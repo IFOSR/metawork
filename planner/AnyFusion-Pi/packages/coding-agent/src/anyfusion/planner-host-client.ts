@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
-import type { PlannerProposalPurpose, PlannerProposalResult, PlannerRuntimeMode } from "./planner-proposal-types.ts";
+import type {
+	ExecutorManualProposalResult,
+	PlannerProposalPurpose,
+	PlannerProposalResult,
+	PlannerRuntimeMode,
+} from "./planner-proposal-types.ts";
 
 export const ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION = 2 as const;
 const MAX_LINE_BYTES = 1_048_576;
@@ -343,6 +348,32 @@ export class AnyFusionPlannerHostClient {
 		return response.result;
 	}
 
+	async submitExecutorManualProposal(
+		input: {
+			agentClassRef: string;
+			userProfile: unknown;
+		},
+		signal?: AbortSignal,
+	): Promise<ExecutorManualProposalResult> {
+		const turnId = `configuration_${Date.now()}_${randomUUID()}`;
+		const response = await this.request(
+			{
+				type: "proposal_submit",
+				turnId,
+				sessionId: this.sessionId,
+				userInput: "Configure Executor capability manual",
+				submissionId: `configuration_${turnId}`,
+				purpose: "configuration",
+				plan: input,
+			},
+			signal,
+		);
+		if (response.type !== "proposal_result" || !isExecutorManualProposalResult(response.result)) {
+			throw new Error("Planner host returned an invalid Executor manual proposal response");
+		}
+		return response.result;
+	}
+
 	async submitCommand(command: string): Promise<CommandResult> {
 		const response = await this.request({ type: "command_submit", command });
 		if (response.type !== "command_result") throw new Error("Planner host returned an unexpected command response");
@@ -477,4 +508,19 @@ function isPlannerProposalResult(value: unknown): value is PlannerProposalResult
 		return Array.isArray(value.issues) && value.issues.every((issue) => typeof issue === "string");
 	if (value.status === "conflict" || value.status === "transport_uncertain") return typeof value.message === "string";
 	return false;
+}
+
+function isExecutorManualProposalResult(value: unknown): value is ExecutorManualProposalResult {
+	if (!isRecord(value)) return false;
+	if (value.status === "rejected") {
+		return Array.isArray(value.issues) && value.issues.every(item => typeof item === "string");
+	}
+	if (value.status === "transport_uncertain") {
+		return value.retryableByReplay === true && typeof value.message === "string";
+	}
+	return value.status === "accepted"
+		&& typeof value.agentClassRef === "string"
+		&& isRecord(value.userProfile)
+		&& typeof value.userProfile.sourceText === "string"
+		&& Array.isArray(value.userProfile.assertions);
 }

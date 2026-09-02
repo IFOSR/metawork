@@ -22,6 +22,41 @@ function candidate(overrides: Partial<AutoModelCandidate> = {}): AutoModelCandid
 }
 
 describe('AutoModelResolver', () => {
+  it('requires an image-capable model for image routing work', () => {
+    const result = AutoModelResolver.resolve({
+      configurationRevision: 'revision-1',
+      agentClassRef: 'pi-agent',
+      harnessRef: 'pi-cli',
+      permissionProfileRef: 'workspace-engineering',
+      policy: {
+        mode: 'auto',
+        allowedModelRefs: ['chat', 'image'],
+        defaultModelRef: 'chat',
+      },
+      candidates: [
+        candidate({
+          modelRef: 'chat',
+          capabilities: ['tools'],
+        }),
+        candidate({
+          modelRef: 'image',
+          capabilities: ['image-generation', 'image-editing'],
+        }),
+      ],
+      requirements: {
+        requiredCapabilities: ['image-generation'],
+        preferredCapabilities: [],
+        contextTokens: 1_024,
+      },
+    });
+
+    expect(result.binding?.modelRef).toBe('image');
+    expect(result.rejectedCandidates).toContainEqual(expect.objectContaining({
+      modelRef: 'chat',
+      reason: 'missing_capability:image-generation',
+    }));
+  });
+
   it('keeps models without a preferred capability in the fallback pool', () => {
     const result = AutoModelResolver.resolve({
       configurationRevision: 'revision-1',

@@ -1,5 +1,6 @@
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import type { ExecutorAffordanceId } from '../routing/types.js';
+import type { HarnessExecutionProtocolId } from '../configuration/types.js';
 
 export interface HarnessProbeResult {
   available: boolean;
@@ -50,6 +51,8 @@ export interface HarnessLaunchInput {
   providerRef?: string;
   modelId?: string;
   responseOnly?: boolean;
+  requiredCapabilities?: readonly string[];
+  executionTarget?: 'host' | 'container';
 }
 
 export interface HarnessLaunchSpec {
@@ -81,6 +84,7 @@ export type ProbeCommandRunner = (
 
 export interface HarnessDriver {
   readonly id: string;
+  readonly executionProtocols: readonly HarnessExecutionProtocolId[];
   readonly supportsContinuation?: boolean;
   readonly supportsResponseOnly?: boolean;
   probe(): Promise<HarnessProbeResult>;

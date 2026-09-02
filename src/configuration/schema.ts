@@ -8,9 +8,9 @@ import {
 import {
   HARNESS_DRIVER_IDS,
   type AnyFusionConfigurationV2,
-  type HarnessDriverId,
-  type HarnessKind,
 } from './types.js';
+import { HARNESS_DRIVER_CATALOG } from './harness-driver-catalog.js';
+import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 
 const REFERENCE_ID = /^[a-z][a-z0-9-]{0,63}$/;
 const SECRET_REFERENCE =
@@ -82,11 +82,27 @@ const ModelProfileSchema = z.object({
   providerRef: ReferenceIdSchema,
   modelId: z.string().trim().min(1).max(200),
   capabilities: uniqueArray(
-    z.enum(['coding', 'long-context', 'planning', 'structured-output', 'tools', 'vision']),
+    z.enum([
+      'coding',
+      'image-editing',
+      'image-generation',
+      'long-context',
+      'planning',
+      'structured-output',
+      'tools',
+      'vision',
+    ]),
     'Model capability',
     16,
   ),
   reasoning: z.enum(['disabled', 'low', 'medium', 'high']),
+  routingNotes: z.object({
+    summary: NonEmptyTextSchema.optional(),
+    strengths: uniqueArray(NonEmptyTextSchema, 'model strength', 32).default([]),
+    limitations: uniqueArray(NonEmptyTextSchema, 'model limitation', 32).default([]),
+    preferredTaskTypes: uniqueArray(NonEmptyTextSchema, 'preferred model task type', 32).default([]),
+    avoidTaskTypes: uniqueArray(NonEmptyTextSchema, 'avoided model task type', 32).default([]),
+  }).strict().optional(),
   contextLimit: z.number().int().min(1_024).max(10_000_000).optional(),
   costTier: z.enum(['low', 'medium', 'high']).optional(),
   latencyTier: z.enum(['low', 'medium', 'high']).optional(),
@@ -204,6 +220,55 @@ const AgentClassDefinitionSchema = z.object({
   mcpServers: uniqueArray(ReferenceIdSchema, 'MCP server', 64).default([]),
   plugins: uniqueArray(ReferenceIdSchema, 'Plugin', 64).default([]),
   generatedRuntimeRef: ReferenceIdSchema,
+  executorManual: z.object({
+    sourceText: z.string().trim().max(8_000),
+    assertionsSourceFingerprint: z.string()
+      .regex(/^sha256:[a-f0-9]{64}$/u)
+      .optional(),
+    semanticReceipt: z.string()
+      .regex(/^manual_[a-f0-9-]{36}$/u)
+      .optional(),
+    assertions: z.array(z.object({
+      topic: z.enum([
+        'mission',
+        'strength',
+        'limitation',
+        'preferred-task',
+        'avoid-task',
+        'model-contribution',
+        'capability-policy',
+        'delivery',
+      ]),
+      text: NonEmptyTextSchema,
+      target: z.string().trim().min(1).max(200).optional(),
+      modelRef: ReferenceIdSchema.optional(),
+      modelCapability: z.enum([
+        'coding',
+        'image-editing',
+        'image-generation',
+        'long-context',
+        'planning',
+        'structured-output',
+        'tools',
+        'vision',
+      ]).optional(),
+      routingCapability: z.enum(ROUTING_CAPABILITY_IDS).optional(),
+      disposition: z.enum([
+        'preferred',
+        'allowed',
+        'avoid',
+        'disabled',
+      ]).optional(),
+    }).strict()).max(64),
+  }).strict().superRefine((manual, context) => {
+    if (manual.sourceText.length === 0 && manual.assertions.length > 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['assertions'],
+        message: 'Executor manual assertions require non-empty sourceText',
+      });
+    }
+  }).optional(),
   enabled: z.boolean(),
 }).strict().superRefine((agentClass, context) => {
   if (agentClass.kind === 'executor') {
@@ -322,17 +387,6 @@ const GatewayConfigSchema = z.object({
   port: z.number().int().min(1).max(65_535).optional(),
 }).strict();
 
-const HARNESS_DRIVER_REGISTRY: Record<
-  HarnessDriverId,
-  Readonly<{ kind: HarnessKind; transport: string; command?: string }>
-> = {
-  'a2a-v1': { kind: 'executor', transport: 'a2a' },
-  'anyfusion-planner-host-v2': { kind: 'planner', transport: 'local-process' },
-  'codex-cli': { kind: 'executor', transport: 'local-cli', command: 'codex' },
-  'container-cli': { kind: 'executor', transport: 'container' },
-  'pi-cli': { kind: 'executor', transport: 'local-cli', command: 'pi' },
-};
-
 export const AnyFusionConfigurationV2Schema = z.object({
   schemaVersion: z.literal(2),
   providers: z.record(ReferenceIdSchema, ProviderDefinitionSchema),
@@ -362,7 +416,7 @@ export const AnyFusionConfigurationV2Schema = z.object({
   }
 
   for (const [harnessRef, harness] of Object.entries(configuration.harnesses)) {
-    const driver = HARNESS_DRIVER_REGISTRY[harness.driverId];
+    const driver = HARNESS_DRIVER_CATALOG[harness.driverId];
     if (driver.kind !== harness.kind || driver.transport !== harness.transport) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -373,13 +427,19 @@ export const AnyFusionConfigurationV2Schema = z.object({
     }
     if (
       harness.transport === 'local-cli'
-      && driver.command !== harness.command
+      && (
+        driver.transport !== 'local-cli'
+        || !('command' in driver)
+        || driver.command !== harness.command
+      )
     ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['harnesses', harnessRef, 'command'],
         message:
-          `Harness driver ${harness.driverId} requires registered command ${driver.command}`,
+          `Harness driver ${harness.driverId} requires registered command ${
+            'command' in driver ? driver.command : '(unsupported)'
+          }`,
       });
     }
   }
@@ -442,6 +502,50 @@ export const AnyFusionConfigurationV2Schema = z.object({
         path: ['agentClasses', agentClassRef, 'permissionProfileRef'],
         message: `unknown Permission Profile reference: ${agentClass.permissionProfileRef}`,
       });
+    }
+
+    const manual = agentClass.executorManual;
+    if (!manual) continue;
+    if (agentClass.kind !== 'executor') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['agentClasses', agentClassRef, 'executorManual'],
+        message: 'Planner AgentClass must not define executorManual',
+      });
+      continue;
+    }
+    if (redactSensitiveText(manual.sourceText) !== manual.sourceText) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['agentClasses', agentClassRef, 'executorManual', 'sourceText'],
+        message: 'Executor manual guidance must not contain credential-like content',
+      });
+    }
+    for (const [assertionIndex, assertion] of manual.assertions.entries()) {
+      if (redactSensitiveText(assertion.text) !== assertion.text) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['agentClasses', agentClassRef, 'executorManual', 'assertions', assertionIndex, 'text'],
+          message: 'Executor manual assertions must not contain credential-like content',
+        });
+      }
+      if (assertion.topic === 'capability-policy') {
+        if (!assertion.routingCapability || !assertion.disposition) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['agentClasses', agentClassRef, 'executorManual', 'assertions', assertionIndex],
+            message:
+              'Executor capability-policy assertions require routingCapability and disposition',
+          });
+        }
+      } else if (assertion.routingCapability || assertion.disposition) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['agentClasses', agentClassRef, 'executorManual', 'assertions', assertionIndex],
+          message:
+            'routingCapability and disposition are valid only for capability-policy assertions',
+        });
+      }
     }
   }
 }) as z.ZodType<AnyFusionConfigurationV2>;

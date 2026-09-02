@@ -211,6 +211,92 @@ describe('Completion Protocol result-first assessment', () => {
     });
   });
 
+  it('requires a valid image artifact for image generation completion', () => {
+    const workspaceRoot = root();
+    writeFileSync(join(workspaceRoot, 'result.txt'), 'not an image');
+    const result = validate({
+      current: subtask({
+        deliveryKind: 'edit',
+        requiredCapabilities: ['image-generation'],
+      }),
+      workspaceRoot,
+      workspaceDelta: delta([
+        { path: 'result.txt', beforeHash: null, afterHash: 'text-hash' },
+      ]),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok ? [] : result.violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'completion_artifact_invalid',
+        message: expect.stringContaining('valid image artifact'),
+      }),
+    ]));
+  });
+
+  it('rejects report delivery for image work because it cannot carry an image artifact', () => {
+    const result = validate({
+      current: subtask({
+        deliveryKind: 'report',
+        requiredCapabilities: ['image-generation'],
+      }),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok ? [] : result.violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'completion_artifact_invalid',
+        message: expect.stringContaining('valid image artifact'),
+      }),
+    ]));
+  });
+
+  it('converts unreadable image artifacts into a completion violation', () => {
+    const workspaceRoot = root();
+    mkdirSync(join(workspaceRoot, 'result.png'));
+
+    const result = validate({
+      current: subtask({
+        deliveryKind: 'edit',
+        requiredCapabilities: ['image-generation'],
+      }),
+      workspaceRoot,
+      workspaceDelta: delta([
+        { path: 'result.png', beforeHash: null, afterHash: 'directory-hash' },
+      ]),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok ? [] : result.violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'completion_artifact_invalid',
+        message: expect.stringContaining('valid image artifact'),
+      }),
+    ]));
+  });
+
+  it('accepts a PNG artifact for image generation completion', () => {
+    const workspaceRoot = root();
+    writeFileSync(
+      join(workspaceRoot, 'result.png'),
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    );
+    const result = validate({
+      current: subtask({
+        deliveryKind: 'edit',
+        requiredCapabilities: ['image-generation'],
+      }),
+      workspaceRoot,
+      workspaceDelta: delta([
+        { path: 'result.png', beforeHash: null, afterHash: 'png-hash' },
+      ]),
+    });
+
+    expect(result.assessment.certification.violations).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'completion_artifact_invalid' }),
+    ]));
+  });
+
   it('allows a zero-delta edit only with a non-empty no-change reason', () => {
     const current = subtask({ deliveryKind: 'edit' });
     const rejected = validate({ current });

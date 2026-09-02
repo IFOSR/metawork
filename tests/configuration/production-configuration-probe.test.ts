@@ -55,6 +55,24 @@ describe('production configuration probe', () => {
       .resolves.toEqual({ ok: true });
   });
 
+  it('does not treat the vendored Planner artifact as a Pi Executor fallback', async () => {
+    const releaseRoot = await fixtureRelease();
+    const probe = createProductionConfigurationProbe({
+      releaseRoot,
+      secretStore: {
+        get: async () => 'secret',
+        put: vi.fn(),
+        delete: vi.fn(),
+      },
+      detectCommand: async command => command !== 'pi',
+    });
+
+    const result = await probe(snapshot(true, true), { contentHash: 'hash', files: {} });
+
+    expect(result.ok).toBe(false);
+    expect(result.issues).toContain('Executor command is unavailable: pi');
+  });
+
   it('returns every blocking issue instead of silently activating', async () => {
     const releaseRoot = await fixtureRelease(false);
     const probe = createProductionConfigurationProbe({

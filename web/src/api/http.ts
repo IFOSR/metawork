@@ -4,6 +4,8 @@ import type {
   ExecutionTimeline,
   ExecutorSummary,
   ConfigurationCompletionResult,
+  ExecutorCapabilityManual,
+  ExecutorManualAnalysis,
   TaskSummary,
   WorkGraphPresentationProjection,
 } from './types';
@@ -48,6 +50,60 @@ export class HttpClient {
 
   getConfigurationCompletion(): Promise<ConfigurationCompletionResult> {
     return this.request('/api/config/completion');
+  }
+
+  getExecutorCapabilityManual(
+    agentClassRef: string,
+    revisionId?: string,
+  ): Promise<ExecutorCapabilityManual> {
+    const query = revisionId ? `?revisionId=${encodeURIComponent(revisionId)}` : '';
+    return this.request(
+      `/api/config/executors/${encodeURIComponent(agentClassRef)}/capability-manual${query}`,
+    );
+  }
+
+  analyzeExecutorManual(
+    agentClassRef: string,
+    baseRevisionId: string,
+    sourceText: string,
+    config?: Record<string, unknown>,
+  ): Promise<ExecutorManualAnalysis> {
+    return this.request(
+      `/api/config/executors/${encodeURIComponent(agentClassRef)}/capability-manual/analyze`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ baseRevisionId, sourceText, ...(config ? { config } : {}) }),
+      },
+    );
+  }
+
+  compileExecutorCapabilityManual(
+    agentClassRef: string,
+    baseRevisionId: string,
+    sourceText: string,
+    config?: Record<string, unknown>,
+  ): Promise<ExecutorManualAnalysis> {
+    return this.request(
+      `/api/config/executors/${encodeURIComponent(agentClassRef)}/capability-manual/compile`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ baseRevisionId, sourceText, ...(config ? { config } : {}) }),
+      },
+    );
+  }
+
+  previewExecutorCapabilityManual(
+    agentClassRef: string,
+    baseRevisionId: string,
+    config: Record<string, unknown>,
+  ): Promise<ExecutorCapabilityManual> {
+    return this.request(
+      `/api/config/executors/${encodeURIComponent(agentClassRef)}/capability-manual/preview`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ baseRevisionId, config }),
+      },
+    );
   }
 
   getTasks(): Promise<TaskSummary[]> {
@@ -186,7 +242,13 @@ export class HttpClient {
       },
     });
     const body = await response.json() as ActivateResult;
-    if (!response.ok && response.status !== 409 && response.status !== 422) {
+    const structuredFailure = body
+      && body.ok === false
+      && typeof body.code === 'string';
+    if (!response.ok
+      && !structuredFailure
+      && response.status !== 409
+      && response.status !== 422) {
       if (response.status === 401) this.onUnauthorized?.();
       throw new Error(`HTTP ${response.status}: ${JSON.stringify(body)}`);
     }

@@ -16,7 +16,7 @@ Phase 6 established the durable attempt, publication and recovery substrate, and
 ADR-0037 now extends it to parallel top-level Tasks across Conversations. The
 active path remains `event -> durable inbox -> KernelWorkflow -> snapshot -> ControlKernel.decide -> immutable decision ledger + application -> durable dispatch items -> attempt supervisor -> normalized observation inbox`. `KernelWorkflow` serializes authorization and application, while independent top-level Tasks from different Conversations may run concurrently within configured account limits. A Conversation has one durable execution slot; its later Tasks queue and never overlap its executing or cleaning-up Task. Every attempt owns a Task-generation/Subtask Git worktree that persists across retry, fallback, takeover and merge repair. The default backend runs the canonical Codex/Pi CLIs as child processes in those worktrees; the Docker attempt backend remains an explicit compatibility mode. The isolated AnyFusion-Pi `PlanningAgent` owns user conversation, read-only queries and natural-language planning semantics; `ControlKernel` owns scheduling, cancellation and recovery policy, and Execution owns WorkUnit claims, leases, backend runtimes and Git side effects. See ADR-0037 and the active implementation plan for the multi-Conversation rollout.
 
-`src/planning/` owns the PlanningAgent interface (`AnyFusionPlanningAgent`), controlled-lifecycle AnyFusion-Pi JSONL RPC runner, the structured proposal contract, and catalog-aware validation. One Conversation maps to one persisted Pi session file. Semantic turns use `--mode rpc` over stdin/stdout JSONL and serialize writers per Conversation; MetaWork does not replay SQLite interaction history into prompts. Stable instructions and one fixed `metaclaw-planner/SKILL.md` live in the AnyFusion-Pi fork, while dynamic Task, runtime, authorization and routing facts come only from seven allowlisted read-only MetaWork MCP tools. Semantic RPC turns additionally expose Pi-native read-only `web_fetch` and `web_search` for bounded credential-free public HTTP(S) information, plus the native proposal tool; Pi-native `read`, `grep`, `find` and `ls` are disabled in this mode. The interactive client-only TUI may retain those read-only repository tools for workspace questions; shell, edit and write remain disabled. A `direct_reply` is valid only when the complete answer can be produced in the current Planner turn from dialogue and available read-only tools without schedulable work or side effects. Real-time/source-dependent facts require a Web tool call first. Shell execution, unavailable Workspace inspection, file/Git/storage mutation, authenticated external actions, other side effects, durable progress, monitoring, artifacts and downstream handoffs require `plan_work_graph` and a Kernel-authorized Executor. This remains semantic Planner policy, not Session/Kernel keyword routing. MetaWork remains the only v8 validator and the only owner of Task, Kernel, Executor and storage mutation. Pi submits `PlanningAgentPlan v8` only through its restricted native `submit_planning_proposal` tool. Runtime injects session, turn, user input and deterministic submission identity; the model supplies only `plan`. A rejection remains ordinary structured tool feedback in the same ReAct turn, with no proposal-specific retry count, repair prompt or outer coordination loop. `src/work-graph/` owns the shared v7 graph types and pure structural rules consumed by Planning, Kernel, and Execution. Transport uncertainty is distinct from validation rejection and is resolved only by idempotently replaying the identical submission; there is no assistant-text envelope parser, earlier-schema production parser, legacy intent route, semantic default, keyword fallback or Codex Planner fallback.
+`src/planning/` owns the PlanningAgent interface (`AnyFusionPlanningAgent`), controlled-lifecycle AnyFusion-Pi JSONL RPC runner, the structured proposal contract, and catalog-aware validation. One Conversation maps to one persisted Pi session file. Semantic turns use `--mode rpc` over stdin/stdout JSONL and serialize writers per Conversation; MetaWork does not replay SQLite interaction history into prompts. Stable instructions and one fixed `metaclaw-planner/SKILL.md` live in the AnyFusion-Pi fork, while dynamic Task, runtime, authorization and routing facts come only from seven allowlisted read-only MetaWork MCP tools. Semantic RPC turns additionally expose Pi-native read-only `web_fetch` and `web_search` for bounded credential-free public HTTP(S) information, plus the native proposal tool; Pi-native `read`, `grep`, `find` and `ls` are disabled in this mode. The interactive client-only TUI may retain those read-only repository tools for workspace questions; shell, edit and write remain disabled. New semantic Planner proposals may not use `direct_reply`: work-like requests must use `plan_work_graph` and a Kernel-authorized Executor, while historical direct-reply records remain readable for audit and replay. Slash-prefixed system commands stay on the Application-Shell path. Real-time/source-dependent facts require a Web tool call first when they are inputs to an Executor-owned result. Shell execution, unavailable Workspace inspection, file/Git/storage mutation, authenticated external actions, other side effects, durable progress, monitoring, artifacts and downstream handoffs require `plan_work_graph` and a Kernel-authorized Executor. This remains semantic Planner policy, not Session/Kernel keyword routing. MetaWork remains the only v8 validator and the only owner of Task, Kernel, Executor and storage mutation. Pi submits `PlanningAgentPlan v8` only through its restricted native `submit_planning_proposal` tool. Runtime injects session, turn, user input and deterministic submission identity; the model supplies only `plan`. A rejection remains ordinary structured tool feedback in the same ReAct turn, with no proposal-specific retry count, repair prompt or outer coordination loop. `src/work-graph/` owns the shared v7 graph types and pure structural rules consumed by Planning, Kernel, and Execution. Transport uncertainty is distinct from validation rejection and is resolved only by idempotently replaying the identical submission; there is no assistant-text envelope parser, earlier-schema production parser, legacy intent route, semantic default, keyword fallback or Codex Planner fallback.
 
 The default local Client is the pinned `AnyFusion-Pi` fork vendored under `planner/AnyFusion-Pi` (checked into this repository, not a separate clone). Native macOS installation builds MetaClaw and Planner in separate dependency trees and runs them as isolated Node 22.19+ processes; the optional Linux container runtime preserves the same process boundary while sharing one image-level Node executable. `metawork server start` owns the persistent Runtime process and never launches a Client. Bare `metawork` is `metawork tui`: the interactive Pi process reads the Server endpoint manifest, starts with `--gateway-socket` plus an optional stable Conversation ID, submits versioned commands, renders ordered safe events, and never constructs or calls a local semantic runtime. `metawork web` only validates the same Server and opens its loopback origin. Client exit never stops Server work. Semantic Planning remains server-side. `src/tui-bridge/` exposes AnyFusion Planner Host Protocol v2 over a mode-`0600` Unix JSONL socket only for controlled RPC Planner proposal tools. MetaClaw injects an absolute Node command and compiled `planner-mcp.js` arguments; the Planner artifact carries no private Node runtime and never substitutes an uncontrolled executable. A missing fixed query tool fails before the first turn. A mid-turn MCP transport loss locks proposal submission and aborts that agent loop; the Conversation remains attachable and a later turn reconnects through the controlled process boundary. Permission requests cross the Gateway as transient bounded facts; the client submits only request ID plus approve/deny as a versioned `permission_resolution` command. Permission arrival and resolution do not create a semantic Planner turn. `ConversationSession` reruns the v8 schema and semantic validation before emitting `plan_proposed` into `DurableKernelWorkflow`. The first accepted proposal locks the turn; rejected revisions remain open, identical submissions replay their persisted result, and a different post-acceptance submission conflicts. Neither Gateway clients nor the Planner Host bridge can directly access the database, Kernel, scheduler or Executor. Planner cannot synthesize privileged commands, edit, execute shell, mutate Task state, authorize work or publish Git changes. Executor attempts use trusted existing Codex/Pi CLI binaries with MetaWork-only attempt homes in the worktree backend, or canonical Codex/Pi attempt images in Docker compatibility mode. The original Ink implementation under `src/tui/` remains intact as an explicitly unmaintained standby module selected with `METACLAW_STANDBY_TUI=1`; any future activation must remain Gateway-backed.
 
@@ -227,6 +227,15 @@ The legacy routing/intent subsystem, `PolicyKernel`, `TaskAdmissionGate`, `Sched
 
 Startup inserts the missing `planner` class and force-converges the persisted `codex-cli` and `pi-agent` AgentClasses to their canonical definitions, including permission-profile bindings and the image fields used by Docker compatibility mode. Custom classes without a valid runtime command/permission profile remain audit-visible but fail closed. Only `planner-1` is seeded; executor WorkUnits are created and probed on demand after kernel authorization. `ExecutorRegistry` resolves every executable AgentClass through the backend-aware `BackendExecutorAdapter`; the worktree backend is a trusted native process path, not a second semantic executor router.
 
+The canonical `pi-agent` AgentClass is a composite Executor implementation:
+ordinary Subtasks run the operator-provided standard `pi --mode json`, while
+validated image-generation/image-editing Subtasks run MetaWork's Image API
+Runner with the same Kernel-authorized binding. The Runner is not a user-visible
+AgentClass and does not use the vendored AnyFusion-Pi Planner or its image mode.
+Native Pi upgrades therefore do not overwrite MetaWork image execution code;
+Docker remains an explicit compatibility path that packages the Runner into the
+attempt image.
+
 Executor recovery is event-driven rather than periodic. `ExecutorRecoveryRefreshService` inspects only enabled AgentClasses whose persisted health is already `error`, coalesces concurrent checks for the same class, records a bounded redacted recovery audit and permits only `error -> healthy`; `disabled` never auto-recovers. Planning and recovery refresh run concurrently, but Kernel admission waits for both. If a relevant class recovers, the proposal may be revised once in the same persisted AnyFusion-Pi session. An existing Task with no usable eligible class persists its latest proposal as `waiting_for_availability`; a later `executor_recovered` fact lets Kernel re-admit the proposal and move the Task to `ready` without another model call or immediate dispatch.
 
 When touching dispatch, update focused behavior tests around `ControlKernel`, `DurableKernelWorkflow`, the decision/application ledger, work-graph runtime, work-unit claims and attempt landing. Attempt terminal regressions remain anchored in `tests/execution/subtask-attempt-runner.test.ts` and `tests/session/planning-agent-session-routing.test.ts`.
@@ -257,10 +266,58 @@ separate user-editable Model Facts resource. Planner is fixed-only and must be
 manually assigned one catalog model. Codex Executor Auto projects GPT-family
 models across enabled Providers, while Pi Executor Auto projects all enabled
 Provider models; both policies are narrowed by the user's allowed pool before
-`AutoModelResolver` produces a concrete binding. Provider/model deletion is
+`AutoModelResolver` produces a concrete binding. An Auto
+`defaultModelRef` is a ranking preference, not a pre-authorized final binding;
+mandatory model capabilities derived from the Subtask's Routing Capabilities
+filter the allowed pool first. `image-generation` and `image-editing` are
+controlled Routing Capabilities derived only when the Executor's effective
+model pool contains models with the corresponding structural capabilities.
+Kernel therefore selects an image-capable model for image work and rejects
+ordinary models even when one is configured as the Auto default.
+Provider/model deletion is
 allowed only while idle, removes deleted references from Auto pools, and leaves
 deleted Fixed references empty until the user repairs them. Invalid drafts never
-activate, and busy activation returns `runtime_busy`.
+activate, and busy activation returns `runtime_busy`. Each enabled Executor
+AgentClass also has one independent revision-scoped capability profile. The
+profile is compiled from its effective fixed/Auto ModelPolicy, current Model
+capability evidence, controlled Executor affordances, configured declarations,
+and user semantics. The Chinese Skill-style manual, read-only tags, capability
+evidence, routable capabilities, preferences, and Routing Catalog entry all
+come from that same profile and source fingerprint. The final manual is
+Planner's authoritative semantic routing profile; the Catalog is its
+machine-readable validation projection. User source text is authoritative
+configuration input and is immediately preserved in the settings draft after
+deterministic schema and sensitive-content validation. Every changed semantic
+payload, including clearing existing guidance, must carry a server-issued
+receipt bound to its exact source and assertions before activation. Clearing is
+normalized deterministically and does not invoke the Planner model.
+Model-assisted extraction may additionally
+produce normalized assertions; when present, user semantics take precedence
+over conflicting generated positioning and preferences. A supported capability
+may be preferred, allowed, avoided, or disabled, while unsupported intent
+remains visible and cannot become routable.
+Configuration turns receive the selected Executor's current manual and model
+facts directly, expose only `submit_executor_manual_proposal`, start no Planner
+MCP extension, and use a bounded configuration-specific timeout. Unsaved draft
+facts may carry a temporary configuration revision, but the Planner process
+still launches with the active revision's authorized model, credentials and
+runtime home; draft facts never become a runtime binding. Timeout, model
+unavailability, missing tool submission without structured semantic output, or
+invalid semantic assertions returns a successful `source-preserved` preview
+with no assertions instead of returning HTTP 422 or losing the draft. A
+configuration model that cannot invoke the native submission tool may return
+the same bounded JSON semantic payload as assistant output; the server
+validates it through the same trusted profile compiler. Changed non-empty
+guidance remains
+activation-blocked until semantic normalization succeeds; empty-source clearing
+uses the same trusted proposal path and receipt without a model call. The
+preview still includes the
+original guidance as bounded draft context and recomputes model-derived
+capability evidence. The profile can
+add or remove actual Routing Capability qualification as effective Models and
+user dispositions change, but it cannot widen Permission Profiles, authorize an
+unconfigured Model, change dynamic health, or bypass Kernel authorization.
+Provider URLs, credentials and commands remain outside the profile.
 Native install/update/rollback uses one `~/.metawork` root, immutable
 configuration/generated/application revisions, revisioned database files and
 durable activation journals. Until an online management transaction can prove
@@ -415,6 +472,14 @@ _Avoid_: executor profile, capability class, instance, worker
 A controlled, supported delivery contract that helps Planner prefer an Executor AgentClass. It is not an exhaustive inventory of that Executor's native tools, permissions, or theoretical abilities.
 _Avoid_: tool list, hard permission, free-form capability tag
 
+**Executor Capability Manual**:
+The revision-scoped, Skill-style Markdown routing guidance for one Executor
+AgentClass. It is generated from that Executor's current effective Models and
+structured routing facts, then semantically merged with persisted user
+assertions. It is not a shared Executor document and is not execution
+authority.
+_Avoid_: global executor profile, permission policy, model authorization
+
 **Executor Catalog**:
 The canonical static definitions of built-in Executor AgentClasses and the Planner-safe projection derived from them. Dynamic class health and recent execution outcomes are not part of this catalog.
 _Avoid_: executor status, Work Unit capacity, runtime inventory
@@ -473,6 +538,9 @@ they must not discard it. Runtime computes one authoritative workspace delta
 before certification, retains internal identities outside model output, and
 derives artifacts from created/modified files. Path escape, unauthorized writes,
 secret exposure and unauthorized ResultReference access remain fail-closed.
+Image generation and editing Subtasks require `deliveryKind: edit` and at least
+one PNG, JPEG, WebP, or GIF artifact whose bounded signature read matches its
+extension; `report`, missing, unreadable, or forged image outputs cannot certify.
 Raw output, business result and safe projection are separate immutable Result
 Objects; clients receive the safe projection through bounded Gateway chunks.
 _Avoid_: model-supplied identity/key fields, legacy envelope fallback, best-effort trailer, visible machine block

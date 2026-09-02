@@ -472,4 +472,104 @@ describe('AnyFusion configuration schema v2', () => {
       },
     }).success).toBe(false);
   });
+
+  it('rejects Executor manual content on a Planner AgentClass', () => {
+    const config = completeConfiguration();
+    expect(AnyFusionConfigurationV2Schema.safeParse({
+      ...config,
+      agentClasses: {
+        ...config.agentClasses,
+        'planner-default': {
+          ...config.agentClasses['planner-default'],
+          executorManual: {
+            sourceText: 'Planner 说明书',
+            assertions: [],
+          },
+        },
+      },
+    }).success).toBe(false);
+  });
+
+  it('preserves stale manual model claims outside the AgentClass model policy', () => {
+    const config = completeConfiguration();
+    expect(AnyFusionConfigurationV2Schema.safeParse({
+      ...config,
+      agentClasses: {
+        ...config.agentClasses,
+        'codex-engineering': {
+          ...config.agentClasses['codex-engineering'],
+          executorManual: {
+            sourceText: '错误的模型归因',
+            assertions: [{
+              topic: 'model-contribution',
+              text: '由 Planner 模型负责视觉理解',
+              modelRef: 'planner',
+              modelCapability: 'vision',
+            }],
+          },
+        },
+      },
+    }).success).toBe(true);
+  });
+
+  it('rejects Executor manual assertions without natural-language source text', () => {
+    const config = completeConfiguration();
+    expect(AnyFusionConfigurationV2Schema.safeParse({
+      ...config,
+      agentClasses: {
+        ...config.agentClasses,
+        'codex-engineering': {
+          ...config.agentClasses['codex-engineering'],
+          executorManual: {
+            sourceText: '',
+            assertions: [{
+              topic: 'model-contribution',
+              text: 'codex-engineering 支持图片生成。',
+              modelRef: 'engineering',
+              modelCapability: 'image-generation',
+            }],
+          },
+        },
+      },
+    }).success).toBe(false);
+  });
+
+  it('accepts a complete capability policy and rejects incomplete policy assertions', () => {
+    const config = completeConfiguration();
+    expect(AnyFusionConfigurationV2Schema.safeParse({
+      ...config,
+      agentClasses: {
+        ...config.agentClasses,
+        'codex-engineering': {
+          ...config.agentClasses['codex-engineering'],
+          executorManual: {
+            sourceText: '不要承担图片生成。',
+            assertions: [{
+              topic: 'capability-policy',
+              text: '禁止承担图片生成。',
+              routingCapability: 'image-generation',
+              disposition: 'disabled',
+            }],
+          },
+        },
+      },
+    }).success).toBe(true);
+    expect(AnyFusionConfigurationV2Schema.safeParse({
+      ...config,
+      agentClasses: {
+        ...config.agentClasses,
+        'codex-engineering': {
+          ...config.agentClasses['codex-engineering'],
+          executorManual: {
+            sourceText: '不要承担图片生成。',
+            assertions: [{
+              topic: 'capability-policy',
+              text: '禁止承担图片生成。',
+              routingCapability: 'image-generation',
+            }],
+          },
+        },
+      },
+    }).success).toBe(false);
+  });
 });

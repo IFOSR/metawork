@@ -126,9 +126,10 @@ export class ConfigurationCompletionService {
         : undefined;
       const catalogCapabilities = (this.deps.modelCapabilities?.[modelId] ?? [])
         .filter((value): value is string => Boolean(value));
-      const capabilities = explicitCapabilities.length > 0
-        ? explicitCapabilities
-        : [...catalogCapabilities];
+      const capabilities = unique([
+        ...explicitCapabilities,
+        ...catalogCapabilities,
+      ]).sort((left, right) => left.localeCompare(right));
       const hasResolvedCapabilities = capabilities.length > 0;
       models[modelRef] = {
         providerRef,

@@ -3,7 +3,12 @@ import { chmod, lstat, mkdir, rename, unlink } from 'node:fs/promises';
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
 import { basename, dirname, join } from 'node:path';
 import type { CommandCompletion } from '../commands/catalog.js';
-import type { PlannerProposalPurpose, PlannerProposalResult, PlannerProposalSubmission } from '../planning/planner-proposal.js';
+import type {
+  ExecutorManualProposalResult,
+  PlannerProposalPurpose,
+  PlannerProposalResult,
+  PlannerProposalSubmission,
+} from '../planning/planner-proposal.js';
 import type {
   PlannerTuiCommandSubmissionResult,
   PlannerTuiExecutorResult,
@@ -32,6 +37,12 @@ export interface PlannerHostBridgeSession {
     submission: PlannerProposalSubmission,
     purpose?: PlannerProposalPurpose,
   ): Promise<PlannerProposalResult>;
+  submitExecutorManualProposal?(
+    proposal: {
+      agentClassRef: string;
+      userProfile: unknown;
+    },
+  ): Promise<ExecutorManualProposalResult>;
 }
 
 export interface PlannerHostBridgeDeps {
@@ -272,16 +283,28 @@ export class PlannerHostBridge {
     request: Extract<PlannerHostRequest, { type: 'proposal_submit' }>,
     runtimeMode: 'interactive' | 'rpc',
   ): Promise<void> {
-    let result: PlannerProposalResult;
+    let result: PlannerProposalResult | ExecutorManualProposalResult;
     try {
-      result = await session.submitPlannerProposal({
-        sessionId: request.sessionId,
-        turnId: request.turnId,
-        userInput: request.userInput,
-        submissionId: request.submissionId,
-        plan: request.plan,
-        runtimeMode,
-      }, request.purpose);
+      if (request.purpose === 'configuration') {
+        const manualProposal = parseExecutorManualProposal(request.plan);
+        if (!manualProposal || !session.submitExecutorManualProposal) {
+          result = {
+            status: 'rejected',
+            issues: ['Planner configuration proposal is unavailable for this host session.'],
+          };
+        } else {
+          result = await session.submitExecutorManualProposal(manualProposal);
+        }
+      } else {
+        result = await session.submitPlannerProposal({
+          sessionId: request.sessionId,
+          turnId: request.turnId,
+          userInput: request.userInput,
+          submissionId: request.submissionId,
+          plan: request.plan,
+          runtimeMode,
+        }, request.purpose);
+      }
     } catch (error) {
       result = {
         status: 'transport_uncertain',
@@ -516,6 +539,25 @@ export class PlannerHostBridge {
     if (!stat.isSocket()) throw new Error(`expected Planner host socket path: ${this.deps.socketPath}`);
     return { dev: stat.dev, ino: stat.ino };
   }
+}
+
+function parseExecutorManualProposal(value: unknown): {
+  agentClassRef: string;
+  userProfile: unknown;
+} | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as { agentClassRef?: unknown; userProfile?: unknown };
+  if (
+    typeof candidate.agentClassRef !== 'string'
+    || candidate.agentClassRef.trim().length === 0
+    || candidate.userProfile === undefined
+  ) {
+    return null;
+  }
+  return {
+    agentClassRef: candidate.agentClassRef,
+    userProfile: candidate.userProfile,
+  };
 }
 
 function sameSocketIdentity(left: SocketIdentity, right: SocketIdentity): boolean {

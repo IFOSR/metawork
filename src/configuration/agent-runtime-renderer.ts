@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AnyFusionConfigurationV2, ConfigurationSnapshot } from './types.js';
+import { buildExecutorCapabilityManual } from '../routing/executor-capability-manual.js';
 
 const CURRENT_FILE = 'current';
 
@@ -27,6 +28,7 @@ export class AgentRuntimeRenderer {
       await this.renderPlanner(snapshot.config, tmp);
       await this.renderCodex(snapshot.config, tmp);
       await this.renderPi(snapshot.config, tmp);
+      await this.renderExecutorCapabilityManuals(snapshot, tmp);
       await rm(target, { recursive: true, force: true });
       await rename(tmp, target);
       if (options.activateCurrent !== false) {
@@ -83,6 +85,27 @@ export class AgentRuntimeRenderer {
     const codex = join(root, 'codex');
     await mkdir(codex, { recursive: true });
     await writeFile(join(codex, 'config.toml'), buildCodexConfigToml(config), 'utf8');
+  }
+
+  private async renderExecutorCapabilityManuals(
+    snapshot: ConfigurationSnapshot,
+    root: string,
+  ): Promise<void> {
+    await Promise.all(Object.entries(snapshot.config.agentClasses)
+      .filter(([, agentClass]) => agentClass.kind === 'executor')
+      .map(async ([agentClassRef, agentClass]) => {
+        const executorRoot = join(root, 'executors', agentClassRef);
+        await mkdir(executorRoot, { recursive: true });
+        const manual = buildExecutorCapabilityManual({
+          agentClassRef,
+          agentClass,
+          models: snapshot.config.models,
+          providers: snapshot.config.providers,
+          harness: snapshot.config.harnesses[agentClass.harnessRef],
+          configurationRevision: snapshot.revisionId,
+        });
+        await writeFile(join(executorRoot, 'CAPABILITY.md'), manual.markdown, 'utf8');
+      }));
   }
 }
 

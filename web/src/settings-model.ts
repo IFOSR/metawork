@@ -27,6 +27,13 @@ export interface SettingsModelEntry {
   qualityTier?: string;
   reasoning?: string;
   costTier?: string;
+  routingNotes?: {
+    summary?: string;
+    strengths?: string[];
+    limitations?: string[];
+    preferredTaskTypes?: string[];
+    avoidTaskTypes?: string[];
+  };
   enabled?: boolean;
 }
 
@@ -38,14 +45,18 @@ export interface AgentClassRoutingDraft {
   modelRef: string;
   allowedModelRefs: string[];
   defaultModelRef: string;
+  fallbackModelRefs?: string[];
   objective: RoutingObjective;
   minimumQualityTier: 'low' | 'medium' | 'high';
   primaryUseCases: string[];
   avoidUseCases: string[];
+  executorManualSourceText: string;
 }
 
 export const MODEL_CAPABILITY_IDS = [
   'coding',
+  'image-editing',
+  'image-generation',
   'long-context',
   'planning',
   'structured-output',
@@ -57,6 +68,8 @@ export type ModelCapabilityId = typeof MODEL_CAPABILITY_IDS[number];
 
 export const MODEL_CAPABILITY_LABELS: Record<ModelCapabilityId, string> = {
   coding: '代码',
+  'image-editing': '图片编辑',
+  'image-generation': '图片生成',
   'long-context': '长上下文',
   planning: '规划',
   'structured-output': '结构化输出',
@@ -92,10 +105,57 @@ export interface AgentClassRoutingFacts {
   affordances: string[];
 }
 
+export function executorManualInputKey(
+  draft: AgentClassRoutingDraft,
+  models: readonly SettingsModelEntry[],
+): string {
+  const modelRefs = draft.mode === 'fixed'
+    ? [draft.modelRef]
+    : [...draft.allowedModelRefs].sort();
+  return JSON.stringify({
+    mode: draft.mode,
+    modelRef: draft.modelRef,
+    allowedModelRefs: modelRefs,
+    defaultModelRef: draft.defaultModelRef,
+    fallbackModelRefs: [...(draft.fallbackModelRefs ?? [])],
+    objective: draft.objective,
+    minimumQualityTier: draft.minimumQualityTier,
+    primaryUseCases: [...draft.primaryUseCases],
+    avoidUseCases: [...draft.avoidUseCases],
+    executorManualSourceText: draft.executorManualSourceText.trim(),
+    models: modelRefs.map(ref => {
+      const model = models.find(candidate => candidate.ref === ref);
+      return model
+        ? {
+          ref: model.ref,
+          providerRef: model.providerRef,
+          modelId: model.modelId,
+          capabilities: [...model.capabilities].sort(),
+          routingNotes: model.routingNotes,
+          contextLimit: model.contextLimit,
+          costInputPerMillion: model.costInputPerMillion,
+          costOutputPerMillion: model.costOutputPerMillion,
+          latencyTier: model.latencyTier,
+          qualityTier: model.qualityTier,
+          reasoning: model.reasoning,
+          costTier: model.costTier,
+          enabled: model.enabled,
+        }
+        : { ref, missing: true };
+    }),
+  });
+}
+
 export const ROUTING_CAPABILITY_CONTRACTS: Record<string, string> = {
   'current-web-research': '研究当前公共网络信息，并保留可追溯来源后交付有来源支撑的结论。',
+  'image-editing': '使用明确支持图片编辑的模型处理输入图片，并交付可验证的图片产物。',
+  'image-generation': '使用明确支持图片生成的模型根据文本要求生成图片，并交付可验证的图片产物。',
   'workspace-engineering': '在受控工作区理解、修改和验证代码或文本文件，并交付变更或产物。',
 };
+
+export function modelCapabilityLabel(capability: string): string {
+  return MODEL_CAPABILITY_LABELS[capability as ModelCapabilityId] ?? capability;
+}
 
 export interface ProviderModelOption {
   modelId: string;
@@ -184,6 +244,7 @@ export function removeModelRefsFromRoutingDraft(
     return [agentClassRef, {
       ...entry,
       allowedModelRefs,
+      fallbackModelRefs: (entry.fallbackModelRefs ?? []).filter(ref => !removed.has(ref)),
       defaultModelRef: removed.has(entry.defaultModelRef) ? (allowedModelRefs[0] ?? '') : entry.defaultModelRef,
     }];
   }));

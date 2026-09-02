@@ -98,6 +98,24 @@ describe('Web Cookie authentication', () => {
     }));
   });
 
+  it('preserves structured activation failures returned by the server', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      ok: false,
+      code: 'activation_failed',
+      issues: ['planner binding refresh failed'],
+    }), {
+      status: 500,
+      headers: { 'content-type': 'application/json' },
+    })));
+    const client = new HttpClient();
+
+    await expect(client.activate('revision-test', { schemaVersion: 2 })).resolves.toEqual({
+      ok: false,
+      code: 'activation_failed',
+      issues: ['planner binding refresh failed'],
+    });
+  });
+
   it('opens WebSocket without sending a token auth message', () => {
     vi.stubGlobal('window', {
       location: { protocol: 'http:', host: '127.0.0.1:8788' },

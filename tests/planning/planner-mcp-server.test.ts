@@ -11,10 +11,12 @@ import { runMigrations } from '../../src/storage/migrations.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
+import type { PlannerExecutorCapabilityManual } from '../../src/configuration/types.js';
 
 function createHarness(
   sessionId = 'sess_current',
   conversationId = 'legacy-conversation',
+  manuals: readonly PlannerExecutorCapabilityManual[] = [],
 ) {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
@@ -42,7 +44,7 @@ function createHarness(
         affordances: [],
         modelPolicy: { mode: 'fixed', modelRef: 'test-model' },
       }],
-    }), conversationId),
+    }), conversationId, () => manuals),
   };
 }
 
@@ -170,6 +172,38 @@ describe('PlannerDataReader', () => {
     });
     expect(reader.getPlanningContext().pendingAuthorizationRequest).toBeNull();
     expect(JSON.stringify(reader.getPlanningContext())).not.toContain('foreign permission');
+  });
+
+  it('projects independent Executor capability manuals with explicit bounded metadata', () => {
+    const { reader } = createHarness('sess-manuals', 'conversation-manuals', [
+      {
+        agentClassRef: 'codex-engineering',
+        configurationRevision: 'revision-test',
+        sourceFingerprint: 'sha256:manual',
+        markdown: '# Executor: codex-engineering\n\n## Best Fit\n- TypeScript refactoring',
+        tags: { bestFit: ['TypeScript refactoring'], avoid: [] },
+      },
+      {
+        agentClassRef: 'pi-research',
+        configurationRevision: 'revision-test',
+        sourceFingerprint: 'sha256:research',
+        markdown: '# Executor: pi-research\n\n## Best Fit\n- source-backed research',
+        tags: { bestFit: ['source-backed research'], avoid: [] },
+      },
+    ]);
+
+    expect(reader.getPlanningContext().executorCapabilityManuals).toEqual([
+      expect.objectContaining({
+        agentClassRef: 'codex-engineering',
+        markdown: expect.stringContaining('TypeScript refactoring'),
+        truncated: false,
+      }),
+      expect.objectContaining({
+        agentClassRef: 'pi-research',
+        markdown: expect.stringContaining('source-backed research'),
+        truncated: false,
+      }),
+    ]);
   });
 
   it('truncates model-generated priority reasons in planner task reads', () => {

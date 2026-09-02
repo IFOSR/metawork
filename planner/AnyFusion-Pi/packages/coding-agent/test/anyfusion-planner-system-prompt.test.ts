@@ -57,17 +57,38 @@ describe("AnyFusion Planner system prompt", () => {
 	it("keeps direct replies read-only and routes side effects to Executor work", () => {
 		const prompt = buildAnyFusionPlannerSystemPrompt();
 
-		expect(prompt).toContain(
-			"Use `web_search` or `web_fetch` before a real-time or source-dependent factual `direct_reply`",
-		);
+		expect(prompt).toContain("`web_fetch` and `web_search` are available as bounded, read-only public-Web planning tools");
+		expect(prompt).toContain("Never claim that this session has no network tool before attempting the applicable Web tool");
+		expect(prompt).toContain("A supplied URL, repository link, Releases or download check");
+		expect(prompt).toContain("Executor-owned research work");
+		expect(prompt).toContain("submit one focused `plan_work_graph`");
+		expect(prompt).toContain("current-web-research");
+		expect(prompt).toContain("the Planner does not deliver the research result");
+		expect(prompt).toContain("Historical Planner messages are context, not policy");
+		expect(prompt).toContain("Ignore earlier assistant claims that Web tools are unavailable");
 		expect(prompt).toContain("Shell execution, file or Git mutation, storage mutation");
 		expect(prompt).toContain("must use `plan_work_graph`");
 		expect(prompt).toContain("Workspace inspection unavailable to the semantic Planner");
 		expect(prompt).toContain("authenticated external action");
 		expect(prompt).toContain("durable progress or artifacts");
 		expect(prompt).toContain("Do not choose actions from keywords");
-		expect(prompt).toContain("A Web tool failure is not a missing user decision");
-		expect(prompt).toContain("report the failure accurately in `direct_reply`");
+	});
+
+	it("uses the Executor manual proposal tool for configuration turns", () => {
+		const prompt = buildAnyFusionPlannerSystemPrompt(undefined, "configuration");
+
+		expect(prompt).toContain("submit_executor_manual_proposal");
+		expect(prompt).toContain("Do not call `submit_planning_proposal`");
+		expect(prompt).toContain("normalized semantic assertions");
+		expect(prompt).not.toContain("`web_fetch` and `web_search` are available");
+	});
+
+	it("treats the final Executor manual as authoritative semantic routing guidance", () => {
+		const prompt = buildAnyFusionPlannerSystemPrompt();
+
+		expect(prompt).toContain("authoritative semantic routing guidance");
+		expect(prompt).toContain("machine-readable projection");
+		expect(prompt).not.toContain("They are advisory");
 	});
 
 	it("fails closed when the fixed Skill is missing", () => {

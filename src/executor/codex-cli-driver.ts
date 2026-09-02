@@ -37,6 +37,7 @@ const execFileAsync = promisify(execFile);
 
 export class CodexCliDriver implements HarnessDriver {
   readonly id = 'codex-cli';
+  readonly executionProtocols = ['workspace-image-artifact-v1'] as const;
   readonly supportsResponseOnly = true;
   private readonly runProbe: ProbeCommandRunner;
   private readonly explicitHomeTemplateDir?: string;

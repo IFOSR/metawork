@@ -1038,6 +1038,44 @@ describe('ManagementServer WebSocket authentication', () => {
     }
   });
 
+  it('returns activation failures as JSON when the configuration query throws', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port, {
+      configQuery: {
+        activate: async () => {
+          throw new Error('planner binding refresh failed');
+        },
+      },
+    });
+    await server.start();
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/config/activate`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer manual-token',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            baseRevisionId: 'revision-test',
+            config: { schemaVersion: 2 },
+          }),
+        },
+      );
+
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toMatchObject({
+        ok: false,
+        code: 'activation_failed',
+        issues: ['planner binding refresh failed'],
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
   it('serves configuration completion as a separate catalog projection', async () => {
     const port = await reservePort();
     const server = createManagementServer(port, {
@@ -1077,6 +1115,329 @@ describe('ManagementServer WebSocket authentication', () => {
           kimi_k3: { capabilityState: '已从 Provider 补全' },
         },
         requiredFields: [],
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('serves an Executor capability manual preview from the configuration query', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port, {
+      configQuery: {
+        getExecutorCapabilityManual: async (agentClassRef, revisionId) => ({
+          agentClassRef,
+          configurationRevision: revisionId ?? 'revision-test',
+          sourceFingerprint: 'sha256:manual',
+          markdown: '# Executor: engineering\n\n## Best Fit\n- TypeScript refactoring',
+          tags: { bestFit: ['TypeScript refactoring'], avoid: [] },
+        }),
+      },
+    });
+    await server.start();
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/config/executors/engineering/capability-manual`,
+        { headers: { authorization: 'Bearer manual-token' } },
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        agentClassRef: 'engineering',
+        configurationRevision: 'revision-test',
+        sourceFingerprint: 'sha256:manual',
+        markdown: '# Executor: engineering\n\n## Best Fit\n- TypeScript refactoring',
+        tags: { bestFit: ['TypeScript refactoring'], avoid: [] },
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('analyzes Executor guidance through the configuration query', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port, {
+      configQuery: {
+        analyzeExecutorManual: async (agentClassRef, input) => ({
+          agentClassRef,
+          configurationRevision: input.baseRevisionId,
+          sourceText: input.sourceText,
+          analysisMode: 'semantic',
+          userProfile: {
+            sourceText: input.sourceText,
+            assertions: [{ topic: 'preferred-task', text: 'TypeScript refactoring' }],
+          },
+          manual: {
+            agentClassRef,
+            configurationRevision: input.baseRevisionId,
+            sourceFingerprint: 'sha256:manual',
+            markdown: '# Executor: engineering',
+            tags: { bestFit: ['TypeScript refactoring'], avoid: [] },
+          },
+          config: { schemaVersion: 2 },
+        }),
+      },
+    });
+    await server.start();
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/config/executors/engineering/capability-manual/analyze`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer manual-token',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            baseRevisionId: 'revision-test',
+            sourceText: '更适合 TypeScript 重构。',
+          }),
+        },
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        agentClassRef: 'engineering',
+        configurationRevision: 'revision-test',
+        analysisMode: 'semantic',
+        manual: { markdown: '# Executor: engineering' },
+        config: { schemaVersion: 2 },
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('compiles an Executor capability profile through the unified endpoint', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port, {
+      configQuery: {
+        compileExecutorManual: async (agentClassRef, input) => ({
+          agentClassRef,
+          configurationRevision: input.baseRevisionId,
+          sourceText: input.sourceText,
+          analysisMode: 'semantic',
+          userProfile: {
+            sourceText: input.sourceText,
+            assertions: [{ topic: 'preferred-task', text: 'TypeScript 重构' }],
+          },
+          manual: {
+            agentClassRef,
+            configurationRevision: input.baseRevisionId,
+            sourceFingerprint: 'sha256:manual',
+            routableCapabilities: ['workspace-engineering'],
+            capabilities: [],
+            markdown: '# Executor: engineering',
+            tags: { bestFit: ['TypeScript 重构'], avoid: [] },
+          },
+          config: { schemaVersion: 2 },
+        }),
+      },
+    });
+    await server.start();
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/config/executors/engineering/capability-manual/compile`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer manual-token',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            baseRevisionId: 'revision-test',
+            sourceText: '更适合 TypeScript 重构。',
+            config: { schemaVersion: 2 },
+          }),
+        },
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        agentClassRef: 'engineering',
+        configurationRevision: 'revision-test',
+        analysisMode: 'semantic',
+        manual: { markdown: '# Executor: engineering' },
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('accepts empty Executor guidance so the trusted path can clear it', async () => {
+    const port = await reservePort();
+    let receivedSourceText: string | undefined;
+    const server = createManagementServer(port, {
+      configQuery: {
+        analyzeExecutorManual: async (agentClassRef, input) => {
+          receivedSourceText = input.sourceText;
+          return {
+            agentClassRef,
+            configurationRevision: input.baseRevisionId,
+            sourceText: input.sourceText,
+            analysisMode: 'semantic',
+            userProfile: {
+              sourceText: '',
+              assertionsSourceFingerprint:
+                'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+              semanticReceipt: 'manual_00000000-0000-4000-8000-000000000000',
+              assertions: [],
+            },
+            manual: {
+              agentClassRef,
+              configurationRevision: input.baseRevisionId,
+              sourceFingerprint: 'sha256:manual',
+              markdown: '# Executor: engineering',
+              tags: { bestFit: [], avoid: [] },
+            },
+            config: { schemaVersion: 2 },
+          };
+        },
+      },
+    });
+    await server.start();
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/config/executors/engineering/capability-manual/analyze`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer manual-token',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            baseRevisionId: 'revision-test',
+            sourceText: '',
+          }),
+        },
+      );
+
+      expect(response.status).toBe(200);
+      expect(receivedSourceText).toBe('');
+      await expect(response.json()).resolves.toMatchObject({
+        analysisMode: 'semantic',
+        userProfile: {
+          sourceText: '',
+          assertions: [],
+          semanticReceipt: expect.stringMatching(/^manual_/u),
+        },
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('previews an Executor manual from the unsaved configuration candidate', async () => {
+    const port = await reservePort();
+    let receivedConfig: unknown;
+    const server = createManagementServer(port, {
+      configQuery: {
+        previewExecutorCapabilityManual: async (agentClassRef, input) => {
+          receivedConfig = input.config;
+          return {
+            agentClassRef,
+            configurationRevision: 'draft-preview',
+            sourceFingerprint: 'sha256:preview',
+            markdown: '# Executor：engineering\n\n## 适合任务\n- 代码仓库实现',
+            tags: { bestFit: ['代码仓库实现'], avoid: [] },
+          };
+        },
+      },
+    });
+    await server.start();
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/config/executors/engineering/capability-manual/preview`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer manual-token',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            baseRevisionId: 'revision-test',
+            config: {
+              schemaVersion: 2,
+              agentClasses: {
+                engineering: {
+                  modelPolicy: { mode: 'fixed', modelRef: 'chat-model' },
+                },
+              },
+            },
+          }),
+        },
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        configurationRevision: 'draft-preview',
+        tags: { bestFit: ['代码仓库实现'] },
+      });
+      expect(receivedConfig).toMatchObject({
+        agentClasses: {
+          engineering: {
+            modelPolicy: { mode: 'fixed', modelRef: 'chat-model' },
+          },
+        },
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('returns source-preserved Executor guidance as a successful analysis result', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port, {
+      configQuery: {
+        analyzeExecutorManual: async (agentClassRef, input) => ({
+          agentClassRef,
+          configurationRevision: input.baseRevisionId,
+          sourceText: input.sourceText,
+          analysisMode: 'source-preserved',
+          warning: 'Semantic enhancement unavailable; preserved the user guidance.',
+          userProfile: {
+            sourceText: input.sourceText,
+            assertions: [],
+          },
+          manual: {
+            agentClassRef,
+            configurationRevision: input.baseRevisionId,
+            sourceFingerprint: 'sha256:manual',
+            markdown: '# Executor: engineering\n\nAdditional user routing context: code work',
+            tags: { bestFit: ['implementation'], avoid: [] },
+          },
+          config: { schemaVersion: 2 },
+        }),
+      },
+    });
+    await server.start();
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/config/executors/engineering/capability-manual/analyze`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer manual-token',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            baseRevisionId: 'revision-test',
+            sourceText: 'code work',
+          }),
+        },
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        analysisMode: 'source-preserved',
+        warning: expect.stringContaining('preserved'),
+        userProfile: { sourceText: 'code work', assertions: [] },
       });
     } finally {
       await server.stop();

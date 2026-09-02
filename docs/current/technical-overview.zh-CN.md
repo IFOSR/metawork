@@ -117,7 +117,8 @@ flowchart LR
   Event --> Workflow[Durable KernelWorkflow v5<br/>inbox、snapshot、decision、application]
   Workflow --> Kernel[ControlKernel<br/>frontier、batch、资源、<br/>permission 与恢复]
   Kernel --> Decision{KernelDecision}
-  Decision -->|direct_reply| Conversation[KernelDecisionApplier<br/>交付 plan.response.directReply，不调 executor]
+  Decision -->|clarification / task_control / no_action| Conversation[KernelDecisionApplier<br/>非执行状态或澄清]
+  Decision -->|plan_work_graph| Executor[Kernel-authorized Executor<br/>完成工作结果]
   Decision -->|clarification| Clarify[澄清<br/>请求缺失输入]
   Decision -->|task_control| Control[Task control runtime<br/>状态、恢复、清理、解除阻塞]
   Decision -->|plan_work_graph| Runtime[KernelDecisionApplier<br/>创建或绑定任务]
@@ -153,11 +154,13 @@ flowchart LR
 AnyFusion-Pi `PlanningAgent` 使用专用 process runner，而不复用 Executor adapter。一个 Conversation 对应一个持久 Pi session 文件。语义入口以 `--mode rpc` 启动 Planner，通过 stdin/stdout 交换 JSONL；同一 Conversation 的 writer 串行执行，避免多个进程并发写入 session 文件。交互 Pi 进程则以 `--gateway-socket` 和 `--conversation-id` 启动，在创建模型、工具或本地会话 runtime 之前进入 client-only 模式，把原始用户命令提交给 Server。Planner fork 管理服务端 RPC 对话历史和固定 system instructions；MetaWork 不从 SQLite interaction 重建提示词。Provider/Model 与 Planner 工具由 MetaWork 固定管理。语义 RPC 模式不暴露 Pi 原生文件读取工具，避免 Planner 通过源码反推 Runtime 或 Kernel 语义；交互式 client-only TUI 可为工作区问题保留只读的 `read`、`grep`、`find` 和 `ls`。所有模式都禁用 `bash`、`edit` 和 `write`。每个语义 turn 通过受限原生 `submit_planning_proposal({ plan })` 工具提交；runtime 注入 session、turn、user input 和 deterministic submission identity。rejection 是当前 ReAct turn 的结构化反馈，transport uncertain 与 rejection 严格分离；不存在 assistant 文本 proposal parser、proposal 专用 retry、repair prompt 或外层 validation loop。
 
 语义 RPC 额外开放 Pi 原生只读 `web_fetch` 与 `web_search`，用于有界、
-无凭据的公开 HTTP(S) 实时信息。只有当 Planner 能在当前 turn 内依据对话和
-已开放只读工具完整生成答案，且不需要可调度工作或副作用时，才可使用
-`direct_reply`；实时或依赖来源的事实必须先调用 Web 工具。Shell、语义
-Planner 无法完成的 Workspace 检查、文件/Git/存储修改、认证外部操作、
-其他外部副作用、持久进度、监控、产物和下游交接必须使用
+无凭据的公开 HTTP(S) 实时信息。新语义 Planner turn 不得使用
+`direct_reply`；工作、分析、调研、报告、产物、Workspace 变更和其他用户可见
+结果必须路由给 Executor，通过 `plan_work_graph` 完成。历史 `direct_reply`
+仅用于审计和回放兼容。实时或依赖来源的事实必须先调用 Web 工具，再由
+Executor 生成持久或可调度结果。Shell、语义 Planner 无法完成的 Workspace
+检查、文件/Git/存储修改、认证外部操作、其他外部副作用、持久进度、监控、
+产物和下游交接必须使用
 `plan_work_graph`，进入 Kernel 授权的 Executor 路径。这是 Planner 所有的
 语义路由，不新增 Session/Kernel 关键词路由。
 
@@ -178,22 +181,45 @@ Planning 与恢复刷新并行开始，但 Kernel 准入前必须等待两者汇
 可重新准入该提案，将 Task 转为 `ready`，不会再次调用 Planner，也不会立即
 dispatch。
 
-### 普通问答路径
+### 历史 Direct Reply 兼容路径
 
 ```mermaid
 flowchart LR
-  Input[用户提问] --> Planning[PlanningAgent]
-  Planning --> Plan[PlanningAgentPlan<br/>direct_reply]
-  Plan --> Kernel[ControlKernel]
-  Kernel --> Decision[KernelDecision<br/>direct_reply]
-  Decision --> Runtime[KernelDecisionApplier]
-  Runtime --> Deliver[deliverDirectReply<br/>交付 plan.response.directReply]
-  Deliver --> Answer[最终回答]
-  Answer --> Persist[记录交互<br/>和 planning_decision]
-  Answer --> UI[TUI 或飞书]
+  Historical[历史 direct_reply 记录] --> Replay[审计或回放]
+  Current[新的语义 Planner 提案] --> Reject[Session ingress 拒绝]
+  Slash[斜杠系统命令] --> Shell[Application-Shell 命令路径]
 ```
 
-这条路径仍然是语义驱动。持久 AnyFusion-Pi Planner session 保留“继续”或“你刚才回答了一半”等对话上下文；持久 MetaClaw 事实仍通过 MCP 显式查询。PlanningAgent 把最终答案写入 `response.directReply`，runtime 原样交付。
+新的语义 Planner turn 不通过 `direct_reply` 完成工作。历史记录仍可用于审计和回放；斜杠系统命令继续走 Application-Shell。工作型请求走下面的持久 Task 路径，并由 Executor 产生结果。
+
+每个启用的 Executor AgentClass 都有自己独立、绑定配置 revision 的统一能力画像。
+Configuration 使用该 Executor 的有效 ModelPolicy、模型能力证据、受控 affordance、
+配置声明和用户语义进行编译，并从同一个 source fingerprint 生成中文
+`executors/<agentClassRef>/CAPABILITY.md`、只读标签、能力证据、路由 disposition
+和 Routing Catalog 投影。最终说明书是 Planner 对该 Executor 做语义匹配的权威依据，
+Catalog 是同一画像供 Validator 使用的机器可读投影，不再是另一套真相。
+
+用户填写的自然语言原文是权威配置，用户语义覆盖冲突的系统定位与偏好。可选的
+智能提炼只开放 `submit_executor_manual_proposal`，不启动 Planner MCP extension。
+模型超时、不可用、未提交工具结果或返回无效 assertions 时，接口返回成功的
+`source-preserved` 预览，保留原文，并继续按当前模型证据重编译画像。该降级结果
+表示预览成功，不表示允许激活；任何语义变化（包括清空已有定义）都必须携带
+服务端签发、并与原文及 assertions 精确绑定的 receipt。清空由受信配置路径
+确定性规范化，不调用 Planner 模型；修改后的非空原文在语义规范化失败时仍不能激活。
+添加或移除有效模型会
+在同一草稿画像中同步增加或移除实际 Routing Capability 资格。用户可以
+把已支撑能力设为优先、允许、避免或禁用，但不能创建未知能力、让无证据能力变成
+可路由、扩大权限、授权未配置模型或绕过 Kernel 的具体绑定校验。
+
+图片生成和图片编辑是受控 Routing Capability。系统已知、Provider 声明或用户对
+当前有效模型确认的已注册模型能力可以形成模型证据；`gpt-image-2` 会提供
+`image-generation` 与 `image-editing`。模型从 Executor 的 Fixed/Auto 模型池移除后，
+对应证据和资格同步消失。Auto 的默认模型只是解析偏好，不是最终绑定；图片
+Subtask 会先按必需模型能力过滤候选，再由 Kernel 选择具体图片模型，普通问答模型
+即使是默认模型也会被拒绝。
+图片生成和图片编辑 Subtask 必须使用 `deliveryKind: edit`。Completion Protocol
+只在至少一个变更后的 PNG、JPEG、WebP 或 GIF 文件扩展名与有界签名读取一致时
+认证完成；`report`、缺失、不可读或伪造图片都不能通过认证。
 
 ### 持久任务路径
 
@@ -242,11 +268,11 @@ flowchart LR
 
 conversation / task 的边界很重要：
 
-- Conversation：即时回答，不创建持久任务。持久 AnyFusion-Pi Planner session 负责对话连续性；direct reply 持久化为审计事实，但不会被回放进后续提示词。
+- Conversation：处理不需要 Executor 的对话连续性或状态转移，不通过新的 `direct_reply` 完成工作；历史 direct reply 仅作为审计事实保留，不回放进后续提示词。
 - Task control：查看或改变已有任务状态。适合“当前在跑什么”“继续那个任务”“清空阻塞任务”。
 - Durable task：创建或继续需要执行、持久化、产物、恢复、调度或后续检索的工作。
 
-当前 direct reply 路径是显式的：MetaClaw 把当前轮发送给已绑定的持久 AnyFusion-Pi Planner session，PlanningAgent 仅在需要时通过 MCP 查询确认偏好或运行时事实，runtime 直接交付 `response.directReply`，不 claim executor work unit。
+新的语义提案在 Session ingress 拒绝 `direct_reply`。工作型请求必须由 Planner 生成聚焦的 Work Graph，交给 Kernel 授权的 Executor 完成；历史 direct reply 只读用于审计和回放，斜杠命令仍由 Application-Shell 处理。
 
 [MetaWork Task OS 架构与策略升级方案](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) 中的本轮主线已经进入代码：确定性任务检索索引、PlanningAgent work graph proposal、统一 `ControlKernel` authorization、持久化 subtasks、work-unit claiming、汇总与验收都已实现并有针对性测试覆盖。Executor Discovery、远程 Registry 和弹性 work-unit spawn 仍不属于当前实现；ADR-0031 的多客户端 Gateway 收敛已于 2026 年 8 月 19 日完成。
 
@@ -259,9 +285,17 @@ PlanningAgent → ControlKernel → Runtime 链处理；已删除 script Client�
 | 执行器 | 命令 | 适合任务 | 安装要求 |
 | --- | --- | --- | --- |
 | Codex CLI | `codex` | 仓库修改、测试、确定性实现、带 patch 的代码审查 | 原生安装复用现有命令，不改变其安装或个人 home |
-| Pi Agent | `pi` | 调研、报告生成、多步骤信息综合、agentic CLI 工作流 | 原生安装复用现有命令，不改变其安装或个人 home |
+| Pi Agent | `pi` | 调研、报告生成、多步骤信息综合、agentic CLI 工作流；授权图片模型后也负责图片生成与编辑 | 原生安装复用现有命令，不改变其安装或个人 home；图片执行由 MetaWork 提供 Runner |
 
 默认 worktree 后端只执行 canonical `codex-cli` 与 `pi-agent`。获批后，Runtime claim 或创建 WorkUnit，再把对应 CLI 作为统一 Runtime 的子进程启动，并把 `cwd` 设为当前 Subtask Git worktree。该路径不扩展第三方 Executor 注册；旧 Docker attempt 后端仍可通过 `METACLAW_EXECUTOR_BACKEND=docker` 显式启用。
+
+`pi-agent` 仍是用户可见的一个 Executor，但内部包含两个确定性的执行引擎：
+普通任务使用用户本机提供的标准 `pi --mode json` 子进程；需要
+`image-generation` 或 `image-editing` 的 Subtask 使用 MetaWork Image API
+Runner。图片 Runner 只使用 Kernel 已授权的 Provider/Model binding，在同一
+workspace 中生成经过签名校验并通过 Completion Protocol 的 PNG、JPEG、WebP
+或 GIF 产物。它不是第二个 AgentClass，不启动 vendored Planner Pi，也不依赖
+Pi 的 upstream image mode；用户升级本机 Pi 不会覆盖 MetaWork Image Runner。
 
 ## 前提条件
 
@@ -949,7 +983,7 @@ MetaWork 为每个 Conversation 调度一个执行或清理中的顶层 Task。A
 
 自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，并通过原生 proposal 工具提交严格 v8 `PlanningAgentPlan`。Work Graph 使用 v7 契约，固定配置 revision 并携带完整 Executor bindings；授权确认只能解释同一 Task 中既有精确 request ID，不能修改 target、scope 或 grant。
 
-- `direct_reply`、`clarification`、`task_control` 或 `no_action`：除非 kernel 把 plan 重写为可执行工作，否则不应 claim executor work unit。
+- `clarification`、`task_control` 或 `no_action`：不应 claim executor work unit；历史 `direct_reply` 只用于兼容回放，新的语义提案入口会拒绝它。
 - `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、`deliveryKind: edit | report`、受控的 `requiredCapabilities` 和完整有序的 canonical AgentClass 候选集合。
 
 `ControlKernel` v5 验证 schema、priority、task status、单活跃任务冲突、Work Graph、AgentClass 和 scheduling snapshot，也唯一决定 batch dispatch、Task/Subtask 取消、显式部分接受、generation replan、deferred availability、Executor recovery、retry/fallback、merge repair/conflict replan、permission grant/deny/escalate、partition wait 和执行后端恢复。

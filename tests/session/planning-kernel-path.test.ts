@@ -94,6 +94,7 @@ function createSession(
   responder?: (
     ...args: [...Parameters<FakeAttemptExecutionResponder>, Database.Database]
   ) => FakeAttemptExecutionResponse | Promise<FakeAttemptExecutionResponse>,
+  options: { allowLegacyDirectReply?: boolean } = {},
 ) {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
@@ -118,6 +119,7 @@ function createSession(
         ? vi.fn().mockImplementation(planningPlan)
         : vi.fn().mockResolvedValue(planningPlan),
     ),
+    allowLegacyDirectReply: options.allowLegacyDirectReply,
   });
   session.initialize({ resumeStartupTasks: false });
   return {
@@ -238,6 +240,50 @@ describe('natural-language planning/kernel path', () => {
         { kind: 'delivery_completed', actor: 'runtime' },
       ],
     });
+  });
+
+  it('rejects direct_reply at the production semantic Planner ingress', async () => {
+    const harness = createSession(
+      'sess_direct_reply_disabled',
+      plan(),
+      undefined,
+      { allowLegacyDirectReply: false },
+    );
+    const directPlan = plan({
+      id: 'plan_direct_reply_disabled',
+      action: 'direct_reply',
+      response: { directReply: '不应由 Planner 直接完成任务' },
+      task: {
+        binding: 'none',
+        taskId: null,
+        control: 'none',
+        scope: null,
+        title: null,
+        goal: null,
+        includeRecentConversationContext: false,
+        priority: null,
+      },
+      workGraph: null,
+    });
+    const turnId = 'turn_direct_reply_disabled';
+
+    const result = await harness.session.submitPlannerProposal({
+      sessionId: harness.sessionId,
+      turnId,
+      userInput: '请分析这个项目',
+      submissionId: createPlannerProposalSubmissionId(harness.sessionId, turnId, directPlan),
+      plan: directPlan,
+      runtimeMode: 'session',
+    });
+
+    expect(result).toMatchObject({
+      status: 'rejected',
+      rejectionType: 'validation',
+      issues: expect.arrayContaining([
+        expect.stringContaining('cannot use direct_reply'),
+      ]),
+    });
+    expect(harness.kernelDecisionRepo.listBySession(harness.sessionId)).toHaveLength(0);
   });
 
   it('rejects an invalid native TUI proposal before it reaches Kernel workflow', async () => {

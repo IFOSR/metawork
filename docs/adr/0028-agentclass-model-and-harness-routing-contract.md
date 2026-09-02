@@ -1,7 +1,7 @@
 # ADR-0028: AgentClass, Model, And Harness Routing Contract
 
 - **Status**: Accepted
-- **Date**: 2026-08-11
+- **Date**: 2026-08-30
 - **Scope**: Harness, Model, AgentClass ownership, generation-scoped authorized execution bindings, revision-scoped health identities, binding-fingerprint attempt history, structured failure subjects, and code-owned permission-profile grammar
 - **Amends**: ADR-0017, ADR-0018, ADR-0023, ADR-0024
 - **Governed by**: ADR-0020
@@ -54,8 +54,48 @@ type ModelPolicy =
 candidate set and optional order. Planner may propose a preference, but Kernel
 validates or resolves the exact tuple from the pinned revision. Runtime and the
 Harness driver may not substitute or silently fall back to another model.
+For Auto policy, `defaultModelRef` is only a resolver preference. It is not the
+final binding and cannot override a mandatory model capability. When a Subtask
+requires a model-derived Routing Capability such as `image-generation` or
+`image-editing`, Kernel first removes allowed candidates that lack the
+corresponding structural Model capability, then resolves one concrete binding.
+An ordinary default model is therefore rejected for image work while an
+allowed image-capable model remains selectable.
 
 Planner-safe projections may expose only controlled routing facts and health summaries. They do not expose provider secrets, raw runtime commands, or free-form permission rules.
+
+### 1.1 Unified Executor capability profiles
+
+An Executor AgentClass may carry bounded user guidance and normalized semantic
+assertions. Configuration compilation derives one independent
+`ExecutorCapabilityProfile` per Executor from the AgentClass's effective model
+set, structural model evidence, controlled affordances, configured capability
+declarations, and user routing dispositions. The profile emits both the
+revision-pinned Skill-style manual and the Planner-safe Routing Catalog entry.
+The final manual is Planner's authoritative semantic routing profile; the
+Catalog is its machine-readable qualification and preference projection.
+
+For an Auto policy, the profile records which allowed Model supplies each
+model-derived capability. System-known, Provider-declared, and user-confirmed
+registered model facts are distinct evidence classes. User assertions take
+precedence over conflicting generated semantic prose and may lower, disable,
+allow, or prefer a structurally supported Routing Capability. They cannot
+authorize an unconfigured Model, invent capability or permission grammar, or
+bypass concrete binding validation.
+
+The profile is not part of the authorized binding tuple. Kernel still resolves
+and validates the exact Model, Harness, Permission Profile, revision, dynamic
+health, and capacity for each attempt. Provider configuration and credentials
+remain outside the profile.
+
+For the canonical `pi-agent` AgentClass, the registered `pi-cli` Executor
+implementation is a composite adapter. Ordinary Subtasks execute through the
+operator-provided standard `pi --mode json` CLI. Subtasks requiring
+`image-generation` or `image-editing` execute through MetaWork's Image API
+Runner using the same authorized binding, model, revision, workspace, input
+and Completion Protocol boundaries. The vendored AnyFusion-Pi Planner is never
+used as an Executor fallback, and Pi's upstream image mode is not part of the
+MetaWork execution contract.
 
 ### 2. Generation-scoped authorized binding
 

@@ -92,6 +92,131 @@ function completeRpcTurn(
   child.stdin.on('finish', () => queueMicrotask(() => child.emit('close', 0, null)));
 }
 
+function completeConfigurationRpcTurn(
+  child: FakeProcess,
+  expectedModel: { provider: string; modelId: string },
+): void {
+  let inputBuffer = '';
+  child.stdin.on('data', chunk => {
+    inputBuffer += chunk.toString();
+    let newline = inputBuffer.indexOf('\n');
+    while (newline >= 0) {
+      const request = JSON.parse(inputBuffer.slice(0, newline)) as {
+        id: string;
+        type: string;
+      };
+      inputBuffer = inputBuffer.slice(newline + 1);
+      if (request.type === 'get_state') {
+        child.stdout.write(`${JSON.stringify({
+          type: 'response',
+          command: 'get_state',
+          success: true,
+          id: request.id,
+          data: {
+            model: {
+              provider: expectedModel.provider,
+              id: expectedModel.modelId,
+            },
+          },
+        })}\n`);
+      } else {
+        const result = {
+          status: 'accepted',
+          agentClassRef: 'engineering',
+          userProfile: {
+            sourceText: '适合图片生成。',
+            assertions: [{
+              topic: 'preferred-task',
+              text: '图片生成。',
+            }],
+          },
+        };
+        for (const event of [
+          { type: 'response', command: 'prompt', success: true, id: request.id },
+          {
+            type: 'tool_execution_start',
+            toolCallId: 'tool-manual',
+            toolName: 'submit_executor_manual_proposal',
+            args: {
+              agentClassRef: 'engineering',
+              userProfile: result.userProfile,
+            },
+          },
+          {
+            type: 'tool_execution_end',
+            toolCallId: 'tool-manual',
+            toolName: 'submit_executor_manual_proposal',
+            result: { details: result },
+            isError: false,
+          },
+          { type: 'agent_end', messages: [] },
+        ]) {
+          child.stdout.write(`${JSON.stringify(event)}\n`);
+        }
+      }
+      newline = inputBuffer.indexOf('\n');
+    }
+  });
+  child.stdin.on('finish', () => queueMicrotask(() => child.emit('close', 0, null)));
+}
+
+function completeConfigurationRpcTurnWithStructuredOutput(
+  child: FakeProcess,
+  expectedModel: { provider: string; modelId: string },
+): void {
+  let inputBuffer = '';
+  child.stdin.on('data', chunk => {
+    inputBuffer += chunk.toString();
+    let newline = inputBuffer.indexOf('\n');
+    while (newline >= 0) {
+      const request = JSON.parse(inputBuffer.slice(0, newline)) as {
+        id: string;
+        type: string;
+      };
+      inputBuffer = inputBuffer.slice(newline + 1);
+      if (request.type === 'get_state') {
+        child.stdout.write(`${JSON.stringify({
+          type: 'response',
+          command: 'get_state',
+          success: true,
+          id: request.id,
+          data: {
+            model: {
+              provider: expectedModel.provider,
+              id: expectedModel.modelId,
+            },
+          },
+        })}\n`);
+      } else {
+        for (const event of [
+          { type: 'response', command: 'prompt', success: true, id: request.id },
+          { type: 'turn_start' },
+          {
+            type: 'agent_end',
+            messages: [{
+              role: 'assistant',
+              content: JSON.stringify({
+                agentClassRef: 'engineering',
+                userProfile: {
+                  sourceText: '适合大型 TypeScript 重构。',
+                  assertions: [{
+                    topic: 'preferred-task',
+                    text: '适合大型 TypeScript 重构。',
+                  }],
+                },
+              }),
+            }],
+          },
+        ]) {
+          child.stdout.write(`${JSON.stringify(event)}\n`);
+        }
+      }
+      newline = inputBuffer.indexOf('\n');
+    }
+  });
+  child.stdin.on('finish', () => queueMicrotask(() => child.emit('close', 0, null)));
+}
+
 describe('PlannerProcessSupervisor', () => {
   it('rejects a Planner RPC when its explicit Conversation owner disagrees with the context', async () => {
     const supervisor = new PlannerProcessSupervisor();
@@ -544,6 +669,69 @@ describe('PlannerProcessSupervisor', () => {
       'Planner supervisor revision mismatch: expected revision-deepseek, received revision-other',
     );
     expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('runs a configuration turn against draft facts with the active Planner binding', async () => {
+    const expectedModel = {
+      provider: 'deepseek',
+      modelId: 'deepseek-v4-pro',
+    };
+    const child = fakeProcess();
+    completeConfigurationRpcTurn(child, expectedModel);
+    const spawn = vi.fn((_command: string, _args: string[], options: {
+      env?: NodeJS.ProcessEnv;
+    }) => child as never);
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      plannerHome: join(tmpdir(), `planner-home-configuration-draft-${process.pid}`),
+      sessionDir: join(tmpdir(), `planner-session-configuration-draft-${process.pid}`),
+      configurationRevision: 'revision-active',
+      expectedModel,
+      spawn: spawn as never,
+    });
+
+    await expect(supervisor.run('analyze this manual', {
+      timeoutMs: 1_000,
+      request: { sessionId: 'session-configuration-draft', source: 'management' },
+      configuration: { revisionId: 'revision-draft' },
+    } as never, 'configuration')).resolves.toMatchObject({
+      proposalResult: {
+        status: 'accepted',
+        agentClassRef: 'engineering',
+      },
+    });
+    expect(spawn.mock.calls[0]?.[2].env).toMatchObject({
+      ANYFUSION_PLANNER_TURN_PURPOSE: 'configuration',
+      METACLAW_CONFIGURATION_REVISION: 'revision-active',
+    });
+  });
+
+  it('returns structured configuration output when the model cannot call the proposal tool', async () => {
+    const expectedModel = {
+      provider: 'deepseek',
+      modelId: 'deepseek-v4-pro',
+    };
+    const child = fakeProcess();
+    completeConfigurationRpcTurnWithStructuredOutput(child, expectedModel);
+    const spawn = vi.fn((_command: string, _args: string[], options: {
+      env?: NodeJS.ProcessEnv;
+    }) => child as never);
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      plannerHome: join(tmpdir(), `planner-home-configuration-json-${process.pid}`),
+      sessionDir: join(tmpdir(), `planner-session-configuration-json-${process.pid}`),
+      configurationRevision: 'revision-active',
+      expectedModel,
+      spawn: spawn as never,
+    });
+
+    await expect(supervisor.run('analyze this manual', {
+      timeoutMs: 1_000,
+      request: { sessionId: 'session-configuration-json', source: 'management' },
+      configuration: { revisionId: 'revision-draft' },
+    } as never, 'configuration')).resolves.toMatchObject({
+      structuredOutput: expect.stringContaining('大型 TypeScript 重构'),
+    });
   });
 
   it('requires an expected model before running a revision-bound RPC turn', async () => {

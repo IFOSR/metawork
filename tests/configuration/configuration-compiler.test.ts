@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ConfigurationCompiler } from '../../src/configuration/configuration-compiler.js';
+import { buildPlannerConfigurationView } from '../../src/configuration/projections.js';
 import { AnyFusionConfigurationV2Schema } from '../../src/configuration/schema.js';
 import type { ConfigurationSnapshot } from '../../src/configuration/types.js';
 
@@ -30,6 +31,10 @@ function snapshot(): ConfigurationSnapshot {
         modelId: 'engineering-model',
         capabilities: ['coding', 'tools'],
         reasoning: 'medium',
+        routingNotes: {
+          summary: '适合工程实现。',
+          strengths: ['代码重构'],
+        },
         enabled: true,
       },
       review: {
@@ -37,6 +42,13 @@ function snapshot(): ConfigurationSnapshot {
         modelId: 'review-model',
         capabilities: ['coding', 'structured-output'],
         reasoning: 'high',
+        enabled: true,
+      },
+      image: {
+        providerRef: 'openai',
+        modelId: 'gpt-image-2',
+        capabilities: ['vision'],
+        reasoning: 'disabled',
         enabled: true,
       },
     },
@@ -51,7 +63,7 @@ function snapshot(): ConfigurationSnapshot {
         supportsContinuation: true,
         enabled: true,
       },
-      codex: {
+      'engineering-local': {
         kind: 'executor',
         transport: 'local-cli',
         command: 'codex',
@@ -84,19 +96,27 @@ function snapshot(): ConfigurationSnapshot {
       },
       'codex-engineering': {
         kind: 'executor',
-        harnessRef: 'codex',
-        modelPolicy: { mode: 'fixed', modelRef: 'engineering' },
+        harnessRef: 'engineering-local',
+        modelPolicy: {
+          mode: 'auto',
+          allowedModelRefs: ['engineering', 'image'],
+          defaultModelRef: 'engineering',
+        },
         permissionProfileRef: 'workspace-default',
         routingCapabilities: ['workspace-engineering'],
         primaryUseCases: ['implementation'],
         avoidUseCases: [],
+        executorManual: {
+          sourceText: '优先处理 monorepo 重构。',
+          assertions: [{ topic: 'preferred-task', text: '优先处理 monorepo 重构.' }],
+        },
         plannerAffordances: ['workspace-read-write', 'workspace-command-validation'],
         generatedRuntimeRef: 'codex-engineering',
         enabled: true,
       },
       'codex-review': {
         kind: 'executor',
-        harnessRef: 'codex',
+        harnessRef: 'engineering-local',
         modelPolicy: { mode: 'fixed', modelRef: 'review' },
         permissionProfileRef: 'workspace-default',
         routingCapabilities: ['workspace-engineering'],
@@ -164,6 +184,18 @@ describe('ConfigurationCompiler', () => {
       .not.toContain('https://');
     expect(await readFile(join(result.rootPath, 'executors/codex-engineering', 'model.json'), 'utf8'))
       .not.toEqual(await readFile(join(result.rootPath, 'executors/codex-review', 'model.json'), 'utf8'));
+    expect(await readFile(join(result.rootPath, 'executors/codex-engineering', 'CAPABILITY.md'), 'utf8'))
+      .toContain('优先处理 monorepo 重构.');
+    expect(await readFile(join(result.rootPath, 'executors/codex-engineering', 'CAPABILITY.md'), 'utf8'))
+      .toContain('engineering-model');
+    const plannerManual = buildPlannerConfigurationView(snapshot())
+      .executorCapabilityManuals?.find(manual => manual.agentClassRef === 'codex-engineering');
+    expect(await readFile(
+      join(result.rootPath, 'executors/codex-engineering', 'CAPABILITY.md'),
+      'utf8',
+    )).toBe(plannerManual?.markdown);
+    expect(await readFile(join(result.rootPath, 'executors/codex-review', 'CAPABILITY.md'), 'utf8'))
+      .not.toContain('优先处理 monorepo 重构.');
     expect((await stat(result.rootPath)).mode & 0o777).toBe(0o555);
   });
 });

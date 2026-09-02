@@ -71,6 +71,33 @@ until the user selects a new model. Busy deletion/activation is rejected by the
 backend with `runtime_busy`, while an unrepaired draft returns
 `invalid_configuration`.
 
+### Unified Executor capability profile amendment
+
+Each enabled Executor has one independent capability profile per immutable
+configuration revision. Candidate compilation combines its effective
+ModelPolicy, Model capability evidence, controlled Executor affordances, and
+persisted user semantics. It then atomically projects:
+
+- the Chinese Skill-style capability manual;
+- read-only best-fit and avoid tags;
+- supported, unresolved, and disposition evidence;
+- the Planner-safe Routing Catalog entry and profile fingerprint;
+- the Kernel-safe routable capabilities used for concrete resolution.
+
+The manual and Catalog are not separately editable or independently derived.
+The final manual is Planner's authoritative semantic routing profile, and the
+Catalog is the machine-readable projection used for validation. User semantics
+override conflicting generated positioning and preferences, while structural
+model and Executor evidence remains mandatory. A user can disable supported
+qualification or mark it `avoid`; user text cannot create an unknown capability,
+authorize an unconfigured Model, or widen Permission Profiles.
+
+Model selection changes mark the draft profile stale. Preview recompiles model
+evidence even when optional natural-language interpretation is unavailable.
+Activation recompiles the profile on the backend and atomically switches the
+profile, manual, Catalog, ModelPolicy, and generated runtime artifact with the
+new revision. Existing Work Graph generations retain their pinned revision.
+
 ## Consequences
 
 - A successful idle activation affects the next Planner turn and new
@@ -83,5 +110,8 @@ backend with `runtime_busy`, while an unrepaired draft returns
 - Configuration completion may use only the active revision, bounded local
   Agent credential discovery, explicit Provider catalogs, presets, and safe
   metadata. Unknown capabilities remain unsupported and require confirmation.
+- Adding or removing an effective Model adds or removes its profile-derived
+  Routing Capabilities, evidence, tags, manual statements, and Catalog
+  qualification in the same revision.
 - Rollback is another revision activation and obeys the same gate and
   optimistic-concurrency rules.

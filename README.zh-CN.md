@@ -29,6 +29,9 @@ MetaWork 为 Agent 工作提供统一的商业服务系统，覆盖规划、授�
   Gateway 命令与事件平面；Server 独立常驻，Client 退出不会停止 Runtime。
 - **可解释路由：** 每个获批 attempt 都固定到一个配置 revision 以及完整的
   Provider、Model、AgentClass、Harness 和 Permission Profile 绑定。
+- **能力驱动路由：** 每个 Executor 都有独立的中文 Skill-style 能力说明书。
+  说明书由当前选择的模型、模型能力证据、Executor 运行支撑条件和用户自然语言定义
+  统一编译；Planner 使用最终说明书做语义匹配，机器可读的路由投影用于校验和模型选择。
 - **显式恢复：** retry、fallback、continuation、merge repair、cancel 和 resume
   都由 ControlKernel 决策。
 
@@ -169,6 +172,22 @@ metawork model    list | add | edit | test | remove
 metawork executor list | add | edit | enable | disable | remove | test
 ```
 
+### Executor 能力配置
+
+每个 Executor 都有独立的能力说明书，而不是所有 Executor 共用一组可自由编辑的标签。
+用户应先配置该 Executor 允许或自动选择的模型，再用自然语言描述它擅长什么、不擅长什么，
+以及哪个模型为它带来了什么具体能力。页面上的“更新能力画像”是一个统一操作，会同时完成：
+
+1. 根据当前模型池重新计算系统能力事实；
+2. 将用户自然语言定义与系统事实语义合并；
+3. 为这个 Executor 生成中文 Skill-style 说明书；
+4. 从同一份能力画像提炼只读标签和结构化路由投影。
+
+最终说明书是 Planner 进行语义理解和路由匹配的依据；结构化路由投影是它的机器可读视图，
+供 Planner 校验和 ControlKernel 选择具体模型。用户定义优先于冲突的系统定位，但不能借此
+授权未配置的模型、扩大权限或绕过 Kernel 授权。移除一个模型后，刷新能力画像会自动移除
+仅由该模型提供证据的能力。
+
 ## 系统架构
 
 ```text
@@ -176,17 +195,60 @@ Client
   -> ClientGateway
     -> ConversationSession
       -> AccountRuntime
-        -> PlanningAgent
-          -> ControlKernel
-            -> Runtime
-              -> Executor
+        -> PlanningAgent（只负责语义规划）
+          -> PlanningAgentPlan v8
+            -> ControlKernel（授权与恢复）
+              -> Work Graph / Runtime
+                -> Executor attempt
 ```
 
 - `ClientGateway` 负责版本化的多客户端命令/事件协议。
 - `ConversationSession` 负责串行输入 mailbox 与持久化 AnyFusion-Pi Planner session。
-- `AccountRuntime` 负责账户共享服务和单一活跃顶层 Task 边界。
+  新的语义 Planner 回合不能直接回复工作型请求；除斜杠开头的系统命令外，都必须提交给
+  Executor 执行。历史 direct-reply 记录仍可用于审计和回放。
+- `AccountRuntime` 负责账户级共享服务和调度策略。每个 Conversation 拥有一个持久执行槽位，
+  不同 Conversation 可以在配置的并发上限内并行执行。
 - `ControlKernel` 是确定性的策略授权方。
-- Execution 负责 claim、lease、backend、attempt、Git publication 与标准化 observation。
+- Execution 负责 claim、lease、原生 worktree 或 Docker 兼容 backend、attempt、Git publication
+  与标准化 observation。
+
+### Planner 到 Executor 的路由链路
+
+```text
+用户请求
+  -> Planner 读取能力说明书和结构化路由投影
+  -> PlanningAgentPlan v8
+  -> Validator 校验工作图和所需能力
+  -> ControlKernel 授权不可变 binding
+  -> Auto Model Resolver 从允许池选择能力匹配的模型
+  -> Executor 执行获批 attempt
+```
+
+Planner 负责自然语言理解和任务拆解，不直接修改 Task、不授权执行、不直接访问存储，也不
+执行 shell。Kernel 是唯一负责调度、选择获批模型 binding、处理恢复以及启动 Executor attempt
+的权威。
+
+### Pi Agent 与图片执行
+
+`pi-agent` 仍然是一个用户可见的 Executor，也只有一份能力说明书。它在运行时使用复合
+Executor Adapter：
+
+```text
+pi-agent
+  ├─ 普通研究、分析、编码和工具任务
+  │    -> 用户安装的标准 `pi --mode json`
+  └─ image-generation / image-editing Subtask
+       -> MetaWork Image API Runner
+```
+
+图片任务使用 Kernel 已授权的 Model 和 Provider binding。MetaWork 会校验输入和输出图片签名，
+把图片产物写入 attempt workspace，并通过 Completion Protocol v4 验收。Image Runner 不是
+第二个 AgentClass，也不会修改 vendored AnyFusion-Pi Planner。因此用户升级本机 Pi 不会覆盖
+MetaWork 的图片执行代码。
+
+macOS 原生 worktree 执行不依赖 Docker。Docker 只是受限部署的显式兼容 backend；它在固定的
+attempt 镜像中同时打包标准 Pi CLI 和 MetaWork Image Runner，并通过 attempt-scoped model
+gateway 转发图片请求，Provider 凭据不会进入容器。
 
 完整契约见[当前技术总览](docs/current/technical-overview.zh-CN.md)和
 [已接受 ADR](docs/adr/README.md)。
@@ -204,8 +266,10 @@ Client
 
 ## 项目状态
 
-MetaWork 正在进行商业化开发。当前每个账户允许一个活跃顶层 Task，同时允许该 Task
-内部有限并行执行多个 Subtask attempt。正式商业发布前，接口与运维契约仍可能调整。
+MetaWork 正在进行商业化开发。当前支持不同 Conversation 之间有限并行的顶层 Task，
+同时每个 Conversation 自己的 Task 执行槽位保持串行。Planner-first 路由、统一 Executor
+能力画像和 Pi 图片执行链路已经实现，并由仓库测试覆盖。真实 Provider 图片生成与编辑仍
+需要配置 OpenAI-compatible endpoint；生产 smoke 可能产生 Provider 用量费用。
 
 ## 许可
 

@@ -18,8 +18,10 @@ import type {
   AnyFusionConfigurationV2,
   ConfigurationServicePort,
   ConfigurationSnapshot,
+  ExecutorManualUserProfile,
   KernelConfigurationView,
   PlannerConfigurationView,
+  PlannerExecutorCapabilityManual,
   RuntimePrivateConfigurationBinding,
 } from './types.js';
 import { resolveRuntimePrivateConfigurationBinding } from './runtime-private-binding-resolver.js';
@@ -27,6 +29,11 @@ import type { SecretStore } from './secret-store.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { AgentRuntimeRenderer } from './agent-runtime-renderer.js';
 import type { ConfigurationActivationGate } from './configuration-activation-gate.js';
+import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
+import {
+  fingerprintExecutorManualSemantics,
+  fingerprintExecutorManualSourceText,
+} from './executor-manual-source.js';
 
 export interface CompiledConfigurationRevision {
   contentHash: string;
@@ -83,8 +90,64 @@ export interface ActivateDraftOptions {
   allowNestedActivation?: boolean;
 }
 
+export interface ExecutorManualSemanticEdit {
+  agentClassRef: string;
+  userProfile: ExecutorManualUserProfile;
+}
+
+/**
+ * Normalize a permissive Planner/tool payload into the canonical assertion
+ * shape before schema validation. Some models attach routing metadata to a
+ * strength or task assertion; preserve that meaning and materialize a
+ * separate capability-policy assertion instead of discarding the route intent.
+ */
+function normalizeExecutorManualProfile(
+  profile: ExecutorManualUserProfile,
+): ExecutorManualUserProfile {
+  const assertions: ExecutorManualUserProfile['assertions'] = [];
+  for (const assertion of profile.assertions) {
+    if (assertion.topic === 'capability-policy') {
+      assertions.push(structuredClone(assertion));
+      continue;
+    }
+
+    const {
+      routingCapability,
+      disposition,
+      ...semanticAssertion
+    } = assertion;
+    assertions.push(structuredClone(semanticAssertion));
+    if (routingCapability && disposition) {
+      assertions.push({
+        ...structuredClone(semanticAssertion),
+        topic: 'capability-policy',
+        routingCapability,
+        disposition,
+      });
+    }
+  }
+  return {
+    ...structuredClone(profile),
+    assertions,
+  };
+}
+
+export function validateExecutorManualSourceText(sourceText: string): void {
+  if (sourceText.length > 8_000 || Buffer.byteLength(sourceText, 'utf8') > 8_000) {
+    throw new Error('Executor manual sourceText exceeds 8000 UTF-8 bytes');
+  }
+  if (redactSensitiveText(sourceText) !== sourceText) {
+    throw new Error('Executor manual guidance must not contain credential-like content');
+  }
+}
+
 export class ConfigurationService implements ConfigurationServicePort {
   private readonly drafts = new Map<string, ConfigurationDraft>();
+  private readonly manualSemanticReceipts = new Map<string, {
+    agentClassRef: string;
+    baseRevisionId: string | null;
+    semanticFingerprint: string;
+  }>();
   private readonly createRevisionId: () => string;
   private readonly probe: NonNullable<ConfigurationServiceDependencies['probe']>;
 
@@ -143,6 +206,109 @@ export class ConfigurationService implements ConfigurationServicePort {
     return compiled;
   }
 
+  /**
+   * Applies optional model-normalized Executor guidance to a mutable draft.
+   * ConfigurationService remains the write and validation authority.
+   */
+  applyExecutorManualProposal(
+    revisionId: string,
+    edit: ExecutorManualSemanticEdit,
+  ): void {
+    const draft = this.requireDraft(revisionId);
+    const userProfile = normalizeExecutorManualProfile(edit.userProfile);
+    const input = asRecord(draft.input);
+    const agentClasses = asRecord(input.agentClasses);
+    const agentClass = asRecord(agentClasses[edit.agentClassRef]);
+    if (agentClass.kind !== 'executor') {
+      throw new Error(`Executor manual edits require an Executor AgentClass: ${edit.agentClassRef}`);
+    }
+    validateExecutorManualSourceText(userProfile.sourceText);
+    if (
+      userProfile.sourceText.trim().length === 0
+      && userProfile.assertions.length > 0
+    ) {
+      throw new Error('Executor manual assertions require non-empty sourceText');
+    }
+    for (const assertion of userProfile.assertions) {
+      if (assertion.text.length > 500
+        || Buffer.byteLength(assertion.text, 'utf8') > 2_000) {
+        throw new Error('Executor manual assertion exceeds 500 characters or 2000 UTF-8 bytes');
+      }
+      if (redactSensitiveText(assertion.text) !== assertion.text) {
+        throw new Error('Executor manual assertions must not contain credential-like content');
+      }
+      if (assertion.topic === 'capability-policy'
+        && (!assertion.routingCapability || !assertion.disposition)) {
+        throw new Error(
+          'Executor capability-policy assertions require routingCapability and disposition',
+        );
+      }
+    }
+    const semanticReceipt = (
+      userProfile.assertions.length > 0
+      || userProfile.sourceText.trim().length === 0
+    )
+      ? `manual_${randomUUID()}`
+      : undefined;
+    if (semanticReceipt) {
+      if (this.manualSemanticReceipts.size >= 256) {
+        const oldestReceipt = this.manualSemanticReceipts.keys().next().value;
+        if (oldestReceipt) this.manualSemanticReceipts.delete(oldestReceipt);
+      }
+      this.manualSemanticReceipts.set(semanticReceipt, {
+        agentClassRef: edit.agentClassRef,
+        baseRevisionId: draft.baseRevisionId,
+        semanticFingerprint: fingerprintExecutorManualSemantics(userProfile),
+      });
+    }
+    draft.input = {
+      ...input,
+        agentClasses: {
+        ...agentClasses,
+        [edit.agentClassRef]: {
+          ...agentClass,
+          executorManual: {
+            ...userProfile,
+            ...(semanticReceipt
+              ? {
+                  assertionsSourceFingerprint:
+                    fingerprintExecutorManualSourceText(userProfile.sourceText),
+                  semanticReceipt,
+                }
+              : {
+                  assertionsSourceFingerprint: undefined,
+                  semanticReceipt: undefined,
+                }),
+          },
+        },
+      },
+    };
+    draft.config = undefined;
+    draft.compiled = undefined;
+    draft.validationIssues = undefined;
+    draft.probed = false;
+  }
+
+  isExecutorManualSemanticReceiptValid(
+    agentClassRef: string,
+    baseRevisionId: string | null,
+    profile: ExecutorManualUserProfile,
+  ): boolean {
+    const receipt = profile.semanticReceipt
+      ? this.manualSemanticReceipts.get(profile.semanticReceipt)
+      : undefined;
+    return Boolean(
+      profile.assertions.length > 0
+      && profile.assertionsSourceFingerprint
+      && profile.assertionsSourceFingerprint
+        === fingerprintExecutorManualSourceText(profile.sourceText)
+      && receipt
+      && receipt.agentClassRef === agentClassRef
+      && receipt.baseRevisionId === baseRevisionId
+      && receipt.semanticFingerprint === fingerprintExecutorManualSemantics(profile),
+    );
+  }
+
   async probeDraft(revisionId: string): Promise<ConfigurationProbeResult> {
     const draft = this.requireDraft(revisionId);
     if (!draft.config || !draft.compiled) {
@@ -182,6 +348,9 @@ export class ConfigurationService implements ConfigurationServicePort {
     }
     if (!draft.probed) {
       throw new Error('configuration draft must be probed before activation');
+    }
+    if (reason === 'activation') {
+      await this.assertManualSemanticChangesCompiled(draft);
     }
 
     const currentRevisionId = await this.activeRevisionId();
@@ -233,8 +402,58 @@ export class ConfigurationService implements ConfigurationServicePort {
       contentHash: snapshot.contentHash,
       reason,
     });
+    for (const agentClass of Object.values(snapshot.config.agentClasses)) {
+      const semanticReceipt = agentClass.executorManual?.semanticReceipt;
+      if (semanticReceipt) this.manualSemanticReceipts.delete(semanticReceipt);
+    }
     this.drafts.delete(revisionId);
     return { ok: true, snapshot };
+  }
+
+  private async assertManualSemanticChangesCompiled(
+    draft: ConfigurationDraft,
+  ): Promise<void> {
+    if (!draft.config) return;
+    const base = draft.baseRevisionId
+      ? await this.dependencies.repository.readSnapshot(draft.baseRevisionId)
+      : null;
+    for (const [agentClassRef, agentClass] of Object.entries(draft.config.agentClasses)) {
+      if (agentClass.kind !== 'executor') continue;
+      const sourceText = agentClass.executorManual?.sourceText.trim() ?? '';
+      const manual = agentClass.executorManual;
+      const baseManual = base?.config.agentClasses[agentClassRef]?.executorManual;
+      const semanticChanged = fingerprintExecutorManualSemantics({
+        sourceText,
+        assertions: manual?.assertions ?? [],
+      }) !== fingerprintExecutorManualSemantics({
+        sourceText: baseManual?.sourceText ?? '',
+        assertions: baseManual?.assertions ?? [],
+      });
+      const receipt = manual?.semanticReceipt
+        ? this.manualSemanticReceipts.get(manual.semanticReceipt)
+        : undefined;
+      const hasStructuredAssertions = (manual?.assertions.length ?? 0) > 0;
+      if (
+        semanticChanged
+        && (
+          (
+            hasStructuredAssertions
+            && (
+              manual?.assertionsSourceFingerprint
+                !== fingerprintExecutorManualSourceText(sourceText)
+              || !receipt
+              || receipt.agentClassRef !== agentClassRef
+              || receipt.baseRevisionId !== draft.baseRevisionId
+              || receipt.semanticFingerprint !== fingerprintExecutorManualSemantics(manual)
+            )
+          )
+        )
+      ) {
+        throw new Error(
+          `Executor capability guidance contains untrusted semantic assertions: ${agentClassRef}`,
+        );
+      }
+    }
   }
 
   async rollback(
@@ -270,6 +489,47 @@ export class ConfigurationService implements ConfigurationServicePort {
 
   async getSnapshot(revisionId: string): Promise<ConfigurationSnapshot> {
     return this.dependencies.repository.readSnapshot(revisionId);
+  }
+
+  getDraftSnapshot(revisionId: string): ConfigurationSnapshot {
+    const draft = this.requireDraft(revisionId);
+    if (!draft.config) throw new Error('configuration draft must be validated before snapshot');
+    const contentHash = draft.compiled?.contentHash
+      ?? createHash('sha256').update(stableJson(draft.config)).digest('hex');
+    return snapshotFor(draft.revisionId, contentHash, draft.config);
+  }
+
+  discardDraft(revisionId: string): void {
+    this.drafts.delete(revisionId);
+  }
+
+  async previewExecutorCapabilityManual(
+    agentClassRef: string,
+    baseRevisionId: string,
+    input: unknown,
+  ): Promise<PlannerExecutorCapabilityManual> {
+    await this.getSnapshot(baseRevisionId);
+    const draft = this.createDraft(input, baseRevisionId);
+    try {
+      const validation = this.validateDraft(draft.revisionId);
+      if (!validation.ok) {
+        throw new Error(validation.issues
+          .map(issue => `${issue.path}: ${issue.message}`)
+          .join('; '));
+      }
+      this.compileDraft(draft.revisionId);
+      const manual = buildPlannerConfigurationView(
+        this.getDraftSnapshot(draft.revisionId),
+      ).executorCapabilityManuals?.find(candidate => (
+        candidate.agentClassRef === agentClassRef
+      ));
+      if (!manual) {
+        throw new Error(`Executor capability manual not found: ${agentClassRef}`);
+      }
+      return manual;
+    } finally {
+      this.discardDraft(draft.revisionId);
+    }
   }
 
   async getPlannerView(revisionId: string): Promise<PlannerConfigurationView> {
@@ -359,12 +619,19 @@ function snapshotFor(
   return { revisionId, contentHash, config };
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
 function stableJson(value: unknown): string {
   if (value === undefined) return 'undefined';
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
   return `{${Object.entries(value)
     .sort(([left], [right]) => left.localeCompare(right))
+    .filter(([, nested]) => nested !== undefined)
     .map(([key, nested]) => `${JSON.stringify(key)}:${stableJson(nested)}`)
     .join(',')}}`;
 }

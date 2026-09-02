@@ -8,7 +8,10 @@ import {
 } from "./planner-mcp-extension.ts";
 import { PLANNER_ACTIVE_TOOL_NAMES } from "./planner-policy.ts";
 import { createPlannerProposalGate } from "./planner-proposal-gate.ts";
-import { createPlanningProposalTool } from "./planner-proposal-tool.ts";
+import {
+	createExecutorManualProposalTool,
+	createPlanningProposalTool,
+} from "./planner-proposal-tool.ts";
 import { buildAnyFusionPlannerSystemPrompt } from "./planner-system-prompt.ts";
 import { createPlannerWebTools } from "./planner-web-tools.ts";
 
@@ -24,6 +27,11 @@ export interface AnyFusionPlannerBootstrapOptions {
 
 export function createAnyFusionPlannerBootstrap(options: AnyFusionPlannerBootstrapOptions = {}) {
 	const cwd = options.cwd ?? process.cwd();
+	const purpose = process.env.ANYFUSION_PLANNER_TURN_PURPOSE === "configuration"
+		? "configuration"
+		: process.env.ANYFUSION_PLANNER_TURN_PURPOSE === "validation"
+			? "validation"
+			: "kernel";
 	const authorizedWorkspace = posixPath.resolve(process.env.ANYFUSION_PLANNER_WORKSPACE ?? "/workspace");
 	const normalizedCwd = posixPath.resolve(cwd);
 	const workspaceRelativePath = posixPath.relative(authorizedWorkspace, normalizedCwd);
@@ -38,12 +46,21 @@ export function createAnyFusionPlannerBootstrap(options: AnyFusionPlannerBootstr
 		connectionFactory: options.connectionFactory,
 	};
 	return {
-		systemPrompt: buildAnyFusionPlannerSystemPrompt(options.skillPath),
-		activeToolNames: [...PLANNER_ACTIVE_TOOL_NAMES],
-		extensionFactories: [createPlannerMcpExtensionFactory(extensionOptions)],
+		systemPrompt: buildAnyFusionPlannerSystemPrompt(
+			options.skillPath,
+			purpose,
+		),
+		activeToolNames: purpose === "configuration"
+			? ["submit_executor_manual_proposal"]
+			: [...PLANNER_ACTIVE_TOOL_NAMES],
+		thinkingLevelOverride: purpose === "configuration" ? ("low" as const) : undefined,
+		extensionFactories: purpose === "configuration"
+			? []
+			: [createPlannerMcpExtensionFactory(extensionOptions)],
 		customTools: [
-			...createPlannerWebTools(),
-			createPlanningProposalTool(options.schemaPath, proposalGate),
+			...(purpose === "configuration" ? [] : createPlannerWebTools()),
+			...(purpose === "configuration" ? [] : [createPlanningProposalTool(options.schemaPath, proposalGate)]),
+			createExecutorManualProposalTool(),
 		] as ToolDefinition[],
 	};
 }

@@ -4,6 +4,7 @@ import type { AutoModelCandidate } from './auto-model-resolver.js';
 export interface CandidateProjectionConfiguration {
   agentClasses: Record<string, {
     harnessRef: string;
+    modelCapabilities?: Record<string, ModelCapability[]>;
   }>;
   providers?: Record<string, {
     enabled: boolean;
@@ -45,7 +46,8 @@ export function projectConfigurationCandidates(
       providerRef: model.providerRef,
       modelRef,
       modelId: model.modelId,
-      capabilities: model.capabilities,
+      capabilities: configuration.agentClasses[agentClassRef]?.modelCapabilities?.[modelRef]
+        ?? model.capabilities,
       contextLimit: model.contextLimit,
       costInputPerMillion: model.costInputPerMillion,
       costOutputPerMillion: model.costOutputPerMillion,

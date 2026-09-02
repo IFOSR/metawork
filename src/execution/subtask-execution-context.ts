@@ -30,7 +30,10 @@ export interface SelectedExecutionEvidence {
 
 export interface SubtaskExecutionContext {
   taskBackground: { id: string; title: string; goal: string; instruction: 'background_only' };
-  currentSubtask: Pick<Subtask, 'id' | 'title' | 'goal' | 'deliveryKind' | 'acceptance'>;
+  currentSubtask: Pick<
+    Subtask,
+    'id' | 'title' | 'goal' | 'deliveryKind' | 'requiredCapabilities' | 'acceptance'
+  >;
   incomingHandoffs: PersistedSubtaskHandoff[];
   outgoingHandoffRequirements: Array<{ toSubtaskId: string; requiredItems: WorkGraphRequiredItem[] }>;
   selectedEvidence: SelectedExecutionEvidence[];
@@ -152,6 +155,7 @@ export class SubtaskExecutionContextBuilder {
           title: input.subtask.title,
           goal: input.subtask.goal,
           deliveryKind: input.subtask.deliveryKind,
+          requiredCapabilities: input.subtask.requiredCapabilities,
           acceptance: input.subtask.acceptance,
           ...input.currentSubtaskOverride,
         },

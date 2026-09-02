@@ -5,6 +5,7 @@ import {
   buildProviderModelOptions,
   dedupeModelEntries,
   evaluateModelCompatibility,
+  executorManualInputKey,
   invalidRoutingDrafts,
   isGptRelatedModel,
   mergeCompletedModelFacts,
@@ -205,6 +206,104 @@ describe('Settings workbench model semantics', () => {
     });
   });
 
+  it('changes the Executor manual input key when model routing facts change', () => {
+    const draft = {
+      mode: 'fixed' as const,
+      modelRef: 'code-gpt-56',
+      allowedModelRefs: ['code-gpt-56'],
+      defaultModelRef: 'code-gpt-56',
+      fallbackModelRefs: [],
+      objective: 'balanced' as const,
+      minimumQualityTier: 'low' as const,
+      primaryUseCases: ['repository implementation'],
+      avoidUseCases: [],
+      executorManualSourceText: '',
+    };
+    const initial = executorManualInputKey(draft, models);
+    const changed = executorManualInputKey(draft, [{
+      ...models[0]!,
+      routingNotes: { summary: '更适合大型重构' },
+    }]);
+    expect(changed).not.toBe(initial);
+  });
+
+  it('changes the Executor manual input key for unsaved guidance and routing policy edits', () => {
+    const draft = {
+      mode: 'auto' as const,
+      modelRef: 'code-gpt-56',
+      allowedModelRefs: ['code-gpt-56'],
+      defaultModelRef: 'code-gpt-56',
+      fallbackModelRefs: [],
+      objective: 'balanced' as const,
+      minimumQualityTier: 'low' as const,
+      primaryUseCases: ['repository implementation'],
+      avoidUseCases: [],
+      executorManualSourceText: '',
+    };
+    const changedGuidance = executorManualInputKey({
+      ...draft,
+      executorManualSourceText: '只负责图片生成。',
+    }, models);
+    const changedObjective = executorManualInputKey({
+      ...draft,
+      objective: 'quality',
+    }, models);
+    const changedSourceWhitespace = executorManualInputKey({
+      ...draft,
+      executorManualSourceText: '  ',
+    }, models);
+    expect(changedGuidance).not.toBe(executorManualInputKey(draft, models));
+    expect(changedObjective).not.toBe(executorManualInputKey(draft, models));
+    expect(changedSourceWhitespace).toBe(executorManualInputKey(draft, models));
+  });
+
+  it('exposes a capability profile refresh action backed by the unsaved candidate preview API', async () => {
+    const agentSource = await readFile(new URL(
+      '../../web/src/components/AgentClassConfig.tsx',
+      import.meta.url,
+    ), 'utf8');
+    const settingsSource = await readFile(new URL(
+      '../../web/src/components/SettingsPanel.tsx',
+      import.meta.url,
+    ), 'utf8');
+    const httpSource = await readFile(new URL(
+      '../../web/src/api/http.ts',
+      import.meta.url,
+    ), 'utf8');
+
+    expect(agentSource).toContain('更新能力画像');
+    expect(agentSource).toContain('当前可路由能力');
+    expect(agentSource).toContain('新增可路由能力');
+    expect(agentSource).toContain('移除可路由能力');
+    expect(agentSource).toContain('路由偏好变化');
+    expect(agentSource).toContain('当前未满足');
+    expect(agentSource).toContain('能力证据');
+    expect(agentSource).toContain('manualPreview?.capabilityChanges');
+    expect(agentSource).toContain('onUpdateManual');
+    expect(agentSource).not.toContain('onAnalyzeManual');
+    expect(agentSource).not.toContain('onRefreshManual');
+    expect(settingsSource).toContain('compileExecutorCapabilityManual');
+    expect(httpSource).toContain('/capability-manual/compile');
+  });
+
+  it('uses one capability-profile update action for cleared Executor guidance', async () => {
+    const agentSource = await readFile(new URL(
+      '../../web/src/components/AgentClassConfig.tsx',
+      import.meta.url,
+    ), 'utf8');
+    const settingsSource = await readFile(new URL(
+      '../../web/src/components/SettingsPanel.tsx',
+      import.meta.url,
+    ), 'utf8');
+
+    expect(agentSource).toContain('onUpdateManual');
+    expect(agentSource).not.toContain('清空定义并预览');
+    expect(settingsSource).not.toContain('if (!sourceText) return;');
+    expect(settingsSource).not.toContain(
+      "sourceText !== (preview?.persistedSourceText ?? '')",
+    );
+  });
+
   it('treats Provider models as the candidate source without duplicating shared identities', () => {
     const duplicate = {
       ...models[0]!,
@@ -293,19 +392,40 @@ describe('Settings workbench model semantics', () => {
     expect(panel).toContain('await refreshConfigurationCompletion()');
   });
 
-  it('edits and persists Model capabilities and AgentClass use cases', async () => {
+  it('keeps model capability facts inside Executor guidance and derives read-only tags from the manual', async () => {
     const [panel, routing] = await Promise.all([
       readFile(new URL('components/SettingsPanel.tsx', webRoot), 'utf8'),
       readFile(new URL('components/AgentClassConfig.tsx', webRoot), 'utf8'),
     ]);
 
-    expect(panel).toContain('模型能力');
-    expect(panel).toContain('MODEL_CAPABILITY_IDS');
-    expect(panel).toContain('toggleModelCapability');
-    expect(panel).toContain('capabilities: model.capabilities');
+    expect(panel).not.toContain('02 / MODEL CAPABILITIES');
+    expect(panel).not.toContain('模型能力');
+    expect(panel).not.toContain('模型路由说明');
     expect(panel).toContain('primaryUseCases: entry.primaryUseCases');
-    expect(routing).toContain('SUGGESTED_USE_CASES');
-    expect(routing).toContain('addUseCase');
-    expect(routing).toContain('removeUseCase');
+    expect(panel).toContain('executorManualInputKey');
+    expect(routing).toContain('某个模型为它带来的具体能力');
+    expect(routing).toContain('manualPreview?.tags');
+    expect(routing).toContain('manualPreview?.capabilities');
+    expect(routing.indexOf('renderRoutePolicyPanel')).toBeLessThan(
+      routing.indexOf('<div className="agent-route-facts">'),
+    );
+    expect(routing).not.toContain('不会改变 Routing Capability');
+    expect(panel).not.toContain('manualAnalysisIssues.length > 0');
+    expect(panel).not.toContain('需要先交给 Planner 解析');
+    expect(panel).toContain("analysisMode: analysis.analysisMode");
+    expect(panel).toContain('assertionsSourceFingerprint');
+    expect(panel).toContain("preview.sourceText.trim() === manualSourceText");
+    expect(panel).toContain('currentSourceText === manualSourceText');
+    expect(routing).toContain('更新能力画像');
+    expect(routing).toContain('原文已保留');
+    expect(routing).not.toContain('智能提炼并预览');
+    expect(routing).toContain('当前定义仍可直接激活');
+    expect(routing).not.toContain('可直接保存');
+    expect(routing).not.toContain('路由所需能力');
+    expect(routing).not.toContain('SUGGESTED_USE_CASES');
+    expect(routing).not.toContain('addUseCase');
+    expect(routing).not.toContain('removeUseCase');
+    expect(routing).not.toContain('use-case-editor');
+    expect(routing).toContain('模型事实已变化，需要更新');
   });
 });

@@ -42,13 +42,14 @@ describe('ContainerCompatibilityAdapter', () => {
       attemptsRoot: '/runtime/attempts',
       environment: {},
     });
-    expect(driver.buildLaunch).toHaveBeenCalledWith({
+    expect(driver.buildLaunch).toHaveBeenCalledWith(expect.objectContaining({
       prompt: expect.stringContaining('Working directory: /workspace'),
       cwd: '/workspace',
       runtimeHomePath: '/runtime-home',
       providerRef: 'deepseek',
       modelId: 'deepseek-v4-pro',
-    });
+      executionTarget: 'container',
+    }));
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       attemptId: 'attempt-1',
       imageRef: 'anyfusion/executor:selected',
@@ -307,6 +308,7 @@ function executorInput(attemptId: string): ExecutorInput {
         title: 'Container compatibility',
         goal: 'Execute the selected container Harness',
         deliveryKind: 'edit',
+        requiredCapabilities: [],
         acceptance: [],
       },
       incomingHandoffs: [],

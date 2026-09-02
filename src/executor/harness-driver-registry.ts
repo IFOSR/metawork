@@ -7,6 +7,7 @@ import type {
 } from '../configuration/types.js';
 import type { ExecutorAdapter } from './adapter.js';
 import type { HarnessDriver } from './harness-driver.js';
+import { harnessDriverCatalogEntry } from '../configuration/harness-driver-catalog.js';
 
 export interface HarnessDriverAdapterFactoryInput {
   driver: HarnessDriver;
@@ -35,6 +36,13 @@ export class HarnessDriverRegistry {
   ): void {
     if (this.registrations.has(driver.id)) {
       throw new Error(`Harness driver is already registered: ${driver.id}`);
+    }
+    const catalogEntry = harnessDriverCatalogEntry(driver.id);
+    if (
+      !catalogEntry
+      || !sameValues(driver.executionProtocols, catalogEntry.executionProtocols)
+    ) {
+      throw new Error(`Harness driver execution protocol mismatch: ${driver.id}`);
     }
     this.registrations.set(driver.id, { driver, createAdapter });
   }
@@ -129,6 +137,13 @@ export class HarnessDriverRegistry {
     const registration = this.registrations.get(harness.driverId);
     return registration ? { harness, registration } : null;
   }
+}
+
+function sameValues(left: readonly string[], right: readonly string[]): boolean {
+  const normalizedLeft = [...left].sort();
+  const normalizedRight = [...right].sort();
+  return normalizedLeft.length === normalizedRight.length
+    && normalizedLeft.every((value, index) => value === normalizedRight[index]);
 }
 
 function requireRevision(

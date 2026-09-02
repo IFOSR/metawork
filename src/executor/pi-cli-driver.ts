@@ -40,6 +40,7 @@ const MAX_PROVISIONAL_TEXT_BYTES = 1024 * 1024;
 
 export class PiCliDriver implements HarnessDriver {
   readonly id = 'pi-cli';
+  readonly executionProtocols = ['workspace-image-artifact-v1'] as const;
   readonly supportsResponseOnly = true;
   private readonly runProbe: ProbeCommandRunner;
   private readonly explicitHomeTemplateDir?: string;

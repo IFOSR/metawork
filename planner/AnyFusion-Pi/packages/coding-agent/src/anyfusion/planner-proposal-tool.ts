@@ -7,12 +7,14 @@ import { AnyFusionPlannerHostClient } from "./planner-host-client.ts";
 import type { PlannerProposalGate } from "./planner-proposal-gate.ts";
 import {
 	createPlannerProposalSubmissionId,
+	type ExecutorManualProposalResult,
 	type PlannerProposalPurpose,
 	type PlannerProposalResult,
 	type PlannerRuntimeMode,
 } from "./planner-proposal-types.ts";
 
 const TOOL_NAME = "submit_planning_proposal";
+const MANUAL_TOOL_NAME = "submit_executor_manual_proposal";
 
 export function createPlanningProposalTool(
 	schemaPath: string | undefined,
@@ -30,9 +32,11 @@ export function createPlanningProposalTool(
 		promptSnippet: "Submit a PlanningAgentPlan v8 proposal to MetaClaw and read the structured result",
 		promptGuidelines: [
 			"Every completed semantic turn must call submit_planning_proposal; do not finish with assistant text alone.",
+			"Do not use this tool for Executor capability configuration turns; use submit_executor_manual_proposal instead.",
 			"Pass only the plan. Never invent sessionId, turnId, userInput, or submissionId.",
 			"If MetaClaw returns rejected, read every issue, revise the plan, and call the tool again in this same turn.",
 			"If transport is uncertain, replay the identical plan so MetaClaw can return the authoritative idempotent result.",
+			"Never submit clarification for a supplied URL, repository link, Releases check, or current public-Web research request merely because the Planner has not fetched the source; route it to a research Executor.",
 		],
 		parameters: Type.Object(
 			{ plan: Type.Unsafe<Record<string, unknown>>(planSchema) },
@@ -109,6 +113,106 @@ export function createPlanningProposalTool(
 	});
 }
 
+export function createExecutorManualProposalTool(): ToolDefinition {
+	return defineTool({
+		name: MANUAL_TOOL_NAME,
+		label: "Submit Executor capability manual",
+		description:
+			"Submit the Planner's semantic interpretation of user guidance for one Executor AgentClass.",
+		promptSnippet: "Submit the normalized Executor capability manual guidance",
+		promptGuidelines: [
+			"Use only for an Executor capability manual configuration turn.",
+			"Preserve the user's intent as semantic assertions. Use capability-policy for explicit preferred, allowed, avoid, or disabled routing intent over a registered capability.",
+			"A model-contribution may confirm a registered capability for a currently allowed model; never invent a model, capability ID, Harness support, or permission.",
+			"When user guidance overrides an existing Best Fit or Avoid tag, copy that existing tag text verbatim into assertion.target so the deterministic merge removes the conflicting generated entry.",
+			"Do not add assertions for adjacent capabilities or task types that the user did not explicitly address.",
+			"Submit exactly one selected Executor AgentClass.",
+		],
+		parameters: Type.Object({
+			agentClassRef: Type.String({ minLength: 1, maxLength: 64 }),
+			userProfile: Type.Object({
+				sourceText: Type.String({ maxLength: 8_000 }),
+				assertions: Type.Array(Type.Object({
+					topic: Type.Union([
+						Type.Literal("mission"),
+						Type.Literal("strength"),
+						Type.Literal("limitation"),
+						Type.Literal("preferred-task"),
+						Type.Literal("avoid-task"),
+						Type.Literal("model-contribution"),
+						Type.Literal("capability-policy"),
+						Type.Literal("delivery"),
+					]),
+					text: Type.String({ minLength: 1, maxLength: 500 }),
+					target: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+					modelRef: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
+					modelCapability: Type.Optional(Type.Union([
+						Type.Literal("coding"),
+						Type.Literal("image-editing"),
+						Type.Literal("image-generation"),
+						Type.Literal("long-context"),
+						Type.Literal("planning"),
+						Type.Literal("structured-output"),
+						Type.Literal("tools"),
+						Type.Literal("vision"),
+					])),
+					routingCapability: Type.Optional(Type.Union([
+						Type.Literal("current-web-research"),
+						Type.Literal("image-editing"),
+						Type.Literal("image-generation"),
+						Type.Literal("workspace-engineering"),
+					])),
+					disposition: Type.Optional(Type.Union([
+						Type.Literal("preferred"),
+						Type.Literal("allowed"),
+						Type.Literal("avoid"),
+						Type.Literal("disabled"),
+					])),
+				}), { maxItems: 64 }),
+			}),
+		}, { additionalProperties: false }),
+		executionMode: "sequential",
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const runtime = deriveRuntimeContext(ctx.sessionManager.getBranch(), ctx.mode);
+			if (runtime.purpose !== "configuration") {
+				return {
+					content: [{ type: "text", text: "This tool is only available for configuration turns." }],
+					details: { status: "rejected", issues: ["invalid Planner turn purpose"] },
+					terminate: true,
+				};
+			}
+			try {
+				const socketPath = requiredEnv("ANYFUSION_BRIDGE_SOCKET");
+				const client = new AnyFusionPlannerHostClient(
+					socketPath,
+					runtime.sessionId,
+					runtimeVersion(),
+					runtime.mode,
+				);
+				await client.connect();
+				const result = await client.submitExecutorManualProposal(params, signal);
+				client.close();
+				return {
+					content: [{ type: "text", text: JSON.stringify(result) }],
+					details: result,
+					terminate: true,
+				};
+			} catch (error) {
+				const result: ExecutorManualProposalResult = {
+					status: "transport_uncertain",
+					retryableByReplay: true,
+					message: error instanceof Error ? error.message : String(error),
+				};
+				return {
+					content: [{ type: "text", text: JSON.stringify(result) }],
+					details: result,
+					terminate: true,
+				};
+			}
+		},
+	});
+}
+
 function readPlanSchema(schemaPath: string | undefined): TSchema {
 	if (!schemaPath) throw new Error("ANYFUSION_PLANNER_SCHEMA_PATH is required for submit_planning_proposal");
 	const parsed: unknown = JSON.parse(readFileSync(schemaPath, "utf8"));
@@ -131,7 +235,11 @@ function deriveRuntimeContext(
 	const entry = latestUserEntry(entries);
 	const userInput = extractUserText(entry);
 	if (!userInput.trim()) throw new Error("Current Planner turn does not contain user input");
-	const purpose = process.env.ANYFUSION_PLANNER_TURN_PURPOSE === "validation" ? "validation" : "kernel";
+	const purpose = process.env.ANYFUSION_PLANNER_TURN_PURPOSE === "validation"
+		? "validation"
+		: process.env.ANYFUSION_PLANNER_TURN_PURPOSE === "configuration"
+			? "configuration"
+			: "kernel";
 	return {
 		sessionId: requiredEnv("ANYFUSION_PLANNER_SESSION_ID", "METACLAW_PLANNER_SESSION_ID"),
 		turnId: `turn_${entry.id}`,

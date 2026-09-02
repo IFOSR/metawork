@@ -7,7 +7,11 @@ import {
   getDefaultPlannerProcessSupervisor,
   type PlannerRunner,
 } from './planner-process-supervisor.js';
-import type { PlannerProposalPurpose, PlannerProposalResult } from './planner-proposal.js';
+import type {
+  PlannerProposalPurpose,
+  PlannerProposalResult,
+  ExecutorManualProposalResult,
+} from './planner-proposal.js';
 import type { PlanningAgent, PlanningProposalSubmitter } from './planning-agent.js';
 import type { PlannerRunProgressObserver } from './planner-progress.js';
 import type { PlanningAgentPlan, PlanningContext } from './planning-types.js';
@@ -59,7 +63,11 @@ export class AnyFusionPlanningAgent implements PlanningAgent {
     submitter?: PlanningProposalSubmitter,
   ): Promise<PlannerProposalResult> {
     try {
-      return (await this.run(context, 'kernel', submitter?.onProgress)).proposalResult;
+      const result = (await this.run(context, 'kernel', submitter?.onProgress)).proposalResult;
+      if (!isPlannerProposalResult(result)) {
+        throw new Error('Planner returned an Executor manual result on a semantic planning turn');
+      }
+      return result;
     } catch (error) {
       return {
         status: 'transport_uncertain',
@@ -73,9 +81,12 @@ export class AnyFusionPlanningAgent implements PlanningAgent {
 
   async plan(context: PlanningContext): Promise<PlanningAgentPlan> {
     const result = await this.run(context, 'validation');
-    if (result.proposalResult.status !== 'accepted'
+    if (!isPlannerProposalResult(result.proposalResult)
+      || result.proposalResult.status !== 'accepted'
       || result.proposalResult.outcome !== 'proposal_validated') {
-      throw new Error(`Planner proposal did not reach validated terminal state: ${result.proposalResult.status}`);
+      throw new Error(
+        `Planner proposal did not reach validated terminal state: ${result.proposalResult?.status ?? 'missing'}`,
+      );
     }
     const parsed = PlanningAgentPlanSchema.safeParse(result.submittedPlan);
     if (!parsed.success) {
@@ -155,6 +166,17 @@ export class AnyFusionPlanningAgent implements PlanningAgent {
       return undefined;
     }
   }
+}
+
+function isPlannerProposalResult(
+  value: PlannerProposalResult | ExecutorManualProposalResult | undefined,
+): value is PlannerProposalResult {
+  if (!value) return false;
+  return !(
+    value.status === 'accepted'
+    && 'agentClassRef' in value
+    && 'userProfile' in value
+  );
 }
 
 export function createDefaultPlanningAgent(

@@ -187,6 +187,11 @@ export interface MetaclawSessionDeps {
   accountRuntimeExecutionServices?: AccountRuntimeExecutionServices;
   accountKernelExecutionServices?: AccountKernelExecutionServices;
   accountPlannerServices?: AccountPlannerServices;
+  /**
+   * Compatibility switch for historical low-level tests/replay fixtures.
+   * Production semantic Planner ingress keeps this disabled.
+   */
+  allowLegacyDirectReply?: boolean;
   getRuntimeBinding?(
     binding: AuthorizedExecutorBinding,
   ): Promise<RuntimePrivateConfigurationBinding> | RuntimePrivateConfigurationBinding;
@@ -395,8 +400,10 @@ export class MetaclawSession {
   private readonly interactionTraceStream: InteractionTraceStream;
   private unregisterPlannerHost: (() => void) | null = null;
   private disposePromise: Promise<void> | null = null;
+  private readonly allowLegacyDirectReply: boolean;
 
   constructor(private deps: MetaclawSessionDeps) {
+    this.allowLegacyDirectReply = deps.allowLegacyDirectReply ?? process.env.NODE_ENV === 'test';
     const getRuntimeBinding = resolveRuntimeBindingResolver(deps);
     const stagedConfiguration = deps.stagedConfiguration
       ?? buildStagedLegacyConfiguration();
@@ -922,6 +929,20 @@ export class MetaclawSession {
     }
 
     const normalizedPlan = normalizePlanningAgentPlanInput(submission.plan);
+    if (!this.allowLegacyDirectReply && isDirectReplyPlan(normalizedPlan)) {
+      return {
+        status: 'rejected',
+        turnId: normalizedTurnId,
+        submissionId: submission.submissionId,
+        planId: typeof normalizedPlan.id === 'string' ? normalizedPlan.id : null,
+        rejectionType: 'validation',
+        issues: [
+          'Semantic Planner cannot use direct_reply; route task-like work through an Executor.',
+          'Slash-prefixed system commands must use the Application-Shell command path.',
+        ],
+        kernel: null,
+      };
+    }
     if (submission.runtimeMode === 'interactive'
       && typeof normalizedPlan === 'object' && normalizedPlan !== null
       && 'action' in normalizedPlan && normalizedPlan.action === 'authorization_resolution') {
@@ -2944,4 +2965,11 @@ export class MetaclawSession {
     });
   }
 
+}
+
+function isDirectReplyPlan(value: unknown): value is { id?: unknown } & Record<string, unknown> {
+  return Boolean(value)
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && (value as Record<string, unknown>).action === 'direct_reply';
 }

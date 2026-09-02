@@ -22,6 +22,7 @@ export class AttemptModelGatewayServer {
     advertisedHost?: string;
     bindHost?: string;
     maxRequestBytes?: number;
+    maxResponseBytes?: number;
   }) {
     this.upstream = new URL(options.upstreamBaseUrl);
     if (!['http:', 'https:'].includes(this.upstream.protocol)) throw new Error('model gateway upstream must use HTTP(S)');
@@ -74,7 +75,11 @@ export class AttemptModelGatewayServer {
         response.end();
         return;
       }
-      response.end(Buffer.from(await upstreamResponse.arrayBuffer()));
+      const payload = Buffer.from(await upstreamResponse.arrayBuffer());
+      if (payload.length > (this.options.maxResponseBytes ?? 64 * 1024 * 1024)) {
+        throw new Error('model gateway response exceeds byte limit');
+      }
+      response.end(payload);
     } catch (error) {
       if (!response.headersSent) sendJson(response, 502, { error: 'model_gateway_upstream_failure' });
       else response.destroy(error instanceof Error ? error : new Error(String(error)));

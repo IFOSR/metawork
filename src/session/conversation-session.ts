@@ -133,6 +133,11 @@ export interface ConversationSessionDeps {
   readonly plannerProposalRepo?: PlannerProposalRepo;
   readonly dispose?: () => Promise<void>;
   readonly workspace?: ConversationWorkspacePort;
+  /**
+   * Compatibility switch for historical low-level tests/replay fixtures.
+   * Production semantic Planner ingress keeps this disabled.
+   */
+  readonly allowLegacyDirectReply?: boolean;
 }
 
 export class ConversationSession {
@@ -164,8 +169,10 @@ export class ConversationSession {
   private resultDeliveries: ConversationResultDelivery[] = [];
   private attachedClients = 0;
   private disposePromise: Promise<void> | null = null;
+  private readonly allowLegacyDirectReply: boolean;
 
   constructor(private readonly deps: ConversationSessionDeps) {
+    this.allowLegacyDirectReply = deps.allowLegacyDirectReply ?? process.env.NODE_ENV === 'test';
     this.kernelExecutionRuntime = deps.kernelExecutionRuntime ?? null;
     this.sessionKernelRuntime = deps.sessionKernelRuntime ?? null;
     this.taskExecutionApplicationService = deps.taskExecutionApplicationService ?? null;
@@ -539,6 +546,20 @@ export class ConversationSession {
     context: PlanningContext,
     eventId = `plan_event_${plan.id}_${generateInteractionId()}`,
   ): Promise<PlannerProposalResult> {
+    if (!this.allowLegacyDirectReply && plan.action === 'direct_reply') {
+      return {
+        status: 'rejected',
+        turnId: eventId,
+        submissionId: eventId,
+        planId: plan.id,
+        rejectionType: 'validation',
+        issues: [
+          'Semantic Planner cannot use direct_reply; route task-like work through an Executor.',
+          'Slash-prefixed system commands must use the Application-Shell command path.',
+        ],
+        kernel: null,
+      };
+    }
     const port = this.deps.runtimePort;
     const sessionKernelRuntime = this.sessionKernelRuntime;
     if (!sessionKernelRuntime) {
@@ -959,6 +980,20 @@ export class ConversationSession {
       };
     }
     const normalizedPlan = normalizePlanningAgentPlanInput(submission.plan);
+    if (!this.allowLegacyDirectReply && isDirectReplyPlan(normalizedPlan)) {
+      return {
+        status: 'rejected',
+        turnId,
+        submissionId: submission.submissionId,
+        planId: typeof normalizedPlan.id === 'string' ? normalizedPlan.id : null,
+        rejectionType: 'validation',
+        issues: [
+          'Semantic Planner cannot use direct_reply; route task-like work through an Executor.',
+          'Slash-prefixed system commands must use the Application-Shell command path.',
+        ],
+        kernel: null,
+      };
+    }
     const parsed = PlanningAgentPlanSchema.safeParse(normalizedPlan);
     const context = this.buildPlanningContext(userInput);
     const validation = context
@@ -1876,6 +1911,13 @@ function commandError(code: string, message: string): Error & { code: string } {
   const error = new Error(message) as Error & { code: string };
   error.code = code;
   return error;
+}
+
+function isDirectReplyPlan(value: unknown): value is { id?: unknown } & Record<string, unknown> {
+  return Boolean(value)
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && (value as Record<string, unknown>).action === 'direct_reply';
 }
 
 function shouldStartInteractionTrace(userInput: string): boolean {

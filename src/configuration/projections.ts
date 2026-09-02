@@ -1,4 +1,6 @@
 import { buildConfigurationCatalog } from '../routing/configuration-catalog.js';
+import { compileExecutorCapabilityProfile } from '../routing/executor-capability-profile.js';
+import { mergeKnownModelCapabilities } from './model-capability-catalog.js';
 import type {
   ConfigurationSnapshot,
   KernelConfigurationView,
@@ -16,8 +18,11 @@ export function buildPlannerConfigurationView(
     .map(([id, model]) => ({
       id,
       providerRef: model.providerRef,
-      capabilities: [...model.capabilities].sort(),
+      capabilities: mergeKnownModelCapabilities(model.modelId, model.capabilities),
       reasoning: model.reasoning,
+      routingNotes: model.routingNotes
+        ? cloneModelRoutingNotes(model.routingNotes)
+        : undefined,
       region: snapshot.config.providers[model.providerRef]!.region,
       contextLimit: model.contextLimit,
       costTier: model.costTier,
@@ -28,6 +33,22 @@ export function buildPlannerConfigurationView(
     }))
     .sort((left, right) => left.id.localeCompare(right.id));
   const planner = snapshot.config.agentClasses.planner;
+  const executorCapabilityProfiles = new Map(Object.entries(snapshot.config.agentClasses)
+    .filter(([, agentClass]) => agentClass.kind === 'executor' && agentClass.enabled)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([agentClassRef, agentClass]) => [
+      agentClassRef,
+      compileExecutorCapabilityProfile({
+        agentClassRef,
+        agentClass,
+        models: snapshot.config.models,
+        providers: snapshot.config.providers,
+        harness: snapshot.config.harnesses[agentClass.harnessRef],
+        configurationRevision: snapshot.revisionId,
+      }),
+    ]));
+  const executorCapabilityManuals = [...executorCapabilityProfiles.values()]
+    .map(profile => profile.manual);
 
   return deepFreeze({
     revisionId: snapshot.revisionId,
@@ -41,13 +62,27 @@ export function buildPlannerConfigurationView(
         modelPolicy: cloneModelPolicy(planner.modelPolicy),
       },
     } : {}),
-    routingCatalog: buildConfigurationCatalog(snapshot),
+    routingCatalog: buildConfigurationCatalog(snapshot, executorCapabilityProfiles),
+    executorCapabilityManuals,
   });
 }
 
 export function buildKernelConfigurationView(
   snapshot: ConfigurationSnapshot,
 ): KernelConfigurationView {
+  const executorCapabilityProfiles = new Map(Object.entries(snapshot.config.agentClasses)
+    .filter(([, agentClass]) => agentClass.kind === 'executor' && agentClass.enabled)
+    .map(([agentClassRef, agentClass]) => [
+      agentClassRef,
+      compileExecutorCapabilityProfile({
+        agentClassRef,
+        agentClass,
+        models: snapshot.config.models,
+        providers: snapshot.config.providers,
+        harness: snapshot.config.harnesses[agentClass.harnessRef],
+        configurationRevision: snapshot.revisionId,
+      }),
+    ]));
   const agentClasses = Object.fromEntries(
     Object.entries(snapshot.config.agentClasses)
       .sort(([left], [right]) => left.localeCompare(right))
@@ -58,7 +93,12 @@ export function buildKernelConfigurationView(
           harnessRef: agentClass.harnessRef,
           modelPolicy: cloneModelPolicy(agentClass.modelPolicy),
           permissionProfileRef: agentClass.permissionProfileRef ?? null,
-          routingCapabilities: [...agentClass.routingCapabilities].sort(),
+          routingCapabilities: agentClass.kind === 'executor'
+            ? executorCapabilityProfiles.get(id)?.routableCapabilities ?? []
+            : [],
+          modelCapabilities: agentClass.kind === 'executor'
+            ? executorCapabilityProfiles.get(id)?.modelCapabilities ?? {}
+            : {},
           enabled: agentClass.enabled,
           transport: harness.transport,
           supportsProbe: harness.supportsProbe,
@@ -73,7 +113,7 @@ export function buildKernelConfigurationView(
       .map(([id, model]) => [id, {
         providerRef: model.providerRef,
         modelId: model.modelId,
-        capabilities: [...model.capabilities].sort(),
+        capabilities: mergeKnownModelCapabilities(model.modelId, model.capabilities),
         reasoning: model.reasoning,
         contextLimit: model.contextLimit,
         costTier: model.costTier,
@@ -142,6 +182,18 @@ function clonePermissionProfile(profile: PermissionProfile): PermissionProfile {
         ? [...profile.parameters.allowedPublicDomains]
         : undefined,
     },
+  };
+}
+
+function cloneModelRoutingNotes(
+  notes: NonNullable<import('./types.js').ModelRoutingNotes>,
+): NonNullable<import('./types.js').ModelRoutingNotes> {
+  return {
+    ...notes,
+    strengths: notes.strengths ? [...notes.strengths] : undefined,
+    limitations: notes.limitations ? [...notes.limitations] : undefined,
+    preferredTaskTypes: notes.preferredTaskTypes ? [...notes.preferredTaskTypes] : undefined,
+    avoidTaskTypes: notes.avoidTaskTypes ? [...notes.avoidTaskTypes] : undefined,
   };
 }
 

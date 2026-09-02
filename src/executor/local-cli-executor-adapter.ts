@@ -128,8 +128,12 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         prompt: buildExecutorContextPrompt(input),
         cwd: executionBinding.workspacePath,
         runtimeHomePath: runtimeHome.homePath,
+        executionTarget: 'host',
         providerRef: this.authorizedBinding.providerRef,
         modelId: this.modelId,
+        ...(input.context.currentSubtask.requiredCapabilities.length > 0
+          ? { requiredCapabilities: input.context.currentSubtask.requiredCapabilities }
+          : {}),
       });
       let streamedOutput: string | null = null;
       const streamTracker = this.driver.createResultStreamTracker?.();
@@ -146,6 +150,10 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           METACLAW_EVIDENCE_MCP_URL: input.context.evidenceTools.binding?.mcpUrl ?? '',
           METACLAW_EVIDENCE_JSON_URL: input.context.evidenceTools.binding?.jsonUrl ?? '',
           METACLAW_EVIDENCE_TOKEN: input.context.evidenceTools.binding?.bearerToken ?? '',
+          METACLAW_INPUTS_PATH: executionBinding.inputsPath,
+          METACLAW_IMAGE_OPERATION: input.context.currentSubtask.requiredCapabilities.includes('image-editing')
+            ? 'editing'
+            : 'generation',
         },
         onLine: (line, stream) => {
           streamTracker?.observe({ line, stream });
@@ -237,6 +245,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         prompt: input.prompt,
         cwd: runtimeHome.homePath,
         runtimeHomePath: runtimeHome.homePath,
+        executionTarget: 'host',
         providerRef: this.authorizedBinding.providerRef,
         modelId: this.modelId,
         responseOnly: true,

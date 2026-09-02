@@ -1,7 +1,29 @@
 import { createHash } from 'node:crypto';
 import type { KernelDecisionAction } from '../kernel/control-kernel.js';
+import type { ExecutorManualUserProfile } from '../configuration/types.js';
 
-export type PlannerProposalPurpose = 'kernel' | 'validation';
+export type PlannerProposalPurpose = 'kernel' | 'validation' | 'configuration';
+
+export interface ExecutorManualProposal {
+  agentClassRef: string;
+  userProfile: ExecutorManualUserProfile;
+}
+
+export type ExecutorManualProposalResult =
+  | {
+      status: 'accepted';
+      agentClassRef: string;
+      userProfile: ExecutorManualUserProfile;
+    }
+  | {
+      status: 'rejected';
+      issues: string[];
+    }
+  | {
+      status: 'transport_uncertain';
+      retryableByReplay: true;
+      message: string;
+    };
 
 export type PlannerProposalAcceptedOutcome =
   | 'proposal_validated'

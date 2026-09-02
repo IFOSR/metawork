@@ -184,6 +184,27 @@ describe('PlanningAgent plan schemas', () => {
     expect(parsed.success).toBe(false);
   });
 
+  it('requires edit delivery for image generation and editing work', () => {
+    const valid = outputPlan();
+    const subtask = valid.workGraph.subtasks[0];
+
+    for (const requiredCapability of ['image-generation', 'image-editing']) {
+      const parsed = PlanningAgentPlanSchema.safeParse({
+        ...valid,
+        workGraph: {
+          ...valid.workGraph,
+          subtasks: [{
+            ...subtask,
+            requiredCapabilities: [requiredCapability],
+            deliveryKind: 'report',
+          }],
+        },
+      });
+
+      expect(parsed.success).toBe(false);
+    }
+  });
+
   it('requires null workGraph for non-work-graph actions', () => {
     const valid = outputPlan();
     expect(PlanningAgentPlanSchema.safeParse({

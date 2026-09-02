@@ -1,5 +1,11 @@
-import { existsSync, realpathSync } from 'node:fs';
-import { resolve, sep } from 'node:path';
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readSync,
+  realpathSync,
+} from 'node:fs';
+import { extname, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import type { Subtask } from '../core/types.js';
 import type { WorkGraphRequiredItem } from '../work-graph/index.js';
@@ -435,6 +441,7 @@ function validateWorkspaceDelivery(
         'report delivery requires noChangeReason to be null',
       ));
     }
+    validateImageArtifactContract(subtask, [], violations);
     return [];
   }
   if (delta.changed.length === 0 && noChangeReason === null) {
@@ -480,7 +487,71 @@ function validateWorkspaceDelivery(
     }
     artifacts.push(real);
   }
+  validateImageArtifactContract(subtask, artifacts, violations);
   return artifacts;
+}
+
+function validateImageArtifactContract(
+  subtask: Subtask,
+  artifacts: readonly string[],
+  violations: CompletionContractViolation[],
+): void {
+  const requiresImageArtifact = subtask.requiredCapabilities.some(
+    capability => capability === 'image-generation' || capability === 'image-editing',
+  );
+  if (!requiresImageArtifact) return;
+  if (artifacts.some(isValidImageArtifact)) return;
+  violations.push(contractViolation(
+    'completion_artifact_invalid',
+    'artifacts',
+    'image generation or editing completion requires at least one valid image artifact',
+  ));
+}
+
+function isValidImageArtifact(path: string): boolean {
+  const extension = extname(path).toLocaleLowerCase();
+  if (!['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(extension)) return false;
+  const bytes = readImageSignature(path);
+  if (!bytes) return false;
+  if (extension === '.png') {
+    return bytes.length >= 8
+      && bytes.subarray(0, 8).equals(
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      );
+  }
+  if (extension === '.jpg' || extension === '.jpeg') {
+    return bytes.length >= 3
+      && bytes[0] === 0xff
+      && bytes[1] === 0xd8
+      && bytes[2] === 0xff;
+  }
+  if (extension === '.gif') {
+    const signature = bytes.subarray(0, 6).toString('ascii');
+    return signature === 'GIF87a' || signature === 'GIF89a';
+  }
+  return bytes.length >= 12
+    && bytes.subarray(0, 4).toString('ascii') === 'RIFF'
+    && bytes.subarray(8, 12).toString('ascii') === 'WEBP';
+}
+
+function readImageSignature(path: string): Buffer | null {
+  let descriptor: number | null = null;
+  try {
+    descriptor = openSync(path, 'r');
+    const buffer = Buffer.allocUnsafe(12);
+    const bytesRead = readSync(descriptor, buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, bytesRead);
+  } catch {
+    return null;
+  } finally {
+    if (descriptor !== null) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        // A failed close cannot turn an untrusted artifact into a valid one.
+      }
+    }
+  }
 }
 
 function isWithin(parent: string, child: string): boolean {

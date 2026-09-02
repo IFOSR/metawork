@@ -65,7 +65,8 @@ certification, authorized downstream handoffs and safety disposition.
 
 ADR-0033 governs hot Provider/Model activation, AccountRuntime activation
 admission, concrete Planner/Executor Auto routing, configuration completion,
-and read-only Work Graph routing presentation.
+read-only Work Graph routing presentation, and atomic activation of each
+Executor's unified capability profile, manual, and Routing Catalog projection.
 
 ADR-0034 governs the accepted independent Server/Client process lifecycle,
 endpoint discovery, Client-assisted initialization and Conversation-scoped
@@ -100,11 +101,11 @@ summaries.
 | Origin-scoped live delivery and replay | [ADR-0036](0036-origin-scoped-live-delivery-and-replay.md) | Detailed live events deliver only to the turn's origin connection; durable history replays every authorized origin on attach/refresh/reconnect |
 | Workspace-scoped Conversation organization | [ADR-0035](0035-workspace-scoped-conversation-organization.md) | Workspace Catalog identity, Account -> Workspace -> Conversations navigation, immutable Conversation binding, Client Workspace selection, bounded directory projection and migration |
 | Independent Server and Client lifecycle | [ADR-0034](0034-independent-server-and-client-process-lifecycle.md) | Persistent Server ownership, independent TUI/Web launch, endpoint manifest, Client-default and durable Conversation Workspace admission, protocol/draining, and Server-owned Feishu lifecycle |
-| Hot configuration activation and Auto model routing | [ADR-0033](0033-hot-configuration-activation-and-auto-model-routing.md) | AccountRuntime activation gate, revision-aware Planner/Executor concrete routing, completion facts, and read-only DAG projection |
+| Hot configuration activation and Auto model routing | [ADR-0033](0033-hot-configuration-activation-and-auto-model-routing.md) | AccountRuntime activation gate, revision-aware Planner/Executor concrete routing, unified Executor capability profile activation, completion facts, and read-only DAG projection |
 | Account Runtime and unified client Gateway | [ADR-0031](0031-account-runtime-and-unified-client-gateway.md) | Account/Conversation/connection cardinality, account-scoped Runtime and Kernel ownership, client Gateway ingress/egress, identity mapping and account data isolation |
 | Result-first delivery and completion certification | [ADR-0032](0032-result-first-delivery-and-completion-certification.md) | Safe result delivery, Completion Protocol v4, Result Objects, edge-scoped references, partial results and completion certification separation |
 | Revisioned Configuration Control Plane | [ADR-0027](0027-configuration-control-plane-and-revision-authority.md) | Static configuration authority, immutable revision layout, generation-scoped revision pinning, projections, activation and one-way cutover |
-| AgentClass, Model and Harness routing | [ADR-0028](0028-agentclass-model-and-harness-routing-contract.md) | Authorized binding tuple, model policy, health identities, fallback attempt identity and Permission Profile ownership |
+| AgentClass, Model and Harness routing | [ADR-0028](0028-agentclass-model-and-harness-routing-contract.md) | Authorized binding tuple, model policy, unified per-Executor capability profile, health identities, fallback attempt identity and Permission Profile ownership |
 | Future remote Executor transport | [ADR-0029](0029-executor-transport-and-a2a-boundary.md) | A2A transport-only boundary, authorized envelope and explicit deferral from the current release |
 | Native release trust and upgrade transaction | [ADR-0030](0030-native-release-trust-and-upgrade-transaction.md) | Signed manifest trust, update locking, quiescence, database backup/migration, activation, health checks and rollback |
 | Multi-Conversation Task parallelism | [ADR-0037](0037-multi-conversation-task-parallelism.md) | Conversation slots, same-Conversation queueing, cross-Conversation scheduling, immutable routing, recovery isolation and bounded summaries |
@@ -115,7 +116,7 @@ summaries.
 | Durable Kernel workflow and recovery | [ADR-0023](0023-durable-kernel-workflow-recovery-and-availability.md) | Durable inbox/application/outbox, structured failure, retry/fallback, deferred availability, Executor recovery, continuation and revisions |
 | Unified Kernel control plane | [ADR-0022](0022-unified-kernel-control-plane-and-decision-ledger.md) | Versioned event/snapshot/decision contract, ledger-first loop, attempt landing, capacity recovery and response-only correction |
 | Work Graph and Subtask execution foundation | [ADR-0021](0021-work-graph-v4-subtask-execution-contract.md) | dependency/context/handoff/completion/evidence semantics retained by the active v5 graph; concurrent dispatch and publication amendments live in ADR-0025/0026 |
-| Static routing contracts | [ADR-0018](0018-supported-routing-contracts-and-unified-executor-definitions.md) | Routing Capability, canonical definitions, catalog projection, bindings and definition provenance |
+| Static routing contracts | [ADR-0018](0018-supported-routing-contracts-and-unified-executor-definitions.md) | Routing Capability registry, profile qualification, Catalog projection, bindings and definition provenance |
 | Dynamic AgentClass status | [ADR-0017](0017-kernel-executor-status-projection.md) | bounded health/outcome/recovery projection, static/dynamic fact split, and `error` versus `disabled` semantics |
 | Planner semantics and context | [ADR-0015](0015-planner-owned-semantics-and-tool-mediated-context.md) | semantic ownership, isolated planner runner, bounded/tool-mediated read-only context and fail-closed behavior |
 | Conversation Task serialization | [ADR-0037](0037-multi-conversation-task-parallelism.md) | One executing/cleaning-up top-level Task per Conversation; later same-Conversation Tasks queue; different Conversations may run in parallel |

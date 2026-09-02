@@ -169,6 +169,53 @@ export type ConfigurationRuntimeState = Pick<ConfigSnapshot,
   | 'blockingReasons' | 'activeTaskId' | 'activeAttemptCount' | 'plannerTurnActive'
   | 'hotActivationSupported' | 'restartRequired' | 'checkedAt'>;
 
+export interface ExecutorCapabilityManual {
+  agentClassRef: string;
+  configurationRevision: string;
+  sourceFingerprint: string;
+  routableCapabilities: string[];
+  capabilities: Array<{
+    capabilityId: string;
+    support: 'supported' | 'unsupported';
+    routingDisposition: 'preferred' | 'allowed' | 'avoid' | 'disabled';
+    evidence: Array<{
+      kind: string;
+      modelRef?: string;
+      detail: string;
+    }>;
+    unresolvedReasons: string[];
+  }>;
+  markdown: string;
+  tags: {
+    bestFit: string[];
+    avoid: string[];
+  };
+}
+
+export interface ExecutorManualAnalysis {
+  agentClassRef: string;
+  configurationRevision: string;
+  sourceText: string;
+  analysisMode: 'semantic' | 'source-preserved';
+  warning?: string;
+  userProfile: {
+    sourceText: string;
+    assertionsSourceFingerprint?: string;
+    semanticReceipt?: string;
+    assertions: Array<{
+      topic: string;
+      text: string;
+      target?: string;
+      modelRef?: string;
+      modelCapability?: string;
+      routingCapability?: string;
+      disposition?: 'preferred' | 'allowed' | 'avoid' | 'disabled';
+    }>;
+  };
+  manual: ExecutorCapabilityManual;
+  config: Record<string, unknown>;
+}
+
 export interface ActivateResult {
   ok: boolean;
   revisionId?: string;

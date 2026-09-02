@@ -296,6 +296,7 @@ function createExecutorInput(): Omit<ExecutorInput, 'onProgress'> {
         title: subtask.title,
         goal: subtask.goal,
         deliveryKind: subtask.deliveryKind,
+        requiredCapabilities: subtask.requiredCapabilities,
         acceptance: subtask.acceptance,
       },
       incomingHandoffs: [],

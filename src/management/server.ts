@@ -62,6 +62,51 @@ export interface ActivateResult {
   issues?: string[];
 }
 
+export interface ExecutorCapabilityManualResponse {
+  agentClassRef: string;
+  configurationRevision: string;
+  sourceFingerprint: string;
+  routableCapabilities: string[];
+  capabilities: Array<{
+    capabilityId: string;
+    support: 'supported' | 'unsupported';
+    routingDisposition: 'preferred' | 'allowed' | 'avoid' | 'disabled';
+    evidence: Array<{
+      kind: string;
+      modelRef?: string;
+      detail: string;
+    }>;
+    unresolvedReasons: string[];
+  }>;
+  markdown: string;
+  tags: {
+    bestFit: string[];
+    avoid: string[];
+  };
+}
+
+export interface ExecutorManualAnalysisRequest {
+  baseRevisionId: string;
+  sourceText: string;
+  config?: unknown;
+}
+
+export interface ExecutorManualAnalysisResponse {
+  agentClassRef: string;
+  configurationRevision: string;
+  sourceText: string;
+  analysisMode: 'semantic' | 'source-preserved';
+  warning?: string;
+  userProfile: unknown;
+  manual: ExecutorCapabilityManualResponse;
+  config: unknown;
+}
+
+export interface ExecutorManualPreviewRequest {
+  baseRevisionId: string;
+  config: unknown;
+}
+
 export interface ConfigQuery {
   getActive(): Promise<ConfigSnapshotResponse>;
   listRevisions(): Promise<RevisionSummary[]>;
@@ -81,6 +126,22 @@ export interface ConfigQuery {
     baseUrl?: string,
   ): Promise<{ configured: boolean; valid: boolean | null; detail?: string }>;
   getCompletion?(): Promise<ConfigurationCompletionResult>;
+  getExecutorCapabilityManual?(
+    agentClassRef: string,
+    revisionId?: string,
+  ): Promise<ExecutorCapabilityManualResponse>;
+  analyzeExecutorManual?(
+    agentClassRef: string,
+    input: ExecutorManualAnalysisRequest,
+  ): Promise<ExecutorManualAnalysisResponse>;
+  compileExecutorManual?(
+    agentClassRef: string,
+    input: ExecutorManualAnalysisRequest,
+  ): Promise<ExecutorManualAnalysisResponse>;
+  previewExecutorCapabilityManual?(
+    agentClassRef: string,
+    input: ExecutorManualPreviewRequest,
+  ): Promise<ExecutorCapabilityManualResponse>;
 }
 
 export interface ConfigurationRuntimeStatusSource {
@@ -140,7 +201,9 @@ export class ManagementServer {
       event => this.broadcast(event),
     ) ?? null;
     const server = createServer((request, response) => {
-      void this.handleRequest(request, response);
+      void this.handleRequest(request, response).catch(error => {
+        this.handleRequestError(request, response, error);
+      });
     });
     server.on('upgrade', (request, socket) => {
       this.handleUpgrade(request, socket as Socket);
@@ -379,6 +442,34 @@ export class ManagementServer {
     }
 
     await this.handleStatic(response, url.pathname);
+  }
+
+  private handleRequestError(
+    request: IncomingMessage,
+    response: ServerResponse,
+    error: unknown,
+  ): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const path = request.url ?? '/';
+    console.error('[MetaWork Web] request failed', {
+      method: request.method ?? 'UNKNOWN',
+      path,
+      message,
+    });
+    if (response.writableEnded) return;
+    if (response.headersSent) {
+      response.destroy();
+      return;
+    }
+    if (request.method === 'POST' && path.split('?', 1)[0] === '/api/config/activate') {
+      this.sendJson(response, 500, {
+        ok: false,
+        code: 'activation_failed',
+        issues: [message],
+      });
+      return;
+    }
+    this.sendJson(response, 500, { error: message });
   }
 
   private async handleApi(
@@ -648,6 +739,114 @@ export class ManagementServer {
         return;
       }
       this.sendJson(response, 200, await this.deps.configQuery.getCompletion());
+      return;
+    }
+
+    const capabilityManualMatch = /^\/api\/config\/executors\/([^/]+)\/capability-manual$/u
+      .exec(url.pathname);
+    if (request.method === 'GET' && capabilityManualMatch) {
+      if (!this.deps.configQuery.getExecutorCapabilityManual) {
+        this.sendJson(response, 503, { error: 'Executor capability manual unavailable' });
+        return;
+      }
+      try {
+        const manual = await this.deps.configQuery.getExecutorCapabilityManual(
+          decodeURIComponent(capabilityManualMatch[1]!),
+          url.searchParams.get('revisionId') ?? undefined,
+        );
+        this.sendJson(response, 200, manual);
+      } catch (error) {
+        this.sendJson(response, 404, { error: (error as Error).message });
+      }
+      return;
+    }
+
+    const capabilityManualAnalysisMatch =
+      /^\/api\/config\/executors\/([^/]+)\/capability-manual\/analyze$/u.exec(url.pathname);
+    if (request.method === 'POST' && capabilityManualAnalysisMatch) {
+      if (!this.deps.configQuery.analyzeExecutorManual) {
+        this.sendJson(response, 503, { error: 'Executor capability manual analysis unavailable' });
+        return;
+      }
+      const body = await readRequestBody(request);
+      if (typeof body.baseRevisionId !== 'string'
+        || !body.baseRevisionId.trim()
+        || typeof body.sourceText !== 'string') {
+        this.sendJson(response, 400, { error: 'baseRevisionId and sourceText are required' });
+        return;
+      }
+      try {
+        const analysis = await this.deps.configQuery.analyzeExecutorManual(
+          decodeURIComponent(capabilityManualAnalysisMatch[1]!),
+          {
+            baseRevisionId: body.baseRevisionId,
+            sourceText: body.sourceText,
+            ...(isRecord(body.config) ? { config: body.config } : {}),
+          },
+        );
+        this.sendJson(response, 200, analysis);
+      } catch (error) {
+        this.sendJson(response, 422, { error: (error as Error).message });
+      }
+      return;
+    }
+
+    const capabilityManualCompileMatch =
+      /^\/api\/config\/executors\/([^/]+)\/capability-manual\/compile$/u.exec(url.pathname);
+    if (request.method === 'POST' && capabilityManualCompileMatch) {
+      if (!this.deps.configQuery.compileExecutorManual) {
+        this.sendJson(response, 503, { error: 'Executor capability profile compiler unavailable' });
+        return;
+      }
+      const body = await readRequestBody(request);
+      if (typeof body.baseRevisionId !== 'string'
+        || !body.baseRevisionId.trim()
+        || typeof body.sourceText !== 'string') {
+        this.sendJson(response, 400, { error: 'baseRevisionId and sourceText are required' });
+        return;
+      }
+      try {
+        const compilation = await this.deps.configQuery.compileExecutorManual(
+          decodeURIComponent(capabilityManualCompileMatch[1]!),
+          {
+            baseRevisionId: body.baseRevisionId,
+            sourceText: body.sourceText,
+            ...(isRecord(body.config) ? { config: body.config } : {}),
+          },
+        );
+        this.sendJson(response, 200, compilation);
+      } catch (error) {
+        this.sendJson(response, 422, { error: (error as Error).message });
+      }
+      return;
+    }
+
+    const capabilityManualPreviewMatch =
+      /^\/api\/config\/executors\/([^/]+)\/capability-manual\/preview$/u.exec(url.pathname);
+    if (request.method === 'POST' && capabilityManualPreviewMatch) {
+      if (!this.deps.configQuery.previewExecutorCapabilityManual) {
+        this.sendJson(response, 503, { error: 'Executor capability manual preview unavailable' });
+        return;
+      }
+      const body = await readRequestBody(request);
+      if (typeof body.baseRevisionId !== 'string'
+        || !body.baseRevisionId.trim()
+        || !isRecord(body.config)) {
+        this.sendJson(response, 400, { error: 'baseRevisionId and config are required' });
+        return;
+      }
+      try {
+        const manual = await this.deps.configQuery.previewExecutorCapabilityManual(
+          decodeURIComponent(capabilityManualPreviewMatch[1]!),
+          {
+            baseRevisionId: body.baseRevisionId,
+            config: body.config,
+          },
+        );
+        this.sendJson(response, 200, manual);
+      } catch (error) {
+        this.sendJson(response, 422, { error: (error as Error).message });
+      }
       return;
     }
 
@@ -924,6 +1123,7 @@ interface RequestBody {
   username?: string;
   password?: string;
   baseRevisionId?: string;
+  sourceText?: string;
   config?: unknown;
   targetRevisionId?: string;
   providerRef?: string;

@@ -5,6 +5,7 @@ import {
   buildConfigurationCatalog,
   validateRoutingCapabilityReferences,
 } from '../../src/routing/configuration-catalog.js';
+import { buildExecutorCapabilityManual } from '../../src/routing/executor-capability-manual.js';
 
 function snapshot(): ConfigurationSnapshot {
   return {
@@ -98,21 +99,36 @@ describe('configuration routing catalog', () => {
         {
           id: 'current-web-research',
           deliveryContract:
-            'Research current public-web information, preserve traceable sources, and deliver source-backed findings.',
+            '研究当前公共网络信息，保留可追溯来源，并交付有来源支撑的结论。',
+        },
+        {
+          id: 'image-editing',
+          deliveryContract:
+            '使用明确支持图片编辑的模型处理输入图片，并交付可验证的图片产物。',
+        },
+        {
+          id: 'image-generation',
+          deliveryContract:
+            '使用明确支持图片生成的模型根据文本要求生成图片，并交付可验证的图片产物。',
         },
         {
           id: 'workspace-engineering',
           deliveryContract:
-            'Understand, modify, and verify code or text files in a controlled workspace and deliver the resulting changes or artifacts.',
+            '在受控工作区理解、修改和验证代码或文本文件，并交付变更或产物。',
         },
       ],
       agentClasses: [
         {
           id: 'engineering',
           routingCapabilities: ['workspace-engineering'],
-          primaryUseCases: ['repository implementation'],
-          avoidUseCases: ['current public-web research'],
-          affordances: ['workspace-command-validation', 'workspace-read-write'],
+        capabilityPreferences: [{
+          capabilityId: 'workspace-engineering',
+          disposition: 'allowed',
+        }],
+        modelCapabilities: {
+          engineering: ['coding', 'tools'],
+        },
+        profileFingerprint: expect.stringMatching(/^sha256:/u),
           modelPolicy: {
             mode: 'fixed',
             modelRef: 'engineering',
@@ -140,5 +156,75 @@ describe('configuration routing catalog', () => {
       'duplicate Routing Capability reference: workspace-engineering',
       'unregistered Routing Capability: arbitrary-shell',
     ]);
+  });
+
+  it('derives image Routing Capabilities from the Executor model policy', () => {
+    const candidate = structuredClone(snapshot());
+    candidate.config.models.image = {
+      providerRef: 'openai',
+      modelId: 'gpt-image-2',
+      capabilities: ['vision'],
+      reasoning: 'disabled',
+      enabled: true,
+    };
+    candidate.config.agentClasses.engineering.modelPolicy = {
+      mode: 'auto',
+      allowedModelRefs: ['engineering', 'image'],
+      defaultModelRef: 'engineering',
+    };
+
+    const catalog = buildConfigurationCatalog(candidate);
+
+    expect(catalog.capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'image-generation' }),
+      expect.objectContaining({ id: 'image-editing' }),
+    ]));
+    expect(catalog.agentClasses[0]?.routingCapabilities).toEqual([
+      'image-editing',
+      'image-generation',
+      'workspace-engineering',
+    ]);
+
+    candidate.config.agentClasses.engineering.modelPolicy = {
+      mode: 'fixed',
+      modelRef: 'engineering',
+    };
+    expect(buildConfigurationCatalog(candidate).agentClasses[0]?.routingCapabilities)
+      .toEqual(['workspace-engineering']);
+  });
+
+  it('projects the same profile fingerprint as the Executor manual', () => {
+    const candidate = snapshot();
+    const agentClass = candidate.config.agentClasses.engineering!;
+    const manual = buildExecutorCapabilityManual({
+      agentClassRef: 'engineering',
+      agentClass,
+      models: candidate.config.models,
+      providers: candidate.config.providers,
+      configurationRevision: candidate.revisionId,
+    });
+
+    expect(buildConfigurationCatalog(candidate).agentClasses[0]).toMatchObject({
+      profileFingerprint: manual.sourceFingerprint,
+      routingCapabilities: manual.routableCapabilities,
+    });
+  });
+
+  it('removes a user-disabled capability from the machine-readable projection', () => {
+    const candidate = structuredClone(snapshot());
+    candidate.config.agentClasses.engineering!.executorManual = {
+      sourceText: '不要把工作区工程任务交给这个 Executor。',
+      assertions: [{
+        topic: 'capability-policy',
+        text: '禁止承担工作区工程任务。',
+        routingCapability: 'workspace-engineering',
+        disposition: 'disabled',
+      }],
+    };
+
+    expect(buildConfigurationCatalog(candidate).agentClasses[0]).toMatchObject({
+      routingCapabilities: [],
+      capabilityPreferences: [],
+    });
   });
 });

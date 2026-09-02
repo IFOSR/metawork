@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { compileConfigurationRevision } from '../../src/configuration/configuration-service.js';
+import {
+  compileConfigurationRevision,
+} from '../../src/configuration/configuration-service.js';
 import type { ConfigurationSnapshot } from '../../src/configuration/types.js';
+import { AnyFusionConfigurationV2Schema } from '../../src/configuration/schema.js';
 import { buildStagedLegacyConfiguration } from '../../src/configuration/staged-legacy-configuration.js';
+import { load } from 'js-yaml';
 
 describe('buildStagedLegacyConfiguration', () => {
   it('pins test Planner and Kernel views to revision-test', () => {
@@ -91,6 +95,29 @@ describe('buildStagedLegacyConfiguration', () => {
       schedulingAgingMs: 300_000,
       sameConversationQueueLimit: 8,
     });
+  });
+
+  it('keeps the configuration hash stable when optional fields are undefined', () => {
+    const migratedSnapshot = migratedSnapshotFixture();
+    const config = structuredClone(migratedSnapshot.config);
+    config.agentClasses['codex-cli']!.executorManual = {
+      sourceText: '优先承担代码实现。',
+      assertionsSourceFingerprint: undefined,
+      semanticReceipt: undefined,
+      assertions: [],
+    };
+    const compiled = compileConfigurationRevision('test-undefined-fields', config);
+    const roundTrippedConfig = AnyFusionConfigurationV2Schema.parse(
+      load(compiled.files['config.yaml'] as string),
+    );
+
+    expect(() => buildStagedLegacyConfiguration({
+      migratedSnapshot: {
+        revisionId: 'revision-current',
+        contentHash: compiled.contentHash,
+        config: roundTrippedConfig,
+      },
+    })).not.toThrow();
   });
 
   it('rejects an Auto Planner policy', () => {

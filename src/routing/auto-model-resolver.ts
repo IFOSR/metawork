@@ -27,6 +27,8 @@ export interface AutoModelCandidate {
 }
 
 export interface AutoModelRequirements {
+  /** Model capabilities that are mandatory for this exact binding. */
+  requiredCapabilities?: readonly ModelCapability[];
   /** Model profile strengths used to rank candidates, not an eligibility gate. */
   preferredCapabilities: readonly ModelCapability[];
   contextTokens: number;
@@ -158,6 +160,11 @@ function rejectCandidate(
   if (candidate.capacityAvailable === false) return 'capacity_unavailable';
   if (!candidate.available || candidate.health === 'unavailable') return 'unavailable';
   if (candidate.health === 'degraded') return 'health_degraded';
+  for (const capability of requirements.requiredCapabilities ?? []) {
+    if (!candidate.capabilities.includes(capability)) {
+      return `missing_capability:${capability}`;
+    }
+  }
   if (requirements.requiresStructuredOutput && !candidate.capabilities.includes('structured-output')) {
     return 'missing_capability:structured-output';
   }

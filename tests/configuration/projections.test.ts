@@ -32,6 +32,10 @@ function snapshot(): ConfigurationSnapshot {
         modelId: 'engineering-model',
         capabilities: ['coding', 'tools'],
         reasoning: 'medium',
+        routingNotes: {
+          strengths: ['复杂代码重构'],
+          limitations: ['不适合视觉设计'],
+        },
         enabled: true,
       },
     },
@@ -91,6 +95,13 @@ function snapshot(): ConfigurationSnapshot {
         routingCapabilities: ['workspace-engineering'],
         primaryUseCases: ['repository implementation'],
         avoidUseCases: ['current public-web research'],
+        executorManual: {
+          sourceText: '优先用于大型 TypeScript 重构。',
+          assertions: [{
+            topic: 'preferred-task',
+            text: '优先用于大型 TypeScript 重构。',
+          }],
+        },
         plannerAffordances: ['workspace-read-write', 'workspace-command-validation'],
         generatedRuntimeRef: 'codex-engineering',
         enabled: true,
@@ -139,6 +150,16 @@ describe('configuration projections', () => {
     ]);
     expect(view.planner?.modelPolicy).toEqual({ mode: 'fixed', modelRef: 'planner' });
     expect(view.models.map(model => model.id)).toEqual(['engineering', 'planner']);
+    expect(view.executorCapabilityManuals).toHaveLength(1);
+    expect(view.executorCapabilityManuals?.[0]).toMatchObject({
+      agentClassRef: 'codex-engineering',
+      configurationRevision: 'revision-2026-08-11',
+    });
+    expect(view.executorCapabilityManuals?.[0]?.markdown).toContain('优先用于大型 TypeScript 重构。');
+    expect(view.routingCatalog.agentClasses[0]?.profileFingerprint)
+      .toBe(view.executorCapabilityManuals?.[0]?.sourceFingerprint);
+    expect(view.routingCatalog.agentClasses[0]?.routingCapabilities)
+      .toEqual(view.executorCapabilityManuals?.[0]?.routableCapabilities);
     expect(serialized).not.toMatch(unsafeProjectionKeyPattern);
     expect(serialized).not.toMatch(hostPathPattern);
     expect(Object.isFrozen(view)).toBe(true);
@@ -163,6 +184,47 @@ describe('configuration projections', () => {
     expect(serialized).not.toMatch(hostPathPattern);
     expect(Object.isFrozen(view)).toBe(true);
     expect(Object.isFrozen(view.agentClasses)).toBe(true);
+  });
+
+  it('uses the profile-derived routable capabilities in both Planner and Kernel views', () => {
+    const candidate = structuredClone(snapshot());
+    candidate.config.agentClasses['codex-engineering']!.executorManual = {
+      sourceText: '不要把工作区工程任务交给这个 Executor。',
+      assertions: [{
+        topic: 'capability-policy',
+        text: '禁止承担工作区工程任务。',
+        routingCapability: 'workspace-engineering',
+        disposition: 'disabled',
+      }],
+    };
+
+    const planner = buildPlannerConfigurationView(candidate);
+    const kernel = buildKernelConfigurationView(candidate);
+
+    expect(planner.routingCatalog.agentClasses[0]?.routingCapabilities).toEqual([]);
+    expect(planner.executorCapabilityManuals?.[0]?.routableCapabilities).toEqual([]);
+    expect(kernel.agentClasses['codex-engineering']?.routingCapabilities).toEqual([]);
+  });
+
+  it('projects user-confirmed model capability evidence per Executor', () => {
+    const candidate = structuredClone(snapshot());
+    candidate.config.agentClasses['codex-engineering']!.executorManual = {
+      sourceText: 'engineering 支持图片生成。',
+      assertions: [{
+        topic: 'model-contribution',
+        text: 'engineering 支持图片生成。',
+        modelRef: 'engineering',
+        modelCapability: 'image-generation',
+      }],
+    };
+
+    const planner = buildPlannerConfigurationView(candidate);
+    const kernel = buildKernelConfigurationView(candidate);
+
+    expect(planner.routingCatalog.agentClasses[0]?.modelCapabilities?.engineering)
+      .toContain('image-generation');
+    expect(kernel.agentClasses['codex-engineering']?.modelCapabilities?.engineering)
+      .toContain('image-generation');
   });
 
   it('retains private launch and credential references only in the Runtime view', () => {

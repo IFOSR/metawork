@@ -1,7 +1,27 @@
 import { createHash } from "node:crypto";
 
-export type PlannerProposalPurpose = "kernel" | "validation";
+export type PlannerProposalPurpose = "kernel" | "validation" | "configuration";
 export type PlannerRuntimeMode = "interactive" | "rpc";
+
+export type ExecutorManualProposalResult =
+	| {
+			status: "accepted";
+			agentClassRef: string;
+			userProfile: {
+				sourceText: string;
+				assertions: Array<{
+					topic: "mission" | "strength" | "limitation" | "preferred-task" | "avoid-task" | "model-contribution" | "capability-policy" | "delivery";
+					text: string;
+					target?: string;
+					modelRef?: string;
+					modelCapability?: "coding" | "image-editing" | "image-generation" | "long-context" | "planning" | "structured-output" | "tools" | "vision";
+					routingCapability?: "current-web-research" | "image-editing" | "image-generation" | "workspace-engineering";
+					disposition?: "preferred" | "allowed" | "avoid" | "disabled";
+				}>;
+			};
+	  }
+	| { status: "rejected"; issues: string[] }
+	| { status: "transport_uncertain"; retryableByReplay: true; message: string };
 
 export type PlannerProposalResult =
 	| {

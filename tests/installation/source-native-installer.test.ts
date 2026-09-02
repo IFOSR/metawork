@@ -90,6 +90,8 @@ describe('SourceNativeInstaller', () => {
     expect(snapshot.revisionId).toBe(result.configurationRevision);
     expect(snapshot.config.agentClasses.planner?.kind).toBe('planner');
     expect(snapshot.config.agentClasses['codex-engineering']?.enabled).toBe(true);
+    // The vendored Planner is not an Executor fallback. Native Pi execution
+    // requires the operator-provided standard `pi` command.
     expect(snapshot.config.agentClasses['pi-research']?.enabled).toBe(false);
 
     const db = new Database(accountPaths.database, { readonly: true });

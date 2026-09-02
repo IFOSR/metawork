@@ -398,6 +398,101 @@ describe('ControlKernel', () => {
     });
   });
 
+  it('requires and selects an image-capable model for image generation work', () => {
+    const proposal = workGraphPlan({
+      goal: '生成一张产品概念图',
+      executor: 'pi-agent',
+      deliveryKind: 'edit',
+    });
+    const subtask = proposal.workGraph!.subtasks[0]!;
+    subtask.contextRefs = [];
+    subtask.requiredCapabilities = ['image-generation'];
+    subtask.executorBindings[0]!.modelSelection = {
+      mode: 'agent-class-default',
+    };
+
+    const planner = structuredClone(plannerConfiguration);
+    planner.routingCatalog.capabilities.push(
+      {
+        id: 'image-generation',
+        deliveryContract: '使用明确支持图片生成的模型生成图片。',
+      },
+      {
+        id: 'image-editing',
+        deliveryContract: '使用明确支持图片编辑的模型修改图片。',
+      },
+    );
+    const piCatalog = planner.routingCatalog.agentClasses.find(
+      agentClass => agentClass.id === 'pi-agent',
+    )!;
+    piCatalog.routingCapabilities.push('image-generation', 'image-editing');
+    piCatalog.modelPolicy = {
+      mode: 'auto',
+      allowedModelRefs: ['pi-model', 'image-model'],
+      defaultModelRef: 'pi-model',
+    };
+    planner.models.push({
+      id: 'image-model',
+      providerRef: 'openai',
+      capabilities: ['image-generation', 'image-editing', 'vision'],
+      reasoning: 'low',
+      region: 'international',
+    });
+
+    const kernel = structuredClone(kernelConfiguration);
+    kernel.agentClasses['pi-agent']!.routingCapabilities.push(
+      'image-generation',
+      'image-editing',
+    );
+    kernel.agentClasses['pi-agent']!.modelPolicy = {
+      mode: 'auto',
+      allowedModelRefs: ['pi-model', 'image-model'],
+      defaultModelRef: 'pi-model',
+    };
+    kernel.models['image-model'] = {
+      providerRef: 'openai',
+      modelId: 'gpt-image-2',
+      capabilities: ['image-generation', 'image-editing', 'vision'],
+      reasoning: 'low',
+      enabled: true,
+    };
+
+    const decision = new ControlKernel().decide({
+      ...event,
+      id: 'event_image_generation',
+      proposal,
+      generationId: 'generation_image_generation',
+      targetGraphRevision: 1,
+    }, {
+      ...snapshot,
+      plannerConfiguration: planner,
+      kernelConfiguration: kernel,
+    });
+
+    expect(decision.action).toMatchObject({
+      type: 'authorize_task_plan',
+      authorizedBindingsBySubtask: {
+        subtask_execute: [{
+          agentClassRef: 'pi-agent',
+          providerRef: 'openai',
+          modelRef: 'image-model',
+        }],
+      },
+      routing: {
+        subtask_execute: [{
+          binding: {
+            providerRef: 'openai',
+            modelRef: 'image-model',
+          },
+          rejectedCandidates: [{
+            modelRef: 'pi-model',
+            reason: 'missing_capability:image-generation',
+          }],
+        }],
+      },
+    });
+  });
+
   it('does not require model tools capability for Pi current-web-research routing', () => {
     const proposal = workGraphPlan({
       goal: 'Research the latest public web information',

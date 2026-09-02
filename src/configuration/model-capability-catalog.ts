@@ -1,3 +1,5 @@
+import type { ModelCapability } from './types.js';
+
 /**
  * Known Model capability facts keyed by Model ID.
  *
@@ -6,14 +8,13 @@
  * notes). They are used only to complete safe, structural configuration facts;
  * the runtime still probes Providers when credentials are available.
  *
- * Capability vocabulary is the Model schema enum: coding, long-context,
- * planning, structured-output, tools, vision.
+ * Capability vocabulary is the Model schema enum.
  */
-export const MODEL_CAPABILITY_CATALOG: Readonly<Record<string, readonly string[]>> = {
+export const MODEL_CAPABILITY_CATALOG: Readonly<Record<string, readonly ModelCapability[]>> = {
   // Code CLI / OpenAI GPT family
   'gpt-5.6-sol': ['coding', 'long-context', 'planning', 'structured-output', 'tools', 'vision'],
   'gpt-5.6-terra': ['coding', 'long-context', 'planning', 'structured-output', 'tools', 'vision'],
-  'gpt-image-2': ['vision'],
+  'gpt-image-2': ['image-editing', 'image-generation', 'vision'],
 
   // Kimi
   'k3': ['coding', 'long-context', 'tools'],
@@ -31,4 +32,14 @@ export const MODEL_CAPABILITY_CATALOG: Readonly<Record<string, readonly string[]
 
 export function knownModelCapabilities(modelId: string): string[] {
   return [...(MODEL_CAPABILITY_CATALOG[modelId] ?? [])];
+}
+
+export function mergeKnownModelCapabilities(
+  modelId: string,
+  capabilities: readonly ModelCapability[],
+): ModelCapability[] {
+  return [...new Set([
+    ...capabilities,
+    ...(MODEL_CAPABILITY_CATALOG[modelId] ?? []),
+  ])].sort((left, right) => left.localeCompare(right));
 }

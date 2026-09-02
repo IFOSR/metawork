@@ -20,6 +20,9 @@ import { PiCliDriver } from '../executor/pi-cli-driver.js';
 import type { ProbeCommandRunner } from '../executor/harness-driver.js';
 import { LocalCliExecutorAdapter } from '../executor/local-cli-executor-adapter.js';
 import { ContainerCompatibilityAdapter } from '../executor/container-compatibility-adapter.js';
+import { ImageApiExecutorAdapter } from '../executor/image-api-executor-adapter.js';
+import { PiCompositeExecutorAdapter } from '../executor/pi-composite-executor-adapter.js';
+import { ImageContainerExecutorAdapter } from '../executor/image-container-executor-adapter.js';
 
 export type RuntimeBindingResolver = (
   binding: AuthorizedExecutorBinding,
@@ -56,7 +59,7 @@ export function buildAccountExecutionServices(deps: {
   const registerLocalDriver = (driver: CodexCliDriver | PiCliDriver) => {
     driverRegistry.register(driver, input => {
       if ((deps.attemptExecutionBackend.kind ?? 'container') === 'worktree') {
-        return new LocalCliExecutorAdapter({
+        const piAdapter = new LocalCliExecutorAdapter({
           agentClassId: input.authorizedBinding.agentClassRef,
           driver: input.driver,
           runtimeBinding: input.runtimeBinding,
@@ -66,8 +69,18 @@ export function buildAccountExecutionServices(deps: {
           attemptsRoot,
           idleTimeoutMs: input.configuration.runtimePolicy.attemptTimeoutMs,
         });
+        if (input.driver.id !== 'pi-cli') return piAdapter;
+        const imageAdapter = new ImageApiExecutorAdapter({
+          agentClassId: input.authorizedBinding.agentClassRef,
+          authorizedBinding: input.authorizedBinding,
+          runtimeBinding: input.runtimeBinding,
+        });
+        return new PiCompositeExecutorAdapter({
+          piAdapter,
+          imageAdapter,
+        });
       }
-      return new ContainerCompatibilityAdapter({
+      const piAdapter = new ContainerCompatibilityAdapter({
         agentClassId: input.authorizedBinding.agentClassRef,
         driver: input.driver,
         runtimeBinding: input.runtimeBinding,
@@ -84,6 +97,18 @@ export function buildAccountExecutionServices(deps: {
         nestedSandbox: input.driver.id === 'codex-cli'
           ? 'codex-workspace-write'
           : undefined,
+      });
+      if (input.driver.id !== 'pi-cli') return piAdapter;
+      const imageAdapter = new ImageContainerExecutorAdapter({
+        agentClassId: input.authorizedBinding.agentClassRef,
+        authorizedBinding: input.authorizedBinding,
+        runtimeBinding: input.runtimeBinding,
+        imageRef: containerCompatibilityImage(input.driver.id),
+        backend: deps.attemptExecutionBackend,
+      });
+      return new PiCompositeExecutorAdapter({
+        piAdapter,
+        imageAdapter,
       });
     });
   };

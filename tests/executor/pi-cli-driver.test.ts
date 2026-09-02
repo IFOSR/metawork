@@ -73,7 +73,10 @@ describe('PiCliDriver', () => {
   });
 
   it('launches with independent HOME and Pi directories', () => {
-    const driver = new PiCliDriver({ probeCommand: vi.fn() });
+    const driver = new PiCliDriver({
+      probeCommand: vi.fn(),
+      piCommand: { command: 'pi', args: [] },
+    });
     const launch = driver.buildLaunch({
       prompt: 'research current information',
       cwd: '/workspace/task',
@@ -103,8 +106,63 @@ describe('PiCliDriver', () => {
     expect(JSON.stringify(launch)).not.toContain('~/.pi');
   });
 
+  it('keeps image capabilities out of the standard Pi CLI launch', () => {
+    const driver = new PiCliDriver({
+      probeCommand: vi.fn(),
+      piCommand: { command: 'pi', args: [] },
+    });
+    const launch = driver.buildLaunch({
+      prompt: '生成一张黄金上涨主题宣传图',
+      cwd: '/workspace/task',
+      runtimeHomePath: '/attempt/home',
+      providerRef: 'code-cli',
+      modelId: 'gpt-image-2',
+      requiredCapabilities: ['image-generation'],
+    } as never);
+
+    expect(launch.args).toEqual([
+      '--mode',
+      'json',
+      '--provider',
+      'code-cli',
+      '--model',
+      'gpt-image-2',
+      '生成一张黄金上涨主题宣传图',
+    ]);
+  });
+
+  it('does not use the configured bundled Planner entrypoint as the Executor', async () => {
+    const bundledEntrypoint = '/opt/metawork/planner/packages/coding-agent/dist/cli.js';
+    const probeCommand = vi.fn(async () => ({ code: 0, stdout: '0.80.2', stderr: '' }));
+    vi.stubEnv('METAWORK_PI_EXECUTOR_COMMAND', bundledEntrypoint);
+    try {
+      const driver = new PiCliDriver({ probeCommand });
+      const launch = driver.buildLaunch({
+        prompt: '生成图片',
+        cwd: '/workspace/task',
+        runtimeHomePath: '/attempt/home',
+        providerRef: 'code-cli',
+        modelId: 'gpt-image-2',
+        requiredCapabilities: ['image-generation'],
+      });
+
+      expect(launch.command).toBe('pi');
+      expect(launch.args[0]).toBe('--mode');
+      await expect(driver.probe()).resolves.toEqual({
+        available: true,
+        detail: '0.80.2',
+      });
+      expect(probeCommand).toHaveBeenCalledWith('pi', ['--version']);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('builds a response-only launch with no tools and no durable session', () => {
-    const driver = new PiCliDriver({ probeCommand: vi.fn() });
+    const driver = new PiCliDriver({
+      probeCommand: vi.fn(),
+      piCommand: { command: 'pi', args: [] },
+    });
     const launch = driver.buildLaunch({
       prompt: 'return completion metadata only',
       cwd: '/attempt/home',

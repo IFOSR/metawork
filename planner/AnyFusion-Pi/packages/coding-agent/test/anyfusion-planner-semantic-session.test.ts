@@ -22,6 +22,7 @@ describe("AnyFusion Planner semantic AgentSession", () => {
 	let previousCommand: string | undefined;
 	let previousArgs: string | undefined;
 	let previousWorkspace: string | undefined;
+	let previousPurpose: string | undefined;
 
 	beforeEach(() => {
 		tempDir = join(tmpdir(), `planner-semantic-session-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -30,6 +31,7 @@ describe("AnyFusion Planner semantic AgentSession", () => {
 		previousCommand = process.env.ANYFUSION_PLANNER_MCP_COMMAND;
 		previousArgs = process.env.ANYFUSION_PLANNER_MCP_ARGS_JSON;
 		previousWorkspace = process.env.ANYFUSION_PLANNER_WORKSPACE;
+		previousPurpose = process.env.ANYFUSION_PLANNER_TURN_PURPOSE;
 		process.env.ANYFUSION_PLANNER_MCP_COMMAND = "/usr/local/bin/node";
 		process.env.ANYFUSION_PLANNER_MCP_ARGS_JSON = '["/app/dist/planner-mcp.js"]';
 		process.env.ANYFUSION_PLANNER_WORKSPACE = tempDir;
@@ -39,6 +41,7 @@ describe("AnyFusion Planner semantic AgentSession", () => {
 		restoreEnvironment("ANYFUSION_PLANNER_MCP_COMMAND", previousCommand);
 		restoreEnvironment("ANYFUSION_PLANNER_MCP_ARGS_JSON", previousArgs);
 		restoreEnvironment("ANYFUSION_PLANNER_WORKSPACE", previousWorkspace);
+		restoreEnvironment("ANYFUSION_PLANNER_TURN_PURPOSE", previousPurpose);
 		if (existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
 	});
 
@@ -97,6 +100,47 @@ describe("AnyFusion Planner semantic AgentSession", () => {
 			expect(session.getActiveToolNames()).not.toEqual(
 				expect.arrayContaining(["read", "grep", "find", "ls", "bash", "edit", "write"]),
 			);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("activates only manual submission for configuration RPC", async () => {
+		process.env.ANYFUSION_PLANNER_TURN_PURPOSE = "configuration";
+		const connection = createConnection();
+		const bootstrap = createAnyFusionPlannerBootstrap({
+			cwd: tempDir,
+			connectionFactory: async () => connection,
+		});
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: tempDir,
+			agentDir,
+			settingsManager,
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			systemPrompt: bootstrap.systemPrompt,
+			extensionFactories: bootstrap.extensionFactories,
+		});
+		await resourceLoader.reload();
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			settingsManager,
+			sessionManager: SessionManager.inMemory(),
+			resourceLoader,
+			noTools: "builtin",
+			tools: bootstrap.activeToolNames,
+			excludeTools: ["bash", "edit", "write"],
+			customTools: bootstrap.customTools,
+		});
+
+		try {
+			await session.bindExtensions({});
+			expect(session.getActiveToolNames()).toEqual(["submit_executor_manual_proposal"]);
 		} finally {
 			session.dispose();
 		}

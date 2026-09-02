@@ -64,7 +64,10 @@ describe('ConfigurationCompletionService', () => {
   });
 
   it('exposes known public Model capabilities for image generation and coding models', () => {
-    expect(MODEL_CAPABILITY_CATALOG['gpt-image-2']).toContain('vision');
+    expect(MODEL_CAPABILITY_CATALOG['gpt-image-2']).toEqual(expect.arrayContaining([
+      'image-generation',
+      'image-editing',
+    ]));
     expect(MODEL_CAPABILITY_CATALOG['gpt-5.6-sol']).toEqual(
       expect.arrayContaining(['coding', 'tools', 'vision']),
     );
@@ -80,9 +83,35 @@ describe('ConfigurationCompletionService', () => {
     });
 
     expect(result.models.image).toMatchObject({
-      capabilities: expect.arrayContaining(['vision']),
+      capabilities: expect.arrayContaining([
+        'image-generation',
+        'image-editing',
+        'vision',
+      ]),
       capabilityState: '已自动发现',
     });
+  });
+
+  it('upgrades persisted legacy image capabilities with known catalog facts', () => {
+    const result = new ConfigurationCompletionService({
+      modelCapabilities: MODEL_CAPABILITY_CATALOG,
+    }).complete({
+      providers: {},
+      models: {
+        image: {
+          providerRef: 'code-cli',
+          modelId: 'gpt-image-2',
+          capabilities: ['vision'],
+        },
+      },
+      agentClasses: {},
+    });
+
+    expect(result.models.image?.capabilities).toEqual([
+      'image-editing',
+      'image-generation',
+      'vision',
+    ]);
   });
 
   it('marks unknown model capability metadata as confirmation instead of guessing support', () => {

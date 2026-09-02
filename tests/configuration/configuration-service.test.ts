@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConfigurationService } from '../../src/configuration/configuration-service.js';
 import { diffConfigurations } from '../../src/configuration/configuration-diff.js';
+import { fingerprintExecutorManualSourceText } from '../../src/configuration/executor-manual-source.js';
 import { FileConfigurationRepository } from '../../src/configuration/file-configuration-repository.js';
 
 const roots: string[] = [];
@@ -144,6 +145,329 @@ describe('ConfigurationService', () => {
         ok: false,
         code: 'revision_conflict',
         activeRevisionId: 'revision-2',
+      });
+  });
+
+  it('applies a Planner-normalized Executor manual to a draft without changing authority fields', async () => {
+    const { service } = await serviceFixture();
+    const draft = service.createDraft(completeConfiguration(), null);
+
+    service.applyExecutorManualProposal(draft.revisionId, {
+      agentClassRef: 'engineering',
+      userProfile: {
+        sourceText: '优先做 TypeScript 重构，不做视觉设计。',
+        assertions: [
+          { topic: 'preferred-task', text: '优先做 TypeScript 重构。' },
+          { topic: 'avoid-task', text: '不做视觉设计。' },
+        ],
+      },
+    });
+
+    const validation = service.validateDraft(draft.revisionId);
+    expect(validation.ok).toBe(true);
+    if (!validation.ok) return;
+    expect(validation.config.agentClasses.engineering.executorManual).toEqual({
+      sourceText: '优先做 TypeScript 重构，不做视觉设计。',
+      assertionsSourceFingerprint: fingerprintExecutorManualSourceText(
+        '优先做 TypeScript 重构，不做视觉设计。',
+      ),
+      semanticReceipt: expect.stringMatching(/^manual_[a-f0-9-]+$/u),
+      assertions: [
+        { topic: 'preferred-task', text: '优先做 TypeScript 重构。' },
+        { topic: 'avoid-task', text: '不做视觉设计。' },
+      ],
+    });
+    expect(validation.config.agentClasses.engineering.modelPolicy).toEqual({
+      mode: 'fixed',
+      modelRef: 'engineering',
+    });
+    expect(validation.config.agentClasses.engineering.permissionProfileRef)
+      .toBe('workspace-default');
+  });
+
+  it('accepts a user-confirmed registered capability for an allowed model', async () => {
+    const { service } = await serviceFixture();
+    const draft = service.createDraft(completeConfiguration(), null);
+
+    expect(() => service.applyExecutorManualProposal(draft.revisionId, {
+      agentClassRef: 'engineering',
+      userProfile: {
+        sourceText: 'engineering 模型负责图片生成。',
+        assertions: [{
+          topic: 'model-contribution',
+          text: '负责图片生成。',
+          modelRef: 'engineering',
+          modelCapability: 'image-generation',
+        }],
+      },
+    })).not.toThrow();
+    expect(service.validateDraft(draft.revisionId).ok).toBe(true);
+  });
+
+  it('trusts normalized capability policy assertions during activation', async () => {
+    const { service } = await serviceFixture();
+    const draft = service.createDraft(completeConfiguration(), null);
+
+    service.applyExecutorManualProposal(draft.revisionId, {
+      agentClassRef: 'engineering',
+      userProfile: {
+        sourceText: '优先承担图片生成。',
+        assertions: [{
+          topic: 'preferred-task',
+          text: '优先承担图片生成。',
+          routingCapability: 'image-generation',
+          disposition: 'preferred',
+        }],
+      },
+    });
+    const validation = service.validateDraft(draft.revisionId);
+    expect(validation.ok).toBe(true);
+    service.compileDraft(draft.revisionId);
+    await service.probeDraft(draft.revisionId);
+
+    await expect(service.activateDraft(draft.revisionId, null)).resolves.toMatchObject({
+      ok: true,
+    });
+  });
+
+  it('activates source-preserved natural-language guidance without compiled assertions', async () => {
+    const { service } = await serviceFixture();
+    const initial = service.createDraft(completeConfiguration(), null);
+    service.validateDraft(initial.revisionId);
+    service.compileDraft(initial.revisionId);
+    await service.probeDraft(initial.revisionId);
+    await service.activateDraft(initial.revisionId, null);
+
+    const candidate = completeConfiguration();
+    candidate.agentClasses.engineering.executorManual = {
+      sourceText: '优先承担大型重构。',
+      assertions: [],
+    };
+    const draft = service.createDraft(candidate, initial.revisionId);
+    service.validateDraft(draft.revisionId);
+    service.compileDraft(draft.revisionId);
+    await service.probeDraft(draft.revisionId);
+
+    await expect(service.activateDraft(draft.revisionId, initial.revisionId))
+      .resolves.toMatchObject({
+        ok: true,
+        snapshot: {
+          config: {
+            agentClasses: {
+              engineering: {
+                executorManual: {
+                  sourceText: '优先承担大型重构。',
+                  assertions: [],
+                },
+              },
+            },
+          },
+        },
+      });
+  });
+
+  it('keeps source-preserved guidance independently activatable for multiple Executors', async () => {
+    const { service } = await serviceFixture();
+    const initialConfig = completeConfiguration();
+    initialConfig.agentClasses.research = {
+      ...structuredClone(initialConfig.agentClasses.engineering),
+      primaryUseCases: ['research'],
+    };
+    const initial = service.createDraft(initialConfig, null);
+    service.validateDraft(initial.revisionId);
+    service.compileDraft(initial.revisionId);
+    await service.probeDraft(initial.revisionId);
+    await service.activateDraft(initial.revisionId, null);
+
+    const candidate = structuredClone(initialConfig);
+    candidate.agentClasses.engineering.executorManual = {
+      sourceText: '优先承担大型重构。',
+      assertions: [],
+    };
+    candidate.agentClasses.research.executorManual = {
+      sourceText: '优先整理长文档并提炼研究结论。',
+      assertions: [],
+    };
+    const draft = service.createDraft(candidate, initial.revisionId);
+    service.validateDraft(draft.revisionId);
+    service.compileDraft(draft.revisionId);
+    await service.probeDraft(draft.revisionId);
+
+    await expect(service.activateDraft(draft.revisionId, initial.revisionId))
+      .resolves.toMatchObject({
+        ok: true,
+        snapshot: {
+          config: {
+            agentClasses: {
+              engineering: {
+                executorManual: {
+                  sourceText: '优先承担大型重构。',
+                  assertions: [],
+                },
+              },
+              research: {
+                executorManual: {
+                  sourceText: '优先整理长文档并提炼研究结论。',
+                  assertions: [],
+                },
+              },
+            },
+          },
+        },
+      });
+  });
+
+  it('rejects activation when changed guidance reuses assertions compiled from older source text', async () => {
+    const { service } = await serviceFixture();
+    const initial = service.createDraft(completeConfiguration(), null);
+    service.applyExecutorManualProposal(initial.revisionId, {
+      agentClassRef: 'engineering',
+      userProfile: {
+        sourceText: '优先承担 TypeScript 重构。',
+        assertions: [{
+          topic: 'preferred-task',
+          text: '优先承担 TypeScript 重构。',
+        }],
+      },
+    });
+    const initialValidation = service.validateDraft(initial.revisionId);
+    expect(initialValidation.ok).toBe(true);
+    if (!initialValidation.ok) return;
+    service.compileDraft(initial.revisionId);
+    await service.probeDraft(initial.revisionId);
+    await service.activateDraft(initial.revisionId, null);
+
+    const candidate = completeConfiguration();
+    candidate.agentClasses.engineering.executorManual = {
+      sourceText: '只承担图片生成。',
+      assertionsSourceFingerprint: fingerprintExecutorManualSourceText(
+        '优先承担 TypeScript 重构。',
+      ),
+      semanticReceipt: initialValidation.config.agentClasses.engineering
+        .executorManual?.semanticReceipt,
+      assertions: [{
+        topic: 'preferred-task',
+        text: '优先承担 TypeScript 重构。',
+      }],
+    };
+    const draft = service.createDraft(candidate, initial.revisionId);
+    service.validateDraft(draft.revisionId);
+    service.compileDraft(draft.revisionId);
+    await service.probeDraft(draft.revisionId);
+
+    await expect(service.activateDraft(draft.revisionId, initial.revisionId))
+      .rejects.toThrow('contains untrusted semantic assertions');
+  });
+
+  it('rejects client-edited assertions even when the source text is unchanged', async () => {
+    const { service } = await serviceFixture();
+    const initial = service.createDraft(completeConfiguration(), null);
+    service.applyExecutorManualProposal(initial.revisionId, {
+      agentClassRef: 'engineering',
+      userProfile: {
+        sourceText: '优先承担 TypeScript 重构。',
+        assertions: [{
+          topic: 'preferred-task',
+          text: '优先承担 TypeScript 重构。',
+        }],
+      },
+    });
+    const initialValidation = service.validateDraft(initial.revisionId);
+    expect(initialValidation.ok).toBe(true);
+    if (!initialValidation.ok) return;
+    service.compileDraft(initial.revisionId);
+    await service.probeDraft(initial.revisionId);
+    await service.activateDraft(initial.revisionId, null);
+
+    const candidate = structuredClone(initialValidation.config);
+    candidate.agentClasses.engineering.executorManual!.assertions = [{
+      topic: 'model-contribution',
+      text: 'engineering 支持图片生成。',
+      modelRef: 'engineering',
+      modelCapability: 'image-generation',
+    }];
+    const draft = service.createDraft(candidate, initial.revisionId);
+    service.validateDraft(draft.revisionId);
+    service.compileDraft(draft.revisionId);
+    await service.probeDraft(draft.revisionId);
+
+    await expect(service.activateDraft(draft.revisionId, initial.revisionId))
+      .rejects.toThrow('contains untrusted semantic assertions');
+  });
+
+  it('rejects client-injected assertions when source text is empty', async () => {
+    const { service } = await serviceFixture();
+    const initial = service.createDraft(completeConfiguration(), null);
+    service.validateDraft(initial.revisionId);
+    service.compileDraft(initial.revisionId);
+    await service.probeDraft(initial.revisionId);
+    await service.activateDraft(initial.revisionId, null);
+
+    const candidate = completeConfiguration();
+    candidate.agentClasses.engineering.executorManual = {
+      sourceText: '',
+      assertionsSourceFingerprint: fingerprintExecutorManualSourceText(''),
+      assertions: [{
+        topic: 'model-contribution',
+        text: 'engineering 支持图片生成。',
+        modelRef: 'engineering',
+        modelCapability: 'image-generation',
+      }],
+    };
+    const draft = service.createDraft(candidate, initial.revisionId);
+    expect(service.validateDraft(draft.revisionId)).toMatchObject({ ok: false });
+  });
+
+  it('allows the trusted semantic path to clear existing Executor guidance', async () => {
+    const { service } = await serviceFixture();
+    const initial = service.createDraft(completeConfiguration(), null);
+    service.applyExecutorManualProposal(initial.revisionId, {
+      agentClassRef: 'engineering',
+      userProfile: {
+        sourceText: '优先承担 TypeScript 重构。',
+        assertions: [{
+          topic: 'preferred-task',
+          text: '优先承担 TypeScript 重构。',
+        }],
+      },
+    });
+    service.validateDraft(initial.revisionId);
+    service.compileDraft(initial.revisionId);
+    await service.probeDraft(initial.revisionId);
+    await service.activateDraft(initial.revisionId, null);
+
+    const candidate = completeConfiguration();
+    candidate.agentClasses.engineering.executorManual = {
+      sourceText: '优先承担 TypeScript 重构。',
+      assertions: [{
+        topic: 'preferred-task',
+        text: '优先承担 TypeScript 重构。',
+      }],
+    };
+    const draft = service.createDraft(candidate, initial.revisionId);
+    service.applyExecutorManualProposal(draft.revisionId, {
+      agentClassRef: 'engineering',
+      userProfile: { sourceText: '', assertions: [] },
+    });
+    service.validateDraft(draft.revisionId);
+    service.compileDraft(draft.revisionId);
+    await service.probeDraft(draft.revisionId);
+
+    await expect(service.activateDraft(draft.revisionId, initial.revisionId))
+      .resolves.toMatchObject({
+        ok: true,
+        snapshot: {
+          config: {
+            agentClasses: {
+              engineering: {
+                executorManual: {
+                  sourceText: '',
+                  assertions: [],
+                },
+              },
+            },
+          },
+        },
       });
   });
 

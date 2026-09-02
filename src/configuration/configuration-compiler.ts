@@ -14,6 +14,7 @@ import type {
   PermissionProfile,
 } from './types.js';
 import { buildModelsJson, buildSettingsJson } from './agent-runtime-renderer.js';
+import { buildExecutorCapabilityManual } from '../routing/executor-capability-manual.js';
 
 export interface CompiledAgentRuntime {
   rootPath: string;
@@ -94,7 +95,7 @@ async function writeAgentRuntime(
     ? snapshot.config.permissionProfiles[agentClass.permissionProfileRef]
     : null;
   await mkdir(rootPath, { recursive: true, mode: 0o700 });
-  await Promise.all([
+  const writes = [
     writeJson(rootPath, 'agent.json', {
       schemaVersion: 1,
       revisionId: snapshot.revisionId,
@@ -119,7 +120,22 @@ async function writeAgentRuntime(
       supportsAbort: harness.supportsAbort,
       supportsContinuation: harness.supportsContinuation,
     }),
-  ]);
+  ];
+  if (agentClass.kind === 'executor') {
+    writes.push(writeFile(
+      join(rootPath, 'CAPABILITY.md'),
+      buildExecutorCapabilityManual({
+        agentClassRef: agentClassId,
+        agentClass,
+        models: snapshot.config.models,
+        providers: snapshot.config.providers,
+        harness,
+        configurationRevision: snapshot.revisionId,
+      }).markdown,
+      { encoding: 'utf8', mode: 0o600 },
+    ));
+  }
+  await Promise.all(writes);
 }
 
 async function writeJson(rootPath: string, name: string, value: unknown): Promise<void> {

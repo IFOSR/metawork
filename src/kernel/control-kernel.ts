@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type {
   KernelConfigurationView,
+  ModelCapability,
   PlannerConfigurationView,
 } from '../configuration/index.js';
 import {
@@ -22,6 +23,7 @@ import {
   type RoutingResolutionAudit,
 } from '../routing/auto-model-resolver.js';
 import { projectConfigurationCandidates } from '../routing/configuration-candidate-projection.js';
+import { requiredModelCapabilitiesForRoutingCapabilities } from '../routing/types.js';
 import type { KernelFailure } from '../core/kernel-failure.js';
 import {
   evaluateCapabilityRequest,
@@ -1766,6 +1768,9 @@ function resolveAuthorizedBindings(
           candidates,
           preferredModelRef,
           requirements: {
+            requiredCapabilities: requiredModelCapabilitiesForRoutingCapabilities(
+              subtask.requiredCapabilities,
+            ) as ModelCapability[],
             preferredCapabilities: [],
             contextTokens: 1_024,
           },

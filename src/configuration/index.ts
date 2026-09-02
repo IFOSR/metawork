@@ -19,6 +19,7 @@ export type {
   GatewayConfig,
   HarnessDefinition,
   HarnessDriverId,
+  HarnessExecutionProtocolId,
   HarnessKind,
   KernelAgentClassConfiguration,
   LocalCliHarnessDefinition,
@@ -27,7 +28,12 @@ export type {
   ModelCapability,
   ModelPolicy,
   ModelProfile,
+  ModelRoutingNotes,
   ModelReasoningLevel,
+  ExecutorManualAssertion,
+  ExecutorManualAssertionTopic,
+  ExecutorManualUserProfile,
+  PlannerExecutorCapabilityManual,
   PermissionProfile,
   PermissionProfileParameters,
   PlannerModelProfile,
@@ -36,6 +42,14 @@ export type {
   RuntimeConfigurationView,
   RuntimePolicy,
 } from './types.js';
+export {
+  fingerprintExecutorManualSemantics,
+  fingerprintExecutorManualSourceText,
+} from './executor-manual-source.js';
+export {
+  HARNESS_DRIVER_CATALOG,
+  harnessDriverCatalogEntry,
+} from './harness-driver-catalog.js';
 export {
   AnyFusionConfigurationV2Schema,
   parseAnyFusionConfigurationV2,
@@ -49,6 +63,12 @@ export {
   ConfigurationService,
   compileConfigurationRevision,
 } from './configuration-service.js';
+export {
+  ExecutorManualPlanner,
+  type ExecutorManualAnalysisInput,
+  type ExecutorManualAnalysisResult,
+  type ExecutorManualPlannerDependencies,
+} from './executor-manual-planner.js';
 export {
   FileConfigurationRepository,
   RecoveryBlockedError,

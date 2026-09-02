@@ -19,6 +19,12 @@ const configuration: PlannerConfigurationView = {
       reasoning: 'medium',
       region: 'international',
     },
+    {
+      id: 'image-model',
+      capabilities: ['image-generation', 'image-editing'],
+      reasoning: 'disabled',
+      region: 'international',
+    },
   ],
   routingCatalog: {
     version: 2,
@@ -27,6 +33,14 @@ const configuration: PlannerConfigurationView = {
       {
         id: 'current-web-research',
         deliveryContract: 'Research public web sources.',
+      },
+      {
+        id: 'image-editing',
+        deliveryContract: 'Edit images with an image-capable model.',
+      },
+      {
+        id: 'image-generation',
+        deliveryContract: 'Generate images with an image-capable model.',
       },
       {
         id: 'workspace-engineering',
@@ -51,6 +65,18 @@ const configuration: PlannerConfigurationView = {
         modelPolicy: {
           mode: 'auto',
           allowedModelRefs: ['engineering-model', 'review-model'],
+          defaultModelRef: 'engineering-model',
+        },
+      },
+      {
+        id: 'pi-image',
+        routingCapabilities: ['image-editing', 'image-generation'],
+        primaryUseCases: ['图片生成', '图片编辑'],
+        avoidUseCases: [],
+        affordances: [],
+        modelPolicy: {
+          mode: 'auto',
+          allowedModelRefs: ['engineering-model', 'image-model'],
           defaultModelRef: 'engineering-model',
         },
       },
@@ -197,6 +223,42 @@ describe('validatePlanningAgentPlan', () => {
       'no_capable_agent_class: subtask impl must be split at a Routing Capability handoff',
       'subtask impl AgentClass fixed-engineering does not cover required capabilities: current-web-research',
     ]));
+  });
+
+  it('requires an exact image-capable Model binding for image work', () => {
+    const imageTask = subtask({
+      requiredCapabilities: ['image-generation'],
+      executorBindings: [binding('pi-image', {
+        mode: 'proposed',
+        modelRef: 'image-model',
+        reason: '使用图片模型生成图片',
+      })],
+      deliveryKind: 'edit',
+    });
+    expect(validatePlanningAgentPlan(plan([imageTask]), configuration))
+      .toEqual({ valid: true, errors: [] });
+
+    imageTask.executorBindings = [binding('pi-image', {
+      mode: 'proposed',
+      modelRef: 'engineering-model',
+      reason: '错误地使用普通模型',
+    })];
+    expect(validatePlanningAgentPlan(plan([imageTask]), configuration).errors).toContain(
+      'subtask impl Model engineering-model does not support required Routing Capabilities: image-generation',
+    );
+  });
+
+  it('allows Auto resolution to choose an image model instead of its ordinary default', () => {
+    const imageTask = subtask({
+      requiredCapabilities: ['image-generation'],
+      executorBindings: [binding('pi-image', {
+        mode: 'agent-class-default',
+      })],
+      deliveryKind: 'edit',
+    });
+
+    expect(validatePlanningAgentPlan(plan([imageTask]), configuration))
+      .toEqual({ valid: true, errors: [] });
   });
 
   it('rejects a graph pinned to a different configuration revision', () => {

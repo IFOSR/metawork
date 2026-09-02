@@ -12,6 +12,7 @@ function input(): ExecutorInput {
         title: 'A',
         goal: 'Only do A',
         deliveryKind: 'report' as const,
+        requiredCapabilities: [],
         acceptance: [
           { key: 'secret_acceptance_key_one', description: 'file exists', requiredEvidence: [] },
           { key: 'secret_acceptance_key_two', description: 'output verified', requiredEvidence: [] },
@@ -35,6 +36,18 @@ describe('Subtask execution prompt layering', () => {
     expect(prompt).toContain('Background goal: Top-level goal');
     expect(prompt).toContain('Operative goal: Only do A');
     expect(prompt).toContain('background only');
+  });
+
+  it('renders the image artifact protocol for image-capable edit subtasks', () => {
+    const imageInput = input();
+    imageInput.context.currentSubtask.deliveryKind = 'edit';
+    imageInput.context.currentSubtask.requiredCapabilities = ['image-generation'];
+
+    const prompt = buildExecutorContextPrompt(imageInput);
+
+    expect(prompt).toContain('Required routing capabilities: image-generation');
+    expect(prompt).toContain('Image artifact protocol: workspace-image-artifact-v1');
+    expect(prompt).toContain('write at least one valid PNG, JPEG, WebP, or GIF image file');
   });
 
   it('renders only selected evidence, direct handoffs, sibling titles and completion contract', () => {

@@ -61,7 +61,8 @@ export function createProductionConfigurationProbe(input: {
 
     for (const harness of Object.values(snapshot.config.harnesses)) {
       if (harness.transport !== 'local-cli' || !harness.enabled) continue;
-      if (!await detectCommand(harness.command)) {
+      const commandAvailable = await detectCommand(harness.command);
+      if (!commandAvailable) {
         issues.push(`Executor command is unavailable: ${harness.command}`);
       }
     }

@@ -5,6 +5,8 @@ import type {
   ConfigSnapshot,
   ConfigurationCompletionResult,
   ConfigurationRuntimeState,
+  ExecutorCapabilityManual,
+  ExecutorManualAnalysis,
 } from '../api/types';
 import { resolveProviderSecretReference } from './provider-secret-state';
 import {
@@ -15,11 +17,10 @@ import {
   invalidRoutingDrafts,
   humanizeAgentClassRef,
   humanizeProviderRef,
-  MODEL_CAPABILITY_IDS,
-  MODEL_CAPABILITY_LABELS,
   refsForModelIdentity,
   removeModelRefsFromRoutingDraft,
   ROUTING_CAPABILITY_CONTRACTS,
+  executorManualInputKey,
   type AgentClassRoutingFacts,
   type ConfigurationFieldState,
   type SettingsModelEntry,
@@ -46,6 +47,33 @@ type RuntimePolicyDraft = {
 };
 
 type RawRecord = Record<string, unknown>;
+type ManualCapabilityChanges = {
+  added: string[];
+  removed: string[];
+  preferenceChanged: Array<{
+    capabilityId: string;
+    from: string;
+    to: string;
+  }>;
+};
+type ManualPreviewState = {
+  status: 'ready' | 'stale' | 'updating' | 'error';
+  sourceText: string;
+  inputKey?: string;
+  persistedSourceText?: string;
+  systemStale?: boolean;
+  analysisMode?: ExecutorManualAnalysis['analysisMode'];
+  warning?: string;
+  markdown?: string;
+  tags?: ExecutorCapabilityManual['tags'];
+  routableCapabilities?: ExecutorCapabilityManual['routableCapabilities'];
+  capabilities?: ExecutorCapabilityManual['capabilities'];
+  capabilityChanges?: ManualCapabilityChanges;
+  assertionsSourceFingerprint?: string;
+  semanticReceipt?: string;
+  assertions?: ExecutorManualAnalysis['userProfile']['assertions'];
+  error?: string;
+};
 
 function asRecord(value: unknown): RawRecord {
   return value && typeof value === 'object' ? value as RawRecord : {};
@@ -55,6 +83,49 @@ function stringList(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     : [];
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function compareManualCapabilities(
+  previous: ManualPreviewState | undefined,
+  next: ExecutorCapabilityManual,
+): ManualCapabilityChanges | undefined {
+  if (!previous?.capabilities || !previous.routableCapabilities) return undefined;
+  const previousRoutable = new Set(previous.routableCapabilities);
+  const nextRoutable = new Set(next.routableCapabilities);
+  const previousById = new Map(previous.capabilities.map(capability => [
+    capability.capabilityId,
+    capability,
+  ]));
+  return {
+    added: next.routableCapabilities.filter(capability => !previousRoutable.has(capability)),
+    removed: previous.routableCapabilities.filter(capability => !nextRoutable.has(capability)),
+    preferenceChanged: next.capabilities.flatMap(capability => {
+      const prior = previousById.get(capability.capabilityId);
+      return prior && prior.routingDisposition !== capability.routingDisposition
+        ? [{
+            capabilityId: capability.capabilityId,
+            from: prior.routingDisposition,
+            to: capability.routingDisposition,
+          }]
+        : [];
+    }),
+  };
+}
+
+function hasRoutingNotes(
+  notes: SettingsModelEntry['routingNotes'] | undefined,
+): boolean {
+  return Boolean(
+    notes?.summary?.trim()
+    || notes?.strengths?.length
+    || notes?.limitations?.length
+    || notes?.preferredTaskTypes?.length
+    || notes?.avoidTaskTypes?.length,
+  );
 }
 
 function normalizeProviderUrl(value: string): string {
@@ -118,9 +189,18 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
     const model = asRecord(raw);
     const rawCapabilities = stringList(model.capabilities);
     const completedModel = completion?.models?.[ref];
-    const capabilities = rawCapabilities.length > 0
-      ? rawCapabilities
-      : stringList(completedModel?.capabilities);
+    const capabilities = [...new Set([
+      ...rawCapabilities,
+      ...stringList(completedModel?.capabilities),
+    ])].sort();
+    const rawNotes = asRecord(model.routingNotes);
+    const routingNotes = {
+      summary: optionalString(rawNotes.summary),
+      strengths: stringList(rawNotes.strengths),
+      limitations: stringList(rawNotes.limitations),
+      preferredTaskTypes: stringList(rawNotes.preferredTaskTypes),
+      avoidTaskTypes: stringList(rawNotes.avoidTaskTypes),
+    };
     return [
       ref,
       {
@@ -128,7 +208,8 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
         providerRef: String(model.providerRef ?? ''),
         modelId: String(model.modelId ?? ref),
         capabilities,
-        capabilityState: capabilities.length > 0 ? '已自动发现' : '需要确认',
+        capabilityState: completedModel?.capabilityState
+          ?? (capabilities.length > 0 ? '已自动发现' : '需要确认'),
         ...(typeof model.contextLimit === 'number' ? { contextLimit: model.contextLimit } : {}),
         ...(typeof model.costInputPerMillion === 'number'
           ? { costInputPerMillion: model.costInputPerMillion }
@@ -140,6 +221,7 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
         ...(typeof model.qualityTier === 'string' ? { qualityTier: model.qualityTier } : {}),
         ...(typeof model.reasoning === 'string' ? { reasoning: model.reasoning } : {}),
         ...(typeof model.costTier === 'string' ? { costTier: model.costTier } : {}),
+        routingNotes,
         enabled: model.enabled !== false,
       },
     ];
@@ -182,6 +264,8 @@ function loadRoutingDraft(config: RawRecord): RoutingDraft {
         defaultModelRef: typeof policy.defaultModelRef === 'string'
           ? policy.defaultModelRef
           : allowedModelRefs[0] ?? modelRefs[0] ?? '',
+        fallbackModelRefs: stringList(asRecord(policy.fallback).order)
+          .filter(ref => modelRefs.includes(ref)),
         objective: fallback.priority === 'quality'
           || fallback.priority === 'cost'
           || fallback.priority === 'latency'
@@ -193,6 +277,9 @@ function loadRoutingDraft(config: RawRecord): RoutingDraft {
           : 'low',
         primaryUseCases: stringList(agentClass.primaryUseCases),
         avoidUseCases: stringList(agentClass.avoidUseCases),
+        executorManualSourceText: typeof asRecord(agentClass.executorManual).sourceText === 'string'
+          ? String(asRecord(agentClass.executorManual).sourceText)
+          : '',
       },
     ];
   }));
@@ -246,6 +333,7 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
   const [runtimePolicy, setRuntimePolicy] = useState<RuntimePolicyDraft | null>(null);
   const [newModelIds, setNewModelIds] = useState<Record<string, string>>({});
   const [result, setResult] = useState<ActivateResult | null>(null);
+  const [manualPreviews, setManualPreviews] = useState<Record<string, ManualPreviewState>>({});
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const secretStatusVersion = useRef(0);
@@ -260,6 +348,7 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
     setRuntimePolicy(loadRuntimePolicy(config));
     setDraft(loadRoutingDraft(config));
     setFacts(loadRoutingFacts(config));
+    setManualPreviews({});
   };
 
   useEffect(() => {
@@ -281,6 +370,62 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
       window.clearInterval(timer);
     };
   }, [http]);
+
+  useEffect(() => {
+    if (!http || !facts || !revisionId) return;
+    const executorRefs = Object.entries(facts)
+      .filter(([, entry]) => entry.kind === 'executor')
+      .map(([ref]) => ref);
+    if (executorRefs.length === 0) return;
+    let cancelled = false;
+    void Promise.all(executorRefs.map(async ref => {
+      try {
+        const manual: ExecutorCapabilityManual = await http.getExecutorCapabilityManual(ref, revisionId);
+        return [ref, {
+          status: 'ready' as const,
+          sourceText: draft?.[ref]?.executorManualSourceText ?? '',
+          persistedSourceText: draft?.[ref]?.executorManualSourceText.trim() ?? '',
+          inputKey: draft?.[ref]
+            ? executorManualInputKey(draft[ref], Object.values(catalog?.models ?? {}))
+            : undefined,
+          markdown: manual.markdown,
+          tags: manual.tags,
+          routableCapabilities: manual.routableCapabilities,
+          capabilities: manual.capabilities,
+        }] as const;
+      } catch (error) {
+        return [ref, {
+          status: 'error' as const,
+          sourceText: draft?.[ref]?.executorManualSourceText ?? '',
+          error: (error as Error).message,
+        }] as const;
+      }
+    })).then(entries => {
+      if (!cancelled) setManualPreviews(Object.fromEntries(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [http, revisionId, facts, draft ? Object.keys(draft).join(',') : '']);
+
+  useEffect(() => {
+    if (!draft || !catalog || !facts) return;
+    setManualPreviews(current => {
+      let changed = false;
+      const next = { ...current };
+      for (const [ref, entry] of Object.entries(draft)) {
+        if (facts[ref]?.kind !== 'executor') continue;
+        const preview = current[ref];
+        if (!preview?.inputKey) continue;
+        const systemStale = preview.inputKey
+          !== executorManualInputKey(entry, Object.values(catalog.models));
+        if (preview.systemStale === systemStale) continue;
+        next[ref] = { ...preview, systemStale };
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [catalog, draft, facts]);
 
   useEffect(() => {
     if (!http || !catalog) return;
@@ -341,6 +486,148 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
     : [];
   const editingDisabled = loading || activationState?.activationAllowed === false;
 
+  const buildCandidateConfiguration = (originalConfig: RawRecord): {
+    config: Record<string, unknown>;
+    activationSecrets: Record<string, string>;
+  } => {
+    if (!draft || !catalog || !runtimePolicy) {
+      throw new Error('配置草稿尚未加载完成');
+    }
+    const originalProviders = asRecord(originalConfig.providers);
+    const originalAgentClasses = asRecord(originalConfig.agentClasses);
+    const knownSecretReferences = Object.values(originalProviders)
+      .map(provider => asRecord(provider).apiKeyRef)
+      .filter((reference): reference is string => typeof reference === 'string');
+    const activationSecrets: Record<string, string> = {};
+    const providers: Record<string, RawRecord> = {};
+    const models: Record<string, RawRecord> = {};
+    const agentClasses: Record<string, RawRecord> = {};
+
+    for (const provider of Object.values(catalog.providers)) {
+      if (provider.apiKey.trim()) activationSecrets[provider.providerRef] = provider.apiKey.trim();
+      const originalProvider = asRecord(originalProviders[provider.providerRef]);
+      providers[provider.providerRef] = {
+        ...originalProvider,
+        protocol: originalProvider.protocol ?? 'openai-compatible',
+        baseUrl: provider.baseUrl,
+        apiKeyRef: resolveProviderSecretReference(
+          provider.providerRef,
+          provider.baseUrl,
+          Object.fromEntries(Object.entries(originalProviders).map(([ref, value]) => [ref, {
+            baseUrl: asRecord(value).baseUrl as string | undefined,
+            apiKeyRef: asRecord(value).apiKeyRef as string | undefined,
+          }])),
+          {},
+          knownSecretReferences,
+        ),
+        region: originalProvider.region ?? 'international',
+        enabled: provider.enabled !== false,
+      };
+    }
+
+    for (const model of Object.values(catalog.models)) {
+      const originalModel = asRecord(asRecord(originalConfig.models)[model.ref]);
+      const sameIdentity = originalModel.providerRef === model.providerRef
+        && originalModel.modelId === model.modelId;
+      models[model.ref] = {
+        ...(sameIdentity ? originalModel : {}),
+        modelId: model.modelId,
+        providerRef: model.providerRef,
+        capabilities: model.capabilities,
+        ...(model.contextLimit !== undefined ? { contextLimit: model.contextLimit } : {}),
+        ...(model.costInputPerMillion !== undefined
+          ? { costInputPerMillion: model.costInputPerMillion }
+          : {}),
+        ...(model.costOutputPerMillion !== undefined
+          ? { costOutputPerMillion: model.costOutputPerMillion }
+          : {}),
+        ...(model.latencyTier ? { latencyTier: model.latencyTier } : {}),
+        ...(model.qualityTier ? { qualityTier: model.qualityTier } : {}),
+        ...(model.costTier ? { costTier: model.costTier } : {}),
+        routingNotes: hasRoutingNotes(model.routingNotes) ? model.routingNotes : undefined,
+        reasoning: model.reasoning ?? (sameIdentity ? originalModel.reasoning : undefined) ?? 'high',
+        enabled: model.enabled !== false,
+      };
+    }
+
+    for (const [ref, entry] of Object.entries(draft)) {
+      const current = asRecord(originalAgentClasses[ref]);
+      const preview = manualPreviews[ref];
+      const currentManual = asRecord(current.executorManual);
+      const manualSourceText = entry.executorManualSourceText.trim();
+      const currentSourceText = typeof currentManual.sourceText === 'string'
+        ? currentManual.sourceText.trim()
+        : '';
+      const normalizedAssertions = preview?.status === 'ready'
+        && preview.sourceText.trim() === manualSourceText
+        ? preview.assertions ?? (
+          Array.isArray(currentManual.assertions) ? currentManual.assertions : []
+        )
+        : currentSourceText === manualSourceText && Array.isArray(currentManual.assertions)
+          ? currentManual.assertions
+          : [];
+      const assertionsSourceFingerprint = preview?.status === 'ready'
+        && preview.analysisMode === 'semantic'
+        && preview.sourceText.trim() === manualSourceText
+        ? preview.assertionsSourceFingerprint
+        : currentSourceText === manualSourceText
+          ? optionalString(currentManual.assertionsSourceFingerprint)
+          : undefined;
+      const semanticReceipt = preview?.status === 'ready'
+        && preview.analysisMode === 'semantic'
+        && preview.sourceText.trim() === manualSourceText
+        ? preview.semanticReceipt
+        : currentSourceText === manualSourceText
+          ? optionalString(currentManual.semanticReceipt)
+          : undefined;
+      agentClasses[ref] = {
+        ...current,
+        primaryUseCases: entry.primaryUseCases ?? [],
+        avoidUseCases: entry.avoidUseCases ?? [],
+        ...(manualSourceText || current.executorManual
+          ? {
+              executorManual: {
+                ...currentManual,
+                sourceText: manualSourceText,
+                assertionsSourceFingerprint,
+                semanticReceipt,
+                assertions: normalizedAssertions,
+              },
+            }
+          : {}),
+        modelPolicy: entry.mode === 'auto'
+          ? {
+            mode: 'auto',
+            allowedModelRefs: entry.allowedModelRefs,
+            defaultModelRef: entry.defaultModelRef || undefined,
+            fallback: {
+              enabled: (entry.fallbackModelRefs?.length ?? 0) > 0,
+              order: entry.fallbackModelRefs ?? [],
+            },
+            objective: {
+              priority: entry.objective,
+              minimumQualityTier: entry.minimumQualityTier,
+            },
+          }
+          : { mode: 'fixed', modelRef: entry.modelRef },
+      };
+    }
+
+    return {
+      config: {
+        ...originalConfig,
+        providers,
+        models,
+        agentClasses,
+        runtimePolicy: {
+          ...asRecord(originalConfig.runtimePolicy),
+          ...runtimePolicy,
+        },
+      },
+      activationSecrets,
+    };
+  };
+
   const activate = async () => {
     if (!http || !revisionId || !draft || !catalog || !runtimePolicy || activationState?.activationAllowed === false) return;
     const missingCredentials = Object.values(catalog.providers)
@@ -361,94 +648,12 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
     setResult(null);
     try {
       const original = await http.getConfig();
-      const originalConfig = original.config as RawRecord;
-      const originalProviders = asRecord(originalConfig.providers);
-      const originalAgentClasses = asRecord(originalConfig.agentClasses);
-      const knownSecretReferences = Object.values(originalProviders)
-        .map(provider => asRecord(provider).apiKeyRef)
-        .filter((reference): reference is string => typeof reference === 'string');
-      const activationSecrets: Record<string, string> = {};
-      const providers: Record<string, RawRecord> = {};
-      const models: Record<string, RawRecord> = {};
-      const agentClasses: Record<string, RawRecord> = {};
-
-      for (const provider of Object.values(catalog.providers)) {
-        if (provider.apiKey.trim()) activationSecrets[provider.providerRef] = provider.apiKey.trim();
-        const originalProvider = asRecord(originalProviders[provider.providerRef]);
-        providers[provider.providerRef] = {
-          ...originalProvider,
-          protocol: originalProvider.protocol ?? 'openai-compatible',
-          baseUrl: provider.baseUrl,
-          apiKeyRef: resolveProviderSecretReference(
-            provider.providerRef,
-            provider.baseUrl,
-            Object.fromEntries(Object.entries(originalProviders).map(([ref, value]) => [ref, {
-              baseUrl: asRecord(value).baseUrl as string | undefined,
-              apiKeyRef: asRecord(value).apiKeyRef as string | undefined,
-            }])),
-            {},
-            knownSecretReferences,
-          ),
-          region: originalProvider.region ?? 'international',
-          enabled: provider.enabled !== false,
-        };
-      }
-
-      for (const model of Object.values(catalog.models)) {
-        const originalModel = asRecord(asRecord(originalConfig.models)[model.ref]);
-        const sameIdentity = originalModel.providerRef === model.providerRef
-          && originalModel.modelId === model.modelId;
-        models[model.ref] = {
-          ...(sameIdentity ? originalModel : {}),
-          modelId: model.modelId,
-          providerRef: model.providerRef,
-          capabilities: model.capabilities,
-          ...(model.contextLimit !== undefined ? { contextLimit: model.contextLimit } : {}),
-          ...(model.costInputPerMillion !== undefined
-            ? { costInputPerMillion: model.costInputPerMillion }
-            : {}),
-          ...(model.costOutputPerMillion !== undefined
-            ? { costOutputPerMillion: model.costOutputPerMillion }
-            : {}),
-          ...(model.latencyTier ? { latencyTier: model.latencyTier } : {}),
-          ...(model.qualityTier ? { qualityTier: model.qualityTier } : {}),
-          ...(model.costTier ? { costTier: model.costTier } : {}),
-          reasoning: model.reasoning ?? (sameIdentity ? originalModel.reasoning : undefined) ?? 'high',
-          enabled: model.enabled !== false,
-        };
-      }
-
-      for (const [ref, entry] of Object.entries(draft)) {
-        const current = asRecord(originalAgentClasses[ref]);
-        agentClasses[ref] = {
-          ...current,
-          primaryUseCases: entry.primaryUseCases ?? [],
-          avoidUseCases: entry.avoidUseCases ?? [],
-          modelPolicy: entry.mode === 'auto'
-            ? {
-              mode: 'auto',
-              allowedModelRefs: entry.allowedModelRefs,
-              defaultModelRef: entry.defaultModelRef || undefined,
-              fallback: { enabled: false, order: [] },
-              objective: {
-                priority: entry.objective,
-                minimumQualityTier: entry.minimumQualityTier,
-              },
-            }
-            : { mode: 'fixed', modelRef: entry.modelRef },
-        };
-      }
-
-      const response = await http.activate(revisionId, {
-        ...originalConfig,
-        providers,
-        models,
-        agentClasses,
-        runtimePolicy: {
-          ...asRecord(originalConfig.runtimePolicy),
-          ...runtimePolicy,
-        },
-      }, activationSecrets);
+      const candidate = buildCandidateConfiguration(original.config as RawRecord);
+      const response = await http.activate(
+        revisionId,
+        candidate.config,
+        candidate.activationSecrets,
+      );
       setResult(response);
       const revisionMismatch = response.issues?.some(issue => /revision mismatch|revision has changed/iu.test(issue));
       if (!response.ok && (
@@ -474,6 +679,64 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
       setResult({ ok: false, code: 'network', issues: [(error as Error).message] });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const updateManual = async (agentClassRef: string) => {
+    if (!http || !revisionId || !draft || !catalog || !runtimePolicy) return;
+    const sourceText = draft[agentClassRef]?.executorManualSourceText.trim() ?? '';
+    const previousPreview = manualPreviews[agentClassRef];
+    setManualPreviews(current => ({
+      ...current,
+      [agentClassRef]: {
+        ...current[agentClassRef],
+        status: 'updating',
+        sourceText,
+      },
+    }));
+    try {
+      const original = await http.getConfig();
+      const candidate = buildCandidateConfiguration(original.config as RawRecord);
+      const analysis = await http.compileExecutorCapabilityManual(
+        agentClassRef,
+        revisionId,
+        sourceText,
+        candidate.config,
+      );
+      setManualPreviews(current => ({
+        ...current,
+        [agentClassRef]: {
+          status: 'ready',
+          sourceText: analysis.sourceText,
+          persistedSourceText: previousPreview?.persistedSourceText ?? '',
+          inputKey: executorManualInputKey(
+            draft[agentClassRef],
+            Object.values(catalog?.models ?? {}),
+          ),
+          systemStale: false,
+          analysisMode: analysis.analysisMode,
+          warning: analysis.warning,
+          markdown: analysis.manual.markdown,
+          tags: analysis.manual.tags,
+          routableCapabilities: analysis.manual.routableCapabilities,
+          capabilities: analysis.manual.capabilities,
+          capabilityChanges: compareManualCapabilities(previousPreview, analysis.manual),
+          assertionsSourceFingerprint: analysis.userProfile.assertionsSourceFingerprint,
+          semanticReceipt: analysis.userProfile.semanticReceipt,
+          assertions: analysis.userProfile.assertions,
+        },
+      }));
+      setLoadError(null);
+    } catch (error) {
+      setManualPreviews(current => ({
+        ...current,
+        [agentClassRef]: {
+          ...current[agentClassRef],
+          status: 'error',
+          sourceText,
+          error: (error as Error).message,
+        },
+      }));
     }
   };
 
@@ -565,30 +828,6 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
     });
   };
 
-  const toggleModelCapability = (modelRef: string, capability: string) => {
-    if (editingDisabled) return;
-    setCatalog(current => {
-      if (!current) return current;
-      const model = current.models[modelRef];
-      if (!model) return current;
-      const enabled = model.capabilities.includes(capability);
-      const capabilities = enabled
-        ? model.capabilities.filter(item => item !== capability)
-        : [...model.capabilities, capability].sort();
-      return {
-        ...current,
-        models: {
-          ...current.models,
-          [modelRef]: {
-            ...model,
-            capabilities,
-            capabilityState: capabilities.length > 0 ? '已自动发现' : '需要确认',
-          },
-        },
-      };
-    });
-  };
-
   const addCustomModel = (providerRef: string) => {
     const modelId = (newModelIds[providerRef] ?? '').trim();
     if (!modelId) {
@@ -630,7 +869,7 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
           <div>
             <div className="settings-eyebrow">CONFIGURATION WORKBENCH</div>
             <h2>设置</h2>
-            <p>配置 Provider 模型目录，以及 Planner、Codex、Pi 的路由偏好。</p>
+            <p>配置 Provider 模型目录，以及 Planner 和各 Executor 的路由偏好。</p>
           </div>
           <div className="settings-header-actions">
             <span className={`activation-pill activation-pill-${activationState?.activationStatus ?? 'idle'}`}>
@@ -810,46 +1049,7 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
               <section className="settings-section">
                 <div className="section-heading">
                   <div>
-                    <div className="settings-eyebrow">02 / MODEL CAPABILITIES</div>
-                    <h3>模型能力</h3>
-                    <p>为每个模型声明能力，用于路由能力基线筛选；勾选后保存并激活生效。</p>
-                  </div>
-                </div>
-                <div className="model-catalog">
-                  {Object.values(catalog.models).map(model => (
-                    <article className="model-card" key={model.ref}>
-                      <div className="model-card-heading">
-                        <div>
-                          <strong>{model.modelId}</strong>
-                          <span className="mono">{humanizeProviderRef(model.providerRef)}</span>
-                        </div>
-                        <span className={`state-badge ${model.capabilityState === '需要确认' ? 'state-badge-warning' : ''}`}>
-                          {fieldStateLabel(model.capabilityState)}
-                        </span>
-                      </div>
-                      <div className="capability-toggles">
-                        {MODEL_CAPABILITY_IDS.map(capability => (
-                          <label className="capability-toggle" key={capability}>
-                            <input
-                              type="checkbox"
-                              checked={model.capabilities.includes(capability)}
-                              disabled={editingDisabled}
-                              onChange={() => toggleModelCapability(model.ref, capability)}
-                            />
-                            <span>{capability}</span>
-                            <small>{MODEL_CAPABILITY_LABELS[capability]}</small>
-                          </label>
-                        ))}
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              </section>
-
-              <section className="settings-section">
-                <div className="section-heading">
-                  <div>
-                    <div className="settings-eyebrow">03 / AGENTCLASS ROUTING</div>
+                    <div className="settings-eyebrow">02 / AGENTCLASS ROUTING</div>
                     <h3>路由策略</h3>
                     <p>Planner 只能手动选择一个模型；Codex 和 Pi 可以使用 Fixed 或 Auto。</p>
                   </div>
@@ -865,7 +1065,25 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
                         facts={agentFacts}
                         draft={entry}
                         models={Object.values(catalog.models)}
-                        onChange={next => setDraft(current => current ? { ...current, [ref]: next } : current)}
+                        manualPreview={manualPreviews[ref]}
+                        onUpdateManual={() => { void updateManual(ref); }}
+                        onChange={next => {
+                          setDraft(current => current ? { ...current, [ref]: next } : current);
+                          if (
+                            agentFacts.kind === 'executor'
+                            && next.executorManualSourceText.trim()
+                              !== entry.executorManualSourceText.trim()
+                          ) {
+                            setManualPreviews(current => ({
+                              ...current,
+                              [ref]: {
+                                ...current[ref],
+                                status: 'stale',
+                                sourceText: next.executorManualSourceText,
+                              },
+                            }));
+                          }
+                        }}
                       />
                     );
                   })}

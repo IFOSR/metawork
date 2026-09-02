@@ -92,8 +92,12 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
         prompt: buildExecutorContextPrompt(containerExecutorInput(input)),
         cwd: '/workspace',
         runtimeHomePath: '/runtime-home',
+        executionTarget: 'container',
         providerRef: this.authorizedBinding.providerRef,
         modelId: this.modelId,
+        ...(input.context.currentSubtask.requiredCapabilities.length > 0
+          ? { requiredCapabilities: input.context.currentSubtask.requiredCapabilities }
+          : {}),
       });
       const resolvedImageId = await this.backend.resolveImage(this.imageRef);
       const record = await this.backend.create({
@@ -120,6 +124,10 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
           METACLAW_EVIDENCE_MCP_URL: input.context.evidenceTools.binding?.mcpUrl ?? '',
           METACLAW_EVIDENCE_JSON_URL: input.context.evidenceTools.binding?.jsonUrl ?? '',
           METACLAW_EVIDENCE_TOKEN: input.context.evidenceTools.binding?.bearerToken ?? '',
+          METACLAW_INPUTS_PATH: '/inputs',
+          METACLAW_IMAGE_OPERATION: input.context.currentSubtask.requiredCapabilities.includes('image-editing')
+            ? 'editing'
+            : 'generation',
           ...(this.egressMode === 'proxy' ? {
             HTTP_PROXY: 'http://metaclaw-egress:8080',
             HTTPS_PROXY: 'http://metaclaw-egress:8080',

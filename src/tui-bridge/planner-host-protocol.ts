@@ -1,5 +1,9 @@
 import type { CommandCompletion } from '../commands/catalog.js';
-import type { PlannerProposalPurpose, PlannerProposalResult } from '../planning/planner-proposal.js';
+import type {
+  ExecutorManualProposalResult,
+  PlannerProposalPurpose,
+  PlannerProposalResult,
+} from '../planning/planner-proposal.js';
 import type { PlannerTuiPermissionResolutionResult } from '../session/session-types.js';
 
 export const ANYFUSION_PLANNER_HOST_PROTOCOL_VERSION = 2 as const;
@@ -63,7 +67,7 @@ export type PlannerHostMessage<TSnapshot = unknown, TExecutorResult = unknown, T
       protocolVersion: 2;
       type: 'proposal_result';
       requestId: string;
-      result: PlannerProposalResult;
+      result: PlannerProposalResult | ExecutorManualProposalResult;
     }
   | { protocolVersion: 2; type: 'shutdown'; requestId: string; accepted: true }
   | {
@@ -104,7 +108,11 @@ export function isPlannerHostRequest(value: unknown): value is PlannerHostReques
       && typeof request.sessionId === 'string' && request.sessionId.length > 0
       && typeof request.userInput === 'string' && request.userInput.trim().length > 0
       && typeof request.submissionId === 'string' && request.submissionId.length > 0
-      && (request.purpose === 'kernel' || request.purpose === 'validation')
+      && (
+        request.purpose === 'kernel'
+        || request.purpose === 'validation'
+        || request.purpose === 'configuration'
+      )
       && request.plan !== undefined;
   }
   return candidate.type === 'hello'

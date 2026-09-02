@@ -5,6 +5,8 @@ import {
   type ConfigurationRoutingCatalog,
   type RoutingCapabilityId,
 } from './types.js';
+import { compileExecutorCapabilityProfile } from './executor-capability-profile.js';
+import type { ExecutorCapabilityProfile } from './executor-capability-profile.js';
 
 export function validateRoutingCapabilityReferences(
   capabilityRefs: readonly string[],
@@ -28,6 +30,7 @@ export function validateRoutingCapabilityReferences(
 
 export function buildConfigurationCatalog(
   snapshot: ConfigurationSnapshot,
+  compiledProfiles?: ReadonlyMap<string, ExecutorCapabilityProfile>,
 ): ConfigurationRoutingCatalog {
   const capabilities = Object.entries(ROUTING_CAPABILITY_REGISTRY)
     .map(([id, definition]) => ({
@@ -37,14 +40,32 @@ export function buildConfigurationCatalog(
     .sort((left, right) => left.id.localeCompare(right.id));
   const agentClasses = Object.entries(snapshot.config.agentClasses)
     .filter(([, agentClass]) => agentClass.kind === 'executor' && agentClass.enabled)
-    .map(([id, agentClass]): ConfigurationCatalogAgentClass => ({
-      id,
-      routingCapabilities: [...agentClass.routingCapabilities].sort(),
-      primaryUseCases: [...agentClass.primaryUseCases].sort(),
-      avoidUseCases: [...agentClass.avoidUseCases].sort(),
-      affordances: [...agentClass.plannerAffordances].sort(),
-      modelPolicy: cloneModelPolicy(agentClass.modelPolicy),
-    }))
+    .map(([id, agentClass]): ConfigurationCatalogAgentClass => {
+      const profile = compiledProfiles?.get(id) ?? compileExecutorCapabilityProfile({
+          agentClassRef: id,
+          agentClass,
+          models: snapshot.config.models,
+          providers: snapshot.config.providers,
+          harness: snapshot.config.harnesses[agentClass.harnessRef],
+          configurationRevision: snapshot.revisionId,
+        });
+      return {
+        id,
+        routingCapabilities: profile.routableCapabilities,
+        capabilityPreferences: profile.capabilities
+          .filter(capability => (
+            capability.support === 'supported'
+            && isCatalogDisposition(capability.routingDisposition)
+          ))
+          .map(capability => ({
+            capabilityId: capability.capabilityId,
+            disposition: capability.routingDisposition as 'preferred' | 'allowed' | 'avoid',
+          })),
+        modelCapabilities: profile.modelCapabilities,
+        profileFingerprint: profile.sourceFingerprint,
+        modelPolicy: cloneModelPolicy(agentClass.modelPolicy),
+      };
+    })
     .sort((left, right) => left.id.localeCompare(right.id));
 
   return deepFreeze({
@@ -57,6 +78,12 @@ export function buildConfigurationCatalog(
 
 export const buildConfigurationRoutingCatalog = buildConfigurationCatalog;
 export const buildPlannerRoutingCatalog = buildConfigurationCatalog;
+
+function isCatalogDisposition(
+  value: string,
+): value is 'preferred' | 'allowed' | 'avoid' {
+  return value === 'preferred' || value === 'allowed' || value === 'avoid';
+}
 
 function cloneModelPolicy(modelPolicy: ModelPolicy): ModelPolicy {
   if (modelPolicy.mode === 'fixed') {

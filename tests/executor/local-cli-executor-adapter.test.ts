@@ -45,13 +45,14 @@ describe('LocalCliExecutorAdapter', () => {
       attemptsRoot: '/runtime/attempts',
       environment: {},
     });
-    expect(driver.buildLaunch).toHaveBeenCalledWith({
+    expect(driver.buildLaunch).toHaveBeenCalledWith(expect.objectContaining({
       prompt: expect.stringContaining('Operative goal: Implement the selected slice'),
       cwd: '/workspace/attempt-1',
       runtimeHomePath: '/runtime/attempts/attempt-1/home',
       providerRef: 'deepseek',
       modelId: 'deepseek-v4-pro',
-    });
+      executionTarget: 'host',
+    }));
     expect(processRunner.run).toHaveBeenCalledWith(expect.objectContaining({
       attemptId: 'attempt-1',
       command: 'selected-driver-command',
@@ -149,14 +150,15 @@ describe('LocalCliExecutorAdapter', () => {
       attemptsRoot: '/runtime/attempts',
       environment: {},
     });
-    expect(driver.buildLaunch).toHaveBeenCalledWith({
+    expect(driver.buildLaunch).toHaveBeenCalledWith(expect.objectContaining({
       prompt: 'return completion metadata only',
       cwd: '/runtime/attempts/attempt-correction/home',
       runtimeHomePath: '/runtime/attempts/attempt-correction/home',
       providerRef: 'deepseek',
       modelId: 'deepseek-v4-pro',
       responseOnly: true,
-    });
+      executionTarget: 'host',
+    }));
     expect(processRunner.run).toHaveBeenCalledWith(expect.objectContaining({
       attemptId: 'attempt-correction',
       cwd: '/runtime/attempts/attempt-correction/home',
@@ -632,6 +634,7 @@ function executorInput(attemptId: string): ExecutorInput {
         title: 'Local CLI adapter',
         goal: 'Implement the selected slice',
         deliveryKind: 'edit',
+        requiredCapabilities: [],
         acceptance: [],
       },
       incomingHandoffs: [],

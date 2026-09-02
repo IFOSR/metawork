@@ -1,5 +1,8 @@
 import type { PlannerConfigurationView } from '../configuration/index.js';
-import type { ConfigurationCatalogAgentClass } from '../routing/types.js';
+import {
+  requiredModelCapabilitiesForRoutingCapabilities,
+  type ConfigurationCatalogAgentClass,
+} from '../routing/types.js';
 import { PlanningAgentPlanSchema } from './planning-agent-plan-schema.js';
 import type { PlanningAgentPlan, SubtaskProposal } from './planning-types.js';
 import { validateWorkGraph } from '../work-graph/index.js';
@@ -183,7 +186,15 @@ function validateRouting(
           `subtask ${subtask.id} AgentClass ${binding.agentClassRef} does not cover required capabilities: ${uncovered.join(', ')}`,
         );
       }
-      validateModelSelection(subtask.id, binding, agentClass, modelRefs, configuration.revisionId, errors);
+      validateModelSelection(
+        subtask.id,
+        binding,
+        agentClass,
+        modelRefs,
+        subtask.requiredCapabilities,
+        configuration,
+        errors,
+      );
     }
   }
 }
@@ -193,11 +204,13 @@ function validateModelSelection(
   binding: SubtaskProposal['executorBindings'][number],
   agentClass: ConfigurationCatalogAgentClass,
   modelRefs: ReadonlySet<string>,
-  configurationRevision: string,
+  requiredRoutingCapabilities: SubtaskProposal['requiredCapabilities'],
+  configuration: PlannerConfigurationView,
   errors: string[],
 ): void {
   const selection = binding.modelSelection;
   const policy = agentClass.modelPolicy;
+  let selectedModelRef: string | null = null;
 
   if (policy.mode === 'fixed') {
     if (selection.mode !== 'fixed-by-agent-class') {
@@ -209,49 +222,65 @@ function validateModelSelection(
         subtaskId,
         policy.modelRef,
         modelRefs,
-        configurationRevision,
+        configuration.revisionId,
         errors,
       );
+      selectedModelRef = policy.modelRef;
     }
-    return;
-  }
-
-  if (selection.mode === 'fixed-by-agent-class') {
+  } else if (selection.mode === 'fixed-by-agent-class') {
     errors.push(
       `subtask ${subtaskId} AgentClass ${binding.agentClassRef} uses auto ModelPolicy and cannot use fixed-by-agent-class selection`,
     );
-    return;
-  }
-
-  if (selection.mode === 'proposed') {
+  } else if (selection.mode === 'proposed') {
     validateModelAvailability(
       subtaskId,
       selection.modelRef,
       modelRefs,
-      configurationRevision,
+      configuration.revisionId,
       errors,
     );
     if (!policy.allowedModelRefs.includes(selection.modelRef)) {
       errors.push(
         `subtask ${subtaskId} Model ${selection.modelRef} is not allowed by AgentClass ${binding.agentClassRef}`,
       );
+    } else {
+      selectedModelRef = selection.modelRef;
     }
-    return;
-  }
-
-  if (!policy.defaultModelRef) {
+  } else if (!policy.defaultModelRef) {
     errors.push(
       `subtask ${subtaskId} AgentClass ${binding.agentClassRef} has no default Model`,
     );
-    return;
+  } else {
+    validateModelAvailability(
+      subtaskId,
+      policy.defaultModelRef,
+      modelRefs,
+      configuration.revisionId,
+      errors,
+    );
+    // The Auto default is a resolver preference, not the final binding. Kernel
+    // may select another allowed model to satisfy mandatory capabilities.
   }
-  validateModelAvailability(
-    subtaskId,
-    policy.defaultModelRef,
-    modelRefs,
-    configurationRevision,
-    errors,
+
+  if (!selectedModelRef) return;
+  const selectedModel = configuration.models.find(model => model.id === selectedModelRef);
+  if (!selectedModel) return;
+  const effectiveCapabilities = agentClass.modelCapabilities?.[selectedModelRef]
+    ?? selectedModel.capabilities;
+  const requiredModelCapabilities = requiredModelCapabilitiesForRoutingCapabilities(
+    requiredRoutingCapabilities,
   );
+  const unsupported = requiredModelCapabilities
+    .filter(capability => !effectiveCapabilities.includes(capability as never));
+  if (unsupported.length > 0) {
+    errors.push(
+      `subtask ${subtaskId} Model ${selectedModelRef} does not support required Routing Capabilities: `
+      + requiredRoutingCapabilities.filter(capability => (
+        requiredModelCapabilitiesForRoutingCapabilities([capability])
+          .some(required => unsupported.includes(required))
+      )).join(', '),
+    );
+  }
 }
 
 function validateModelAvailability(

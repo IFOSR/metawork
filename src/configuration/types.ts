@@ -19,6 +19,8 @@ export interface ProviderDefinition {
 
 export type ModelCapability =
   | 'coding'
+  | 'image-editing'
+  | 'image-generation'
   | 'long-context'
   | 'planning'
   | 'structured-output'
@@ -27,11 +29,20 @@ export type ModelCapability =
 
 export type ModelReasoningLevel = 'disabled' | 'low' | 'medium' | 'high';
 
+export interface ModelRoutingNotes {
+  summary?: string;
+  strengths?: string[];
+  limitations?: string[];
+  preferredTaskTypes?: string[];
+  avoidTaskTypes?: string[];
+}
+
 export interface ModelProfile {
   providerRef: string;
   modelId: string;
   capabilities: ModelCapability[];
   reasoning: ModelReasoningLevel;
+  routingNotes?: ModelRoutingNotes;
   contextLimit?: number;
   costTier?: 'low' | 'medium' | 'high';
   latencyTier?: 'low' | 'medium' | 'high';
@@ -51,6 +62,13 @@ export const HARNESS_DRIVER_IDS = [
 
 export type HarnessDriverId = typeof HARNESS_DRIVER_IDS[number];
 export type HarnessKind = 'planner' | 'executor';
+
+export const HARNESS_EXECUTION_PROTOCOL_IDS = [
+  'workspace-image-artifact-v1',
+] as const;
+
+export type HarnessExecutionProtocolId =
+  typeof HARNESS_EXECUTION_PROTOCOL_IDS[number];
 
 interface HarnessDefinitionBase {
   kind: HarnessKind;
@@ -111,6 +129,39 @@ export type AutoModelObjective = Readonly<{
   minimumQualityTier?: 'low' | 'medium' | 'high';
 }>;
 
+export type ExecutorManualAssertionTopic =
+  | 'mission'
+  | 'strength'
+  | 'limitation'
+  | 'preferred-task'
+  | 'avoid-task'
+  | 'model-contribution'
+  | 'capability-policy'
+  | 'delivery';
+
+export type ExecutorCapabilityDisposition =
+  | 'preferred'
+  | 'allowed'
+  | 'avoid'
+  | 'disabled';
+
+export interface ExecutorManualAssertion {
+  topic: ExecutorManualAssertionTopic;
+  text: string;
+  target?: string;
+  modelRef?: string;
+  modelCapability?: ModelCapability;
+  routingCapability?: RoutingCapabilityId;
+  disposition?: ExecutorCapabilityDisposition;
+}
+
+export interface ExecutorManualUserProfile {
+  sourceText: string;
+  assertionsSourceFingerprint?: string;
+  semanticReceipt?: string;
+  assertions: ExecutorManualAssertion[];
+}
+
 export interface AgentClassDefinition {
   kind: HarnessKind;
   harnessRef: string;
@@ -124,6 +175,7 @@ export interface AgentClassDefinition {
   mcpServers: string[];
   plugins: string[];
   generatedRuntimeRef: string;
+  executorManual?: ExecutorManualUserProfile;
   enabled: boolean;
 }
 
@@ -176,6 +228,7 @@ export interface PlannerModelProfile {
   providerRef: string;
   capabilities: ModelCapability[];
   reasoning: ModelReasoningLevel;
+  routingNotes?: ModelRoutingNotes;
   region: string;
   contextLimit?: number;
   costTier?: 'low' | 'medium' | 'high';
@@ -194,7 +247,37 @@ export type PlannerConfigurationView = Readonly<{
     modelPolicy: ModelPolicy;
   }>;
   routingCatalog: ConfigurationRoutingCatalog;
+  executorCapabilityManuals?: PlannerExecutorCapabilityManual[];
 }>;
+
+export interface PlannerExecutorCapabilityManual {
+  agentClassRef: string;
+  configurationRevision: ConfigurationRevisionId;
+  markdown: string;
+  sourceFingerprint: string;
+  routableCapabilities: RoutingCapabilityId[];
+  capabilities: Array<{
+    capabilityId: RoutingCapabilityId;
+    support: 'supported' | 'unsupported';
+    routingDisposition: ExecutorCapabilityDisposition;
+    evidence: Array<{
+      kind:
+        | 'model-system-known'
+        | 'model-provider-declared'
+        | 'model-user-confirmed'
+        | 'executor-affordance'
+        | 'harness-support'
+        | 'executor-declaration';
+      modelRef?: string;
+      detail: string;
+    }>;
+    unresolvedReasons: string[];
+  }>;
+  tags: {
+    bestFit: string[];
+    avoid: string[];
+  };
+}
 
 export interface KernelAgentClassConfiguration {
   kind: HarnessKind;
@@ -202,6 +285,7 @@ export interface KernelAgentClassConfiguration {
   modelPolicy: ModelPolicy;
   permissionProfileRef: string | null;
   routingCapabilities: RoutingCapabilityId[];
+  modelCapabilities?: Record<string, ModelCapability[]>;
   enabled: boolean;
   transport: HarnessDefinition['transport'];
   supportsProbe: boolean;

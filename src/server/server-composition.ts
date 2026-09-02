@@ -17,7 +17,11 @@ import { formatCliHelp, parseCliArgs } from '../cli/args.js';
 import { runConfigurationAdmin, type ConfigurationMutationResult } from '../commands/configuration-admin.js';
 import { FileConfigurationRepository } from '../configuration/file-configuration-repository.js';
 import { AgentRuntimeRenderer } from '../configuration/agent-runtime-renderer.js';
-import { ConfigurationService, type ActivateDraftResult } from '../configuration/configuration-service.js';
+import {
+  ConfigurationService,
+  ExecutorManualPlanner,
+} from '../configuration/index.js';
+import type { ActivateDraftResult } from '../configuration/configuration-service.js';
 import type { AnyFusionConfigurationV2 } from '../configuration/types.js';
 import {
   buildApplicationConfig,
@@ -437,6 +441,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     secretStore,
   });
   const renderer = new AgentRuntimeRenderer(resolve(accountPaths.generated, 'agent-runtime'));
+  // Refresh revision-scoped runtime artifacts on startup so existing active
+  // revisions also receive newly introduced per-Executor manuals.
+  await renderer.render(migratedSnapshot);
   const stagedConfiguration = buildStagedLegacyConfiguration({ migratedSnapshot });
   let accountRuntimeComposition: ReturnType<typeof buildAccountRuntimeComposition> | null = null;
   const configurationActivationGate = new ConfigurationActivationGate(() => (
@@ -621,6 +628,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
   });
   await plannerHost.start();
+  const executorManualPlanner = new ExecutorManualPlanner({
+    configuration: configurationService,
+    runner: plannerSupervisor,
+    registerSession: (sessionId, session) => plannerHost.registerSession(sessionId, session),
+  });
 
   // ADR-0031: 组合根构造 RuntimeRegistry + AccountRuntime（local-default），
   // 会话工厂复用 AccountRuntime 的账户级服务簇。
@@ -1345,6 +1357,41 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             config: snapshot.config,
           };
         },
+        getExecutorCapabilityManual: async (agentClassRef, revisionId) => {
+          const snapshot = await configurationService.getSnapshot(
+            revisionId ?? (await configurationService.getActiveSnapshot()).revisionId,
+          );
+          const manual = buildPlannerConfigurationView(snapshot)
+            .executorCapabilityManuals
+            ?.find(candidate => candidate.agentClassRef === agentClassRef);
+          if (!manual) {
+            throw new Error(`Executor capability manual not found: ${agentClassRef}`);
+          }
+          return manual;
+        },
+        analyzeExecutorManual: (agentClassRef, input) => executorManualPlanner.analyze({
+          agentClassRef,
+          baseRevisionId: input.baseRevisionId,
+          sourceText: input.sourceText,
+          ...(input.config ? {
+            candidateConfig: input.config as AnyFusionConfigurationV2,
+          } : {}),
+        }),
+        compileExecutorManual: (agentClassRef, input) => executorManualPlanner.compile({
+          agentClassRef,
+          baseRevisionId: input.baseRevisionId,
+          sourceText: input.sourceText,
+          ...(input.config ? {
+            candidateConfig: input.config as AnyFusionConfigurationV2,
+          } : {}),
+        }),
+        previewExecutorCapabilityManual: (agentClassRef, input) => (
+          configurationService.previewExecutorCapabilityManual(
+            agentClassRef,
+            input.baseRevisionId,
+            input.config,
+          )
+        ),
         listRevisions: async () => {
           const revisionIds = await configurationRepository.listRevisions();
           const active = await configurationService.getActiveSnapshot();
@@ -1409,9 +1456,22 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           });
         },
         activate: async (baseRevisionId, nextConfig, secrets) => {
+          let compiledConfig: AnyFusionConfigurationV2;
+          try {
+            compiledConfig = (await executorManualPlanner.compileAll({
+              baseRevisionId,
+              config: nextConfig as AnyFusionConfigurationV2,
+            })).config;
+          } catch (error) {
+            return {
+              ok: false,
+              code: 'invalid_configuration',
+              issues: [error instanceof Error ? error.message : String(error)],
+            };
+          }
           const result = await configurationRuntimeCoordinator.activate({
             expectedRevisionId: baseRevisionId,
-            config: nextConfig as AnyFusionConfigurationV2,
+            config: compiledConfig,
             secrets,
           });
           if (result.ok) {

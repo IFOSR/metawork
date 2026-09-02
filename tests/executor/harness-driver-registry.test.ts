@@ -23,6 +23,15 @@ describe('HarnessDriverRegistry', () => {
       .toThrow('Harness driver is already registered: codex-cli');
   });
 
+  it('rejects a Harness driver whose execution protocols differ from the driver catalog', () => {
+    const registry = new HarnessDriverRegistry();
+
+    expect(() => registry.register(
+      harnessDriver('codex-cli', []),
+      vi.fn(() => executorAdapter('unexpected')),
+    )).toThrow('Harness driver execution protocol mismatch: codex-cli');
+  });
+
   it('fails closed when the configured Harness driver is not registered', () => {
     const registry = new HarnessDriverRegistry();
 
@@ -85,9 +94,15 @@ describe('HarnessDriverRegistry', () => {
   });
 });
 
-function harnessDriver(id: string): HarnessDriver {
+function harnessDriver(
+  id: string,
+  executionProtocols = id === 'codex-cli' || id === 'pi-cli'
+    ? ['workspace-image-artifact-v1'] as const
+    : [],
+): HarnessDriver {
   return {
     id,
+    executionProtocols,
     probe: vi.fn(async () => ({ available: true })),
     materializeHome: vi.fn(async input => ({
       homePath: `${input.attemptsRoot}/${input.attemptId}`,

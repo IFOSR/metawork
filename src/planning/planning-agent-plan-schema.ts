@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ROUTING_CAPABILITY_IDS } from '../routing/types.js';
 
 export const PLANNER_SOURCE = 'anyfusion-planner';
 
@@ -21,7 +22,6 @@ const TASK_CONTROL_VALUES = [
 const RISK_LEVEL_VALUES = ['low', 'medium', 'high'] as const;
 const TASK_PRIORITY_VALUES = ['normal', 'high', 'urgent'] as const;
 const DELIVERY_KIND_VALUES = ['edit', 'report'] as const;
-const ROUTING_CAPABILITY_VALUES = ['current-web-research', 'workspace-engineering'] as const;
 const WORK_GRAPH_ITEM_TYPE_VALUES = ['text', 'artifact'] as const;
 const WORK_GRAPH_KEY = /^[a-z][a-z0-9_-]{0,63}$/;
 const CONFIGURATION_REFERENCE = /^[a-z][a-z0-9-]{0,63}$/;
@@ -109,14 +109,25 @@ const SubtaskSchema = z.object({
   goal: z.string(),
   dependencies: z.array(DependencySchema),
   contextRefs: z.array(ContextRefSchema).max(12),
-  requiredCapabilities: z.array(z.enum(ROUTING_CAPABILITY_VALUES)).min(1),
+  requiredCapabilities: z.array(z.enum(ROUTING_CAPABILITY_IDS)).min(1),
   executorBindings: z.array(ExecutorBindingSchema).min(1).max(32),
   deliveryKind: z.enum(DELIVERY_KIND_VALUES).describe(
     'edit: the subtask creates or modifies files in the workspace; report: read-only analysis or answer that must not change the workspace',
   ),
   acceptance: z.array(AcceptanceSchema).min(1).max(12),
   riskLevel: z.enum(RISK_LEVEL_VALUES),
-}).strict();
+}).strict().superRefine((subtask, context) => {
+  const requiresImageArtifact = subtask.requiredCapabilities.some(
+    capability => capability === 'image-generation' || capability === 'image-editing',
+  );
+  if (requiresImageArtifact && subtask.deliveryKind !== 'edit') {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['deliveryKind'],
+      message: 'image generation and editing require edit delivery with an image artifact',
+    });
+  }
+});
 
 const WorkGraphSchema = z.object({
   schemaVersion: z.literal(7),

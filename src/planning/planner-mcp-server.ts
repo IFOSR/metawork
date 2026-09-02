@@ -4,13 +4,18 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { dirname, join } from 'path';
 import { buildPlannerRoutingCatalog } from '../routing/configuration-catalog.js';
-import type { ConfigurationRoutingCatalog } from '../routing/types.js';
+import type {
+  ConfigurationRoutingCatalog,
+} from '../routing/types.js';
+import type { PlannerExecutorCapabilityManual } from '../configuration/types.js';
 import { FileConfigurationRepository } from '../configuration/file-configuration-repository.js';
+import { buildPlannerConfigurationView } from '../configuration/projections.js';
 import { resolveMetaWorkPaths } from '../installation/paths.js';
 import { truncateText } from '../utils/truncate-text.js';
 
 const MAX_RESULTS = 20;
 const DEFAULT_RESULTS = 10;
+const MAX_MANUAL_CONTEXT_CHARS = 60_000;
 const TASK_STATUSES = ['created', 'ready', 'running', 'parked', 'blocked', 'done', 'archived', 'cancelled'] as const;
 
 export class PlannerDataReader {
@@ -19,6 +24,7 @@ export class PlannerDataReader {
     private readonly sessionId: string,
     private readonly getRoutingCatalog: () => ConfigurationRoutingCatalog,
     private readonly conversationId = sessionId,
+    private readonly getExecutorCapabilityManuals: () => readonly PlannerExecutorCapabilityManual[] = () => [],
   ) {}
 
   searchTasks(input: { query?: string; statuses?: string[]; limit?: number }) {
@@ -254,6 +260,7 @@ export class PlannerDataReader {
         createdAt: pending.created_at,
       } : null,
       routingCatalog: this.getRoutingCatalog(),
+      executorCapabilityManuals: projectCapabilityManuals(this.getExecutorCapabilityManuals()),
     };
   }
 
@@ -312,7 +319,7 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
     inputSchema: { limit: z.number().int().min(1).max(MAX_RESULTS).optional() },
   }, async input => toolResult(reader.getCurrentSessionContext(input.limit)));
   server.registerTool('get_planning_context', {
-    description: 'Read current session Planner facts: bounded confirmed preferences, the exact pending authorization request, and canonical routing capabilities and AgentClasses. Call before executable planning, preference-dependent replies, or authorization resolution.',
+    description: 'Read current session Planner facts: bounded confirmed preferences, the exact pending authorization request, canonical routing capabilities and AgentClasses, and one independent bounded capability manual per enabled Executor. Call before executable planning, preference-dependent replies, or authorization resolution.',
     inputSchema: {},
   }, async () => toolResult(reader.getPlanningContext()));
   server.registerTool('get_session_interaction', {
@@ -359,8 +366,15 @@ export async function runPlannerMcpServer(): Promise<void> {
     process.env.METACLAW_CONFIGURATION_REVISION,
   );
   const routingCatalog = buildPlannerRoutingCatalog(snapshot);
+  const plannerView = buildPlannerConfigurationView(snapshot);
   const server = createPlannerMcpServer(
-    new PlannerDataReader(db, sessionId, () => routingCatalog, conversationId),
+    new PlannerDataReader(
+      db,
+      sessionId,
+      () => routingCatalog,
+      conversationId,
+      () => plannerView.executorCapabilityManuals ?? [],
+    ),
   );
   await server.connect(new StdioServerTransport());
 }
@@ -399,6 +413,22 @@ function toolResult(value: unknown) {
 
 function boundedLimit(limit?: number): number {
   return Math.max(1, Math.min(MAX_RESULTS, limit ?? DEFAULT_RESULTS));
+}
+
+function projectCapabilityManuals(
+  manuals: readonly PlannerExecutorCapabilityManual[],
+): Array<PlannerExecutorCapabilityManual & { truncated: boolean }> {
+  const projected = manuals
+    .slice()
+    .sort((left, right) => left.agentClassRef.localeCompare(right.agentClassRef))
+    .map(manual => ({ ...manual, truncated: false }));
+  if (projected.reduce((total, manual) => total + Buffer.byteLength(manual.markdown, 'utf8'), 0)
+    > MAX_MANUAL_CONTEXT_CHARS) {
+    throw new Error(
+      `Executor capability manual projection exceeds ${MAX_MANUAL_CONTEXT_CHARS}-byte limit`,
+    );
+  }
+  return projected;
 }
 
 function safeJson<T>(value: unknown, fallback: T): T {

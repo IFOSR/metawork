@@ -7,6 +7,18 @@ import {
 /** The only production renderer for an Executor's attempt-scoped context. */
 export function buildExecutorContextPrompt(input: ExecutorInput): string {
   const { context } = input;
+  const requiredCapabilities = context.currentSubtask.requiredCapabilities ?? [];
+  const imageArtifactProtocol = requiredCapabilities.some(
+    capability => capability === 'image-generation' || capability === 'image-editing',
+  )
+    ? [
+        '',
+        'Image artifact protocol: workspace-image-artifact-v1',
+        '- Perform the requested image generation or editing through the authorized model and tools.',
+        '- For edit delivery, write at least one valid PNG, JPEG, WebP, or GIF image file inside the authorized workspace.',
+        '- Runtime validates the image signature and derives the final artifact paths from the workspace delta.',
+      ]
+    : [];
   const completionProtocol = 'protocol' in context.completionContract
     && context.completionContract.protocol === MERGE_REPAIR_PROTOCOL
     ? [
@@ -48,6 +60,10 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     `Current Subtask: ${context.currentSubtask.title}`,
     `Operative goal: ${context.currentSubtask.goal}`,
     `Delivery kind: ${context.currentSubtask.deliveryKind}`,
+    `Required routing capabilities: ${
+      requiredCapabilities.join(', ') || '(none)'
+    }`,
+    ...imageArtifactProtocol,
     'Acceptance requirements (Runtime owns their internal keys):',
     JSON.stringify(context.currentSubtask.acceptance.map(item => ({
       description: item.description,

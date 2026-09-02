@@ -8,6 +8,7 @@ export default defineConfig({
     'src/generate-planner-schema.ts',
     'src/capability-request-cli.ts',
     'src/capability-use-cli.ts',
+    'src/image-api-cli.ts',
     'src/emit-pi-attempt-extension.ts',
     'src/prepare-smoke-configuration.ts',
   ],

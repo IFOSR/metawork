@@ -23,6 +23,11 @@ describe('production composition root', () => {
     expect(gatewayRuntime).toContain('conversations.getOrOpen');
   });
 
+  it('refreshes per-Executor capability manuals for the active revision at Server startup', () => {
+    const index = readFileSync(resolve(root, 'src/server/server-composition.ts'), 'utf8');
+    expect(index).toContain('await renderer.render(migratedSnapshot)');
+  });
+
   it('passes the runtime binding resolver to the preserved standby TUI', () => {
     const server = readFileSync(resolve(root, 'src/server/server-composition.ts'), 'utf8');
     expect(server).not.toContain('serverSurface');

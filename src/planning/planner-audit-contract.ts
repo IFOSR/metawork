@@ -1,4 +1,7 @@
-import type { PlannerProposalResult } from './planner-proposal.js';
+import type {
+  ExecutorManualProposalResult,
+  PlannerProposalResult,
+} from './planner-proposal.js';
 
 export interface PlannerToolCallTrace {
   sequence: number;
@@ -9,7 +12,8 @@ export interface PlannerToolCallTrace {
 }
 
 export interface PlannerRunResult {
-  proposalResult: PlannerProposalResult;
+  proposalResult?: PlannerProposalResult | ExecutorManualProposalResult;
+  structuredOutput?: string;
   submittedPlan: unknown;
   toolCalls: PlannerToolCallTrace[];
   threadId: string | null;

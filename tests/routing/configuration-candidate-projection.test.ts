@@ -83,4 +83,18 @@ describe('configuration candidate projection', () => {
       harnessCompatible: true,
     });
   });
+
+  it('uses per-Executor user-confirmed model capabilities for Kernel candidates', () => {
+    const input = configuration();
+    input.agentClasses['pi-agent']!.modelCapabilities = {
+      'gpt-primary': ['coding', 'tools', 'image-generation'],
+    };
+
+    const candidates = projectConfigurationCandidates(input, 'pi-agent');
+
+    expect(candidates.find(candidate => candidate.modelRef === 'gpt-primary')?.capabilities)
+      .toContain('image-generation');
+    expect(candidates.find(candidate => candidate.modelRef === 'gpt-secondary')?.capabilities)
+      .not.toContain('image-generation');
+  });
 });
