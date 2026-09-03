@@ -115,6 +115,64 @@ function completeConfiguration() {
 }
 
 describe('AnyFusion configuration schema v2', () => {
+  it('accepts a Feishu gateway platform definition', () => {
+    const config = minimalConfiguration();
+    const result = AnyFusionConfigurationV2Schema.safeParse({
+      ...config,
+      gateway: {
+        enabled: true,
+        platforms: {
+          feishu: {
+            enabled: true,
+            domain: 'feishu',
+            connection_mode: 'websocket',
+            app_id: 'cli_schema',
+            app_secret_env: 'FEISHU_APP_SECRET',
+            event_port: 8787,
+            event_path: '/feishu/events',
+            verification_token: '',
+            access: {
+              dm_policy: 'pairing',
+              allowed_users: [],
+              group_policy: 'open',
+              require_mention: true,
+            },
+            delivery: {
+              final_markdown_mode: 'card',
+              fallback_mode: 'post',
+              final_file_fallback: true,
+            },
+            home_channel: 'oc_schema',
+          },
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects invalid Feishu platform values', () => {
+    const config = minimalConfiguration();
+    expect(AnyFusionConfigurationV2Schema.safeParse({
+      ...config,
+      gateway: {
+        platforms: {
+          feishu: {
+            enabled: true,
+            connection_mode: 'carrier-pigeon',
+          },
+        },
+      },
+    }).success).toBe(false);
+    expect(AnyFusionConfigurationV2Schema.safeParse({
+      ...config,
+      gateway: {
+        platforms: {
+          telegram: { enabled: true },
+        },
+      },
+    }).success).toBe(false);
+  });
+
   it('accepts the complete empty v2 document shape', () => {
     const parsed = AnyFusionConfigurationV2Schema.parse(minimalConfiguration());
     expect(parsed.runtimePolicy).toMatchObject({

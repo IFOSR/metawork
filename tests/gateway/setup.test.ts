@@ -103,6 +103,49 @@ describe('gateway setup', () => {
     }
   });
 
+  it('activates the Feishu platform through the injected activator when provided', async () => {
+    const metaclawDir = mkdtempSync(resolve(tmpdir(), 'metaclaw-gateway-activate-'));
+    const activated: unknown[] = [];
+    const outputLines: string[] = [];
+    const previousSecret = process.env.FEISHU_APP_SECRET;
+    delete process.env.FEISHU_APP_SECRET;
+
+    try {
+      await runGatewaySetup({
+        metaclawDir,
+        deps: {
+          registerFeishuBotByQr: async () => ({
+            appId: 'cli_activate',
+            appSecret: 'secret_activate',
+            domain: 'feishu',
+          }),
+          choose: async () => 0,
+          prompt: async () => '',
+          writeLine: line => outputLines.push(line ?? ''),
+        },
+        activate: async feishu => {
+          activated.push(feishu);
+          return { revisionId: 'feishu-setup-test' };
+        },
+      });
+
+      expect(activated).toHaveLength(1);
+      expect(activated[0]).toMatchObject({
+        enabled: true,
+        app_id: 'cli_activate',
+        connection_mode: 'websocket',
+      });
+      expect(outputLines.join('\n')).toContain('配置已激活: revision feishu-setup-test');
+      expect(outputLines.join('\n')).toContain('metawork server restart');
+    } finally {
+      if (previousSecret === undefined) {
+        delete process.env.FEISHU_APP_SECRET;
+      } else {
+        process.env.FEISHU_APP_SECRET = previousSecret;
+      }
+    }
+  });
+
   it('preserves existing canonical Gateway endpoint values while rewriting credentials', async () => {
     const metaclawDir = mkdtempSync(resolve(tmpdir(), 'metaclaw-gateway-existing-setup-'));
     writeFileSync(resolve(metaclawDir, 'config.yaml'), [

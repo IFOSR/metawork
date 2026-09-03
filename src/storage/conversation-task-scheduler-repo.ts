@@ -115,6 +115,35 @@ export class ConversationTaskSchedulerRepo {
     })();
   }
 
+  /**
+   * Releases the slot held by a terminal task without knowing the owning
+   * conversation up front, then promotes the next queued task. Used by
+   * cancellation cascades so a cancelled task never blocks its conversation.
+   */
+  releaseTaskSlotAndPromote(
+    taskId: string,
+    now: string,
+  ): { conversationId: string; promotedTaskId: string | null } | null {
+    return this.db.transaction(() => {
+      const slot = this.db.prepare(`
+        SELECT conversation_id FROM conversation_task_slots
+        WHERE active_task_id = ? AND state IN ('occupied', 'releasing')
+      `).get(taskId) as { conversation_id: string } | undefined;
+      if (!slot) return null;
+      const released = this.db.prepare(`
+        UPDATE conversation_task_slots
+        SET active_task_id = NULL, state = 'free', reservation_id = NULL, updated_at = ?
+        WHERE conversation_id = ? AND active_task_id = ? AND state IN ('occupied', 'releasing')
+      `).run(now, slot.conversation_id, taskId);
+      if (released.changes !== 1) return { conversationId: slot.conversation_id, promotedTaskId: null };
+      const promotion = this.promoteQueuedInTransaction(slot.conversation_id, now);
+      return {
+        conversationId: slot.conversation_id,
+        promotedTaskId: promotion?.taskId ?? null,
+      };
+    })();
+  }
+
   promoteNextQueued(
     conversationId: string,
     now: string,

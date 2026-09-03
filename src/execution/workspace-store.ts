@@ -143,7 +143,9 @@ export class WorkspaceStore {
     await this.assertManagedWorkspace(workspace);
     const visit = async (path: string): Promise<void> => {
       const info = await lstat(path);
-      if (info.isSymbolicLink()) throw new Error(`execution workspace rejects symlink: ${path}`);
+      // Development workspaces legitimately contain symlinks (for example a
+      // Python virtualenv); they are skipped instead of failing the attempt.
+      if (info.isSymbolicLink()) return;
       if (process.platform !== 'win32') {
         await chown(path, ownership.uid, ownership.gid);
       }
@@ -244,13 +246,16 @@ export class WorkspaceStore {
         const absolute = join(directory, child.name);
         const relativePath = relative(rootPath, absolute).split(sep).join('/');
         const info = await lstat(absolute);
-        if (info.isSymbolicLink()) throw new Error(`workspace checkpoint rejects symlink: ${relativePath}`);
+        // Symlinks and other non-regular entries (daemon sockets, FIFOs) are
+        // not representable in checkpoints; development workspaces contain
+        // them routinely (virtualenvs, browser daemons), so they are skipped
+        // instead of failing the attempt.
+        if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) continue;
         if (info.isDirectory()) {
           entries.push({ path: relativePath, type: 'directory', size: 0, hash: null, objectUri: null });
           await visit(absolute);
           continue;
         }
-        if (!info.isFile()) throw new Error(`workspace checkpoint rejects special file: ${relativePath}`);
         const object = await this.storeObject(absolute);
         entries.push({
           path: relativePath,
@@ -291,20 +296,20 @@ export class WorkspaceStore {
 
   private async copyDirectory(sourceRoot: string, current: string, destinationRoot: string): Promise<void> {
     for (const entry of await readdir(current, { withFileTypes: true })) {
-      if (['.git', 'node_modules', 'dist', '.metaclaw'].includes(entry.name)) continue;
+      if (['.git', 'node_modules', 'dist', '.metaclaw', '.venv'].includes(entry.name)) continue;
       const source = join(current, entry.name);
       const relativePath = relative(sourceRoot, source);
       const destination = this.resolveWorkspaceRelative(destinationRoot, relativePath);
       const info = await lstat(source);
-      if (info.isSymbolicLink()) throw new Error(`workspace seed rejects symlink: ${relativePath}`);
+      // Symlinks and special files are skipped for the same reason as in
+      // scanWorkspace: not representable, routinely present in dev trees.
+      if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) continue;
       if (info.isDirectory()) {
         await mkdir(destination, { recursive: true });
         await this.copyDirectory(sourceRoot, source, destinationRoot);
-      } else if (info.isFile()) {
+      } else {
         await mkdir(dirname(destination), { recursive: true });
         await copyFile(source, destination);
-      } else {
-        throw new Error(`workspace seed rejects special file: ${relativePath}`);
       }
     }
   }

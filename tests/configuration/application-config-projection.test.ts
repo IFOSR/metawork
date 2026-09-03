@@ -18,6 +18,46 @@ describe('application configuration projection', () => {
       port: 8790,
     });
   });
+
+  it('projects the Feishu platform definition from the snapshot', () => {
+    const base = snapshot();
+    const config = buildApplicationConfig({
+      ...base,
+      config: {
+        ...base.config,
+        gateway: {
+          enabled: true,
+          platforms: {
+            feishu: {
+              enabled: true,
+              domain: 'feishu',
+              connection_mode: 'websocket',
+              app_id: 'cli_projection',
+              app_secret_env: 'FEISHU_APP_SECRET',
+              access: {
+                dm_policy: 'pairing',
+                allowed_users: [],
+                group_policy: 'open',
+                require_mention: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(config.gateway?.platforms?.feishu).toMatchObject({
+      enabled: true,
+      app_id: 'cli_projection',
+      connection_mode: 'websocket',
+    });
+    expect(config.gateway?.platforms?.feishu?.access?.dm_policy).toBe('pairing');
+  });
+
+  it('keeps the Feishu platform disabled when the snapshot has no platform section', () => {
+    const config = buildApplicationConfig(snapshot());
+    expect(config.gateway?.platforms?.feishu?.enabled).toBe(false);
+  });
 });
 
 function snapshot(): ConfigurationSnapshot {

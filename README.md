@@ -106,6 +106,13 @@ Stops a running Server, removes the managed launchers (`metawork`, `anyfusion`,
 `metaclaw`), and deletes the install root. Add `--purge` to also remove legacy
 launcher backups.
 
+### Keeping the Server running
+
+`metawork server start` runs in the foreground. For an always-on deployment use
+the supervision templates under `scripts/supervision/` (launchd plist for
+macOS, systemd unit for Linux) — they restart the Server automatically if it
+exits.
+
 ### Install from source
 
 ```bash

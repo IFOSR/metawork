@@ -74,6 +74,7 @@ export function formatTaskClearResult(scope: TaskClearScope, cancelled: Task[], 
   lines.push(
     ...cancelled.map(task => `  - #${task.id} [${task.status.toUpperCase()}] ${task.title}`),
   );
+  lines.push('→ 相关会话任务槽、调度队列与执行派发已同步释放；新任务可立即执行');
   return lines.join('\n');
 }
 

@@ -3,6 +3,7 @@ import { dump, load } from 'js-yaml';
 import { resolve } from 'path';
 import { createInterface, type Interface } from 'readline';
 import { stdin as input, stdout as output } from 'process';
+import type { FeishuGatewayPlatformDefinition } from '../configuration/types.js';
 import { registerFeishuBotByQr, type FeishuQrRegistrationResult } from './feishu-onboarding.js';
 
 type FeishuDomain = 'feishu' | 'lark';
@@ -18,9 +19,20 @@ interface GatewaySetupDeps {
   close?: () => void;
 }
 
+export interface GatewaySetupActivationResult {
+  revisionId: string;
+}
+
 export interface GatewaySetupOptions {
   metaclawDir: string;
   deps?: GatewaySetupDeps;
+  /**
+   * When provided, the wizard additionally activates the Feishu platform
+   * definition through the authoritative ConfigurationService so a running
+   * Server picks it up; without it the wizard only writes the legacy
+   * config.yaml/.env pair (test compatibility).
+   */
+  activate?: (feishu: FeishuGatewayPlatformDefinition) => Promise<GatewaySetupActivationResult>;
 }
 
 interface FeishuSetupCredentials {
@@ -44,13 +56,17 @@ export async function runGatewaySetup(options: GatewaySetupOptions): Promise<voi
       return;
     }
 
-    await setupFeishuGateway(options.metaclawDir, deps);
+    await setupFeishuGateway(options.metaclawDir, deps, options.activate);
   } finally {
     deps.close();
   }
 }
 
-async function setupFeishuGateway(metaclawDir: string, deps: Required<GatewaySetupDeps>): Promise<void> {
+async function setupFeishuGateway(
+  metaclawDir: string,
+  deps: Required<GatewaySetupDeps>,
+  activate?: GatewaySetupOptions['activate'],
+): Promise<void> {
   deps.writeLine('─── Feishu / Lark Setup ───');
   deps.writeLine();
 
@@ -100,6 +116,17 @@ async function setupFeishuGateway(metaclawDir: string, deps: Required<GatewaySet
     homeChannel,
   });
 
+  let activation: GatewaySetupActivationResult | null = null;
+  if (activate) {
+    const config = readConfigObject(resolve(metaclawDir, 'config.yaml')) as {
+      gateway?: { platforms?: { feishu?: FeishuGatewayPlatformDefinition } };
+    };
+    const feishu = config.gateway?.platforms?.feishu;
+    if (feishu) {
+      activation = await activate(feishu);
+    }
+  }
+
   deps.writeLine();
   deps.writeLine('Feishu / Lark Gateway 配置完成。');
   deps.writeLine(`App ID: ${credentials.appId}`);
@@ -107,6 +134,9 @@ async function setupFeishuGateway(metaclawDir: string, deps: Required<GatewaySet
   deps.writeLine(`Connection mode: ${connectionMode}`);
   if (credentials.botName) {
     deps.writeLine(`Bot: ${credentials.botName}`);
+  }
+  if (activation) {
+    deps.writeLine(`配置已激活: revision ${activation.revisionId}`);
   }
   deps.writeLine('下一步: metawork server restart');
 }

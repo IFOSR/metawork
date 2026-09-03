@@ -200,10 +200,41 @@ export interface RuntimePolicy {
   probeTimeoutMs?: number;
 }
 
+export interface FeishuGatewayAccessPolicy {
+  dm_policy: 'pairing' | 'allow_all' | 'allowlist';
+  allowed_users: string[];
+  group_policy: 'open' | 'disabled';
+  require_mention: boolean;
+}
+
+export interface FeishuGatewayDeliveryPolicy {
+  final_markdown_mode?: 'card' | 'post';
+  fallback_mode?: 'file' | 'post';
+  final_file_fallback?: boolean;
+}
+
+export interface FeishuGatewayPlatformDefinition {
+  enabled: boolean;
+  domain?: 'feishu' | 'lark';
+  connection_mode?: 'websocket' | 'webhook';
+  app_id?: string;
+  app_secret_env?: string;
+  event_port?: number;
+  event_path?: string;
+  verification_token?: string;
+  encrypt_key_env?: string;
+  access?: FeishuGatewayAccessPolicy;
+  delivery?: FeishuGatewayDeliveryPolicy;
+  home_channel?: string;
+}
+
 export interface GatewayConfig {
   enabled?: boolean;
   bindHost?: string;
   port?: number;
+  platforms?: {
+    feishu?: FeishuGatewayPlatformDefinition;
+  };
 }
 
 export interface AnyFusionConfigurationV2 {

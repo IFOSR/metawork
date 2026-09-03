@@ -544,6 +544,7 @@ export class MetaclawSession {
       kernelWorkflowRepo: this.kernelWorkflowRepo,
       workspaceRepository: this.workspaceRepository,
       attemptExecutionRepository: this.attemptExecutionRepository,
+      conversationTaskSchedulerRepo: this.conversationTaskSchedulerRepo,
     });
     const resourceLeaseService = runtimeExecutionServices.resourceLeaseService;
     const dispatchItemRepo = runtimeExecutionServices.dispatchItemRepo;

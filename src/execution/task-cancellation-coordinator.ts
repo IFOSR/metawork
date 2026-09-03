@@ -9,6 +9,7 @@ import type { TaskEventRepo } from '../storage/task-event-repo.js';
 import { TaskEventRecorder } from '../storage/task-event-recorder.js';
 import type { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import type { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
+import type { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
 import type { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import type { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
 import type { ResourceLeaseService } from './resource-lease-service.js';
@@ -41,6 +42,7 @@ export class TaskCancellationCoordinator {
     taskEventRepo: TaskEventRepo;
     workGraphRevisionRepo: WorkGraphRevisionRepo;
     dispatchItemRepo: KernelDispatchItemRepo;
+    schedulerRepo: ConversationTaskSchedulerRepo;
     publicationRepo: WorkspacePublicationRepo;
     generationReplanRepo: GenerationReplanRequestRepo;
     resourceLeaseService: ResourceLeaseService;
@@ -123,6 +125,11 @@ export class TaskCancellationCoordinator {
           now,
         });
         this.deps.generationReplanRepo.cancelTask(action.taskId, decision.id, now);
+        // Cancel cascades must close every scheduling surface for the task:
+        // its schedule entry and its conversation slot, otherwise later tasks
+        // in the same conversation queue forever behind a dead "current task".
+        this.deps.schedulerRepo.markTerminal(action.taskId, now);
+        const slotRelease = this.deps.schedulerRepo.releaseTaskSlotAndPromote(action.taskId, now);
         this.taskEvents.record(
           action.taskId,
           null,
@@ -132,6 +139,12 @@ export class TaskCancellationCoordinator {
             decisionId: decision.id,
             affectedSubtaskIds: affected,
             cleanupAttemptIds,
+            ...(slotRelease
+              ? {
+                releasedConversationSlot: slotRelease.conversationId,
+                promotedTaskId: slotRelease.promotedTaskId,
+              }
+              : {}),
           },
         );
         return { taskId: action.taskId, affectedSubtaskIds: affected, cleanupAttemptIds };

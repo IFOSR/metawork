@@ -273,6 +273,14 @@ export class SubtaskAttemptRunner {
     const agentClassName = dispatch.authorizedBinding.agentClassRef;
     const task = this.deps.taskRuntimeService.findTask(input.taskId);
     const sourceRoot = input.sourceRoot ?? this.deps.sourceRoot;
+    if (sourceRoot && sourceRoot.endsWith('workspace-store')) {
+      // The fallback sourceRoot is the workspace-store root itself; executing
+      // from it imports the store into itself (observed 2026-09-03). Refuse
+      // loudly instead — the dispatch payload's workspacePath was missing.
+      throw new Error(
+        `attempt ${attemptId} has no workspace source: dispatch payload is missing its workspacePath`,
+      );
+    }
     const subtask = this.deps.subtaskRepo.findById(input.subtaskId);
     const attemptKind = dispatch.attemptKind;
     const sourceAttemptId = dispatch.sourceAttemptId;

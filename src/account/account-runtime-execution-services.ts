@@ -27,6 +27,7 @@ import type { SqlitePermissionRepository } from '../storage/permission-repo.js';
 import type { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
 import type { SqliteWorkspaceRepository } from '../storage/workspace-repo.js';
 import type { SqliteAttemptExecutionRepository } from '../storage/attempt-execution-backend-repo.js';
+import type { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
 
 export interface AccountRuntimeExecutionServices {
   readonly resourceLeaseService: ResourceLeaseService;
@@ -55,6 +56,7 @@ export function buildAccountRuntimeExecutionServices(deps: {
   kernelWorkflowRepo: KernelWorkflowRepo;
   workspaceRepository: SqliteWorkspaceRepository;
   attemptExecutionRepository: SqliteAttemptExecutionRepository;
+  conversationTaskSchedulerRepo: ConversationTaskSchedulerRepo;
   accountId?: string;
   resultRoot: string;
 }): AccountRuntimeExecutionServices {
@@ -70,6 +72,7 @@ export function buildAccountRuntimeExecutionServices(deps: {
     taskEventRepo: deps.taskEventRepo,
     workGraphRevisionRepo: deps.workGraphRevisionRepo,
     dispatchItemRepo,
+    schedulerRepo: deps.conversationTaskSchedulerRepo,
     publicationRepo,
     generationReplanRepo,
     resourceLeaseService,

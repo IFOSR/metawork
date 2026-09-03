@@ -80,6 +80,7 @@ import {
   mergeRepairReplanRecoveryEvent,
 } from './kernel-application-recovery.js';
 import { mergeConflictObservationId } from './merge-repair-protocol.js';
+import { describeAttemptFailure } from './failure-reasons.js';
 
 interface FocusContext {
   kind: 'conversation' | 'task';
@@ -2569,6 +2570,13 @@ export class KernelExecutionRuntime {
         } : {}),
         ...(outcome.outcome === 'executor_failed' ? {
           failureCode: outcome.failure.code,
+          ...(() => {
+            const hint = describeAttemptFailure({
+              failureCode: outcome.failure.code,
+              errorDetail: 'detail' in outcome.failure ? String(outcome.failure.detail ?? '') : null,
+            });
+            return hint ? { failureHint: hint } : {};
+          })(),
         } : {}),
         ...executionEventDetails({
           display: outcomeDisplay,

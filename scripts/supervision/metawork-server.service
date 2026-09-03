@@ -1,0 +1,16 @@
+# MetaWork Server systemd template (Linux).
+# Install: sudo cp metawork-server.service /etc/systemd/system/
+#          sudo systemctl daemon-reload && sudo systemctl enable --now metawork-server
+[Unit]
+Description=MetaWork Server
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/metawork server start
+Restart=always
+RestartSec=5
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

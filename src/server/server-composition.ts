@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'path';
 import { mkdirSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
+import { loadEnvFileIfExists } from '../utils/env-file.js';
 import { createDatabase } from '../storage/database.js';
 import { TaskRepo } from '../storage/task-repo.js';
 import { PreferenceRepo } from '../storage/preference-repo.js';
@@ -265,6 +266,29 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     ? paths.appCurrent
     : resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
+  // Surface secrets such as FEISHU_APP_SECRET live next to the install root
+  // .env; load them before any gateway/platform wiring runs. Existing process
+  // environment entries always win.
+  loadEnvFileIfExists(join(paths.root, '.env'));
+
+  // Reconcile half-cancelled task state (orphaned dispatch items, stale
+  // conversation slots, zombie schedule entries) at startup and every minute;
+  // see docs/plans/2026-09-03-feishu-task-execution-incident-review.md.
+  {
+    const { runTaskStateReconciler } = await import('../execution/task-state-reconciler.js');
+    const reconcileOnce = async () => {
+      try {
+        const report = await runTaskStateReconciler({ installRoot: paths.root });
+        for (const line of report.lines) console.log(`[reconciler] ${line}`);
+      } catch (error) {
+        console.error(`[reconciler] reconciliation failed: ${(error as Error).message}`);
+      }
+    };
+    await reconcileOnce();
+    const timer = setInterval(() => { void reconcileOnce(); }, 60_000);
+    timer.unref?.();
+  }
+
   if (cliCommand.kind === 'help') {
     process.stdout.write(`${formatCliHelp()}\n`);
     return;
@@ -333,6 +357,62 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       await configurationRepository.getActiveSnapshot(),
     );
     console.log(formatGatewayDoctorChecks(runGatewayDoctor({ config, metaclawDir })));
+    // Deep task-state diagnostics for the surfaces implicated by the
+    // 2026-09-03 incident (dispatch queue, conversation slots, schedule
+    // entries, blocked tasks).
+    {
+      const diagDb = createDatabase(accountPaths.database);
+      try {
+        const stuckDispatch = diagDb.prepare(
+          "SELECT status, COUNT(*) AS count FROM kernel_dispatch_items WHERE status IN ('pending_launch', 'launching', 'cancelling', 'uncertain') GROUP BY status",
+        ).all() as Array<{ status: string; count: number }>;
+        const orphanDispatch = diagDb.prepare(
+          "SELECT COUNT(*) AS count FROM kernel_dispatch_items AS item WHERE item.status IN ('pending_launch', 'launching', 'cancelling', 'uncertain') AND EXISTS (SELECT 1 FROM tasks WHERE tasks.id = item.task_id AND tasks.status IN ('cancelled', 'done', 'failed', 'archived'))",
+        ).get() as { count: number };
+        const staleSlots = diagDb.prepare(
+          "SELECT COUNT(*) AS count FROM conversation_task_slots WHERE active_task_id IS NOT NULL AND state IN ('occupied', 'releasing') AND EXISTS (SELECT 1 FROM tasks WHERE tasks.id = conversation_task_slots.active_task_id AND tasks.status IN ('cancelled', 'done', 'failed', 'archived'))",
+        ).get() as { count: number };
+        const zombieSchedule = diagDb.prepare(
+          "SELECT COUNT(*) AS count FROM task_schedule_entries AS entry WHERE entry.state IN ('queued', 'eligible', 'reserved', 'running') AND EXISTS (SELECT 1 FROM tasks WHERE tasks.id = entry.task_id AND tasks.status IN ('cancelled', 'done', 'failed', 'archived'))",
+        ).get() as { count: number };
+        const blockedTasks = diagDb.prepare(
+          "SELECT id, title FROM tasks WHERE status = 'blocked' ORDER BY updated_at DESC LIMIT 5",
+        ).all() as Array<{ id: string; title: string }>;
+        console.log(formatGatewayDoctorChecks([
+          {
+            name: 'tasks.dispatch_queue',
+            status: stuckDispatch.length === 0 ? 'ok' : (orphanDispatch.count > 0 ? 'fail' : 'warn'),
+            message: stuckDispatch.length === 0
+              ? 'No in-flight dispatch items'
+              : `${JSON.stringify(stuckDispatch)} in flight`
+                + (orphanDispatch.count > 0 ? `; ${orphanDispatch.count} orphaned by terminal tasks (run: metawork maintenance reconcile-tasks)` : ''),
+          },
+          {
+            name: 'tasks.conversation_slots',
+            status: staleSlots.count > 0 ? 'fail' : 'ok',
+            message: staleSlots.count > 0
+              ? `${staleSlots.count} slot(s) held by terminal tasks; run: metawork maintenance reconcile-tasks`
+              : 'No stale conversation slots',
+          },
+          {
+            name: 'tasks.schedule_entries',
+            status: zombieSchedule.count > 0 ? 'fail' : 'ok',
+            message: zombieSchedule.count > 0
+              ? `${zombieSchedule.count} zombie schedule entries; run: metawork maintenance reconcile-tasks`
+              : 'No zombie schedule entries',
+          },
+          {
+            name: 'tasks.blocked',
+            status: blockedTasks.length > 0 ? 'warn' : 'ok',
+            message: blockedTasks.length > 0
+              ? blockedTasks.map(task => `${task.title} (${task.id.slice(0, 18)})`).join('; ')
+              : 'No blocked tasks',
+          },
+        ]));
+      } finally {
+        diagDb.close();
+      }
+    }
     return;
   }
 

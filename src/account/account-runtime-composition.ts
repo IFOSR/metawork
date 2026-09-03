@@ -147,6 +147,7 @@ export function buildAccountRuntimeComposition(deps: {
     kernelWorkflowRepo: kernelServices.kernelWorkflowRepo,
     workspaceRepository: workspaceServices.workspaceRepository,
     attemptExecutionRepository: workspaceServices.attemptExecutionRepository,
+    conversationTaskSchedulerRepo: repositories.conversationTaskSchedulerRepo,
   });
   const plannerModel = deps.stagedConfiguration.snapshot.config.models[
     deps.plannerBinding.modelRef

@@ -129,13 +129,31 @@ export class KernelDispatchItemRepo {
         ) {
           throw new Error(`authorized binding revision mismatch for attempt ${item.attemptId}`);
         }
+        // Dispatch payloads carry the execution request (workspace path,
+        // goal, context refs). Batch dispatch synthesizes items without one
+        // (P0-5 follow-up); the attempt runner refuses to execute those
+        // against the workspace-store fallback, so the gap is safe.
+        const fence = this.db.prepare(`
+          SELECT tasks.status AS task_status, subtasks.status AS subtask_status
+          FROM tasks
+          INNER JOIN subtasks ON subtasks.id = ?
+          WHERE tasks.id = ?
+        `).get(item.subtaskId, decision.action.taskId) as {
+          task_status: string;
+          subtask_status: string;
+        } | undefined;
+        const cancelledBeforePersist = Boolean(
+          fence
+          && (fence.task_status === 'cancelled' || fence.subtask_status === 'cancelled'),
+        );
         this.db.prepare(`
           INSERT INTO kernel_dispatch_items (
             attempt_id, decision_id, batch_order, task_id, generation_id, subtask_id,
             agent_class_name, attempt_kind, source_attempt_id, recovery_mode,
             attempt_payload_json, resource_grant_json, status, configuration_revision,
-            authorized_binding_json, binding_fingerprint, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_launch', ?, ?, ?, ?, ?)
+            authorized_binding_json, binding_fingerprint, created_at, updated_at,
+            terminal_at, error_summary
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           item.attemptId,
           decision.id,
@@ -149,11 +167,16 @@ export class KernelDispatchItemRepo {
           item.recoveryMode,
           JSON.stringify(item.attemptPayload),
           JSON.stringify(item.defaultResourceGrant),
+          cancelledBeforePersist ? 'cancelled' : 'pending_launch',
           decision.configurationRevision,
           JSON.stringify(item.authorizedBinding),
           item.bindingFingerprint,
           now,
           now,
+          cancelledBeforePersist ? now : null,
+          cancelledBeforePersist
+            ? 'task cancelled between authorization and dispatch persistence'
+            : null,
         );
       }
       return decision.action.items.map(item => {
@@ -214,7 +237,31 @@ export class KernelDispatchItemRepo {
         !fence
         || fence.task_status === 'cancelled'
         || fence.subtask_status === 'cancelled'
-      ) return null;
+      ) {
+        // The cancellation fence won: terminalize the item instead of leaving
+        // it pending forever — otherwise dispatch drains spin on a row that
+        // can never be claimed.
+        this.db.prepare(`
+          UPDATE kernel_dispatch_items
+          SET status = 'cancelled',
+              terminal_at = ?,
+              cancel_requested_at = ?,
+              cancelled_at = ?,
+              error_summary = ?,
+              updated_at = ?
+          WHERE attempt_id = ? AND status = 'pending_launch'
+        `).run(
+          now,
+          now,
+          now,
+          fence
+            ? `cancellation fence: task or subtask already cancelled before launch`
+            : 'cancellation fence: task or subtask missing before launch',
+          now,
+          attemptId,
+        );
+        return null;
+      }
       const changed = this.db.prepare(`
         UPDATE kernel_dispatch_items
         SET status = 'launching', launch_started_at = ?, updated_at = ?

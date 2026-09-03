@@ -73,9 +73,11 @@ export class SessionKernelRuntime {
         return null;
       case 'request_clarification':
         this.deps.callbacks.appendOutput(
-          '## 需要补充信息',
+          '## ❓ 需要你回答（任务在此等待，不会自动继续）',
           '',
           decision.action.question,
+          '',
+          '> 直接回复本条消息即可继续；若不再需要，可发送 `/task clear all` 取消相关任务。',
         );
         this.deps.callbacks.refreshRuntimeState();
         return null;

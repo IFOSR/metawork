@@ -54,17 +54,26 @@ export function buildApplicationConfig(snapshot: ConfigurationSnapshot): Config 
     gateway: {
       enabled: snapshot.config.gateway.enabled ?? false,
       platforms: {
-        feishu: {
-          enabled: false,
-          domain: 'feishu',
-          connection_mode: 'websocket',
-          app_secret_env: 'FEISHU_APP_SECRET',
-          event_port: 8787,
-          event_path: '/feishu/events',
-        },
+        feishu: projectFeishuPlatform(snapshot.config.gateway.platforms?.feishu),
       },
     },
   };
+}
+
+function projectFeishuPlatform(
+  feishu: import('./types.js').FeishuGatewayPlatformDefinition | undefined,
+): NonNullable<NonNullable<Config['gateway']>['platforms']>['feishu'] {
+  if (!feishu) {
+    return {
+      enabled: false,
+      domain: 'feishu',
+      connection_mode: 'websocket',
+      app_secret_env: 'FEISHU_APP_SECRET',
+      event_port: 8787,
+      event_path: '/feishu/events',
+    };
+  }
+  return { ...feishu };
 }
 
 function defaultExecutorCommand(snapshot: ConfigurationSnapshot): string | null {

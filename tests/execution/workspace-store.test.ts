@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WorkspaceStore } from '../../src/execution/workspace-store.js';
@@ -36,5 +36,41 @@ describe('WorkspaceStore', () => {
   test('rejects workspace identity traversal', async () => {
     const store = new WorkspaceStore(join(temporaryRoot, 'store'));
     await expect(store.ensureWorkspace({ taskId: '..', generationId: 'g', subtaskId: 's' }, 'directory')).rejects.toThrow();
+  });
+
+  test('seeds and checkpoints workspaces containing virtualenv symlinks', async () => {
+    const source = join(temporaryRoot, 'source');
+    await mkdir(join(source, '.venv', 'bin'), { recursive: true });
+    await writeFile(join(source, '.venv', 'bin', 'activate'), 'venv payload\n');
+    await writeFile(join(source, '.venv', 'bin', 'python3.13'), 'binary placeholder\n');
+    await symlink('python3.13', join(source, '.venv', 'bin', 'python'));
+    await writeFile(join(source, 'report.md'), 'task content\n');
+    const store = new WorkspaceStore(join(temporaryRoot, 'store'));
+    await store.initialize();
+    const workspace = await store.ensureWorkspace({ taskId: 't-venv', generationId: 'g-venv', subtaskId: 's-venv' }, 'directory');
+
+    await store.seedDirectory(workspace, source);
+    const checkpoint = await store.createCheckpoint(workspace, { reason: 'attempt_start', attemptId: 'a-venv', now: '2026-07-22T00:00:00.000Z' });
+    const paths = checkpoint.manifest.entries.map(entry => entry.path);
+    expect(paths).toContain('report.md');
+    expect(paths.some(path => path.startsWith('.venv/'))).toBe(false);
+  });
+
+  test('checkpoints skip non-representable entries without failing the attempt', async () => {
+    const source = join(temporaryRoot, 'source');
+    await mkdir(source);
+    await writeFile(join(source, 'data.txt'), 'payload\n');
+    await symlink('data.txt', join(source, 'data-link.txt'));
+    const store = new WorkspaceStore(join(temporaryRoot, 'store'));
+    await store.initialize();
+    const workspace = await store.ensureWorkspace({ taskId: 't-skip', generationId: 'g-skip', subtaskId: 's-skip' }, 'directory');
+    await mkdir(workspace.filesPath, { recursive: true });
+    await writeFile(join(workspace.filesPath, 'data.txt'), 'payload\n');
+    await symlink('data.txt', join(workspace.filesPath, 'data-link.txt'));
+
+    const checkpoint = await store.createCheckpoint(workspace, { reason: 'attempt_start', attemptId: 'a-skip', now: '2026-07-22T00:00:00.000Z' });
+    const paths = checkpoint.manifest.entries.map(entry => entry.path);
+    expect(paths).toContain('data.txt');
+    expect(paths).not.toContain('data-link.txt');
   });
 });

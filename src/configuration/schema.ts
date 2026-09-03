@@ -378,6 +378,34 @@ const RuntimePolicySchema = z.object({
   }
 });
 
+const FeishuGatewayAccessPolicySchema = z.object({
+  dm_policy: z.enum(['pairing', 'allow_all', 'allowlist']),
+  allowed_users: z.array(z.string().trim().min(1)),
+  group_policy: z.enum(['open', 'disabled']),
+  require_mention: z.boolean(),
+}).strict();
+
+const FeishuGatewayDeliveryPolicySchema = z.object({
+  final_markdown_mode: z.enum(['card', 'post']).optional(),
+  fallback_mode: z.enum(['file', 'post']).optional(),
+  final_file_fallback: z.boolean().optional(),
+}).strict();
+
+const FeishuGatewayPlatformDefinitionSchema = z.object({
+  enabled: z.boolean(),
+  domain: z.enum(['feishu', 'lark']).optional(),
+  connection_mode: z.enum(['websocket', 'webhook']).optional(),
+  app_id: z.string().trim().min(1).optional(),
+  app_secret_env: z.string().trim().min(1).optional(),
+  event_port: z.number().int().min(1).max(65_535).optional(),
+  event_path: z.string().trim().min(1).optional(),
+  verification_token: z.string().optional(),
+  encrypt_key_env: z.string().trim().min(1).optional(),
+  access: FeishuGatewayAccessPolicySchema.optional(),
+  delivery: FeishuGatewayDeliveryPolicySchema.optional(),
+  home_channel: z.string().trim().min(1).optional(),
+}).strict();
+
 const GatewayConfigSchema = z.object({
   enabled: z.boolean().optional(),
   bindHost: z.string().trim().min(1).max(253).refine(
@@ -385,6 +413,9 @@ const GatewayConfigSchema = z.object({
     'bindHost must be a host name or IP address',
   ).optional(),
   port: z.number().int().min(1).max(65_535).optional(),
+  platforms: z.object({
+    feishu: FeishuGatewayPlatformDefinitionSchema.optional(),
+  }).strict().optional(),
 }).strict();
 
 export const AnyFusionConfigurationV2Schema = z.object({

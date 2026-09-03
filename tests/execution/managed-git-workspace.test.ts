@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
@@ -19,6 +21,30 @@ afterEach(async () => {
 });
 
 describe('ManagedGitWorkspaceService', () => {
+  it('imports plain sources containing executor sockets without failing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'metaclaw-managed-git-socket-'));
+    roots.push(root);
+    const source = join(root, 'source');
+    await mkdir(join(source, '.agent-browser'), { recursive: true });
+    await writeFile(join(source, 'weather.md'), 'sunny\n');
+    const sockPath = join(source, '.agent-browser', 'default.sock');
+    const server = createServer();
+    await new Promise<void>(resolve => server.listen(sockPath, resolve));
+
+    try {
+      const service = new ManagedGitWorkspaceService(new WorkspaceStore(join(root, 'store')));
+      const workspace = await service.ensure(
+        { taskId: 'task-socket', generationId: 'generation-socket', subtaskId: 'subtask-socket' },
+        source,
+      );
+      expect(workspace).not.toBeNull();
+      expect(await readFile(join(workspace!.filesPath, 'weather.md'), 'utf8')).toBe('sunny\n');
+      expect(existsSync(join(workspace!.filesPath, '.agent-browser', 'default.sock'))).toBe(false);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
   it('captures a dirty baseline and commits only to the managed branch', async () => {
     const root = await mkdtemp(join(tmpdir(), 'metaclaw-managed-git-'));
     roots.push(root);

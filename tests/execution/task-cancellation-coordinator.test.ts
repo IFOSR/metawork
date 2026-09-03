@@ -9,6 +9,7 @@ import { TaskEventRepo } from '../../src/storage/task-event-repo.js';
 import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
 import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../../src/storage/workspace-publication-repo.js';
+import { ConversationTaskSchedulerRepo } from '../../src/storage/conversation-task-scheduler-repo.js';
 import { GenerationReplanRequestRepo } from '../../src/storage/generation-replan-request-repo.js';
 import { SqliteResourceLeaseRepository } from '../../src/storage/resource-lease-repo.js';
 import { ResourceLeaseService } from '../../src/execution/resource-lease-service.js';
@@ -93,6 +94,7 @@ describe('TaskCancellationCoordinator', () => {
       taskEventRepo: new TaskEventRepo(db),
       workGraphRevisionRepo: revisions,
       dispatchItemRepo: dispatch,
+      schedulerRepo: new ConversationTaskSchedulerRepo(db),
       publicationRepo: new WorkspacePublicationRepo(db),
       generationReplanRepo: new GenerationReplanRequestRepo(db),
       resourceLeaseService: new ResourceLeaseService(new SqliteResourceLeaseRepository(db)),
@@ -286,6 +288,7 @@ describe('TaskCancellationCoordinator', () => {
       taskEventRepo: new TaskEventRepo(db),
       workGraphRevisionRepo: revisions,
       dispatchItemRepo: dispatch,
+      schedulerRepo: new ConversationTaskSchedulerRepo(db),
       publicationRepo: publications,
       generationReplanRepo: new GenerationReplanRequestRepo(db),
       resourceLeaseService: leases,
@@ -400,6 +403,7 @@ describe('TaskCancellationCoordinator', () => {
       taskEventRepo: new TaskEventRepo(db),
       workGraphRevisionRepo: revisions,
       dispatchItemRepo: dispatch,
+      schedulerRepo: new ConversationTaskSchedulerRepo(db),
       publicationRepo: new WorkspacePublicationRepo(db),
       generationReplanRepo: new GenerationReplanRequestRepo(db),
       resourceLeaseService: new ResourceLeaseService(new SqliteResourceLeaseRepository(db)),

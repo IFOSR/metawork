@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { WorkspaceHandle, WorkspaceIdentity, WorkspaceStore } from './workspace-store.js';
@@ -10,6 +10,7 @@ const PLAIN_SOURCE_EXCLUDED_TOP_LEVEL = new Set([
   '.cache',
   '.git',
   '.metaclaw',
+  '.venv',
   'coverage',
   'dist',
   'logs',
@@ -507,14 +508,29 @@ export class ManagedGitWorkspaceService {
 
   private async importPlainSource(sourceRoot: string, repositoryPath: string): Promise<void> {
     const importRoot = await mkdtemp(join(dirname(repositoryPath), 'plain-import-'));
+    // Guard against pathological sources (for example a dispatch without a
+    // workspace payload): importing a directory into itself must fail with a
+    // clear error instead of Node cp's EINVAL on recursive self-copy.
+    const realSource = await realpath(sourceRoot).catch(() => sourceRoot);
+    const realImportParent = await realpath(dirname(importRoot)).catch(() => dirname(importRoot));
+    if (realSource === realImportParent || realImportParent.startsWith(`${realSource}/`)) {
+      throw new Error(
+        `refusing to import workspace source into itself: ${sourceRoot} contains ${importRoot}`,
+      );
+    }
     try {
       await cp(sourceRoot, importRoot, {
         recursive: true,
-        filter: source => {
+        filter: async source => {
           const pathFromSource = relative(sourceRoot, source);
           if (pathFromSource === '' && source === sourceRoot) return true;
           const topLevel = pathFromSource.split(/[\\/]/u)[0] ?? '';
-          return !PLAIN_SOURCE_EXCLUDED_TOP_LEVEL.has(topLevel);
+          if (PLAIN_SOURCE_EXCLUDED_TOP_LEVEL.has(topLevel)) return false;
+          // Executors (for example a browser daemon) can leave Unix sockets or
+          // FIFOs in the workspace; Node's recursive cp aborts with EINVAL on
+          // them, so they are skipped instead of failing the attempt.
+          const info = await lstat(source).catch(() => null);
+          return !(info?.isSocket() || info?.isFIFO());
         },
       });
       await git(['init'], importRoot);
@@ -524,7 +540,15 @@ export class ManagedGitWorkspaceService {
       await git(['-C', importRoot, 'commit', '--allow-empty', '-m', 'chore: import task generation source']);
       await git(['clone', '--bare', '--no-hardlinks', importRoot, repositoryPath]);
     } finally {
-      await rm(importRoot, { recursive: true, force: true });
+      // Transient EBUSY/ENOTEMPTY/EPERM failures happen on APFS when a git
+      // object file is still being flushed; retry instead of failing the
+      // attempt during cleanup.
+      await rm(importRoot, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 120,
+      }).catch(() => undefined);
     }
   }
 

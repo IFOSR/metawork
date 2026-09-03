@@ -44,6 +44,7 @@ export class AttemptSupervisor {
     private readonly repository: AttemptSupervisorRepository,
     private readonly maxConcurrentAttempts: number,
     private readonly maxConcurrentAttemptsPerTask = maxConcurrentAttempts,
+    private readonly drainTuning: { idleSpinLimit?: number; spinDelayMs?: number } = {},
   ) {
     if (!Number.isInteger(maxConcurrentAttempts) || maxConcurrentAttempts <= 0) {
       throw new Error('maxConcurrentAttempts must be a positive integer');
@@ -90,6 +91,13 @@ export class AttemptSupervisor {
   }
 
   async drain(taskId: string): Promise<void> {
+    // Bounded drain: pending items that can never be claimed (for example a
+    // cancellation fence) must terminate the drain instead of spinning on
+    // microtasks, which starves the event loop entirely (observed as a 100%
+    // CPU busy loop that even blocked SIGTERM handling).
+    const idleSpinLimit = this.drainTuning.idleSpinLimit ?? 600;
+    const spinDelayMs = this.drainTuning.spinDelayMs ?? 100;
+    let idleSpins = 0;
     for (;;) {
       this.kick(taskId);
       const active = [...this.active.values()]
@@ -97,9 +105,18 @@ export class AttemptSupervisor {
         .map(item => item.promise);
       if (active.length === 0 && this.repository.listPending(taskId).length === 0) return;
       if (active.length === 0) {
-        await Promise.resolve();
+        idleSpins += 1;
+        if (idleSpins >= idleSpinLimit) {
+          throw new Error(
+            `attempt drain made no progress for task ${taskId}: `
+            + `${this.repository.listPending(taskId).length} dispatch item(s) are not claimable`,
+          );
+        }
+        // Yield to the macrotask queue so timers, IO, and signals keep running.
+        await new Promise(resolve => setTimeout(resolve, spinDelayMs));
         continue;
       }
+      idleSpins = 0;
       await Promise.allSettled(active);
     }
   }

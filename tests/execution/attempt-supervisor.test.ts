@@ -20,6 +20,7 @@ const bindingFingerprint = authorizedExecutorBindingFingerprint(authorizedBindin
 class MemoryDispatchItems {
   readonly records = new Map<string, KernelDispatchItemRecord>();
   readonly cancelBeforeRunning = new Set<string>();
+  readonly claimRefused = new Set<string>();
 
   insertBatch(
     decision: KernelDecision & {
@@ -82,6 +83,7 @@ class MemoryDispatchItems {
   claimPending(attemptId: string, now: string): KernelDispatchItemRecord | null {
     const record = this.records.get(attemptId);
     if (!record || record.status !== 'pending_launch') return null;
+    if (this.claimRefused.has(attemptId)) return null;
     record.status = 'launching';
     record.updatedAt = now;
     return record;
@@ -301,6 +303,30 @@ describe('AttemptSupervisor', () => {
 
     expect(launched).toEqual([]);
     expect(repository.records.get('attempt-a')?.status).toBe('cancelling');
+  });
+
+  it('terminates the drain with a clear error when pending items are never claimable', async () => {
+    const repository = new MemoryDispatchItems();
+    // A fence-blocked item that stays pending_launch forever: claim always
+    // refuses and the item is never terminalized (the historical race shape).
+    repository.claimRefused = new Set(['attempt-a']);
+    const supervisor = new AttemptSupervisor(repository, 1, 1, { idleSpinLimit: 3, spinDelayMs: 1 });
+
+    const decision = {
+      ...batchDecision(),
+      action: {
+        ...batchDecision().action,
+        items: [batchDecision().action.items[0]!],
+      },
+    };
+    supervisor.enqueue(decision, bindingContext(decision, 'generation-1'), {
+      run: async item => outcomeEvent(item),
+      submit: async () => undefined,
+      onLaunchError: async item => outcomeEvent(item),
+    }, new Date().toISOString());
+
+    await expect(supervisor.drain('task-1'))
+      .rejects.toThrow('attempt drain made no progress for task task-1');
   });
 
   it('keeps each attempt bound to the context of its dispatch batch', async () => {

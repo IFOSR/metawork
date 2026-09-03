@@ -94,4 +94,30 @@ describe('parseCliArgs', () => {
     expect(help).not.toContain('--connect');
     expect(help).not.toContain('gateway run');
   });
+
+  it('parses the Feishu setup wizard as a Server action', () => {
+    expect(parseCliArgs(['server', 'setup-feishu']))
+      .toEqual({ kind: 'server', action: 'setup-feishu' });
+  });
+
+  it('parses the maintenance reconcile command', () => {
+    expect(parseCliArgs(['maintenance', 'reconcile-tasks']))
+      .toEqual({ kind: 'maintenance-reconcile' });
+    expect(() => parseCliArgs(['maintenance', 'other']))
+      .toThrow('用法: metawork maintenance reconcile-tasks');
+  });
+
+  it('parses gateway pairing management commands', () => {
+    expect(parseCliArgs(['gateway', 'pairing', 'list']))
+      .toEqual({ kind: 'gateway-pairing', command: 'list', userId: undefined });
+    expect(parseCliArgs(['gateway', 'pairing', 'approve', 'ou_123']))
+      .toEqual({ kind: 'gateway-pairing', command: 'approve', userId: 'ou_123' });
+  });
+
+  it('rejects gateway pairing without a user id for approve and revoke', () => {
+    expect(() => parseCliArgs(['gateway', 'pairing', 'approve']))
+      .toThrow('缺少用户 ID。用法: metawork gateway pairing approve <open_id>');
+    expect(() => parseCliArgs(['gateway', 'run']))
+      .toThrow('Gateway 生命周期命令已移除');
+  });
 });

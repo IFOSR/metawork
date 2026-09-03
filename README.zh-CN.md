@@ -91,6 +91,12 @@ curl -fsSL https://14.103.216.193/metawork-release/install.sh | bash -s -- --uni
 会先停止运行中的 Server，移除托管的启动器（`metawork`、`anyfusion`、`metaclaw`），
 并删除安装目录。追加 `--purge` 可同时清理旧版启动器备份。
 
+### 让 Server 常驻运行
+
+`metawork server start` 是前台进程。需要长期运行时，可使用
+`scripts/supervision/` 下的守护模板（macOS 用 launchd plist，Linux 用
+systemd unit），Server 退出后会自动拉起。
+
 ### 源码安装
 
 ```bash
