@@ -56,9 +56,12 @@ export ANYFUSION_INSTALL_ROOT="$INSTALL_ROOT"
 INSTALL_COMMAND=install
 if [ -e "$INSTALL_ROOT/app/current" ]; then
   INSTALL_COMMAND=update
-else
-  : "${METAWORK_PROVIDER_KEY:?METAWORK_PROVIDER_KEY is required}"
-  : "${METAWORK_PROVIDER_URL:?METAWORK_PROVIDER_URL is required}"
+fi
+if [ "$INSTALL_COMMAND" = "install" ] \
+  && [ -z "${METAWORK_PROVIDER_KEY:-}" -o -z "${METAWORK_PROVIDER_URL:-}" ] \
+  && [ -t 0 ]; then
+  echo "Provider setup runs interactively after the build."
+  echo "For unattended installs, export METAWORK_PROVIDER_KEY and METAWORK_PROVIDER_URL first."
 fi
 
 PLANNER_ROOT="${ANYFUSION_PI_SOURCE_ROOT:-$SCRIPT_DIR/planner/AnyFusion-Pi}"

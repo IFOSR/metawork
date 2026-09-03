@@ -74,29 +74,81 @@ supported production path; use WSL2 or the optional Docker compatibility path.
 - npm
 - Git
 - Native build tools for `better-sqlite3`
-- An OpenAI-compatible Provider base URL and API key
+- An API key for an OpenAI-compatible model provider (DeepSeek, Kimi, Code
+  CLI, or your own endpoint). The setup wizard collects and verifies it after
+  the build.
 
 Codex CLI and Pi Agent are installed independently. Setup detects them on
 `PATH`; it does not install, upgrade, downgrade, or reconfigure either CLI.
 
-### Install
+### Quick install (macOS, Linux, WSL2)
+
+```bash
+curl -fsSL https://14.103.216.193/metawork-release/install.sh | bash
+
+export PATH="$HOME/.local/bin:$PATH"
+metawork --help
+```
+
+One command downloads the signed, prebuilt Runtime and vendored Planner
+artifacts, verifies them, and launches the provider setup wizard. Re-running
+the same command updates an existing installation in place — configuration,
+secrets, and task data are preserved. Windows users: use WSL2 or the Docker
+compatibility path.
+
+Uninstall:
+
+```bash
+curl -fsSL https://14.103.216.193/metawork-release/install.sh | bash -s -- --uninstall
+```
+
+Stops a running Server, removes the managed launchers (`metawork`, `anyfusion`,
+`metaclaw`), and deletes the install root. Add `--purge` to also remove legacy
+launcher backups.
+
+### Install from source
 
 ```bash
 git clone https://github.com/IFOSR/metawork.git
 cd metawork
-
-export METAWORK_PROVIDER_KEY='replace-with-your-key'
-export METAWORK_PROVIDER_URL='https://your-openai-compatible-endpoint.example/v1'
-
-# Optional
-export METAWORK_PROVIDER_MODEL='your-model-id'
-export METAWORK_PROVIDER_REGION='international'
-
 ./setup.sh
 
 export PATH="$HOME/.local/bin:$PATH"
 metawork --help
 ```
+
+After the build, the installer launches a short setup wizard: pick a provider
+preset (DeepSeek, Kimi, or Code CLI) or enter any OpenAI-compatible endpoint,
+confirm the model, and paste your API key. The wizard verifies the key with a
+live request, stores it in the local secret store, and completes the
+installation. No configuration needs to be exported beforehand.
+
+<details>
+<summary>Non-interactive install (CI, Docker, scripts)</summary>
+
+Skip the wizard by exporting the provider environment before running
+`./setup.sh`:
+
+```bash
+export METAWORK_PROVIDER_KEY='your-key'
+export METAWORK_PROVIDER_URL='https://api.deepseek.com/v1'
+# Optional
+export METAWORK_PROVIDER_MODEL='deepseek-chat'
+export METAWORK_PROVIDER_REGION='international'
+```
+
+</details>
+
+<details>
+<summary>Publishing prebuilt releases (maintainers)</summary>
+
+`node scripts/package-release.mjs` packages the built Runtime and vendored
+Planner into per-platform tarballs plus an Ed25519-signed manifest consumed by
+`scripts/install.sh`. Sign with a release key (`--signing-key` or
+`METAWORK_RELEASE_SIGNING_KEY`); `--generate-dev-key` exists for local testing
+only. Package from a production-only dependency tree (`npm ci --omit=dev`).
+
+</details>
 
 The installer builds the MetaWork Runtime and vendored `planner/AnyFusion-Pi`
 sources in separate dependency trees. Releases, account state, configuration,

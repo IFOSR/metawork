@@ -46,10 +46,6 @@ function resolveProductEnvironment(canonicalName, compatibilityName, defaultValu
   return value;
 }
 
-function requiredEnvironment(value, name) {
-  if (!value) throw new Error(`${name} is required`);
-}
-
 function main() {
   if (process.platform !== 'darwin') {
     throw new Error(`install-native-macos requires macOS; found ${process.platform}`);
@@ -63,17 +59,7 @@ function main() {
   const installCommand = existsSync(join(installRoot, 'app', 'current'))
     ? 'update'
     : 'install';
-  const providerKey = resolveProductEnvironment('METAWORK_PROVIDER_KEY', 'ANYFUSION_PROVIDER_KEY');
-  const providerUrl = resolveProductEnvironment('METAWORK_PROVIDER_URL', 'ANYFUSION_PROVIDER_URL');
-  if (installCommand === 'install') {
-    requiredEnvironment(providerKey, 'METAWORK_PROVIDER_KEY');
-    requiredEnvironment(providerUrl, 'METAWORK_PROVIDER_URL');
-  }
-  resolveProductEnvironment(
-    'METAWORK_PROVIDER_MODEL',
-    'ANYFUSION_PROVIDER_MODEL',
-    'gpt-5.6-terra',
-  );
+  resolveProductEnvironment('METAWORK_PROVIDER_MODEL', 'ANYFUSION_PROVIDER_MODEL', 'gpt-5.6-terra');
   resolveProductEnvironment(
     'METAWORK_PROVIDER_REGION',
     'ANYFUSION_PROVIDER_REGION',

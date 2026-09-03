@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../../src/account/account-id.js';
 import { resolveAccountPaths } from '../../src/account/account-paths.js';
+import { FileConfigurationRepository } from '../../src/configuration/file-configuration-repository.js';
 import {
   parseNativeInstallArgs,
   runNativeInstallCli,
@@ -95,6 +96,124 @@ describe('native install CLI', () => {
     expect(() => lstatSync(join(installRoot, 'data', 'metaclaw.db'))).toThrow();
     expect(() => lstatSync(join(installRoot, 'config', 'active'))).toThrow();
     expect(output.join('\n')).toContain('installed 1.2.0-preview.0');
+    expect(output.join('\n')).toContain('export PATH="$HOME/.local/bin:$PATH"');
+  });
+
+  it('collects provider configuration through the wizard when env is missing', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'metawork-native-cli-wizard-'));
+    cleanup.push(root);
+    const sourceRoot = join(root, 'source');
+    const plannerRoot = join(root, 'planner-source');
+    fixtureRelease(sourceRoot, plannerRoot);
+    const installRoot = join(root, 'installed');
+
+    const exitCode = await runNativeInstallCli([
+      'install',
+      '1.2.0-preview.0',
+      '--source-root',
+      sourceRoot,
+      '--planner-root',
+      plannerRoot,
+    ], {
+      env: {
+        HOME: root,
+        METAWORK_INSTALL_ROOT: installRoot,
+        METAWORK_SECRET_STORE: 'file',
+      },
+      platform: 'linux',
+      detectCommand: async () => true,
+      isServerRunning: async () => false,
+      isInteractive: () => true,
+      collectProviderConfiguration: async defaults => {
+        expect(defaults.baseUrl).toBeUndefined();
+        expect(defaults.modelId).toBeUndefined();
+        return {
+          baseUrl: 'https://api.deepseek.com/v1',
+          modelId: 'deepseek-chat',
+          apiKey: 'wizard-secret',
+        };
+      },
+    });
+
+    expect(exitCode).toBe(0);
+    const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, installRoot);
+    const repository = new FileConfigurationRepository(accountPaths.config);
+    await repository.initialize();
+    const recovery = await repository.recover();
+    expect(recovery.status).not.toBe('empty');
+    const snapshot = await repository.getActiveSnapshot();
+    expect(snapshot.config.providers.provider?.baseUrl).toBe('https://api.deepseek.com/v1');
+    expect(snapshot.config.models['default-model']?.modelId).toBe('deepseek-chat');
+  });
+
+  it('fails closed without provider configuration in non-interactive installs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'metawork-native-cli-headless-'));
+    cleanup.push(root);
+    const sourceRoot = join(root, 'source');
+    const plannerRoot = join(root, 'planner-source');
+    fixtureRelease(sourceRoot, plannerRoot);
+    const installRoot = join(root, 'installed');
+
+    await expect(runNativeInstallCli([
+      'install',
+      '1.2.0-preview.0',
+      '--source-root',
+      sourceRoot,
+      '--planner-root',
+      plannerRoot,
+    ], {
+      env: {
+        HOME: root,
+        METAWORK_INSTALL_ROOT: installRoot,
+        METAWORK_SECRET_STORE: 'file',
+        METAWORK_PROVIDER_URL: 'https://provider.example/v1',
+      },
+      platform: 'linux',
+      detectCommand: async () => true,
+      isServerRunning: async () => false,
+      isInteractive: () => false,
+      collectProviderConfiguration: async () => {
+        throw new Error('wizard must not run');
+      },
+    })).rejects.toThrow('provider configuration is required');
+
+    expect(() => lstatSync(join(installRoot, 'app', 'releases', '1.2.0-preview.0')))
+      .toThrow();
+  });
+
+  it('skips the wizard when provider environment variables are complete', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'metawork-native-cli-env-'));
+    cleanup.push(root);
+    const sourceRoot = join(root, 'source');
+    const plannerRoot = join(root, 'planner-source');
+    fixtureRelease(sourceRoot, plannerRoot);
+    const installRoot = join(root, 'installed');
+
+    await expect(runNativeInstallCli([
+      'install',
+      '1.2.0-preview.0',
+      '--source-root',
+      sourceRoot,
+      '--planner-root',
+      plannerRoot,
+    ], {
+      env: {
+        HOME: root,
+        METAWORK_INSTALL_ROOT: installRoot,
+        METAWORK_SECRET_STORE: 'file',
+        METAWORK_PROVIDER_KEY: 'secret',
+        METAWORK_PROVIDER_URL: 'https://provider.example/v1',
+        METAWORK_PROVIDER_MODEL: 'model',
+        METAWORK_PROVIDER_REGION: 'international',
+      },
+      platform: 'linux',
+      detectCommand: async () => true,
+      isServerRunning: async () => false,
+      isInteractive: () => true,
+      collectProviderConfiguration: async () => {
+        throw new Error('wizard must not run');
+      },
+    })).resolves.toBe(0);
   });
 
   it('accepts the existing ANYFUSION variables as compatibility inputs', async () => {

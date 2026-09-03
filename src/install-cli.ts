@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { commandExistsOnPath } from './configuration/production-configuration-probe.js';
@@ -21,6 +22,13 @@ import {
 } from './installation/product-root-migrator.js';
 import { isInstanceRunning } from './management/lock.js';
 import { ServerUpdateCoordinator } from './session/server-update-coordinator.js';
+import {
+  collectProviderInput,
+  createTerminalProviderPrompt,
+  type ProviderProbe,
+  type WizardProviderDefaults,
+  type WizardProviderInput,
+} from './installation/configuration-wizard.js';
 
 export type NativeInstallCommand = 'install' | 'update' | 'rollback';
 
@@ -69,6 +77,11 @@ export async function runNativeInstallCli(
     detectCommand?: (command: string) => Promise<boolean>;
     isServerRunning?: () => Promise<boolean>;
     write?: (line: string) => void;
+    isInteractive?: () => boolean;
+    collectProviderConfiguration?: (
+      defaults: WizardProviderDefaults,
+    ) => Promise<WizardProviderInput>;
+    probeProvider?: ProviderProbe;
   } = {},
 ): Promise<number> {
   const args = parseNativeInstallArgs(argv);
@@ -96,11 +109,29 @@ export async function runNativeInstallCli(
   const isServerRunning = dependencies.isServerRunning
     ?? (() => isInstanceRunning(join(paths.data, 'runtime.lock')));
   const write = dependencies.write ?? (line => process.stdout.write(`${line}\n`));
+  const isInteractive = dependencies.isInteractive
+    ?? (() => process.stdin.isTTY === true && process.stdout.isTTY === true);
+  const collectProviderConfiguration = dependencies.collectProviderConfiguration
+    ?? (async defaults => {
+      const prompt = createTerminalProviderPrompt({});
+      try {
+        return await collectProviderInput(prompt, {
+          defaults,
+          probe: dependencies.probeProvider ?? probeOpenAiCompatibleProvider,
+        });
+      } finally {
+        prompt.close();
+      }
+    });
 
   if (args.command === 'install') {
     const secretScheme = productEnvironment.secretStore === 'file'
       ? 'file-secret'
       : 'keychain';
+    const provider = await resolveInstallProvider(
+      productEnvironment,
+      { isInteractive, collectProviderConfiguration },
+    );
     const result = await runOfflineNativeTransaction({
       command: args.command,
       releaseId: args.releaseId,
@@ -115,28 +146,17 @@ export async function runNativeInstallCli(
         sourceRoot: args.sourceRoot!,
         plannerRoot: args.plannerRoot!,
         provider: {
-          baseUrl: requiredProductEnvironment(
-            productEnvironment.providerUrl,
-            PRODUCT_ENVIRONMENT.providerUrl[0],
-          ),
-          apiKey: requiredProductEnvironment(
-            productEnvironment.providerKey,
-            PRODUCT_ENVIRONMENT.providerKey[0],
-          ),
-          modelId: requiredProductEnvironment(
-            productEnvironment.providerModel,
-            PRODUCT_ENVIRONMENT.providerModel[0],
-          ),
-          region: requiredProductEnvironment(
-            productEnvironment.providerRegion,
-            PRODUCT_ENVIRONMENT.providerRegion[0],
-          ),
+          baseUrl: provider.baseUrl,
+          apiKey: provider.apiKey,
+          modelId: provider.modelId,
+          region: provider.region,
           secretReference:
             `${secretScheme}:anyfusion/provider`,
         },
       }),
     });
     write(`installed ${result.releaseId} with configuration ${result.configurationRevision}`);
+    write('next: export PATH="$HOME/.local/bin:$PATH" && metawork --help');
     return 0;
   }
 
@@ -181,6 +201,68 @@ export async function runNativeInstallCli(
   } catch (error) {
     await rootMigration?.rollback();
     throw error;
+  }
+}
+
+interface InstallerProviderBinding {
+  baseUrl: string;
+  apiKey: string;
+  modelId: string;
+  region: string;
+}
+
+async function resolveInstallProvider(
+  productEnvironment: ReturnType<typeof resolveInstallerEnvironment>,
+  interaction: {
+    isInteractive(): boolean;
+    collectProviderConfiguration(defaults: WizardProviderDefaults): Promise<WizardProviderInput>;
+  },
+): Promise<InstallerProviderBinding> {
+  let { providerKey: apiKey, providerUrl: baseUrl, providerModel: modelId } = productEnvironment;
+  if (!apiKey || !baseUrl) {
+    if (!interaction.isInteractive()) {
+      throw new Error(
+        'provider configuration is required: set METAWORK_PROVIDER_KEY and METAWORK_PROVIDER_URL'
+        + ' for non-interactive installs, or run in a terminal to use the setup wizard',
+      );
+    }
+    const collected = await interaction.collectProviderConfiguration({
+      baseUrl,
+      modelId,
+    });
+    apiKey = collected.apiKey;
+    baseUrl = collected.baseUrl;
+    modelId = collected.modelId;
+  }
+  return {
+    baseUrl: requiredProductEnvironment(baseUrl, PRODUCT_ENVIRONMENT.providerUrl[0]),
+    apiKey: requiredProductEnvironment(apiKey, PRODUCT_ENVIRONMENT.providerKey[0]),
+    modelId: requiredProductEnvironment(modelId, PRODUCT_ENVIRONMENT.providerModel[0]),
+    region: productEnvironment.providerRegion ?? 'international',
+  };
+}
+
+async function probeOpenAiCompatibleProvider(baseUrl: string, apiKey: string): Promise<
+  | { status: 'verified' }
+  | { status: 'unverifiable'; detail?: string }
+  | { status: 'rejected'; detail?: string }
+> {
+  const endpoint = `${baseUrl.replace(/\/+$/u, '')}/models`;
+  try {
+    const response = await fetch(endpoint, {
+      headers: { authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (response.status === 401 || response.status === 403) {
+      return { status: 'rejected', detail: `HTTP ${response.status} from GET /models` };
+    }
+    if (response.ok) return { status: 'verified' };
+    return { status: 'unverifiable', detail: `HTTP ${response.status} from GET /models` };
+  } catch (error) {
+    return {
+      status: 'unverifiable',
+      detail: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
@@ -315,7 +397,10 @@ function requiredProductEnvironment(
 
 if (
   process.argv[1]
-  && import.meta.url === pathToFileURL(process.argv[1]).href
+  // realpathSync matters on macOS, where launch paths such as
+  // /var/folders/... (TMPDIR) and /tmp resolve through /private symlink
+  // chains that import.meta.url collapses but pathToFileURL keeps literal.
+  && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
 ) {
   runNativeInstallCli(process.argv.slice(2)).catch(error => {
     process.stderr.write(

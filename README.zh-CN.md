@@ -63,29 +63,74 @@ WSL2 或可选的 Docker 兼容模式。
 - npm
 - Git
 - `better-sqlite3` 所需的原生构建工具
-- OpenAI-compatible Provider 地址与 API Key
+- 任一 OpenAI 兼容模型服务的 API Key（DeepSeek、Kimi、Code CLI 或自建网关），
+  由安装后的配置向导采集并验证
 
 Codex CLI 与 Pi Agent 独立安装。安装程序只检测 `PATH` 中已有的 CLI，不会安装、
 升级、降级或修改它们。
 
-### 安装
+### 一条命令安装（macOS、Linux、WSL2）
+
+```bash
+curl -fsSL https://14.103.216.193/metawork-release/install.sh | bash
+
+export PATH="$HOME/.local/bin:$PATH"
+metawork --help
+```
+
+一条命令下载并校验已签名的预构建 Runtime 与内嵌 Planner 产物，然后自动进入
+Provider 配置向导。重复执行同一命令会对已有安装原地升级——配置、密钥和任务
+数据全部保留。Windows 用户请使用 WSL2 或 Docker 兼容模式。
+
+卸载：
+
+```bash
+curl -fsSL https://14.103.216.193/metawork-release/install.sh | bash -s -- --uninstall
+```
+
+会先停止运行中的 Server，移除托管的启动器（`metawork`、`anyfusion`、`metaclaw`），
+并删除安装目录。追加 `--purge` 可同时清理旧版启动器备份。
+
+### 源码安装
 
 ```bash
 git clone https://github.com/IFOSR/metawork.git
 cd metawork
-
-export METAWORK_PROVIDER_KEY='替换为你的密钥'
-export METAWORK_PROVIDER_URL='https://你的-openai-compatible服务地址.example/v1'
-
-# 可选
-export METAWORK_PROVIDER_MODEL='你的模型ID'
-export METAWORK_PROVIDER_REGION='international'
-
 ./setup.sh
 
 export PATH="$HOME/.local/bin:$PATH"
 metawork --help
 ```
+
+构建完成后，安装程序会启动一个简短的配置向导：选择预设 Provider（DeepSeek、
+Kimi、Code CLI）或输入任意 OpenAI 兼容地址，确认模型，粘贴 API Key。向导会用
+一次真实请求验证 Key，存入本地 SecretStore，然后完成安装。无需预先 export 任何
+配置。
+
+<details>
+<summary>非交互安装（CI、Docker、脚本）</summary>
+
+跳过向导，在运行 `./setup.sh` 前导出 Provider 环境变量：
+
+```bash
+export METAWORK_PROVIDER_KEY='你的密钥'
+export METAWORK_PROVIDER_URL='https://api.deepseek.com/v1'
+# 可选
+export METAWORK_PROVIDER_MODEL='deepseek-chat'
+export METAWORK_PROVIDER_REGION='international'
+```
+
+</details>
+
+<details>
+<summary>发布预构建产物（维护者）</summary>
+
+`node scripts/package-release.mjs` 将构建好的 Runtime 与内嵌 Planner 打包为按平台
+区分的 tarball 和 Ed25519 签名 manifest，供 `scripts/install.sh` 消费。签名密钥通过
+`--signing-key` 或 `METAWORK_RELEASE_SIGNING_KEY` 提供；`--generate-dev-key` 仅限本地
+测试。打包前请使用仅含生产依赖的目录（`npm ci --omit=dev`）。
+
+</details>
 
 安装程序会在独立依赖树中分别构建 MetaWork Runtime 与
 `planner/AnyFusion-Pi`。release、账户状态、配置、生成的运行时文件和更新日志统一
