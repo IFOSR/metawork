@@ -154,7 +154,31 @@ Follow-up items outside this delivery:
 - CI automation for the packaged-release flow (per the Phase 2 plan) and an
   end-to-end cancel-storm smoke.
 
-## 6. Notes
+## 7. Post-remediation user-perspective test (2026-09-04, Web UI)
+
+Executed through the Web client (http://127.0.0.1:8788, token login) as an
+end user:
+
+- **Case 1 — normal execution on the real workspace**: submitted a directory
+  statistics task against `/Users/ylfego/Program/test` (which contains the
+  exact artifacts behind incidents 1–7: `.venv` symlinks,
+  `.agent-browser`, `.metaclaw`). Completed in ~50s through Planner →
+  Kernel → codex-engineering → verification → publication with the correct
+  answer; dispatch terminal, slot released, CPU 0% throughout.
+- **Case 2 — cancel while executing**: submitted a longer task and sent
+  `/task clear all` mid-execution.
+- Idle-state `/task clear all` works and reports the new cascade-confirmation
+copy.
+
+Findings (recorded, not yet fixed):
+
+- **Cancel commands queue behind the running turn.** A `/task` command sent
+  while a task executes is queued like any input, with no queued indicator —
+  to the user it looks ignored (the same shape as the "无反应" reports on
+  Feishu). The Web UI has no dedicated cancel button either. Proposed fix:
+  task-control commands (`/task`, `/clear`) should bypass the input queue and
+  execute immediately, and the Web UI should surface a cancel affordance on
+  the running task; tracked as P2 follow-up below.
 
 - All manual SQLite triage tonight was performed against a backed-up database
   (`/tmp/metawork-db-backup-*.db`); the production fix must replace these
