@@ -4,6 +4,12 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
 
+const SEARCH_CONNECT_TIMEOUT_S = "5";
+const SEARCH_TOTAL_TIMEOUT_S = "15";
+const FETCH_TOTAL_TIMEOUT_S = "30";
+const MAX_SEARCH_CALLS_PER_ATTEMPT = 30;
+const BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
 function runCurl(args: string[], input?: string, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = execFile(
@@ -50,18 +56,6 @@ function stripHtml(value: string): string {
     .trim());
 }
 
-function normalizeDuckDuckGoUrl(rawUrl: string): string {
-  const decoded = htmlDecode(rawUrl);
-  if (decoded.startsWith("//duckduckgo.com/l/?")) {
-    const url = new URL(` + "`https:${decoded}`" + `);
-    return url.searchParams.get("uddg") ?? decoded;
-  }
-  if (decoded.startsWith("/l/?")) {
-    const url = new URL(` + "`https://duckduckgo.com${decoded}`" + `);
-    return url.searchParams.get("uddg") ?? decoded;
-  }
-  return decoded;
-}
 
 type SearchResult = {
   title: string;
@@ -70,37 +64,6 @@ type SearchResult = {
   position: number;
 };
 
-function parseDuckDuckGo(html: string, limit: number): SearchResult[] {
-  const results: SearchResult[] = [];
-  const htmlPattern = new RegExp("<a[^>]+class=[\\"'][^\\"']*result__a[^\\"']*[\\"'][^>]+href=[\\"']([^\\"']+)[\\"'][^>]*>([\\s\\S]*?)<\\/a>[\\s\\S]*?<a[^>]+class=[\\"'][^\\"']*result__snippet[^\\"']*[\\"'][^>]*>([\\s\\S]*?)<\\/a>", "g");
-  for (const match of html.matchAll(htmlPattern)) {
-    if (results.length >= limit) break;
-    const url = normalizeDuckDuckGoUrl(match[1]);
-    if (!url || url.includes("duckduckgo.com/y.js")) continue;
-    results.push({
-      title: stripHtml(match[2]),
-      url,
-      description: stripHtml(match[3]),
-      position: results.length + 1,
-    });
-  }
-
-  if (results.length > 0) return results;
-
-  const litePattern = new RegExp("<a rel=\\"nofollow\\" href=\\"([^\\"]+)\\"[^>]*>([\\s\\S]*?)<\\/a>[\\s\\S]*?<td[^>]*class=['\\"]result-snippet['\\"][^>]*>([\\s\\S]*?)<\\/td>", "g");
-  for (const match of html.matchAll(litePattern)) {
-    if (results.length >= limit) break;
-    const url = normalizeDuckDuckGoUrl(match[1]);
-    if (!url || url.includes("duckduckgo.com/y.js")) continue;
-    results.push({
-      title: stripHtml(match[2]),
-      url,
-      description: stripHtml(match[3]),
-      position: results.length + 1,
-    });
-  }
-  return results;
-}
 
 function parseBing(html: string, limit: number): SearchResult[] {
   const results: SearchResult[] = [];
@@ -108,25 +71,53 @@ function parseBing(html: string, limit: number): SearchResult[] {
   for (const match of html.matchAll(blockPattern)) {
     if (results.length >= limit) break;
     const block = match[1];
-    const result = block.match(/<h2[^>]*>[\\s\\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\\s\\S]*?)<\\/a>[\\s\\S]*?<p[^>]*>([\\s\\S]*?)<\\/p>/i);
+    const result = block.match(/<h2[^>]*>[\\s\\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\\s\\S]*?)<\\/a>/i);
     if (!result) continue;
     const url = htmlDecode(result[1]);
     if (!/^https?:\\/\\//iu.test(url)) continue;
+    const snippet = block.match(/<p[^>]*>([\\s\\S]*?)<\\/p>/i);
     results.push({
       title: stripHtml(result[2]),
       url,
-      description: stripHtml(result[3]),
+      description: snippet ? stripHtml(snippet[1]) : "",
       position: results.length + 1,
     });
   }
   return results;
 }
 
+function parseBaidu(html: string, limit: number): SearchResult[] {
+  const results: SearchResult[] = [];
+  const blockPattern = /<div[^>]+class=["'][^"']*result[^"']*c-container[^"']*["'][^>]*>([\\s\\S]*?)<h3[^>]*>[\\s\\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\\s\\S]*?)<\\/a>/gi;
+  for (const match of html.matchAll(blockPattern)) {
+    if (results.length >= limit) break;
+    const url = htmlDecode(match[2]);
+    if (!/^https?:\\/\\//iu.test(url)) continue;
+    results.push({
+      title: stripHtml(match[3]),
+      url,
+      description: "",
+      position: results.length + 1,
+    });
+  }
+  return results;
+}
+
+class SearchBackendError extends Error {}
+
+const searchCallCount = { count: 0 };
+const searchCache = new Map<string, { web: SearchResult[]; provider: string; elapsedMs: number }>();
+
 async function searchPublicWeb(query: string, limit: number, signal?: AbortSignal): Promise<{
   web: SearchResult[];
   provider: string;
+  elapsedMs: number;
 }> {
-  const request = async (url: string): Promise<string> => {
+  const cacheKey = JSON.stringify([query, limit]);
+  const cached = searchCache.get(cacheKey);
+  if (cached) return cached;
+
+  const request = async (url: string, queryParam: string): Promise<string> => {
     try {
       return await runCurl([
         "-L",
@@ -134,32 +125,55 @@ async function searchPublicWeb(query: string, limit: number, signal?: AbortSigna
         "--show-error",
         "--get",
         "--data-urlencode",
-        ` + "`q=${query}`" + `,
+        ` + "`${queryParam}=${query}`" + `,
+        "--connect-timeout",
+        SEARCH_CONNECT_TIMEOUT_S,
         "--max-time",
-        "60",
+        SEARCH_TOTAL_TIMEOUT_S,
         "-A",
-        "Mozilla/5.0 (compatible; metaclaw-pi-web-search/1.0)",
+        BROWSER_UA,
         url,
       ], undefined, signal);
     } catch (error) {
       if (signal?.aborted) throw error;
-      return "";
+      throw new SearchBackendError((error as Error).message);
     }
   };
 
-  const duckDuckGo = parseDuckDuckGo(
-    await request("https://html.duckduckgo.com/html/"),
-    limit,
-  );
-  if (duckDuckGo.length > 0) {
-    return { web: duckDuckGo, provider: "duckduckgo-html-curl" };
-  }
+  const startedAt = Date.now();
+  const failures: string[] = [];
 
-  const bing = parseBing(
-    await request("https://www.bing.com/search"),
-    limit,
+  let html = "";
+  try {
+    html = await request(` + "`https://www.bing.com/search?count=${Math.max(limit, 10)}&mkt=zh-CN`" + `, "q");
+  } catch (error) {
+    failures.push(` + "`bing: ${(error as Error).message}`" + `);
+  }
+  let web = html ? parseBing(html, limit) : [];
+  if (web.length > 0) {
+    const outcome = { web, provider: "bing-html-curl", elapsedMs: Date.now() - startedAt };
+    searchCache.set(cacheKey, outcome);
+    return outcome;
+  }
+  if (html && web.length === 0) failures.push("bing: no parseable results");
+
+  try {
+    html = await request("https://www.baidu.com/s", "wd");
+  } catch (error) {
+    failures.push(` + "`baidu: ${(error as Error).message}`" + `);
+    html = "";
+  }
+  web = html ? parseBaidu(html, limit) : [];
+  if (web.length > 0) {
+    const outcome = { web, provider: "baidu-html-curl", elapsedMs: Date.now() - startedAt };
+    searchCache.set(cacheKey, outcome);
+    return outcome;
+  }
+  if (html && web.length === 0) failures.push("baidu: no parseable results");
+
+  throw new SearchBackendError(
+    "网络不可用：搜索后端（Bing、百度）均无法访问。" + (failures.length > 0 ? " 原因: " + failures.join("; ") : ""),
   );
-  return { web: bing, provider: "bing-html-curl" };
 }
 
 const webSearchTool = defineTool({
@@ -178,19 +192,46 @@ const webSearchTool = defineTool({
   }),
   async execute(_toolCallId, params, signal) {
     const limit = Math.min(Math.max(Number(params.limit ?? 5) || 5, 1), 20);
-    const { web, provider } = await searchPublicWeb(String(params.query), limit, signal);
-    return {
-      content: [{
-        type: "text",
-        text: JSON.stringify({
-          success: web.length > 0,
-          data: { web },
-          error: web.length > 0 ? undefined : "No parseable search results returned.",
-          provider,
-        }, null, 2),
-      }],
-      details: { provider, query: params.query, limit },
-    };
+    if (searchCallCount.count >= MAX_SEARCH_CALLS_PER_ATTEMPT) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: false,
+            error: ` + "`本次执行的搜索次数已达上限（${MAX_SEARCH_CALLS_PER_ATTEMPT} 次）。请基于已获取的信息继续完成任务。`" + `,
+          }, null, 2),
+        }],
+        details: { query: params.query, limit, budgetExhausted: true },
+      };
+    }
+    searchCallCount.count += 1;
+    try {
+      const { web, provider, elapsedMs } = await searchPublicWeb(String(params.query), limit, signal);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: web.length > 0,
+            data: { web },
+            error: web.length > 0 ? undefined : "No parseable search results returned.",
+            provider,
+            elapsedMs,
+          }, null, 2),
+        }],
+        details: { provider, query: params.query, limit, elapsedMs, resultCount: web.length },
+      };
+    } catch (error) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: false,
+            error: (error as Error).message,
+          }, null, 2),
+        }],
+        details: { query: params.query, limit, failed: true },
+      };
+    }
   },
 });
 
@@ -216,10 +257,12 @@ const webFetchTool = defineTool({
       "-L",
       "--silent",
       "--show-error",
+      "--connect-timeout",
+      SEARCH_CONNECT_TIMEOUT_S,
       "--max-time",
-      "60",
+      FETCH_TOTAL_TIMEOUT_S,
       "-A",
-      "Mozilla/5.0 (compatible; metaclaw-pi-web-fetch/1.0)",
+      BROWSER_UA,
       rawUrl,
     ], undefined, signal);
     const title = html.match(new RegExp("<title[^>]*>([\\s\\S]*?)<\\/title>", "i"))?.[1];
