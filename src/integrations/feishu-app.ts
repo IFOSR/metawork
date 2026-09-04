@@ -462,9 +462,11 @@ export class FeishuAppClient {
   }
 
   /**
-   * Imports a text artifact (markdown and friends) as a Feishu cloud document
-   * and returns its URL, so users can read generated reports directly in
-   * Docs instead of receiving opaque file attachments or bare paths.
+   * Publishes a text artifact (markdown and friends) into the bot's Feishu
+   * cloud space and returns a browsable URL. Uses the verified pipeline:
+   * explorer upload -> optional docx import -> tenant-readable link share.
+   * Falls back to the raw file URL when the docx import or the public link
+   * cannot be established (callers degrade to file messages on throw).
    */
   async importFileToCloudDoc(
     filePath: string,
@@ -474,14 +476,28 @@ export class FeishuAppClient {
     const fileName = basename(filePath);
     const extension = fileName.includes('.') ? fileName.split('.').pop()!.toLowerCase() : '';
     if (!extension) {
-      throw new Error(`飞书云文档导入需要带扩展名的文件: ${fileName}`);
+      throw new Error(`飞书云文档同步需要带扩展名的文件: ${fileName}`);
     }
 
-    // 1. Upload the raw file into the import staging area.
+    // 1. Resolve the bot's cloud-space root folder.
+    const rootMeta = await fetch('https://open.feishu.cn/open-apis/drive/explorer/v2/root_folder/meta', {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const rootPayload = await rootMeta.json() as {
+      code?: number;
+      msg?: string;
+      data?: { token?: string };
+    };
+    const rootToken = rootPayload.data?.token;
+    if (rootPayload.code !== 0 || !rootToken) {
+      throw new Error(`飞书云空间根目录获取失败: ${rootPayload.msg ?? rootMeta.status}`);
+    }
+
+    // 2. Upload the file into the root folder (explorer mode).
     const form = new FormData();
     form.set('file_name', fileName);
-    form.set('parent_type', 'ccm_import_open');
-    form.set('parent_node', '');
+    form.set('parent_type', 'explorer');
+    form.set('parent_node', rootToken);
     form.set('size', String(statSync(filePath).size));
     form.set('file', new Blob([readFileSync(filePath)]), fileName);
     const uploadResponse = await this.postForm(
@@ -492,71 +508,94 @@ export class FeishuAppClient {
     const uploadPayload = await uploadResponse.json() as {
       code?: number;
       msg?: string;
-      data?: { file_token?: string };
+      data?: { file_token?: string; url?: string };
     };
     const fileToken = uploadPayload.data?.file_token;
     if (!uploadResponse.ok || uploadPayload.code !== 0 || !fileToken) {
       throw new Error(`飞书云文档文件上传失败: ${uploadPayload.msg ?? uploadResponse.status}`);
     }
+    const fileUrl = uploadPayload.data?.url
+      ?? `https://feishu.cn/file/${fileToken}`;
 
-    // 2. Create the import task (markdown -> docx in the bot's cloud space).
-    const importResponse = await this.postJson(
-      'https://open.feishu.cn/open-apis/drive/v1/import_tasks',
-      {
-        file_extension: extension,
-        file_token: fileToken,
-        type: 'docx',
-        point: { mount_type: 1, mount_key: '0' },
-        file_name: fileName.replace(/\.[^.]+$/u, ''),
-      },
-      { authorization: `Bearer ${token}` },
-    );
-    const importPayload = await importResponse.json() as {
-      code?: number;
-      msg?: string;
-      data?: { ticket?: string };
-    };
-    const ticket = importPayload.data?.ticket;
-    if (!importResponse.ok || importPayload.code !== 0 || !ticket) {
-      throw new Error(`飞书云文档导入创建失败: ${importPayload.msg ?? importResponse.status}`);
-    }
-
-    // 3. Poll until the import finishes and collect the document token.
-    const sleep = options.sleep ?? ((ms: number) => new Promise(resolve => setTimeout(resolve, ms)));
-    const pollIntervalMs = options.pollIntervalMs ?? 1000;
-    const timeoutMs = options.timeoutMs ?? 60_000;
-    const startedAt = Date.now();
-    for (;;) {
-      await sleep(pollIntervalMs);
-      const statusResponse = await fetch(
-        `https://open.feishu.cn/open-apis/drive/v1/import_tasks/${encodeURIComponent(ticket)}`,
-        { headers: { authorization: `Bearer ${token}` } },
-      );
-      const statusPayload = await statusResponse.json() as {
-        code?: number;
-        msg?: string;
-        data?: {
-          result?: {
-            job_status?: number;
-            job_error_msg?: string;
-          };
-          token?: string;
+    // 3. Best effort: import as an online docx for a richer reading view.
+    //    Some markdown constructs make the importer fail; the raw file is
+    //    still previewable, so failures here are not fatal.
+    let docUrl: string | null = null;
+    if (extension === 'md' || extension === 'markdown' || extension === 'docx') {
+      try {
+        const importResponse = await this.postJson(
+          'https://open.feishu.cn/open-apis/drive/v1/import_tasks',
+          {
+            file_extension: extension,
+            file_token: fileToken,
+            type: 'docx',
+            point: { mount_type: 1, mount_key: rootToken },
+            file_name: fileName.replace(/\.[^.]+$/u, ''),
+          },
+          { authorization: `Bearer ${token}` },
+        );
+        const importPayload = await importResponse.json() as {
+          code?: number;
+          data?: { ticket?: string };
         };
-      };
-      if (statusPayload.code !== 0) {
-        throw new Error(`飞书云文档导入状态查询失败: ${statusPayload.msg ?? statusResponse.status}`);
-      }
-      const jobStatus = statusPayload.data?.result?.job_status;
-      if (jobStatus === 0 && statusPayload.data?.token) {
-        const domain = this.config.domain === 'lark'
-          ? 'https://www.larksuite.com'
-          : 'https://feishu.cn';
-        return `${domain}/docx/${statusPayload.data.token}`;
-      }
-      if (jobStatus === 2 || (jobStatus === 1 && Date.now() - startedAt > timeoutMs)) {
-        throw new Error(`飞书云文档导入失败: ${statusPayload.data?.result?.job_error_msg ?? 'timeout'}`);
+        const ticket = importPayload.data?.ticket;
+        if (importPayload.code === 0 && ticket) {
+          const sleep = options.sleep ?? ((ms: number) => new Promise(resolve => setTimeout(resolve, ms)));
+          const startedAt = Date.now();
+          for (;;) {
+            await sleep(options.pollIntervalMs ?? 1000);
+            const statusResponse = await fetch(
+              `https://open.feishu.cn/open-apis/drive/v1/import_tasks/${encodeURIComponent(ticket)}`,
+              { headers: { authorization: `Bearer ${token}` } },
+            );
+            const statusPayload = await statusResponse.json() as {
+              data?: { result?: { job_status?: number }; token?: string };
+            };
+            const jobStatus = statusPayload.data?.result?.job_status;
+            if (jobStatus === 0 && statusPayload.data?.token) {
+              docUrl = `https://feishu.cn/docx/${statusPayload.data.token}`;
+              break;
+            }
+            if (jobStatus === 2 || Date.now() - startedAt > (options.timeoutMs ?? 30_000)) {
+              break;
+            }
+          }
+        }
+      } catch {
+        // Non-fatal: the file URL below still works.
       }
     }
+
+    // 4. Make the target readable by anyone in the tenant with the link, so
+    //    chat recipients can open it without per-user grants.
+    const shareToken = docUrl ? docUrl.split('/').pop()! : fileToken;
+    const shareType = docUrl ? 'docx' : 'file';
+    const publicResponse = await fetch(
+      `https://open.feishu.cn/open-apis/drive/v1/permissions/${encodeURIComponent(shareToken)}/public?type=${shareType}`,
+      {
+        method: 'PATCH',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          link_share_entity: 'tenant_readable',
+          external_access: false,
+          security_entity: 'reliable',
+          comment_mention_entity: 'anyone_can_view',
+          share_entity: 'tenant',
+          manage_entity: 'tenant',
+          link_share_restricted: false,
+        }),
+      },
+    );
+    if (publicResponse.ok) {
+      return docUrl ?? fileUrl;
+    }
+    // The public-link patch needs drive permissions the app may not have;
+    // still return the URL — the bot owns it and per-user grants can be added
+    // later without breaking this delivery path.
+    return docUrl ?? fileUrl;
   }
 
   async sendFileToChat(chatId: string, fileKey: string): Promise<void> {
