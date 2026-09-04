@@ -151,4 +151,71 @@ describe('ConversationInputMailbox', () => {
     expect(executed).toEqual(['req_1', 'req_2']);
     expect(mailbox.isIdle).toBe(true);
   });
+
+  it('executes control slash commands immediately while a turn is active', async () => {
+    const executed: string[] = [];
+    let releaseActive!: () => void;
+    const mailbox = new ConversationInputMailbox({
+      execute: async command => {
+        executed.push(command.requestId);
+        if (command.requestId === 'req_active') {
+          await new Promise<void>(resolve => { releaseActive = resolve; });
+        }
+      },
+    });
+
+    mailbox.submit({
+      requestId: 'req_active',
+      idempotencyKey: 'idem_active',
+      command: { kind: 'user_message', text: '长期任务', attachments: [] },
+    });
+    await waitFor(() => mailbox.isActive);
+
+    const control: MailboxCommand = {
+      requestId: 'req_control',
+      idempotencyKey: 'idem_control',
+      command: { kind: 'slash_command', text: '/task clear all' },
+    };
+    expect(mailbox.submit(control).status).toBe('accepted');
+    // The control command runs even though the active turn never finished.
+    await waitFor(() => executed.includes('req_control'));
+    expect(mailbox.isActive).toBe(true);
+    expect(mailbox.queueLength).toBe(0);
+
+    releaseActive!();
+    await waitFor(() => mailbox.isIdle);
+    expect(executed).toEqual(['req_active', 'req_control']);
+  });
+
+  it('keeps conversational slash commands in the FIFO queue', async () => {
+    const executed: string[] = [];
+    let releaseActive!: () => void;
+    const mailbox = new ConversationInputMailbox({
+      execute: async command => {
+        executed.push(command.requestId);
+        if (command.requestId === 'req_active') {
+          await new Promise<void>(resolve => { releaseActive = resolve; });
+        }
+      },
+    });
+    mailbox.submit({
+      requestId: 'req_active',
+      idempotencyKey: 'idem_active',
+      command: { kind: 'user_message', text: '占位', attachments: [] },
+    });
+    await waitFor(() => mailbox.isActive);
+
+    mailbox.submit({
+      requestId: 'req_settings',
+      idempotencyKey: 'idem_settings',
+      command: { kind: 'slash_command', text: '/settings' },
+    });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(executed).not.toContain('req_settings');
+    expect(mailbox.queueLength).toBe(1);
+
+    releaseActive!();
+    await waitFor(() => mailbox.isIdle);
+    expect(executed).toContain('req_settings');
+  });
 });

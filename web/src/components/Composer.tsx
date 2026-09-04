@@ -154,6 +154,21 @@ export function Composer({
             >
               📎
             </button>
+            {running && (
+              <button
+                type="button"
+                className="stop-button"
+                disabled={disabled}
+                title="立即取消当前任务（含终止运行中的执行器，并释放会话队列）"
+                onClick={() => {
+                  if (window.confirm('确定取消当前任务？运行中的执行器会被终止。')) {
+                    onSend('/task clear all', []);
+                  }
+                }}
+              >
+                ⏹ 停止
+              </button>
+            )}
             <button type="submit" disabled={disabled || running || !draft.trim()}>
               {running ? '执行中' : '发送'}
             </button>

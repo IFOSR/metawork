@@ -2992,6 +2992,20 @@ select {
   border-color: var(--accent);
 }
 
+.composer-actions .stop-button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--danger, #c2413f);
+}
+
+.composer-actions .stop-button:hover:not(:disabled) {
+  border-color: var(--danger, #c2413f);
+}
+
 .attachment-strip {
   display: flex;
   flex-wrap: wrap;

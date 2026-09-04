@@ -34,6 +34,21 @@ export interface ConversationInputMailboxDeps {
 
 const DEFAULT_MAX_QUEUE_SIZE = 16;
 
+/**
+ * Control commands execute immediately instead of queueing behind the
+ * active turn: cancelling or inspecting task state must not wait for a
+ * long-running turn to finish (observed 2026-09-04: `/task clear all` sat
+ * in the FIFO for the whole task duration with no feedback). They are not
+ * turns — FIFO single-active-turn semantics (ADR-0031 §7) are preserved for
+ * conversational input.
+ */
+const CONTROL_COMMAND_PATTERN = /^\/(?:task\s+(?:clear|cancel|stop|list|show)|clear\b|status\b|doctor\b)/iu;
+
+export function isControlSlashCommand(command: MailboxCommand): boolean {
+  return command.command?.kind === 'slash_command'
+    && CONTROL_COMMAND_PATTERN.test(command.command.text.trim());
+}
+
 export class ConversationInputMailbox {
   private readonly queue: MailboxCommand[] = [];
   private activeCommand: MailboxCommand | null = null;
@@ -69,6 +84,17 @@ export class ConversationInputMailbox {
         status: 'rejected',
         reason: 'closed',
       };
+    }
+
+    if (isControlSlashCommand(command)) {
+      const receipt: MailboxReceipt = {
+        requestId: command.requestId,
+        idempotencyKey: command.idempotencyKey,
+        status: 'accepted',
+      };
+      this.receipts.set(command.idempotencyKey, receipt);
+      void this.execute(command).catch(() => undefined);
+      return receipt;
     }
 
     const occupied = this.queue.length + (this.activeCommand ? 1 : 0);
