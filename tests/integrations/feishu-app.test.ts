@@ -2410,6 +2410,87 @@ describe('Feishu app helpers', () => {
     expect(client.sendFileToChat).toHaveBeenNthCalledWith(2, 'oc_chat', 'file_key_sheet');
   });
 
+  it('imports text artifacts as Feishu cloud documents and falls back to file messages on failure', async () => {
+    const repoDir = mkdtempSync(resolve(tmpdir(), 'metaclaw-feishu-cloud-doc-'));
+    const taskDir = resolve(repoDir, 'metaclaw-tasks', 'task_cloud');
+    mkdirSync(taskDir, { recursive: true });
+    const reportPath = resolve(taskDir, 'report.md');
+    const brokenPath = resolve(taskDir, 'broken.md');
+    const imagePath = resolve(taskDir, 'chart.png');
+    writeFileSync(reportPath, '# 云文档报告\n正文', 'utf-8');
+    writeFileSync(brokenPath, '# 会失败', 'utf-8');
+    writeFileSync(imagePath, 'png', 'utf-8');
+
+    const session = {
+      getSnapshot: vi.fn()
+        .mockReturnValueOnce({ output: ['before'] })
+        .mockReturnValueOnce({
+          output: [
+            'before',
+            '> 生成报告',
+            '任务 #task_cloud 已创建：生成报告',
+            '+ Executor: codex-cli｜#task_cloud｜已启动 codex-cli 执行器',
+            '+ Executor: codex-cli｜#task_cloud｜报告已生成。',
+            '+ Executor: codex-cli｜#task_cloud｜tokens used',
+            '+ Executor: codex-cli｜#task_cloud｜123',
+            '✓ 任务完成 (3.1s)',
+            '┌─ 任务结果 ───────────────────────────────────────┐',
+            '│ 摘要: 报告已生成。',
+            '│ 下一步: 如需继续，可基于当前结果继续创建 follow-up 任务',
+            '└──────────────────────────────────────────────────┘',
+            `→ 文件输出目录: ${taskDir}`,
+            '→ 已省略文件正文输出，请直接查看生成文件',
+            '→ 已记录 3 个任务产物',
+            `   - ${reportPath}`,
+            `   - ${brokenPath}`,
+            `   - ${imagePath}`,
+          ],
+        }),
+      submit: vi.fn().mockResolvedValue({ exitRequested: false }),
+      appendSystemMessage: vi.fn(),
+    };
+    const client = {
+      addReactionToMessage: vi.fn().mockResolvedValue('reaction_typing'),
+      removeReactionFromMessage: vi.fn().mockResolvedValue(undefined),
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue(undefined),
+      uploadFile: vi.fn()
+        .mockResolvedValueOnce('file_key_broken')
+        .mockResolvedValueOnce('file_key_image'),
+      sendFileToChat: vi.fn().mockResolvedValue(undefined),
+      importFileToCloudDoc: vi.fn()
+        .mockResolvedValueOnce('https://feishu.cn/docx/doccn_report')
+        .mockRejectedValueOnce(new Error('permission denied')),
+    };
+
+    await handleFeishuMessageEvent({
+      message: {
+        message_id: 'om_message_cloud',
+        chat_id: 'oc_chat',
+        message_type: 'text',
+        content: '{"text":"生成报告"}',
+      },
+    }, {
+      session,
+      client,
+      seenMessageIds: new Set<string>(),
+    });
+
+    expect(client.importFileToCloudDoc).toHaveBeenNthCalledWith(1, reportPath);
+    expect(client.importFileToCloudDoc).toHaveBeenNthCalledWith(2, brokenPath);
+    expect(client.sendMarkdownCardToChat).toHaveBeenCalledWith('oc_chat', [
+      '**任务产物已同步到飞书云文档，点击直接查看**',
+      '- [report.md](https://feishu.cn/docx/doccn_report)',
+      '- broken.md',
+      '- chart.png',
+    ].join('\n'));
+    // The failed import and the non-text artifact fall back to file messages.
+    expect(client.uploadFile).toHaveBeenNthCalledWith(1, brokenPath);
+    expect(client.uploadFile).toHaveBeenNthCalledWith(2, imagePath);
+    expect(session.appendSystemMessage).toHaveBeenCalledWith(
+      expect.stringContaining('飞书云文档导入失败'),
+    );
+  });
+
   it('sends long Feishu replies in multiple ordered messages without dropping content', async () => {
     const longAnswer = [
       `${'甲'.repeat(1800)}`,

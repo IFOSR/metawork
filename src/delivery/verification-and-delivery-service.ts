@@ -1,4 +1,5 @@
-import { existsSync } from 'fs';
+import { existsSync, statSync } from 'fs';
+import { resolve, sep } from 'path';
 import type { ResolvedPreference, Task, TaskRecoveryTrigger, WorkspaceContext } from '../core/types.js';
 import type { NotificationService } from '../notifications/types.js';
 import {
@@ -338,11 +339,24 @@ export class VerificationAndDeliveryService {
       return [];
     }
 
-    const matches = output.match(/\/[^\s`"'，。,；;：！？（）()<>\]]+/g) ?? [];
-    const normalized = matches
+    const workspaceRoot = targetPaths[0]!;
+    // Absolute paths mentioned by the Executor.
+    const absoluteMatches = output.match(/\/[^\s`"'，。,；;：！？（）()<>\]]+/g) ?? [];
+    // Workspace-relative paths (for example "files/report.md") that Executors
+    // routinely report; resolve them against the workspace root so they are
+    // still captured for delivery and Feishu cloud-doc sync.
+    const relativeMatches = output.match(
+      /(?:^|[\s"'（(:：])([\w][\w .\/\-]*\.(?:md|markdown|txt|csv|json|html|yaml|yml|pdf|docx|xlsx|png|jpe?g|svg|py|ts|tsx|js|mjs|sh|sql|go|rs|java))\b/gu,
+    ) ?? [];
+    const relativeCleaned = relativeMatches
+      .map(candidate => candidate.replace(/^[\s"'（(:：]+/u, '').trim())
+      .filter(candidate => !candidate.startsWith('/'))
+      .map(candidate => resolve(workspaceRoot, candidate));
+
+    const normalized = [...absoluteMatches, ...relativeCleaned]
       .map(path => path.replace(/[.,;:!?）)\]]+$/u, ''))
-      .filter(path => targetPaths.some(targetPath => path.startsWith(targetPath)))
-      .filter(path => existsSync(path));
+      .filter(path => targetPaths.some(targetPath => path === targetPath || path.startsWith(`${targetPath}/`) || path.startsWith(`${targetPath}${sep}`)))
+      .filter(path => existsSync(path) && statSync(path).isFile());
 
     return Array.from(new Set(normalized));
   }

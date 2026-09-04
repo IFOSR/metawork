@@ -88,6 +88,8 @@ export interface FeishuAppConfig {
   event_path: string;
   verification_token?: string;
   encrypt_key_env?: string;
+  /** feishu（中国）或 lark（国际版）；云文档链接域名取决于它。 */
+  domain?: 'feishu' | 'lark';
 }
 
 interface JsonResponse {
@@ -242,7 +244,8 @@ export class FeishuAppClient {
   private readonly nowMs: () => number;
 
   constructor(
-    private readonly config: Required<Pick<FeishuAppConfig, 'app_id' | 'app_secret'>>,
+    private readonly config: Required<Pick<FeishuAppConfig, 'app_id' | 'app_secret'>>
+      & Partial<Pick<FeishuAppConfig, 'domain'>>,
     deps: FeishuAppClientDeps = {},
   ) {
     this.postJson = deps.postJson ?? defaultPostJson;
@@ -458,6 +461,104 @@ export class FeishuAppClient {
     return fileKey;
   }
 
+  /**
+   * Imports a text artifact (markdown and friends) as a Feishu cloud document
+   * and returns its URL, so users can read generated reports directly in
+   * Docs instead of receiving opaque file attachments or bare paths.
+   */
+  async importFileToCloudDoc(
+    filePath: string,
+    options: { pollIntervalMs?: number; timeoutMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+  ): Promise<string> {
+    const token = await this.getTenantAccessToken();
+    const fileName = basename(filePath);
+    const extension = fileName.includes('.') ? fileName.split('.').pop()!.toLowerCase() : '';
+    if (!extension) {
+      throw new Error(`飞书云文档导入需要带扩展名的文件: ${fileName}`);
+    }
+
+    // 1. Upload the raw file into the import staging area.
+    const form = new FormData();
+    form.set('file_name', fileName);
+    form.set('parent_type', 'ccm_import_open');
+    form.set('parent_node', '');
+    form.set('size', String(statSync(filePath).size));
+    form.set('file', new Blob([readFileSync(filePath)]), fileName);
+    const uploadResponse = await this.postForm(
+      'https://open.feishu.cn/open-apis/drive/v1/medias/upload_all',
+      form,
+      { authorization: `Bearer ${token}` },
+    );
+    const uploadPayload = await uploadResponse.json() as {
+      code?: number;
+      msg?: string;
+      data?: { file_token?: string };
+    };
+    const fileToken = uploadPayload.data?.file_token;
+    if (!uploadResponse.ok || uploadPayload.code !== 0 || !fileToken) {
+      throw new Error(`飞书云文档文件上传失败: ${uploadPayload.msg ?? uploadResponse.status}`);
+    }
+
+    // 2. Create the import task (markdown -> docx in the bot's cloud space).
+    const importResponse = await this.postJson(
+      'https://open.feishu.cn/open-apis/drive/v1/import_tasks',
+      {
+        file_extension: extension,
+        file_token: fileToken,
+        type: 'docx',
+        point: { mount_type: 1, mount_key: '0' },
+        file_name: fileName.replace(/\.[^.]+$/u, ''),
+      },
+      { authorization: `Bearer ${token}` },
+    );
+    const importPayload = await importResponse.json() as {
+      code?: number;
+      msg?: string;
+      data?: { ticket?: string };
+    };
+    const ticket = importPayload.data?.ticket;
+    if (!importResponse.ok || importPayload.code !== 0 || !ticket) {
+      throw new Error(`飞书云文档导入创建失败: ${importPayload.msg ?? importResponse.status}`);
+    }
+
+    // 3. Poll until the import finishes and collect the document token.
+    const sleep = options.sleep ?? ((ms: number) => new Promise(resolve => setTimeout(resolve, ms)));
+    const pollIntervalMs = options.pollIntervalMs ?? 1000;
+    const timeoutMs = options.timeoutMs ?? 60_000;
+    const startedAt = Date.now();
+    for (;;) {
+      await sleep(pollIntervalMs);
+      const statusResponse = await fetch(
+        `https://open.feishu.cn/open-apis/drive/v1/import_tasks/${encodeURIComponent(ticket)}`,
+        { headers: { authorization: `Bearer ${token}` } },
+      );
+      const statusPayload = await statusResponse.json() as {
+        code?: number;
+        msg?: string;
+        data?: {
+          result?: {
+            job_status?: number;
+            job_error_msg?: string;
+          };
+          token?: string;
+        };
+      };
+      if (statusPayload.code !== 0) {
+        throw new Error(`飞书云文档导入状态查询失败: ${statusPayload.msg ?? statusResponse.status}`);
+      }
+      const jobStatus = statusPayload.data?.result?.job_status;
+      if (jobStatus === 0 && statusPayload.data?.token) {
+        const domain = this.config.domain === 'lark'
+          ? 'https://www.larksuite.com'
+          : 'https://feishu.cn';
+        return `${domain}/docx/${statusPayload.data.token}`;
+      }
+      if (jobStatus === 2 || (jobStatus === 1 && Date.now() - startedAt > timeoutMs)) {
+        throw new Error(`飞书云文档导入失败: ${statusPayload.data?.result?.job_error_msg ?? 'timeout'}`);
+      }
+    }
+  }
+
   async sendFileToChat(chatId: string, fileKey: string): Promise<void> {
     const token = await this.getTenantAccessToken();
     const response = await this.postJson(
@@ -624,6 +725,7 @@ type FeishuMessageClient = Pick<
       | 'sendActionCardToThread'
       | 'downloadMessageResource'
       | 'uploadFile'
+      | 'importFileToCloudDoc'
       | 'sendFileToChat'
       | 'sendFileToThread'
   >>;
@@ -1179,6 +1281,7 @@ export function createFeishuBridge(config: Config, session: FeishuSessionPort): 
   const client = new FeishuAppClient({
     app_id: gatewayFeishu.appId,
     app_secret: appSecret,
+    domain: gatewayFeishu.domain,
   });
   const markdownPreview = buildFeishuMarkdownPreviewOptions(config);
   const gatewayConfig = {
@@ -2515,14 +2618,62 @@ async function sendArtifactFilesToFeishu(
     return;
   }
 
+  // Text artifacts become Feishu cloud documents so users can read generated
+  // reports in Docs directly; everything else (and any cloud-doc failure)
+  // falls back to a raw file message.
+  const CLOUD_DOC_EXTENSIONS = new Set([
+    'md', 'markdown', 'txt', 'csv', 'json', 'html', 'yaml', 'yml', 'log',
+  ]);
+  const isCloudDocCandidate = (path: string): boolean => {
+    const extension = path.split('.').pop()?.toLowerCase() ?? '';
+    return CLOUD_DOC_EXTENSIONS.has(extension) && Boolean(deps.client.importFileToCloudDoc);
+  };
+
+  const docLinks: Array<{ name: string; url: string }> = [];
+  const fileOnlyPaths: string[] = [];
+  for (const artifactPath of artifactPaths) {
+    if (!isCloudDocCandidate(artifactPath)) {
+      fileOnlyPaths.push(artifactPath);
+      continue;
+    }
+    try {
+      const url = await deps.client.importFileToCloudDoc!(artifactPath);
+      docLinks.push({ name: basename(artifactPath), url });
+      recordFeishuAudit(deps, {
+        kind: 'artifact',
+        chatId,
+        method: 'file',
+        ok: true,
+        reason: 'cloud_doc',
+      });
+    } catch (error) {
+      deps.session.appendSystemMessage(
+        `⚠️ 飞书云文档导入失败，改用文件发送: ${basename(artifactPath)}: ${(error as Error).message}`,
+      );
+      fileOnlyPaths.push(artifactPath);
+    }
+  }
+
+  const noticeLines: string[] = [];
+  if (docLinks.length > 0) {
+    noticeLines.push('**任务产物已同步到飞书云文档，点击直接查看**');
+    for (const doc of docLinks) {
+      noticeLines.push(`- [${doc.name}](${doc.url})`);
+    }
+  }
+  if (fileOnlyPaths.length > 0) {
+    if (noticeLines.length === 0) {
+      noticeLines.push('**任务产物已同步到飞书**');
+    }
+    for (const path of fileOnlyPaths) {
+      noticeLines.push(`- ${basename(path)}`);
+    }
+  }
   await sendMarkdownCardToFeishuTarget({
     client: deps.client,
     chatId,
     ...(threadId ? { threadId } : {}),
-  }, [
-    '**任务产物已同步到飞书**',
-    ...artifactPaths.map(path => `- ${basename(path)}`),
-  ].join('\n'));
+  }, noticeLines.join('\n'));
   recordFeishuAudit(deps, {
     kind: 'artifact',
     chatId,
@@ -2530,7 +2681,7 @@ async function sendArtifactFilesToFeishu(
     ok: true,
   });
 
-  for (const artifactPath of artifactPaths) {
+  for (const artifactPath of fileOnlyPaths) {
     try {
       const fileKey = await deps.client.uploadFile(artifactPath);
       if (threadId) {
