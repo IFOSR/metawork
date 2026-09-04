@@ -107,6 +107,7 @@ export function buildAccountKernelExecutionServices(deps: {
   taskExecutionCallbacks: TaskExecutionApplicationCallbacks;
   sessionKernelCallbacks: SessionKernelRuntimeCallbacks;
   conversationTaskSchedulerRepo?: ConversationTaskSchedulerRepo;
+  resolveWorkspacePath?: (taskId: string) => Promise<string | null>;
 }): AccountKernelExecutionServices {
   const kernelExecutionRuntime = new KernelExecutionRuntime({
     sessionId: deps.sessionId,
@@ -116,6 +117,7 @@ export function buildAccountKernelExecutionServices(deps: {
     orchestration: deps.orchestration,
     notifier: deps.notifier,
     taskRuntimeService: deps.taskRuntimeService,
+    ...(deps.resolveWorkspacePath ? { resolveWorkspacePath: deps.resolveWorkspacePath } : {}),
     agentClassService: deps.agentClassService,
     workGraphRuntimeService: deps.workGraphRuntimeService,
     subtaskRepo: deps.subtaskRepo,

@@ -64,6 +64,8 @@ export function buildAccountRuntimeComposition(deps: {
   orchestration: OrchestrationEngine;
   contextRecaller: ContextRecaller;
   notifier: NotificationService;
+  /** 任务 → 会话工作区解析（恢复/定时请求缺 workspacePath 时兜底）。 */
+  resolveWorkspacePath?: (taskId: string) => Promise<string | null>;
   /** 用户可见 Workspace 根（进程启动目录），与内部 workspaceStore 是不同依赖。 */
   userWorkspaceRoot?: string;
   resolveUserWorkspaceRoot?: (
@@ -197,6 +199,7 @@ export function buildAccountRuntimeComposition(deps: {
     getConfigurationRevision: deps.getConfigurationRevision,
     getRuntimeConfiguration: deps.getRuntimeConfiguration,
     taskRuntimeService: taskServices.taskRuntimeService,
+    ...(deps.resolveWorkspacePath ? { resolveWorkspacePath: deps.resolveWorkspacePath } : {}),
     agentClassService: taskServices.agentClassService,
     workGraphRuntimeService: repositories.workGraphRuntimeService,
     subtaskRepo: repositories.subtaskRepo,

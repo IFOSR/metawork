@@ -72,15 +72,21 @@ and server restarted between fixes.
    never be claimed. drain now yields via macrotasks with backoff and fails
    loudly after a bounded idle budget (tunable, default ~60s); combined with
    the claim-time terminalization in (1) the drain converges.
-5. **Dispatch payload integrity.** — **Partially delivered.** Root cause
-   located: `selectDispatchableSubtasks` batch dispatch synthesizes items
-   with `attemptPayload: null` (only single-dispatch recovery paths carry
-   payloads). Defenses shipped: the attempt runner refuses to execute against
-   the workspace-store fallback (`has no workspace source`), and
-   `importPlainSource` rejects self-nested sources with a clear error.
-   **Remaining:** populate the payload (workspacePath/goal) in the batch
-   dispatch synthesis inside `control-kernel.ts` — needs a Kernel decision
-   surface change with its own ADR-adjacent review.
+5. **Dispatch payload integrity.** — **Delivered (2026-09-04).** Root cause
+   refined again by the WeChat-Channels incident: normal dispatches obtain
+   their workspace from the queued turn request (`QueuedExecutionRequest
+   .workspacePath`), which the original submission carries; **recovery and
+   timer requests are synthesized without it**, so continuation dispatches
+   fell back to the workspace-store root and were stopped by the runner
+   guard (`has no workspace source`) — correct defense, broken recovery.
+   Fix: `KernelExecutionRuntime.runDispatchItem` now resolves the missing
+   workspace through the new `resolveWorkspacePath(taskId)` dependency
+   (task → `tasks.workspace_id` → workspace catalog → `canonicalPath`),
+   wired from `server-composition` (and passed through the account service
+   builders). Verified against real data: the Channels task resolves to
+   `/Users/ylfego/Program/test` (available). Batch-dispatch payload
+   synthesis (`selectDispatchableSubtasks`) remains payload-null by design;
+   the runner-side workspace resolution makes that safe.
 6. **Stale instance lock recovery.** — **Already present**
    (`acquireInstanceLock` reclaims stale locks by PID liveness); the 2026-09-03
    "lock stuck" observation was a live busy-looping process holding it. No

@@ -57,6 +57,7 @@ export function buildAccountRuntimeExecutionServices(deps: {
   workspaceRepository: SqliteWorkspaceRepository;
   attemptExecutionRepository: SqliteAttemptExecutionRepository;
   conversationTaskSchedulerRepo: ConversationTaskSchedulerRepo;
+  resolveWorkspacePath?: (taskId: string) => Promise<string | null>;
   accountId?: string;
   resultRoot: string;
 }): AccountRuntimeExecutionServices {
@@ -73,6 +74,7 @@ export function buildAccountRuntimeExecutionServices(deps: {
     workGraphRevisionRepo: deps.workGraphRevisionRepo,
     dispatchItemRepo,
     schedulerRepo: deps.conversationTaskSchedulerRepo,
+    ...(deps.resolveWorkspacePath ? { resolveWorkspacePath: deps.resolveWorkspacePath } : {}),
     publicationRepo,
     generationReplanRepo,
     resourceLeaseService,

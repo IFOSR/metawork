@@ -371,6 +371,10 @@ export interface KernelExecutionRuntimeDeps {
   orchestration: OrchestrationEngine;
   notifier: NotificationService;
   taskRuntimeService: TaskRuntimeService;
+  /** Resolves a task's conversation workspace path when the queued request
+   *  does not carry one (timer/recovery requests historically omitted it,
+   *  which broke continuation dispatches with a missing workspace source). */
+  resolveWorkspacePath?: (taskId: string) => Promise<string | null>;
   agentClassService: AgentClassService;
   workGraphRuntimeService: WorkGraphRuntimeService;
   subtaskRepo: SubtaskRepo;
@@ -1654,6 +1658,16 @@ export class KernelExecutionRuntime {
     progressTracker: ReturnType<ExecutionProgressService['createTracker']>;
   }): Promise<KernelEvent> {
     const { item } = input;
+    let request = input.request;
+    if (!request.workspacePath && this.deps.resolveWorkspacePath) {
+      // Recovery/timer requests do not carry the conversation workspace;
+      // resolve it from the task so continuation attempts execute against
+      // the real source instead of the workspace-store fallback (P0-5).
+      const resolved = await this.deps.resolveWorkspacePath(item.taskId);
+      if (resolved) {
+        request = { ...request, workspacePath: resolved };
+      }
+    }
     const existingReceipt = this.deps.attemptReceiptRepo.findByAttemptId(item.attemptId);
     if (
       existingReceipt?.terminalState === 'contract_blocked'

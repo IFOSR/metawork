@@ -716,10 +716,18 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
 
   // ADR-0031: 组合根构造 RuntimeRegistry + AccountRuntime（local-default），
   // 会话工厂复用 AccountRuntime 的账户级服务簇。
+  const resolveTaskWorkspacePath = async (taskId: string): Promise<string | null> => {
+    const task = db.prepare('SELECT workspace_id FROM tasks WHERE id = ?').get(taskId) as
+      { workspace_id: string | null } | undefined;
+    if (!task?.workspace_id) return null;
+    const workspace = await workspaceCatalogStore.findById(task.workspace_id);
+    return workspace && workspace.availability === 'available' ? workspace.canonicalPath : null;
+  };
   accountRuntimeComposition = buildAccountRuntimeComposition({
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     db,
     taskEngine,
+    resolveWorkspacePath: resolveTaskWorkspacePath,
     memoryEngine,
     orchestration,
     contextRecaller,
