@@ -6,10 +6,15 @@ import type {
   FeishuSessionPort,
 } from '../integrations/feishu-app.js';
 import type { GatewayEventEnvelope, GatewayReplay } from './client-events.js';
+import type { InteractionTraceEvent } from '../management/interaction-trace.js';
 import type { EventJournal } from './event-journal.js';
 import type { FeishuGatewayAdapter } from './feishu-gateway-adapter.js';
 import type { GatewaySubscriptions } from './gateway-subscriptions.js';
 import { ResultStreamAssembler } from './result-stream-assembler.js';
+import {
+  createTaskActivityTracker,
+  type TaskActivityTracker,
+} from './task-activity-tracker.js';
 import { workspaceEventStreamId } from './workspace-event-stream.js';
 import {
   formatFeishuWorkspaceConfirmation,
@@ -23,7 +28,16 @@ export interface FeishuGatewaySessionPortDeps {
   readonly journal: EventJournal;
   readonly subscriptions: GatewaySubscriptions;
   readonly timeoutMs?: number;
+  /** Min interval between in-place activity card updates (default 5s). */
+  readonly activityCardMinIntervalMs?: number;
   readonly onSystemMessage?: (...lines: string[]) => void;
+  /** Registered artifacts for a task (drives Feishu cloud-doc delivery). */
+  readonly listTaskArtifacts?: (taskId: string) => Array<{
+    displayName: string;
+    publishedPath: string;
+    mediaType: string;
+    previewKind: string;
+  }>;
   readonly runtimePaths?: FeishuSessionPort['runtimePaths'];
 }
 
@@ -37,9 +51,14 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
   private readonly liveAttachments = new Map<string, {
     conversationId: string;
     unsubscribe: () => void;
+    activity: FeishuActivityCardState;
   }>();
 
   constructor(private readonly deps: FeishuGatewaySessionPortDeps) {}
+
+  private get activityCardMinIntervalMs(): number {
+    return this.deps.activityCardMinIntervalMs ?? 5_000;
+  }
 
   get runtimePaths(): FeishuSessionPort['runtimePaths'] {
     return this.deps.runtimePaths;
@@ -82,7 +101,7 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     chatType?: 'dm' | 'group' | 'unknown';
     text: string;
     requestId: string;
-    onProgress: (text: string) => void;
+    onProgress: (text: string, options?: { cardUpdateKey?: string; collapsedMarkdown?: string }) => void;
   }): Promise<string[] | FeishuGatewayReply> {
     this.activeRequestIds.add(input.requestId);
     try {
@@ -99,7 +118,7 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     chatType?: 'dm' | 'group' | 'unknown';
     text: string;
     requestId: string;
-    onProgress: (text: string) => void;
+    onProgress: (text: string, options?: { cardUpdateKey?: string; collapsedMarkdown?: string }) => void;
   }): Promise<string[] | FeishuGatewayReply> {
     const receipt = await this.deps.adapter.handleMessage(
       { tenantKey: this.deps.tenantKey, userId: input.senderId },
@@ -194,7 +213,7 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     for (const event of replayEvents) {
       if (isWorkspaceProjectionEvent(event)) continue;
       const result = terminal.consume(event);
-      if (result) return result;
+      if (result) return result as string[];
     }
     return terminal.promise;
   }
@@ -391,7 +410,20 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     const existing = this.liveAttachments.get(connectionId);
     if (existing?.conversationId === conversationId) return;
     existing?.unsubscribe();
+    existing?.activity.dispose();
     const resultAssembler = new ResultStreamAssembler();
+    const activity = createLiveActivityCardState(
+      this.activityCardMinIntervalMs,
+      (card, collapsedMarkdown) => this.emitDelivery({
+        ...target,
+        kind: 'progress',
+        reply: {
+          lines: [card],
+          cardUpdateKey: `feishu-activity:live:${conversationId}`,
+          ...(collapsedMarkdown ? { collapsedMarkdown } : {}),
+        },
+      }),
+    );
     const unsubscribe = this.deps.subscriptions.subscribe({
       accountId: this.deps.accountId,
       conversationId,
@@ -411,12 +443,21 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
           return;
         }
         if (event.kind === 'trace_delta') {
-          const lines = traceProgressLines(event);
-          if (lines.length > 0) {
+          const payload = asRecord(event.payload);
+          const items = Array.isArray(payload?.events) ? payload.events : [];
+          const milestones: string[] = [];
+          for (const rawItem of items) {
+            const { milestone } = activity.tracker.consume(
+              normalizeTraceActivityEvent(asRecord(rawItem) ?? {}),
+            );
+            if (milestone && milestone.tier === 'chat') milestones.push(milestone.text);
+            else activity.schedule();
+          }
+          if (milestones.length > 0) {
             this.emitDelivery({
               ...target,
               kind: 'progress',
-              reply: { lines },
+              reply: { lines: milestones },
             });
           }
           return;
@@ -447,11 +488,13 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
         });
       },
     });
-    this.liveAttachments.set(connectionId, { conversationId, unsubscribe });
+    this.liveAttachments.set(connectionId, { conversationId, unsubscribe, activity });
   }
 
   private clearLiveAttachment(connectionId: string): void {
-    this.liveAttachments.get(connectionId)?.unsubscribe();
+    const attachment = this.liveAttachments.get(connectionId);
+    attachment?.unsubscribe();
+    attachment?.activity.dispose();
     this.liveAttachments.delete(connectionId);
   }
 
@@ -459,14 +502,36 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     for (const listener of this.deliveryListeners) listener(delivery);
   }
 
+  private taskArtifactsFor(taskId: string | null): Array<{
+    name: string;
+    path: string;
+    mediaType: string;
+    previewKind: string;
+  }> {
+    if (!taskId || !this.deps.listTaskArtifacts) return [];
+    try {
+      return this.deps.listTaskArtifacts(taskId).map(record => ({
+        name: record.displayName,
+        path: record.publishedPath,
+        mediaType: record.mediaType,
+        previewKind: record.previewKind,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
   private waitForTerminal(
     conversationId: string,
     requestId: string,
     connectionId: string,
-    onProgress: (text: string) => void,
+    onProgress: (
+      text: string,
+      options?: { cardUpdateKey?: string; collapsedMarkdown?: string },
+    ) => void,
   ): {
-    promise: Promise<string[]>;
-    consume(event: GatewayEventEnvelope): string[] | null;
+    promise: Promise<string[] | FeishuGatewayReply>;
+    consume(event: GatewayEventEnvelope): unknown;
   } {
     let unsubscribe: (() => void) | null = null;
     let timeout: NodeJS.Timeout | null = null;
@@ -475,8 +540,36 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     const resultAssembler = new ResultStreamAssembler();
     const pendingProgress = new Map<string, string>();
     let progressFlushTimer: NodeJS.Timeout | null = null;
-    let resolvePromise!: (lines: string[]) => void;
+    const activity = createTaskActivityTracker();
+    const cardUpdateKey = `feishu-activity:${requestId}`;
+    let cardTimer: NodeJS.Timeout | null = null;
+    let lastCardSentAtMs = 0;
+    let resolvePromise!: (value: string[] | FeishuGatewayReply) => void;
     let rejectPromise!: (error: Error) => void;
+    const paintActivityCard = () => {
+      lastCardSentAtMs = Date.now();
+      const parts = activity.renderCardParts();
+      onProgress(parts.markdown, {
+        cardUpdateKey,
+        ...(parts.collapsedMarkdown ? { collapsedMarkdown: parts.collapsedMarkdown } : {}),
+      });
+    };
+    const scheduleActivityCard = () => {
+      if (cardTimer) return;
+      const waitMs = Math.max(
+        0,
+        this.activityCardMinIntervalMs - (Date.now() - lastCardSentAtMs),
+      );
+      if (waitMs === 0) {
+        paintActivityCard();
+        return;
+      }
+      cardTimer = setTimeout(() => {
+        cardTimer = null;
+        paintActivityCard();
+      }, waitMs);
+      cardTimer.unref?.();
+    };
     const cleanup = () => {
       unsubscribe?.();
       unsubscribe = null;
@@ -484,6 +577,8 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       timeout = null;
       if (progressFlushTimer) clearTimeout(progressFlushTimer);
       progressFlushTimer = null;
+      if (cardTimer) clearTimeout(cardTimer);
+      cardTimer = null;
     };
     const flushProgress = () => {
       if (pendingProgress.size === 0) return;
@@ -505,7 +600,7 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       }, 250);
       progressFlushTimer.unref?.();
     };
-    const consume = (event: GatewayEventEnvelope): string[] | null => {
+    const consume = (event: GatewayEventEnvelope): string[] | FeishuGatewayReply | null => {
       if (settled) return null;
       if (seenEventIds.has(event.eventId)) return null;
       seenEventIds.add(event.eventId);
@@ -530,36 +625,27 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       }
       if (event.kind === 'trace_delta') {
         const payload = event.payload as {
-          events?: Array<{
-            id?: string;
-            kind?: string;
-            title?: string;
-            summary?: string;
-            subtaskId?: string | null;
-            details?: { subtaskId?: string };
-          }>;
+          events?: Array<Record<string, unknown>>;
         };
         for (const item of payload.events ?? []) {
-          const text = [item.title, item.summary].filter(Boolean).join('：');
-          const terminal = Boolean(item.kind && (
-            item.kind.includes('blocked')
-            || item.kind.includes('failed')
-            || item.kind.includes('publication')
-            || item.kind.includes('delivery_completed')
-            || item.kind.includes('result_observed')
-          ));
-          const key = item.subtaskId
-            ?? item.details?.subtaskId
-            ?? item.kind
-            ?? item.id
-            ?? 'execution';
-          queueProgress(key, text, terminal);
+          const { milestone } = activity.consume(normalizeTraceActivityEvent(item));
+          if (milestone && milestone.tier === 'chat') {
+            // L3 chat tier: only high-value milestones interrupt the user.
+            queueProgress(milestone.key, milestone.text, true);
+          } else {
+            // L1/L2: step detail converges into the self-updating activity
+            // card instead of flooding the chat (replaces traceProgressLines).
+            scheduleActivityCard();
+          }
         }
       }
       if (event.kind === 'terminal_error') {
         flushProgress();
         const message = (event.payload as { message?: string }).message
           ?? 'Gateway execution failed';
+        if (lastCardSentAtMs > 0) {
+          onProgress(activity.renderReceipt('failed', message), { cardUpdateKey });
+        }
         settled = true;
         cleanup();
         if (/workspace_required|workspace (?:is )?not (?:selected|set)/iu.test(message)) {
@@ -572,19 +658,24 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       }
       if (event.kind === 'final_answer') {
         flushProgress();
+        if (lastCardSentAtMs > 0) {
+          onProgress(activity.renderReceipt('completed'), { cardUpdateKey });
+        }
         const payload = event.payload as { lines?: string[]; resultId?: string };
         const completed = payload.resultId
           ? resultAssembler.find(payload.resultId)
           : null;
         const lines = completed ? completed.content.split('\n') : payload.lines ?? [];
+        const artifacts = this.taskArtifactsFor(activity.snapshot().taskId);
+        const value = artifacts.length > 0 ? { lines, artifacts } : lines;
         settled = true;
         cleanup();
-        resolvePromise(lines);
-        return lines;
+        resolvePromise(value);
+        return value;
       }
       return null;
     };
-    const promise = new Promise<string[]>((resolve, reject) => {
+    const promise = new Promise<string[] | FeishuGatewayReply>((resolve, reject) => {
       resolvePromise = resolve;
       rejectPromise = reject;
     });
@@ -658,17 +749,62 @@ function workspacePathFromEvent(event: GatewayEventEnvelope): string | null {
     : null;
 }
 
-function traceProgressLines(event: GatewayEventEnvelope): string[] {
-  const payload = asRecord(event.payload);
-  if (!Array.isArray(payload?.events)) return [];
-  return payload.events.flatMap(item => {
-    const record = asRecord(item);
-    const text = [
-      stringValue(record?.title),
-      stringValue(record?.summary),
-    ].filter((value): value is string => value !== null).join('：');
-    return text ? [text.slice(0, 500)] : [];
-  });
+function normalizeTraceActivityEvent(item: Record<string, unknown>): InteractionTraceEvent {
+  return {
+    id: stringValue(item.id) ?? `trace-${Math.random().toString(36).slice(2)}`,
+    sequence: typeof item.sequence === 'number' ? item.sequence : 0,
+    occurredAt: stringValue(item.occurredAt) ?? new Date().toISOString(),
+    phase: (stringValue(item.phase) ?? 'execution') as InteractionTraceEvent['phase'],
+    actor: (stringValue(item.actor) ?? 'runtime') as InteractionTraceEvent['actor'],
+    kind: stringValue(item.kind) ?? 'unknown',
+    status: (stringValue(item.status) ?? 'running') as InteractionTraceEvent['status'],
+    title: stringValue(item.title) ?? '',
+    summary: stringValue(item.summary) ?? '',
+    details: asRecord(item.details) ?? {},
+    taskId: stringValue(item.taskId),
+    subtaskId: stringValue(item.subtaskId),
+  };
+}
+
+interface FeishuActivityCardState {
+  tracker: TaskActivityTracker;
+  /** Schedule a throttled in-place card repaint for accumulated activity. */
+  schedule(): void;
+  dispose(): void;
+}
+
+function createLiveActivityCardState(
+  minIntervalMs: number,
+  emitCard: (card: string, collapsedMarkdown: string | null) => void,
+): FeishuActivityCardState {
+  const tracker = createTaskActivityTracker();
+  let timer: NodeJS.Timeout | null = null;
+  let lastSentAtMs = 0;
+  const paint = () => {
+    lastSentAtMs = Date.now();
+    const parts = tracker.renderCardParts();
+    emitCard(parts.markdown, parts.collapsedMarkdown);
+  };
+  return {
+    tracker,
+    schedule() {
+      if (timer) return;
+      const waitMs = Math.max(0, minIntervalMs - (Date.now() - lastSentAtMs));
+      if (waitMs === 0) {
+        paint();
+        return;
+      }
+      timer = setTimeout(() => {
+        timer = null;
+        paint();
+      }, waitMs);
+      timer.unref?.();
+    },
+    dispose() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    },
+  };
 }
 
 interface FeishuWorkspaceConversation {

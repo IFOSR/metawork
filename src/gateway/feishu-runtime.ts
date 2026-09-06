@@ -34,6 +34,11 @@ export async function startFeishuRuntimeBridge(
         ? '→ 飞书 Webhook 桥接已启动，等待飞书回调'
         : '→ 飞书长连接桥接已启动，等待飞书消息',
     );
+    session.appendSystemMessage(
+      '→ 飞书权限自检清单（长任务卡片/云文档需要）: '
+      + 'im:message（发消息）、im:message:update（卡片原地更新）、'
+      + 'im:file（文件上传）、docx 文档导入权限。缺失时进度卡片降级为低频新发并在审计中记录。',
+    );
   } catch (error) {
     session.appendSystemMessage(`⚠️ 飞书应用桥接启动失败: ${(error as Error).message}`);
     return null;

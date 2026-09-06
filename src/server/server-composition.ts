@@ -1299,6 +1299,14 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       journal: eventJournal,
       subscriptions: gatewaySubscriptions,
       onSystemMessage: (...lines) => console.log(lines.join('\n')),
+      listTaskArtifacts: (taskId: string) => new TaskArtifactRepo(db)
+        .listByTask(taskId)
+        .map(record => ({
+          displayName: record.displayName,
+          publishedPath: record.publishedPath,
+          mediaType: record.mediaType,
+          previewKind: record.previewKind,
+        })),
       runtimePaths: {
         pairing: resolve(accountPaths.gateway, 'feishu-pairings.json'),
         audit: resolve(accountPaths.gateway, 'gateway-audit.jsonl'),

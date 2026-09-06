@@ -181,7 +181,9 @@ describe('FeishuGatewaySessionPort', () => {
       requestId: 'req_1',
       onProgress: message => progressMessages.push(message),
     })).resolves.toEqual(['final answer']);
-    expect(progressMessages).toEqual(['Planning：Inspecting context']);
+    expect(progressMessages).toHaveLength(2); // activity card + completion receipt
+    expect(progressMessages[0]).toContain('Planning：Inspecting context');
+    expect(progressMessages[1]).toContain('任务已完成');
   });
 
   it('reassembles a large replayed result instead of relying on final-answer lines', async () => {
@@ -565,7 +567,10 @@ describe('FeishuGatewaySessionPort', () => {
         chatId: 'chat_1',
         threadId: 'thread_1',
         kind: 'progress',
-        reply: { lines: ['Planning：Inspecting context'] },
+        reply: {
+          lines: [expect.stringContaining('Planning：Inspecting context')],
+          cardUpdateKey: 'feishu-activity:live:conv_1',
+        },
       },
       {
         senderId: 'user_1',
@@ -577,6 +582,181 @@ describe('FeishuGatewaySessionPort', () => {
     ]);
     unsubscribe();
   });
+
+  it('converges executor progress floods into a throttled activity card and pushes milestones immediately', async () => {
+    const subscriptions = new GatewaySubscriptions();
+    const traceFlood = (sequence: number): GatewayEventEnvelope => ({
+      ...finalEvent(),
+      eventId: `event_trace_${sequence}`,
+      sequence,
+      kind: 'trace_delta',
+      payload: {
+        turnId: 'turn_1',
+        events: [{
+          id: `evt_${sequence}`,
+          sequence,
+          occurredAt: '2026-09-05T01:00:00.000Z',
+          phase: 'execution',
+          actor: 'executor',
+          kind: 'executor_progress',
+          status: 'running',
+          title: 'Executor progress: skill',
+          summary: `Executor started tool: web_search — query ${sequence}`,
+          details: {},
+          taskId: 'task_1',
+        }],
+      },
+    });
+    const milestoneEvent: GatewayEventEnvelope = {
+      ...finalEvent(),
+      eventId: 'event_milestone',
+      sequence: 90,
+      kind: 'trace_delta',
+      payload: {
+        turnId: 'turn_1',
+        events: [{
+          id: 'evt_milestone',
+          sequence: 90,
+          occurredAt: '2026-09-05T01:00:01.000Z',
+          phase: 'execution',
+          actor: 'runtime',
+          kind: 'subtask_execution_started',
+          status: 'running',
+          title: 'Executing Subtask: 收集视频号数据',
+          summary: '',
+          details: {},
+          taskId: 'task_1',
+          subtaskId: 'sub_1',
+        }, {
+          id: 'evt_milestone_chat',
+          sequence: 91,
+          occurredAt: '2026-09-05T01:00:02.000Z',
+          phase: 'execution',
+          actor: 'runtime',
+          kind: 'executor_result_observed',
+          status: 'completed',
+          title: 'Result observed',
+          summary: '子任务完成',
+          details: {},
+          taskId: 'task_1',
+          subtaskId: 'sub_1',
+        }],
+      },
+    };
+    const journal: EventJournal = {
+      append: async event => event,
+      replay: async () => {
+        const origin = { connectionId: 'feishu:chat_1:', surface: 'feishu' as const };
+        subscriptions.publish(milestoneEvent, origin);
+        subscriptions.publish(traceFlood(1), origin);
+        subscriptions.publish(traceFlood(2), origin);
+        subscriptions.publish(traceFlood(3), origin);
+        return { lastSequence: 99, snapshot: [], deltas: [finalEventFor('req_1', 99)] };
+      },
+    };
+    const port = new FeishuGatewaySessionPort({
+      accountId: 'local-default',
+      tenantKey: 'tenant_1',
+      adapter: {
+        handleMessage: async () => ({
+          requestId: 'req_1',
+          idempotencyKey: 'feishu:req_1',
+          status: 'accepted',
+          conversationId: 'conv_1',
+        }),
+      } as unknown as FeishuGatewayAdapter,
+      journal,
+      subscriptions,
+      timeoutMs: 500,
+      activityCardMinIntervalMs: 60_000,
+    });
+    const progressCalls: Array<{ text: string; cardUpdateKey?: string }> = [];
+
+    await expect(port.submitGatewayMessage({
+      senderId: 'user_1',
+      chatId: 'chat_1',
+      text: 'research',
+      requestId: 'req_1',
+      onProgress: (text, options) => progressCalls.push({ text, cardUpdateKey: options?.cardUpdateKey }),
+    })).resolves.toEqual(['final answer']);
+
+    const milestoneCalls = progressCalls.filter(call => call.cardUpdateKey === undefined);
+    expect(milestoneCalls).toHaveLength(1);
+    expect(milestoneCalls[0]!.text).toContain('Result observed');
+    // Card-tier milestones (subtask start) never reach the chat.
+    expect(milestoneCalls.some(call => call.text.includes('Executing Subtask'))).toBe(false);
+
+    const cardCalls = progressCalls.filter(call => call.cardUpdateKey !== undefined);
+    expect(cardCalls).toHaveLength(2); // activity card + completion receipt
+    expect(cardCalls[0]!.cardUpdateKey).toBe('feishu-activity:req_1');
+    expect(cardCalls[0]!.text).toContain('收集视频号数据');
+    expect(cardCalls[1]!.text).toContain('任务已完成');
+    expect(cardCalls[0]!.text).toContain('收集视频号数据');
+  });
+
+  it('attaches registered task artifacts to the final reply for cloud-doc delivery', async () => {
+    const subscriptions = new GatewaySubscriptions();
+    const journal: EventJournal = {
+      append: async event => event,
+      replay: async () => ({ lastSequence: 0, snapshot: [], deltas: [] }),
+    };
+    const adapter = {
+      handleMessage: async () => ({
+        requestId: 'req_1',
+        idempotencyKey: 'feishu:req_1',
+        status: 'accepted',
+        conversationId: 'conv_1',
+      }),
+    } as unknown as FeishuGatewayAdapter;
+    const port = new FeishuGatewaySessionPort({
+      accountId: 'local-default',
+      tenantKey: 'tenant_1',
+      adapter,
+      journal,
+      subscriptions,
+      timeoutMs: 500,
+      listTaskArtifacts: taskId => (taskId === 'task_1' ? [{
+        displayName: '调研报告.md',
+        publishedPath: '/tmp/artifacts/调研报告.md',
+        mediaType: 'text/markdown',
+        previewKind: 'markdown',
+      }] : []),
+    });
+    const origin = { connectionId: 'feishu:chat_1:', surface: 'feishu' as const };
+    const taskTrace: GatewayEventEnvelope = {
+      ...finalEvent(),
+      eventId: 'event_task',
+      sequence: 1,
+      kind: 'trace_delta',
+      payload: {
+        turnId: 'turn_1',
+        events: [{
+          id: 'evt_sub', sequence: 1, occurredAt: '2026-09-05T01:00:00.000Z',
+          phase: 'execution', actor: 'runtime', kind: 'subtask_execution_started',
+          status: 'running', title: 'Executing Subtask: 调研', summary: '',
+          details: {}, taskId: 'task_1', subtaskId: 'sub_1',
+        }],
+      },
+    };
+    const submitPromise = port.submitGatewayMessage({
+      senderId: 'user_1',
+      chatId: 'chat_1',
+      text: '调研一下',
+      requestId: 'req_1',
+      onProgress: () => undefined,
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    subscriptions.publish(taskTrace, origin);
+    subscriptions.publish(finalEventFor('req_1', 2), origin);
+    const reply = await submitPromise;
+    expect(Array.isArray(reply)).toBe(false);
+    if (Array.isArray(reply)) return;
+    expect(reply.artifacts).toEqual([expect.objectContaining({
+      name: '调研报告.md',
+      previewKind: 'markdown',
+    })]);
+  });
+
 });
 
 function finalEvent(): GatewayEventEnvelope {

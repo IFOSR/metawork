@@ -22,7 +22,7 @@ export interface FeishuSessionPort {
     chatType?: 'dm' | 'group' | 'unknown';
     text: string;
     requestId: string;
-    onProgress: (text: string) => void;
+    onProgress: (text: string, options?: { cardUpdateKey?: string; collapsedMarkdown?: string }) => void;
   }): Promise<string[] | FeishuGatewayReply>;
   submitGatewayAction?(input: {
     senderId: string;
@@ -53,6 +53,20 @@ export interface FeishuGatewayActionValue {
 
 export interface FeishuGatewayReply {
   readonly lines: string[];
+  /**
+   * When set, deliveries with the same key update one Feishu card in place
+   * instead of sending a new message each time (long-task activity card).
+   */
+  readonly cardUpdateKey?: string;
+  /** Collapsed "展开执行细节" section content for activity cards. */
+  readonly collapsedMarkdown?: string;
+  /** Registered task artifacts to deliver as Feishu cloud docs / files. */
+  readonly artifacts?: ReadonlyArray<{
+    readonly name: string;
+    readonly path: string;
+    readonly mediaType: string;
+    readonly previewKind: string;
+  }>;
   readonly actions?: Array<{
     readonly label: string;
     readonly value: FeishuGatewayActionValue;
@@ -101,6 +115,7 @@ interface JsonResponse {
 
 interface FeishuAppClientDeps {
   postJson?: (url: string, body: Record<string, unknown>, headers?: Record<string, string>) => Promise<JsonResponse>;
+  putJson?: (url: string, body: Record<string, unknown>, headers?: Record<string, string>) => Promise<JsonResponse>;
   postForm?: (url: string, form: FormData, headers?: Record<string, string>) => Promise<JsonResponse>;
   getBinary?: (url: string, headers?: Record<string, string>) => Promise<BinaryResponse>;
   deleteJson?: (url: string, headers?: Record<string, string>) => Promise<JsonResponse>;
@@ -208,6 +223,14 @@ type FeishuMarkdownCardV2Element =
       content: string;
     }
   | {
+      tag: 'collapsible_panel';
+      expanded: boolean;
+      header: {
+        title: { tag: 'plain_text'; content: string };
+      };
+      elements: Array<{ tag: 'markdown'; content: string }>;
+    }
+  | {
       tag: 'table';
       page_size: number;
       row_height: 'low';
@@ -238,6 +261,7 @@ const MARKDOWN_FENCE_CLOSE_RE = /^```\s*$/;
 export class FeishuAppClient {
   private tenantToken: TenantTokenState | null = null;
   private readonly postJson: (url: string, body: Record<string, unknown>, headers?: Record<string, string>) => Promise<JsonResponse>;
+  private readonly putJson: (url: string, body: Record<string, unknown>, headers?: Record<string, string>) => Promise<JsonResponse>;
   private readonly postForm: (url: string, form: FormData, headers?: Record<string, string>) => Promise<JsonResponse>;
   private readonly getBinary: (url: string, headers?: Record<string, string>) => Promise<BinaryResponse>;
   private readonly deleteJson: (url: string, headers?: Record<string, string>) => Promise<JsonResponse>;
@@ -249,6 +273,7 @@ export class FeishuAppClient {
     deps: FeishuAppClientDeps = {},
   ) {
     this.postJson = deps.postJson ?? defaultPostJson;
+    this.putJson = deps.putJson ?? defaultPutJson;
     this.postForm = deps.postForm ?? defaultPostForm;
     this.getBinary = deps.getBinary ?? defaultGetBinary;
     this.deleteJson = deps.deleteJson ?? defaultDeleteJson;
@@ -327,9 +352,13 @@ export class FeishuAppClient {
     }
   }
 
-  async sendMarkdownCardToChat(chatId: string, markdown: string): Promise<void> {
+  async sendMarkdownCardToChat(
+    chatId: string,
+    markdown: string,
+    options: { collapsedMarkdown?: string } = {},
+  ): Promise<string | null> {
     const token = await this.getTenantAccessToken();
-    const sendCard = async (card: FeishuMarkdownCard) => {
+    const sendCard = async (card: FeishuMarkdownCard): Promise<string | null> => {
       const response = await this.postJson(
         'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
         {
@@ -341,31 +370,63 @@ export class FeishuAppClient {
           authorization: `Bearer ${token}`,
         },
       );
-      const payload = await response.json() as { code?: number; msg?: string };
+      const payload = await response.json() as {
+        code?: number;
+        msg?: string;
+        data?: { message_id?: string };
+      };
       if (!response.ok || payload.code !== 0) {
         throw new Error(`飞书消息发送失败: ${payload.code ?? response.status}${payload.msg ? ` ${payload.msg}` : ''}`);
       }
+      return payload.data?.message_id ?? null;
     };
 
-    const card = createFeishuMarkdownCard(markdown);
+    const card = createFeishuMarkdownCard(markdown, options);
     try {
-      await sendCard(card);
+      return await sendCard(card);
     } catch (error) {
       let fallbackError = error;
       if (isFeishuTableCard(card) && isFeishuCardContentError(error)) {
         try {
-          await sendCard(createFeishuMarkdownCard(markdown, { tableMode: 'markdown' }));
-          return;
+          return await sendCard(createFeishuMarkdownCard(markdown, { tableMode: 'markdown' }));
         } catch (tableFallbackError) {
           fallbackError = tableFallbackError;
         }
       }
       if (isFeishuCardContentError(fallbackError)) {
-        await sendCard(createFeishuPlainTextCard(markdown));
-        return;
+        return await sendCard(createFeishuPlainTextCard(markdown));
       }
       throw fallbackError;
     }
+  }
+
+  /**
+   * Update an existing interactive card in place (long-task activity card).
+   * Returns false when Feishu rejects the update so callers can fall back to
+   * sending a fresh card instead.
+   */
+  async updateMarkdownCard(
+    messageId: string,
+    markdown: string,
+    options: { collapsedMarkdown?: string } = {},
+  ): Promise<{ ok: boolean; error?: string }> {
+    const token = await this.getTenantAccessToken();
+    const response = await this.putJson(
+      `https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`,
+      {
+        msg_type: 'interactive',
+        content: JSON.stringify(createFeishuMarkdownCard(markdown, options)),
+      },
+      {
+        authorization: `Bearer ${token}`,
+      },
+    );
+    const payload = await response.json() as { code?: number; msg?: string };
+    if (response.ok && payload.code === 0) return { ok: true };
+    return {
+      ok: false,
+      error: `${payload.code ?? response.status}${payload.msg ? ` ${payload.msg}` : ''}`,
+    };
   }
 
   async sendActionCardToChat(
@@ -391,22 +452,31 @@ export class FeishuAppClient {
     }
   }
 
-  async sendMarkdownCardToThread(messageId: string, markdown: string): Promise<void> {
+  async sendMarkdownCardToThread(
+    messageId: string,
+    markdown: string,
+    options: { collapsedMarkdown?: string } = {},
+  ): Promise<string | null> {
     const token = await this.getTenantAccessToken();
     const response = await this.postJson(
       `https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/reply`,
       {
         msg_type: 'interactive',
-        content: JSON.stringify(createFeishuMarkdownCard(markdown)),
+        content: JSON.stringify(createFeishuMarkdownCard(markdown, options)),
       },
       {
         authorization: `Bearer ${token}`,
       },
     );
-    const payload = await response.json() as { code?: number; msg?: string };
+    const payload = await response.json() as {
+      code?: number;
+      msg?: string;
+      data?: { message_id?: string };
+    };
     if (!response.ok || payload.code !== 0) {
       throw new Error(`飞书线程消息发送失败: ${payload.msg ?? response.status}`);
     }
+    return payload.data?.message_id ?? null;
   }
 
   async sendActionCardToThread(
@@ -732,7 +802,7 @@ interface FeishuMessageSession {
     chatType?: 'dm' | 'group' | 'unknown';
     text: string;
     requestId: string;
-    onProgress: (text: string) => void;
+    onProgress: (text: string, options?: { cardUpdateKey?: string; collapsedMarkdown?: string }) => void;
   }): Promise<string[] | FeishuGatewayReply>;
   submitGatewayAction?(input: {
     senderId: string;
@@ -762,6 +832,7 @@ type FeishuMessageClient = Pick<
       | 'sendMarkdownCardToThread'
       | 'sendActionCardToChat'
       | 'sendActionCardToThread'
+      | 'updateMarkdownCard'
       | 'downloadMessageResource'
       | 'uploadFile'
       | 'importFileToCloudDoc'
@@ -795,7 +866,7 @@ interface FeishuDeliveryAuditEvent {
   reason?: string;
   chunkIndex?: number;
   chunkCount?: number;
-  method: 'card' | 'post' | 'file' | 'notice' | 'skipped';
+  method: 'card' | 'card-update' | 'post' | 'file' | 'notice' | 'skipped';
   ok: boolean;
   error?: string;
 }
@@ -1144,7 +1215,8 @@ export async function handleFeishuMessageEvent(
         chatId,
         deps.pendingResourcesByChatId,
       );
-      const progressQueue: Promise<void>[] = [];
+      const progressCardMessageIds = new Map<string, FeishuCardSlot>();
+      let progressChain: Promise<void> = Promise.resolve();
       const outputLines = await deps.session.submitGatewayMessage({
         senderId: normalizedEvent.userId ?? 'unknown-sender',
         chatId,
@@ -1154,22 +1226,37 @@ export async function handleFeishuMessageEvent(
           : normalizedEvent.chatType,
         text: textWithResources,
         requestId: messageId,
-        onProgress: progress => {
-          progressQueue.push(
-            sendMarkdownCardToFeishuTarget({
+        onProgress: (progress, options) => {
+          // Serialize progress sends so in-place card updates never race the
+          // send that created the card message.
+          progressChain = progressChain.then(() => {
+            const target = {
               client: deps.client,
               chatId,
               ...(normalizedEvent.threadId
                 ? { threadId: normalizedEvent.threadId }
                 : {}),
-            }, progress)
-              .catch(error => {
-                deps.session.appendSystemMessage(`⚠️ 飞书步骤消息回发失败: ${(error as Error).message}`);
-              }),
-          );
+            };
+            return options?.cardUpdateKey
+              ? upsertMarkdownCardToFeishuTarget(
+                target,
+                progress,
+                options.cardUpdateKey,
+                progressCardMessageIds,
+                {
+                  collapsedMarkdown: options.collapsedMarkdown,
+                  onUpdateFailure: error => deps.session.appendSystemMessage(
+                    `⚠️ 飞书卡片原地更新失败: ${error}`,
+                  ),
+                },
+              )
+              : sendMarkdownCardToFeishuTarget(target, progress).then(() => undefined);
+          }).catch(error => {
+            deps.session.appendSystemMessage(`⚠️ 飞书步骤消息回发失败: ${(error as Error).message}`);
+          });
         },
       });
-      await Promise.all(progressQueue);
+      await progressChain;
       if (!Array.isArray(outputLines)) {
         await sendFeishuGatewayReply({
           client: deps.client,
@@ -1219,6 +1306,7 @@ export async function handleFeishuMessageEvent(
       const progressOutput = mergeFeishuProgressOutputs(pendingProgressOutputs.splice(0));
       progressSendQueue = progressSendQueue.then(() =>
         deps.client.sendMarkdownCardToChat(chatId, progressOutput)
+          .then(() => undefined)
           .catch((error) => {
             deps.session.appendSystemMessage(`⚠️ 飞书步骤消息回发失败: ${(error as Error).message}`);
           })
@@ -1428,6 +1516,7 @@ export function subscribeFeishuGatewayDeliveries(input: {
   audit?: FeishuDeliveryAudit;
 }): () => void {
   if (!input.session.subscribeGatewayDelivery) return () => undefined;
+  const cardMessageIds = new Map<string, FeishuCardSlot>();
   return input.session.subscribeGatewayDelivery(delivery => {
     if (input.accessPolicy) {
       const decision = evaluateFeishuGatewayPolicy({
@@ -1455,12 +1544,135 @@ export function subscribeFeishuGatewayDeliveries(input: {
       ...(delivery.threadId ? { threadId: delivery.threadId } : {}),
       reply: delivery.reply,
       audit: input.audit,
+      cardMessageIds,
+      deliveryKind: delivery.kind,
+      onSystemMessage: line => input.session.appendSystemMessage(line),
     }).catch(error => {
       input.session.appendSystemMessage(
         `⚠️ 飞书持续投递失败: ${(error as Error).message}`,
       );
     });
   });
+}
+
+/**
+ * Deliver registered task artifacts (durable records, never answer-text
+ * parsing): text/markdown/code artifacts become Feishu cloud documents so the
+ * report is readable natively in Feishu; everything else falls back to a raw
+ * file message. Failures degrade loudly, never silently.
+ */
+async function deliverRegisteredArtifactsToFeishu(input: {
+  client: FeishuMessageClient;
+  chatId: string;
+  threadId?: string;
+  artifacts: ReadonlyArray<{
+    name: string;
+    path: string;
+    mediaType: string;
+    previewKind: string;
+  }>;
+  session: Pick<FeishuMessageSession, 'appendSystemMessage'>;
+  audit?: FeishuDeliveryAudit;
+}): Promise<void> {
+  const docLinks: Array<{ name: string; url: string }> = [];
+  for (const artifact of input.artifacts) {
+    const isDocCandidate = ['markdown', 'text', 'code'].includes(artifact.previewKind)
+      && input.client.importFileToCloudDoc;
+    if (isDocCandidate) {
+      try {
+        const url = await input.client.importFileToCloudDoc!(artifact.path);
+        docLinks.push({ name: artifact.name, url });
+        input.audit?.record({
+          kind: 'artifact',
+          chatId: input.chatId,
+          method: 'file',
+          ok: true,
+          reason: 'cloud_doc',
+        });
+        continue;
+      } catch (error) {
+        input.session.appendSystemMessage(
+          `⚠️ 飞书云文档导入失败，改用文件发送: ${artifact.name}: ${(error as Error).message}`,
+        );
+      }
+    }
+    if (!input.client.uploadFile) {
+      input.session.appendSystemMessage(`⚠️ 飞书产物发送跳过: 当前客户端不支持文件上传`);
+      continue;
+    }
+    try {
+      const fileKey = await input.client.uploadFile(artifact.path);
+      if (input.threadId && input.client.sendFileToThread) {
+        await input.client.sendFileToThread(input.threadId, fileKey);
+      } else if (!input.threadId && input.client.sendFileToChat) {
+        await input.client.sendFileToChat(input.chatId, fileKey);
+      }
+      input.audit?.record({
+        kind: 'artifact',
+        chatId: input.chatId,
+        method: 'file',
+        ok: true,
+        reason: 'raw_file',
+      });
+    } catch (error) {
+      input.session.appendSystemMessage(
+        `⚠️ 飞书产物文件发送失败: ${artifact.name}: ${(error as Error).message}`,
+      );
+    }
+  }
+  if (docLinks.length > 0) {
+    const lines = [
+      '**📄 在飞书文档中阅读完整报告**',
+      ...docLinks.map(doc => `- [${doc.name}](${doc.url})`),
+    ];
+    await sendMarkdownCardToFeishuTarget(
+      { client: input.client, chatId: input.chatId, ...(input.threadId ? { threadId: input.threadId } : {}) },
+      lines.join('\n'),
+    );
+  }
+}
+
+const BODY_DOC_MIN_LENGTH = 3_000;
+
+/** Long report-style answers without file artifacts become a cloud doc too. */
+async function deliverAnswerBodyAsCloudDoc(input: {
+  client: FeishuMessageClient;
+  chatId: string;
+  threadId?: string;
+  title: string;
+  body: string;
+  session: Pick<FeishuMessageSession, 'appendSystemMessage'>;
+  audit?: FeishuDeliveryAudit;
+}): Promise<boolean> {
+  if (!input.client.importFileToCloudDoc) return false;
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'metawork-feishu-doc-'));
+  try {
+    const filePath = join(dir, `${input.title}.md`);
+    await writeFile(filePath, input.body, 'utf8');
+    const url = await input.client.importFileToCloudDoc(filePath);
+    await sendMarkdownCardToFeishuTarget(
+      { client: input.client, chatId: input.chatId, ...(input.threadId ? { threadId: input.threadId } : {}) },
+      `**📄 在飞书文档中阅读完整报告**\n- [${input.title}](${url})`,
+    );
+    input.audit?.record({
+      kind: 'artifact',
+      chatId: input.chatId,
+      method: 'file',
+      ok: true,
+      reason: 'cloud_doc_body',
+    });
+    return true;
+  } catch (error) {
+    input.session.appendSystemMessage(
+      `⚠️ 飞书云文档导入失败（正文直转）: ${(error as Error).message}`,
+    );
+    return false;
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 async function sendFeishuGatewayReply(input: {
@@ -1471,10 +1683,43 @@ async function sendFeishuGatewayReply(input: {
   requestId?: string;
   reply: FeishuGatewayReply;
   audit?: FeishuDeliveryAudit;
+  cardMessageIds?: Map<string, FeishuCardSlot>;
+  deliveryKind?: 'progress' | 'final';
+  onSystemMessage?: (line: string) => void;
 }): Promise<void> {
   const markdown = input.reply.lines.join('\n');
   if (!markdown) return;
   try {
+    if (input.reply.cardUpdateKey && input.cardMessageIds && !input.reply.actions?.length) {
+      await upsertMarkdownCardToFeishuTarget(
+        input,
+        markdown,
+        input.reply.cardUpdateKey,
+        input.cardMessageIds,
+        {
+          collapsedMarkdown: input.reply.collapsedMarkdown,
+          onUpdateFailure: error => {
+            input.audit?.record({
+              kind: 'progress',
+              chatId: input.chatId,
+              ...(input.requestId ? { requestId: input.requestId } : {}),
+              method: 'card-update',
+              ok: false,
+              error,
+            });
+            input.onSystemMessage?.(`⚠️ 飞书卡片原地更新失败: ${error}`);
+          },
+        },
+      );
+      input.audit?.record({
+        kind: 'progress',
+        chatId: input.chatId,
+        ...(input.requestId ? { requestId: input.requestId } : {}),
+        method: 'card-update',
+        ok: true,
+      });
+      return;
+    }
     if (input.reply.actions?.length) {
       if (input.threadId) {
         if (input.client.sendActionCardToThread) {
@@ -1495,12 +1740,37 @@ async function sendFeishuGatewayReply(input: {
       await sendMarkdownCardToFeishuTarget(input, markdown);
     }
     input.audit?.record({
-      kind: 'final',
+      kind: input.deliveryKind === 'progress' ? 'progress' : 'final',
       chatId: input.chatId,
       ...(input.requestId ? { requestId: input.requestId } : {}),
       method: 'card',
       ok: true,
     });
+    if (input.reply.artifacts && input.reply.artifacts.length > 0) {
+      await deliverRegisteredArtifactsToFeishu({
+        client: input.client,
+        chatId: input.chatId,
+        ...(input.threadId ? { threadId: input.threadId } : {}),
+        artifacts: input.reply.artifacts,
+        session: input.session,
+        ...(input.audit ? { audit: input.audit } : {}),
+      });
+    } else if (
+      input.deliveryKind === 'final'
+      && markdown.length >= BODY_DOC_MIN_LENGTH
+      && !markdown.startsWith('/')
+    ) {
+      // Report-style answers that never became a file still deserve a doc.
+      await deliverAnswerBodyAsCloudDoc({
+        client: input.client,
+        chatId: input.chatId,
+        ...(input.threadId ? { threadId: input.threadId } : {}),
+        title: '任务报告',
+        body: markdown,
+        session: input.session,
+        ...(input.audit ? { audit: input.audit } : {}),
+      });
+    }
   } catch (error) {
     input.audit?.record({
       kind: 'fallback',
@@ -1522,14 +1792,72 @@ function sendMarkdownCardToFeishuTarget(
     threadId?: string;
   },
   markdown: string,
-): Promise<void> {
+  cardOptions: { collapsedMarkdown?: string } = {},
+): Promise<string | null> {
+  // Preserve the legacy call shape when no card options are present so
+  // existing clients/tests keep working unchanged.
+  const withOptions = Object.keys(cardOptions).length > 0;
   if (!input.threadId) {
-    return input.client.sendMarkdownCardToChat(input.chatId, markdown);
+    return withOptions
+      ? input.client.sendMarkdownCardToChat(input.chatId, markdown, cardOptions)
+      : input.client.sendMarkdownCardToChat(input.chatId, markdown);
   }
   if (!input.client.sendMarkdownCardToThread) {
     return Promise.reject(new Error('当前客户端不支持飞书线程消息发送'));
   }
-  return input.client.sendMarkdownCardToThread(input.threadId, markdown);
+  return withOptions
+    ? input.client.sendMarkdownCardToThread(input.threadId, markdown, cardOptions)
+    : input.client.sendMarkdownCardToThread(input.threadId, markdown);
+}
+
+interface FeishuCardSlot {
+  messageId: string;
+  lastSentAtMs: number;
+}
+
+const DEFAULT_CARD_FALLBACK_MIN_INTERVAL_MS = 60_000;
+
+/**
+ * Send or update a card keyed by `cardUpdateKey`: the first delivery sends a
+ * new card and records its message id; later deliveries update it in place
+ * (zero notifications). When the in-place update is rejected the failure is
+ * reported loudly and a fresh card is re-sent at most once per
+ * `fallbackMinIntervalMs` (default 60 s) — never a per-repaint flood.
+ */
+async function upsertMarkdownCardToFeishuTarget(
+  input: {
+    client: FeishuMessageClient;
+    chatId: string;
+    threadId?: string;
+  },
+  markdown: string,
+  cardUpdateKey: string,
+  cardSlots: Map<string, FeishuCardSlot>,
+  options: {
+    nowMs?: () => number;
+    fallbackMinIntervalMs?: number;
+    onUpdateFailure?: (error: string) => void;
+    collapsedMarkdown?: string;
+  } = {},
+): Promise<void> {
+  const nowMs = options.nowMs ?? Date.now;
+  const minInterval = options.fallbackMinIntervalMs ?? DEFAULT_CARD_FALLBACK_MIN_INTERVAL_MS;
+  const slot = cardSlots.get(cardUpdateKey);
+  const cardOptions = options.collapsedMarkdown
+    ? { collapsedMarkdown: options.collapsedMarkdown }
+    : undefined;
+  if (slot && input.client.updateMarkdownCard) {
+    const updated = cardOptions
+      ? await input.client.updateMarkdownCard(slot.messageId, markdown, cardOptions)
+      : await input.client.updateMarkdownCard(slot.messageId, markdown);
+    if (updated.ok) return;
+    options.onUpdateFailure?.(updated.error ?? 'unknown');
+    if (nowMs() - slot.lastSentAtMs < minInterval) return;
+  }
+  const messageId = cardOptions
+    ? await sendMarkdownCardToFeishuTarget(input, markdown, cardOptions)
+    : await sendMarkdownCardToFeishuTarget(input, markdown);
+  if (messageId) cardSlots.set(cardUpdateKey, { messageId, lastSentAtMs: nowMs() });
 }
 
 function parseFeishuGatewayActionValue(value: unknown): FeishuGatewayActionValue | null {
@@ -1655,10 +1983,35 @@ export function createFeishuWebhookMarkdownCard(markdown: string): FeishuWebhook
 
 export function createFeishuMarkdownCard(
   markdown: string,
-  options: { tableMode?: 'native' | 'markdown' } = {},
+  options: { tableMode?: 'native' | 'markdown'; collapsedMarkdown?: string } = {},
 ): FeishuMarkdownCard {
   const { title, content } = extractFeishuCardTitle(markdown);
   const tableMode = options.tableMode ?? 'native';
+  if (options.collapsedMarkdown) {
+    const elements: FeishuMarkdownCardV2Element[] = [
+      ...createFeishuMarkdownCardV2Elements(content),
+      {
+        tag: 'collapsible_panel',
+        expanded: false,
+        header: { title: { tag: 'plain_text', content: '展开执行细节' } },
+        elements: createFeishuMarkdownCardV2Elements(options.collapsedMarkdown)
+          .filter((element): element is { tag: 'markdown'; content: string } => element.tag === 'markdown'),
+      },
+    ];
+    return {
+      schema: '2.0',
+      config: { wide_screen_mode: true },
+      ...(title
+        ? {
+            header: {
+              template: 'blue' as const,
+              title: { tag: 'plain_text' as const, content: title },
+            },
+          }
+        : {}),
+      body: { elements },
+    };
+  }
   if (tableMode === 'native' && hasFeishuMarkdownTable(content)) {
     return {
       schema: '2.0',
@@ -3845,6 +4198,23 @@ async function defaultPostJson(
 ): Promise<JsonResponse> {
   const response = await fetch(url, {
     method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...headers,
+    },
+    body: JSON.stringify(body),
+  });
+
+  return response;
+}
+
+async function defaultPutJson(
+  url: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+): Promise<JsonResponse> {
+  const response = await fetch(url, {
+    method: 'PUT',
     headers: {
       'content-type': 'application/json',
       ...headers,

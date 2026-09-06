@@ -7,7 +7,7 @@ export interface GatewayAuditRecord {
   platform: 'feishu';
   kind: 'inbound' | 'policy' | 'session' | 'progress' | 'final' | 'artifact' | 'fallback';
   target: string;
-  method: 'card' | 'post' | 'file' | 'local' | 'notice' | 'skipped';
+  method: 'card' | 'card-update' | 'post' | 'file' | 'local' | 'notice' | 'skipped';
   ok: boolean;
   requestId?: string;
   reason?: string;
