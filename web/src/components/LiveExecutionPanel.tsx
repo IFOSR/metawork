@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { ConversationTurnProjection } from '../api/session-types';
 import type { ExecutionTimeline, InteractionTraceEvent } from '../api/types';
 import { executionElapsedEndMs } from '../execution-duration';
+import { executorHealthBadge } from '../executor-health';
 
 interface ExecutionCard {
   subtaskId: string;
@@ -78,6 +79,11 @@ export function LiveExecutionPanel({
 }
 
 function CardBody({ card, completed }: { card: ExecutionCard; completed: boolean }) {
+  const healthBadge = executorHealthBadge({
+    updatedAt: card.updatedAt,
+    nowMs: Date.now(),
+    running: !completed && isActiveActivity(card.activityStatus),
+  });
   return (
     <>
       <h4 title={card.subtaskTitle}>{card.subtaskTitle}</h4>
@@ -90,6 +96,11 @@ function CardBody({ card, completed }: { card: ExecutionCard; completed: boolean
       <p className="execution-card-step" data-activity={card.activityStatus}>
         {activityLabel(card.activityStatus, card.stepLabel)}
       </p>
+      {healthBadge && (
+        <p className="execution-card-health" data-health={healthBadge.level}>
+          {healthBadge.label}
+        </p>
+      )}
       <footer>
         <time>{formatElapsed(
           card.startedAt,

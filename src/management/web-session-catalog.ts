@@ -161,7 +161,13 @@ export class WebSessionCatalog {
 
     const safeTurn = this.normalizeTurn(sanitizeConversationTurn(turn, sessionId));
     const timestamp = this.now();
-    const turns = boundWebSessionTurns([...currentTurns, safeTurn]);
+    // Upsert by turn id: a later, richer terminal record (e.g. rebuilt from a
+    // full journal replay after a conversation switch) replaces an earlier
+    // stub instead of being locked out by it.
+    const turns = boundWebSessionTurns([
+      ...currentTurns.filter(existing => existing.id !== safeTurn.id),
+      safeTurn,
+    ]);
     const firstQueryTitle = firstUserQueryTitle(turns);
     const metadata = {
       ...conversation.conversation,
@@ -176,13 +182,16 @@ export class WebSessionCatalog {
     await this.deps.conversationStore.writeConversation({
       ...conversation,
       conversation: metadata,
-      turns: [...conversation.turns, {
-        id: safeTurn.id,
-        conversationId: sessionId,
-        userInput: safeTurn.userInput,
-        finalAnswer: safeTurn.finalAnswer,
-        status: safeTurn.status,
-      }].slice(-MAX_CONVERSATION_TURNS),
+      turns: [
+        ...conversation.turns.filter(existing => existing.id !== safeTurn.id),
+        {
+          id: safeTurn.id,
+          conversationId: sessionId,
+          userInput: safeTurn.userInput,
+          finalAnswer: safeTurn.finalAnswer,
+          status: safeTurn.status,
+        },
+      ].slice(-MAX_CONVERSATION_TURNS),
     });
     const catalog = await this.deps.conversationStore.readCatalog();
     await this.deps.conversationStore.writeCatalog({

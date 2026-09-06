@@ -151,3 +151,53 @@ describe('InteractionTraceStream', () => {
     expect(JSON.stringify(stream.getSnapshot())).not.toMatch(/chain.of.thought|reasoning_tokens/iu);
   });
 });
+
+describe('long event keys (production attempt ids)', () => {
+  it('does not collapse distinct events whose eventKeys only differ after the 160-char bound', () => {
+    // Regression: production attemptIds are ~188 chars, so
+    // `${attemptId}:progress:N` exceeds the 160-char id bound for every N.
+    // Naive truncation made all executor_progress/heartbeat events share one
+    // id, and dedupe silently dropped every step after the first.
+    const stream = new InteractionTraceStream('conv-long');
+    stream.beginTurn({ turnId: 'turn_1', userInput: 'research' });
+    const attemptId = `attempt_dispatch_event_exec_int_abcdef_${
+      'x'.repeat(170)
+    }_primary`;
+    for (let index = 1; index <= 3; index += 1) {
+      stream.append({
+        phase: 'execution',
+        actor: 'executor',
+        kind: 'executor_progress',
+        status: 'running',
+        title: `Executor progress: ${index}`,
+        summary: `step ${index}`,
+        details: {},
+        eventKey: `${attemptId}:progress:${index}`,
+      });
+    }
+    const snapshot = stream.getSnapshot()!;
+    const progressEvents = snapshot.events.filter(event => event.kind === 'executor_progress');
+    expect(progressEvents).toHaveLength(3);
+    expect(new Set(progressEvents.map(event => event.id)).size).toBe(3);
+  });
+
+  it('still dedupes replays of the same long eventKey', () => {
+    const stream = new InteractionTraceStream('conv-long-2');
+    stream.beginTurn({ turnId: 'turn_1', userInput: 'research' });
+    const attemptId = `attempt_${'y'.repeat(180)}`;
+    const input = {
+      phase: 'execution' as const,
+      actor: 'executor' as const,
+      kind: 'executor_progress',
+      status: 'running' as const,
+      title: 'Executor progress: 1',
+      summary: 'step 1',
+      details: {},
+      eventKey: `${attemptId}:progress:1`,
+    };
+    stream.append(input);
+    stream.append(input);
+    const snapshot = stream.getSnapshot()!;
+    expect(snapshot.events.filter(event => event.kind === 'executor_progress')).toHaveLength(1);
+  });
+});

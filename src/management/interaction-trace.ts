@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { truncateText } from '../utils/truncate-text.js';
 
@@ -85,7 +86,15 @@ function sanitizeValue(value: unknown, depth: number): unknown {
   return value === undefined ? null : sanitizeInteractionTraceText(String(value));
 }
 
+const BOUNDED_ID_LIMIT = 160;
+
 function boundedId(value: string): string {
-  const normalized = value.trim().replace(/[^A-Za-z0-9_.:-]+/gu, '_');
-  return truncateText(normalized || 'unknown', 160);
+  const normalized = value.trim().replace(/[^A-Za-z0-9_.:-]+/gu, '_') || 'unknown';
+  if (normalized.length <= BOUNDED_ID_LIMIT) return normalized;
+  // Truncating alone destroys uniqueness: production attemptIds are ~188
+  // chars, so `${attemptId}:progress:N` differs only past char 160 for every
+  // N, collapsing all such events onto one dedupe id. Keep a bounded head
+  // plus a deterministic hash of the full value instead.
+  const digest = createHash('sha256').update(normalized).digest('hex').slice(0, 16);
+  return `${normalized.slice(0, BOUNDED_ID_LIMIT - 17)}:${digest}`;
 }

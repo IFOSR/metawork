@@ -133,6 +133,34 @@ describe('WebSessionCatalog', () => {
     });
   });
 
+  it('upserts a turn by id so a richer terminal record replaces an earlier stub', async () => {
+    const fixture = await makeCatalog();
+    const created = await fixture.catalog.create({
+      workspaceId: fixture.workspaceId,
+      principalId: PRINCIPAL,
+    });
+    // A premature stub persist (no trace events, announcement-only answer)...
+    const stub = makeTurn(created.session.id, 1, '调研 GPT-6', 0);
+    stub.finalAnswer = '【Executor: pi-research｜派发准备】';
+    stub.status = 'completed';
+    await fixture.catalog.appendTurn(created.session.id, stub);
+
+    // ...must be replaced by the richer terminal record rebuilt from replay.
+    const full = makeTurn(created.session.id, 1, '调研 GPT-6', 5);
+    full.status = 'blocked';
+    full.finalAnswer = 'Execution blocked: quarantined';
+    await fixture.catalog.appendTurn(created.session.id, full);
+
+    const record = await fixture.catalog.read(created.session.id, created.session.id);
+    expect(record?.turns).toHaveLength(1);
+    expect(record?.turns[0]).toMatchObject({
+      id: 'turn_1',
+      status: 'blocked',
+      finalAnswer: 'Execution blocked: quarantined',
+    });
+    expect(record?.turns[0]?.traceEvents).toHaveLength(5);
+  });
+
   it('uses the first ordinary user query as unified Conversation title', async () => {
     const fixture = await makeCatalog(Array.from(
       { length: 6 },

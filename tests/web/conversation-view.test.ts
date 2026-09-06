@@ -22,6 +22,12 @@ describe('Detailed conversation view', () => {
     expect(turn).toContain('MarkdownContent');
     expect(turn).toContain('system-command-result');
     expect(turn).toContain('hasTaskExecution');
+    // Presentation split: step detail lives in the trajectory only; the
+    // conversation turn shows a compact status line plus a trajectory link.
+    expect(turn).not.toContain('<ExecutionNarrative');
+    expect(turn).toContain('execution-status-line');
+    expect(turn).toContain('查看完整轨迹');
+    expect(view).toContain('onOpenTrajectory');
     expect(turn).not.toContain('<strong>最终答案</strong>');
     expect(narrative).toContain('Planner');
     expect(narrative).toContain('授权与路由');

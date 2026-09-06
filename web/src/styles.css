@@ -3968,6 +3968,19 @@ select:focus-visible {
   font-size: 12px;
 }
 
+.execution-card-health {
+  margin: 0 0 8px;
+  font-size: 11px;
+}
+
+.execution-card-health[data-health='stale'] {
+  color: var(--warning, #b5872a);
+}
+
+.execution-card-health[data-health='lost'] {
+  color: var(--danger, #c2413f);
+}
+
 .execution-card footer {
   display: flex;
   justify-content: space-between;
@@ -4801,4 +4814,35 @@ button:active:not(:disabled) {
 :root[data-theme='light'] .execution-detail-kind {
   color: var(--text-secondary);
   border-color: var(--line-subtle);
+}
+
+.execution-status-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.execution-status-line[data-status='blocked'],
+.execution-status-line[data-status='failed'] {
+  color: var(--danger, #c2413f);
+}
+
+.trajectory-link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+}
+
+.trajectory-link:hover {
+  text-decoration: underline;
 }

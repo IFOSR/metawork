@@ -14,6 +14,7 @@
 import type { GuidanceProposal, RuntimeState } from '../core/types.js';
 import type { Config } from '../core/types.js';
 import type { Task, TaskRecoveryTrigger } from '../core/types.js';
+import { buildTaskStatusLines } from './task-status-snapshot.js';
 import {
   formatTaskResumeDecision,
   type SessionTaskExecutionApplicationService,
@@ -799,6 +800,12 @@ export class ConversationSession {
         await this.submitUserInput(command.text, options);
         return;
       case 'slash_command':
+        if (/^\/status(?:\s|$)/u.test(command.text.trim())) {
+          // L5: instant status snapshot — answered locally from the live
+          // interaction trace, never routed to the Planner (works mid-turn).
+          this.appendOutput(...this.buildTaskStatusLines());
+          return;
+        }
         if (
           'workspaceMutation' in command
           && (command as unknown as { workspaceMutation?: unknown }).workspaceMutation
@@ -813,6 +820,18 @@ export class ConversationSession {
       case 'cancel_turn':
         throw new Error(`turn cancellation is not available for completed admission: ${command.turnId}`);
     }
+  }
+
+  private buildTaskStatusLines(): string[] {
+    const taskId = this.getSnapshot().currentTaskId;
+    const task = taskId ? this.deps.runtimePort.queries.findTask(taskId) : null;
+    const trace = this.deps.interactionTraceStream?.getSnapshot() ?? null;
+    return buildTaskStatusLines({
+      taskTitle: task?.title ?? null,
+      taskStatus: task?.status ?? null,
+      startedAt: trace?.startedAt ?? null,
+      traceEvents: trace?.events ?? [],
+    });
   }
 
   completeCommand(text: string, cursor = text.length): CommandCompletion {

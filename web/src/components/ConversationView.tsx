@@ -9,12 +9,14 @@ export function ConversationView({
   running = false,
   onOpenArtifact,
   onOpenSubtaskDetail,
+  onOpenTrajectory,
 }: {
   sessionId?: string | null;
   turns: ConversationTurnProjection[];
   running?: boolean;
   onOpenArtifact?: (artifact: ArtifactProjection) => void;
   onOpenSubtaskDetail?: (subtaskId: string, subtaskTitle: string) => void;
+  onOpenTrajectory?: (turnId: string) => void;
 }) {
   const viewRef = useRef<HTMLDivElement | null>(null);
   const previousSessionIdRef = useRef<string | null | undefined>(sessionId);
@@ -95,6 +97,7 @@ export function ConversationView({
             <LiveExecutionPanel turn={latest} onSelectSubtask={onOpenSubtaskDetail} />
           ) : undefined}
           onOpenArtifact={onOpenArtifact}
+          onOpenTrajectory={onOpenTrajectory}
         />
       ))}
       {locked && (

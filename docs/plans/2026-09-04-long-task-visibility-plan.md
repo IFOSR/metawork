@@ -1,7 +1,15 @@
 # Long-Task Execution Visibility Plan
 
 - Date: 2026-09-04
-- Status: Proposed (user-approved scope, not yet implemented)
+- Status: Delivered (core layers L1/L2/L3/L5 + Web badge), 2026-09-05.
+  Validation: `tests/gateway` + `tests/integrations` + `tests/web` + focused
+  session/e2e suites — 393 tests green; `npm run lint` clean; user-perspective
+  E2E `tests/e2e/feishu-long-task-visibility.test.ts` covers the full Feishu
+  long-task flow (20 steps + heartbeat loss + recovery → one updating card,
+  milestone notices, final answer, background live card).
+- Revised: 2026-09-05 — presentation split approved by user: L1 detail lives
+  in the trace channel (Web) / collapsible card section (Feishu), never in the
+  main conversation/chat flow. See §2.0.
 - Trigger: repeated "任务执行到什么程度了？是死机了吗？" during 20–60 minute
   research tasks (WeChat Channels research task sat 55 minutes with no
   user-visible signal after an executor heartbeat loss).
@@ -25,6 +33,32 @@ is not projected to users.
 
 ## 2. Design
 
+### 2.0 Presentation split (user-approved, 2026-09-05)
+
+Core principle: **push state, pull steps**. The main conversation/chat surface
+stays clean — it only carries the heartbeat badge (L2), one-line milestones
+(L3), and the final answer. Full step-by-step detail (L1) is always available
+but never pushed into the main flow:
+
+- **Web**: L1 rides the existing structured `trace_v1` stream
+  (`src/management/interaction-trace.ts`) as a new `executor_step` event kind
+  (step number, tool name, argument digest, elapsed). It inherits trace replay,
+  origin-scoped delivery, and the collapsible trace UI for free. The main
+  conversation view is untouched: L2 badge + L3 milestones only. Mental model:
+  conversation = conclusions and nodes; trace = complete process.
+- **Feishu**: there is no trace pane; the self-updating progress card **is**
+  the trace pane. Default render is a one-line status (current subtask,
+  current step digest, heartbeat age); step detail sits behind the card's
+  collapsible "展开执行细节" section (last ~20 steps). Optionally append the
+  full activity log to a Feishu cloud doc via the existing cloud-doc pipeline
+  and link it from the card.
+- **Required cleanup**: Feishu currently flattens every `trace_delta` into
+  plain chat messages (`traceProgressLines` in
+  `src/gateway/feishu-gateway-session-port.ts`), which floods the chat on long
+  tasks — exactly the noise this plan exists to remove. Implementing L1 must
+  replace that path: trace lines converge into the card instead of being
+  pushed as standalone progress messages.
+
 Four layers, each independently shippable, ordered by value/effort.
 
 ### L1 — Executor activity stream (the "agent-like" step log)
@@ -37,10 +71,12 @@ Four layers, each independently shippable, ordered by value/effort.
   one-line argument digest, one-line result digest, elapsed time.
 - Feishu rendering: a periodically updated progress card (update the same
   message up to Feishu's rate limits; fall back to a new short message every
-  2 minutes). Content: current subtask title, current tool, step count,
-  elapsed, "N 秒前有活动".
-- Web rendering: extend `LiveExecutionPanel` with a collapsible executor
-  step list fed by the same events.
+  2 minutes). Default content: current subtask title, current step digest,
+  step count, elapsed, "N 秒前有活动". Step-by-step detail stays in the
+  card's collapsible section (see §2.0) — it is never pushed as chat messages.
+- Web rendering: emit `executor_step` events into the existing `trace_v1`
+  stream; the trace panel renders them as a collapsible step list with a live
+  step-counter badge. The main conversation view is not modified.
 
 ### L2 — Heartbeat health indicator (answers "死机了吗")
 
@@ -71,9 +107,9 @@ covers this; ensure the conversation view surfaces them when collapsed.
 - Feishu interactive cards support collapsible sections natively: the
   progress card renders a one-line summary; an "展开执行细节" collapsible
   contains the L1 step timeline (last ~20 steps, older collapsed by date).
-- Web: `ConversationTurn` already has expand/collapse affordances; add the
-  same step timeline section, collapsed by default, with a live step counter
-  badge.
+- Web: the trace panel already has expand/collapse affordances; the L1
+  `executor_step` list renders there, collapsed by default, with a live step
+  counter badge. Nothing is added to the main conversation view.
 
 ### L5 — Natural-language status query
 
@@ -103,9 +139,44 @@ blocked with no further retries or user notification. Fix priority:
 |---|---|---|
 | L2 + L3 | event delivery + badges (no new producers) | ~1 day |
 | L5 | status snapshot command | ~0.5 day |
-| L1 | executor activity projection + throttling + Feishu card updates | ~2–3 days |
-| L4 | collapsible card layout (Feishu) + Web step timeline | ~1 day |
+| L1 | executor activity projection + throttling + trace_v1 `executor_step` kind (Web) + Feishu card updates; **includes replacing the `traceProgressLines` chat-flood path** | ~2–3 days |
+| L4 | Feishu collapsible card section + Web trace step timeline | ~1 day |
 | P0-5 generation fix | Kernel decision-surface change, needs review | ~1 day + review |
 
 Recommended order: L2+L3 (immediate "is it alive" answer), P0-5 (removes the
 silent-block failure), L5, then L1+L4 (full step-by-step transparency).
+
+## 5. Delivery record (2026-09-05)
+
+Delivered:
+
+- **Shared core**: `src/gateway/task-activity-tracker.ts` — pure reducer over
+  interaction-trace events: step digest (L1), heartbeat health
+  active/stale/lost (L2), milestone classification incl. recovery events (L3).
+- **Feishu L1/L2/L3**: self-updating activity card. `FeishuAppClient`
+  `sendMarkdownCardToChat/Thread` now return `message_id`; new
+  `updateMarkdownCard` (PUT); deliveries carry `cardUpdateKey` and are
+  upserted in place (`upsertMarkdownCardToFeishuTarget`) with fallback to a
+  fresh card. Both the request path (`waitForTerminal` onProgress) and the
+  live-attachment path converge trace floods into the card (first paint
+  immediate, then throttled, default 5 s, `activityCardMinIntervalMs`).
+  Milestones push immediately as one-line messages. The old
+  `traceProgressLines` per-line chat flood is removed.
+- **L5**: `/status` answered locally in
+  `ConversationSession.executeGatewayCommand` from the live interaction trace
+  via `src/session/task-status-snapshot.ts` — works on every surface through
+  the mailbox fast path, never touches the Planner.
+- **Web L2**: `web/src/executor-health.ts` + health badge in
+  `LiveExecutionPanel` (stale > 30 s, lost > 120 s). Web L1/L4 were already
+  covered by the existing trace panels (executor_progress/heartbeat rendering,
+  collapsible detail drawer).
+
+Deferred follow-ups:
+
+- Feishu native `collapsible_panel` card schema for the step section (today
+  the card inlines the last 5 steps, which already satisfies pull-not-push).
+- Planner-routed natural-language status intent (`/status` works everywhere;
+  "进展如何" free-text routing is Planner-side).
+- During total executor silence the Feishu card health ages via incoming
+  `executor_heartbeat` trace events; a pure timer-based refresh remains a
+  nicety.

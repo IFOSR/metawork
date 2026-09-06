@@ -1286,6 +1286,148 @@ function catalogFixture(): WebSessionRuntimeCatalog {
   return catalogForRecord(record);
 }
 
+describe('conversation switch persistence (production incident 2026-09-05)', () => {
+  it('persists the full trace when a task terminates while the user is on another conversation', async () => {
+    // Production sequence: user runs a long task in conv_1, switches to
+    // conv_2 mid-run, the task blocks while away, then the user switches
+    // back. The persisted turn must carry the full trace and true status.
+    const listeners = new Map<string, (event: GatewayEventEnvelope) => void>();
+    const journals = new Map<string, GatewayEventEnvelope[]>();
+    const persistedTurns = new Map<string, Array<WebSessionRecord['turns'][number]>>();
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: {
+        initialize: async () => undefined,
+        create: async () => sessionRecord('conv_1', true),
+        list: async () => [],
+        search: async () => [],
+        read: async (sessionId: string) => {
+          const record = sessionRecord(sessionId, true);
+          record.turns = (persistedTurns.get(sessionId) ?? []).map(turn => structuredClone(turn));
+          return record;
+        },
+        workspaceIdForConversation: async () => 'workspace_repo',
+        listWorkspaces: async () => [],
+        archive: async () => true,
+        clearWorkspace: async () => 0,
+        appendTurn: async (sessionId: string, turn: WebSessionRecord['turns'][number]) => {
+          const turns = persistedTurns.get(sessionId) ?? [];
+          turns.push(structuredClone(turn));
+          persistedTurns.set(sessionId, turns);
+          return sessionRecord(sessionId, true);
+        },
+      },
+      gateway: {
+        attachClient: async () => () => undefined,
+        subscribe: (
+          _accountId: string,
+          conversationId: string,
+          next: (event: GatewayEventEnvelope) => void,
+        ) => {
+          listeners.set(conversationId, next);
+          return () => undefined;
+        },
+        replay: async (_accountId: string, conversationId: string) => {
+          const events = journals.get(conversationId) ?? [];
+          return {
+            lastSequence: events.at(-1)?.sequence ?? 0,
+            snapshot: [],
+            deltas: events,
+          };
+        },
+        submit: async (envelope: { requestId: string }) => ({
+          requestId: envelope.requestId,
+          idempotencyKey: 'idem_1',
+          status: 'accepted' as const,
+          conversationId: 'conv_1',
+        }),
+      } as unknown as WebGatewayAdapter,
+      createId: prefix => `${prefix}_1`,
+    });
+
+    const publish = (conversationId: string, event: GatewayEventEnvelope) => {
+      const events = journals.get(conversationId) ?? [];
+      events.push(event);
+      journals.set(conversationId, events);
+      listeners.get(conversationId)?.(event);
+    };
+    const trace = (
+      eventId: string,
+      sequence: number,
+      turnId: string,
+      kind: string,
+      status: string,
+      requestId = 'req_1',
+    ): GatewayEventEnvelope => ({
+      protocolVersion: 2,
+      eventId,
+      sequence,
+      accountId: 'local-default',
+      conversationId: 'conv_1',
+      requestId,
+      turnId,
+      kind: 'trace_delta',
+      payload: {
+        turnId,
+        status,
+        events: [{
+          id: `${turnId}_${kind}_${sequence}`,
+          sequence,
+          occurredAt: '2026-09-05T01:14:30.000Z',
+          phase: 'execution',
+          actor: 'executor',
+          kind,
+          status,
+          title: kind,
+          summary: `${kind} detail`,
+          taskId: 'task_A',
+          details: {},
+        }],
+      },
+      occurredAt: '2026-09-05T01:14:30.000Z',
+    });
+
+    // 1. User submits the long task in conv_1; progress streams live.
+    await attachBrowser(runtime);
+    await runtime.submit('browser-a', '调研 GPT-6');
+    publish('conv_1', turnStartedEvent('evt_ts', 1, 'req_1', 'turn_A'));
+    publish('conv_1', trace('evt_p1', 2, 'turn_A', 'executor_progress', 'running'));
+    publish('conv_1', trace('evt_p2', 3, 'turn_A', 'executor_progress', 'running'));
+
+    // 2. User switches to conv_2 and runs a quick task there.
+    await runtime.activateSession('browser-a', 'conv_2');
+    listeners.set('conv_2', listeners.get('conv_2')!);
+    // 3. The long task terminates while the user is away: events land in the
+    //    journal but nobody is subscribed to conv_1.
+    publish('conv_1', trace('evt_blocked', 4, 'turn_A', 'execution_blocked', 'blocked'));
+    listeners.delete('conv_1');
+    const finalEvent: GatewayEventEnvelope = {
+      ...outputEvent('evt_final', 5, []),
+      requestId: 'req_1',
+      turnId: 'turn_A',
+      kind: 'final_answer',
+      payload: { lines: ['Execution blocked: quarantined'] },
+      occurredAt: '2026-09-05T01:18:55.000Z',
+    };
+    {
+      const events = journals.get('conv_1') ?? [];
+      events.push(finalEvent);
+      journals.set('conv_1', events);
+    }
+
+    // 4. User switches back to conv_1.
+    await runtime.activateSession('browser-a', 'conv_1');
+
+    const turns = persistedTurns.get('conv_1') ?? [];
+    const turnA = turns.find(turn => turn.id === 'turn_A');
+    expect(turnA).toBeDefined();
+    expect(turnA!.status).toBe('blocked');
+    expect(turnA!.traceEvents.length).toBeGreaterThan(0);
+    expect(turnA!.traceEvents).toContainEqual(expect.objectContaining({ kind: 'executor_progress' }));
+    expect(turnA!.traceEvents).toContainEqual(expect.objectContaining({ kind: 'execution_blocked' }));
+  });
+});
+
 function sessionRecord(id: string, active: boolean): WebSessionRecord {
   return {
     version: 1,

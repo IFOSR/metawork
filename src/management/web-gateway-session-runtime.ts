@@ -69,6 +69,12 @@ export interface WebGatewaySessionRuntimeDeps {
 class WebGatewayClientSession {
   private readonly listeners = new Set<(event: WebSessionRuntimeEvent) => void>();
   private readonly pendingInputs = new Map<string, string>();
+  /** turn id → richness of what was persisted (skip re-persist without new information). */
+  private readonly persistedTurns = new Map<string, {
+    status: string;
+    traceCount: number;
+    answerLength: number;
+  }>();
   private readonly resultAssemblies = new Map<string, ResultAssembly>();
   private readonly completedResults = new Map<string, string>();
   private readonly turnStates = new Map<string, RuntimeTurnState>();
@@ -148,6 +154,7 @@ class WebGatewayClientSession {
     this.completedResults.clear();
     this.turnStates.clear();
     this.persistedTurnIds.clear();
+    this.persistedTurns.clear();
     this.workspaces.clear();
     this.deps.gateway.closeConnection?.(this.connectionId);
     this.disposePromise = Promise.allSettled([...this.pendingAttaches]).then(() => undefined);
@@ -366,6 +373,11 @@ class WebGatewayClientSession {
     const existingRecord = await this.deps.catalog.read(sessionId, sessionId);
     for (const turn of existingRecord?.turns ?? []) {
       this.persistedTurnIds.add(turn.id);
+      this.persistedTurns.set(turn.id, {
+        status: turn.status,
+        traceCount: turn.traceEvents.length,
+        answerLength: turn.finalAnswer?.length ?? 0,
+      });
       this.turnStates.set(turn.id, {
         id: turn.id,
         sessionId: turn.sessionId,
@@ -713,7 +725,11 @@ class WebGatewayClientSession {
       state.finalAnswer = arrayStringValue(payload.lines)?.join('\n')
         ?? state.finalAnswer;
       if (!state.backgroundWorkPending) {
-        state.status = 'completed';
+        // The answer closes the turn, but never downgrades a terminal trace
+        // status (blocked/failed) observed before the answer arrived.
+        if (state.status !== 'blocked' && state.status !== 'failed') {
+          state.status = 'completed';
+        }
         state.completedAt = event.occurredAt;
       }
     } else if (event.kind === 'terminal_error') {
@@ -744,13 +760,24 @@ class WebGatewayClientSession {
     event: GatewayEventEnvelope,
     finalLines: string[],
   ): Promise<void> {
-    if (!event.turnId || this.persistedTurnIds.has(event.turnId)) return;
+    if (!event.turnId) return;
     const state = this.turnStates.get(event.turnId);
     if (!state || !state.userInput) return;
-    this.persistedTurnIds.add(event.turnId);
     const finalAnswer = finalLines.length > 0
       ? finalLines.join('\n')
       : state.finalAnswer ?? '';
+    const richness = {
+      status: state.status,
+      traceCount: state.traceEvents.length,
+      answerLength: finalAnswer.length,
+    };
+    const previous = this.persistedTurns.get(event.turnId);
+    if (
+      previous
+      && previous.status === richness.status
+      && previous.traceCount >= richness.traceCount
+      && previous.answerLength >= richness.answerLength
+    ) return;
     const status = state.status === 'failed'
       ? 'failed'
       : state.status === 'blocked' ? 'blocked' : 'completed';
@@ -764,6 +791,8 @@ class WebGatewayClientSession {
         this.deps.projectTaskArtifacts?.(taskId) ?? [],
       )
       : state.artifacts;
+    this.persistedTurns.set(event.turnId, richness);
+    this.persistedTurnIds.add(event.turnId);
     const appended = await this.deps.catalog.appendTurn(event.conversationId, {
       id: state.id,
       sessionId: event.conversationId,

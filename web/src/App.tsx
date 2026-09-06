@@ -678,6 +678,7 @@ export function App() {
                 const target = turns.at(-1);
                 if (target) setExecutionDetail({ subtaskId, subtaskTitle, turnId: target.id });
               }}
+              onOpenTrajectory={() => setTab('trajectory')}
             />
           )
           : (
