@@ -13,7 +13,7 @@ Planner、ControlKernel 和 Executor 边界完成执行、恢复、验收与交�
 一次聊天回复。
 
 [为什么用 MetaWork](#为什么用-metawork) · [安装方式](#安装方式) ·
-[使用方式](#使用方式) · [系统架构](#系统架构) ·
+[快速开始](#快速开始) · [使用方式](#使用方式) · [系统架构](#系统架构) ·
 [兼容策略](#兼容策略) · [English](README.md)
 
 </div>
@@ -25,7 +25,7 @@ MetaWork 为 Agent 工作提供统一的商业服务系统，覆盖规划、授�
 - **持久工作：** Task、Work Graph、结果、恢复事实和审计记录可跨进程重启保留。
 - **受控执行：** Planner 负责提出工作，ControlKernel 负责授权状态变化，
   Executor 只执行明确获批的 attempt。
-- **多端统一：** 原生 TUI、Web、飞书和 Unix 客户端使用同一套版本化
+- **多端统一：** Web、飞书和 Unix 客户端使用同一套版本化
   Gateway 命令与事件平面；Server 独立常驻，Client 退出不会停止 Runtime。
 - **可解释路由：** 每个获批 attempt 都固定到一个配置 revision 以及完整的
   Provider、Model、AgentClass、Harness 和 Permission Profile 绑定。
@@ -80,7 +80,8 @@ metawork --help
 
 一条命令下载并校验已签名的预构建 Runtime 与内嵌 Planner 产物，然后自动进入
 Provider 配置向导。重复执行同一命令会对已有安装原地升级——配置、密钥和任务
-数据全部保留。Windows 用户请使用 WSL2 或 Docker 兼容模式。
+数据全部保留。Windows 用户请使用 WSL2 或 Docker 兼容模式。向导完成后，
+继续阅读[快速开始](#快速开始)。
 
 卸载：
 
@@ -176,17 +177,78 @@ export METAWORK_PROVIDER_REGION='international'
 
 如需修改安装根目录，请在安装前设置 `METAWORK_INSTALL_ROOT`。
 
+## 快速开始
+
+全新安装到跑通第一个交付任务只需三步：
+
+```bash
+# 1. 启动 Server（前台运行；长期部署请用上文的 supervision 模板）
+metawork server start
+
+# 2. 另开一个终端，在项目目录下启动 Web Client
+cd /你的/项目目录
+metawork web            # 在浏览器中打开 http://127.0.0.1:8788
+```
+
+3. 用自然语言描述任务。Planner 负责理解需求并提出 Work Graph，ControlKernel
+负责授权，Executor 在托管 Git worktree 中完成获批的 attempt。结果经验收后
+通过 Git publication gate 发布，并交付回当前 Conversation。
+
+更习惯在飞书里工作？完成第 1 步后运行 `metawork server setup-feishu`，
+见下文[飞书](#飞书)。
+
+### 命令速查
+
+```text
+metawork server start | stop | restart | status | doctor   # Server 生命周期与健康检查
+metawork web [--no-open]          # Web Client，默认 http://127.0.0.1:8788（连接已运行的 Server）
+metawork server setup-feishu      # 接入飞书机器人（交互式向导）
+metawork gateway pairing list | approve | revoke <open_id>   # 飞书私聊准入
+metawork build                    # 重新构建并原子激活 release
+metawork config show | validate | history | diff | rollback
+metawork provider list | add | edit | test | remove
+metawork model    list | add | edit | test | remove
+metawork executor list | add | edit | enable | disable | remove | test
+```
+
+随时可用 `metawork provider test` 验证 Provider Key。
+
 ## 使用方式
 
-### 原生 TUI
+### Web 工作区
+
+连接已运行的 Server（`metawork server start`）：
 
 ```bash
 cd /你的/项目目录
-metawork
+metawork web
+metawork web --no-open
 ```
 
-启动目录会成为 Planner 的只读工作区上下文。Executor 的获批修改发生在托管的
-Task/Subtask Git worktree 中，并经过 publication gate。
+启动目录会成为该 Conversation 中 Planner 的只读工作区上下文，浏览器打开
+`http://127.0.0.1:8788`。普通启动会使用短时 URL fragment bootstrap 换取
+HttpOnly、SameSite=Strict session cookie；SSH、端口转发或手动打开浏览器时使用
+`--no-open`。Executor 的获批修改发生在托管的 Task/Subtask Git worktree 中，
+并经过 publication gate。
+
+### 飞书
+
+把飞书机器人接入同一个 Runtime：
+
+```bash
+metawork server setup-feishu    # 向导：扫码登录或 App ID/Secret，私聊与群聊策略
+metawork server restart
+```
+
+推荐 WebSocket 连接模式，无需公网回调地址。默认 Pairing 私聊策略下，用户向
+机器人发消息即发起接入申请，由管理员批准：
+
+```bash
+metawork gateway pairing list
+metawork gateway pairing approve <open_id>
+```
+
+获批用户直接在飞书里把任务交给 MetaWork，结果也会交付回同一个会话。
 
 ### 构建与运行生命周期
 
@@ -200,26 +262,15 @@ metawork build
 metawork server start
 ```
 
-`metawork server start`、`metawork tui` 和 `metawork web` 都使用同一个已激活的
+`metawork server start`、`metawork web` 和飞书 Gateway 都使用同一个已激活的
 `app/current` release。`metawork build` 不启动 Server 或 Client；Server 仍在
 运行时构建会直接失败。
-
-### Web 工作区
-
-```bash
-metawork web
-metawork web --no-open
-```
-
-默认 Web 地址是 `http://127.0.0.1:8788`。普通启动会使用短时 URL fragment
-bootstrap 换取 HttpOnly、SameSite=Strict session cookie。SSH、端口转发或手动打开
-浏览器时使用 `--no-open`。
 
 ### 管理命令
 
 ```text
-metawork status
-metawork doctor
+metawork server status
+metawork server doctor
 metawork config show | validate | history | diff | rollback
 metawork provider list | add | edit | test | remove
 metawork model    list | add | edit | test | remove

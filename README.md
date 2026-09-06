@@ -13,7 +13,7 @@ that survive restarts, execute through controlled Planner and Executor
 boundaries, and deliver verifiable results instead of stopping at a chat reply.
 
 [Why MetaWork](#why-metawork) · [Installation](#installation) ·
-[Usage](#usage) · [Architecture](#architecture) ·
+[Quick Start](#quick-start) · [Usage](#usage) · [Architecture](#architecture) ·
 [Compatibility](#compatibility) · [中文](README.zh-CN.md)
 
 </div>
@@ -27,7 +27,7 @@ executing, recovering, and delivering agent work.
   history persist across process restarts.
 - **Governed execution:** the Planner proposes work, the ControlKernel
   authorizes state changes, and Executors run only concrete approved attempts.
-- **Multiple clients, one runtime:** native TUI, Web, Feishu, and Unix clients
+- **Multiple clients, one runtime:** Web, Feishu, and Unix clients
   share the same versioned Gateway command and event plane. Server owns the
   Runtime and remains alive when Clients exit.
 - **Explainable routing:** every authorized attempt is pinned to a configuration
@@ -94,7 +94,8 @@ One command downloads the signed, prebuilt Runtime and vendored Planner
 artifacts, verifies them, and launches the provider setup wizard. Re-running
 the same command updates an existing installation in place — configuration,
 secrets, and task data are preserved. Windows users: use WSL2 or the Docker
-compatibility path.
+compatibility path. When the wizard completes, continue with
+[Quick Start](#quick-start).
 
 Uninstall:
 
@@ -195,18 +196,84 @@ generated runtime files, and update journals are stored under `~/.metawork`.
 
 Set `METAWORK_INSTALL_ROOT` before installation to use a different root.
 
+## Quick Start
+
+Three steps from a fresh install to your first delivered task:
+
+```bash
+# 1. Start the Server (foreground; use the supervision templates above for
+#    background deployment)
+metawork server start
+
+# 2. In a second terminal, launch the Web Client from your project directory
+cd /path/to/your/project
+metawork web            # opens http://127.0.0.1:8788 in your browser
+```
+
+3. Describe the task in natural language. The Planner interprets the request
+and proposes a Work Graph, the ControlKernel authorizes it, and an Executor
+completes approved attempts in managed Git worktrees. Results are verified,
+published through the Git publication gate, and delivered back to the
+Conversation.
+
+Prefer working inside Feishu? Run `metawork server setup-feishu` after
+step 1 — see [Feishu](#feishu).
+
+### Command cheat sheet
+
+```text
+metawork server start | stop | restart | status | doctor   # Server lifecycle and health
+metawork web [--no-open]          # Web Client at http://127.0.0.1:8788 (connects to the running Server)
+metawork server setup-feishu      # connect a Feishu bot (interactive wizard)
+metawork gateway pairing list | approve | revoke <open_id>   # Feishu DM access
+metawork build                    # rebuild and atomically activate a release
+metawork config show | validate | history | diff | rollback
+metawork provider list | add | edit | test | remove
+metawork model    list | add | edit | test | remove
+metawork executor list | add | edit | enable | disable | remove | test
+```
+
+Verify the provider key at any time with `metawork provider test`.
+
 ## Usage
 
-### Native TUI
+### Web workspace
+
+Connects to the running Server (`metawork server start`):
 
 ```bash
 cd /path/to/your/project
-metawork
+metawork web
+metawork web --no-open
 ```
 
-The launch directory becomes the read-only Planner workspace context.
-Authorized Executor changes happen in managed Task/Subtask Git worktrees and
-pass through the publication gate.
+The launch directory becomes the Conversation's read-only Planner workspace
+context, and the browser opens `http://127.0.0.1:8788`. Normal startup
+exchanges a short-lived URL-fragment bootstrap for an HttpOnly,
+SameSite=Strict session cookie; use `--no-open` for SSH, port forwarding, or
+manual browser startup. Authorized Executor changes happen in managed
+Task/Subtask Git worktrees and pass through the publication gate.
+
+### Feishu
+
+Connect a Feishu bot to the same runtime:
+
+```bash
+metawork server setup-feishu    # wizard: QR sign-in or App ID/Secret, DM and group policy
+metawork server restart
+```
+
+WebSocket connection is recommended and needs no public callback address.
+With the default pairing DM policy, a user messages the bot to request
+access, then an operator approves it:
+
+```bash
+metawork gateway pairing list
+metawork gateway pairing approve <open_id>
+```
+
+Approved users hand tasks to MetaWork directly in Feishu, and results are
+delivered back to the same chat.
 
 ### Build and runtime lifecycle
 
@@ -221,26 +288,15 @@ metawork build
 metawork server start
 ```
 
-`metawork server start`, `metawork tui`, and `metawork web` all use the same
-activated `app/current` release. `metawork build` does not start a Server or a
-Client and refuses to run while Server is active.
-
-### Web workspace
-
-```bash
-metawork web
-metawork web --no-open
-```
-
-The default Web endpoint is `http://127.0.0.1:8788`. Normal startup exchanges a
-short-lived URL-fragment bootstrap for an HttpOnly, SameSite=Strict session
-cookie. Use `--no-open` for SSH, port forwarding, or manual browser startup.
+`metawork server start`, `metawork web`, and the Feishu Gateway all use the
+same activated `app/current` release. `metawork build` does not start a Server
+or a Client and refuses to run while Server is active.
 
 ### Management commands
 
 ```text
-metawork status
-metawork doctor
+metawork server status
+metawork server doctor
 metawork config show | validate | history | diff | rollback
 metawork provider list | add | edit | test | remove
 metawork model    list | add | edit | test | remove
