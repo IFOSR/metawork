@@ -19,6 +19,7 @@ export type IntentTaskControl =
   | 'status_query'
   | 'resume_task'
   | 'recover_blocked'
+  | 'abandon_task'
   | 'none';
 export type TaskSemanticPriority = 'normal' | 'high' | 'urgent';
 
@@ -56,6 +57,9 @@ export interface PlanningAgentPlan {
   authorizationResolution: {
     requestId: string;
     resolution: 'approve' | 'deny';
+  } | null;
+  conflictResolution?: {
+    oldTaskId: string;
   } | null;
   workGraph: WorkGraphProposal | null;
   source: string;

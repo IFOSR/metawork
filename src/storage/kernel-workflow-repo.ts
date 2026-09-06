@@ -139,6 +139,49 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
     return rows.map(rowToApplication);
   }
 
+  /**
+   * Uncertain applications are durable recovery state, never a hidden retry
+   * queue (2026-09-06 plan §5.3): reconciliation reads them explicitly and
+   * resolves each one to applied or retryable with a deterministic decision.
+   */
+  listUncertainApplications(actions?: KernelDecisionAction['type'][], taskId?: string): KernelDecisionApplicationRecord[] {
+    if (actions?.length === 0) return [];
+    const actionFilter = actions?.length
+      ? ` AND decision.action IN (${actions.map(() => '?').join(', ')})`
+      : '';
+    const taskFilter = taskId ? ' AND decision.task_id = ?' : '';
+    const rows = this.db.prepare(`
+      SELECT application.*, decision.decision_json,
+             decision.schema_version AS decision_schema_version
+      FROM kernel_decision_applications application
+      JOIN kernel_decisions decision ON decision.id = application.decision_id
+      WHERE application.status = 'uncertain'${actionFilter}${taskFilter}
+      ORDER BY application.created_at ASC, application.id ASC
+    `).all(...(actions ?? []), ...(taskId ? [taskId] : [])) as ApplicationRow[];
+    return rows.map(rowToApplication);
+  }
+
+  /** Resolves an uncertain application after postcondition reconciliation. */
+  resolveUncertainApplication(
+    decisionId: string,
+    outcome: 'applied' | 'retry',
+    now: string,
+  ): void {
+    if (outcome === 'applied') {
+      this.db.prepare(`
+        UPDATE kernel_decision_applications
+        SET status = 'applied', error_summary = NULL, applied_at = ?, updated_at = ?
+        WHERE decision_id = ? AND status = 'uncertain'
+      `).run(now, now, decisionId);
+      return;
+    }
+    this.db.prepare(`
+      UPDATE kernel_decision_applications
+      SET status = 'pending', applying_at = NULL, updated_at = ?
+      WHERE decision_id = ? AND status = 'uncertain'
+    `).run(now, decisionId);
+  }
+
   markApplying(decisionId: string, now: string): KernelDecisionApplicationRecord {
     this.db.prepare(`
       UPDATE kernel_decision_applications

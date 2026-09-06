@@ -146,38 +146,80 @@ export class KernelDispatchItemRepo {
           fence
           && (fence.task_status === 'cancelled' || fence.subtask_status === 'cancelled'),
         );
-        this.db.prepare(`
-          INSERT INTO kernel_dispatch_items (
-            attempt_id, decision_id, batch_order, task_id, generation_id, subtask_id,
-            agent_class_name, attempt_kind, source_attempt_id, recovery_mode,
-            attempt_payload_json, resource_grant_json, status, configuration_revision,
-            authorized_binding_json, binding_fingerprint, created_at, updated_at,
-            terminal_at, error_summary
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          item.attemptId,
-          decision.id,
-          firstOrder + item.order,
-          decision.action.taskId,
-          bindingContext.generationId,
-          item.subtaskId,
-          item.authorizedBinding.agentClassRef,
-          item.attemptKind,
-          item.sourceAttemptId,
-          item.recoveryMode,
-          JSON.stringify(item.attemptPayload),
-          JSON.stringify(item.defaultResourceGrant),
-          cancelledBeforePersist ? 'cancelled' : 'pending_launch',
-          decision.configurationRevision,
-          JSON.stringify(item.authorizedBinding),
-          item.bindingFingerprint,
-          now,
-          now,
-          cancelledBeforePersist ? now : null,
-          cancelledBeforePersist
-            ? 'task cancelled between authorization and dispatch persistence'
-            : null,
-        );
+        const persist = (cancelled: boolean): void => {
+          this.db.prepare(`
+            INSERT INTO kernel_dispatch_items (
+              attempt_id, decision_id, batch_order, task_id, generation_id, subtask_id,
+              agent_class_name, attempt_kind, source_attempt_id, recovery_mode,
+              attempt_payload_json, resource_grant_json, status, configuration_revision,
+              authorized_binding_json, binding_fingerprint, created_at, updated_at,
+              terminal_at, error_summary
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            item.attemptId,
+            decision.id,
+            firstOrder + item.order,
+            decision.action.taskId,
+            bindingContext.generationId,
+            item.subtaskId,
+            item.authorizedBinding.agentClassRef,
+            item.attemptKind,
+            item.sourceAttemptId,
+            item.recoveryMode,
+            JSON.stringify(item.attemptPayload),
+            JSON.stringify(item.defaultResourceGrant),
+            cancelled ? 'cancelled' : 'pending_launch',
+            decision.configurationRevision,
+            JSON.stringify(item.authorizedBinding),
+            item.bindingFingerprint,
+            now,
+            now,
+            cancelled ? now : null,
+            cancelled
+              ? 'task cancelled between authorization and dispatch persistence'
+              : null,
+          );
+        };
+        try {
+          persist(cancelledBeforePersist);
+        } catch (error) {
+          if (!isSubtaskSlotViolation(error)) throw error;
+          // The fence pre-check raced a concurrent cancellation commit. Re-read
+          // the fence: if the cancellation won, persist this attempt as already
+          // terminal instead of failing the whole application (§5.3
+          // conflict-safe dispatch persistence).
+          const refetched = this.db.prepare(`
+            SELECT tasks.status AS task_status, subtasks.status AS subtask_status
+            FROM tasks
+            INNER JOIN subtasks ON subtasks.id = ?
+            WHERE tasks.id = ?
+          `).get(item.subtaskId, decision.action.taskId) as {
+            task_status: string;
+            subtask_status: string;
+          } | undefined;
+          if (
+            refetched
+            && (refetched.task_status === 'cancelled' || refetched.subtask_status === 'cancelled')
+          ) {
+            persist(true);
+            continue;
+          }
+          const owner = this.db.prepare(`
+            SELECT attempt_id FROM kernel_dispatch_items
+            WHERE task_id = ? AND generation_id = ? AND subtask_id = ?
+              AND status IN ('pending_launch', 'launching', 'running', 'cancelling')
+              AND attempt_id <> ?
+            LIMIT 1
+          `).get(
+            decision.action.taskId,
+            bindingContext.generationId,
+            item.subtaskId,
+            item.attemptId,
+          ) as { attempt_id: string } | undefined;
+          throw new Error(
+            `live dispatch attempt already owns ${item.subtaskId}: ${owner?.attempt_id ?? 'unknown'}`,
+          );
+        }
       }
       return decision.action.items.map(item => {
         const persisted = this.find(item.attemptId);
@@ -332,6 +374,70 @@ export class KernelDispatchItemRepo {
         parameters.push(...input.subtaskIds);
       }
       const where = filters.join(' AND ');
+      // 1. Rows already inside the one-active-subtask partial index move to
+      //    'cancelling' without changing their index membership.
+      this.db.prepare(`
+        UPDATE kernel_dispatch_items
+        SET status = 'cancelling',
+            cancellation_decision_id = ?,
+            cancel_requested_at = COALESCE(cancel_requested_at, ?),
+            updated_at = ?
+        WHERE ${where} AND status IN ('launching', 'running')
+      `).run(input.decisionId, input.now, input.now, ...parameters);
+      // 2. 'uncertain' rows left the partial index when they became uncertain,
+      //    so a newer attempt may already own the same (task, generation,
+      //    subtask) slot. Re-entering the index blindly reproduced the
+      //    2026-09-06 `UNIQUE constraint failed` cancellation failure: the
+      //    whole cancel transaction rolled back and the Task stayed blocked
+      //    with its Conversation slot occupied. Terminalize every superseded
+      //    row instead of cancelling it (§5.3 conflict-safe reconciliation).
+      const uncertain = this.db.prepare(`
+        SELECT attempt_id FROM kernel_dispatch_items
+        WHERE ${where} AND status = 'uncertain'
+        ORDER BY batch_order, attempt_id
+      `).all(...parameters) as Array<{ attempt_id: string }>;
+      for (const row of uncertain) {
+        const superseded = this.db.prepare(`
+          SELECT 1 FROM kernel_dispatch_items AS sibling
+          WHERE sibling.task_id = (SELECT task_id FROM kernel_dispatch_items WHERE attempt_id = ?)
+            AND sibling.generation_id = (SELECT generation_id FROM kernel_dispatch_items WHERE attempt_id = ?)
+            AND sibling.subtask_id = (SELECT subtask_id FROM kernel_dispatch_items WHERE attempt_id = ?)
+            AND sibling.attempt_id <> ?
+            AND sibling.status IN ('pending_launch', 'launching', 'running', 'cancelling')
+          LIMIT 1
+        `).get(row.attempt_id, row.attempt_id, row.attempt_id, row.attempt_id);
+        if (superseded) {
+          this.db.prepare(`
+            UPDATE kernel_dispatch_items
+            SET status = 'cancelled',
+                terminal_at = ?,
+                cancellation_decision_id = ?,
+                cancel_requested_at = COALESCE(cancel_requested_at, ?),
+                cancelled_at = ?,
+                error_summary = COALESCE(error_summary, ?),
+                updated_at = ?
+            WHERE attempt_id = ? AND status = 'uncertain'
+          `).run(
+            input.now,
+            input.decisionId,
+            input.now,
+            input.now,
+            'superseded by a newer active attempt during cancellation',
+            input.now,
+            row.attempt_id,
+          );
+          continue;
+        }
+        this.db.prepare(`
+          UPDATE kernel_dispatch_items
+          SET status = 'cancelling',
+              cancellation_decision_id = ?,
+              cancel_requested_at = COALESCE(cancel_requested_at, ?),
+              updated_at = ?
+          WHERE attempt_id = ? AND status = 'uncertain'
+        `).run(input.decisionId, input.now, input.now, row.attempt_id);
+      }
+      // 3. Never-launched rows go straight to terminal 'cancelled'.
       this.db.prepare(`
         UPDATE kernel_dispatch_items
         SET status = 'cancelled',
@@ -349,14 +455,6 @@ export class KernelDispatchItemRepo {
         input.now,
         ...parameters,
       );
-      this.db.prepare(`
-        UPDATE kernel_dispatch_items
-        SET status = 'cancelling',
-            cancellation_decision_id = ?,
-            cancel_requested_at = COALESCE(cancel_requested_at, ?),
-            updated_at = ?
-        WHERE ${where} AND status IN ('launching', 'running', 'uncertain')
-      `).run(input.decisionId, input.now, input.now, ...parameters);
       return (this.db.prepare(`
         SELECT * FROM kernel_dispatch_items
         WHERE ${where}
@@ -454,4 +552,11 @@ function sameBinding(
     && left.modelRef === right.modelRef
     && left.permissionProfileRef === right.permissionProfileRef
     && left.configurationRevision === right.configurationRevision;
+}
+
+/** Detects a violation of the one-active-subtask partial unique index. */
+function isSubtaskSlotViolation(error: unknown): boolean {
+  return error instanceof Error
+    && (error as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE'
+    && error.message.includes('kernel_dispatch_items');
 }

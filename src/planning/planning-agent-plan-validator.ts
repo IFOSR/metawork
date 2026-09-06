@@ -103,10 +103,15 @@ function validateTaskControlScope(plan: PlanningAgentPlan, errors: string[]): vo
     errors.push('clear_tasks requires scope all, parked, or blocked');
   }
   if (
-    (plan.task.control === 'resume_task' || plan.task.control === 'recover_blocked')
+    (plan.task.control === 'resume_task'
+      || plan.task.control === 'recover_blocked'
+      || plan.task.control === 'abandon_task')
     && plan.task.scope !== null
   ) {
     errors.push(`${plan.task.control} requires scope null`);
+  }
+  if (plan.task.control === 'abandon_task' && plan.task.taskId === null) {
+    errors.push('abandon_task requires the exact old Task id (taskId)');
   }
 }
 

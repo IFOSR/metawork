@@ -473,6 +473,20 @@ export class ConversationSession {
     };
   }
 
+  /** Releases stale admission state for this Conversation before planning. */
+  private async reconcileAdmissionBeforePlanning(): Promise<void> {
+    const conversationId = this.deps.conversationId;
+    if (!conversationId || !this.kernelExecutionRuntime) return;
+    const slot = this.deps.runtimePort.queries.getConversationTaskSlot?.(conversationId);
+    if (!slot?.activeTaskId || slot.state === 'free') return;
+    try {
+      this.kernelExecutionRuntime.reconcileConversationAdmission(conversationId);
+    } catch {
+      // Reconciliation is best-effort here; the Kernel admission gate and
+      // explicit abandon_task control remain the fail-closed safety net.
+    }
+  }
+
   async handleNaturalLanguageInput(
     userInput: string,
     images?: PlannerImageAttachment[],
@@ -497,6 +511,10 @@ export class ConversationSession {
   ): Promise<boolean> {
     const planningAgent = this.deps.runtimePort.planning;
     if (!planningAgent) return false;
+    // §5.3.6 pre-admission reconciliation: release legacy blocked+occupied
+    // combinations (uncertain cancellations) before the Planner classifies a
+    // same-topic conflict, so explicit new work is not held by dead state.
+    await this.reconcileAdmissionBeforePlanning();
     const context = this.buildPlanningContext(userInput, images);
     if (!context) return false;
     this.appendTrace({
@@ -1859,7 +1877,11 @@ export class ConversationSession {
         setFocusContext: focus => this.setFocusContext(focus),
         resolveRequestText: eventId => this.resolveRequestText(eventId),
         cancelTask: async (taskId, reason) => {
-          await this.kernelExecutionRuntime?.cancelTask(taskId, reason);
+          const runtime = this.kernelExecutionRuntime;
+          if (!runtime) {
+            throw new Error('Kernel execution runtime is unavailable');
+          }
+          return runtime.cancelTaskWithOutcome(taskId, reason);
         },
       },
     };

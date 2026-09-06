@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ClientGateway, ClientGatewayResult } from './client-gateway.js';
 import type { GatewayCommand, GatewayCommandEnvelope } from './client-protocol.js';
+import type { GatewayAttachmentStore } from './attachment-store-port.js';
 import type { CommandReceipt } from './command-admission.js';
 import type {
   ConversationBindingRecord,
@@ -51,6 +52,22 @@ export interface FeishuConversationRoutingDeps {
     conversationId: string,
     principalId: string,
   ) => Promise<string | null>;
+  /** §5.5: persists message-scoped attachment bytes under the resolved Conversation. */
+  readonly attachments?: GatewayAttachmentStore;
+  onAttachmentSaved?(input: {
+    conversationId: string;
+    attachmentId: string;
+    name: string;
+    kind: 'image' | 'file';
+  }): void;
+  onAttachmentFailed?(input: {
+    conversationId: string;
+    chatId?: string;
+    threadId?: string;
+    name: string;
+    kind: 'image' | 'file';
+    reason: string;
+  }): void;
 }
 
 export class FeishuConversationRouting {
@@ -64,6 +81,7 @@ export class FeishuConversationRouting {
     text: string,
     requestId: string,
     idempotencyKey: string,
+    attachments?: Array<{ path: string; name: string; kind: 'image' | 'file' }>,
   ): Promise<FeishuConversationRouteResult> {
     return this.serialize(channel, () => this.routeMessageOpen(
       sender,
@@ -71,6 +89,7 @@ export class FeishuConversationRouting {
       text,
       requestId,
       idempotencyKey,
+      attachments,
     ));
   }
 
@@ -80,6 +99,7 @@ export class FeishuConversationRouting {
     text: string,
     requestId: string,
     idempotencyKey: string,
+    attachments?: Array<{ path: string; name: string; kind: 'image' | 'file' }>,
   ): Promise<FeishuConversationRouteResult> {
     const normalized = text.trim();
     if (/^\/workspace(?:\s|$)/u.test(normalized)) {
@@ -125,7 +145,54 @@ export class FeishuConversationRouting {
         : { kind: 'user_message', text: normalized, attachments: [] },
       requestId,
       idempotencyKey,
+      normalized.startsWith('/') ? undefined : attachments,
     );
+  }
+
+  /**
+   * §5.5: persists attachment bytes into the Gateway attachment store ONLY
+   * after the bound Conversation is known — including the first message that
+   * CREATES the Conversation (a brand-new Conversation must not drop the
+   * screenshot that created it).
+   */
+  private async persistAttachmentsForConversation(
+    conversationId: string,
+    channel: FeishuChannelBinding,
+    attachments: Array<{ path: string; name: string; kind: 'image' | 'file' }> | undefined,
+  ): Promise<Array<{ attachmentId: string; kind: string }>> {
+    if (!attachments || attachments.length === 0 || !this.deps.attachments) return [];
+    const references: Array<{ attachmentId: string; kind: string }> = [];
+    const { readFile } = await import('node:fs/promises');
+    for (const attachment of attachments) {
+      try {
+        const bytes = await readFile(attachment.path);
+        const saved = await this.deps.attachments.saveAttachment({
+          sessionId: conversationId,
+          name: attachment.name,
+          bytes,
+        }) as { attachmentId: string };
+        references.push({ attachmentId: saved.attachmentId, kind: attachment.kind });
+        this.deps.onAttachmentSaved?.({
+          conversationId,
+          attachmentId: saved.attachmentId,
+          name: attachment.name,
+          kind: attachment.kind,
+        });
+      } catch (error) {
+        // A failing attachment never blocks the text command, but the
+        // failure is surfaced through the failure callback — never a silent
+        // drop (§5.5.6 reports the exact stage).
+        this.deps.onAttachmentFailed?.({
+          conversationId,
+          ...(channel.chatId ? { chatId: channel.chatId } : {}),
+          ...(channel.threadId !== undefined ? { threadId: channel.threadId } : {}),
+          name: attachment.name,
+          kind: attachment.kind,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return references;
   }
 
   routeCardAction(
@@ -358,6 +425,7 @@ export class FeishuConversationRouting {
     command: Extract<GatewayCommand, { kind: 'user_message' | 'slash_command' }>,
     requestId: string,
     idempotencyKey: string,
+    rawAttachments?: Array<{ path: string; name: string; kind: 'image' | 'file' }>,
   ): Promise<FeishuConversationRouteResult> {
     const context = await this.bindingContext(sender, channel);
     if (!context.binding?.workspaceId) {
@@ -389,6 +457,18 @@ export class FeishuConversationRouting {
         workspaceId: context.binding.workspaceId,
         conversationId,
       });
+    }
+    // §5.5: resolve attachment bytes now that the Conversation exists — the
+    // first message that CREATES the Conversation keeps its screenshots too.
+    if (command.kind === 'user_message' && rawAttachments?.length) {
+      const references = await this.persistAttachmentsForConversation(
+        conversationId,
+        channel,
+        rawAttachments,
+      );
+      if (references.length > 0) {
+        command = { ...command, attachments: references };
+      }
     }
     const result = await this.handle(sender, {
       requestId,

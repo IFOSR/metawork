@@ -47,6 +47,11 @@ export function normalizeFeishuInboundEvent(
   }
 
   const messageType = normalizeMessageType(event.message?.message_type);
+  // §5.5: a rich-text (post) message carries text and images in ONE message;
+  // the normalizer extracts both so the Gateway command never splits them.
+  const postContent = messageType === 'unknown' && isPostContent(event.message?.content)
+    ? parseFeishuPost(event.message?.content)
+    : null;
   return {
     id: `feishu:${messageId}`,
     platform: 'feishu',
@@ -54,9 +59,15 @@ export function normalizeFeishuInboundEvent(
     messageId,
     chatId,
     chatType: normalizeChatType(event.message?.chat_type),
-    text: messageType === 'text' ? parseFeishuText(event.message?.content) ?? '' : '',
+    text: messageType === 'text'
+      ? parseFeishuText(event.message?.content) ?? ''
+      : postContent?.text ?? '',
     messageType,
-    attachments: [],
+    attachments: (postContent?.imageKeys ?? []).map((imageKey, index) => ({
+      id: imageKey,
+      type: 'image' as const,
+      name: `image-${index + 1}.png`,
+    })),
     mentions: (event.message?.mentions ?? [])
       .map(mention => ({
         id: stringValue(mention.id?.open_id) ?? stringValue(mention.id?.user_id) ?? '',
@@ -99,6 +110,58 @@ export function parseFeishuText(content: unknown): string | null {
   } catch {
     return content.trim();
   }
+}
+
+/** Detects Feishu rich-text (post) message content. */
+export function isPostContent(content: unknown): boolean {
+  if (typeof content !== 'string') return false;
+  try {
+    const parsed = JSON.parse(content) as { content?: unknown };
+    return Array.isArray(parsed?.content);
+  } catch {
+    return false;
+  }
+}
+
+/** Extracts plain text and image keys from Feishu rich-text (post) content. */
+export function parseFeishuPost(content: unknown): { text: string; imageKeys: string[] } | null {
+  if (typeof content !== 'string') return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { content?: unknown }).content)) {
+    return null;
+  }
+  const textParts: string[] = [];
+  const imageKeys: string[] = [];
+  const walk = (nodes: unknown[]): void => {
+    for (const node of nodes) {
+      if (Array.isArray(node)) {
+        walk(node);
+        continue;
+      }
+      if (!node || typeof node !== 'object') continue;
+      const record = node as Record<string, unknown>;
+      if (typeof record.text === 'string') {
+        textParts.push(record.text);
+      }
+      if (record.tag === 'img' && typeof record.image_key === 'string' && record.image_key) {
+        imageKeys.push(record.image_key);
+      }
+      if (Array.isArray(record.content)) {
+        walk(record.content);
+      }
+      if (Array.isArray(record.elements)) {
+        walk(record.elements);
+      }
+    }
+  };
+  walk((parsed as { content: unknown[] }).content);
+  if (textParts.length === 0 && imageKeys.length === 0) return null;
+  return { text: textParts.join('').trim(), imageKeys };
 }
 
 function normalizeChatType(value: unknown): GatewayInboundEvent['chatType'] {

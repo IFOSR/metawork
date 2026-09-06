@@ -17,6 +17,7 @@ const TASK_CONTROL_VALUES = [
   'status_query',
   'resume_task',
   'recover_blocked',
+  'abandon_task',
   'none',
 ] as const;
 const RISK_LEVEL_VALUES = ['low', 'medium', 'high'] as const;
@@ -145,6 +146,11 @@ const AuthorizationResolutionSchema = z.object({
   resolution: z.enum(['approve', 'deny']),
 }).strict();
 
+/** §5.4 explicit abandon-and-create: the new plan names the exact old Task to abandon. */
+const ConflictResolutionSchema = z.object({
+  oldTaskId: z.string().trim().min(1),
+}).strict();
+
 const PlanShapeSchema = z.object({
   id: z.string().trim().min(1),
   schemaVersion: z.literal(8),
@@ -156,6 +162,7 @@ const PlanShapeSchema = z.object({
   task: TaskSchema,
   risk: RiskSchema,
   authorizationResolution: AuthorizationResolutionSchema.nullable(),
+  conflictResolution: ConflictResolutionSchema.nullable().optional(),
   workGraph: WorkGraphSchema.nullable(),
   source: z.literal(PLANNER_SOURCE),
 }).strict().superRefine((plan, context) => {
@@ -170,6 +177,12 @@ const PlanShapeSchema = z.object({
   }
   if (plan.action !== 'authorization_resolution' && plan.authorizationResolution !== null) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['authorizationResolution'], message: 'non-authorization actions require null authorizationResolution' });
+  }
+  if (plan.conflictResolution != null && plan.action !== 'plan_work_graph') {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['conflictResolution'], message: 'conflictResolution requires plan_work_graph' });
+  }
+  if (plan.conflictResolution != null && plan.task.taskId !== null) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['conflictResolution'], message: 'conflictResolution targets a NEW Task (taskId must be null)' });
   }
 });
 

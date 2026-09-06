@@ -26,6 +26,7 @@ import {
   isRetrySafeLegacySystemBindingReplan,
   legacySystemBindingRecoveryEvent,
 } from '../execution/kernel-application-recovery.js';
+import { reconcileUncertainCancellations } from '../execution/cancellation-reconciliation.js';
 import type { QueuedTaskPayload } from '../storage/conversation-task-scheduler-repo.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 
@@ -202,6 +203,15 @@ export class AccountStartupRecoveryService {
       }
     }
 
+    // §5.3.5: reconcile uncertain cancellation applications FIRST, so a
+    // re-applied cancellation becomes a durable cancelled Task before the
+    // recovery sweep below releases its Conversation slot.
+    const cancellationReconciliation = reconcileUncertainCancellations({
+      store: this.deps.kernelServices.kernelWorkflowRepo,
+      coordinator: this.deps.runtimeExecutionServices.cancellationCoordinator,
+      taskRuntimeService: this.deps.taskServices.taskRuntimeService,
+    });
+    void cancellationReconciliation;
     await this.deps.runtimeExecutionServices.cancellationCoordinator.recover();
     this.deps.repositories.effectOutboxRepo.reconcileSending(now);
     this.deps.kernelServices.kernelWorkflowRepo.reconcileProcessing();
@@ -630,9 +640,8 @@ export class AccountStartupRecoveryService {
           const event = this.deps.kernelServices.kernelWorkflowRepo.findEvent(eventId);
           return event?.type === 'plan_proposed' ? event.requestText : '';
         },
-        cancelTask: async (taskId, reason) => {
-          await this.deps.kernelExecutionServices.kernelExecutionRuntime.cancelTask(taskId, reason);
-        },
+        cancelTask: (taskId, reason) =>
+          this.deps.kernelExecutionServices.kernelExecutionRuntime.cancelTaskWithOutcome(taskId, reason),
       },
     };
   }

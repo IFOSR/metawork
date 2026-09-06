@@ -2399,11 +2399,11 @@ describe('Feishu app helpers', () => {
       },
     });
 
-    expect(client.sendMarkdownCardToChat).toHaveBeenCalledWith('oc_chat', [
-      '**任务产物已同步到飞书**',
-      '- report.md',
-      '- data.csv',
-    ].join('\n'));
+    expect(client.sendMarkdownCardToChat).toHaveBeenCalled();
+    const sent = client.sendMarkdownCardToChat.mock.calls
+      .map(([, markdown]) => String(markdown)).join('\n');
+    expect(sent).toContain('文件已发送：report.md');
+    expect(sent).toContain('文件已发送：data.csv');
     expect(client.uploadFile).toHaveBeenNthCalledWith(1, reportPath);
     expect(client.uploadFile).toHaveBeenNthCalledWith(2, sheetPath);
     expect(client.sendFileToChat).toHaveBeenNthCalledWith(1, 'oc_chat', 'file_key_report');
@@ -2477,12 +2477,10 @@ describe('Feishu app helpers', () => {
 
     expect(client.importFileToCloudDoc).toHaveBeenNthCalledWith(1, reportPath);
     expect(client.importFileToCloudDoc).toHaveBeenNthCalledWith(2, brokenPath);
-    expect(client.sendMarkdownCardToChat).toHaveBeenCalledWith('oc_chat', [
-      '**任务产物已同步到飞书云文档，点击直接查看**',
-      '- [report.md](https://feishu.cn/docx/doccn_report)',
-      '- broken.md',
-      '- chart.png',
-    ].join('\n'));
+    const sent = client.sendMarkdownCardToChat.mock.calls
+      .map(([, markdown]) => String(markdown)).join('\n');
+    expect(sent).toContain('云文档已生成：[report.md](https://feishu.cn/docx/doccn_report)');
+    expect(sent).toContain('文件已发送：broken.md');
     // The failed import and the non-text artifact fall back to file messages.
     expect(client.uploadFile).toHaveBeenNthCalledWith(1, brokenPath);
     expect(client.uploadFile).toHaveBeenNthCalledWith(2, imagePath);
@@ -3702,9 +3700,13 @@ describe('Feishu activity progress card (long-task visibility)', () => {
     await expect(client.sendMarkdownCardToChat('oc_chat', '**任务执行中**')).resolves.toBe('om_card_1');
   });
 
-  it('updateMarkdownCard rewrites an existing card in place via PUT', async () => {
+  it('updateMarkdownCard follows the verified card-update contract: PATCH with content only', async () => {
+    // §5.2: interactive-card updates use PATCH /im/v1/messages/{id} with only
+    // the card `content` JSON string — no msg_type. PUT on this path edits
+    // text/post messages and requires msg_type, which is why the original
+    // PUT-without-msg_type call failed with `230001 invalid msg_type`.
     const postJson = vi.fn().mockResolvedValueOnce(tokenResponse);
-    const putJson = vi.fn().mockResolvedValue({
+    const patchJson = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
       json: async () => ({ code: 0 }),
@@ -3712,20 +3714,24 @@ describe('Feishu activity progress card (long-task visibility)', () => {
     });
     const client = new FeishuAppClient(
       { app_id: 'cli_test', app_secret: 'secret' },
-      { postJson, putJson },
+      { postJson, patchJson },
     );
 
     await expect(client.updateMarkdownCard('om_card_1', '**任务执行中** v2')).resolves.toEqual({ ok: true });
-    expect(putJson).toHaveBeenCalledWith(
+    expect(patchJson).toHaveBeenCalledTimes(1);
+    expect(patchJson).toHaveBeenCalledWith(
       'https://open.feishu.cn/open-apis/im/v1/messages/om_card_1',
-      expect.objectContaining({ msg_type: 'interactive' }),
+      {
+        content: JSON.stringify(createFeishuMarkdownCard('**任务执行中** v2')),
+      },
       expect.objectContaining({ authorization: 'Bearer tenant-token' }),
     );
+    expect(patchJson.mock.calls[0]?.[1]).not.toHaveProperty('msg_type');
   });
 
-  it('updateMarkdownCard returns false when Feishu rejects the update', async () => {
+  it('updateMarkdownCard classifies message-not-found as an immediate degrade signal', async () => {
     const postJson = vi.fn().mockResolvedValueOnce(tokenResponse);
-    const putJson = vi.fn().mockResolvedValue({
+    const patchJson = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
       json: async () => ({ code: 230002, msg: 'message not found' }),
@@ -3733,10 +3739,58 @@ describe('Feishu activity progress card (long-task visibility)', () => {
     });
     const client = new FeishuAppClient(
       { app_id: 'cli_test', app_secret: 'secret' },
-      { postJson, putJson },
+      { postJson, patchJson },
     );
 
-    await expect(client.updateMarkdownCard('om_gone', 'updated')).resolves.toEqual({ ok: false, error: expect.stringContaining('230002') });
+    await expect(client.updateMarkdownCard('om_gone', 'updated')).resolves.toEqual({
+      ok: false,
+      error: expect.stringContaining('230002'),
+      classification: 'not_found',
+    });
+  });
+
+  it('updateMarkdownCard classifies an invalid-parameter rejection as a contract failure', async () => {
+    const postJson = vi.fn().mockResolvedValueOnce(tokenResponse);
+    const patchJson = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ code: 230001, msg: 'Your request contains an invalid request parameter, ext=invalid msg_type' }),
+      text: async () => 'invalid',
+    });
+    const client = new FeishuAppClient(
+      { app_id: 'cli_test', app_secret: 'secret' },
+      { postJson, patchJson },
+    );
+
+    await expect(client.updateMarkdownCard('om_bad', 'updated')).resolves.toEqual({
+      ok: false,
+      error: expect.stringContaining('230001'),
+      classification: 'contract',
+    });
+  });
+
+  it('updateMarkdownCard retries a transient failure exactly once', async () => {
+    const postJson = vi.fn().mockResolvedValueOnce(tokenResponse);
+    const patchJson = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 503,
+        json: async () => ({ code: 503, msg: 'server busy' }),
+        text: async () => 'server busy',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ code: 0 }),
+        text: async () => 'ok',
+      });
+    const client = new FeishuAppClient(
+      { app_id: 'cli_test', app_secret: 'secret' },
+      { postJson, patchJson },
+    );
+
+    await expect(client.updateMarkdownCard('om_flaky', 'v2')).resolves.toEqual({ ok: true });
+    expect(patchJson).toHaveBeenCalledTimes(2);
   });
 
   it('converges repeated progress card deliveries with the same update key into one message', async () => {
@@ -3761,6 +3815,7 @@ describe('Feishu activity progress card (long-task visibility)', () => {
     subscribeFeishuGatewayDeliveries({
       session: session as never,
       client: client as never,
+      cardDeliveryOptions: { updateCooldownMs: 0 },
     });
     listener?.({
       senderId: 'ou_user',
@@ -3778,7 +3833,11 @@ describe('Feishu activity progress card (long-task visibility)', () => {
     await new Promise(resolve => setTimeout(resolve, 0));
 
     expect(client.sendMarkdownCardToChat).toHaveBeenCalledTimes(1);
-    expect(client.updateMarkdownCard).toHaveBeenCalledWith('om_card_1', '**任务执行中** step 2');
+    expect(client.updateMarkdownCard).toHaveBeenCalledWith(
+      'om_card_1',
+      '**任务执行中** step 2',
+      expect.anything(),
+    );
   });
 
   it('throttles the fresh-card fallback when the in-place update fails', async () => {
@@ -3799,12 +3858,13 @@ describe('Feishu activity progress card (long-task visibility)', () => {
       sendMarkdownCardToChat: vi.fn()
         .mockResolvedValueOnce('om_card_1')
         .mockResolvedValueOnce('om_card_2'),
-      updateMarkdownCard: vi.fn().mockResolvedValue({ ok: false, error: '230002 message not found' }),
+      updateMarkdownCard: vi.fn().mockResolvedValue({ ok: false, error: '230002 message not found', classification: 'not_found' as const }),
     };
 
     subscribeFeishuGatewayDeliveries({
       session: session as never,
       client: client as never,
+      cardDeliveryOptions: { updateCooldownMs: 0 },
     });
     listener?.({
       senderId: 'ou_user',
@@ -3857,12 +3917,17 @@ describe('Feishu activity progress card (long-task visibility)', () => {
       session: session as never,
       client: client as never,
       seenMessageIds: new Set<string>(),
+      cardDeliveryOptions: { updateCooldownMs: 0 },
     });
 
     const cardSends = client.sendMarkdownCardToChat.mock.calls
       .filter(([, markdown]) => String(markdown).includes('**任务执行中**'));
     expect(cardSends).toHaveLength(1);
-    expect(client.updateMarkdownCard).toHaveBeenCalledWith('om_card_1', '**任务执行中** step 2');
+    expect(client.updateMarkdownCard).toHaveBeenCalledWith(
+      'om_card_1',
+      '**任务执行中** step 2',
+      expect.anything(),
+    );
   });
 });
 
@@ -3883,7 +3948,7 @@ describe('Feishu activity card fallback governance', () => {
     };
     const client = {
       sendMarkdownCardToChat: vi.fn().mockResolvedValue('om_card_new'),
-      updateMarkdownCard: vi.fn().mockResolvedValue({ ok: false, error: '230002 permission denied' }),
+      updateMarkdownCard: vi.fn().mockResolvedValue({ ok: false, error: '230002 permission denied', classification: 'not_found' as const }),
     };
     const audit = { record: vi.fn() };
 
@@ -3891,19 +3956,21 @@ describe('Feishu activity card fallback governance', () => {
       session: session as never,
       client: client as never,
       audit: audit as never,
+      cardDeliveryOptions: { updateCooldownMs: 0 },
     });
     // First paint sends the card (update attempted first on stored id? no id yet -> send).
     listener?.({ senderId: 'ou_user', chatId: 'oc_chat', kind: 'progress', reply: { lines: ['v1'], cardUpdateKey: 'k' } });
     await new Promise(resolve => setTimeout(resolve, 0));
-    // Next two repaints within the 60s fallback window: update fails -> at most ONE fallback resend.
+    // Next two repaints within the fallback window: update fails -> at most ONE fallback resend.
     listener?.({ senderId: 'ou_user', chatId: 'oc_chat', kind: 'progress', reply: { lines: ['v2'], cardUpdateKey: 'k' } });
     await new Promise(resolve => setTimeout(resolve, 0));
     listener?.({ senderId: 'ou_user', chatId: 'oc_chat', kind: 'progress', reply: { lines: ['v3'], cardUpdateKey: 'k' } });
     await new Promise(resolve => setTimeout(resolve, 0));
 
-    // First paint only: within the 60s fallback window, failed updates are
+    // First paint only: within the fallback window, failed updates are
     // reported loudly but never re-sent as new messages.
     expect(client.sendMarkdownCardToChat).toHaveBeenCalledTimes(1);
+    expect(client.updateMarkdownCard).toHaveBeenCalledTimes(1);
     expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'progress',
       ok: false,
@@ -3911,6 +3978,23 @@ describe('Feishu activity card fallback governance', () => {
     expect(session.appendSystemMessage).toHaveBeenCalledWith(
       expect.stringContaining('230002'),
     );
+    expect(audit.record).not.toHaveBeenCalledWith(expect.objectContaining({
+      method: 'card-update',
+      ok: true,
+    }));
+
+    const now = Date.now();
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(now + 5 * 60_000 + 1);
+    listener?.({
+      senderId: 'ou_user',
+      chatId: 'oc_chat',
+      kind: 'progress',
+      reply: { lines: ['v4'], cardUpdateKey: 'k' },
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    dateNow.mockRestore();
+    expect(client.sendMarkdownCardToChat).toHaveBeenCalledTimes(2);
+    expect(client.updateMarkdownCard).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -3978,5 +4062,389 @@ describe('Feishu registered artifact delivery (cloud docs)', () => {
       .find(text => text.includes('https://feishu.cn/docx/abc123'));
     expect(notice).toBeDefined();
     expect(notice).toContain('调研报告.md');
+  });
+});
+
+describe('Feishu artifact delivery terminal outcomes (2026-09-06 plan §5.6)', () => {
+  it('states the cloud-document outcome explicitly in the final reply', async () => {
+    let listener: ((delivery: {
+      senderId: string;
+      chatId: string;
+      kind: 'progress' | 'final';
+      reply: {
+        lines: string[];
+        artifacts?: Array<{ name: string; path: string; mediaType: string; previewKind: string }>;
+      };
+    }) => void) | null = null;
+    const session = {
+      subscribeGatewayDelivery: vi.fn((next: typeof listener) => {
+        listener = next;
+        return () => undefined;
+      }),
+      appendSystemMessage: vi.fn(),
+    };
+    const client = {
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue('om_1'),
+      importFileToCloudDoc: vi.fn().mockResolvedValue('https://feishu.cn/docx/outcome1'),
+    };
+
+    subscribeFeishuGatewayDeliveries({
+      session: session as never,
+      client: client as never,
+    });
+    listener?.({
+      senderId: 'ou_user',
+      chatId: 'oc_chat',
+      kind: 'final',
+      reply: {
+        lines: ['报告完成'],
+        artifacts: [{
+          name: '报告.md',
+          path: '/tmp/artifacts/报告.md',
+          mediaType: 'text/markdown',
+          previewKind: 'markdown',
+        }],
+      },
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    const finalMarkdown = client.sendMarkdownCardToChat.mock.calls
+      .map(([, markdown]) => String(markdown))
+      .find(text => text.includes('报告完成'));
+    expect(finalMarkdown).toBeDefined();
+    expect(finalMarkdown).toContain('云文档已生成：[报告.md](https://feishu.cn/docx/outcome1)');
+  });
+
+  it('reports a file fallback with the bounded cloud-doc failure reason', async () => {
+    let listener: ((delivery: {
+      senderId: string;
+      chatId: string;
+      kind: 'progress' | 'final';
+      reply: {
+        lines: string[];
+        artifacts?: Array<{ name: string; path: string; mediaType: string; previewKind: string }>;
+      };
+    }) => void) | null = null;
+    const session = {
+      subscribeGatewayDelivery: vi.fn((next: typeof listener) => {
+        listener = next;
+        return () => undefined;
+      }),
+      appendSystemMessage: vi.fn(),
+    };
+    const client = {
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue('om_1'),
+      importFileToCloudDoc: vi.fn().mockRejectedValue(new Error('import task poll timed out')),
+      uploadFile: vi.fn().mockResolvedValue('file_key_1'),
+      sendFileToChat: vi.fn().mockResolvedValue(undefined),
+    };
+
+    subscribeFeishuGatewayDeliveries({
+      session: session as never,
+      client: client as never,
+    });
+    listener?.({
+      senderId: 'ou_user',
+      chatId: 'oc_chat',
+      kind: 'final',
+      reply: {
+        lines: ['正文完成'],
+        artifacts: [{
+          name: '报告.md',
+          path: '/tmp/artifacts/fallback.md',
+          mediaType: 'text/markdown',
+          previewKind: 'markdown',
+        }],
+      },
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    const finalMarkdown = client.sendMarkdownCardToChat.mock.calls
+      .map(([, markdown]) => String(markdown))
+      .find(text => text.includes('正文完成'));
+    expect(finalMarkdown).toContain('文件已发送：报告.md（云文档生成失败：import task poll timed out）');
+  });
+
+  it('never re-sends an artifact whose ledger entry is terminal (restart-safe idempotency)', async () => {
+    const ledgerPath = `/tmp/feishu-ledger-test-${Date.now()}.jsonl`;
+    const { FeishuArtifactDeliveryLedger, artifactDeliveryKey } = await import('../../src/integrations/feishu-artifact-delivery.js');
+    const ledger = new FeishuArtifactDeliveryLedger(ledgerPath);
+    const idemKey = artifactDeliveryKey({ chatId: 'oc_chat', artifactPath: '/tmp/artifacts/idem.md' });
+    ledger.reserve(idemKey, 'idem.md');
+    ledger.settle(idemKey, 'cloud_doc', { url: 'https://feishu.cn/docx/idem' });
+
+    let listener: ((delivery: {
+      senderId: string;
+      chatId: string;
+      kind: 'progress' | 'final';
+      reply: {
+        lines: string[];
+        artifacts?: Array<{ name: string; path: string; mediaType: string; previewKind: string }>;
+      };
+    }) => void) | null = null;
+    const session = {
+      subscribeGatewayDelivery: vi.fn((next: typeof listener) => {
+        listener = next;
+        return () => undefined;
+      }),
+      appendSystemMessage: vi.fn(),
+    };
+    const client = {
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue('om_1'),
+      importFileToCloudDoc: vi.fn(),
+    };
+
+    subscribeFeishuGatewayDeliveries({
+      session: session as never,
+      client: client as never,
+      artifactLedger: ledger,
+    });
+    listener?.({
+      senderId: 'ou_user',
+      chatId: 'oc_chat',
+      kind: 'final',
+      reply: {
+        lines: ['重放投递'],
+        artifacts: [{
+          name: 'idem.md',
+          path: '/tmp/artifacts/idem.md',
+          mediaType: 'text/markdown',
+          previewKind: 'markdown',
+        }],
+      },
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(client.importFileToCloudDoc).not.toHaveBeenCalled();
+    const finalMarkdown = client.sendMarkdownCardToChat.mock.calls
+      .map(([, markdown]) => String(markdown))
+      .find(text => text.includes('重放投递'));
+    expect(finalMarkdown).toContain('云文档已生成：[idem.md](https://feishu.cn/docx/idem)');
+  });
+});
+
+describe('Feishu message-scoped attachments (2026-09-06 plan §5.5)', () => {
+  it('acknowledges an image-only message and binds it to the next text command on the same route', async () => {
+    const { FeishuPendingAttachmentStore } = await import('../../src/integrations/feishu-pending-attachments.js');
+    const pendingAttachments = new FeishuPendingAttachmentStore();
+    const submittedInputs: Array<{ text: string; attachments?: Array<{ path: string; name: string; kind: string }> }> = [];
+    const session = {
+      submitGatewayMessage: vi.fn(async (input: {
+        text: string;
+        attachments?: Array<{ path: string; name: string; kind: string }>;
+        onProgress: (text: string, options?: Record<string, unknown>) => void;
+      }) => {
+        submittedInputs.push({ text: input.text, attachments: input.attachments });
+        return ['完成'];
+      }),
+      appendSystemMessage: vi.fn(),
+    };
+    const client = {
+      addReactionToMessage: vi.fn().mockResolvedValue('reaction'),
+      removeReactionFromMessage: vi.fn().mockResolvedValue(undefined),
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue('om_ack'),
+      downloadMessageResource: vi.fn().mockResolvedValue({
+        path: '/tmp/uploads/chat/om_img/screenshot.png',
+        fileName: 'screenshot.png',
+      }),
+    };
+    const deps = {
+      session: session as never,
+      client: client as never,
+      seenMessageIds: new Set<string>(),
+      pendingAttachments,
+      cardDeliveryOptions: { updateCooldownMs: 0 },
+    };
+
+    // 1. image-only message: download + pending + immediate acknowledgement.
+    await handleFeishuMessageEvent({
+      sender: { sender_id: { open_id: 'ou_user' } },
+      message: {
+        message_id: 'om_img',
+        chat_id: 'oc_chat',
+        chat_type: 'p2p',
+        message_type: 'image',
+        content: '{"image_key":"img_key_1"}',
+      },
+    }, deps);
+    expect(client.downloadMessageResource).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: 'om_img',
+      fileKey: 'img_key_1',
+      resourceType: 'image',
+    }));
+    expect(client.sendMarkdownCardToChat).toHaveBeenCalledWith(
+      'oc_chat',
+      expect.stringContaining('已收到图片'),
+    );
+    expect(pendingAttachments.size()).toBe(1);
+
+    // 2. next text message on the same route claims it as a command attachment.
+    await handleFeishuMessageEvent({
+      sender: { sender_id: { open_id: 'ou_user' } },
+      message: {
+        message_id: 'om_text',
+        chat_id: 'oc_chat',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: '{"text":"分析这张图"}',
+      },
+    }, deps);
+    expect(submittedInputs).toHaveLength(1);
+    expect(submittedInputs[0]!.text).toBe('分析这张图');
+    expect(submittedInputs[0]!.attachments).toEqual([{
+      path: '/tmp/uploads/chat/om_img/screenshot.png',
+      name: 'screenshot.png',
+      kind: 'image',
+    }]);
+    expect(pendingAttachments.size()).toBe(0);
+    // Text no longer appends raw file paths (the legacy chat-level mechanism).
+    expect(submittedInputs[0]!.text).not.toContain('/tmp/uploads');
+  });
+
+  it('carries inline rich-text images with their text in one command', async () => {
+    const { FeishuPendingAttachmentStore } = await import('../../src/integrations/feishu-pending-attachments.js');
+    const pendingAttachments = new FeishuPendingAttachmentStore();
+    const submittedInputs: Array<{ text: string; attachments?: Array<{ path: string; name: string; kind: string }> }> = [];
+    const session = {
+      submitGatewayMessage: vi.fn(async (input: {
+        text: string;
+        attachments?: Array<{ path: string; name: string; kind: string }>;
+      }) => {
+        submittedInputs.push({ text: input.text, attachments: input.attachments });
+        return ['完成'];
+      }),
+      appendSystemMessage: vi.fn(),
+    };
+    const client = {
+      addReactionToMessage: vi.fn().mockResolvedValue('reaction'),
+      removeReactionFromMessage: vi.fn().mockResolvedValue(undefined),
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue('om_1'),
+      downloadMessageResource: vi.fn().mockResolvedValue({
+        path: '/tmp/uploads/chat/om_post/inline.png',
+        fileName: 'inline.png',
+      }),
+    };
+
+    await handleFeishuMessageEvent({
+      sender: { sender_id: { open_id: 'ou_user' } },
+      message: {
+        message_id: 'om_post',
+        chat_id: 'oc_chat',
+        chat_type: 'p2p',
+        message_type: 'post',
+        content: JSON.stringify({
+          title: '调研需求',
+          content: [[
+            { tag: 'text', text: '请看这张截图' },
+            { tag: 'img', image_key: 'img_inline_1' },
+          ]],
+        }),
+      },
+    }, {
+      session: session as never,
+      client: client as never,
+      seenMessageIds: new Set<string>(),
+      pendingAttachments,
+      cardDeliveryOptions: { updateCooldownMs: 0 },
+    });
+
+    expect(submittedInputs).toHaveLength(1);
+    expect(submittedInputs[0]!.text).toBe('请看这张截图');
+    expect(submittedInputs[0]!.attachments).toEqual([{
+      path: '/tmp/uploads/chat/om_post/inline.png',
+      name: 'inline.png',
+      kind: 'image',
+    }]);
+    expect(pendingAttachments.size()).toBe(0);
+  });
+});
+
+describe('Feishu command isolation and final-reply artifact delivery (closure)', () => {
+  it('does not consume pending attachments for a slash command', async () => {
+    const { FeishuPendingAttachmentStore } = await import('../../src/integrations/feishu-pending-attachments.js');
+    const pendingAttachments = new FeishuPendingAttachmentStore();
+    pendingAttachments.add({
+      messageId: 'om_img', chatId: 'oc_chat', senderId: 'ou_user',
+      path: '/tmp/screenshot.png', name: 'screenshot.png', resourceType: 'image',
+    });
+    const submitted: Array<{ text: string; attachments?: unknown[] }> = [];
+    const session = {
+      submitGatewayMessage: vi.fn(async (input: { text: string; attachments?: unknown[] }) => {
+        submitted.push({ text: input.text, attachments: input.attachments });
+        return ['ok'];
+      }),
+      appendSystemMessage: vi.fn(),
+    };
+    const client = {
+      addReactionToMessage: vi.fn().mockResolvedValue('r'),
+      removeReactionFromMessage: vi.fn().mockResolvedValue(undefined),
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue('om_1'),
+    };
+
+    await handleFeishuMessageEvent({
+      sender: { sender_id: { open_id: 'ou_user' } },
+      message: {
+        message_id: 'om_status',
+        chat_id: 'oc_chat',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: '{"text":"/status dashboard"}',
+      },
+    }, {
+      session: session as never,
+      client: client as never,
+      seenMessageIds: new Set<string>(),
+      pendingAttachments,
+      cardDeliveryOptions: { updateCooldownMs: 0 },
+    });
+
+    expect(submitted[0]!.attachments).toBeUndefined();
+    expect(pendingAttachments.size()).toBe(1); // still waiting, not discarded
+  });
+
+  it('delivers registered artifacts and states the outcome when a final reply object arrives', async () => {
+    const session = {
+      submitGatewayMessage: vi.fn(async (input: {
+        onProgress: (text: string, options?: Record<string, unknown>) => void;
+      }) => {
+        void input;
+        return { lines: ['报告完成'], artifacts: [{
+          name: '报告.md',
+          path: '/tmp/artifacts/报告.md',
+          mediaType: 'text/markdown',
+          previewKind: 'markdown',
+        }] };
+      }),
+      appendSystemMessage: vi.fn(),
+    };
+    const client = {
+      addReactionToMessage: vi.fn().mockResolvedValue('r'),
+      removeReactionFromMessage: vi.fn().mockResolvedValue(undefined),
+      sendMarkdownCardToChat: vi.fn().mockResolvedValue('om_1'),
+      importFileToCloudDoc: vi.fn().mockResolvedValue('https://feishu.cn/docx/reply-object'),
+    };
+
+    await handleFeishuMessageEvent({
+      sender: { sender_id: { open_id: 'ou_user' } },
+      message: {
+        message_id: 'om_final_reply',
+        chat_id: 'oc_chat',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: '{"text":"run task"}',
+      },
+    }, {
+      session: session as never,
+      client: client as never,
+      seenMessageIds: new Set<string>(),
+      cardDeliveryOptions: { updateCooldownMs: 0 },
+    });
+
+    // The final reply object path must actually run cloud-document delivery.
+    expect(client.importFileToCloudDoc).toHaveBeenCalledWith('/tmp/artifacts/报告.md');
+    const finalText = client.sendMarkdownCardToChat.mock.calls
+      .map(([, markdown]) => String(markdown))
+      .find(text => text.includes('报告完成'));
+    expect(finalText).toContain('云文档已生成：[报告.md](https://feishu.cn/docx/reply-object)');
   });
 });

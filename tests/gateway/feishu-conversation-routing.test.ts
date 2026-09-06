@@ -462,3 +462,116 @@ function receipt(
     ...(values.workspaceId ? { workspaceId: values.workspaceId } : {}),
   };
 }
+
+describe('FeishuConversationRouting message-scoped attachments (2026-09-06 plan §5.5)', () => {
+  it('persists attachment bytes under the bound Conversation and forwards resolvable references', async () => {
+    const { FileAttachmentStore } = await import('../../src/storage/file-attachment-store.js');
+    const root = await mkdtemp(join(tmpdir(), 'feishu-routing-att-'));
+    roots.push(root);
+    const store = new FileAttachmentStore(join(root, 'attachments'));
+    await store.initialize();
+    const imagePath = join(root, 'chart.png');
+    await writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    const savedInputs: Array<{ conversationId: string; name: string }> = [];
+    const { routing, bindings, envelopes } = await makeRouting({
+      attachments: store,
+      onAttachmentSaved: input => savedInputs.push({
+        conversationId: input.conversationId,
+        name: input.name,
+      }),
+    });
+    await bindings.set({
+      accountId: 'local-default',
+      platform: 'feishu',
+      channelId: 'chat_1',
+      workspaceId: 'workspace_repo',
+      conversationId: 'conv_bound',
+    });
+
+    await routing.routeMessage(
+      sender,
+      channel,
+      '看图分析',
+      'req_att',
+      'idem_att',
+      [{ path: imagePath, name: 'chart.png', kind: 'image' }],
+    );
+
+    const message = envelopes.map(envelope => envelope.command)
+      .find(command => command.kind === 'user_message') as
+      { kind: 'user_message'; text: string; attachments: Array<{ attachmentId: string; kind: string }> };
+    expect(message).toBeDefined();
+    expect(message.attachments).toHaveLength(1);
+    expect(savedInputs).toEqual([{ conversationId: 'conv_bound', name: 'chart.png' }]);
+    // The reference resolves back through the Gateway attachment store.
+    const resolved = await store.readAttachment('conv_bound', message.attachments[0]!.attachmentId);
+    expect(resolved?.metadata.kind).toBe('image');
+    expect(resolved?.metadata.name).toBe('chart.png');
+  });
+
+  it('drops attachments for slash commands and passes text-only messages through unchanged', async () => {
+    const { routing, bindings, envelopes } = await makeRouting();
+    await bindings.set({
+      accountId: 'local-default',
+      platform: 'feishu',
+      channelId: 'chat_1',
+      workspaceId: 'workspace_repo',
+      conversationId: 'conv_bound',
+    });
+    const imagePath = join(tmpdir(), 'nope.png');
+
+    await routing.routeMessage(sender, channel, '/status', 'req_slash', 'idem_slash', [
+      { path: imagePath, name: 'nope.png', kind: 'image' },
+    ]);
+    await routing.routeMessage(sender, channel, 'plain text', 'req_text', 'idem_text');
+
+    const commands = envelopes.map(envelope => envelope.command);
+    expect(commands.some(command => command.kind === 'slash_command'
+      && 'attachments' in command === false)).toBe(true);
+    const textCommand = commands.find(command => command.kind === 'user_message') as
+      { kind: 'user_message'; attachments: unknown[] };
+    expect(textCommand.attachments).toEqual([]);
+  });
+});
+
+describe('FeishuConversationRouting first-message attachments (2026-09-06 closure)', () => {
+  it('persists attachments even when the message CREATES the Conversation', async () => {
+    const { FileAttachmentStore } = await import('../../src/storage/file-attachment-store.js');
+    const root = await mkdtemp(join(tmpdir(), 'feishu-routing-create-'));
+    roots.push(root);
+    const store = new FileAttachmentStore(join(root, 'attachments'));
+    await store.initialize();
+    const imagePath = join(root, 'first.png');
+    await writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    const saved: Array<{ conversationId: string; name: string }> = [];
+    const { routing, bindings, envelopes } = await makeRouting({
+      attachments: store,
+      onAttachmentSaved: input => saved.push({ conversationId: input.conversationId, name: input.name }),
+    });
+    // Workspace selected but NO Conversation bound yet -> the message creates one.
+    await bindings.set({
+      accountId: 'local-default',
+      platform: 'feishu',
+      channelId: 'chat_1',
+      workspaceId: 'workspace_repo',
+      conversationId: null,
+    });
+
+    await routing.routeMessage(
+      sender,
+      channel,
+      '看图分析',
+      'req_create_att',
+      'idem_create_att',
+      [{ path: imagePath, name: 'first.png', kind: 'image' }],
+    );
+
+    const message = envelopes.map(envelope => envelope.command)
+      .find(command => command.kind === 'user_message') as
+      { kind: 'user_message'; attachments: Array<{ attachmentId: string }> };
+    expect(message.attachments).toHaveLength(1);
+    expect(saved).toEqual([{ conversationId: 'conv_new', name: 'first.png' }]);
+    const resolved = await store.readAttachment('conv_new', message.attachments[0]!.attachmentId);
+    expect(resolved?.metadata.kind).toBe('image');
+  });
+});

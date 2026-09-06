@@ -98,7 +98,15 @@ export class TaskCancellationCoordinator {
         if (action.generationId !== (revision?.generationId ?? null)) {
           throw new Error('Task cancellation generation changed before application');
         }
-        this.deps.taskRuntimeService.cancelTask(action.taskId, decision.reason);
+        // Idempotent replay (§5.3): a previously-uncertain application re-applies
+        // the same cancellation identity after the durable transaction already
+        // committed. Converge to the same postconditions instead of throwing —
+        // `只能取消未完成任务` used to keep the application uncertain forever,
+        // which kept the Task blocked with its Conversation slot occupied.
+        const alreadyCancelled = task.status === 'cancelled';
+        if (!alreadyCancelled) {
+          this.deps.taskRuntimeService.cancelTask(action.taskId, decision.reason);
+        }
         const subtasks = revision
           ? this.deps.subtaskRepo.listActiveByTask(action.taskId)
           : this.deps.subtaskRepo.listByTask(action.taskId);
@@ -125,28 +133,24 @@ export class TaskCancellationCoordinator {
           now,
         });
         this.deps.generationReplanRepo.cancelTask(action.taskId, decision.id, now);
-        // Cancel cascades must close every scheduling surface for the task:
-        // its schedule entry and its conversation slot, otherwise later tasks
-        // in the same conversation queue forever behind a dead "current task".
-        this.deps.schedulerRepo.markTerminal(action.taskId, now);
-        const slotRelease = this.deps.schedulerRepo.releaseTaskSlotAndPromote(action.taskId, now);
-        this.taskEvents.record(
-          action.taskId,
-          null,
-          'task_cancelled',
-          decision.reason,
-          {
-            decisionId: decision.id,
-            affectedSubtaskIds: affected,
-            cleanupAttemptIds,
-            ...(slotRelease
-              ? {
-                releasedConversationSlot: slotRelease.conversationId,
-                promotedTaskId: slotRelease.promotedTaskId,
-              }
-              : {}),
-          },
-        );
+        // The cancellation fence is now durable. The schedule entry and the
+        // Conversation slot are released only AFTER the asynchronous drain
+        // confirms every dispatch, lease, and execution backend has converged
+        // (releaseAdmission) — never while old attempts are still cleaning up
+        // (§4.1: no same-Conversation overlap between old and new work).
+        if (!alreadyCancelled) {
+          this.taskEvents.record(
+            action.taskId,
+            null,
+            'task_cancelled',
+            decision.reason,
+            {
+              decisionId: decision.id,
+              affectedSubtaskIds: affected,
+              cleanupAttemptIds,
+            },
+          );
+        }
         return { taskId: action.taskId, affectedSubtaskIds: affected, cleanupAttemptIds };
       }
 
@@ -275,6 +279,49 @@ export class TaskCancellationCoordinator {
         this.settlePartialCancellation(candidateTaskId);
       }
     }
+    // §4.1: release the Conversation slot for every cancelled Task whose
+    // cleanup has converged — including the no-taskId startup sweep, where
+    // the old code released nothing and left a cancelled Task looking live.
+    const now = new Date().toISOString();
+    if (taskId) {
+      this.releaseAdmission(taskId, now);
+    } else {
+      for (const candidateTaskId of this.deps.taskRuntimeService.listTasks()
+        .filter(task => task.status === 'cancelled')
+        .map(task => task.id)) {
+        this.releaseAdmission(candidateTaskId, now);
+      }
+    }
+  }
+
+  /**
+   * Releases the Conversation slot and closes the schedule entry only after
+   * every dispatch/lease/backend effect has converged (§4.1). Returns null
+   * while cleanup residue remains — the slot stays held so a same-Conversation
+   * new Task can never overlap the still-cleaning old attempts.
+   */
+  releaseAdmission(
+    taskId: string,
+    now = new Date().toISOString(),
+  ): { conversationId: string; promotedTaskId: string | null } | null {
+    const task = this.deps.taskRuntimeService.findTask(taskId);
+    if (!task || !['cancelled', 'done', 'failed', 'archived'].includes(task.status)) return null;
+    if (this.completionBlockedReasons(taskId, null).length > 0) return null;
+    this.deps.schedulerRepo.markTerminal(taskId, now);
+    const slotRelease = this.deps.schedulerRepo.releaseTaskSlotAndPromote(taskId, now);
+    if (slotRelease) {
+      this.taskEvents.record(
+        taskId,
+        null,
+        'task_slot_released',
+        'Conversation slot released after cancellation cleanup converged',
+        {
+          releasedConversationSlot: slotRelease.conversationId,
+          promotedTaskId: slotRelease.promotedTaskId,
+        },
+      );
+    }
+    return slotRelease;
   }
 
   completionBlockedReasons(

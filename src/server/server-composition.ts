@@ -56,6 +56,7 @@ import { FeishuRuntimeManager } from '../gateway/feishu-runtime.js';
 import { FeishuGatewayAdapter } from '../gateway/feishu-gateway-adapter.js';
 import { FeishuConversationRouting } from '../gateway/feishu-conversation-routing.js';
 import { FeishuGatewaySessionPort } from '../gateway/feishu-gateway-session-port.js';
+import { GatewayAuditLog } from '../gateway/audit.js';
 import { ClientGateway } from '../gateway/client-gateway.js';
 import { BindingConversationResolver } from '../gateway/conversation-resolver.js';
 import { ConversationBindingRepository } from '../session/conversation-binding-repository.js';
@@ -1271,6 +1272,24 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       accountId: LOCAL_DEFAULT_ACCOUNT_ID,
       gateway: clientGateway,
       bindings: conversationBindings,
+      attachments: webAttachmentStore,
+      onAttachmentFailed: input => {
+        // §5.5.6/§5.5.7: the exact stage of an attachment failure is surfaced
+        // durably (audit) and operator-visibly — never silently dropped. The
+        // image-resolution success/failure additionally reaches the user's
+        // activity card through the gateway_attachment_resolved trace event.
+        const message = `Feishu attachment resolution failed: ${input.name} (${input.kind}) -> ${input.reason}`;
+        console.error(message);
+        new GatewayAuditLog(resolve(accountPaths.gateway, 'gateway-audit.jsonl')).record({
+          platform: 'feishu',
+          kind: 'inbound',
+          target: input.chatId ?? input.conversationId,
+          method: 'file',
+          ok: false,
+          reason: 'attachment_resolution_failed',
+          error: message,
+        });
+      },
       restoreWorkspace: (connectionId, workspaceId, principalId) =>
         workspaceGatewayRuntime.activateWorkspace(
           connectionId,

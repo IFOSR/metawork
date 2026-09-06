@@ -1165,6 +1165,29 @@ describe('ControlKernel', () => {
     });
   });
 
+  it('blocks a deterministic missing Workspace source instead of scheduling a retry loop', () => {
+    const kernel = new ControlKernel();
+    const failure = executionFailure('attempt_workspace', codexBinding, 'continuation', 'timeout');
+    const workspaceFailure = {
+      ...failure,
+      failure: {
+        kind: 'configuration' as const,
+        scope: 'task' as const,
+        code: 'workspace_source_missing',
+        summary: 'dispatch payload is missing its workspacePath',
+      },
+    };
+    const snapshot = dispatchSnapshot([], 'awaiting_decision');
+    snapshot.attempts = [attemptFact(workspaceFailure)];
+
+    expect(kernel.decide(workspaceFailure, snapshot).action).toEqual({
+      type: 'block_work',
+      taskId: 'task_1',
+      subtaskId: 'subtask_1',
+      preserveSubtaskState: true,
+    });
+  });
+
   it('falls back immediately for task failure and requests only one automatic replan per generation', () => {
     const kernel = new ControlKernel();
     const taskFailure = executionFailure('attempt_1', codexBinding, 'primary', 'task_failed');
@@ -1646,3 +1669,157 @@ function attemptFact(event: Extract<KernelEvent, { type: 'execution_outcome' }>)
     completedAt: event.occurredAt,
   };
 }
+
+describe('ControlKernel abandon_task authorization (2026-09-06 plan §5.4)', () => {
+  const taskControlProposal = (control: string, taskId: string | null) => ({
+    ...event,
+    id: `event_${control}_${taskId ?? 'none'}`,
+    proposal: {
+      ...event.proposal,
+      id: `plan_${control}`,
+      action: 'task_control',
+      task: {
+        binding: taskId ? 'reference' : 'none',
+        taskId,
+        control,
+        scope: null,
+        title: null,
+        goal: null,
+        includeRecentConversationContext: false,
+        priority: null,
+      },
+    },
+  });
+
+  it('authorizes abandoning the slot-occupying Task of the current Conversation', () => {
+    const kernel = new ControlKernel();
+    const decision = kernel.decide(
+      taskControlProposal('abandon_task', 'task-old') as KernelEvent,
+      {
+        ...snapshot,
+        tasks: [{ id: 'task-old', status: 'blocked', conversationId: 'session_1' }],
+        activeTaskByConversation: { session_1: 'task-old' },
+      },
+    );
+    expect(decision.action).toMatchObject({
+      type: 'authorize_task_control',
+      task: { control: 'abandon_task', taskId: 'task-old' },
+    });
+  });
+
+  it('authorizes abandoning a queued (non-slot) Task of the current Conversation', () => {
+    const kernel = new ControlKernel();
+    const decision = kernel.decide(
+      taskControlProposal('abandon_task', 'task-queued') as KernelEvent,
+      {
+        ...snapshot,
+        tasks: [{ id: 'task-queued', status: 'created', conversationId: 'session_1' }],
+        activeTaskByConversation: { session_1: 'task-other' },
+      },
+    );
+    expect(decision.action).toMatchObject({ type: 'authorize_task_control' });
+  });
+
+  it('rejects abandoning a Task owned by another Conversation', () => {
+    const kernel = new ControlKernel();
+    const decision = kernel.decide(
+      taskControlProposal('abandon_task', 'task-foreign') as KernelEvent,
+      {
+        ...snapshot,
+        tasks: [{ id: 'task-foreign', status: 'blocked', conversationId: 'conversation-b' }],
+        activeTaskByConversation: {},
+      },
+    );
+    expect(decision.action).toMatchObject({ type: 'reject_request' });
+    expect(decision.reason).toContain('another Conversation');
+  });
+
+  it('rejects abandoning an invented Task id', () => {
+    const kernel = new ControlKernel();
+    const decision = kernel.decide(
+      taskControlProposal('abandon_task', 'task-invented') as KernelEvent,
+      { ...snapshot, tasks: [] },
+    );
+    expect(decision.action).toMatchObject({ type: 'reject_request' });
+    expect(decision.reason).toContain('task not found');
+  });
+
+  it('still rejects a resume control while the slot is occupied by another Task', () => {
+    const kernel = new ControlKernel();
+    const proposal = taskControlProposal('resume_task', 'task-queued');
+    proposal.proposal.task.priority = { level: 'normal', reason: 'explicit resume' };
+    const decision = kernel.decide(proposal as KernelEvent, {
+      ...snapshot,
+      tasks: [{ id: 'task-queued', status: 'parked', conversationId: 'session_1' }],
+      activeTaskByConversation: { session_1: 'task-other' },
+    });
+    expect(decision.action).toMatchObject({ type: 'reject_request' });
+    expect(decision.reason).toContain('slot is occupied');
+  });
+});
+
+describe('ControlKernel conflictResolution (2026-09-06 plan §5.4 abandon-and-create)', () => {
+  const conflictPlan = (oldTaskId: string) => {
+    const proposal = workGraphPlan({ goal: 'New work', capabilityClass: 'code_edit' });
+    proposal.workGraph!.subtasks[0]!.contextRefs = [];
+    proposal.conflictResolution = { oldTaskId };
+    return proposal;
+  };
+
+  it('authorizes the new plan as queued and carries the old Task identity', () => {
+    const kernel = new ControlKernel();
+    const decision = kernel.decide({
+      ...event,
+      id: 'event_conflict_resolution',
+      conversationId: 'session_1',
+      proposal: conflictPlan('task-old'),
+      generationId: 'generation_conflict',
+    }, {
+      ...snapshot,
+      tasks: [{ id: 'task-old', status: 'blocked' }],
+      activeTaskByConversation: { session_1: 'task-old' },
+      occupiedConversationIds: ['session_1'],
+      queuedTaskCountByConversation: { session_1: 0 },
+    });
+
+    expect(decision.action).toMatchObject({
+      type: 'authorize_task_plan',
+      scheduleState: 'queued',
+      conflictResolution: { oldTaskId: 'task-old' },
+    });
+  });
+
+  it('rejects an unknown old Task id', () => {
+    const kernel = new ControlKernel();
+    const decision = kernel.decide({
+      ...event,
+      id: 'event_conflict_unknown',
+      conversationId: 'session_1',
+      proposal: conflictPlan('task-missing'),
+      generationId: 'generation_conflict_unknown',
+    }, {
+      ...snapshot,
+      tasks: [{ id: 'task-other', status: 'blocked' }],
+      activeTaskByConversation: { session_1: 'task-other' },
+    });
+    expect(decision.action).toMatchObject({ type: 'reject_request' });
+    expect(decision.reason).toContain('unknown Task');
+  });
+
+  it('rejects an already-terminal old Task', () => {
+    const kernel = new ControlKernel();
+    const decision = kernel.decide({
+      ...event,
+      id: 'event_conflict_terminal',
+      conversationId: 'session_1',
+      proposal: conflictPlan('task-done'),
+      generationId: 'generation_conflict_terminal',
+    }, {
+      ...snapshot,
+      tasks: [{ id: 'task-done', status: 'done' }],
+      activeTaskByConversation: { session_1: 'task-done' },
+    });
+    expect(decision.action).toMatchObject({ type: 'reject_request' });
+    expect(decision.reason).toContain('already-terminal');
+  });
+});

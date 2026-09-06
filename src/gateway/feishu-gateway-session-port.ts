@@ -48,6 +48,8 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
   >();
   private readonly deliveryListeners = new Set<(delivery: FeishuGatewayDelivery) => void>();
   private readonly activeRequestIds = new Set<string>();
+  private readonly activeTurnIds = new Set<string>();
+  private readonly requestTurnIds = new Map<string, string>();
   private readonly liveAttachments = new Map<string, {
     conversationId: string;
     unsubscribe: () => void;
@@ -101,13 +103,17 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     chatType?: 'dm' | 'group' | 'unknown';
     text: string;
     requestId: string;
-    onProgress: (text: string, options?: { cardUpdateKey?: string; collapsedMarkdown?: string }) => void;
+    attachments?: Array<{ path: string; name: string; kind: 'image' | 'file' }>;
+    onProgress: (text: string, options?: { cardUpdateKey?: string; collapsedMarkdown?: string; terminal?: boolean }) => void;
   }): Promise<string[] | FeishuGatewayReply> {
     this.activeRequestIds.add(input.requestId);
     try {
       return await this.submitGatewayMessageOpen(input);
     } finally {
       this.activeRequestIds.delete(input.requestId);
+      const turnId = this.requestTurnIds.get(input.requestId);
+      if (turnId) this.activeTurnIds.delete(turnId);
+      this.requestTurnIds.delete(input.requestId);
     }
   }
 
@@ -118,7 +124,8 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     chatType?: 'dm' | 'group' | 'unknown';
     text: string;
     requestId: string;
-    onProgress: (text: string, options?: { cardUpdateKey?: string; collapsedMarkdown?: string }) => void;
+    attachments?: Array<{ path: string; name: string; kind: 'image' | 'file' }>;
+    onProgress: (text: string, options?: { cardUpdateKey?: string; collapsedMarkdown?: string; terminal?: boolean }) => void;
   }): Promise<string[] | FeishuGatewayReply> {
     const receipt = await this.deps.adapter.handleMessage(
       { tenantKey: this.deps.tenantKey, userId: input.senderId },
@@ -129,8 +136,16 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       input.text,
       input.requestId,
       `feishu:${input.requestId}`,
+      input.attachments,
     );
     if ('kind' in receipt) throw new Error(receipt.message);
+    const receiptTurnId = 'turnId' in receipt && typeof receipt.turnId === 'string'
+      ? receipt.turnId
+      : null;
+    if (receiptTurnId) {
+      this.activeTurnIds.add(receiptTurnId);
+      this.requestTurnIds.set(input.requestId, receiptTurnId);
+    }
     if (receipt.status === 'rejected') {
       if (receipt.reason === 'workspace_required') {
         return [formatFeishuWorkspaceRequired()];
@@ -412,6 +427,16 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     existing?.unsubscribe();
     existing?.activity.dispose();
     const resultAssembler = new ResultStreamAssembler();
+    let activeTaskId: string | null = null;
+    let activeTurnId: string | null = null;
+    const retiredTaskIds = new Set<string>();
+    // §4.3/§5.1: the card scope is conversation + task (never an unstable
+    // request-only lifetime), so a re-attached or retried delivery reuses the
+    // same activity card instead of leaking a new one.
+    // §4.3/§5.1: bind the live card to the immutable turn identity (fallback
+    // to task, then planning) so a task switch never re-keys the same card
+    // mid-stream into a second state machine.
+    const liveCardUpdateKey = () => `feishu-activity:live:${conversationId}:${activeTurnId ?? activeTaskId ?? 'planning'}`;
     const activity = createLiveActivityCardState(
       this.activityCardMinIntervalMs,
       (card, collapsedMarkdown) => this.emitDelivery({
@@ -419,7 +444,7 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
         kind: 'progress',
         reply: {
           lines: [card],
-          cardUpdateKey: `feishu-activity:live:${conversationId}`,
+          cardUpdateKey: liveCardUpdateKey(),
           ...(collapsedMarkdown ? { collapsedMarkdown } : {}),
         },
       }),
@@ -429,7 +454,10 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       conversationId,
       liveConnectionId: connectionId,
       listener: event => {
-        if (event.requestId && this.activeRequestIds.has(event.requestId)) return;
+        if (
+          (event.requestId && this.activeRequestIds.has(event.requestId))
+          || (event.turnId && this.activeTurnIds.has(event.turnId))
+        ) return;
         if (
           event.kind === 'result_delivery_available'
           || event.kind === 'result_chunk'
@@ -445,10 +473,26 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
         if (event.kind === 'trace_delta') {
           const payload = asRecord(event.payload);
           const items = Array.isArray(payload?.events) ? payload.events : [];
+          const eventTurnId = event.turnId ?? stringValue(payload?.turnId);
+          if (eventTurnId && activeTurnId === null) activeTurnId = eventTurnId;
           const milestones: string[] = [];
           for (const rawItem of items) {
+            const normalized = normalizeTraceActivityEvent(asRecord(rawItem) ?? {});
+            if (normalized.taskId) {
+              if (retiredTaskIds.has(normalized.taskId)) continue;
+              if (activeTaskId === null) {
+                activeTaskId = normalized.taskId;
+                activeTurnId = eventTurnId;
+              } else if (normalized.taskId !== activeTaskId) {
+                retiredTaskIds.add(activeTaskId);
+                activeTaskId = normalized.taskId;
+                activeTurnId = eventTurnId;
+                activity.reset();
+              }
+              if (normalized.taskId !== activeTaskId) continue;
+            }
             const { milestone } = activity.tracker.consume(
-              normalizeTraceActivityEvent(asRecord(rawItem) ?? {}),
+              normalized,
             );
             if (milestone && milestone.tier === 'chat') milestones.push(milestone.text);
             else activity.schedule();
@@ -465,14 +509,47 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
         if (event.kind === 'terminal_error') {
           const payload = asRecord(event.payload);
           const message = stringValue(payload?.message) ?? 'Gateway execution failed';
+          // Late terminal from a retired turn must never paint, emit, or
+          // clear the CURRENT task's live attachment (2026-09-06 closure).
+          // Strict match: once a turn is active, a terminal with a missing or
+          // different turnId is stale and ignored.
+          const eventTurnId = event.turnId ?? null;
+          if (activeTurnId && eventTurnId !== activeTurnId) {
+            return;
+          }
+          if (activity.tracker.snapshot().taskId) {
+            // §5.1 terminal paint: the card itself reaches a terminal state;
+            // the failure notice then arrives as its own final message.
+            this.emitDelivery({
+              ...target,
+              kind: 'progress',
+              reply: {
+                lines: [activity.tracker.renderReceipt('failed', message)],
+                cardUpdateKey: liveCardUpdateKey(),
+                terminal: true,
+              },
+            });
+          }
           this.emitDelivery({
             ...target,
             kind: 'final',
             reply: { lines: [`任务失败：${message}`] },
           });
+          if (activeTaskId) retiredTaskIds.add(activeTaskId);
+          activity.reset();
+          activeTaskId = null;
+          activeTurnId = null;
           return;
         }
         if (event.kind !== 'final_answer') return;
+        // Late final_answer from a retired turn must not be attributed to the
+        // new task: verify the turn identity before painting the terminal
+        // receipt or clearing the active task state. Strict match: once a turn
+        // is active, a terminal with a missing or different turnId is stale.
+        const finalEventTurnId = event.turnId ?? null;
+        if (activeTurnId && finalEventTurnId !== activeTurnId) {
+          return;
+        }
         const payload = asRecord(event.payload);
         const resultId = stringValue(payload?.resultId);
         const completed = resultId ? resultAssembler.find(resultId) : null;
@@ -481,11 +558,32 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
           : Array.isArray(payload?.lines)
             ? payload.lines.filter((line): line is string => typeof line === 'string')
             : [];
+        const finalTaskId = activity.tracker.snapshot().taskId;
+        if (finalTaskId) {
+          // §5.1 terminal paint: the card closes itself (✔ 完成 receipt) while
+          // the answer travels as its own final message.
+          this.emitDelivery({
+            ...target,
+            kind: 'progress',
+            reply: {
+              lines: [activity.tracker.renderReceipt('completed')],
+              cardUpdateKey: liveCardUpdateKey(),
+              terminal: true,
+            },
+          });
+        }
         this.emitDelivery({
           ...target,
           kind: 'final',
-          reply: { lines },
+          reply: (() => {
+            const artifacts = this.taskArtifactsFor(finalTaskId);
+            return artifacts.length > 0 ? { lines, artifacts } : { lines };
+          })(),
         });
+        if (activeTaskId) retiredTaskIds.add(activeTaskId);
+        activity.reset();
+        activeTaskId = null;
+        activeTurnId = null;
       },
     });
     this.liveAttachments.set(connectionId, { conversationId, unsubscribe, activity });
@@ -527,7 +625,7 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     connectionId: string,
     onProgress: (
       text: string,
-      options?: { cardUpdateKey?: string; collapsedMarkdown?: string },
+      options?: { cardUpdateKey?: string; collapsedMarkdown?: string; terminal?: boolean },
     ) => void,
   ): {
     promise: Promise<string[] | FeishuGatewayReply>;
@@ -541,7 +639,11 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     const pendingProgress = new Map<string, string>();
     let progressFlushTimer: NodeJS.Timeout | null = null;
     const activity = createTaskActivityTracker();
-    const cardUpdateKey = `feishu-activity:${requestId}`;
+    // §4.3: stable delivery scope (conversation + task), not the request id.
+    // §4.3/§5.1: stable delivery scope. The request id is immutable for the
+    // whole turn, so this card never switches identity mid-stream (the old
+    // requestId->taskId switch produced a second machine and a second card).
+    const cardUpdateKey = () => `feishu-activity:turn:${conversationId}:${requestId}`;
     let cardTimer: NodeJS.Timeout | null = null;
     let lastCardSentAtMs = 0;
     let resolvePromise!: (value: string[] | FeishuGatewayReply) => void;
@@ -550,7 +652,7 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       lastCardSentAtMs = Date.now();
       const parts = activity.renderCardParts();
       onProgress(parts.markdown, {
-        cardUpdateKey,
+        cardUpdateKey: cardUpdateKey(),
         ...(parts.collapsedMarkdown ? { collapsedMarkdown: parts.collapsedMarkdown } : {}),
       });
     };
@@ -644,7 +746,10 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
         const message = (event.payload as { message?: string }).message
           ?? 'Gateway execution failed';
         if (lastCardSentAtMs > 0) {
-          onProgress(activity.renderReceipt('failed', message), { cardUpdateKey });
+          onProgress(activity.renderReceipt('failed', message), {
+            cardUpdateKey: cardUpdateKey(),
+            terminal: true,
+          });
         }
         settled = true;
         cleanup();
@@ -659,7 +764,10 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       if (event.kind === 'final_answer') {
         flushProgress();
         if (lastCardSentAtMs > 0) {
-          onProgress(activity.renderReceipt('completed'), { cardUpdateKey });
+          onProgress(activity.renderReceipt('completed'), {
+            cardUpdateKey: cardUpdateKey(),
+            terminal: true,
+          });
         }
         const payload = event.payload as { lines?: string[]; resultId?: string };
         const completed = payload.resultId
@@ -770,6 +878,7 @@ interface FeishuActivityCardState {
   tracker: TaskActivityTracker;
   /** Schedule a throttled in-place card repaint for accumulated activity. */
   schedule(): void;
+  reset(): void;
   dispose(): void;
 }
 
@@ -777,7 +886,7 @@ function createLiveActivityCardState(
   minIntervalMs: number,
   emitCard: (card: string, collapsedMarkdown: string | null) => void,
 ): FeishuActivityCardState {
-  const tracker = createTaskActivityTracker();
+  let tracker = createTaskActivityTracker();
   let timer: NodeJS.Timeout | null = null;
   let lastSentAtMs = 0;
   const paint = () => {
@@ -786,7 +895,9 @@ function createLiveActivityCardState(
     emitCard(parts.markdown, parts.collapsedMarkdown);
   };
   return {
-    tracker,
+    get tracker() {
+      return tracker;
+    },
     schedule() {
       if (timer) return;
       const waitMs = Math.max(0, minIntervalMs - (Date.now() - lastSentAtMs));
@@ -799,6 +910,12 @@ function createLiveActivityCardState(
         paint();
       }, waitMs);
       timer.unref?.();
+    },
+    reset() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      lastSentAtMs = 0;
+      tracker = createTaskActivityTracker();
     },
     dispose() {
       if (timer) clearTimeout(timer);

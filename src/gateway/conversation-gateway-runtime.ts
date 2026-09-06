@@ -69,6 +69,8 @@ export class ConversationGatewayRuntime {
   /** 每个 Conversation 最近一次 turn 的来源（ADR-0036），用于投影事件定向；
    *  命令返回后保留，供后台 Task/Executor 投影继续定向到发起来源，直到下一个 turn 覆盖。 */
   private readonly activeOrigins = new Map<string, GatewayTurnOrigin>();
+  /** Stable correlation for background trace events after the command returns. */
+  private readonly turnRequestIds = new Map<string, string>();
   private admissionClosed = false;
 
   constructor(private readonly deps: ConversationGatewayRuntimeDeps) {}
@@ -348,13 +350,20 @@ export class ConversationGatewayRuntime {
       traceTurnId = trace.turnId;
       traceSequence = trace.events.at(-1)?.sequence ?? 0;
       if (events.length > 0) {
-        enqueueProjection(() => this.publish(conversation.conversationId, null, trace.turnId, 'trace_delta', {
+        enqueueProjection(() => this.publish(
+          conversation.conversationId,
+          this.turnRequestIds.get(trace.turnId) ?? null,
+          trace.turnId,
+          'trace_delta',
+          {
           turnId: trace.turnId,
           taskId: trace.taskId,
           status: trace.status,
           completedAt: trace.completedAt,
           events,
-        }, activeOrigin()));
+          },
+          activeOrigin(),
+        ));
       }
     });
   }
@@ -375,6 +384,7 @@ export class ConversationGatewayRuntime {
     if (origin) this.activeOrigins.set(conversation.conversationId, origin);
     const accountRuntime = this.deps.registry.getIfLoaded(this.deps.accountId);
     const turnId = this.id('turn');
+    this.turnRequestIds.set(turnId, mailboxCommand.requestId);
     const before = conversation.getOutput().length;
     const beforeResultDeliveries = conversation.getResultDeliveries().length;
     const workspaceCommand = mailboxCommand.command.kind === 'slash_command'
@@ -396,6 +406,39 @@ export class ConversationGatewayRuntime {
         conversation.conversationId,
         mailboxCommand.command,
       );
+      // §5.5.7: durable proof whether the message's attachments reached the
+      // Planner turn — "downloaded" must never silently mean "delivered".
+      if (mailboxCommand.command.kind === 'user_message'
+        && mailboxCommand.command.attachments.length > 0) {
+        await this.publish(
+          conversation.conversationId,
+          mailboxCommand.requestId,
+          turnId,
+          'trace_delta',
+          {
+            events: [{
+              id: `attachment-resolution-${mailboxCommand.requestId}`,
+              sequence: 0,
+              occurredAt: this.now(),
+              phase: 'planning',
+              actor: 'planner',
+              kind: 'gateway_attachment_resolved',
+              status: images && images.length > 0 ? 'completed' : 'failed',
+              title: images && images.length > 0
+                ? `Planner 接收到 ${images.length} 个图片附件`
+                : `图片附件未能进入 Planner 输入（引用 ${mailboxCommand.command.attachments.length} 个）`,
+              summary: '',
+              details: {
+                requested: mailboxCommand.command.attachments.length,
+                resolved: images?.length ?? 0,
+              },
+              taskId: null,
+              subtaskId: null,
+            }],
+          },
+          origin,
+        );
+      }
       await conversation.executeGatewayCommand(
         mailboxCommand.command,
         {

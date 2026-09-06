@@ -80,6 +80,16 @@ export interface KernelWorkflowStore {
   ): void;
   reconcileProcessing(): number;
   countByApplicationStatus(): Record<KernelApplicationStatus, number>;
+  /** Durable recovery surface for uncertain applications (§5.3). */
+  listUncertainApplications?(
+    actions?: KernelDecisionAction['type'][],
+    taskId?: string,
+  ): KernelDecisionApplicationRecord[];
+  resolveUncertainApplication?(
+    decisionId: string,
+    outcome: 'applied' | 'retry',
+    now: string,
+  ): void;
 }
 
 export interface KernelWorkflowClock {

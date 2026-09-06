@@ -113,7 +113,11 @@ describe('Feishu long-task visibility (user-perspective E2E)', () => {
       sendMarkdownCardToChat: vi.fn(async () => `om_send_${(sendCounter += 1)}`),
       updateMarkdownCard: vi.fn().mockResolvedValue(true),
     };
-    subscribeFeishuGatewayDeliveries({ session: port as never, client: client as never });
+    subscribeFeishuGatewayDeliveries({
+      session: port as never,
+      client: client as never,
+      cardDeliveryOptions: { updateCooldownMs: 0 },
+    });
 
     runScript = () => {
       void (async () => {
@@ -151,6 +155,10 @@ describe('Feishu long-task visibility (user-perspective E2E)', () => {
       session: port as never,
       client: client as never,
       seenMessageIds: new Set<string>(),
+      // Wall-clock update throttling is covered by the card delivery machine
+      // unit tests; this user-perspective E2E observes the governance rules
+      // (one card, in-place updates, no flood) at compressed speed.
+      cardDeliveryOptions: { updateCooldownMs: 0 },
     });
     await sleep(20);
 

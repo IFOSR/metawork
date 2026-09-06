@@ -6,7 +6,7 @@ import type { ActiveExecutionControl } from '../execution/active-execution-contr
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { SessionPresentationService } from './session-presentation-service.js';
 import type { QueuedExecutionRequest } from './session-helpers.js';
-import type { TaskClearScope, TaskStatusQueryScope } from '../task/task-control-types.js';
+import type { TaskClearOutcome, TaskClearScope, TaskStatusQueryScope } from '../task/task-control-types.js';
 import type { Task } from '../core/types.js';
 import type {
   ConversationTaskSchedulerRepo,
@@ -42,7 +42,7 @@ export interface SessionKernelRuntimeDeps {
     getCurrentTaskId(): string | null;
     setFocusContext(focus: FocusContext | null): void;
     resolveRequestText(eventId: string): string;
-    cancelTask(taskId: string, reason: string): Promise<void>;
+    cancelTask(taskId: string, reason: string): Promise<TaskClearOutcome>;
   };
 }
 
@@ -189,18 +189,76 @@ export class SessionKernelRuntime {
         .filter(task => statuses.includes(task.status) && (
           taskBelongsToConversation(task, conversationId, this.deps.legacyCompatibility)
         ));
+      // §5.3.7: report the actual durable outcome per Task instead of a
+      // blanket "cancelled N tasks" that hides uncertain state.
+      const outcomes: Array<TaskClearOutcome & { title: string }> = [];
       for (const task of candidates) {
-        await this.deps.callbacks.cancelTask(
-          task.id,
-          `Planner-authorized clear_tasks (${scope})`,
-        );
+        try {
+          const outcome = await this.deps.callbacks.cancelTask(
+            task.id,
+            `Planner-authorized clear_tasks (${scope})`,
+          );
+          outcomes.push({ ...outcome, title: task.title });
+        } catch (error) {
+          outcomes.push({
+            taskId: task.id,
+            status: 'clear_blocked',
+            residue: [],
+            phase: error instanceof Error ? error.message : String(error),
+            title: task.title,
+          });
+        }
       }
       const result = { cancelled: candidates, runningCancelled: candidates.some(task => task.status === 'running') };
       if (result.cancelled.some(task => task.id === this.deps.callbacks.getCurrentTaskId())) {
         this.deps.callbacks.setCurrentTaskId(null);
         this.deps.callbacks.setFocusContext(null);
       }
-      this.deps.callbacks.appendOutput(this.deps.presentation.formatTaskClearResult({ scope, ...result }));
+      this.deps.callbacks.appendOutput(this.deps.presentation.formatTaskClearResult({
+        scope,
+        ...result,
+        outcomes,
+      }));
+      this.deps.callbacks.refreshRuntimeState();
+      return;
+    }
+    if (taskCommand.control === 'abandon_task') {
+      // §5.4 explicit abandon-and-create: applies only to the exact old Task
+      // in the current Conversation; a new Task is never created before the
+      // cancellation postconditions are durable; uncertain cancellations hold
+      // the new Task with a named phase instead of pretending success.
+      if (!taskCommand.taskId) throw new Error('abandon_task requires the exact old Task id');
+      const task = this.deps.taskRuntimeService.findTask(taskCommand.taskId);
+      if (!task) throw new Error(`task not found: ${taskCommand.taskId}`);
+      if (!taskBelongsToConversation(task, conversationId, this.deps.legacyCompatibility)) {
+        throw new Error('abandon_task target is owned by another Conversation');
+      }
+      if (['cancelled', 'done', 'failed', 'archived'].includes(task.status)) {
+        this.deps.callbacks.appendOutput(
+          `旧任务 #${task.id} 已处于终态（${task.status}），无需放弃；会话准入状态将在下次规划前自动核对。`,
+        );
+        this.deps.callbacks.refreshRuntimeState();
+        return;
+      }
+      const outcome = await this.deps.callbacks.cancelTask(
+        task.id,
+        `Planner-authorized abandon_task (explicit user decision on ${task.id})`,
+      );
+      if (outcome.status === 'cleared' || outcome.status === 'already_cleared') {
+        this.deps.callbacks.setCurrentTaskId(null);
+        this.deps.callbacks.setFocusContext(null);
+        this.deps.callbacks.appendOutput(
+          `旧任务 #${task.id} 已取消并释放；请重发你的新需求，将作为新任务接纳。`,
+        );
+      } else if (outcome.status === 'recovery_in_progress') {
+        this.deps.callbacks.appendOutput(
+          `旧任务 #${task.id} 取消已受理，后台清理中（残留: ${outcome.residue.join(', ') || '无'}）；完成后即可提交新任务。`,
+        );
+      } else {
+        this.deps.callbacks.appendOutput(
+          `新任务暂缓：旧任务 #${task.id} 取消未完成（阶段: ${outcome.phase ?? '未知'}）。`,
+        );
+      }
       this.deps.callbacks.refreshRuntimeState();
       return;
     }
@@ -235,6 +293,45 @@ export class SessionKernelRuntime {
   ): Promise<void> {
     if (decision.action.type !== 'authorize_task_plan') return;
     const command = decision.action.task;
+    // §5.4 abandon-and-create: abandon the exact old Task FIRST, then admit
+    // the new plan. The new Task is never created before the cancellation
+    // authorization is durable; an uncertain cancellation holds the new Task
+    // with a named phase instead of pretending to schedule it.
+    if (decision.action.conflictResolution) {
+      const oldTask = this.deps.taskRuntimeService.findTask(
+        decision.action.conflictResolution.oldTaskId,
+      );
+      if (!oldTask) {
+        throw new Error(`conflictResolution old Task not found: ${decision.action.conflictResolution.oldTaskId}`);
+      }
+      if (!taskBelongsToConversation(
+        oldTask,
+        decision.action.owner.conversationId,
+        this.deps.legacyCompatibility,
+      )) {
+        throw new Error('conflictResolution old Task is owned by another Conversation');
+      }
+      const outcome = await this.deps.callbacks.cancelTask(
+        oldTask.id,
+        `abandon-and-create: abandon ${oldTask.id} before new Task ${decision.action.taskId}`,
+      );
+      if (outcome.status === 'clear_blocked') {
+        this.deps.callbacks.appendOutput(
+          `新任务暂缓：旧任务 #${oldTask.id} 取消未完成（阶段: ${outcome.phase ?? '未知'}）。`,
+        );
+        this.deps.callbacks.refreshRuntimeState();
+        return;
+      }
+      if (outcome.status === 'recovery_in_progress') {
+        // §4.2: the new Task is never created before the old Task is fully
+        // released — an in-flight cleanup still holds the slot.
+        this.deps.callbacks.appendOutput(
+          `新任务暂缓：旧任务 #${oldTask.id} 已受理取消，后台清理中（残留: ${outcome.residue.join(', ') || '无'}）；清理完成后请重发需求。`,
+        );
+        this.deps.callbacks.refreshRuntimeState();
+        return;
+      }
+    }
     const inline = this.deps.memoryContextService.normalizeInlineResourcesFromInput(userInput);
     const task = command.taskId
       ? this.deps.taskRuntimeService.findTask(command.taskId)

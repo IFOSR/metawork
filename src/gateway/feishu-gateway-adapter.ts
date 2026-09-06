@@ -43,6 +43,7 @@ export class FeishuGatewayAdapter {
     text: string,
     requestId: string,
     idempotencyKey: string,
+    attachments?: Array<{ path: string; name: string; kind: 'image' | 'file' }>,
   ): Promise<FeishuConversationRouteResult> {
     if (this.deps.routing) {
       return this.deps.routing.routeMessage(
@@ -51,6 +52,7 @@ export class FeishuGatewayAdapter {
         text,
         requestId,
         idempotencyKey,
+        attachments,
       );
     }
     const envelope: GatewayCommandEnvelope = {

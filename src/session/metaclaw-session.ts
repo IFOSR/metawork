@@ -626,9 +626,8 @@ export class MetaclawSession {
           const event = this.kernelWorkflowRepo.findEvent(eventId);
           return event?.type === 'plan_proposed' ? event.requestText : '';
         },
-        cancelTask: async (taskId, reason) => {
-          await this.kernelExecutionRuntime.cancelTask(taskId, reason);
-        },
+        cancelTask: (taskId, reason) =>
+          this.kernelExecutionRuntime.cancelTaskWithOutcome(taskId, reason),
       },
     });
     this.kernelExecutionRuntime = kernelExecutionServices.kernelExecutionRuntime;

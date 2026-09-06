@@ -55,6 +55,11 @@ import type {
   CancellationReceipt,
   TaskCancellationCoordinator,
 } from './task-cancellation-coordinator.js';
+import {
+  reconcileUncertainCancellations,
+  type CancellationReconciliationEntry,
+} from './cancellation-reconciliation.js';
+import type { TaskClearOutcome } from '../task/task-control-types.js';
 import type {
   WorkspacePublicationWorker,
   WorkspacePublicationOutcome,
@@ -505,6 +510,45 @@ export class KernelExecutionRuntime {
     });
   }
 
+  /**
+   * `/task clear` semantics (§5.3.7): reports the actual durable outcome —
+   * cleared / already cleared / recovery in progress / clear blocked — and
+   * whether every admission surface was released.
+   */
+  async cancelTaskWithOutcome(
+    taskId: string,
+    reason = 'explicit Task cancellation command',
+  ): Promise<TaskClearOutcome> {
+    const before = this.deps.taskRuntimeService.findTask(taskId);
+    const alreadyCancelled = before?.status === 'cancelled';
+    try {
+      await this.cancelTask(taskId, reason);
+    } catch (error) {
+      return {
+        taskId,
+        status: 'clear_blocked',
+        residue: [],
+        phase: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const residue = this.deps.cancellationCoordinator.completionBlockedReasons(taskId, null);
+    if (residue.length === 0) {
+      // No asynchronous cleanup is pending: release the Conversation slot and
+      // close the schedule entry right now so the outcome is accurate (§4.1).
+      this.deps.cancellationCoordinator.releaseAdmission(taskId);
+      return {
+        taskId,
+        status: alreadyCancelled ? 'already_cleared' : 'cleared',
+        residue: [],
+      };
+    }
+    return {
+      taskId,
+      status: 'recovery_in_progress',
+      residue,
+    };
+  }
+
   async cancelSubtasks(
     taskId: string,
     targetSubtaskIds: string[],
@@ -544,6 +588,66 @@ export class KernelExecutionRuntime {
       taskId ? `recover:${taskId}` : 'recover:all',
       () => this.deps.cancellationCoordinator.recover(taskId),
     );
+  }
+
+  /**
+   * Reconciles uncertain cancellation applications (2026-09-06 plan §5.3):
+   * resolves already-applied / replayable state durably and keeps admission
+   * closed with a named phase for contradictory state.
+   */
+  reconcileCancellationApplications(taskId?: string): CancellationReconciliationEntry[] {
+    const entries = reconcileUncertainCancellations({
+      store: this.deps.kernelWorkflowStore,
+      coordinator: this.deps.cancellationCoordinator,
+      taskRuntimeService: this.deps.taskRuntimeService,
+      onResolved: resolvedTaskId => {
+        void this.startCancellationDrain(resolvedTaskId);
+      },
+    }, taskId);
+    for (const entry of entries) {
+      if (entry.outcome !== 'unresolved') continue;
+      this.appendExecutionTrace({
+        phase: 'verification',
+        actor: 'kernel',
+        kind: 'cancellation_reconciliation_unresolved',
+        status: 'failed',
+        title: 'Uncertain cancellation requires attention',
+        summary: `Task ${entry.taskId} cancellation application ${entry.decisionId} could not converge.`,
+        details: { diagnostics: entry.diagnostics },
+        eventKey: `cancellation_reconciliation_unresolved:${entry.decisionId}`,
+      });
+    }
+    return entries;
+  }
+
+  /**
+   * Pre-admission reconciliation (§5.3.6): releases legacy
+   * blocked+occupied+running combinations for one Conversation before the
+   * Planner classifies a same-topic conflict.
+   */
+  reconcileConversationAdmission(conversationId: string): {
+    releasedStaleSlot: boolean;
+    reconciliation: CancellationReconciliationEntry[];
+  } {
+    const scheduler = this.deps.conversationTaskSchedulerRepo;
+    if (!scheduler) return { releasedStaleSlot: false, reconciliation: [] };
+    const slot = scheduler.getSlot(conversationId);
+    const activeTaskId = slot.state === 'free' ? null : slot.activeTaskId;
+    if (!activeTaskId) return { releasedStaleSlot: false, reconciliation: [] };
+    const task = this.deps.taskRuntimeService.findTask(activeTaskId);
+    if (!task) return { releasedStaleSlot: false, reconciliation: [] };
+    const reconciliation = this.reconcileCancellationApplications(activeTaskId);
+    if (['cancelled', 'done', 'failed', 'archived'].includes(task.status)) {
+      // §4.1: never release the slot while dispatch/publication/backend/lease
+      // residue remains — releaseAdmission re-checks every blocking category.
+      const released = this.deps.cancellationCoordinator.releaseAdmission(
+        activeTaskId,
+        new Date().toISOString(),
+      );
+      this.deps.callbacks.refreshRuntimeState();
+      return { releasedStaleSlot: released !== null, reconciliation };
+    }
+    return { releasedStaleSlot: false, reconciliation };
   }
 
   async executorRecovered(
@@ -1972,7 +2076,7 @@ export class KernelExecutionRuntime {
             sourceAttemptId: item.sourceAttemptId,
             recoveryMode: item.recoveryMode,
             defaultResourceGrant: item.resourceGrant,
-            sourceRoot: input.request.workspacePath,
+            sourceRoot: request.workspacePath,
             onProgress,
           });
     } finally {
@@ -2161,6 +2265,7 @@ export class KernelExecutionRuntime {
 
   private launchFailureEvent(item: KernelDispatchItemRecord, error: unknown): KernelEvent {
     const summary = error instanceof Error ? error.message : String(error);
+    const workspaceSourceMissing = /no workspace source|missing its workspacePath/iu.test(summary);
     return this.eventFromDispatchItem(item, {
       type: 'execution_outcome',
       terminalKind: 'failed',
@@ -2169,9 +2274,9 @@ export class KernelExecutionRuntime {
       attemptKind: item.attemptKind,
       sourceAttemptId: item.sourceAttemptId,
       failure: {
-        kind: 'infrastructure',
-        scope: 'attempt',
-        code: 'dispatch_launch_failed',
+        kind: workspaceSourceMissing ? 'configuration' : 'infrastructure',
+        scope: workspaceSourceMissing ? 'task' : 'attempt',
+        code: workspaceSourceMissing ? 'workspace_source_missing' : 'dispatch_launch_failed',
         summary,
       },
     });

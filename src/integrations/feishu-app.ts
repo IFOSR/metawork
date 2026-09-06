@@ -22,7 +22,9 @@ export interface FeishuSessionPort {
     chatType?: 'dm' | 'group' | 'unknown';
     text: string;
     requestId: string;
-    onProgress: (text: string, options?: { cardUpdateKey?: string; collapsedMarkdown?: string }) => void;
+    /** Message-scoped attachments carried into the Gateway command (§5.5). */
+    attachments?: Array<{ path: string; name: string; kind: 'image' | 'file' }>;
+    onProgress: (text: string, options?: { cardUpdateKey?: string; collapsedMarkdown?: string; terminal?: boolean }) => void;
   }): Promise<string[] | FeishuGatewayReply>;
   submitGatewayAction?(input: {
     senderId: string;
@@ -60,6 +62,8 @@ export interface FeishuGatewayReply {
   readonly cardUpdateKey?: string;
   /** Collapsed "展开执行细节" section content for activity cards. */
   readonly collapsedMarkdown?: string;
+  /** Marks the terminal paint of this card scope (receipt state). */
+  readonly terminal?: boolean;
   /** Registered task artifacts to deliver as Feishu cloud docs / files. */
   readonly artifacts?: ReadonlyArray<{
     readonly name: string;
@@ -82,6 +86,24 @@ export interface FeishuGatewayDelivery {
   readonly reply: FeishuGatewayReply;
 }
 import { resolveFeishuGatewayConfig, toFeishuAppConfig } from '../gateway/feishu-config.js';
+import type {
+  FeishuCardDeliveryMachineOptions,
+  FeishuCardDeliveryRegistry,
+  FeishuCardUpdateFailureClass,
+} from './feishu-card-delivery-machine.js';
+import { FeishuCardDeliveryRegistry as CardDeliveryRegistry } from './feishu-card-delivery-machine.js';
+import {
+  FeishuArtifactDeliveryLedger,
+  artifactDeliveryKey,
+  boundedArtifactReason,
+  formatArtifactDeliveryStatusLine,
+  type FeishuArtifactDeliveryEntry,
+  type FeishuArtifactDeliveryOutcome,
+} from './feishu-artifact-delivery.js';
+import {
+  FeishuPendingAttachmentStore,
+  type FeishuPendingAttachment,
+} from './feishu-pending-attachments.js';
 import {
   evaluateFeishuGatewayPolicy,
   FeishuPairingStore,
@@ -116,6 +138,7 @@ interface JsonResponse {
 interface FeishuAppClientDeps {
   postJson?: (url: string, body: Record<string, unknown>, headers?: Record<string, string>) => Promise<JsonResponse>;
   putJson?: (url: string, body: Record<string, unknown>, headers?: Record<string, string>) => Promise<JsonResponse>;
+  patchJson?: (url: string, body: Record<string, unknown>, headers?: Record<string, string>) => Promise<JsonResponse>;
   postForm?: (url: string, form: FormData, headers?: Record<string, string>) => Promise<JsonResponse>;
   getBinary?: (url: string, headers?: Record<string, string>) => Promise<BinaryResponse>;
   deleteJson?: (url: string, headers?: Record<string, string>) => Promise<JsonResponse>;
@@ -262,6 +285,7 @@ export class FeishuAppClient {
   private tenantToken: TenantTokenState | null = null;
   private readonly postJson: (url: string, body: Record<string, unknown>, headers?: Record<string, string>) => Promise<JsonResponse>;
   private readonly putJson: (url: string, body: Record<string, unknown>, headers?: Record<string, string>) => Promise<JsonResponse>;
+  private readonly patchJson: (url: string, body: Record<string, unknown>, headers?: Record<string, string>) => Promise<JsonResponse>;
   private readonly postForm: (url: string, form: FormData, headers?: Record<string, string>) => Promise<JsonResponse>;
   private readonly getBinary: (url: string, headers?: Record<string, string>) => Promise<BinaryResponse>;
   private readonly deleteJson: (url: string, headers?: Record<string, string>) => Promise<JsonResponse>;
@@ -274,6 +298,7 @@ export class FeishuAppClient {
   ) {
     this.postJson = deps.postJson ?? defaultPostJson;
     this.putJson = deps.putJson ?? defaultPutJson;
+    this.patchJson = deps.patchJson ?? defaultPatchJson;
     this.postForm = deps.postForm ?? defaultPostForm;
     this.getBinary = deps.getBinary ?? defaultGetBinary;
     this.deleteJson = deps.deleteJson ?? defaultDeleteJson;
@@ -402,31 +427,54 @@ export class FeishuAppClient {
 
   /**
    * Update an existing interactive card in place (long-task activity card).
-   * Returns false when Feishu rejects the update so callers can fall back to
-   * sending a fresh card instead.
+   *
+   * Verified Feishu contract (2026-09-06 plan §5.2): interactive-card updates
+   * use PATCH /open-apis/im/v1/messages/{message_id} with only the card
+   * `content` JSON string in the body — `msg_type` is not part of this
+   * request. PUT on the same path edits text/post messages and requires
+   * `msg_type`, which is exactly why the original PUT-without-msg_type call
+   * failed with `230001 invalid msg_type`. Failures are classified so only
+   * contract-incompatible or message-not-found responses degrade a delivery
+   * scope to create-only; transient failures retry once inside this adapter.
    */
   async updateMarkdownCard(
     messageId: string,
     markdown: string,
     options: { collapsedMarkdown?: string } = {},
-  ): Promise<{ ok: boolean; error?: string }> {
-    const token = await this.getTenantAccessToken();
-    const response = await this.putJson(
-      `https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`,
-      {
-        msg_type: 'interactive',
-        content: JSON.stringify(createFeishuMarkdownCard(markdown, options)),
-      },
-      {
-        authorization: `Bearer ${token}`,
-      },
-    );
-    const payload = await response.json() as { code?: number; msg?: string };
-    if (response.ok && payload.code === 0) return { ok: true };
-    return {
-      ok: false,
-      error: `${payload.code ?? response.status}${payload.msg ? ` ${payload.msg}` : ''}`,
+  ): Promise<{ ok: boolean; error?: string; classification?: FeishuCardUpdateFailureClass }> {
+    const attempt = async (): Promise<{ ok: boolean; error?: string; classification?: FeishuCardUpdateFailureClass }> => {
+      const token = await this.getTenantAccessToken();
+      const response = await this.patchJson(
+        `https://open.feishu.cn/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`,
+        {
+          content: JSON.stringify(createFeishuMarkdownCard(markdown, options)),
+        },
+        {
+          authorization: `Bearer ${token}`,
+        },
+      );
+      const payload = await response.json() as { code?: number; msg?: string };
+      if (response.ok && payload.code === 0) return { ok: true };
+      const error = `${payload.code ?? response.status}${payload.msg ? ` ${payload.msg}` : ''}`;
+      return {
+        ok: false,
+        error,
+        classification: classifyFeishuCardUpdateFailure(response.status, payload.code, payload.msg),
+      };
     };
+    try {
+      const first = await attempt();
+      if (first.ok || first.classification !== 'transient') return first;
+      // One bounded retry for transient failures only; cooldowns and
+      // degradation are owned by the delivery state machine.
+      return await attempt();
+    } catch (error) {
+      return {
+        ok: false,
+        error: (error as Error).message,
+        classification: 'transient',
+      };
+    }
   }
 
   async sendActionCardToChat(
@@ -802,7 +850,9 @@ interface FeishuMessageSession {
     chatType?: 'dm' | 'group' | 'unknown';
     text: string;
     requestId: string;
-    onProgress: (text: string, options?: { cardUpdateKey?: string; collapsedMarkdown?: string }) => void;
+    /** Message-scoped attachments carried into the Gateway command (§5.5). */
+    attachments?: Array<{ path: string; name: string; kind: 'image' | 'file' }>;
+    onProgress: (text: string, options?: { cardUpdateKey?: string; collapsedMarkdown?: string; terminal?: boolean }) => void;
   }): Promise<string[] | FeishuGatewayReply>;
   submitGatewayAction?(input: {
     senderId: string;
@@ -850,9 +900,99 @@ interface FeishuMessageHandlerDeps {
   audit?: FeishuDeliveryAudit;
   transport?: 'websocket' | 'webhook';
   pendingResourcesByChatId?: Map<string, string[]>;
+  /** Message-scoped pending attachments (§5.5) — preferred over the legacy path list. */
+  pendingAttachments?: FeishuPendingAttachmentStore;
+  /** Bridge-level card delivery registries, one per chat/thread target. */
+  cardDeliveries?: FeishuCardDeliveryHost;
+  /** Machine tuning for request-local fallback hosts (tests inject 0ms). */
+  cardDeliveryOptions?: FeishuCardDeliveryMachineOptions;
+  /** Durable artifact delivery idempotency ledger (§4.5). */
+  artifactLedger?: FeishuArtifactDeliveryLedger;
   uploadDir?: string;
   replyDir?: string;
   markdownPreview?: FeishuMarkdownPreviewOptions;
+}
+
+/**
+ * Owns one delivery registry per chat/thread target for the bridge lifetime,
+ * so the same delivery scope reuses its card across requests (§5.1: keyed by
+ * conversation/task/generation, never an unstable request-only lifetime).
+ */
+export class FeishuCardDeliveryHost {
+  private readonly registries = new Map<string, FeishuCardDeliveryRegistry>();
+
+  constructor(
+    private readonly options: FeishuCardDeliveryMachineOptions = {},
+    private readonly audit?: FeishuDeliveryAudit,
+  ) {}
+
+  registryFor(
+    target: { chatId: string; threadId?: string },
+    client: FeishuMessageClient,
+    audit?: FeishuDeliveryAudit,
+  ): FeishuCardDeliveryRegistry {
+    const key = `${target.chatId}\0${target.threadId ?? ''}`;
+    const existing = this.registries.get(key);
+    if (existing) return existing;
+    const effectiveAudit = audit ?? this.audit;
+    const registry = new CardDeliveryRegistry({
+      options: {
+        ...this.options,
+        onAudit: record => {
+          this.options.onAudit?.(record);
+          effectiveAudit?.record({
+            kind: 'progress',
+            chatId: key.split('\0')[0]!,
+            method: record.outcome === 'updated' ? 'card-update' : 'card',
+            ok: !['failed', 'degraded'].includes(record.outcome),
+            reason: `card_delivery:${record.outcome}`,
+            ...(record.error ? { error: record.error } : {}),
+          });
+        },
+      },
+      opsFor: () => ({
+        createCard: async (markdown, options) => sendMarkdownCardToFeishuTarget(
+          { client, chatId: target.chatId, ...(target.threadId ? { threadId: target.threadId } : {}) },
+          markdown,
+          options,
+        ),
+        updateCard: async (messageId, markdown, options) => {
+          if (!client.updateMarkdownCard) {
+            return {
+              ok: false,
+              error: '当前客户端不支持卡片原地更新',
+              classification: 'contract' as const,
+            };
+          }
+          const result = await client.updateMarkdownCard(messageId, markdown, options);
+          return {
+            ok: result.ok,
+            error: result.error,
+            classification: result.classification ?? 'unknown',
+          };
+        },
+      }),
+    });
+    this.registries.set(key, registry);
+    return registry;
+  }
+}
+
+/** §5.2 failure classification for interactive-card update responses. */
+export function classifyFeishuCardUpdateFailure(
+  httpStatus: number,
+  code: number | undefined,
+  message: string | undefined,
+): FeishuCardUpdateFailureClass {
+  const text = `${message ?? ''}`;
+  if (code === 230001) return 'contract';
+  if (code === 230002) return 'not_found';
+  if (httpStatus === 403 || /permission|forbidden|鉴权|无权限/iu.test(text)) return 'permission';
+  if (httpStatus === 429 || code === 99991400 || /too many|rate.?limit|频繁/iu.test(text)) {
+    return 'transient';
+  }
+  if (httpStatus >= 500) return 'transient';
+  return 'unknown';
 }
 
 interface FeishuDeliveryAudit {
@@ -881,6 +1021,29 @@ export class FeishuEventBridge {
   private server: Server | null = null;
   private readonly seenMessageIds = new Set<string>();
   private readonly pendingResourcesByChatId = new Map<string, string[]>();
+  private pendingAttachmentsInstance: FeishuPendingAttachmentStore | null = null;
+  private get pendingAttachments(): FeishuPendingAttachmentStore {
+    this.pendingAttachmentsInstance ??= new FeishuPendingAttachmentStore({
+      ledgerPath: this.deps.gatewayConfig?.uploadDir
+        ? resolve(this.deps.gatewayConfig.uploadDir, 'feishu-pending-attachments.jsonl')
+        : undefined,
+    });
+    return this.pendingAttachmentsInstance;
+  }
+  private cardDeliveriesInstance: FeishuCardDeliveryHost | null = null;
+  private get cardDeliveries(): FeishuCardDeliveryHost {
+    this.cardDeliveriesInstance ??= new FeishuCardDeliveryHost(
+      {},
+      createFeishuDeliveryAudit(this.deps.gatewayConfig?.auditPath),
+    );
+    return this.cardDeliveriesInstance;
+  }
+  private artifactLedgerInstance: FeishuArtifactDeliveryLedger | null = null;
+  private get artifactLedger(): FeishuArtifactDeliveryLedger | undefined {
+    return (this.artifactLedgerInstance ??= createFeishuArtifactLedger(
+      this.deps.gatewayConfig?.auditPath,
+    ) ?? null) ?? undefined;
+  }
   private deliveryUnsubscribe: (() => void) | null = null;
 
   constructor(private readonly deps: FeishuEventBridgeDeps) {}
@@ -901,6 +1064,7 @@ export class FeishuEventBridge {
         ? new FeishuPairingStore(this.deps.gatewayConfig.pairingPath)
         : undefined,
       audit: createFeishuDeliveryAudit(this.deps.gatewayConfig?.auditPath),
+      artifactLedger: this.artifactLedger,
     });
 
     return new Promise((resolve, reject) => {
@@ -1019,6 +1183,9 @@ export class FeishuEventBridge {
       audit: createFeishuDeliveryAudit(this.deps.gatewayConfig?.auditPath),
       transport: 'webhook',
       pendingResourcesByChatId: this.pendingResourcesByChatId,
+      pendingAttachments: this.pendingAttachments,
+      cardDeliveries: this.cardDeliveries,
+      artifactLedger: this.artifactLedger,
       uploadDir: this.deps.gatewayConfig?.uploadDir,
       replyDir: this.deps.gatewayConfig?.replyDir,
       markdownPreview: this.deps.markdownPreview,
@@ -1049,6 +1216,29 @@ export class FeishuWebSocketBridge implements FeishuBridge {
   private wsClient: Lark.WSClient | null = null;
   private readonly seenMessageIds = new Set<string>();
   private readonly pendingResourcesByChatId = new Map<string, string[]>();
+  private pendingAttachmentsInstance: FeishuPendingAttachmentStore | null = null;
+  private get pendingAttachments(): FeishuPendingAttachmentStore {
+    this.pendingAttachmentsInstance ??= new FeishuPendingAttachmentStore({
+      ledgerPath: this.deps.gatewayConfig?.uploadDir
+        ? resolve(this.deps.gatewayConfig.uploadDir, 'feishu-pending-attachments.jsonl')
+        : undefined,
+    });
+    return this.pendingAttachmentsInstance;
+  }
+  private cardDeliveriesInstance: FeishuCardDeliveryHost | null = null;
+  private get cardDeliveries(): FeishuCardDeliveryHost {
+    this.cardDeliveriesInstance ??= new FeishuCardDeliveryHost(
+      {},
+      createFeishuDeliveryAudit(this.deps.gatewayConfig?.auditPath),
+    );
+    return this.cardDeliveriesInstance;
+  }
+  private artifactLedgerInstance: FeishuArtifactDeliveryLedger | null = null;
+  private get artifactLedger(): FeishuArtifactDeliveryLedger | undefined {
+    return (this.artifactLedgerInstance ??= createFeishuArtifactLedger(
+      this.deps.gatewayConfig?.auditPath,
+    ) ?? null) ?? undefined;
+  }
   private deliveryUnsubscribe: (() => void) | null = null;
 
   constructor(private readonly deps: FeishuWebSocketBridgeDeps) {}
@@ -1065,6 +1255,7 @@ export class FeishuWebSocketBridge implements FeishuBridge {
         ? new FeishuPairingStore(this.deps.gatewayConfig.pairingPath)
         : undefined,
       audit: createFeishuDeliveryAudit(this.deps.gatewayConfig?.auditPath),
+      artifactLedger: this.artifactLedger,
     });
 
     const eventDispatcher = new Lark.EventDispatcher({
@@ -1084,6 +1275,9 @@ export class FeishuWebSocketBridge implements FeishuBridge {
       audit: createFeishuDeliveryAudit(this.deps.gatewayConfig?.auditPath),
       transport: 'websocket',
       pendingResourcesByChatId: this.pendingResourcesByChatId,
+      pendingAttachments: this.pendingAttachments,
+      cardDeliveries: this.cardDeliveries,
+      artifactLedger: this.artifactLedger,
       uploadDir: this.deps.gatewayConfig?.uploadDir,
       replyDir: this.deps.gatewayConfig?.replyDir,
       markdownPreview: this.deps.markdownPreview,
@@ -1177,7 +1371,10 @@ export async function handleFeishuMessageEvent(
     }
   }
 
-  if (messageType !== 'text') {
+  const isRichTextWithImages = messageType === 'unknown'
+    && normalizedEvent.attachments.length > 0
+    && normalizedEvent.text.length > 0;
+  if (messageType !== 'text' && !isRichTextWithImages) {
     return await handleFeishuResourceMessage(message, {
       chatId,
       messageId,
@@ -1185,7 +1382,11 @@ export async function handleFeishuMessageEvent(
       client: deps.client,
       session: deps.session,
       pendingResourcesByChatId: deps.pendingResourcesByChatId,
+      pendingAttachments: deps.pendingAttachments,
+      ...(normalizedEvent.threadId ? { threadId: normalizedEvent.threadId } : {}),
+      ...(normalizedEvent.userId ? { senderId: normalizedEvent.userId } : {}),
       uploadDir: deps.uploadDir,
+      audit: deps.audit,
     });
   }
 
@@ -1215,7 +1416,33 @@ export async function handleFeishuMessageEvent(
         chatId,
         deps.pendingResourcesByChatId,
       );
-      const progressCardMessageIds = new Map<string, FeishuCardSlot>();
+      // §5.5: assemble message-scoped attachments for this command — inline
+      // images from a rich-text message plus pending images/files claimed
+      // from the same Conversation route — instead of appending paths to text.
+      const commandAttachments = await collectFeishuCommandAttachments({
+        chatId,
+        ...(normalizedEvent.threadId ? { threadId: normalizedEvent.threadId } : {}),
+        messageId,
+        text,
+        ...(normalizedEvent.userId ? { senderId: normalizedEvent.userId } : {}),
+        inlineAttachments: normalizedEvent.attachments,
+        deps,
+      });
+      if (commandAttachments.length > 0) {
+        deps.audit?.record({
+          kind: 'inbound',
+          chatId,
+          requestId: messageId,
+          method: 'file',
+          ok: true,
+          reason: `attachment_bound:${commandAttachments.length}`,
+        });
+      }
+      // One card-slot registry for the whole request (or the bridge lifetime
+      // when the bridge provided one): the same delivery scope reuses its
+      // card across every progress paint of this request.
+      const cardDeliveries = deps.cardDeliveries
+        ?? new FeishuCardDeliveryHost(deps.cardDeliveryOptions);
       let progressChain: Promise<void> = Promise.resolve();
       const outputLines = await deps.session.submitGatewayMessage({
         senderId: normalizedEvent.userId ?? 'unknown-sender',
@@ -1225,6 +1452,13 @@ export async function handleFeishuMessageEvent(
           ? 'group'
           : normalizedEvent.chatType,
         text: textWithResources,
+        ...(commandAttachments.length > 0
+          ? { attachments: commandAttachments.map(attachment => ({
+            path: attachment.path,
+            name: attachment.name,
+            kind: attachment.resourceType,
+          })) }
+          : {}),
         requestId: messageId,
         onProgress: (progress, options) => {
           // Serialize progress sends so in-place card updates never race the
@@ -1233,6 +1467,7 @@ export async function handleFeishuMessageEvent(
             const target = {
               client: deps.client,
               chatId,
+              cardDeliveries,
               ...(normalizedEvent.threadId
                 ? { threadId: normalizedEvent.threadId }
                 : {}),
@@ -1242,14 +1477,12 @@ export async function handleFeishuMessageEvent(
                 target,
                 progress,
                 options.cardUpdateKey,
-                progressCardMessageIds,
                 {
                   collapsedMarkdown: options.collapsedMarkdown,
-                  onUpdateFailure: error => deps.session.appendSystemMessage(
-                    `⚠️ 飞书卡片原地更新失败: ${error}`,
-                  ),
+                  ...(options.terminal ? { terminal: true } : {}),
+                  audit: deps.audit,
                 },
-              )
+              ).then(() => undefined)
               : sendMarkdownCardToFeishuTarget(target, progress).then(() => undefined);
           }).catch(error => {
             deps.session.appendSystemMessage(`⚠️ 飞书步骤消息回发失败: ${(error as Error).message}`);
@@ -1258,6 +1491,9 @@ export async function handleFeishuMessageEvent(
       });
       await progressChain;
       if (!Array.isArray(outputLines)) {
+        // FeishuGatewayReply final answers carry { lines, artifacts }: they
+        // must flow through the artifact/cloud-document delivery path — a
+        // reply card must never claim cloud-doc delivery that never ran.
         await sendFeishuGatewayReply({
           client: deps.client,
           session: deps.session,
@@ -1266,6 +1502,9 @@ export async function handleFeishuMessageEvent(
           requestId: messageId,
           reply: outputLines,
           audit: deps.audit,
+          cardDeliveries,
+          artifactLedger: deps.artifactLedger,
+          deliveryKind: 'final',
         });
         return true;
       }
@@ -1277,15 +1516,22 @@ export async function handleFeishuMessageEvent(
       const output = sanitizeFeishuFinalReply(rawOutput, replyOutputLines);
       const reply = appendMarkdownPreviewLinks(output, replyOutputLines, deps.markdownPreview);
       if (reply) {
-        await sendFeishuFinalReplyChunks(
+        // §5.6: artifact delivery completes before the final reply so the
+        // reply can state the terminal outcome (云文档已生成 / 文件已发送 /
+        // 正文已返回，云文档生成失败 / 无可发布文件).
+        const artifactEntries = await sendArtifactFilesToFeishu(
           chatId,
-          splitForFeishu(reply),
+          replyOutputLines,
           deps,
           normalizedEvent.threadId,
         );
-        await sendArtifactFilesToFeishu(
+        const statusLines = artifactEntries.map(formatArtifactDeliveryStatusLine);
+        const replyWithStatus = statusLines.length > 0
+          ? `${reply}\n\n${statusLines.join('\n')}`
+          : reply;
+        await sendFeishuFinalReplyChunks(
           chatId,
-          replyOutputLines,
+          splitForFeishu(replyWithStatus),
           deps,
           normalizedEvent.threadId,
         );
@@ -1372,9 +1618,15 @@ export async function handleFeishuMessageEvent(
       }
       await flushProgress();
       await progressSendQueue;
-      const chunks = splitForFeishu(reply);
+      // §5.6: deliver artifacts first so the final reply states the terminal
+      // outcome instead of sending a separate (and potentially failing) card.
+      const artifactEntries = await sendArtifactFilesToFeishu(chatId, replyOutputLines, deps);
+      const statusLines = artifactEntries.map(formatArtifactDeliveryStatusLine);
+      const replyWithStatus = statusLines.length > 0
+        ? `${reply}\n\n${statusLines.join('\n')}`
+        : reply;
+      const chunks = splitForFeishu(replyWithStatus);
       await sendFeishuFinalReplyChunks(chatId, chunks, deps);
-      await sendArtifactFilesToFeishu(chatId, replyOutputLines, deps);
     } catch (error) {
       deps.session.appendSystemMessage(`⚠️ 飞书消息回发失败: ${(error as Error).message}`);
     }
@@ -1514,9 +1766,15 @@ export function subscribeFeishuGatewayDeliveries(input: {
   accessPolicy?: FeishuGatewayAccessPolicy;
   pairingStore?: FeishuPairingStore;
   audit?: FeishuDeliveryAudit;
+  cardDeliveryOptions?: FeishuCardDeliveryMachineOptions;
+  artifactLedger?: FeishuArtifactDeliveryLedger;
 }): () => void {
   if (!input.session.subscribeGatewayDelivery) return () => undefined;
-  const cardMessageIds = new Map<string, FeishuCardSlot>();
+  const cardDeliveries = new FeishuCardDeliveryHost({
+    ...input.cardDeliveryOptions,
+    onDiagnostic: line => input.session.appendSystemMessage(line),
+  }, input.audit);
+  const artifactLedger = input.artifactLedger;
   return input.session.subscribeGatewayDelivery(delivery => {
     if (input.accessPolicy) {
       const decision = evaluateFeishuGatewayPolicy({
@@ -1544,7 +1802,8 @@ export function subscribeFeishuGatewayDeliveries(input: {
       ...(delivery.threadId ? { threadId: delivery.threadId } : {}),
       reply: delivery.reply,
       audit: input.audit,
-      cardMessageIds,
+      cardDeliveries,
+      artifactLedger,
       deliveryKind: delivery.kind,
       onSystemMessage: line => input.session.appendSystemMessage(line),
     }).catch(error => {
@@ -1561,6 +1820,19 @@ export function subscribeFeishuGatewayDeliveries(input: {
  * report is readable natively in Feishu; everything else falls back to a raw
  * file message. Failures degrade loudly, never silently.
  */
+function settleArtifactLedger(
+  ledger: FeishuArtifactDeliveryLedger | undefined,
+  key: string,
+  outcome: FeishuArtifactDeliveryOutcome,
+  extra: { url?: string; reason?: string },
+  session: Pick<FeishuMessageSession, 'appendSystemMessage'>,
+): void {
+  if (!ledger) return;
+  if (!ledger.settle(key, outcome, extra)) {
+    session.appendSystemMessage('⚠️ 产物投递账本落盘失败：该产物在重启后可能被重复投递');
+  }
+}
+
 async function deliverRegisteredArtifactsToFeishu(input: {
   client: FeishuMessageClient;
   chatId: string;
@@ -1573,31 +1845,88 @@ async function deliverRegisteredArtifactsToFeishu(input: {
   }>;
   session: Pick<FeishuMessageSession, 'appendSystemMessage'>;
   audit?: FeishuDeliveryAudit;
-}): Promise<void> {
-  const docLinks: Array<{ name: string; url: string }> = [];
+  ledger?: FeishuArtifactDeliveryLedger;
+  requestId?: string;
+}): Promise<FeishuArtifactDeliveryEntry[]> {
+  const entries: FeishuArtifactDeliveryEntry[] = [];
+  const now = () => new Date().toISOString();
   for (const artifact of input.artifacts) {
+    let cloudDocFailureReason: string | undefined;
+    const key = artifactDeliveryKey({
+      chatId: input.chatId,
+      ...(input.threadId ? { threadId: input.threadId } : {}),
+      artifactPath: artifact.path,
+    });
+    // §4.5 reservation first: prevent duplicate imports across restarts and
+    // concurrent sends. A non-persisted reservation fails closed.
+    const reservation = input.ledger?.reserve(key, artifact.name) ?? 'reserved';
+    if (reservation === 'already_delivered') {
+      const recorded = input.ledger!.find(key)!;
+      entries.push(recorded);
+      continue;
+    }
+    if (reservation === 'in_flight' || reservation === 'write_failed') {
+      const reason = reservation === 'write_failed'
+        ? '账本写入失败，为避免重复投递而跳过'
+        : '上一次投递尚未确认，为避免重复而跳过';
+      const entry: FeishuArtifactDeliveryEntry = {
+        key,
+        name: artifact.name,
+        state: 'pending',
+        outcome: 'uncertain',
+        reason,
+        ts: now(),
+      };
+      entries.push(entry);
+      input.session.appendSystemMessage(`⚠️ 飞书产物投递跳过（${reason}）: ${artifact.name}`);
+      continue;
+    }
     const isDocCandidate = ['markdown', 'text', 'code'].includes(artifact.previewKind)
       && input.client.importFileToCloudDoc;
     if (isDocCandidate) {
       try {
         const url = await input.client.importFileToCloudDoc!(artifact.path);
-        docLinks.push({ name: artifact.name, url });
+        settleArtifactLedger(input.ledger, key, 'cloud_doc', { url }, input.session);
+        const entry: FeishuArtifactDeliveryEntry = {
+          key,
+          name: artifact.name,
+          state: 'terminal',
+          outcome: 'cloud_doc',
+          url,
+          ts: now(),
+        };
+        entries.push(entry);
         input.audit?.record({
           kind: 'artifact',
           chatId: input.chatId,
+          ...(input.requestId ? { requestId: input.requestId } : {}),
           method: 'file',
           ok: true,
           reason: 'cloud_doc',
         });
         continue;
       } catch (error) {
+        const reason = boundedArtifactReason(error);
         input.session.appendSystemMessage(
-          `⚠️ 飞书云文档导入失败，改用文件发送: ${artifact.name}: ${(error as Error).message}`,
+          `⚠️ 飞书云文档导入失败，改用文件发送: ${artifact.name}: ${reason}`,
         );
+        // fall through to the file fallback below — the failure reason must
+        // survive into the final user-visible status line.
+        cloudDocFailureReason = reason;
       }
     }
     if (!input.client.uploadFile) {
-      input.session.appendSystemMessage(`⚠️ 飞书产物发送跳过: 当前客户端不支持文件上传`);
+      const entry: FeishuArtifactDeliveryEntry = {
+        key,
+        name: artifact.name,
+        state: 'terminal',
+        outcome: cloudDocFailureReason !== undefined ? 'cloud_doc_failed' : 'skipped',
+        reason: cloudDocFailureReason ?? '当前客户端不支持文件上传',
+        ts: now(),
+      };
+      settleArtifactLedger(input.ledger, key, entry.outcome!, { reason: entry.reason }, input.session);
+      entries.push(entry);
+      input.session.appendSystemMessage('⚠️ 飞书产物发送跳过: 当前客户端不支持文件上传');
       continue;
     }
     try {
@@ -1606,30 +1935,63 @@ async function deliverRegisteredArtifactsToFeishu(input: {
         await input.client.sendFileToThread(input.threadId, fileKey);
       } else if (!input.threadId && input.client.sendFileToChat) {
         await input.client.sendFileToChat(input.chatId, fileKey);
+      } else {
+        throw new Error('当前客户端不支持当前目标的文件发送');
       }
+      const outcome = cloudDocFailureReason !== undefined ? 'file_fallback' as const : 'file' as const;
+      settleArtifactLedger(input.ledger, key, outcome, {
+        ...(cloudDocFailureReason !== undefined ? { reason: cloudDocFailureReason } : {}),
+      }, input.session);
+      const entry: FeishuArtifactDeliveryEntry = {
+        key,
+        name: artifact.name,
+        state: 'terminal',
+        outcome,
+        ...(cloudDocFailureReason !== undefined ? { reason: cloudDocFailureReason } : {}),
+        ts: now(),
+      };
+      entries.push(entry);
       input.audit?.record({
         kind: 'artifact',
         chatId: input.chatId,
+        ...(input.requestId ? { requestId: input.requestId } : {}),
         method: 'file',
         ok: true,
-        reason: 'raw_file',
+        reason: cloudDocFailureReason !== undefined ? 'raw_file_after_cloud_doc_failure' : 'raw_file',
       });
     } catch (error) {
+      const reason = boundedArtifactReason(error);
+      const outcome = cloudDocFailureReason !== undefined ? 'cloud_doc_failed' as const : 'failed' as const;
+      const finalReason = cloudDocFailureReason !== undefined
+        ? `${cloudDocFailureReason}；文件发送也失败: ${reason}`
+        : reason;
+      settleArtifactLedger(input.ledger, key, outcome, { reason: finalReason }, input.session);
+      const entry: FeishuArtifactDeliveryEntry = {
+        key,
+        name: artifact.name,
+        state: 'terminal',
+        outcome,
+        reason: finalReason,
+        ts: now(),
+      };
+      entries.push(entry);
+      input.audit?.record({
+        kind: 'artifact',
+        chatId: input.chatId,
+        ...(input.requestId ? { requestId: input.requestId } : {}),
+        method: 'file',
+        ok: false,
+        error: reason,
+      });
       input.session.appendSystemMessage(
-        `⚠️ 飞书产物文件发送失败: ${artifact.name}: ${(error as Error).message}`,
+        `⚠️ 飞书产物文件发送失败: ${artifact.name}: ${reason}`,
       );
     }
   }
-  if (docLinks.length > 0) {
-    const lines = [
-      '**📄 在飞书文档中阅读完整报告**',
-      ...docLinks.map(doc => `- [${doc.name}](${doc.url})`),
-    ];
-    await sendMarkdownCardToFeishuTarget(
-      { client: input.client, chatId: input.chatId, ...(input.threadId ? { threadId: input.threadId } : {}) },
-      lines.join('\n'),
-    );
-  }
+  // §4.3 noise reduction: the final reply already states every terminal
+  // outcome (云文档已生成<link> / 文件已发送 / 失败), so no separate doc-link
+  // card is sent — a card-send failure here must also never block the reply.
+  return entries;
 }
 
 const BODY_DOC_MIN_LENGTH = 3_000;
@@ -1643,16 +2005,45 @@ async function deliverAnswerBodyAsCloudDoc(input: {
   body: string;
   session: Pick<FeishuMessageSession, 'appendSystemMessage'>;
   audit?: FeishuDeliveryAudit;
+  ledger?: FeishuArtifactDeliveryLedger;
 }): Promise<boolean> {
   if (!input.client.importFileToCloudDoc) return false;
+  // §4.5/§5.6: long-body conversion is an external effect too — reserve it in
+  // the same durable ledger so a replay never re-imports the same body. The
+  // key includes a content hash so consecutive distinct reports in one chat
+  // are never mistaken for the same delivery.
+  const bodyHash = createHash('sha256').update(input.body).digest('hex').slice(0, 16);
+  const key = artifactDeliveryKey({
+    chatId: input.chatId,
+    ...(input.threadId ? { threadId: input.threadId } : {}),
+    artifactPath: `body:${input.title}:${bodyHash}`,
+  });
+  const reservation = input.ledger?.reserve(key, input.title) ?? 'reserved';
+  if (reservation === 'already_delivered') return true;
+  if (reservation === 'in_flight' || reservation === 'write_failed') return false;
   const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const dir = await mkdtemp(join(tmpdir(), 'metawork-feishu-doc-'));
+  let url: string;
   try {
     const filePath = join(dir, `${input.title}.md`);
     await writeFile(filePath, input.body, 'utf8');
-    const url = await input.client.importFileToCloudDoc(filePath);
+    url = await input.client.importFileToCloudDoc(filePath);
+  } catch (error) {
+    settleArtifactLedger(input.ledger, key, 'cloud_doc_failed', { reason: boundedArtifactReason(error) }, input.session);
+    input.session.appendSystemMessage(
+      `⚠️ 飞书云文档导入失败（正文直转）: ${(error as Error).message}`,
+    );
+    return false;
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+  // The import is the terminal effect; settling cloud_doc happens BEFORE the
+  // best-effort link card so a card send failure can never rewrite a
+  // successful import into a failure (§5.6).
+  settleArtifactLedger(input.ledger, key, 'cloud_doc', { url }, input.session);
+  try {
     await sendMarkdownCardToFeishuTarget(
       { client: input.client, chatId: input.chatId, ...(input.threadId ? { threadId: input.threadId } : {}) },
       `**📄 在飞书文档中阅读完整报告**\n- [${input.title}](${url})`,
@@ -1664,15 +2055,13 @@ async function deliverAnswerBodyAsCloudDoc(input: {
       ok: true,
       reason: 'cloud_doc_body',
     });
-    return true;
   } catch (error) {
+    // Link card send failure is surfaced but must not mask the delivered doc.
     input.session.appendSystemMessage(
-      `⚠️ 飞书云文档导入失败（正文直转）: ${(error as Error).message}`,
+      `⚠️ 飞书云文档链接卡片发送失败（文档已生成）: ${(error as Error).message}`,
     );
-    return false;
-  } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
+  return true;
 }
 
 async function sendFeishuGatewayReply(input: {
@@ -1683,41 +2072,84 @@ async function sendFeishuGatewayReply(input: {
   requestId?: string;
   reply: FeishuGatewayReply;
   audit?: FeishuDeliveryAudit;
-  cardMessageIds?: Map<string, FeishuCardSlot>;
+  cardDeliveries?: FeishuCardDeliveryHost;
+  artifactLedger?: FeishuArtifactDeliveryLedger;
   deliveryKind?: 'progress' | 'final';
   onSystemMessage?: (line: string) => void;
 }): Promise<void> {
   const markdown = input.reply.lines.join('\n');
   if (!markdown) return;
+  // §5.6: artifact/cloud-document effects complete BEFORE the final reply so
+  // the reply can state their terminal outcome explicitly — a card response
+  // can never claim cloud-document completion that did not happen.
+  let statusLines: string[] = [];
+  const isFinal = input.deliveryKind === 'final';
+  if (isFinal && input.reply.artifacts && input.reply.artifacts.length > 0) {
+    const entries = await deliverRegisteredArtifactsToFeishu({
+      client: input.client,
+      chatId: input.chatId,
+      ...(input.threadId ? { threadId: input.threadId } : {}),
+      artifacts: input.reply.artifacts,
+      session: input.session,
+      ...(input.audit ? { audit: input.audit } : {}),
+      ...(input.artifactLedger ? { ledger: input.artifactLedger } : {}),
+      ...(input.requestId ? { requestId: input.requestId } : {}),
+    });
+    statusLines = entries.map(formatArtifactDeliveryStatusLine);
+  } else if (
+    isFinal
+    && markdown.length >= BODY_DOC_MIN_LENGTH
+    && !markdown.startsWith('/')
+  ) {
+    // Report-style answers that never became a file still deserve a doc.
+    const delivered = await deliverAnswerBodyAsCloudDoc({
+      client: input.client,
+      chatId: input.chatId,
+      ...(input.threadId ? { threadId: input.threadId } : {}),
+      title: '任务报告',
+      body: markdown,
+      session: input.session,
+      ...(input.audit ? { audit: input.audit } : {}),
+      ...(input.artifactLedger ? { ledger: input.artifactLedger } : {}),
+    });
+    if (!delivered) {
+      statusLines = ['正文已返回，云文档生成失败：导入未完成（完整正文见上方消息）'];
+    }
+  }
+  const finalMarkdown = statusLines.length > 0
+    ? `${markdown}\n\n${statusLines.join('\n')}`
+    : markdown;
   try {
-    if (input.reply.cardUpdateKey && input.cardMessageIds && !input.reply.actions?.length) {
-      await upsertMarkdownCardToFeishuTarget(
+    if (input.reply.cardUpdateKey && !input.reply.actions?.length) {
+      const result = await upsertMarkdownCardToFeishuTarget(
         input,
-        markdown,
+        finalMarkdown,
         input.reply.cardUpdateKey,
-        input.cardMessageIds,
         {
           collapsedMarkdown: input.reply.collapsedMarkdown,
-          onUpdateFailure: error => {
-            input.audit?.record({
-              kind: 'progress',
-              chatId: input.chatId,
-              ...(input.requestId ? { requestId: input.requestId } : {}),
-              method: 'card-update',
-              ok: false,
-              error,
-            });
-            input.onSystemMessage?.(`⚠️ 飞书卡片原地更新失败: ${error}`);
-          },
+          ...(isFinal ? { terminal: true } : {}),
+          audit: input.audit,
+          onDiagnostic: line => input.onSystemMessage?.(line),
         },
       );
-      input.audit?.record({
-        kind: 'progress',
-        chatId: input.chatId,
-        ...(input.requestId ? { requestId: input.requestId } : {}),
-        method: 'card-update',
-        ok: true,
-      });
+      if (result.operation === 'updated') {
+        input.audit?.record({
+          kind: 'progress',
+          chatId: input.chatId,
+          ...(input.requestId ? { requestId: input.requestId } : {}),
+          method: 'card-update',
+          ok: true,
+        });
+      } else if (result.operation === 'created') {
+        input.audit?.record({
+          kind: 'progress',
+          chatId: input.chatId,
+          ...(input.requestId ? { requestId: input.requestId } : {}),
+          method: 'card',
+          ok: true,
+          ...(result.updateError ? { reason: 'fallback_after_update_failure' } : {}),
+        });
+      }
       return;
     }
     if (input.reply.actions?.length) {
@@ -1725,52 +2157,27 @@ async function sendFeishuGatewayReply(input: {
         if (input.client.sendActionCardToThread) {
           await input.client.sendActionCardToThread(
             input.threadId,
-            markdown,
+            finalMarkdown,
             input.reply.actions,
           );
         } else {
-          await sendMarkdownCardToFeishuTarget(input, markdown);
+          await sendMarkdownCardToFeishuTarget(input, finalMarkdown);
         }
       } else if (input.client.sendActionCardToChat) {
-        await input.client.sendActionCardToChat(input.chatId, markdown, input.reply.actions);
+        await input.client.sendActionCardToChat(input.chatId, finalMarkdown, input.reply.actions);
       } else {
-        await sendMarkdownCardToFeishuTarget(input, markdown);
+        await sendMarkdownCardToFeishuTarget(input, finalMarkdown);
       }
     } else {
-      await sendMarkdownCardToFeishuTarget(input, markdown);
+      await sendMarkdownCardToFeishuTarget(input, finalMarkdown);
     }
     input.audit?.record({
-      kind: input.deliveryKind === 'progress' ? 'progress' : 'final',
+      kind: isFinal ? 'final' : 'progress',
       chatId: input.chatId,
       ...(input.requestId ? { requestId: input.requestId } : {}),
       method: 'card',
       ok: true,
     });
-    if (input.reply.artifacts && input.reply.artifacts.length > 0) {
-      await deliverRegisteredArtifactsToFeishu({
-        client: input.client,
-        chatId: input.chatId,
-        ...(input.threadId ? { threadId: input.threadId } : {}),
-        artifacts: input.reply.artifacts,
-        session: input.session,
-        ...(input.audit ? { audit: input.audit } : {}),
-      });
-    } else if (
-      input.deliveryKind === 'final'
-      && markdown.length >= BODY_DOC_MIN_LENGTH
-      && !markdown.startsWith('/')
-    ) {
-      // Report-style answers that never became a file still deserve a doc.
-      await deliverAnswerBodyAsCloudDoc({
-        client: input.client,
-        chatId: input.chatId,
-        ...(input.threadId ? { threadId: input.threadId } : {}),
-        title: '任务报告',
-        body: markdown,
-        session: input.session,
-        ...(input.audit ? { audit: input.audit } : {}),
-      });
-    }
   } catch (error) {
     input.audit?.record({
       kind: 'fallback',
@@ -1781,7 +2188,7 @@ async function sendFeishuGatewayReply(input: {
       error: (error as Error).message,
     });
     if (!input.reply.actions?.length) throw error;
-    await sendMarkdownCardToFeishuTarget(input, markdown);
+    await sendMarkdownCardToFeishuTarget(input, finalMarkdown);
   }
 }
 
@@ -1809,55 +2216,72 @@ function sendMarkdownCardToFeishuTarget(
     ? input.client.sendMarkdownCardToThread(input.threadId, markdown, cardOptions)
     : input.client.sendMarkdownCardToThread(input.threadId, markdown);
 }
-
-interface FeishuCardSlot {
-  messageId: string;
-  lastSentAtMs: number;
-}
-
-const DEFAULT_CARD_FALLBACK_MIN_INTERVAL_MS = 60_000;
+type FeishuCardUpsertResult =
+  | { operation: 'updated' }
+  | { operation: 'created'; updateError?: string }
+  | { operation: 'throttled'; updateError: string };
 
 /**
- * Send or update a card keyed by `cardUpdateKey`: the first delivery sends a
- * new card and records its message id; later deliveries update it in place
- * (zero notifications). When the in-place update is rejected the failure is
- * reported loudly and a fresh card is re-sent at most once per
- * `fallbackMinIntervalMs` (default 60 s) — never a per-repaint flood.
+ * Paints one card delivery through the Feishu card delivery state machine
+ * (§5.1): the card slot is keyed by `cardUpdateKey` (a stable
+ * conversation/task/generation scope), operations are serialized, updates are
+ * throttled, degradation is bounded, and failures diagnose at most once per
+ * scope. Falls back to a request-local registry when the bridge did not
+ * provide one (legacy call sites).
  */
 async function upsertMarkdownCardToFeishuTarget(
   input: {
     client: FeishuMessageClient;
     chatId: string;
     threadId?: string;
+    cardDeliveries?: FeishuCardDeliveryHost;
+    audit?: FeishuDeliveryAudit;
   },
   markdown: string,
   cardUpdateKey: string,
-  cardSlots: Map<string, FeishuCardSlot>,
   options: {
     nowMs?: () => number;
     fallbackMinIntervalMs?: number;
     onUpdateFailure?: (error: string) => void;
+    onDiagnostic?: (line: string) => void;
+    audit?: FeishuDeliveryAudit;
     collapsedMarkdown?: string;
+    immediate?: boolean;
+    terminal?: boolean;
+    machineOptions?: FeishuCardDeliveryMachineOptions;
   } = {},
-): Promise<void> {
-  const nowMs = options.nowMs ?? Date.now;
-  const minInterval = options.fallbackMinIntervalMs ?? DEFAULT_CARD_FALLBACK_MIN_INTERVAL_MS;
-  const slot = cardSlots.get(cardUpdateKey);
-  const cardOptions = options.collapsedMarkdown
-    ? { collapsedMarkdown: options.collapsedMarkdown }
-    : undefined;
-  if (slot && input.client.updateMarkdownCard) {
-    const updated = cardOptions
-      ? await input.client.updateMarkdownCard(slot.messageId, markdown, cardOptions)
-      : await input.client.updateMarkdownCard(slot.messageId, markdown);
-    if (updated.ok) return;
-    options.onUpdateFailure?.(updated.error ?? 'unknown');
-    if (nowMs() - slot.lastSentAtMs < minInterval) return;
+): Promise<FeishuCardUpsertResult> {
+  const host = input.cardDeliveries ?? new FeishuCardDeliveryHost({
+    ...options.machineOptions,
+    onDiagnostic: line => options.onDiagnostic?.(line),
+  }, options.audit);
+  const registry = host.registryFor(
+    {
+      chatId: input.chatId,
+      ...(input.threadId ? { threadId: input.threadId } : {}),
+    },
+    input.client,
+    input.audit,
+  );
+  const machine = registry.machineFor(cardUpdateKey);
+  const result = await machine.paint({
+    markdown,
+    ...(options.collapsedMarkdown ? { collapsedMarkdown: options.collapsedMarkdown } : {}),
+    ...(options.immediate || options.terminal ? { immediate: true } : {}),
+    ...(options.terminal ? { terminal: true } : {}),
+  });
+  switch (result.operation) {
+    case 'updated':
+    case 'terminal':
+      return { operation: 'updated' };
+    case 'created':
+    case 'replaced':
+      return { operation: 'created' };
+    case 'throttled':
+    case 'suppressed':
+    default:
+      return { operation: 'throttled', updateError: 'card_update_throttled_or_degraded' };
   }
-  const messageId = cardOptions
-    ? await sendMarkdownCardToFeishuTarget(input, markdown, cardOptions)
-    : await sendMarkdownCardToFeishuTarget(input, markdown);
-  if (messageId) cardSlots.set(cardUpdateKey, { messageId, lastSentAtMs: nowMs() });
 }
 
 function parseFeishuGatewayActionValue(value: unknown): FeishuGatewayActionValue | null {
@@ -1917,6 +2341,14 @@ function buildFeishuGatewayAccessPolicy(config: Config): FeishuGatewayAccessPoli
     requireMention: feishu?.access?.require_mention ?? true,
     ...(process.env.FEISHU_BOT_OPEN_ID ? { botOpenId: process.env.FEISHU_BOT_OPEN_ID } : {}),
   };
+}
+
+/** Ledger lives beside the audit log so restarts keep artifact idempotency. */
+function createFeishuArtifactLedger(auditPath?: string): FeishuArtifactDeliveryLedger | undefined {
+  if (!auditPath) return undefined;
+  return new FeishuArtifactDeliveryLedger(
+    auditPath.replace(/\.jsonl$/u, '') + '-artifact-ledger.jsonl',
+  );
 }
 
 function createFeishuDeliveryAudit(path?: string): FeishuDeliveryAudit {
@@ -2655,6 +3087,88 @@ function parseFeishuResourceContent(content: unknown): {
   return null;
 }
 
+/** §5.5: inline rich-text images + route-claimed pending attachments for one command. */
+async function collectFeishuCommandAttachments(input: {
+  chatId: string;
+  threadId?: string;
+  messageId: string;
+  text: string;
+  senderId?: string;
+  inlineAttachments: ReadonlyArray<{ id: string; type: string; name?: string }>;
+  deps: FeishuMessageHandlerDeps;
+}): Promise<Array<{ path: string; name: string; resourceType: 'image' | 'file'; messageId: string }>> {
+  const collected: Array<{ path: string; name: string; resourceType: 'image' | 'file'; messageId: string }> = [];
+  // §5.5: commands (/task clear all, /status, ...) never consume pending or
+  // inline attachments — routing drops slash-command attachments by design,
+  // so claiming them here would silently discard a waiting screenshot.
+  const isCommand = input.text.trim().startsWith('/');
+  for (const attachment of input.inlineAttachments) {
+    if (isCommand || attachment.type !== 'image' || !input.deps.client.downloadMessageResource) continue;
+    try {
+      const downloaded = await input.deps.client.downloadMessageResource({
+        messageId: input.messageId,
+        fileKey: attachment.id,
+        resourceType: 'image',
+        fileName: attachment.name,
+        outputDir: input.deps.uploadDir
+          ? resolve(
+            input.deps.uploadDir,
+            sanitizePathPart(input.chatId),
+            sanitizePathPart(input.messageId),
+          )
+          : undefined,
+      });
+      input.deps.audit?.record({
+        kind: 'inbound',
+        chatId: input.chatId,
+        requestId: input.messageId,
+        method: 'file',
+        ok: true,
+        reason: 'attachment_saved:image_inline',
+      });
+      collected.push({
+        path: downloaded.path,
+        name: downloaded.fileName,
+        resourceType: 'image',
+        messageId: input.messageId,
+      });
+    } catch (error) {
+      input.deps.audit?.record({
+        kind: 'inbound',
+        chatId: input.chatId,
+        requestId: input.messageId,
+        method: 'file',
+        ok: false,
+        reason: 'attachment_inline_download_failed',
+        error: boundedArtifactReason(error),
+      });
+    }
+  }
+  if (input.deps.pendingAttachments && !isCommand) {
+    const claimed = input.deps.pendingAttachments.claimForText({
+      chatId: input.chatId,
+      ...(input.senderId ? { senderId: input.senderId } : {}),
+      ...(input.threadId !== undefined ? { threadId: input.threadId } : {}),
+    });
+    collected.push(...claimed.map((record: FeishuPendingAttachment) => ({
+      path: record.path,
+      name: record.name,
+      resourceType: record.resourceType,
+      messageId: record.messageId,
+    })));
+  }
+  // §5.5.6 deterministic visibility: files are saved as Gateway attachments
+  // but only images flow into the Planner multimodal input — say so instead
+  // of silently saving a file no downstream consumer reads.
+  const fileCount = collected.filter(item => item.resourceType === 'file').length;
+  if (fileCount > 0) {
+    input.deps.session.appendSystemMessage(
+      `→ 已保存 ${fileCount} 个文件附件；Planner 多模态输入仅接收图片，文件请在需求中明确引用。`,
+    );
+  }
+  return collected;
+}
+
 async function handleFeishuResourceMessage(
   message: NonNullable<FeishuIncomingMessageEvent['message']>,
   input: {
@@ -2664,7 +3178,11 @@ async function handleFeishuResourceMessage(
     client: FeishuMessageClient;
     session: FeishuMessageSession;
     pendingResourcesByChatId?: Map<string, string[]>;
+    pendingAttachments?: FeishuPendingAttachmentStore;
+    threadId?: string;
+    senderId?: string;
     uploadDir?: string;
+    audit?: FeishuDeliveryAudit;
   },
 ): Promise<boolean> {
   if (input.messageType !== 'file' && input.messageType !== 'image') {
@@ -2687,15 +3205,61 @@ async function handleFeishuResourceMessage(
         ? resolve(input.uploadDir, sanitizePathPart(input.chatId), sanitizePathPart(input.messageId))
         : undefined,
     });
-    const pendingResources = input.pendingResourcesByChatId ?? new Map<string, string[]>();
-    pendingResources.set(input.chatId, [
-      ...(pendingResources.get(input.chatId) ?? []),
-      downloaded.path,
-    ]);
+    if (input.pendingAttachments) {
+      // §5.5 message-scoped flow: bind the downloaded file to its message
+      // identity and Conversation route; the next compatible text message on
+      // the same route claims it as a Gateway attachment.
+      input.pendingAttachments.add({
+        messageId: input.messageId,
+        chatId: input.chatId,
+        ...(input.threadId ? { threadId: input.threadId } : {}),
+        ...(input.senderId ? { senderId: input.senderId } : {}),
+        path: downloaded.path,
+        name: downloaded.fileName,
+        resourceType: resource.resourceType,
+      });
+    } else {
+      const pendingResources = input.pendingResourcesByChatId ?? new Map<string, string[]>();
+      pendingResources.set(input.chatId, [
+        ...(pendingResources.get(input.chatId) ?? []),
+        downloaded.path,
+      ]);
+    }
+    input.audit?.record({
+      kind: 'inbound',
+      chatId: input.chatId,
+      requestId: input.messageId,
+      method: 'file',
+      ok: true,
+      reason: `attachment_saved:${resource.resourceType}`,
+    });
     input.session.appendSystemMessage(`→ 已接收飞书文件: ${downloaded.fileName}`);
+    if (resource.resourceType === 'image') {
+      // §5.5.2: an image-only message gets an immediate acknowledgement
+      // that the image is waiting for a text instruction.
+      await sendMarkdownCardToFeishuTarget(
+        {
+          client: input.client,
+          chatId: input.chatId,
+          ...(input.threadId ? { threadId: input.threadId } : {}),
+        },
+        `已收到图片 **${downloaded.fileName}**，请直接发送文字说明需要用它做什么；未说明的图片会在 30 分钟后过期。`,
+      ).catch(error => {
+        input.session.appendSystemMessage(`⚠️ 飞书图片确认发送失败: ${(error as Error).message}`);
+      });
+    }
     return true;
   } catch (error) {
-    input.session.appendSystemMessage(`⚠️ 飞书文件下载失败: ${(error as Error).message}`);
+    const reason = boundedArtifactReason(error);
+    input.audit?.record({
+      kind: 'inbound',
+      chatId: input.chatId,
+      requestId: input.messageId,
+      method: 'file',
+      ok: false,
+      error: reason,
+    });
+    input.session.appendSystemMessage(`⚠️ 飞书文件下载失败: ${reason}`);
     return true;
   }
 }
@@ -2996,18 +3560,60 @@ async function sendArtifactFilesToFeishu(
   outputLines: string[],
   deps: FeishuMessageHandlerDeps,
   threadId?: string,
-): Promise<void> {
+): Promise<FeishuArtifactDeliveryEntry[]> {
   const artifactPaths = extractArtifactPaths(outputLines)
     .filter(path => existsSync(path) && statSync(path).isFile());
   if (artifactPaths.length === 0) {
-    return;
+    return [];
   }
+  const now = () => new Date().toISOString();
+  const ledgerFor = (artifactPath: string) => artifactDeliveryKey({
+    chatId,
+    ...(threadId ? { threadId } : {}),
+    artifactPath,
+  });
+  /** Ledger-guarded effect with a durable reservation (§4.5). */
+  const guarded = async (
+    artifactPath: string,
+    attempt: () => Promise<Omit<FeishuArtifactDeliveryEntry, 'key' | 'state'>>,
+  ): Promise<FeishuArtifactDeliveryEntry> => {
+    const key = ledgerFor(artifactPath);
+    const reservation = deps.artifactLedger?.reserve(key, basename(artifactPath)) ?? 'reserved';
+    if (reservation === 'already_delivered') {
+      return deps.artifactLedger!.find(key)!;
+    }
+    if (reservation === 'in_flight' || reservation === 'write_failed') {
+      return {
+        key,
+        name: basename(artifactPath),
+        state: 'pending',
+        outcome: 'uncertain',
+        reason: reservation === 'write_failed'
+          ? '账本写入失败，为避免重复投递而跳过'
+          : '上一次投递尚未确认，为避免重复而跳过',
+        ts: now(),
+      };
+    }
+    const delivered = await attempt();
+    settleArtifactLedger(deps.artifactLedger, key, delivered.outcome!, {
+      ...(delivered.url ? { url: delivered.url } : {}),
+      ...(delivered.reason ? { reason: delivered.reason } : {}),
+    }, deps.session);
+    return { ...delivered, key, state: 'terminal' };
+  };
   const canSendFile = threadId
     ? Boolean(deps.client.sendFileToThread)
     : Boolean(deps.client.sendFileToChat);
   if (!deps.client.uploadFile || !canSendFile) {
     deps.session.appendSystemMessage('⚠️ 飞书任务产物同步跳过: 当前客户端不支持文件上传');
-    return;
+    return artifactPaths.map(path => ({
+      key: ledgerFor(path),
+      name: basename(path),
+      state: 'terminal' as const,
+      outcome: 'skipped' as const,
+      reason: '当前客户端不支持文件上传',
+      ts: now(),
+    }));
   }
 
   // Text artifacts become Feishu cloud documents so users can read generated
@@ -3021,16 +3627,24 @@ async function sendArtifactFilesToFeishu(
     return CLOUD_DOC_EXTENSIONS.has(extension) && Boolean(deps.client.importFileToCloudDoc);
   };
 
-  const docLinks: Array<{ name: string; url: string }> = [];
-  const fileOnlyPaths: string[] = [];
+  const fileOnlyPaths: Array<{ path: string; cloudDocFailureReason?: string }> = [];
+  const entries: FeishuArtifactDeliveryEntry[] = [];
   for (const artifactPath of artifactPaths) {
     if (!isCloudDocCandidate(artifactPath)) {
-      fileOnlyPaths.push(artifactPath);
+      fileOnlyPaths.push({ path: artifactPath });
       continue;
     }
     try {
-      const url = await deps.client.importFileToCloudDoc!(artifactPath);
-      docLinks.push({ name: basename(artifactPath), url });
+      const entry = await guarded(artifactPath, async () => {
+        const url = await deps.client.importFileToCloudDoc!(artifactPath);
+        return {
+          name: basename(artifactPath),
+          outcome: 'cloud_doc' as const,
+          url,
+          ts: now(),
+        };
+      });
+      entries.push(entry);
       recordFeishuAudit(deps, {
         kind: 'artifact',
         chatId,
@@ -3039,70 +3653,70 @@ async function sendArtifactFilesToFeishu(
         reason: 'cloud_doc',
       });
     } catch (error) {
+      const reason = boundedArtifactReason(error);
       deps.session.appendSystemMessage(
-        `⚠️ 飞书云文档导入失败，改用文件发送: ${basename(artifactPath)}: ${(error as Error).message}`,
+        `⚠️ 飞书云文档导入失败，改用文件发送: ${basename(artifactPath)}: ${reason}`,
       );
-      fileOnlyPaths.push(artifactPath);
+      fileOnlyPaths.push({ path: artifactPath, cloudDocFailureReason: reason });
     }
   }
 
-  const noticeLines: string[] = [];
-  if (docLinks.length > 0) {
-    noticeLines.push('**任务产物已同步到飞书云文档，点击直接查看**');
-    for (const doc of docLinks) {
-      noticeLines.push(`- [${doc.name}](${doc.url})`);
-    }
-  }
-  if (fileOnlyPaths.length > 0) {
-    if (noticeLines.length === 0) {
-      noticeLines.push('**任务产物已同步到飞书**');
-    }
-    for (const path of fileOnlyPaths) {
-      noticeLines.push(`- ${basename(path)}`);
-    }
-  }
-  await sendMarkdownCardToFeishuTarget({
-    client: deps.client,
-    chatId,
-    ...(threadId ? { threadId } : {}),
-  }, noticeLines.join('\n'));
-  recordFeishuAudit(deps, {
-    kind: 'artifact',
-    chatId,
-    method: 'notice',
-    ok: true,
-  });
-
-  for (const artifactPath of fileOnlyPaths) {
+  for (const { path: artifactPath, cloudDocFailureReason } of fileOnlyPaths) {
     try {
-      const fileKey = await deps.client.uploadFile(artifactPath);
-      if (threadId) {
-        await deps.client.sendFileToThread!(threadId, fileKey);
-      } else {
-        await deps.client.sendFileToChat!(chatId, fileKey);
-      }
+      const entry = await guarded(artifactPath, async () => {
+        const upload = deps.client.uploadFile!;
+        const fileKey = await upload(artifactPath);
+        if (threadId) {
+          await deps.client.sendFileToThread!(threadId, fileKey);
+        } else {
+          await deps.client.sendFileToChat!(chatId, fileKey);
+        }
+        return {
+          name: basename(artifactPath),
+          outcome: cloudDocFailureReason !== undefined ? ('file_fallback' as const) : ('file' as const),
+          ...(cloudDocFailureReason !== undefined ? { reason: cloudDocFailureReason } : {}),
+          ts: now(),
+        };
+      });
+      entries.push(entry);
       recordFeishuAudit(deps, {
         kind: 'artifact',
         chatId,
         method: 'file',
         ok: true,
+        reason: cloudDocFailureReason !== undefined ? 'raw_file_after_cloud_doc_failure' : 'raw_file',
       });
     } catch (error) {
-      deps.session.appendSystemMessage(`⚠️ 飞书任务产物同步失败: ${artifactPath}: ${(error as Error).message}`);
+      const reason = boundedArtifactReason(error);
+      const finalReason = cloudDocFailureReason !== undefined
+        ? `${cloudDocFailureReason}；文件发送也失败: ${reason}`
+        : reason;
+      const key = ledgerFor(artifactPath);
+      const outcome = cloudDocFailureReason !== undefined ? ('cloud_doc_failed' as const) : ('failed' as const);
+      settleArtifactLedger(deps.artifactLedger, key, outcome, { reason: finalReason }, deps.session);
+      const entry: FeishuArtifactDeliveryEntry = {
+        key,
+        name: basename(artifactPath),
+        state: 'terminal',
+        outcome,
+        reason: finalReason,
+        ts: now(),
+      };
+      entries.push(entry);
+      deps.session.appendSystemMessage(`⚠️ 飞书任务产物同步失败: ${artifactPath}: ${reason}`);
       recordFeishuAudit(deps, {
         kind: 'artifact',
         chatId,
         method: 'file',
         ok: false,
-        error: (error as Error).message,
+        error: reason,
       });
-      await sendMarkdownCardToFeishuTarget({
-        client: deps.client,
-        chatId,
-        ...(threadId ? { threadId } : {}),
-      }, `⚠️ 任务产物同步失败：${basename(artifactPath)}`);
     }
   }
+
+  // §4.3 noise reduction: the final reply states each terminal outcome; no
+  // separate notice card is sent (and its failure can never block the reply).
+  return entries;
 }
 
 async function sendFeishuFinalReplyChunks(
@@ -4215,6 +4829,23 @@ async function defaultPutJson(
 ): Promise<JsonResponse> {
   const response = await fetch(url, {
     method: 'PUT',
+    headers: {
+      'content-type': 'application/json',
+      ...headers,
+    },
+    body: JSON.stringify(body),
+  });
+
+  return response;
+}
+
+async function defaultPatchJson(
+  url: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+): Promise<JsonResponse> {
+  const response = await fetch(url, {
+    method: 'PATCH',
     headers: {
       'content-type': 'application/json',
       ...headers,

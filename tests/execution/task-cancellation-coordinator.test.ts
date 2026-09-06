@@ -541,3 +541,91 @@ function dispatchDecision(taskId: string): KernelDecision & {
     },
   };
 }
+
+describe('TaskCancellationCoordinator idempotent replay (2026-09-06 plan §5.3)', () => {
+  it('replaying the same cancellation identity converges instead of failing the application', async () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+    seedConfigurationRevision(db);
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-cancel-replay');
+    const taskRuntime = new TaskRuntimeService({ taskEngine, taskRepo });
+    const task = taskEngine.create({ id: 'task-replay', title: 'Replay', goal: 'Replay' });
+    taskEngine.transition(task.id, 'ready');
+    taskEngine.transition(task.id, 'running');
+    const revisions = new WorkGraphRevisionRepo(db);
+    revisions.activate({
+      id: 'revision-replay-1',
+      taskId: task.id,
+      revision: 1,
+      generationId: 'generation-replay-1',
+      configurationRevision: authorizedBinding.configurationRevision,
+      authorizedDecisionId: null,
+      proposalSource: 'initial',
+      automaticReplan: false,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+    });
+    const subtasks = new SubtaskRepo(db);
+    subtasks.upsert({
+      ...subtask(task.id, 'only', 'running'),
+      generationId: 'generation-replay-1',
+    });
+    const scheduler = new ConversationTaskSchedulerRepo(db);
+    scheduler.claimSlot('conv-replay', task.id, 'decision-replay', now);
+    scheduler.markRunning(task.id, now);
+
+    const decision = {
+      schemaVersion: 5,
+      id: 'decision-cancel-replay',
+      eventId: 'event-cancel-replay',
+      reason: 'durable Task cancellation fence authorized',
+      configurationRevision: authorizedBinding.configurationRevision,
+      action: {
+        type: 'cancel_task' as const,
+        taskId: task.id,
+        generationId: 'generation-replay-1',
+      },
+    } as unknown as Parameters<TaskCancellationCoordinator['apply']>[0];
+
+    const coordinator = new TaskCancellationCoordinator({
+      db,
+      taskRuntimeService: taskRuntime,
+      subtaskRepo: subtasks,
+      taskEventRepo: new TaskEventRepo(db),
+      workGraphRevisionRepo: revisions,
+      dispatchItemRepo: new KernelDispatchItemRepo(db),
+      schedulerRepo: scheduler,
+      publicationRepo: new WorkspacePublicationRepo(db),
+      generationReplanRepo: new GenerationReplanRequestRepo(db),
+      resourceLeaseService: new ResourceLeaseService(new SqliteResourceLeaseRepository(db)),
+      workUnitClaimService: new WorkUnitClaimService(new WorkUnitRepo(db)),
+      activeExecutions: { abortAttempt: vi.fn(), abortTask: vi.fn() },
+      attemptExecutionBackend: {} as AttemptExecutionBackend,
+      attemptExecutionRepository: new SqliteAttemptExecutionRepository(db),
+    });
+
+    const first = coordinator.apply(decision);
+    expect(first.taskId).toBe(task.id);
+    expect(taskRepo.findById(task.id)?.status).toBe('cancelled');
+
+    // §4.1: the Conversation slot is released only after cleanup converges
+    // (recover), never inside the apply fence.
+    await coordinator.recover(task.id);
+    expect(scheduler.getSlot('conv-replay').state).toBe('free');
+
+    // A previously-uncertain application replays the same identity after the
+    // cancellation already committed. This must converge to the same
+    // postconditions instead of throwing `只能取消未完成任务` and keeping the
+    // Kernel application uncertain forever.
+    expect(() => coordinator.apply(decision)).not.toThrow();
+    expect(taskRepo.findById(task.id)?.status).toBe('cancelled');
+    await coordinator.recover(task.id);
+    expect(scheduler.getSlot('conv-replay').state).toBe('free');
+    const replayEvents = new TaskEventRepo(db).listByTask(task.id)
+      .filter(event => event.eventType === 'task_cancelled');
+    expect(replayEvents).toHaveLength(1);
+  });
+});

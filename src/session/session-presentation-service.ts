@@ -41,6 +41,12 @@ const CLEAR_SCOPE_LABELS: Record<TaskClearScope, string> = {
   blocked: '阻塞任务',
 };
 
+export type {
+  TaskClearOutcome,
+  TaskClearOutcomeStatus,
+} from '../task/task-control-types.js';
+import type { TaskClearOutcome } from '../task/task-control-types.js';
+
 /** Centralizes user-visible session formatting for task state, guidance, recall, and executor setup output. */
 export class SessionPresentationService {
   private readonly queueLimit: number;
@@ -150,6 +156,7 @@ export class SessionPresentationService {
     scope: TaskClearScope;
     cancelled: Task[];
     runningCancelled?: boolean;
+    outcomes?: Array<TaskClearOutcome & { title: string }>;
   }): string {
     const lines = [
       `已清空${CLEAR_SCOPE_LABELS[input.scope]}：取消 ${input.cancelled.length} 个任务`,
@@ -164,8 +171,13 @@ export class SessionPresentationService {
       lines.push('→ 已中止当前执行器，避免被取消任务继续输出');
     }
 
+    // Durable per-task outcome (§5.3.7): cleared / already cleared /
+    // recovery in progress / clear blocked — never a blanket "cancelled".
     lines.push(
-      ...input.cancelled.map(task => `  - #${task.id} [${task.status.toUpperCase()}] ${task.title}`),
+      ...input.cancelled.map(task => {
+        const outcome = input.outcomes?.find(entry => entry.taskId === task.id);
+        return `  - #${task.id} [${formatClearOutcome(outcome)}] ${task.title}`;
+      }),
     );
     return lines.join('\n');
   }
@@ -508,5 +520,19 @@ export class SessionPresentationService {
             : '已创建';
     const progress = Math.round(entry.task.prioritySignals.progressRatio * 100);
     return `│ ${index}. [${marker}] #${entry.task.id} ${entry.task.title} | 优先级 ${entry.score.toFixed(1)} | ${entry.executionOrder} | 进度 ${progress}% | ${entry.reason}`;
+  }
+}
+
+function formatClearOutcome(outcome: TaskClearOutcome | undefined): string {
+  if (!outcome) return 'CANCELLED';
+  switch (outcome.status) {
+    case 'cleared':
+      return '已取消并释放';
+    case 'already_cleared':
+      return '此前已取消';
+    case 'recovery_in_progress':
+      return `已受理，后台清理中（残留: ${outcome.residue.join(', ') || '无'}）`;
+    case 'clear_blocked':
+      return `取消受阻: ${outcome.phase ?? '未知阶段'}；新任务暂缓`;
   }
 }

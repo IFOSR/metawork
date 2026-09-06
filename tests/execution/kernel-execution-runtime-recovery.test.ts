@@ -22,6 +22,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
       summary: 'Executor produced partial output, then became silent',
     };
     const runtime = new KernelExecutionRuntime({
+      resolveWorkspacePath: vi.fn().mockResolvedValue('/Users/ylfego/Program/test'),
       attemptReceiptRepo: {
         findByAttemptId: vi.fn().mockReturnValue(null),
       },
@@ -93,6 +94,11 @@ describe('KernelExecutionRuntime executor recovery', () => {
       attemptId: 'attempt-timeout',
       failure: timeoutFailure,
     });
+    expect((runtime as unknown as {
+      deps: { attemptRunner: { run: ReturnType<typeof vi.fn> } };
+    }).deps.attemptRunner.run).toHaveBeenCalledWith(expect.objectContaining({
+      sourceRoot: '/Users/ylfego/Program/test',
+    }));
   });
 
   it('streams presentation-only heartbeats while an Executor is silent', async () => {

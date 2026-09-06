@@ -458,6 +458,8 @@ export type KernelDecisionAction =
       graphRevision: number;
       proposalSource: 'initial' | 'replan' | 'conflict_replan';
       routing?: Record<string, RoutingResolutionAudit[]>;
+      /** §5.4 abandon-and-create: the exact old Task to abandon before admission. */
+      conflictResolution?: { oldTaskId: string };
     }
   | { type: 'authorize_task_control'; task: KernelPlanProposal['task'] }
   | {
@@ -724,7 +726,12 @@ export class ControlKernel {
       return decision(event, { type: 'reject_request' }, `task not found: ${proposal.task.taskId}`);
     }
     if (proposal.action === 'task_control') {
-      if ((proposal.task.control === 'resume_task' || proposal.task.control === 'recover_blocked') && !proposal.task.taskId) {
+      if (
+        (proposal.task.control === 'resume_task'
+          || proposal.task.control === 'recover_blocked'
+          || proposal.task.control === 'abandon_task')
+        && !proposal.task.taskId
+      ) {
         return decision(event, { type: 'request_clarification', question: proposal.clarificationQuestion ?? 'Which task should be resumed?' }, 'resume requires an explicit task');
       }
       if (!['status_query', 'clear_tasks'].includes(proposal.task.control)) {
@@ -735,10 +742,16 @@ export class ControlKernel {
         if (targetTask?.conversationId && targetTask.conversationId !== conversationId) {
           return decision(event, { type: 'reject_request' }, 'task is owned by another Conversation');
         }
-        const scopedActiveTaskId = snapshot.activeTaskByConversation?.[conversationId]
-          ?? (snapshot.activeTaskByConversation ? null : snapshot.runningTaskId);
-        if (scopedActiveTaskId && proposal.task.taskId !== scopedActiveTaskId) {
-          return decision(event, { type: 'reject_request' }, `Conversation execution slot is occupied by ${scopedActiveTaskId}`);
+        // abandon_task resolves the same-topic conflict explicitly: it may
+        // target any Task in this Conversation (the slot owner or a queued
+        // Task), never a Task of another Conversation. Topic similarity alone
+        // still authorizes nothing (§4.2 fail-closed rule).
+        if (proposal.task.control !== 'abandon_task') {
+          const scopedActiveTaskId = snapshot.activeTaskByConversation?.[conversationId]
+            ?? (snapshot.activeTaskByConversation ? null : snapshot.runningTaskId);
+          if (scopedActiveTaskId && proposal.task.taskId !== scopedActiveTaskId) {
+            return decision(event, { type: 'reject_request' }, `Conversation execution slot is occupied by ${scopedActiveTaskId}`);
+          }
         }
       }
       return decision(event, { type: 'authorize_task_control', task: proposal.task }, 'task control authorized');
@@ -837,6 +850,20 @@ export class ControlKernel {
     if (violations.length > 0) {
       return decision(event, { type: 'reject_request' }, violations.map(item => `${item.code}: ${item.message}`).join('; '));
     }
+    // §5.4: abandon-and-create names the exact old Task. Existence is
+    // checked here; Conversation ownership is enforced by the Runtime
+    // (snapshot task projections do not carry conversationId). Topic
+    // similarity alone still authorizes nothing — the Planner must emit an
+    // explicit conflictResolution with an exact oldTaskId.
+    if (proposal.conflictResolution) {
+      const oldTask = snapshot.tasks.find(task => task.id === proposal.conflictResolution!.oldTaskId);
+      if (!oldTask) {
+        return decision(event, { type: 'reject_request' }, `conflictResolution targets an unknown Task: ${proposal.conflictResolution.oldTaskId}`);
+      }
+      if (['cancelled', 'done', 'failed', 'archived'].includes(oldTask.status)) {
+        return decision(event, { type: 'reject_request' }, `conflictResolution targets an already-terminal Task: ${oldTask.status}`);
+      }
+    }
     return decision(event, {
       type: 'authorize_task_plan',
       taskId: proposal.task.taskId ?? deterministicTaskId(event.id),
@@ -856,6 +883,9 @@ export class ControlKernel {
       graphRevision: event.targetGraphRevision,
       proposalSource: event.proposalSource,
       routing: resolved.routing,
+      ...(proposal.conflictResolution
+        ? { conflictResolution: { oldTaskId: proposal.conflictResolution.oldTaskId } }
+        : {}),
     }, 'work graph authorized');
   }
 
@@ -1179,6 +1209,16 @@ export class ControlKernel {
     }
     if (failure.code === 'startup_orphaned_work') {
       return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, 'startup orphaned work requires explicit recovery');
+    }
+    if (
+      failure.code === 'workspace_source_missing'
+      || failure.code === 'dispatch_context_invalid'
+    ) {
+      return decision(
+        event,
+        { type: 'block_work', taskId, subtaskId: subtask.id, preserveSubtaskState: true },
+        `${failure.code} requires Workspace/context repair before explicit resume`,
+      );
     }
     if (snapshot.task?.status === 'cancelled' || subtask.status === 'cancelled') {
       return decision(event, { type: 'no_op' }, 'cancellation fence makes the late attempt outcome stale');

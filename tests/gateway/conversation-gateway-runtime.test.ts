@@ -956,6 +956,19 @@ it('resolves image attachment refs into planner multimodal images', async () => 
     expect(images).toHaveLength(1);
     expect(images[0]).toMatchObject({ name: 'chart.png', mimeType: 'image/png' });
     expect(Buffer.from(images[0]!.data, 'base64').subarray(0, 8)).toEqual(pngMagic);
+
+    // §5.5.7: the durable journal proves whether the attachments reached the
+    // Planner turn — 1 resolved of 2 requested image refs.
+    const replay = await journal.replay('local-default', 'conv_1');
+    const resolutionEvent = [...replay.snapshot, ...replay.deltas]
+      .find(event => event.kind === 'trace_delta'
+        && JSON.stringify(event.payload).includes('gateway_attachment_resolved'));
+    expect(resolutionEvent).toBeDefined();
+    const payload = resolutionEvent!.payload as { events: Array<{ status: string; details: { requested: number; resolved: number } }> };
+    expect(payload.events[0]).toMatchObject({
+      status: 'completed',
+      details: { requested: 3, resolved: 1 },
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1080,9 +1093,11 @@ describe('ConversationGatewayRuntime origin delivery (ADR-0036)', () => {
     await receipt.completion;
 
     // 命令已返回，后台投影继续流式推送给发起来源。
+    const turnId = webEvents.find(event => event.kind === 'turn_started')?.turnId;
+    expect(turnId).toBeTruthy();
     const session = fixture.sessions[0]!;
     session.fireTrace({
-      turnId: 'turn_background',
+      turnId: turnId!,
       taskId: 'task_1',
       status: 'running',
       completedAt: null,
@@ -1106,6 +1121,7 @@ describe('ConversationGatewayRuntime origin delivery (ADR-0036)', () => {
     expect(webEvents.map(event => event.kind)).toEqual(
       expect.arrayContaining(['trace_delta', 'task_projection']),
     );
+    expect(webEvents.find(event => event.kind === 'trace_delta')?.requestId).toBe('req_1');
     expect(tuiEvents.filter(event => (
       event.kind === 'trace_delta' || event.kind === 'task_projection'
     ))).toEqual([]);
