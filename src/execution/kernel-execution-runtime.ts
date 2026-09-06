@@ -1444,6 +1444,10 @@ export class KernelExecutionRuntime {
       ) {
         this.deps.subtaskRepo.updateStatus(action.subtaskId, 'blocked', { error: decision.reason });
       }
+      // Result-first gate model: a blocked task with a safe result still
+      // delivers that result to the user (marked as unverified) — content
+      // checks hold downstream flow, never user delivery.
+      this.deliverSafeResultOnBlock(action.taskId, decision.reason);
       await this.blockTask(action.taskId, decision.reason, input.finishExecution);
       this.appendExecutionTrace({
         phase: 'verification',
@@ -2772,6 +2776,34 @@ export class KernelExecutionRuntime {
     await this.deps.cancellationCoordinator.recover(task.id);
     this.deps.cancellationCoordinator.settlePartialCancellation(task.id);
     return applied;
+  }
+
+  private deliverSafeResultOnBlock(taskId: string, reason: string): void {
+    try {
+      const receipts = this.deps.attemptReceiptRepo.listByTask(taskId);
+      const safe = receipts
+        .map(receipt => (receipt.parsing?.resultObjects as { safeProjectionId?: string | null } | undefined)?.safeProjectionId)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+        .at(-1);
+      if (!safe) return;
+      const object = this.deps.resultObjectRepo?.findObject(safe);
+      if (!object || object.completeness === 'incomplete' || object.byteLength === 0) return;
+      const content = this.deps.resultObjectRepo?.readRange(safe, 0, object.byteLength)?.content ?? '';
+      if (!content.trim()) return;
+      this.deps.callbacks.recordResultDelivery({
+        resultId: safe,
+        content,
+        completeness: 'partial',
+        certification: 'uncertified',
+      });
+      this.deps.callbacks.appendOutput(
+        content,
+        '',
+        `⚠️ 未通过内容校验（${reason}），结果已交付供人工判断；任务保持阻塞，不向下游流转。`,
+      );
+    } catch {
+      // Delivery-on-block is best-effort and must never mask the block itself.
+    }
   }
 
   private async blockTask(

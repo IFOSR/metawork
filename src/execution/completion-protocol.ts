@@ -2,8 +2,10 @@ import {
   closeSync,
   existsSync,
   openSync,
+  readFileSync,
   readSync,
   realpathSync,
+  statSync,
 } from 'node:fs';
 import { extname, resolve, sep } from 'node:path';
 import { z } from 'zod';
@@ -35,7 +37,7 @@ const CompletedEnvelopeSchema = z.object({
   subtaskId: z.string(),
   acceptanceEvidence: z.array(z.object({
     key: z.string(),
-    evidence: z.array(z.string()),
+    evidence: z.array(z.union([z.string(), z.record(z.string(), z.unknown())])),
   }).strict()),
   artifacts: z.array(z.string()),
   handoffs: z.array(z.object({
@@ -51,8 +53,15 @@ const FailedEnvelopeSchema = z.object({
 }).strict();
 const CompletionEnvelopeSchema = z.discriminatedUnion('status', [CompletedEnvelopeSchema, FailedEnvelopeSchema]);
 const CompletedReportSchema = z.object({
-  evidence: z.array(z.string().trim().min(1)).min(1),
+  // Evidence items may be plain strings or structured citations (kind/
+  // description/retrievedAt) — both are valid model output shapes.
+  evidence: z.array(z.union([
+    z.string().trim().min(1),
+    z.record(z.string(), z.unknown()),
+  ])),
   noChangeReason: z.string().trim().min(1).nullable(),
+  /** Explicit body channel: a report file this attempt wrote to the output area. */
+  reportPath: z.string().trim().min(1).max(500).nullable().optional(),
 }).strict();
 const FailedReportSchema = z.object({ failure: FailureSchema }).strict();
 const CompletionReportSchema = z.union([CompletedReportSchema, FailedReportSchema]);
@@ -141,6 +150,78 @@ type ParsedCompletionReportResult =
   | Extract<CompletionProtocolResult, { ok: false }>;
 type CompletionProtocolFailure = Extract<CompletionProtocolResult, { ok: false }>;
 
+/**
+ * Content-level violations hold certification (downstream does not consume an
+ * unverified result) while the user still receives the deliverable.
+ * Everything else — marker/report shape, evidence shape, budgets, delta
+ * trivia — is format: recorded as warnings, never gates anything.
+ */
+const CONTENT_VIOLATION_CODES = new Set<CompletionContractErrorCode>([
+  'completion_subtask_mismatch',
+  'completion_acceptance_mismatch',
+]);
+
+function isContentViolation(violation: CompletionContractViolation): boolean {
+  return CONTENT_VIOLATION_CODES.has(violation.code);
+}
+
+const COMPLETION_BODY_VIOLATION_PATH = 'body';
+const EMPTY_BODY_MESSAGE = 'completion body is empty; provide Markdown before the marker or declare reportPath in the trailer';
+const MAX_REPORT_PATH_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Deterministic body resolution (contract v4):
+ * 1. Markdown before the marker wins.
+ * 2. Otherwise the trailer's reportPath — a file this attempt produced in
+ *    the output area (proved by the workspace delta) — is the body.
+ * Everything else is a correctable format violation, never a safety
+ * quarantine.
+ */
+function resolveCompletionBody(
+  body: string,
+  report: { reportPath?: string | null } | { failure: unknown } | null,
+  workspaceRoot: string,
+  delta: WorkspaceDelta | null,
+  violations: CompletionContractViolation[],
+): { body: string; resolved: boolean } {
+  if (body) return { body, resolved: false };
+  const reportPath = report && !('failure' in report) ? (report.reportPath ?? undefined) : undefined;
+  if (!reportPath) return { body, resolved: false };
+  const produced = delta?.changed.some(entry => entry.path === reportPath && entry.afterHash !== null);
+  if (!produced) {
+    violations.push(contractViolation(
+      'completion_malformed',
+      'reportPath',
+      'reportPath must reference a file produced or changed by this attempt',
+    ));
+    return { body, resolved: false };
+  }
+  if (!existsSync(workspaceRoot)) {
+    violations.push(contractViolation('completion_malformed', 'reportPath', 'workspace root does not exist'));
+    return { body, resolved: false };
+  }
+  const realRoot = realpathSync(workspaceRoot);
+  const candidate = resolve(workspaceRoot, reportPath);
+  if (!existsSync(candidate) || !isWithin(realRoot, realpathSync(candidate))) {
+    violations.push(contractViolation(
+      'completion_malformed',
+      'reportPath',
+      'reportPath does not exist or escapes the workspace',
+    ));
+    return { body, resolved: false };
+  }
+  const size = statSync(candidate).size;
+  if (size === 0 || size > MAX_REPORT_PATH_BYTES) {
+    violations.push(contractViolation(
+      'completion_malformed',
+      'reportPath',
+      `reportPath file size ${size} is out of bounds`,
+    ));
+    return { body, resolved: false };
+  }
+  return { body: readFileSync(candidate, 'utf8').trim(), resolved: true };
+}
+
 /** Parses, strips and deterministically assesses the v4 completion trailer. */
 export function validateCompletionProtocol(input: {
   rawResponse: string;
@@ -153,11 +234,26 @@ export function validateCompletionProtocol(input: {
   const parsed = parseCompletion(input.rawResponse);
   if (!parsed.ok) return parsed;
 
-  const violations: CompletionContractViolation[] = [...parsed.violations];
-  const { body } = parsed;
-  const metadataViolations = [...parsed.violations];
+  const bodyViolations: CompletionContractViolation[] = [];
+  const resolution = resolveCompletionBody(
+    parsed.body,
+    parsed.report,
+    input.workspaceRoot,
+    parseWorkspaceDelta(input.workspaceDelta),
+    bodyViolations,
+  );
+  const parsedViolations = [
+    ...parsed.violations.filter(violation => !(
+      resolution.resolved && violation.path === COMPLETION_BODY_VIOLATION_PATH
+    )),
+    ...bodyViolations,
+  ];
+
+  const violations: CompletionContractViolation[] = [...parsedViolations];
+  const body = resolution.body;
+  const metadataViolations = [...parsedViolations];
   const safetyViolations: CompletionContractViolation[] = [];
-  const certificationViolations: CompletionContractViolation[] = [...parsed.violations];
+  const certificationViolations: CompletionContractViolation[] = [...parsedViolations];
   const assessmentBase = {
     result: { kind: 'partial' as const },
     deliverability: { status: 'deliverable' as const, violations: [] },
@@ -165,13 +261,26 @@ export function validateCompletionProtocol(input: {
     safety: { status: 'safe' as const, violations: safetyViolations },
   };
   if (!parsed.report) {
+    // Format-only failure (unparseable/absent trailer): the result stays
+    // certified and flows; the trailer is a hint channel, never a gate.
+    // A minimal completed envelope is synthesized from runtime-owned facts
+    // (delta-derived artifacts, graph-edge handoffs upstream).
     return {
       ok: true,
       body,
-      envelope: null,
+      envelope: materializeCompletionEnvelope(
+        { evidence: [], noChangeReason: null },
+        input.subtask,
+        input.outgoingHandoffs,
+        [],
+      ),
       normalizedArtifacts: [],
       warnings: metadataViolations.map(formatViolation),
-      assessment: assessmentBase,
+      assessment: {
+        ...assessmentBase,
+        result: { kind: body ? 'complete' : 'partial' },
+        certification: { status: 'certified', violations: [] },
+      },
     };
   }
   if ('failure' in parsed.report) {
@@ -235,7 +344,6 @@ export function validateCompletionProtocol(input: {
 
   const sortedViolations = violations.sort(compareViolation);
   const safety = sortedViolations.filter(isSafetyViolation);
-  const certification = sortedViolations.filter(item => !isSafetyViolation(item));
   if (safety.length > 0) {
     return {
       ok: false,
@@ -245,62 +353,130 @@ export function validateCompletionProtocol(input: {
       assessment: {
         result: { kind: 'none' },
         deliverability: { status: 'quarantined', violations: safety },
-        certification: { status: 'uncertified', violations: certification },
+        certification: {
+          status: 'uncertified',
+          violations: sortedViolations.filter(item => !isSafetyViolation(item)),
+        },
         safety: { status: 'safety_blocked', violations: safety },
       },
     };
   }
+  // Result-first gate model: format violations are warnings (never gate);
+  // only content-level violations (identity, acceptance) hold certification.
+  const contentViolations = sortedViolations.filter(isContentViolation);
+  const formatViolations = sortedViolations.filter(item => !isContentViolation(item));
   return {
     ok: true,
     body,
     envelope,
     normalizedArtifacts,
-    warnings: certification.map(formatViolation),
+    warnings: sortedViolations.map(formatViolation),
     assessment: {
-      result: { kind: certification.length > 0 ? 'partial' : 'complete' },
+      result: { kind: contentViolations.length > 0 ? 'partial' : 'complete' },
       deliverability: { status: 'deliverable', violations: [] },
       certification: {
-        status: certification.length > 0 ? 'uncertified' : 'certified',
-        violations: certification,
+        status: contentViolations.length > 0 ? 'uncertified' : 'certified',
+        violations: contentViolations,
       },
       safety: { status: 'safe', violations: [] },
     },
   };
 }
 
+const BUNDLED_MARKER_PREFIX = '<!-- metaclaw:completion:v4 ';
+const BUNDLED_MARKER_SUFFIX = ' -->';
+
+/** Extract the first complete JSON object from a trailer region (R1). */
+function extractFirstJsonObject(raw: string): { ok: boolean; value?: unknown; error?: string } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { ok: false, error: 'completion report is empty' };
+  const start = trimmed.indexOf('{');
+  if (start < 0) return { ok: false, error: 'completion report is not strict JSON: no object found' };
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < trimmed.length; index += 1) {
+    const char = trimmed[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') inString = !inString;
+    if (inString) continue;
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        const candidate = trimmed.slice(start, index + 1);
+        try {
+          return { ok: true, value: JSON.parse(candidate) };
+        } catch (error) {
+          return {
+            ok: false,
+            error: `completion report is not strict JSON: ${error instanceof Error ? error.message : String(error)}`,
+          };
+        }
+      }
+    }
+  }
+  return { ok: false, error: 'completion report is not strict JSON: unterminated object' };
+}
+
 function parseCompletion(rawResponse: string): ParsedCompletionReportResult {
   const marker = COMPLETION_MARKER_V4;
-  const markerMatches = [...rawResponse.matchAll(new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))];
-  const markerIndex = markerMatches.length > 0 ? markerMatches[0]!.index! : -1;
-  const body = (markerIndex >= 0 ? rawResponse.slice(0, markerIndex) : rawResponse).trim();
-  if (!body) {
-    return failure('completion_malformed', 'body', 'completion body must be non-empty');
+  const markerPattern = new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+
+  // R1: accept the bundled form `<!-- metaclaw:completion:v4 {...} -->` by
+  // normalizing it to the exact marker + JSON layout before matching.
+  let normalized = rawResponse;
+  let bundledCount = 0;
+  for (let searchFrom = 0; ;) {
+    const bundledIndex = normalized.indexOf(BUNDLED_MARKER_PREFIX, searchFrom);
+    if (bundledIndex < 0) break;
+    const closing = normalized.indexOf(BUNDLED_MARKER_SUFFIX, bundledIndex + BUNDLED_MARKER_PREFIX.length);
+    if (closing < 0) break;
+    const inner = normalized.slice(bundledIndex + BUNDLED_MARKER_PREFIX.length, closing).trim();
+    const whole = normalized.slice(bundledIndex, closing + BUNDLED_MARKER_SUFFIX.length);
+    normalized = normalized.slice(0, bundledIndex) + marker + '\n' + inner + normalized.slice(closing + BUNDLED_MARKER_SUFFIX.length);
+    bundledCount += 1;
+    searchFrom = bundledIndex + marker.length + inner.length + 2;
   }
-  if (markerMatches.length === 0) {
-    return {
-      ok: true,
-      body,
-      report: null,
-      violations: [contractViolation('completion_malformed', 'marker', 'completion marker is missing')],
-    };
-  }
-  const rawReport = rawResponse.slice(markerIndex + marker.length).trimStart();
+
+  const normalizedMatches = bundledCount > 0
+    ? [...normalized.matchAll(markerPattern)]
+    : [...rawResponse.matchAll(markerPattern)];
+
+  const markerIndex = normalizedMatches.length > 0 ? normalizedMatches[0]!.index! : -1;
+  const body = (markerIndex >= 0 ? normalized.slice(0, markerIndex) : normalized).trim();
   const violations: CompletionContractViolation[] = [];
-  if (markerMatches.length !== 1) {
-    violations.push(contractViolation('completion_malformed', 'marker', `expected exactly one final completion marker, received ${markerMatches.length}`));
+  if (!body) {
+    violations.push(contractViolation('completion_malformed', 'body', EMPTY_BODY_MESSAGE));
   }
-  if (!rawReport) {
+  if (normalizedMatches.length === 0) {
+    violations.push(contractViolation('completion_malformed', 'marker', 'completion marker is missing'));
+    return { ok: true, body, report: null, violations };
+  }
+  const rawReport = markerIndex >= 0 ? normalized.slice(markerIndex + marker.length).trimStart() : '';
+  const totalMarkers = bundledCount > 0
+    ? rawResponse.match(new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))?.length ?? 0
+    : normalizedMatches.length;
+  if (totalMarkers !== 1) {
+    violations.push(contractViolation('completion_malformed', 'marker', `expected exactly one final completion marker, received ${totalMarkers + bundledCount}`));
+  }
+  if (!rawReport.trim()) {
     violations.push(contractViolation('completion_malformed', 'report', 'completion report is empty'));
     return { ok: true, body, report: null, violations };
   }
-  let candidate: unknown;
-  try {
-    candidate = JSON.parse(rawReport);
-  } catch (error) {
-    violations.push(contractViolation('completion_malformed', 'report', `completion report is not strict JSON: ${error instanceof Error ? error.message : String(error)}`));
+  const extracted = extractFirstJsonObject(rawReport);
+  if (!extracted.ok) {
+    violations.push(contractViolation('completion_malformed', 'report', extracted.error!));
     return { ok: true, body, report: null, violations };
   }
-  const report = CompletionReportSchema.safeParse(candidate);
+  const report = CompletionReportSchema.safeParse(extracted.value);
   if (!report.success) {
     violations.push(...report.error.issues.map(issue => contractViolation(
       'completion_malformed',
@@ -370,7 +546,10 @@ function validateAcceptance(
     if (actual.has(item.key)) violations.push(contractViolation('completion_acceptance_mismatch', `acceptanceEvidence.${index}.key`, `duplicate acceptance key ${item.key}`));
     actual.add(item.key);
     for (const [evidenceIndex, evidence] of item.evidence.entries()) {
-      if (!evidence.trim()) {
+      const text = typeof evidence === 'string'
+        ? evidence
+        : JSON.stringify(evidence) ?? '';
+      if (!text.trim()) {
         violations.push(contractViolation('completion_acceptance_mismatch', `acceptanceEvidence.${index}.evidence.${evidenceIndex}`, 'evidence must be non-empty'));
       }
     }
@@ -427,26 +606,26 @@ function validateWorkspaceDelivery(
     ));
     return [];
   }
-  if (subtask.deliveryKind === 'report') {
-    // Delivery kind describes the primary result channel, not filesystem
-    // permissions. Research commonly persists intermediate material.
-    validateImageArtifactContract(subtask, [], violations);
-    return [];
+  if (subtask.deliveryKind !== 'report') {
+    if (delta.changed.length === 0 && noChangeReason === null) {
+      violations.push(contractViolation(
+        'completion_no_change_reason_mismatch',
+        'noChangeReason',
+        'edit delivery without workspace changes requires a no-change reason',
+      ));
+    }
+    if (delta.changed.length > 0 && noChangeReason !== null) {
+      violations.push(contractViolation(
+        'completion_no_change_reason_mismatch',
+        'noChangeReason',
+        'edit delivery with workspace changes requires noChangeReason to be null',
+      ));
+    }
   }
-  if (delta.changed.length === 0 && noChangeReason === null) {
-    violations.push(contractViolation(
-      'completion_no_change_reason_mismatch',
-      'noChangeReason',
-      'edit delivery without workspace changes requires a no-change reason',
-    ));
-  }
-  if (delta.changed.length > 0 && noChangeReason !== null) {
-    violations.push(contractViolation(
-      'completion_no_change_reason_mismatch',
-      'noChangeReason',
-      'edit delivery with workspace changes requires noChangeReason to be null',
-    ));
-  }
+
+  // The executor output area is the single source of truth for artifacts —
+  // for every delivery kind, including report. Declarations in the completion
+  // report are optional hints and never gate registration.
 
   if (!existsSync(workspaceRoot)) {
     violations.push(contractViolation('completion_artifact_invalid', 'workspaceRoot', 'workspace root does not exist'));
@@ -554,22 +733,6 @@ function sameSet<T>(left: Set<T>, right: Set<T>): boolean {
 
 function sameMap(left: Map<string, string>, right: Map<string, string>): boolean {
   return left.size === right.size && [...left].every(([key, value]) => right.get(key) === value);
-}
-
-function failure(code: CompletionContractErrorCode, path: string, message: string): CompletionProtocolFailure {
-  const violation = contractViolation(code, path, message);
-  return {
-    ok: false,
-    body: null,
-    envelope: null,
-    violations: [violation],
-    assessment: {
-      result: { kind: 'none' },
-      deliverability: { status: 'quarantined', violations: [violation] },
-      certification: { status: 'uncertified', violations: [violation] },
-      safety: { status: 'safe', violations: [] },
-    },
-  };
 }
 
 function contractViolation(code: CompletionContractErrorCode, path: string, message: string): CompletionContractViolation {

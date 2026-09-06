@@ -60,6 +60,7 @@ export function buildAccountRuntimeExecutionServices(deps: {
   resolveWorkspacePath?: (taskId: string) => Promise<string | null>;
   accountId?: string;
   resultRoot: string;
+  userArtifactPublication?: import('../delivery/user-artifact-publication-service.js').UserArtifactPublicationService | null;
 }): AccountRuntimeExecutionServices {
   const resourceLeaseService = new ResourceLeaseService(new SqliteResourceLeaseRepository(deps.db));
   const dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
@@ -103,6 +104,7 @@ export function buildAccountRuntimeExecutionServices(deps: {
     controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
     accountId: deps.accountId,
     resultRoot: deps.resultRoot,
+    userArtifactPublication: deps.userArtifactPublication ?? null,
   });
 
   return {

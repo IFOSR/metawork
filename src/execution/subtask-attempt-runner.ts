@@ -40,6 +40,7 @@ import type {
 import {
   captureWorkspaceState,
   deriveWorkspaceDelta,
+  parseWorkspaceDelta,
   parseWorkspaceState,
   type WorkspaceDelta,
   type WorkspaceState,
@@ -144,6 +145,14 @@ export interface SubtaskAttemptRunnerDeps {
   controlNetwork: string;
   accountId?: string;
   resultRoot: string;
+  /**
+   * When present, attempt-output files are registered as user-visible
+   * artifacts at landing — independent of the git publication ceremony, so
+   * correction-path completions register too. Dedupe is content-hash based
+   * inside the service, making the publication worker's later registration
+   * a no-op for identical content.
+   */
+  userArtifactPublication?: import('../delivery/user-artifact-publication-service.js').UserArtifactPublicationService | null;
 }
 
 /** Owns one Subtask attempt from claim through immutable terminal persistence. */
@@ -1065,6 +1074,14 @@ export class SubtaskAttemptRunner {
         });
       }
       finalCheckpointReason = 'success';
+      await this.registerAttemptArtifacts({
+        taskId: task.id,
+        generationId: subtask.generationId,
+        subtaskId: subtask.id,
+        publicationId: `publication_${attemptId}`,
+        delta: workspaceDelta,
+        filesPath: workspace?.filesPath ?? null,
+      });
       return {
         outcome: 'completed',
         attemptId,
@@ -1225,11 +1242,16 @@ export class SubtaskAttemptRunner {
       this.deps.subtaskRepo.updateStatus(subtask.id, 'running');
       claim.markRunning();
       const sourceResult = this.readCorrectionSourceResult(source);
+      const sourceDelta = parseWorkspaceDelta(sourceRuntime.workspaceDelta);
       const prompt = buildCorrectionPrompt({
         resultId: sourceResult.safe.resultId,
         contentHash: sourceResult.safe.contentHash,
         byteLength: sourceResult.safe.byteLength,
-        workspaceChanged: sourceRuntime.workspaceDelta?.changed === true,
+        workspaceChanged: Array.isArray(sourceDelta?.changed) && (sourceDelta?.changed?.length ?? 0) > 0,
+        producedFiles: (sourceDelta?.changed ?? [])
+          .filter(entry => entry.afterHash !== null)
+          .map(entry => entry.path),
+        sourceBodyPresent: Boolean(sourceResult.body),
         violations: input.violations,
       });
       const result = await this.deps.executionRuntime.runResponseOnly(
@@ -1273,7 +1295,9 @@ export class SubtaskAttemptRunner {
         rawResponse: `${sourceResult.body}\n\n${correctedMetadata}`,
         subtask,
         outgoingHandoffs,
-        workspaceRoot: fileURLToPath(sourceWorkspace.rootUri),
+        // Delta paths and reportPath are relative to the executor output area
+        // (files/), not the workspace root.
+        workspaceRoot: join(fileURLToPath(sourceWorkspace.rootUri), 'files'),
         workspaceDelta: sourceRuntime.workspaceDelta,
         incomingUsageByTarget: new Map(outgoingHandoffs.map(contract => [
           contract.toSubtaskId,
@@ -1299,6 +1323,35 @@ export class SubtaskAttemptRunner {
         safeProjectionId: sourceResult.safe.resultId,
       };
       const safeBody = sourceResult.body;
+      // When the source body is empty and the corrected trailer declares
+      // reportPath, the validated workspace file is the authoritative body;
+      // persist fresh result objects so downstream references never resolve
+      // to an empty result.
+      let activeResultObjects: {
+        rawOutputId: string;
+        businessResultId: string;
+        safeProjectionId: string;
+      } = resultObjects;
+      let landedBody = safeBody;
+      if (!safeBody && completion.ok && completion.body) {
+        const resolved = this.persistAttemptResults({
+          attemptId: input.attemptId,
+          taskId: task.id,
+          generationId: subtask.generationId,
+          subtaskId: subtask.id,
+          rawResponse: result.output,
+          body: completion.body,
+          completeness: 'complete',
+        });
+        if (resolved.businessResultId && resolved.safeProjectionId) {
+          activeResultObjects = {
+            rawOutputId: resolved.rawOutputId,
+            businessResultId: resolved.businessResultId,
+            safeProjectionId: resolved.safeProjectionId,
+          };
+          landedBody = completion.body;
+        }
+      }
       if (!completion.ok) {
         const detail = completion.violations.map(item => `${item.code}:${item.path}:${item.message}`).join('; ');
         const contractOutcome = this.landContractFailure({
@@ -1375,14 +1428,14 @@ export class SubtaskAttemptRunner {
           attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName, startedAt,
           terminalState: 'completed', rawResponse: result.output, completionSchemaVersion: 4, warnings: completion.warnings,
-          resultObjects,
+          resultObjects: activeResultObjects,
           assessment: completion.assessment,
           completionContract: input.completionContract,
         }, completedAt),
         expectedSubtaskStatus: 'running',
         nextSubtaskStatus: 'done',
         subtaskError: null,
-        subtaskResult: safeBody ?? '',
+        subtaskResult: landedBody ?? '',
         subtaskArtifacts: completion.normalizedArtifacts,
         subtaskVerification: {
           warnings: completion.warnings,
@@ -1416,11 +1469,19 @@ export class SubtaskAttemptRunner {
           reason: 'Cancellation fence won before correction terminal landing',
         };
       }
+      await this.registerAttemptArtifacts({
+        taskId: task.id,
+        generationId: subtask.generationId,
+        subtaskId: subtask.id,
+        publicationId: null,
+        delta: parseWorkspaceDelta(sourceRuntime.workspaceDelta),
+        filesPath: sourceWorkspace ? join(fileURLToPath(sourceWorkspace.rootUri), 'files') : null,
+      });
       return {
-        outcome: 'completed', attemptId: input.attemptId, output: safeBody ?? '',
+        outcome: 'completed', attemptId: input.attemptId, output: landedBody ?? '',
         artifacts: completion.normalizedArtifacts, warnings: completion.warnings,
         executorName: agentClassName, durationMs: result.durationMs,
-        resultId: sourceResult.safe.resultId,
+        resultId: activeResultObjects.safeProjectionId,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1565,6 +1626,50 @@ export class SubtaskAttemptRunner {
       certification: input.assessment.certification.status,
       safety: input.assessment.safety.status,
     };
+  }
+
+  /**
+   * Register attempt-output files as user-visible artifacts straight from the
+   * executor output area — independent of the git publication ceremony, so
+   * correction-path completions register too. Failure-isolated by design.
+   */
+  private async registerAttemptArtifacts(input: {
+    taskId: string;
+    generationId: string;
+    subtaskId: string;
+    publicationId: string | null;
+    delta: WorkspaceDelta | null;
+    filesPath: string | null;
+  }): Promise<void> {
+    const service = this.deps.userArtifactPublication;
+    if (!service || !input.delta || !input.filesPath) return;
+    const sources = input.delta.changed
+      .filter(entry => entry.afterHash !== null)
+      .map(entry => ({ sourceRelativePath: entry.path }));
+    if (sources.length === 0) return;
+    try {
+      const task = this.deps.taskRuntimeService.findTask(input.taskId);
+      const outcome = await service.publishIntegratedArtifacts({
+        sessionId: this.sessionId,
+        accountId: this.deps.accountId ?? 'local-default',
+        taskId: input.taskId,
+        taskTitle: task?.title ?? input.taskId,
+        generationId: input.generationId,
+        subtaskId: input.subtaskId,
+        publicationId: input.publicationId,
+        integratedWorkspaceRoot: input.filesPath,
+        sources,
+      });
+      for (const failure of outcome.failures) {
+        console.warn(
+          `attempt artifact registration skipped ${failure.sourceRelativePath}: ${failure.reason}`,
+        );
+      }
+    } catch (error) {
+      console.warn(
+        `attempt artifact registration failed for ${input.subtaskId}: ${(error as Error).message}`,
+      );
+    }
   }
 
   private persistAttemptResults(input: {
@@ -1905,6 +2010,8 @@ function buildCorrectionPrompt(input: {
   contentHash: string;
   byteLength: number;
   workspaceChanged: boolean;
+  producedFiles: string[];
+  sourceBodyPresent: boolean;
   violations: CompletionContractViolation[];
 }): string {
   const guidance = [...new Set(input.violations.map(violation => correctionGuidance(violation.code)))];
@@ -1915,8 +2022,12 @@ function buildCorrectionPrompt(input: {
     `Immutable result hash: ${input.contentHash}`,
     `Immutable result bytes: ${input.byteLength}`,
     `Workspace changed: ${String(input.workspaceChanged)}`,
+    `Source body present: ${String(input.sourceBodyPresent)}`,
+    ...(input.producedFiles.length > 0
+      ? [`Files produced by the source attempt (reportPath must be one of these when the body is empty): ${input.producedFiles.map(file => `"${file}"`).join(', ')}`]
+      : ['The source attempt produced no workspace files; omit reportPath.']),
     `Trailer marker: ${COMPLETION_MARKER_V4}`,
-    'Successful report schema: {"evidence":["<evidence>"],"noChangeReason":null}',
+    'Successful report schema: {"evidence":["<evidence>"],"noChangeReason":null,"reportPath":"<optional: workspace file that is the authoritative body when the body is empty>"}',
     'Failure report schema: {"failure":{"kind":"task_failed","code":"<stable_code>","summary":"<concise explanation>"}}',
     'Do not return schema/status identity, Task/Subtask/attempt/WorkUnit IDs, acceptance keys, or handoff identities. Runtime owns and injects them.',
     `Validation guidance:\n${guidance.map(item => `- ${item}`).join('\n')}`,
@@ -1933,6 +2044,8 @@ function correctionGuidance(code: CompletionContractViolation['code']): string {
       return 'This is a historical validation code. New attempts allow Workspace changes for report delivery.';
     case 'completion_workspace_delta_uncertain':
       return 'The workspace delta is not authoritative and cannot be repaired in the response; return a structured failure.';
+    case 'completion_malformed':
+      return 'If the body was empty, declare reportPath in the trailer pointing to the report file this attempt wrote to the output area; otherwise return exactly one strict identity-free trailer matching the schemas above.';
     case 'completion_budget_exceeded':
       return 'Return valid metadata without changing or shortening the original business result.';
     default:

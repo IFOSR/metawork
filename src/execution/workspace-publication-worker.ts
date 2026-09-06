@@ -491,62 +491,29 @@ export class WorkspacePublicationWorker {
               `safe projection is required for handoff publication: ${publication.sourceAttemptId}`,
             );
           }
-          const summary = handoff.items.map(item => (
-            item.type === 'text'
-              ? { key: item.key, type: item.type, summary: `Authorized upstream result for ${item.key}` }
-              : { key: item.key, type: item.type, paths: item.paths }
-          ));
-          const summaryHash = `sha256:${createHash('sha256')
-            .update(JSON.stringify(summary))
-            .digest('hex')}`;
-          const referenceId = resultReferenceId({
-            accountId: this.deps.accountId ?? 'local-default',
-            taskId: publication.taskId,
-            generationId: publication.generationId,
-            sourceSubtaskId: publication.subtaskId,
-            targetSubtaskId: handoff.toSubtaskId,
-            attemptId: publication.sourceAttemptId,
-            resultId: safeProjection.resultId,
-          });
-          const reference = this.results.createReference({
-            referenceId,
-            resultId: safeProjection.resultId,
-            accountId: this.deps.accountId ?? 'local-default',
-            taskId: publication.taskId,
-            generationId: publication.generationId,
-            sourceSubtaskId: publication.subtaskId,
-            targetSubtaskId: handoff.toSubtaskId,
-            edgeKey: `${publication.subtaskId}->${handoff.toSubtaskId}`,
-            requiredItems: handoff.items.map(item => item.key),
-            readScope: {
-              kind: 'direct_dependency',
-              offset: 0,
-              length: safeProjection.byteLength,
-              summaryHash,
-            },
-            createdAt: now,
-          });
-          const items: PersistedSubtaskHandoffItem[] = handoff.items.map(item => (
-            item.type === 'text'
-              ? {
-                  key: item.key,
-                  type: 'result_reference',
-                  referenceId,
-                  summary: `Authorized upstream result for ${item.key}`,
-                }
-              : { key: item.key, type: 'artifact', paths: [...item.paths] }
-          ));
-          this.handoffs.insert({
-            taskId: publication.taskId,
-            fromSubtaskId: publication.subtaskId,
-            toSubtaskId: handoff.toSubtaskId,
-            attemptId: publication.sourceAttemptId,
-            items,
-            resultReference: reference,
-            completionSchemaVersion: publication.originalCompletion.completionSchemaVersion,
-            createdAt: now,
-          });
+          this.insertEdgeHandoff(
+            publication,
+            handoff.toSubtaskId,
+            handoff.items.map(item => item.key),
+            handoff.items.map(item => (
+              item.type === 'text'
+                ? { key: item.key, type: 'text' as const, summary: `Authorized upstream result for ${item.key}` }
+                : { key: item.key, type: item.type, paths: item.paths }
+            )),
+            handoff.items.map(item => (
+              item.type === 'text'
+                ? null
+                : { key: item.key, type: 'artifact' as const, paths: [...item.paths] }
+            )),
+            safeProjection,
+            now,
+          );
         }
+        // Declaration-independent materialization: the Work Graph edge itself
+        // is the handoff authorization. Any outgoing edge left without a
+        // handoff row (undeclared by the executor) is materialized from the
+        // source's safe projection instead of hard-blocking downstream.
+        this.materializeEdgeHandoffs(publication, safeProjection, now);
         this.deps.subtaskRepo.updateStatus(publication.subtaskId, 'done', {
           result: publication.originalCompletion.body,
           artifacts: publication.originalCompletion.artifacts,
@@ -659,6 +626,104 @@ export class WorkspacePublicationWorker {
     for (const publication of publications) {
       await this.publishUserArtifacts(publication, integrationWorkspace);
     }
+  }
+
+  /**
+   * Materialize handoff rows for every outgoing Work Graph edge that has
+   * none. The edge is the authorization; the executor's completion envelope
+   * is only an optional metadata channel and never gates data flow.
+   */
+  private materializeEdgeHandoffs(
+    publication: WorkspacePublicationRecord,
+    safeProjection: { resultId: string; byteLength: number } | null,
+    now: string,
+  ): void {
+    if (!safeProjection) return;
+    const outgoing = this.deps.subtaskRepo.listByTask(publication.taskId)
+      .flatMap(subtask => subtask.dependencies
+        .filter(dependency => dependency.fromSubtaskId === publication.subtaskId)
+        .map(dependency => ({ toSubtaskId: subtask.id, requiredItems: dependency.requiredItems })));
+    if (outgoing.length === 0) return;
+    const existing = new Set(
+      this.handoffs.listByTask(publication.taskId)
+        .filter(handoff => handoff.fromSubtaskId === publication.subtaskId)
+        .map(handoff => handoff.toSubtaskId),
+    );
+    for (const edge of outgoing) {
+      if (existing.has(edge.toSubtaskId)) continue;
+      const keys = edge.requiredItems.length > 0
+        ? edge.requiredItems.map(item => item.key)
+        : ['result'];
+      this.insertEdgeHandoff(
+        publication,
+        edge.toSubtaskId,
+        keys,
+        keys.map(key => ({ key, type: 'text' as const, summary: `Authorized upstream result for ${key}` })),
+        keys.map(() => null),
+        safeProjection,
+        now,
+      );
+    }
+  }
+
+  private insertEdgeHandoff(
+    publication: WorkspacePublicationRecord,
+    toSubtaskId: string,
+    requiredKeys: string[],
+    summaryItems: Array<{ key: string; type: string; summary?: string; paths?: string[] }>,
+    artifactItems: Array<{ key: string; type: 'artifact'; paths: string[] } | null>,
+    safeProjection: { resultId: string; byteLength: number },
+    now: string,
+  ): void {
+    const summaryHash = `sha256:${createHash('sha256')
+      .update(JSON.stringify(summaryItems))
+      .digest('hex')}`;
+    const referenceId = resultReferenceId({
+      accountId: this.deps.accountId ?? 'local-default',
+      taskId: publication.taskId,
+      generationId: publication.generationId,
+      sourceSubtaskId: publication.subtaskId,
+      targetSubtaskId: toSubtaskId,
+      attemptId: publication.sourceAttemptId,
+      resultId: safeProjection.resultId,
+    });
+    const reference = this.results.createReference({
+      referenceId,
+      resultId: safeProjection.resultId,
+      accountId: this.deps.accountId ?? 'local-default',
+      taskId: publication.taskId,
+      generationId: publication.generationId,
+      sourceSubtaskId: publication.subtaskId,
+      targetSubtaskId: toSubtaskId,
+      edgeKey: `${publication.subtaskId}->${toSubtaskId}`,
+      requiredItems: requiredKeys,
+      readScope: {
+        kind: 'direct_dependency',
+        offset: 0,
+        length: safeProjection.byteLength,
+        summaryHash,
+      },
+      createdAt: now,
+    });
+    const items: PersistedSubtaskHandoffItem[] = summaryItems.map((item, index) => {
+      const artifact = artifactItems[index] ?? null;
+      return artifact ?? {
+        key: item.key,
+        type: 'result_reference' as const,
+        referenceId,
+        summary: item.summary ?? `Authorized upstream result for ${item.key}`,
+      };
+    });
+    this.handoffs.insert({
+      taskId: publication.taskId,
+      fromSubtaskId: publication.subtaskId,
+      toSubtaskId,
+      attemptId: publication.sourceAttemptId,
+      items,
+      resultReference: reference,
+      completionSchemaVersion: publication.originalCompletion.completionSchemaVersion,
+      createdAt: now,
+    });
   }
 
   private artifactSources(

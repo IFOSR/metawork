@@ -92,3 +92,39 @@ metadata deterministically, preserve the raw audit reference, and mark audit
 metadata incomplete. Workspace/path containment and authorization remain
 fail-closed; uncertain workspace delta blocks file publication only when a safe
 text result can still be independently delivered.
+
+### Declaration-independent materialization amendment (2026-09-05)
+
+The Work Graph edge is the handoff authorization, and the executor output
+area is the artifact authority. The completion envelope's `handoffs` and
+`artifacts` declarations are optional metadata channels only; they no longer
+gate data flow or artifact registration.
+
+- At publication integration, Runtime materializes a default
+  `result_reference` handoff row for every outgoing edge that has none,
+  backed by the source attempt's safe projection. Edges without any result
+  object still block terminally (`missing_handoff`), preserving the
+  fail-closed posture for genuinely absent results. This removes the
+  `missing_handoff`/`identity_mismatch` bug class for undeclared envelopes.
+- `deliveryKind: report` no longer empties the artifact list: new files in
+  the executor output area register as artifacts for every delivery kind.
+  Deleted paths (`afterHash: null`) never register, and workspace
+  containment/existence validation remains fail-closed.
+- User decision (2026-09-05): declarations are not a second source of truth;
+  Runtime-owned facts (workspace delta, graph edges, result objects) are the
+  only authority.
+
+### Completion body channel amendment (2026-09-05, night)
+
+The completion body has exactly two deterministic channels, resolved in this
+order: (1) non-empty Markdown before the single completion marker; (2) the
+trailer's `reportPath` field referencing a file the attempt produced in the
+output area (proved by the workspace delta; containment, existence and size
+validated fail-closed). An empty body without a valid `reportPath` is a
+**correctable** format violation routed to the response-only correction loop
+(which can declare `reportPath` without re-executing); it is no longer
+quarantined — quarantine remains reserved for safety violations. When a
+correction resolves the body via `reportPath`, Runtime persists fresh
+business/safe result objects so downstream references never resolve to an
+empty result. The contract forbids splitting body and marker across messages;
+the final response must be self-contained.

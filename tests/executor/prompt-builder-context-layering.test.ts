@@ -39,6 +39,12 @@ function input(): ExecutorInput {
 }
 
 describe('Subtask execution prompt layering', () => {
+  it('mandates web_search as the primary web channel with bash curl only as fallback', () => {
+    const prompt = buildExecutorContextPrompt(input());
+    expect(prompt).toContain('web_search');
+    expect(prompt).toMatch(/web_search[\s\S]{0,240}(网络不可用|fall ?back)/i);
+  });
+
   it('marks the Task goal background-only and the Subtask goal operative', () => {
     const prompt = buildExecutorContextPrompt(input());
     expect(prompt).toContain('Background goal: Top-level goal');

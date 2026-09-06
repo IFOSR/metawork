@@ -79,6 +79,13 @@ function node(
 }
 
 function setup(rawResponse: string) {
+  const artifactPublicationStub = {
+    publishIntegratedArtifacts: vi.fn().mockResolvedValue({
+      projections: [],
+      taskDirectory: '/tmp/artifacts',
+      failures: [],
+    }),
+  };
   const db = new Database(':memory:');
   runMigrations(db);
   db.prepare(`
@@ -170,6 +177,7 @@ function setup(rawResponse: string) {
     resultRoot,
     sourceRoot,
     controlNetwork: 'metaclaw-control',
+    userArtifactPublication: artifactPublicationStub as never,
   });
   const defaultResourceGrant = buildDefaultResourceClaims({
     workspaceId: `workspace-task_phase2-${a.generationId}-${a.id}`,
@@ -257,6 +265,7 @@ function setup(rawResponse: string) {
     a,
     b,
     defaultResourceGrant,
+    artifactPublicationStub,
   };
 }
 
@@ -311,6 +320,46 @@ function validResponse(): string {
 }
 
 describe('SubtaskAttemptRunner', () => {
+  it('completes directly when the body is empty but the report file exists (format never gates)', async () => {
+    // Result-first redesign: an empty trailer body with a produced report
+    // file certifies as a warning; artifacts register; no correction loop.
+    const trailer = `${COMPLETION_MARKER_V4}\n${JSON.stringify({
+      evidence: ['verified'],
+      noChangeReason: null,
+    })}`;
+    const setupResult = setup(trailer);
+    setupResult.executionRuntime.run.mockImplementationOnce(async input => {
+      writeFileSync(
+        join(input.executorInput.executionBinding!.workspacePath, 'report.md'),
+        '# 调研报告\n\n工作区正文',
+      );
+      return {
+        taskId: 'task_phase2',
+        executionId: 'exec_1',
+        status: 'success',
+        executorName: 'codex-cli',
+        output: trailer,
+        error: null,
+        artifacts: [],
+        subtaskResults: [],
+        durationMs: 10,
+      };
+    });
+    const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_primary', executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
+      ...attemptIdentity(), executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+
+    expect(outcome).toMatchObject({ outcome: 'completed' });
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)?.status).toBe('awaiting_integration');
+    expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: 'task_phase2',
+        sources: [expect.objectContaining({ sourceRelativePath: 'report.md' })],
+      }),
+    );
+  });
+
   it('atomically records a candidate receipt without publishing handoffs before integration', async () => {
     const setupResult = setup(validResponse());
     const outcome = await setupResult.runner.run({
@@ -413,16 +462,17 @@ describe('SubtaskAttemptRunner', () => {
       ...attemptIdentity(), executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
     expect(outcome).toMatchObject({
-      outcome: 'contract_failed',
+      // Redesigned gate model: missing metadata is format noise; the result
+      // completes and flows.
+      outcome: 'completed',
       output: 'plain response without envelope',
-      resultId: 'result_attempt_1_safe',
     });
-    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'awaiting_decision', result: '' });
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'awaiting_integration', result: '' });
     expect(setupResult.db.prepare(`
       SELECT terminal_state, raw_response, parsing_json
       FROM executor_attempt_receipts
     `).get()).toMatchObject({
-      terminal_state: 'uncertified_result',
+      terminal_state: 'completed',
       raw_response: '',
       parsing_json: expect.stringContaining('"safeProjectionId":"result_attempt_1_safe"'),
     });
@@ -431,9 +481,9 @@ describe('SubtaskAttemptRunner', () => {
       FROM result_objects
       ORDER BY result_id
     `).all()).toEqual([
-      { result_id: 'result_attempt_1_business', kind: 'business_result', completeness: 'partial' },
-      { result_id: 'result_attempt_1_raw', kind: 'raw_attempt_output', completeness: 'partial' },
-      { result_id: 'result_attempt_1_safe', kind: 'safe_projection', completeness: 'partial' },
+      { result_id: 'result_attempt_1_business', kind: 'business_result', completeness: 'complete' },
+      { result_id: 'result_attempt_1_raw', kind: 'raw_attempt_output', completeness: 'complete' },
+      { result_id: 'result_attempt_1_safe', kind: 'safe_projection', completeness: 'complete' },
     ]);
     expect(setupResult.db.prepare('SELECT COUNT(*) AS count FROM subtask_handoffs').get()).toEqual({ count: 0 });
     expect(setupResult.taskRuntimeService.findTask('task_phase2')).toMatchObject({ status: 'running' });
@@ -445,7 +495,6 @@ describe('SubtaskAttemptRunner', () => {
       WHERE work_unit_id = 'executor-codex' AND event_type IN ('waiting', 'released')
       ORDER BY rowid
     `).all()).toEqual([
-      { event_type: 'waiting', state: 'waiting', attempt_id: outcome.attemptId },
       { event_type: 'released', state: 'idle', attempt_id: outcome.attemptId },
     ]);
   });
@@ -937,44 +986,31 @@ describe('SubtaskAttemptRunner', () => {
     });
   });
 
-  it('validates a continuation against the source attempt chain workspace baseline', async () => {
+  it('completes an edit delivery with workspace changes and registers them', async () => {
+    // Redesigned gate model: a trailer-less edit source completes directly;
+    // the produced file registers as an attempt artifact.
     const setupResult = setup(validResponse());
     setupResult.subtaskRepo.upsert({
       ...setupResult.a,
       deliveryKind: 'edit',
     });
-    setupResult.executionRuntime.run
-      .mockImplementationOnce(async input => {
-        writeFileSync(
-          join(input.executorInput.executionBinding.workspacePath, 'report.html'),
-          '<!doctype html><html><body>complete</body></html>',
-        );
-        return {
-          taskId: 'task_phase2',
-          executionId: 'exec_source',
-          status: 'success',
-          executorName: 'codex-cli',
-          output: 'Report created without a completion marker.',
-          error: null,
-          artifacts: [],
-          subtaskResults: [],
-          durationMs: 10,
-        };
-      })
-      .mockResolvedValueOnce({
+    setupResult.executionRuntime.run.mockImplementationOnce(async input => {
+      writeFileSync(
+        join(input.executorInput.executionBinding.workspacePath, 'report.html'),
+        '<!doctype html><html><body>complete</body></html>',
+      );
+      return {
         taskId: 'task_phase2',
-        executionId: 'exec_continuation',
+        executionId: 'exec_source',
         status: 'success',
         executorName: 'codex-cli',
-        output: `Recovered report verified.\n\n${COMPLETION_MARKER_V4}\n${JSON.stringify({
-          evidence: ['report.html exists and was verified'],
-          noChangeReason: null,
-        })}`,
+        output: 'Report created without a completion marker.',
         error: null,
         artifacts: [],
         subtaskResults: [],
         durationMs: 10,
-      });
+      };
+    });
 
     const source = await setupResult.runner.run({
       attemptId: 'attempt_source_workspace_change',
@@ -985,29 +1021,17 @@ describe('SubtaskAttemptRunner', () => {
       executionMode: 'fresh',
       defaultResourceGrant: setupResult.defaultResourceGrant,
     });
-    expect(source).toMatchObject({ outcome: 'contract_failed' });
-    setupResult.workUnitRepo.updateState('executor-codex', 'idle');
 
-    const recovered = await setupResult.runner.run({
-      attemptId: 'attempt_workspace_continuation',
-      sourceAttemptId: 'attempt_source_workspace_change',
-      attemptKind: 'continuation',
-      recoveryMode: 'recovery_packet',
-      executionId: 'exec_continuation',
-      taskId: 'task_phase2',
-      subtaskId: setupResult.a.id,
-      ...attemptIdentity(),
-      executionMode: 'follow-up',
-      defaultResourceGrant: setupResult.defaultResourceGrant,
-    });
-
-    expect(recovered).toMatchObject({
+    expect(source).toMatchObject({
       outcome: 'completed',
-      output: 'Recovered report verified.',
+      output: 'Report created without a completion marker.',
     });
-    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
-      status: 'awaiting_integration',
-    });
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)?.status).toBe('awaiting_integration');
+    expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sources: [expect.objectContaining({ sourceRelativePath: 'report.html' })],
+      }),
+    );
   });
 
   it('does not start a stale fallback after the Task was cancelled', async () => {
@@ -1033,8 +1057,11 @@ describe('SubtaskAttemptRunner', () => {
       attemptId: 'attempt_primary', executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
       ...attemptIdentity(), executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
-    expect(first.outcome).toBe('contract_failed');
-    if (first.outcome !== 'contract_failed') return;
+    // Redesigned gate model: a trailer-less primary completes. Park the
+    // subtask into awaiting_decision to emulate a content-gated source for
+    // the correction round-trip below.
+    expect(first.outcome).toBe('completed');
+    setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'awaiting_decision', { error: 'content gate fixture' });
     setupResult.workUnitRepo.updateState('executor-codex', 'idle');
     setupResult.executionRuntime.runResponseOnly.mockResolvedValue({
       success: true,
@@ -1049,7 +1076,7 @@ describe('SubtaskAttemptRunner', () => {
     const corrected = await setupResult.runner.runCorrection({
       attemptId: 'attempt_correction', sourceAttemptId: first.attemptId, executionId: 'exec_1',
       taskId: 'task_phase2', subtaskId: setupResult.a.id, ...attemptIdentity(),
-      completionContract: first.completionContract, violations: first.violations,
+      completionContract: { marker: '<!-- metaclaw:completion:v4 -->', schemaVersion: 4 }, violations: [],
     });
 
     expect(corrected).toMatchObject({ outcome: 'completed', output: originalBody });
@@ -1057,7 +1084,9 @@ describe('SubtaskAttemptRunner', () => {
     const correctionPrompt = setupResult.executionRuntime.runResponseOnly.mock.calls[0][1];
     expect(correctionPrompt).not.toContain(originalBody);
     expect(correctionPrompt).not.toContain('REWRITTEN_BODY_MUST_BE_IGNORED');
-    expect(correctionPrompt).toContain('{"evidence":["<evidence>"],"noChangeReason":null}');
+    expect(correctionPrompt).toContain('"evidence":["<evidence>"]');
+    expect(correctionPrompt).toContain('"noChangeReason":null');
+    expect(correctionPrompt).toContain('reportPath');
     expect(correctionPrompt).not.toContain('concise evidence');
     expect(correctionPrompt).not.toContain('Completion contract:');
     expect(correctionPrompt).not.toContain('task_phase2_a');
@@ -1065,7 +1094,7 @@ describe('SubtaskAttemptRunner', () => {
     expect(setupResult.db.prepare(`
       SELECT attempt_id, terminal_state, raw_response FROM executor_attempt_receipts ORDER BY completed_at, attempt_id
     `).all()).toEqual(expect.arrayContaining([
-      { attempt_id: 'attempt_primary', terminal_state: 'uncertified_result', raw_response: '' },
+      { attempt_id: 'attempt_primary', terminal_state: 'completed', raw_response: '' },
       { attempt_id: 'attempt_correction', terminal_state: 'completed', raw_response: '' },
     ]));
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
@@ -1085,7 +1114,7 @@ describe('SubtaskAttemptRunner', () => {
     });
     expect(setupResult.db.prepare(`
       SELECT COUNT(*) AS count FROM workspace_publications
-    `).get()).toEqual({ count: 0 });
+    `).get()).toEqual({ count: 1 });
     expect(setupResult.workflow.findEvent(
       'event_attempt_correction_execution_outcome',
     )).toMatchObject({
@@ -1106,8 +1135,11 @@ describe('SubtaskAttemptRunner', () => {
       executionMode: 'fresh',
       defaultResourceGrant: setupResult.defaultResourceGrant,
     });
-    expect(first.outcome).toBe('contract_failed');
-    if (first.outcome !== 'contract_failed') return;
+    // Redesigned gate model: a trailer-less primary completes. Park the
+    // subtask into awaiting_decision to emulate a content-gated source for
+    // the correction round-trip below.
+    expect(first.outcome).toBe('completed');
+    setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'awaiting_decision', { error: 'content gate fixture' });
     setupResult.workUnitRepo.updateState('executor-codex', 'idle');
 
     const corrected = await setupResult.runner.runCorrection({
@@ -1140,7 +1172,10 @@ describe('SubtaskAttemptRunner', () => {
       executionMode: 'fresh',
       defaultResourceGrant: setupResult.defaultResourceGrant,
     });
-    expect(first.outcome).toBe('contract_failed');
+    // Redesigned gate model: trailer-less source completes; park the subtask
+    // to keep the continuation dispatch authorized.
+    expect(first.outcome).toBe('completed');
+    setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'awaiting_decision', { error: 'gate fixture' });
     setupResult.workUnitRepo.updateState('executor-codex', 'idle');
 
     const continued = await setupResult.runner.run({
@@ -1394,5 +1429,117 @@ describe('SubtaskAttemptRunner', () => {
     expect(outcome).toMatchObject({ outcome: 'completed' });
     expect(permissionResult).toMatchObject({ status: 'granted' });
     expect(permissionResult?.grantId).toMatch(/^permission_grant_/u);
+  });
+});
+
+describe('attempt artifact registration (publication-independent)', () => {
+  it('registers output-area files as artifacts on primary completion', async () => {
+    const setupResult = setup(validResponse());
+    setupResult.executionRuntime.run.mockImplementationOnce(async input => {
+      writeFileSync(
+        join(input.executorInput.executionBinding!.workspacePath, 'report.md'),
+        '# 报告',
+      );
+      return {
+        taskId: 'task_phase2', executionId: 'exec_1', status: 'success', executorName: 'codex-cli',
+        output: validResponse(), error: null, artifacts: [], subtaskResults: [], durationMs: 10,
+      };
+    });
+    const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_artifacts', executionId: 'exec_1', taskId: 'task_phase2',
+      subtaskId: setupResult.a.id, ...attemptIdentity(), executionMode: 'fresh',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+    expect(outcome).toMatchObject({ outcome: 'completed' });
+    expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: 'task_phase2',
+        subtaskId: setupResult.a.id,
+        sources: [expect.objectContaining({ sourceRelativePath: 'report.md' })],
+      }),
+    );
+  });
+
+  it('registers artifacts on the correction path too', async () => {
+    const setupResult = setup(validResponse());
+    // primary fails contract, correction succeeds — registration must still happen
+    setupResult.executionRuntime.run.mockImplementationOnce(async input => {
+      writeFileSync(
+        join(input.executorInput.executionBinding!.workspacePath, 'report.md'),
+        '# 报告',
+      );
+      return {
+        taskId: 'task_phase2', executionId: 'exec_1', status: 'success', executorName: 'codex-cli',
+        output: `正文内容\n\n${COMPLETION_MARKER_V4}\n{"evidence": ["x"], "noChangeReason": null`,
+        error: null, artifacts: [], subtaskResults: [], durationMs: 10,
+      };
+    });
+    const first = await setupResult.runner.run({
+      attemptId: 'attempt_primary', executionId: 'exec_1', taskId: 'task_phase2',
+      subtaskId: setupResult.a.id, ...attemptIdentity(), executionMode: 'fresh',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+    // Redesigned gate model: a trailer-less primary completes. Park the
+    // subtask into awaiting_decision to emulate a content-gated source for
+    // the correction round-trip below.
+    expect(first.outcome).toBe('completed');
+    setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'awaiting_decision', { error: 'content gate fixture' });
+    setupResult.workUnitRepo.updateState('executor-codex', 'idle');
+    setupResult.executionRuntime.runResponseOnly.mockResolvedValue({
+      success: true,
+      output: `${COMPLETION_MARKER_V4}\n${JSON.stringify({ evidence: ['fixed'], noChangeReason: null })}`,
+      exitCode: 0, durationMs: 5,
+    });
+    const corrected = await setupResult.runner.runCorrection({
+      attemptId: 'attempt_correction', sourceAttemptId: first.attemptId, executionId: 'exec_1',
+      taskId: 'task_phase2', subtaskId: setupResult.a.id, ...attemptIdentity(),
+      completionContract: { marker: '<!-- metaclaw:completion:v4 -->', schemaVersion: 4 }, violations: [],
+    });
+    expect(corrected).toMatchObject({ outcome: 'completed' });
+    expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: 'task_phase2',
+        sources: [expect.objectContaining({ sourceRelativePath: 'report.md' })],
+      }),
+    );
+  });
+});
+
+describe('R6 anti-regression invariant: format failures never withhold results', () => {
+  it('delivers the report with every observed production format failure at once', async () => {
+    // Reproduces the meat-plan incident class: bundled marker form, empty
+    // evidence, trailing narration after the trailer. The redesigned gate
+    // model must complete the attempt, register artifacts, and publish.
+    const rawResponse = [
+      '肉制品市场方案正文。',
+      '',
+      '<!-- metaclaw:completion:v4 {"evidence":[],"noChangeReason":null} -->',
+      '以上为最终交付。',
+    ].join('\n');
+    const setupResult = setup(rawResponse);
+    setupResult.executionRuntime.run.mockImplementationOnce(async input => {
+      writeFileSync(
+        join(input.executorInput.executionBinding!.workspacePath, '方案.md'),
+        '# 肉制品市场进入与营销方案',
+      );
+      return {
+        taskId: 'task_phase2', executionId: 'exec_1', status: 'success', executorName: 'codex-cli',
+        output: rawResponse, error: null, artifacts: [], subtaskResults: [], durationMs: 10,
+      };
+    });
+    const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_meat', executionId: 'exec_1', taskId: 'task_phase2',
+      subtaskId: setupResult.a.id, ...attemptIdentity(), executionMode: 'fresh',
+      defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+
+    expect(outcome).toMatchObject({ outcome: 'completed' });
+    expect((outcome as { output?: string }).output).toContain('肉制品市场方案正文');
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)?.status).toBe('awaiting_integration');
+    expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sources: [expect.objectContaining({ sourceRelativePath: '方案.md' })],
+      }),
+    );
   });
 });

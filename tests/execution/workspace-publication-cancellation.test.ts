@@ -706,6 +706,174 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
   });
 });
 
+describe('WorkspacePublicationWorker edge-authoritative handoffs', () => {
+  it('materializes a default result_reference handoff from the graph edge when the completion declares none', async () => {
+    // Declaration-independent materialization: the Work Graph edge itself is
+    // the handoff authorization. The executor's completion envelope no longer
+    // decides whether the downstream subtask can read the upstream result.
+    const resultRoot = mkdtempSync(join(tmpdir(), 'metawork-publication-synth-'));
+    try {
+      const db = new Database(':memory:');
+      db.pragma('foreign_keys = ON');
+      runMigrations(db);
+      const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/publication-synth');
+      const taskRuntime = new TaskRuntimeService({
+        taskEngine,
+        taskRepo: new TaskRepo(db),
+      });
+      const task = taskEngine.create({
+        id: 'task-publication-synth',
+        title: 'Synthesized handoff',
+        goal: 'Materialize edge handoffs without declarations',
+      });
+      taskEngine.transition(task.id, 'ready');
+      taskEngine.transition(task.id, 'running');
+      insertConfigurationRevision(db, configurationRevision);
+      activateGraphRevision(db, task.id, 'generation-synth', configurationRevision);
+      const subtasks = new SubtaskRepo(db);
+      const base = {
+        taskId: task.id,
+        graphRevision: 1,
+        generationId: 'generation-synth',
+        contextRefs: [],
+        requiredCapabilities: ['workspace-engineering'],
+        executorBindings: [publicationBinding],
+        deliveryKind: 'report' as const,
+        acceptance: [],
+        riskLevel: 'low' as const,
+        result: '',
+        artifacts: [],
+        verification: { warnings: [], completionSchemaVersion: null },
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      subtasks.upsert({
+        ...base,
+        id: 'source-synth',
+        title: 'Research',
+        goal: 'Produce the upstream result',
+        status: 'awaiting_integration',
+        dependencies: [],
+      });
+      subtasks.upsert({
+        ...base,
+        id: 'target-synth',
+        title: 'Write report',
+        goal: 'Consume the upstream result',
+        status: 'ready',
+        dependencies: [{
+          fromSubtaskId: 'source-synth',
+          requiredItems: [{ key: 'findings', type: 'text', description: 'Research findings' }],
+        }],
+      });
+      const result = new ResultObjectRepo(db, resultRoot).putObject({
+        resultId: 'result-synth-safe',
+        accountId: 'local-default',
+        taskId: task.id,
+        generationId: 'generation-synth',
+        sourceSubtaskId: 'source-synth',
+        attemptId: 'attempt-synth',
+        kind: 'safe_projection',
+        mediaType: 'text/markdown',
+        content: 'research findings body',
+        completeness: 'complete',
+        retentionClass: 'task',
+      });
+      const publications = new WorkspacePublicationRepo(db);
+      publications.insertCandidate({
+        id: 'publication-synth',
+        taskId: task.id,
+        generationId: 'generation-synth',
+        subtaskId: 'source-synth',
+        sourceAttemptId: 'attempt-synth',
+        agentClassName: 'codex-cli',
+        candidateCommit: 'candidate-commit',
+        completion: {
+          body: 'research findings body',
+          artifacts: [],
+          warnings: [],
+          handoffs: [], // nothing declared — the edge must still materialize
+          completionSchemaVersion: 4,
+        },
+        topologyLayer: 0,
+        firstDispatchOrder: 0,
+        createdAt: now,
+      });
+      const worker = new WorkspacePublicationWorker({
+        db,
+        sessionId: 'session-synth',
+        accountId: 'local-default',
+        resultRoot,
+        sourceRoot: '/tmp/source',
+        workspaceStore: { rootPath: '/tmp/workspace-publication-synth' } as never,
+        workspaceRepository: { findByIdentity: vi.fn().mockReturnValue(null) } as never,
+        subtaskRepo: subtasks,
+        attemptReceiptRepo: {
+          findByAttemptId: vi.fn().mockReturnValue({
+            attemptId: 'attempt-synth',
+            taskId: task.id,
+            subtaskId: 'source-synth',
+            generationId: 'generation-synth',
+            workUnitId: 'work-unit-synth',
+            configurationRevision,
+            authorizedBinding: publicationBinding,
+            bindingFingerprint: 'binding-fingerprint-synth',
+            parsing: {
+              resultObjects: {
+                rawOutputId: 'result-synth-raw',
+                businessResultId: 'result-synth-business',
+                safeProjectionId: result.resultId,
+              },
+            },
+          }),
+        } as never,
+        resourceLeaseService: {
+          claim: vi.fn().mockReturnValue({ type: 'claimed', leases: [] }),
+          release: vi.fn(),
+        } as never,
+        dispatchItemRepo: { listByTask: vi.fn().mockReturnValue([]) } as never,
+        taskRuntimeService: taskRuntime,
+      });
+      Object.defineProperty(worker, 'git', {
+        value: {
+          ensure: vi.fn().mockResolvedValue({ id: 'integration-workspace' }),
+          describeCandidate: vi.fn().mockResolvedValue({ changedPaths: [], filePolicy: {} }),
+          mergeCandidate: vi.fn().mockResolvedValue({
+            type: 'integrated',
+            baseCommit: 'base',
+            oursCommit: 'ours',
+            theirsCommit: 'theirs',
+            integrationCommit: 'integration-commit',
+            filePolicy: {},
+          }),
+        },
+      });
+
+      const outcomes = await worker.drain(task.id, 'generation-synth');
+
+      expect(outcomes).toEqual([expect.objectContaining({ type: 'integrated' })]);
+      const handoff = new SubtaskHandoffRepo(db).listIncoming(task.id, 'target-synth')[0];
+      expect(handoff).toBeDefined();
+      expect(handoff!.resultReference).toMatchObject({
+        resultId: result.resultId,
+        sourceSubtaskId: 'source-synth',
+        targetSubtaskId: 'target-synth',
+        contentHash: result.contentHash,
+        byteLength: result.byteLength,
+      });
+      // The edge's declared needs are all satisfied by the single result reference.
+      expect(handoff!.items).toEqual([expect.objectContaining({
+        key: 'findings',
+        type: 'result_reference',
+        referenceId: handoff!.resultReference!.referenceId,
+      })]);
+    } finally {
+      rmSync(resultRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 const now = '2026-07-28T00:00:00.000Z';
 
 function insertConfigurationRevision(

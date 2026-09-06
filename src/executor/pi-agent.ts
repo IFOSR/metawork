@@ -44,7 +44,7 @@ function htmlDecode(value: string): string {
     .replace(/&#39;/g, "'")
     .replace(/&#x27;/g, "'")
     .replace(/&#x2F;/g, "/")
-    .replace(/&#(\\d+);/g, (_match, code) => String.fromCharCode(Number(code)))
+    .replace(/&#(\d+);/g, (_match, code) => String.fromCharCode(Number(code)))
     .replace(/&#x([0-9a-f]+);/gi, (_match, code) => String.fromCharCode(Number.parseInt(code, 16)));
 }
 
@@ -67,15 +67,15 @@ type SearchResult = {
 
 function parseBing(html: string, limit: number): SearchResult[] {
   const results: SearchResult[] = [];
-  const blockPattern = /<li[^>]+class=["'][^"']*b_algo[^"']*["'][^>]*>([\\s\\S]*?)<\\/li>/gi;
+  const blockPattern = /<li[^>]+class=["'][^"']*b_algo[^"']*["'][^>]*>([\s\S]*?)<\/li>/gi;
   for (const match of html.matchAll(blockPattern)) {
     if (results.length >= limit) break;
     const block = match[1];
-    const result = block.match(/<h2[^>]*>[\\s\\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\\s\\S]*?)<\\/a>/i);
+    const result = block.match(/<h2[^>]*>[\s\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i);
     if (!result) continue;
     const url = htmlDecode(result[1]);
-    if (!/^https?:\\/\\//iu.test(url)) continue;
-    const snippet = block.match(/<p[^>]*>([\\s\\S]*?)<\\/p>/i);
+    if (!/^https?:\/\//iu.test(url)) continue;
+    const snippet = block.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
     results.push({
       title: stripHtml(result[2]),
       url,
@@ -88,11 +88,11 @@ function parseBing(html: string, limit: number): SearchResult[] {
 
 function parseBaidu(html: string, limit: number): SearchResult[] {
   const results: SearchResult[] = [];
-  const blockPattern = /<div[^>]+class=["'][^"']*result[^"']*c-container[^"']*["'][^>]*>([\\s\\S]*?)<h3[^>]*>[\\s\\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\\s\\S]*?)<\\/a>/gi;
+  const blockPattern = /<div[^>]+class=["'][^"']*result[^"']*c-container[^"']*["'][^>]*>([\s\S]*?)<h3[^>]*>[\s\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
   for (const match of html.matchAll(blockPattern)) {
     if (results.length >= limit) break;
     const url = htmlDecode(match[2]);
-    if (!/^https?:\\/\\//iu.test(url)) continue;
+    if (!/^https?:\/\//iu.test(url)) continue;
     results.push({
       title: stripHtml(match[3]),
       url,
@@ -179,9 +179,10 @@ async function searchPublicWeb(query: string, limit: number, signal?: AbortSigna
 const webSearchTool = defineTool({
   name: "web_search",
   label: "Web Search",
-  description: "Search the public web. Uses curl so proxy environment variables such as HTTP_PROXY/HTTPS_PROXY are honored.",
-  promptSnippet: "web_search(query, limit): search the public web and return titles, URLs, and snippets.",
+  description: "首选的 Web 检索通道：托管后端（Bing→百度链）、受控超时、结果缓存、中文优化。一切联网检索必须先用它；仅当它返回“网络不可用”时才允许用 bash 里的 curl/wget 兜底。Proxy environment variables such as HTTP_PROXY/HTTPS_PROXY are honored.",
+  promptSnippet: "web_search(query, limit): search the public web and return titles, URLs, and snippets. 联网检索的首选工具。",
   promptGuidelines: [
+    "web_search 是所有联网检索的首选（managed backends、受控超时、结果缓存）；不要自己用 bash+curl 拼搜索请求，curl 仅作为 web_search 明确不可用时的兜底。",
     "Use web_search for current, online, source-backed, market, company, product, and research tasks.",
     "Use specific queries. Prefer limit 3-10 unless broad coverage is required.",
     "Use web_fetch on important result URLs before making source-backed claims.",

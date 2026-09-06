@@ -129,6 +129,17 @@ export function buildAccountRuntimeComposition(deps: {
     kernelExecutorStatusRepo: repositories.kernelExecutorStatusRepo,
     getConfigurationRevision: deps.getConfigurationRevision,
   });
+  const userArtifactPublication = deps.userWorkspaceRoot || deps.resolveUserWorkspaceRoot
+    ? new UserArtifactPublicationService({
+      ...(deps.userWorkspaceRoot ? { userWorkspaceRoot: deps.userWorkspaceRoot } : {}),
+      ...(deps.resolveUserWorkspaceRoot
+        ? { resolveUserWorkspaceRoot: deps.resolveUserWorkspaceRoot }
+        : {}),
+      accountId: deps.accountId,
+      taskArtifactRepo: new TaskArtifactRepo(deps.db),
+    })
+    : null;
+
   const runtimeExecutionServices = buildAccountRuntimeExecutionServices({
     db: deps.db,
     sessionId: deps.sessionId,
@@ -150,6 +161,7 @@ export function buildAccountRuntimeComposition(deps: {
     workspaceRepository: workspaceServices.workspaceRepository,
     attemptExecutionRepository: workspaceServices.attemptExecutionRepository,
     conversationTaskSchedulerRepo: repositories.conversationTaskSchedulerRepo,
+    ...(userArtifactPublication ? { userArtifactPublication } : {}),
   });
   const plannerModel = deps.stagedConfiguration.snapshot.config.models[
     deps.plannerBinding.modelRef
@@ -172,16 +184,6 @@ export function buildAccountRuntimeComposition(deps: {
   const verificationAndDeliveryService = new VerificationAndDeliveryService();
   // 用户可见 Workspace（进程启动目录）与内部 workspaceStore 是不同依赖；
   // 未提供时（如测试组合）不启用用户产物发布。
-  const userArtifactPublication = deps.userWorkspaceRoot || deps.resolveUserWorkspaceRoot
-    ? new UserArtifactPublicationService({
-      ...(deps.userWorkspaceRoot ? { userWorkspaceRoot: deps.userWorkspaceRoot } : {}),
-      ...(deps.resolveUserWorkspaceRoot
-        ? { resolveUserWorkspaceRoot: deps.resolveUserWorkspaceRoot }
-        : {}),
-      accountId: deps.accountId,
-      taskArtifactRepo: new TaskArtifactRepo(deps.db),
-    })
-    : null;
   const kernelExecutionServices = buildAccountKernelExecutionServices({
     db: deps.db,
     sessionId: deps.sessionId,
@@ -236,6 +238,7 @@ export function buildAccountRuntimeComposition(deps: {
     taskExecutionCallbacks: conversationExecutionBinder.routedTaskCallbacks(),
     sessionKernelCallbacks: conversationExecutionBinder.routedSessionKernelCallbacks(),
     conversationTaskSchedulerRepo: repositories.conversationTaskSchedulerRepo,
+    ...(userArtifactPublication ? { userArtifactPublication } : {}),
   });
   conversationExecutionBinder.bindSharedServices(kernelExecutionServices);
   coordinatorServices.bindKernelExecutionRuntime(kernelExecutionServices.kernelExecutionRuntime);
