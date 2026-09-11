@@ -582,5 +582,29 @@ export const AnyFusionConfigurationV2Schema = z.object({
 }) as z.ZodType<AnyFusionConfigurationV2>;
 
 export function parseAnyFusionConfigurationV2(value: unknown): AnyFusionConfigurationV2 {
-  return AnyFusionConfigurationV2Schema.parse(value);
+  return AnyFusionConfigurationV2Schema.parse(normalizeRetiredRuntimePolicy(value));
+}
+
+function normalizeRetiredRuntimePolicy(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const configuration = value as Record<string, unknown>;
+  const runtimePolicy = configuration.runtimePolicy;
+  if (!runtimePolicy || typeof runtimePolicy !== 'object' || Array.isArray(runtimePolicy)) {
+    return value;
+  }
+  const policy = runtimePolicy as Record<string, unknown>;
+  if (
+    !Object.hasOwn(policy, 'attemptTimeoutMs')
+    || Object.hasOwn(policy, 'executorIdleTimeoutMs')
+  ) {
+    return value;
+  }
+  const { attemptTimeoutMs, ...currentPolicy } = policy;
+  return {
+    ...configuration,
+    runtimePolicy: {
+      ...currentPolicy,
+      executorIdleTimeoutMs: attemptTimeoutMs,
+    },
+  };
 }

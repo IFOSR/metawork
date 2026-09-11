@@ -35,6 +35,8 @@ MetaWork 为 Agent 工作提供统一的商业服务系统，覆盖规划、授�
 - **上下文连续：** Planner 通过持久化的 Pi session 理解“这张图片”“刚才生成的报告”
   等自然表达；MetaWork 的 Context Bridge 提供有界的 Conversation 事实，验证选中的历史
   Artifact，并只向 Executor 物化已授权的输入。
+- **长任务可靠执行：** Executor 没有总体执行时长上限。可选 watchdog 只在 Harness
+  确实处于 idle 时过期；权威 operation 正在执行期间会暂停计时。
 - **显式恢复：** retry、fallback、continuation、merge repair、cancel 和 resume
   都由 ControlKernel 决策。
 
@@ -132,10 +134,12 @@ export METAWORK_PROVIDER_REGION='international'
 <details>
 <summary>发布预构建产物（维护者）</summary>
 
-`node scripts/package-release.mjs` 将构建好的 Runtime 与内嵌 Planner 打包为按平台
-区分的 tarball 和 Ed25519 签名 manifest，供 `scripts/install.sh` 消费。签名密钥通过
-`--signing-key` 或 `METAWORK_RELEASE_SIGNING_KEY` 提供；`--generate-dev-key` 仅限本地
-测试。打包前请使用仅含生产依赖的目录（`npm ci --omit=dev`）。
+`node scripts/package-release.mjs` 将构建好的 Runtime、`web/dist`、Runtime 依赖和
+内嵌 Planner 打包为按平台区分的 tarball 和 Ed25519 签名 manifest，供
+`scripts/install.sh` 消费。签名密钥通过 `--signing-key` 或
+`METAWORK_RELEASE_SIGNING_KEY` 提供；`--generate-dev-key` 仅限本地测试。打包前请
+使用仅含生产依赖的目录（`npm ci --omit=dev`）。Runtime、Web、Planner 或依赖产物
+缺失时，打包命令会直接失败。
 
 </details>
 
@@ -231,6 +235,10 @@ HttpOnly、SameSite=Strict session cookie；SSH、端口转发或手动打开浏
 `--no-open`。Executor 的获批修改发生在托管的 Task/Subtask Git worktree 中，
 并经过 publication gate。
 
+同一个 Conversation 中的每个 Turn 都会保留在页面和持久化 Planner session 中。
+对话页展示完整的有界 Turn 历史；轨迹页默认只展示最新 Turn 对应的 Task。需要查看
+旧任务时，可从对应历史 Turn 的执行卡片打开该任务的精确轨迹。
+
 ### 飞书
 
 把飞书机器人接入同一个 Runtime：
@@ -264,7 +272,12 @@ metawork server start
 
 `metawork server start`、`metawork web` 和飞书 Gateway 都使用同一个已激活的
 `app/current` release。`metawork build` 不启动 Server 或 Client；Server 仍在
-运行时构建会直接失败。
+运行时构建会直接失败。安装、升级或构建完成后需要重启 Server，所有 Client 才会
+使用新激活的 Runtime 和 Web 静态产物。
+
+`runtimePolicy.executorIdleTimeoutMs` 是可选的 Executor watchdog。它表示 idle
+超时，不是 Task 或 attempt 的总体时长限制。已有安装如果使用过旧的
+`attemptTimeoutMs` 字段，读取配置时会自动归一化为新字段。
 
 ### 管理命令
 

@@ -37,6 +37,17 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 
 ### Changed
 
+- Replaced the Executor-wide `attemptTimeoutMs` interpretation with the
+  idle-only `runtimePolicy.executorIdleTimeoutMs` watchdog. Existing persisted
+  configurations using the retired field are normalized during read, while
+  conflicting old/new values fail closed.
+- Kept complete bounded Turn history in the Web Conversation view while
+  scoping the default Trajectory and execution cards to the newest Turn's
+  Task. Late catalog refreshes and stale Conversation reads can no longer
+  erase or overwrite the selected Conversation.
+- Serialized only Web navigation mutations so Workspace or Conversation
+  switching cannot retarget an in-flight message and does not reduce
+  cross-Conversation Task concurrency.
 - Dispatched Executors through Harness Drivers and removed the legacy
   backend-executor-adapter, builtin-executor-catalog, executor-admin-service,
   agent-class-seeder, planner-process-runner, and planner-tui-process modules.

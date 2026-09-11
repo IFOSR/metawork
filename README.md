@@ -44,6 +44,9 @@ executing, recovering, and delivering agent work.
   Context Bridge provides bounded Conversation facts, validates selected
   historical Artifacts, and materializes only authorized inputs for the
   Executor.
+- **Reliable long execution:** Executor work has no overall wall-clock limit.
+  The optional watchdog expires only when the Harness is genuinely idle and is
+  paused while an authoritative operation is active.
 - **Explicit recovery:** retry, fallback, continuation, merge repair,
   cancellation, and resume remain ControlKernel decisions.
 
@@ -150,11 +153,13 @@ export METAWORK_PROVIDER_REGION='international'
 <details>
 <summary>Publishing prebuilt releases (maintainers)</summary>
 
-`node scripts/package-release.mjs` packages the built Runtime and vendored
-Planner into per-platform tarballs plus an Ed25519-signed manifest consumed by
-`scripts/install.sh`. Sign with a release key (`--signing-key` or
-`METAWORK_RELEASE_SIGNING_KEY`); `--generate-dev-key` exists for local testing
-only. Package from a production-only dependency tree (`npm ci --omit=dev`).
+`node scripts/package-release.mjs` packages the built Runtime, `web/dist`,
+Runtime dependencies, and vendored Planner into per-platform tarballs plus an
+Ed25519-signed manifest consumed by `scripts/install.sh`. Sign with a release
+key (`--signing-key` or `METAWORK_RELEASE_SIGNING_KEY`);
+`--generate-dev-key` exists for local testing only. Package from a
+production-only dependency tree (`npm ci --omit=dev`). The packaging command
+fails if the Runtime, Web, Planner, or dependency outputs are missing.
 
 </details>
 
@@ -254,6 +259,12 @@ SameSite=Strict session cookie; use `--no-open` for SSH, port forwarding, or
 manual browser startup. Authorized Executor changes happen in managed
 Task/Subtask Git worktrees and pass through the publication gate.
 
+Every Turn in the selected Conversation remains visible and available to the
+persisted Planner session. The Conversation view keeps the complete bounded
+Turn history, while Trajectory defaults to the newest Turn and shows only that
+Turn's Task. Open an older Turn's execution card to inspect its exact
+historical trajectory.
+
 ### Feishu
 
 Connect a Feishu bot to the same runtime:
@@ -290,7 +301,14 @@ metawork server start
 
 `metawork server start`, `metawork web`, and the Feishu Gateway all use the
 same activated `app/current` release. `metawork build` does not start a Server
-or a Client and refuses to run while Server is active.
+or a Client and refuses to run while Server is active. Restart the Server
+after an install, update, or build so all clients use the newly activated
+Runtime and Web assets.
+
+`runtimePolicy.executorIdleTimeoutMs` is the optional Executor watchdog. It is
+an idle timeout, not a maximum Task or attempt duration. Existing installations
+that used the retired `attemptTimeoutMs` field are normalized to the new name
+when their configuration is read.
 
 ### Management commands
 

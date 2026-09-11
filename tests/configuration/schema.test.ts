@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { AnyFusionConfigurationV2Schema } from '../../src/configuration/schema.js';
+import {
+  AnyFusionConfigurationV2Schema,
+  parseAnyFusionConfigurationV2,
+} from '../../src/configuration/schema.js';
 
 function minimalConfiguration() {
   return {
@@ -196,6 +199,30 @@ describe('AnyFusion configuration schema v2', () => {
       },
     });
     expect(result.success).toBe(true);
+  });
+
+  it('migrates the retired attempt timeout field to the idle-only policy', () => {
+    const result = parseAnyFusionConfigurationV2({
+      ...minimalConfiguration(),
+      runtimePolicy: {
+        attemptTimeoutMs: 60_000,
+      },
+    });
+
+    expect(result.runtimePolicy).toMatchObject({
+      executorIdleTimeoutMs: 60_000,
+    });
+    expect(result.runtimePolicy).not.toHaveProperty('attemptTimeoutMs');
+  });
+
+  it('rejects configurations that specify both timeout field names', () => {
+    expect(() => parseAnyFusionConfigurationV2({
+      ...minimalConfiguration(),
+      runtimePolicy: {
+        attemptTimeoutMs: 60_000,
+        executorIdleTimeoutMs: 120_000,
+      },
+    })).toThrow();
   });
 
   it('rejects invalid parallel scheduling values and inconsistent attempt caps', () => {

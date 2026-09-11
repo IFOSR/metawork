@@ -69,6 +69,34 @@ describe('FileConfigurationRepository', () => {
     })).rejects.toThrow(/already exists/i);
   });
 
+  it('loads legacy idle timeout configuration during an upgrade', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-config-legacy-timeout-'));
+    roots.push(root);
+    const repository = new FileConfigurationRepository(join(root, 'config'));
+    await repository.initialize();
+
+    await repository.writeRevision({
+      revisionId: 'legacy-revision',
+      contentHash: 'legacy-content-hash',
+      files: {
+        'config.yaml': dump({
+          ...config(),
+          runtimePolicy: { attemptTimeoutMs: 60_000 },
+        }, { noRefs: true, sortKeys: true }),
+      },
+    });
+    await repository.activateRevision('legacy-revision', null, 'activation-legacy');
+
+    const snapshot = await repository.getActiveSnapshot();
+
+    expect(snapshot.revisionId).toBe('legacy-revision');
+    expect(snapshot.contentHash).toBe('legacy-content-hash');
+    expect(snapshot.config.runtimePolicy).toMatchObject({
+      executorIdleTimeoutMs: 60_000,
+    });
+    expect(snapshot.config.runtimePolicy).not.toHaveProperty('attemptTimeoutMs');
+  });
+
   it('recovers prepared activation without allowing mixed projections', async () => {
     const root = await mkdtemp(join(tmpdir(), 'anyfusion-config-recovery-'));
     roots.push(root);
