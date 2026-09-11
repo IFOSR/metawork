@@ -86,6 +86,17 @@ if [[ -n "${METAWORK_INSTALL_ROOT:-}" && -n "${ANYFUSION_INSTALL_ROOT:-}" \
 fi
 INSTALL_ROOT="${METAWORK_INSTALL_ROOT:-${ANYFUSION_INSTALL_ROOT:-$HOME/.metawork}}"
 
+# Non-macOS hosts have no Keychain: default to the file-backed secret store so
+# the fresh-install path matches setup.sh (see resolve_product_env there).
+# Mirror the compatibility variable so the installer's own conflict check in
+# resolveProductEnvironment() stays satisfied when only one of the two is set.
+if [ "$(uname -s)" != "Darwin" ]; then
+  if [ -n "${ANYFUSION_SECRET_STORE:-}" ] && [ -z "${METAWORK_SECRET_STORE:-}" ]; then
+    export METAWORK_SECRET_STORE="$ANYFUSION_SECRET_STORE"
+  fi
+  export METAWORK_SECRET_STORE="${METAWORK_SECRET_STORE:-file}"
+fi
+
 uninstall() {
   local bin_dir="$HOME/.local/bin"
   local removed=()
@@ -315,8 +326,10 @@ RELEASE_ID="$(verify_manifest "$MANIFEST_PATH")"
 RUNTIME_URL="$(resolve_artifact_url metawork.url)"
 PLANNER_URL="$(resolve_artifact_url planner.url)"
 echo "Downloading and verifying prebuilt artifacts..."
-curl -fsSL "$RUNTIME_URL" -o "$RUNTIME_ARCHIVE"
-curl -fsSL "$PLANNER_URL" -o "$PLANNER_ARCHIVE"
+echo "  - Runtime (~14MB): $RUNTIME_URL"
+curl -fSL --progress-bar --retry 2 -o "$RUNTIME_ARCHIVE" "$RUNTIME_URL"
+echo "  - Planner (~122MB): $PLANNER_URL"
+curl -fSL --progress-bar --retry 2 -o "$PLANNER_ARCHIVE" "$PLANNER_URL"
 verify_artifact "$MANIFEST_PATH" metawork "$RUNTIME_ARCHIVE"
 verify_artifact "$MANIFEST_PATH" planner "$PLANNER_ARCHIVE"
 
