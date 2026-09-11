@@ -8,7 +8,7 @@ describe('user install script contracts', () => {
   it('verifies the signed manifest and artifacts before extraction or execution', () => {
     const manifestDownload = script.indexOf('curl -fsSL "$MANIFEST_URL"');
     const signatureVerification = script.indexOf('verify_manifest "$MANIFEST_PATH"');
-    const artifactDownload = script.indexOf('curl -fsSL "$RUNTIME_URL"');
+    const artifactDownload = script.indexOf('curl -fSL --progress-bar --retry 2 -o "$RUNTIME_ARCHIVE" "$RUNTIME_URL"');
     const artifactVerification = script.indexOf('verify_artifact "$MANIFEST_PATH"');
     const extraction = script.indexOf('tar -xzf');
     const installerExecution = script.indexOf('dist/install-cli.js');
@@ -42,9 +42,13 @@ describe('user install script contracts', () => {
     expect(script).toContain('exit 0');
   });
 
-  it('reconnects the terminal for the provider wizard under curl | bash', () => {
-    expect(script).toContain('exec < /dev/tty');
+  it('hands the provider wizard the terminal without touching the piped script stdin', () => {
+    // The installer process — not the installing shell — receives /dev/tty:
+    // redirecting bash's own stdin under `curl | bash` makes bash wait for
+    // the next script line on the keyboard and the install hangs silently.
     expect(script).toContain('[ ! -t 0 ]');
+    expect(script).toContain('< /dev/tty');
+    expect(script).not.toContain('exec < /dev/tty');
   });
 
   it('honors MetaWork environment overrides with fail-closed AnyFusion aliases', () => {
