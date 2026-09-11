@@ -357,11 +357,16 @@ else
   echo "Installing MetaWork to $INSTALL_ROOT..."
 fi
 
-# `curl | bash` pipes the script through stdin; reconnect the terminal so the
-# provider setup wizard can read interactive input on fresh installs. Failures
-# (no controlling terminal) fall back to the inherited stdin.
+# `curl | bash` pipes the script through stdin — and bash itself still needs
+# that pipe to read the remaining lines of this script, so the stdin must NOT
+# be redirected here (redirecting it makes bash wait for the next script line
+# on your keyboard and hang silently). Instead, hand the terminal directly to
+# the installer process. If there is no controlling terminal, fall through to
+# the plain exec below, which fails with a clear non-interactive error.
 if [ "$INSTALL_COMMAND" = "install" ] && [ ! -t 0 ] && [ -e /dev/tty ]; then
-  { exec < /dev/tty; } 2>/dev/null || true
+  exec node "$STAGING_DIR/runtime/dist/install-cli.js" "$INSTALL_COMMAND" "$RELEASE_ID" \
+    --source-root "$STAGING_DIR/runtime" \
+    --planner-root "$STAGING_DIR/planner" < /dev/tty
 fi
 
 exec node "$STAGING_DIR/runtime/dist/install-cli.js" "$INSTALL_COMMAND" "$RELEASE_ID" \
