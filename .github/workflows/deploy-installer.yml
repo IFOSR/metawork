@@ -1,0 +1,78 @@
+name: Deploy Release Installer
+
+# Keeps the live one-command installer at
+# https://14.103.216.193/metawork-release/install.sh in sync with
+# scripts/install.sh on main. Releases are packaged manually
+# (scripts/package-release.mjs); run this workflow after publishing a new
+# release, or just push a change to scripts/install.sh and it deploys itself.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - scripts/install.sh
+      - .github/workflows/deploy-installer.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-installer
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Sync install.sh to release server
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Sanity-check installer syntax
+        run: bash -n scripts/install.sh
+
+      - name: Set up SSH key
+        env:
+          DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 600 /dev/null /tmp/deploy_key
+          printf '%s\n' "$DEPLOY_KEY" > /tmp/deploy_key
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -H 14.103.216.193 >> ~/.ssh/known_hosts 2>/dev/null
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Backup previous installer on server
+        run: |
+          ssh -i /tmp/deploy_key -o IdentitiesOnly=yes root@14.103.216.193 \
+            'cp /root/metawork-release/install.sh /root/metawork-release/install.sh.prev'
+
+      - name: Upload installer
+        run: |
+          scp -i /tmp/deploy_key -o IdentitiesOnly=yes \
+            scripts/install.sh root@14.103.216.193:/root/metawork-release/install.sh
+
+      - name: Verify (checksum over SSH + end-to-end fetch)
+        run: |
+          set -euo pipefail
+          local_sum="$(sha256sum scripts/install.sh | awk '{print $1}')"
+          remote_sum="$(ssh -i /tmp/deploy_key -o IdentitiesOnly=yes root@14.103.216.193 \
+            'sha256sum /root/metawork-release/install.sh' | awk '{print $1}')"
+          echo "local=$local_sum remote=$remote_sum"
+          test "$local_sum" = "$remote_sum"
+          if fetched="$(curl -fsSL --retry 3 https://14.103.216.193/metawork-release/install.sh)"; then
+            printf '%s\n' "$fetched" | sha256sum | awk '{print $1}' | grep -qx "$local_sum" || {
+              echo "::error::served installer does not match repository version"; exit 1;
+            }
+            echo "Served installer matches main."
+          else
+            echo "::warning::could not fetch the installer over HTTPS from this runner; SSH checksum verification passed"
+          fi
+
+      - name: Clean up SSH key
+        if: always()
+        run: rm -f /tmp/deploy_key
