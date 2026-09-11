@@ -81,9 +81,18 @@ metawork --help
 ```
 
 一条命令下载并校验已签名的预构建 Runtime 与内嵌 Planner 产物，然后自动进入
-Provider 配置向导。重复执行同一命令会对已有安装原地升级——配置、密钥和任务
-数据全部保留。Windows 用户请使用 WSL2 或 Docker 兼容模式。向导完成后，
-继续阅读[快速开始](#快速开始)。
+Provider 配置向导。Linux 与 WSL2 上安装器会自动选用文件型 SecretStore
+（`METAWORK_SECRET_STORE=file`），无需手动 export。重复执行同一命令会对已有
+安装原地升级——配置、密钥和任务数据全部保留。Windows 用户请使用 WSL2 或
+Docker 兼容模式。向导完成后，继续阅读[快速开始](#快速开始)。
+
+在 IDE 内嵌终端、agent 或 CI 等无法把向导接到键盘的场景，请先下载再用真实
+终端运行（或改用下文的环境变量非交互安装）：
+
+```bash
+curl -fsSL https://14.103.216.193/metawork-release/install.sh -o metawork-install.sh
+bash metawork-install.sh
+```
 
 卸载：
 
@@ -124,7 +133,8 @@ Kimi、Code CLI）或输入任意 OpenAI 兼容地址，确认模型，粘贴 AP
 ```bash
 export METAWORK_PROVIDER_KEY='你的密钥'
 export METAWORK_PROVIDER_URL='https://api.deepseek.com/v1'
-# 可选
+# 可选（Linux/WSL2 会自动选用文件型 SecretStore）
+export METAWORK_SECRET_STORE='file'
 export METAWORK_PROVIDER_MODEL='deepseek-chat'
 export METAWORK_PROVIDER_REGION='international'
 ```

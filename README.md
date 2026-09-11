@@ -94,11 +94,23 @@ metawork --help
 ```
 
 One command downloads the signed, prebuilt Runtime and vendored Planner
-artifacts, verifies them, and launches the provider setup wizard. Re-running
+artifacts, verifies them, and launches the provider setup wizard. On Linux
+and WSL2 the installer automatically selects the file-backed secret store
+(`METAWORK_SECRET_STORE=file`); no manual export is needed. Re-running
 the same command updates an existing installation in place — configuration,
 secrets, and task data are preserved. Windows users: use WSL2 or the Docker
 compatibility path. When the wizard completes, continue with
 [Quick Start](#quick-start).
+
+Running inside an IDE-embedded terminal, an agent, or CI where `curl | bash`
+cannot attach the setup wizard to your keyboard? Download first, then run in
+a real terminal (or set the environment variables below and stay
+non-interactive):
+
+```bash
+curl -fsSL https://14.103.216.193/metawork-release/install.sh -o metawork-install.sh
+bash metawork-install.sh
+```
 
 Uninstall:
 
@@ -143,7 +155,8 @@ Skip the wizard by exporting the provider environment before running
 ```bash
 export METAWORK_PROVIDER_KEY='your-key'
 export METAWORK_PROVIDER_URL='https://api.deepseek.com/v1'
-# Optional
+# Optional (Linux/WSL2 defaults to the file-backed secret store automatically)
+export METAWORK_SECRET_STORE='file'
 export METAWORK_PROVIDER_MODEL='deepseek-chat'
 export METAWORK_PROVIDER_REGION='international'
 ```
