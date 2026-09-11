@@ -97,6 +97,20 @@ describe('ExecutionProjector', () => {
     expect(planning.proposal?.dependencies).toEqual([['sub_1', 'sub_2']]);
   });
 
+  it('projects a blocked Task with a waiting Kernel retry as waiting_retry', () => {
+    const timeline = makeProjector().project(makeTask({
+      status: 'blocked',
+      dependencies: [{
+        taskId: 'task_1',
+        type: 'kernel_retry',
+        description: 'retry scheduled',
+        status: 'waiting',
+      }],
+    }));
+
+    expect(timeline.status).toBe('waiting_retry');
+  });
+
   it('有 decisions 时 authorization done', () => {
     const timeline = makeProjector({
       decisionRepo: {

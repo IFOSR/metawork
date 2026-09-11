@@ -208,6 +208,27 @@ describe('WebConversationProjector', () => {
     expect(persisted).toHaveLength(1);
   });
 
+  it('keeps a retrying execution non-terminal even after a blocked trace was observed', async () => {
+    const { projector, persisted } = makeProjector();
+    projector.beginTurn({ userInput: 'Run the task', outputFrom: 0 });
+    await projector.applyTrace(makeTrace('blocked', [queryEvent, kernelEvent]));
+
+    await projector.applyTimeline({
+      ...timeline,
+      status: 'waiting_retry',
+      stages: timeline.stages.map(stage => (
+        stage.phase === 'execution' ? { ...stage, status: 'running' } : stage
+      )),
+    });
+    await projector.finishSubmission();
+
+    expect(projector.getSnapshot()).toMatchObject({
+      status: 'running',
+      completedAt: null,
+    });
+    expect(persisted).toEqual([]);
+  });
+
   it('preserves a safe visible diagnostic when submission fails', async () => {
     const { projector, persisted } = makeProjector();
     projector.beginTurn({ userInput: 'Fail safely', outputFrom: 0 });

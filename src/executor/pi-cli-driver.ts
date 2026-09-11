@@ -13,6 +13,7 @@ import { RuntimeHomeMaterializer } from './runtime-home-materializer.js';
 import type { ExecutorAffordanceId } from '../routing/types.js';
 import type {
   HarnessDriver,
+  HarnessActivitySignal,
   HarnessLaunchInput,
   HarnessLaunchSpec,
   HarnessProbeResult,
@@ -210,6 +211,27 @@ export class PiCliDriver implements HarnessDriver {
     }
     if (event.type === 'agent_settled') {
       return { kind: 'status', text: 'Executor process settled' };
+    }
+    return null;
+  }
+
+  parseActivityLine(input: HarnessProgressLineInput): HarnessActivitySignal | null {
+    if (input.stream !== 'stdout') return null;
+    const event = parseJsonLine(input.line);
+    if (!event || typeof event.type !== 'string') return null;
+    if (event.type === 'turn_start' || event.type === 'turn_end') {
+      if (typeof event.turnIndex !== 'number') return null;
+      return {
+        type: event.type === 'turn_start' ? 'operation_started' : 'operation_finished',
+        operationId: `pi-turn:${event.turnIndex}`,
+      };
+    }
+    if (event.type === 'tool_execution_start' || event.type === 'tool_execution_end') {
+      if (typeof event.toolCallId !== 'string' || !event.toolCallId.trim()) return null;
+      return {
+        type: event.type === 'tool_execution_start' ? 'operation_started' : 'operation_finished',
+        operationId: `pi-tool:${safeHarnessName(event.toolCallId)}`,
+      };
     }
     return null;
   }

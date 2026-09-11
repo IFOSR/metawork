@@ -402,6 +402,47 @@ describe('PiCliDriver', () => {
     });
   });
 
+  it('classifies Pi turn and tool lifecycle as authoritative active operations', () => {
+    const driver = new PiCliDriver({ probeCommand: vi.fn() });
+
+    expect(driver.parseActivityLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({ type: 'turn_start', turnIndex: 2 }),
+    })).toEqual({
+      type: 'operation_started',
+      operationId: 'pi-turn:2',
+    });
+    expect(driver.parseActivityLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'tool_execution_start',
+        toolCallId: 'tool_1',
+        toolName: 'bash',
+      }),
+    })).toEqual({
+      type: 'operation_started',
+      operationId: 'pi-tool:tool_1',
+    });
+    expect(driver.parseActivityLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'tool_execution_end',
+        toolCallId: 'tool_1',
+        toolName: 'bash',
+      }),
+    })).toEqual({
+      type: 'operation_finished',
+      operationId: 'pi-tool:tool_1',
+    });
+    expect(driver.parseActivityLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({ type: 'turn_end', turnIndex: 2 }),
+    })).toEqual({
+      type: 'operation_finished',
+      operationId: 'pi-turn:2',
+    });
+  });
+
   it('pre-creates an isolated Pi session directory', async () => {
     const root = await mkdtemp(join(tmpdir(), 'anyfusion-pi-driver-'));
     try {

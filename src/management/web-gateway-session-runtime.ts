@@ -24,6 +24,7 @@ import type {
 import type { GatewayAttachmentStore } from '../gateway/attachment-store-port.js';
 import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
 import type { WebLaunchContextInput } from './web-launch-context.js';
+import { turnStatusFromTimeline } from './web-conversation-projector.js';
 
 const MAX_ATTACHMENTS_PER_MESSAGE = 32;
 const MAX_ENRICHMENT_BYTES = 16 * 1024;
@@ -90,6 +91,7 @@ class WebGatewayClientSession {
   private disposed = false;
   private disposePromise: Promise<void> | null = null;
   private activeWorkspaceId: string | null = null;
+  private navigationQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly deps: WebGatewaySessionRuntimeDeps,
@@ -134,7 +136,7 @@ class WebGatewayClientSession {
   }
 
   selectWorkspace(path: string): Promise<WorkspaceInitializationResult> {
-    return this.initializeWorkspace(path);
+    return this.enqueueNavigation(() => this.initializeWorkspace(path));
   }
 
   dispose(): Promise<void> {
@@ -165,8 +167,9 @@ class WebGatewayClientSession {
     text: string,
     attachments: Array<{ attachmentId: string; kind: string }> = [],
   ): Promise<void> {
+    const targetSessionId = this.activeSessionId;
     const requestId = this.id('req');
-    const effectiveText = await this.enrichWithAttachments(text, attachments);
+    const effectiveText = await this.enrichWithAttachments(text, attachments, targetSessionId);
     this.pendingInputs.set(requestId, text);
     const command: GatewayCommand = effectiveText.startsWith('/')
       ? { kind: 'slash_command', text: effectiveText }
@@ -178,7 +181,7 @@ class WebGatewayClientSession {
       connectionId: this.connectionId,
       scope: {
         kind: 'conversation',
-        selection: { mode: 'attach', conversationId: this.activeSessionId },
+        selection: { mode: 'attach', conversationId: targetSessionId },
       },
       command,
       clientCapabilities: ['trace_v1'],
@@ -193,13 +196,14 @@ class WebGatewayClientSession {
   private async enrichWithAttachments(
     text: string,
     attachments: Array<{ attachmentId: string; kind: string }>,
+    sessionId: string,
   ): Promise<string> {
     const store = this.deps.attachments;
     if (!store || attachments.length === 0) return text;
     const sections: string[] = [];
     let budget = MAX_ENRICHMENT_BYTES;
     for (const reference of attachments.slice(0, MAX_ATTACHMENTS_PER_MESSAGE)) {
-      const resolved = await store.readAttachment(this.activeSessionId, reference.attachmentId);
+      const resolved = await store.readAttachment(sessionId, reference.attachmentId);
       if (!resolved) continue;
       const { metadata } = resolved;
       const sizeLabel = formatByteSize(metadata.size);
@@ -245,6 +249,10 @@ class WebGatewayClientSession {
   }
 
   async createSession(): Promise<WebSessionCreationResult> {
+    return this.enqueueNavigation(() => this.createSessionNow());
+  }
+
+  private async createSessionNow(): Promise<WebSessionCreationResult> {
     if (!this.activeWorkspaceId) throw new Error('workspace_required');
     const requestId = this.id('req');
     const receipt = await this.deps.gateway.submit({
@@ -261,7 +269,7 @@ class WebGatewayClientSession {
     }
     const created = await this.deps.catalog.read(receipt.conversationId);
     if (!created) throw new Error('created_conversation_unavailable');
-    const activation = await this.activateSession(created.session.id);
+    const activation = await this.activateSessionNow(created.session.id);
     const workspaceInitialization = { status: 'not_requested' as const };
     return {
       session: await this.readSession(created.session.id)
@@ -272,6 +280,10 @@ class WebGatewayClientSession {
   }
 
   async activateSession(sessionId: string): Promise<WebSessionActivationResult> {
+    return this.enqueueNavigation(() => this.activateSessionNow(sessionId));
+  }
+
+  private async activateSessionNow(sessionId: string): Promise<WebSessionActivationResult> {
     const target = await this.deps.catalog.read(sessionId);
     if (!target || target.session.archived) {
       return { state: 'activation_blocked', sessionId, reason: 'session_unavailable' };
@@ -378,6 +390,10 @@ class WebGatewayClientSession {
         traceCount: turn.traceEvents.length,
         answerLength: turn.finalAnswer?.length ?? 0,
       });
+      const taskId = turn.taskId
+        ?? turn.executionTimeline?.taskId
+        ?? inferTaskId(turn.userInput);
+      const executionTimeline = timelineForTask(turn.executionTimeline, taskId);
       this.turnStates.set(turn.id, {
         id: turn.id,
         sessionId: turn.sessionId,
@@ -385,11 +401,11 @@ class WebGatewayClientSession {
         userInput: turn.userInput,
         status: turn.status,
         finalAnswer: turn.finalAnswer,
-        taskId: turn.taskId ?? inferTaskId(turn.userInput),
+        taskId,
         startedAt: turn.startedAt,
         completedAt: turn.completedAt,
-        traceEvents: structuredClone(turn.traceEvents),
-        executionTimeline: structuredClone(turn.executionTimeline),
+        traceEvents: filterTraceEventsForTask(turn.traceEvents, taskId),
+        executionTimeline: executionTimeline ? structuredClone(executionTimeline) : null,
         interactionKind: turn.interactionKind ?? interactionKindForInput(turn.userInput),
         backgroundWorkPending: false,
         artifacts: structuredClone(turn.artifacts ?? []),
@@ -480,6 +496,7 @@ class WebGatewayClientSession {
       if (state.taskId && state.executionTimeline) {
         this.emit({
           type: 'execution',
+          turnId: state.id,
           taskId: state.taskId,
           timeline: state.executionTimeline,
         });
@@ -509,7 +526,7 @@ class WebGatewayClientSession {
       else this.emit(artifacts);
     }
     const presentationEvent = event.kind === 'trace_delta' && state
-      ? traceEventWithNormalizedPresentation(event, state.traceEvents)
+      ? traceEventWithNormalizedPresentation(event, state)
       : event;
     const resultEvent = this.consumeResultEvent(event);
     if (resultEvent) {
@@ -543,9 +560,9 @@ class WebGatewayClientSession {
     }
     if (event.kind === 'final_answer' && event.requestId) {
       this.pendingInputs.delete(event.requestId);
-      if (!state?.backgroundWorkPending) {
-        void this.persistTerminalTurn(event, mapped?.type === 'final_answer' ? mapped.lines : []);
-      }
+      // Persist a compatibility snapshot even while the public projection is
+      // running, so durable Task facts can rehydrate this exact turn later.
+      void this.persistTerminalTurn(event, mapped?.type === 'final_answer' ? mapped.lines : []);
     }
     if (event.kind === 'terminal_error' && event.requestId) {
       this.pendingInputs.delete(event.requestId);
@@ -601,6 +618,12 @@ class WebGatewayClientSession {
     }
   }
 
+  private enqueueNavigation<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.navigationQueue.then(operation, operation);
+    this.navigationQueue = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
   private async projectMetadata(
     metadata: WebSessionDirectoryMetadata,
   ): Promise<WebSessionDirectoryMetadataProjection>;
@@ -619,7 +642,12 @@ class WebGatewayClientSession {
     };
   }
 
-  private async projectRecord(record: WebSessionRecord): Promise<WebSessionRecordProjection> {
+  private async projectRecord(
+    record: WebSessionRecord | (
+      Omit<WebSessionRecord, 'turns'>
+      & { turns: import('./web-session-types.js').ConversationTurnProjection[] }
+    ),
+  ): Promise<WebSessionRecordProjection> {
     return {
       ...structuredClone(record),
       session: await this.projectMetadata(record.session),
@@ -707,14 +735,33 @@ class WebGatewayClientSession {
       const traceEvents = Array.isArray(payload.events)
         ? payload.events.filter(isInteractionTraceEvent)
         : [];
+      const payloadTaskId = stringValue(payload.taskId);
+      state.taskId ??= payloadTaskId;
       const byId = new Map(state.traceEvents.map(item => [item.id, item]));
+      let foreignEventCount = 0;
       for (const item of traceEvents) {
+        const itemTaskId = traceEventTaskId(item);
+        if (itemTaskId && (!state.taskId || itemTaskId !== state.taskId)) {
+          foreignEventCount += 1;
+          continue;
+        }
         byId.set(item.id, item);
-        state.taskId = item.taskId ?? stringValue(item.details.taskId) ?? state.taskId;
       }
       state.traceEvents = [...byId.values()].sort(compareTraceEvents);
+      const traceMatchesTask = (
+        !payloadTaskId
+        || !state.taskId
+        || payloadTaskId === state.taskId
+      ) && (
+        foreignEventCount === 0
+        || Boolean(payloadTaskId && state.taskId && payloadTaskId === state.taskId)
+      );
       const traceStatus = payload.status;
-      if (isInteractionTraceStatus(traceStatus)) {
+      if (
+        traceMatchesTask
+        && isInteractionTraceStatus(traceStatus)
+        && canAdvanceTurnStatus(state.status, traceStatus)
+      ) {
         state.status = traceStatus;
         state.completedAt = traceStatus === 'running' ? null : event.occurredAt;
       }
@@ -749,10 +796,15 @@ class WebGatewayClientSession {
     const state = this.turnStates.get(event.turnId);
     const taskId = state?.taskId ?? null;
     if (!state || !taskId) return null;
-    const timeline = this.deps.projectExecutionTimeline(taskId);
+    const timeline = timelineForTask(this.deps.projectExecutionTimeline(taskId), taskId);
     if (!timeline) return null;
     state.executionTimeline = structuredClone(timeline);
-    const eventPayload = { type: 'execution', taskId, timeline } as const;
+    const eventPayload = {
+      type: 'execution',
+      turnId: event.turnId,
+      taskId,
+      timeline,
+    } as const;
     return eventPayload;
   }
 
@@ -783,8 +835,9 @@ class WebGatewayClientSession {
       : state.status === 'blocked' ? 'blocked' : 'completed';
     const taskId = state.taskId ?? inferTaskId(state.userInput);
     const executionTimeline = taskId
-      ? this.deps.projectExecutionTimeline?.(taskId) ?? state.executionTimeline
-      : state.executionTimeline;
+      ? timelineForTask(this.deps.projectExecutionTimeline?.(taskId) ?? null, taskId)
+        ?? timelineForTask(state.executionTimeline, taskId)
+      : null;
     const artifacts = taskId
       ? mergeArtifacts(
         state.artifacts,
@@ -818,8 +871,12 @@ class WebGatewayClientSession {
     });
   }
 
-  private enrichRecord(record: WebSessionRecord): WebSessionRecord {
-    const taskIds = record.turns.map(turn => turn.taskId ?? inferTaskId(turn.userInput));
+  private enrichRecord(record: WebSessionRecord) {
+    const taskIds = record.turns.map(turn => (
+      turn.taskId
+      ?? turn.executionTimeline?.taskId
+      ?? inferTaskId(turn.userInput)
+    ));
     const latestTurnByTask = new Map<string, number>();
     taskIds.forEach((taskId, index) => {
       if (taskId) latestTurnByTask.set(taskId, index);
@@ -871,18 +928,28 @@ class WebGatewayClientSession {
     hydrateDurableFacts: boolean,
     timelineByTask: Map<string, ExecutionTimeline | null>,
     artifactsByTask: Map<string, ArtifactProjection[]>,
-  ): ConversationTurn {
-    if (!taskId) return structuredClone(turn);
+  ): import('./web-session-types.js').ConversationTurnProjection {
+    if (!taskId) {
+      return {
+        ...structuredClone(turn),
+        traceEvents: filterTraceEventsForTask(turn.traceEvents, null),
+      };
+    }
     if (!hydrateDurableFacts) {
+      const executionTimeline = timelineForTask(turn.executionTimeline, taskId);
       return {
         ...structuredClone(turn),
         taskId,
+        traceEvents: filterTraceEventsForTask(turn.traceEvents, taskId),
+        executionTimeline: executionTimeline ? structuredClone(executionTimeline) : null,
       };
     }
     if (!timelineByTask.has(taskId)) {
+      const projectedTimeline = this.deps.projectExecutionTimeline?.(taskId) ?? null;
       timelineByTask.set(
         taskId,
-        this.deps.projectExecutionTimeline?.(taskId) ?? turn.executionTimeline,
+        timelineForTask(projectedTimeline, taskId)
+          ?? timelineForTask(turn.executionTimeline, taskId),
       );
     }
     if (!artifactsByTask.has(taskId)) {
@@ -891,16 +958,22 @@ class WebGatewayClientSession {
         this.deps.projectTaskArtifacts?.(taskId) ?? [],
       );
     }
-    const executionTimeline = timelineByTask.get(taskId) ?? turn.executionTimeline;
+    const executionTimeline = timelineByTask.get(taskId) ?? null;
     const projectedArtifacts = artifactsByTask.get(taskId) ?? [];
     const artifacts = mergeArtifacts(turn.artifacts, projectedArtifacts);
     const artifactRefs = [...new Set([
       ...turn.artifactRefs,
       ...artifacts.map(artifact => artifact.relativePath),
     ])];
+    const projectedStatus = executionTimeline
+      ? turnStatusFromTimeline(executionTimeline)
+      : null;
     return {
       ...structuredClone(turn),
+      status: projectedStatus ?? turn.status,
+      completedAt: projectedStatus === 'running' ? null : turn.completedAt,
       taskId,
+      traceEvents: filterTraceEventsForTask(turn.traceEvents, taskId),
       executionTimeline: executionTimeline ? structuredClone(executionTimeline) : null,
       artifactRefs,
       artifacts,
@@ -1104,7 +1177,7 @@ export class WebGatewaySessionRuntime {
 
 function traceEventWithNormalizedPresentation(
   event: GatewayEventEnvelope,
-  normalizedEvents: InteractionTraceEvent[],
+  state: RuntimeTurnState,
 ): GatewayEventEnvelope {
   const payload = asRecord(event.payload);
   const incoming = Array.isArray(payload.events)
@@ -1115,7 +1188,9 @@ function traceEventWithNormalizedPresentation(
     ...event,
     payload: {
       ...payload,
-      events: normalizedEvents.filter(item => ids.has(item.id)),
+      status: state.status,
+      completedAt: state.completedAt,
+      events: state.traceEvents.filter(item => ids.has(item.id)),
     },
   };
 }
@@ -1313,6 +1388,13 @@ function isInteractionTraceStatus(value: unknown): value is InteractionTraceStat
     || value === 'blocked';
 }
 
+function canAdvanceTurnStatus(
+  current: InteractionTraceStatus,
+  incoming: InteractionTraceStatus,
+): boolean {
+  return current === 'running' || incoming !== 'running';
+}
+
 function isInteractionTraceEvent(value: unknown): value is InteractionTraceEvent {
   if (!value || typeof value !== 'object') return false;
   const event = value as Record<string, unknown>;
@@ -1332,6 +1414,29 @@ function compareTraceEvents(
   return left.sequence - right.sequence
     || left.occurredAt.localeCompare(right.occurredAt)
     || left.id.localeCompare(right.id);
+}
+
+function traceEventTaskId(event: InteractionTraceEvent): string | null {
+  return event.taskId ?? stringValue(event.details.taskId);
+}
+
+function filterTraceEventsForTask(
+  events: InteractionTraceEvent[],
+  taskId: string | null,
+): InteractionTraceEvent[] {
+  return events
+    .filter(event => {
+      const eventTaskId = traceEventTaskId(event);
+      return !eventTaskId || eventTaskId === taskId;
+    })
+    .map(event => structuredClone(event));
+}
+
+function timelineForTask(
+  timeline: ExecutionTimeline | null | undefined,
+  taskId: string | null,
+): ExecutionTimeline | null {
+  return timeline && taskId && timeline.taskId === taskId ? timeline : null;
 }
 
 function arrayStringValue(value: unknown): string[] | null {

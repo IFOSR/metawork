@@ -11,6 +11,11 @@ export interface ExecutorHealthBadge {
   label: string;
 }
 
+export type ExecutorActivityState =
+  | 'active_operation'
+  | 'presentation_heartbeat'
+  | 'idle';
+
 const STALE_AFTER_MS = 30_000;
 const LOST_AFTER_MS = 120_000;
 
@@ -18,8 +23,13 @@ export function executorHealthBadge(input: {
   updatedAt: string | null;
   nowMs: number;
   running: boolean;
+  activityState: ExecutorActivityState | null;
 }): ExecutorHealthBadge | null {
-  if (!input.running || input.updatedAt === null) return null;
+  if (
+    !input.running
+    || input.updatedAt === null
+    || input.activityState !== 'idle'
+  ) return null;
   const updatedMs = Date.parse(input.updatedAt);
   if (Number.isNaN(updatedMs)) return null;
   const ageMs = input.nowMs - updatedMs;

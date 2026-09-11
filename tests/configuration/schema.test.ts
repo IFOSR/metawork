@@ -103,7 +103,7 @@ function completeConfiguration() {
     },
     runtimePolicy: {
       maxConcurrentAttempts: 4,
-      attemptTimeoutMs: 600_000,
+      executorIdleTimeoutMs: 600_000,
       probeTimeoutMs: 30_000,
     },
     gateway: {

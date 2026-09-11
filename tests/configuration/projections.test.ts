@@ -4,6 +4,7 @@ import {
   buildPlannerConfigurationView,
   buildRuntimeConfigurationView,
 } from '../../src/configuration/projections.js';
+import { buildApplicationConfig } from '../../src/configuration/application-config-projection.js';
 import { AnyFusionConfigurationV2Schema } from '../../src/configuration/schema.js';
 import type { ConfigurationSnapshot } from '../../src/configuration/types.js';
 
@@ -118,7 +119,7 @@ function snapshot(): ConfigurationSnapshot {
     },
     runtimePolicy: {
       maxConcurrentAttempts: 4,
-      attemptTimeoutMs: 600_000,
+      executorIdleTimeoutMs: 600_000,
       probeTimeoutMs: 30_000,
     },
     gateway: {
@@ -239,6 +240,13 @@ describe('configuration projections', () => {
     expect(Object.isFrozen(view.harnesses)).toBe(true);
   });
 
+  it('projects the Executor idle timeout without an overall duration limit', () => {
+    const config = buildApplicationConfig(snapshot());
+
+    expect(config.executor.timeout).toBe(600);
+    expect(config.executor).not.toHaveProperty('max_duration');
+  });
+
   it('projects auto modelPolicy candidates in order and excludes disabled agent classes', () => {
     const config = AnyFusionConfigurationV2Schema.parse({
       schemaVersion: 2,
@@ -301,7 +309,11 @@ describe('configuration projections', () => {
           parameters: { maxAdditionalReadPartitions: 8 },
         },
       },
-      runtimePolicy: { maxConcurrentAttempts: 4, attemptTimeoutMs: 600000, probeTimeoutMs: 30000 },
+      runtimePolicy: {
+        maxConcurrentAttempts: 4,
+        executorIdleTimeoutMs: 600000,
+        probeTimeoutMs: 30000,
+      },
       gateway: { enabled: true, bindHost: '127.0.0.1', port: 8787 },
     });
 

@@ -428,6 +428,69 @@ describe('FileEventJournal', () => {
     });
   });
 
+  it('builds a replay trace snapshot from the latest Turn only', async () => {
+    const journal = await makeJournal();
+    await journal.append({
+      ...makeEvent('trace_a', 'trace_delta'),
+      turnId: 'turn_a',
+      payload: {
+        turnId: 'turn_a',
+        taskId: 'task_a',
+        status: 'completed',
+        events: [{
+          id: 'task_a_event',
+          sequence: 1,
+          occurredAt: '2026-09-10T08:00:00.000Z',
+          phase: 'execution',
+          actor: 'executor',
+          kind: 'executor_progress',
+          status: 'completed',
+          title: 'Task A',
+          summary: 'Task A completed',
+          taskId: 'task_a',
+          subtaskId: 'subtask_a',
+          details: { taskId: 'task_a', subtaskId: 'subtask_a' },
+        }],
+      },
+    });
+    await journal.append({
+      ...makeEvent('trace_b', 'trace_delta'),
+      turnId: 'turn_b',
+      payload: {
+        turnId: 'turn_b',
+        taskId: null,
+        status: 'running',
+        events: [{
+          id: 'turn_b_planning',
+          sequence: 1,
+          occurredAt: '2026-09-10T09:00:00.000Z',
+          phase: 'planning',
+          actor: 'planner',
+          kind: 'planner_processing_cycle',
+          status: 'running',
+          title: 'Planning Task B',
+          summary: 'Task B is not bound yet',
+          taskId: null,
+          subtaskId: null,
+          details: {},
+        }],
+      },
+    });
+
+    const replay = await journal.replay('local-default', 'conv_1');
+    const traceSnapshot = replay.snapshot.find(event => event.kind === 'trace_delta');
+
+    expect(traceSnapshot).toMatchObject({
+      eventId: 'trace_b',
+      turnId: 'turn_b',
+      payload: {
+        turnId: 'turn_b',
+        replay: true,
+        events: [{ id: 'turn_b_planning' }],
+      },
+    });
+  });
+
   it('accepts a cursor immediately before the retained history and returns the terminal snapshot', async () => {
     const journal = await makeJournal();
     for (let sequence = 1; sequence <= 201; sequence += 1) {

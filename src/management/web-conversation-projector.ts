@@ -123,10 +123,12 @@ export class WebConversationProjector {
     this.current.executionTimeline = structuredClone(timeline);
     this.normalizeCurrent();
 
-    const terminalStatus = terminalStatusFromTimeline(timeline);
-    if (terminalStatus) {
-      this.current.status = terminalStatus;
-      this.current.completedAt ??= this.now();
+    const projectedStatus = turnStatusFromTimeline(timeline);
+    if (projectedStatus) {
+      this.current.status = projectedStatus;
+      this.current.completedAt = projectedStatus === 'running'
+        ? null
+        : this.current.completedAt ?? this.now();
     }
     this.publish();
     await this.persistIfReady();
@@ -254,9 +256,12 @@ function extractExecutorFinalResult(line: string): string | null {
   return match?.[1]?.trim() || null;
 }
 
-function terminalStatusFromTimeline(
+export function turnStatusFromTimeline(
   timeline: ExecutionTimeline,
-): ConversationTurn['status'] | null {
+): ConversationTurnProjection['status'] | null {
+  if (['created', 'ready', 'running', 'waiting_retry'].includes(timeline.status)) {
+    return 'running';
+  }
   if (['done', 'archived'].includes(timeline.status)) return 'completed';
   if (['blocked', 'parked'].includes(timeline.status)) return 'blocked';
   if (['cancelled', 'failed'].includes(timeline.status)) return 'failed';

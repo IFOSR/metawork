@@ -74,4 +74,15 @@ describe('Detailed conversation view', () => {
     expect(styles).toContain('.narrative-toggle');
     expect(styles).toContain('.back-to-latest');
   });
+
+  it('opens the exact historical Turn instead of always using the latest Turn', async () => {
+    const app = await readFile(new URL('../App.tsx', root), 'utf8');
+
+    expect(app).toContain('selectedTrajectoryTurnId');
+    expect(app).toContain('turns.find(turn => turn.id === selectedTrajectoryTurnId)');
+    expect(app).toContain('onOpenTrajectory={turnId =>');
+    expect(app).toContain(
+      'useEffect(() => setSelectedTrajectoryTurnId(null), [activeWorkspaceId, browsedSessionId])',
+    );
+  });
 });

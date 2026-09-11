@@ -3,10 +3,12 @@ import type { WorkspaceSummary } from '../api/session-types';
 export function WorkspaceSelector({
   workspaces,
   activeWorkspaceId,
+  disabled = false,
   onSelect,
 }: {
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string | null;
+  disabled?: boolean;
   onSelect: (workspace: WorkspaceSummary) => void;
 }) {
   const active = workspaces.find(workspace => workspace.id === activeWorkspaceId) ?? null;
@@ -16,6 +18,7 @@ export function WorkspaceSelector({
       <select
         id="workspace-select"
         value={activeWorkspaceId ?? ''}
+        disabled={disabled}
         onChange={event => {
           const workspace = workspaces.find(item => item.id === event.target.value);
           if (workspace) onSelect(workspace);

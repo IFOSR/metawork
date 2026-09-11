@@ -2,7 +2,11 @@ import { useEffect, useState } from 'react';
 import type { ConversationTurnProjection } from '../api/session-types';
 import type { ExecutionTimeline, InteractionTraceEvent } from '../api/types';
 import { executionElapsedEndMs } from '../execution-duration';
-import { executorHealthBadge } from '../executor-health';
+import {
+  executorHealthBadge,
+  type ExecutorActivityState,
+} from '../executor-health';
+import { traceEventTaskId } from '../turn-task-presentation';
 
 interface ExecutionCard {
   subtaskId: string;
@@ -17,6 +21,7 @@ interface ExecutionCard {
   startedAt: string | null;
   updatedAt: string | null;
   activityStatus: string;
+  activityState: ExecutorActivityState | null;
 }
 
 /**
@@ -83,6 +88,7 @@ function CardBody({ card, completed }: { card: ExecutionCard; completed: boolean
     updatedAt: card.updatedAt,
     nowMs: Date.now(),
     running: !completed && isActiveActivity(card.activityStatus),
+    activityState: card.activityState,
   });
   return (
     <>
@@ -140,14 +146,19 @@ function collectExecutionCards(
       startedAt: attempt?.startedAt ?? null,
       updatedAt: attempt?.updatedAt ?? null,
       activityStatus: attempt?.status ?? attempt?.result ?? subtask.status,
+      activityState: null,
     });
   }
   for (const event of events) {
+    const eventTaskId = traceEventTaskId(event);
+    if (timeline?.taskId && eventTaskId && eventTaskId !== timeline.taskId) continue;
     const details = event.details as Record<string, unknown>;
     if (!details || typeof details !== 'object') continue;
     const subtaskId = event.subtaskId || readString(details.subtaskId);
     if (!subtaskId) continue;
-    const existing = bySubtask.get(subtaskId) ?? {
+    const current = bySubtask.get(subtaskId);
+    if (timeline && !current) continue;
+    const existing = current ?? {
       subtaskId,
       subtaskTitle: '',
       executorDisplayName: '',
@@ -160,6 +171,7 @@ function collectExecutionCards(
       startedAt: null as string | null,
       updatedAt: null as string | null,
       activityStatus: event.kind,
+      activityState: null as ExecutorActivityState | null,
     };
     // 事件按 sequence 有序，后到的事实覆盖先到的字段。
     const next: ExecutionCard = {
@@ -183,6 +195,7 @@ function collectExecutionCards(
         ? details.updatedAt
         : event.occurredAt,
       activityStatus: activityStatusFor(event),
+      activityState: executorActivityState(details.activityState),
     };
     bySubtask.set(subtaskId, next);
   }
@@ -202,11 +215,19 @@ function isActiveActivity(status: string): boolean {
 }
 
 function activityLabel(status: string, step: string): string {
-  if (status === 'heartbeat') return `运行中（心跳）：${step}`;
+  if (status === 'heartbeat') return `执行进程仍在运行，等待公开事件：${step}`;
   if (status === 'dependency_wait') return `等待依赖：${step}`;
   if (status === 'capacity_wait') return `等待容量：${step}`;
   if (status === 'blocked') return `已阻塞：${step}`;
   return step;
+}
+
+function executorActivityState(value: unknown): ExecutorActivityState | null {
+  return value === 'active_operation'
+    || value === 'presentation_heartbeat'
+    || value === 'idle'
+    ? value
+    : null;
 }
 
 function readString(value: unknown): string {

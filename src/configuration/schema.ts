@@ -366,7 +366,7 @@ const RuntimePolicySchema = z.object({
   maxConcurrentAttemptsPerTask: z.number().int().min(1).max(32).default(2),
   schedulingAgingMs: z.number().int().min(0).max(86_400_000).default(300_000),
   sameConversationQueueLimit: z.number().int().min(0).max(32).default(8),
-  attemptTimeoutMs: z.number().int().min(1_000).max(86_400_000).optional(),
+  executorIdleTimeoutMs: z.number().int().min(1_000).max(86_400_000).optional(),
   probeTimeoutMs: z.number().int().min(1_000).max(300_000).optional(),
 }).strict().superRefine((policy, context) => {
   if (policy.maxConcurrentAttemptsPerTask > policy.maxConcurrentAttempts) {

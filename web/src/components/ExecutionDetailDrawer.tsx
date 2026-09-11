@@ -95,32 +95,35 @@ function latestExecutionMeta(
   timeline: ExecutionTimeline | null,
   subtaskId: string,
 ): ExecutionMeta | null {
-  let meta: ExecutionMeta | null = null;
+  let subtaskTitle = '';
+  let executorDisplayName = '';
+  let providerDisplayName = '';
+  let modelDisplayName = '';
   for (const event of events) {
     const details = event.details as Record<string, unknown> | undefined;
     if (!details || details.subtaskId !== subtaskId) continue;
-    meta = {
-      subtaskTitle: readString(details.subtaskTitle) || meta?.subtaskTitle || subtaskId,
-      executorDisplayName: readString(details.executorDisplayName)
-        || readString(details.executorName)
-        || meta?.executorDisplayName
-        || '',
-      providerDisplayName: readString(details.providerDisplayName) || meta?.providerDisplayName || '',
-      modelDisplayName: readString(details.modelDisplayName) || meta?.modelDisplayName || '',
-    };
+    subtaskTitle = readString(details.subtaskTitle) || subtaskTitle || subtaskId;
+    executorDisplayName = readString(details.executorDisplayName)
+      || readString(details.executorName)
+      || executorDisplayName;
+    providerDisplayName = readString(details.providerDisplayName) || providerDisplayName;
+    modelDisplayName = readString(details.modelDisplayName) || modelDisplayName;
   }
   const durableSubtask = timeline?.stages
     .find(stage => stage.phase === 'execution')
     ?.subtasks?.find(subtask => subtask.id === subtaskId);
   if (durableSubtask) {
-    meta = {
-      subtaskTitle: meta?.subtaskTitle || durableSubtask.title,
-      executorDisplayName: meta?.executorDisplayName || durableSubtask.executor || '',
-      providerDisplayName: meta?.providerDisplayName || '',
-      modelDisplayName: meta?.modelDisplayName || '',
-    };
+    subtaskTitle ||= durableSubtask.title;
+    executorDisplayName ||= durableSubtask.executor || '';
   }
-  return meta;
+  return subtaskTitle || executorDisplayName || providerDisplayName || modelDisplayName
+    ? {
+        subtaskTitle,
+        executorDisplayName,
+        providerDisplayName,
+        modelDisplayName,
+      }
+    : null;
 }
 
 function collectDetailEvents(

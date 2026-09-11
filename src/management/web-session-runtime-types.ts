@@ -114,7 +114,12 @@ export type WebSessionRuntimeEvent =
     status?: InteractionTraceStatus;
     completedAt?: string | null;
   }
-  | { type: 'execution'; taskId: string; timeline: ExecutionTimeline }
+  | {
+    type: 'execution';
+    turnId: string;
+    taskId: string;
+    timeline: ExecutionTimeline;
+  }
   | {
     type: 'artifacts';
     turnId: string;

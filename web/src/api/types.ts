@@ -91,6 +91,11 @@ export type InteractionTraceStatus = 'running' | 'completed' | 'failed' | 'block
 export interface InteractionTraceEvent {
   id: string;
   sequence: number;
+  cursor?: string;
+  eventKey?: string;
+  taskId?: string | null;
+  subtaskId?: string | null;
+  attemptId?: string | null;
   occurredAt: string;
   phase: 'intake' | 'planning' | 'authorization' | 'routing' | 'execution' | 'verification' | 'delivery';
   actor: 'user' | 'planner' | 'kernel' | 'runtime' | 'executor';
@@ -324,7 +329,12 @@ export type ServerMessage =
   }
   // from 是 lines[0] 在完整输出中的绝对行号；重连回放 from=0，按下标幂等合并去重。
   | { type: 'output'; from: number; lines: string[] }
-  | { type: 'execution'; taskId: string; timeline: ExecutionTimeline }
+  | {
+    type: 'execution';
+    turnId: string;
+    taskId: string;
+    timeline: ExecutionTimeline;
+  }
   | {
     type: 'artifacts';
     turnId: string;

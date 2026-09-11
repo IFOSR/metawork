@@ -585,6 +585,77 @@ describe('ConversationSession', () => {
     });
   });
 
+  it('ends a clarification turn after notifying the user that more input is required', async () => {
+    const trace = new InteractionTraceStream('planner_clarification');
+    const session = new ConversationSession({
+      conversationId: 'conv_clarification',
+      plannerSessionId: 'planner_clarification',
+      runtimePort: makePort('local-default', {
+        planning: {
+          submit: async (_context, submitter) => {
+            submitter.onProgress?.({
+              kind: 'agent_completed',
+              sequence: 1,
+              elapsedMs: 25,
+            });
+            return {
+              status: 'accepted',
+              turnId: 'planner_turn_clarification',
+              submissionId: 'proposal_clarification',
+              planId: 'plan_clarification',
+              outcome: 'clarification_requested',
+              displayText: '请补充需要比较的具体发言内容。',
+              taskId: null,
+              kernel: {
+                decisionId: 'decision_clarification',
+                action: 'request_clarification',
+                reason: 'missing comparison context',
+              },
+            };
+          },
+        } as never,
+      }),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      interactionTraceStream: trace,
+      planningContextBuilder: {
+        build: ({ userInput }: { userInput: string }) => ({
+          userInput,
+          request: { sessionId: 'planner_clarification', source: 'session' },
+          pendingAuthorizationRequest: null,
+          configuration: {
+            revisionId: 'revision-test',
+            contentHash: 'hash',
+            models: [],
+            routingCatalog: {
+              configurationRevision: 'revision-test',
+              agentClasses: [],
+            },
+          },
+          timeoutMs: 1_000,
+        }),
+      } as never,
+    });
+
+    await session.submitUserInput('谁的发言含金量最高？', {
+      interactionTurnId: 'gateway_turn_clarification',
+    });
+
+    expect(session.getInteractionTrace()).toMatchObject({
+      turnId: 'gateway_turn_clarification',
+      status: 'completed',
+      completedAt: expect.any(String),
+      events: expect.arrayContaining([
+        expect.objectContaining({ kind: 'planner_agent_completed' }),
+        expect.objectContaining({
+          kind: 'clarification_requested',
+          status: 'completed',
+          summary: '请补充需要比较的具体发言内容。',
+        }),
+      ]),
+    });
+    expect(session.hasBackgroundWork()).toBe(false);
+  });
+
   it('starts a fresh interaction trace for an explicit task resume command', async () => {
     const trace = new InteractionTraceStream('planner_resume');
     let session!: ConversationSession;
@@ -669,6 +740,62 @@ describe('ConversationSession', () => {
       await new Promise(resolve => setTimeout(resolve, 0));
     }
     expect(session.hasBackgroundWork()).toBe(false);
+  });
+
+  it('keeps the current turn open while its durable Task waits for an automatic retry', () => {
+    const task = {
+      id: 'task_retry_wait',
+      conversationId: 'conv_retry_wait',
+      status: 'blocked',
+      dependencies: [{
+        taskId: 'task_retry_wait',
+        type: 'kernel_retry',
+        description: 'retry scheduled',
+        status: 'waiting',
+      }],
+    };
+    const session = new ConversationSession({
+      conversationId: 'conv_retry_wait',
+      plannerSessionId: 'planner_retry_wait',
+      runtimePort: makePort('local-default', {
+        queries: {
+          findTask: taskId => taskId === task.id ? task as never : null,
+        } as never,
+      }),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+    });
+    session.setCurrentTaskId(task.id);
+
+    expect(session.hasBackgroundWork()).toBe(true);
+  });
+
+  it('does not append a previous Task execution trace into a newer turn', () => {
+    const trace = new InteractionTraceStream('conversation_trace_ownership');
+    const session = new ConversationSession({
+      conversationId: 'conv_trace_ownership',
+      plannerSessionId: 'planner_trace_ownership',
+      runtimePort: makePort('local-default'),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      interactionTraceStream: trace,
+    });
+    trace.beginTurn({ turnId: 'turn_a', userInput: '执行 A' });
+    session.setCurrentTaskId('task_a');
+    trace.beginTurn({ turnId: 'turn_b', userInput: '开始 B' });
+
+    session.appendExecutionTrace({
+      phase: 'execution',
+      actor: 'executor',
+      kind: 'executor_progress',
+      status: 'running',
+      title: 'A is still running',
+      summary: 'late progress from A',
+      details: {},
+      eventKey: 'late-a',
+      taskId: 'task_a',
+    });
+
+    expect(trace.getSnapshot()?.turnId).toBe('turn_b');
+    expect(trace.getSnapshot()?.events.some(event => event.eventKey === 'late-a')).toBe(false);
   });
 
   it('passes Gateway image attachments into the Planner context', async () => {

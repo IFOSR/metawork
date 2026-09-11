@@ -254,6 +254,7 @@ e2e('Artifact preview drawer and IME-aware Enter browser flow', () => {
         }));
         server.pushWs(JSON.stringify({
           type: 'execution',
+          turnId: 'turn_live_1',
           taskId: 'task_live',
           timeline: {
             taskId: 'task_live',

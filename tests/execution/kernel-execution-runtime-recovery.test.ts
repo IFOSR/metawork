@@ -183,6 +183,8 @@ describe('KernelExecutionRuntime executor recovery', () => {
           subtaskId: 'subtask-live',
           attemptId: 'attempt-live',
           lastProgressKind: 'dispatch_started',
+          activityState: 'presentation_heartbeat',
+          watchdogAuthority: false,
         }),
       }));
     });
@@ -219,6 +221,67 @@ describe('KernelExecutionRuntime executor recovery', () => {
     });
 
     expect(recordExecutionOutcome).not.toHaveBeenCalled();
+  });
+
+  it('presents an authorized retry wait as non-terminal automatic recovery', async () => {
+    const blockTask = vi.fn();
+    const finishExecution = vi.fn().mockResolvedValue(undefined);
+    const retryBinding = binding('revision-a');
+    const runtime = new KernelExecutionRuntime({
+      taskRuntimeService: {
+        findTask: vi.fn().mockReturnValue({
+          id: 'task-retry-wait',
+          status: 'running',
+        }),
+        blockTask,
+      },
+      callbacks: {},
+      taskEventRepo: { insert: vi.fn() },
+      dispatchItemRepo: {},
+      maxConcurrentAttempts: 4,
+    } as never);
+    const decision: KernelDecision = {
+      schemaVersion: 5,
+      configurationRevision: 'revision-a',
+      id: 'decision-retry-wait',
+      eventId: 'event-retry-wait',
+      reason: 'transient executor failure',
+      action: {
+        type: 'wait_for_retry',
+        taskId: 'task-retry-wait',
+        subtaskId: 'subtask-retry-wait',
+        resumeAt: '2026-09-10T06:30:00.000Z',
+        authorizedBinding: retryBinding,
+        bindingFingerprint: authorizedExecutorBindingFingerprint(retryBinding),
+        sourceAttemptId: 'attempt-primary',
+      },
+    };
+
+    const event = await (runtime as unknown as {
+      applyExecutionDecision(input: Record<string, unknown>): Promise<KernelEvent | null>;
+    }).applyExecutionDecision({
+      decision,
+      executionId: 'execution-retry-wait',
+      request: {},
+      progressTracker: {},
+      supervisorContext: {},
+      attemptFacts: [],
+      finishExecution,
+    });
+
+    expect(blockTask).toHaveBeenCalledWith(
+      'task-retry-wait',
+      expect.objectContaining({ type: 'kernel_retry', status: 'waiting' }),
+    );
+    expect(finishExecution).toHaveBeenCalledWith([
+      expect.stringContaining('retry automatically'),
+    ]);
+    expect(finishExecution.mock.calls[0]?.[0]?.[0]).not.toContain('Execution blocked');
+    expect(event).toMatchObject({
+      type: 'timer_tick',
+      taskId: 'task-retry-wait',
+      wakeKind: 'retry',
+    });
   });
 
   it('delivers an upgraded historical result without re-running the Harness', async () => {

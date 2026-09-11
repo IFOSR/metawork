@@ -67,7 +67,7 @@ export function buildAccountExecutionServices(deps: {
           modelId: input.configuration.models[input.authorizedBinding.modelRef]!.modelId,
           executorAffordances: input.agentClass.plannerAffordances,
           attemptsRoot,
-          idleTimeoutMs: input.configuration.runtimePolicy.attemptTimeoutMs,
+          idleTimeoutMs: input.configuration.runtimePolicy.executorIdleTimeoutMs,
         });
         if (input.driver.id !== 'pi-cli') return piAdapter;
         const imageAdapter = new ImageApiExecutorAdapter({

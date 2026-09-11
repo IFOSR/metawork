@@ -19,6 +19,13 @@ The final Phase 6 implementation must close whole-Task cancellation, cascading c
 
 An attempt becomes terminal only when its immutable receipt, Subtask transition, terminal dispatch item and Kernel outcome inbox event commit in one SQLite transaction. Container, WorkUnit and resource-lease cleanup follows as an idempotent replayable supervisor step. If Docker, Git or persistent facts cannot prove reconciliation is safe, MetaClaw enters recovery-blocked mode: status and diagnostics remain available, but no attempt starts and no unproven claim or lease is released.
 
+Local CLI execution has no Runtime-owned wall-clock, tool-count or processing-cycle
+limit. The sole process timeout is an idle watchdog configured by
+`runtimePolicy.executorIdleTimeoutMs`. Driver-classified Harness operation
+start/end facts suspend and resume that watchdog, while presentation heartbeats
+remain non-authoritative. Kernel `wait_for_retry` is a durable non-terminal
+`waiting_retry` state rather than a user-facing execution block.
+
 Because the product is unreleased, the closing implementation accepts only the current Kernel v4 contract and a fresh SQLite v27 database. Earlier Kernel/schema dual reads, legacy dispatch entrypoints and compatibility-only executor/session facades are not part of the initial product contract.
 
 Multi-top-level-Task admission, priority, fairness, starvation protection, queueing, preemption and cross-Task recovery are deferred to a future independent roadmap. They must reuse the durable dispatch/publication seams when eventually introduced, but are not Phase 6 acceptance conditions. ADR-0011 therefore remains accepted and is not archived.

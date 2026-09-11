@@ -9,6 +9,7 @@ export function SessionSidebar({
   activeSessionId,
   runningSessionId,
   selectedSessionId,
+  workspaceSwitching,
   search,
   onSearch,
   onSelectWorkspace,
@@ -24,6 +25,7 @@ export function SessionSidebar({
   activeSessionId: string | null;
   runningSessionId: string | null;
   selectedSessionId: string | null;
+  workspaceSwitching: boolean;
   search: string;
   onSearch: (value: string) => void;
   onSelectWorkspace: (workspace: WorkspaceSummary) => void;
@@ -42,12 +44,13 @@ export function SessionSidebar({
       <WorkspaceSelector
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
+        disabled={workspaceSwitching}
         onSelect={onSelectWorkspace}
       />
       <button
         className="new-session-button"
         onClick={onNewSession}
-        disabled={!activeWorkspaceId}
+        disabled={!activeWorkspaceId || workspaceSwitching}
       >
         <span>＋</span> 新建会话
       </button>
@@ -67,6 +70,7 @@ export function SessionSidebar({
             className="clear-sessions"
             title="清空除当前会话外的全部历史"
             onClick={onClearSessions}
+            disabled={workspaceSwitching}
           >
             清空
           </button>
@@ -87,6 +91,7 @@ export function SessionSidebar({
               data-selected={selected}
               key={session.id}
               onClick={() => onSelect(session.id)}
+              disabled={workspaceSwitching}
             >
               <span className="session-row-status" />
               <span className="session-row-copy">

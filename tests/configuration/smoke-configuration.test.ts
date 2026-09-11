@@ -112,7 +112,7 @@ describe('prepareSmokeConfiguration', () => {
       mode: 'fixed',
       modelRef: 'pi-k3',
     });
-    expect(snapshot.config.runtimePolicy.attemptTimeoutMs).toBe(3_600_000);
+    expect(snapshot.config.runtimePolicy.executorIdleTimeoutMs).toBe(900_000);
 
     const generatedRuntimeRoot = resolve(accountPaths.generated, 'agent-runtime');
     expect(JSON.parse(await readFile(

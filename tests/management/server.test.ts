@@ -1592,6 +1592,7 @@ describe('ManagementServer WebSocket authentication', () => {
     const sessionRuntime = createSessionRuntime({
       getReplayEvents: () => [{
         type: 'execution',
+        turnId: 'turn-live',
         taskId: 'task-live',
         timeline,
       }],
@@ -1605,14 +1606,24 @@ describe('ManagementServer WebSocket authentication', () => {
       // 首条连接建立时投影过一次；第二条连接也要立刻拿到当前时间线。
       await expect(client.nextText()).resolves.toContain('"type":"hello"');
       await expect(client.nextText()).resolves.toBe(
-        JSON.stringify({ type: 'execution', taskId: 'task-live', timeline }),
+        JSON.stringify({
+          type: 'execution',
+          turnId: 'turn-live',
+          taskId: 'task-live',
+          timeline,
+        }),
       );
 
       const second = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
       try {
         await expect(second.nextText()).resolves.toContain('"type":"hello"');
         await expect(second.nextText()).resolves.toBe(
-          JSON.stringify({ type: 'execution', taskId: 'task-live', timeline }),
+          JSON.stringify({
+            type: 'execution',
+            turnId: 'turn-live',
+            taskId: 'task-live',
+            timeline,
+          }),
         );
       } finally {
         second.close();

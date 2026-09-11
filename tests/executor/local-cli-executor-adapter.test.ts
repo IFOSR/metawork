@@ -506,6 +506,45 @@ describe('LocalCliExecutorAdapter', () => {
       vi.useRealTimers();
     }
   });
+
+  it('does not expire the idle watchdog while a Harness operation is active', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = controllableChildProcess();
+      const signalProcess = vi.fn((_pid: number, signal: NodeJS.Signals) => {
+        if (signal === 'SIGTERM') queueMicrotask(() => child.emitExit(null));
+      });
+      const runner = new SpawnLocalCliChildProcessRunner({ spawnProcess: () => child, signalProcess });
+
+      const resultPromise = runner.run({
+        attemptId: 'attempt-active-operation',
+        command: 'pi',
+        args: [],
+        cwd: '/workspace/attempt-active-operation',
+        environment: {},
+        idleTimeoutMs: 300,
+        onLine: line => line === 'operation-started'
+          ? { type: 'operation_started', operationId: 'pi-tool:tool_1' }
+          : line === 'operation-finished'
+            ? { type: 'operation_finished', operationId: 'pi-tool:tool_1' }
+            : undefined,
+      });
+      child.emitStdout('operation-started\n');
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(signalProcess).not.toHaveBeenCalled();
+
+      child.emitStdout('operation-finished\n');
+      await vi.advanceTimersByTimeAsync(299);
+      expect(signalProcess).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      await resultPromise;
+      expect(signalProcess).toHaveBeenCalledWith(-123, 'SIGTERM');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function completedChildProcess() {

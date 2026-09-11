@@ -1445,9 +1445,10 @@ export class KernelExecutionRuntime {
       return null;
     }
     if (action.type === 'wait_for_retry') {
-      await this.blockTask(
-        action.taskId, `retry scheduled for ${action.resumeAt}`,
-        input.finishExecution, 'kernel_retry',
+      await this.waitForRetry(
+        action.taskId,
+        action.resumeAt,
+        input.finishExecution,
       );
       return this.eventFromDecision(decision, {
         type: 'timer_tick',
@@ -2028,6 +2029,8 @@ export class KernelExecutionRuntime {
               lastProgressAt: new Date(lastProgressAtMs).toISOString(),
               lastProgressKind,
               heartbeatSequence,
+              activityState: 'presentation_heartbeat',
+              watchdogAuthority: false,
               ...bindingDetails,
               ...executionEventDetails({
                 display,
@@ -2927,6 +2930,24 @@ export class KernelExecutionRuntime {
     }
     this.recordTaskEvent(taskId, null, 'phase2_execution_blocked', reason, {});
     await finishExecution([`Execution blocked: ${reason}`]);
+  }
+
+  private async waitForRetry(
+    taskId: string,
+    resumeAt: string,
+    finishExecution: (lines: string[], scheduleNext?: boolean) => Promise<void>,
+  ): Promise<void> {
+    const reason = `retry scheduled for ${resumeAt}`;
+    if (this.deps.taskRuntimeService.findTask(taskId)?.status === 'running') {
+      this.deps.taskRuntimeService.blockTask(taskId, {
+        taskId,
+        type: 'kernel_retry',
+        description: reason,
+        status: 'waiting',
+      });
+    }
+    this.recordTaskEvent(taskId, null, 'phase2_execution_waiting_retry', reason, {});
+    await finishExecution([`Execution will retry automatically at ${resumeAt}`]);
   }
 
   private isKernelWakeAuthorized(task: import('../core/types.js').Task, wakeKind: Extract<KernelEvent, { type: 'timer_tick' }>['wakeKind']): boolean {

@@ -30,8 +30,13 @@ import {
 } from './components/ArtifactPreviewDrawer';
 import { ExecutionDetailDrawer } from './components/ExecutionDetailDrawer';
 import type { WorkspaceTab } from './components/WorkspaceHeader';
-import { retainLiveTurnForConversation } from './conversation-live-turn';
+import {
+  isCurrentConversationRecordRequest,
+  retainTerminalLiveTurnInRecord,
+  retainLiveTurnForConversation,
+} from './conversation-live-turn';
 import { useThemePreference } from './theme';
+import { projectTurnForPresentation } from './turn-task-presentation';
 
 let startupAuthentication: ReturnType<typeof establishWebSession> | null = null;
 
@@ -46,9 +51,11 @@ export function App() {
   const [sessions, setSessions] = useState<WebSessionMetadata[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [browsedSessionId, setBrowsedSessionId] = useState<string | null>(null);
+  const [workspaceSwitching, setWorkspaceSwitching] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState<WebSessionRecord | null>(null);
   const [liveTurn, setLiveTurn] = useState<ConversationTurnProjection | null>(null);
   const [tab, setTab] = useState<WorkspaceTab>('conversation');
+  const [selectedTrajectoryTurnId, setSelectedTrajectoryTurnId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [search, setSearch] = useState('');
   const [activationNotice, setActivationNotice] = useState<string | null>(null);
@@ -66,6 +73,13 @@ export function App() {
   const httpRef = useRef<HttpClient | null>(null);
   const wsRef = useRef<WsClient | null>(null);
   const activeConversationRef = useRef<string | null>(null);
+  const browsedConversationRef = useRef<string | null>(null);
+  const liveTurnRef = useRef<ConversationTurnProjection | null>(null);
+  const loadRecordRef = useRef<(sessionId: string) => void>(() => undefined);
+  const conversationRequestRef = useRef(0);
+  const recordRequestRef = useRef(0);
+  const workspaceSwitchRef = useRef(false);
+  const workspaceSwitchRequestRef = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -102,16 +116,39 @@ export function App() {
     const http = new HttpClient(handleUnauthorized);
     httpRef.current = http;
     const loadRecord = (sessionId: string) => {
+      const requestId = ++recordRequestRef.current;
       void http.getConversation(sessionId)
-        .then(setSelectedRecord)
-        .catch(error => setActivationNotice((error as Error).message));
+        .then(record => {
+          if (isCurrentConversationRecordRequest({
+            requestId,
+            latestRequestId: recordRequestRef.current,
+            requestedSessionId: sessionId,
+            browsedSessionId: browsedConversationRef.current,
+          })) {
+            setSelectedRecord(record);
+          }
+        })
+        .catch(error => {
+          if (isCurrentConversationRecordRequest({
+            requestId,
+            latestRequestId: recordRequestRef.current,
+            requestedSessionId: sessionId,
+            browsedSessionId: browsedConversationRef.current,
+          })) {
+            setActivationNotice((error as Error).message);
+          }
+        });
     };
+    loadRecordRef.current = loadRecord;
     const ws = new WsClient({
       onHello: sessionId => {
         activeConversationRef.current = sessionId;
         setActiveSessionId(sessionId);
         if (sessionId) {
-          setBrowsedSessionId(current => current ?? sessionId);
+          if (!browsedConversationRef.current) {
+            browsedConversationRef.current = sessionId;
+            setBrowsedSessionId(sessionId);
+          }
           loadRecord(sessionId);
         }
       },
@@ -119,15 +156,28 @@ export function App() {
         activeConversationRef.current = sessionId;
         setActiveSessionId(sessionId);
         setSessions(nextSessions);
+        if (
+          browsedConversationRef.current === sessionId
+          && nextSessions.some(session => session.id === sessionId)
+        ) {
+          loadRecord(sessionId);
+        }
       },
       onWorkspaceDirectory: (workspaceId, sessionId, nextSessions) => {
         setActiveWorkspaceId(workspaceId);
         activeConversationRef.current = sessionId;
         setActiveSessionId(sessionId);
         setSessions(nextSessions);
-        setBrowsedSessionId(current => (
-          current && nextSessions.some(session => session.id === current) ? current : null
-        ));
+        const nextBrowsedSessionId = (
+          browsedConversationRef.current
+          && nextSessions.some(session => session.id === browsedConversationRef.current)
+        )
+          ? browsedConversationRef.current
+          : sessionId && nextSessions.some(session => session.id === sessionId)
+            ? sessionId
+            : null;
+        browsedConversationRef.current = nextBrowsedSessionId;
+        setBrowsedSessionId(nextBrowsedSessionId);
         setSelectedRecord(current => (
           current && nextSessions.some(session => session.id === current.session.id)
             ? current
@@ -136,9 +186,11 @@ export function App() {
       },
       onActiveSessionChanged: sessionId => {
         activeConversationRef.current = sessionId;
+        browsedConversationRef.current = sessionId;
         setActiveSessionId(sessionId);
         setBrowsedSessionId(sessionId);
-        setLiveTurn(current => retainLiveTurnForConversation(current, sessionId));
+        liveTurnRef.current = retainLiveTurnForConversation(liveTurnRef.current, sessionId);
+        setLiveTurn(liveTurnRef.current);
         setActivationNotice(null);
         // 切换会话后旧会话的预览与执行详情不得残留。
         setPreviewState({ status: 'closed' });
@@ -159,9 +211,16 @@ export function App() {
           }
           : current);
       },
-      onConversationSnapshot: turn => setLiveTurn(turn),
+      onConversationSnapshot: turn => {
+        liveTurnRef.current = turn;
+        setLiveTurn(turn);
+      },
       onTurnStarted: (_requestId, turnId, userInput, startedAt, interactionKind) => {
-        setLiveTurn({
+        setSelectedRecord(current => retainTerminalLiveTurnInRecord(
+          current,
+          liveTurnRef.current,
+        ));
+        const nextTurn: ConversationTurnProjection = {
           id: turnId,
           sessionId: activeConversationRef.current ?? 'active',
           userInput,
@@ -176,78 +235,99 @@ export function App() {
           executionTimeline: null,
           artifactRefs: [],
           artifacts: [],
-        });
+        };
+        liveTurnRef.current = nextTurn;
+        setLiveTurn(nextTurn);
       },
       onTraceSnapshot: trace => {
-        setLiveTurn(current => mergeTraceSnapshot(current, trace));
+        liveTurnRef.current = mergeTraceSnapshot(liveTurnRef.current, trace);
+        setLiveTurn(liveTurnRef.current);
       },
       onTraceDelta: (turnId, _fromSequence, events, status, completedAt) => {
-        setLiveTurn(current => mergeTraceDelta(current, turnId, events, status, completedAt));
+        liveTurnRef.current = mergeTraceDelta(
+          liveTurnRef.current,
+          turnId,
+          events,
+          status,
+          completedAt,
+        );
+        setLiveTurn(liveTurnRef.current);
       },
       onConfigurationRuntimeState: state => setConfigurationRuntime(state),
-      onExecution: (taskId, timeline) => {
-        setLiveTurn(current => current
-          ? { ...current, taskId, executionTimeline: timeline }
-          : current);
+      onExecution: (turnId, taskId, timeline) => {
+        liveTurnRef.current = liveTurnRef.current
+          && liveTurnRef.current.id === turnId
+          && (!liveTurnRef.current.taskId || liveTurnRef.current.taskId === taskId)
+          ? { ...liveTurnRef.current, taskId, executionTimeline: timeline }
+          : liveTurnRef.current;
+        setLiveTurn(liveTurnRef.current);
       },
       onArtifacts: (turnId, taskId, artifacts) => {
-        setLiveTurn(current => current && current.id === turnId
+        liveTurnRef.current = liveTurnRef.current
+          && liveTurnRef.current.id === turnId
+          && (!liveTurnRef.current.taskId || liveTurnRef.current.taskId === taskId)
           ? {
-            ...current,
+            ...liveTurnRef.current,
             taskId,
             artifactRefs: [...new Set([
-              ...current.artifactRefs,
+              ...liveTurnRef.current.artifactRefs,
               ...artifacts.map(artifact => artifact.relativePath),
             ])],
-            artifacts: mergeArtifacts(current.artifacts, artifacts),
+            artifacts: mergeArtifacts(liveTurnRef.current.artifacts, artifacts),
           }
-          : current);
+          : liveTurnRef.current;
+        setLiveTurn(liveTurnRef.current);
       },
       onFinalAnswer: (_requestId, turnId, lines, completedAt, backgroundWorkPending) => {
-        setLiveTurn(current => current && current.id === turnId
+        liveTurnRef.current = liveTurnRef.current && liveTurnRef.current.id === turnId
           ? {
-            ...current,
+            ...liveTurnRef.current,
             status: backgroundWorkPending ? 'running' : 'completed',
             finalAnswer: lines.join('\n'),
             completedAt: backgroundWorkPending ? null : completedAt,
           }
-          : current);
+          : liveTurnRef.current;
+        setLiveTurn(liveTurnRef.current);
       },
       onResultDeliveryAvailable: (_requestId, turnId, _resultId, certification) => {
-        setLiveTurn(current => current && current.id === turnId
+        liveTurnRef.current = liveTurnRef.current && liveTurnRef.current.id === turnId
           ? {
-            ...current,
+            ...liveTurnRef.current,
             finalAnswer: certification === 'uncertified'
               ? '结果正在流式返回，任务完成认证待处理。\n\n'
               : '',
           }
-          : current);
+          : liveTurnRef.current;
+        setLiveTurn(liveTurnRef.current);
       },
       onResultChunk: (_requestId, turnId, _resultId, offset, chunk) => {
-        setLiveTurn(current => current && current.id === turnId
+        liveTurnRef.current = liveTurnRef.current && liveTurnRef.current.id === turnId
           ? {
-            ...current,
-            finalAnswer: appendUtf8Chunk(current.finalAnswer ?? '', offset, chunk),
+            ...liveTurnRef.current,
+            finalAnswer: appendUtf8Chunk(liveTurnRef.current.finalAnswer ?? '', offset, chunk),
           }
-          : current);
+          : liveTurnRef.current;
+        setLiveTurn(liveTurnRef.current);
       },
       onResultCompleted: (_requestId, turnId, _resultId, content, _certification) => {
-        setLiveTurn(current => current && current.id === turnId
+        liveTurnRef.current = liveTurnRef.current && liveTurnRef.current.id === turnId
           ? {
-            ...current,
+            ...liveTurnRef.current,
             finalAnswer: content,
           }
-          : current);
+          : liveTurnRef.current;
+        setLiveTurn(liveTurnRef.current);
       },
       onTerminalError: (_requestId, turnId, message, completedAt) => {
-        setLiveTurn(current => current && current.id === turnId
+        liveTurnRef.current = liveTurnRef.current && liveTurnRef.current.id === turnId
           ? {
-            ...current,
+            ...liveTurnRef.current,
             status: 'failed',
             finalAnswer: message,
             completedAt,
           }
-          : current);
+          : liveTurnRef.current;
+        setLiveTurn(liveTurnRef.current);
       },
       onOutput: lines => {
         if (lines.some(line => line.startsWith('错误:'))) {
@@ -290,23 +370,40 @@ export function App() {
         const resolvedSessionId = initialSessionId ?? activeInWorkspace;
         activeConversationRef.current = activeInWorkspace;
         setActiveSessionId(activeInWorkspace);
-        setBrowsedSessionId(current => current ?? resolvedSessionId);
+        const nextBrowsedSessionId = browsedConversationRef.current ?? resolvedSessionId;
+        browsedConversationRef.current = nextBrowsedSessionId;
+        setBrowsedSessionId(nextBrowsedSessionId);
         setConfigurationRuntime(config);
         if (activeInWorkspace) loadRecord(activeInWorkspace);
       })
       .catch(() => undefined);
-    return () => ws.close();
+    return () => {
+      loadRecordRef.current = () => undefined;
+      ws.close();
+    };
   }, [authenticated, startupLaunchContext]);
 
   useEffect(() => {
     if (!authenticated || !httpRef.current || !activeWorkspaceId) return;
+    const requestId = ++conversationRequestRef.current;
+    const requestedWorkspaceId = activeWorkspaceId;
     const timer = window.setTimeout(() => {
-      void httpRef.current?.getConversations(activeWorkspaceId, search)
-        .then(result => setSessions(result.conversations))
+      void httpRef.current?.getConversations(requestedWorkspaceId, search)
+        .then(result => {
+          if (
+            requestId !== conversationRequestRef.current
+            || result.activeWorkspaceId !== requestedWorkspaceId
+          ) {
+            return;
+          }
+          setSessions(result.conversations);
+        })
         .catch(() => undefined);
     }, 180);
     return () => window.clearTimeout(timer);
   }, [authenticated, activeWorkspaceId, search]);
+
+  useEffect(() => setSelectedTrajectoryTurnId(null), [activeWorkspaceId, browsedSessionId]);
 
   useEffect(() => {
     if (previewState.status === 'closed' && !executionDetail) return;
@@ -325,10 +422,17 @@ export function App() {
   const handleSelectWorkspace = async (workspace: WorkspaceSummary) => {
     const http = httpRef.current;
     if (!http) return;
+    if (workspaceSwitchRef.current || workspace.id === activeWorkspaceId) return;
     if (workspace.availability !== 'available') {
       setActivationNotice(`Workspace ${workspace.displayName} 当前不可用。`);
       return;
     }
+    workspaceSwitchRef.current = true;
+    const switchRequestId = ++workspaceSwitchRequestRef.current;
+    ++conversationRequestRef.current;
+    ++recordRequestRef.current;
+    setWorkspaceSwitching(true);
+    setActivationNotice(null);
     try {
       const result = await http.selectWorkspace(workspace.canonicalPath);
       if (result.selection.status === 'failed' || !result.activeWorkspaceId) {
@@ -343,39 +447,52 @@ export function App() {
         http.getWorkspaces(),
         http.getConversations(result.activeWorkspaceId),
       ]);
+      if (switchRequestId !== workspaceSwitchRequestRef.current) return;
       const workspaceActiveSessionId = catalog.conversations.some(
         session => session.id === result.activeSessionId,
       )
         ? result.activeSessionId
         : null;
-      const initialSessionId = selectInitialSessionId(
-        catalog.conversations,
-        null,
-        workspaceActiveSessionId,
-      );
-      let resolvedActiveSessionId = workspaceActiveSessionId;
-      if (initialSessionId && initialSessionId !== workspaceActiveSessionId) {
-        const activation = await http.attachConversation(initialSessionId).catch(() => null);
-        if (activation?.state === 'active') resolvedActiveSessionId = initialSessionId;
-      }
       setWorkspaces(workspaceCatalog.workspaces);
       setActiveWorkspaceId(result.activeWorkspaceId);
-      activeConversationRef.current = resolvedActiveSessionId;
-      setActiveSessionId(resolvedActiveSessionId);
+      activeConversationRef.current = workspaceActiveSessionId;
+      browsedConversationRef.current = workspaceActiveSessionId;
+      setActiveSessionId(workspaceActiveSessionId);
       setSessions(catalog.conversations);
-      setBrowsedSessionId(initialSessionId ?? resolvedActiveSessionId);
+      setBrowsedSessionId(workspaceActiveSessionId);
       setSelectedRecord(null);
+      liveTurnRef.current = null;
       setLiveTurn(null);
       setPreviewState({ status: 'closed' });
       setExecutionDetail(null);
       setActivationNotice(null);
-      if (resolvedActiveSessionId) {
-        void http.getConversation(resolvedActiveSessionId)
-          .then(setSelectedRecord)
-          .catch(error => setActivationNotice((error as Error).message));
+      if (workspaceActiveSessionId) {
+        const recordRequestId = ++recordRequestRef.current;
+        void http.getConversation(workspaceActiveSessionId)
+          .then(record => {
+            if (
+              recordRequestId === recordRequestRef.current
+              && switchRequestId === workspaceSwitchRequestRef.current
+            ) {
+              setSelectedRecord(record);
+            }
+          })
+          .catch(error => {
+            if (
+              recordRequestId === recordRequestRef.current
+              && switchRequestId === workspaceSwitchRequestRef.current
+            ) {
+              setActivationNotice((error as Error).message);
+            }
+          });
       }
     } catch (error) {
       setActivationNotice(`Workspace 切换失败：${(error as Error).message}`);
+    } finally {
+      if (switchRequestId === workspaceSwitchRequestRef.current) {
+        workspaceSwitchRef.current = false;
+        setWorkspaceSwitching(false);
+      }
     }
   };
 
@@ -419,6 +536,7 @@ export function App() {
         setSessions(catalog.conversations);
       }
       activeConversationRef.current = sessionId;
+      browsedConversationRef.current = sessionId;
       setActiveSessionId(sessionId);
       setBrowsedSessionId(sessionId);
       setPreviewState({ status: 'closed' });
@@ -428,24 +546,26 @@ export function App() {
   };
 
   const handleSelectSession = (sessionId: string) => {
+    if (workspaceSwitchRef.current) return;
+    browsedConversationRef.current = sessionId;
     setBrowsedSessionId(sessionId);
     setActivationNotice(null);
     setPreviewState({ status: 'closed' });
     setExecutionDetail(null);
     if (sessionId === activeSessionId) {
-      void httpRef.current?.getConversation(sessionId)
-        .then(setSelectedRecord)
-        .catch(error => setActivationNotice((error as Error).message));
+      loadRecordRef.current(sessionId);
       return;
     }
     setSelectedRecord(null);
-    setLiveTurn(current => retainLiveTurnForConversation(current, sessionId));
+    liveTurnRef.current = retainLiveTurnForConversation(liveTurnRef.current, sessionId);
+    setLiveTurn(liveTurnRef.current);
     void handleActivation(sessionId).catch(error => {
       setActivationNotice((error as Error).message);
     });
   };
 
   const handleNewSession = async () => {
+    if (workspaceSwitchRef.current) return;
     if (!httpRef.current || !activeWorkspaceId) {
       setActivationNotice('请先选择 Workspace，再新建会话。');
       return;
@@ -453,6 +573,7 @@ export function App() {
     const result = await httpRef.current.createConversation(activeWorkspaceId);
     const catalog = await httpRef.current.getConversations(activeWorkspaceId);
     setSessions(catalog.conversations);
+    browsedConversationRef.current = result.session.session.id;
     setBrowsedSessionId(result.session.session.id);
     setSelectedRecord(result.session);
     setActivationNotice(
@@ -464,6 +585,7 @@ export function App() {
     if (result.activation.state === 'active') {
       activeConversationRef.current = result.session.session.id;
       setActiveSessionId(result.session.session.id);
+      liveTurnRef.current = null;
       setLiveTurn(null);
       setPreviewState({ status: 'closed' });
       setExecutionDetail(null);
@@ -476,6 +598,8 @@ export function App() {
       await httpRef.current.deleteConversation(sessionId);
       setSessions(current => current.filter(session => session.id !== sessionId));
       if (browsedSessionId === sessionId) {
+        browsedConversationRef.current = null;
+        ++recordRequestRef.current;
         setBrowsedSessionId(null);
         setSelectedRecord(null);
       }
@@ -515,6 +639,8 @@ export function App() {
       const result = await httpRef.current.clearConversations();
       setSessions(current => current.filter(session => session.id === activeSessionId));
       if (browsedSessionId && browsedSessionId !== activeSessionId) {
+        browsedConversationRef.current = null;
+        ++recordRequestRef.current;
         setBrowsedSessionId(null);
         setSelectedRecord(null);
       }
@@ -567,20 +693,27 @@ export function App() {
   const selectedId = browsedSessionId ?? activeConversationInWorkspace;
   const selectedMetadata = sessions.find(session => session.id === selectedId)
     ?? selectedRecord?.session;
-  const turns: ConversationTurnProjection[] = [...(selectedRecord?.turns ?? [])];
+  const turns: ConversationTurnProjection[] = (selectedRecord?.turns ?? [])
+    .map(projectTurnForPresentation);
   if (selectedId === activeSessionId && liveTurn) {
+    const projectedLiveTurn = projectTurnForPresentation(liveTurn);
     const existingIndex = turns.findIndex(turn => turn.id === liveTurn.id);
-    if (existingIndex >= 0) turns[existingIndex] = liveTurn;
-    else turns.push(liveTurn);
+    if (existingIndex >= 0) turns[existingIndex] = projectedLiveTurn;
+    else turns.push(projectedLiveTurn);
   }
   const latestTurn = turns.at(-1) ?? null;
+  const selectedTrajectoryTurn = selectedTrajectoryTurnId
+    ? turns.find(turn => turn.id === selectedTrajectoryTurnId) ?? latestTurn
+    : latestTurn;
   const running = Boolean(selectedId === activeSessionId && liveTurn?.status === 'running');
   const composerDisabled = selectedId !== activeSessionId || !connected;
-  const composerBlockedReason = selectedId !== activeSessionId
-    ? '正在加载当前会话…'
-    : !connected
-      ? 'WebSocket 尚未连接，消息不会丢失。连接恢复后再发送。'
-      : activationNotice;
+  const composerBlockedReason = workspaceSwitching
+    ? '正在切换 Workspace…'
+    : selectedId !== activeSessionId
+      ? '正在加载当前会话…'
+      : !connected
+        ? 'WebSocket 尚未连接，消息不会丢失。连接恢复后再发送。'
+        : activationNotice;
 
   // 执行详情抽屉：只在目标 turn 仍可见时渲染；找不到时视为关闭。
   const executionDetailTurn = executionDetail
@@ -596,6 +729,7 @@ export function App() {
         activeWorkspaceId={activeWorkspaceId}
         activeSessionId={activeSessionId}
         selectedSessionId={selectedId}
+        workspaceSwitching={workspaceSwitching}
         search={search}
         title={selectedMetadata?.title ?? activeWorkspace?.displayName ?? 'Workspace'}
         workspace={activeWorkspace}
@@ -604,7 +738,7 @@ export function App() {
         themePreference={themePreference}
         composerVisible={tab === 'conversation' && Boolean(selectedId)}
         draft={draft}
-        composerDisabled={composerDisabled}
+        composerDisabled={workspaceSwitching || composerDisabled}
         running={running}
         blockedReason={composerBlockedReason}
         previewOpen={previewState.status !== 'closed' || executionDetailOpen}
@@ -633,7 +767,10 @@ export function App() {
         onDeleteSession={sessionId => void handleDeleteSession(sessionId)}
         onClearSessions={() => void handleClearSessions()}
         onSettings={() => setSettingsOpen(true)}
-        onTabChange={setTab}
+        onTabChange={nextTab => {
+          if (nextTab === 'trajectory') setSelectedTrajectoryTurnId(null);
+          setTab(nextTab);
+        }}
         onThemeChange={setThemePreference}
         onDraftChange={setDraft}
         onSend={(text, attachments) => {
@@ -672,22 +809,30 @@ export function App() {
             <ConversationView
               sessionId={selectedId}
               turns={turns}
-              running={running}
               onOpenArtifact={handleOpenArtifact}
               onOpenSubtaskDetail={(subtaskId, subtaskTitle) => {
                 const target = turns.at(-1);
                 if (target) setExecutionDetail({ subtaskId, subtaskTitle, turnId: target.id });
               }}
-              onOpenTrajectory={() => setTab('trajectory')}
+              onOpenTrajectory={turnId => {
+                setSelectedTrajectoryTurnId(turnId);
+                setTab('trajectory');
+              }}
             />
           )
           : (
             <TrajectoryView
-              turn={latestTurn}
+              turn={selectedTrajectoryTurn}
               http={httpRef.current}
               onOpenArtifact={handleOpenArtifact}
               onOpenSubtaskDetail={(subtaskId, subtaskTitle) => {
-                if (latestTurn) setExecutionDetail({ subtaskId, subtaskTitle, turnId: latestTurn.id });
+                if (selectedTrajectoryTurn) {
+                  setExecutionDetail({
+                    subtaskId,
+                    subtaskTitle,
+                    turnId: selectedTrajectoryTurn.id,
+                  });
+                }
               }}
             />
           )}

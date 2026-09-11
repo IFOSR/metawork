@@ -366,8 +366,21 @@ function isCompactedSnapshotSource(event: GatewayEventEnvelope): boolean {
 function buildTraceSnapshot(
   events: readonly GatewayEventEnvelope[],
 ): GatewayEventEnvelope | null {
-  const traceEvents = events
-    .filter(event => event.kind === 'trace_delta')
+  const traceDeltas = events.filter(event => (
+    event.kind === 'trace_delta'
+    && isRecord(event.payload)
+    && Array.isArray(event.payload.events)
+    && event.payload.events.length > 0
+  ));
+  const latest = traceDeltas.at(-1);
+  if (!latest) return null;
+  const latestTurnId = traceDeltaTurnId(latest);
+  const traceEvents = traceDeltas
+    .filter(event => (
+      latestTurnId
+        ? traceDeltaTurnId(event) === latestTurnId
+        : event === latest
+    ))
     .flatMap(event => {
       const payload = isRecord(event.payload) ? event.payload : {};
       return Array.isArray(payload.events) ? payload.events : [];
@@ -386,13 +399,6 @@ function buildTraceSnapshot(
     numberValue(left.sequence) - numberValue(right.sequence)
       || stringValue(left.occurredAt).localeCompare(stringValue(right.occurredAt))
   ));
-  const latest = [...events].reverse().find(event => (
-    event.kind === 'trace_delta'
-      && isRecord(event.payload)
-      && Array.isArray(event.payload.events)
-      && event.payload.events.length > 0
-  ));
-  if (!latest) return null;
   const payload = {
     ...(isRecord(latest.payload) ? latest.payload : {}),
     events: boundTraceEvents(ordered),
@@ -402,6 +408,11 @@ function buildTraceSnapshot(
     ...latest,
     payload,
   };
+}
+
+function traceDeltaTurnId(event: GatewayEventEnvelope): string | null {
+  if (event.turnId) return event.turnId;
+  return isRecord(event.payload) ? stringValue(event.payload.turnId) || null : null;
 }
 
 function boundTraceEvents(events: readonly Record<string, unknown>[]): Record<string, unknown>[] {

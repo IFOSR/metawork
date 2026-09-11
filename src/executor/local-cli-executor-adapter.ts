@@ -5,7 +5,11 @@ import type { AuthorizedExecutorBinding } from '../core/authorized-executor-bind
 import type { ExecutorResult } from '../core/types.js';
 import type { ExecutorAdapter, ExecutorInput, ExecutorProbeResult } from './adapter.js';
 import { normalizeExecutorFailure } from './error-utils.js';
-import type { HarnessDriver, HarnessLaunchSpec } from './harness-driver.js';
+import type {
+  HarnessActivitySignal,
+  HarnessDriver,
+  HarnessLaunchSpec,
+} from './harness-driver.js';
 import { safeHostEnvironment } from './harness-driver.js';
 import { buildExecutorContextPrompt } from './prompt-builder.js';
 import type { ExecutorAffordanceId } from '../routing/types.js';
@@ -17,7 +21,10 @@ const DEFAULT_TERMINATION_GRACE_MS = 5_000;
 export interface LocalCliChildProcessInput extends HarnessLaunchSpec {
   attemptId: string;
   idleTimeoutMs?: number;
-  onLine?: (line: string, stream: 'stdout' | 'stderr') => void;
+  onLine?: (
+    line: string,
+    stream: 'stdout' | 'stderr',
+  ) => HarnessActivitySignal | null | void;
   onRawChunk?: (chunk: Buffer | string, stream: 'stdout' | 'stderr') => void;
 }
 
@@ -163,6 +170,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           }
           const progress = this.driver.parseProgressLine?.({ line, stream });
           if (progress) input.onProgress?.(progress);
+          return this.driver.parseActivityLine?.({ line, stream });
         },
         onRawChunk: (chunk, stream) => input.onRawOutput?.(Buffer.from(chunk), stream),
       });
@@ -365,6 +373,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       let sigkillSentAt: string | null = null;
       let idleTimer: NodeJS.Timeout | null = null;
       let forceKillTimer: NodeJS.Timeout | null = null;
+      const activeOperations = new Set<string>();
       const signalChild = (signal: NodeJS.Signals) => {
         const pid = child.pid;
         if (!pid) return;
@@ -437,8 +446,20 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
           || timeoutMs <= 0
         ) return;
         if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = null;
+        if (activeOperations.size > 0) return;
         idleTimer = setTimeout(expireIdleWatchdog, timeoutMs);
         idleTimer.unref();
+      };
+      const emitLine = (line: string, stream: 'stdout' | 'stderr') => {
+        const activity = input.onLine?.(line, stream);
+        if (!activity) return;
+        if (activity.type === 'operation_started') {
+          activeOperations.add(activity.operationId);
+        } else {
+          activeOperations.delete(activity.operationId);
+        }
+        resetIdleWatchdog();
       };
       const appendStdout = (chunk: Buffer | string) => {
         resetIdleWatchdog();
@@ -449,7 +470,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
         stdoutLineBuffer = emitCompleteLines(
           stdoutLineBuffer,
           chunk,
-          line => input.onLine?.(line, 'stdout'),
+          line => emitLine(line, 'stdout'),
         );
       };
       const appendStderr = (chunk: Buffer | string) => {
@@ -461,7 +482,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
         stderrLineBuffer = emitCompleteLines(
           stderrLineBuffer,
           chunk,
-          line => input.onLine?.(line, 'stderr'),
+          line => emitLine(line, 'stderr'),
         );
       };
 

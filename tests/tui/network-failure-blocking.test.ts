@@ -108,13 +108,13 @@ describe('App recoverable infrastructure failure waiting', () => {
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await waitUntil(() => taskRepo.findByStatus('blocked').length > 0);
-    await waitUntil(() => app.lastFrame()?.includes('Execution blocked: retry scheduled for') ?? false);
+    await waitUntil(() => app.lastFrame()?.includes('Execution will retry automatically at') ?? false);
 
     const blockedTask = taskRepo.findByStatus('blocked')[0];
     expect(blockedTask).toBeTruthy();
     expect(blockedTask.dependencies[0]).toMatchObject({ type: 'kernel_retry', status: 'waiting' });
     expect(blockedTask.dependencies[0]?.description).toContain('retry scheduled for');
-    expect(app.lastFrame()).toContain('Execution blocked: retry scheduled for');
+    expect(app.lastFrame()).toContain('Execution will retry automatically at');
 
     app.unmount();
     app.cleanup();
@@ -154,13 +154,13 @@ describe('App recoverable infrastructure failure waiting', () => {
     }
     await (inputCapture.handler?.('', { return: true }) ?? Promise.resolve());
     await waitUntil(() => taskRepo.findByStatus('blocked').length > 0);
-    await waitUntil(() => app.lastFrame()?.includes('Execution blocked: retry scheduled for') ?? false);
+    await waitUntil(() => app.lastFrame()?.includes('Execution will retry automatically at') ?? false);
 
     const blockedTask = taskRepo.findByStatus('blocked')[0];
     expect(blockedTask).toBeTruthy();
     expect(blockedTask.dependencies[0]).toMatchObject({ type: 'kernel_retry', status: 'waiting' });
     expect(blockedTask.dependencies[0]?.description).toContain('retry scheduled for');
-    expect(app.lastFrame()).toContain('Execution blocked: retry scheduled for');
+    expect(app.lastFrame()).toContain('Execution will retry automatically at');
 
     app.unmount();
     app.cleanup();

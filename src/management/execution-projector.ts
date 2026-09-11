@@ -100,7 +100,12 @@ export class ExecutionProjector {
     return {
       taskId: task.id,
       title: task.title,
-      status: task.status,
+      status: task.status === 'blocked'
+        && task.dependencies.some(dependency =>
+          dependency.type === 'kernel_retry' && dependency.status === 'waiting'
+        )
+        ? 'waiting_retry'
+        : task.status,
       stages: [
         this.projectPlanning(subtasks),
         this.projectAuthorization(decisions),

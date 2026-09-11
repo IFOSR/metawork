@@ -157,6 +157,7 @@ export class ConversationSession {
   private latestGuidance: GuidanceState | null = null;
   private runningExecutorsByAttempt = new Map<string, { taskId: string; subtaskId: string; name: string }>();
   private backgroundWork = new Set<Promise<void>>();
+  private taskTraceTurnIds = new Map<string, string>();
   private blockedRecheckInFlight = false;
   private lastBlockedRecheckAt: number | null = null;
   private lastTaskPoolWatchdogFingerprint: string | null = null;
@@ -234,6 +235,10 @@ export class ConversationSession {
 
   setCurrentTaskId(taskId: string | null): void {
     this.currentTaskId = taskId;
+    const trace = this.deps.interactionTraceStream?.getSnapshot();
+    if (taskId && trace?.status === 'running') {
+      this.taskTraceTurnIds.set(taskId, trace.turnId);
+    }
     this.notify();
   }
 
@@ -391,6 +396,11 @@ export class ConversationSession {
   appendExecutionTrace(input: ExecutionTraceAppendInput): void {
     const current = this.deps.interactionTraceStream?.getSnapshot();
     if (!current || current.status !== 'running') return;
+    if (input.taskId) {
+      const ownerTurnId = this.taskTraceTurnIds.get(input.taskId);
+      if (ownerTurnId && ownerTurnId !== current.turnId) return;
+      if (!ownerTurnId && current.taskId && current.taskId !== input.taskId) return;
+    }
     this.deps.interactionTraceStream?.append(input);
   }
 
@@ -675,7 +685,11 @@ export class ConversationSession {
     if (attemptId) this.runningExecutorsByAttempt.delete(attemptId);
   }
 
-  startBackgroundExecution(_taskId: string, launch: () => Promise<void>): Promise<void> {
+  startBackgroundExecution(taskId: string, launch: () => Promise<void>): Promise<void> {
+    const trace = this.deps.interactionTraceStream?.getSnapshot();
+    if (trace?.status === 'running') {
+      this.taskTraceTurnIds.set(taskId, trace.turnId);
+    }
     let promise!: Promise<void>;
     promise = Promise.resolve()
       .then(launch)
@@ -688,7 +702,16 @@ export class ConversationSession {
   }
 
   hasBackgroundWork(): boolean {
-    return this.backgroundWork.size > 0;
+    if (this.backgroundWork.size > 0) return true;
+    if (!this.currentTaskId) return false;
+    const task = this.deps.runtimePort.queries.findTask(this.currentTaskId);
+    return task?.status === 'running'
+      || Boolean(
+        task?.status === 'blocked'
+        && task.dependencies.some(dependency =>
+          dependency.type === 'kernel_retry' && dependency.status === 'waiting'
+        ),
+      );
   }
 
   deliverDirectReply(userInput: string, reply: string): void {
@@ -1337,7 +1360,25 @@ export class ConversationSession {
   private recordPlannerProposalTerminalTrace(result: PlannerProposalResult): void {
     const current = this.deps.interactionTraceStream?.getSnapshot();
     if (!current || current.status !== 'running') return;
-    if (result.status === 'accepted') return;
+    if (result.status === 'accepted') {
+      if (result.outcome !== 'clarification_requested') return;
+      this.appendTrace({
+        phase: 'delivery',
+        actor: 'runtime',
+        kind: 'clarification_requested',
+        status: 'completed',
+        title: 'Clarification requested',
+        summary: result.displayText,
+        details: {
+          plannerTurnId: result.turnId,
+          submissionId: result.submissionId,
+          decisionId: result.kernel?.decisionId ?? null,
+        },
+        eventKey: `${result.submissionId}:clarification`,
+        traceStatus: 'completed',
+      });
+      return;
+    }
     const status = result.status === 'rejected' ? 'failed' : 'blocked';
     this.appendTrace({
       phase: 'planning',

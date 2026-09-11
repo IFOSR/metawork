@@ -15,6 +15,7 @@ export function WorkspaceShell({
   activeWorkspaceId,
   activeSessionId,
   selectedSessionId,
+  workspaceSwitching,
   search,
   title,
   workspace,
@@ -50,6 +51,7 @@ export function WorkspaceShell({
   activeWorkspaceId: string | null;
   activeSessionId: string | null;
   selectedSessionId: string | null;
+  workspaceSwitching: boolean;
   search: string;
   title: string;
   workspace: WorkspaceSummary | null;
@@ -90,6 +92,7 @@ export function WorkspaceShell({
         activeSessionId={activeSessionId}
         runningSessionId={running ? activeSessionId : null}
         selectedSessionId={selectedSessionId}
+        workspaceSwitching={workspaceSwitching}
         search={search}
         onSearch={onSearch}
         onSelectWorkspace={onSelectWorkspace}

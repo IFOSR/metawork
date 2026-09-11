@@ -13,6 +13,7 @@ import { RuntimeHomeMaterializer } from './runtime-home-materializer.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import type {
   HarnessDriver,
+  HarnessActivitySignal,
   HarnessLaunchInput,
   HarnessLaunchSpec,
   HarnessProbeResult,
@@ -200,6 +201,27 @@ export class CodexCliDriver implements HarnessDriver {
       return { kind: 'status', text: 'Executor recorded workspace changes' };
     }
     return null;
+  }
+
+  parseActivityLine(input: HarnessProgressLineInput): HarnessActivitySignal | null {
+    if (input.stream !== 'stdout') return null;
+    const event = parseJsonLine(input.line);
+    if (!event || typeof event.type !== 'string') return null;
+    if (event.type === 'turn.started' || event.type === 'turn.completed') {
+      return {
+        type: event.type === 'turn.started' ? 'operation_started' : 'operation_finished',
+        operationId: 'codex-turn',
+      };
+    }
+    if (event.type !== 'item.started' && event.type !== 'item.completed') return null;
+    const item = event.item;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+    const itemId = (item as Record<string, unknown>).id;
+    if (typeof itemId !== 'string' || !itemId.trim()) return null;
+    return {
+      type: event.type === 'item.started' ? 'operation_started' : 'operation_finished',
+      operationId: `codex-item:${safeHarnessName(itemId)}`,
+    };
   }
 
   private async seedProviderConfig(homePath: string, revisionId: string): Promise<void> {

@@ -161,6 +161,45 @@ describe('CodexCliDriver', () => {
     });
   });
 
+  it('classifies Codex turn and item lifecycle as authoritative active operations', () => {
+    const driver = new CodexCliDriver({ probeCommand: vi.fn() });
+
+    expect(driver.parseActivityLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({ type: 'turn.started' }),
+    })).toEqual({
+      type: 'operation_started',
+      operationId: 'codex-turn',
+    });
+    expect(driver.parseActivityLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'item.started',
+        item: { id: 'item_2', type: 'command_execution' },
+      }),
+    })).toEqual({
+      type: 'operation_started',
+      operationId: 'codex-item:item_2',
+    });
+    expect(driver.parseActivityLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'item.completed',
+        item: { id: 'item_2', type: 'command_execution' },
+      }),
+    })).toEqual({
+      type: 'operation_finished',
+      operationId: 'codex-item:item_2',
+    });
+    expect(driver.parseActivityLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({ type: 'turn.completed' }),
+    })).toEqual({
+      type: 'operation_finished',
+      operationId: 'codex-turn',
+    });
+  });
+
   it('materializes CODEX_HOME under the supplied attempts root', async () => {
     const root = await mkdtemp(join(tmpdir(), 'anyfusion-codex-driver-'));
     try {

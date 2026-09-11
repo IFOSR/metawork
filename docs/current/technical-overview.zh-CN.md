@@ -551,13 +551,16 @@ codex --help
 默认配置：
 
 ```yaml
-executor:
-  command: codex
-  timeout: 300
-  max_duration: 3600
+runtimePolicy:
+  executorIdleTimeoutMs: 300000
 ```
 
-`timeout` 表示连续无输出 watchdog，不是固定墙钟总时长限制。只要 executor 仍在 stdout 或 stderr 输出内容，MetaWork 就会续期，不会因为运行时间长而杀掉仍活跃的进程。`max_duration` 仅保留用于兼容旧配置，不再用于终止活跃 executor。
+`executorIdleTimeoutMs` 是唯一的 Executor 时间边界。MetaWork 不设置 Attempt
+总时长、工具调用次数、处理轮次或全局 shell timeout。stdout/stderr 会续期 idle
+watchdog；Harness Driver 识别到 operation start 后暂停 watchdog，直到最后一个
+operation end 才重新计时。Runtime heartbeat 只用于展示，不是 watchdog 活动。
+Kernel 自动 retry 投影为非终态 `waiting_retry`，Web 会保持原 turn 运行中，并从
+durable execution timeline 收敛最终状态。
 
 ### Pi Agent
 
@@ -722,6 +725,15 @@ Subtask 分组展示 Executor、Harness、Provider、Model、当前安全步骤�
 ExecutionProjector 时间线，因此重连、切换会话和回合结束后仍能查看同一条
 Subtask 详情。心跳、等待依赖、等待容量和 blocked 会与真实 Executor 活动
 明确区分。执行进度只是展示事实，不会成为 Completion Protocol 验收证据。
+
+Web 展示遵循
+`Conversation -> Turn -> one presentation Task -> Subtasks -> Attempts`。
+一个 Turn 首次绑定的展示 Task 身份不可被后续事件替换。实时 execution 和 artifact
+消息同时携带 `turnId` 与 `taskId`，浏览器仅在两者都匹配时应用更新；其他 Task
+的 trace 不能创建卡片、修改状态或进入当前 Turn 的 Trajectory。Trajectory 默认
+展示最新 Turn，从历史 Turn 打开时则精确选择该 Turn。已有混合历史记录只在读取
+投影时过滤，不修改或删除持久 Task、trace、artifact 与 audit 事实；当前 Task 内
+并发执行的所有 Subtask 仍完整展示。
 
 执行展示统一使用 Runtime Subtask ID 作为 canonical identity。
 `src/work-graph/subtask-identity.ts` 是 proposal ID 到 Runtime ID 映射的唯一纯

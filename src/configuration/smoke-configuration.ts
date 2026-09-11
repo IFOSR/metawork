@@ -46,7 +46,6 @@ export async function prepareSmokeConfiguration(
       models,
       executorCommand: input.executorCommand,
       executorTimeoutSeconds: input.executorTimeoutSeconds,
-      executorMaxDurationSeconds: input.executorMaxDurationSeconds,
     }),
   );
   const compiled = compileConfigurationRevision(
@@ -79,7 +78,6 @@ function buildSmokeConfiguration(input: {
   models: { planner: ModelInput; executor: ModelInput };
   executorCommand: string;
   executorTimeoutSeconds: number;
-  executorMaxDurationSeconds: number;
 }): AnyFusionConfigurationV2 {
   const executorHarness = input.executorCommand === 'pi'
     ? 'pi-cli'
@@ -174,10 +172,7 @@ function buildSmokeConfiguration(input: {
       },
     },
     runtimePolicy: {
-      attemptTimeoutMs: Math.max(
-        input.executorTimeoutSeconds,
-        input.executorMaxDurationSeconds,
-      ) * 1_000,
+      executorIdleTimeoutMs: input.executorTimeoutSeconds * 1_000,
     },
     gateway: {},
   };

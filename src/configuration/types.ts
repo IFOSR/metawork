@@ -196,7 +196,7 @@ export interface RuntimePolicy {
   maxConcurrentAttemptsPerTask?: number;
   schedulingAgingMs?: number;
   sameConversationQueueLimit?: number;
-  attemptTimeoutMs?: number;
+  executorIdleTimeoutMs?: number;
   probeTimeoutMs?: number;
 }
 

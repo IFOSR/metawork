@@ -3,6 +3,7 @@ import type {
   ExecutionTimeline,
   InteractionTrace,
   InteractionTraceEvent,
+  InteractionTraceStatus,
   ServerMessage,
   ConfigurationRuntimeState,
 } from './types';
@@ -68,7 +69,7 @@ export interface WsHandlers {
     certification: 'certified' | 'uncertified',
   ) => void;
   onOutput?: (lines: string[], from: number) => void;
-  onExecution?: (taskId: string, timeline: ExecutionTimeline) => void;
+  onExecution?: (turnId: string, taskId: string, timeline: ExecutionTimeline) => void;
   onArtifacts?: (turnId: string, taskId: string, artifacts: ArtifactProjection[]) => void;
   onTraceSnapshot?: (trace: InteractionTrace) => void;
   onTraceDelta?: (
@@ -189,7 +190,7 @@ export class WsClient {
           this.handlers.onOutput?.(message.lines, message.from);
           break;
         case 'execution':
-          this.handlers.onExecution?.(message.taskId, message.timeline);
+          this.handlers.onExecution?.(message.turnId, message.taskId, message.timeline);
           break;
         case 'artifacts':
           this.handlers.onArtifacts?.(message.turnId, message.taskId, message.artifacts);

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import type { GatewayAttachmentStore } from '../../src/gateway/attachment-store-port.js';
 import type { GatewayEventEnvelope, GatewayReplay } from '../../src/gateway/client-events.js';
 import type { WebGatewayAdapter } from '../../src/management/web-gateway-adapter.js';
 import { FileAttachmentStore } from '../../src/storage/file-attachment-store.js';
@@ -15,6 +16,100 @@ import type { WebSessionRecord } from '../../src/management/web-session-types.js
 import type { ExecutionTimeline } from '../../src/management/execution-projector.js';
 
 describe('WebGatewaySessionRuntime', () => {
+  it('serializes Workspace navigation so a later selection cannot be overtaken', async () => {
+    const firstSelection = deferred<{
+      requestId: string;
+      idempotencyKey: string;
+      status: 'accepted';
+      workspaceId: string;
+      conversationId: null;
+    }>();
+    const submittedPaths: string[] = [];
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway: gatewayFixture({
+        submit: async envelope => {
+          if (envelope.command.kind !== 'select_workspace') {
+            throw new Error(`unexpected command: ${envelope.command.kind}`);
+          }
+          submittedPaths.push(envelope.command.path);
+          if (envelope.command.path === '/repo-a') return firstSelection.promise;
+          return {
+            requestId: envelope.requestId,
+            idempotencyKey: envelope.idempotencyKey,
+            status: 'accepted' as const,
+            workspaceId: 'workspace_b',
+            conversationId: null,
+          };
+        },
+      }),
+    });
+
+    const first = runtime.selectWorkspace('browser-a', '/repo-a');
+    await waitFor(() => submittedPaths.length === 1);
+    const second = runtime.selectWorkspace('browser-a', '/repo-b');
+
+    expect(submittedPaths).toEqual(['/repo-a']);
+    firstSelection.resolve({
+      requestId: 'req_a',
+      idempotencyKey: 'idem_a',
+      status: 'accepted',
+      workspaceId: 'workspace_a',
+      conversationId: null,
+    });
+
+    await Promise.all([first, second]);
+    expect(submittedPaths).toEqual(['/repo-a', '/repo-b']);
+    expect(runtime.getClientState('browser-a').activeWorkspaceId).toBe('workspace_b');
+  });
+
+  it('keeps a message bound to its original Conversation across a foreground switch', async () => {
+    const attachmentRead = deferred<{
+      metadata: { name: string; mime: string; kind: 'text'; size: number };
+      bytes: Buffer;
+      path: string;
+    }>();
+    let submittedConversationId: string | null = null;
+    const gateway = gatewayFixture({
+      submit: async envelope => {
+        if (envelope.scope.kind === 'conversation'
+          && envelope.scope.selection.mode === 'attach') {
+          submittedConversationId = envelope.scope.selection.conversationId;
+        }
+        return {
+          requestId: envelope.requestId,
+          idempotencyKey: envelope.idempotencyKey,
+          status: 'accepted' as const,
+          conversationId: 'conv_1',
+        };
+      },
+    });
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway,
+      attachments: {
+        readAttachment: async () => attachmentRead.promise,
+      } as unknown as GatewayAttachmentStore,
+    });
+
+    await attachBrowser(runtime);
+    const submitting = runtime.submit('browser-a', '发给 A', [{
+      attachmentId: 'attachment_a',
+      kind: 'file',
+    }]);
+    await runtime.activateSession('browser-a', 'conv_2');
+    attachmentRead.resolve({
+      metadata: { name: 'a.txt', mime: 'text/plain', kind: 'text', size: 1 },
+      bytes: Buffer.from('A'),
+      path: '/tmp/a.txt',
+    });
+
+    await submitting;
+    expect(submittedConversationId).toBe('conv_1');
+  });
+
   it('selects the launch cwd as Workspace without creating a Conversation', async () => {
     const submitted: Array<{ connectionId: string; kind: string }> = [];
     const runtime = new WebGatewaySessionRuntime({
@@ -551,15 +646,98 @@ describe('WebGatewaySessionRuntime', () => {
     ]);
   });
 
+  it('does not let late running trace events reopen a completed clarification turn', async () => {
+    let listener: ((event: GatewayEventEnvelope) => void) | null = null;
+    let submittedRequestId = '';
+    const projected: WebSessionRuntimeEvent[] = [];
+    const gateway = {
+      attachClient: async () => () => undefined,
+      subscribe: (
+        _accountId: string,
+        _conversationId: string,
+        next: (event: GatewayEventEnvelope) => void,
+      ) => {
+        listener = next;
+        return () => undefined;
+      },
+      replay: async () => ({ lastSequence: 0, snapshot: [], deltas: [] }),
+      submit: async (envelope: { requestId: string }) => {
+        submittedRequestId = envelope.requestId;
+        return {
+          requestId: envelope.requestId,
+          idempotencyKey: 'idem_clarification',
+          status: 'accepted' as const,
+          conversationId: 'conv_1',
+        };
+      },
+    } as unknown as WebGatewayAdapter;
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway,
+      createId: prefix => `${prefix}_clarification`,
+    });
+    runtime.subscribe('browser-a', event => projected.push(event));
+
+    await attachBrowser(runtime);
+    await runtime.submit('browser-a', '谁的发言含金量最高？');
+    listener!({
+      ...outputEvent('event_started', 1, []),
+      requestId: submittedRequestId,
+      turnId: 'turn_clarification',
+      kind: 'turn_started',
+      payload: { commandKind: 'user_message' },
+    });
+    listener!({
+      ...outputEvent('event_final', 2, []),
+      requestId: submittedRequestId,
+      turnId: 'turn_clarification',
+      kind: 'final_answer',
+      payload: { lines: ['请补充需要比较的具体发言内容。'] },
+    });
+    listener!({
+      ...outputEvent('event_late_trace', 3, []),
+      requestId: submittedRequestId,
+      turnId: 'turn_clarification',
+      kind: 'trace_delta',
+      payload: {
+        turnId: 'turn_clarification',
+        status: 'running',
+        completedAt: null,
+        events: [{
+          id: 'trace_planner_completed',
+          sequence: 2,
+          occurredAt: '2026-08-19T00:00:00.000Z',
+          phase: 'planning',
+          actor: 'planner',
+          kind: 'planner_agent_completed',
+          status: 'completed',
+          title: 'Planner handoff confirmed',
+          summary: 'Planner completed the structured proposal handoff.',
+          taskId: null,
+          subtaskId: null,
+          details: {},
+        }],
+      },
+    });
+
+    expect(projected.at(-1)).toMatchObject({
+      type: 'trace_delta',
+      turnId: 'turn_clarification',
+      status: 'completed',
+      completedAt: '2026-08-19T00:00:00.000Z',
+    });
+  });
+
   it('keeps a background task command live after its immediate command result', async () => {
     let listener: ((event: GatewayEventEnvelope) => void) | null = null;
-    let appended = 0;
+    let appended: WebSessionRecord['turns'][number] | null = null;
     const projected: WebSessionRuntimeEvent[] = [];
     const record = sessionRecord('conv_1', true);
     const catalog = {
       ...catalogForRecord(record),
-      appendTurn: async () => {
-        appended += 1;
+      appendTurn: async (_sessionId, turn) => {
+        appended = structuredClone(turn);
         return record;
       },
     } as unknown as WebSessionRuntimeCatalog;
@@ -623,9 +801,14 @@ describe('WebGatewaySessionRuntime', () => {
         backgroundWorkPending: true,
       },
     });
-    await Promise.resolve();
+    await waitFor(() => appended !== null);
 
-    expect(appended).toBe(0);
+    expect(appended).toMatchObject({
+      id: 'turn_1',
+      status: 'completed',
+      completedAt: '2026-08-19T00:00:00.000Z',
+      finalAnswer: '已发起任务恢复',
+    });
     listener!({
       ...outputEvent('event_trace', 3, []),
       requestId: 'req_1',
@@ -659,9 +842,211 @@ describe('WebGatewaySessionRuntime', () => {
     }));
     expect(projected).toContainEqual(expect.objectContaining({
       type: 'execution',
+      turnId: 'turn_1',
       taskId: 'task_resume',
       timeline,
     }));
+  });
+
+  it('keeps a Turn bound to its first Task when a previous Task emits late trace events', async () => {
+    let listener: ((event: GatewayEventEnvelope) => void) | null = null;
+    const projected: WebSessionRuntimeEvent[] = [];
+    const timelineFor = (taskId: string): ExecutionTimeline => ({
+      taskId,
+      title: taskId,
+      status: 'running',
+      stages: [{
+        phase: 'execution',
+        status: 'running',
+        subtasks: [{
+          id: `subtask_${taskId}`,
+          title: `Subtask ${taskId}`,
+          status: 'running',
+          attempts: [],
+        }],
+      }],
+    });
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway: gatewayFixture({
+        subscribe: (
+          _accountId: string,
+          _conversationId: string,
+          next: (event: GatewayEventEnvelope) => void,
+        ) => {
+          listener = next;
+          return () => undefined;
+        },
+      }),
+      projectExecutionTimeline: taskId => timelineFor(taskId),
+    });
+    runtime.subscribe('browser-a', event => projected.push(event));
+
+    await attachBrowser(runtime);
+    listener!(turnStartedEvent('event_started', 1, 'req_b', 'turn_b'));
+    listener!({
+      ...traceDeltaEvent('event_task_b', 2, 'turn_b'),
+      requestId: 'req_b',
+      payload: {
+        turnId: 'turn_b',
+        taskId: 'task_b',
+        status: 'running',
+        events: [{
+          id: 'trace_task_b',
+          sequence: 1,
+          occurredAt: '2026-09-10T09:00:00.000Z',
+          phase: 'execution',
+          actor: 'executor',
+          kind: 'executor_progress',
+          status: 'running',
+          title: 'Task B progress',
+          summary: 'Task B is running',
+          taskId: 'task_b',
+          subtaskId: 'subtask_task_b',
+          details: { taskId: 'task_b', subtaskId: 'subtask_task_b' },
+        }],
+      },
+    });
+    listener!({
+      ...traceDeltaEvent('event_late_task_a', 3, 'turn_b'),
+      requestId: 'req_b',
+      payload: {
+        turnId: 'turn_b',
+        status: 'blocked',
+        events: [{
+          id: 'trace_late_task_a',
+          sequence: 2,
+          occurredAt: '2026-09-10T08:59:00.000Z',
+          phase: 'execution',
+          actor: 'executor',
+          kind: 'executor_progress',
+          status: 'running',
+          title: 'Late Task A progress',
+          summary: 'Task A completed earlier',
+          taskId: 'task_a',
+          subtaskId: 'subtask_task_a',
+          details: { taskId: 'task_a', subtaskId: 'subtask_task_a' },
+        }],
+      },
+    });
+    listener!({
+      ...traceDeltaEvent('event_mixed_task_a', 4, 'turn_b'),
+      requestId: 'req_b',
+      payload: {
+        turnId: 'turn_b',
+        status: 'blocked',
+        events: [
+          {
+            id: 'trace_turn_b_neutral',
+            sequence: 3,
+            occurredAt: '2026-09-10T09:01:00.000Z',
+            phase: 'delivery',
+            actor: 'runtime',
+            kind: 'delivery_progress',
+            status: 'running',
+            title: 'Turn B delivery',
+            summary: 'Current Turn event',
+            taskId: null,
+            subtaskId: null,
+            details: {},
+          },
+          {
+            id: 'trace_mixed_task_a',
+            sequence: 4,
+            occurredAt: '2026-09-10T08:59:30.000Z',
+            phase: 'execution',
+            actor: 'executor',
+            kind: 'executor_progress',
+            status: 'blocked',
+            title: 'Mixed Task A progress',
+            summary: 'Historical Task event',
+            taskId: 'task_a',
+            subtaskId: 'subtask_task_a',
+            details: { taskId: 'task_a', subtaskId: 'subtask_task_a' },
+          },
+        ],
+      },
+    });
+
+    const executionEvents = projected.filter(
+      (event): event is Extract<WebSessionRuntimeEvent, { type: 'execution' }> =>
+        event.type === 'execution',
+    );
+    expect(executionEvents.length).toBeGreaterThan(0);
+    expect(executionEvents.every(event => (
+      event.turnId === 'turn_b' && event.taskId === 'task_b'
+    ))).toBe(true);
+    expect(projected).not.toContainEqual(expect.objectContaining({
+      type: 'trace_delta',
+      events: expect.arrayContaining([
+        expect.objectContaining({ taskId: 'task_a' }),
+      ]),
+    }));
+    expect(projected).not.toContainEqual(expect.objectContaining({
+      type: 'trace_delta',
+      turnId: 'turn_b',
+      status: 'blocked',
+    }));
+  });
+
+  it('keeps the persisted Turn Task authoritative over a mismatched historical Timeline', async () => {
+    const record = sessionRecord('conv_1', true);
+    record.turns = [{
+      id: 'turn_b',
+      sessionId: 'conv_1',
+      userInput: '执行 Task B',
+      status: 'completed',
+      finalAnswer: 'Task B completed',
+      taskId: 'task_b',
+      startedAt: '2026-09-10T09:00:00.000Z',
+      completedAt: '2026-09-10T09:05:00.000Z',
+      traceEvents: [{
+        id: 'task_b_progress',
+        sequence: 1,
+        occurredAt: '2026-09-10T09:01:00.000Z',
+        phase: 'execution',
+        actor: 'executor',
+        kind: 'executor_progress',
+        status: 'completed',
+        title: 'Task B progress',
+        summary: 'current',
+        taskId: 'task_b',
+        subtaskId: 'subtask_b',
+        details: { taskId: 'task_b', subtaskId: 'subtask_b' },
+      }],
+      executionTimeline: {
+        taskId: 'task_a',
+        title: 'Task A',
+        status: 'done',
+        stages: [{
+          phase: 'execution',
+          status: 'done',
+          subtasks: [{
+            id: 'subtask_a',
+            title: 'Historical Task A',
+            status: 'done',
+            attempts: [],
+          }],
+        }],
+      },
+      artifactRefs: [],
+      artifacts: [],
+    }];
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogForRecord(record),
+      gateway: gatewayFixture(),
+    });
+
+    await attachBrowser(runtime);
+    const rebuilt = await runtime.readSession('browser-a', 'conv_1');
+
+    expect(rebuilt?.turns[0]).toMatchObject({
+      taskId: 'task_b',
+      executionTimeline: null,
+      traceEvents: [expect.objectContaining({ id: 'task_b_progress' })],
+    });
   });
 
   it('persists a background task as blocked with the Kernel blocker reason', async () => {
@@ -851,6 +1236,7 @@ describe('WebGatewaySessionRuntime', () => {
       kind: 'trace_delta',
       payload: {
         turnId: 'turn_1',
+        taskId: 'task_1',
         events: [{
           id: 'trace_executor',
           cursor: 'turn_1:1',
@@ -1091,6 +1477,146 @@ describe('WebGatewaySessionRuntime', () => {
     expect(artifactProjectionCount).toBe(1);
   });
 
+  it('rehydrates a historical retrying Task as a non-terminal turn', async () => {
+    const record = sessionRecord('conv_1', true);
+    record.turns = [{
+      id: 'turn_retrying',
+      sessionId: 'conv_1',
+      userInput: '执行任务',
+      status: 'blocked',
+      finalAnswer: 'Execution blocked: retry scheduled',
+      taskId: 'task_retrying',
+      startedAt: '2026-09-10T06:00:00.000Z',
+      completedAt: '2026-09-10T06:05:00.000Z',
+      traceEvents: [],
+      executionTimeline: null,
+      artifactRefs: [],
+      artifacts: [],
+    }];
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogForRecord(record),
+      gateway: gatewayFixture(),
+      projectExecutionTimeline: taskId => taskId === 'task_retrying'
+        ? {
+            taskId,
+            title: '执行任务',
+            status: 'waiting_retry',
+            stages: [
+              { phase: 'planning', status: 'done' },
+              { phase: 'authorization', status: 'done' },
+              { phase: 'execution', status: 'running' },
+              { phase: 'verification', status: 'pending' },
+              { phase: 'delivery', status: 'pending' },
+            ],
+          }
+        : null,
+    });
+
+    await attachBrowser(runtime);
+    const rebuilt = await runtime.readSession('browser-a', 'conv_1');
+
+    expect(rebuilt?.turns[0]).toMatchObject({
+      id: 'turn_retrying',
+      status: 'running',
+      completedAt: null,
+      executionTimeline: expect.objectContaining({ status: 'waiting_retry' }),
+    });
+  });
+
+  it('filters foreign Task events from an existing mixed historical Turn', async () => {
+    const record = sessionRecord('conv_1', true);
+    record.turns = [{
+      id: 'turn_b',
+      sessionId: 'conv_1',
+      userInput: '执行 Task B',
+      status: 'completed',
+      finalAnswer: 'Task B completed',
+      taskId: 'task_b',
+      startedAt: '2026-09-10T09:00:00.000Z',
+      completedAt: '2026-09-10T09:05:00.000Z',
+      traceEvents: [
+        {
+          id: 'query_b',
+          sequence: 1,
+          occurredAt: '2026-09-10T09:00:00.000Z',
+          phase: 'intake',
+          actor: 'user',
+          kind: 'query_received',
+          status: 'completed',
+          title: 'Query',
+          summary: '执行 Task B',
+          taskId: null,
+          subtaskId: null,
+          details: {},
+        },
+        {
+          id: 'task_a_progress',
+          sequence: 2,
+          occurredAt: '2026-09-10T08:59:00.000Z',
+          phase: 'execution',
+          actor: 'executor',
+          kind: 'executor_progress',
+          status: 'completed',
+          title: 'Task A progress',
+          summary: 'old',
+          taskId: 'task_a',
+          subtaskId: 'subtask_a',
+          details: { taskId: 'task_a', subtaskId: 'subtask_a' },
+        },
+        {
+          id: 'task_b_progress',
+          sequence: 3,
+          occurredAt: '2026-09-10T09:01:00.000Z',
+          phase: 'execution',
+          actor: 'executor',
+          kind: 'executor_progress',
+          status: 'completed',
+          title: 'Task B progress',
+          summary: 'current',
+          taskId: 'task_b',
+          subtaskId: 'subtask_b',
+          details: { taskId: 'task_b', subtaskId: 'subtask_b' },
+        },
+      ],
+      executionTimeline: {
+        taskId: 'task_b',
+        title: 'Task B',
+        status: 'done',
+        stages: [{
+          phase: 'execution',
+          status: 'done',
+          subtasks: [{
+            id: 'subtask_b',
+            title: 'Subtask B',
+            status: 'done',
+            attempts: [],
+          }],
+        }],
+      },
+      artifactRefs: [],
+      artifacts: [],
+    }];
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogForRecord(record),
+      gateway: gatewayFixture(),
+    });
+
+    await attachBrowser(runtime);
+    const rebuilt = await runtime.readSession('browser-a', 'conv_1');
+
+    expect(rebuilt?.turns[0]?.traceEvents.map(event => event.id)).toEqual([
+      'query_b',
+      'task_b_progress',
+    ]);
+    expect(record.turns[0]?.traceEvents.map(event => event.id)).toEqual([
+      'query_b',
+      'task_a_progress',
+      'task_b_progress',
+    ]);
+  });
+
   it('streams newly published artifacts to the active turn', async () => {
     let listener: ((event: GatewayEventEnvelope) => void) | null = null;
     const artifact = {
@@ -1131,6 +1657,7 @@ describe('WebGatewaySessionRuntime', () => {
       requestId: 'req_live',
       payload: {
         turnId: 'turn_live',
+        taskId: artifact.taskId,
         status: 'running',
         events: [{
           id: 'trace_live',
@@ -1369,6 +1896,7 @@ describe('conversation switch persistence (production incident 2026-09-05)', () 
       kind: 'trace_delta',
       payload: {
         turnId,
+        taskId: 'task_A',
         status,
         events: [{
           id: `${turnId}_${kind}_${sequence}`,

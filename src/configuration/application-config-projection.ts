@@ -12,8 +12,7 @@ export function buildApplicationConfig(snapshot: ConfigurationSnapshot): Config 
     version: 2,
     executor: {
       command: defaultExecutorCommand(snapshot) ?? 'codex',
-      timeout: Math.ceil((snapshot.config.runtimePolicy.attemptTimeoutMs ?? 300_000) / 1_000),
-      max_duration: Math.ceil((snapshot.config.runtimePolicy.attemptTimeoutMs ?? 3_600_000) / 1_000),
+      timeout: Math.ceil((snapshot.config.runtimePolicy.executorIdleTimeoutMs ?? 300_000) / 1_000),
     },
     orchestration: {
       reminder_enabled: true,

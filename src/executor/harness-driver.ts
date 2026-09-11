@@ -24,6 +24,11 @@ export interface HarnessProgressEvent {
   text: string;
 }
 
+export interface HarnessActivitySignal {
+  type: 'operation_started' | 'operation_finished';
+  operationId: string;
+}
+
 export interface HarnessResultStreamSnapshot {
   output: string | null;
   provisional: boolean;
@@ -94,6 +99,7 @@ export interface HarnessDriver {
   createResultStreamTracker?(): HarnessResultStreamTracker;
   parseResultLine?(input: HarnessProgressLineInput): string | null;
   parseProgressLine?(input: HarnessProgressLineInput): HarnessProgressEvent | null;
+  parseActivityLine?(input: HarnessProgressLineInput): HarnessActivitySignal | null;
 }
 
 /** Whitelists the host variables an Executor child process may inherit. */

@@ -574,9 +574,16 @@ Runtime behavior requirements:
 - It must accept the full task prompt through `{prompt}` or as the final argument.
 - It should write the final answer to stdout.
 - Failures should return a non-zero exit code or a clear stderr error.
-- Long-running tasks should emit progress periodically so the idle watchdog does not treat the process as stuck.
+- Long-running Harness operations may remain silent indefinitely after an authoritative operation-start event; the idle watchdog resumes only after the last operation-end event.
 - File artifacts should be written into the task output directory provided in the prompt.
 - Feishu delivery, file upload, and preview link generation should stay in MetaWork's backend; executors should produce local artifacts instead of calling Feishu APIs directly.
+
+`runtimePolicy.executorIdleTimeoutMs` is the only Executor time limit. MetaWork
+does not impose an Attempt wall-clock limit, tool-call budget, processing-cycle
+budget, or global shell timeout. Runtime heartbeats are presentation-only and
+never renew or suspend the watchdog. A Kernel automatic retry is exposed as
+`waiting_retry`; Web keeps the originating turn running and rehydrates its final
+status from the durable execution timeline.
 
 Optional advanced adapter interfaces:
 
@@ -751,6 +758,17 @@ capacity wait and blocked states are rendered distinctly from actual Executor
 activity. Stable event cursors and event IDs make replay idempotent across
 reconnects, and the persisted turn keeps the trace/timeline after the current
 turn ends. No progress event is Completion Protocol evidence.
+
+Web presentation follows
+`Conversation -> Turn -> one presentation Task -> Subtasks -> Attempts`.
+The first Task identity bound to a Turn is monotonic. Live execution and
+artifact messages carry both `turnId` and `taskId`, and the browser applies
+them only when both identities match. Task-bound trace events from another
+Task cannot create cards, replace status, or enter the selected Turn's
+Trajectory. Trajectory defaults to the newest Turn; opening a historical
+Turn selects that exact Turn. Existing mixed records are filtered during
+read projection without mutating durable Task, trace, artifact, or audit
+history, and all concurrent Subtasks inside the selected Task remain visible.
 
 Execution presentation uses the Runtime Subtask ID as its canonical identity.
 `src/work-graph/subtask-identity.ts` is the single pure owner of proposal-to-

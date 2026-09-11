@@ -42,12 +42,14 @@ describe('Web workspace shell', () => {
     expect(app).toContain('activeWorkspaceId');
     expect(app).toContain('workspaces');
     expect(app).toContain('browsedSessionId');
+    expect(app).toContain('workspaceSwitching');
+    expect(app).toContain('conversationRequestRef');
     expect(app).toContain('onTurnStarted');
     expect(app).toContain('onFinalAnswer');
     expect(app).toContain('onTraceDelta');
     expect(app).toContain('activeWorkspace');
     expect(app).toContain('onWorkspaceChanged');
-    expect(app).toContain('retainLiveTurnForConversation(current, sessionId)');
+    expect(app).toContain('retainLiveTurnForConversation(liveTurnRef.current, sessionId)');
     expect(app).toContain("composerVisible={tab === 'conversation' && Boolean(selectedId)}");
     expect(app).toContain('workspace-home');
     expect(http).toContain('/api/workspaces');
@@ -57,6 +59,56 @@ describe('Web workspace shell', () => {
     expect(styles).toContain('.workspace-sidebar');
     expect(styles).toContain('.workspace-selector');
     expect(styles).toContain('.workspace-home');
+  });
+
+  it('keeps Workspace switching separate from Conversation attachment', async () => {
+    const app = await readFile(new URL('App.tsx', root), 'utf8');
+    const start = app.indexOf('const handleSelectWorkspace');
+    const end = app.indexOf('const handleOpenArtifact');
+    const workspaceHandler = app.slice(start, end);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(workspaceHandler).not.toContain('attachConversation');
+    expect(workspaceHandler).not.toContain('selectInitialSessionId');
+  });
+
+  it('disables the Workspace selector during a switch', async () => {
+    const selector = await readFile(new URL('components/WorkspaceSelector.tsx', root), 'utf8');
+    const sidebar = await readFile(new URL('components/SessionSidebar.tsx', root), 'utf8');
+    const shell = await readFile(new URL('components/WorkspaceShell.tsx', root), 'utf8');
+
+    expect(selector).toContain('disabled');
+    expect(sidebar).toContain('workspaceSwitching');
+    expect(shell).toContain('workspaceSwitching');
+  });
+
+  it('refreshes the currently browsed Conversation after its catalog entry changes', async () => {
+    const app = await readFile(new URL('App.tsx', root), 'utf8');
+    const start = app.indexOf('onSessionCatalog:');
+    const end = app.indexOf('onWorkspaceDirectory:', start);
+    const catalogHandler = app.slice(start, end);
+    const loadRecordStart = app.indexOf('const loadRecord');
+    const loadRecordEnd = app.indexOf('const ws = new WsClient', loadRecordStart);
+    const loadRecord = app.slice(loadRecordStart, loadRecordEnd);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(catalogHandler).toContain('browsedConversationRef.current');
+    expect(catalogHandler).toContain('loadRecord');
+    expect(loadRecord).toContain('isCurrentConversationRecordRequest');
+  });
+
+  it('rolls a completed live Turn into Conversation history before starting the next Turn', async () => {
+    const app = await readFile(new URL('App.tsx', root), 'utf8');
+    const start = app.indexOf('onTurnStarted:');
+    const end = app.indexOf('onTraceSnapshot:', start);
+    const turnStartedHandler = app.slice(start, end);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(turnStartedHandler).toContain('liveTurnRef.current');
+    expect(turnStartedHandler).toContain('retainTerminalLiveTurnInRecord');
   });
 
   it('provides a three-state persisted theme control', async () => {

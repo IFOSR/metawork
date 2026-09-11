@@ -66,6 +66,18 @@ one card per Subtask and retains it as `EXECUTION SUMMARY`; a selected card
 opens a replayable detail drawer. Historical Web turns persist the safe trace
 and durable ExecutionProjector timeline, so reconnect and Conversation
 switching do not fall back to only the latest turn or current in-memory trace.
+Web presentation ownership is
+`Conversation -> Turn -> one presentation Task -> Subtasks -> Attempts`.
+A Turn binds monotonically to one presentation Task; Task-bound trace,
+execution and artifact updates must match both `turnId` and `taskId`.
+Trajectory defaults to the newest Turn, while an explicit historical Turn
+selection reprojects only that Turn's Task. Existing mixed historical records
+are filtered at read time without deleting durable Task, trace, artifact or
+audit facts. Concurrent Subtasks within the selected Task remain visible.
+Clarification is a completed turn that waits for a new user submission; it
+does not retain active execution state. Turn status is monotonic once terminal,
+so late Planner or presentation events may enrich the trace but cannot reopen
+`completed`, `failed`, or `blocked` as `running`.
 Work Graph owns the pure proposal-to-Runtime canonical Subtask identity map;
 Runtime materialization and every Management replay/live projection use that
 same map, without title, order or suffix guessing. Configuration owns
@@ -218,6 +230,14 @@ retains its authorized `workspaceId` and canonical path.
 `src/kernel/` owns the pure `ControlKernel` and the deep control-loop interface. Kernel contract v5 includes the executor-recovery and deferred-availability lifecycle in addition to the Phase 6 dispatch, cancellation, publication and permission contracts. `ControlKernel` reads no time, IDs, repositories, adapters or raw logs. Storage and Runtime implement the ledger and apply seams from outside the Kernel module.
 
 `src/execution/subtask-attempt-runner.ts` executes one Kernel-authorized deterministic attempt. A successful primary/correction attempt commits an immutable receipt and candidate Git commit, then moves the Subtask to `awaiting_integration`; it does not publish result, artifacts, handoffs or `done`. The publication worker integrates candidates in topology/first-dispatch/Subtask-ID order and atomically publishes all completion facts only after Git succeeds. Every non-success commits a terminal receipt and returns control to Kernel policy. A first completion-contract failure may receive one response-only correction on the same AgentClass; merge conflicts instead use the original AgentClass for up to three isolated `merge_repair` attempts, followed by one conflict-chain Planner replan and then park.
+
+Local CLI attempts have no MetaWork-owned wall-clock, tool-count or processing-cycle
+budget. `runtimePolicy.executorIdleTimeoutMs` is the only Executor time boundary:
+stdout/stderr activity renews it, and Driver-classified Harness operations suspend it
+until the last active operation finishes. Runtime presentation heartbeats are not
+watchdog activity. A Kernel-authorized automatic retry is projected as
+`waiting_retry`, keeps the originating turn non-terminal, and may update only that
+Task's durable historical projection after a newer Conversation turn begins.
 
 Executor path invariant: the Planner-projected `workingDirectory` and `targetPaths` identify the task-owned Git worktree, while each Executor also needs a private runtime home for provider configuration, tools, and sessions. These are separate path contracts. A future Executor registration entry must declare or derive both contracts and must let the adapter materialize them before process launch; it must never rely on a CLI's implicit `HOME` discovery. For Pi, the adapter must set `HOME`, `PI_CODING_AGENT_DIR`, and `PI_CODING_AGENT_SESSION_DIR` and pre-create the session directory. For Codex, the adapter must set an isolated `CODEX_HOME` containing the rewritten provider config. The child process `cwd` remains the Planner-assigned worktree. Startup should fail with a path-specific diagnostic if either the worktree or private runtime home is missing. On native and worktree-container launches the drivers seed that private home from the operator-managed templates (`METACLAW_EXECUTOR_CODEX_HOME`, `METACLAW_EXECUTOR_PI_HOME`) and inject provider credentials from the assigned env files (`METACLAW_CODEX_EXECUTOR_ENV_FILE`, `METACLAW_PI_EXECUTOR_ENV_FILE`); the host environment whitelist never forwards `OPENAI_*` on its own.
 

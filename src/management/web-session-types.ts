@@ -83,8 +83,9 @@ export interface WebSessionRecord {
 }
 
 export interface WebSessionRecordProjection
-  extends Omit<WebSessionRecord, 'session'> {
+  extends Omit<WebSessionRecord, 'session' | 'turns'> {
   session: WebSessionMetadataProjection;
+  turns: ConversationTurnProjection[];
 }
 
 export type WebSessionActivationResult =

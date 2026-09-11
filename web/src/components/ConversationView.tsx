@@ -6,14 +6,12 @@ import { LiveExecutionPanel } from './LiveExecutionPanel';
 export function ConversationView({
   sessionId,
   turns,
-  running = false,
   onOpenArtifact,
   onOpenSubtaskDetail,
   onOpenTrajectory,
 }: {
   sessionId?: string | null;
   turns: ConversationTurnProjection[];
-  running?: boolean;
   onOpenArtifact?: (artifact: ArtifactProjection) => void;
   onOpenSubtaskDetail?: (subtaskId: string, subtaskTitle: string) => void;
   onOpenTrajectory?: (turnId: string) => void;
