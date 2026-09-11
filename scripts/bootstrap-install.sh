@@ -11,11 +11,11 @@ if [[ -n "${METAWORK_RELEASE_CHANNEL:-}" \
 fi
 EXPECTED_CHANNEL="${METAWORK_RELEASE_CHANNEL:-${ANYFUSION_RELEASE_CHANNEL:-preview}}"
 BOOTSTRAP_INSTALLER_VERSION="1.2.0"
-TRUSTED_RELEASE_KEY_ID="release-2026-preview-01"
+TRUSTED_RELEASE_KEY_ID="metawork-release-2026-02"
 TRUSTED_RELEASE_PUBLIC_KEY='-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAX35i+fZoXTfkJ5jQkU8zXj2CFv/yCmiFUPk/o/388RI=
+MCowBQYDK2VwAyEAtvsiOMBPW+6WUjhpCQcnLRT5CvurwhRM2v0zWhdC8WM=
 -----END PUBLIC KEY-----'
-REVOKED_RELEASE_KEY_IDS=""
+REVOKED_RELEASE_KEY_IDS="metawork-release-2026-01,release-2026-preview-01"
 
 if [[ -z "$RELEASE_ID" || -z "$MANIFEST_URL" ]]; then
   echo "usage: bootstrap-install.sh <release-id> <manifest-url>" >&2
