@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AnyFusionConfigurationV2, ConfigurationSnapshot } from './types.js';
 import { buildExecutorCapabilityManual } from '../routing/executor-capability-manual.js';
@@ -29,6 +29,11 @@ export class AgentRuntimeRenderer {
       await this.renderCodex(snapshot.config, tmp);
       await this.renderPi(snapshot.config, tmp);
       await this.renderExecutorCapabilityManuals(snapshot, tmp);
+      // Per-revision trees are deliberately immutable (ConfigurationCompiler
+      // #makeImmutable: 0o555 directories, 0o444 files). Restore write access
+      // before removal — a plain recursive rm fails with EACCES when the
+      // startup refresh rebuilds the still-active revision.
+      await restoreWriteAccess(target);
       await rm(target, { recursive: true, force: true });
       await rename(tmp, target);
       if (options.activateCurrent !== false) {
@@ -207,6 +212,17 @@ function buildCodexConfigToml(config: AnyFusionConfigurationV2): string {
  * 读取 generatedRoot/current 得到当前 revisionId，返回 generatedRoot/<revisionId>/<subdir>。
  * current 缺失或目录未渲染时返回 null（调用方回退到环境变量/默认值）。
  */
+async function restoreWriteAccess(path: string): Promise<void> {
+  const info = await lstat(path).catch(() => null);
+  if (!info) return;
+  await chmod(path, info.mode | 0o200).catch(() => undefined);
+  if (info.isDirectory()) {
+    for (const entry of await readdir(path, { withFileTypes: true })) {
+      await restoreWriteAccess(join(path, entry.name));
+    }
+  }
+}
+
 export function resolveCurrentRuntimeHome(generatedRoot: string, subdir: string): string | undefined {
   try {
     const revisionId = readFileSync(join(generatedRoot, 'current'), 'utf8').trim();

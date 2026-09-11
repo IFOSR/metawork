@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -189,6 +189,35 @@ describe('AgentRuntimeRenderer', () => {
       expect(toml).toContain('[model_providers.provider-b]');
       expect(toml).toContain('base_url = "https://a.example/v1"');
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('re-renders a revision that was made immutable (startup refresh)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-renderer-'));
+    try {
+      const renderer = new AgentRuntimeRenderer(root);
+      await renderer.render(snapshot('rev-1', makeConfig()));
+
+      // Mirror ConfigurationCompiler#makeImmutable: 0o555 dirs, 0o444 files.
+      const freeze = async (dir: string): Promise<void> => {
+        for (const entry of await readdir(dir, { withFileTypes: true })) {
+          const child = join(dir, entry.name);
+          if (entry.isDirectory()) await freeze(child);
+          await chmod(child, entry.isDirectory() ? 0o555 : 0o444);
+        }
+        await chmod(dir, 0o555);
+      };
+      await freeze(join(root, 'rev-1'));
+
+      // Previously failed with EACCES on the read-only revision tree.
+      await expect(renderer.render(snapshot('rev-1', makeConfig()))).resolves.toBe(
+        join(root, 'rev-1'),
+      );
+      const settingsRaw = await readFile(join(root, 'rev-1', 'planner', 'settings.json'), 'utf8');
+      expect(JSON.parse(settingsRaw).defaultModel).toBe('gpt-a');
+    } finally {
+      await chmod(root, 0o755).catch(() => undefined);
       await rm(root, { recursive: true, force: true });
     }
   });
