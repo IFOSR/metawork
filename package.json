@@ -1,6 +1,6 @@
 {
   "name": "metawork",
-  "version": "1.2.0-preview.0",
+  "version": "1.2.0-preview.1",
   "description": "A commercial AI Task OS for durable, policy-governed agent workflows.",
   "private": true,
   "type": "module",

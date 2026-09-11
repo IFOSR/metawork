@@ -5,6 +5,30 @@ AnyFusion release entries remain unchanged for auditability.
 
 The project follows [Semantic Versioning](https://semver.org/) for public preview releases.
 
+## [1.2.0-preview.1] - 2026-09-11
+
+### Fixed
+
+- Linux/WSL2 fresh installs no longer abort with "non-macOS native installation
+  requires explicit METAWORK_SECRET_STORE=file" before the provider wizard;
+  the release installer now defaults to the file-backed secret store on
+  non-macOS hosts (matching `setup.sh`).
+- The one-command `curl | bash` install no longer hangs silently after
+  "Installing MetaWork to ...": the provider setup wizard now receives the
+  terminal directly instead of redirecting the installing shell's stdin,
+  which previously made bash wait for the next script line on the keyboard.
+- Large artifact downloads (Runtime ~14MB, Planner ~122MB) now show progress
+  bars and retry transient failures.
+- `metawork server start` no longer fails with `EACCES` when refreshing the
+  active configuration revision: write access is restored before rebuilding
+  the deliberately immutable per-revision generated trees.
+
+### Security
+
+- Release signing key rotated to `metawork-release-2026-02`;
+  `metawork-release-2026-01` is revoked. Manifests published before this
+  release are no longer accepted by the installer.
+
 ## [Unreleased]
 
 ### Added
