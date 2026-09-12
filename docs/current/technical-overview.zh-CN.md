@@ -171,16 +171,22 @@ Executor result 和当前 Conversation Artifact 事实。它是事实目录，�
 Context Bridge 不返回私有发布路径、绝对 Workspace 路径或凭据。只有来源仍是
 普通文件且内容哈希与持久记录一致的已发布 Artifact，才会标记为可用。
 
-语义 RPC 额外开放 Pi 原生只读 `web_fetch` 与 `web_search`，用于有界、
-无凭据的公开 HTTP(S) 实时信息。新语义 Planner turn 不得使用
+语义 RPC 不开放 Web 侦察工具。新语义 Planner turn 不得使用
 `direct_reply`；工作、分析、调研、报告、产物、Workspace 变更和其他用户可见
 结果必须路由给 Executor，通过 `plan_work_graph` 完成。历史 `direct_reply`
-仅用于审计和回放兼容。实时或依赖来源的事实必须先调用 Web 工具，再由
-Executor 生成持久或可调度结果。Shell、语义 Planner 无法完成的 Workspace
+仅用于审计和回放兼容。实时或依赖来源的事实、用户提供的 URL 和公开网络
+研究请求直接路由给覆盖 `current-web-research` 的 AgentClass，由 Executor
+执行最终 Web 检索，并通过 `contextRefs` 接收有界的当前用户输入。Shell、
+语义 Planner 无法完成的 Workspace
 检查、文件/Git/存储修改、认证外部操作、其他外部副作用、持久进度、监控、
 产物和下游交接必须使用
 `plan_work_graph`，进入 Kernel 授权的 Executor 路径。这是 Planner 所有的
 语义路由，不新增 Session/Kernel 关键词路由。
+
+Planner 的收敛预算仍是 8 个处理轮次和 12 次非提案工具调用。超过任一预算
+且尚未提交 proposal 时，Runtime 产生独立的 `convergence_exhausted` 终态，
+不把它解释为 `transport_uncertain`，不生成 fallback proposal、Task、Kernel
+事件或 Executor attempt；当前 turn 明确失败并提示用户重试或缩小范围。
 
 本地 AnyFusion-Pi TUI 和 RPC runner 使用同一 vendored 应用，但承担不同角色。TUI 只连接版本化 Unix Gateway，流式展示 replay/live 的 `turn_started`、`trace_delta`、`task_projection`、执行、权限、产物、最终答案和终态错误事件；原始输入、斜杠命令、权限决议与取消请求全部进入 `ClientGateway`。只有受控 RPC runner 连接 mode-`0600` 的 `PlannerHostBridge` 提交 proposal。`ConversationSession` 重新执行 v8 schema 和语义校验，再进入 `plan_proposed → DurableKernelWorkflow → ControlKernel`。client mode 和 bridge 都不能直接访问数据库、Kernel、调度、Execution 或 Executor。
 

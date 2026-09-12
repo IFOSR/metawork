@@ -193,7 +193,10 @@ conversation messages or semantic turns and never enter the Pi branch or LLM
 context. RPC, Feishu, and Session Planner surfaces retain exact natural-language
 authorization under the existing request-ID and Task validation contract.
 
-## Amendment: direct public Web access and action boundary (2026-08-30)
+## Superseded amendment: direct public Web access and action boundary (2026-08-30)
+
+The Planner Web surface described below was superseded by the
+Executor-owned retrieval amendment dated 2026-09-12.
 
 Semantic Planner turns expose two additional Pi-native read-only tools:
 `web_fetch` for one bounded credential-free public HTTP(S) target and
@@ -224,6 +227,24 @@ Kernel-authorized Executor path. Explicit Task control remains `task_control`.
 The Planner decides this boundary semantically from required capabilities and
 effects; Session, Kernel and validators do not add keyword routing or a second
 semantic router.
+
+## Amendment: Executor-owned public Web retrieval and convergence failure (2026-09-12)
+
+MetaWork-managed AnyFusion-Pi Planner sessions no longer expose
+`web_fetch` or `web_search`. The Planner remains the sole natural-language
+semantic owner, but current public information, supplied URLs and research
+requests are routed directly to an AgentClass covering
+`current-web-research`. The Executor performs final Web retrieval and receives
+the bounded current user input through the `current_user_input` ContextRef.
+Planner no longer performs Web reconnaissance or constructs source URLs.
+
+The Planner convergence budgets remain eight processing cycles and twelve
+non-proposal tool calls. Exceeding either budget without a submitted proposal
+is classified as `convergence_exhausted`, not `transport_uncertain`.
+Convergence exhaustion creates no fallback proposal, Task, Kernel event or
+Executor attempt. The current turn ends with a bounded user-facing failure and
+the next user submission is a fresh semantic turn. `transport_uncertain`
+continues to mean that an identical submitted proposal may be replayed.
 
 ## Amendment: unified per-Executor capability profiles (2026-08-31)
 

@@ -1,5 +1,6 @@
 import type { RevisionedAgentBinding } from '../core/authorized-executor-binding.js';
 import {
+  PlannerRunError,
   plannerRunFailureDetails,
   type PlannerToolCallTrace,
 } from './planner-audit-contract.js';
@@ -69,6 +70,16 @@ export class AnyFusionPlanningAgent implements PlanningAgent {
       }
       return result;
     } catch (error) {
+      if (error instanceof PlannerRunError && error.code === 'convergence_exhausted' && error.convergence) {
+        return {
+          status: 'convergence_exhausted',
+          turnId: 'unknown',
+          message: error.message,
+          reason: error.convergence.reason,
+          limit: error.convergence.limit,
+          observed: error.convergence.observed,
+        };
+      }
       return {
         status: 'transport_uncertain',
         turnId: 'unknown',

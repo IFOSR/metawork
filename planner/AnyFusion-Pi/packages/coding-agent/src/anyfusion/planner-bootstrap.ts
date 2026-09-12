@@ -13,7 +13,6 @@ import {
 	createPlanningProposalTool,
 } from "./planner-proposal-tool.ts";
 import { buildAnyFusionPlannerSystemPrompt } from "./planner-system-prompt.ts";
-import { createPlannerWebTools } from "./planner-web-tools.ts";
 
 export interface AnyFusionPlannerBootstrapOptions {
 	cwd?: string;
@@ -58,7 +57,6 @@ export function createAnyFusionPlannerBootstrap(options: AnyFusionPlannerBootstr
 			? []
 			: [createPlannerMcpExtensionFactory(extensionOptions)],
 		customTools: [
-			...(purpose === "configuration" ? [] : createPlannerWebTools()),
 			...(purpose === "configuration" ? [] : [createPlanningProposalTool(options.schemaPath, proposalGate)]),
 			createExecutorManualProposalTool(),
 		] as ToolDefinition[],

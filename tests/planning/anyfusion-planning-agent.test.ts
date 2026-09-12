@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PlannerConfigurationView } from '../../src/configuration/index.js';
 import type { RevisionedAgentBinding } from '../../src/core/authorized-executor-binding.js';
 import { AnyFusionPlanningAgent } from '../../src/planning/anyfusion-planning-agent.js';
+import { PlannerRunError } from '../../src/planning/planner-audit-contract.js';
 import type { PlannerProposalResult } from '../../src/planning/planner-proposal.js';
 import type { PlanningContext } from '../../src/planning/planning-types.js';
 
@@ -177,6 +178,35 @@ describe('AnyFusionPlanningAgent native proposal tool adapter', () => {
       status: 'transport_uncertain', retryableByReplay: true,
     });
     expect(plannerRunner.run).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns convergence exhaustion separately from replayable transport uncertainty', async () => {
+    const plannerRunner = {
+      run: vi.fn(async () => {
+        throw new PlannerRunError(
+          'Planner did not submit a proposal within 8 processing cycles',
+          {
+          code: 'convergence_exhausted',
+          convergence: {
+            reason: 'processing_cycles',
+            limit: 8,
+            observed: 9,
+          },
+          toolCalls: [],
+          threadId: '/planner/sessions/session_test.jsonl',
+          durationMs: 42,
+          },
+        );
+      }),
+    };
+    const agent = new AnyFusionPlanningAgent({ runner: plannerRunner as never });
+
+    await expect(agent.submit(context())).resolves.toMatchObject({
+      status: 'convergence_exhausted',
+      reason: 'processing_cycles',
+      limit: 8,
+      observed: 9,
+    });
   });
 
   it('persists partial tool calls attached to an unstructured Planner process failure', async () => {

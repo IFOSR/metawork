@@ -21,8 +21,6 @@ describe("AnyFusion Planner bootstrap", () => {
 		expect(tui.activeToolNames).toEqual([...PLANNER_ACTIVE_TOOL_NAMES]);
 		expect(rpc.activeToolNames).toEqual(tui.activeToolNames);
 		expect(tui.customTools.map((tool) => tool.name)).toEqual([
-			"web_fetch",
-			"web_search",
 			"submit_planning_proposal",
 			"submit_executor_manual_proposal",
 		]);
@@ -39,16 +37,8 @@ describe("AnyFusion Planner bootstrap", () => {
 			expect.stringContaining("Do not add assertions for adjacent capabilities"),
 			expect.stringContaining("capability-policy"),
 		]));
-		expect(tui.customTools.find((tool) => tool.name === "web_fetch")?.promptGuidelines).toEqual(
-			expect.arrayContaining([
-				expect.stringContaining("supplied public URL"),
-			]),
-		);
-		expect(tui.customTools.find((tool) => tool.name === "web_search")?.promptGuidelines).toEqual(
-			expect.arrayContaining([
-				expect.stringContaining("real-time"),
-			]),
-		);
+		expect(tui.customTools.find((tool) => tool.name === "web_fetch")).toBeUndefined();
+		expect(tui.customTools.find((tool) => tool.name === "web_search")).toBeUndefined();
 		expect(tui.extensionFactories).toHaveLength(1);
 		expect(rpc.extensionFactories).toHaveLength(1);
 	});

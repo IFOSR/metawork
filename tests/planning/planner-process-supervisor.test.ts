@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
+import { PlannerRunError } from '../../src/planning/planner-audit-contract.js';
 import { PlannerProcessSupervisor } from '../../src/planning/planner-process-supervisor.js';
 
 interface FakeProcess extends EventEmitter {
@@ -946,9 +947,14 @@ describe('PlannerProcessSupervisor', () => {
     await expect(supervisor.run('plan this', {
       timeoutMs: 1_000,
       request: { sessionId: 'session-cycle-budget', source: 'gateway' },
-    } as never, 'kernel')).rejects.toThrow(
-      'Planner did not submit a proposal within 2 processing cycles',
-    );
+    } as never, 'kernel')).rejects.toMatchObject({
+      code: 'convergence_exhausted',
+      convergence: {
+        reason: 'processing_cycles',
+        limit: 2,
+        observed: 3,
+      },
+    } satisfies Partial<PlannerRunError>);
     expect(child.kill).toHaveBeenCalled();
   });
 
@@ -984,9 +990,14 @@ describe('PlannerProcessSupervisor', () => {
     await expect(supervisor.run('plan this', {
       timeoutMs: 1_000,
       request: { sessionId: 'session-tool-budget', source: 'gateway' },
-    } as never, 'kernel')).rejects.toThrow(
-      'Planner did not submit a proposal within 2 non-proposal tool calls',
-    );
+    } as never, 'kernel')).rejects.toMatchObject({
+      code: 'convergence_exhausted',
+      convergence: {
+        reason: 'non_proposal_tool_calls',
+        limit: 2,
+        observed: 3,
+      },
+    } satisfies Partial<PlannerRunError>);
     expect(child.kill).toHaveBeenCalled();
   });
 

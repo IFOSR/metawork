@@ -67,6 +67,14 @@ export type PlannerProposalResult =
       submissionId: string;
       retryableByReplay: true;
       message: string;
+    }
+  | {
+      status: 'convergence_exhausted';
+      turnId: string;
+      message: string;
+      reason: 'processing_cycles' | 'non_proposal_tool_calls';
+      limit: number;
+      observed: number;
     };
 
 export interface PlannerProposalSubmission {

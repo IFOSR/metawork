@@ -20,10 +20,21 @@ export interface PlannerRunResult {
   durationMs: number;
 }
 
+export type PlannerRunErrorCode = 'runtime_failure' | 'convergence_exhausted';
+export type PlannerConvergenceReason = 'processing_cycles' | 'non_proposal_tool_calls';
+
+export interface PlannerConvergenceDetails {
+  reason: PlannerConvergenceReason;
+  limit: number;
+  observed: number;
+}
+
 export class PlannerRunError extends Error {
+  readonly code: PlannerRunErrorCode;
   readonly toolCalls: PlannerToolCallTrace[];
   readonly threadId: string | null;
   readonly durationMs: number;
+  readonly convergence?: PlannerConvergenceDetails;
 
   constructor(
     message: string,
@@ -31,14 +42,18 @@ export class PlannerRunError extends Error {
       toolCalls: PlannerToolCallTrace[];
       threadId: string | null;
       durationMs: number;
+      code?: PlannerRunErrorCode;
+      convergence?: PlannerConvergenceDetails;
       cause?: unknown;
     },
   ) {
     super(message, input.cause === undefined ? undefined : { cause: input.cause });
     this.name = 'PlannerRunError';
+    this.code = input.code ?? 'runtime_failure';
     this.toolCalls = input.toolCalls;
     this.threadId = input.threadId;
     this.durationMs = input.durationMs;
+    this.convergence = input.convergence;
   }
 }
 

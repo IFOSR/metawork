@@ -9,7 +9,6 @@ import {
 	applyPlannerResourcePolicy,
 	PLANNER_MCP_TOOL_NAMES,
 	PLANNER_PROPOSAL_TOOL_NAME,
-	PLANNER_WEB_TOOL_NAMES,
 } from "../src/anyfusion/planner-policy.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
@@ -95,7 +94,7 @@ describe("AnyFusion Planner semantic AgentSession", () => {
 		try {
 			await session.bindExtensions({});
 			expect(session.getActiveToolNames().sort()).toEqual(
-				[...PLANNER_WEB_TOOL_NAMES, PLANNER_PROPOSAL_TOOL_NAME, ...PLANNER_MCP_TOOL_NAMES].sort(),
+				[PLANNER_PROPOSAL_TOOL_NAME, ...PLANNER_MCP_TOOL_NAMES].sort(),
 			);
 			expect(session.getActiveToolNames()).not.toEqual(
 				expect.arrayContaining(["read", "grep", "find", "ls", "bash", "edit", "write"]),

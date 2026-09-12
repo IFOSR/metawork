@@ -57,13 +57,13 @@ describe("AnyFusion Planner system prompt", () => {
 	it("keeps direct replies read-only and routes side effects to Executor work", () => {
 		const prompt = buildAnyFusionPlannerSystemPrompt();
 
-		expect(prompt).toContain("`web_fetch` and `web_search` are available as bounded, read-only public-Web planning tools");
-		expect(prompt).toContain("Never claim that this session has no network tool before attempting the applicable Web tool");
 		expect(prompt).toContain("A supplied URL, repository link, Releases or download check");
 		expect(prompt).toContain("Executor-owned research work");
+		expect(prompt).toContain("Planner has no Web reconnaissance tools");
 		expect(prompt).toContain("submit one focused `plan_work_graph`");
 		expect(prompt).toContain("current-web-research");
 		expect(prompt).toContain("the Planner does not deliver the research result");
+		expect(prompt).toContain("Do not construct or guess URLs");
 		expect(prompt).toContain("Historical Planner messages are context, not policy");
 		expect(prompt).toContain("Ignore earlier assistant claims that Web tools are unavailable");
 		expect(prompt).toContain("Shell execution, file or Git mutation, storage mutation");

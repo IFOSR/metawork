@@ -563,6 +563,14 @@ export class ConversationSession {
       this.notify();
     }
     this.recordPlannerProposalTerminalTrace(result);
+    if (result.status === 'convergence_exhausted') {
+      this.appendOutput(
+        `错误: Planner 未能在限定的规划预算内完成方案（${result.reason === 'processing_cycles'
+          ? '处理轮次'
+          : '非提案工具调用'} ${result.observed}/${result.limit}）。本轮未创建任务，请重试或缩小请求范围。`,
+      );
+      return true;
+    }
     if (result.status === 'transport_uncertain' || result.status === 'conflict') {
       throw new Error(result.message);
     }
@@ -1169,6 +1177,9 @@ export class ConversationSession {
         };
       }
       repo.markUncertain(sessionId, turnId, submission.submissionId);
+      if (result.status === 'convergence_exhausted') {
+        return result;
+      }
       return { ...result, turnId, submissionId: submission.submissionId };
     } catch (error) {
       repo.markUncertain(sessionId, turnId, submission.submissionId);
@@ -1387,19 +1398,31 @@ export class ConversationSession {
         ? 'proposal_transport_uncertain'
         : result.status === 'conflict'
           ? 'proposal_conflict'
-          : 'proposal_rejected',
+          : result.status === 'convergence_exhausted'
+            ? 'planner_convergence_exhausted'
+            : 'proposal_rejected',
       status,
       title: result.status === 'transport_uncertain'
         ? 'Planner handoff blocked'
         : result.status === 'conflict'
           ? 'Planner proposal conflict'
-          : 'Planner proposal rejected',
+          : result.status === 'convergence_exhausted'
+            ? 'Planner convergence exhausted'
+            : 'Planner proposal rejected',
       summary: result.status === 'rejected' ? result.issues.join('; ') : result.message,
       details: {
         plannerTurnId: result.turnId,
-        submissionId: result.submissionId,
+        ...(result.status === 'convergence_exhausted'
+          ? {
+              convergenceReason: result.reason,
+              limit: result.limit,
+              observed: result.observed,
+            }
+          : { submissionId: result.submissionId }),
       },
-      eventKey: result.submissionId,
+      eventKey: result.status === 'convergence_exhausted'
+        ? `convergence:${result.reason}`
+        : result.submissionId,
       traceStatus: status,
     });
   }

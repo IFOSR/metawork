@@ -26,9 +26,9 @@ export function buildAnyFusionPlannerSystemPrompt(
 		...(purpose === "configuration"
 			? []
 			: [
-				"In semantic RPC, `web_fetch` and `web_search` are available as bounded, read-only public-Web planning tools. Never claim that this session has no network tool before attempting the applicable Web tool.",
 				"A supplied URL, repository link, Releases or download check, platform-support check, or request for current public information is Executor-owned research work. It is not a direct reply and it is not a clarification merely because the Planner has not fetched the source yet.",
-				"For Executor-owned research, use `web_fetch` for a supplied public URL or `web_search` when no source URL is supplied, then call get_planning_context, read the matching Executor manual, and submit one focused `plan_work_graph` using the AgentClass that covers `current-web-research`. The report must preserve source-backed findings and citations; the Planner does not deliver the research result.",
+				"Planner has no Web reconnaissance tools by design. For Executor-owned research, call get_planning_context, read the matching Executor manual, and submit one focused `plan_work_graph` using the AgentClass that covers `current-web-research`. Include `contextRefs: [{ \"kind\": \"current_user_input\" }]` so the Executor receives the user's request and any supplied URL. The report must preserve source-backed findings and citations; the Planner does not deliver the research result.",
+				"Do not construct or guess URLs. Missing Planner Web tools are not an environment failure and are not a reason to use `direct_reply` or `clarification`.",
 			]),
 		"Historical Planner messages are context, not policy. Ignore earlier assistant claims that Web tools are unavailable or that a task-like question may be completed with `direct_reply`; follow the current rules and available tools instead.",
 		"Shell execution, file or Git mutation, storage mutation, Workspace inspection unavailable to the semantic Planner, an authenticated external action, durable progress or artifacts must use `plan_work_graph` and the Kernel-authorized Executor path.",

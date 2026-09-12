@@ -1907,6 +1907,12 @@ export class MetaclawSession {
         eventStatus: 'blocked',
         traceStatus: 'blocked',
       },
+      convergence_exhausted: {
+        kind: 'planner_convergence_exhausted',
+        title: 'Planner convergence exhausted',
+        eventStatus: 'blocked',
+        traceStatus: 'blocked',
+      },
     };
     const mapped = mapping[result.status];
     const summary = result.status === 'rejected'
@@ -1921,7 +1927,13 @@ export class MetaclawSession {
       summary,
       details: {
         turnId: effectiveTurnId,
-        submissionId: result.submissionId,
+        ...(result.status === 'convergence_exhausted'
+          ? {
+              convergenceReason: result.reason,
+              limit: result.limit,
+              observed: result.observed,
+            }
+          : { submissionId: result.submissionId }),
         ...(result.turnId !== effectiveTurnId
           ? { reportedTurnId: result.turnId }
           : {}),
@@ -1941,9 +1953,11 @@ export class MetaclawSession {
           ? { planId: result.planId, rejectionType: result.rejectionType }
           : {}),
       },
-      eventKey: result.submissionId === 'unknown'
-        ? `planner-run:${effectiveTurnId}`
-        : result.submissionId,
+      eventKey: result.status === 'convergence_exhausted'
+        ? `planner-run:${effectiveTurnId}:convergence:${result.reason}`
+        : result.submissionId === 'unknown'
+          ? `planner-run:${effectiveTurnId}`
+          : result.submissionId,
       traceStatus: mapped.traceStatus,
     });
   }

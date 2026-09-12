@@ -27,6 +27,7 @@ import { buildPlannerMcpLaunchEnv } from './planner-mcp-launch-env.js';
 import { materializePlannerRuntimeHome } from './planner-runtime-home.js';
 import {
   PlannerRunError,
+  type PlannerConvergenceReason,
   type PlannerRunResult,
   type PlannerToolCallTrace,
 } from './planner-audit-contract.js';
@@ -444,6 +445,20 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
           () => reject(plannerError),
         );
       };
+      const failConvergence = (
+        message: string,
+        reason: PlannerConvergenceReason,
+        limit: number,
+        observed: number,
+      ) => {
+        fail(new PlannerRunError(message, {
+          code: 'convergence_exhausted',
+          convergence: { reason, limit, observed },
+          toolCalls: [...toolCalls],
+          threadId: sessionPath,
+          durationMs: Date.now() - startedAt,
+        }));
+      };
       const sendPrompt = () => {
         const images = context.images?.map(image => ({
           type: 'image' as const,
@@ -521,10 +536,13 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
         if (event.type === 'turn_start') {
           turn += 1;
           if (turn > maxProcessingCycles) {
-            fail(new Error(
+            failConvergence(
               `Planner did not submit a proposal within ${maxProcessingCycles} processing cycles; `
               + 'stop workspace inspection and decide from authoritative MCP facts.',
-            ));
+              'processing_cycles',
+              maxProcessingCycles,
+              turn,
+            );
             return;
           }
           modelOutputReceived = false;
@@ -553,10 +571,13 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
           ) {
             nonProposalToolCalls += 1;
             if (nonProposalToolCalls > maxNonProposalToolCalls) {
-              fail(new Error(
+              failConvergence(
                 `Planner did not submit a proposal within ${maxNonProposalToolCalls} `
                 + 'non-proposal tool calls; stop querying and submit the bounded decision.',
-              ));
+                'non_proposal_tool_calls',
+                maxNonProposalToolCalls,
+                nonProposalToolCalls,
+              );
               return;
             }
           }

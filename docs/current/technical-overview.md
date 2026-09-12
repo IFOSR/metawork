@@ -171,13 +171,13 @@ never returns private published paths, absolute Workspace paths or credentials.
 Published Artifact facts are marked available only when their source is a
 regular file and its content hash still matches the durable record.
 
-Semantic RPC also exposes Pi-native read-only `web_fetch` and `web_search` for
-bounded credential-free public HTTP(S) information. Historical `direct_reply`
+Semantic RPC does not expose Web reconnaissance tools. Historical `direct_reply`
 proposals remain replayable for compatibility, but production semantic
 proposal ingress rejects new `direct_reply`; work-like requests must be routed
-to an Executor through `plan_work_graph`. Real-time/source-dependent facts are
-read through a Web tool call before routing when a durable or schedulable result
-is requested. Shell execution,
+to an Executor through `plan_work_graph`. Real-time/source-dependent facts,
+supplied URLs and public research requests are routed to an AgentClass covering
+`current-web-research`; the Executor performs final Web retrieval and receives
+the bounded current user input through `contextRefs`. Shell execution,
 unavailable Workspace inspection, file/Git/storage mutation, authenticated
 external actions, other side effects, durable progress, monitoring, artifacts
 and downstream handoffs require `plan_work_graph` and the Kernel-authorized
@@ -198,9 +198,10 @@ Repository readers may inspect user-requested workspace content, but they may
 not be used to reverse-engineer MetaClaw Runtime, Kernel, validation, recovery,
 scheduling or Executor semantics. Those facts remain MCP/schema-authoritative.
 The supervisor also enforces a convergence budget of eight processing cycles
-and twelve non-proposal tool calls; exceeding either budget without submitting
-a proposal produces an immediate terminal error instead of consuming the full
-RPC timeout.
+and twelve non-proposal tool calls. Exceeding either budget without submitting
+a proposal produces a typed fail-closed terminal result, distinct from
+`transport_uncertain`; no fallback proposal, Task, Kernel event or Executor
+attempt is created, and the user is asked to retry or narrow the request.
 
 Task-control proposals also require explicit current-turn user intent. Topic
 overlap, a blocked or parked Task, and single-active-Task admission pressure do

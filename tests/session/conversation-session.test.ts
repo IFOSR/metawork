@@ -585,6 +585,70 @@ describe('ConversationSession', () => {
     });
   });
 
+  it('fails closed on Planner convergence exhaustion without creating a task', async () => {
+    const trace = new InteractionTraceStream('planner_convergence');
+    let submittedProposal = false;
+    const session = new ConversationSession({
+      conversationId: 'conv_convergence',
+      plannerSessionId: 'planner_convergence',
+      runtimePort: makePort('local-default', {
+        queries: {
+          findOldestPendingPermission: () => null,
+        } as never,
+        planning: {
+          submit: async () => ({
+            status: 'convergence_exhausted',
+            turnId: 'turn_convergence',
+            message: 'Planner did not converge within its bounded planning budget.',
+            reason: 'processing_cycles',
+            limit: 8,
+            observed: 9,
+          }),
+        } as never,
+        commands: {
+          submitKernel: async () => {
+            submittedProposal = true;
+            throw new Error('convergence exhaustion must not submit a Kernel event');
+          },
+        } as never,
+      }),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      interactionTraceStream: trace,
+      planningContextBuilder: {
+        build: ({ userInput }: { userInput: string }) => ({
+          userInput,
+          request: { sessionId: 'planner_convergence', source: 'session' },
+          pendingAuthorizationRequest: null,
+          configuration: {
+            revisionId: 'revision-test',
+            contentHash: 'hash',
+            models: [],
+            routingCatalog: {
+              configurationRevision: 'revision-test',
+              agentClasses: [],
+            },
+          },
+          timeoutMs: 1_000,
+        }),
+      } as never,
+    });
+
+    await session.submitUserInput('研究这个问题', { interactionTurnId: 'gateway_convergence' });
+
+    expect(submittedProposal).toBe(false);
+    expect(session.getOutput().at(-1)).toContain('本轮未创建任务');
+    expect(session.getInteractionTrace()).toMatchObject({
+      turnId: 'gateway_convergence',
+      status: 'blocked',
+      events: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'planner_convergence_exhausted',
+          status: 'blocked',
+        }),
+      ]),
+    });
+  });
+
   it('ends a clarification turn after notifying the user that more input is required', async () => {
     const trace = new InteractionTraceStream('planner_clarification');
     const session = new ConversationSession({
