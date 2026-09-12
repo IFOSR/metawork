@@ -22,6 +22,11 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          # 完整的提交历史：跨仓库契约测试（tests/acceptance/
+          # task8-cross-repository-contract.test.ts）需要校验被固定的契约提交
+          # 是 HEAD 的祖先，而 checkout 默认只拉取一个提交（fetch-depth: 1）。
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
