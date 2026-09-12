@@ -248,4 +248,4 @@ router or automatic research fallback.
   (missing Anthropic API key, existing managed provider/model policy conflicts
   in generic Pi RPC/compaction tests, and an unrelated bash-output regression).
 - Completion date: 2026-09-12.
-- Closing commit: pending.
+- Closing commit: `526b902` (`feat(planner): move web research to executor boundary`).

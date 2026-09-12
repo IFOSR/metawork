@@ -5,6 +5,23 @@ AnyFusion release entries remain unchanged for auditability.
 
 The project follows [Semantic Versioning](https://semver.org/) for public preview releases.
 
+## [1.2.0-preview.3] - 2026-09-12
+
+### Changed
+
+- Current public-Web research, supplied URLs, and source-dependent requests now
+  route through the Executor's `current-web-research` capability; the Planner
+  no longer performs Web reconnaissance.
+- Planner convergence exhaustion is now a distinct fail-closed outcome. It
+  creates no fallback proposal, Task, Kernel event, or Executor attempt, and
+  asks the user to retry or narrow the request.
+
+### Fixed
+
+- Preserved replayable `transport_uncertain` semantics for actual Planner
+  handoff uncertainty while keeping convergence exhaustion out of the replay
+  path.
+
 ## [1.2.0-preview.1] - 2026-09-11
 
 ### Fixed
@@ -164,5 +181,7 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 - CLI, configuration, and runtime contracts may change during the preview period.
 - Some command and TUI workflows remain under active development.
 
-[Unreleased]: https://github.com/IFOSR/metawork/compare/v1.2.0-preview.0...HEAD
+[Unreleased]: https://github.com/IFOSR/metawork/compare/v1.2.0-preview.3...HEAD
+[1.2.0-preview.3]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.3
+[1.2.0-preview.2]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.2
 [1.2.0-preview.0]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.0
