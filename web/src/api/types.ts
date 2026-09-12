@@ -166,7 +166,17 @@ export interface ConfigurationCompletionResult {
     latencyTier?: string;
     qualityTier?: string;
   }>;
+  /** 公开的模型能力目录（modelId → 能力标签），用于加入候选时立即补全。 */
+  modelCapabilityCatalog: Record<string, string[]>;
   requiredFields: string[];
+}
+
+/** `POST /api/config/discover-models` 的响应：现场探测 Provider 模型列表。 */
+export interface ProviderModelDiscoveryResult {
+  status: 'discovered' | 'unavailable';
+  modelIds: string[];
+  /** modelId → 内置目录登记的能力标签；目录未收录的模型为空数组。 */
+  capabilities: Record<string, string[]>;
 }
 
 export type ConfigurationRuntimeState = Pick<ConfigSnapshot,

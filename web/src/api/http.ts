@@ -6,6 +6,7 @@ import type {
   ConfigurationCompletionResult,
   ExecutorCapabilityManual,
   ExecutorManualAnalysis,
+  ProviderModelDiscoveryResult,
   TaskSummary,
   WorkGraphPresentationProjection,
 } from './types';
@@ -50,6 +51,17 @@ export class HttpClient {
 
   getConfigurationCompletion(): Promise<ConfigurationCompletionResult> {
     return this.request('/api/config/completion');
+  }
+
+  discoverProviderModels(input: {
+    baseUrl: string;
+    apiKey?: string;
+    providerRef?: string;
+  }): Promise<ProviderModelDiscoveryResult> {
+    return this.request('/api/config/discover-models', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
   }
 
   getExecutorCapabilityManual(

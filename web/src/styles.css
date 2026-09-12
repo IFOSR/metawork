@@ -939,6 +939,74 @@ body {
   font-size: 12px;
 }
 
+.provider-discovery {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.provider-discovery-message {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.provider-discovery-error {
+  color: var(--red);
+}
+
+.provider-discovery-list {
+  display: grid;
+  gap: 7px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-panel);
+}
+
+.capability-badges {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.capability-editor {
+  display: grid;
+  gap: 8px;
+  margin: 6px 0 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-panel);
+}
+
+.capability-checkboxes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 6px 12px;
+}
+
+.capability-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.capability-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .provider-custom-model {
   display: flex;
   gap: 8px;
@@ -1674,6 +1742,45 @@ body {
   gap: 10px;
   padding: 14px 28px;
   border-top: 1px solid var(--border);
+}
+
+/* Planner 独立更新区（第一步） */
+.planner-section .state-badge {
+  white-space: nowrap;
+}
+
+.planner-update-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.planner-update-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.settings-footer {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.settings-footer-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.settings-footer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .primary-button {
