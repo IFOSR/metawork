@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# scripts/package-release.mjs 的输出目录（发布打包产物，不入库）
+dist-release/
 *.db
 .DS_Store
 coverage/
