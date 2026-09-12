@@ -33,6 +33,37 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 
 ### Added
 
+- Settings 工作台「获取模型列表」：可在 Provider 卡片中用表单里填写的 BaseURL/API Key
+  现场探测该 Provider 的 OpenAI 兼容 `/models`,自动列出模型并为内置目录收录的模型
+  标注能力标签（新端点 `POST /api/config/discover-models`）。
+- `GET /api/config/completion` 现在同时下发公开的模型能力目录
+  (`modelCapabilityCatalog`),使界面在「加入候选」时即可补全能力。
+- Settings 工作台新增条件浮现的**能力标签勾选编辑器**（仅对目录未收录、能力待确认的
+  模型展示，支持一键「使用目录推荐」）。
+- Settings 工作台新增**保存前预检**：按 AgentClass 的硬性能力要求检查已绑定模型，
+  直接指出「哪个 AgentClass 绑定的哪个模型缺少什么能力」，避免激活时才报错。
+- Planner 现在可独立更新：Settings 工作台第一步之后（Provider 目录之后、Executor
+  之前）新增 Planner 板块与「更新 Planner」按钮，只提交 Planner 绑定及其依赖的
+  Model/Provider，不影响其它设置。
+
+### Changed
+
+- Settings 工作台板块顺序调整为：运行时容量 → Provider 模型目录 → Planner →
+  Executor 路由；「保存并激活」不再修改 Planner（Planner 由「更新 Planner」单独提交），
+  并有明确文案提示。
+
+### Fixed
+
+- 激活与运行时（Kernel/Executor）的候选模型投影会按内置能力目录兜底合并能力标签，
+  避免目录已收录的模型因配置里能力为空而被 Planner 绑定等硬性要求拒绝。
+- `no eligible model candidate` 现在携带每个候选被拒绝的具体原因
+  （例如 `k3: missing_capability:structured-output`），不再是无从定位的报错。
+- 常规「保存并激活」不再把 `agentClasses.planner` 整体丢弃（旧实现会因此被判定为
+  进程级变更，误报「此更改需要重启服务后生效」），而是用运行中的 Planner 原样覆盖。
+- 更新 Planner 成功后只同步 Planner 基线，保留其它板块尚未保存的编辑。
+
+### Added
+
 - Configuration Control Plane with a revisioned `ConfigurationService`,
   immutable `ConfigurationSnapshot`, and one-configuration-revision-per-generation
   binding for Planner, Kernel, and Runtime.
