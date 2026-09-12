@@ -118,7 +118,14 @@ export class AutoModelResolver {
     }
 
     if (eligible.length === 0) {
-      throw new Error('no eligible model candidate');
+      const rejected = rejectedCandidates.length > 0
+        ? ` (${rejectedCandidates
+          .map(candidate => `${candidate.modelRef}: ${candidate.reason}`)
+          .join('; ')})`
+        : '';
+      throw new Error(
+        `no eligible model candidate${rejected}`,
+      );
     }
 
     eligible.sort((left, right) => (

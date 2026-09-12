@@ -230,4 +230,28 @@ describe('AutoModelResolver', () => {
       { modelRef: 'plain', providerRef: 'provider-a', reason: 'missing_capability:structured-output' },
     ]);
   });
+
+  it('names the rejected candidates and reasons when nothing is eligible', () => {
+    expect(() => AutoModelResolver.resolve({
+      configurationRevision: 'revision-1',
+      agentClassRef: 'planner',
+      harnessRef: 'anyfusion-planner',
+      permissionProfileRef: 'planner-none',
+      policy: { mode: 'fixed', modelRef: 'k3' },
+      candidates: [
+        candidate({
+          modelRef: 'k3',
+          modelId: 'k3',
+          capabilities: [],
+        }),
+      ],
+      requirements: {
+        preferredCapabilities: ['planning', 'structured-output'],
+        contextTokens: 1_024,
+        requiresStructuredOutput: true,
+      },
+    })).toThrow(
+      'no eligible model candidate (k3: missing_capability:structured-output)',
+    );
+  });
 });

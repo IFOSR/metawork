@@ -47,6 +47,11 @@ export interface ConfigurationCompletionResult {
     modelIds: string[];
   }>;
   models: Record<string, ConfigurationCompletionModel>;
+  /**
+   * 公开的模型能力目录(modelId → 能力标签)，供界面在“加入候选/获取模型列表”
+   * 时立即补全能力，而不必等到下一次面板刷新。
+   */
+  modelCapabilityCatalog: Record<string, string[]>;
   requiredFields: string[];
 }
 
@@ -155,6 +160,10 @@ export class ConfigurationCompletionService {
 
     return {
       providers,
+      modelCapabilityCatalog: Object.fromEntries(
+        Object.entries(this.deps.modelCapabilities ?? {})
+          .map(([modelId, capabilities]) => [modelId, [...capabilities].sort()]),
+      ),
       providerPresets: [...presets.values()]
         .map(preset => ({
           providerRef: preset.providerRef,

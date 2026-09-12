@@ -135,4 +135,14 @@ describe('ConfigurationCompletionService', () => {
       'providers.custom.credential',
     ]);
   });
+
+  it('exposes the model capability catalog so the UI can fill capabilities at add time', () => {
+    const result = new ConfigurationCompletionService({
+      modelCapabilities: MODEL_CAPABILITY_CATALOG,
+    }).complete({});
+
+    expect(result.modelCapabilityCatalog['deepseek-v4-pro']).toContain('structured-output');
+    expect(result.modelCapabilityCatalog['kimi-for-coding']).toContain('structured-output');
+    expect(result.modelCapabilityCatalog['glm-5.3']).toBeUndefined();
+  });
 });

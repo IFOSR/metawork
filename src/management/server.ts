@@ -108,6 +108,17 @@ export interface ExecutorManualPreviewRequest {
   config: unknown;
 }
 
+/**
+ * 现场探测结果：用表单里的 BaseURL/API Key(或已存凭据)调 Provider 的
+ * OpenAI 兼容 /models 接口，只返回模型 ID 与公开目录里的能力标签，不落库。
+ */
+export interface ProviderModelDiscoveryResponse {
+  status: 'discovered' | 'unavailable';
+  modelIds: string[];
+  /** modelId → 内置目录登记的能力标签；目录未收录的模型为空数组。 */
+  capabilities: Record<string, string[]>;
+}
+
 export interface ConfigQuery {
   getActive(): Promise<ConfigSnapshotResponse>;
   listRevisions(): Promise<RevisionSummary[]>;
@@ -127,6 +138,10 @@ export interface ConfigQuery {
     baseUrl?: string,
   ): Promise<{ configured: boolean; valid: boolean | null; detail?: string }>;
   getCompletion?(): Promise<ConfigurationCompletionResult>;
+  /** 用表单中的 baseUrl/apiKey（或已存密钥）现场探测 Provider 模型列表；不落库。 */
+  discoverProviderModels?(
+    input: { baseUrl: string; apiKey?: string; providerRef?: string },
+  ): Promise<ProviderModelDiscoveryResponse>;
   getExecutorCapabilityManual?(
     agentClassRef: string,
     revisionId?: string,
@@ -738,6 +753,33 @@ export class ManagementServer {
         return;
       }
       this.sendJson(response, 200, await this.deps.configQuery.getCompletion());
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/config/discover-models') {
+      if (!this.deps.configQuery.discoverProviderModels) {
+        this.sendJson(response, 503, { error: 'provider model discovery unavailable' });
+        return;
+      }
+      const body = await readRequestBody(request);
+      const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '';
+      const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+      const providerRef = typeof body.providerRef === 'string' ? body.providerRef.trim() : '';
+      if (!baseUrl || (!apiKey && !providerRef)) {
+        this.sendJson(response, 400, {
+          error: 'baseUrl and one of apiKey/providerRef are required',
+        });
+        return;
+      }
+      this.sendJson(
+        response,
+        200,
+        await this.deps.configQuery.discoverProviderModels({
+          baseUrl,
+          ...(apiKey ? { apiKey } : {}),
+          ...(providerRef ? { providerRef } : {}),
+        }),
+      );
       return;
     }
 

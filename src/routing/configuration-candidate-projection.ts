@@ -1,4 +1,5 @@
 import type { ModelCapability } from '../configuration/types.js';
+import { mergeKnownModelCapabilities } from '../configuration/model-capability-catalog.js';
 import type { AutoModelCandidate } from './auto-model-resolver.js';
 
 export interface CandidateProjectionConfiguration {
@@ -46,8 +47,11 @@ export function projectConfigurationCandidates(
       providerRef: model.providerRef,
       modelRef,
       modelId: model.modelId,
-      capabilities: configuration.agentClasses[agentClassRef]?.modelCapabilities?.[modelRef]
-        ?? model.capabilities,
+      capabilities: mergeKnownModelCapabilities(
+        model.modelId,
+        configuration.agentClasses[agentClassRef]?.modelCapabilities?.[modelRef]
+          ?? model.capabilities,
+      ),
       contextLimit: model.contextLimit,
       costInputPerMillion: model.costInputPerMillion,
       costOutputPerMillion: model.costOutputPerMillion,

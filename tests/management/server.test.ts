@@ -1173,6 +1173,56 @@ describe('ManagementServer WebSocket authentication', () => {
     }
   });
 
+  it('discovers provider models with the credentials supplied by the settings form', async () => {
+    const port = await reservePort();
+    const calls: Array<{ baseUrl: string; apiKey?: string; providerRef?: string }> = [];
+    const server = createManagementServer(port, {
+      configQuery: {
+        discoverProviderModels: async input => {
+          calls.push(input);
+          return {
+            status: 'discovered',
+            modelIds: ['deepseek-v4-pro'],
+            capabilities: { 'deepseek-v4-pro': ['coding', 'structured-output'] },
+          };
+        },
+      },
+    });
+    await server.start();
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/config/discover-models`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer manual-token', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          baseUrl: 'https://api.deepseek.com/v1',
+          apiKey: 'sk-form-key',
+          providerRef: 'deepseek',
+        }),
+      });
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        status: 'discovered',
+        modelIds: ['deepseek-v4-pro'],
+        capabilities: { 'deepseek-v4-pro': ['coding', 'structured-output'] },
+      });
+      expect(calls).toEqual([{
+        baseUrl: 'https://api.deepseek.com/v1',
+        apiKey: 'sk-form-key',
+        providerRef: 'deepseek',
+      }]);
+
+      const invalid = await fetch(`http://127.0.0.1:${port}/api/config/discover-models`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer manual-token', 'content-type': 'application/json' },
+        body: JSON.stringify({ baseUrl: 'https://api.deepseek.com/v1' }),
+      });
+      expect(invalid.status).toBe(400);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it('serves an Executor capability manual preview from the configuration query', async () => {
     const port = await reservePort();
     const server = createManagementServer(port, {

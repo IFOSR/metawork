@@ -84,6 +84,31 @@ describe('configuration candidate projection', () => {
     });
   });
 
+  it('fills catalogued capabilities for models that declare none', () => {
+    const input = configuration();
+    input.models['imported'] = {
+      providerRef: 'secondary',
+      modelId: 'deepseek-v4-pro',
+      capabilities: [],
+      enabled: true,
+    };
+    input.models['unknown'] = {
+      providerRef: 'secondary',
+      modelId: 'some-uncatalogued-model',
+      capabilities: [],
+      enabled: true,
+    };
+
+    const candidates = projectConfigurationCandidates(input, 'pi-agent');
+
+    // 激活与 Kernel 投影会为目录收录的 modelId 补上能力，避免空能力模型在
+    // Planner 绑定等硬性要求下被无提示拒绝。
+    expect(candidates.find(candidate => candidate.modelRef === 'imported')?.capabilities)
+      .toContain('structured-output');
+    expect(candidates.find(candidate => candidate.modelRef === 'unknown')?.capabilities)
+      .toEqual([]);
+  });
+
   it('uses per-Executor user-confirmed model capabilities for Kernel candidates', () => {
     const input = configuration();
     input.agentClasses['pi-agent']!.modelCapabilities = {

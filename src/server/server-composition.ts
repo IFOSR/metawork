@@ -141,8 +141,11 @@ import {
 } from '../configuration/configuration-runtime-coordinator.js';
 import { ConfigurationCompletionService } from '../configuration/configuration-completion-service.js';
 import { PUBLIC_PROVIDER_PRESETS } from '../configuration/public-provider-catalog.js';
-import { MODEL_CAPABILITY_CATALOG } from '../configuration/model-capability-catalog.js';
-import { buildProviderCompletionCatalog } from '../configuration/provider-model-discovery.js';
+import { knownModelCapabilities, MODEL_CAPABILITY_CATALOG } from '../configuration/model-capability-catalog.js';
+import {
+  buildProviderCompletionCatalog,
+  discoverOpenAiCompatibleModels,
+} from '../configuration/provider-model-discovery.js';
 import { ConfigurationRevisionRepo } from '../storage/configuration-revision-repo.js';
 import {
   classifyServerReadiness,
@@ -1569,6 +1572,34 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             ),
             agentClasses: snapshot.config.agentClasses as unknown as Record<string, Record<string, unknown>>,
           });
+        },
+        discoverProviderModels: async input => {
+          const baseUrl = input.baseUrl.trim();
+          let apiKey = input.apiKey?.trim() ?? '';
+          if (!apiKey && input.providerRef) {
+            try {
+              const snapshot = await configurationService.getActiveSnapshot();
+              const provider = snapshot.config.providers[input.providerRef];
+              if (provider) {
+                assertSecretReference(provider.apiKeyRef);
+                apiKey = (await secretStore.get(provider.apiKeyRef)).trim();
+              }
+            } catch {
+              apiKey = '';
+            }
+          }
+          if (!/^https?:\/\//iu.test(baseUrl) || !apiKey) {
+            return { status: 'unavailable' as const, modelIds: [], capabilities: {} };
+          }
+          const discovery = await discoverOpenAiCompatibleModels({ baseUrl, apiKey });
+          return {
+            status: discovery.status,
+            modelIds: discovery.modelIds,
+            capabilities: Object.fromEntries(discovery.modelIds.map(modelId => [
+              modelId,
+              knownModelCapabilities(modelId),
+            ])),
+          };
         },
         activate: async (baseRevisionId, nextConfig, secrets) => {
           let compiledConfig: AnyFusionConfigurationV2;
