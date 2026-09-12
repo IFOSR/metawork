@@ -300,6 +300,28 @@ metawork model    list | add | edit | test | remove
 metawork executor list | add | edit | enable | disable | remove | test
 ```
 
+### Provider 模型目录与能力标签
+
+设置工作台的顺序是「运行时容量 → Provider 模型目录 → Planner → Executor 路由」，
+因为 Planner 与 Executor 的模型都必须来自已配置的 Provider。
+
+新增或修改 Provider 时，填好 Base URL 与 API Key 后点「**获取模型列表**」，即可用你刚
+填写的凭据现场探测该 Provider 的 OpenAI 兼容 `/models`，列出它提供的全部模型；内置的
+模型能力目录会为已收录的模型自动标注能力标签，未收录的模型显示「能力待确认」，可通过
+「**补充能力**」手工勾选。点「加入候选」时能力标签会一并写入，因此不会出现能力为空的
+模型。保存前的预检会直接指出「哪个 AgentClass 绑定的哪个模型缺少什么能力」，不再等到
+激活时才给出难以定位的报错。
+
+### Planner 的独立更新
+
+Planner 与其它设置分开更新：Planner 板块有自己的「**更新 Planner**」按钮，只提交 Planner
+绑定以及它依赖的 Model/Provider（含这些 Provider 的密钥），其余配置保持运行中状态不变；
+「保存并激活」不会修改 Planner。这样更新其它设置时，不会顺带用尚未更新的 Planner 执行。
+
+约束：有任务运行中时不能更新 Planner（按钮禁用并显示原因）；Planner 绑定的模型缺少必需
+能力（如 `planning` / `structured-output`）或已不在模型目录中时，会先给出预检提示；更新
+成功后只同步 Planner 基线，其它板块尚未保存的编辑会保留。
+
 ### Executor 能力配置
 
 每个 Executor 都有独立的能力说明书，而不是所有 Executor 共用一组可自由编辑的标签。

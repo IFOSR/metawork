@@ -334,6 +334,36 @@ metawork model    list | add | edit | test | remove
 metawork executor list | add | edit | enable | disable | remove | test
 ```
 
+### Provider catalog and capability labels
+
+The settings workbench is ordered runtime capacity → Provider catalog → Planner →
+Executor routing, because both the Planner and the Executors can only use Models from an
+already configured Provider.
+
+When adding or editing a Provider, fill in the Base URL and API key and press
+**Get model list**: the workbench probes that Provider's OpenAI-compatible `/models`
+endpoint with the credentials you just typed and lists every model it offers. The built-in
+model capability catalog labels the models it knows about automatically; unknown models
+show "capability unconfirmed" and can be completed by hand via **Add capabilities**.
+Capabilities are written together with the model when you add it as a candidate, so no
+model is ever saved with an empty capability list. The pre-activation check names the exact
+AgentClass binding that is missing which capability, instead of failing activation with an
+error that is hard to trace.
+
+### Updating the Planner independently
+
+The Planner is updated separately from the rest of the configuration: the Planner section
+has its own **Update Planner** button that submits only the Planner binding plus the
+Models/Providers it depends on (with those Providers' secrets). Everything else keeps
+running unchanged, and **Save and activate** never modifies the Planner — so updating other
+settings can never be applied by a Planner that has not been updated yet.
+
+Constraints: the Planner cannot be updated while a Task is running (the button is disabled
+and states the reason); if the Planner's Model lacks a required capability (for example
+`planning` / `structured-output`) or is no longer in the catalog, a pre-check reports it
+first; after a successful update only the Planner baseline is refreshed, so unsaved edits
+in other sections are preserved.
+
 ### Executor capability configuration
 
 Each Executor has an independent capability manual rather than a shared set of

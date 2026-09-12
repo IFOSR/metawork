@@ -29,7 +29,7 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
   `metawork-release-2026-01` is revoked. Manifests published before this
   release are no longer accepted by the installer.
 
-## [Unreleased]
+## [1.2.0-preview.2] - 2026-09-12
 
 ### Added
 
@@ -42,15 +42,17 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
   模型展示，支持一键「使用目录推荐」）。
 - Settings 工作台新增**保存前预检**：按 AgentClass 的硬性能力要求检查已绑定模型，
   直接指出「哪个 AgentClass 绑定的哪个模型缺少什么能力」，避免激活时才报错。
-- Planner 现在可独立更新：Settings 工作台第一步之后（Provider 目录之后、Executor
-  之前）新增 Planner 板块与「更新 Planner」按钮，只提交 Planner 绑定及其依赖的
-  Model/Provider，不影响其它设置。
+- Planner 现在可独立更新：Settings 工作台在 Provider 目录之后、Executor 之前新增
+  Planner 板块与「更新 Planner」按钮，只提交 Planner 绑定及其依赖的 Model/Provider，
+  不影响其它设置。
 
 ### Changed
 
 - Settings 工作台板块顺序调整为：运行时容量 → Provider 模型目录 → Planner →
   Executor 路由；「保存并激活」不再修改 Planner（Planner 由「更新 Planner」单独提交），
   并有明确文案提示。
+- 安全但未认证的执行结果（例如缺少完成标记）作为**已完成任务 + 完成摘要中的警告**
+  呈现，不再把任务阻塞；无论何种情况都不会伪造提交交付物。
 
 ### Fixed
 
@@ -61,6 +63,8 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 - 常规「保存并激活」不再把 `agentClasses.planner` 整体丢弃（旧实现会因此被判定为
   进程级变更，误报「此更改需要重启服务后生效」），而是用运行中的 Planner 原样覆盖。
 - 更新 Planner 成功后只同步 Planner 基线，保留其它板块尚未保存的编辑。
+
+## [Unreleased]
 
 ### Added
 
