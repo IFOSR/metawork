@@ -128,13 +128,21 @@ describe('PlannerHostBridge shared Proposal Host', () => {
   it('reclaims a stale Planner Host socket', async () => {
     const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-stale.sock`);
     await createStaleSocket(socketPath);
-    const staleIdentity = await socketIdentity(socketPath);
     const bridge = new PlannerHostBridge({ socketPath });
 
     try {
       await bridge.start();
-      expect(await socketIdentity(socketPath)).not.toEqual(staleIdentity);
+      // 断言方式：不比较 socket 文件的 inode —— 文件系统可能在 unlink 后
+      // 复用同一个 inode（例如 tmpfs），那样会把成功回收误判为失败。
+      // 改为验证“该路径现在由此 bridge 提供服务”：能连上，并返回未握手的
+      // hello_required 错误（与 live socket 测试一致）。
       const socket = await connect(socketPath);
+      write(socket, { protocolVersion: 2, type: 'ping', requestId: 'ping-reclaimed' });
+      expect(await read(socket)).toMatchObject({
+        type: 'error',
+        requestId: 'ping-reclaimed',
+        error: { code: 'hello_required' },
+      });
       socket.destroy();
     } finally {
       await bridge.stop();

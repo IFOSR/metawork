@@ -321,7 +321,7 @@ describe('scripted session', () => {
     expect(result.output.join('\n')).not.toContain('已记录 1 个任务产物');
   });
 
-  it('delivers safe uncertified output without synthesizing a fallback Feishu Markdown artifact', async () => {
+  it('completes safe uncertified output with a malformed-completion warning instead of synthesizing a fallback Feishu Markdown artifact', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
@@ -361,13 +361,19 @@ describe('scripted session', () => {
       ),
     });
 
-    const blockedTask = taskEngine.list().find(task => task.status === 'blocked');
-    expect(blockedTask).toBeTruthy();
-    const fallbackArtifact = resolve(process.cwd(), 'metaclaw-tasks', blockedTask!.id, 'feishu-document.md');
-    expect(blockedTask?.artifacts).not.toContain(fallbackArtifact);
+    // 现状语义（产品确认）：安全但未认证的结果（缺少完成标记）不再阻塞任务，
+    // 而是完成任务并在完成摘要中给出警告；唯一硬不变量是绝不伪造交付物。
+    const completedTask = taskEngine.list().find(task => task.status === 'done');
+    expect(completedTask).toBeTruthy();
+    const fallbackArtifact = resolve(process.cwd(), 'metaclaw-tasks', completedTask!.id, 'feishu-document.md');
+    expect(completedTask?.artifacts).toEqual([]);
+    expect(completedTask?.artifacts).not.toContain(fallbackArtifact);
     const output = result.output.join('\n');
     expect(output).toContain('磊哥，我已开始调研');
-    expect(output).toContain('结果已返回，任务完成认证待处理。');
+    expect(output).toContain('Warnings:');
+    expect(output).toContain('completion_malformed:marker:completion marker is missing');
+    // 这条路径不再输出“认证待处理”提示（它只属于 contract_failed 分支）。
+    expect(output).not.toContain('结果已返回，任务完成认证待处理。');
     expect(output).not.toContain('response-only correction is unavailable or already exhausted');
     expect(output).not.toContain('已记录 1 个任务产物');
   });
