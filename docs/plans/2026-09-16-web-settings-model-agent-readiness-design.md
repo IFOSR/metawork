@@ -152,8 +152,13 @@ their pinned configuration identity. A rename does not change `providerRef`,
 Provider API Keys are stored as plaintext in:
 
 ```text
-~/.config/metawork/credentials.json
+~/.metawork/credentials.json
 ```
+
+The path follows the configured MetaWork installation root. The default is
+`~/.metawork/credentials.json`; an installation-root override places the file
+at `<install-root>/credentials.json`. This design does not introduce a second
+`~/.config/metawork` persistence root.
 
 The file has one intentionally simple format:
 
@@ -539,7 +544,8 @@ Executor concepts into 模型 and 智能体.
    internal identity.
 4. Every Provider API Key can be replaced and is shown only as a mask in Web.
 5. Provider API Keys are authoritative in one plaintext
-   `~/.config/metawork/credentials.json` file.
+   `~/.metawork/credentials.json` file by default, or
+   `<install-root>/credentials.json` when the MetaWork root is overridden.
 6. Planner and concurrency/queue controls are the only controls moved into
    advanced settings.
 7. Pi is detected automatically and blocks only new work when unavailable.
