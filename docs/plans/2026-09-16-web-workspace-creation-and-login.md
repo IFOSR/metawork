@@ -344,8 +344,22 @@ still accepts an argument.
 In `src/management/web-auth.ts`:
 
 1. Delete the `launchContexts` option and the `WebLaunchContextService` import.
-2. Delete `launchContext` from `WebAuthSessionState`.
-3. Replace `exchange` and `createSession`:
+2. Make the options parameter optional so `new WebAuthService()` compiles:
+
+```ts
+export class WebAuthService {
+  readonly manualAccessToken: string;
+  private readonly sessions = new Map<string, WebAuthSessionState>();
+  private readonly createSessionToken: () => string;
+
+  constructor(private readonly options: WebAuthServiceOptions = {}) {
+    this.manualAccessToken = options.manualAccessToken ?? generateToken();
+    this.createSessionToken = options.createSessionToken ?? generateToken;
+  }
+```
+
+3. Delete `launchContext` from `WebAuthSessionState`.
+4. Replace `exchange` and `createSession`:
 
 ```ts
 export interface WebAuthServiceOptions {
@@ -682,6 +696,51 @@ the `new ManagementServer({...})` call and delete
 `async initializeClient() { return { status: 'not_requested' }; },` from
 `createSessionRuntime`.
 
+**Step 3b: Remove the dead `workspaceInitialization` creation contract**
+
+`workspaceInitialization` only ever carried the launch hint's outcome. With the
+hint no longer applied at session creation it has no source, so it is deleted in
+this same change with no compatibility read:
+
+- `src/management/web-session-types.ts`: delete
+  `workspaceInitialization: WorkspaceInitializationResult;` from
+  `WebSessionCreationResult`. Keep `WorkspaceInitializationResult` itself —
+  `selectWorkspace` still returns it.
+- `web/src/api/session-types.ts`: delete the `workspaceInitialization` member
+  from `WebSessionCreationResult`.
+- `src/management/web-gateway-session-runtime.ts` in `createSessionNow()`:
+  delete `const workspaceInitialization = { status: 'not_requested' as const };`
+  and the `workspaceInitialization,` property from the returned object.
+- `web/src/App.tsx` in `handleNewSession()`: replace
+
+```ts
+    setActivationNotice(
+      result.workspaceInitialization.status === 'failed'
+        ? `默认 Workspace 设置失败：${result.workspaceInitialization.reason}。`
+          + ' 请执行 /workspace /absolute/path。'
+        : activationMessage(result.activation),
+    );
+```
+
+with
+
+```ts
+    setActivationNotice(activationMessage(result.activation));
+```
+
+- `tests/management/server.test.ts`: delete the stale
+  `workspaceInitialization: { status: 'not_requested' },` inside the
+  `createSession` mock of the blocked-activation test.
+- `tests/management/web-gateway-session-runtime.test.ts`: delete any
+  `workspaceInitialization` expectation.
+- `tests/e2e/workspace-conversation-directory-browser.test.ts`: delete
+  `workspaceInitialization: { status: 'not_requested' },` from the mock creation
+  response.
+- `tests/gateway/client-gateway.test.ts`: rename the local
+  `workspaceInitializationEnvelope()` helper to `selectWorkspaceEnvelope()` so no
+  reader mistakes it for the removed Web contract. Behaviour is unchanged; it
+  only issues a `select_workspace` command.
+
 **Step 4: Run the tests**
 
 Run: `npm test -- --run tests/management/server.test.ts`
@@ -691,6 +750,14 @@ Run: `npm test -- --run tests/management/web-gateway-session-runtime.test.ts`
 Expected: PASS. If the file references `initializeClient`, replace those call
 sites with `selectWorkspace`.
 
+Run: `npm test -- --run tests/management/web-session-types.test.ts`
+Expected: PASS
+
+Confirm nothing still reads the removed field:
+`grep -rn "workspaceInitialization" src web/src tests`
+Expected: only `WorkspaceInitializationResult` declarations and
+`selectWorkspace` usages remain.
+
 Run: `npm run lint`
 Expected: no errors.
 
@@ -698,8 +765,11 @@ Expected: no errors.
 
 ```bash
 git add src/management/server.ts src/management/web-session-runtime-types.ts \
-  src/management/web-gateway-session-runtime.ts src/server/server-composition.ts \
-  tests/management/server.test.ts tests/management/web-gateway-session-runtime.test.ts
+  src/management/web-gateway-session-runtime.ts src/management/web-session-types.ts \
+  src/server/server-composition.ts web/src/api/session-types.ts web/src/App.tsx \
+  tests/management/server.test.ts tests/management/web-gateway-session-runtime.test.ts \
+  tests/gateway/client-gateway.test.ts \
+  tests/e2e/workspace-conversation-directory-browser.test.ts
 git commit -m "refactor(web): serve launch workspace hints without a session"
 ```
 
@@ -711,7 +781,8 @@ git commit -m "refactor(web): serve launch workspace hints without a session"
 - Modify: `src/client/web-client-launcher.ts`
 - Modify: `src/management/token.ts`
 - Test: `tests/client/web-client-launcher.test.ts`
-- Delete: `tests/management/token.test.ts`
+- Test: `tests/management/token.test.ts`
+- Test: `tests/architecture/no-direct-client-session-paths.test.ts`
 
 **Step 1: Rewrite the failing test**
 
@@ -747,28 +818,56 @@ In `src/client/web-client-launcher.ts`, replace the URL construction:
     const url = `${endpoint.webOrigin.replace(/\/+$/u, '')}/#launch=${encodeURIComponent(launch.token)}`;
 ```
 
-**Step 4: Delete the dead startup presentation helper**
+**Step 4: Update the architecture contract test**
+
+`tests/architecture/no-direct-client-session-paths.test.ts` asserts the launcher
+URL fragment and will fail otherwise. Change
+
+```ts
+    const urlLine = launcher.split('\n').find(line => line.includes('const url =')) ?? '';
+    expect(urlLine).toContain('#bootstrap=');
+    expect(urlLine).not.toMatch(/workspace|canonical|startupWorkspacePath/u);
+```
+
+to
+
+```ts
+    const urlLine = launcher.split('\n').find(line => line.includes('const url =')) ?? '';
+    // 启动提示 token 不是登录凭据，且 URL 仍不得携带任何 Workspace 路径。
+    expect(urlLine).toContain('#launch=');
+    expect(urlLine).not.toMatch(/workspace|canonical|startupWorkspacePath/u);
+```
+
+**Step 5: Delete the dead startup presentation helper**
 
 `buildWebStartupPresentation` in `src/management/token.ts` is unused production
-code. Delete the function and the whole of `tests/management/token.test.ts`, and
-delete the now-unused `bootstrap` parameters it introduced. Keep
-`generateToken`, `formatWebAccessTokenLine`, `tokenMatches`, and
-`bearerTokenFromHeader`.
+code. Delete the function and the two tests that cover it
+(`hides credentials during normal automatic browser startup` and
+`prints only the manual fallback token for no-open mode`) from
+`tests/management/token.test.ts`. Keep the rest of that file:
+`formatWebAccessTokenLine` and `generateToken` are still production behaviour.
+Also keep `tokenMatches` and `bearerTokenFromHeader`.
 
-**Step 5: Run the tests**
+**Step 6: Run the tests**
 
 Run: `npm test -- --run tests/client/web-client-launcher.test.ts`
+Expected: PASS
+
+Run: `npm test -- --run tests/management/token.test.ts`
+Expected: PASS (two remaining tests)
+
+Run: `npm test -- --run tests/architecture/no-direct-client-session-paths.test.ts`
 Expected: PASS
 
 Run: `npm run lint`
 Expected: no errors.
 
-**Step 6: Commit**
+**Step 7: Commit**
 
 ```bash
 git add src/client/web-client-launcher.ts src/management/token.ts \
-  tests/client/web-client-launcher.test.ts
-git rm tests/management/token.test.ts
+  tests/client/web-client-launcher.test.ts tests/management/token.test.ts \
+  tests/architecture/no-direct-client-session-paths.test.ts
 git commit -m "feat(web): open the browser with a launch hint instead of a login token"
 ```
 
@@ -788,12 +887,13 @@ Create `tests/management/workspace-directory-browser.test.ts`:
 import {
   mkdir,
   mkdtemp,
+  realpath,
   rm,
   symlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join, parse } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WorkspaceDirectoryBrowser } from '../../src/management/workspace-directory-browser.js';
 
@@ -816,22 +916,49 @@ async function fixture() {
 }
 
 describe('WorkspaceDirectoryBrowser', () => {
-  it('lists directories only, sorted and with the realpath-resolved path', async () => {
+  it('lists directories only, sorted, under canonical paths', async () => {
     const root = await fixture();
-    // /var 在 macOS 上是 /private/var 的符号链接：realpath 必须被应用。
+    const canonicalRoot = await realpath(root);
     const browser = new WorkspaceDirectoryBrowser();
+
     const result = await browser.browse(root);
 
-    expect(result.path).not.toContain('/../');
+    expect(result.path).toBe(canonicalRoot);
     expect(result.entries.map(entry => entry.name)).toEqual([
       'alpha',
       'Beta',
       'linked-alpha',
       'zeta',
     ]);
-    expect(result.entries.every(entry => entry.path.startsWith(result.path))).toBe(true);
+    // 每个 entry 的 path 都是 realpath：符号链接报告其目标目录的规范路径。
+    for (const entry of result.entries) {
+      expect(entry.path).toBe(await realpath(join(result.path, entry.name)));
+      expect(entry.path.startsWith(result.path)).toBe(true);
+    }
+    expect(result.entries.find(entry => entry.name === 'linked-alpha')?.path)
+      .toBe(join(canonicalRoot, 'alpha'));
     expect(result.entries.map(entry => entry.name)).not.toContain('notes.txt');
     expect(result.entries.map(entry => entry.name)).not.toContain('linked-file');
+  });
+
+  it('returns Server-built crumbs so clients never parse an OS path', async () => {
+    const root = await fixture();
+    const browser = new WorkspaceDirectoryBrowser();
+
+    const result = await browser.browse(root);
+
+    expect(result.crumbs[0]).toEqual({ name: parse(result.path).root, path: parse(result.path).root });
+    expect(result.crumbs.at(-1)).toEqual({
+      name: basename(result.path),
+      path: result.path,
+    });
+    // 每一级都是上一级的直接子目录。
+    for (let index = 1; index < result.crumbs.length; index += 1) {
+      const previous = result.crumbs[index - 1]!;
+      const current = result.crumbs[index]!;
+      expect(current.path).toBe(join(previous.path, current.name));
+      expect(current.path.startsWith(previous.path)).toBe(true);
+    }
   });
 
   it('reports the parent directory and clamps the filesystem root', async () => {
@@ -882,7 +1009,7 @@ Create `src/management/workspace-directory-browser.ts`:
 ```ts
 import { readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, join, parse, resolve, sep } from 'node:path';
 
 export const MAX_BROWSE_ENTRIES = 500;
 
@@ -891,9 +1018,15 @@ export interface WorkspaceBrowseEntry {
   readonly path: string;
 }
 
+export interface WorkspaceBrowseCrumb {
+  readonly name: string;
+  readonly path: string;
+}
+
 export interface WorkspaceBrowseResult {
   readonly path: string;
   readonly parent: string | null;
+  readonly crumbs: WorkspaceBrowseCrumb[];
   readonly entries: WorkspaceBrowseEntry[];
 }
 
@@ -905,10 +1038,14 @@ export interface WorkspaceDirectoryBrowserDeps {
 /**
  * 只读目录列举，供未创建的 Workspace 选择使用。
  *
- * 根策略为 `/`：允许向上导航到文件系统根，不排除任何目录。所有返回路径都
- * 经过 realpath 归一化，保证浏览器展示的路径与 Server 后续授权的路径一致。
- * 这里只增加“可发现性”，不增加授权能力：select_workspace 本来就接受任意
- * 存在的绝对目录。
+ * 根策略为 `/`：允许向上导航到文件系统根，不排除任何目录。path、parent、
+ * crumbs 与 entries 中的每个路径都经过 realpath 归一化，因此符号链接目录会以
+ * 其目标目录的规范路径出现——这正是 select_workspace 之后会重新解析并存储的
+ * 路径。crumbs 由 Server 生成，客户端不再自行解析操作系统路径，Windows 盘符与
+ * 分隔符语义完全留在 Server 侧。
+ *
+ * 这里只增加“可发现性”，不增加授权能力：select_workspace 本来就接受任意存在
+ * 的绝对目录。
  */
 export class WorkspaceDirectoryBrowser {
   private readonly defaultPath: () => string;
@@ -929,6 +1066,8 @@ export class WorkspaceDirectoryBrowser {
     const dirents = await readdir(canonical, { withFileTypes: true }).catch(error => {
       throw mapReadError(error);
     });
+    // 上限在 realpath 之前应用，以便界定每请求的系统调用数量；
+    // 因此实际返回条数可能少于 maxEntries。
     const names = dirents
       .filter(entry => entry.isDirectory() || entry.isSymbolicLink())
       .map(entry => entry.name)
@@ -936,17 +1075,39 @@ export class WorkspaceDirectoryBrowser {
       .slice(0, this.maxEntries);
     const entries: WorkspaceBrowseEntry[] = [];
     for (const name of names) {
-      // 符号链接必须解析后确认是目录，避免把文件链接展示成可选项。
-      const child = await stat(resolve(canonical, name)).catch(() => null);
-      if (!child?.isDirectory()) continue;
-      entries.push({ name, path: resolve(canonical, name) });
+      const target = await resolveDirectory(resolve(canonical, name));
+      if (!target) continue;
+      entries.push({ name, path: target });
     }
     return {
       path: canonical,
       parent: canonical === dirname(canonical) ? null : dirname(canonical),
+      crumbs: buildCrumbs(canonical),
       entries,
     };
   }
+}
+
+/** 解析为目录时返回规范路径；指向文件或已消失时返回 null。 */
+async function resolveDirectory(path: string): Promise<string | null> {
+  try {
+    const canonical = await realpath(path);
+    return (await stat(canonical)).isDirectory() ? canonical : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildCrumbs(canonical: string): WorkspaceBrowseCrumb[] {
+  const root = parse(canonical).root;
+  const crumbs: WorkspaceBrowseCrumb[] = [{ name: root, path: root }];
+  for (const segment of canonical.slice(root.length).split(sep).filter(Boolean)) {
+    crumbs.push({
+      name: segment,
+      path: join(crumbs[crumbs.length - 1]!.path, segment),
+    });
+  }
+  return crumbs;
 }
 
 async function resolveCanonical(path: string): Promise<string> {
@@ -1025,10 +1186,13 @@ Add to `tests/management/server.test.ts`:
       const payload = await response.json() as {
         path: string;
         parent: string | null;
+        crumbs: Array<{ name: string; path: string }>;
         entries: Array<{ name: string }>;
       };
       expect(payload.path).toBe(await realpath(root));
       expect(payload.entries.map(entry => entry.name)).toEqual(['repo']);
+      // Server 必须提供结构化路径段，客户端不解析操作系统路径。
+      expect(payload.crumbs.at(-1)).toEqual({ name: basename(payload.path), path: payload.path });
     } finally {
       await server.stop();
       await rm(root, { recursive: true, force: true });
@@ -1059,9 +1223,9 @@ Add to `tests/management/server.test.ts`:
   });
 ```
 
-Add the needed imports at the top of the test file:
-`realpath` from `node:fs/promises` (extend the existing import),
-`mkdir`/`rm` if not already imported, and
+Add the needed imports at the top of the test file: `basename` to the
+`node:path` import, `realpath` to the `node:fs/promises` import, `mkdir`/`rm` if
+not already imported, and
 `import { WorkspaceDirectoryBrowser } from '../../src/management/workspace-directory-browser.js';`.
 
 Add `readonly workspaceDirectoryBrowser?: WorkspaceDirectoryBrowser;` to
@@ -1348,6 +1512,7 @@ In `web/src/api/http.ts`, add after `getWorkspaces()`:
   browseWorkspaceDirectory(path?: string): Promise<{
     path: string;
     parent: string | null;
+    crumbs: Array<{ name: string; path: string }>;
     entries: Array<{ name: string; path: string }>;
   }> {
     const suffix = path?.trim() ? `?path=${encodeURIComponent(path.trim())}` : '';
@@ -1366,6 +1531,7 @@ import type { HttpClient } from '../api/http';
 interface BrowseState {
   path: string;
   parent: string | null;
+  crumbs: Array<{ name: string; path: string }>;
   entries: Array<{ name: string; path: string }>;
 }
 
@@ -1422,7 +1588,7 @@ export function WorkspaceCreator({
       .finally(() => setLoading(false));
   };
 
-  const segments = (state?.path ?? '').split('/').filter(Boolean);
+  const segments = state?.crumbs ?? [];
 
   return (
     <div className="workspace-creator-backdrop" onClick={onClose}>
@@ -1439,15 +1605,15 @@ export function WorkspaceCreator({
           </div>
           <button type="button" className="ghost-button" onClick={onClose}>关闭</button>
         </header>
+        {/* 面包屑完全来自 Server 的结构化路径段，前端不解析 OS 路径。 */}
         <nav className="workspace-creator-path" aria-label="当前目录">
-          <button type="button" onClick={() => openPath('/')}>/</button>
-          {segments.map((segment, index) => (
+          {segments.map(crumb => (
             <button
-              key={`${segment}-${index}`}
+              key={crumb.path}
               type="button"
-              onClick={() => openPath(`/${segments.slice(0, index + 1).join('/')}`)}
+              onClick={() => openPath(crumb.path)}
             >
-              {segment}
+              {crumb.name}
             </button>
           ))}
         </nav>
@@ -1467,7 +1633,7 @@ export function WorkspaceCreator({
             <button
               type="button"
               className="workspace-creator-row"
-              key={entry.path}
+              key={entry.name}
               onClick={() => openPath(entry.path)}
             >
               <span aria-hidden="true">▸</span>
@@ -1864,7 +2030,109 @@ git commit -m "feat(web): create Workspaces from a local directory browser"
 
 ---
 
-### Task 9: Close documentation and run the validation gate
+### Task 9: Record the decision in a new ADR and update current authority docs
+
+**Files:**
+- Create: `docs/adr/0039-web-workspace-creation-and-login.md`
+- Modify: `docs/adr/README.md`
+- Modify: `docs/adr/0034-independent-server-and-client-process-lifecycle.md`
+- Modify: `docs/adr/0035-workspace-scoped-conversation-organization.md`
+- Modify: `CONTEXT.md`
+- Modify: `docs/current/account-runtime-and-gateway-operations.md`
+
+**Step 1: Write the ADR**
+
+Create `docs/adr/0039-web-workspace-creation-and-login.md` following the
+repository ADR format used by ADR-0035. It must state, at minimum:
+
+```markdown
+# ADR-0039: Web Workspace Creation And Login
+
+- **Status:** Accepted
+- **Date:** 2026-09-16
+- **Scope:** Web authentication, Web launch hints, Workspace creation from a
+  Client surface, and read-only Server directory enumeration
+- **Amends:** ADR-0034 (Browser bootstrap context and startup hint), ADR-0035
+  (Client Workspace Selection)
+- **Preserves:** ADR-0011, ADR-0020, ADR-0031
+- **Design:** `docs/plans/2026-09-16-web-workspace-creation-and-login-design.md`
+- **Implementation plan:**
+  `docs/plans/2026-09-16-web-workspace-creation-and-login.md`
+- **Governed by:** ADR-0020
+```
+
+Record these decisions:
+
+1. `metawork web` never authenticates a browser. A launch token is a
+   one-time, 60-second, non-authenticating Workspace suggestion served by
+   `POST /api/auth/launch-context`, and it is applied only through the ordinary
+   authorized `select_workspace` command after login. This replaces ADR-0034's
+   "the authenticated Web session may reuse that launch hint" rule.
+2. Built-in login credentials are the fixed `admin` / `123456` pair. The Server
+   never generates or rotates credentials. Environment variables
+   (`ANYFUSION_WEB_USERNAME`, `ANYFUSION_WEB_PASSWORD`,
+   `ANYFUSION_WEB_PASSWORD_HASH`) remain the supported override.
+3. A Client may create a Workspace inside its Account by selecting a local
+   directory. The Server owns path resolution and authorization; the Client
+   only browses and proposes. This extends ADR-0035's Client Workspace
+   selection without changing `WorkspaceRecord`, the Conversation binding, or
+   the Workspace Catalog format.
+4. `GET /api/workspaces/browse` is a cookie-session-only, read-only directory
+   listing under root `/`. It returns `path`, `parent`, `crumbs`, and
+   `entries`, where every path is `realpath`-resolved and `crumbs` is the
+   Server-built path decomposition. It grants no new Workspace authority,
+   because `select_workspace` already accepted any existing absolute directory
+   from an authenticated principal.
+5. Database-backed Web user management, session TTL/sliding renewal, and
+   restart-surviving signed cookies are explicitly deferred. A future decision
+   must not treat the current in-memory session map as authoritative.
+
+**Step 2: Link the amendment**
+
+Add `Amended by: [ADR-0039](0039-web-workspace-creation-and-login.md)` to the
+header block of both ADR-0034 and ADR-0035, and add a topic row to the table in
+`docs/adr/README.md`:
+
+```markdown
+| Web workspace creation and login | [ADR-0039](0039-web-workspace-creation-and-login.md) | Explicit Web login, non-authenticating launch hints, fixed built-in credentials, and cookie-only local directory browsing for Workspace creation; amends ADR-0034 and ADR-0035 |
+```
+
+**Step 3: Update `CONTEXT.md`**
+
+In the paragraph that describes the default local Client and `metawork web`,
+replace the claim that `metawork web` only validates the Server and opens its
+loopback origin with text stating that it opens the loopback origin carrying a
+non-authenticating startup directory hint, that login is always explicit, and
+that a Workspace may be created from the Web surface by browsing a local
+directory. Do not restate runtime invariants that already live in the ADRs.
+
+**Step 4: Update the current technical overview**
+
+In `docs/current/account-runtime-and-gateway-operations.md`, the paragraph that
+currently reads "bootstrap context. The Browser URL contains only an opaque token
+fragment, not ..." must be rewritten to describe:
+
+- the launch-hint endpoint and its 60-second, single-use, non-authenticating
+  contract;
+- that the Browser URL carries no login credential and no Workspace path;
+- the cookie-only directory browse endpoint and its root policy.
+
+**Step 5: Run the docs consistency check**
+
+Run: `grep -rn "#bootstrap=\|launchContext\|buildWebStartupPresentation" docs CONTEXT.md`
+Expected: no current-authority document still describes the removed contract.
+Historical `docs/archive/` matches are acceptable.
+
+**Step 6: Commit**
+
+```bash
+git add docs/adr docs/current/account-runtime-and-gateway-operations.md CONTEXT.md
+git commit -m "docs(adr): record explicit Web login and local Workspace creation"
+```
+
+---
+
+### Task 10: Close the plans and run the full validation gate
 
 **Files:**
 - Modify: `docs/README.md`
@@ -1881,14 +2149,14 @@ closing commit SHA.
 
 **Step 2: Run the focused validation gate**
 
-Run each command and confirm the expected result:
-
 ```bash
 npm test -- --run tests/management/login-credentials.test.ts
 npm test -- --run tests/management/web-auth.test.ts
 npm test -- --run tests/management/server.test.ts
 npm test -- --run tests/management/web-gateway-session-runtime.test.ts
+npm test -- --run tests/management/web-session-types.test.ts
 npm test -- --run tests/management/workspace-directory-browser.test.ts
+npm test -- --run tests/management/token.test.ts
 npm test -- --run tests/client/web-client-launcher.test.ts
 npm test -- --run tests/web/auth.test.ts
 npm test -- --run tests/web/workspace-shell.test.ts
@@ -1896,7 +2164,39 @@ npm run lint
 npm run build:web
 ```
 
-**Step 3: Commit**
+All must pass.
+
+**Step 3: Run the repository-wide guard tests**
+
+The architecture tests run in the default suite and would otherwise fail late:
+
+```bash
+npm test -- --run tests/architecture
+```
+
+Expected: PASS, including `no-direct-client-session-paths.test.ts` with its
+`#launch=` assertion and `tests/architecture/current-client-runtime-topology.test.ts`.
+
+Also confirm no stale mock still fabricates a removed contract:
+
+```bash
+npm test -- --run tests/gateway/client-gateway.test.ts tests/management
+```
+
+**Step 4: Run the browser end-to-end tests**
+
+The browser suites are gated behind `RUN_BROWSER_E2E=1`. Run them because this
+change rewrites the auth and Workspace-creation paths they mock:
+
+```bash
+RUN_BROWSER_E2E=1 npx vitest run tests/e2e
+```
+
+Expected: PASS. If the host has no Chrome at
+`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, record the skip
+reason in the plan instead of claiming the E2E gate passed.
+
+**Step 5: Commit**
 
 ```bash
 git add docs/README.md docs/plans

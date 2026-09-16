@@ -2,8 +2,10 @@
 
 > **Status:** Approved
 > **Design date:** 2026-09-16
-> **Amends:** ADR-0035 (Client Workspace Selection), ADR-0034 (Client startup hint)
-> **Preserves:** ADR-0011, ADR-0020, ADR-0031, ADR-0035
+> **Recorded by:** ADR-0039 (Web Workspace Creation And Login)
+> **Amends:** ADR-0034 (Browser bootstrap context and startup hint), ADR-0035
+> (Client Workspace Selection)
+> **Preserves:** ADR-0011, ADR-0020, ADR-0031
 
 ## Problem
 
@@ -101,16 +103,28 @@ absolute directory from an authenticated principal.
 
 ```text
 GET /api/workspaces/browse?path=<absolute path>
-  -> { path, parent, entries: [{ name, path }] }
+  -> {
+       path,
+       parent,
+       crumbs: [{ name, path }],
+       entries: [{ name, path }]
+     }
 ```
 
 - `path` absent defaults to `os.homedir()`.
 - Root policy is `/`: navigation up to the filesystem root is allowed and no
-  directory is excluded. Every reported path is the `realpath`-resolved path,
-  so a symlink cannot make the browser report a path that differs from what the
-  Server later authorizes.
+  directory is excluded.
+- `crumbs` is the Server-built path decomposition, including the filesystem
+  root as its first element. Clients render and navigate with `crumbs` and
+  never parse an operating-system path themselves, so Windows drive and
+  separator semantics stay entirely Server-side.
 - Only directories are listed, never files. Entries are capped at 500 and
   sorted case-insensitively with numeric collation.
+- Every reported path — `path`, `parent`, `crumbs[].path`, and `entries[].path`
+  — is `realpath`-resolved. A symlinked directory is therefore reported under
+  its canonical target path, which is exactly the path
+  `select_workspace` later re-resolves and stores. The entry `name` keeps the
+  link name so the listing still matches what the user sees in the directory.
 - Only cookie-authenticated sessions may browse. The shared
   `manual-bearer-client` identity is refused, because it cannot distinguish
   which human is enumerating the Server filesystem.
@@ -144,7 +158,9 @@ GET /api/workspaces/browse?path=<absolute path>
 
 - `WebLaunchContextService` keeps `issue()`, the 60-second TTL, and the
   single-use `consume()`.
-- `WebAuthService.exchange()` keeps only the `manualAccessToken` branch.
+- `WebAuthService.exchange()` keeps only the `manualAccessToken` branch, and
+  `WebAuthServiceOptions` becomes fully optional so the service can be
+  constructed without options.
 - `WebAuthSessionState.launchContext` is removed, together with
   `ManagementWebSessionRuntime.initializeClient()` and
   `WebGatewayClientSession.initializeClient()`.
@@ -159,12 +175,34 @@ GET /api/workspaces/browse?path=<absolute path>
   suggested Workspace when the client has no active Workspace, then attach the
   suggested Conversation when present.
 
+### Removed Contracts
+
+These exist only because the launch token used to authenticate. They are
+removed in the same release with no compatibility read:
+
+| Removed | Location |
+| --- | --- |
+| `launchContext` on the auth session state | `src/management/web-auth.ts` |
+| `launchContext` in `/api/auth/bootstrap` and `/api/auth/session` responses | `src/management/server.ts` |
+| `ManagementWebSessionRuntime.initializeClient` | `src/management/web-session-runtime-types.ts` |
+| `WebGatewayClientSession.initializeClient` | `src/management/web-gateway-session-runtime.ts` |
+| `WebSessionCreationResult.workspaceInitialization` | `src/management/web-session-types.ts` |
+| `WebSessionCreationResult.workspaceInitialization` | `web/src/api/session-types.ts` |
+| `WorkspaceInitializationResult` creation-result projection | `src/management/web-gateway-session-runtime.ts` |
+| `result.workspaceInitialization` reads | `web/src/App.tsx` |
+| `bootstrapTokenFromHash` / `clearBootstrapFragment` | `web/src/auth.ts` |
+| `buildWebStartupPresentation` | `src/management/token.ts` |
+
+`WorkspaceInitializationResult` itself stays: `selectWorkspace` still returns
+it for the `/workspace` and `POST /api/workspaces/select` paths.
+
 ### Directory browser
 
 - New module `src/management/workspace-directory-browser.ts` owns path
-  resolution, symlink containment, directory filtering, sorting, and the entry
-  cap. It is pure I/O with injectable dependencies so it can be unit tested
-  without the native `better-sqlite3` dependency.
+  resolution, per-entry `realpath` normalization, Server-built crumbs, directory
+  filtering, sorting, and the entry cap. It has no runtime dependency beyond
+  `node:fs/promises` and `node:os`, so it can be unit tested without the native
+  `better-sqlite3` dependency.
 - Error codes: `browse_path_invalid`, `browse_path_forbidden`,
   `browse_path_not_found`.
 - `ManagementServer` maps them to HTTP 400, 403, and 404.
@@ -217,6 +255,27 @@ GET /api/workspaces/browse?path=<absolute path>
   `ANYFUSION_WEB_PASSWORD_HASH`. The Server never regenerates credentials, so a
   configured value is stable across restarts.
 
+### Documentation Authority
+
+Because this changes an accepted authentication and Client Workspace contract,
+the decision is recorded in a new ADR rather than edited into ADR-0034/0035 in
+place, following `docs/adr/README.md`:
+
+- **Create** `docs/adr/0039-web-workspace-creation-and-login.md`, stating
+  status, date, scope, the amended ADRs, and the preserved decisions.
+- **Update** `docs/adr/0034-independent-server-and-client-process-lifecycle.md`
+  and `docs/adr/0035-workspace-scoped-conversation-organization.md` with an
+  `Amended by: ADR-0039` pointer.
+- **Update** `docs/adr/README.md` with the new topic row and its 0034/0035
+  amendment relationship.
+- **Update** `CONTEXT.md`: the Web Client and Workspace-selection paragraph must
+  state that the Web launch hint is not a credential, that login is always
+  explicit, and that a Workspace may be created from Web by browsing a local
+  directory.
+- **Update** `docs/current/account-runtime-and-gateway-operations.md`: the
+  bootstrap-context paragraph must describe the launch-hint endpoint and the
+  cookie-only directory browse endpoint.
+
 ## Consequences
 
 - A user who types the Web URL and logs in can reach the product without ever
@@ -248,14 +307,24 @@ GET /api/workspaces/browse?path=<absolute path>
 - `tests/management/login-credentials.test.ts`: built-in default is stable
   across calls; env and hash overrides still win; no generation path remains.
 - `tests/management/web-auth.test.ts`: a launch token can no longer create a
-  session; the manual token still can.
+  session; the manual token still can; the service constructs without options.
 - `tests/management/web-launch-context.test.ts`: one-time consumption and TTL
   are unchanged for the new endpoint.
 - `tests/management/workspace-directory-browser.test.ts`: directory-only
-  listing, sorting, cap, parent computation, root behaviour, symlink
-  containment, and each error code.
+  listing, sorting, cap, crumbs, parent computation, root behaviour, per-entry
+  `realpath` (including a symlink that must be reported under its target path),
+  and each error code.
 - `tests/management/server.test.ts`: browse endpoint authorization (cookie yes,
-  bearer no) and status mapping.
+  bearer no), status mapping, and the launch-hint endpoint.
+- `tests/management/web-gateway-session-runtime.test.ts`: no
+  `initializeClient`, no `workspaceInitialization` in creation results.
+- `git grep -n workspaceInitialization` over `src`, `web/src`, and `tests` must
+  show only `WorkspaceInitializationResult` declarations and `selectWorkspace`
+  usages.
+- `tests/architecture/no-direct-client-session-paths.test.ts`: the launcher URL
+  assertion moves from `#bootstrap=` to `#launch=`.
+- `tests/e2e/*`: mock servers stop returning `launchContext` and
+  `workspaceInitialization`.
 - `tests/web/auth.test.ts` and `tests/web/workspace-shell.test.ts`: source and
   behaviour contracts for the launch fragment, the login page, and the
   Workspace creator.
