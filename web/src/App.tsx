@@ -366,11 +366,14 @@ export function App() {
           if (activation?.state === 'active') resolvedActiveSessionId = initialSession.id;
         }
         setSessions(catalog?.conversations ?? []);
-        const activeInWorkspace = catalog?.conversations.some(
-          session => session.id === resolvedActiveSessionId,
-        )
-          ? resolvedActiveSessionId
-          : null;
+        // WebSocket 事件可能在本启动快照返回前就已建立活动会话。此时不得用陈旧目录覆盖它，
+        // 否则后续会话点击会误判为“已附加”而跳过 attach。
+        const liveSessionId = requestedConversationId ? null : activeConversationRef.current;
+        const activeInWorkspace = liveSessionId ?? (
+          catalog?.conversations.some(session => session.id === resolvedActiveSessionId)
+            ? resolvedActiveSessionId
+            : null
+        );
         const resolvedSessionId = initialSessionId ?? activeInWorkspace;
         activeConversationRef.current = activeInWorkspace;
         setActiveSessionId(activeInWorkspace);
