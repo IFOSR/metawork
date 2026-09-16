@@ -121,7 +121,8 @@ describe('no direct client session paths', () => {
       'utf8',
     );
     const urlLine = launcher.split('\n').find(line => line.includes('const url =')) ?? '';
-    expect(urlLine).toContain('#bootstrap=');
+    // 启动提示 token 不是登录凭据，且 URL 仍不得携带任何 Workspace 路径。
+    expect(urlLine).toContain('#launch=');
     expect(urlLine).not.toMatch(/workspace|canonical|startupWorkspacePath/u);
   });
 

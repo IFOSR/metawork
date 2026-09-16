@@ -11,7 +11,7 @@ describe('WebClientLauncher', () => {
       webOrigin: 'http://127.0.0.1:8788',
     }));
     const registerLaunch = vi.fn(async () => ({
-      token: 'opaque-bootstrap-token',
+      token: 'opaque-launch-token',
       expiresAt: '2026-08-27T08:01:00.000Z',
     }));
     const launcher = new WebClientLauncher({
@@ -29,7 +29,7 @@ describe('WebClientLauncher', () => {
       conversationId: 'conv_1',
     });
     expect(open).toHaveBeenCalledWith(
-      'http://127.0.0.1:8788/#bootstrap=opaque-bootstrap-token',
+      'http://127.0.0.1:8788/#launch=opaque-launch-token',
     );
     expect(resolveEndpoint).toHaveBeenCalledWith('/tmp/endpoint.json', 2);
     expect(url).not.toContain('/repo-a');
@@ -50,14 +50,14 @@ describe('WebClientLauncher', () => {
       startupWorkspacePath: '/repo-b',
       resolveEndpoint,
       registerLaunch: async () => ({
-        token: 'opaque-bootstrap-token',
+        token: 'opaque-launch-token',
         expiresAt: '2026-08-27T08:01:00.000Z',
       }),
       open,
     });
 
     await expect(launcher.start({ conversationId: undefined, noOpen: true })).resolves.toBe(
-      'http://127.0.0.1:8788/#bootstrap=opaque-bootstrap-token',
+      'http://127.0.0.1:8788/#launch=opaque-launch-token',
     );
     expect(resolveEndpoint).toHaveBeenCalledWith('/tmp/endpoint.json', 2);
     expect(open).not.toHaveBeenCalled();

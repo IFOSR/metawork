@@ -41,7 +41,8 @@ export class WebClientLauncher {
       workspaceHint: this.startupWorkspacePath,
       ...(options.conversationId ? { conversationId: options.conversationId } : {}),
     });
-    const url = `${endpoint.webOrigin.replace(/\/+$/u, '')}/#bootstrap=${encodeURIComponent(launch.token)}`;
+    // 启动提示不是登录凭据：只携带本机目录建议，浏览器仍需用户显式登录。
+    const url = `${endpoint.webOrigin.replace(/\/+$/u, '')}/#launch=${encodeURIComponent(launch.token)}`;
     if (!options.noOpen) this.deps.open?.(url);
     return url;
   }
