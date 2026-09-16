@@ -1,5 +1,6 @@
 import { FileSecretStore } from './file-secret-store.js';
 import { KeychainSecretStore } from './keychain-secret-store.js';
+import { CredentialsFileSecretStore } from './credentials-file-secret-store.js';
 import {
   assertSecretReference,
   type SecretReference,
@@ -13,9 +14,13 @@ import {
 export function createProductionSecretStore(input: {
   platform?: NodeJS.Platform;
   secretsRoot: string;
+  credentialsFile?: string;
   env?: NodeJS.ProcessEnv;
   references?: readonly string[];
 }): SecretStore {
+  if (input.credentialsFile) {
+    return new CredentialsFileSecretStore(input.credentialsFile);
+  }
   const platform = input.platform ?? process.platform;
   const requested = resolveProductEnvironment(
     input.env ?? {},

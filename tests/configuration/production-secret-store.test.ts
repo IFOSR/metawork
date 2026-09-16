@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FileSecretStore } from '../../src/configuration/file-secret-store.js';
 import { KeychainSecretStore } from '../../src/configuration/keychain-secret-store.js';
+import { CredentialsFileSecretStore } from '../../src/configuration/credentials-file-secret-store.js';
 import {
   createProductionSecretStore,
   prepareProductionSecretStore,
@@ -16,6 +17,15 @@ afterEach(async () => {
 });
 
 describe('production SecretStore selection', () => {
+  it('uses the explicit MetaWork credentials file when provided', () => {
+    expect(createProductionSecretStore({
+      credentialsFile: '/Users/test/.metawork/credentials.json',
+      secretsRoot: '/unused',
+      platform: 'darwin',
+      env: {},
+    })).toBeInstanceOf(CredentialsFileSecretStore);
+  });
+
   it('uses Keychain by default on macOS', () => {
     expect(createProductionSecretStore({
       platform: 'darwin',

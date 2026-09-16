@@ -84,6 +84,10 @@ export {
 export type { SecretReference, SecretStore } from './secret-store.js';
 export { FileSecretStore } from './file-secret-store.js';
 export { KeychainSecretStore } from './keychain-secret-store.js';
+export {
+  CredentialsFileSecretStore,
+  providerRefFromSecretReference,
+} from './credentials-file-secret-store.js';
 export { ConfigurationCompiler } from './configuration-compiler.js';
 export {
   ConfigurationMigrationService,

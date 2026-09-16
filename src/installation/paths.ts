@@ -16,6 +16,7 @@ export interface MetaWorkPaths {
   metaclawLauncher: string;
   data: string;
   configFile: string;
+  credentials: string;
   secrets: string;
   database: string;
   databaseRevisions: string;
@@ -88,6 +89,7 @@ export function resolveMetaWorkPaths(
     metaclawLauncher: resolve(resolvedHome, '.local', 'bin', 'metaclaw'),
     data,
     configFile: resolve(config, 'active', 'config.yaml'),
+    credentials: resolve(root, 'credentials.json'),
     secrets: resolve(config, 'secrets'),
     database: resolve(data, 'metaclaw.db'),
     databaseRevisions: resolve(data, 'database-revisions'),
