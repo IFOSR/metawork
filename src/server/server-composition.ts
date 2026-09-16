@@ -79,6 +79,7 @@ import {
 } from '../workspace/conversation-workspace-service.js';
 import { WorkspaceConversationMigrator } from '../workspace/workspace-conversation-migrator.js';
 import { WorkspaceDirectoryService } from '../workspace/workspace-directory-service.js';
+import { WorkspaceDirectoryBrowser } from '../management/workspace-directory-browser.js';
 import { WorkspaceGatewayRuntime } from '../gateway/workspace-gateway-runtime.js';
 import { workspaceEventStreamId } from '../gateway/workspace-event-stream.js';
 import { clientConnectionEventStreamId } from '../gateway/client-connection-event-stream.js';
@@ -249,6 +250,7 @@ async function startWebMode(options: {
     token: options.webAuth.manualAccessToken,
     webAuth: options.webAuth,
     launchContexts: options.launchContexts,
+    workspaceDirectoryBrowser: new WorkspaceDirectoryBrowser(),
     runningRevisionId: options.runningRevisionId,
     sessionRuntime: options.sessionRuntime,
     executionQuery: options.executionQuery,

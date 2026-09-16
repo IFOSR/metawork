@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createConnection, createServer, type Socket } from 'node:net';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   ManagementServer,
@@ -11,6 +11,9 @@ import {
 } from '../../src/management/server.js';
 import { WebAuthService } from '../../src/management/web-auth.js';
 import { WebLaunchContextService } from '../../src/management/web-launch-context.js';
+import {
+  WorkspaceDirectoryBrowser,
+} from '../../src/management/workspace-directory-browser.js';
 import { FileAttachmentStore } from '../../src/storage/file-attachment-store.js';
 import {
   resolveLoginCredentials,
@@ -855,6 +858,70 @@ describe('ManagementServer WebSocket authentication', () => {
       await expect(session.json()).resolves.toEqual({ authenticated: true });
     } finally {
       await server.stop();
+    }
+  });
+
+  it('browses directories for cookie sessions only', async () => {
+    const port = await reservePort();
+    const root = await mkdtemp(join(tmpdir(), 'browse-endpoint-'));
+    await mkdir(join(root, 'repo'));
+    const browser = new WorkspaceDirectoryBrowser({ defaultPath: () => root });
+    const server = createManagementServer(port, { workspaceDirectoryBrowser: browser });
+    await server.start();
+
+    try {
+      // Bearer token 共享 clientId，无法界定“谁在浏览服务器目录”。
+      const bearer = await fetch(
+        `http://127.0.0.1:${port}/api/workspaces/browse`,
+        { headers: { authorization: 'Bearer manual-token' } },
+      );
+      expect(bearer.status).toBe(403);
+
+      const cookie = await exchangeToken(port, 'manual-token');
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/workspaces/browse`,
+        { headers: { cookie } },
+      );
+      expect(response.status).toBe(200);
+      const payload = await response.json() as {
+        path: string;
+        parent: string | null;
+        crumbs: Array<{ name: string; path: string }>;
+        entries: Array<{ name: string }>;
+      };
+      expect(payload.path).toBe(await realpath(root));
+      expect(payload.entries.map(entry => entry.name)).toEqual(['repo']);
+      // Server 必须提供结构化路径段，客户端不解析操作系统路径。
+      expect(payload.crumbs.at(-1)).toEqual({
+        name: basename(payload.path),
+        path: payload.path,
+      });
+    } finally {
+      await server.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('maps browse failures onto HTTP status codes', async () => {
+    const port = await reservePort();
+    const root = await mkdtemp(join(tmpdir(), 'browse-errors-'));
+    const server = createManagementServer(port, {
+      workspaceDirectoryBrowser: new WorkspaceDirectoryBrowser({ defaultPath: () => root }),
+    });
+    await server.start();
+
+    try {
+      const cookie = await exchangeToken(port, 'manual-token');
+      const browse = (path: string) => fetch(
+        `http://127.0.0.1:${port}/api/workspaces/browse?path=${encodeURIComponent(path)}`,
+        { headers: { cookie } },
+      );
+
+      expect((await browse('relative')).status).toBe(400);
+      expect((await browse(join(root, 'missing'))).status).toBe(404);
+    } finally {
+      await server.stop();
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -1750,6 +1817,7 @@ interface ManagementServerTestOverrides {
   readonly attachmentStore?: FileAttachmentStore;
   readonly artifactQuery?: import('../../src/management/artifact-preview-service.js').ArtifactPreviewService;
   readonly launchContexts?: WebLaunchContextService;
+  readonly workspaceDirectoryBrowser?: WorkspaceDirectoryBrowser;
 }
 
 function createManagementServer(
@@ -1767,6 +1835,8 @@ function createManagementServer(
     token: webAuth.manualAccessToken,
     webAuth,
     launchContexts: overrides.launchContexts ?? new WebLaunchContextService(),
+    workspaceDirectoryBrowser: overrides.workspaceDirectoryBrowser
+      ?? new WorkspaceDirectoryBrowser(),
     runningRevisionId: 'revision-runtime',
     webSocketAuthTimeoutMs: overrides.webSocketAuthTimeoutMs,
     sessionRuntime: overrides.sessionRuntime ?? createSessionRuntime(),

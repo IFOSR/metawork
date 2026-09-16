@@ -18,6 +18,7 @@ import { LoginThrottle } from './web-auth.js';
 import type { LoginCredentials } from './login-credentials.js';
 import type { WebAuthService } from './web-auth.js';
 import type { WebLaunchContextService } from './web-launch-context.js';
+import type { WorkspaceDirectoryBrowser } from './workspace-directory-browser.js';
 import type {
   ManagementWebSessionRuntime,
 } from './web-session-runtime-types.js';
@@ -180,6 +181,8 @@ export interface ManagementServerDeps {
   attachmentStore?: GatewayAttachmentStore;
   /** 同源 artifact 预览服务；未提供时 artifact 端点返回 503。 */
   artifactQuery?: ArtifactPreviewService;
+  /** 只读目录列举；仅对浏览器 cookie 会话开放。 */
+  workspaceDirectoryBrowser: WorkspaceDirectoryBrowser;
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
   configurationRuntime?: ConfigurationRuntimeStatusSource;
@@ -596,8 +599,7 @@ export class ManagementServer {
       return;
     }
 
-    const artifactPreviewMatch = /^\/api\/artifacts\/([^/]+)\/preview$/u.exec(url.pathname);
-    if (request.method === 'GET' && artifactPreviewMatch) {
+    const artifactPreviewMatch = /^\/api\/artifacts\/([^/]+)\/preview$/u.exec(url.pathname);    if (request.method === 'GET' && artifactPreviewMatch) {
       await this.handleArtifactPreview(response, decodeURIComponent(artifactPreviewMatch[1]!));
       return;
     }
@@ -625,6 +627,27 @@ export class ManagementServer {
         activeWorkspaceId: state.activeWorkspaceId,
         workspaces: await this.deps.sessionRuntime.listWorkspaces(clientId),
       });
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/workspaces/browse') {
+      // 目录枚举只对浏览器 cookie 会话开放：manual-bearer-client 是共享身份。
+      if (!authSession) {
+        this.sendJson(response, 403, { error: 'cookie_session_required' });
+        return;
+      }
+      try {
+        const result = await this.deps.workspaceDirectoryBrowser.browse(
+          url.searchParams.get('path') ?? undefined,
+        );
+        this.sendJson(response, 200, result);
+      } catch (error) {
+        const code = (error as Error).message;
+        const status = code === 'browse_path_forbidden'
+          ? 403
+          : code === 'browse_path_not_found' ? 404 : 400;
+        this.sendJson(response, status, { error: code });
+      }
       return;
     }
 
