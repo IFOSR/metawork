@@ -2,6 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-27
+- **Amended:** 2026-09-16
+- **Amended by:** [ADR-0039](0039-web-workspace-creation-and-login.md)
 - **Scope:** Workspace identity, Conversation organization, Client Workspace
   selection, Workspace directory projection, and Workspace/Conversation
   persistence

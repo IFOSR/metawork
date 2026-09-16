@@ -67,8 +67,33 @@ moves an existing Conversation. New Conversations are created in the selected
 Workspace. Missing or rejected selection returns `workspace_required`.
 
 `metawork web` transfers its startup hint through a short-lived, single-use
-bootstrap context. The Browser URL contains only an opaque token fragment, not
-the Workspace path. TUI, Web and Feishu read the same bounded Workspace
+launch context. The Browser URL contains only an opaque hint token fragment, the
+Workspace path never enters the URL, and the token cannot create a session:
+
+```text
+POST /api/auth/launch-context { token }  ->  { workspaceHint, conversationId? }
+```
+
+The Browser resolves that hint before login and applies it only after
+authenticating, through the ordinary authorized `select_workspace` command. Web
+login is always explicit: a valid session cookie skips the login page, and
+`admin` / `123456` is the fixed built-in credential unless
+`ANYFUSION_WEB_USERNAME` and `ANYFUSION_WEB_PASSWORD(_HASH)` override it. The
+Server never generates or rotates a login password.
+
+A Client may create a Workspace without leaving the Web surface by browsing a
+local directory:
+
+```text
+GET /api/workspaces/browse?path=/absolute/path  (cookie session only)
+  -> { path, parent, crumbs: [{ name, path }], entries: [{ name, path }] }
+```
+
+The browse endpoint is read-only, lists directories only under root `/`, returns
+`realpath`-resolved paths, and supplies Server-built `crumbs` so no Client parses
+an operating-system path. It grants no Workspace authority beyond
+`select_workspace`, which already accepted any existing absolute directory from
+an authenticated Principal. TUI, Web and Feishu read the same bounded Workspace
 Conversation Directory. Full history, trace and results require attaching to
 one Conversation.
 
