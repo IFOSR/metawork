@@ -4,6 +4,7 @@
 > **Design date:** 2026-09-16
 > **Delivery status:** Complete
 > **Delivery date:** 2026-09-16
+> **Closing commit:** `76b295b`
 > **Preserves:** ADR-0011, ADR-0020, ADR-0028, ADR-0031, ADR-0033
 > **Amends during implementation:** ADR-0033 configuration presentation and
 > credential storage contract

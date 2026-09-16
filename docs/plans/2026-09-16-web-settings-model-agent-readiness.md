@@ -3,6 +3,7 @@
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 > **Status:** Complete
 > **Completed:** 2026-09-16
+> **Closing commit:** `76b295b`
 
 **Goal:** Replace implementation-oriented Web settings with a model-and-agent experience, store Provider API Keys in one editable MetaWork-root file, and block new work only when the required Pi agent is unavailable.
 
@@ -1453,5 +1454,7 @@ git commit -m "docs: record settings and agent readiness delivery"
   `~/.config/metawork` persistence root is introduced by this feature.
 - Validation completed: settings tests `27 passed`, Web tests `100 passed`,
   focused core regression `219 passed`, browser E2E `2 passed`, lint, Web
-  build, and `git diff --check`. The full suite retains two unrelated baseline
-  failures in production-composition and Planner supervisor path assertions.
+  build, and `git diff --check`. The full suite completed with `402 passed`,
+  `8 skipped`, and two unrelated baseline failures in
+  `tests/architecture/production-composition.test.ts` and
+  `tests/planning/planner-process-supervisor.test.ts`.
