@@ -401,6 +401,53 @@ describe('Settings workbench model semantics', () => {
     expect(panel).toContain('await refreshConfigurationCompletion()');
   });
 
+  it('presents model connections instead of implementation-oriented Provider settings', async () => {
+    const [panel, dialog] = await Promise.all([
+      readFile(new URL('components/SettingsPanel.tsx', webRoot), 'utf8'),
+      readFile(new URL('components/ModelConnectionDialog.tsx', webRoot), 'utf8'),
+    ]);
+
+    expect(panel).toContain('模型列表');
+    expect(panel).toContain('新增模型');
+    expect(panel).toContain('已配置');
+    expect(panel).toContain('更新 API Key');
+    expect(panel).toContain('displayName: provider.displayName.trim()');
+    expect(panel).not.toContain('新增 Provider');
+    expect(panel).not.toContain('自定义 Provider');
+    expect(panel).not.toContain('SecretStore');
+    expect(dialog).toContain('模型名称');
+    expect(dialog).toContain('API URL');
+    expect(dialog).toContain('API Key');
+    expect(dialog).toContain('请填写模型名称、API URL 和 API Key');
+  });
+
+  it('keeps existing credentials when the replacement key is blank', async () => {
+    const panel = await readFile(new URL('components/SettingsPanel.tsx', webRoot), 'utf8');
+
+    expect(panel).toContain("if (provider.apiKey.trim()) activationSecrets[provider.providerRef]");
+    expect(panel).toContain('留空保持不变');
+    expect(panel).toContain('maskedApiKey');
+    expect(panel).toContain('重新发现模型');
+  });
+
+  it('uses user-owned agent names and keeps Planner and runtime policy in Advanced settings', async () => {
+    const [panel, routing] = await Promise.all([
+      readFile(new URL('components/SettingsPanel.tsx', webRoot), 'utf8'),
+      readFile(new URL('components/AgentClassConfig.tsx', webRoot), 'utf8'),
+    ]);
+
+    expect(panel).toContain('智能体');
+    expect(panel).toContain('高级设置');
+    expect(panel).toContain("displayName: entry.displayName.trim()");
+    expect(panel).toContain('agentReadiness');
+    expect(routing).toContain('名称');
+    expect(routing).not.toContain('EXECUTOR');
+    expect(routing).not.toContain('Executor 能力说明');
+    expect(routing).not.toContain('Harness');
+    expect(routing).not.toContain('Pi Agent');
+    expect(routing).not.toContain('Codex Engineering');
+  });
+
   it('keeps model capability facts inside Executor guidance and derives read-only tags from the manual', async () => {
     const [panel, routing] = await Promise.all([
       readFile(new URL('components/SettingsPanel.tsx', webRoot), 'utf8'),

@@ -166,6 +166,7 @@ export interface ConfigurationCompletionResult {
     baseUrl: string | null;
     credentialState: ConfigurationCompletionFieldState;
     modelIds: string[];
+    maskedApiKey?: string | null;
   }>;
   providerPresets: Array<{
     providerRef: string;

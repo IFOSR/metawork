@@ -375,13 +375,13 @@ export ANYFUSION_PROVIDER_URL='https://你的-openai-兼容服务地址.example/
 metawork --help
 ```
 
-macOS 上，`setup.sh` 要求 Node.js 22.19+、Git、npm，以及已经存在的
-`codex` 和 `pi` 命令。它会直接构建仓库内检入的 `planner/AnyFusion-Pi` planner
-源码（不克隆外部仓库），两者使用独立依赖树，构建后把 mode-`0600` 的 MetaWork 专用 provider
-和模型配置写入 `~/.config/metawork`，只安装
-`~/.local/bin/anyfusion`，并将账户运行状态保存在
-`~/.metawork/accounts/local-default`。安装期间不会运行两个 Executor，也不会
-写入 `~/.codex` 或 `~/.pi`。
+macOS 上，`setup.sh` 要求 Node.js 22.19+，并直接构建仓库内检入的
+`planner/AnyFusion-Pi` planner 源码（不克隆外部仓库），两者使用独立依赖树。
+Pi 是开始新工作的必需智能体，Codex 是由 MetaWork 检测的可选增强，不影响
+产品启动。配置、运行状态和生产 Provider 凭据都放在 MetaWork 根目录下，
+默认分别位于 `~/.metawork/accounts/local-default` 和
+`~/.metawork/credentials.json`。安装期间不会修改 `~/.codex` 或
+`~/.pi`。
 
 安装后的 launcher 在每次执行时读取当前目录。请从 Planner 需要检查的
 仓库或目录启动：
@@ -395,10 +395,9 @@ anyfusion
 
 - `node --version` 是 `>=22.19.0`。
 - `./setup.sh` 输出原生安装完成。
-- `~/.config/metawork/provider.env` 权限为 `0600`。
+- `~/.metawork/credentials.json` 存在时权限为 `0600`。
 - 新开一个 shell 后，`metawork --help` 可用。
-- 安装前后的 `command -v codex`、`codex --version`、`command -v pi`
-  和 `pi --version` 保持不变。
+- `command -v pi` 和 `pi --version` 可用；Codex 若安装则显示为可选增强。
 
 任一仓库更新后重新运行 `./setup.sh`。如果 nested AnyFusion-Pi 有未提交
 修改，安装器会保留并直接构建，不覆盖这些修改。
@@ -883,9 +882,11 @@ Docker attempt 路径只是兼容模式，原生 launcher 不会启动它。
   -> revisions/<revision-id>/
 ```
 
-不要原地编辑不可变 revision 文件。Provider 凭据由账户 SecretStore 解析；
-macOS 默认使用 Keychain，只有显式设置 `METAWORK_SECRET_STORE=file` 时才使用
-权限为 `0600` 的文件。
+不要原地编辑不可变 revision 文件。生产 Provider 凭据继续通过现有
+SecretStore 接口解析，但默认由 `~/.metawork/credentials.json` 提供；
+如果覆盖 MetaWork 根目录，则使用 `<install-root>/credentials.json`。Web
+只显示掩码，并且只在更新时接收明文 Key；旧 Keychain 或账户 secret 文件
+仅用于适用的一次性迁移。
 
 启动前导出飞书密钥：
 

@@ -316,6 +316,30 @@ produce normalized assertions; when present, user semantics take precedence
 over conflicting generated positioning and preferences. A supported capability
 may be preferred, allowed, avoided, or disabled, while unsupported intent
 remains visible and cannot become routable.
+
+The ordinary Web settings vocabulary is intentionally simpler than the
+architecture vocabulary: Provider entries are shown as models, and
+Executor/AgentClass entries are shown as agents. Optional revision-scoped
+`displayName` values are presentation labels only; stable Provider,
+AgentClass, Harness, routing, capability, and historical binding identities do
+not change when a user renames an item. The default built-in agent labels are
+`智能体 1` for `pi-agent` and `智能体 2` for `codex-cli`.
+
+Production Provider credentials are stored in the single MetaWork-root file
+`<metawork-root>/credentials.json`, which defaults to
+`~/.metawork/credentials.json`. The existing `SecretStore` runtime seam
+resolves Provider references through that file; Web returns only configured
+state and a masked Key, and an update replaces the stored value. This feature
+does not add a `~/.config/metawork` persistence root.
+
+Application-Shell agent readiness is separate from Kernel Executor health.
+Pi is required for new-work admission, while login, Workspace access, history,
+settings and readiness refresh remain available when Pi is missing. Codex is
+optional and its absence never blocks work; the Web projection explains its
+additional GPT/Codex compatibility and coding benefits without suggesting that
+Pi lacks coding capability. A readiness transition never cancels an already
+admitted Task.
+
 Configuration turns receive the selected Executor's current manual and model
 facts directly, expose only `submit_executor_manual_proposal`, start no Planner
 MCP extension, and use a bounded configuration-specific timeout. Unsaved draft

@@ -2,19 +2,21 @@ import type {
   AgentClassRoutingDraft,
   AgentClassRoutingFacts,
   SettingsModelEntry,
+  SettingsProviderEntry,
   RoutingObjective,
 } from '../settings-model';
 import {
   describeRoutingObjective,
   evaluateModelCompatibility,
-  humanizeProviderRef,
   modelCapabilityLabel,
+  resolveProviderDisplayName,
 } from '../settings-model';
 
 interface AgentClassConfigProps {
   facts: AgentClassRoutingFacts;
   draft: AgentClassRoutingDraft;
   models: SettingsModelEntry[];
+  providers?: SettingsProviderEntry[];
   onChange: (draft: AgentClassRoutingDraft) => void;
   manualPreview?: {
     status: 'ready' | 'stale' | 'updating' | 'error';
@@ -77,17 +79,18 @@ const dispositionLabels = {
 
 const evidenceLabels: Record<string, string> = {
   'model-system-known': '系统已知模型能力',
-  'model-provider-declared': 'Provider 声明模型能力',
+  'model-provider-declared': '模型服务声明能力',
   'model-user-confirmed': '用户确认模型能力',
-  'executor-affordance': 'Executor 执行支撑',
-  'harness-support': 'Harness 执行协议',
-  'executor-declaration': 'Executor 配置声明',
+  'executor-affordance': '智能体执行能力',
+  'harness-support': '执行环境支持',
+  'executor-declaration': '智能体配置声明',
 };
 
 export function AgentClassConfig({
   facts,
   draft,
   models,
+  providers = [],
   onChange,
   manualPreview,
   onUpdateManual,
@@ -109,19 +112,31 @@ export function AgentClassConfig({
     <article className="agent-route-card">
       <div className="agent-route-heading">
         <div>
-          <div className="settings-eyebrow">{facts.kind === 'planner' ? 'PLANNER' : 'EXECUTOR'}</div>
-          <h3>{facts.displayName}</h3>
+          <div className="settings-eyebrow">智能体</div>
+          <label className="agent-name-field">
+            <span>名称</span>
+            <input
+              className="text-input"
+              value={draft.displayName ?? facts.displayName}
+              maxLength={80}
+              onChange={event => onChange({
+                ...draft,
+                displayName: event.target.value,
+              })}
+            />
+          </label>
           <p className="settings-subtitle">
-            {facts.harnessLabel} · {facts.transport}
+            模型路由、能力配置和能力画像
           </p>
         </div>
-        <span className="system-badge">配置事实</span>
+        <span className="system-badge">可编辑</span>
       </div>
 
       {renderRoutePolicyPanel({
         facts,
         draft,
         models,
+        providers,
         enabledModels,
         modelCompatibility,
         selectedModel,
@@ -133,12 +148,12 @@ export function AgentClassConfig({
       <div className="agent-route-facts">
         {facts.kind === 'executor' && (
           <section className="executor-guidance-section">
-            <span className="fact-label">Executor 能力说明</span>
+            <span className="fact-label">能力说明</span>
             <textarea
               className="text-input executor-guidance-input"
               value={draft.executorManualSourceText}
               maxLength={8_000}
-              placeholder="用自然语言描述这个 Executor 擅长什么、不擅长什么，以及某个模型为它带来的具体能力。点击“更新能力画像”后，系统会统一解析并生成说明书。"
+              placeholder="用自然语言描述这个智能体擅长什么、不擅长什么，以及某个模型为它带来的具体能力。点击“更新能力画像”后，系统会统一解析并生成说明书。"
               onChange={event => onChange({
                 ...draft,
                 executorManualSourceText: event.target.value,
@@ -146,8 +161,8 @@ export function AgentClassConfig({
               rows={5}
             />
             <small className="field-help">
-              这是该 Executor 独立的用户定义。模型事实与用户定义会共同编译能力画像，
-              并更新 Planner 的实际路由资格；权限和模型白名单仍由受控配置管理。
+              这是该智能体独立的用户定义。模型事实与用户定义会共同编译能力画像，
+              并更新规划的实际路由资格；权限和模型白名单仍由受控配置管理。
             </small>
             <div className="executor-guidance-actions">
               <button
@@ -197,7 +212,7 @@ export function AgentClassConfig({
                   <div>
                     <span className="fact-label">当前可路由能力</span>
                     <small className="field-help">
-                      由当前模型、Executor 支撑条件和用户定义统一编译，只读展示。
+                      由当前模型、智能体执行条件和用户定义统一编译，只读展示。
                     </small>
                   </div>
                   <span className="system-badge">
@@ -303,7 +318,7 @@ export function AgentClassConfig({
           <section className="executor-capability-tags">
             <span className="fact-label">能力标签</span>
             <small className="field-help">
-              标签由最终融合后的 Executor 能力说明书自动提炼，只读展示。
+              标签由最终融合后的能力说明书自动提炼，只读展示。
             </small>
             <div className="capability-tag-groups">
               <div>
@@ -379,6 +394,7 @@ function renderRoutePolicyPanel(input: {
   facts: AgentClassRoutingFacts;
   draft: AgentClassRoutingDraft;
   models: SettingsModelEntry[];
+  providers: SettingsProviderEntry[];
   enabledModels: SettingsModelEntry[];
   modelCompatibility: Map<string, ReturnType<typeof evaluateModelCompatibility>>;
   selectedModel: SettingsModelEntry | undefined;
@@ -390,6 +406,7 @@ function renderRoutePolicyPanel(input: {
     facts,
     draft,
     models,
+    providers,
     enabledModels,
     modelCompatibility,
     selectedModel,
@@ -409,7 +426,7 @@ function renderRoutePolicyPanel(input: {
           <span className="system-badge">手动固定模型</span>
         ) : (
           <select
-            aria-label={`${facts.displayName} 路由模式`}
+              aria-label={`${draft.displayName ?? facts.displayName} 路由模式`}
             value={draft.mode}
             onChange={event => {
               const mode = event.target.value as AgentClassRoutingDraft['mode'];
@@ -471,7 +488,11 @@ function renderRoutePolicyPanel(input: {
                     <span>
                       <strong>{model.modelId}</strong>
                       <small>
-                        {humanizeProviderRef(model.providerRef)} · {
+                        {resolveProviderDisplayName(
+                          providers.find(provider => provider.providerRef === model.providerRef)?.providerRef
+                            ?? model.providerRef,
+                          providers.find(provider => provider.providerRef === model.providerRef)?.displayName,
+                        )} · {
                           model.capabilities.map(modelCapabilityLabel).join(' / ') || '能力未确认'
                         }
                       </small>
@@ -541,7 +562,11 @@ function renderRoutePolicyPanel(input: {
                   disabled={!canSelect && model.ref !== draft.modelRef}
                   key={model.ref}
                 >
-                  {model.modelId} · {humanizeProviderRef(model.providerRef)}
+                  {model.modelId} · {resolveProviderDisplayName(
+                    providers.find(provider => provider.providerRef === model.providerRef)?.providerRef
+                      ?? model.providerRef,
+                    providers.find(provider => provider.providerRef === model.providerRef)?.displayName,
+                  )}
                   {compatibility.eligible ? '' : ` · 缺少 ${compatibility.missingCapabilities.join('/')}`}
                 </option>
               );
@@ -553,11 +578,15 @@ function renderRoutePolicyPanel(input: {
       <details className="routing-explanation">
         <summary>为什么这样路由</summary>
         <p>
-          这里展示的是配置阶段可确定的能力基线。实际执行时，Kernel 还会检查 Provider/Model
-          健康、Harness 兼容性、容量、上下文和可用性，最后按“{describeRoutingObjective(draft.objective)}”排序。
+          这里展示的是配置阶段可确定的能力基线。实际执行时，系统还会检查模型连接
+          健康、执行环境兼容性、容量、上下文和可用性，最后按“{describeRoutingObjective(draft.objective)}”排序。
           这些运行时动态结果会在任务轨迹的 routing 阶段展示。
           {selectedModel
-            ? ` 当前偏好模型为 ${selectedModel.modelId}（${humanizeProviderRef(selectedModel.providerRef)}）。`
+            ? ` 当前偏好模型为 ${selectedModel.modelId}（${resolveProviderDisplayName(
+              providers.find(provider => provider.providerRef === selectedModel.providerRef)?.providerRef
+                ?? selectedModel.providerRef,
+              providers.find(provider => provider.providerRef === selectedModel.providerRef)?.displayName,
+            )}）。`
             : ' 当前还没有可用模型。'}
         </p>
         <div className="routing-candidate-audit">
@@ -565,7 +594,11 @@ function renderRoutePolicyPanel(input: {
             const compatibility = modelCompatibility.get(model.ref)!;
             return (
               <div data-eligible={compatibility.eligible} key={model.ref}>
-                <span>{humanizeProviderRef(model.providerRef)} / {model.modelId}</span>
+                <span>{resolveProviderDisplayName(
+                  providers.find(provider => provider.providerRef === model.providerRef)?.providerRef
+                    ?? model.providerRef,
+                  providers.find(provider => provider.providerRef === model.providerRef)?.displayName,
+                )} / {model.modelId}</span>
                 <strong>
                   {compatibility.eligible
                     ? '基线能力匹配'

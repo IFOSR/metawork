@@ -933,6 +933,7 @@ export function App() {
         <SettingsPanel
           http={httpRef.current}
           runtime={configurationRuntime}
+          agentReadiness={agentReadiness}
           onClose={() => setSettingsOpen(false)}
         />
       )}

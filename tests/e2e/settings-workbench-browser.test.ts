@@ -42,7 +42,8 @@ e2e('Settings workbench browser flow', () => {
         await waitForExpression(
           cdp,
           `document.querySelectorAll('.provider-card').length === 2
-            && document.querySelectorAll('.agent-route-card').length === 3`,
+            && document.querySelectorAll('.agent-route-card').length === 3
+            && !document.querySelector('.advanced-settings')?.hasAttribute('open')`,
         );
 
         const initial = await cdp.evaluate(`(() => {
@@ -53,12 +54,11 @@ e2e('Settings workbench browser flow', () => {
             panelFits: panel.getBoundingClientRect().right <= window.innerWidth
               && panel.getBoundingClientRect().left >= 0,
             providerCards: document.querySelectorAll('.provider-card').length,
-            modelCards: document.querySelectorAll('.model-card').length,
             routeCards: document.querySelectorAll('.agent-route-card').length,
-            hasSuitability: document.body.innerText.includes('适合做什么'),
             hasRoutingExplanation: document.body.innerText.includes('为什么这样路由'),
             hasCandidateRejection: document.body.innerText.includes('排除 · 缺少'),
-            hasModelCapabilitiesSection: document.body.innerText.includes('模型能力'),
+            hasAgentSection: document.body.innerText.includes('智能体'),
+            advancedCollapsed: !document.querySelector('.advanced-settings')?.hasAttribute('open'),
             diagnosticsHidden: !document.querySelector('.diagnostics-panel'),
             workspaceHeader: document.querySelector('.workspace-runtime')?.textContent ?? '',
           };
@@ -68,12 +68,11 @@ e2e('Settings workbench browser flow', () => {
           viewportWidth: 1440,
           panelFits: true,
           providerCards: 2,
-          modelCards: 3,
           routeCards: 3,
-          hasSuitability: true,
           hasRoutingExplanation: true,
           hasCandidateRejection: true,
-          hasModelCapabilitiesSection: true,
+          hasAgentSection: true,
+          advancedCollapsed: true,
           diagnosticsHidden: true,
         });
         expect((initial as { workspaceHeader: string }).workspaceHeader).not.toContain('rev');
@@ -87,7 +86,7 @@ e2e('Settings workbench browser flow', () => {
           return {
             modelIds: [...providerCard.querySelectorAll('.provider-model-line > span:first-child')]
               .map(item => item.textContent),
-            hasModelFacts: Boolean(document.querySelector('.model-card')),
+            hasModelFacts: Boolean(document.querySelector('.provider-card')),
           };
         })()`);
         expect(providerDirectory).toEqual({
@@ -97,7 +96,7 @@ e2e('Settings workbench browser flow', () => {
 
         const pool = await cdp.evaluate(`(() => {
           const card = [...document.querySelectorAll('.agent-route-card')]
-            .find(item => item.textContent.includes('Code CLI'));
+            .find(item => item.querySelector('.model-option'));
           const boxes = [...card.querySelectorAll('.model-option input[type="checkbox"]')];
           const before = boxes.filter(box => box.checked).length;
           const candidate = boxes.find(box => !box.checked && !box.disabled);
@@ -113,7 +112,7 @@ e2e('Settings workbench browser flow', () => {
         const deletedProvider = await cdp.evaluate(`(() => {
           const card = document.querySelectorAll('.provider-card')[1];
           const button = [...card.querySelectorAll('button')]
-            .find(item => item.textContent.includes('删除 Provider'));
+            .find(item => item.textContent.includes('删除模型'));
           button.click();
           return {
             providerName: Boolean(card),
@@ -142,8 +141,7 @@ e2e('Settings workbench browser flow', () => {
         });
 
         await cdp.evaluate(`(() => {
-          const card = [...document.querySelectorAll('.agent-route-card')]
-            .find(item => item.textContent.includes('Pi Research'));
+          const card = [...document.querySelectorAll('.agents-section .agent-route-card')].at(-1);
           const selects = card.querySelectorAll('select');
           const select = selects[selects.length - 1];
           select.value = 'code-gpt-56';
@@ -270,7 +268,7 @@ e2e('Settings workbench browser flow', () => {
           [...document.querySelectorAll('.provider-card')].map(card => ({
             name: card.querySelector('h4')?.textContent ?? '',
             baseUrl: card.querySelector('.mono')?.textContent ?? '',
-            credentialConfigured: card.textContent.includes('凭据已由 SecretStore'),
+            credentialConfigured: card.textContent.includes('已配置'),
           }))
         ))()`) as Array<{
           name: string;
@@ -296,27 +294,22 @@ e2e('Settings workbench browser flow', () => {
           const line = [...card.querySelectorAll('.provider-model-line')]
             .find(item => item.querySelector('span')?.textContent === 'deepseek-chat');
           line.querySelector('button').click();
-          for (const displayName of ['Code CLI', 'Pi Research']) {
-            const routeCard = [...document.querySelectorAll('.agent-route-card')]
-              .find(item => item.textContent.includes(displayName));
+          for (const routeCard of document.querySelectorAll('.agents-section .agent-route-card')) {
             const mode = routeCard.querySelector('.route-policy-heading select');
             mode.value = 'auto';
             mode.dispatchEvent(new Event('change', { bubbles: true }));
           }
         })()`);
         await waitForExpression(cdp, `
-          ['Code CLI', 'Pi Research'].every(displayName => {
-            const card = [...document.querySelectorAll('.agent-route-card')]
-              .find(item => item.textContent.includes(displayName));
+          [...document.querySelectorAll('.agents-section .agent-route-card')].every(card => {
             return [...card.querySelectorAll('.model-option')].some(
               option => option.textContent.includes('deepseek-chat')
             );
           })
         `);
         const deepseekEligibility = await cdp.evaluate(`(() => {
-          const eligibilityFor = displayName => {
-            const card = [...document.querySelectorAll('.agent-route-card')]
-              .find(item => item.textContent.includes(displayName));
+          const routeCards = [...document.querySelectorAll('.agents-section .agent-route-card')];
+          const eligibilityFor = card => {
             const option = [...card.querySelectorAll('.model-option')]
               .find(item => item.textContent.includes('deepseek-chat'));
             return {
@@ -325,8 +318,8 @@ e2e('Settings workbench browser flow', () => {
             };
           };
           return {
-            codex: eligibilityFor('Code CLI'),
-            pi: eligibilityFor('Pi Research'),
+            codex: eligibilityFor(routeCards[0]),
+            pi: eligibilityFor(routeCards[1]),
           };
         })()`) as {
           codex: { disabled: boolean; detail: string };
@@ -445,8 +438,16 @@ async function startMockServer(
     }
     if (url.pathname === '/api/config/secrets/status') {
       json(response, mode === 'provider-recovery'
-        ? { provider: false, 'code-cli': true, deepseek: true, kimi: true }
-        : { 'code-cli': true, deepseek: true });
+        ? {
+          provider: { configured: false, maskedApiKey: null },
+          'code-cli': { configured: true, maskedApiKey: '••••••••code' },
+          deepseek: { configured: true, maskedApiKey: '••••••••seek' },
+          kimi: { configured: true, maskedApiKey: '••••••••kimi' },
+        }
+        : {
+          'code-cli': { configured: true, maskedApiKey: '••••••••code' },
+          deepseek: { configured: true, maskedApiKey: '••••••••seek' },
+        });
       return;
     }
     if (url.pathname === '/api/config/completion') {

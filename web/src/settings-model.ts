@@ -11,6 +11,7 @@ export interface SettingsProviderEntry {
   baseUrl: string;
   modelIds: string[];
   credentialState: ConfigurationFieldState;
+  maskedApiKey?: string | null;
   enabled?: boolean;
 }
 
@@ -41,6 +42,7 @@ export type RoutingMode = 'auto' | 'fixed';
 export type RoutingObjective = 'balanced' | 'quality' | 'cost' | 'latency';
 
 export interface AgentClassRoutingDraft {
+  displayName?: string;
   mode: RoutingMode;
   modelRef: string;
   allowedModelRefs: string[];
@@ -103,6 +105,26 @@ export interface AgentClassRoutingFacts {
   routingCapabilities: string[];
   capabilityContracts: string[];
   affordances: string[];
+}
+
+export const DEFAULT_AGENT_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  'pi-agent': '智能体 1',
+  'codex-cli': '智能体 2',
+};
+
+export function resolveAgentDisplayName(
+  agentClassRef: string,
+  configured?: string,
+): string {
+  const trimmed = configured?.trim();
+  return trimmed || DEFAULT_AGENT_DISPLAY_NAMES[agentClassRef] || humanizeAgentClassRef(agentClassRef);
+}
+
+export function resolveProviderDisplayName(
+  providerRef: string,
+  configured?: string,
+): string {
+  return configured?.trim() || humanizeProviderRef(providerRef);
 }
 
 export function executorManualInputKey(

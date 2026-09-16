@@ -17,7 +17,7 @@ describe('execution transparency projection', () => {
     });
 
     expect(identity).toEqual({
-      executorDisplayName: 'Codex CLI',
+      executorDisplayName: '智能体 2',
       harnessDisplayName: 'Codex CLI',
       providerDisplayName: 'Code CLI',
       modelDisplayName: 'gpt-5.6-terra',

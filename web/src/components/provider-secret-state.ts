@@ -51,6 +51,33 @@ export function resolveProviderSecretReference(
   return `${scheme}:anyfusion/providers/${providerRef}`;
 }
 
+export function resolveProviderSecretReferenceFromConfiguration(
+  providerRef: string,
+  baseUrl: string,
+  providers: Record<string, unknown>,
+  writtenReferences: Record<string, string>,
+  knownReferences: readonly string[],
+): string {
+  const existingProviders = Object.fromEntries(
+    Object.entries(providers).map(([ref, value]) => {
+      const record = value && typeof value === 'object'
+        ? value as Record<string, unknown>
+        : {};
+      return [ref, {
+        baseUrl: typeof record.baseUrl === 'string' ? record.baseUrl : undefined,
+        apiKeyRef: typeof record.apiKeyRef === 'string' ? record.apiKeyRef : undefined,
+      }];
+    }),
+  );
+  return resolveProviderSecretReference(
+    providerRef,
+    baseUrl,
+    existingProviders,
+    writtenReferences,
+    knownReferences,
+  );
+}
+
 function isSecretReference(value: string | undefined): value is string {
   return Boolean(value && /^(?:keychain|file-secret):[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/u.test(value));
 }

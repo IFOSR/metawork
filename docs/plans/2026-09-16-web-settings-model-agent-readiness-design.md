@@ -2,6 +2,8 @@
 
 > **Status:** Approved
 > **Design date:** 2026-09-16
+> **Delivery status:** Complete
+> **Delivery date:** 2026-09-16
 > **Preserves:** ADR-0011, ADR-0020, ADR-0028, ADR-0031, ADR-0033
 > **Amends during implementation:** ADR-0033 configuration presentation and
 > credential storage contract
@@ -554,3 +556,13 @@ Executor concepts into 模型 and 智能体.
 9. Installation recovery takes effect after re-detection without restart.
 10. Existing configuration activation, routing, capability, history, running
     Task, and recovery behavior passes regression validation.
+
+## Delivery Record
+
+The approved design is implemented without changing the existing data-layer
+interfaces. The Web settings surface now presents user-owned model and agent
+names, keeps routing and capability configuration on each agent, and places
+only Planner and concurrency/queue controls under collapsed advanced settings.
+Provider Keys use the single MetaWork-root `credentials.json` file and remain
+masked in Web. Pi readiness is required for new work; Codex readiness is an
+optional enhancement with explicit installation benefits and no task block.

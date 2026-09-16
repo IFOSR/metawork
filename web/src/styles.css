@@ -679,6 +679,141 @@ body {
   overflow-x: hidden;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.58);
+}
+
+.model-connection-dialog {
+  width: min(520px, 100%);
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(76, 141, 255, 0.12), transparent 240px),
+    var(--bg-panel);
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.38);
+}
+
+.model-connection-dialog-heading,
+.model-connection-dialog-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.model-connection-dialog h3 {
+  margin: 4px 0 0;
+  font-size: 21px;
+}
+
+.model-connection-dialog p {
+  margin: 6px 0 0;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.model-connection-dialog-fields {
+  display: grid;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.model-connection-dialog-actions {
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+.advanced-settings {
+  padding: 0;
+  overflow: hidden;
+}
+
+.advanced-settings > summary {
+  padding: 20px;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.advanced-settings > summary::marker {
+  color: var(--accent);
+}
+
+.advanced-settings-body {
+  display: grid;
+  gap: 18px;
+  padding: 0 20px 20px;
+}
+
+.advanced-settings-body .settings-section {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.agent-name-field {
+  display: grid;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.agent-name-field span {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.agent-name-field .text-input {
+  width: min(360px, 100%);
+}
+
+.agent-readiness-settings {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.agent-readiness-settings-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(224, 178, 60, 0.5);
+  border-radius: 10px;
+  background: rgba(224, 178, 60, 0.08);
+}
+
+.agent-readiness-settings-card strong {
+  display: block;
+}
+
+.agent-readiness-settings-card p {
+  max-width: 760px;
+  margin: 5px 0 0;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.agent-readiness-settings-installed {
+  border-color: rgba(55, 201, 127, 0.5);
+  background: rgba(55, 201, 127, 0.08);
+}
+
+.agent-readiness-settings-optional {
+  border-color: rgba(76, 141, 255, 0.5);
+  background: rgba(76, 141, 255, 0.08);
+}
+
 .settings-header h2,
 .section-heading h3,
 .agent-route-heading h3,
