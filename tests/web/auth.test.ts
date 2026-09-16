@@ -2,9 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HttpClient } from '../../web/src/api/http.js';
 import { WsClient } from '../../web/src/api/ws.js';
 import {
-  bootstrapTokenFromHash,
-  clearBootstrapFragment,
+  clearLaunchFragment,
   exchangeWebCredential,
+  launchTokenFromHash,
+  resolveWebLaunchSuggestion,
 } from '../../web/src/auth.js';
 
 class FakeWebSocket {
@@ -41,11 +42,11 @@ afterEach(() => {
 });
 
 describe('Web Cookie authentication', () => {
-  it('extracts bootstrap credentials from the fragment and removes it', () => {
-    expect(bootstrapTokenFromHash('#bootstrap=token%20value')).toBe('token value');
+  it('extracts the launch hint token from the fragment and removes it', () => {
+    expect(launchTokenFromHash('#launch=token%20value')).toBe('token value');
     const replaceState = vi.fn();
 
-    clearBootstrapFragment(
+    clearLaunchFragment(
       { pathname: '/settings', search: '?tab=models' },
       { replaceState },
     );
@@ -53,13 +54,44 @@ describe('Web Cookie authentication', () => {
     expect(replaceState).toHaveBeenCalledWith(null, '', '/settings?tab=models');
   });
 
-  it('exchanges a credential without browser storage', async () => {
+  it('exchanges a launch hint without creating a session', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      workspaceHint: '/repo-a',
+      conversationId: 'conv_1',
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('window', {
+      location: { pathname: '/', search: '', hash: '#launch=launch-token' },
+      history: { replaceState: vi.fn() },
+    });
+
+    await expect(resolveWebLaunchSuggestion(fetchImpl)).resolves.toEqual({
+      workspaceHint: '/repo-a',
+      conversationId: 'conv_1',
+    });
+    expect(fetchImpl).toHaveBeenCalledWith('/api/auth/launch-context', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: 'launch-token' }),
+    });
+  });
+
+  it('ignores an expired or already consumed launch hint', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 404 }));
+    vi.stubGlobal('window', {
+      location: { pathname: '/', search: '', hash: '#launch=stale' },
+      history: { replaceState: vi.fn() },
+    });
+
+    await expect(resolveWebLaunchSuggestion(fetchImpl)).resolves.toBeNull();
+  });
+
+  it('exchanges the manual access token without browser storage', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       authenticated: true,
-      launchContext: {
-        workspaceHint: '/repo-a',
-        conversationId: 'conv_1',
-      },
     }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
@@ -67,10 +99,6 @@ describe('Web Cookie authentication', () => {
 
     await expect(exchangeWebCredential('manual-token', fetchImpl)).resolves.toEqual({
       authenticated: true,
-      launchContext: {
-        workspaceHint: '/repo-a',
-        conversationId: 'conv_1',
-      },
     });
     expect(fetchImpl).toHaveBeenCalledWith('/api/auth/bootstrap', {
       method: 'POST',

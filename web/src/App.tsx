@@ -16,7 +16,8 @@ import {
   establishWebSession,
   exchangeWebCredential,
   loginWithPassword,
-  type WebLaunchContext,
+  resolveWebLaunchSuggestion,
+  type WebLaunchSuggestion,
 } from './auth';
 import { ConversationView } from './components/ConversationView';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -39,11 +40,12 @@ import { useThemePreference } from './theme';
 import { projectTurnForPresentation } from './turn-task-presentation';
 
 let startupAuthentication: ReturnType<typeof establishWebSession> | null = null;
+let startupLaunchSuggestionPromise: Promise<WebLaunchSuggestion | null> | null = null;
 
 export function App() {
   const [themePreference, setThemePreference] = useThemePreference();
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
-  const [startupLaunchContext, setStartupLaunchContext] = useState<WebLaunchContext | null>(null);
+  const [startupLaunchSuggestion, setStartupLaunchSuggestion] = useState<WebLaunchSuggestion | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
@@ -84,10 +86,11 @@ export function App() {
   useEffect(() => {
     let active = true;
     startupAuthentication ??= establishWebSession();
-    void startupAuthentication
-      .then(session => {
+    startupLaunchSuggestionPromise ??= resolveWebLaunchSuggestion().catch(() => null);
+    void Promise.all([startupAuthentication, startupLaunchSuggestionPromise])
+      .then(([session, suggestion]) => {
         if (!active) return;
-        setStartupLaunchContext(session?.launchContext ?? null);
+        setStartupLaunchSuggestion(suggestion);
         setAuthenticated(Boolean(session));
       })
       .catch(error => {
@@ -336,12 +339,17 @@ export function App() {
     ws.connect();
     void Promise.all([http.getWorkspaces(), http.getConfig()])
       .then(async ([workspaceCatalog, config]) => {
-        setWorkspaces(workspaceCatalog.workspaces);
-        setActiveWorkspaceId(workspaceCatalog.activeWorkspaceId);
-        const catalog = workspaceCatalog.activeWorkspaceId
-          ? await http.getConversations(workspaceCatalog.activeWorkspaceId)
+        const applied = await applyStartupLaunchSuggestion(
+          http,
+          workspaceCatalog,
+          startupLaunchSuggestion,
+        );
+        setWorkspaces(applied.workspaces);
+        setActiveWorkspaceId(applied.activeWorkspaceId);
+        const catalog = applied.activeWorkspaceId
+          ? await http.getConversations(applied.activeWorkspaceId)
           : null;
-        const requestedConversationId = startupLaunchContext?.conversationId ?? null;
+        const requestedConversationId = startupLaunchSuggestion?.conversationId ?? null;
         const initialSessionId = selectInitialSessionId(
           catalog?.conversations ?? [],
           requestedConversationId,
@@ -375,7 +383,7 @@ export function App() {
       loadRecordRef.current = () => undefined;
       ws.close();
     };
-  }, [authenticated, startupLaunchContext]);
+  }, [authenticated, startupLaunchSuggestion]);
 
   useEffect(() => {
     if (!authenticated || !httpRef.current || !activeWorkspaceId) return;
@@ -644,7 +652,6 @@ export function App() {
       const session = await exchangeWebCredential(token);
       setAuthError(session ? null : 'token 无效或已过期。');
       if (session) {
-        setStartupLaunchContext(session.launchContext);
         setAuthenticated(true);
       }
       return Boolean(session);
@@ -659,7 +666,6 @@ export function App() {
       const ok = await loginWithPassword(username, password);
       setAuthError(ok ? null : '用户名或密码错误，或尝试次数过多，请稍后再试。');
       if (ok) {
-        setStartupLaunchContext(null);
         setAuthenticated(true);
       }
       return ok;
@@ -891,6 +897,22 @@ function mergeArtifacts(
     (left, right) => left.publishedAt.localeCompare(right.publishedAt)
       || left.artifactId.localeCompare(right.artifactId),
   );
+}
+
+async function applyStartupLaunchSuggestion(
+  http: HttpClient,
+  catalog: { activeWorkspaceId: string | null; workspaces: WorkspaceSummary[] },
+  suggestion: WebLaunchSuggestion | null,
+): Promise<{ activeWorkspaceId: string | null; workspaces: WorkspaceSummary[] }> {
+  const hint = suggestion?.workspaceHint;
+  if (catalog.activeWorkspaceId || !hint) return catalog;
+  const selection = await http.selectWorkspace(hint).catch(() => null);
+  if (!selection?.activeWorkspaceId) return catalog;
+  const refreshed = await http.getWorkspaces().catch(() => null);
+  return {
+    activeWorkspaceId: selection.activeWorkspaceId,
+    workspaces: refreshed?.workspaces ?? catalog.workspaces,
+  };
 }
 
 function activationMessage(result: WebSessionActivationResult): string | null {
