@@ -118,6 +118,58 @@ function completeConfiguration() {
 }
 
 describe('AnyFusion configuration schema v2', () => {
+  it('accepts user display names for Providers and AgentClasses', () => {
+    const config = completeConfiguration();
+    const parsed = AnyFusionConfigurationV2Schema.parse({
+      ...config,
+      providers: {
+        openai: {
+          ...config.providers.openai,
+          displayName: '我的 OpenAI',
+        },
+      },
+      agentClasses: {
+        ...config.agentClasses,
+        'codex-engineering': {
+          ...config.agentClasses['codex-engineering'],
+          displayName: '代码助手',
+        },
+      },
+    });
+
+    expect(parsed.providers.openai?.displayName).toBe('我的 OpenAI');
+    expect(parsed.agentClasses['codex-engineering']?.displayName).toBe('代码助手');
+  });
+
+  it.each([
+    ['Provider', 'providers', 'openai'],
+    ['AgentClass', 'agentClasses', 'codex-engineering'],
+  ] as const)('rejects blank and overlong %s display names', (_label, section, ref) => {
+    const config = completeConfiguration();
+    const definition = config[section][ref];
+
+    expect(AnyFusionConfigurationV2Schema.safeParse({
+      ...config,
+      [section]: {
+        ...config[section],
+        [ref]: {
+          ...definition,
+          displayName: '   ',
+        },
+      },
+    }).success).toBe(false);
+    expect(AnyFusionConfigurationV2Schema.safeParse({
+      ...config,
+      [section]: {
+        ...config[section],
+        [ref]: {
+          ...definition,
+          displayName: 'a'.repeat(81),
+        },
+      },
+    }).success).toBe(false);
+  });
+
   it('accepts a Feishu gateway platform definition', () => {
     const config = minimalConfiguration();
     const result = AnyFusionConfigurationV2Schema.safeParse({

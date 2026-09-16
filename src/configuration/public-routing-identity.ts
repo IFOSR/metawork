@@ -8,6 +8,10 @@ import {
   publicDisplayNameFromRef,
   publicProviderDisplayName,
 } from './public-provider-catalog.js';
+import {
+  resolveAgentDisplayName,
+  resolveProviderDisplayName,
+} from './user-facing-names.js';
 
 export interface PublicRoutingIdentity {
   executorDisplayName: string;
@@ -37,21 +41,33 @@ export function resolvePublicRoutingIdentity(
     ? configuration.providers[model.providerRef]
     : undefined;
   const providerRef = model?.providerRef ?? binding.providerRef;
+  const configuredProvider = configuration?.revisionId === binding.configurationRevision
+    ? configuration.providers[providerRef]
+    : undefined;
+  const agentClass = configuration?.revisionId === binding.configurationRevision
+    ? configuration.agentClasses?.[binding.agentClassRef]
+    : undefined;
   const harness = configuration?.revisionId === binding.configurationRevision
     ? configuration.harnesses?.[binding.harnessRef]
     : undefined;
 
   return {
-    executorDisplayName: executorDisplayName(binding.agentClassRef),
+    executorDisplayName: executorDisplayName(
+      binding.agentClassRef,
+      agentClass && 'displayName' in agentClass ? agentClass.displayName : undefined,
+    ),
     harnessDisplayName: harnessDisplayName(
       binding.harnessRef,
       harness && 'driverId' in harness ? harness.driverId : undefined,
     ),
-    providerDisplayName: publicProviderDisplayName(
+    providerDisplayName: resolveProviderDisplayName(
       providerRef,
-      provider && 'baseUrl' in provider && typeof provider.baseUrl === 'string'
-        ? provider.baseUrl
+      configuredProvider && 'displayName' in configuredProvider
+        ? configuredProvider.displayName
         : undefined,
+      provider && 'baseUrl' in provider && typeof provider.baseUrl === 'string'
+        ? publicProviderDisplayName(providerRef, provider.baseUrl)
+        : publicProviderDisplayName(providerRef),
     ),
     modelDisplayName: model?.modelId ?? '历史模型信息不可用',
     availability: model ? 'available' : 'unavailable',
@@ -62,6 +78,7 @@ function configurationFacts(source: PublicRoutingConfiguration | null | undefine
   revisionId: string;
   models: KernelConfigurationView['models'] | RuntimeConfigurationView['models'];
   providers: KernelConfigurationView['providers'] | RuntimeConfigurationView['providers'];
+  agentClasses?: KernelConfigurationView['agentClasses'] | RuntimeConfigurationView['agentClasses'];
   harnesses?: RuntimeConfigurationView['harnesses'];
 } | null {
   if (!source) return null;
@@ -70,6 +87,7 @@ function configurationFacts(source: PublicRoutingConfiguration | null | undefine
       revisionId: source.revisionId,
       models: source.config.models,
       providers: source.config.providers,
+      agentClasses: source.config.agentClasses,
       harnesses: source.config.harnesses,
     };
   }
@@ -77,15 +95,14 @@ function configurationFacts(source: PublicRoutingConfiguration | null | undefine
     revisionId: source.revisionId,
     models: source.models,
     providers: source.providers,
+    agentClasses: source.agentClasses,
     ...('harnesses' in source ? { harnesses: source.harnesses } : {}),
   };
 }
 
-function executorDisplayName(agentClassRef: string): string {
-  if (agentClassRef === 'codex-cli') return 'Codex CLI';
-  if (agentClassRef === 'pi-agent') return 'Pi Agent';
+function executorDisplayName(agentClassRef: string, configured?: string): string {
   if (agentClassRef === 'planner') return 'MetaWork Planner (AnyFusion-Pi)';
-  return publicDisplayNameFromRef(agentClassRef);
+  return resolveAgentDisplayName(agentClassRef, configured);
 }
 
 function harnessDisplayName(harnessRef: string, driverId?: string): string {

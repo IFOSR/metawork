@@ -406,6 +406,7 @@ export class LegacyConfigurationReader {
         enabled: true,
       },
       'codex-cli': {
+        displayName: '智能体 2',
         kind: 'executor',
         harnessRef: 'codex-cli',
         modelPolicy: { mode: 'fixed', modelRef: defaultModelRef },
@@ -421,6 +422,7 @@ export class LegacyConfigurationReader {
         enabled: true,
       },
       'pi-agent': {
+        displayName: '智能体 1',
         kind: 'executor',
         harnessRef: 'pi-cli',
         modelPolicy: { mode: 'fixed', modelRef: defaultModelRef },

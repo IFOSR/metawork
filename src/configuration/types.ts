@@ -10,6 +10,7 @@ export type ConfigurationRevisionId = string;
 export type ProviderProtocol = 'openai-compatible' | 'anthropic';
 
 export interface ProviderDefinition {
+  displayName?: string;
   protocol: ProviderProtocol;
   baseUrl: string;
   apiKeyRef: string;
@@ -163,6 +164,7 @@ export interface ExecutorManualUserProfile {
 }
 
 export interface AgentClassDefinition {
+  displayName?: string;
   kind: HarnessKind;
   harnessRef: string;
   modelPolicy: ModelPolicy;
@@ -311,6 +313,7 @@ export interface PlannerExecutorCapabilityManual {
 }
 
 export interface KernelAgentClassConfiguration {
+  displayName?: string;
   kind: HarnessKind;
   harnessRef: string;
   modelPolicy: ModelPolicy;
@@ -342,6 +345,7 @@ export type KernelConfigurationView = Readonly<{
     enabled: boolean;
   }>;
   providers: Record<string, {
+    displayName?: string;
     enabled: boolean;
   }>;
   permissionProfiles: Record<string, PermissionProfile>;

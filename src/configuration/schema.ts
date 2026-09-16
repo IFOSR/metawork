@@ -71,6 +71,7 @@ const CommandArgumentSchema = z.string().trim().min(1).max(500).refine(
 );
 
 const ProviderDefinitionSchema = z.object({
+  displayName: z.string().trim().min(1).max(80).optional(),
   protocol: z.enum(['openai-compatible', 'anthropic']),
   baseUrl: credentialFreeHttpUrlSchema('Provider baseUrl'),
   apiKeyRef: z.string().regex(SECRET_REFERENCE),
@@ -200,6 +201,7 @@ const ModelPolicySchema = z.union([
 ]);
 
 const AgentClassDefinitionSchema = z.object({
+  displayName: z.string().trim().min(1).max(80).optional(),
   kind: z.enum(['planner', 'executor']),
   harnessRef: ReferenceIdSchema,
   modelPolicy: ModelPolicySchema,

@@ -89,6 +89,7 @@ export function buildKernelConfigurationView(
       .map(([id, agentClass]) => {
         const harness = snapshot.config.harnesses[agentClass.harnessRef]!;
         return [id, {
+          displayName: agentClass.displayName,
           kind: agentClass.kind,
           harnessRef: agentClass.harnessRef,
           modelPolicy: cloneModelPolicy(agentClass.modelPolicy),
@@ -132,7 +133,10 @@ export function buildKernelConfigurationView(
   const providers = Object.fromEntries(
     Object.entries(snapshot.config.providers)
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(([id, provider]) => [id, { enabled: provider.enabled }]),
+      .map(([id, provider]) => [id, {
+        displayName: provider.displayName,
+        enabled: provider.enabled,
+      }]),
   );
 
   return deepFreeze({

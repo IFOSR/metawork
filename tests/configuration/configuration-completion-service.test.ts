@@ -3,6 +3,26 @@ import { ConfigurationCompletionService } from '../../src/configuration/configur
 import { MODEL_CAPABILITY_CATALOG } from '../../src/configuration/model-capability-catalog.js';
 
 describe('ConfigurationCompletionService', () => {
+  it('prefers the configured Provider display name over a public preset label', () => {
+    const result = new ConfigurationCompletionService({
+      presets: [{
+        providerRef: 'kimi',
+        displayName: 'Kimi',
+        baseUrl: 'https://api.kimi.com/coding/v1',
+        modelIds: ['k3'],
+      }],
+    }).complete({
+      providers: {
+        kimi: {
+          displayName: '我的工作模型',
+          baseUrl: 'https://api.kimi.com/coding/v1',
+        },
+      },
+    });
+
+    expect(result.providers.kimi?.displayName).toBe('我的工作模型');
+  });
+
   it('prefers active configuration and local credentials, and reports only unresolved fields', () => {
     const result = new ConfigurationCompletionService({
       presets: [{
