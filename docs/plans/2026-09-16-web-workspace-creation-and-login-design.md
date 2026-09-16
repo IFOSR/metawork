@@ -105,8 +105,10 @@ GET /api/workspaces/browse?path=<absolute path>
 ```
 
 - `path` absent defaults to `os.homedir()`.
-- Root policy is `/`: navigation up to the filesystem root is allowed, and
-  `realpath` containment is enforced after symlink resolution.
+- Root policy is `/`: navigation up to the filesystem root is allowed and no
+  directory is excluded. Every reported path is the `realpath`-resolved path,
+  so a symlink cannot make the browser report a path that differs from what the
+  Server later authorizes.
 - Only directories are listed, never files. Entries are capped at 500 and
   sorted case-insensitively with numeric collation.
 - Only cookie-authenticated sessions may browse. The shared
@@ -200,8 +202,9 @@ GET /api/workspaces/browse?path=<absolute path>
   localhost-only origin check.
 - Browsing requires cookie authentication, so the shared bearer client cannot
   enumerate directories.
-- Symlinks are resolved with `realpath` before any containment or directory
-  decision, so a link cannot be used to misreport a path.
+- Symlinks are resolved with `realpath` before the directory decision, so the
+  reported path is always the canonical path that `select_workspace` later
+  re-resolves and authorizes.
 - The launch-context endpoint is unauthenticated by design. It is gated by a
   32-byte random token, a 60-second TTL, and single use, and it returns a
   directory hint only. It cannot create a session, list Workspaces, or read
