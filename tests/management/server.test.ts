@@ -20,6 +20,7 @@ import {
   type LoginCredentials,
 } from '../../src/management/login-credentials.js';
 import type { WebSessionRecordProjection } from '../../src/management/web-session-types.js';
+import type { AgentReadiness } from '../../src/management/agent-installation-readiness-service.js';
 
 function metadataFixture(id: string, active: boolean) {
   return {
@@ -1681,6 +1682,79 @@ describe('ManagementServer WebSocket authentication', () => {
     }
   });
 
+  it('serves authenticated agent readiness and forces an explicit refresh', async () => {
+    const port = await reservePort();
+    const agents = [readinessFixture()];
+    let refreshCalls = 0;
+    const server = createManagementServer(port, {
+      agentReadiness: {
+        getState: () => agents,
+        refresh: async () => {
+          refreshCalls += 1;
+          return agents;
+        },
+        subscribe: () => () => undefined,
+      },
+    });
+    await server.start();
+
+    try {
+      const unauthorized = await fetch(`http://127.0.0.1:${port}/api/agents/readiness`);
+      expect(unauthorized.status).toBe(401);
+
+      const response = await fetch(`http://127.0.0.1:${port}/api/agents/readiness`, {
+        headers: { authorization: 'Bearer manual-token' },
+      });
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ agents });
+
+      const refresh = await fetch(`http://127.0.0.1:${port}/api/agents/readiness/refresh`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer manual-token' },
+      });
+      expect(refresh.status).toBe(200);
+      expect(refreshCalls).toBeGreaterThanOrEqual(2);
+      await expect(refresh.json()).resolves.toEqual({ agents });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('sends readiness to a new WebSocket and broadcasts state transitions', async () => {
+    const port = await reservePort();
+    const listeners = new Set<(agents: readonly AgentReadiness[]) => void>();
+    const agents = [readinessFixture()];
+    const server = createManagementServer(port, {
+      agentReadiness: {
+        getState: () => agents,
+        refresh: async () => agents,
+        subscribe: listener => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+    });
+    await server.start();
+    const cookie = await exchangeToken(port, 'manual-token');
+    const client = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
+
+    try {
+      await expect(client.nextText()).resolves.toContain('"type":"hello"');
+      await expect(client.nextText()).resolves.toBe(JSON.stringify({
+        type: 'agent_readiness_state',
+        agents,
+      }));
+      for (const listener of listeners) listener([{
+        ...agents[0]!,
+        status: 'missing',
+      }]);
+      await expect(client.nextText()).resolves.toContain('"status":"missing"');
+    } finally {
+      client.close();
+      await server.stop();
+    }
+  });
+
   it('tags output increments with stable absolute cursors so reconnects dedupe by index', async () => {
     const port = await reservePort();
     const listeners = new Set<
@@ -1886,6 +1960,11 @@ interface ManagementServerTestOverrides {
   readonly artifactQuery?: import('../../src/management/artifact-preview-service.js').ArtifactPreviewService;
   readonly launchContexts?: WebLaunchContextService;
   readonly workspaceDirectoryBrowser?: WorkspaceDirectoryBrowser;
+  readonly agentReadiness?: {
+    getState(): readonly AgentReadiness[];
+    refresh(input?: { force?: boolean }): Promise<readonly AgentReadiness[]>;
+    subscribe(listener: (agents: readonly AgentReadiness[]) => void): () => void;
+  };
 }
 
 function createManagementServer(
@@ -1929,7 +2008,21 @@ function createManagementServer(
       writeSecret: async () => ({ configured: true, maskedApiKey: '••••••••test' }),
       ...overrides.configQuery,
     },
+    agentReadiness: overrides.agentReadiness,
   });
+}
+
+function readinessFixture(): AgentReadiness {
+  return {
+    agentId: 'pi-agent',
+    required: true,
+    displayName: '智能体 1',
+    status: 'installed',
+    version: 'pi 1.0.0',
+    detail: null,
+    installUrl: 'https://example.com/pi',
+    checkedAt: '2026-09-16T00:00:00.000Z',
+  };
 }
 
 function createSessionRuntime(

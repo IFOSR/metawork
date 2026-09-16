@@ -8,6 +8,7 @@ import type {
   ExecutorManualAnalysis,
   ProviderModelDiscoveryResult,
   ProviderCredentialStatus,
+  AgentReadiness,
   TaskSummary,
   WorkGraphPresentationProjection,
 } from './types';
@@ -48,6 +49,14 @@ export class HttpClient {
 
   getActivationStatus(): Promise<Pick<ConfigSnapshot, 'activationStatus' | 'activationAllowed' | 'blockingReasons' | 'activeTaskId' | 'activeAttemptCount' | 'plannerTurnActive' | 'hotActivationSupported' | 'restartRequired' | 'checkedAt'>> {
     return this.request('/api/config/activation-status');
+  }
+
+  getAgentReadiness(): Promise<{ agents: AgentReadiness[] }> {
+    return this.request('/api/agents/readiness');
+  }
+
+  refreshAgentReadiness(): Promise<{ agents: AgentReadiness[] }> {
+    return this.request('/api/agents/readiness/refresh', { method: 'POST' });
   }
 
   getConfigurationCompletion(): Promise<ConfigurationCompletionResult> {

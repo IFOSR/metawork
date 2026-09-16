@@ -6,6 +6,7 @@ import type {
   InteractionTraceStatus,
   ServerMessage,
   ConfigurationRuntimeState,
+  AgentReadiness,
 } from './types';
 import type {
   ArtifactProjection,
@@ -16,6 +17,7 @@ import type {
 
 export interface WsHandlers {
   onHello?: (sessionId: string | null) => void;
+  onAgentReadinessState?: (agents: AgentReadiness[]) => void;
   onSessionCatalog?: (activeSessionId: string, sessions: WebSessionMetadata[]) => void;
   onWorkspaceDirectory?: (
     activeWorkspaceId: string,
@@ -114,6 +116,9 @@ export class WsClient {
         case 'hello':
           this.handlers.onStatusChange?.(true);
           this.handlers.onHello?.(message.sessionId);
+          break;
+        case 'agent_readiness_state':
+          this.handlers.onAgentReadinessState?.(message.agents);
           break;
         case 'session_catalog':
           this.handlers.onSessionCatalog?.(message.activeSessionId, message.sessions);

@@ -140,6 +140,19 @@ export interface ProviderCredentialStatus {
   maskedApiKey: string | null;
 }
 
+export type AgentReadinessStatus = 'checking' | 'installed' | 'missing' | 'broken';
+
+export interface AgentReadiness {
+  agentId: 'pi-agent' | 'codex-cli';
+  required: boolean;
+  displayName: string;
+  status: AgentReadinessStatus;
+  version: string | null;
+  detail: string | null;
+  installUrl: string;
+  checkedAt: string;
+}
+
 export type ConfigurationCompletionFieldState =
   | '已自动发现'
   | '已从 Provider 补全'
@@ -272,6 +285,7 @@ import type {
 
 export type ServerMessage =
   | { type: 'hello'; sessionId: string | null }
+  | { type: 'agent_readiness_state'; agents: AgentReadiness[] }
   | {
       type: 'session_catalog';
       activeSessionId: string;

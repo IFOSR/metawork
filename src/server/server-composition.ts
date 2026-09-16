@@ -81,6 +81,10 @@ import {
 import { WorkspaceConversationMigrator } from '../workspace/workspace-conversation-migrator.js';
 import { WorkspaceDirectoryService } from '../workspace/workspace-directory-service.js';
 import { WorkspaceDirectoryBrowser } from '../management/workspace-directory-browser.js';
+import {
+  AgentInstallationReadinessService,
+} from '../management/agent-installation-readiness-service.js';
+import { resolveAgentDisplayName } from '../configuration/user-facing-names.js';
 import { WorkspaceGatewayRuntime } from '../gateway/workspace-gateway-runtime.js';
 import { workspaceEventStreamId } from '../gateway/workspace-event-stream.js';
 import { clientConnectionEventStreamId } from '../gateway/client-connection-event-stream.js';
@@ -233,6 +237,7 @@ async function startWebMode(options: {
   artifactQuery: ArtifactPreviewService;
   webAuth: WebAuthService;
   launchContexts: WebLaunchContextService;
+  agentReadiness: AgentInstallationReadinessService;
 }): Promise<ManagementServer> {
   const loginCredentials = resolveLoginCredentials(process.env);
   if (loginCredentials.builtInDefault) {
@@ -259,6 +264,7 @@ async function startWebMode(options: {
     loginCredentials,
     attachmentStore: options.attachmentStore,
     artifactQuery: options.artifactQuery,
+    agentReadiness: options.agentReadiness,
   });
   await managementServer.start();
   process.stdout.write([
@@ -907,6 +913,14 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       await gatewayFeishuManager?.applyConfiguration(buildApplicationConfig(snapshot));
     },
   });
+  const agentReadiness = new AgentInstallationReadinessService({
+    resolveDisplayName: agentId => resolveAgentDisplayName(
+      agentId,
+      (configurationRuntimeCoordinator.getSnapshot().config.agentClasses[agentId] as {
+        displayName?: string;
+      } | undefined)?.displayName,
+    ),
+  });
   const runtimePort = activatedAccountRuntime.getConversationPort();
   const conversationRegistry = new ConversationRegistry();
 
@@ -1386,6 +1400,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         ),
       }),
       webAuth,
+      agentReadiness,
       sessionRuntime: new WebGatewaySessionRuntime({
         accountId: LOCAL_DEFAULT_ACCOUNT_ID,
         catalog: webSessionCatalog,

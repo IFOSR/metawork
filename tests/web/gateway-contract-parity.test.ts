@@ -4,6 +4,7 @@ import {
   isKnownGatewayEventKind,
   isSupportedGatewayProtocolVersion,
 } from '../../web/src/api/gateway-types.js';
+import type { ServerMessage } from '../../web/src/api/types.js';
 
 describe('web gateway contract parity', () => {
   it('recognizes every server event kind', () => {
@@ -23,5 +24,22 @@ describe('web gateway contract parity', () => {
     expect(isSupportedGatewayProtocolVersion(999)).toBe(false);
     expect(isSupportedGatewayProtocolVersion('1')).toBe(false);
     expect(isSupportedGatewayProtocolVersion(undefined)).toBe(false);
+  });
+
+  it('keeps the agent readiness event in the WebSocket contract', () => {
+    const message: ServerMessage = {
+      type: 'agent_readiness_state',
+      agents: [{
+        agentId: 'pi-agent',
+        required: true,
+        displayName: '智能体 1',
+        status: 'installed',
+        version: 'pi 1.0.0',
+        detail: null,
+        installUrl: 'https://example.com/pi',
+        checkedAt: '2026-09-16T00:00:00.000Z',
+      }],
+    };
+    expect(message.type).toBe('agent_readiness_state');
   });
 });
