@@ -30,7 +30,7 @@ export function WorkspaceHeader({
         <div className="workspace-path" title={workspacePath ?? undefined}>
           <span>Workspace</span>
           <code>
-            {workspacePath ?? '未设置 · 输入 /workspace /absolute/path'}
+            {workspacePath ?? '未设置 · 点击左侧 ＋ 添加本机目录'}
           </code>
         </div>
       </div>

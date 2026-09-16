@@ -143,6 +143,16 @@ export class HttpClient {
     return this.request('/api/workspaces');
   }
 
+  browseWorkspaceDirectory(path?: string): Promise<{
+    path: string;
+    parent: string | null;
+    crumbs: Array<{ name: string; path: string }>;
+    entries: Array<{ name: string; path: string }>;
+  }> {
+    const suffix = path?.trim() ? `?path=${encodeURIComponent(path.trim())}` : '';
+    return this.request(`/api/workspaces/browse${suffix}`);
+  }
+
   selectWorkspace(path: string): Promise<{
     selection:
       | { status: 'not_requested' }

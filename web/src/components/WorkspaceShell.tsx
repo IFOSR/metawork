@@ -32,6 +32,7 @@ export function WorkspaceShell({
   children,
   onSearch,
   onSelectWorkspace,
+  onCreateWorkspace,
   onNewSession,
   onSelectSession,
   onDeleteSession,
@@ -69,6 +70,7 @@ export function WorkspaceShell({
   children: ReactNode;
   onSearch: (value: string) => void;
   onSelectWorkspace: (workspace: WorkspaceSummary) => void;
+  onCreateWorkspace: () => void;
   onNewSession: () => void;
   onSelectSession: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
@@ -96,6 +98,7 @@ export function WorkspaceShell({
         search={search}
         onSearch={onSearch}
         onSelectWorkspace={onSelectWorkspace}
+        onCreateWorkspace={onCreateWorkspace}
         onNewSession={onNewSession}
         onSelect={onSelectSession}
         onDeleteSession={onDeleteSession}

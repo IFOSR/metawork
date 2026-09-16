@@ -1984,6 +1984,131 @@ select {
   text-transform: uppercase;
 }
 
+.workspace-selector-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.workspace-create-button {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid #35443a;
+  border-radius: 6px;
+  color: var(--accent);
+  background: transparent;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.workspace-create-button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.workspace-create-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.workspace-creator-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(6, 9, 7, 0.66);
+}
+
+.workspace-creator {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  gap: 12px;
+  width: min(560px, 100%);
+  max-height: min(620px, 100%);
+  padding: 18px;
+  border: 1px solid #29342b;
+  border-radius: 14px;
+  background: var(--surface-raised);
+}
+
+.workspace-creator header,
+.workspace-creator footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workspace-creator-kicker {
+  color: #738076;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+}
+
+.workspace-creator-path {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 11px;
+}
+
+.workspace-creator-path button {
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--accent);
+  background: transparent;
+  cursor: pointer;
+}
+
+.workspace-creator-list {
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid #29342b;
+  border-radius: 10px;
+}
+
+.workspace-creator-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-bottom: 1px solid #202922;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-creator-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.workspace-creator-empty {
+  padding: 16px 12px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.workspace-creator footer code {
+  overflow: hidden;
+  color: var(--text-dim);
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .workspace-selector select {
   width: 100%;
   min-width: 0;
@@ -4775,6 +4900,20 @@ button:active:not(:disabled) {
 }
 :root[data-theme='light'] .workspace-selector-path code {
   color: var(--text-secondary);
+}
+
+:root[data-theme='light'] .workspace-creator {
+  border-color: var(--line-subtle);
+  background: var(--surface-raised);
+}
+
+:root[data-theme='light'] .workspace-creator-list {
+  border-color: var(--line-subtle);
+}
+
+:root[data-theme='light'] .workspace-creator-row {
+  border-bottom-color: var(--line-subtle);
+  color: var(--text-primary);
 }
 
 :root[data-theme='light'] .artifact-link {

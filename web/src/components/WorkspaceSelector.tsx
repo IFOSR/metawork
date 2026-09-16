@@ -5,16 +5,30 @@ export function WorkspaceSelector({
   activeWorkspaceId,
   disabled = false,
   onSelect,
+  onCreateWorkspace,
 }: {
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string | null;
   disabled?: boolean;
   onSelect: (workspace: WorkspaceSummary) => void;
+  onCreateWorkspace: () => void;
 }) {
   const active = workspaces.find(workspace => workspace.id === activeWorkspaceId) ?? null;
   return (
     <div className="workspace-selector">
-      <label htmlFor="workspace-select">Workspace</label>
+      <div className="workspace-selector-head">
+        <label htmlFor="workspace-select">Workspace</label>
+        <button
+          type="button"
+          className="workspace-create-button"
+          aria-label="添加 Workspace"
+          title="添加本机目录为 Workspace"
+          disabled={disabled}
+          onClick={onCreateWorkspace}
+        >
+          ＋
+        </button>
+      </div>
       <select
         id="workspace-select"
         value={activeWorkspaceId ?? ''}
@@ -38,7 +52,7 @@ export function WorkspaceSelector({
       </select>
       <div className="workspace-selector-path" title={active?.canonicalPath}>
         <span data-availability={active?.availability ?? 'unavailable'} />
-        <code>{active?.canonicalPath ?? '从 Workspace 目录启动 MetaWork Web'}</code>
+        <code>{active?.canonicalPath ?? '点击 ＋ 添加本机目录'}</code>
       </div>
     </div>
   );

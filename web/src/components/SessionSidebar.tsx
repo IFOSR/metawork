@@ -13,6 +13,7 @@ export function SessionSidebar({
   search,
   onSearch,
   onSelectWorkspace,
+  onCreateWorkspace,
   onNewSession,
   onSelect,
   onDeleteSession,
@@ -29,6 +30,7 @@ export function SessionSidebar({
   search: string;
   onSearch: (value: string) => void;
   onSelectWorkspace: (workspace: WorkspaceSummary) => void;
+  onCreateWorkspace: () => void;
   onNewSession: () => void;
   onSelect: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
@@ -46,6 +48,7 @@ export function SessionSidebar({
         activeWorkspaceId={activeWorkspaceId}
         disabled={workspaceSwitching}
         onSelect={onSelectWorkspace}
+        onCreateWorkspace={onCreateWorkspace}
       />
       <button
         className="new-session-button"
@@ -129,7 +132,7 @@ export function SessionSidebar({
         })}
         {sessions.length === 0 && (
           <div className="sidebar-empty">
-            {activeWorkspaceId ? '当前 Workspace 暂无会话' : '请先选择 Workspace'}
+            {activeWorkspaceId ? '当前 Workspace 暂无会话' : '点击 ＋ 添加本机目录后新建会话'}
           </div>
         )}
       </div>

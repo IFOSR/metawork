@@ -36,7 +36,7 @@ describe('Web workspace shell', () => {
     expect(header).toContain('轨迹');
     expect(header).toContain('workspace');
     expect(header).toContain('workspacePath');
-    expect(header).toContain('/workspace /absolute/path');
+    expect(header).toContain('点击左侧 ＋ 添加本机目录');
     expect(composer).toContain('<textarea');
     expect(app).toContain('activeSessionId');
     expect(app).toContain('activeWorkspaceId');
@@ -59,6 +59,50 @@ describe('Web workspace shell', () => {
     expect(styles).toContain('.workspace-sidebar');
     expect(styles).toContain('.workspace-selector');
     expect(styles).toContain('.workspace-home');
+  });
+
+  it('creates a Workspace by browsing local directories', async () => {
+    const [app, sidebar, selector, creator, http, styles] = await Promise.all([
+      readFile(new URL('App.tsx', root), 'utf8'),
+      readFile(new URL('components/SessionSidebar.tsx', root), 'utf8'),
+      readFile(new URL('components/WorkspaceSelector.tsx', root), 'utf8'),
+      readFile(new URL('components/WorkspaceCreator.tsx', root), 'utf8'),
+      readFile(new URL('api/http.ts', root), 'utf8'),
+      readFile(new URL('styles.css', root), 'utf8'),
+    ]);
+
+    // 侧栏 Workspace 卡片提供创建入口。
+    expect(selector).toContain('onCreateWorkspace');
+    expect(selector).toContain('workspace-create-button');
+    expect(sidebar).toContain('onCreateWorkspace');
+    expect(app).toContain('workspaceCreatorOpen');
+    expect(app).toContain('<WorkspaceCreator');
+
+    // 目录浏览器只通过浏览选择，不接受手输路径。
+    expect(http).toContain('/api/workspaces/browse');
+    expect(creator).toContain('browseWorkspaceDirectory');
+    expect(creator).toContain('选择此目录');
+    expect(creator).toContain('onSelect');
+    expect(creator).not.toContain('<input');
+    expect(creator).toContain('crumbs');
+    for (const code of [
+      'browse_path_invalid',
+      'browse_path_forbidden',
+      'browse_path_not_found',
+    ]) {
+      expect(creator).toContain(code);
+    }
+
+    expect(styles).toContain('.workspace-creator');
+    expect(styles).toContain('.workspace-create-button');
+  });
+
+  it('applies a launch hint only after authentication', async () => {
+    const app = await readFile(new URL('App.tsx', root), 'utf8');
+
+    expect(app).toContain('resolveWebLaunchSuggestion');
+    expect(app).toContain('applyStartupLaunchSuggestion');
+    expect(app).not.toContain('startupLaunchContext');
   });
 
   it('keeps Workspace switching separate from Conversation attachment', async () => {

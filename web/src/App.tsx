@@ -23,6 +23,7 @@ import { ConversationView } from './components/ConversationView';
 import { SettingsPanel } from './components/SettingsPanel';
 import { TokenGate } from './components/TokenGate';
 import { TrajectoryView } from './components/TrajectoryView';
+import { WorkspaceCreator } from './components/WorkspaceCreator';
 import { WorkspaceShell } from './components/WorkspaceShell';
 import { selectInitialSessionId } from './session-selection';
 import {
@@ -62,6 +63,7 @@ export function App() {
   const [search, setSearch] = useState('');
   const [activationNotice, setActivationNotice] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [workspaceCreatorOpen, setWorkspaceCreatorOpen] = useState(false);
   const [configurationRuntime, setConfigurationRuntime] = useState<ConfigurationRuntimeState | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<AttachmentMetadata[]>([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -421,14 +423,23 @@ export function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [previewState.status, executionDetail]);
 
-  const handleSelectWorkspace = async (workspace: WorkspaceSummary) => {
-    const http = httpRef.current;
-    if (!http) return;
-    if (workspaceSwitchRef.current || workspace.id === activeWorkspaceId) return;
+  const handleSelectWorkspace = (workspace: WorkspaceSummary) => {
     if (workspace.availability !== 'available') {
       setActivationNotice(`Workspace ${workspace.displayName} 当前不可用。`);
       return;
     }
+    void handleSelectWorkspacePath(workspace.canonicalPath);
+  };
+
+  const handleCreateWorkspace = (path: string) => {
+    setWorkspaceCreatorOpen(false);
+    void handleSelectWorkspacePath(path);
+  };
+
+  const handleSelectWorkspacePath = async (workspacePath: string) => {
+    const http = httpRef.current;
+    if (!http) return;
+    if (workspaceSwitchRef.current) return;
     workspaceSwitchRef.current = true;
     const switchRequestId = ++workspaceSwitchRequestRef.current;
     ++conversationRequestRef.current;
@@ -436,7 +447,7 @@ export function App() {
     setWorkspaceSwitching(true);
     setActivationNotice(null);
     try {
-      const result = await http.selectWorkspace(workspace.canonicalPath);
+      const result = await http.selectWorkspace(workspacePath);
       if (result.selection.status === 'failed' || !result.activeWorkspaceId) {
         setActivationNotice(
           result.selection.status === 'failed'
@@ -756,7 +767,8 @@ export function App() {
           />
         )}
         onSearch={setSearch}
-        onSelectWorkspace={workspace => void handleSelectWorkspace(workspace)}
+        onSelectWorkspace={handleSelectWorkspace}
+        onCreateWorkspace={() => setWorkspaceCreatorOpen(true)}
         onNewSession={() => void handleNewSession()}
         onSelectSession={handleSelectSession}
         onDeleteSession={sessionId => void handleDeleteSession(sessionId)}
@@ -792,10 +804,12 @@ export function App() {
               <p>
                 {activeWorkspace
                   ? '选择左侧会话继续工作，或在当前 Workspace 新建一个独立会话。'
-                  : '从项目目录启动 MetaWork Web，或选择已有 Workspace。'}
+                  : '点击左侧 ＋ 或此处按钮，选择本机目录创建 Workspace。'}
               </p>
-              {activeWorkspace && (
+              {activeWorkspace ? (
                 <button onClick={() => void handleNewSession()}>新建会话</button>
+              ) : (
+                <button onClick={() => setWorkspaceCreatorOpen(true)}>添加 Workspace</button>
               )}
             </div>
           )
@@ -839,6 +853,13 @@ export function App() {
           onClose={() => setSettingsOpen(false)}
         />
       )}
+      <WorkspaceCreator
+        http={httpRef.current}
+        open={workspaceCreatorOpen}
+        disabled={workspaceSwitching}
+        onClose={() => setWorkspaceCreatorOpen(false)}
+        onSelect={handleCreateWorkspace}
+      />
     </>
   );
 }
