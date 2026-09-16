@@ -1,7 +1,6 @@
 import { randomBytes, scryptSync } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
-  generateLoginCredentials,
   resolveLoginCredentials,
   verifyLogin,
 } from '../../src/management/login-credentials.js';
@@ -19,7 +18,7 @@ describe('login credentials', () => {
     });
 
     expect(credentials.username).toBe('alice');
-    expect(credentials.generated).toBe(false);
+    expect(credentials.builtInDefault).toBe(false);
     expect(verifyLogin('alice', 'secret-password', credentials)).toBe(true);
     expect(verifyLogin('alice', 'wrong', credentials)).toBe(false);
     expect(verifyLogin('bob', 'secret-password', credentials)).toBe(false);
@@ -33,25 +32,28 @@ describe('login credentials', () => {
     });
 
     expect(credentials.passwordHash).toBe(hash);
+    expect(credentials.builtInDefault).toBe(false);
     expect(verifyLogin('carol', 'plain-secret', credentials)).toBe(true);
     expect(verifyLogin('carol', 'other-secret', credentials)).toBe(false);
   });
 
-  it('generates a random password when nothing is configured', () => {
+  it('keeps the built-in credentials fixed instead of generating a password', () => {
     const first = resolveLoginCredentials({});
     const second = resolveLoginCredentials({});
 
     expect(first.username).toBe('admin');
-    expect(first.password).toMatch(/^[A-Za-z0-9]{8}$/u);
-    expect(first.generated).toBe(true);
-    expect(second.password).not.toBe(first.password);
+    expect(first.password).toBe('123456');
+    expect(first.builtInDefault).toBe(true);
+    // 登录信息永不随机生成：两次解析必须完全一致。
+    expect(second).toEqual(first);
+    expect(verifyLogin('admin', '123456', first)).toBe(true);
   });
 
-  it('generateLoginCredentials exposes username and password for startup presentation', () => {
-    const credentials = generateLoginCredentials();
+  it('honors a configured username while reporting the built-in password default', () => {
+    const credentials = resolveLoginCredentials({ ANYFUSION_WEB_USERNAME: 'admin' });
 
     expect(credentials.username).toBe('admin');
-    expect(credentials.password).toMatch(/^[A-Za-z0-9]{8}$/u);
-    expect(credentials.generated).toBe(true);
+    expect(credentials.password).toBe('123456');
+    expect(credentials.builtInDefault).toBe(true);
   });
 });

@@ -1,15 +1,20 @@
-import { randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
+import { scryptSync, timingSafeEqual } from 'node:crypto';
 
 /**
- * Web 工作台账密登录凭据（MVP：单账号，服务端预设）。
+ * Web 工作台账密登录凭据（单账号，服务端预设）。
  *
  * 凭据来源优先级：
- * 1. `ANYFUSION_WEB_USERNAME` + `ANYFUSION_WEB_PASSWORD`（明文）
- * 2. `ANYFUSION_WEB_USERNAME` + `ANYFUSION_WEB_PASSWORD_HASH`（scrypt，格式 `saltHex:hashHex`）
- * 3. 未配置时生成 `admin` + 随机 8 位密码（启动时打印到终端）
+ * 1. `ANYFUSION_WEB_USERNAME` + `ANYFUSION_WEB_PASSWORD_HASH`（scrypt，格式 `saltHex:hashHex`）
+ * 2. `ANYFUSION_WEB_USERNAME` + `ANYFUSION_WEB_PASSWORD`（明文）
+ * 3. 内置默认 `admin` / `123456`
+ *
+ * 内置默认值与 `metawork.sh`、`src/installation/native-launcher.ts` 一致。
+ * 凭据永不随机生成：登录信息只能由用户显式修改，Server 不得擅自变更。
  */
 
 const USERNAME_PATTERN = /^[\w.@-]{1,64}$/u;
+const BUILT_IN_USERNAME = 'admin';
+const BUILT_IN_PASSWORD = '123456';
 
 export interface LoginCredentials {
   readonly username: string;
@@ -17,8 +22,8 @@ export interface LoginCredentials {
   readonly password?: string;
   /** scrypt hash（`saltHex:hashHex`）；优先于明文密码。 */
   readonly passwordHash?: string;
-  /** 是否为自动生成的凭据（需要启动时展示给用户）。 */
-  readonly generated: boolean;
+  /** 是否仍在使用内置默认密码（仅用于启动提示，不代表凭据被生成）。 */
+  readonly builtInDefault: boolean;
 }
 
 export interface LoginCredentialsEnv {
@@ -28,32 +33,26 @@ export interface LoginCredentialsEnv {
 }
 
 export function resolveLoginCredentials(env: LoginCredentialsEnv): LoginCredentials {
-  const username = normalizeUsername(env.ANYFUSION_WEB_USERNAME) ?? 'admin';
+  const username = normalizeUsername(env.ANYFUSION_WEB_USERNAME) ?? BUILT_IN_USERNAME;
   if (env.ANYFUSION_WEB_PASSWORD_HASH) {
     assertHashFormat(env.ANYFUSION_WEB_PASSWORD_HASH);
     return {
       username,
       passwordHash: env.ANYFUSION_WEB_PASSWORD_HASH,
-      generated: false,
+      builtInDefault: false,
     };
   }
   if (env.ANYFUSION_WEB_PASSWORD) {
     return {
       username,
       password: env.ANYFUSION_WEB_PASSWORD,
-      generated: false,
+      builtInDefault: false,
     };
   }
-  return generateLoginCredentials(username);
-}
-
-export function generateLoginCredentials(
-  username = 'admin',
-): LoginCredentials & { password: string } {
   return {
     username,
-    password: generateReadablePassword(),
-    generated: true,
+    password: BUILT_IN_PASSWORD,
+    builtInDefault: true,
   };
 }
 
@@ -95,16 +94,6 @@ function normalizeUsername(value: string | undefined): string | null {
   const trimmed = (value ?? '').trim();
   if (!trimmed || !USERNAME_PATTERN.test(trimmed)) return null;
   return trimmed.toLocaleLowerCase();
-}
-
-function generateReadablePassword(): string {
-  const alphabet = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
-  let password = '';
-  for (let index = 0; index < 8; index += 1) {
-    password += alphabet[randomInt(alphabet.length)];
-  }
-  void randomBytes(0);
-  return password;
 }
 
 function assertHashFormat(hash: string): void {

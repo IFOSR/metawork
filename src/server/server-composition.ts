@@ -233,9 +233,10 @@ async function startWebMode(options: {
   webAuth: WebAuthService;
 }): Promise<ManagementServer> {
   const loginCredentials = resolveLoginCredentials(process.env);
-  if (loginCredentials.generated && loginCredentials.password) {
+  if (loginCredentials.builtInDefault) {
     process.stdout.write(
-      `MetaWork Web 登录账号：${loginCredentials.username} / ${loginCredentials.password}\n`,
+      'MetaWork Web 正在使用内置登录凭据 admin / 123456；'
+      + '请通过 ANYFUSION_WEB_USERNAME 与 ANYFUSION_WEB_PASSWORD(_HASH) 修改。\n',
     );
   }
   const webDistDir = process.env.ANYFUSION_WEB_DIST
