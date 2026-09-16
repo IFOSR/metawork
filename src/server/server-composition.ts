@@ -231,6 +231,7 @@ async function startWebMode(options: {
   attachmentStore?: FileAttachmentStore;
   artifactQuery: ArtifactPreviewService;
   webAuth: WebAuthService;
+  launchContexts: WebLaunchContextService;
 }): Promise<ManagementServer> {
   const loginCredentials = resolveLoginCredentials(process.env);
   if (loginCredentials.builtInDefault) {
@@ -247,6 +248,7 @@ async function startWebMode(options: {
     webDistDir,
     token: options.webAuth.manualAccessToken,
     webAuth: options.webAuth,
+    launchContexts: options.launchContexts,
     runningRevisionId: options.runningRevisionId,
     sessionRuntime: options.sessionRuntime,
     executionQuery: options.executionQuery,
@@ -1202,7 +1204,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
   });
   const webLaunchContexts = new WebLaunchContextService();
-  const webAuth = new WebAuthService({ launchContexts: webLaunchContexts });
+  const webAuth = new WebAuthService();
 
   const gatewayServer = new MetaclawGatewayServer({
     socketPath: gatewaySocketPath,
@@ -1354,6 +1356,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     });
     const workGraphPresentationProjector = new WorkGraphPresentationProjector();
     managementServer = await startWebMode({
+      launchContexts: webLaunchContexts,
       port: resolveServerWebPort(process.env),
       noOpen: true,
       runningRevisionId: stagedConfiguration.snapshot.revisionId,

@@ -237,7 +237,6 @@ async function startMockServer(webDist: string): Promise<{
       json(response, {
         session: conversationRecord(true),
         activation: { state: 'active', sessionId: 'conv-shared' },
-        workspaceInitialization: { status: 'not_requested' },
       }, 201);
       return;
     }

@@ -17,6 +17,7 @@ import { verifyLogin } from './login-credentials.js';
 import { LoginThrottle } from './web-auth.js';
 import type { LoginCredentials } from './login-credentials.js';
 import type { WebAuthService } from './web-auth.js';
+import type { WebLaunchContextService } from './web-launch-context.js';
 import type {
   ManagementWebSessionRuntime,
 } from './web-session-runtime-types.js';
@@ -185,6 +186,8 @@ export interface ManagementServerDeps {
   /** 账密登录凭据；未提供时登录端点返回 503。 */
   loginCredentials?: LoginCredentials;
   loginThrottle?: LoginThrottle;
+  /** 启动目录提示；仅由未鉴权的 /api/auth/launch-context 读取。 */
+  launchContexts: WebLaunchContextService;
 }
 
 const MIME: Record<string, string> = {
@@ -422,10 +425,11 @@ export class ManagementServer {
     }
     throttle.registerSuccess(clientKey);
     const session = this.deps.webAuth.createSession();
-    response.writeHead(204, {
+    response.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
       'Set-Cookie': this.deps.webAuth.sessionCookie(session.sessionToken),
     });
-    response.end();
+    response.end(`${JSON.stringify({ authenticated: true })}\n`);
   }
 
   private isAllowedWebSocketOrigin(origin: string | undefined): boolean {
@@ -502,21 +506,35 @@ export class ManagementServer {
         this.sendJson(response, 401, { error: 'unauthorized' });
         return;
       }
-      const workspaceInitialization = await this.deps.sessionRuntime.initializeClient(
-        session.clientId,
-        session.launchContext,
-      );
       response.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',
         'Set-Cookie': this.deps.webAuth.sessionCookie(session.sessionToken),
       });
-      response.end(`${JSON.stringify({
-        authenticated: true,
-        launchContext: session.launchContext,
-        ...(workspaceInitialization.status === 'failed'
-          ? { workspaceInitialization }
-          : {}),
-      })}\n`);
+      response.end(`${JSON.stringify({ authenticated: true })}\n`);
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/auth/launch-context') {
+      if (!this.isAllowedWebSocketOrigin(request.headers.origin)) {
+        this.sendJson(response, 403, { error: 'forbidden_origin' });
+        return;
+      }
+      const body = await readRequestBody(request);
+      const token = typeof body.token === 'string' ? body.token.trim() : '';
+      if (!token) {
+        this.sendJson(response, 400, { error: 'launch token is required' });
+        return;
+      }
+      const launch = this.deps.launchContexts.consume(token);
+      if (!launch) {
+        this.sendJson(response, 404, { error: 'launch_context_unavailable' });
+        return;
+      }
+      // 只返回目录提示，绝不建立会话。
+      this.sendJson(response, 200, {
+        workspaceHint: launch.workspaceHint,
+        ...(launch.conversationId ? { conversationId: launch.conversationId } : {}),
+      });
       return;
     }
 
@@ -533,7 +551,6 @@ export class ManagementServer {
       }
       this.sendJson(response, 200, {
         authenticated: true,
-        launchContext: session.launchContext,
       });
       return;
     }

@@ -1,8 +1,4 @@
 import { generateToken, tokenMatches } from './token.js';
-import type {
-  WebLaunchContextInput,
-  WebLaunchContextService,
-} from './web-launch-context.js';
 
 export const WEB_SESSION_COOKIE = 'anyfusion_web_session';
 
@@ -11,13 +7,11 @@ const LOCKOUT_MS = 30_000;
 
 export interface WebAuthServiceOptions {
   manualAccessToken?: string;
-  launchContexts: WebLaunchContextService;
   createSessionToken?: () => string;
 }
 
 export interface WebAuthSessionState {
   readonly clientId: string;
-  readonly launchContext: WebLaunchContextInput | null;
 }
 
 export interface WebAuthExchangeResult extends WebAuthSessionState {
@@ -63,36 +57,20 @@ export class WebAuthService {
   private readonly sessions = new Map<string, WebAuthSessionState>();
   private readonly createSessionToken: () => string;
 
-  constructor(private readonly options: WebAuthServiceOptions) {
+  constructor(private readonly options: WebAuthServiceOptions = {}) {
     this.manualAccessToken = options.manualAccessToken ?? generateToken();
     this.createSessionToken = options.createSessionToken ?? generateToken;
   }
 
   exchange(token: string): WebAuthExchangeResult | null {
-    const launch = this.options.launchContexts.consume(token);
-    if (launch) {
-      return this.createSession({
-        workspaceHint: launch.workspaceHint,
-        ...(launch.conversationId ? { conversationId: launch.conversationId } : {}),
-      });
-    }
+    // 启动目录提示 token 不是登录凭据：只有手动访问 token 能换取会话。
     if (!tokenMatches(this.manualAccessToken, token)) return null;
     return this.createSession();
   }
 
-  createSession(launchContext: WebLaunchContextInput | null = null): WebAuthExchangeResult {
+  createSession(): WebAuthExchangeResult {
     const sessionToken = this.uniqueSessionToken();
-    const state: WebAuthSessionState = {
-      clientId: sessionToken,
-      launchContext: launchContext
-        ? {
-          workspaceHint: launchContext.workspaceHint,
-          ...(launchContext.conversationId
-            ? { conversationId: launchContext.conversationId }
-            : {}),
-        }
-        : null,
-    };
+    const state: WebAuthSessionState = { clientId: sessionToken };
     this.sessions.set(sessionToken, state);
     return { sessionToken, ...state };
   }

@@ -306,7 +306,6 @@ describe('ManagementServer WebSocket authentication', () => {
             sessionId: 'session_new',
             reason: 'task_runtime_active',
           },
-          workspaceInitialization: { status: 'not_requested' },
         };
       },
       activateSession: async (_clientId, sessionId) => {
@@ -469,7 +468,7 @@ describe('ManagementServer WebSocket authentication', () => {
       expect(missing.status).toBe(400);
 
       const ok = await login('admin', 'test-password');
-      expect(ok.status).toBe(204);
+      expect(ok.status).toBe(200);
       const cookie = ok.headers.get('set-cookie')!.split(';', 1)[0]!;
       expect(cookie).toContain('anyfusion_web_session=');
 
@@ -483,7 +482,6 @@ describe('ManagementServer WebSocket authentication', () => {
       });
       await expect(authSession.json()).resolves.toEqual({
         authenticated: true,
-        launchContext: null,
       });
 
       // 连续失败 5 次后锁定（第 6 次即使密码正确也 429）。
@@ -748,10 +746,10 @@ describe('ManagementServer WebSocket authentication', () => {
     }
   });
 
-  it('binds an automatic launch context to one session cookie and consumes its token once', async () => {
+  it('serves a launch Workspace hint without authenticating the caller', async () => {
     const port = await reservePort();
     const launchContexts = new WebLaunchContextService({
-      generateToken: () => 'bootstrap-token',
+      generateToken: () => 'launch-token',
     });
     const launch = launchContexts.issue({
       workspaceHint: '/repo-a',
@@ -761,137 +759,100 @@ describe('ManagementServer WebSocket authentication', () => {
     await server.start();
 
     try {
-      const first = await exchangeTokenResponse(port, launch.token);
-      expect(first.status).toBe(200);
-      expect(first.headers.get('set-cookie')).toContain(
-        'anyfusion_web_session=session-token-1; HttpOnly; SameSite=Strict; Path=/',
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/auth/launch-context`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            origin: `http://127.0.0.1:${port}`,
+          },
+          body: JSON.stringify({ token: launch.token }),
+        },
       );
-      await expect(first.json()).resolves.toEqual({
-        authenticated: true,
-        launchContext: {
-          workspaceHint: '/repo-a',
-          conversationId: 'conv_1',
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        workspaceHint: '/repo-a',
+        conversationId: 'conv_1',
+      });
+      // 提示端点不得下发会话 cookie。
+      expect(response.headers.get('set-cookie')).toBeNull();
+      // 一次性消费。
+      const reused = await fetch(
+        `http://127.0.0.1:${port}/api/auth/launch-context`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            origin: `http://127.0.0.1:${port}`,
+          },
+          body: JSON.stringify({ token: launch.token }),
         },
-      });
-      const reused = await exchangeTokenResponse(port, launch.token);
-      expect(reused.status).toBe(401);
-
-      const cookie = first.headers.get('set-cookie')!.split(';', 1)[0]!;
-      const authSession = await fetch(`http://127.0.0.1:${port}/api/auth/session`, {
-        headers: { cookie },
-      });
-      expect(authSession.status).toBe(200);
-      await expect(authSession.json()).resolves.toEqual({
-        authenticated: true,
-        launchContext: {
-          workspaceHint: '/repo-a',
-          conversationId: 'conv_1',
-        },
-      });
-      const config = await fetch(`http://127.0.0.1:${port}/api/config`, {
-        headers: { cookie },
-      });
-      expect(config.status).toBe(200);
+      );
+      expect(reused.status).toBe(404);
     } finally {
       await server.stop();
     }
   });
 
-  it('isolates launch contexts between browser sessions', async () => {
+  it('rejects launch hint requests from a foreign browser origin', async () => {
     const port = await reservePort();
-    const tokens = ['launch-a', 'launch-b'];
-    const launchContexts = new WebLaunchContextService({
-      generateToken: () => tokens.shift()!,
-    });
-    const firstLaunch = launchContexts.issue({ workspaceHint: '/repo-a' });
-    const secondLaunch = launchContexts.issue({
-      workspaceHint: '/repo-b',
-      conversationId: 'conv_b',
-    });
-    const server = createManagementServer(port, { launchContexts });
+    const server = createManagementServer(port);
     await server.start();
 
     try {
-      const firstCookie = await exchangeToken(port, firstLaunch.token);
-      const secondCookie = await exchangeToken(port, secondLaunch.token);
-      const [first, second] = await Promise.all([
-        fetch(`http://127.0.0.1:${port}/api/auth/session`, {
-          headers: { cookie: firstCookie },
-        }),
-        fetch(`http://127.0.0.1:${port}/api/auth/session`, {
-          headers: { cookie: secondCookie },
-        }),
-      ]);
-
-      await expect(first.json()).resolves.toMatchObject({
-        launchContext: { workspaceHint: '/repo-a' },
-      });
-      await expect(second.json()).resolves.toMatchObject({
-        launchContext: {
-          workspaceHint: '/repo-b',
-          conversationId: 'conv_b',
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/auth/launch-context`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            origin: 'https://attacker.example',
+          },
+          body: JSON.stringify({ token: 'whatever' }),
         },
-      });
+      );
+      expect(response.status).toBe(403);
     } finally {
       await server.stop();
     }
   });
 
-  it('uses the authenticated browser launch hint only for initial and newly created Conversations', async () => {
+  it('does not apply a launch hint during login', async () => {
     const port = await reservePort();
     const launchContexts = new WebLaunchContextService({
       generateToken: () => 'launch-browser',
     });
     const launch = launchContexts.issue({ workspaceHint: '/repo-browser' });
-    const initializations: Array<{ workspaceHint: string; conversationId?: string }> = [];
-    const initializationClientIds: string[] = [];
-    const createdClientIds: string[] = [];
-    const createdRecord = {
-      version: 1 as const,
-      session: {
-        ...metadataFixture('session_new', true),
-        workspace: null,
-      },
-      turns: [],
-    };
-    const sessionRuntime = createSessionRuntime({
-      initializeClient: async (clientId, context) => {
-        initializationClientIds.push(clientId);
-        if (context) initializations.push(context);
-        return { status: 'accepted' };
-      },
-      createSession: async clientId => {
-        createdClientIds.push(clientId);
-        return {
-          session: createdRecord,
-          activation: { state: 'active', sessionId: 'session_new' },
-          workspaceInitialization: { status: 'accepted' },
-        };
-      },
-    });
-    const server = createManagementServer(port, {
-      launchContexts,
-      sessionRuntime,
-    });
+    const server = createManagementServer(port, { launchContexts });
     await server.start();
 
     try {
-      const cookie = await exchangeToken(port, launch.token);
-      expect(initializations).toEqual([{ workspaceHint: '/repo-browser' }]);
-      expect(initializationClientIds).toEqual(['session-token-1']);
-
-      const created = await fetch(
-        `http://127.0.0.1:${port}/api/workspaces/workspace_repo/conversations`,
-        {
-          method: 'POST',
-          headers: {
-            cookie,
-            'content-type': 'application/json',
-          },
+      const bootstrap = await fetch(`http://127.0.0.1:${port}/api/auth/bootstrap`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          origin: `http://127.0.0.1:${port}`,
         },
-      );
-      expect(created.status).toBe(201);
-      expect(createdClientIds).toEqual(['session-token-1']);
+        body: JSON.stringify({ token: launch.token }),
+      });
+      // 启动提示 token 不再能换取会话。
+      expect(bootstrap.status).toBe(401);
+
+      const login = await fetch(`http://127.0.0.1:${port}/api/auth/login`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          origin: `http://127.0.0.1:${port}`,
+        },
+        body: JSON.stringify({ username: 'admin', password: 'test-password' }),
+      });
+      expect(login.status).toBe(200);
+      const cookie = login.headers.get('set-cookie')!.split(';', 1)[0]!;
+      const session = await fetch(`http://127.0.0.1:${port}/api/auth/session`, {
+        headers: { cookie },
+      });
+      await expect(session.json()).resolves.toEqual({ authenticated: true });
     } finally {
       await server.stop();
     }
@@ -1798,7 +1759,6 @@ function createManagementServer(
   let sessionCounter = 0;
   const webAuth = new WebAuthService({
     manualAccessToken: 'manual-token',
-    launchContexts: overrides.launchContexts ?? new WebLaunchContextService(),
     createSessionToken: () => `session-token-${sessionCounter += 1}`,
   });
   return new ManagementServer({
@@ -1806,6 +1766,7 @@ function createManagementServer(
     webDistDir: '/tmp/anyfusion-missing-web-dist',
     token: webAuth.manualAccessToken,
     webAuth,
+    launchContexts: overrides.launchContexts ?? new WebLaunchContextService(),
     runningRevisionId: 'revision-runtime',
     webSocketAuthTimeoutMs: overrides.webSocketAuthTimeoutMs,
     sessionRuntime: overrides.sessionRuntime ?? createSessionRuntime(),
@@ -1838,7 +1799,6 @@ function createSessionRuntime(
 ): ManagementWebSessionRuntime {
   return {
     async initialize() {},
-    async initializeClient() { return { status: 'not_requested' }; },
     async closeClient() {},
     async dispose() {},
     getClientState() {

@@ -13,7 +13,6 @@ import type {
   WebSessionRecordProjection,
   WorkspaceInitializationResult,
 } from './web-session-types.js';
-import type { WebLaunchContextInput } from './web-launch-context.js';
 import type { WorkspaceSummary } from '../workspace/workspace-directory-service.js';
 import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
 
@@ -135,7 +134,6 @@ export type WebSessionRuntimeEvent =
 
 export interface ManagementWebSessionRuntime {
   initialize(): Promise<void>;
-  initializeClient(clientId: string, context: WebLaunchContextInput | null): Promise<WorkspaceInitializationResult>;
   closeClient(clientId: string): Promise<void>;
   dispose(): Promise<void>;
   getClientState(clientId: string): {

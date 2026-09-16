@@ -23,7 +23,6 @@ import type {
 } from './web-session-types.js';
 import type { GatewayAttachmentStore } from '../gateway/attachment-store-port.js';
 import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
-import type { WebLaunchContextInput } from './web-launch-context.js';
 import { turnStatusFromTimeline } from './web-conversation-projector.js';
 
 const MAX_ATTACHMENTS_PER_MESSAGE = 32;
@@ -110,21 +109,6 @@ class WebGatewayClientSession {
   async initialize(): Promise<void> {
     if (this.disposed) throw new Error('Web Gateway runtime is disposed');
     await this.deps.catalog.initialize();
-  }
-
-  async initializeClient(context: WebLaunchContextInput | null): Promise<WorkspaceInitializationResult> {
-    await this.initialize();
-    if (!context) return { status: 'not_requested' };
-    if (context.conversationId) {
-      const workspaceId = await this.deps.catalog.workspaceIdForConversation(context.conversationId);
-      if (!workspaceId) return { status: 'failed', reason: 'conversation_workspace_unavailable' };
-      this.activeWorkspaceId = workspaceId;
-      this.deps.gateway.restoreWorkspace?.(this.connectionId, workspaceId);
-      this.followWorkspace(workspaceId);
-      await this.attach(context.conversationId);
-      return { status: 'not_requested' };
-    }
-    return this.initializeWorkspace(context.workspaceHint);
   }
 
   getState(): { activeWorkspaceId: string | null; activeSessionId: string | null } {
@@ -270,12 +254,10 @@ class WebGatewayClientSession {
     const created = await this.deps.catalog.read(receipt.conversationId);
     if (!created) throw new Error('created_conversation_unavailable');
     const activation = await this.activateSessionNow(created.session.id);
-    const workspaceInitialization = { status: 'not_requested' as const };
     return {
       session: await this.readSession(created.session.id)
         ?? await this.projectRecord(created),
       activation,
-      workspaceInitialization,
     };
   }
 
@@ -1083,13 +1065,6 @@ export class WebGatewaySessionRuntime {
     if (this.initialized) return;
     await this.deps.catalog.initialize();
     this.initialized = true;
-  }
-
-  async initializeClient(
-    clientId: string,
-    context: WebLaunchContextInput | null,
-  ): Promise<WorkspaceInitializationResult> {
-    return this.client(clientId).initializeClient(context);
   }
 
   async closeClient(clientId: string): Promise<void> {

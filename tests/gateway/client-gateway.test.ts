@@ -160,7 +160,7 @@ describe('ClientGateway', () => {
         status: command.kind === 'select_workspace' ? 'accepted' : 'rejected',
       }),
     });
-    await expect(gateway.handle(workspaceInitializationEnvelope(), 'local'))
+    await expect(gateway.handle(selectWorkspaceEnvelope(), 'local'))
       .resolves.toMatchObject({ status: 'accepted', conversationId: null });
   });
 
@@ -177,7 +177,7 @@ describe('ClientGateway', () => {
       }),
     });
 
-    await expect(gateway.handle(workspaceInitializationEnvelope(), 'local'))
+    await expect(gateway.handle(selectWorkspaceEnvelope(), 'local'))
       .resolves.toMatchObject({
         status: 'rejected',
         conversationId: null,
@@ -427,7 +427,7 @@ describe('ClientGateway', () => {
   });
 });
 
-function workspaceInitializationEnvelope(): GatewayCommandEnvelope {
+function selectWorkspaceEnvelope(): GatewayCommandEnvelope {
   return {
     ...envelope,
     requestId: 'req_workspace',

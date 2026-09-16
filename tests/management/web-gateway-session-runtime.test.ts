@@ -129,7 +129,7 @@ describe('WebGatewaySessionRuntime', () => {
       }),
     });
 
-    await runtime.initializeClient('browser-a', { workspaceHint: '/repo-a' });
+    await runtime.selectWorkspace('browser-a', '/repo-a');
 
     expect(runtime.getClientState('browser-a')).toEqual({
       activeWorkspaceId: 'workspace_repo',
@@ -157,13 +157,13 @@ describe('WebGatewaySessionRuntime', () => {
       gateway: gatewayFixture(),
     });
 
-    await runtime.initializeClient('random-session-token', { workspaceHint: '/repo-a' });
+    await runtime.selectWorkspace('random-session-token', '/repo-a');
     await runtime.listWorkspaces('random-session-token');
 
     expect(principals).toEqual(['web:local-web-user', 'web:local-web-user']);
   });
 
-  it('direct attach restores the Conversation Workspace and ignores cwd', async () => {
+  it('direct attach restores the Conversation Workspace and ignores the previously selected Workspace', async () => {
     const gateway = gatewayFixture();
     const runtime = new WebGatewaySessionRuntime({
       accountId: 'local-default',
@@ -171,10 +171,8 @@ describe('WebGatewaySessionRuntime', () => {
       gateway,
     });
 
-    await runtime.initializeClient('browser-a', {
-      workspaceHint: '/repo-other',
-      conversationId: 'conv_1',
-    });
+    await runtime.selectWorkspace('browser-a', '/repo-other');
+    await runtime.activateSession('browser-a', 'conv_1');
 
     expect(runtime.getClientState('browser-a')).toEqual({
       activeWorkspaceId: 'workspace_repo',
@@ -197,8 +195,8 @@ describe('WebGatewaySessionRuntime', () => {
       }),
     });
 
-    await runtime.initializeClient('browser-a', { workspaceHint: '/repo-a' });
-    await runtime.initializeClient('browser-b', { workspaceHint: '/repo-b' });
+    await runtime.selectWorkspace('browser-a', '/repo-a');
+    await runtime.selectWorkspace('browser-b', '/repo-b');
 
     expect(runtime.getClientState('browser-a').activeWorkspaceId).toBe('workspace_a');
     expect(runtime.getClientState('browser-b').activeWorkspaceId).toBe('workspace_b');
@@ -238,7 +236,7 @@ describe('WebGatewaySessionRuntime', () => {
     const events: WebSessionRuntimeEvent[] = [];
     runtime.subscribe('browser-a', event => events.push(event));
 
-    await runtime.initializeClient('browser-a', { workspaceHint: '/repo' });
+    await runtime.selectWorkspace('browser-a', '/repo');
     expect(listeners.has('workspace:workspace_repo')).toBe(true);
     listeners.get('workspace:workspace_repo')?.({
       ...outputEvent('workspace_activity_1', 1, []),
@@ -283,7 +281,7 @@ describe('WebGatewaySessionRuntime', () => {
       }),
     });
 
-    await runtime.initializeClient('browser-a', { workspaceHint: '/repo' });
+    await runtime.selectWorkspace('browser-a', '/repo');
     await expect(runtime.activateSession('browser-a', 'conv_1')).resolves.toEqual({
       state: 'active',
       sessionId: 'conv_1',
@@ -448,10 +446,7 @@ describe('WebGatewaySessionRuntime', () => {
     const events: WebSessionRuntimeEvent[] = [];
     runtime.subscribe('browser-a', event => events.push(event));
 
-    await runtime.initializeClient('browser-a', {
-      workspaceHint: '/repo',
-      conversationId: 'conv_1',
-    });
+    await runtime.activateSession('browser-a', 'conv_1');
     // 提交一次以在内存中建立 requestId -> userInput 映射（模拟仍在执行的 turn）。
     await runtime.submit('browser-a', 'hello');
     events.length = 0;
@@ -612,6 +607,7 @@ describe('WebGatewaySessionRuntime', () => {
     runtime.subscribe('browser-a', event => projected.push(event));
 
     await attachBrowser(runtime);
+    projected.length = 0;
     await runtime.submit('browser-a', '回答这个问题');
     listener!({
       ...outputEvent('event_started', 1, []),
@@ -1323,6 +1319,7 @@ describe('WebGatewaySessionRuntime', () => {
     runtime.subscribe('browser-a', event => events.push(event));
 
     await attachBrowser(runtime);
+    events.length = 0;
     await runtime.submit('browser-a', '分析这个项目的模块边界');
     listener!({
       ...outputEvent('event_started', 1, []),
@@ -1702,6 +1699,7 @@ describe('WebGatewaySessionRuntime', () => {
     });
     runtime.subscribe('browser-a', event => projected.push(event));
     await attachBrowser(runtime);
+    projected.length = 0;
 
     const content = '第一段\n第二段';
     const bytes = Buffer.from(content, 'utf8');
@@ -1990,10 +1988,7 @@ async function attachBrowser(
   runtime: WebGatewaySessionRuntime,
   clientId = 'browser-a',
 ): Promise<void> {
-  await runtime.initializeClient(clientId, {
-    workspaceHint: '/repo',
-    conversationId: 'conv_1',
-  });
+  await runtime.activateSession(clientId, 'conv_1');
 }
 
 function outputEvent(

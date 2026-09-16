@@ -165,10 +165,7 @@ describe('Web image to Planner end-to-end path', () => {
     });
 
     try {
-      await webRuntime.initializeClient('browser-a', {
-        workspaceHint: '/repo',
-        conversationId: 'conv_e2e_image',
-      });
+      await webRuntime.activateSession('browser-a', 'conv_e2e_image');
       await webRuntime.submit('browser-a', '请分析这张截图', [{
         attachmentId: image.attachmentId,
         kind: 'image',

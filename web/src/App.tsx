@@ -88,12 +88,6 @@ export function App() {
       .then(session => {
         if (!active) return;
         setStartupLaunchContext(session?.launchContext ?? null);
-        if (session?.workspaceInitialization?.status === 'failed') {
-          setActivationNotice(
-            `默认 Workspace 设置失败：${session.workspaceInitialization.reason}。`
-            + ' 请执行 /workspace /absolute/path。',
-          );
-        }
         setAuthenticated(Boolean(session));
       })
       .catch(error => {
@@ -576,12 +570,7 @@ export function App() {
     browsedConversationRef.current = result.session.session.id;
     setBrowsedSessionId(result.session.session.id);
     setSelectedRecord(result.session);
-    setActivationNotice(
-      result.workspaceInitialization.status === 'failed'
-        ? `默认 Workspace 设置失败：${result.workspaceInitialization.reason}。`
-          + ' 请执行 /workspace /absolute/path。'
-        : activationMessage(result.activation),
-    );
+    setActivationNotice(activationMessage(result.activation));
     if (result.activation.state === 'active') {
       activeConversationRef.current = result.session.session.id;
       setActiveSessionId(result.session.session.id);

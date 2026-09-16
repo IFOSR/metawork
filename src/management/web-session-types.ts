@@ -100,7 +100,6 @@ export type WebSessionActivationResult =
 export interface WebSessionCreationResult {
   session: WebSessionRecordProjection;
   activation: WebSessionActivationResult;
-  workspaceInitialization: WorkspaceInitializationResult;
 }
 
 export type WorkspaceInitializationResult =

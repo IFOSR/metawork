@@ -107,10 +107,6 @@ export type WebSessionActivationResult =
 export interface WebSessionCreationResult {
   session: WebSessionRecord;
   activation: WebSessionActivationResult;
-  workspaceInitialization:
-    | { status: 'not_requested' }
-    | { status: 'accepted' }
-    | { status: 'failed'; reason: string };
 }
 
 export interface AttachmentMetadata {
