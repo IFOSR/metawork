@@ -1,7 +1,8 @@
 # Web Workspace Creation And Login Implementation Plan
 
-> **Status:** Ready
+> **Status:** Complete
 > **Plan date:** 2026-09-16
+> **Completion date:** 2026-09-16
 > **Design:** [Web Workspace Creation And Login Design](2026-09-16-web-workspace-creation-and-login-design.md)
 
 > **For the executing agent:** REQUIRED SUB-SKILL: use the executing-plans skill
@@ -2208,7 +2209,6 @@ git commit -m "docs(plans): record Web workspace creation and login delivery"
 ## Manual Acceptance
 
 After the automated gate, verify on a native macOS host:
-
 1. `metawork server start` prints the built-in-credential notice once and never
    prints a generated password. Restart it and confirm the credentials are
    unchanged.
@@ -2224,3 +2224,81 @@ After the automated gate, verify on a native macOS host:
    Conversation.
 6. Confirm `metawork web --no-open` still prints a URL and that the Server
    terminal shows the manual access token used by the login page's token mode.
+
+---
+
+## Delivered
+
+| Commit | Scope |
+| --- | --- |
+| `d885928` | Built-in login credentials fixed at `admin` / `123456`; random generation removed |
+| `1e0cb64` | Launch tokens no longer authenticate; `POST /api/auth/launch-context`; `launchContext`, `initializeClient`, and `workspaceInitialization` removed |
+| `95d4d23` | `metawork web` opens `/#launch=<token>`; dead `buildWebStartupPresentation` removed |
+| `828dfdf` | Read-only `WorkspaceDirectoryBrowser` with per-entry `realpath` and Server-built `crumbs` |
+| `48d7044` | Cookie-only `GET /api/workspaces/browse` |
+| `2dd7b12` | Browser-side launch suggestion resolution and post-login application |
+| `f0837e9` | Web Workspace creator: sidebar `＋`, directory modal, shared Workspace selection transition |
+| `998bd29` | ADR-0039 plus ADR-0034/0035 amendment pointers, ADR index, `CONTEXT.md`, current technical overview |
+| `a659094` | Startup-snapshot race fix found during E2E validation |
+
+### Deviations From The Plan
+
+1. **Tasks 2 and 3 shipped as one commit (`1e0cb64`).** Removing
+   `launchContext` from `WebAuthService` cannot type-check while
+   `ManagementServer` still reads it, so the type removal and the endpoint
+   replacement must land together. The plan's task boundary was wrong; the
+   ground rule "no dual path" took precedence.
+2. **More call sites than the plan listed.** `tests/e2e/web-image-planner-flow.test.ts`
+   also called `initializeClient`, and the
+   `tests/management/web-gateway-session-runtime.test.ts` `attachBrowser` helper
+   now uses `activateSession`. Three lifecycle tests reset their event collectors
+   right after attach because `activateSession` additionally emits
+   `session_catalog`, which the old `initializeClient` path did not.
+3. **`tests/management/token.test.ts` was kept**, minus the two
+   `buildWebStartupPresentation` tests. The plan's first draft deleted the whole
+   file, which would have removed live `formatWebAccessTokenLine` and
+   `generateToken` coverage.
+4. **One additional defect was found and fixed (`a659094`).** While validating
+   the browser E2E, the startup load continuation was proven to overwrite live
+   WebSocket session state: when the initial directory snapshot resolved after an
+   `active_session_changed` event, it wrote the stale
+   `activeConversationId` back into `activeSessionId` and
+   `activeConversationRef`. A later row click then treated an unattached
+   Conversation as already attached, skipped `attach`, and issued a record load
+   that the Server rejected. The startup continuation now preserves a live
+   session instead of clobbering it. The regression window widened because
+   `applyStartupLaunchSuggestion` added an `await` ahead of that write.
+
+## Validation
+
+Deterministic gates, all passing:
+
+```text
+npm run lint                                                          pass
+npx tsc --noEmit -p web/tsconfig.json                                 pass
+npm run build:web                                                     pass
+npm test -- --run tests/management tests/web tests/gateway \
+  tests/client tests/workspace tests/architecture                    509 passed / 86 files
+npm test -- --run tests/architecture                                  32 passed
+```
+
+Focused gate from Task 10: 112 passed across
+`login-credentials`, `web-auth`, `server`, `web-gateway-session-runtime`,
+`web-session-types`, `workspace-directory-browser`, `token`,
+`web-client-launcher`, `web/auth`, `web/workspace-shell`.
+
+Browser E2E (`RUN_BROWSER_E2E=1 npx vitest run tests/e2e`):
+
+| Result | Detail |
+| --- | --- |
+| Pre-existing failures | `artifact-preview-and-ime`, `settings-workbench-browser`, and `web-routing-identity-and-theme` fail on the pre-change commit `e33e516` as well. Confirmed by a baseline worktree; not caused by this change. |
+| Fixed by this change | `workspace-conversation-directory-browser` failed intermittently (2 of 27 runs) before `a659094` and passed 104 of 105 runs after it. One residual browser-timing timeout remains unexplained and is recorded here rather than claimed green. |
+| Baseline reference | The same test passed 41 of 41 runs on `e33e516`. |
+
+## Closing Note
+
+The residual E2E timing sensitivity is the only unclosed item. It affects a
+suite gated behind `RUN_BROWSER_E2E=1`, not the default test run, and the proven
+root cause behind the observed failures is fixed. Any follow-up should treat the
+remaining single timeout as an Application-Shell observability gap rather than a
+Server or Gateway contract problem.

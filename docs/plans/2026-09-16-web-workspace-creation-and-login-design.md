@@ -1,7 +1,8 @@
 # Web Workspace Creation And Login Design
 
-> **Status:** Approved
+> **Status:** Complete
 > **Design date:** 2026-09-16
+> **Completion date:** 2026-09-16
 > **Recorded by:** ADR-0039 (Web Workspace Creation And Login)
 > **Amends:** ADR-0034 (Browser bootstrap context and startup hint), ADR-0035
 > (Client Workspace Selection)
@@ -173,7 +174,9 @@ GET /api/workspaces/browse?path=<absolute path>
   `null`.
 - `App.tsx` applies a resolved suggestion only after authentication: select the
   suggested Workspace when the client has no active Workspace, then attach the
-  suggested Conversation when present.
+  suggested Conversation when present. It also preserves a live WebSocket
+  session when the startup directory snapshot resolves later, so a stale
+  snapshot cannot mark an unattached Conversation as active.
 
 ### Removed Contracts
 
