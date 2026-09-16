@@ -12,15 +12,17 @@ import {
 } from '../installation/product-environment.js';
 
 export function createProductionSecretStore(input: {
+  credentialsFile: string;
+}): CredentialsFileSecretStore {
+  return new CredentialsFileSecretStore(input.credentialsFile);
+}
+
+export function createLegacyProductionSecretStore(input: {
   platform?: NodeJS.Platform;
   secretsRoot: string;
-  credentialsFile?: string;
   env?: NodeJS.ProcessEnv;
   references?: readonly string[];
 }): SecretStore {
-  if (input.credentialsFile) {
-    return new CredentialsFileSecretStore(input.credentialsFile);
-  }
   const platform = input.platform ?? process.platform;
   const requested = resolveProductEnvironment(
     input.env ?? {},
@@ -53,6 +55,10 @@ export function createProductionSecretStore(input: {
 }
 
 export async function prepareProductionSecretStore(store: SecretStore): Promise<void> {
+  if (store instanceof CredentialsFileSecretStore) {
+    await store.initialize();
+    return;
+  }
   if (!(store instanceof FileSecretStore)) return;
   await store.initialize();
   await store.assertSecurePermissions();

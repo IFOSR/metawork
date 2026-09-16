@@ -135,6 +135,11 @@ export interface ConfigSnapshot {
   config: Record<string, unknown>;
 }
 
+export interface ProviderCredentialStatus {
+  configured: boolean;
+  maskedApiKey: string | null;
+}
+
 export type ConfigurationCompletionFieldState =
   | '已自动发现'
   | '已从 Provider 补全'

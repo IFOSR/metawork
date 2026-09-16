@@ -88,6 +88,10 @@ export {
   CredentialsFileSecretStore,
   providerRefFromSecretReference,
 } from './credentials-file-secret-store.js';
+export {
+  importLegacyProviderCredentials,
+  type LegacyProviderCredentialImportResult,
+} from './legacy-provider-credential-import.js';
 export { ConfigurationCompiler } from './configuration-compiler.js';
 export {
   ConfigurationMigrationService,
@@ -103,7 +107,10 @@ export {
   createProductionRuntimeBindings,
   type ProductionRuntimeBindings,
 } from './production-runtime-bindings.js';
-export { createProductionSecretStore } from './production-secret-store.js';
+export {
+  createLegacyProductionSecretStore,
+  createProductionSecretStore,
+} from './production-secret-store.js';
 export { createProductionConfigurationProbe } from './production-configuration-probe.js';
 export {
   importLocalAgentCredentials,

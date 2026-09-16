@@ -7,7 +7,12 @@ import { resolveAccountPaths } from '../account/account-paths.js';
 import { ConfigurationService } from '../configuration/configuration-service.js';
 import { FileConfigurationRepository } from '../configuration/file-configuration-repository.js';
 import { createProductionConfigurationProbe } from '../configuration/production-configuration-probe.js';
-import { createProductionSecretStore } from '../configuration/production-secret-store.js';
+import {
+  createLegacyProductionSecretStore,
+  createProductionSecretStore,
+} from '../configuration/production-secret-store.js';
+import { prepareProductionSecretStore } from '../configuration/production-secret-store.js';
+import { importLegacyProviderCredentials } from '../configuration/legacy-provider-credential-import.js';
 import type {
   AnyFusionConfigurationV2,
   FeishuGatewayPlatformDefinition,
@@ -33,6 +38,18 @@ export async function activateFeishuGatewayPlatform(
     throw new Error('active configuration is missing; install MetaWork first');
   }
   const snapshot = await repository.getActiveSnapshot();
+  const legacySecretStore = createLegacyProductionSecretStore({
+    secretsRoot: accountPaths.secrets,
+    env: process.env,
+    references: Object.values(snapshot.config.providers).map(provider => provider.apiKeyRef),
+  });
+  const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials });
+  await prepareProductionSecretStore(secretStore);
+  await importLegacyProviderCredentials({
+    target: secretStore,
+    providers: snapshot.config.providers,
+    legacyStore: legacySecretStore,
+  });
 
   const next: AnyFusionConfigurationV2 = structuredClone(snapshot.config);
   next.gateway = {
@@ -49,11 +66,7 @@ export async function activateFeishuGatewayPlatform(
     createRevisionId: () => `${input.revisionPrefix ?? 'feishu-setup'}-${Date.now()}`,
     probe: createProductionConfigurationProbe({
       releaseRoot: paths.appCurrent,
-      secretStore: createProductionSecretStore({
-        secretsRoot: accountPaths.secrets,
-        env: process.env,
-        references: Object.values(snapshot.config.providers).map(provider => provider.apiKeyRef),
-      }),
+      secretStore,
       detectCommand: command => Promise.resolve(commandExistsOnPath(command, process.env.PATH ?? '')),
     }),
   });

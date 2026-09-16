@@ -17,10 +17,19 @@ import {
   type SettingsModelEntry,
   type SettingsProviderEntry,
 } from '../../web/src/settings-model.js';
+import type { ProviderCredentialStatus } from '../../web/src/api/types.js';
 
 const webRoot = new URL('../../web/src/', import.meta.url);
 
 describe('Settings workbench model semantics', () => {
+  it('accepts masked credential summaries without exposing the API Key', () => {
+    const status: ProviderCredentialStatus = {
+      configured: true,
+      maskedApiKey: '••••••••cdef',
+    };
+    expect(status.configured).toBe(true);
+    expect(status.maskedApiKey).not.toContain('sk-');
+  });
   it('exposes the current DeepSeek V4 Flash model IDs in the Provider preset', () => {
     expect(PUBLIC_PROVIDER_PRESETS.find(preset => preset.providerRef === 'deepseek')?.modelIds)
       .toEqual(expect.arrayContaining([

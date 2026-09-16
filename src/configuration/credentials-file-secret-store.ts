@@ -17,13 +17,22 @@ interface CredentialsDocument {
 }
 
 const PROVIDER_REFERENCE =
-  /^(?:file-secret|keychain):anyfusion\/providers\/([a-z][a-z0-9-]{0,63})$/u;
+  /^(?:file-secret|keychain):anyfusion\/(?:providers\/)?([a-z][a-z0-9-]{0,63})$/u;
 
 export class CredentialsFileSecretStore implements SecretStore {
   constructor(readonly filePath: string) {}
 
   async initialize(): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 });
+  }
+
+  async validate(): Promise<void> {
+    try {
+      await this.read();
+    } catch (error) {
+      if (isMissingFileError(error)) return;
+      throw error;
+    }
   }
 
   async get(reference: SecretReference): Promise<string> {
@@ -37,10 +46,7 @@ export class CredentialsFileSecretStore implements SecretStore {
   async put(reference: SecretReference, value: string): Promise<void> {
     const providerRef = providerRefFromSecretReference(reference);
     const current = await this.readOrEmpty();
-    await this.writeAtomic({
-      version: 1,
-      providers: { ...current.providers, [providerRef]: value },
-    });
+    await this.writeProviders({ ...current.providers, [providerRef]: value });
   }
 
   async delete(reference: SecretReference): Promise<void> {
@@ -49,7 +55,12 @@ export class CredentialsFileSecretStore implements SecretStore {
     if (!(providerRef in current.providers)) return;
     const providers = { ...current.providers };
     delete providers[providerRef];
-    await this.writeAtomic({ version: 1, providers });
+    await this.writeProviders(providers);
+  }
+
+  async putProviders(values: Record<string, string>): Promise<void> {
+    const current = await this.readOrEmpty();
+    await this.writeProviders({ ...current.providers, ...values });
   }
 
   private async readOrEmpty(): Promise<CredentialsDocument> {
@@ -89,13 +100,13 @@ export class CredentialsFileSecretStore implements SecretStore {
     return value;
   }
 
-  private async writeAtomic(document: CredentialsDocument): Promise<void> {
+  private async writeProviders(providers: Record<string, string>): Promise<void> {
     await this.initialize();
     const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`;
     try {
       await writeFile(
         temporaryPath,
-        `${JSON.stringify(document, null, 2)}\n`,
+        `${JSON.stringify({ version: 1, providers }, null, 2)}\n`,
         { encoding: 'utf8', mode: 0o600 },
       );
       await chmod(temporaryPath, 0o600);

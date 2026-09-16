@@ -1,9 +1,11 @@
+import type { ProviderCredentialStatus } from '../api/types';
+
 export type ProviderSecretState = 'unknown' | 'missing' | 'configured';
 
 export function deriveSecretStates(
   agentClassRefs: readonly string[],
   providerRefs: Record<string, string>,
-  configured: Record<string, boolean>,
+  configured: Record<string, ProviderCredentialStatus | boolean>,
 ): Record<string, ProviderSecretState> {
   const states: Record<string, ProviderSecretState> = {};
   for (const agentClassRef of agentClassRefs) {
@@ -12,9 +14,16 @@ export function deriveSecretStates(
       states[agentClassRef] = 'unknown';
       continue;
     }
-    states[agentClassRef] = configured[providerRef] ? 'configured' : 'missing';
+    const status = configured[providerRef];
+    states[agentClassRef] = typeof status === 'boolean'
+      ? (status ? 'configured' : 'missing')
+      : status?.configured ? 'configured' : 'missing';
   }
   return states;
+}
+
+export function maskApiKey(value: string): string {
+  return `••••••••${value.slice(-4)}`;
 }
 
 export function resolveProviderSecretReference(

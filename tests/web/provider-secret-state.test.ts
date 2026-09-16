@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   deriveSecretStates,
+  maskApiKey,
   resolveProviderSecretReference,
 } from '../../web/src/components/provider-secret-state.js';
 
@@ -12,7 +13,7 @@ describe('provider secret state projection', () => {
         planner: 'kimi',
         'codex-cli': 'kimi',
       },
-      { kimi: true },
+      { kimi: { configured: true, maskedApiKey: '••••••••kimi' } },
     )).toEqual({
       planner: 'configured',
       'codex-cli': 'configured',
@@ -23,7 +24,7 @@ describe('provider secret state projection', () => {
     expect(deriveSecretStates(
       ['planner'],
       { planner: 'kimi' },
-      { kimi: true },
+      { kimi: { configured: true, maskedApiKey: '••••••••kimi' } },
     )).toEqual({ planner: 'configured' });
   });
 
@@ -34,11 +35,16 @@ describe('provider secret state projection', () => {
         planner: 'kimi',
         'pi-agent': 'kimi',
       },
-      { kimi: false },
+      { kimi: { configured: false, maskedApiKey: null } },
     )).toEqual({
       planner: 'missing',
       'pi-agent': 'missing',
     });
+  });
+
+  it('masks an API Key while retaining only its last four characters', () => {
+    expect(maskApiKey('sk-secret')).toBe('••••••••cret');
+    expect(maskApiKey('abc')).toBe('••••••••abc');
   });
 
   it('preserves the active reference scheme when a newly selected Provider is activated', () => {

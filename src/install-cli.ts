@@ -4,8 +4,6 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { commandExistsOnPath } from './configuration/production-configuration-probe.js';
 import { createProductionSecretStore } from './configuration/production-secret-store.js';
-import { LOCAL_DEFAULT_ACCOUNT_ID } from './account/account-id.js';
-import { resolveAccountPaths } from './account/account-paths.js';
 import { resolveMetaWorkPaths } from './installation/paths.js';
 import {
   PRODUCT_ENVIRONMENT,
@@ -15,7 +13,6 @@ import { InstallerCore } from './installation/installer-core.js';
 import { AccountLayoutMigrator } from './installation/account-layout-migrator.js';
 import { SourceNativeInstaller } from './installation/source-native-installer.js';
 import { SourceNativeUpdater } from './installation/source-native-updater.js';
-import { FileConfigurationRepository } from './configuration/file-configuration-repository.js';
 import {
   ProductRootMigrator,
   type ProductRootMigration,
@@ -94,15 +91,8 @@ export async function runNativeInstallCli(
   );
   const paths = rootMigration?.paths
     ?? resolveMetaWorkPaths(env.HOME, productEnvironment.installRoot);
-  const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
-  const activeSecretReferences = args.command === 'install'
-    ? []
-    : await readActiveSecretReferences(accountPaths.config);
   const secretStore = createProductionSecretStore({
-    platform: dependencies.platform,
-    secretsRoot: accountPaths.secrets,
-    env,
-    references: activeSecretReferences,
+    credentialsFile: paths.credentials,
   });
   const detectCommand = dependencies.detectCommand
     ?? (command => commandExistsOnPath(command, env.PATH ?? ''));
@@ -125,9 +115,7 @@ export async function runNativeInstallCli(
     });
 
   if (args.command === 'install') {
-    const secretScheme = productEnvironment.secretStore === 'file'
-      ? 'file-secret'
-      : 'keychain';
+    const secretScheme = 'file-secret';
     const provider = await resolveInstallProvider(
       productEnvironment,
       { isInteractive, collectProviderConfiguration },
@@ -151,7 +139,7 @@ export async function runNativeInstallCli(
           modelId: provider.modelId,
           region: provider.region,
           secretReference:
-            `${secretScheme}:anyfusion/provider`,
+            `${secretScheme}:anyfusion/providers/provider`,
         },
       }),
     });
@@ -264,15 +252,6 @@ async function probeOpenAiCompatibleProvider(baseUrl: string, apiKey: string): P
       detail: error instanceof Error ? error.message : String(error),
     };
   }
-}
-
-async function readActiveSecretReferences(configRoot: string): Promise<string[]> {
-  const repository = new FileConfigurationRepository(configRoot);
-  await repository.initialize();
-  const recovery = await repository.recover();
-  if (recovery.status === 'empty') return [];
-  const snapshot = await repository.getActiveSnapshot();
-  return Object.values(snapshot.config.providers).map(provider => provider.apiKeyRef);
 }
 
 async function prepareProductRootMigration(

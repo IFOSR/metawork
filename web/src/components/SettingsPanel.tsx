@@ -462,7 +462,7 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
               ...provider,
               credentialState: provider.apiKey
                 ? provider.credentialState
-                : existence[ref] ? '已自动发现' : provider.credentialState,
+                : existence[ref]?.configured ? '已自动发现' : provider.credentialState,
             },
           ])),
         }
@@ -486,13 +486,13 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
     ]);
     setCapabilityCatalog(completion.modelCapabilityCatalog ?? {});
     const existence = await http.getSecretStatus(Object.keys(completion.providers))
-      .catch(() => ({} as Record<string, boolean>));
+      .catch(() => ({}));
     applyConfigSnapshot(snapshot, {
       ...completion,
       providers: Object.fromEntries(
         Object.entries(completion.providers).map(([providerRef, provider]) => [
           providerRef,
-          existence[providerRef]
+          existence[providerRef]?.configured
             ? { ...provider, credentialState: '已自动发现' as const }
             : provider,
         ]),

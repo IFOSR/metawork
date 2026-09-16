@@ -7,6 +7,7 @@ import type {
   ExecutorCapabilityManual,
   ExecutorManualAnalysis,
   ProviderModelDiscoveryResult,
+  ProviderCredentialStatus,
   TaskSummary,
   WorkGraphPresentationProjection,
 } from './types';
@@ -277,16 +278,18 @@ export class HttpClient {
     return body;
   }
 
-  writeSecret(providerRef: string, apiKey: string): Promise<{ apiKeyRef: string }> {
-    return this.request<{ apiKeyRef: string }>('/api/config/secrets', {
+  writeSecret(providerRef: string, apiKey: string): Promise<ProviderCredentialStatus> {
+    return this.request<ProviderCredentialStatus>('/api/config/secrets', {
       method: 'POST',
       body: JSON.stringify({ providerRef, apiKey }),
     });
   }
 
-  getSecretStatus(providers: string[]): Promise<Record<string, boolean>> {
+  getSecretStatus(providers: string[]): Promise<Record<string, ProviderCredentialStatus>> {
     const params = new URLSearchParams({ providers: providers.join(',') });
-    return this.request<Record<string, boolean>>(`/api/config/secrets/status?${params.toString()}`);
+    return this.request<Record<string, ProviderCredentialStatus>>(
+      `/api/config/secrets/status?${params.toString()}`,
+    );
   }
 
   verifySecret(

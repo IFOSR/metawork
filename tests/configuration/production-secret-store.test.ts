@@ -6,6 +6,7 @@ import { FileSecretStore } from '../../src/configuration/file-secret-store.js';
 import { KeychainSecretStore } from '../../src/configuration/keychain-secret-store.js';
 import { CredentialsFileSecretStore } from '../../src/configuration/credentials-file-secret-store.js';
 import {
+  createLegacyProductionSecretStore,
   createProductionSecretStore,
   prepareProductionSecretStore,
 } from '../../src/configuration/production-secret-store.js';
@@ -20,14 +21,11 @@ describe('production SecretStore selection', () => {
   it('uses the explicit MetaWork credentials file when provided', () => {
     expect(createProductionSecretStore({
       credentialsFile: '/Users/test/.metawork/credentials.json',
-      secretsRoot: '/unused',
-      platform: 'darwin',
-      env: {},
     })).toBeInstanceOf(CredentialsFileSecretStore);
   });
 
   it('uses Keychain by default on macOS', () => {
-    expect(createProductionSecretStore({
+    expect(createLegacyProductionSecretStore({
       platform: 'darwin',
       secretsRoot: '/unused',
       env: {},
@@ -35,7 +33,7 @@ describe('production SecretStore selection', () => {
   });
 
   it('follows the active configuration reference scheme on macOS', () => {
-    expect(createProductionSecretStore({
+    expect(createLegacyProductionSecretStore({
       platform: 'darwin',
       secretsRoot: '/secrets',
       env: {},
@@ -45,7 +43,7 @@ describe('production SecretStore selection', () => {
       ],
     })).toBeInstanceOf(FileSecretStore);
 
-    expect(createProductionSecretStore({
+    expect(createLegacyProductionSecretStore({
       platform: 'darwin',
       secretsRoot: '/unused',
       env: {},
@@ -54,7 +52,7 @@ describe('production SecretStore selection', () => {
   });
 
   it('fails closed when one active revision mixes secret store schemes', () => {
-    expect(() => createProductionSecretStore({
+    expect(() => createLegacyProductionSecretStore({
       platform: 'darwin',
       secretsRoot: '/unused',
       env: {},
@@ -66,7 +64,7 @@ describe('production SecretStore selection', () => {
   });
 
   it('requires an explicit file fallback on non-macOS platforms', async () => {
-    expect(() => createProductionSecretStore({
+    expect(() => createLegacyProductionSecretStore({
       platform: 'linux',
       secretsRoot: '/unused',
       env: {},
@@ -74,7 +72,7 @@ describe('production SecretStore selection', () => {
 
     const root = await mkdtemp(join(tmpdir(), 'anyfusion-production-secrets-'));
     roots.push(root);
-    const store = createProductionSecretStore({
+    const store = createLegacyProductionSecretStore({
       platform: 'linux',
       secretsRoot: root,
       env: { ANYFUSION_SECRET_STORE: 'file' },
@@ -84,7 +82,7 @@ describe('production SecretStore selection', () => {
   });
 
   it('uses the canonical MetaWork secret-store setting', () => {
-    expect(createProductionSecretStore({
+    expect(createLegacyProductionSecretStore({
       platform: 'linux',
       secretsRoot: '/secrets',
       env: { METAWORK_SECRET_STORE: 'file' },
@@ -92,7 +90,7 @@ describe('production SecretStore selection', () => {
   });
 
   it('fails closed when canonical and compatibility secret-store settings conflict', () => {
-    expect(() => createProductionSecretStore({
+    expect(() => createLegacyProductionSecretStore({
       platform: 'darwin',
       secretsRoot: '/unused',
       env: {
@@ -105,7 +103,7 @@ describe('production SecretStore selection', () => {
   });
 
   it('never silently falls back from a requested Keychain store', () => {
-    expect(() => createProductionSecretStore({
+    expect(() => createLegacyProductionSecretStore({
       platform: 'linux',
       secretsRoot: '/unused',
       env: { ANYFUSION_SECRET_STORE: 'keychain' },

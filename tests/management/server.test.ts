@@ -1581,7 +1581,7 @@ describe('ManagementServer WebSocket authentication', () => {
       configQuery: {
         writeSecret: async (_ref, apiKey) => {
           storedApiKey = apiKey;
-          return { apiKeyRef: 'file-secret:anyfusion/providers/provider-test' };
+          return { configured: true, maskedApiKey: '••••••••cret' };
         },
       },
     });
@@ -1605,9 +1605,77 @@ describe('ManagementServer WebSocket authentication', () => {
       });
       expect(response.status).toBe(200);
       const body = await response.json();
-      expect(body).toEqual({ apiKeyRef: 'file-secret:anyfusion/providers/provider-test' });
+      expect(body).toEqual({ configured: true, maskedApiKey: '••••••••cret' });
       expect(storedApiKey).toBe('sk-secret');
       expect(JSON.stringify(body)).not.toContain('sk-secret');
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('rejects unsafe Provider refs and blank API Keys at the HTTP boundary', async () => {
+    const port = await reservePort();
+    let writes = 0;
+    const server = createManagementServer(port, {
+      configQuery: {
+        writeSecret: async () => {
+          writes += 1;
+          return { configured: true, maskedApiKey: '••••••••cret' };
+        },
+      },
+    });
+    await server.start();
+
+    try {
+      const unsafeRef = await fetch(`http://127.0.0.1:${port}/api/config/secrets`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer manual-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ providerRef: '../provider', apiKey: 'sk-secret' }),
+      });
+      expect(unsafeRef.status).toBe(400);
+
+      const blankKey = await fetch(`http://127.0.0.1:${port}/api/config/secrets`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer manual-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ providerRef: 'provider-test', apiKey: '   ' }),
+      });
+      expect(blankKey.status).toBe(400);
+      expect(writes).toBe(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('returns masked credential summaries for requested Providers', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port, {
+      configQuery: {
+        getSecretStatus: async () => ({
+          openai: { configured: true, maskedApiKey: '••••••••cdef' },
+          missing: { configured: false, maskedApiKey: null },
+        }),
+      },
+    });
+    await server.start();
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/config/secrets/status?providers=openai,missing`,
+        {
+          headers: { authorization: 'Bearer manual-token' },
+        },
+      );
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        openai: { configured: true, maskedApiKey: '••••••••cdef' },
+        missing: { configured: false, maskedApiKey: null },
+      });
     } finally {
       await server.stop();
     }
@@ -1858,7 +1926,7 @@ function createManagementServer(
       getSnapshot: async () => null,
       activate: async () => ({ ok: true, revisionId: 'revision-next' }),
       rollback: async () => ({ ok: true, revisionId: 'revision-test' }),
-      writeSecret: async () => ({ apiKeyRef: 'file-secret:anyfusion/providers/provider-test' }),
+      writeSecret: async () => ({ configured: true, maskedApiKey: '••••••••test' }),
       ...overrides.configQuery,
     },
   });

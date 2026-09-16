@@ -29,12 +29,13 @@ import {
   createProductionConfigurationProbe,
   createProductionRuntimeBindings,
   createProductionSecretStore,
+  createLegacyProductionSecretStore,
   resolvePlannerRuntimeEnvironment,
   importLocalAgentCredentials,
   importLocalAgentCredentialsForRefs,
+  importLegacyProviderCredentials,
 } from '../configuration/index.js';
 import { prepareProductionSecretStore } from '../configuration/production-secret-store.js';
-import { FileSecretStore } from '../configuration/file-secret-store.js';
 import {
   assertSecretReference,
   type SecretReference,
@@ -176,11 +177,10 @@ function localAgentCredentialSources() {
 }
 
 async function preheatLocalAgentCredentials(secretStore: SecretStore): Promise<void> {
-  const scheme = secretStore instanceof FileSecretStore ? 'file-secret' : 'keychain';
   const providers: Record<string, SecretReference> = Object.fromEntries(
     LOCAL_AGENT_PROVIDER_REFS.map(providerRef => [
       providerRef,
-      `${scheme}:anyfusion/providers/${providerRef}` as SecretReference,
+      `file-secret:anyfusion/providers/${providerRef}` as SecretReference,
     ]),
   );
   await importLocalAgentCredentialsForRefs({
@@ -435,13 +435,19 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       throw new Error('active configuration is missing; run `anyfusion-install install`');
     }
     const activeSnapshot = await configurationRepository.getActiveSnapshot();
-    const secretStore = createProductionSecretStore({
+    const legacySecretStore = createLegacyProductionSecretStore({
       secretsRoot: accountPaths.secrets,
       env: process.env,
       references: Object.values(activeSnapshot.config.providers)
         .map(provider => provider.apiKeyRef),
     });
+    const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials });
     await prepareProductionSecretStore(secretStore);
+    await importLegacyProviderCredentials({
+      target: secretStore,
+      providers: activeSnapshot.config.providers,
+      legacyStore: legacySecretStore,
+    });
     await preheatLocalAgentCredentials(secretStore);
     await importLocalAgentCredentials({
       ...localAgentCredentialSources(),
@@ -516,13 +522,19 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   }
 
   // 3. Bind Planner, Kernel and Runtime to the exact active revision.
-  const secretStore = createProductionSecretStore({
+  const legacySecretStore = createLegacyProductionSecretStore({
     secretsRoot: accountPaths.secrets,
     env: process.env,
     references: Object.values(migratedSnapshot.config.providers)
       .map(provider => provider.apiKeyRef),
   });
+  const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials });
   await prepareProductionSecretStore(secretStore);
+  await importLegacyProviderCredentials({
+    target: secretStore,
+    providers: migratedSnapshot.config.providers,
+    legacyStore: legacySecretStore,
+  });
   await preheatLocalAgentCredentials(secretStore);
   await importLocalAgentCredentials({
     ...localAgentCredentialSources(),
@@ -795,9 +807,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     prepareConfig: async ({ config, secrets }) => {
       let prepared = structuredClone(config) as AnyFusionConfigurationV2;
       for (const [providerRef, apiKey] of Object.entries(secrets)) {
-        const reference = secretStore instanceof FileSecretStore
-          ? `file-secret:anyfusion/providers/${providerRef}` as const
-          : `keychain:anyfusion/providers/${providerRef}` as const;
+        const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
         const provider = prepared.providers[providerRef];
         if (provider) provider.apiKeyRef = reference;
       }
@@ -807,9 +817,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       const previous = new Map<string, string | null>();
       const references = new Map<string, SecretReference>();
       for (const [providerRef, apiKey] of Object.entries(secrets)) {
-        const reference = secretStore instanceof FileSecretStore
-          ? `file-secret:anyfusion/providers/${providerRef}` as const
-          : `keychain:anyfusion/providers/${providerRef}` as const;
+        const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
         references.set(providerRef, reference);
         try {
           previous.set(providerRef, await secretStore.get(reference));
@@ -1670,41 +1678,44 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             };
         },
         writeSecret: async (providerRef, apiKey) => {
-          const reference = secretStore instanceof FileSecretStore
-            ? `file-secret:anyfusion/providers/${providerRef}` as const
-            : `keychain:anyfusion/providers/${providerRef}` as const;
-          await secretStore.put(reference, apiKey);
-          return { apiKeyRef: reference };
+          const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
+          const normalized = apiKey.trim();
+          await secretStore.put(reference, normalized);
+          return {
+            configured: true,
+            maskedApiKey: maskApiKey(normalized),
+          };
         },
         getSecretStatus: async providerRefs => {
           const references = Object.fromEntries(providerRefs.map(providerRef => [
             providerRef,
-            secretStore instanceof FileSecretStore
-              ? `file-secret:anyfusion/providers/${providerRef}` as const
-              : `keychain:anyfusion/providers/${providerRef}` as const,
+            `file-secret:anyfusion/providers/${providerRef}` as const,
           ]));
           await importLocalAgentCredentialsForRefs({
             ...localAgentCredentialSources(),
             providers: references,
             secretStore,
           });
-          const status: Record<string, boolean> = {};
+          const status: Record<string, {
+            configured: boolean;
+            maskedApiKey: string | null;
+          }> = {};
           for (const providerRef of providerRefs) {
-            const reference = secretStore instanceof FileSecretStore
-              ? `file-secret:anyfusion/providers/${providerRef}` as const
-              : `keychain:anyfusion/providers/${providerRef}` as const;
+            const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
             try {
-              status[providerRef] = (await secretStore.get(reference)).trim().length > 0;
+              const apiKey = (await secretStore.get(reference)).trim();
+              status[providerRef] = {
+                configured: apiKey.length > 0,
+                maskedApiKey: apiKey ? maskApiKey(apiKey) : null,
+              };
             } catch {
-              status[providerRef] = false;
+              status[providerRef] = { configured: false, maskedApiKey: null };
             }
           }
           return status;
         },
         verifySecret: async (providerRef, requestedBaseUrl) => {
-          const reference = secretStore instanceof FileSecretStore
-            ? `file-secret:anyfusion/providers/${providerRef}` as const
-            : `keychain:anyfusion/providers/${providerRef}` as const;
+          const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
           let apiKey: string;
           try {
             apiKey = (await secretStore.get(reference)).trim();
@@ -1822,4 +1833,8 @@ function asPayloadRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null
     ? value as Record<string, unknown>
     : { value };
+}
+
+function maskApiKey(value: string): string {
+  return `••••••••${value.slice(-4)}`;
 }

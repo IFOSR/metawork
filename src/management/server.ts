@@ -65,6 +65,11 @@ export interface ActivateResult {
   issues?: string[];
 }
 
+export interface ProviderCredentialStatus {
+  configured: boolean;
+  maskedApiKey: string | null;
+}
+
 export interface ExecutorCapabilityManualResponse {
   agentClassRef: string;
   configurationRevision: string;
@@ -131,9 +136,9 @@ export interface ConfigQuery {
     secrets?: Record<string, string>,
   ): Promise<ActivateResult>;
   rollback(targetRevisionId: string): Promise<ActivateResult>;
-  writeSecret(providerRef: string, apiKey: string): Promise<{ apiKeyRef: string }>;
+  writeSecret(providerRef: string, apiKey: string): Promise<ProviderCredentialStatus>;
   /** 查询各 provider 的 secret 是否已配置。 */
-  getSecretStatus(providerRefs: string[]): Promise<Record<string, boolean>>;
+  getSecretStatus(providerRefs: string[]): Promise<Record<string, ProviderCredentialStatus>>;
   /** 用存储的密钥调 Provider API 验证有效性；未配置时 valid 为 null。 */
   verifySecret(
     providerRef: string,
@@ -984,11 +989,15 @@ export class ManagementServer {
     }
 
     if (request.method === 'GET' && url.pathname === '/api/config/secrets/status') {
-      const refs = (url.searchParams.get('providers') ?? '')
+      const rawRefs = (url.searchParams.get('providers') ?? '')
         .split(',')
         .map(value => value.trim())
-        .filter(Boolean)
-        .slice(0, 64);
+        .filter(Boolean);
+      if (rawRefs.some(providerRef => !isSafeProviderRef(providerRef))) {
+        this.sendJson(response, 400, { error: 'invalid providerRef' });
+        return;
+      }
+      const refs = rawRefs.slice(0, 64);
       this.sendJson(response, 200, await this.deps.configQuery.getSecretStatus(refs));
       return;
     }
@@ -1009,11 +1018,18 @@ export class ManagementServer {
 
     if (request.method === 'POST' && url.pathname === '/api/config/secrets') {
       const body = await readRequestBody(request);
-      if (!body.providerRef || !body.apiKey) {
+      if (typeof body.providerRef !== 'string'
+        || !isSafeProviderRef(body.providerRef)
+        || typeof body.apiKey !== 'string'
+        || body.apiKey.trim().length === 0) {
         this.sendJson(response, 400, { error: 'providerRef and apiKey are required' });
         return;
       }
-      this.sendJson(response, 200, await this.deps.configQuery.writeSecret(body.providerRef, body.apiKey));
+      this.sendJson(
+        response,
+        200,
+        await this.deps.configQuery.writeSecret(body.providerRef, body.apiKey.trim()),
+      );
       return;
     }
 
