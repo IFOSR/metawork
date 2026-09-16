@@ -224,11 +224,15 @@ export class WsClient {
             this.rejectAuthentication();
             break;
           }
-          this.handlers.onError?.(message.message, {
-            ...(message.requestId ? { requestId: message.requestId } : {}),
-            ...(message.code ? { code: message.code } : {}),
-            ...(message.agentId ? { agentId: message.agentId } : {}),
-          });
+          if (message.requestId || message.code || message.agentId) {
+            this.handlers.onError?.(message.message, {
+              ...(message.requestId ? { requestId: message.requestId } : {}),
+              ...(message.code ? { code: message.code } : {}),
+              ...(message.agentId ? { agentId: message.agentId } : {}),
+            });
+          } else {
+            this.handlers.onError?.(message.message);
+          }
           break;
       }
     };
@@ -246,10 +250,16 @@ export class WsClient {
     };
   }
 
-  sendInput(text: string, attachments?: Array<{ attachmentId: string }>): boolean {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
-    this.socket.send(JSON.stringify({ type: 'input', text, attachments } satisfies ClientMessage));
-    return true;
+  sendInput(text: string, attachments?: Array<{ attachmentId: string }>): string | null {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return null;
+    const requestId = `req_${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}_${Math.random()}`}`;
+    this.socket.send(JSON.stringify({
+      type: 'input',
+      requestId,
+      text,
+      attachments,
+    } satisfies ClientMessage));
+    return requestId;
   }
 
   close(): void {

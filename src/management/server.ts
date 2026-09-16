@@ -355,7 +355,12 @@ export class ManagementServer {
           const attachments = (message.attachments ?? [])
             .filter(entry => typeof entry?.attachmentId === 'string')
             .map(entry => ({ attachmentId: entry.attachmentId as string, kind: 'file' }));
-          void this.deps.sessionRuntime.submit(clientId, message.text, attachments).catch(error => {
+          void this.deps.sessionRuntime.submit(
+            clientId,
+            message.text,
+            attachments,
+            message.requestId,
+          ).catch(error => {
             const candidate = error as { code?: unknown; agentId?: unknown };
             ws.send(JSON.stringify({
               type: 'error',

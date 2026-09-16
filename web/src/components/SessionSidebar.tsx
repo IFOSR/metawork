@@ -15,6 +15,7 @@ export function SessionSidebar({
   onSelectWorkspace,
   onCreateWorkspace,
   onNewSession,
+  newWorkBlocked,
   onSelect,
   onDeleteSession,
   onClearSessions,
@@ -32,6 +33,7 @@ export function SessionSidebar({
   onSelectWorkspace: (workspace: WorkspaceSummary) => void;
   onCreateWorkspace: () => void;
   onNewSession: () => void;
+  newWorkBlocked: boolean;
   onSelect: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
   onClearSessions: () => void;
@@ -53,7 +55,8 @@ export function SessionSidebar({
       <button
         className="new-session-button"
         onClick={onNewSession}
-        disabled={!activeWorkspaceId || workspaceSwitching}
+        disabled={!activeWorkspaceId || workspaceSwitching || newWorkBlocked}
+        title={newWorkBlocked ? '请先安装必需智能体' : undefined}
       >
         <span>＋</span> 新建会话
       </button>

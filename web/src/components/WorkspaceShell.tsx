@@ -8,6 +8,8 @@ import { Composer } from './Composer';
 import { SessionSidebar } from './SessionSidebar';
 import { WorkspaceHeader, type WorkspaceTab } from './WorkspaceHeader';
 import type { ThemePreference } from '../theme';
+import type { AgentReadiness } from '../api/types';
+import { AgentReadinessBanner } from './AgentReadinessBanner';
 
 export function WorkspaceShell({
   sessions,
@@ -25,8 +27,11 @@ export function WorkspaceShell({
   composerVisible,
   draft,
   composerDisabled,
+  newWorkBlocked,
   running,
   blockedReason,
+  agentReadiness,
+  onRefreshAgentReadiness,
   previewOpen = false,
   previewDrawer = null,
   children,
@@ -62,8 +67,10 @@ export function WorkspaceShell({
   composerVisible: boolean;
   draft: string;
   composerDisabled: boolean;
+  newWorkBlocked: boolean;
   running: boolean;
   blockedReason?: string | null;
+  agentReadiness: AgentReadiness[];
   /** 右侧文档预览抽屉是否打开；打开时主画布切换为三列桌面布局。 */
   previewOpen?: boolean;
   previewDrawer?: ReactNode;
@@ -76,6 +83,7 @@ export function WorkspaceShell({
   onDeleteSession: (sessionId: string) => void;
   onClearSessions: () => void;
   onSettings: () => void;
+  onRefreshAgentReadiness: () => void;
   onTabChange: (tab: WorkspaceTab) => void;
   onThemeChange: (preference: ThemePreference) => void;
   onDraftChange: (value: string) => void;
@@ -100,6 +108,7 @@ export function WorkspaceShell({
         onSelectWorkspace={onSelectWorkspace}
         onCreateWorkspace={onCreateWorkspace}
         onNewSession={onNewSession}
+        newWorkBlocked={newWorkBlocked}
         onSelect={onSelectSession}
         onDeleteSession={onDeleteSession}
         onClearSessions={onClearSessions}
@@ -114,6 +123,11 @@ export function WorkspaceShell({
           themePreference={themePreference}
           onTabChange={onTabChange}
           onThemeChange={onThemeChange}
+        />
+        <AgentReadinessBanner
+          agents={agentReadiness}
+          onRefresh={onRefreshAgentReadiness}
+          onOpenSettings={onSettings}
         />
         <div className="workspace-body">
           <section className="workspace-canvas">{children}</section>

@@ -161,17 +161,18 @@ class WebGatewayClientSession {
   async submit(
     text: string,
     attachments: Array<{ attachmentId: string; kind: string }> = [],
+    requestId?: string,
   ): Promise<void> {
     const targetSessionId = this.activeSessionId;
-    const requestId = this.id('req');
+    const effectiveRequestId = requestId ?? this.id('req');
     const effectiveText = await this.enrichWithAttachments(text, attachments, targetSessionId);
-    this.pendingInputs.set(requestId, text);
+    this.pendingInputs.set(effectiveRequestId, text);
     const command: GatewayCommand = effectiveText.startsWith('/')
       ? { kind: 'slash_command', text: effectiveText }
       : { kind: 'user_message', text: effectiveText, attachments };
     const receipt = await this.deps.gateway.submit({
       protocolVersion: 2,
-      requestId,
+      requestId: effectiveRequestId,
       idempotencyKey: this.id('idem'),
       connectionId: this.connectionId,
       scope: {
@@ -182,7 +183,7 @@ class WebGatewayClientSession {
       clientCapabilities: ['trace_v1'],
     });
     if ('kind' in receipt || receipt.status === 'rejected') {
-      this.pendingInputs.delete(requestId);
+      this.pendingInputs.delete(effectiveRequestId);
       if ('kind' in receipt) throw new Error(receipt.message);
       if (receipt.code === 'required_agent_unavailable') {
         throw new WebGatewayAdmissionError(receipt.code, receipt.agentId);

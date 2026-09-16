@@ -5,13 +5,14 @@ const root = new URL('../../web/src/', import.meta.url);
 
 describe('Web workspace shell', () => {
   it('renders session navigation, dual views, and a conversation-only composer', async () => {
-    const [app, shell, sidebar, selector, header, composer, http, styles] = await Promise.all([
+    const [app, shell, sidebar, selector, header, composer, banner, http, styles] = await Promise.all([
       readFile(new URL('App.tsx', root), 'utf8'),
       readFile(new URL('components/WorkspaceShell.tsx', root), 'utf8'),
       readFile(new URL('components/SessionSidebar.tsx', root), 'utf8'),
       readFile(new URL('components/WorkspaceSelector.tsx', root), 'utf8'),
       readFile(new URL('components/WorkspaceHeader.tsx', root), 'utf8'),
       readFile(new URL('components/Composer.tsx', root), 'utf8'),
+      readFile(new URL('components/AgentReadinessBanner.tsx', root), 'utf8'),
       readFile(new URL('api/http.ts', root), 'utf8'),
       readFile(new URL('styles.css', root), 'utf8'),
     ]);
@@ -22,6 +23,7 @@ describe('Web workspace shell', () => {
     expect(selector).toContain('availability');
     expect(shell).toContain('<WorkspaceHeader');
     expect(shell).toContain('<Composer');
+    expect(shell).toContain('<AgentReadinessBanner');
     expect(shell).toContain('composerVisible');
     expect(shell).toContain('{composerVisible && (');
     expect(sidebar).toContain('新建会话');
@@ -49,6 +51,11 @@ describe('Web workspace shell', () => {
     expect(app).toContain('onTraceDelta');
     expect(app).toContain('activeWorkspace');
     expect(app).toContain('onWorkspaceChanged');
+    expect(app).toContain('getAgentReadiness');
+    expect(app).toContain('onAgentReadinessState');
+    expect(app).toContain('requiredAgentBlock');
+    expect(app).toContain('pendingInputsRef');
+    expect(app).toContain('required_agent_unavailable');
     expect(app).toContain('retainLiveTurnForConversation(liveTurnRef.current, sessionId)');
     expect(app).toContain("composerVisible={tab === 'conversation' && Boolean(selectedId)}");
     expect(app).toContain('workspace-home');
@@ -59,6 +66,10 @@ describe('Web workspace shell', () => {
     expect(styles).toContain('.workspace-sidebar');
     expect(styles).toContain('.workspace-selector');
     expect(styles).toContain('.workspace-home');
+    expect(styles).toContain('.agent-readiness-banner');
+    expect(banner).toContain('Codex');
+    expect(banner).toContain('GPT/Codex');
+    expect(banner).toContain('仍可承担代码和研究能力');
   });
 
   it('creates a Workspace by browsing local directories', async () => {

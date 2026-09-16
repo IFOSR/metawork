@@ -142,7 +142,12 @@ export interface ManagementWebSessionRuntime {
   };
   listWorkspaces(clientId: string): Promise<WorkspaceSummary[]>;
   selectWorkspace(clientId: string, path: string): Promise<WorkspaceInitializationResult>;
-  submit(clientId: string, text: string, attachments?: Array<{ attachmentId: string; kind: string }>): Promise<void>;
+  submit(
+    clientId: string,
+    text: string,
+    attachments?: Array<{ attachmentId: string; kind: string }>,
+    requestId?: string,
+  ): Promise<void>;
   listSessions(clientId: string, query?: string): Promise<WebSessionDirectoryMetadataProjection[]>;
   readSession(clientId: string, sessionId: string): Promise<WebSessionRecordProjection | null>;
   createSession(clientId: string): Promise<WebSessionCreationResult>;
