@@ -1215,6 +1215,15 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       ),
     handleWorkspaceCommand: (command, context) =>
       workspaceGatewayRuntime.handle(command, context),
+    newWorkAdmission: {
+      check: () => agentReadiness.isRequiredAgentReady()
+        ? { allowed: true as const }
+        : {
+            allowed: false as const,
+            reason: 'required_agent_unavailable' as const,
+            agentId: 'pi-agent' as const,
+          },
+    },
   });
   const webGatewayAdapter = new WebGatewayAdapter({
     gateway: clientGateway,

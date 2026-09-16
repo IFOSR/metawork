@@ -82,7 +82,11 @@ export interface WsHandlers {
     completedAt?: string | null,
   ) => void;
   onConfigurationRuntimeState?: (state: ConfigurationRuntimeState) => void;
-  onError?: (message: string) => void;
+  onError?: (message: string, detail?: {
+    requestId?: string;
+    code?: string;
+    agentId?: string;
+  }) => void;
   onUnauthorized?: () => void;
   onStatusChange?: (connected: boolean) => void;
 }
@@ -220,7 +224,11 @@ export class WsClient {
             this.rejectAuthentication();
             break;
           }
-          this.handlers.onError?.(message.message);
+          this.handlers.onError?.(message.message, {
+            ...(message.requestId ? { requestId: message.requestId } : {}),
+            ...(message.code ? { code: message.code } : {}),
+            ...(message.agentId ? { agentId: message.agentId } : {}),
+          });
           break;
       }
     };

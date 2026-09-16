@@ -380,7 +380,13 @@ export type ServerMessage =
       status?: InteractionTraceStatus;
       completedAt?: string | null;
     }
-  | { type: 'error'; message: string };
+  | {
+      type: 'error';
+      message: string;
+      requestId?: string;
+      code?: string;
+      agentId?: string;
+    };
 
 export type ClientMessage =
   | { type: 'input'; text: string; attachments?: Array<{ attachmentId: string }> }

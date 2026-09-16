@@ -20,9 +20,7 @@ import type { LoginCredentials } from './login-credentials.js';
 import type { WebAuthService } from './web-auth.js';
 import type { WebLaunchContextService } from './web-launch-context.js';
 import type { WorkspaceDirectoryBrowser } from './workspace-directory-browser.js';
-import type {
-  ManagementWebSessionRuntime,
-} from './web-session-runtime-types.js';
+import type { ManagementWebSessionRuntime } from './web-session-runtime-types.js';
 import type {
   ArtifactDownloadResult,
   ArtifactMetadataResult,
@@ -336,7 +334,12 @@ export class ManagementServer {
     );
     ws = new WebSocketConnection(socket, {
       onMessage: text => {
-        let message: { type?: string; text?: string; attachments?: Array<{ attachmentId?: unknown }> };
+        let message: {
+          type?: string;
+          requestId?: string;
+          text?: string;
+          attachments?: Array<{ attachmentId?: unknown }>;
+        };
         try {
           message = JSON.parse(text) as typeof message;
         } catch {
@@ -353,7 +356,14 @@ export class ManagementServer {
             .filter(entry => typeof entry?.attachmentId === 'string')
             .map(entry => ({ attachmentId: entry.attachmentId as string, kind: 'file' }));
           void this.deps.sessionRuntime.submit(clientId, message.text, attachments).catch(error => {
-            ws.send(JSON.stringify({ type: 'error', message: (error as Error).message }));
+            const candidate = error as { code?: unknown; agentId?: unknown };
+            ws.send(JSON.stringify({
+              type: 'error',
+              message: (error as Error).message,
+              ...(typeof message.requestId === 'string' ? { requestId: message.requestId } : {}),
+              ...(typeof candidate.code === 'string' ? { code: candidate.code } : {}),
+              ...(typeof candidate.agentId === 'string' ? { agentId: candidate.agentId } : {}),
+            }));
           });
         }
       },
@@ -730,7 +740,19 @@ export class ManagementServer {
         this.sendJson(response, 409, { error: 'workspace is not selected' });
         return;
       }
-      this.sendJson(response, 201, await this.deps.sessionRuntime.createSession(clientId));
+      try {
+        this.sendJson(response, 201, await this.deps.sessionRuntime.createSession(clientId));
+      } catch (error) {
+        const candidate = error as { code?: unknown; agentId?: unknown };
+        if (candidate.code === 'required_agent_unavailable') {
+          this.sendJson(response, 409, {
+            code: candidate.code,
+            ...(typeof candidate.agentId === 'string' ? { agentId: candidate.agentId } : {}),
+          });
+          return;
+        }
+        throw error;
+      }
       return;
     }
 

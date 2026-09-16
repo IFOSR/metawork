@@ -21,6 +21,7 @@ import {
 } from '../../src/management/login-credentials.js';
 import type { WebSessionRecordProjection } from '../../src/management/web-session-types.js';
 import type { AgentReadiness } from '../../src/management/agent-installation-readiness-service.js';
+import { WebGatewayAdmissionError } from '../../src/management/web-gateway-session-runtime.js';
 
 function metadataFixture(id: string, active: boolean) {
   return {
@@ -1749,6 +1750,67 @@ describe('ManagementServer WebSocket authentication', () => {
         status: 'missing',
       }]);
       await expect(client.nextText()).resolves.toContain('"status":"missing"');
+    } finally {
+      client.close();
+      await server.stop();
+    }
+  });
+
+  it('returns the required-Agent code when HTTP conversation creation is blocked', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port, {
+      sessionRuntime: createSessionRuntime({
+        async createSession() {
+          throw new WebGatewayAdmissionError('required_agent_unavailable', 'pi-agent');
+        },
+      }),
+    });
+    await server.start();
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/workspaces/workspace_repo/conversations`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer manual-token',
+            'content-type': 'application/json',
+          },
+        },
+      );
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({
+        code: 'required_agent_unavailable',
+        agentId: 'pi-agent',
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('keeps the required-Agent details on a WebSocket input rejection', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port, {
+      sessionRuntime: createSessionRuntime({
+        async submit() {
+          throw new WebGatewayAdmissionError('required_agent_unavailable', 'pi-agent');
+        },
+      }),
+    });
+    await server.start();
+    const cookie = await exchangeToken(port, 'manual-token');
+    const client = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
+
+    try {
+      await client.nextText();
+      client.sendJson({ type: 'input', requestId: 'req_blocked', text: '开始工作' });
+      await expect(client.nextText()).resolves.toBe(JSON.stringify({
+        type: 'error',
+        message: 'required_agent_unavailable',
+        requestId: 'req_blocked',
+        code: 'required_agent_unavailable',
+        agentId: 'pi-agent',
+      }));
     } finally {
       client.close();
       await server.stop();

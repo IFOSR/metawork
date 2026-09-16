@@ -110,6 +110,70 @@ describe('ClientGateway', () => {
     expect(submitted).toEqual(['conv_1']);
   });
 
+  it('rejects new user work before durable admission when the required Agent is unavailable', async () => {
+    const store = new MemoryCommandAdmissionStore();
+    let activated = false;
+    let resolved = false;
+    const gateway = new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: {
+        resolve: async () => {
+          resolved = true;
+          return { status: 'created', conversationId: 'conv_1' };
+        },
+      },
+      activateAccount: async () => {
+        activated = true;
+      },
+      submitToConversation: async () => ({ status: 'accepted' }),
+      commandAdmissionStore: store,
+      newWorkAdmission: {
+        check: () => ({
+          allowed: false as const,
+          reason: 'required_agent_unavailable' as const,
+          agentId: 'pi-agent' as const,
+        }),
+      },
+    });
+
+    await expect(gateway.handle(envelope, 'local')).resolves.toMatchObject({
+      status: 'rejected',
+      reason: 'required_agent_unavailable',
+      agentId: 'pi-agent',
+    });
+    expect(activated).toBe(false);
+    expect(resolved).toBe(false);
+    await expect(store.listRecoverable()).resolves.toEqual([]);
+  });
+
+  it('applies required-Agent admission to new conversations but not navigation or slash commands', async () => {
+    const rejected = {
+      allowed: false as const,
+      reason: 'required_agent_unavailable' as const,
+      agentId: 'pi-agent' as const,
+    };
+    const gateway = new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
+      activateAccount: async () => undefined,
+      submitToConversation: async () => ({ status: 'accepted' }),
+      handleWorkspaceCommand: async () => ({ status: 'accepted', conversationId: 'conv_new' }),
+      newWorkAdmission: { check: () => rejected },
+    });
+
+    await expect(gateway.handle(createConversationEnvelope(), 'local')).resolves.toMatchObject({
+      status: 'rejected',
+      reason: 'required_agent_unavailable',
+      agentId: 'pi-agent',
+    });
+    await expect(gateway.handle(selectWorkspaceEnvelope(), 'local'))
+      .resolves.toMatchObject({ status: 'accepted' });
+    await expect(gateway.handle(slashCommandEnvelope(), 'local'))
+      .resolves.toMatchObject({ status: 'accepted' });
+  });
+
   it('propagates the authenticated transport origin into the Conversation mailbox', async () => {
     const origins: Array<{ connectionId: string; surface: string }> = [];
     const gateway = new ClientGateway({
@@ -434,6 +498,25 @@ function selectWorkspaceEnvelope(): GatewayCommandEnvelope {
     idempotencyKey: 'idem_workspace',
     scope: { kind: 'workspace' },
     command: { kind: 'select_workspace', path: '/repo-a' },
+  };
+}
+
+function createConversationEnvelope(): GatewayCommandEnvelope {
+  return {
+    ...envelope,
+    requestId: 'req_create_conversation',
+    idempotencyKey: 'idem_create_conversation',
+    scope: { kind: 'workspace' },
+    command: { kind: 'create_conversation', workspaceId: 'workspace_repo' },
+  };
+}
+
+function slashCommandEnvelope(): GatewayCommandEnvelope {
+  return {
+    ...envelope,
+    requestId: 'req_slash',
+    idempotencyKey: 'idem_slash',
+    command: { kind: 'slash_command', text: '/help' },
   };
 }
 

@@ -30,6 +30,17 @@ const MAX_ENRICHMENT_BYTES = 16 * 1024;
 const EXCERPT_MAX_LINES = 64;
 const WEB_WORKSPACE_PRINCIPAL = 'web:local-web-user';
 
+export class WebGatewayAdmissionError extends Error {
+  constructor(
+    readonly code: string,
+    readonly agentId?: string,
+    message = code,
+  ) {
+    super(message);
+    this.name = 'WebGatewayAdmissionError';
+  }
+}
+
 function formatByteSize(size: number): string {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
@@ -172,7 +183,11 @@ class WebGatewayClientSession {
     });
     if ('kind' in receipt || receipt.status === 'rejected') {
       this.pendingInputs.delete(requestId);
-      throw new Error('kind' in receipt ? receipt.message : receipt.reason ?? 'Gateway rejected the command');
+      if ('kind' in receipt) throw new Error(receipt.message);
+      if (receipt.code === 'required_agent_unavailable') {
+        throw new WebGatewayAdmissionError(receipt.code, receipt.agentId);
+      }
+      throw new Error(receipt.reason ?? 'Gateway rejected the command');
     }
   }
 
@@ -249,7 +264,11 @@ class WebGatewayClientSession {
       clientCapabilities: ['trace_v1'],
     });
     if ('kind' in receipt || receipt.status === 'rejected' || !receipt.conversationId) {
-      throw new Error('kind' in receipt ? receipt.message : receipt.reason ?? 'conversation_create_failed');
+      if ('kind' in receipt) throw new Error(receipt.message);
+      if (receipt.code === 'required_agent_unavailable') {
+        throw new WebGatewayAdmissionError(receipt.code, receipt.agentId);
+      }
+      throw new Error(receipt.reason ?? 'conversation_create_failed');
     }
     const created = await this.deps.catalog.read(receipt.conversationId);
     if (!created) throw new Error('created_conversation_unavailable');
