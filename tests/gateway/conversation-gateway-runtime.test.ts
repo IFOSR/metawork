@@ -1117,7 +1117,12 @@ describe('ConversationGatewayRuntime origin delivery (ADR-0036)', () => {
       plannerState: { status: 'running' },
     });
 
-    await waitFor(() => webEvents.some(event => event.kind === 'trace_delta'));
+    // trace_delta 与 task_projection 共用同一条串行投影队列：fireTrace 先入队，
+    // fireSnapshot 的投影后入队。只等 trace_delta 就断言两者都已投递，会在队列
+    // 第二项完成前提前返回，属于测试自身的竞态。这里等到断言真正需要的两个事件
+    // 都到达；task_projection 若始终不到仍会超时失败。
+    await waitFor(() => webEvents.some(event => event.kind === 'trace_delta')
+      && webEvents.some(event => event.kind === 'task_projection'));
     expect(webEvents.map(event => event.kind)).toEqual(
       expect.arrayContaining(['trace_delta', 'task_projection']),
     );

@@ -85,7 +85,11 @@ describe('production composition root', () => {
 
     expect(installCli).toContain('InstallerCore');
     expect(installCli).toContain('ServerUpdateCoordinator');
-    expect(installCli).toContain('secretsRoot: accountPaths.secrets');
+    // 生产凭据已一次性迁移到 MetaWork root 下的 credentials.json（旧的 secretsRoot
+    // 目录不再由安装 CLI 使用），因此这里锁的是新的凭据文件契约。
+    expect(installCli).toContain('createProductionSecretStore({');
+    expect(installCli).toContain('credentialsFile: paths.credentials');
+    expect(installCli).not.toContain('secretsRoot');
     expect(installer).toContain('resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root)');
     expect(updater).toContain('resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root)');
     expect(installer).not.toContain('paths.generatedAgentRuntime');
