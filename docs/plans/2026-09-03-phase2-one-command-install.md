@@ -97,6 +97,61 @@ staging dereferences symlinks (`tar -h`) for npm workspace layouts.
   update path: a task row, provider config, and secret survived an update to
   a second release ID, and a third run of the same manifest exited 0.
 
+## macOS dual-architecture packaging (repeatable)
+
+Every release must publish both macOS architectures. `package-release.mjs`
+defaults to the host architecture, so an Intel workstation produces only
+`darwin-x64` unless the native modules are swapped first.
+
+1. Produce a production-only staging tree (never package the dev tree):
+
+   ```bash
+   rsync -a --exclude node_modules --exclude .git --exclude dist-release ./ /tmp/mw-rel/src/
+   cd /tmp/mw-rel/src && npm ci --omit=dev
+   rsync -a --exclude .git planner/AnyFusion-Pi/ /tmp/mw-rel/src/planner/AnyFusion-Pi/
+   ```
+
+2. Package `darwin-x64` first, from that tree:
+
+   ```bash
+   node scripts/package-release.mjs --source-root /tmp/mw-rel/src \
+     --planner-root /tmp/mw-rel/src/planner/AnyFusion-Pi --out-dir /tmp/mw-rel/out \
+     --release-id <version>-<short-rev> --platform darwin --arch x64 \
+     --key-id <key-id> --signing-key ~/.config/metawork-release/<key-id>.private.pem
+   ```
+
+3. Swap the native modules for arm64, then package `darwin-arm64` from the same
+   tree. `npm_config_arch=arm64` does **not** work: `prebuild-install` skips the
+   foreign prebuild and falls back to node-gyp, which then fails.
+
+   - `better-sqlite3`: download
+     `better-sqlite3-v<ver>-node-v<abi>-darwin-arm64.tar.gz` from the
+     `WiseLibs/better-sqlite3` GitHub release and copy its
+     `build/Release/better_sqlite3.node` over the x64 one. Node 22 is ABI 127.
+   - Planner: replace `@rolldown/binding-darwin-x64`,
+     `lightningcss-darwin-x64` and `@mariozechner/clipboard-darwin-x64` with the
+     same-version `-darwin-arm64` packages from the npm registry
+     (`npm pack <pkg>@<version>`), deleting the x64 directories.
+
+4. Confirm every embedded binary reports arm64 before packaging:
+
+   ```bash
+   file node_modules/better-sqlite3/build/Release/better_sqlite3.node
+   file planner/AnyFusion-Pi/node_modules/@rolldown/binding-darwin-arm64/*.node
+   ```
+
+5. Publish: create `1.2.0-<version>-<short-rev>/` on the release host, upload the
+   manifests and both architectures' tarballs, upload the new `install.sh`, and
+   swap the `latest` symlink atomically (`ln -sfn <dir> latest.new && mv -Tf
+   latest.new latest`). `latest` is shared by every platform, so the directory
+   must contain a manifest for each platform still being served; carry the
+   previous release's other-platform artifacts forward and re-sign their
+   manifests with the current key, because a rotation revokes the old one.
+
+6. Verify from the public URL: fetch `install.sh`, take its own embedded
+   `TRUSTED_RELEASE_KEY_ID`/`TRUSTED_RELEASE_PUBLIC_KEY`/`REVOKED_RELEASE_KEY_IDS`,
+   and confirm every manifest verifies against exactly those.
+
 ## Open items
 
 - CI automation: a tag-triggered workflow running `npm run package:release`
