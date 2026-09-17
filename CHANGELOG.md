@@ -5,6 +5,66 @@ AnyFusion release entries remain unchanged for auditability.
 
 The project follows [Semantic Versioning](https://semver.org/) for public preview releases.
 
+## [1.2.0-preview.4] - 2026-09-17
+
+### Added
+
+- Web Workspace creation: a Client can add a Workspace by browsing a local
+  directory through the cookie-authenticated, read-only
+  `GET /api/workspaces/browse` endpoint. It returns `realpath`-resolved paths
+  and Server-built `crumbs`, so no Client parses an operating-system path, and
+  path resolution and authorization stay Server-owned (ADR-0039).
+- User-facing Web settings are rebuilt around Model list, Agents and a collapsed
+  Advanced section. Model connections can be created, renamed and retried;
+  model and agent display names are editable; API Key status is masked.
+- Provider credentials now live in `<metawork-root>/credentials.json`. Existing
+  file or Keychain credentials are imported once at startup.
+- Agent installation readiness is projected to the Client surfaces. A missing
+  required Pi agent blocks only new work through the unified Server path; a
+  missing Codex agent is presented as an optional enhancement.
+
+### Changed
+
+- Web login is always explicit. `metawork web` still opens the Browser, but its
+  URL carries only a one-time launch hint that cannot establish a session. The
+  hint is applied after login through the ordinary authorized Workspace
+  selection command, and an existing session cookie still skips the login page.
+- Built-in login credentials are the fixed `admin` / `123456` pair. The Server
+  never generates or rotates a login password; `ANYFUSION_WEB_USERNAME`,
+  `ANYFUSION_WEB_PASSWORD` and `ANYFUSION_WEB_PASSWORD_HASH` override it.
+- Agent display names resolve from the current active configuration, so one
+  rename applies to the settings fields and the readiness projection together.
+- `POST /api/auth/login` and `POST /api/auth/bootstrap` return
+  `{ authenticated: true }` with status 200 instead of 204.
+
+### Fixed
+
+- Agent display-name changes hot-activate instead of failing with
+  `restart_required`.
+- Renamed agents are re-projected immediately instead of waiting for the next
+  readiness probe.
+- Readiness cards, settings fields and the readiness banner show one consistent
+  agent name instead of a hardcoded `智能体 1` / `智能体 2` label.
+- The Workspace selector no longer presents a stale Workspace as active, and the
+  create dialog keeps errors inside the dialog, traps focus and restores focus
+  when it closes.
+- The Web client no longer lets the startup directory snapshot overwrite a live
+  WebSocket session, which could skip attach for a just-switched Conversation.
+- WebSocket `error` messages carry the originating `requestId`, and rejected
+  commands carry `code` and `agentId`.
+
+### Security
+
+- A launch token is no longer a login credential and cannot establish a session.
+- The directory browse endpoint is restricted to cookie sessions, so the shared
+  `manual-bearer-client` identity cannot enumerate the Server filesystem.
+
+### Removed
+
+- `launchContext`, `ManagementWebSessionRuntime.initializeClient` and
+  `WebSessionCreationResult.workspaceInitialization` are removed with no
+  compatibility read.
+
 ## [1.2.0-preview.3] - 2026-09-12
 
 ### Changed
@@ -181,7 +241,8 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 - CLI, configuration, and runtime contracts may change during the preview period.
 - Some command and TUI workflows remain under active development.
 
-[Unreleased]: https://github.com/IFOSR/metawork/compare/v1.2.0-preview.3...HEAD
+[Unreleased]: https://github.com/IFOSR/metawork/compare/v1.2.0-preview.4...HEAD
+[1.2.0-preview.4]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.4
 [1.2.0-preview.3]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.3
 [1.2.0-preview.2]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.2
 [1.2.0-preview.0]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.0
