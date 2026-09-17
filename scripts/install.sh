@@ -345,7 +345,12 @@ test -f "$STAGING_DIR/runtime/dist/install-cli.js" || {
 # Existing installations are updated in place; a fresh tree is installed.
 # Both paths preserve configuration, secrets, and task data.
 INSTALL_COMMAND="install"
-if [ -e "$INSTALL_ROOT/app/current" ]; then
+# `-e` follows symlinks, so a dangling app/current left behind by an interrupted
+# upgrade or a manually removed release looked like a fresh machine; the script
+# then chose the install path and the offline installer refused it with "clean
+# installation target already exists", leaving no way forward. Treat the symlink
+# itself as an existing installation so the update path can replace it.
+if [ -e "$INSTALL_ROOT/app/current" ] || [ -L "$INSTALL_ROOT/app/current" ]; then
   CURRENT_RELEASE="$(basename "$(readlink "$INSTALL_ROOT/app/current" 2>/dev/null || true)")"
   if [ -n "$CURRENT_RELEASE" ] && [ "$CURRENT_RELEASE" = "$RELEASE_ID" ]; then
     echo "MetaWork $RELEASE_ID is already installed at $INSTALL_ROOT; nothing to do."
