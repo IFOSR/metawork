@@ -52,6 +52,12 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
   WebSocket session, which could skip attach for a just-switched Conversation.
 - WebSocket `error` messages carry the originating `requestId`, and rejected
   commands carry `code` and `agentId`.
+- The one-command installer probes the controlling terminal instead of the
+  `/dev/tty` device node, so a fresh `curl | bash` install works on headless CI
+  runners and containers that have the node but no terminal. It also treats a
+  dangling `app/current` symlink as an existing installation, so an interrupted
+  upgrade can be repaired instead of failing with "clean installation target
+  already exists".
 
 ### Security
 
