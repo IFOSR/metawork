@@ -58,6 +58,10 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 - A launch token is no longer a login credential and cannot establish a session.
 - The directory browse endpoint is restricted to cookie sessions, so the shared
   `manual-bearer-client` identity cannot enumerate the Server filesystem.
+- Release signing trust rotated to `metawork-release-2026-03`;
+  `metawork-release-2026-01` and `metawork-release-2026-02` are revoked. The
+  private key for `metawork-release-2026-02` was lost, so no manifest could be
+  signed under the previous trust anchor.
 
 ### Removed
 

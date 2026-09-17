@@ -24,11 +24,11 @@ set -euo pipefail
 
 INSTALLER_VERSION="1.2.0"
 DEFAULT_MANIFEST_BASE="https://14.103.216.193/metawork-release"
-TRUSTED_RELEASE_KEY_ID="metawork-release-2026-02"
+TRUSTED_RELEASE_KEY_ID="metawork-release-2026-03"
 TRUSTED_RELEASE_PUBLIC_KEY='-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAtvsiOMBPW+6WUjhpCQcnLRT5CvurwhRM2v0zWhdC8WM=
+MCowBQYDK2VwAyEAJm/qnGNd9Aeg+41GoIjKOgpasxivfCXJCsZwyMbyIVE=
 -----END PUBLIC KEY-----'
-REVOKED_RELEASE_KEY_IDS="metawork-release-2026-01"
+REVOKED_RELEASE_KEY_IDS="metawork-release-2026-01,metawork-release-2026-02"
 
 if [[ -n "${METAWORK_RELEASE_CHANNEL:-}" \
   && -n "${ANYFUSION_RELEASE_CHANNEL:-}" \
