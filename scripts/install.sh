@@ -361,9 +361,20 @@ fi
 # that pipe to read the remaining lines of this script, so the stdin must NOT
 # be redirected here (redirecting it makes bash wait for the next script line
 # on your keyboard and hang silently). Instead, hand the terminal directly to
-# the installer process. If there is no controlling terminal, fall through to
-# the plain exec below, which fails with a clear non-interactive error.
-if [ "$INSTALL_COMMAND" = "install" ] && [ ! -t 0 ] && [ -e /dev/tty ]; then
+# the installer process. If there is no usable controlling terminal, fall
+# through to the plain exec below.
+#
+# The probe must OPEN /dev/tty, not merely test that the device node exists:
+# headless CI runners and containers without `-t` have the node but no
+# controlling terminal, so `< /dev/tty` fails with ENXIO and aborted a fresh
+# install instead of falling through to the non-interactive path.
+has_controlling_terminal() {
+  [ -c /dev/tty ] || return 1
+  { : < /dev/tty; } 2>/dev/null || return 1
+  return 0
+}
+
+if [ "$INSTALL_COMMAND" = "install" ] && [ ! -t 0 ] && has_controlling_terminal; then
   exec node "$STAGING_DIR/runtime/dist/install-cli.js" "$INSTALL_COMMAND" "$RELEASE_ID" \
     --source-root "$STAGING_DIR/runtime" \
     --planner-root "$STAGING_DIR/planner" < /dev/tty
