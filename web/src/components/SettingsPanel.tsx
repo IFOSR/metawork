@@ -8,6 +8,7 @@ import type {
   ConfigurationRuntimeState,
   ExecutorCapabilityManual,
   ExecutorManualAnalysis,
+  ProviderCredentialStatus,
 } from '../api/types';
 import {
   maskApiKey,
@@ -506,7 +507,7 @@ export function SettingsPanel({
     ]);
     setCapabilityCatalog(completion.modelCapabilityCatalog ?? {});
     const existence = await http.getSecretStatus(Object.keys(completion.providers))
-      .catch(() => ({}));
+      .catch((): Record<string, ProviderCredentialStatus> => ({}));
     const configuredByUrl = new Map<string, {
       configured: boolean;
       maskedApiKey: string | null;
@@ -669,7 +670,7 @@ export function SettingsPanel({
           : undefined;
       agentClasses[ref] = {
         ...current,
-        displayName: entry.displayName.trim(),
+        displayName: (entry.displayName ?? '').trim(),
         primaryUseCases: entry.primaryUseCases ?? [],
         avoidUseCases: entry.avoidUseCases ?? [],
         ...(manualSourceText || current.executorManual

@@ -390,5 +390,11 @@ export type ServerMessage =
     };
 
 export type ClientMessage =
-  | { type: 'input'; text: string; attachments?: Array<{ attachmentId: string }> }
+  | {
+    type: 'input';
+    text: string;
+    /** 客户端生成的请求 ID；服务端用它把结果回投到发起的那条消息。 */
+    requestId?: string;
+    attachments?: Array<{ attachmentId: string }>;
+  }
   | { type: 'close' };
