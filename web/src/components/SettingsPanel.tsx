@@ -574,6 +574,10 @@ export function SettingsPanel({
     }
     return [...new Set(warnings)];
   })();
+  // 就绪卡片与“智能体名称”必须同名：卡片直接用服务端按 AgentClass 解析出的
+  // displayName，这里的必需智能体名用于卡片正文里的交叉引用。
+  const requiredAgentName = agentReadiness.find(agent => agent.required)?.displayName
+    ?? '必需智能体';
   const editingDisabled = loading || activationState?.activationAllowed === false;
 
   const buildCandidateConfiguration = (originalConfig: RawRecord): {
@@ -1550,7 +1554,9 @@ export function SettingsPanel({
                     {agentReadiness.filter(agent => agent.agentId === 'pi-agent').map(agent => (
                       <div className={`agent-readiness-settings-card agent-readiness-settings-${agent.status}`} key={agent.agentId}>
                         <div>
-                          <strong>{agent.status === 'installed' ? '智能体 1 已就绪' : '智能体 1 未就绪'}</strong>
+                          <strong>
+                            {agent.displayName} {agent.status === 'installed' ? '已就绪' : '未就绪'}
+                          </strong>
                           <p>
                             {agent.status === 'installed'
                               ? 'MetaWork 可以开始新工作。'
@@ -1573,11 +1579,13 @@ export function SettingsPanel({
                     {agentReadiness.filter(agent => agent.agentId === 'codex-cli').map(agent => (
                       <div className="agent-readiness-settings-card agent-readiness-settings-optional" key={agent.agentId}>
                         <div>
-                          <strong>智能体 2 {agent.status === 'installed' ? '已安装' : '可选增强'}</strong>
+                          <strong>
+                            {agent.displayName} {agent.status === 'installed' ? '已安装' : '可选增强'}
+                          </strong>
                           <p>
                             {agent.status === 'installed'
                               ? '已提供额外的 GPT/Codex 路由与回退选择。'
-                              : '安装后对 GPT/Codex 系列模型兼容性更强，更适合代码理解、修改、测试和仓库级工程任务，并提供额外的路由与回退选择。智能体 1 仍可通过模型和能力配置完成代码、研究等任务。'}
+                              : `安装后对 GPT/Codex 系列模型兼容性更强，更适合代码理解、修改、测试和仓库级工程任务，并提供额外的路由与回退选择。${requiredAgentName} 仍可通过模型和能力配置完成代码、研究等任务。`}
                           </p>
                         </div>
                         {agent.status !== 'installed' && (

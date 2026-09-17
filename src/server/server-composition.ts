@@ -85,6 +85,7 @@ import {
   AgentInstallationReadinessService,
 } from '../management/agent-installation-readiness-service.js';
 import { resolveAgentDisplayName } from '../configuration/user-facing-names.js';
+import { agentClassRefForInstallation } from '../management/agent-installation-catalog.js';
 import { WorkspaceGatewayRuntime } from '../gateway/workspace-gateway-runtime.js';
 import { workspaceEventStreamId } from '../gateway/workspace-event-stream.js';
 import { clientConnectionEventStreamId } from '../gateway/client-connection-event-stream.js';
@@ -914,12 +915,23 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
   });
   const agentReadiness = new AgentInstallationReadinessService({
-    resolveDisplayName: agentId => resolveAgentDisplayName(
-      agentId,
-      (configurationRuntimeCoordinator.getSnapshot().config.agentClasses[agentId] as {
-        displayName?: string;
-      } | undefined)?.displayName,
-    ),
+    // 就绪卡片必须和设置里的“智能体名称”显示同一个名字：先按 CLI 命令把安装
+    // 对应到它的 AgentClass，再走同一套命名解析（用户配置名优先，其次由 class
+    // ref 推导）。此前用 agentId 直接索引 agentClasses，键不匹配导致配置名永远
+    // 读不到，卡片只能退回硬编码的“智能体 1/2”。
+    resolveDisplayName: agentId => {
+      const config = configurationRuntimeCoordinator.getSnapshot().config;
+      const agentClassRef = agentClassRefForInstallation({
+        agentId,
+        agentClasses: config.agentClasses,
+        harnesses: config.harnesses,
+      });
+      if (!agentClassRef) return undefined;
+      return resolveAgentDisplayName(
+        agentClassRef,
+        (config.agentClasses[agentClassRef] as { displayName?: string } | undefined)?.displayName,
+      );
+    },
   });
   const runtimePort = activatedAccountRuntime.getConversationPort();
   const conversationRegistry = new ConversationRegistry();

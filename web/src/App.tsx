@@ -357,7 +357,9 @@ export function App() {
           pendingInputsRef.current.delete(detail.requestId);
           setDraft(pending.draft);
           setPendingAttachments(pending.attachments);
-          setActivationNotice('当前无法开始新工作，请先安装智能体 1。');
+          setActivationNotice(
+            `当前无法开始新工作，请先安装${requiredAgentBlock(agentReadiness).agent?.displayName ?? '必需智能体'}。`,
+          );
           return;
         }
         setActivationNotice(`执行错误：${message}`);
@@ -651,7 +653,7 @@ export function App() {
       const message = (error as Error).message;
       setActivationNotice(
         message.includes('required_agent_unavailable')
-          ? '当前无法新建会话，请先安装智能体 1。'
+          ? `当前无法新建会话，请先安装${requiredAgentBlock(agentReadiness).agent?.displayName ?? '必需智能体'}。`
           : `新建会话失败：${message}`,
       );
     }

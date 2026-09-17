@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { safeHostEnvironment } from '../executor/harness-driver.js';
+import { resolveAgentDisplayName } from '../configuration/user-facing-names.js';
 import {
   AGENT_INSTALLATION_CATALOG,
   type AgentInstallationDefinition,
@@ -116,8 +117,10 @@ export class AgentInstallationReadinessService {
     return {
       agentId: definition.agentId,
       required: definition.required,
+      // 名字必须与设置里的“智能体名称”同源：注入的解析器已按 AgentClass 取名，
+      // 这里只在没有匹配 AgentClass 时退回到安装身份本身的默认名。
       displayName: this.resolveDisplayName(definition.agentId)?.trim()
-        || (definition.agentId === 'pi-agent' ? '智能体 1' : '智能体 2'),
+        || resolveAgentDisplayName(definition.agentId),
       status: 'checking',
       version: null,
       detail: null,

@@ -266,6 +266,39 @@ describe('Settings workbench model semantics', () => {
     expect(changedSourceWhitespace).toBe(executorManualInputKey(draft, models));
   });
 
+  it('labels agent readiness with the same agent name that settings shows', async () => {
+    const [settingsSource, bannerSource, appSource, serviceSource, compositionSource] =
+      await Promise.all([
+        readFile(new URL('../../web/src/components/SettingsPanel.tsx', import.meta.url), 'utf8'),
+        readFile(new URL('../../web/src/components/AgentReadinessBanner.tsx', import.meta.url), 'utf8'),
+        readFile(new URL('../../web/src/App.tsx', import.meta.url), 'utf8'),
+        readFile(new URL(
+          '../../src/management/agent-installation-readiness-service.ts',
+          import.meta.url,
+        ), 'utf8'),
+        readFile(new URL('../../src/server/server-composition.ts', import.meta.url), 'utf8'),
+      ]);
+
+    // 就绪卡片标题使用服务端按 AgentClass 解析出的 displayName。
+    expect(settingsSource).toContain(
+      "{agent.displayName} {agent.status === 'installed' ? '已就绪' : '未就绪'}",
+    );
+    expect(settingsSource).toContain(
+      "{agent.displayName} {agent.status === 'installed' ? '已安装' : '可选增强'}",
+    );
+    expect(bannerSource).toContain('<strong>{codex.displayName} 未安装，可选增强</strong>');
+
+    // 任何用户可见文案都不得再硬编码“智能体 N”，否则会与“智能体名称”不一致。
+    expect(settingsSource).not.toMatch(/智能体 [12]/u);
+    expect(bannerSource).not.toMatch(/智能体 [12]/u);
+    expect(appSource).not.toMatch(/智能体 [12]/u);
+    expect(serviceSource).not.toMatch(/智能体 [12]/u);
+
+    // 服务端必须把安装对应到 AgentClass 后再取名，而不是用 agentId 索引 agentClasses。
+    expect(compositionSource).toContain('agentClassRefForInstallation({');
+    expect(compositionSource).not.toContain('config.agentClasses[agentId]');
+  });
+
   it('exposes a capability profile refresh action backed by the unsaved candidate preview API', async () => {
     const agentSource = await readFile(new URL(
       '../../web/src/components/AgentClassConfig.tsx',
@@ -438,7 +471,7 @@ describe('Settings workbench model semantics', () => {
 
     expect(panel).toContain('智能体');
     expect(panel).toContain('高级设置');
-    expect(panel).toContain("displayName: entry.displayName.trim()");
+    expect(panel).toContain("displayName: (entry.displayName ?? '').trim()");
     expect(panel).toContain('agentReadiness');
     expect(routing).toContain('名称');
     expect(routing).not.toContain('EXECUTOR');
