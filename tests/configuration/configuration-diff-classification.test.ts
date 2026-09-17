@@ -60,6 +60,30 @@ describe('configuration diff classification', () => {
     ]);
   });
 
+  it('classifies AgentClass display name changes as hot activation', () => {
+    // 展示名在投影时从当前快照解析，不进入编译产物，也不影响路由语义，
+    // 因此与 primaryUseCases / executorManual 同类，必须可热激活。
+    const result = classifyConfigurationDiff(
+      {
+        agentClasses: {
+          'codex-engineering': { displayName: '智能体 2' },
+        },
+      },
+      {
+        agentClasses: {
+          'codex-engineering': { displayName: 'Codex Engineering' },
+        },
+      },
+    );
+
+    expect(result.classification).toBe<ConfigurationChangeClass>('hot');
+    expect(result.restartRequired).toBe(false);
+    expect(result.restartPaths).toEqual([]);
+    expect(result.entries.map(entry => entry.path)).toEqual([
+      'agentClasses.codex-engineering.displayName',
+    ]);
+  });
+
   it('classifies Harness and Permission Profile changes as restart required', () => {
     const result = classifyConfigurationDiff(
       {

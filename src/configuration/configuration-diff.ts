@@ -55,6 +55,10 @@ function isHotPath(path: string): boolean {
     // Routing use-case hints guide AgentClass choice and are resolved from the
     // current active revision before each Planner turn, so they are hot-safe
     // (ADR-0033: a successful idle activation affects the next Planner turn).
+    // A display name only labels a projection; it is resolved from the current
+    // active revision at projection time and never enters compiled artifacts or
+    // routing decisions, so it is hot-safe for the same reason as use-case hints.
+    || /^agentClasses\.[^.]+\.displayName$/u.test(path)
     || /^agentClasses\.[^.]+\.primaryUseCases$/u.test(path)
     || /^agentClasses\.[^.]+\.avoidUseCases$/u.test(path)
     || /^agentClasses\.[^.]+\.executorManual(?:\.|$)/u.test(path);
