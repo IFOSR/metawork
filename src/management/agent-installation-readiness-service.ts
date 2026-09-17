@@ -72,7 +72,25 @@ export class AgentInstallationReadinessService {
   }
 
   getState(): readonly AgentReadiness[] {
-    return this.state;
+    return this.deriveNames(this.state);
+  }
+
+  /**
+   * 配置改名后重新投影名称并广播订阅者，不重新探测进程。
+   *
+   * 名称是配置的投影，不是探测事实；把它留在缓存里会让设置里的改名在
+   * 就绪卡片上停留到下次探测（TTL 或手动重新检测）才生效。
+   */
+  republish(): void {
+    this.publish();
+  }
+
+  private deriveNames(agents: readonly AgentReadiness[]): readonly AgentReadiness[] {
+    return agents.map(agent => {
+      const displayName = this.resolveDisplayName(agent.agentId)?.trim()
+        || resolveAgentDisplayName(agent.agentId);
+      return displayName === agent.displayName ? agent : { ...agent, displayName };
+    });
   }
 
   subscribe(listener: (agents: readonly AgentReadiness[]) => void): () => void {
@@ -83,7 +101,7 @@ export class AgentInstallationReadinessService {
   async refresh(input: { force?: boolean } = {}): Promise<readonly AgentReadiness[]> {
     const force = input.force === true;
     if (!force && this.lastRefreshAt > 0 && this.now() - this.lastRefreshAt < this.ttlMs) {
-      return this.state;
+      return this.getState();
     }
     if (this.refreshPromise) return this.refreshPromise;
 
@@ -97,7 +115,7 @@ export class AgentInstallationReadinessService {
         this.state = next;
         this.lastRefreshAt = this.now();
         this.publish();
-        return this.state;
+        return this.getState();
       })
       .finally(() => {
         this.refreshPromise = null;
@@ -159,7 +177,8 @@ export class AgentInstallationReadinessService {
   }
 
   private publish(): void {
-    for (const listener of this.listeners) listener(this.state);
+    const agents = this.getState();
+    for (const listener of this.listeners) listener(agents);
   }
 }
 

@@ -807,6 +807,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     authorized: true,
   });
   let gatewayFeishuManager: FeishuRuntimeManager | null = null;
+  // 由稍后构造的 AgentInstallationReadinessService 填充：配置激活会改动
+  // AgentClass 展示名，必须立刻重新投影并广播，否则就绪卡片会停在旧名字。
+  let republishAgentReadiness: (() => void) | null = null;
   const configurationRuntimeCoordinator = new ConfigurationRuntimeCoordinator({
     service: configurationService,
     gate: configurationActivationGate,
@@ -886,6 +889,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       stagedConfiguration.plannerBinding = nextStaged.plannerBinding;
       stagedConfiguration.plannerBindingFingerprint = nextStaged.plannerBindingFingerprint;
       await gatewayFeishuManager?.applyConfiguration(buildApplicationConfig(snapshot));
+      republishAgentReadiness?.();
     },
     onActivationFailed: async ({ snapshot, runtime }) => {
       const restored = buildStagedLegacyConfiguration({ migratedSnapshot: snapshot });
@@ -912,6 +916,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       stagedConfiguration.plannerBinding = restored.plannerBinding;
       stagedConfiguration.plannerBindingFingerprint = restored.plannerBindingFingerprint;
       await gatewayFeishuManager?.applyConfiguration(buildApplicationConfig(snapshot));
+      republishAgentReadiness?.();
     },
   });
   const agentReadiness = new AgentInstallationReadinessService({
@@ -933,6 +938,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       );
     },
   });
+  republishAgentReadiness = () => agentReadiness.republish();
   const runtimePort = activatedAccountRuntime.getConversationPort();
   const conversationRegistry = new ConversationRegistry();
 

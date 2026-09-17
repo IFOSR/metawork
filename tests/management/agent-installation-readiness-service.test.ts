@@ -27,6 +27,54 @@ describe('AgentInstallationReadinessService', () => {
     expect(pi.detail).toBeNull();
   });
 
+  it('re-projects renamed agents without re-probing the installed processes', async () => {
+    let piName = '智能体 1';
+    let probes = 0;
+    const service = new AgentInstallationReadinessService({
+      probe: async command => {
+        probes += 1;
+        return installed(`${command} 1.2.3`);
+      },
+      resolveDisplayName: agentId => (agentId === 'pi-agent' ? piName : `${piName} 2`),
+    });
+
+    await service.refresh({ force: true });
+    expect(probes).toBe(2);
+    expect(service.getState().find(agent => agent.agentId === 'pi-agent')?.displayName)
+      .toBe('智能体 1');
+
+    // 用户在设置里改名后，投影必须立刻反映新名字，且不得重新探测进程。
+    piName = '我的研究员';
+    expect(service.getState().find(agent => agent.agentId === 'pi-agent')?.displayName)
+      .toBe('我的研究员');
+    expect(service.getState().find(agent => agent.agentId === 'codex-cli')?.displayName)
+      .toBe('我的研究员 2');
+    expect(probes).toBe(2);
+  });
+
+  it('publishes renamed agents to subscribers without a new probe', async () => {
+    let piName = '智能体 1';
+    let probes = 0;
+    const service = new AgentInstallationReadinessService({
+      probe: async () => {
+        probes += 1;
+        return installed('pi 1.2.3');
+      },
+      resolveDisplayName: agentId => (agentId === 'pi-agent' ? piName : undefined),
+    });
+    const published: string[][] = [];
+    service.subscribe(agents => published.push(agents.map(agent => agent.displayName)));
+
+    await service.refresh({ force: true });
+    expect(probes).toBe(2);
+
+    piName = 'Pi Research';
+    service.republish();
+
+    expect(published.at(-1)?.[0]).toBe('Pi Research');
+    expect(probes).toBe(2);
+  });
+
   it('distinguishes missing, timeout, non-zero, and launch-error probes', async () => {
     const service = new AgentInstallationReadinessService({
       probe: async command => {

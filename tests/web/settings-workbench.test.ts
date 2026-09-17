@@ -297,6 +297,13 @@ describe('Settings workbench model semantics', () => {
     // 服务端必须把安装对应到 AgentClass 后再取名，而不是用 agentId 索引 agentClasses。
     expect(compositionSource).toContain('agentClassRefForInstallation({');
     expect(compositionSource).not.toContain('config.agentClasses[agentId]');
+
+    // 名字是被缓存的探测结果之外的东西：改名后必须重新投影并广播，
+    // 否则卡片要等到下次探测（TTL 或手动重新检测）才更新。
+    expect(serviceSource).toContain('republish(): void');
+    expect(serviceSource).toContain('deriveNames(this.state)');
+    expect(compositionSource).toContain('republishAgentReadiness = () => agentReadiness.republish();');
+    expect(compositionSource).toContain('republishAgentReadiness?.();');
   });
 
   it('exposes a capability profile refresh action backed by the unsaved candidate preview API', async () => {
