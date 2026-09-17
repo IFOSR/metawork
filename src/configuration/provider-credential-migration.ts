@@ -5,7 +5,26 @@ import {
   createLegacyProductionSecretStore,
   prepareProductionSecretStore,
 } from './production-secret-store.js';
+import type { SecretStore } from './secret-store.js';
 import type { ProviderDefinition } from './types.js';
+
+export interface LegacyProviderStoreInput {
+  readonly secretsRoot: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly references: readonly string[];
+}
+
+/**
+ * Platform-aware legacy store: the account `secrets/` directory on file-based
+ * installs, the macOS Keychain when the active references use `keychain:`.
+ */
+export function defaultLegacyProviderStore(input: LegacyProviderStoreInput): SecretStore {
+  return createLegacyProductionSecretStore({
+    secretsRoot: input.secretsRoot,
+    env: input.env,
+    references: input.references,
+  });
+}
 
 export type ProviderCredentialMigrationStatus =
   'already-migrated' | 'migrated' | 'legacy-store-unavailable';
@@ -37,6 +56,8 @@ export async function migrateLegacyProviderCredentials(input: {
   providers: Record<string, ProviderDefinition>;
   legacySecretsDir: string;
   env?: NodeJS.ProcessEnv;
+  /** Test seam; defaults to the platform-aware legacy store. */
+  createLegacyStore?: (input: LegacyProviderStoreInput) => SecretStore;
 }): Promise<ProviderCredentialMigrationResult> {
   if (existsSync(input.target.filePath)) {
     // A valid file is the migration marker. A malformed one fails closed, just
@@ -45,12 +66,13 @@ export async function migrateLegacyProviderCredentials(input: {
     return { status: 'already-migrated', imported: [], missing: [] };
   }
 
-  let legacyStore;
+  const references = Object.values(input.providers).map(provider => provider.apiKeyRef);
+  let legacyStore: SecretStore;
   try {
-    legacyStore = createLegacyProductionSecretStore({
+    legacyStore = (input.createLegacyStore ?? defaultLegacyProviderStore)({
       secretsRoot: input.legacySecretsDir,
       env: input.env ?? process.env,
-      references: Object.values(input.providers).map(provider => provider.apiKeyRef),
+      references,
     });
   } catch (error) {
     // No Provider can be migrated from the legacy layout. Report it instead of

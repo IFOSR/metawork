@@ -501,8 +501,12 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     });
   }
 
-  // 2. Load the sole active configuration revision. Legacy import belongs to
-  // the transactional installer rather than ordinary runtime startup.
+  // 2. Load the sole active configuration revision. Legacy *configuration
+  // document* import belongs to the transactional installer rather than
+  // ordinary runtime startup. The one exception is the Provider credential
+  // cutover in step 3, which must also run ahead of the candidate probe inside
+  // the upgrade transaction, because that probe runs before activation.
+  // See configuration/provider-credential-migration.ts.
 
   // ADR-0031: 账户数据根——迁移并激活 local-default 账户，运行时使用账户作用域数据。
   await new AccountLayoutMigrator({ paths }).migrate();

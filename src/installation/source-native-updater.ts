@@ -218,6 +218,14 @@ export class SourceNativeUpdater {
       await repository.recover();
       const targetRevision = basename(target.previousTargets.configuration);
       const targetSnapshot = await repository.readSnapshot(targetRevision);
+      // Rollback probes the target configuration before activation, so it needs
+      // the same Provider credential migration the forward update performs.
+      await migrateLegacyProviderCredentials({
+        target: this.dependencies.secretStore,
+        providers: targetSnapshot.config.providers,
+        legacySecretsDir: accountPaths.secrets,
+        env: process.env,
+      });
       const targetReleaseRoot = resolve(dirname(paths.appCurrent), target.previousTargets.application);
       const probe = createProductionConfigurationProbe({
         releaseRoot: targetReleaseRoot,

@@ -383,6 +383,42 @@ describe('SourceNativeUpdater', () => {
       .toBe('runtime-legacy-next\n');
   });
 
+  it('migrates legacy account secrets before probing a rollback to an older release', async () => {
+    const fixture = await installedFixture();
+    const nextSource = join(fixture.home, 'source-rollback-legacy');
+    const nextPlanner = join(fixture.home, 'planner-rollback-legacy');
+    fixtureRelease(nextSource, nextPlanner, 'runtime-rollback-legacy\n', 'planner-rollback-legacy\n');
+    const updater = new SourceNativeUpdater({
+      paths: fixture.paths,
+      secretStore: fixture.secretStore,
+      detectCommand: async command => command === 'codex',
+      isServerRunning: async () => false,
+    });
+    await updater.update({
+      releaseId: '1.2.1-preview.0',
+      sourceRoot: nextSource,
+      plannerRoot: nextPlanner,
+    });
+
+    // The rollback target predates the credentials file, so restore the legacy
+    // layout an older installation would have had.
+    const credentialsFile = join(fixture.paths.root, 'credentials.json');
+    rmSync(credentialsFile, { force: true });
+    const legacyStore = new FileSecretStore(fixture.accountPaths.secrets);
+    await legacyStore.initialize();
+    await legacyStore.put('file-secret:anyfusion/provider', 'legacy-provider-key');
+
+    await expect(updater.rollback('1.2.0-preview.0'))
+      .resolves.toMatchObject({ outcome: 'committed' });
+
+    expect(JSON.parse(readFileSync(credentialsFile, 'utf8'))).toEqual({
+      version: 1,
+      providers: { provider: 'legacy-provider-key' },
+    });
+    expect(readFileSync(join(fixture.paths.appCurrent, 'dist', 'index.js'), 'utf8'))
+      .toBe('runtime-initial\n');
+  });
+
   it('replaces an orphaned staged release directory left by a rolled-back update', async () => {
     const fixture = await installedFixture();
     const orphan = join(fixture.paths.releases, '1.2.1-preview.0');

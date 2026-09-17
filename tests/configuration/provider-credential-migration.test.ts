@@ -6,6 +6,8 @@ import { CredentialsFileSecretStore } from '../../src/configuration/credentials-
 import { FileSecretStore } from '../../src/configuration/file-secret-store.js';
 import { migrateLegacyProviderCredentials } from '../../src/configuration/provider-credential-migration.js';
 import type { ProviderDefinition } from '../../src/configuration/types.js';
+import type { SecretStore } from '../../src/configuration/secret-store.js';
+import type { LegacyProviderStoreInput } from '../../src/configuration/provider-credential-migration.js';
 
 const cleanup: string[] = [];
 
@@ -121,5 +123,42 @@ describe('migrateLegacyProviderCredentials', () => {
     expect(result.status).toBe('legacy-store-unavailable');
     expect(result.detail).toBeTruthy();
     expect(() => readFileSync(credentialsFile)).toThrow();
+  });
+
+  it('migrates a Keychain-backed legacy installation through the same seam', async () => {
+    // macOS installs made before the credentials file kept the key in the
+    // Keychain and referenced it with a keychain: scheme. The migration has to
+    // follow the references rather than assume the file-based layout.
+    const { legacySecretsDir, target, credentialsFile } = fixture();
+    const requested: LegacyProviderStoreInput[] = [];
+    const keychainStore: SecretStore = {
+      get: async reference => {
+        if (reference !== 'keychain:anyfusion/providers/provider') {
+          throw new Error(`unexpected reference: ${reference}`);
+        }
+        return 'keychain-provider-key';
+      },
+      put: async () => undefined,
+      delete: async () => undefined,
+    };
+
+    const result = await migrateLegacyProviderCredentials({
+      target,
+      providers: { provider: provider('keychain:anyfusion/providers/provider') },
+      legacySecretsDir,
+      env: {},
+      createLegacyStore: input => {
+        requested.push(input);
+        return keychainStore;
+      },
+    });
+
+    expect(requested).toHaveLength(1);
+    expect(requested[0]!.references).toEqual(['keychain:anyfusion/providers/provider']);
+    expect(result).toMatchObject({ status: 'migrated', imported: ['provider'], missing: [] });
+    expect(JSON.parse(readFileSync(credentialsFile, 'utf8'))).toEqual({
+      version: 1,
+      providers: { provider: 'keychain-provider-key' },
+    });
   });
 });
