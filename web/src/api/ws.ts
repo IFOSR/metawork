@@ -6,6 +6,7 @@ import type {
   InteractionTraceStatus,
   ServerMessage,
   ConfigurationRuntimeState,
+  AgentReadiness,
 } from './types';
 import type {
   ArtifactProjection,
@@ -16,6 +17,7 @@ import type {
 
 export interface WsHandlers {
   onHello?: (sessionId: string | null) => void;
+  onAgentReadinessState?: (agents: AgentReadiness[]) => void;
   onSessionCatalog?: (activeSessionId: string, sessions: WebSessionMetadata[]) => void;
   onWorkspaceDirectory?: (
     activeWorkspaceId: string,
@@ -80,7 +82,11 @@ export interface WsHandlers {
     completedAt?: string | null,
   ) => void;
   onConfigurationRuntimeState?: (state: ConfigurationRuntimeState) => void;
-  onError?: (message: string) => void;
+  onError?: (message: string, detail?: {
+    requestId?: string;
+    code?: string;
+    agentId?: string;
+  }) => void;
   onUnauthorized?: () => void;
   onStatusChange?: (connected: boolean) => void;
 }
@@ -114,6 +120,9 @@ export class WsClient {
         case 'hello':
           this.handlers.onStatusChange?.(true);
           this.handlers.onHello?.(message.sessionId);
+          break;
+        case 'agent_readiness_state':
+          this.handlers.onAgentReadinessState?.(message.agents);
           break;
         case 'session_catalog':
           this.handlers.onSessionCatalog?.(message.activeSessionId, message.sessions);
@@ -215,7 +224,15 @@ export class WsClient {
             this.rejectAuthentication();
             break;
           }
-          this.handlers.onError?.(message.message);
+          if (message.requestId || message.code || message.agentId) {
+            this.handlers.onError?.(message.message, {
+              ...(message.requestId ? { requestId: message.requestId } : {}),
+              ...(message.code ? { code: message.code } : {}),
+              ...(message.agentId ? { agentId: message.agentId } : {}),
+            });
+          } else {
+            this.handlers.onError?.(message.message);
+          }
           break;
       }
     };
@@ -233,10 +250,16 @@ export class WsClient {
     };
   }
 
-  sendInput(text: string, attachments?: Array<{ attachmentId: string }>): boolean {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
-    this.socket.send(JSON.stringify({ type: 'input', text, attachments } satisfies ClientMessage));
-    return true;
+  sendInput(text: string, attachments?: Array<{ attachmentId: string }>): string | null {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return null;
+    const requestId = `req_${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}_${Math.random()}`}`;
+    this.socket.send(JSON.stringify({
+      type: 'input',
+      requestId,
+      text,
+      attachments,
+    } satisfies ClientMessage));
+    return requestId;
   }
 
   close(): void {

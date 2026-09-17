@@ -2,21 +2,26 @@ import { useEffect, useRef, useState } from 'react';
 import type { HttpClient } from '../api/http';
 import type {
   ActivateResult,
+  AgentReadiness,
   ConfigSnapshot,
   ConfigurationCompletionResult,
   ConfigurationRuntimeState,
   ExecutorCapabilityManual,
   ExecutorManualAnalysis,
+  ProviderCredentialStatus,
 } from '../api/types';
-import { resolveProviderSecretReference } from './provider-secret-state';
+import {
+  maskApiKey,
+  resolveProviderSecretReferenceFromConfiguration,
+} from './provider-secret-state';
 import { buildPlannerScopedConfiguration, keepActivePlanner } from '../planner-update';
+import { ModelConnectionDialog, type NewModelConnectionDraft } from './ModelConnectionDialog';
 import {
   AgentClassConfig,
 } from './AgentClassConfig';
 import {
   buildProviderModelOptions,
   invalidRoutingDrafts,
-  humanizeAgentClassRef,
   humanizeProviderRef,
   refsForModelIdentity,
   removeModelRefsFromRoutingDraft,
@@ -25,8 +30,9 @@ import {
   evaluateModelCompatibility,
   MODEL_CAPABILITY_IDS,
   MODEL_CAPABILITY_LABELS,
+  resolveAgentDisplayName,
+  resolveProviderDisplayName,
   type AgentClassRoutingFacts,
-  type ConfigurationFieldState,
   type ModelCapabilityId,
   type SettingsModelEntry,
   type SettingsProviderEntry,
@@ -37,6 +43,7 @@ interface SettingsPanelProps {
   http: HttpClient | null;
   runtime: ConfigurationRuntimeState | null;
   onClose: () => void;
+  agentReadiness?: AgentReadiness[];
 }
 
 type ProviderDraft = SettingsProviderEntry & { apiKey: string };
@@ -152,15 +159,18 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
       providerRef,
       {
         providerRef,
-        displayName: completed?.displayName
+        displayName: typeof provider.displayName === 'string' && provider.displayName.trim()
+          ? provider.displayName.trim()
+          : completed?.displayName
           ?? preset?.displayName
-          ?? humanizeProviderRef(providerRef),
+          ?? resolveProviderDisplayName(providerRef),
         baseUrl,
         modelIds: [...new Set([
           ...(completed?.modelIds ?? []),
           ...(preset?.modelIds ?? []),
         ])],
         apiKey: '',
+        maskedApiKey: completed?.maskedApiKey ?? null,
         credentialState: completed?.credentialState ?? '需要确认',
         enabled: provider.enabled !== false,
       },
@@ -185,6 +195,7 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
       baseUrl,
       modelIds: completed.modelIds,
       apiKey: '',
+      maskedApiKey: completed.maskedApiKey ?? null,
       credentialState: completed.credentialState,
       enabled: true,
     };
@@ -259,9 +270,13 @@ function loadRoutingDraft(config: RawRecord): RoutingDraft {
         : modelRefs[0] ?? '';
     const fallback = asRecord(policy.objective);
     return [
-      agentClassRef,
-      {
-        mode,
+       agentClassRef,
+       {
+         displayName: resolveAgentDisplayName(
+           agentClassRef,
+           typeof agentClass.displayName === 'string' ? agentClass.displayName : undefined,
+         ),
+         mode,
         modelRef,
         allowedModelRefs: allowedModelRefs.length > 0
           ? allowedModelRefs
@@ -305,9 +320,12 @@ function loadRoutingFacts(config: RawRecord): RoutingFacts {
     const avoidUseCases = stringList(agentClass.avoidUseCases);
     return [
       agentClassRef,
-      {
-        agentClassRef,
-        displayName: humanizeAgentClassRef(agentClassRef),
+       {
+         agentClassRef,
+        displayName: resolveAgentDisplayName(
+          agentClassRef,
+          typeof agentClass.displayName === 'string' ? agentClass.displayName : undefined,
+        ),
         kind: baseFacts.kind,
         harnessRef,
         harnessLabel: humanizeProviderRef(harnessRef),
@@ -325,11 +343,12 @@ function loadRoutingFacts(config: RawRecord): RoutingFacts {
   }));
 }
 
-function fieldStateLabel(state: ConfigurationFieldState): string {
-  return state;
-}
-
-export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
+export function SettingsPanel({
+  http,
+  runtime,
+  onClose,
+  agentReadiness = [],
+}: SettingsPanelProps) {
   const [activationState, setActivationState] = useState<ConfigurationRuntimeState | null>(runtime);
   const [revisionId, setRevisionId] = useState<string | null>(null);
   const [draft, setDraft] = useState<RoutingDraft | null>(null);
@@ -352,6 +371,7 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
   const [manualPreviews, setManualPreviews] = useState<Record<string, ManualPreviewState>>({});
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [modelDialogOpen, setModelDialogOpen] = useState(false);
   const secretStatusVersion = useRef(0);
 
   const applyConfigSnapshot = (
@@ -460,9 +480,10 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
             ref,
             {
               ...provider,
+              maskedApiKey: existence[ref]?.maskedApiKey ?? provider.maskedApiKey ?? null,
               credentialState: provider.apiKey
                 ? provider.credentialState
-                : existence[ref] ? '已自动发现' : provider.credentialState,
+                : existence[ref]?.configured ? '已自动发现' : provider.credentialState,
             },
           ])),
         }
@@ -486,14 +507,36 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
     ]);
     setCapabilityCatalog(completion.modelCapabilityCatalog ?? {});
     const existence = await http.getSecretStatus(Object.keys(completion.providers))
-      .catch(() => ({} as Record<string, boolean>));
+      .catch((): Record<string, ProviderCredentialStatus> => ({}));
+    const configuredByUrl = new Map<string, {
+      configured: boolean;
+      maskedApiKey: string | null;
+    }>();
+    for (const [providerRef, provider] of Object.entries(completion.providers)) {
+      const status = existence[providerRef];
+      if (!status?.configured || !provider.baseUrl) continue;
+      configuredByUrl.set(normalizeProviderUrl(provider.baseUrl), {
+        configured: true,
+        maskedApiKey: status.maskedApiKey,
+      });
+    }
     applyConfigSnapshot(snapshot, {
       ...completion,
       providers: Object.fromEntries(
         Object.entries(completion.providers).map(([providerRef, provider]) => [
           providerRef,
-          existence[providerRef]
-            ? { ...provider, credentialState: '已自动发现' as const }
+          existence[providerRef]?.configured
+            ? {
+              ...provider,
+              maskedApiKey: existence[providerRef]?.maskedApiKey ?? null,
+              credentialState: '已自动发现' as const,
+            }
+            : configuredByUrl.get(normalizeProviderUrl(provider.baseUrl ?? ''))?.configured
+              ? {
+                ...provider,
+                maskedApiKey: configuredByUrl.get(normalizeProviderUrl(provider.baseUrl ?? ''))!.maskedApiKey,
+                credentialState: '已自动发现' as const,
+              }
             : provider,
         ]),
       ),
@@ -525,12 +568,16 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
         if (compatibility.eligible) continue;
         warnings.push(
           `${agentFacts.displayName}：${model.modelId} 缺少 ${compatibility.missingCapabilities.join(' / ')}`
-          + '，激活或任务调度会被拒绝（可在上方 Provider 卡片中补充该模型的能力标签）',
+          + '，激活或任务调度会被拒绝（可在上方模型卡片中补充该模型的能力标签）',
         );
       }
     }
     return [...new Set(warnings)];
   })();
+  // 就绪卡片与“智能体名称”必须同名：卡片直接用服务端按 AgentClass 解析出的
+  // displayName，这里的必需智能体名用于卡片正文里的交叉引用。
+  const requiredAgentName = agentReadiness.find(agent => agent.required)?.displayName
+    ?? '必需智能体';
   const editingDisabled = loading || activationState?.activationAllowed === false;
 
   const buildCandidateConfiguration = (originalConfig: RawRecord): {
@@ -556,14 +603,12 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
       providers[provider.providerRef] = {
         ...originalProvider,
         protocol: originalProvider.protocol ?? 'openai-compatible',
-        baseUrl: provider.baseUrl,
-        apiKeyRef: resolveProviderSecretReference(
+        displayName: provider.displayName.trim(),
+        baseUrl: provider.baseUrl.trim(),
+        apiKeyRef: resolveProviderSecretReferenceFromConfiguration(
           provider.providerRef,
           provider.baseUrl,
-          Object.fromEntries(Object.entries(originalProviders).map(([ref, value]) => [ref, {
-            baseUrl: asRecord(value).baseUrl as string | undefined,
-            apiKeyRef: asRecord(value).apiKeyRef as string | undefined,
-          }])),
+          originalProviders,
           {},
           knownSecretReferences,
         ),
@@ -629,6 +674,7 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
           : undefined;
       agentClasses[ref] = {
         ...current,
+        displayName: (entry.displayName ?? '').trim(),
         primaryUseCases: entry.primaryUseCases ?? [],
         avoidUseCases: entry.avoidUseCases ?? [],
         ...(manualSourceText || current.executorManual
@@ -704,13 +750,13 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
     if (!modelRef) return ['Planner 尚未选择模型'];
     const model = catalog.models[modelRef];
     if (!model) {
-      return [`Planner 绑定的模型 ${modelRef} 不在模型目录中，请重新选择`];
+      return [`规划设置绑定的模型 ${modelRef} 不在模型目录中，请重新选择`];
     }
     const compatibility = evaluateModelCompatibility(model, facts.planner);
     if (compatibility.eligible) return [] as string[];
     return [
-      `Planner 绑定 ${model.modelId} 缺少 ${compatibility.missingCapabilities.join(' / ')}`
-      + '，更新会被拒绝（可在 Provider 卡片中补充该模型的能力标签）',
+      `规划设置绑定 ${model.modelId} 缺少 ${compatibility.missingCapabilities.join(' / ')}`
+      + '，更新会被拒绝（可在模型卡片中补充该模型的能力标签）',
     ];
   })();
 
@@ -764,7 +810,7 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
     }
     if (missingCredentials.length > 0) {
       setResult(null);
-      setLoadError(`以下 Provider 缺少凭据：${missingCredentials.join('、')}`);
+      setLoadError(`以下模型连接缺少 API Key：${missingCredentials.join('、')}`);
       return;
     }
     setLoadError(null);
@@ -872,30 +918,35 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
     }
   };
 
-  const addProvider = () => {
+  const createModelConnection = (connection: NewModelConnectionDraft) => {
+    let index = Object.keys(catalog?.providers ?? {}).length + 1;
+    let providerRef = `custom-model-${index}`;
+    while (catalog?.providers[providerRef]) {
+      index += 1;
+      providerRef = `custom-model-${index}`;
+    }
+    const provider: ProviderDraft = {
+      providerRef,
+      displayName: connection.displayName,
+      baseUrl: connection.baseUrl,
+      modelIds: [],
+      apiKey: connection.apiKey,
+      maskedApiKey: maskApiKey(connection.apiKey),
+      credentialState: '已自动发现',
+      enabled: true,
+    };
     setCatalog(current => {
       if (!current) return current;
-      let index = Object.keys(current.providers).length + 1;
-      let providerRef = `custom-provider-${index}`;
-      while (current.providers[providerRef]) {
-        index += 1;
-        providerRef = `custom-provider-${index}`;
-      }
       return {
         ...current,
         providers: {
           ...current.providers,
-          [providerRef]: {
-            providerRef,
-            displayName: '自定义 Provider',
-            baseUrl: '',
-            modelIds: [],
-            apiKey: '',
-            credentialState: '缺失',
-          },
+          [providerRef]: provider,
         },
       };
     });
+    setModelDialogOpen(false);
+    void discoverModels(provider);
   };
 
   const removeProvider = (providerRef: string) => {
@@ -1024,7 +1075,7 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
           ...current,
           [provider.providerRef]: {
             status: 'error',
-            message: '未能获取模型列表：请检查 Base URL 与 API Key，或确认该 Provider 提供 OpenAI 兼容的 /models 接口。',
+          message: '未能获取模型列表：请检查 API URL 与 API Key，或确认该模型服务提供 OpenAI 兼容的 /models 接口。',
           },
         }));
         return;
@@ -1092,6 +1143,81 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
     );
   };
 
+  const plannerSection = (
+    <section className="settings-section planner-section">
+      <div className="section-heading">
+        <div>
+          <div className="settings-eyebrow">PLANNING</div>
+          <h3>规划设置</h3>
+          <p>
+            规划使用的模型来自模型列表。修改后单独更新，其他设置的保存不会覆盖它。
+          </p>
+        </div>
+        <span className={`state-badge ${plannerDirty ? 'state-badge-warning' : ''}`}>
+          {plannerDirty ? '有未更新的修改' : '与运行中一致'}
+        </span>
+      </div>
+
+      {facts?.planner && plannerDraft && catalog && (
+        <AgentClassConfig
+          facts={facts.planner}
+          draft={plannerDraft}
+          models={Object.values(catalog.models)}
+          providers={Object.values(catalog.providers)}
+          onChange={next => {
+            setDraft(current => (current ? { ...current, planner: next } : current));
+          }}
+        />
+      )}
+
+      {plannerPrecheckWarnings.length > 0 && (
+        <div className="result-banner result-error">
+          <ul className="issues">
+            {plannerPrecheckWarnings.map((warning, index) => (
+              <li key={index}>{warning}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="planner-update-row">
+        <button
+          className="primary-button"
+          onClick={() => { void updatePlanner(); }}
+          disabled={plannerUpdating
+            || plannerBlocked
+            || !plannerDirty
+            || plannerPrecheckWarnings.length > 0}
+        >
+          {plannerUpdating ? '更新规划设置中…' : '更新规划设置'}
+        </button>
+        <span className="planner-update-hint">
+          {plannerBlocked
+            ? `当前不能更新：${activationState?.blockingReasons?.map(reason => reason.message).join('；')
+              || '运行时正在处理任务'}`
+            : plannerPrecheckWarnings.length > 0
+              ? '请先解决上方的问题'
+              : !plannerDirty
+                ? '没有待更新的规划设置修改'
+                : '仅提交规划设置及它依赖的模型连接'}
+        </span>
+      </div>
+
+      {plannerResult && (
+        <div className={`result-banner ${plannerResult.ok ? 'result-ok' : 'result-error'}`}>
+          {plannerResult.ok
+            ? '规划设置已更新。'
+            : `更新失败（${plannerResult.code ?? 'unknown'}）`}
+          {plannerResult.issues && plannerResult.issues.length > 0 && (
+            <ul className="issues">
+              {plannerResult.issues.map((issue, index) => <li key={index}>{issue}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
+    </section>
+  );
+
   return (
     <div className="drawer-backdrop" onClick={onClose}>
       <div className="drawer settings-workbench" onClick={event => event.stopPropagation()}>
@@ -1099,7 +1225,7 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
           <div>
             <div className="settings-eyebrow">CONFIGURATION WORKBENCH</div>
             <h2>设置</h2>
-            <p>先配置 Provider 与模型目录，再单独更新 Planner，最后保存并激活 Executor 路由与运行时策略。</p>
+            <p>管理模型连接、智能体路由和运行策略。模型连接只需要名称、API URL 和 API Key。</p>
           </div>
           <div className="settings-header-actions">
             <span className={`activation-pill activation-pill-${activationState?.activationStatus ?? 'idle'}`}>
@@ -1123,37 +1249,20 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
           {draft && catalog && facts && runtimePolicy && (
             <div className="settings-sections">
 
-              <section className="settings-section runtime-policy-section">
-                <div className="section-heading">
-                  <div>
-                    <div className="settings-eyebrow">00 / RUNTIME CAPACITY</div>
-                    <h3>并行与队列</h3>
-                    <p>不同会话可并行执行；同一会话的后续 Task 会排队。</p>
-                  </div>
-                </div>
-                <div className="runtime-policy-grid">
-                  <label className="settings-field">
-                    <span>同时运行任务数</span>
-                    <input className="text-input" type="number" min={1} max={8}
-                      value={runtimePolicy.maxConcurrentTasks}
-                      onChange={event => setRuntimePolicy(current => current ? {
-                        ...current, maxConcurrentTasks: Number(event.target.value),
-                      } : current)} />
-                    <small>最多可同时运行多少个会话任务；同一会话内仍按顺序执行。</small>
-                  </label>
-                </div>
-                <div className="routing-section-note">
-                  降低上限不会取消当前运行中的 Task，只影响下一轮调度；配置激活仍遵守现有 revision 和运行中安全门。
-                </div>
-              </section>
               <section className="settings-section">
                 <div className="section-heading">
                   <div>
-                    <div className="settings-eyebrow">01 / PROVIDER CATALOG</div>
-                    <h3>Provider</h3>
-                    <p>Provider 内加入的模型才会进入 Planner 和 Executor 的候选集。</p>
+                    <div className="settings-eyebrow">01 / MODEL CONNECTIONS</div>
+                    <h3 id="models-heading">模型列表</h3>
+                    <p>每个模型连接可以独立命名、更新 API Key，并提供给智能体进行路由。</p>
                   </div>
-                  <button className="ghost-button" onClick={addProvider}>新增 Provider</button>
+                  <button
+                    className="primary-button"
+                    disabled={editingDisabled}
+                    onClick={() => setModelDialogOpen(true)}
+                  >
+                    新增模型
+                  </button>
                 </div>
                 <div className="provider-grid">
                   {Object.values(catalog.providers).map(provider => {
@@ -1163,31 +1272,57 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
                       provider.providerRef,
                     );
                     return (
-                      <article className="provider-card" key={provider.providerRef}>
+                      <article className="provider-card model-connection-card" key={provider.providerRef}>
                         <div className="provider-card-heading">
                           <div>
-                            <h4>{provider.displayName}</h4>
-                            <span className="mono">{provider.baseUrl || '尚未填写 Base URL'}</span>
+                            <h4>{provider.displayName || '未命名模型'}</h4>
+                            <span className="mono">{provider.baseUrl || '尚未填写 API URL'}</span>
                           </div>
                           <div className="provider-card-actions">
-                            <span className={`state-badge ${provider.credentialState === '缺失' ? 'state-badge-warning' : ''}`}>
-                              {fieldStateLabel(provider.credentialState)}
+                            <span className={`state-badge ${
+                              !provider.apiKey.trim() && !provider.maskedApiKey
+                                ? 'state-badge-warning'
+                                : ''
+                            }`}>
+                              {provider.apiKey.trim()
+                                ? `已配置 · ${maskApiKey(provider.apiKey.trim())}`
+                                : provider.maskedApiKey
+                                  ? `已配置 · ${provider.maskedApiKey}`
+                                  : '未配置'}
                             </span>
                             <button
                               className="text-button danger-button"
                               disabled={editingDisabled}
                               onClick={() => removeProvider(provider.providerRef)}
                             >
-                              删除 Provider
+                              删除模型
                             </button>
                           </div>
                         </div>
                         <div className="provider-stat">
                           <strong>{knownModels.length}</strong>
-                          <span>个已知模型</span>
+                          <span>个可用模型</span>
                         </div>
                         <label className="settings-field">
-                          <span>Base URL</span>
+                          <span>名称</span>
+                          <input
+                            className="text-input"
+                            value={provider.displayName}
+                            onChange={event => setCatalog(current => current ? {
+                              ...current,
+                              providers: {
+                                ...current.providers,
+                                [provider.providerRef]: {
+                                  ...provider,
+                                  displayName: event.target.value,
+                                },
+                              },
+                            } : current)}
+                            disabled={editingDisabled}
+                          />
+                        </label>
+                        <label className="settings-field">
+                          <span>API URL</span>
                           <input
                             className="text-input"
                             value={provider.baseUrl}
@@ -1198,43 +1333,42 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
                                 [provider.providerRef]: { ...provider, baseUrl: event.target.value },
                               },
                             } : current)}
+                            disabled={editingDisabled}
                           />
                         </label>
-                        {provider.credentialState === '缺失' ? (
-                          <label className="settings-field">
-                            <span>API Key</span>
-                            <input
-                              className="text-input"
-                              type="password"
-                              value={provider.apiKey}
-                              placeholder="仅在缺少凭据时填写"
-                              onChange={event => setCatalog(current => current ? {
-                                ...current,
-                                providers: {
-                                  ...current.providers,
-                                  [provider.providerRef]: { ...provider, apiKey: event.target.value },
+                        <label className="settings-field">
+                          <span>更新 API Key</span>
+                          <input
+                            className="text-input"
+                            type="password"
+                            value={provider.apiKey}
+                            placeholder="留空保持不变"
+                            onChange={event => setCatalog(current => current ? {
+                              ...current,
+                              providers: {
+                                ...current.providers,
+                                [provider.providerRef]: {
+                                  ...provider,
+                                  apiKey: event.target.value,
                                 },
-                              } : current)}
-                              autoComplete="off"
-                            />
-                          </label>
-                        ) : (
-                          <div className="credential-summary">
-                            凭据已由 SecretStore / 本机配置提供，不重复展示 API Key。
-                          </div>
-                        )}
+                              },
+                            } : current)}
+                            autoComplete="new-password"
+                            disabled={editingDisabled}
+                          />
+                          <small>页面只显示掩码；输入新的 Key 后保存即可替换。</small>
+                        </label>
                         <div className="provider-discovery">
                           <button
                             className="ghost-button"
                             disabled={editingDisabled
                               || !provider.baseUrl.trim()
-                              || (!provider.apiKey.trim() && provider.credentialState === '缺失')
                               || modelDiscoveries[provider.providerRef]?.status === 'loading'}
                             onClick={() => { void discoverModels(provider); }}
                           >
                             {modelDiscoveries[provider.providerRef]?.status === 'loading'
                               ? '正在获取模型列表…'
-                              : '获取模型列表'}
+                              : '重新发现模型'}
                           </button>
                           {modelDiscoveries[provider.providerRef]?.status === 'error' && (
                             <p className="provider-discovery-message provider-discovery-error">
@@ -1243,8 +1377,8 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
                           )}
                           {modelDiscoveries[provider.providerRef]?.status === 'ready' && (
                             <div className="provider-discovery-list">
-                              <span className="fact-label">
-                                探测到 {modelDiscoveries[provider.providerRef]?.modelIds?.length ?? 0} 个模型（能力自动标注，未收录的需补充）
+                                <span className="fact-label">
+                                发现 {modelDiscoveries[provider.providerRef]?.modelIds?.length ?? 0} 个模型（未收录的模型可以手工加入）
                               </span>
                               {(modelDiscoveries[provider.providerRef]?.modelIds ?? []).map(modelId => {
                                 const configured = Object.values(catalog.models).some(model => (
@@ -1287,7 +1421,7 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
                         </div>
                         {knownModels.length > 0 && (
                           <div className="provider-model-list">
-                            <span className="fact-label">Provider 模型目录</span>
+                            <span className="fact-label">模型目录</span>
                             {knownModels.map(option => (
                               <div key={option.modelId}>
                                 <div className="provider-model-line">
@@ -1407,88 +1541,69 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
                 </div>
               </section>
 
-              <section className="settings-section planner-section">
+              <section className="settings-section agents-section" aria-labelledby="agents-heading">
                 <div className="section-heading">
                   <div>
-                    <div className="settings-eyebrow">02 / PLANNER</div>
-                    <h3>Planner</h3>
-                    <p>
-                      Planner 的模型来自上方的 Provider 模型目录。改动后用下方按钮单独更新 Planner，
-                      之后其它设置才由新的 Planner 接管；「保存并激活」不会修改 Planner。
-                    </p>
-                  </div>
-                  <span className={`state-badge ${plannerDirty ? 'state-badge-warning' : ''}`}>
-                    {plannerDirty ? '有未更新的修改' : '与运行中一致'}
-                  </span>
-                </div>
-
-                {facts.planner && plannerDraft && (
-                  <AgentClassConfig
-                    facts={facts.planner}
-                    draft={plannerDraft}
-                    models={Object.values(catalog.models)}
-                    onChange={next => {
-                      setDraft(current => (current ? { ...current, planner: next } : current));
-                    }}
-                  />
-                )}
-
-                {plannerPrecheckWarnings.length > 0 && (
-                  <div className="result-banner result-error">
-                    <ul className="issues">
-                      {plannerPrecheckWarnings.map((warning, index) => (
-                        <li key={index}>{warning}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                <div className="planner-update-row">
-                  <button
-                    className="primary-button"
-                    onClick={() => { void updatePlanner(); }}
-                    disabled={plannerUpdating
-                      || plannerBlocked
-                      || !plannerDirty
-                      || plannerPrecheckWarnings.length > 0}
-                  >
-                    {plannerUpdating ? '更新 Planner 中…' : '更新 Planner'}
-                  </button>
-                  <span className="planner-update-hint">
-                    {plannerBlocked
-                      ? `当前不能更新：${activationState?.blockingReasons?.map(reason => reason.message).join('；')
-                        || '运行时正在处理任务'}`
-                      : plannerPrecheckWarnings.length > 0
-                        ? '请先解决上方的问题'
-                        : !plannerDirty
-                          ? '没有待更新的 Planner 修改'
-                          : '仅提交 Planner 绑定及它依赖的 模型/Provider'}
-                  </span>
-                </div>
-
-                {plannerResult && (
-                  <div className={`result-banner ${plannerResult.ok ? 'result-ok' : 'result-error'}`}>
-                    {plannerResult.ok
-                      ? 'Planner 已更新。'
-                      : `Planner 更新失败（${plannerResult.code ?? 'unknown'}）`}
-                    {plannerResult.issues && plannerResult.issues.length > 0 && (
-                      <ul className="issues">
-                        {plannerResult.issues.map((issue, index) => <li key={index}>{issue}</li>)}
-                      </ul>
-                    )}
-                  </div>
-                )}
-              </section>
-
-              <section className="settings-section">
-                <div className="section-heading">
-                  <div>
-                    <div className="settings-eyebrow">03 / EXECUTOR ROUTING</div>
-                    <h3>Executor 路由策略</h3>
-                    <p>Codex 和 Pi 可以使用 Fixed 或 Auto；Planner 请在上一步单独更新。</p>
+                    <div className="settings-eyebrow">02 / AGENTS</div>
+                    <h3 id="agents-heading">智能体</h3>
+                    <p>每个智能体可以单独选择模型、路由方式和能力配置。</p>
                   </div>
                 </div>
-                <p className="routing-section-note">Auto 只在当前 AgentClass 支持且用户勾选的候选模型中进行运行时选择。</p>
+                {agentReadiness.length > 0 && (
+                  <div className="agent-readiness-settings">
+                    {agentReadiness.filter(agent => agent.agentId === 'pi-agent').map(agent => (
+                      <div className={`agent-readiness-settings-card agent-readiness-settings-${agent.status}`} key={agent.agentId}>
+                        <div>
+                          <strong>
+                            {agent.displayName} {agent.status === 'installed' ? '已就绪' : '未就绪'}
+                          </strong>
+                          <p>
+                            {agent.status === 'installed'
+                              ? 'MetaWork 可以开始新工作。'
+                              : '这是运行新工作的必需组件，请先安装后再开始任务。'}
+                          </p>
+                        </div>
+                        {agent.status !== 'installed' && (
+                          <div className="agent-readiness-actions">
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              onClick={() => window.open(agent.installUrl, '_blank', 'noopener,noreferrer')}
+                            >
+                              打开安装页面
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {agentReadiness.filter(agent => agent.agentId === 'codex-cli').map(agent => (
+                      <div className="agent-readiness-settings-card agent-readiness-settings-optional" key={agent.agentId}>
+                        <div>
+                          <strong>
+                            {agent.displayName} {agent.status === 'installed' ? '已安装' : '可选增强'}
+                          </strong>
+                          <p>
+                            {agent.status === 'installed'
+                              ? '已提供额外的 GPT/Codex 路由与回退选择。'
+                              : `安装后对 GPT/Codex 系列模型兼容性更强，更适合代码理解、修改、测试和仓库级工程任务，并提供额外的路由与回退选择。${requiredAgentName} 仍可通过模型和能力配置完成代码、研究等任务。`}
+                          </p>
+                        </div>
+                        {agent.status !== 'installed' && (
+                          <div className="agent-readiness-actions">
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              onClick={() => window.open(agent.installUrl, '_blank', 'noopener,noreferrer')}
+                            >
+                              查看安装说明
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="routing-section-note">自动路由只会在当前智能体支持且你选中的模型池中进行选择。</p>
                 <div className="routing-stack">
                   {Object.entries(draft).filter(([ref]) => ref !== 'planner').map(([ref, entry]) => {
                     const agentFacts = facts[ref];
@@ -1499,6 +1614,7 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
                         facts={agentFacts}
                         draft={entry}
                         models={Object.values(catalog.models)}
+                        providers={Object.values(catalog.providers)}
                         manualPreview={manualPreviews[ref]}
                         onUpdateManual={() => { void updateManual(ref); }}
                         onChange={next => {
@@ -1523,6 +1639,42 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
                   })}
                 </div>
               </section>
+
+              <details className="settings-section advanced-settings">
+                <summary>高级设置</summary>
+                <div className="advanced-settings-body">
+                  <section className="runtime-policy-section">
+                    <div className="section-heading">
+                      <div>
+                        <div className="settings-eyebrow">PLANNER AND RUNTIME</div>
+                        <h3>并行与队列</h3>
+                        <p>不同会话可并行执行；同一会话的后续任务会排队。</p>
+                      </div>
+                    </div>
+                    <div className="runtime-policy-grid">
+                      <label className="settings-field">
+                        <span>同时运行任务数</span>
+                        <input
+                          className="text-input"
+                          type="number"
+                          min={1}
+                          max={8}
+                          value={runtimePolicy.maxConcurrentTasks}
+                          onChange={event => setRuntimePolicy(current => current ? {
+                            ...current,
+                            maxConcurrentTasks: Number(event.target.value),
+                          } : current)}
+                        />
+                        <small>最多同时运行多少个会话任务；同一会话内仍按顺序执行。</small>
+                      </label>
+                    </div>
+                    <div className="routing-section-note">
+                      降低上限不会取消当前运行中的任务，只影响下一轮调度。
+                    </div>
+                  </section>
+                  {plannerSection}
+                </div>
+              </details>
             </div>
           )}
 
@@ -1559,8 +1711,8 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
           <footer className="drawer-footer settings-footer">
             <div className="settings-footer-note">
               {plannerDirty
-                ? '注意：Planner 有未更新的修改，本次「保存并激活」不会应用它——请用 Planner 板块的「更新 Planner」。'
-                : '「保存并激活」只应用 Provider/模型目录、Executor 路由与运行时策略，不包含 Planner。'}
+                ? '注意：规划设置有未更新的修改，本次「保存并激活」不会应用它——请在高级设置中单独更新。'
+                : '「保存并激活」只应用模型列表、智能体路由与运行时策略，不包含规划设置。'}
             </div>
             <div className="settings-footer-actions">
               <button className="ghost-button" onClick={onClose}>取消</button>
@@ -1578,6 +1730,12 @@ export function SettingsPanel({ http, runtime, onClose }: SettingsPanelProps) {
             </div>
           </footer>
         )}
+        <ModelConnectionDialog
+          open={modelDialogOpen}
+          disabled={editingDisabled}
+          onCancel={() => setModelDialogOpen(false)}
+          onConfirm={createModelConnection}
+        />
       </div>
     </div>
   );

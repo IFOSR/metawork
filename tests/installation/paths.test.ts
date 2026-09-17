@@ -12,6 +12,7 @@ describe('MetaWork installation paths', () => {
       accountsRoot: '/Users/test/.metawork/accounts',
       appCurrent: '/Users/test/.metawork/app/current',
       configFile: '/Users/test/.metawork/config/active/config.yaml',
+      credentials: '/Users/test/.metawork/credentials.json',
       configurationRevisions: '/Users/test/.metawork/config/revisions',
       database: '/Users/test/.metawork/data/metaclaw.db',
       databaseRevisions: '/Users/test/.metawork/data/database-revisions',
@@ -35,6 +36,7 @@ describe('MetaWork installation paths', () => {
       root: '/opt/metawork',
       data: '/opt/metawork/data',
       database: '/opt/metawork/data/metaclaw.db',
+      credentials: '/opt/metawork/credentials.json',
       launcher: '/Users/test/.local/bin/metawork',
     });
   });

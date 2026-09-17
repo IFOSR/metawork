@@ -65,6 +65,8 @@ export type GatewayServerMessage =
       type: 'error';
       message: string;
       requestId?: string;
+      code?: string;
+      agentId?: string;
       event?: GatewayEventEnvelope;
     };
 

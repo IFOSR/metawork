@@ -20,6 +20,8 @@ import {
   type LoginCredentials,
 } from '../../src/management/login-credentials.js';
 import type { WebSessionRecordProjection } from '../../src/management/web-session-types.js';
+import type { AgentReadiness } from '../../src/management/agent-installation-readiness-service.js';
+import { WebGatewayAdmissionError } from '../../src/management/web-gateway-session-runtime.js';
 
 function metadataFixture(id: string, active: boolean) {
   return {
@@ -1581,7 +1583,7 @@ describe('ManagementServer WebSocket authentication', () => {
       configQuery: {
         writeSecret: async (_ref, apiKey) => {
           storedApiKey = apiKey;
-          return { apiKeyRef: 'file-secret:anyfusion/providers/provider-test' };
+          return { configured: true, maskedApiKey: '••••••••cret' };
         },
       },
     });
@@ -1605,10 +1607,212 @@ describe('ManagementServer WebSocket authentication', () => {
       });
       expect(response.status).toBe(200);
       const body = await response.json();
-      expect(body).toEqual({ apiKeyRef: 'file-secret:anyfusion/providers/provider-test' });
+      expect(body).toEqual({ configured: true, maskedApiKey: '••••••••cret' });
       expect(storedApiKey).toBe('sk-secret');
       expect(JSON.stringify(body)).not.toContain('sk-secret');
     } finally {
+      await server.stop();
+    }
+  });
+
+  it('rejects unsafe Provider refs and blank API Keys at the HTTP boundary', async () => {
+    const port = await reservePort();
+    let writes = 0;
+    const server = createManagementServer(port, {
+      configQuery: {
+        writeSecret: async () => {
+          writes += 1;
+          return { configured: true, maskedApiKey: '••••••••cret' };
+        },
+      },
+    });
+    await server.start();
+
+    try {
+      const unsafeRef = await fetch(`http://127.0.0.1:${port}/api/config/secrets`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer manual-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ providerRef: '../provider', apiKey: 'sk-secret' }),
+      });
+      expect(unsafeRef.status).toBe(400);
+
+      const blankKey = await fetch(`http://127.0.0.1:${port}/api/config/secrets`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer manual-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ providerRef: 'provider-test', apiKey: '   ' }),
+      });
+      expect(blankKey.status).toBe(400);
+      expect(writes).toBe(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('returns masked credential summaries for requested Providers', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port, {
+      configQuery: {
+        getSecretStatus: async () => ({
+          openai: { configured: true, maskedApiKey: '••••••••cdef' },
+          missing: { configured: false, maskedApiKey: null },
+        }),
+      },
+    });
+    await server.start();
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/config/secrets/status?providers=openai,missing`,
+        {
+          headers: { authorization: 'Bearer manual-token' },
+        },
+      );
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        openai: { configured: true, maskedApiKey: '••••••••cdef' },
+        missing: { configured: false, maskedApiKey: null },
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('serves authenticated agent readiness and forces an explicit refresh', async () => {
+    const port = await reservePort();
+    const agents = [readinessFixture()];
+    let refreshCalls = 0;
+    const server = createManagementServer(port, {
+      agentReadiness: {
+        getState: () => agents,
+        refresh: async () => {
+          refreshCalls += 1;
+          return agents;
+        },
+        subscribe: () => () => undefined,
+      },
+    });
+    await server.start();
+
+    try {
+      const unauthorized = await fetch(`http://127.0.0.1:${port}/api/agents/readiness`);
+      expect(unauthorized.status).toBe(401);
+
+      const response = await fetch(`http://127.0.0.1:${port}/api/agents/readiness`, {
+        headers: { authorization: 'Bearer manual-token' },
+      });
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ agents });
+
+      const refresh = await fetch(`http://127.0.0.1:${port}/api/agents/readiness/refresh`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer manual-token' },
+      });
+      expect(refresh.status).toBe(200);
+      expect(refreshCalls).toBeGreaterThanOrEqual(2);
+      await expect(refresh.json()).resolves.toEqual({ agents });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('sends readiness to a new WebSocket and broadcasts state transitions', async () => {
+    const port = await reservePort();
+    const listeners = new Set<(agents: readonly AgentReadiness[]) => void>();
+    const agents = [readinessFixture()];
+    const server = createManagementServer(port, {
+      agentReadiness: {
+        getState: () => agents,
+        refresh: async () => agents,
+        subscribe: listener => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+    });
+    await server.start();
+    const cookie = await exchangeToken(port, 'manual-token');
+    const client = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
+
+    try {
+      await expect(client.nextText()).resolves.toContain('"type":"hello"');
+      await expect(client.nextText()).resolves.toBe(JSON.stringify({
+        type: 'agent_readiness_state',
+        agents,
+      }));
+      for (const listener of listeners) listener([{
+        ...agents[0]!,
+        status: 'missing',
+      }]);
+      await expect(client.nextText()).resolves.toContain('"status":"missing"');
+    } finally {
+      client.close();
+      await server.stop();
+    }
+  });
+
+  it('returns the required-Agent code when HTTP conversation creation is blocked', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port, {
+      sessionRuntime: createSessionRuntime({
+        async createSession() {
+          throw new WebGatewayAdmissionError('required_agent_unavailable', 'pi-agent');
+        },
+      }),
+    });
+    await server.start();
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/workspaces/workspace_repo/conversations`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer manual-token',
+            'content-type': 'application/json',
+          },
+        },
+      );
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({
+        code: 'required_agent_unavailable',
+        agentId: 'pi-agent',
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('keeps the required-Agent details on a WebSocket input rejection', async () => {
+    const port = await reservePort();
+    const server = createManagementServer(port, {
+      sessionRuntime: createSessionRuntime({
+        async submit() {
+          throw new WebGatewayAdmissionError('required_agent_unavailable', 'pi-agent');
+        },
+      }),
+    });
+    await server.start();
+    const cookie = await exchangeToken(port, 'manual-token');
+    const client = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
+
+    try {
+      await client.nextText();
+      client.sendJson({ type: 'input', requestId: 'req_blocked', text: '开始工作' });
+      await expect(client.nextText()).resolves.toBe(JSON.stringify({
+        type: 'error',
+        message: 'required_agent_unavailable',
+        requestId: 'req_blocked',
+        code: 'required_agent_unavailable',
+        agentId: 'pi-agent',
+      }));
+    } finally {
+      client.close();
       await server.stop();
     }
   });
@@ -1818,6 +2022,11 @@ interface ManagementServerTestOverrides {
   readonly artifactQuery?: import('../../src/management/artifact-preview-service.js').ArtifactPreviewService;
   readonly launchContexts?: WebLaunchContextService;
   readonly workspaceDirectoryBrowser?: WorkspaceDirectoryBrowser;
+  readonly agentReadiness?: {
+    getState(): readonly AgentReadiness[];
+    refresh(input?: { force?: boolean }): Promise<readonly AgentReadiness[]>;
+    subscribe(listener: (agents: readonly AgentReadiness[]) => void): () => void;
+  };
 }
 
 function createManagementServer(
@@ -1858,10 +2067,24 @@ function createManagementServer(
       getSnapshot: async () => null,
       activate: async () => ({ ok: true, revisionId: 'revision-next' }),
       rollback: async () => ({ ok: true, revisionId: 'revision-test' }),
-      writeSecret: async () => ({ apiKeyRef: 'file-secret:anyfusion/providers/provider-test' }),
+      writeSecret: async () => ({ configured: true, maskedApiKey: '••••••••test' }),
       ...overrides.configQuery,
     },
+    agentReadiness: overrides.agentReadiness,
   });
+}
+
+function readinessFixture(): AgentReadiness {
+  return {
+    agentId: 'pi-agent',
+    required: true,
+    displayName: '智能体 1',
+    status: 'installed',
+    version: 'pi 1.0.0',
+    detail: null,
+    installUrl: 'https://example.com/pi',
+    checkedAt: '2026-09-16T00:00:00.000Z',
+  };
 }
 
 function createSessionRuntime(

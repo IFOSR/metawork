@@ -67,7 +67,22 @@ export interface ClientGatewayDeps {
     reason?: string;
   }>;
   commandAdmissionStore?: CommandAdmissionStore;
+  newWorkAdmission?: NewWorkAdmission;
   now?: () => string;
+}
+
+export type NewWorkAdmissionResult =
+  | { readonly allowed: true }
+  | {
+      readonly allowed: false;
+      readonly reason: 'required_agent_unavailable';
+      readonly agentId: 'pi-agent';
+    };
+
+export interface NewWorkAdmission {
+  check(command: Extract<GatewayCommand, {
+    kind: 'user_message' | 'create_conversation';
+  }>): NewWorkAdmissionResult;
 }
 
 export type ClientGatewayResult = CommandReceipt | GatewayError;
@@ -147,6 +162,19 @@ export class ClientGateway {
     const account = await this.deps.accountResolver.resolve(principal);
     if (account.status !== 'authorized') {
       return gatewayError('authorization', 'unauthorized', account.reason, envelope.requestId);
+    }
+
+    const admissionCheck = newWorkAdmissionFor(envelope.command, this.deps.newWorkAdmission);
+    if (admissionCheck && !admissionCheck.allowed) {
+      return {
+        requestId: envelope.requestId,
+        idempotencyKey: envelope.idempotencyKey,
+        status: 'rejected',
+        conversationId: null,
+        reason: admissionCheck.reason,
+        code: admissionCheck.reason,
+        agentId: admissionCheck.agentId,
+      };
     }
 
     await this.recovery;
@@ -371,6 +399,16 @@ function isWorkspaceCommand(command: GatewayCommand): command is Extract<Gateway
     'create_conversation',
     'archive_conversation',
   ].includes(command.kind);
+}
+
+function newWorkAdmissionFor(
+  command: GatewayCommand,
+  admission: NewWorkAdmission | undefined,
+): NewWorkAdmissionResult | null {
+  if (!admission || (command.kind !== 'user_message' && command.kind !== 'create_conversation')) {
+    return null;
+  }
+  return admission.check(command);
 }
 
 function requestIdFromUntrustedEnvelope(input: unknown): string | null {

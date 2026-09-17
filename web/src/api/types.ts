@@ -135,6 +135,24 @@ export interface ConfigSnapshot {
   config: Record<string, unknown>;
 }
 
+export interface ProviderCredentialStatus {
+  configured: boolean;
+  maskedApiKey: string | null;
+}
+
+export type AgentReadinessStatus = 'checking' | 'installed' | 'missing' | 'broken';
+
+export interface AgentReadiness {
+  agentId: 'pi-agent' | 'codex-cli';
+  required: boolean;
+  displayName: string;
+  status: AgentReadinessStatus;
+  version: string | null;
+  detail: string | null;
+  installUrl: string;
+  checkedAt: string;
+}
+
 export type ConfigurationCompletionFieldState =
   | '已自动发现'
   | '已从 Provider 补全'
@@ -148,6 +166,7 @@ export interface ConfigurationCompletionResult {
     baseUrl: string | null;
     credentialState: ConfigurationCompletionFieldState;
     modelIds: string[];
+    maskedApiKey?: string | null;
   }>;
   providerPresets: Array<{
     providerRef: string;
@@ -267,6 +286,7 @@ import type {
 
 export type ServerMessage =
   | { type: 'hello'; sessionId: string | null }
+  | { type: 'agent_readiness_state'; agents: AgentReadiness[] }
   | {
       type: 'session_catalog';
       activeSessionId: string;
@@ -361,8 +381,20 @@ export type ServerMessage =
       status?: InteractionTraceStatus;
       completedAt?: string | null;
     }
-  | { type: 'error'; message: string };
+  | {
+      type: 'error';
+      message: string;
+      requestId?: string;
+      code?: string;
+      agentId?: string;
+    };
 
 export type ClientMessage =
-  | { type: 'input'; text: string; attachments?: Array<{ attachmentId: string }> }
+  | {
+    type: 'input';
+    text: string;
+    /** 客户端生成的请求 ID；服务端用它把结果回投到发起的那条消息。 */
+    requestId?: string;
+    attachments?: Array<{ attachmentId: string }>;
+  }
   | { type: 'close' };

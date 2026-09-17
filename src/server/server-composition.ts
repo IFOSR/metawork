@@ -29,12 +29,13 @@ import {
   createProductionConfigurationProbe,
   createProductionRuntimeBindings,
   createProductionSecretStore,
+  createLegacyProductionSecretStore,
   resolvePlannerRuntimeEnvironment,
   importLocalAgentCredentials,
   importLocalAgentCredentialsForRefs,
+  importLegacyProviderCredentials,
 } from '../configuration/index.js';
 import { prepareProductionSecretStore } from '../configuration/production-secret-store.js';
-import { FileSecretStore } from '../configuration/file-secret-store.js';
 import {
   assertSecretReference,
   type SecretReference,
@@ -80,6 +81,11 @@ import {
 import { WorkspaceConversationMigrator } from '../workspace/workspace-conversation-migrator.js';
 import { WorkspaceDirectoryService } from '../workspace/workspace-directory-service.js';
 import { WorkspaceDirectoryBrowser } from '../management/workspace-directory-browser.js';
+import {
+  AgentInstallationReadinessService,
+} from '../management/agent-installation-readiness-service.js';
+import { resolveAgentDisplayName } from '../configuration/user-facing-names.js';
+import { agentClassRefForInstallation } from '../management/agent-installation-catalog.js';
 import { WorkspaceGatewayRuntime } from '../gateway/workspace-gateway-runtime.js';
 import { workspaceEventStreamId } from '../gateway/workspace-event-stream.js';
 import { clientConnectionEventStreamId } from '../gateway/client-connection-event-stream.js';
@@ -176,11 +182,10 @@ function localAgentCredentialSources() {
 }
 
 async function preheatLocalAgentCredentials(secretStore: SecretStore): Promise<void> {
-  const scheme = secretStore instanceof FileSecretStore ? 'file-secret' : 'keychain';
   const providers: Record<string, SecretReference> = Object.fromEntries(
     LOCAL_AGENT_PROVIDER_REFS.map(providerRef => [
       providerRef,
-      `${scheme}:anyfusion/providers/${providerRef}` as SecretReference,
+      `file-secret:anyfusion/providers/${providerRef}` as SecretReference,
     ]),
   );
   await importLocalAgentCredentialsForRefs({
@@ -233,6 +238,7 @@ async function startWebMode(options: {
   artifactQuery: ArtifactPreviewService;
   webAuth: WebAuthService;
   launchContexts: WebLaunchContextService;
+  agentReadiness: AgentInstallationReadinessService;
 }): Promise<ManagementServer> {
   const loginCredentials = resolveLoginCredentials(process.env);
   if (loginCredentials.builtInDefault) {
@@ -259,6 +265,7 @@ async function startWebMode(options: {
     loginCredentials,
     attachmentStore: options.attachmentStore,
     artifactQuery: options.artifactQuery,
+    agentReadiness: options.agentReadiness,
   });
   await managementServer.start();
   process.stdout.write([
@@ -435,13 +442,19 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       throw new Error('active configuration is missing; run `anyfusion-install install`');
     }
     const activeSnapshot = await configurationRepository.getActiveSnapshot();
-    const secretStore = createProductionSecretStore({
+    const legacySecretStore = createLegacyProductionSecretStore({
       secretsRoot: accountPaths.secrets,
       env: process.env,
       references: Object.values(activeSnapshot.config.providers)
         .map(provider => provider.apiKeyRef),
     });
+    const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials });
     await prepareProductionSecretStore(secretStore);
+    await importLegacyProviderCredentials({
+      target: secretStore,
+      providers: activeSnapshot.config.providers,
+      legacyStore: legacySecretStore,
+    });
     await preheatLocalAgentCredentials(secretStore);
     await importLocalAgentCredentials({
       ...localAgentCredentialSources(),
@@ -516,13 +529,19 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   }
 
   // 3. Bind Planner, Kernel and Runtime to the exact active revision.
-  const secretStore = createProductionSecretStore({
+  const legacySecretStore = createLegacyProductionSecretStore({
     secretsRoot: accountPaths.secrets,
     env: process.env,
     references: Object.values(migratedSnapshot.config.providers)
       .map(provider => provider.apiKeyRef),
   });
+  const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials });
   await prepareProductionSecretStore(secretStore);
+  await importLegacyProviderCredentials({
+    target: secretStore,
+    providers: migratedSnapshot.config.providers,
+    legacyStore: legacySecretStore,
+  });
   await preheatLocalAgentCredentials(secretStore);
   await importLocalAgentCredentials({
     ...localAgentCredentialSources(),
@@ -788,6 +807,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     authorized: true,
   });
   let gatewayFeishuManager: FeishuRuntimeManager | null = null;
+  // 由稍后构造的 AgentInstallationReadinessService 填充：配置激活会改动
+  // AgentClass 展示名，必须立刻重新投影并广播，否则就绪卡片会停在旧名字。
+  let republishAgentReadiness: (() => void) | null = null;
   const configurationRuntimeCoordinator = new ConfigurationRuntimeCoordinator({
     service: configurationService,
     gate: configurationActivationGate,
@@ -795,9 +817,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     prepareConfig: async ({ config, secrets }) => {
       let prepared = structuredClone(config) as AnyFusionConfigurationV2;
       for (const [providerRef, apiKey] of Object.entries(secrets)) {
-        const reference = secretStore instanceof FileSecretStore
-          ? `file-secret:anyfusion/providers/${providerRef}` as const
-          : `keychain:anyfusion/providers/${providerRef}` as const;
+        const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
         const provider = prepared.providers[providerRef];
         if (provider) provider.apiKeyRef = reference;
       }
@@ -807,9 +827,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       const previous = new Map<string, string | null>();
       const references = new Map<string, SecretReference>();
       for (const [providerRef, apiKey] of Object.entries(secrets)) {
-        const reference = secretStore instanceof FileSecretStore
-          ? `file-secret:anyfusion/providers/${providerRef}` as const
-          : `keychain:anyfusion/providers/${providerRef}` as const;
+        const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
         references.set(providerRef, reference);
         try {
           previous.set(providerRef, await secretStore.get(reference));
@@ -871,6 +889,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       stagedConfiguration.plannerBinding = nextStaged.plannerBinding;
       stagedConfiguration.plannerBindingFingerprint = nextStaged.plannerBindingFingerprint;
       await gatewayFeishuManager?.applyConfiguration(buildApplicationConfig(snapshot));
+      republishAgentReadiness?.();
     },
     onActivationFailed: async ({ snapshot, runtime }) => {
       const restored = buildStagedLegacyConfiguration({ migratedSnapshot: snapshot });
@@ -897,8 +916,29 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       stagedConfiguration.plannerBinding = restored.plannerBinding;
       stagedConfiguration.plannerBindingFingerprint = restored.plannerBindingFingerprint;
       await gatewayFeishuManager?.applyConfiguration(buildApplicationConfig(snapshot));
+      republishAgentReadiness?.();
     },
   });
+  const agentReadiness = new AgentInstallationReadinessService({
+    // 就绪卡片必须和设置里的“智能体名称”显示同一个名字：先按 CLI 命令把安装
+    // 对应到它的 AgentClass，再走同一套命名解析（用户配置名优先，其次由 class
+    // ref 推导）。此前用 agentId 直接索引 agentClasses，键不匹配导致配置名永远
+    // 读不到，卡片只能退回硬编码的“智能体 1/2”。
+    resolveDisplayName: agentId => {
+      const config = configurationRuntimeCoordinator.getSnapshot().config;
+      const agentClassRef = agentClassRefForInstallation({
+        agentId,
+        agentClasses: config.agentClasses,
+        harnesses: config.harnesses,
+      });
+      if (!agentClassRef) return undefined;
+      return resolveAgentDisplayName(
+        agentClassRef,
+        (config.agentClasses[agentClassRef] as { displayName?: string } | undefined)?.displayName,
+      );
+    },
+  });
+  republishAgentReadiness = () => agentReadiness.republish();
   const runtimePort = activatedAccountRuntime.getConversationPort();
   const conversationRegistry = new ConversationRegistry();
 
@@ -1193,6 +1233,15 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       ),
     handleWorkspaceCommand: (command, context) =>
       workspaceGatewayRuntime.handle(command, context),
+    newWorkAdmission: {
+      check: () => agentReadiness.isRequiredAgentReady()
+        ? { allowed: true as const }
+        : {
+            allowed: false as const,
+            reason: 'required_agent_unavailable' as const,
+            agentId: 'pi-agent' as const,
+          },
+    },
   });
   const webGatewayAdapter = new WebGatewayAdapter({
     gateway: clientGateway,
@@ -1378,6 +1427,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         ),
       }),
       webAuth,
+      agentReadiness,
       sessionRuntime: new WebGatewaySessionRuntime({
         accountId: LOCAL_DEFAULT_ACCOUNT_ID,
         catalog: webSessionCatalog,
@@ -1670,41 +1720,44 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             };
         },
         writeSecret: async (providerRef, apiKey) => {
-          const reference = secretStore instanceof FileSecretStore
-            ? `file-secret:anyfusion/providers/${providerRef}` as const
-            : `keychain:anyfusion/providers/${providerRef}` as const;
-          await secretStore.put(reference, apiKey);
-          return { apiKeyRef: reference };
+          const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
+          const normalized = apiKey.trim();
+          await secretStore.put(reference, normalized);
+          return {
+            configured: true,
+            maskedApiKey: maskApiKey(normalized),
+          };
         },
         getSecretStatus: async providerRefs => {
           const references = Object.fromEntries(providerRefs.map(providerRef => [
             providerRef,
-            secretStore instanceof FileSecretStore
-              ? `file-secret:anyfusion/providers/${providerRef}` as const
-              : `keychain:anyfusion/providers/${providerRef}` as const,
+            `file-secret:anyfusion/providers/${providerRef}` as const,
           ]));
           await importLocalAgentCredentialsForRefs({
             ...localAgentCredentialSources(),
             providers: references,
             secretStore,
           });
-          const status: Record<string, boolean> = {};
+          const status: Record<string, {
+            configured: boolean;
+            maskedApiKey: string | null;
+          }> = {};
           for (const providerRef of providerRefs) {
-            const reference = secretStore instanceof FileSecretStore
-              ? `file-secret:anyfusion/providers/${providerRef}` as const
-              : `keychain:anyfusion/providers/${providerRef}` as const;
+            const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
             try {
-              status[providerRef] = (await secretStore.get(reference)).trim().length > 0;
+              const apiKey = (await secretStore.get(reference)).trim();
+              status[providerRef] = {
+                configured: apiKey.length > 0,
+                maskedApiKey: apiKey ? maskApiKey(apiKey) : null,
+              };
             } catch {
-              status[providerRef] = false;
+              status[providerRef] = { configured: false, maskedApiKey: null };
             }
           }
           return status;
         },
         verifySecret: async (providerRef, requestedBaseUrl) => {
-          const reference = secretStore instanceof FileSecretStore
-            ? `file-secret:anyfusion/providers/${providerRef}` as const
-            : `keychain:anyfusion/providers/${providerRef}` as const;
+          const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
           let apiKey: string;
           try {
             apiKey = (await secretStore.get(reference)).trim();
@@ -1822,4 +1875,8 @@ function asPayloadRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null
     ? value as Record<string, unknown>
     : { value };
+}
+
+function maskApiKey(value: string): string {
+  return `••••••••${value.slice(-4)}`;
 }

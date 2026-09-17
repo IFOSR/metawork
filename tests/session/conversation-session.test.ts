@@ -210,7 +210,7 @@ describe('ConversationSession', () => {
     expect(routed?.details).toMatchObject({
       providerDisplayName: 'Code CLI',
       modelDisplayName: 'gpt-5.6-terra',
-      executorDisplayName: 'Codex CLI',
+      executorDisplayName: '智能体 2',
     });
     expect(routed?.summary).toContain('Code CLI/gpt-5.6-terra');
     expect(routed?.summary).not.toContain('code-cli-5');

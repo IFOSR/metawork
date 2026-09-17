@@ -13,15 +13,14 @@ import {
 } from '../gateway/attachment-store-port.js';
 import type { ConfigurationRuntimeState } from '../configuration/configuration-runtime-coordinator.js';
 import type { ConfigurationCompletionResult } from '../configuration/configuration-completion-service.js';
+import type { AgentReadiness } from './agent-installation-readiness-service.js';
 import { verifyLogin } from './login-credentials.js';
 import { LoginThrottle } from './web-auth.js';
 import type { LoginCredentials } from './login-credentials.js';
 import type { WebAuthService } from './web-auth.js';
 import type { WebLaunchContextService } from './web-launch-context.js';
 import type { WorkspaceDirectoryBrowser } from './workspace-directory-browser.js';
-import type {
-  ManagementWebSessionRuntime,
-} from './web-session-runtime-types.js';
+import type { ManagementWebSessionRuntime } from './web-session-runtime-types.js';
 import type {
   ArtifactDownloadResult,
   ArtifactMetadataResult,
@@ -63,6 +62,11 @@ export interface ActivateResult {
   runningRevisionId?: string;
   restartRequired?: boolean;
   issues?: string[];
+}
+
+export interface ProviderCredentialStatus {
+  configured: boolean;
+  maskedApiKey: string | null;
 }
 
 export interface ExecutorCapabilityManualResponse {
@@ -131,9 +135,9 @@ export interface ConfigQuery {
     secrets?: Record<string, string>,
   ): Promise<ActivateResult>;
   rollback(targetRevisionId: string): Promise<ActivateResult>;
-  writeSecret(providerRef: string, apiKey: string): Promise<{ apiKeyRef: string }>;
+  writeSecret(providerRef: string, apiKey: string): Promise<ProviderCredentialStatus>;
   /** 查询各 provider 的 secret 是否已配置。 */
-  getSecretStatus(providerRefs: string[]): Promise<Record<string, boolean>>;
+  getSecretStatus(providerRefs: string[]): Promise<Record<string, ProviderCredentialStatus>>;
   /** 用存储的密钥调 Provider API 验证有效性；未配置时 valid 为 null。 */
   verifySecret(
     providerRef: string,
@@ -191,6 +195,12 @@ export interface ManagementServerDeps {
   loginThrottle?: LoginThrottle;
   /** 启动目录提示；仅由未鉴权的 /api/auth/launch-context 读取。 */
   launchContexts: WebLaunchContextService;
+  /** 本机 Agent 安装状态；缺省时保留无 Agent 检测的测试/嵌入模式。 */
+  agentReadiness?: {
+    getState(): readonly AgentReadiness[];
+    refresh(input?: { force?: boolean }): Promise<readonly AgentReadiness[]>;
+    subscribe(listener: (agents: readonly AgentReadiness[]) => void): () => void;
+  };
 }
 
 const MIME: Record<string, string> = {
@@ -210,6 +220,7 @@ export class ManagementServer {
   private readonly authenticatedWsConnections = new Set<WebSocketConnection>();
   private readonly wsConnectionsByClient = new Map<string, Set<WebSocketConnection>>();
   private configurationRuntimeUnsubscribe: (() => void) | null = null;
+  private agentReadinessUnsubscribe: (() => void) | null = null;
   private stopping = false;
   private stopPromise: Promise<void> | null = null;
 
@@ -222,6 +233,9 @@ export class ManagementServer {
     this.configurationRuntimeUnsubscribe = this.deps.configurationRuntime?.subscribe?.(
       event => this.broadcast(event),
     ) ?? null;
+    this.agentReadinessUnsubscribe = this.deps.agentReadiness?.subscribe(
+      agents => this.broadcast({ type: 'agent_readiness_state', agents }),
+    ) ?? null;
     const server = createServer((request, response) => {
       void this.handleRequest(request, response).catch(error => {
         this.handleRequestError(request, response, error);
@@ -231,6 +245,9 @@ export class ManagementServer {
       this.handleUpgrade(request, socket as Socket);
     });
     this.server = server;
+    void this.deps.agentReadiness?.refresh({ force: true }).catch(error => {
+      console.error('[MetaWork Web] agent readiness refresh failed', error);
+    });
 
     await new Promise<void>((resolvePromise, reject) => {
       server.once('error', reject);
@@ -259,6 +276,8 @@ export class ManagementServer {
     this.wsConnectionsByClient.clear();
     this.configurationRuntimeUnsubscribe?.();
     this.configurationRuntimeUnsubscribe = null;
+    this.agentReadinessUnsubscribe?.();
+    this.agentReadinessUnsubscribe = null;
     this.stopPromise = Promise.all([
       closeServer,
       this.deps.sessionRuntime.dispose(),
@@ -315,7 +334,12 @@ export class ManagementServer {
     );
     ws = new WebSocketConnection(socket, {
       onMessage: text => {
-        let message: { type?: string; text?: string; attachments?: Array<{ attachmentId?: unknown }> };
+        let message: {
+          type?: string;
+          requestId?: string;
+          text?: string;
+          attachments?: Array<{ attachmentId?: unknown }>;
+        };
         try {
           message = JSON.parse(text) as typeof message;
         } catch {
@@ -331,8 +355,20 @@ export class ManagementServer {
           const attachments = (message.attachments ?? [])
             .filter(entry => typeof entry?.attachmentId === 'string')
             .map(entry => ({ attachmentId: entry.attachmentId as string, kind: 'file' }));
-          void this.deps.sessionRuntime.submit(clientId, message.text, attachments).catch(error => {
-            ws.send(JSON.stringify({ type: 'error', message: (error as Error).message }));
+          void this.deps.sessionRuntime.submit(
+            clientId,
+            message.text,
+            attachments,
+            message.requestId,
+          ).catch(error => {
+            const candidate = error as { code?: unknown; agentId?: unknown };
+            ws.send(JSON.stringify({
+              type: 'error',
+              message: (error as Error).message,
+              ...(typeof message.requestId === 'string' ? { requestId: message.requestId } : {}),
+              ...(typeof candidate.code === 'string' ? { code: candidate.code } : {}),
+              ...(typeof candidate.agentId === 'string' ? { agentId: candidate.agentId } : {}),
+            }));
           });
         }
       },
@@ -358,6 +394,11 @@ export class ManagementServer {
     for (const event of this.deps.sessionRuntime.getReplayEvents(clientId)) {
       ws.send(JSON.stringify(event));
     }
+    const agents = this.deps.agentReadiness?.getState();
+    if (agents) ws.send(JSON.stringify({
+      type: 'agent_readiness_state',
+      agents,
+    }));
   }
 
   private broadcast(message: unknown): void {
@@ -621,6 +662,19 @@ export class ManagementServer {
       return;
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/agents/readiness') {
+      this.sendJson(response, 200, {
+        agents: this.deps.agentReadiness?.getState() ?? [],
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/agents/readiness/refresh') {
+      const agents = await this.deps.agentReadiness?.refresh({ force: true }) ?? [];
+      this.sendJson(response, 200, { agents });
+      return;
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/workspaces') {
       const state = this.deps.sessionRuntime.getClientState(clientId);
       this.sendJson(response, 200, {
@@ -691,7 +745,19 @@ export class ManagementServer {
         this.sendJson(response, 409, { error: 'workspace is not selected' });
         return;
       }
-      this.sendJson(response, 201, await this.deps.sessionRuntime.createSession(clientId));
+      try {
+        this.sendJson(response, 201, await this.deps.sessionRuntime.createSession(clientId));
+      } catch (error) {
+        const candidate = error as { code?: unknown; agentId?: unknown };
+        if (candidate.code === 'required_agent_unavailable') {
+          this.sendJson(response, 409, {
+            code: candidate.code,
+            ...(typeof candidate.agentId === 'string' ? { agentId: candidate.agentId } : {}),
+          });
+          return;
+        }
+        throw error;
+      }
       return;
     }
 
@@ -984,11 +1050,15 @@ export class ManagementServer {
     }
 
     if (request.method === 'GET' && url.pathname === '/api/config/secrets/status') {
-      const refs = (url.searchParams.get('providers') ?? '')
+      const rawRefs = (url.searchParams.get('providers') ?? '')
         .split(',')
         .map(value => value.trim())
-        .filter(Boolean)
-        .slice(0, 64);
+        .filter(Boolean);
+      if (rawRefs.some(providerRef => !isSafeProviderRef(providerRef))) {
+        this.sendJson(response, 400, { error: 'invalid providerRef' });
+        return;
+      }
+      const refs = rawRefs.slice(0, 64);
       this.sendJson(response, 200, await this.deps.configQuery.getSecretStatus(refs));
       return;
     }
@@ -1009,11 +1079,18 @@ export class ManagementServer {
 
     if (request.method === 'POST' && url.pathname === '/api/config/secrets') {
       const body = await readRequestBody(request);
-      if (!body.providerRef || !body.apiKey) {
+      if (typeof body.providerRef !== 'string'
+        || !isSafeProviderRef(body.providerRef)
+        || typeof body.apiKey !== 'string'
+        || body.apiKey.trim().length === 0) {
         this.sendJson(response, 400, { error: 'providerRef and apiKey are required' });
         return;
       }
-      this.sendJson(response, 200, await this.deps.configQuery.writeSecret(body.providerRef, body.apiKey));
+      this.sendJson(
+        response,
+        200,
+        await this.deps.configQuery.writeSecret(body.providerRef, body.apiKey.trim()),
+      );
       return;
     }
 

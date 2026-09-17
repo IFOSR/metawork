@@ -1,4 +1,5 @@
 import { publicProviderDisplayName } from './public-provider-catalog.js';
+import { resolveProviderDisplayName } from './user-facing-names.js';
 
 export type CompletionFieldState =
   | '已自动发现'
@@ -107,7 +108,12 @@ export class ConfigurationCompletionService {
             ? '已从 Provider 补全'
             : '缺失';
       providers[providerRef] = {
-        displayName: preset?.displayName ?? publicProviderDisplayName(providerRef, baseUrl ?? undefined),
+        displayName: resolveProviderDisplayName(
+          providerRef,
+          text(configured.displayName),
+          preset?.displayName
+            ?? publicProviderDisplayName(providerRef, baseUrl ?? undefined),
+        ),
         baseUrl,
         credentialState,
         modelIds: unique([

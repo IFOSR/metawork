@@ -98,6 +98,32 @@ Activation recompiles the profile on the backend and atomically switches the
 profile, manual, Catalog, ModelPolicy, and generated runtime artifact with the
 new revision. Existing Work Graph generations retain their pinned revision.
 
+### User-facing settings and local readiness amendment (2026-09-16)
+
+The ordinary Web settings surface presents Provider entries as models and
+Executor/AgentClass entries as agents. `Provider`, `Executor`, `AgentClass`,
+Harness, `SecretStore`, `apiKeyRef`, and stable internal references remain
+technical contracts and are not required user vocabulary. Provider and
+AgentClass definitions may carry an optional revision-scoped `displayName`;
+renaming changes presentation only and never changes routing identity,
+historical bindings, or capability ownership.
+
+Production Provider credentials are authoritative in the one
+`<metawork-root>/credentials.json` file, defaulting to
+`~/.metawork/credentials.json`. The Web surface accepts a Key only on write,
+returns configured state plus a mask, and permits replacement. The existing
+`SecretStore` interface remains the runtime seam, while the production
+implementation resolves Provider references through this file. No separate
+`~/.config/metawork` persistence root is introduced.
+
+Application Shell owns local agent installation readiness. Pi is required only
+for admitting new work; missing Pi does not block login, Workspace access,
+history, settings, or readiness refresh, and does not cancel running Tasks.
+Codex is optional. Its missing state explains the additional GPT/Codex model
+compatibility and coding benefits but never blocks work or implies that Pi
+lacks coding capability. Readiness is projected through Management and the
+unified Gateway and is not Kernel Executor health.
+
 ## Consequences
 
 - A successful idle activation affects the next Planner turn and new

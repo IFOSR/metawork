@@ -1,6 +1,9 @@
 # Web Settings Model And Agent Readiness Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> **Status:** Complete
+> **Completed:** 2026-09-16
+> **Closing commit:** `76b295b`
 
 **Goal:** Replace implementation-oriented Web settings with a model-and-agent experience, store Provider API Keys in one editable MetaWork-root file, and block new work only when the required Pi agent is unavailable.
 
@@ -1433,3 +1436,25 @@ git commit -m "docs: record settings and agent readiness delivery"
 - Pi recovery takes effect after refresh without restart.
 - Existing routing, capability profiles, history, running Tasks, and recovery
   behavior pass regression validation.
+
+## Delivery Record
+
+- Delivered user-facing `模型列表`, `智能体`, and collapsed `高级设置`
+  sections without changing the Provider, AgentClass, Harness, routing, or
+  execution interfaces.
+- Added editable model and agent display names, model connection creation and
+  rename flows, masked API Key status, API Key replacement, model discovery
+  retry, and stable internal references.
+- Added Pi/Codex installation readiness projection. Missing Pi blocks only new
+  work; missing Codex is shown as an optional enhancement with GPT/Codex
+  compatibility and coding benefits, without implying that Pi lacks coding
+  capability.
+- Made `<metawork-root>/credentials.json` the production Provider credential
+  file, defaulting to `~/.metawork/credentials.json`; no
+  `~/.config/metawork` persistence root is introduced by this feature.
+- Validation completed: settings tests `27 passed`, Web tests `100 passed`,
+  focused core regression `219 passed`, browser E2E `2 passed`, lint, Web
+  build, and `git diff --check`. The full suite completed with `402 passed`,
+  `8 skipped`, and two unrelated baseline failures in
+  `tests/architecture/production-composition.test.ts` and
+  `tests/planning/planner-process-supervisor.test.ts`.

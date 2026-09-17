@@ -15,6 +15,8 @@ export interface CommandReceipt {
   readonly conversationId: string | null;
   readonly workspaceId?: string | null;
   readonly reason?: string;
+  readonly code?: string;
+  readonly agentId?: string;
 }
 
 export interface CommandAdmissionDeps {

@@ -1,5 +1,6 @@
 import { FileSecretStore } from './file-secret-store.js';
 import { KeychainSecretStore } from './keychain-secret-store.js';
+import { CredentialsFileSecretStore } from './credentials-file-secret-store.js';
 import {
   assertSecretReference,
   type SecretReference,
@@ -11,6 +12,12 @@ import {
 } from '../installation/product-environment.js';
 
 export function createProductionSecretStore(input: {
+  credentialsFile: string;
+}): CredentialsFileSecretStore {
+  return new CredentialsFileSecretStore(input.credentialsFile);
+}
+
+export function createLegacyProductionSecretStore(input: {
   platform?: NodeJS.Platform;
   secretsRoot: string;
   env?: NodeJS.ProcessEnv;
@@ -48,6 +55,10 @@ export function createProductionSecretStore(input: {
 }
 
 export async function prepareProductionSecretStore(store: SecretStore): Promise<void> {
+  if (store instanceof CredentialsFileSecretStore) {
+    await store.initialize();
+    return;
+  }
   if (!(store instanceof FileSecretStore)) return;
   await store.initialize();
   await store.assertSecurePermissions();

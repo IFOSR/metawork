@@ -17,10 +17,19 @@ import {
   type SettingsModelEntry,
   type SettingsProviderEntry,
 } from '../../web/src/settings-model.js';
+import type { ProviderCredentialStatus } from '../../web/src/api/types.js';
 
 const webRoot = new URL('../../web/src/', import.meta.url);
 
 describe('Settings workbench model semantics', () => {
+  it('accepts masked credential summaries without exposing the API Key', () => {
+    const status: ProviderCredentialStatus = {
+      configured: true,
+      maskedApiKey: '••••••••cdef',
+    };
+    expect(status.configured).toBe(true);
+    expect(status.maskedApiKey).not.toContain('sk-');
+  });
   it('exposes the current DeepSeek V4 Flash model IDs in the Provider preset', () => {
     expect(PUBLIC_PROVIDER_PRESETS.find(preset => preset.providerRef === 'deepseek')?.modelIds)
       .toEqual(expect.arrayContaining([
@@ -257,6 +266,46 @@ describe('Settings workbench model semantics', () => {
     expect(changedSourceWhitespace).toBe(executorManualInputKey(draft, models));
   });
 
+  it('labels agent readiness with the same agent name that settings shows', async () => {
+    const [settingsSource, bannerSource, appSource, serviceSource, compositionSource] =
+      await Promise.all([
+        readFile(new URL('../../web/src/components/SettingsPanel.tsx', import.meta.url), 'utf8'),
+        readFile(new URL('../../web/src/components/AgentReadinessBanner.tsx', import.meta.url), 'utf8'),
+        readFile(new URL('../../web/src/App.tsx', import.meta.url), 'utf8'),
+        readFile(new URL(
+          '../../src/management/agent-installation-readiness-service.ts',
+          import.meta.url,
+        ), 'utf8'),
+        readFile(new URL('../../src/server/server-composition.ts', import.meta.url), 'utf8'),
+      ]);
+
+    // 就绪卡片标题使用服务端按 AgentClass 解析出的 displayName。
+    expect(settingsSource).toContain(
+      "{agent.displayName} {agent.status === 'installed' ? '已就绪' : '未就绪'}",
+    );
+    expect(settingsSource).toContain(
+      "{agent.displayName} {agent.status === 'installed' ? '已安装' : '可选增强'}",
+    );
+    expect(bannerSource).toContain('<strong>{codex.displayName} 未安装，可选增强</strong>');
+
+    // 任何用户可见文案都不得再硬编码“智能体 N”，否则会与“智能体名称”不一致。
+    expect(settingsSource).not.toMatch(/智能体 [12]/u);
+    expect(bannerSource).not.toMatch(/智能体 [12]/u);
+    expect(appSource).not.toMatch(/智能体 [12]/u);
+    expect(serviceSource).not.toMatch(/智能体 [12]/u);
+
+    // 服务端必须把安装对应到 AgentClass 后再取名，而不是用 agentId 索引 agentClasses。
+    expect(compositionSource).toContain('agentClassRefForInstallation({');
+    expect(compositionSource).not.toContain('config.agentClasses[agentId]');
+
+    // 名字是被缓存的探测结果之外的东西：改名后必须重新投影并广播，
+    // 否则卡片要等到下次探测（TTL 或手动重新检测）才更新。
+    expect(serviceSource).toContain('republish(): void');
+    expect(serviceSource).toContain('deriveNames(this.state)');
+    expect(compositionSource).toContain('republishAgentReadiness = () => agentReadiness.republish();');
+    expect(compositionSource).toContain('republishAgentReadiness?.();');
+  });
+
   it('exposes a capability profile refresh action backed by the unsaved candidate preview API', async () => {
     const agentSource = await readFile(new URL(
       '../../web/src/components/AgentClassConfig.tsx',
@@ -390,6 +439,53 @@ describe('Settings workbench model semantics', () => {
     expect(panel).not.toContain('调度老化时间');
     expect(panel).not.toContain('同会话排队上限');
     expect(panel).toContain('await refreshConfigurationCompletion()');
+  });
+
+  it('presents model connections instead of implementation-oriented Provider settings', async () => {
+    const [panel, dialog] = await Promise.all([
+      readFile(new URL('components/SettingsPanel.tsx', webRoot), 'utf8'),
+      readFile(new URL('components/ModelConnectionDialog.tsx', webRoot), 'utf8'),
+    ]);
+
+    expect(panel).toContain('模型列表');
+    expect(panel).toContain('新增模型');
+    expect(panel).toContain('已配置');
+    expect(panel).toContain('更新 API Key');
+    expect(panel).toContain('displayName: provider.displayName.trim()');
+    expect(panel).not.toContain('新增 Provider');
+    expect(panel).not.toContain('自定义 Provider');
+    expect(panel).not.toContain('SecretStore');
+    expect(dialog).toContain('模型名称');
+    expect(dialog).toContain('API URL');
+    expect(dialog).toContain('API Key');
+    expect(dialog).toContain('请填写模型名称、API URL 和 API Key');
+  });
+
+  it('keeps existing credentials when the replacement key is blank', async () => {
+    const panel = await readFile(new URL('components/SettingsPanel.tsx', webRoot), 'utf8');
+
+    expect(panel).toContain("if (provider.apiKey.trim()) activationSecrets[provider.providerRef]");
+    expect(panel).toContain('留空保持不变');
+    expect(panel).toContain('maskedApiKey');
+    expect(panel).toContain('重新发现模型');
+  });
+
+  it('uses user-owned agent names and keeps Planner and runtime policy in Advanced settings', async () => {
+    const [panel, routing] = await Promise.all([
+      readFile(new URL('components/SettingsPanel.tsx', webRoot), 'utf8'),
+      readFile(new URL('components/AgentClassConfig.tsx', webRoot), 'utf8'),
+    ]);
+
+    expect(panel).toContain('智能体');
+    expect(panel).toContain('高级设置');
+    expect(panel).toContain("displayName: (entry.displayName ?? '').trim()");
+    expect(panel).toContain('agentReadiness');
+    expect(routing).toContain('名称');
+    expect(routing).not.toContain('EXECUTOR');
+    expect(routing).not.toContain('Executor 能力说明');
+    expect(routing).not.toContain('Harness');
+    expect(routing).not.toContain('Pi Agent');
+    expect(routing).not.toContain('Codex Engineering');
   });
 
   it('keeps model capability facts inside Executor guidance and derives read-only tags from the manual', async () => {

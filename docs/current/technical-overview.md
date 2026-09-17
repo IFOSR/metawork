@@ -420,13 +420,15 @@ export ANYFUSION_PROVIDER_URL='https://your-openai-compatible-endpoint.example/v
 metawork --help
 ```
 
-On macOS, `setup.sh` requires Node.js 22.19+, Git, npm, and existing `codex`
-and `pi` commands. It builds MetaClaw and the vendored `planner/AnyFusion-Pi` planner
-sources (checked into this repository) with separate dependency trees, writes mode-`0600`
-MetaWork-only provider and model configuration under
-`~/.config/metawork`, installs only `~/.local/bin/anyfusion`, and stores
-account runtime state under `~/.metawork/accounts/local-default`. It does not run either
-Executor during installation and does not write `~/.codex` or `~/.pi`.
+On macOS, `setup.sh` requires Node.js 22.19+ and builds MetaClaw and the
+vendored `planner/AnyFusion-Pi` planner sources (checked into this repository)
+with separate dependency trees. Pi is required for new-work admission; Codex
+is an optional enhancement detected by MetaWork and is not required to start
+the product. Configuration, runtime state, and the production Provider
+credential file are stored under the MetaWork root:
+`~/.metawork/accounts/local-default` and
+`~/.metawork/credentials.json` by default. The setup does not write `~/.codex`
+or `~/.pi`.
 
 The installed launcher captures the current directory at invocation time.
 Start MetaWork from the repository or directory the Planner should inspect:
@@ -440,10 +442,10 @@ Install checklist:
 
 - `node --version` is `>=22.19.0`.
 - `./setup.sh` reports native installation complete.
-- `~/.config/metawork/provider.env` is mode `0600`.
+- `~/.metawork/credentials.json` is mode `0600` when present.
 - `metawork --help` works from a new shell.
-- `command -v codex`, `codex --version`, `command -v pi`, and `pi --version`
-  are unchanged after setup.
+- `command -v pi` and `pi --version` are available for new work.
+- `codex --version` is shown as an optional enhancement when Codex is installed.
 
 Re-run `./setup.sh` after updating either repository. A dirty nested
 AnyFusion-Pi checkout is preserved and built without being overwritten.
@@ -482,8 +484,9 @@ metawork --help
 npm run smoke:metawork
 ```
 
-Install and authenticate Codex/Pi independently before setup; MetaWork setup
-must not be used to change an existing Executor installation.
+Install and authenticate Pi independently before using new-work features.
+Codex may be installed independently for its optional GPT/Codex compatibility
+and coding benefits; MetaWork setup does not change either agent installation.
 
 Windows install checklist:
 
@@ -980,9 +983,12 @@ active pointer is:
   -> revisions/<revision-id>/
 ```
 
-Do not edit immutable revision files in place. Provider credentials resolve
-through the account SecretStore, with macOS Keychain as the default and
-mode-`0600` files only when `METAWORK_SECRET_STORE=file` is explicit.
+Do not edit immutable revision files in place. Production Provider credentials
+resolve through the existing account SecretStore seam backed by
+`~/.metawork/credentials.json` by default, or
+`<install-root>/credentials.json` when the MetaWork root is overridden. Web
+shows only a masked Key and accepts raw Keys only on update; legacy Keychain
+and account secret files are used only for one-time migration where applicable.
 
 Export the Feishu app secret before starting the runtime:
 

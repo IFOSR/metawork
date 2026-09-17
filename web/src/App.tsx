@@ -10,7 +10,12 @@ import type {
   WebSessionRecord,
   WorkspaceSummary,
 } from './api/session-types';
-import type { ConfigurationRuntimeState, InteractionTrace, InteractionTraceEvent } from './api/types';
+import type {
+  AgentReadiness,
+  ConfigurationRuntimeState,
+  InteractionTrace,
+  InteractionTraceEvent,
+} from './api/types';
 import { WsClient } from './api/ws';
 import {
   establishWebSession,
@@ -39,6 +44,7 @@ import {
 } from './conversation-live-turn';
 import { useThemePreference } from './theme';
 import { projectTurnForPresentation } from './turn-task-presentation';
+import { requiredAgentBlock } from './agent-readiness';
 
 let startupAuthentication: ReturnType<typeof establishWebSession> | null = null;
 let startupLaunchSuggestionPromise: Promise<WebLaunchSuggestion | null> | null = null;
@@ -65,6 +71,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [workspaceCreatorOpen, setWorkspaceCreatorOpen] = useState(false);
   const [configurationRuntime, setConfigurationRuntime] = useState<ConfigurationRuntimeState | null>(null);
+  const [agentReadiness, setAgentReadiness] = useState<AgentReadiness[]>([]);
   const [pendingAttachments, setPendingAttachments] = useState<AttachmentMetadata[]>([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [previewState, setPreviewState] = useState<PreviewDrawerState>({ status: 'closed' });
@@ -84,6 +91,11 @@ export function App() {
   const recordRequestRef = useRef(0);
   const workspaceSwitchRef = useRef(false);
   const workspaceSwitchRequestRef = useRef(0);
+  const pendingInputsRef = useRef(new Map<string, {
+    draft: string;
+    attachments: AttachmentMetadata[];
+  }>());
+  const readinessFocusRefreshRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -215,6 +227,7 @@ export function App() {
         setLiveTurn(turn);
       },
       onTurnStarted: (_requestId, turnId, userInput, startedAt, interactionKind) => {
+        pendingInputsRef.current.delete(_requestId);
         setSelectedRecord(current => retainTerminalLiveTurnInRecord(
           current,
           liveTurnRef.current,
@@ -253,6 +266,7 @@ export function App() {
         setLiveTurn(liveTurnRef.current);
       },
       onConfigurationRuntimeState: state => setConfigurationRuntime(state),
+      onAgentReadinessState: agents => setAgentReadiness(agents),
       onExecution: (turnId, taskId, timeline) => {
         liveTurnRef.current = liveTurnRef.current
           && liveTurnRef.current.id === turnId
@@ -333,12 +347,39 @@ export function App() {
           setActivationNotice(lines.join('\n'));
         }
       },
-      onError: message => setActivationNotice(`执行错误：${message}`),
+      onError: (message, detail) => {
+        if (
+          detail?.code === 'required_agent_unavailable'
+          && detail.requestId
+          && pendingInputsRef.current.has(detail.requestId)
+        ) {
+          const pending = pendingInputsRef.current.get(detail.requestId)!;
+          pendingInputsRef.current.delete(detail.requestId);
+          setDraft(pending.draft);
+          setPendingAttachments(pending.attachments);
+          setActivationNotice(
+            `当前无法开始新工作，请先安装${requiredAgentBlock(agentReadiness).agent?.displayName ?? '必需智能体'}。`,
+          );
+          return;
+        }
+        setActivationNotice(`执行错误：${message}`);
+      },
       onUnauthorized: handleUnauthorized,
       onStatusChange: setConnected,
     });
     wsRef.current = ws;
     ws.connect();
+    void http.getAgentReadiness()
+      .then(result => setAgentReadiness(result.agents))
+      .catch(() => undefined);
+    const handleReadinessFocus = () => {
+      if (!readinessFocusRefreshRef.current) return;
+      readinessFocusRefreshRef.current = false;
+      void http.refreshAgentReadiness()
+        .then(result => setAgentReadiness(result.agents))
+        .catch(() => undefined);
+    };
+    window.addEventListener('focus', handleReadinessFocus);
     void Promise.all([http.getWorkspaces(), http.getConfig()])
       .then(async ([workspaceCatalog, config]) => {
         const applied = await applyStartupLaunchSuggestion(
@@ -386,6 +427,7 @@ export function App() {
       .catch(() => undefined);
     return () => {
       loadRecordRef.current = () => undefined;
+      window.removeEventListener('focus', handleReadinessFocus);
       ws.close();
     };
   }, [authenticated, startupLaunchSuggestion]);
@@ -583,25 +625,50 @@ export function App() {
 
   const handleNewSession = async () => {
     if (workspaceSwitchRef.current) return;
+    const requiredBlock = requiredAgentBlock(agentReadiness);
+    if (requiredBlock.blocked) {
+      setActivationNotice(requiredBlock.message);
+      return;
+    }
     if (!httpRef.current || !activeWorkspaceId) {
       setActivationNotice('请先选择 Workspace，再新建会话。');
       return;
     }
-    const result = await httpRef.current.createConversation(activeWorkspaceId);
-    const catalog = await httpRef.current.getConversations(activeWorkspaceId);
-    setSessions(catalog.conversations);
-    browsedConversationRef.current = result.session.session.id;
-    setBrowsedSessionId(result.session.session.id);
-    setSelectedRecord(result.session);
-    setActivationNotice(activationMessage(result.activation));
-    if (result.activation.state === 'active') {
-      activeConversationRef.current = result.session.session.id;
-      setActiveSessionId(result.session.session.id);
-      liveTurnRef.current = null;
-      setLiveTurn(null);
-      setPreviewState({ status: 'closed' });
-      setExecutionDetail(null);
+    try {
+      const result = await httpRef.current.createConversation(activeWorkspaceId);
+      const catalog = await httpRef.current.getConversations(activeWorkspaceId);
+      setSessions(catalog.conversations);
+      browsedConversationRef.current = result.session.session.id;
+      setBrowsedSessionId(result.session.session.id);
+      setSelectedRecord(result.session);
+      setActivationNotice(activationMessage(result.activation));
+      if (result.activation.state === 'active') {
+        activeConversationRef.current = result.session.session.id;
+        setActiveSessionId(result.session.session.id);
+        liveTurnRef.current = null;
+        setLiveTurn(null);
+        setPreviewState({ status: 'closed' });
+        setExecutionDetail(null);
+      }
+    } catch (error) {
+      const message = (error as Error).message;
+      setActivationNotice(
+        message.includes('required_agent_unavailable')
+          ? `当前无法新建会话，请先安装${requiredAgentBlock(agentReadiness).agent?.displayName ?? '必需智能体'}。`
+          : `新建会话失败：${message}`,
+      );
     }
+  };
+
+  const handleRefreshAgentReadiness = () => {
+    void httpRef.current?.refreshAgentReadiness()
+      .then(result => setAgentReadiness(result.agents))
+      .catch(error => setActivationNotice(`重新检测失败：${(error as Error).message}`));
+  };
+
+  const handleOpenAgentSettings = () => {
+    readinessFocusRefreshRef.current = true;
+    setSettingsOpen(true);
   };
 
   const handleDeleteSession = async (sessionId: string) => {
@@ -716,13 +783,16 @@ export function App() {
     ? turns.find(turn => turn.id === selectedTrajectoryTurnId) ?? latestTurn
     : latestTurn;
   const running = Boolean(selectedId === activeSessionId && liveTurn?.status === 'running');
-  const composerDisabled = selectedId !== activeSessionId || !connected;
+  const requiredBlock = requiredAgentBlock(agentReadiness);
+  const composerDisabled = selectedId !== activeSessionId || !connected || requiredBlock.blocked;
   const composerBlockedReason = workspaceSwitching
     ? '正在切换 Workspace…'
     : selectedId !== activeSessionId
       ? '正在加载当前会话…'
       : !connected
         ? 'WebSocket 尚未连接，消息不会丢失。连接恢复后再发送。'
+        : requiredBlock.blocked
+          ? requiredBlock.message
         : activationNotice;
 
   // 执行详情抽屉：只在目标 turn 仍可见时渲染；找不到时视为关闭。
@@ -749,6 +819,8 @@ export function App() {
         composerVisible={tab === 'conversation' && Boolean(selectedId)}
         draft={draft}
         composerDisabled={workspaceSwitching || composerDisabled}
+        newWorkBlocked={requiredBlock.blocked}
+        agentReadiness={agentReadiness}
         running={running}
         blockedReason={composerBlockedReason}
         previewOpen={previewState.status !== 'closed' || executionDetailOpen}
@@ -777,7 +849,8 @@ export function App() {
         onSelectSession={handleSelectSession}
         onDeleteSession={sessionId => void handleDeleteSession(sessionId)}
         onClearSessions={() => void handleClearSessions()}
-        onSettings={() => setSettingsOpen(true)}
+        onSettings={handleOpenAgentSettings}
+        onRefreshAgentReadiness={handleRefreshAgentReadiness}
         onTabChange={nextTab => {
           if (nextTab === 'trajectory') setSelectedTrajectoryTurnId(null);
           setTab(nextTab);
@@ -785,11 +858,15 @@ export function App() {
         onThemeChange={setThemePreference}
         onDraftChange={setDraft}
         onSend={(text, attachments) => {
-          const sent = (wsRef.current?.sendInput(text, attachments) ?? false);
-          if (!sent) {
+          const requestId = wsRef.current?.sendInput(text, attachments) ?? null;
+          if (!requestId) {
             setActivationNotice('WebSocket 尚未连接，消息仍保留在输入框中。');
             return;
           }
+          pendingInputsRef.current.set(requestId, {
+            draft: text,
+            attachments: pendingAttachments,
+          });
           setDraft('');
           setPendingAttachments([]);
           setActivationNotice(null);
@@ -811,7 +888,12 @@ export function App() {
                   : '点击左侧添加按钮或此处按钮，选择本机目录创建 Workspace。'}
               </p>
               {activeWorkspace ? (
-                <button onClick={() => void handleNewSession()}>新建会话</button>
+                <button
+                  onClick={() => void handleNewSession()}
+                  disabled={requiredBlock.blocked}
+                >
+                  新建会话
+                </button>
               ) : (
                 <button onClick={() => setWorkspaceCreatorOpen(true)}>添加 Workspace</button>
               )}
@@ -854,6 +936,7 @@ export function App() {
         <SettingsPanel
           http={httpRef.current}
           runtime={configurationRuntime}
+          agentReadiness={agentReadiness}
           onClose={() => setSettingsOpen(false)}
         />
       )}

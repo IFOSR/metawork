@@ -373,13 +373,21 @@ export class MetaclawGatewayServer {
         clientCapabilities: ['trace_v1'],
       }, 'local').then(receipt => {
         if ('kind' in receipt || receipt.status === 'rejected') {
+          const rejected = 'kind' in receipt ? null : receipt;
           send({
             type: 'error',
             message: 'kind' in receipt ? receipt.message : receipt.reason ?? 'Gateway rejected input',
+            requestId: message.requestId,
+            ...(rejected?.code ? { code: rejected.code } : {}),
+            ...(rejected?.agentId ? { agentId: rejected.agentId } : {}),
           });
         }
       }).catch(error => {
-        send({ type: 'error', message: (error as Error).message });
+        send({
+          type: 'error',
+          message: (error as Error).message,
+          requestId: message.requestId,
+        });
       });
     }, {
       onError: error => {
