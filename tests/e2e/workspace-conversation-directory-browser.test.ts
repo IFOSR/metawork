@@ -32,6 +32,41 @@ e2e('Workspace Conversation directory browser flow', () => {
         waitForExpression(second.cdp, `Boolean(document.querySelector('.workspace-home'))`),
       ]);
 
+      await first.cdp.evaluate(`document.querySelector('.workspace-create-button').click()`);
+      await waitForExpression(
+        first.cdp,
+        `[...document.querySelectorAll('.workspace-creator-row')]
+          .some(row => row.innerText.includes('directory-000'))`,
+      );
+      expect(await first.cdp.evaluate(`(() => {
+        const modal = document.querySelector('.workspace-creator');
+        const footer = document.querySelector('.workspace-creator footer');
+        if (!modal || !footer) return false;
+        const modalRect = modal.getBoundingClientRect();
+        const footerRect = footer.getBoundingClientRect();
+        return modalRect.top >= 0
+          && modalRect.bottom <= window.innerHeight
+          && footerRect.height > 0
+          && footerRect.bottom <= window.innerHeight;
+      })()`)).toBe(true);
+
+      await first.cdp.evaluate(
+        `document.querySelector('.workspace-creator footer .primary-button').click()`,
+      );
+      await waitForExpression(
+        first.cdp,
+        `document.querySelector('.workspace-creator-status')?.innerText
+          .includes('Workspace 切换失败')`,
+      );
+      expect(await first.cdp.evaluate(
+        `Boolean(document.querySelector('.workspace-creator'))`,
+      )).toBe(true);
+      await first.cdp.evaluate(`document.querySelector('.workspace-creator header button').click()`);
+      await waitForExpression(
+        first.cdp,
+        `document.querySelector('.workspace-creator') === null`,
+      );
+
       await first.cdp.evaluate(`document.querySelector('.new-session-button').click()`);
       await Promise.all([
         waitForExpression(
@@ -192,6 +227,22 @@ async function startMockServer(webDist: string): Promise<{
       json(response, {
         activeWorkspaceId: state.activeWorkspaceId,
         workspaces: WORKSPACES,
+      });
+      return;
+    }
+    if (url.pathname === '/api/workspaces/browse') {
+      json(response, {
+        path: '/Users/browser-test',
+        parent: '/Users',
+        crumbs: [
+          { name: '/', path: '/' },
+          { name: 'Users', path: '/Users' },
+          { name: 'browser-test', path: '/Users/browser-test' },
+        ],
+        entries: Array.from({ length: 500 }, (_, index) => ({
+          name: `directory-${String(index).padStart(3, '0')}`,
+          path: `/Users/browser-test/directory-${String(index).padStart(3, '0')}`,
+        })),
       });
       return;
     }

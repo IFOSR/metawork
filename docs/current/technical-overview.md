@@ -715,16 +715,19 @@ Conversation Workspace and ignores cwd. `/workspace` never moves an existing
 Conversation.
 
 `metawork web` registers its startup directory in a short-lived single-use
-Server launch context. The URL contains only an opaque bootstrap fragment and
-never contains a Workspace path. HTTP snapshots, WebSocket replay, and live
+Server launch context. The URL contains only an opaque launch-hint fragment and
+never contains a Workspace path. After explicit login, the Browser applies the
+hint through the ordinary authorized Workspace selection path. HTTP snapshots,
+WebSocket replay, and live
 `workspace_changed` events expose the Server-confirmed canonical Workspace to
 the existing Web interface without narrowing its richer projections.
 
 The Web surface binds only to `127.0.0.1`. Normal startup opens a short-lived,
-single-use URL-fragment bootstrap that is exchanged for an HttpOnly,
-SameSite=Strict process-local session cookie and removed from the address bar.
-No token is copied or stored by browser JavaScript. `metawork web --no-open`
-prints a manual fallback token for SSH and port-forwarded use. WebSocket
+single-use launch-hint fragment that cannot authenticate the Browser and is
+removed from the address bar after resolution. Login remains explicit; a valid
+login creates the HttpOnly, SameSite=Strict process-local session cookie.
+`metawork web --no-open` prints a manual fallback token for SSH and
+port-forwarded use. WebSocket
 upgrades require the session cookie and an allowed loopback Origin before the
 protocol switches; stale cookies return the browser to the fallback gate
 instead of reconnecting indefinitely.

@@ -697,16 +697,17 @@ Conversation 前返回 `workspace_required`。attach/replay 恢复 Conversation 
 Workspace 并忽略当前 cwd；`/workspace` 不移动已有 Conversation。
 
 `metawork web` 通过短时、单次使用的 Server launch context 传递启动目录；URL
-只包含不透明 bootstrap fragment，不包含 Workspace 路径。HTTP snapshot、
+只包含不透明 launch-hint fragment，不包含 Workspace 路径。浏览器显式登录后，
+再通过普通的已授权 Workspace selection 路径应用该提示。HTTP snapshot、
 WebSocket replay 和 live `workspace_changed` 都向现有 Web 界面返回 Server
 确认的 canonical Workspace，且不缩减现有 Web projection。
 
 Web 交互面只监听 `127.0.0.1`。正常启动会打开一个短时、单次使用的 URL
-fragment bootstrap；前端将它交换为 `HttpOnly`、`SameSite=Strict` 的
-进程级会话 Cookie 后立即清除地址栏 fragment。用户无需复制 token，浏览器
-JavaScript 也不持久化 token。`metawork web --no-open` 仅为 SSH、端口转发
-和手工打开浏览器场景打印兜底 token。WebSocket 在协议升级前验证 Cookie
-和同源 loopback Origin；旧 Cookie 会返回兜底输入页，而不是无限重连。
+launch-hint fragment；该提示不能认证浏览器，解析后立即从地址栏移除。登录始终
+需要显式完成；有效登录才创建 `HttpOnly`、`SameSite=Strict` 的进程级会话
+Cookie。`metawork web --no-open` 仅为 SSH、端口转发和手工打开浏览器场景
+打印兜底 token。WebSocket 在协议升级前验证 Cookie 和同源 loopback Origin；
+旧 Cookie 会返回兜底输入页，而不是无限重连。
 
 Web 现在采用持久 Conversation 工作区：左侧固定历史栏用于浏览有界投影，
 `WebGatewaySessionRuntime` 通过 `WebGatewayAdapter` 附着到选定的稳定

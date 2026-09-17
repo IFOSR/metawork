@@ -434,15 +434,14 @@ export function App() {
     void handleSelectWorkspacePath(workspace.canonicalPath);
   };
 
-  const handleCreateWorkspace = (path: string) => {
-    setWorkspaceCreatorOpen(false);
-    void handleSelectWorkspacePath(path);
+  const handleCreateWorkspace = async (path: string): Promise<string | null> => {
+    return handleSelectWorkspacePath(path);
   };
 
-  const handleSelectWorkspacePath = async (workspacePath: string) => {
+  const handleSelectWorkspacePath = async (workspacePath: string): Promise<string | null> => {
     const http = httpRef.current;
-    if (!http) return;
-    if (workspaceSwitchRef.current) return;
+    if (!http) return 'Workspace 服务尚未就绪，请稍后重试。';
+    if (workspaceSwitchRef.current) return '正在切换 Workspace，请稍后重试。';
     workspaceSwitchRef.current = true;
     const switchRequestId = ++workspaceSwitchRequestRef.current;
     ++conversationRequestRef.current;
@@ -452,18 +451,17 @@ export function App() {
     try {
       const result = await http.selectWorkspace(workspacePath);
       if (result.selection.status === 'failed' || !result.activeWorkspaceId) {
-        setActivationNotice(
-          result.selection.status === 'failed'
-            ? `Workspace 切换失败：${result.selection.reason}`
-            : 'Workspace 切换失败：Server 未返回 workspaceId。',
-        );
-        return;
+        const message = result.selection.status === 'failed'
+          ? `Workspace 切换失败：${result.selection.reason}`
+          : 'Workspace 切换失败：Server 未返回 workspaceId。';
+        setActivationNotice(message);
+        return message;
       }
       const [workspaceCatalog, catalog] = await Promise.all([
         http.getWorkspaces(),
         http.getConversations(result.activeWorkspaceId),
       ]);
-      if (switchRequestId !== workspaceSwitchRequestRef.current) return;
+      if (switchRequestId !== workspaceSwitchRequestRef.current) return null;
       const workspaceActiveSessionId = catalog.conversations.some(
         session => session.id === result.activeSessionId,
       )
@@ -502,8 +500,11 @@ export function App() {
             }
           });
       }
+      return null;
     } catch (error) {
-      setActivationNotice(`Workspace 切换失败：${(error as Error).message}`);
+      const message = `Workspace 切换失败：${(error as Error).message}`;
+      setActivationNotice(message);
+      return message;
     } finally {
       if (switchRequestId === workspaceSwitchRequestRef.current) {
         workspaceSwitchRef.current = false;
@@ -568,7 +569,7 @@ export function App() {
     setActivationNotice(null);
     setPreviewState({ status: 'closed' });
     setExecutionDetail(null);
-    if (sessionId === activeSessionId) {
+    if (sessionId === activeConversationRef.current) {
       loadRecordRef.current(sessionId);
       return;
     }
@@ -807,7 +808,7 @@ export function App() {
               <p>
                 {activeWorkspace
                   ? '选择左侧会话继续工作，或在当前 Workspace 新建一个独立会话。'
-                  : '点击左侧 ＋ 或此处按钮，选择本机目录创建 Workspace。'}
+                  : '点击左侧添加按钮或此处按钮，选择本机目录创建 Workspace。'}
               </p>
               {activeWorkspace ? (
                 <button onClick={() => void handleNewSession()}>新建会话</button>
@@ -856,13 +857,15 @@ export function App() {
           onClose={() => setSettingsOpen(false)}
         />
       )}
-      <WorkspaceCreator
-        http={httpRef.current}
-        open={workspaceCreatorOpen}
-        disabled={workspaceSwitching}
-        onClose={() => setWorkspaceCreatorOpen(false)}
-        onSelect={handleCreateWorkspace}
-      />
+      {workspaceCreatorOpen && (
+        <WorkspaceCreator
+          http={httpRef.current}
+          open
+          disabled={workspaceSwitching}
+          onClose={() => setWorkspaceCreatorOpen(false)}
+          onSelect={handleCreateWorkspace}
+        />
+      )}
     </>
   );
 }

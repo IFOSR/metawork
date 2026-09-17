@@ -132,7 +132,9 @@ export function SessionSidebar({
         })}
         {sessions.length === 0 && (
           <div className="sidebar-empty">
-            {activeWorkspaceId ? '当前 Workspace 暂无会话' : '点击 ＋ 添加本机目录后新建会话'}
+            {activeWorkspaceId
+              ? '当前 Workspace 暂无会话'
+              : '点击 Workspace 添加按钮选择本机目录'}
           </div>
         )}
       </div>

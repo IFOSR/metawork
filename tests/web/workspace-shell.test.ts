@@ -143,6 +143,16 @@ describe('Web workspace shell', () => {
     expect(loadRecord).toContain('isCurrentConversationRecordRequest');
   });
 
+  it('uses the synchronous active Conversation ref when deciding whether attach is required', async () => {
+    const app = await readFile(new URL('App.tsx', root), 'utf8');
+    const start = app.indexOf('const handleSelectSession');
+    const end = app.indexOf('const handleNewSession', start);
+    const handler = app.slice(start, end);
+
+    expect(handler).toContain('sessionId === activeConversationRef.current');
+    expect(handler).not.toContain('sessionId === activeSessionId');
+  });
+
   it('rolls a completed live Turn into Conversation history before starting the next Turn', async () => {
     const app = await readFile(new URL('App.tsx', root), 'utf8');
     const start = app.indexOf('onTurnStarted:');

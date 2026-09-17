@@ -26,19 +26,25 @@ export function WorkspaceSelector({
           disabled={disabled}
           onClick={onCreateWorkspace}
         >
-          ＋
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M10 4.5v11M4.5 10h11" />
+          </svg>
         </button>
       </div>
       <select
         id="workspace-select"
-        value={activeWorkspaceId ?? ''}
+        value={active?.id ?? ''}
         disabled={disabled}
         onChange={event => {
           const workspace = workspaces.find(item => item.id === event.target.value);
           if (workspace) onSelect(workspace);
         }}
       >
-        {workspaces.length === 0 && <option value="">暂无 Workspace</option>}
+        {!active && (
+          <option value="" disabled>
+            {workspaces.length === 0 ? '暂无 Workspace' : '请选择 Workspace'}
+          </option>
+        )}
         {workspaces.map(workspace => (
           <option
             key={workspace.id}
@@ -52,7 +58,7 @@ export function WorkspaceSelector({
       </select>
       <div className="workspace-selector-path" title={active?.canonicalPath}>
         <span data-availability={active?.availability ?? 'unavailable'} />
-        <code>{active?.canonicalPath ?? '点击 ＋ 添加本机目录'}</code>
+        <code>{active?.canonicalPath ?? '点击添加按钮选择本机目录'}</code>
       </div>
     </div>
   );
