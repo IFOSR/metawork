@@ -17,7 +17,8 @@ import { ConfigurationCompiler } from '../configuration/configuration-compiler.j
 import { ConfigurationService } from '../configuration/configuration-service.js';
 import { createProductionConfigurationProbe } from '../configuration/production-configuration-probe.js';
 import { FileConfigurationRepository } from '../configuration/file-configuration-repository.js';
-import type { SecretStore } from '../configuration/secret-store.js';
+import { migrateLegacyProviderCredentials } from '../configuration/provider-credential-migration.js';
+import type { CredentialsFileSecretStore } from '../configuration/credentials-file-secret-store.js';
 import { CURRENT_SCHEMA_VERSION, runMigrations } from '../storage/migrations.js';
 import { DatabaseUpgradeTransaction } from './database-upgrade-transaction.js';
 import type { AnyFusionPaths } from './paths.js';
@@ -50,7 +51,12 @@ export interface SourceNativeUpdateResult {
 export class SourceNativeUpdater {
   constructor(private readonly dependencies: {
     paths: AnyFusionPaths;
-    secretStore: SecretStore;
+    /**
+     * Candidate probe store. It is the MetaWork credentials file, because the
+     * probe must evaluate the configuration against the credentials the release
+     * will actually read after activation.
+     */
+    secretStore: CredentialsFileSecretStore;
     detectCommand(command: string): Promise<boolean>;
     isServerRunning(): Promise<boolean>;
     afterSwitch?: (name: ReleasePointerName) => Promise<void>;
@@ -77,7 +83,24 @@ export class SourceNativeUpdater {
       await repository.recover();
       const snapshot = await repository.getActiveSnapshot();
 
-      await stageSourceRelease(input.sourceRoot, input.plannerRoot, release.releaseRoot, input.releaseId);
+      // The one-time cutover to the credentials file runs during Server startup,
+      // that is after activation, while the candidate probe below runs before
+      // it. Migrate first so an installation that still keeps Provider keys in
+      // the account secrets directory can satisfy the probe at all.
+      await migrateLegacyProviderCredentials({
+        target: this.dependencies.secretStore,
+        providers: snapshot.config.providers,
+        legacySecretsDir: accountPaths.secrets,
+        env: process.env,
+      });
+
+      await stageSourceRelease(
+        input.sourceRoot,
+        input.plannerRoot,
+        release.releaseRoot,
+        input.releaseId,
+        paths.appCurrent,
+      );
       const sourceSchema = readSchemaVersion(accountPaths.database);
       if (!isSupportedDatabaseSchema(sourceSchema)) {
         throw new Error(`unsupported update source schema: ${sourceSchema}`);

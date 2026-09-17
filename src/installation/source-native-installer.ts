@@ -10,7 +10,7 @@ import {
   rm,
   symlink,
 } from 'node:fs/promises';
-import { basename, dirname, join, relative } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
 import { resolveAccountPaths } from '../account/account-paths.js';
@@ -104,7 +104,13 @@ export class SourceNativeInstaller {
     let secretStored = false;
     let compiledRuntimeRoot: string | null = null;
     try {
-      await stageSourceRelease(input.sourceRoot, input.plannerRoot, release.releaseRoot, input.releaseId);
+      await stageSourceRelease(
+        input.sourceRoot,
+        input.plannerRoot,
+        release.releaseRoot,
+        input.releaseId,
+        paths.appCurrent,
+      );
       await this.dependencies.secretStore.put(secretReference, input.provider.apiKey);
       secretStored = true;
       await service.initialize();
@@ -212,6 +218,30 @@ async function collectCleanupError(
 async function removeImmutablePath(path: string): Promise<void> {
   await makeWritable(path);
   await rm(path, { recursive: true, force: true });
+}
+
+/**
+ * A rolled-back upgrade leaves its staged release directory behind, so
+ * re-running the same release id used to fail with ENOTEMPTY and could never
+ * recover. An orphaned directory is replaced; the active release never is.
+ */
+async function assertReleaseRootReplaceable(
+  releaseRoot: string,
+  appCurrentPointer: string,
+  releaseId: string,
+): Promise<void> {
+  const existing = await lstat(releaseRoot).then(() => true, () => false);
+  if (!existing) return;
+  const activeTarget = await readlink(appCurrentPointer).catch(() => null);
+  if (
+    activeTarget !== null
+    && resolve(dirname(appCurrentPointer), activeTarget) === resolve(releaseRoot)
+  ) {
+    throw new Error(
+      `release ${releaseId} is the active release; install a different release id`,
+    );
+  }
+  await removeImmutablePath(releaseRoot);
 }
 
 function buildConfiguration(
@@ -343,7 +373,9 @@ export async function stageSourceRelease(
   plannerRoot: string,
   releaseRoot: string,
   releaseId: string,
+  appCurrentPointer: string,
 ): Promise<void> {
+  await assertReleaseRootReplaceable(releaseRoot, appCurrentPointer, releaseId);
   const stageRoot = `${releaseRoot}.stage-${randomUUID()}`;
   await mkdir(stageRoot, { recursive: true, mode: 0o700 });
   try {

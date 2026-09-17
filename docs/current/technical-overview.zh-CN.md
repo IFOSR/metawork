@@ -887,7 +887,8 @@ Docker attempt 路径只是兼容模式，原生 launcher 不会启动它。
 SecretStore 接口解析，但默认由 `~/.metawork/credentials.json` 提供；
 如果覆盖 MetaWork 根目录，则使用 `<install-root>/credentials.json`。Web
 只显示掩码，并且只在更新时接收明文 Key；旧 Keychain 或账户 secret 文件
-仅用于适用的一次性迁移。
+仅用于适用的一次性迁移。该迁移也会在升级事务的候选配置探针之前执行，否则
+老安装在每次升级时都会以 Provider secret 不可用而失败。
 
 启动前导出飞书密钥：
 

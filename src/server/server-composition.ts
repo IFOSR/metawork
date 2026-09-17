@@ -372,7 +372,12 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     const config = buildApplicationConfig(
       await configurationRepository.getActiveSnapshot(),
     );
-    console.log(formatGatewayDoctorChecks(runGatewayDoctor({ config, metaclawDir })));
+    console.log(formatGatewayDoctorChecks(runGatewayDoctor({
+      config,
+      // ADR-0031: Gateway pairing and audit state live in the account root, not
+      // at the installation root.
+      gatewayDir: accountPaths.gateway,
+    })));
     // Deep task-state diagnostics for the surfaces implicated by the
     // 2026-09-03 incident (dispatch queue, conversation slots, schedule
     // entries, blocked tasks).

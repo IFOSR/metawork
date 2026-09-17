@@ -9,17 +9,21 @@ import {
   readlinkSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../../src/account/account-id.js';
 import { resolveAccountPaths } from '../../src/account/account-paths.js';
 import { FileConfigurationRepository } from '../../src/configuration/file-configuration-repository.js';
 import { FileSecretStore } from '../../src/configuration/file-secret-store.js';
 import { resolveAnyFusionPaths } from '../../src/installation/paths.js';
-import { SourceNativeInstaller } from '../../src/installation/source-native-installer.js';
+import {
+  SourceNativeInstaller,
+  stageSourceRelease,
+} from '../../src/installation/source-native-installer.js';
 import { CURRENT_SCHEMA_VERSION } from '../../src/storage/migrations.js';
 
 const cleanup: string[] = [];
@@ -190,6 +194,54 @@ describe('SourceNativeInstaller', () => {
       secretStore: new FileSecretStore(accountPaths.secrets),
       detectCommand: async () => true,
     }).install(input)).resolves.toMatchObject({ releaseId: input.releaseId });
+  });
+});
+
+describe('stageSourceRelease', () => {
+  it('replaces an orphaned release directory that no pointer references', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'anyfusion-stage-replace-'));
+    cleanup.push(home);
+    const sourceRoot = join(home, 'source');
+    const plannerRoot = join(home, 'planner-source');
+    fixtureRelease(sourceRoot, plannerRoot);
+    const paths = resolveAnyFusionPaths(home);
+    const releaseRoot = join(paths.releases, '1.2.1-preview.0');
+    mkdirSync(join(releaseRoot, 'dist'), { recursive: true });
+    writeFileSync(join(releaseRoot, 'dist', 'index.js'), 'stale\n');
+    mkdirSync(dirname(paths.appCurrent), { recursive: true });
+
+    await stageSourceRelease(
+      sourceRoot,
+      plannerRoot,
+      releaseRoot,
+      '1.2.1-preview.0',
+      paths.appCurrent,
+    );
+
+    expect(readFileSync(join(releaseRoot, 'dist', 'index.js'), 'utf8')).toBe('runtime\n');
+  });
+
+  it('refuses to overwrite the active release', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'anyfusion-stage-active-'));
+    cleanup.push(home);
+    const sourceRoot = join(home, 'source');
+    const plannerRoot = join(home, 'planner-source');
+    fixtureRelease(sourceRoot, plannerRoot);
+    const paths = resolveAnyFusionPaths(home);
+    const releaseRoot = join(paths.releases, '1.2.1-preview.0');
+    mkdirSync(join(releaseRoot, 'dist'), { recursive: true });
+    writeFileSync(join(releaseRoot, 'dist', 'index.js'), 'active\n');
+    mkdirSync(dirname(paths.appCurrent), { recursive: true });
+    symlinkSync(join('releases', '1.2.1-preview.0'), paths.appCurrent);
+
+    await expect(stageSourceRelease(
+      sourceRoot,
+      plannerRoot,
+      releaseRoot,
+      '1.2.1-preview.0',
+      paths.appCurrent,
+    )).rejects.toThrow('release 1.2.1-preview.0 is the active release');
+    expect(readFileSync(join(releaseRoot, 'dist', 'index.js'), 'utf8')).toBe('active\n');
   });
 });
 
