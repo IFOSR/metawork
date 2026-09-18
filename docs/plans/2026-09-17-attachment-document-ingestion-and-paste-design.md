@@ -1,6 +1,7 @@
 # 附件资源贯穿 Planner、MetaWork 与 Executor 的设计
 
-> **Status:** Implemented（核心链路与本地验证已完成；Docker 镜像构建受 Docker Hub 网络超时影响）。2026-09-18 修订：撤销 MetaWork 提供的文档解析器（见 §15 修订记录）。
+> **Status:** Implemented（核心链路与本地验证已完成；Docker 镜像构建受 Docker Hub 网络超时影响）。2026-09-18 修订：撤销 MetaWork 提供的文档解析器、上调附件预算、修复 bridge 提交路径丢失当前 Turn 附件资格并收敛 plan_proposed 构造点（见 §15 修订记录）。
+> **Closing commits:** `c85383f feat(attachments): deliver opaque user attachments into Executor inputs`、`chore(release): 1.2.0-preview.5`（同一提交内记录本设计的交付与验证）
 > **Date:** 2026-09-17
 > **范围:** Web 附件上传、粘贴截图、Planner 附件编排、Kernel 授权、Executor 输入物化与文件处理能力
 > **相关:** ADR-0015（Planner 语义所有权）、ADR-0020（模块职责与依赖方向）、ADR-0038（Planner、MetaWork 与 Executor Context Bridge）

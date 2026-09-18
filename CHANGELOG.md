@@ -5,6 +5,41 @@ AnyFusion release entries remain unchanged for auditability.
 
 The project follows [Semantic Versioning](https://semver.org/) for public preview releases.
 
+## [1.2.0-preview.5] - 2026-09-18
+
+### Added
+
+- User attachments are first-class resources. Web click, drag/drop and
+  clipboard-file paste share one bounded upload endpoint, and Feishu message
+  files resolve into the same Attachment Store with durable
+  Account/Conversation/Workspace ownership, media class, size and SHA-256.
+- The Planner selects `{ kind: "attachment", attachmentId }` ContextRefs from
+  bounded metadata only (ID, name, MIME, size, availability). Authorized
+  Executor attempts receive the revalidated original under the attempt-local
+  `inputs/` directory, and the Executor prompt names the relative input path.
+- Per-message attachment budget: 100 MiB per file, 500 MiB and 32 files per
+  message. The Gateway rejects an over-budget message before it becomes a Turn,
+  and the Web Composer refuses the file before uploading it.
+- `document-processing` Routing Capability, so a file-handling Subtask is only
+  routed to an Executor that declares the ability.
+
+### Changed
+
+- MetaWork no longer ships a document reader. Document parsing is owned by the
+  routed Executor's own base model and tools, so a weaker fixed parser and its
+  `pdfjs-dist`/`tesseract.js` dependency tree are gone from the release.
+- An unqualified attachment reference now reports 附件 instead of the raw
+  `attachment` kind in the Kernel clarification.
+
+### Fixed
+
+- A proposal submitted through the Planner host bridge kept losing the current
+  Turn's attachments, so every plan that referenced an uploaded file was
+  rejected with “计划引用了当前任务不可用的上下文（attachment）”. The eligible
+  attachment set is now a Turn fact read by both submission paths.
+- Replans no longer drop attachment eligibility: they inherit the attachments of
+  their Task's originating admission instead of submitting an empty set.
+
 ## [1.2.0-preview.4] - 2026-09-17
 
 ### Added
