@@ -371,6 +371,12 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       let settled = false;
       let promptAccepted = false;
       let modelChecked = this.currentExpectedModel === undefined;
+      // A resumed Pi session keeps its own selected model, so a configuration
+      // change reaches the session through one `set_model` reconciliation
+      // instead of failing the turn.
+      let modelReconciled = false;
+      const modelRequestId = `${requestId}-set-model`;
+      const stateRecheckRequestId = `${requestId}-state-recheck`;
       let pendingResult: PlannerRunResult | null = null;
       let terminalProposalResult: PlannerProposalResult | ExecutorManualProposalResult | null = null;
       let structuredOutput: string | undefined;
@@ -487,7 +493,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
         }
         if (
           event.type === 'response'
-          && event.id === stateRequestId
+          && (event.id === stateRequestId || event.id === stateRecheckRequestId)
           && event.command === 'get_state'
         ) {
           if (event.success !== true) {
@@ -510,6 +516,16 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
             || actualProvider !== expected.provider
             || actualModelId !== expected.modelId
           ) {
+            if (expected && !modelReconciled) {
+              modelReconciled = true;
+              proc.stdin?.write(`${JSON.stringify({
+                id: modelRequestId,
+                type: 'set_model',
+                provider: expected.provider,
+                modelId: expected.modelId,
+              })}\n`);
+              return;
+            }
             fail(new Error(
               `Planner model binding mismatch: expected `
               + `${expected?.provider ?? 'unknown'}/${expected?.modelId ?? 'unknown'}, `
@@ -519,6 +535,19 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
           }
           modelChecked = true;
           sendPrompt();
+          return;
+        }
+        if (event.type === 'response' && event.id === modelRequestId && event.command === 'set_model') {
+          if (event.success !== true) {
+            fail(new Error(
+              `Planner model binding mismatch: expected `
+              + `${this.currentExpectedModel?.provider ?? 'unknown'}/${this.currentExpectedModel?.modelId ?? 'unknown'}; `
+              + `the resumed Planner session could not switch to it: `
+              + truncateText(redactSensitiveText(String(event.error ?? 'unknown error')), 500),
+            ));
+            return;
+          }
+          proc.stdin?.write(`${JSON.stringify({ id: stateRecheckRequestId, type: 'get_state' })}\n`);
           return;
         }
         if (event.type === 'response' && event.id === requestId && event.command === 'prompt') {

@@ -1132,6 +1132,7 @@ describe('ConversationSession', () => {
   it('lets a replan reference the attachments its originating Turn was admitted with', async () => {
     const { workGraphPlan } = await import('../support/planning-agent-plans.js');
     const configuration = replanConfiguration();
+    let replanRequest = '';
     const session = new ConversationSession({
       conversationId: 'conversation_replan_attachments',
       plannerSessionId: 'planner_replan_attachments',
@@ -1158,17 +1159,30 @@ describe('ConversationSession', () => {
             type: 'plan_proposed',
             attachmentIds: ['att_original'],
           }) as never,
+          listAttemptReceipts: () => ([{
+            attemptId: 'attempt_failed',
+            agentClassName: 'codex-engineering',
+            generationId: 'generation_1',
+            graphRevision: 1,
+            terminalState: 'executor_failed',
+            failure: { kind: 'provider_quota', scope: 'agent_class', code: 'provider_quota_exceeded', summary: '403 用户额度不足' },
+            errorCode: 'provider_quota_exceeded',
+            errorDetail: 'unexpected status 403 Forbidden: 用户额度不足',
+          }]) as never,
         } as never,
       }),
       mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
       planningContextBuilder: {
-        build: (input: { userInput: string }) => ({
-          userInput: input.userInput,
-          request: { sessionId: 'planner_replan_attachments', source: 'session' },
-          pendingAuthorizationRequest: null,
-          configuration,
-          timeoutMs: 1_000,
-        }),
+        build: (input: { userInput: string }) => {
+          replanRequest = input.userInput;
+          return {
+            userInput: input.userInput,
+            request: { sessionId: 'planner_replan_attachments', source: 'session' },
+            pendingAuthorizationRequest: null,
+            configuration,
+            timeoutMs: 1_000,
+          };
+        },
       } as never,
     });
 
@@ -1192,6 +1206,13 @@ describe('ConversationSession', () => {
       attachmentIds: ['att_original'],
       targetGraphRevision: 2,
     });
+    // The replan prompt names the failed candidates and tells the Planner not
+    // to reuse them blindly.
+    expect(replanRequest).toContain('codex-engineering');
+    expect(replanRequest).toContain('provider_quota_exceeded');
+    expect(replanRequest).toContain(
+      'Do not bind the remaining work back to an Executor candidate that already failed in this generation',
+    );
   });
 
   it('reconstructs an accepted proposal from an already-applied Kernel decision after a completion crash', async () => {

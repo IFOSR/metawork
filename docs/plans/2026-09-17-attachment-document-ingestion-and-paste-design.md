@@ -743,4 +743,14 @@ Executor executes
 
 新增/更新测试：`tests/execution/workspace-path-length.test.ts`（纯函数 + 真实长 id 的段落/总长断言）、`runtime-home-materializer.test.ts`、`scripted-session.test.ts`（新目录形状）、`control-kernel.test.ts`（quota 后类仍 available、再次成功保持 healthy）。契约记录：`CONTEXT.md` 新增 managed path-naming invariant；`CHANGELOG.md` Unreleased。
 
-状态：F1–F4 全部落地；F5（技能侧）按用户决定不做；未发 release。
+### 2026-09-18：Planner 模型切换与会话语义调和；replan 禁止盲目复用失败候选
+
+现象：把 Planner 换成本地部署模型后，执行任务报 `Planner unavailable: Planner model binding mismatch: expected custom-model-5/Ornith-…gguf, received deepseek/deepseek-flash`。
+
+根因：每个 Conversation 的 Pi 会话是持久的（`--session <conversation>.jsonl`），会话自身保存了上次选择的模型；切换模型只改了 revision 级 runtime home 的 `settings.json`（本机 `planner/runtime/revision-d1adc52b…/settings.json` 已是新模型），而 `planner/sessions/conv_OS3gQjfaDuxK.jsonl` 里仍是 `provider=deepseek, model=deepseek-flash`。MetaWork 启动 Pi 时不传 `--model`，Pi 恢复会话模型并通过 `get_state` 上报，于是与配置期望不一致 → fail closed。
+
+修复：`planner-process-supervisor` 在 `get_state` 检查发现不一致时，先发一次 RPC `set_model`（Pi 的 `rpc-mode.ts` 已支持，按 provider+modelId 在 registry 中校验）调和会话模型，随后再取一次 `get_state` 复核；只有调和失败才 fail closed，并在错误里同时给出期望值、实际值与 set_model 的失败原因。语义连续性（同一 Pi 会话）因此得以保留，不需要轮换会话。
+
+同时补上一条 replan 语义指令：自动 replan 的请求已经携带本代失败候选（`agentClassName/failure/code/summary`），现明确要求 Planner 不得在未说明"这次为何会不同"的情况下把剩余工作重新绑定到刚失败的 Executor 候选。
+
+状态：F1–F4 落地，模型切换调和与 replan 指令落地；F5（技能侧）按用户决定不做；未发 release。

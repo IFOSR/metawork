@@ -1871,6 +1871,7 @@ export class ConversationSession {
       `Generation: ${decision.action.generationId}`,
       `Superseded revision: ${decision.action.sourceRevision}`,
       'The new graph must describe only remaining work and may reference the task_evidence IDs below.',
+      'Do not bind the remaining work back to an Executor candidate that already failed in this generation unless you explain why this attempt would behave differently.',
       `Completed evidence: ${JSON.stringify(evidence.map(item => ({
         evidenceId: item.id,
         title: item.title,

@@ -372,6 +372,16 @@ describe('PlannerProcessSupervisor', () => {
           },
         })}\n`);
       }
+      if (command.type === 'set_model') {
+        // The resumed session cannot switch to the configured model.
+        child.stdout.write(`${JSON.stringify({
+          type: 'response',
+          command: 'set_model',
+          success: false,
+          id: command.id,
+          error: 'Model not found: deepseek/deepseek-v4-pro',
+        })}\n`);
+      }
     });
     const supervisor = new PlannerProcessSupervisor({
       command: '/release/planner',
@@ -391,9 +401,11 @@ describe('PlannerProcessSupervisor', () => {
     } as never, 'kernel').catch(value => value as Error);
 
     expect(error.message).toContain(
-      'Planner model binding mismatch: expected deepseek/deepseek-v4-pro, received kimi/k3',
+      'Planner model binding mismatch: expected deepseek/deepseek-v4-pro',
     );
-    expect(commands.map(command => command.type)).toEqual(['get_state']);
+    expect(error.message).toContain('Model not found: deepseek/deepseek-v4-pro');
+    // One reconciliation attempt is made before failing closed.
+    expect(commands.map(command => command.type)).toEqual(['get_state', 'set_model']);
   });
 
   it('sends the prompt only after the restored Planner model matches', async () => {
@@ -464,6 +476,97 @@ describe('PlannerProcessSupervisor', () => {
       submittedPlan: { id: 'plan-model-match' },
     });
     expect(commands.map(command => command.type)).toEqual(['get_state', 'prompt']);
+  });
+
+  it('rebinds a resumed session to the configured Planner model instead of failing the turn', async () => {
+    const child = fakeProcess();
+    const commands: Array<Record<string, unknown>> = [];
+    let stateReads = 0;
+    child.stdin.on('data', chunk => {
+      const command = JSON.parse(chunk.toString().trim()) as Record<string, unknown>;
+      commands.push(command);
+      if (command.type === 'get_state') {
+        stateReads += 1;
+        child.stdout.write(`${JSON.stringify({
+          type: 'response',
+          command: 'get_state',
+          success: true,
+          id: command.id,
+          // The resumed session still holds the model it was created with.
+          data: {
+            model: stateReads === 1
+              ? { provider: 'deepseek', id: 'deepseek-flash' }
+              : { provider: 'custom-model-5', id: 'Ornith-1.5-35B-A3B-Q4_0_ROCMFP4_COHERENT.gguf' },
+          },
+        })}\n`);
+        return;
+      }
+      if (command.type === 'set_model') {
+        child.stdout.write(`${JSON.stringify({
+          type: 'response',
+          command: 'set_model',
+          success: true,
+          id: command.id,
+        })}\n`);
+        return;
+      }
+      if (command.type !== 'prompt') return;
+      const result = {
+        status: 'accepted',
+        turnId: 'turn-model-rebind',
+        submissionId: 'submission-model-rebind',
+        planId: 'plan-model-rebind',
+        outcome: 'proposal_validated',
+        displayText: 'validated',
+        taskId: null,
+        kernel: null,
+      };
+      for (const event of [
+        { type: 'response', command: 'prompt', success: true, id: command.id },
+        {
+          type: 'tool_execution_start',
+          toolCallId: 'tool-model-rebind',
+          toolName: 'submit_planning_proposal',
+          args: { plan: { id: 'plan-model-rebind', schemaVersion: 8 } },
+        },
+        {
+          type: 'tool_execution_end',
+          toolCallId: 'tool-model-rebind',
+          toolName: 'submit_planning_proposal',
+          result: { details: result },
+          isError: false,
+        },
+        { type: 'agent_end', messages: [] },
+      ]) {
+        child.stdout.write(`${JSON.stringify(event)}\n`);
+      }
+    });
+    child.stdin.on('finish', () => queueMicrotask(() => child.emit('close', 0, null)));
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      plannerHome: join(tmpdir(), `planner-home-model-rebind-${process.pid}`),
+      sessionDir: join(tmpdir(), `planner-session-model-rebind-${process.pid}`),
+      expectedModel: {
+        provider: 'custom-model-5',
+        modelId: 'Ornith-1.5-35B-A3B-Q4_0_ROCMFP4_COHERENT.gguf',
+      },
+      spawn: (() => child as never) as never,
+    });
+
+    await expect(supervisor.run('plan this', {
+      timeoutMs: 1_000,
+      request: { sessionId: 'session-model-rebind', source: 'gateway' },
+    } as never, 'kernel')).resolves.toMatchObject({
+      submittedPlan: { id: 'plan-model-rebind' },
+    });
+    expect(commands.map(command => command.type)).toEqual([
+      'get_state', 'set_model', 'get_state', 'prompt',
+    ]);
+    expect(commands[1]).toMatchObject({
+      type: 'set_model',
+      provider: 'custom-model-5',
+      modelId: 'Ornith-1.5-35B-A3B-Q4_0_ROCMFP4_COHERENT.gguf',
+    });
   });
 
   it('sends multimodal images with the prompt command when provided', async () => {

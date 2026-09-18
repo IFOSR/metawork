@@ -25,6 +25,14 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 
 ### Fixed
 
+- Switching the Planner model no longer makes planning fail with
+  `Planner model binding mismatch`. A resumed Pi session keeps its own selected
+  model, so the Server now rebinds the session to the configured provider/model
+  (`set_model`) and re-checks before running the turn; it still fails closed,
+  naming both sides, when the session cannot switch.
+- An automatic replan now tells the Planner which Executor candidates already
+  failed in this generation and instructs it not to rebind the remaining work to
+  them without stating why the attempt would behave differently.
 - Managed workspace, Git repository and attempt-runtime paths no longer repeat a
   long durable identity at every nesting level. Directory names are now
   deterministic bounded segments (readable prefix/suffix plus a short digest)
