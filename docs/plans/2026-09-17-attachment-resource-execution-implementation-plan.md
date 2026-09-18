@@ -235,6 +235,12 @@
 ### Post-Completion Revision
 
 - 2026-09-18: Task 7 (the MetaWork-owned `metawork-document-reader` CLI) was reversed by user decision. The routed Executor's base model and its own tools own document parsing; MetaWork ships no parser. The `document-processing` capability declaration and Task 6 remain. Code, Docker, prompt and documentation changes are listed in `2026-09-17-attachment-document-ingestion-and-paste-design.md` §15.
+- 2026-09-18: `docker/shell.ps1` kept `metaclaw-shell-data-v37-anyfusion-planner`
+  after the schema 38 bump, so `tests/docker/shell-schema-isolation.test.ts`
+  guarded a volume name that no longer matched `CURRENT_SCHEMA_VERSION` and CI
+  stayed red on `main`. The volume name is scoped to schema v38 again, so
+  `-Rebuild` starts a clean volume and keeps the v37 volume for manual
+  recovery instead of migrating it in place.
 
 ### Git State
 
