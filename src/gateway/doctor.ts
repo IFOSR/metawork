@@ -11,7 +11,13 @@ export interface GatewayDoctorCheck {
 
 export function runGatewayDoctor(input: {
   config: Config;
-  metaclawDir: string;
+  /**
+   * Gateway state directory. ADR-0031 makes this the account-scoped
+   * `accounts/<id>/gateway` root, not the installation root; the doctor used to
+   * look at the pre-migration `<install-root>` path and therefore warned about
+   * pairing and audit state that existed.
+   */
+  gatewayDir: string;
   env?: NodeJS.ProcessEnv;
 }): GatewayDoctorCheck[] {
   const env = input.env ?? process.env;
@@ -68,18 +74,22 @@ export function runGatewayDoctor(input: {
     message: homeChannel ? `Home channel is ${homeChannel}` : 'Home channel is not configured; send /sethome in Feishu',
   });
 
+  const pairingStatePath = resolve(input.gatewayDir, 'feishu-pairings.json');
+  const pairingStateExists = existsSync(pairingStatePath);
   checks.push({
     name: 'gateway.feishu.pairings',
-    status: existsSync(resolve(input.metaclawDir, 'feishu-pairings.json')) ? 'ok' : 'warn',
-    message: existsSync(resolve(input.metaclawDir, 'feishu-pairings.json'))
+    status: pairingStateExists ? 'ok' : 'warn',
+    message: pairingStateExists
       ? 'Pairing state file exists'
       : 'Pairing state file does not exist yet',
   });
 
+  const auditLogPath = resolve(input.gatewayDir, 'gateway-audit.jsonl');
+  const auditLogExists = existsSync(auditLogPath);
   checks.push({
     name: 'gateway.audit',
-    status: existsSync(resolve(input.metaclawDir, 'gateway-audit.jsonl')) ? 'ok' : 'warn',
-    message: existsSync(resolve(input.metaclawDir, 'gateway-audit.jsonl'))
+    status: auditLogExists ? 'ok' : 'warn',
+    message: auditLogExists
       ? 'Gateway audit log exists'
       : 'Gateway audit log does not exist yet',
   });

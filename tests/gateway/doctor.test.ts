@@ -43,10 +43,10 @@ function config(): Config {
 
 describe('gateway doctor', () => {
   it('checks local Feishu Gateway configuration and secrets', () => {
-    const metaclawDir = mkdtempSync(resolve(tmpdir(), 'metaclaw-doctor-'));
+    const gatewayDir = mkdtempSync(resolve(tmpdir(), 'metaclaw-doctor-'));
     const checks = runGatewayDoctor({
       config: config(),
-      metaclawDir,
+      gatewayDir,
       env: {
         FEISHU_SECRET: 'secret',
         FEISHU_ENCRYPT_KEY: 'encrypt',

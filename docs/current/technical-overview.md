@@ -1004,6 +1004,9 @@ resolve through the existing account SecretStore seam backed by
 `<install-root>/credentials.json` when the MetaWork root is overridden. Web
 shows only a masked Key and accepts raw Keys only on update; legacy Keychain
 and account secret files are used only for one-time migration where applicable.
+That migration also runs in the upgrade transaction before the candidate
+configuration probe, because an older installation would otherwise fail every
+update with an unavailable Provider secret.
 
 Export the Feishu app secret before starting the runtime:
 
