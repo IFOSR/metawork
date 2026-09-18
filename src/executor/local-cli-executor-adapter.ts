@@ -4,7 +4,7 @@ import type { RuntimePrivateConfigurationBinding } from '../configuration/types.
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { ExecutorResult } from '../core/types.js';
 import type { ExecutorAdapter, ExecutorInput, ExecutorProbeResult } from './adapter.js';
-import { normalizeExecutorFailure } from './error-utils.js';
+import { normalizeExecutorFailure, type ExecutorFailureContext } from './error-utils.js';
 import type {
   HarnessActivitySignal,
   HarnessDriver,
@@ -143,6 +143,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           : {}),
       });
       let streamedOutput: string | null = null;
+      let lastStep: string | undefined;
       const streamTracker = this.driver.createResultStreamTracker?.();
       const rawResult = await this.processRunner.run({
         attemptId: executionBinding.attemptId,
@@ -169,7 +170,12 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
             streamedOutput = resultLine;
           }
           const progress = this.driver.parseProgressLine?.({ line, stream });
-          if (progress) input.onProgress?.(progress);
+          if (progress) {
+            // Keep the last reported step so a failure can name where it happened.
+            const excerpt = progress.text.replace(/\s+/gu, ' ').trim();
+            if (excerpt) lastStep = excerpt.slice(0, 200);
+            input.onProgress?.(progress);
+          }
           return this.driver.parseActivityLine?.({ line, stream });
         },
         onRawChunk: (chunk, stream) => input.onRawOutput?.(Buffer.from(chunk), stream),
@@ -207,7 +213,10 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         success: false,
         output: result.output,
         error: result.error,
-        failure: normalizeExecutorFailure(result.error),
+        failure: normalizeExecutorFailure(result.error, false, this.failurePassthrough(input, {
+          ...(!result.success && result.errorDetail ? { detail: result.errorDetail } : {}),
+          ...(lastStep ? { step: lastStep } : {}),
+        })),
         exitCode,
         durationMs: Date.now() - startedAt,
         diagnostics,
@@ -218,11 +227,35 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         success: false,
         output: '',
         error: message,
-        failure: normalizeExecutorFailure(message),
+        failure: normalizeExecutorFailure(message, false, this.failurePassthrough(input)),
         exitCode: 1,
         durationMs: Date.now() - startedAt,
       };
     }
+  }
+
+  /**
+   * Passthrough facts attached to every Executor failure: which Executor,
+   * provider and step produced it. Raw text stays in `summary`/`detail`.
+   */
+  private failurePassthrough(
+    input: ExecutorInput,
+    extra: { detail?: string; step?: string } = {},
+  ): ExecutorFailureContext {
+    return {
+      ...(extra.detail ? { detail: extra.detail } : {}),
+      ...(extra.step ? { step: extra.step } : {}),
+      origin: 'executor',
+      stage: 'attempt',
+      actor: {
+        agentClassRef: this.authorizedBinding.agentClassRef,
+        harnessRef: this.authorizedBinding.harnessRef,
+        providerRef: this.authorizedBinding.providerRef,
+        modelRef: this.authorizedBinding.modelRef,
+        attemptId: input.context.identity.attemptId,
+        subtaskId: input.context.identity.subtaskId,
+      },
+    };
   }
 
   async executeResponseOnly(input: {

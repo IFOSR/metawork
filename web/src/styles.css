@@ -5376,6 +5376,33 @@ button:active:not(:disabled) {
   color: var(--danger, #c2413f);
 }
 
+.execution-failure {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--danger, #c2413f);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.execution-failure strong {
+  color: var(--danger, #c2413f);
+}
+
+.execution-failure-summary {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  word-break: break-word;
+}
+
+.execution-failure-facts {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
 .trajectory-link {
   background: none;
   border: none;

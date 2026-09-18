@@ -14,6 +14,7 @@ import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import type {
   HarnessDriver,
   HarnessActivitySignal,
+  HarnessExecutorResult,
   HarnessLaunchInput,
   HarnessLaunchSpec,
   HarnessProbeResult,
@@ -31,6 +32,7 @@ import {
   parseJsonLines,
   safeHarnessName,
   safeHostEnvironment,
+  structuredStreamFailure,
 } from './harness-driver.js';
 import { executorActivityExcerpt } from './pi-cli-driver.js';
 
@@ -119,7 +121,19 @@ export class CodexCliDriver implements HarnessDriver {
         return { success: true as const, output: messages.at(-1)! };
       }
     }
-    return normalizeHarnessResult(input);
+    return this.failureResult(input);
+  }
+
+  /**
+   * The stream carries the authoritative failure; stderr is only the fallback
+   * and stays available as `errorDetail` for the full-trajectory view.
+   */
+  private failureResult(input: HarnessResultInput): HarnessExecutorResult {
+    const fallback = normalizeHarnessResult(input);
+    const structured = structuredStreamFailure(input.stdout)
+      ?? structuredStreamFailure(input.streamedOutput ?? undefined);
+    if (!structured || fallback.success) return fallback;
+    return { ...fallback, error: structured };
   }
 
   parseResultLine(input: HarnessProgressLineInput): string | null {

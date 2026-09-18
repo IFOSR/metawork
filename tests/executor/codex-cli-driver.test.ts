@@ -77,7 +77,26 @@ describe('CodexCliDriver', () => {
     expect(driver.parseResult({ exitCode: 0, stdout: 'done\n', stderr: '' }))
       .toEqual({ success: true, output: 'done' });
     expect(driver.parseResult({ exitCode: 2, stdout: '', stderr: 'failed' }))
-      .toEqual({ success: false, output: '', error: 'failed' });
+      .toEqual({ success: false, output: '', error: 'failed', errorDetail: 'failed' });
+  });
+
+  it('reports the stream failure instead of the stderr startup notice', () => {
+    const driver = new CodexCliDriver({ probeCommand: vi.fn() });
+    const quota = 'unexpected status 403 Forbidden: 用户额度不足, 剩余额度: ＄-0.001796';
+    const stdout = [
+      JSON.stringify({ type: 'thread.started', thread_id: 'thread_1' }),
+      JSON.stringify({ type: 'turn.started' }),
+      JSON.stringify({ type: 'error', message: `Reconnecting... 5/5 (${quota})` }),
+      JSON.stringify({ type: 'turn.failed', error: { message: quota } }),
+    ].join('\n');
+
+    const result = driver.parseResult({
+      exitCode: 1,
+      stdout,
+      stderr: 'Reading additional input from stdin...',
+    });
+
+    expect(result).toMatchObject({ success: false, error: quota, errorDetail: 'Reading additional input from stdin...' });
   });
 
   it('extracts JSONL agent output and streams sanitized execution activity', () => {

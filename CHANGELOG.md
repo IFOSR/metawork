@@ -7,8 +7,29 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 
 ## [Unreleased]
 
+### Added
+
+- Blocked and failed Turns now carry the Executor failure to the Client: the
+  Web conversation shows the upstream error text, the stable failure code, the
+  last executed step and the provider status, and a blocked Task description
+  names the failure that caused the block.
+
+### Changed
+
+- Executor failure facts pass through instead of being replaced. `summary`
+  keeps the upstream text (provider, harness or stderr), a localized headline
+  is attached as `label`, and the raw tail stays available as `detail`. A
+  failed Codex attempt now reports the structured stream failure
+  (`turn.failed` / `error` events, e.g. a provider 403 with the account
+  balance) rather than the stderr startup notice.
+
 ### Fixed
 
+- A provider entitlement failure (for example `403 用户额度不足`) is classified
+  as `provider_quota_exceeded` instead of `unknown_executor_failure`, so it no
+  longer blocks a Task with an unactionable reason: the Kernel tries the next
+  authorized Executor binding, or requests one replan, and the AgentClass is
+  marked unavailable so the exhausted provider is not used again.
 - The Docker shell workflow keeps its persistent data volume scoped to the
   current pre-release schema again. The schema 38 bump left `docker/shell.ps1`
   on `metaclaw-shell-data-v37-anyfusion-planner`, so the workflow could mount a

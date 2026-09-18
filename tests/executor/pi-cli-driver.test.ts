@@ -190,7 +190,7 @@ describe('PiCliDriver', () => {
   it('normalizes result output and redacts diagnostics', () => {
     const driver = new PiCliDriver({ probeCommand: vi.fn() });
     expect(driver.parseResult({ exitCode: 1, stdout: '', stderr: 'token=sk-secret' }))
-      .toEqual({ success: false, output: '', error: 'token=[REDACTED]' });
+      .toEqual({ success: false, output: '', error: 'token=[REDACTED]', errorDetail: 'token=[REDACTED]' });
   });
 
   it('fails closed when Pi reports a structured model error with exit code zero', () => {

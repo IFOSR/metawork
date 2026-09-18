@@ -57,7 +57,7 @@ export function projectExecutionOutcome(
     failure,
   };
   const permanentClassFault = failure?.scope === 'agent_class'
-    && ['authentication', 'configuration', 'adapter'].includes(failure.kind);
+    && ['authentication', 'configuration', 'adapter', 'provider_quota'].includes(failure.kind);
   return {
     agentClassName: input.agentClassName,
     classHealth: current?.classHealth === 'disabled'

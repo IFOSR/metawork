@@ -10,6 +10,34 @@ function executionStatusLabel(status: ConversationTurnProjection['status']): str
   return '已完成';
 }
 
+interface TurnFailureFacts {
+  code?: string;
+  summary?: string;
+  label?: string;
+  step?: string;
+  provider?: string;
+}
+
+/**
+ * Reads the passthrough failure facts the Runtime recorded for this Turn, so a
+ * blocked or failed Turn shows what actually went wrong and where.
+ */
+function turnFailureFacts(turn: ConversationTurnProjection): TurnFailureFacts | null {
+  for (const event of [...turn.traceEvents].reverse()) {
+    const details = event.details as Record<string, unknown> | undefined;
+    if (!details || typeof details.failureSummary !== 'string') continue;
+    const provider = details.failureProvider as { httpStatus?: unknown; requestId?: unknown } | undefined;
+    return {
+      ...(typeof details.failureCode === 'string' ? { code: details.failureCode } : {}),
+      summary: details.failureSummary,
+      ...(typeof details.failureLabel === 'string' ? { label: details.failureLabel } : {}),
+      ...(typeof details.failureStep === 'string' ? { step: details.failureStep } : {}),
+      ...(provider?.httpStatus !== undefined ? { provider: `HTTP ${String(provider.httpStatus)}` } : {}),
+    };
+  }
+  return null;
+}
+
 export function ConversationTurnView({
   turn,
   liveExecutionPanel,
@@ -31,6 +59,7 @@ export function ConversationTurnView({
       || turn.traceEvents.some(event => event.taskId || event.phase === 'execution'),
   );
   const stepCount = turn.traceEvents.length;
+  const failure = turn.status === 'completed' ? null : turnFailureFacts(turn);
   return (
     <article className="conversation-turn" data-turn-id={turn.id}>
       <section className="user-message">
@@ -50,6 +79,19 @@ export function ConversationTurnView({
               查看完整轨迹 →
             </button>
           )}
+        </section>
+      )}
+      {failure && (
+        <section className="execution-failure" data-status={turn.status}>
+          <strong>{failure.label ?? '执行未完成'}</strong>
+          {failure.summary && <p className="execution-failure-summary">{failure.summary}</p>}
+          <span className="execution-failure-facts">
+            {[
+              failure.code,
+              failure.step ? `步骤：${failure.step}` : undefined,
+              failure.provider,
+            ].filter(Boolean).join(' · ')}
+          </span>
         </section>
       )}
       {isSystemCommand && turn.finalAnswer && (

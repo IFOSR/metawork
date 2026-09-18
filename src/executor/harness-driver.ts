@@ -47,7 +47,13 @@ export interface HarnessResultStreamTracker {
 
 export type HarnessExecutorResult =
   | { success: true; output: string }
-  | { success: false; output: string; error: string };
+  | {
+      success: false;
+      output: string;
+      error: string;
+      /** Harness stderr tail kept for passthrough; never a replacement for `error`. */
+      errorDetail?: string;
+    };
 
 export interface HarnessLaunchInput {
   prompt: string;
@@ -129,11 +135,37 @@ export function emptyToUndefined(value: string | undefined): string | undefined 
 export function normalizeHarnessResult(input: HarnessResultInput): HarnessExecutorResult {
   const output = input.streamedOutput?.trim() || input.stdout.trim();
   if (input.exitCode === 0) return { success: true, output };
+  const stderr = input.stderr.trim();
   return {
     success: false,
     output: input.streamedOutput?.trim() ?? '',
-    error: redactSensitiveText(input.stderr.trim() || `process exited with code ${input.exitCode ?? 'unknown'}`),
+    error: redactSensitiveText(stderr || `process exited with code ${input.exitCode ?? 'unknown'}`),
+    ...(stderr ? { errorDetail: redactSensitiveText(stderr) } : {}),
   };
+}
+
+/**
+ * Extracts the harness's own structured failure message from a JSONL stream.
+ *
+ * Codex reports the real cause (`turn.failed` / stream `error` events, e.g. a
+ * provider 403 with the account balance) on stdout, while stderr only carries
+ * startup notices. Reading the stream keeps the passthrough faithful.
+ */
+export function structuredStreamFailure(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const events = parseJsonLines(raw);
+  for (const event of [...events].reverse()) {
+    if (event.type !== 'turn.failed') continue;
+    const message = (event.error as { message?: unknown } | undefined)?.message;
+    if (typeof message === 'string' && message.trim()) return redactSensitiveText(message.trim());
+  }
+  for (const event of [...events].reverse()) {
+    if (event.type !== 'error') continue;
+    if (typeof event.message === 'string' && event.message.trim()) {
+      return redactSensitiveText(event.message.trim());
+    }
+  }
+  return undefined;
 }
 
 export function parseJsonLine(value: string): Record<string, unknown> | null {

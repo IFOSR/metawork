@@ -1253,6 +1253,7 @@ export class ControlKernel {
     }
     if (!retryable && ![
       'authentication', 'configuration', 'adapter', 'capability_mismatch', 'task_failed', 'quality_failed',
+      'provider_quota',
     ].includes(failure.kind)) {
       return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, `${failure.kind} has no safe recovery policy`);
     }

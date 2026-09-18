@@ -112,7 +112,11 @@ describe('App permission failure blocking', () => {
 
     const blockedTask = taskRepo.findByStatus('blocked')[0];
     expect(blockedTask).toBeTruthy();
-    expect(blockedTask.dependencies[0]?.description).toBe('permission requires explicit recovery');
+    // The block description now keeps the Kernel policy reason and names the
+    // Executor failure that caused it.
+    const blockedDescription = blockedTask.dependencies[0]?.description ?? '';
+    expect(blockedDescription).toContain('permission requires explicit recovery');
+    expect(blockedDescription).toContain('permission_denied');
     expect(app.lastFrame()).toContain('Execution blocked: permission requires explicit recovery');
 
     app.unmount();

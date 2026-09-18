@@ -2696,6 +2696,12 @@ export class KernelExecutionRuntime {
         } : {}),
         ...(outcome.outcome === 'executor_failed' ? {
           failureCode: outcome.failure.code,
+          // Passthrough: the Client sees what actually failed, not a category.
+          failureSummary: outcome.failure.summary,
+          ...(outcome.failure.label ? { failureLabel: outcome.failure.label } : {}),
+          ...(outcome.failure.step ? { failureStep: outcome.failure.step } : {}),
+          ...(outcome.failure.provider ? { failureProvider: outcome.failure.provider } : {}),
+          ...(outcome.failure.detail ? { failureDetail: outcome.failure.detail } : {}),
           ...(() => {
             const hint = describeAttemptFailure({
               failureCode: outcome.failure.code,
@@ -2920,16 +2926,35 @@ export class KernelExecutionRuntime {
     finishExecution: (lines: string[], scheduleNext?: boolean) => Promise<void>,
     dependencyType: import('../core/types.js').Dependency['type'] = 'manual',
   ): Promise<void> {
+    const blockedReason = this.blockReasonWithCause(taskId, reason);
     if (this.deps.taskRuntimeService.findTask(taskId)?.status === 'running') {
       this.deps.taskRuntimeService.blockTask(taskId, {
         taskId,
         type: dependencyType,
-        description: reason,
+        description: blockedReason,
         status: 'waiting',
       });
     }
-    this.recordTaskEvent(taskId, null, 'phase2_execution_blocked', reason, {});
-    await finishExecution([`Execution blocked: ${reason}`]);
+    this.recordTaskEvent(taskId, null, 'phase2_execution_blocked', blockedReason, {});
+    await finishExecution([`Execution blocked: ${blockedReason}`]);
+  }
+
+  /**
+   * Names the Executor failure that caused a block next to the Kernel policy
+   * reason, so a blocked Task explains itself instead of only saying that some
+   * unnamed state needs manual recovery.
+   */
+  private blockReasonWithCause(taskId: string, reason: string): string {
+    const failure = this.deps.attemptReceiptRepo.listByTask(taskId)
+      .map(receipt => receipt.failure)
+      .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate))
+      .at(-1);
+    if (!failure) return reason;
+    const cause = [failure.code, failure.summary]
+      .filter((part): part is string => Boolean(part && part.trim()))
+      .join(': ');
+    if (!cause || reason.includes(failure.summary)) return reason;
+    return `${reason}（${cause}）`;
   }
 
   private async waitForRetry(

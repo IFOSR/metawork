@@ -7,6 +7,65 @@ import {
   normalizeExecutorFailure,
 } from '../../src/executor/error-utils.js';
 
+describe('normalizeExecutorFailure passthrough', () => {
+  const quotaRaw = 'unexpected status 403 Forbidden: 用户额度不足, 剩余额度: ＄-0.001796 '
+    + '(request id: 202609180750166259346028268d9d6uA96m7kI), url: https://www.code-cli.cn/v1/responses';
+
+  it('classifies a provider entitlement failure and keeps the upstream text as the summary', () => {
+    const failure = normalizeExecutorFailure(quotaRaw, false, {
+      origin: 'executor',
+      stage: 'attempt',
+      actor: {
+        agentClassRef: 'codex-engineering',
+        providerRef: 'code-cli',
+        modelRef: 'code-cli-5',
+        attemptId: 'attempt_1',
+      },
+      step: 'command_execution',
+    });
+
+    expect(failure.kind).toBe('provider_quota');
+    expect(failure.code).toBe('provider_quota_exceeded');
+    expect(failure.summary).toBe(quotaRaw);
+    expect(failure.label).toContain('额度');
+    expect(failure.provider).toEqual({
+      httpStatus: 403,
+      requestId: '202609180750166259346028268d9d6uA96m7kI',
+    });
+    expect(failure.origin).toBe('executor');
+    expect(failure.stage).toBe('attempt');
+    expect(failure.actor?.modelRef).toBe('code-cli-5');
+    expect(failure.step).toBe('command_execution');
+  });
+
+  it('does not treat a bare 403 without an entitlement signal as a quota failure', () => {
+    const failure = normalizeExecutorFailure('unexpected status 403 Forbidden: access denied by proxy');
+    expect(failure.kind).not.toBe('provider_quota');
+  });
+
+  it('keeps the upstream error line and adds the localized headline as a label', () => {
+    const raw = [
+      'Reading additional input from stdin...',
+      'failed to connect to websocket: IO error: failed to lookup address information',
+    ].join('\n');
+    const failure = normalizeExecutorFailure(raw);
+
+    expect(failure.kind).toBe('network');
+    expect(failure.summary).toBe('failed to connect to websocket: IO error: failed to lookup address information');
+    expect(failure.label).toBe('执行器网络连接失败，请检查网络或代理配置');
+    expect(failure.detail).toContain('Reading additional input from stdin...');
+  });
+
+  it('bounds and single-lines the passthrough fields it persists', () => {
+    const failure = normalizeExecutorFailure('boom', false, {
+      detail: 'a'.repeat(5000),
+      step: `line one\nline two`,
+    });
+    expect(failure.detail?.length).toBe(4000);
+    expect(failure.step).toBe('line one line two');
+  });
+});
+
 describe('formatExecutorError', () => {
   it('collapses codex network logs into a concise user-facing message', () => {
     const raw = [

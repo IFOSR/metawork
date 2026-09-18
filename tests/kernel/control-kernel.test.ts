@@ -1220,8 +1220,64 @@ describe('ControlKernel', () => {
     });
   });
 
-  it('falls back immediately for task failure and requests only one automatic replan per generation', () => {
+  it('switches binding on a provider quota failure instead of blocking it as unknown', () => {
     const kernel = new ControlKernel();
+    const quotaFailure = runtimeEvent({
+      type: 'execution_outcome',
+      terminalKind: 'failed',
+      attemptId: 'attempt_quota',
+      authorizedBinding: codexBinding,
+      bindingFingerprint: codexFingerprint,
+      attemptKind: 'primary',
+      sourceAttemptId: null,
+      failure: {
+        kind: 'provider_quota' as const,
+        scope: 'agent_class' as const,
+        code: 'provider_quota_exceeded',
+        summary: 'unexpected status 403 Forbidden: 用户额度不足, 剩余额度: ＄-0.001796',
+        provider: { httpStatus: 403 },
+      },
+    }) as Extract<KernelEvent, { type: 'execution_outcome' }>;
+    const snapshot = dispatchSnapshot([], 'awaiting_decision');
+    snapshot.attempts = [attemptFact(quotaFailure)];
+
+    expect(kernel.decide(quotaFailure, snapshot).action).toMatchObject({
+      type: 'dispatch_batch',
+      items: [expect.objectContaining({
+        authorizedBinding: piBinding,
+        bindingFingerprint: piFingerprint,
+        attemptKind: 'fallback',
+      })],
+    });
+  });
+
+  it('requests one replan when a quota failure has no remaining binding', () => {
+    const kernel = new ControlKernel();
+    const quotaFailure = runtimeEvent({
+      type: 'execution_outcome',
+      terminalKind: 'failed',
+      attemptId: 'attempt_quota_only',
+      authorizedBinding: codexBinding,
+      bindingFingerprint: codexFingerprint,
+      attemptKind: 'primary',
+      sourceAttemptId: null,
+      failure: {
+        kind: 'provider_quota' as const,
+        scope: 'agent_class' as const,
+        code: 'provider_quota_exceeded',
+        summary: 'unexpected status 403 Forbidden: 用户额度不足',
+      },
+    }) as Extract<KernelEvent, { type: 'execution_outcome' }>;
+    const snapshot = dispatchSnapshot([], 'awaiting_decision');
+    snapshot.subtasks[0]!.executorBindings = [codexBinding];
+    snapshot.attempts = [attemptFact(quotaFailure)];
+
+    const decision = kernel.decide(quotaFailure, snapshot);
+    expect(decision.action).toMatchObject({ type: 'queue_generation_replan' });
+    expect(decision.reason).not.toContain('unknown requires explicit recovery');
+  });
+
+  it('falls back immediately for task failure and requests only one automatic replan per generation', () => {    const kernel = new ControlKernel();
     const taskFailure = executionFailure('attempt_1', codexBinding, 'primary', 'task_failed');
     const fallbackSnapshot = dispatchSnapshot([], 'awaiting_decision');
     fallbackSnapshot.attempts = [attemptFact(taskFailure)];

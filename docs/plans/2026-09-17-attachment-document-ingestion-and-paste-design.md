@@ -705,3 +705,26 @@ Executor executes
 验证：`tests/session/conversation-session.test.ts` 新增“bridge 提交来自重启后的进程”与“replan 可引用原 Turn 附件”两条用例（去掉对应修复均失败）；`tests/storage/planner-turn-input-repo.test.ts` 覆盖读写/覆盖/清理/坏数据；`tests/storage/migrations.test.ts` 新增 37→38 升级与基线断言。
 
 未变：MetaWork 不解析附件内容；`MetaclawSession`（standby Ink TUI）保留自己的旧构造代码，但它不支持附件，按 AGENTS.md 不对其做迁移投入。
+
+### 2026-09-18：Planner/Executor 失败原文透传（取消“通称替换”）
+
+现象：一次 Executor attempt 因 provider `403 用户额度不足` 失败，但用户界面只看到“已阻塞 · 36 步”+ 模型最后一句旁白；轨迹里的失败摘要是 Codex 的启动提示 `Reading additional input from stdin...`，分类落到 `unknown_executor_failure`，Kernel 因此 `block_work`（"unknown requires explicit recovery"）。真因（额度）既不在用户可见文案里，也不在轨迹里。
+
+根因（三层叠加）：
+
+1. 捕获：`normalizeHarnessResult` 在非 0 退出时只取 stderr；真实原因在 stdout 的 `turn.failed` / `error` 事件里，被丢弃。
+2. 摘要：`formatExecutorError` 把原文替换成中文通称，且全为噪音时兜底会把噪音行当摘要返回。
+3. 分类：额度类文本没有任何规则命中，落到 `unknown` → Kernel fail-closed 阻塞，且无可换 binding 路径。
+
+修复（按“错误必须原文透传”的原则）：
+
+1. `KernelFailure` 增加透传字段：`label`（可选中文headline）、`detail`（原始尾巴，有界 4000）、`origin`（planner/executor/harness/provider/kernel）、`stage`、`actor`（agentClass/harness/provider/model/attempt/subtask）、`provider.httpStatus`/`requestId`、`step`（失败前最后一步）；新增失败种类 `provider_quota`。
+2. `normalizeExecutorFailure` 的 `summary` 改为**上游原文**（首个有意义行，否则原文首行）；中文通称只作为 `label`，从不覆盖原文。
+3. 新增 `provider_quota` 判定（额度/余额/欠费/402，**不含**裸 403）：Kernel 把它归入“不重试但可换 binding”的集合（`control-kernel.ts`），`executor-status-projection.ts` 将其计为类永久故障，因此欠费的 provider 不会被继续使用；没有可换 binding 时自动 replan 一次，再不行才 park。
+4. Codex driver 新增 `structuredStreamFailure`：非 0 退出时优先取 `turn.failed`，其次最后一条 `error` 事件，stderr 降级为 `errorDetail`。
+5. `local-cli-executor-adapter` 在失败时附带 `origin/stage/actor/step`，其中 `step` 来自最后一条进度行。
+6. 可见性：`executor_result_observed` 轨迹事件新增 `failureSummary`/`failureLabel`/`failureStep`/`failureProvider`/`failureDetail`；`blockTask` 的 description 在策略原因后附上失败码与原文；Web 会话条目在 blocked/failed 时渲染失败摘要、失败码、步骤与 provider 状态（`ConversationTurn.tsx` + `styles.css`）。
+
+验证：`tests/executor/codex-cli-driver.test.ts` 复现本次事故（去掉 driver 修复即失败）、`tests/executor/error-utils.test.ts` 新增透传/分类用例、`tests/kernel/control-kernel.test.ts` 新增“quota → 换 binding / 单 binding → 一次 replan（不再是 unknown 阻塞）”、`tests/web/conversation-turn-failure.test.ts` 断言界面出现原文+失败码+步骤。回归：executor/kernel/tui/web 75 文件 381 通过；management/gateway/acceptance 55 文件 384 通过；`npm run lint`、web `tsc`、`vite build` 通过。
+
+未覆盖（后续）：F4 路径缩短（工作区/attempt 目录段），以及把 `actor/stage` 投影到 Web 执行面板的更细分展示。

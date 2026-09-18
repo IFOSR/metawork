@@ -1,5 +1,5 @@
 // Normalizes executor errors and progress lines by filtering internal noise and classifying recoverable failures.
-import { kernelFailure, type KernelFailure } from '../core/kernel-failure.js';
+import { kernelFailure, type KernelFailure, type KernelFailureActor, type KernelFailureOrigin } from '../core/kernel-failure.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { truncateText } from '../utils/truncate-text.js';
 const EXECUTOR_NOISE_PATTERNS = [
@@ -39,6 +39,10 @@ export function formatExecutorError(raw?: string): string | undefined {
 
   if (isNullByteFailure(normalized)) {
     return '图片任务包含无效的二进制输入，请重新选择图片附件';
+  }
+
+  if (isProviderQuotaFailure(normalized)) {
+    return '模型服务额度不足（provider 拒绝计费），请充值或切换模型后重试';
   }
 
   if (isNetworkFailure(normalized)) {
@@ -88,31 +92,106 @@ export function isRecoverableExecutorFailure(raw?: string): boolean {
     || isPermissionFailure(raw);
 }
 
+export interface ExecutorFailureContext {
+  /** Raw harness tail (e.g. stderr) preserved alongside the summary. */
+  detail?: string;
+  origin?: KernelFailureOrigin;
+  stage?: string;
+  actor?: KernelFailureActor;
+  step?: string;
+}
+
+/** Optional passthrough facts layered onto the classified failure. */
+type FailurePassthrough = Pick<
+  KernelFailure,
+  'label' | 'detail' | 'origin' | 'stage' | 'actor' | 'step' | 'provider'
+>;
+
 /** Adapter-boundary normalization. Runtime and Kernel never parse error text. */
-export function normalizeExecutorFailure(raw?: string, interrupted = false): KernelFailure {
-  const summary = formatExecutorError(raw) ?? raw ?? 'unknown executor failure';
-  if (interrupted) return kernelFailure({ kind: 'cancelled', scope: 'attempt', code: 'execution_interrupted', summary });
-  if (raw && isNullByteFailure(raw)) {
-    return kernelFailure({ kind: 'configuration', scope: 'task', code: 'invalid_task_input', summary });
+export function normalizeExecutorFailure(
+  raw?: string,
+  interrupted = false,
+  context: ExecutorFailureContext = {},
+): KernelFailure {
+  const rawText = raw?.trim() ?? '';
+  // Passthrough: `summary` stays the upstream text. A localized headline is
+  // attached as `label` instead of replacing what actually happened.
+  const summary = firstMeaningfulRawLine(rawText) ?? (rawText || 'unknown executor failure');
+  const label = formatExecutorError(rawText);
+  const detail = context.detail?.trim() || rawText;
+  const passthrough: FailurePassthrough = {
+    ...(label && label !== summary ? { label } : {}),
+    ...(detail ? { detail } : {}),
+    ...(context.origin ? { origin: context.origin } : {}),
+    ...(context.stage ? { stage: context.stage } : {}),
+    ...(context.actor ? { actor: context.actor } : {}),
+    ...(context.step ? { step: context.step } : {}),
+    ...providerFacts(rawText),
+  };
+  if (interrupted) {
+    return kernelFailure({ kind: 'cancelled', scope: 'attempt', code: 'execution_interrupted', summary, ...passthrough });
   }
-  if (raw && isNetworkFailure(raw)) return kernelFailure({ kind: 'network', scope: 'agent_class', code: 'network_failure', summary });
-  if (/executor idle timeout|timed out|timeout/i.test(raw ?? '')) {
-    return kernelFailure({ kind: 'timeout', scope: 'agent_class', code: 'executor_timeout', summary });
+  if (rawText && isNullByteFailure(rawText)) {
+    return kernelFailure({ kind: 'configuration', scope: 'task', code: 'invalid_task_input', summary, ...passthrough });
   }
-  if (/executor max duration exceeded|resource exhausted|out of memory/i.test(raw ?? '')) {
-    return kernelFailure({ kind: 'infrastructure', scope: 'agent_class', code: 'executor_infrastructure_failure', summary });
+  if (rawText && isNetworkFailure(rawText)) {
+    return kernelFailure({ kind: 'network', scope: 'agent_class', code: 'network_failure', summary, ...passthrough });
   }
-  if (raw && isPermissionFailure(raw)) return kernelFailure({ kind: 'permission', scope: 'task', code: 'permission_denied', summary });
-  if (/unauthenticated|authentication|invalid api key|unauthorized/i.test(raw ?? '')) {
-    return kernelFailure({ kind: 'authentication', scope: 'agent_class', code: 'authentication_failed', summary });
+  if (/executor idle timeout|timed out|timeout/i.test(rawText)) {
+    return kernelFailure({ kind: 'timeout', scope: 'agent_class', code: 'executor_timeout', summary, ...passthrough });
   }
-  if (/command not found|enoent|not recognized|configuration|config/i.test(raw ?? '')) {
-    return kernelFailure({ kind: 'configuration', scope: 'agent_class', code: 'executor_configuration_failed', summary });
+  if (/executor max duration exceeded|resource exhausted|out of memory/i.test(rawText)) {
+    return kernelFailure({ kind: 'infrastructure', scope: 'agent_class', code: 'executor_infrastructure_failure', summary, ...passthrough });
   }
-  if (/adapter|unsupported executor|binding/i.test(raw ?? '')) {
-    return kernelFailure({ kind: 'adapter', scope: 'agent_class', code: 'executor_adapter_failed', summary });
+  if (rawText && isPermissionFailure(rawText)) {
+    return kernelFailure({ kind: 'permission', scope: 'task', code: 'permission_denied', summary, ...passthrough });
   }
-  return kernelFailure({ kind: 'unknown', scope: 'attempt', code: 'unknown_executor_failure', summary });
+  // Provider entitlement failures are distinct from a bad credential: the key
+  // is valid, the account cannot pay for the request.
+  if (isProviderQuotaFailure(rawText)) {
+    return kernelFailure({ kind: 'provider_quota', scope: 'agent_class', code: 'provider_quota_exceeded', summary, ...passthrough });
+  }
+  if (/unauthenticated|authentication|invalid api key|unauthorized/i.test(rawText)) {
+    return kernelFailure({ kind: 'authentication', scope: 'agent_class', code: 'authentication_failed', summary, ...passthrough });
+  }
+  if (/command not found|enoent|not recognized|configuration|config/i.test(rawText)) {
+    return kernelFailure({ kind: 'configuration', scope: 'agent_class', code: 'executor_configuration_failed', summary, ...passthrough });
+  }
+  if (/adapter|unsupported executor|binding/i.test(rawText)) {
+    return kernelFailure({ kind: 'adapter', scope: 'agent_class', code: 'executor_adapter_failed', summary, ...passthrough });
+  }
+  return kernelFailure({ kind: 'unknown', scope: 'attempt', code: 'unknown_executor_failure', summary, ...passthrough });
+}
+
+/**
+ * True when the provider reports an entitlement/payment problem rather than a
+ * bad credential. Deliberately narrower than a bare `403`, which can also be a
+ * proxy or permission decision.
+ */
+export function isProviderQuotaFailure(raw: string): boolean {
+  return /(insufficient\s+(?:balance|quota|credit|credits|funds)|quota\s+exceeded|exceeded\s+your\s+(?:current\s+)?quota|out\s+of\s+credit|no\s+credit|payment\s+required|额度不足|余额不足|余额不够|欠费|配额不足|\b402\b)/iu.test(raw);
+}
+
+function firstMeaningfulRawLine(raw: string): string | undefined {
+  if (!raw) return undefined;
+  const lines = raw.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  return lines.find(line =>
+    !EXECUTOR_NOISE_PATTERNS.some(pattern => pattern.test(line))
+    && !EXECUTOR_WARNING_PATTERNS.some(pattern => pattern.test(line)),
+  ) ?? lines[0];
+}
+
+/** Provider facts parsed from the passthrough text, for operator diagnosis. */
+function providerFacts(raw: string): Pick<KernelFailure, 'provider'> {
+  if (!raw) return {};
+  const status = /\b(?:status\s+)?(4\d{2}|5\d{2})\b[^\n]*?(?:forbidden|unauthorized|too\s+many|payment|quota|balance|额度|余额)/iu.exec(raw)
+    ?? /\bstatus\s+(4\d{2}|5\d{2})\b/iu.exec(raw);
+  const requestId = /request\s+id[:\s]+([A-Za-z0-9_-]{6,})/iu.exec(raw);
+  const provider = {
+    ...(status?.[1] ? { httpStatus: Number(status[1]) } : {}),
+    ...(requestId?.[1] ? { requestId: requestId[1] } : {}),
+  };
+  return Object.keys(provider).length > 0 ? { provider } : {};
 }
 
 function isNullByteFailure(raw: string): boolean {
