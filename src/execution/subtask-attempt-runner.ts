@@ -2075,7 +2075,11 @@ function boundedRecoveryPacket(
     failure: receipt ? {
       terminalState: receipt.terminalState,
       code: receipt.failure?.code ?? receipt.errorCode,
+      // Passthrough facts for the retry attempt: the upstream text, and the
+      // localized headline/step the Runtime diagnosed alongside it.
       summary: receipt.failure?.summary ?? receipt.errorDetail?.slice(0, 1_000) ?? null,
+      ...(receipt.failure?.label ? { label: receipt.failure.label } : {}),
+      ...(receipt.failure?.step ? { step: receipt.failure.step } : {}),
     } : null,
     knownProgress: runtime?.progress ?? {},
     workspaceDelta: runtime?.workspaceDelta ?? {},

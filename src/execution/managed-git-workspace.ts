@@ -4,6 +4,7 @@ import { chmod, cp, lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFi
 import { dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { WorkspaceHandle, WorkspaceIdentity, WorkspaceStore } from './workspace-store.js';
+import { boundedPathSegment } from '../utils/bounded-path-segment.js';
 
 const execFileAsync = promisify(execFile);
 const PLAIN_SOURCE_EXCLUDED_TOP_LEVEL = new Set([
@@ -122,10 +123,12 @@ export class ManagedGitWorkspaceService {
     if (!sourceInfo.isDirectory()) throw new Error('managed Git source must be a directory');
     await mkdir(this.repositoriesPath, { recursive: true });
     const workspace = await this.store.ensureWorkspace(identity, 'git');
+    // Directory names are bounded like the workspace tree; Git ref and branch
+    // names keep the durable readable identities.
     const repositoryPath = join(
       this.repositoriesPath,
-      safeRefSegment(identity.taskId),
-      `${safeRefSegment(identity.generationId)}.git`,
+      boundedPathSegment(identity.taskId, { prefix: 't', readable: 12 }),
+      `${boundedPathSegment(identity.generationId, { prefix: 'g' })}.git`,
     );
     const branch = `metaclaw/${safeRefSegment(identity.taskId)}/${safeRefSegment(identity.generationId)}/${safeRefSegment(identity.subtaskId)}`;
     const generationRefPrefix = `refs/metaclaw/generations/${safeRefSegment(identity.taskId)}/${safeRefSegment(identity.generationId)}`;

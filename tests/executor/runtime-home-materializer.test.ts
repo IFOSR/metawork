@@ -27,9 +27,13 @@ describe('RuntimeHomeMaterializer', () => {
       },
     });
 
-    expect(result.homePath).toBe(join(root, 'attempt-123', 'home'));
-    expect(await stat(join(root, 'attempt-123', 'logs'))).toBeTruthy();
-    expect(JSON.parse(await readFile(join(root, 'attempt-123', 'environment.json'), 'utf8')))
+    // The attempt directory name is a bounded projection of the attempt id, so
+    // deep attempt identities cannot overflow filesystem limits.
+    const attemptSegment = result.homePath.slice(root.length + 1).split('/')[0]!;
+    expect(attemptSegment).toContain('attempt-123');
+    expect(result.homePath).toBe(join(root, attemptSegment, 'home'));
+    expect(await stat(join(root, attemptSegment, 'logs'))).toBeTruthy();
+    expect(JSON.parse(await readFile(join(root, attemptSegment, 'environment.json'), 'utf8')))
       .toEqual({
         redacted: true,
         attemptId: 'attempt-123',
@@ -38,8 +42,8 @@ describe('RuntimeHomeMaterializer', () => {
         bindingFingerprint: 'fingerprint',
         environmentKeys: ['CODEX_HOME', 'OPENAI_API_KEY'],
       });
-    expect(await readFile(join(root, 'attempt-123', 'environment.json'), 'utf8'))
+    expect(await readFile(join(root, attemptSegment, 'environment.json'), 'utf8'))
       .not.toContain('sk-attempt-scoped-secret');
-    expect(await readFile(join(root, 'attempt-123', 'receipt.json'), 'utf8')).toContain('"status": "pending"');
+    expect(await readFile(join(root, attemptSegment, 'receipt.json'), 'utf8')).toContain('"status": "pending"');
   });
 });

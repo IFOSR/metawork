@@ -28,7 +28,9 @@ export function buildAccountWorkspaceServices(
   const permissionRepository = new SqlitePermissionRepository(db);
   const attemptExecutionRepository = new SqliteAttemptExecutionRepository(db);
   const workspaceRepository = new SqliteWorkspaceRepository(db);
-  const workspaceStore = new WorkspaceStore(resolve(workspaceStoreRoot, 'workspace-store'));
+  // The account root already ends in `workspace-store`; a second identical
+  // segment only lengthened every managed workspace path.
+  const workspaceStore = new WorkspaceStore(workspaceStoreRoot);
   const workspaceRetentionService = new WorkspaceRetentionService(workspaceRepository, workspaceStore);
 
   return {

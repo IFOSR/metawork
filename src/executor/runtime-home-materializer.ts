@@ -1,3 +1,4 @@
+import { boundedPathSegment } from '../utils/bounded-path-segment.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type {
@@ -48,7 +49,12 @@ export class RuntimeHomeMaterializer {
     logsPath: string;
   } {
     const safeAttemptId = safeSegment(attemptId, 'attemptId');
-    const attemptRoot = resolve(this.attemptsRoot, safeAttemptId);
+    // The attempt id is long and repeats identifiers; only its directory name
+    // is bounded, so the Executor HOME stays short and stable.
+    const attemptRoot = resolve(
+      this.attemptsRoot,
+      boundedPathSegment(safeAttemptId, { prefix: 'a', readable: 12 }),
+    );
     return {
       attemptRoot,
       homePath: join(attemptRoot, 'home'),

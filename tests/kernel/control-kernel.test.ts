@@ -1251,6 +1251,35 @@ describe('ControlKernel', () => {
     });
   });
 
+  it('keeps an AgentClass available after a quota failure so a top-up restores it', async () => {
+    const { projectExecutionOutcome } = await import('../../src/kernel/executor-status-projection.js');
+    const { deriveAgentAvailability } = await import('../../src/kernel/agent-availability.js');
+
+    const projection = projectExecutionOutcome(null, {
+      agentClassName: 'codex-engineering',
+      attemptId: 'attempt_quota',
+      outcome: 'failed',
+      completedAt: '2026-09-18T07:50:20.511Z',
+      failure: {
+        kind: 'provider_quota',
+        scope: 'agent_class',
+        code: 'provider_quota_exceeded',
+        summary: 'unexpected status 403 Forbidden: 用户额度不足',
+      },
+    });
+
+    expect(projection.classHealth).not.toBe('error');
+    expect(deriveAgentAvailability(projection, '2026-09-18T07:51:00.000Z')).toBe('available');
+    // A later successful attempt keeps it healthy.
+    const recovered = projectExecutionOutcome(projection, {
+      agentClassName: 'codex-engineering',
+      attemptId: 'attempt_after_topup',
+      outcome: 'succeeded',
+      completedAt: '2026-09-18T08:10:00.000Z',
+    });
+    expect(recovered.classHealth).toBe('healthy');
+  });
+
   it('requests one replan when a quota failure has no remaining binding', () => {
     const kernel = new ControlKernel();
     const quotaFailure = runtimeEvent({

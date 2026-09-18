@@ -77,7 +77,11 @@ describe('blocked task user journey', () => {
 
     const blockedTask = taskRepo.findByStatus('blocked')[0];
     expect(blockedTask).toBeTruthy();
-    expect(blockedTask.dependencies[0]?.description).toBe('unknown requires explicit recovery');
+    // The block keeps the Kernel policy reason and adds the Executor failure
+    // that caused it, so the user can see why the Task stopped.
+    const blockedDescription = blockedTask.dependencies[0]?.description ?? '';
+    expect(blockedDescription).toContain('unknown requires explicit recovery');
+    expect(blockedDescription).toContain('unknown_executor_failure');
     let output = session.getSnapshot().output.join('\n');
     expect(output).toContain('Execution blocked: unknown requires explicit recovery');
 

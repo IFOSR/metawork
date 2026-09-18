@@ -2945,7 +2945,7 @@ export class KernelExecutionRuntime {
    * unnamed state needs manual recovery.
    */
   private blockReasonWithCause(taskId: string, reason: string): string {
-    const failure = this.deps.attemptReceiptRepo.listByTask(taskId)
+    const failure = (this.deps.attemptReceiptRepo?.listByTask(taskId) ?? [])
       .map(receipt => receipt.failure)
       .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate))
       .at(-1);

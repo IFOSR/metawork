@@ -241,8 +241,10 @@ describe('scripted session', () => {
 
     const doneTask = taskEngine.list().find(task => task.status === 'done');
     expect((doneTask as any)?.artifacts).toHaveLength(1);
-    expect((doneTask as any)?.artifacts[0]).toContain('/workspace-store/workspaces/');
-    expect((doneTask as any)?.artifacts[0]).toContain('/files/artifact-note.md');
+    // Managed workspace directories are bounded segments of the durable IDs.
+    expect((doneTask as any)?.artifacts[0]).toMatch(
+      /\/workspaces\/t_[A-Za-z0-9._-]+\/g_[A-Za-z0-9._-]+\/s_[A-Za-z0-9._-]+\/files\/artifact-note\.md$/u,
+    );
   });
 
   it('shows file-task Executor final output once and does not repeat it in completion', async () => {

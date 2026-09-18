@@ -727,4 +727,20 @@ Executor executes
 
 验证：`tests/executor/codex-cli-driver.test.ts` 复现本次事故（去掉 driver 修复即失败）、`tests/executor/error-utils.test.ts` 新增透传/分类用例、`tests/kernel/control-kernel.test.ts` 新增“quota → 换 binding / 单 binding → 一次 replan（不再是 unknown 阻塞）”、`tests/web/conversation-turn-failure.test.ts` 断言界面出现原文+失败码+步骤。回归：executor/kernel/tui/web 75 文件 381 通过；management/gateway/acceptance 55 文件 384 通过；`npm run lint`、web `tsc`、`vite build` 通过。
 
-未覆盖（后续）：F4 路径缩短（工作区/attempt 目录段），以及把 `actor/stage` 投影到 Web 执行面板的更细分展示。
+### 2026-09-18：托管路径缩短（F4）与配额失败不再标记类故障
+
+现象（承接上一节）：Executor 工作目录达 402 字符，`planning-with-files` 的技能脚本把整条 CWD 压成单段目录名时溢出 macOS `NAME_MAX`(255)。
+
+根因：同一个 64 位 plan-event 哈希在三级目录名里各出现一次（`task_...`(89) / `generation_task_...`(95) / `task_..._r1_<slug>`(120)），且 account 根下 `workspace-store/workspace-store` 重复了一段；attempt 目录段也长达 188。
+
+修复：
+
+1. 新增 `src/utils/bounded-path-segment.ts` 的 `boundedPathSegment(identity, {prefix, readable, from, digest})`：确定性、纯函数、≤64 字符（可读前缀/后缀 + 8 位摘要）。持久 id 在数据库、Kernel 账本与所有 handle/URI 中保持完整不变，只有磁盘目录名被压短；任何进程都能重算出同一目录，无需映射表或迁移。
+2. 应用于：`workspace-store.ts` 的 task/generation/subtask 段（创建与 `assertManagedWorkspace` 校验两处同源）、`runtime-home-materializer.ts` 的 attempt 段、`managed-git-workspace.ts` 的仓库目录段（Git ref/branch 名保持完整可读，因为它们是发布契约且组件本身未超限）。
+3. `account-workspace-services.ts` 去掉重复的 `workspace-store` 段（account 级 `<account>/workspace-store/` 契约不变，ADR-0031/0034/0035 不受影响）。
+4. 实测效果：同一 task 的工作区绝对路径从 402 → 约 150 字符，每段 ≤64；attempt HOME 从 188 → 约 80。
+5. 配额失败（`provider_quota`）**不再**计入永久类故障：充值后该类立刻可用，路由继续按能力优先；单次失败只在当前 Subtask 内跳过已试过的 binding（Kernel 仍会换 binding 或自动 replan 一次），不影响后续任务。
+
+新增/更新测试：`tests/execution/workspace-path-length.test.ts`（纯函数 + 真实长 id 的段落/总长断言）、`runtime-home-materializer.test.ts`、`scripted-session.test.ts`（新目录形状）、`control-kernel.test.ts`（quota 后类仍 available、再次成功保持 healthy）。契约记录：`CONTEXT.md` 新增 managed path-naming invariant；`CHANGELOG.md` Unreleased。
+
+状态：F1–F4 全部落地；F5（技能侧）按用户决定不做；未发 release。

@@ -16,6 +16,7 @@ import {
 } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { boundedPathSegment } from '../utils/bounded-path-segment.js';
 
 export type WorkspaceKind = 'git';
 export type CheckpointReason = 'attempt_start' | 'explicit' | 'permission_suspended' | 'success' | 'failure' | 'cancelled';
@@ -60,6 +61,17 @@ export interface StoredWorkspaceCheckpoint {
   manifestHash: string;
   manifestSize: number;
   manifest: WorkspaceCheckpointManifest;
+}
+
+function workspaceSegment(
+  level: 'task' | 'generation' | 'subtask',
+  id: string,
+): string {
+  if (level === 'generation') return boundedPathSegment(id, { prefix: 'g' });
+  if (level === 'subtask') {
+    return boundedPathSegment(id, { prefix: 's', readable: 24, from: 'end' });
+  }
+  return boundedPathSegment(id, { prefix: 't', readable: 12 });
 }
 
 function safeIdentitySegment(value: string, label: string): string {
@@ -113,7 +125,14 @@ export class WorkspaceStore {
     const taskId = safeIdentitySegment(identity.taskId, 'taskId');
     const generationId = safeIdentitySegment(identity.generationId, 'generationId');
     const subtaskId = safeIdentitySegment(identity.subtaskId, 'subtaskId');
-    const rootPath = join(this.workspacesPath, taskId, generationId, subtaskId);
+    // Durable IDs stay as-is; only the directory names are bounded, so deep
+    // nesting cannot overflow NAME_MAX or a path-flattening tool.
+    const rootPath = join(
+      this.workspacesPath,
+      workspaceSegment('task', taskId),
+      workspaceSegment('generation', generationId),
+      workspaceSegment('subtask', subtaskId),
+    );
     const filesPath = join(rootPath, 'files');
     const checkpointsPath = join(rootPath, 'checkpoints');
     await Promise.all([mkdir(filesPath, { recursive: true }), mkdir(checkpointsPath, { recursive: true })]);
@@ -323,7 +342,12 @@ export class WorkspaceStore {
   }
 
   private async assertManagedWorkspace(workspace: WorkspaceHandle): Promise<void> {
-    const expected = resolve(this.workspacesPath, workspace.taskId, workspace.generationId, workspace.subtaskId);
+    const expected = resolve(
+      this.workspacesPath,
+      workspaceSegment('task', workspace.taskId),
+      workspaceSegment('generation', workspace.generationId),
+      workspaceSegment('subtask', workspace.subtaskId),
+    );
     if (resolve(workspace.rootPath) !== expected || !workspace.filesPath.startsWith(`${expected}${sep}`)) {
       throw new Error('workspace is outside the managed store');
     }

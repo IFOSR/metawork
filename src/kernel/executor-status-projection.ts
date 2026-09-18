@@ -56,8 +56,11 @@ export function projectExecutionOutcome(
     outcome: input.outcome,
     failure,
   };
+  // A provider entitlement failure must not disable the AgentClass: topping up
+  // the account has to make the Executor usable again, and routing stays
+  // capability-first. Only genuine class-level faults are permanent.
   const permanentClassFault = failure?.scope === 'agent_class'
-    && ['authentication', 'configuration', 'adapter', 'provider_quota'].includes(failure.kind);
+    && ['authentication', 'configuration', 'adapter'].includes(failure.kind);
   return {
     agentClassName: input.agentClassName,
     classHealth: current?.classHealth === 'disabled'

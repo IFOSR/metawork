@@ -25,6 +25,14 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 
 ### Fixed
 
+- Managed workspace, Git repository and attempt-runtime paths no longer repeat a
+  long durable identity at every nesting level. Directory names are now
+  deterministic bounded segments (readable prefix/suffix plus a short digest)
+  and the duplicated `workspace-store/workspace-store` segment is gone, which
+  brings a real workspace from ~400 characters to well under 200 and stops
+  `ENAMETOOLONG` in tools that flatten a path into one name. Durable identities
+  in the database and the Kernel ledger are unchanged; Tasks and workspaces
+  created before this change are not re-adopted and do not need to be rerun.
 - A provider entitlement failure (for example `403 用户额度不足`) is classified
   as `provider_quota_exceeded` instead of `unknown_executor_failure`, so it no
   longer blocks a Task with an unactionable reason: the Kernel tries the next
