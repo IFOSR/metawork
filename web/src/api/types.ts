@@ -86,7 +86,7 @@ export interface WorkGraphPresentationProjection {
   currentRunnableFrontier: string[];
 }
 
-export type InteractionTraceStatus = 'running' | 'completed' | 'failed' | 'blocked';
+export type InteractionTraceStatus = 'running' | 'completed' | 'failed' | 'blocked' | 'cancelled';
 
 export interface InteractionTraceEvent {
   id: string;
@@ -397,4 +397,5 @@ export type ClientMessage =
     requestId?: string;
     attachments?: Array<{ attachmentId: string }>;
   }
+  | { type: 'cancel'; turnId: string }
   | { type: 'close' };

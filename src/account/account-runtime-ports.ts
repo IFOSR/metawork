@@ -103,6 +103,11 @@ export interface ConversationRuntimePort {
       trigger: ExecutorRecoveryRefreshTrigger;
       agentClassNames?: string[];
     }): Promise<ExecutorRecoveryRefreshReport>;
+    /**
+     * Turn cancellation: stops the in-flight Planner process of one session
+     * without closing that session. Absent when no Planner controller is wired.
+     */
+    cancelPlannerTurn?(plannerSessionId: string): Promise<void>;
   };
   readonly execution: {
     readonly activeExecutions: ActiveExecutionControl;

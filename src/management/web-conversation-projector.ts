@@ -264,7 +264,8 @@ export function turnStatusFromTimeline(
   }
   if (['done', 'archived'].includes(timeline.status)) return 'completed';
   if (['blocked', 'parked'].includes(timeline.status)) return 'blocked';
-  if (['cancelled', 'failed'].includes(timeline.status)) return 'failed';
+  if (timeline.status === 'cancelled') return 'cancelled';
+  if (timeline.status === 'failed') return 'failed';
 
   const delivery = timeline.stages.find(stage => stage.phase === 'delivery');
   if (delivery?.status === 'done') return 'completed';

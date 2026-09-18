@@ -7,6 +7,7 @@ function executionStatusLabel(status: ConversationTurnProjection['status']): str
   if (status === 'running') return '执行中';
   if (status === 'blocked') return '已阻塞';
   if (status === 'failed') return '失败';
+  if (status === 'cancelled') return '已取消';
   return '已完成';
 }
 

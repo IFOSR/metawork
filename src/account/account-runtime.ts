@@ -371,6 +371,10 @@ export class AccountRuntime implements AccountRuntimeHandle {
           if (!coordinator) throw new Error('Executor recovery service is unavailable');
           return coordinator.executorRecoveryRefreshService.refresh(input);
         },
+        cancelPlannerTurn: plannerSessionId => (
+          this.deps.plannerServices?.plannerSupervisor?.abortSession(plannerSessionId)
+          ?? Promise.resolve()
+        ),
       },
       execution: this.deps.executionServices && this.deps.taskServices
         ? {

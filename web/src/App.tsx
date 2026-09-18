@@ -889,6 +889,14 @@ export function App() {
           setPendingAttachments([]);
           setActivationNotice(null);
         }}
+        onCancelTurn={() => {
+          const turnId = liveTurnRef.current?.id ?? '';
+          if (!wsRef.current?.sendCancel(turnId)) {
+            setActivationNotice('WebSocket 尚未连接，无法停止当前轮。');
+            return;
+          }
+          setActivationNotice('已请求停止当前轮。');
+        }}
         attachments={pendingAttachments.map(metadata => ({ metadata }))}
         uploadError={uploadError}
         onFilesSelected={files => void handleFilesSelected(files)}

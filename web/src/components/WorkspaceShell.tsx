@@ -47,6 +47,7 @@ export function WorkspaceShell({
   onThemeChange,
   onDraftChange,
   onSend,
+  onCancelTurn,
   attachments,
   uploadError,
   onFilesSelected,
@@ -88,6 +89,7 @@ export function WorkspaceShell({
   onThemeChange: (preference: ThemePreference) => void;
   onDraftChange: (value: string) => void;
   onSend: (value: string, attachments: Array<{ attachmentId: string }>) => void;
+  onCancelTurn: () => void;
   attachments: Array<{ metadata: AttachmentMetadata }>;
   uploadError?: string | null;
   onFilesSelected: (files: File[]) => void;
@@ -141,6 +143,7 @@ export function WorkspaceShell({
             blockedReason={blockedReason}
             onDraftChange={onDraftChange}
             onSend={onSend}
+            onCancel={onCancelTurn}
             attachments={attachments}
             uploadError={uploadError}
             onFilesSelected={onFilesSelected}

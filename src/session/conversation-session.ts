@@ -173,6 +173,14 @@ export class ConversationSession {
   };
   private focusContext: { kind: 'conversation' | 'task'; taskId: string | null } | null = null;
   private activePlannerRuns = 0;
+  /** Interaction turn id of the turn currently being handled (Client-visible). */
+  private activeInteractionTurnId: string | null = null;
+  /**
+   * Turns the user cancelled. A late Planner proposal for one of them must not
+   * be admitted, even when the Planner process managed to submit before the
+   * abort landed. Cleared when the next turn starts.
+   */
+  private readonly cancelledTurnIds = new Set<string>();
   /**
    * Current Planner turn input facts.
    *
@@ -622,11 +630,26 @@ export class ConversationSession {
     this.notify();
     let result: PlannerProposalResult;
     try {
-      result = await planningAgent.submit(context, {
-        submit: async plan => this.submitValidatedPlannerProposal(userInput, plan),
+      result = await planningAgent.submit(context, {        submit: async plan => this.submitValidatedPlannerProposal(userInput, plan),
         onProgress: progress => this.recordPlannerProgressTrace(progress),
       });
     } catch (error) {
+      if (this.isCancelledTurn()) {
+        // The user cancelled the turn; the aborted Planner process is an
+        // expected consequence, not a failure to report.
+        this.appendTrace({
+          phase: 'planning',
+          actor: 'runtime',
+          kind: 'turn_cancelled',
+          status: 'completed',
+          title: 'Turn cancelled',
+          summary: '本轮到用户取消为止，未创建任务。',
+          details: {},
+          eventKey: 'turn_cancelled',
+          traceStatus: 'cancelled',
+        });
+        return true;
+      }
       this.appendTrace({
         phase: 'planning',
         actor: 'planner',
@@ -643,6 +666,20 @@ export class ConversationSession {
       this.activePlannerRuns = Math.max(0, this.activePlannerRuns - 1);
       this.endPlannerTurn();
       this.notify();
+    }
+    if (this.isCancelledTurn()) {
+      this.appendTrace({
+        phase: 'planning',
+        actor: 'runtime',
+        kind: 'turn_cancelled',
+        status: 'completed',
+        title: 'Turn cancelled',
+        summary: '用户取消了本轮；Planner 结果未被采纳。',
+        details: {},
+        eventKey: 'turn_cancelled',
+        traceStatus: 'cancelled',
+      });
+      return true;
     }
     this.recordPlannerProposalTerminalTrace(result);
     if (result.status === 'convergence_exhausted') {
@@ -669,7 +706,21 @@ export class ConversationSession {
     userInput: string,
     plan: PlanningAgentPlan,
     eventId = `plan_event_${plan.id}_${generateInteractionId()}`,
-  ): Promise<PlannerProposalResult> {    if (!this.allowLegacyDirectReply && plan.action === 'direct_reply') {
+  ): Promise<PlannerProposalResult> {
+    if (this.isCancelledTurn()) {
+      // The user cancelled this turn; a proposal that raced the abort must not
+      // create or modify a Task.
+      return {
+        status: 'rejected',
+        turnId: eventId,
+        submissionId: eventId,
+        planId: plan.id,
+        rejectionType: 'validation',
+        issues: ['turn cancelled by user'],
+        kernel: null,
+      };
+    }
+    if (!this.allowLegacyDirectReply && plan.action === 'direct_reply') {
       return {
         status: 'rejected',
         turnId: eventId,
@@ -951,7 +1002,66 @@ export class ConversationSession {
         await this.resolvePermission(command.requestId, command.resolution, 'button');
         return;
       case 'cancel_turn':
-        throw new Error(`turn cancellation is not available for completed admission: ${command.turnId}`);
+        await this.cancelActiveTurn(command.turnId);
+        return;
+    }
+  }
+
+  private isCancelledTurn(): boolean {
+    return this.activeInteractionTurnId !== null
+      && this.cancelledTurnIds.has(this.activeInteractionTurnId);
+  }
+
+  /**
+   * Turn cancellation: latch the turn, abort the in-flight Planner process
+   * without closing its session, and stop work that already became a Task in
+   * this Conversation. Late proposals are dropped by `isCancelledTurn()`.
+   */
+  private async cancelActiveTurn(requestedTurnId: string): Promise<void> {
+    const active = this.deps.interactionTraceStream?.getSnapshot() ?? null;
+    const targetTurnId = active?.status === 'running' ? active.turnId : null;
+    if (!targetTurnId) {
+      await this.cancelConversationWork('用户取消了当前轮');
+      this.appendOutput('当前没有正在规划的轮次；已请求取消该会话进行中的任务。');
+      return;
+    }
+    if (requestedTurnId && requestedTurnId !== targetTurnId) {
+      this.appendOutput('该轮次已不在执行中。');
+      return;
+    }
+    this.cancelledTurnIds.add(targetTurnId);
+    this.appendTrace({
+      phase: 'planning',
+      actor: 'runtime',
+      kind: 'turn_cancel_requested',
+      status: 'running',
+      title: 'Turn cancellation requested',
+      summary: '用户请求取消当前轮。',
+      details: {},
+      eventKey: 'turn_cancel_requested',
+    });
+    this.appendOutput('-> 已请求取消当前轮，正在终止 Planner 与执行器…');
+    try {
+      await this.deps.runtimePort.commands.cancelPlannerTurn?.(this.deps.plannerSessionId);
+    } catch (error) {
+      this.appendOutput(`终止 Planner 进程失败：${(error as Error).message}`);
+    }
+    await this.cancelConversationWork('用户取消了当前轮');
+    this.notify();
+  }
+
+  private async cancelConversationWork(reason: string): Promise<void> {
+    const runtime = this.kernelExecutionRuntime;
+    if (!runtime) return;
+    const taskId = this.getCurrentTaskId()
+      ?? this.deps.runtimePort.queries.getConversationTaskSlot?.(this.deps.conversationId)?.activeTaskId
+      ?? null;
+    if (!taskId) return;
+    try {
+      await runtime.cancelTask(taskId, reason);
+      this.appendOutput(`已取消任务 ${taskId} 的后续执行。`);
+    } catch (error) {
+      this.appendOutput(`取消任务失败：${(error as Error).message}`);
     }
   }
 
@@ -1309,6 +1419,9 @@ export class ConversationSession {
     this.workspacePath = (await this.getWorkspace())?.path ?? this.workspacePath;
     const startsTrace = shouldStartInteractionTrace(userInput);
     const interactionTurnId = options.interactionTurnId ?? `turn_${generateInteractionId()}`;
+    // A new turn supersedes any cancellation latch from the previous one.
+    this.cancelledTurnIds.clear();
+    this.activeInteractionTurnId = interactionTurnId;
     if (startsTrace) {
       this.deps.interactionTraceStream?.beginTurn({
         turnId: interactionTurnId,

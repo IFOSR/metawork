@@ -219,6 +219,29 @@ class WebGatewayClientSession {
     if (violation) throw new WebGatewayAdmissionError(violation.code, undefined, violation.message);
   }
 
+  /**
+   * Turn cancellation from a Client. The command goes through the ordinary
+   * Gateway admission path so the Application Shell owns the latch and the
+   * Planner abort.
+   */
+  async cancelTurn(turnId: string): Promise<void> {
+    const targetSessionId = this.activeSessionId;
+    if (!targetSessionId) return;
+    const receipt = await this.deps.gateway.submit({
+      protocolVersion: 2,
+      requestId: this.id('req'),
+      idempotencyKey: this.id('idem'),
+      connectionId: this.connectionId,
+      scope: {
+        kind: 'conversation',
+        selection: { mode: 'attach', conversationId: targetSessionId },
+      },
+      command: { kind: 'cancel_turn', turnId },
+      clientCapabilities: ['trace_v1'],
+    });
+    if ('kind' in receipt) throw new Error(receipt.message);
+  }
+
   async listSessions(query = ''): Promise<WebSessionDirectoryMetadataProjection[]> {
     if (!this.activeWorkspaceId) return [];
     const input = {
@@ -1105,6 +1128,10 @@ export class WebGatewaySessionRuntime {
     return this.client(clientId).selectWorkspace(path);
   }
 
+  cancelTurn(clientId: string, turnId: string): Promise<void> {
+    return this.client(clientId).cancelTurn(turnId);
+  }
+
   submit(
     clientId: string,
     text: string,
@@ -1371,7 +1398,8 @@ function isInteractionTraceStatus(value: unknown): value is InteractionTraceStat
   return value === 'running'
     || value === 'completed'
     || value === 'failed'
-    || value === 'blocked';
+    || value === 'blocked'
+    || value === 'cancelled';
 }
 
 function canAdvanceTurnStatus(

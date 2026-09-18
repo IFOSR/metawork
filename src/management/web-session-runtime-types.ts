@@ -148,6 +148,8 @@ export interface ManagementWebSessionRuntime {
     attachments?: Array<{ attachmentId: string; kind: string }>,
     requestId?: string,
   ): Promise<void>;
+  /** Cancels the Client's current turn (Planner run and/or its Task). */
+  cancelTurn(clientId: string, turnId: string): Promise<void>;
   listSessions(clientId: string, query?: string): Promise<WebSessionDirectoryMetadataProjection[]>;
   readSession(clientId: string, sessionId: string): Promise<WebSessionRecordProjection | null>;
   createSession(clientId: string): Promise<WebSessionCreationResult>;

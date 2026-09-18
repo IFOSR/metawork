@@ -70,6 +70,11 @@ export interface PlannerProcessController extends PlannerRunner {
   readonly runtimeBinding?: Readonly<PlannerSupervisorRuntimeBinding>;
   stop(): Promise<void>;
   stopSession(sessionId: string): Promise<void>;
+  /**
+   * Terminates the in-flight Planner process of one session without closing
+   * that session, so the next turn can reuse the same Conversation session.
+   */
+  abortSession(sessionId: string): Promise<void>;
 }
 
 type SpawnFn = typeof spawn;
@@ -309,6 +314,16 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
 
   async stopSession(sessionId: string): Promise<void> {
     this.closedSessions.add(sessionId);
+    await this.terminateProcesses(
+      [...this.activeProcesses].filter(child => this.trackedProcesses.get(child)?.sessionId === sessionId),
+    );
+  }
+
+  /**
+   * Turn cancellation: stop the running Planner process but keep the session
+   * usable, unlike `stopSession`, which closes it for good.
+   */
+  async abortSession(sessionId: string): Promise<void> {
     await this.terminateProcesses(
       [...this.activeProcesses].filter(child => this.trackedProcesses.get(child)?.sessionId === sessionId),
     );

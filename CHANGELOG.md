@@ -25,6 +25,13 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 
 ### Fixed
 
+- The Web stop control now really stops the current Turn. It previously sent
+  `/task clear all`, which cancels Tasks; while the Planner was still planning
+  there was no Task to cancel, so the run continued and its clarification or
+  Task still appeared. The stop control sends `cancel_turn`, the Planner process
+  is aborted without closing the Conversation session, a proposal that races the
+  abort is rejected, and an already-admitted Task is cancelled with its Executor.
+  The Turn is reported as 已取消 instead of 失败 (ADR-0040).
 - Switching the Planner model no longer makes planning fail with
   `Planner model binding mismatch`. A resumed Pi session keeps its own selected
   model, so the Server now rebinds the session to the configured provider/model

@@ -338,6 +338,7 @@ export class ManagementServer {
           type?: string;
           requestId?: string;
           text?: string;
+          turnId?: string;
           attachments?: Array<{ attachmentId?: unknown }>;
         };
         try {
@@ -349,6 +350,17 @@ export class ManagementServer {
 
         if (message.type === 'close') {
           ws.close();
+          return;
+        }
+        if (message.type === 'cancel') {
+          void this.deps.sessionRuntime
+            .cancelTurn(clientId, typeof message.turnId === 'string' ? message.turnId : '')
+            .catch(error => {
+              ws.send(JSON.stringify({
+                type: 'error',
+                message: (error as Error).message,
+              }));
+            });
           return;
         }
         if (message.type === 'input' && message.text) {

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { truncateText } from '../utils/truncate-text.js';
 
-export type InteractionTraceStatus = 'running' | 'completed' | 'failed' | 'blocked';
+export type InteractionTraceStatus = 'running' | 'completed' | 'failed' | 'blocked' | 'cancelled';
 export type InteractionTraceEventStatus = 'pending' | 'running' | 'completed' | 'failed' | 'blocked';
 export type InteractionTracePhase =
   | 'intake'

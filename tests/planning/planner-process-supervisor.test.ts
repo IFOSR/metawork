@@ -1560,6 +1560,39 @@ describe('PlannerProcessSupervisor', () => {
     expect(spawn).toHaveBeenCalledTimes(1);
   });
 
+  it('aborts the in-flight turn without closing the session for later turns', async () => {
+    const children: FakeProcess[] = [];
+    const spawn = vi.fn(() => {
+      const child = fakeProcess();
+      children.push(child);
+      return child as never;
+    });
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      sessionDir: join(tmpdir(), `planner-supervisor-abort-${process.pid}`),
+      spawn: spawn as never,
+    });
+    const context = {
+      timeoutMs: 1_000,
+      request: { sessionId: 'abort-session', source: 'gateway' },
+    } as never;
+
+    const running = supervisor.run('plan', context, 'kernel');
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    await supervisor.abortSession('abort-session');
+
+    // The aborted turn fails, and the terminated process is gone.
+    await expect(running).rejects.toThrow();
+    expect(children[0]?.kill).toHaveBeenCalledWith('SIGTERM');
+
+    // Unlike stopSession, the session stays usable for the next turn.
+    const next = supervisor.run('plan again', context, 'kernel');
+    await vi.waitFor(() => expect(children).toHaveLength(2));
+    expect(children[1]?.kill).toHaveBeenCalledTimes(0);
+    await supervisor.stop();
+    await expect(next).rejects.toThrow();
+  });
+
   it('does not start queued or new RPC turns after global shutdown begins', async () => {
     const child = fakeProcess();
     const spawn = vi.fn(() => child as never);

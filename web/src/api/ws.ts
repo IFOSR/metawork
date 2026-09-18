@@ -262,6 +262,13 @@ export class WsClient {
     return requestId;
   }
 
+  /** Stops the current turn: aborts the Planner run and its Task, if any. */
+  sendCancel(turnId: string): boolean {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
+    this.socket.send(JSON.stringify({ type: 'cancel', turnId } satisfies ClientMessage));
+    return true;
+  }
+
   close(): void {
     this.closedByUser = true;
     if (this.reconnectTimer !== null) {

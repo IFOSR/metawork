@@ -139,6 +139,7 @@ function statusLabel(status: ConversationTurnProjection['status']): string {
     completed: '已完成',
     failed: '失败',
     blocked: '阻塞',
+    cancelled: '已取消',
   }[status];
 }
 

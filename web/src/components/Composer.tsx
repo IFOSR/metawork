@@ -18,6 +18,7 @@ export function Composer({
   uploadError,
   onDraftChange,
   onSend,
+  onCancel,
   onFilesSelected,
   onRemoveAttachment,
 }: {
@@ -29,6 +30,8 @@ export function Composer({
   uploadError?: string | null;
   onDraftChange: (value: string) => void;
   onSend: (value: string, attachments: Array<{ attachmentId: string }>) => void;
+  /** Stops the current Planner/Executor turn instead of queueing a command. */
+  onCancel: () => void;
   onFilesSelected: (files: File[]) => void;
   onRemoveAttachment: (attachmentId: string) => void;
 }) {
@@ -166,10 +169,10 @@ export function Composer({
                 type="button"
                 className="stop-button"
                 disabled={disabled}
-                title="立即取消当前任务（含终止运行中的执行器，并释放会话队列）"
+                title="停止当前轮：终止运行中的 Planner 与执行器，不会创建新任务"
                 onClick={() => {
-                  if (window.confirm('确定取消当前任务？运行中的执行器会被终止。')) {
-                    onSend('/task clear all', []);
+                  if (window.confirm('确定停止当前轮？运行中的 Planner 与执行器会被终止。')) {
+                    onCancel();
                   }
                 }}
               >

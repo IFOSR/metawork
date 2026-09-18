@@ -35,7 +35,7 @@ export interface ConversationTurn {
   readonly conversationId: string;
   readonly userInput: string;
   readonly finalAnswer: string | null;
-  readonly status: 'completed' | 'failed' | 'blocked';
+  readonly status: 'completed' | 'failed' | 'blocked' | 'cancelled';
 }
 
 export interface ConversationRecord {

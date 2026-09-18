@@ -69,7 +69,10 @@ describe('production composition root', () => {
     );
     expect(composition).toContain("userWorkspaceRoot?: string");
     expect(composition).toContain('workspaceRoot: string;');
-    expect(workspaceServices).toContain("'workspace-store'");
+    // The managed store root is the caller-provided account-scoped root; the
+    // account path already ends in `workspace-store`, so no second segment is
+    // appended (that duplication lengthened every managed workspace path).
+    expect(workspaceServices).toContain('new WorkspaceStore(workspaceStoreRoot)');
   });
 
   it('routes native transactions through the shared installer and Server coordinator', () => {
