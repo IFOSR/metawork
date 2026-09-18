@@ -5,6 +5,18 @@ AnyFusion release entries remain unchanged for auditability.
 
 The project follows [Semantic Versioning](https://semver.org/) for public preview releases.
 
+## [Unreleased]
+
+### Fixed
+
+- The Docker shell workflow keeps its persistent data volume scoped to the
+  current pre-release schema again. The schema 38 bump left `docker/shell.ps1`
+  on `metaclaw-shell-data-v37-anyfusion-planner`, so the workflow could mount a
+  v37 database and migrate it in place instead of starting a clean v38 volume.
+  Run `docker/shell.ps1 -Rebuild` to move to
+  `metaclaw-shell-data-v38-anyfusion-planner`; the previous volume is preserved
+  for manual recovery, as the volume isolation intends.
+
 ## [1.2.0-preview.5] - 2026-09-18
 
 ### Added
@@ -286,7 +298,8 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 - CLI, configuration, and runtime contracts may change during the preview period.
 - Some command and TUI workflows remain under active development.
 
-[Unreleased]: https://github.com/IFOSR/metawork/compare/v1.2.0-preview.4...HEAD
+[Unreleased]: https://github.com/IFOSR/metawork/compare/v1.2.0-preview.5...HEAD
+[1.2.0-preview.5]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.5
 [1.2.0-preview.4]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.4
 [1.2.0-preview.3]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.3
 [1.2.0-preview.2]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.2
