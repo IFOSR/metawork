@@ -9,6 +9,16 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 
 ### Added
 
+- The Conversation tab shows a live planning card while the Planner is parsing
+  the request, in the same shape as the Executor card: phase, current step,
+  Planner tool calls and elapsed time update as the Interaction Trace advances.
+  Previously the conversation stayed blank during planning, so a long thinking
+  pause looked like a hang (the trajectory tab had the detail, the conversation
+  tab had none).
+- The document preview drawer can be maximized to the full workspace body and
+  resized by dragging its left edge, so long documents are readable without
+  leaving the Conversation.
+
 - Blocked and failed Turns now carry the Executor failure to the Client: the
   Web conversation shows the upstream error text, the stable failure code, the
   last executed step and the provider status, and a blocked Task description

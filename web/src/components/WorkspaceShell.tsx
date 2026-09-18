@@ -48,6 +48,7 @@ export function WorkspaceShell({
   onDraftChange,
   onSend,
   onCancelTurn,
+  previewMaximized,
   attachments,
   uploadError,
   onFilesSelected,
@@ -74,6 +75,8 @@ export function WorkspaceShell({
   agentReadiness: AgentReadiness[];
   /** 右侧文档预览抽屉是否打开；打开时主画布切换为三列桌面布局。 */
   previewOpen?: boolean;
+  /** 预览铺满主体时隐藏对话列，避免两列争抢宽度。 */
+  previewMaximized?: boolean;
   previewDrawer?: ReactNode;
   children: ReactNode;
   onSearch: (value: string) => void;
@@ -96,7 +99,11 @@ export function WorkspaceShell({
   onRemoveAttachment: (attachmentId: string) => void;
 }) {
   return (
-    <div className="workspace-shell" data-preview-open={previewOpen || undefined}>
+    <div
+      className="workspace-shell"
+      data-preview-open={previewOpen || undefined}
+      data-preview-maximized={previewMaximized || undefined}
+    >
       <SessionSidebar
         sessions={sessions}
         workspaces={workspaces}

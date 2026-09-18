@@ -4157,6 +4157,15 @@ select:focus-visible {
   min-height: 0;
 }
 
+/* 规划阶段卡片：与执行卡片同形，使用 accent 色区分阶段。 */
+.live-planning-panel .execution-card {
+  border-left: 3px solid var(--accent);
+}
+
+.live-planning-panel .execution-card-step {
+  color: var(--accent);
+}
+
 .workspace-body .workspace-canvas {
   flex: 1 1 auto;
   min-width: 0;
@@ -4169,11 +4178,43 @@ select:focus-visible {
 
 .artifact-preview-drawer {
   display: flex;
-  flex: 0 0 clamp(300px, 34vw, 520px);
+  /* 默认给长文档留出更宽的阅读区；用户仍可拖动或用最大化按钮调整。 */
+  flex: 0 0 clamp(340px, 42vw, 640px);
   flex-direction: column;
   min-width: 0;
   border-left: 1px solid var(--border);
   background: #0f130f;
+}
+
+.artifact-preview-drawer {
+  position: relative;
+}
+
+/* 最大化：预览铺满工作区主体，对话列让位（Esc 或再次点击还原）。 */
+.workspace-shell[data-preview-maximized] .workspace-canvas {
+  display: none;
+}
+
+.workspace-shell[data-preview-maximized] .artifact-preview-drawer {
+  flex: 1 1 100%;
+  max-width: none;
+}
+
+/* 左侧拖动调宽手柄。 */
+.artifact-drawer-resize {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 2;
+}
+
+.artifact-drawer-resize:hover,
+.artifact-drawer-resize:active {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 .artifact-preview-drawer.is-collapsed {
@@ -4910,6 +4951,13 @@ button:active:not(:disabled) {
 
   .composer-wrap {
     padding-inline: 26px;
+  }
+}
+
+@media (max-width: 860px) {
+  /* 窄屏没有并排空间：隐藏拖动调宽手柄，最大化仍然可用。 */
+  .artifact-drawer-resize {
+    display: none;
   }
 }
 

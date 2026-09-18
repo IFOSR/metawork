@@ -1,3 +1,4 @@
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { ArtifactProjection } from '../api/session-types';
 import type { HttpClient } from '../api/http';
 import { formatBytes } from './ArtifactLink';
@@ -25,14 +26,24 @@ export function ArtifactPreviewDrawer({
   http,
   state,
   collapsed,
+  maximized,
+  width,
   onClose,
   onToggleCollapse,
+  onToggleMaximize,
+  onResize,
 }: {
   http: HttpClient | null;
   state: PreviewDrawerState;
   collapsed: boolean;
+  /** 铺满工作区主体，用于阅读长文档。 */
+  maximized?: boolean;
+  /** 用户拖动调宽后的像素宽度；为空时使用默认三列布局。 */
+  width?: number | null;
   onClose: () => void;
   onToggleCollapse: () => void;
+  onToggleMaximize?: () => void;
+  onResize?: (width: number) => void;
 }) {
   if (state.status === 'closed') return null;
 
@@ -60,6 +71,17 @@ export function ArtifactPreviewDrawer({
             >
               {collapsed ? '⟨' : '⟩'}
             </button>
+            {!collapsed && onToggleMaximize && (
+              <button
+                type="button"
+                className="artifact-drawer-maximize"
+                onClick={onToggleMaximize}
+                aria-pressed={maximized ? true : undefined}
+                title={maximized ? '还原预览宽度' : '最大化预览'}
+              >
+                {maximized ? '⤡' : '⤢'}
+              </button>
+            )}
             {http && (
               <a
                 className="artifact-drawer-download"
@@ -85,11 +107,45 @@ export function ArtifactPreviewDrawer({
     </header>
   );
 
+  const resizable = !collapsed && !maximized && typeof onResize === 'function';
+  const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resizable) return;
+    const startX = event.clientX;
+    const startWidth = event.currentTarget.parentElement?.getBoundingClientRect().width ?? 0;
+    const ownerWindow = event.currentTarget.ownerDocument.defaultView ?? window;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    const onMove = (move: PointerEvent) => {
+      // 向左拖动变宽：抽屉在右侧，宽度 = 起始宽度 + 反向位移。
+      const next = Math.round(startWidth + (startX - move.clientX));
+      onResize?.(next);
+    };
+    const onUp = () => {
+      ownerWindow.removeEventListener('pointermove', onMove);
+      ownerWindow.removeEventListener('pointerup', onUp);
+    };
+    ownerWindow.addEventListener('pointermove', onMove);
+    ownerWindow.addEventListener('pointerup', onUp);
+  };
+
   return (
     <aside
       className={`artifact-preview-drawer${collapsed ? ' is-collapsed' : ''}`}
       data-testid="artifact-preview-drawer"
+      data-maximized={maximized ? 'true' : undefined}
+      style={!collapsed && !maximized && typeof width === 'number'
+        ? { flexBasis: `${width}px` }
+        : undefined}
     >
+      {resizable && (
+        <div
+          className="artifact-drawer-resize"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖动调整预览宽度"
+          title="拖动调整预览宽度"
+          onPointerDown={startResize}
+        />
+      )}
       {header}
       {!collapsed && (
         <div className="artifact-drawer-body">

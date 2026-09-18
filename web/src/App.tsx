@@ -77,6 +77,8 @@ export function App() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [previewState, setPreviewState] = useState<PreviewDrawerState>({ status: 'closed' });
   const [previewCollapsed, setPreviewCollapsed] = useState(false);
+  const [previewMaximized, setPreviewMaximized] = useState(false);
+  const [previewWidth, setPreviewWidth] = useState<number | null>(null);
   const [executionDetail, setExecutionDetail] = useState<{
     subtaskId: string;
     subtaskTitle: string;
@@ -842,6 +844,7 @@ export function App() {
         running={running}
         blockedReason={composerBlockedReason}
         previewOpen={previewState.status !== 'closed' || executionDetailOpen}
+        previewMaximized={previewMaximized}
         previewDrawer={executionDetailOpen && executionDetail && executionDetailTurn ? (
           <ExecutionDetailDrawer
             turn={executionDetailTurn}
@@ -853,11 +856,16 @@ export function App() {
             http={httpRef.current}
             state={previewState}
             collapsed={previewCollapsed}
+            maximized={previewMaximized}
+            width={previewWidth}
             onClose={() => {
               setPreviewState({ status: 'closed' });
               setPreviewCollapsed(false);
+              setPreviewMaximized(false);
             }}
             onToggleCollapse={() => setPreviewCollapsed(current => !current)}
+            onToggleMaximize={() => setPreviewMaximized(current => !current)}
+            onResize={next => setPreviewWidth(clampPreviewWidth(next))}
           />
         )}
         onSearch={setSearch}
@@ -1049,6 +1057,15 @@ async function applyStartupLaunchSuggestion(
     activeWorkspaceId: selection.activeWorkspaceId,
     workspaces: refreshed?.workspaces ?? catalog.workspaces,
   };
+}
+
+/**
+ * 预览抽屉宽度限制：至少保留可读的对话列，也不超过视口以免出现横向滚动。
+ */
+function clampPreviewWidth(width: number): number {
+  const viewport = typeof window === 'undefined' ? 1_440 : window.innerWidth;
+  const max = Math.max(360, Math.min(viewport - 360, 1_200));
+  return Math.round(Math.max(320, Math.min(width, max)));
 }
 
 function activationMessage(result: WebSessionActivationResult): string | null {

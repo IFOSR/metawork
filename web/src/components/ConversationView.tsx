@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ArtifactProjection, ConversationTurnProjection } from '../api/session-types';
 import { ConversationTurnView } from './ConversationTurn';
 import { LiveExecutionPanel } from './LiveExecutionPanel';
+import { LivePlanningPanel, plannerActivity } from './LivePlanningPanel';
 
 export function ConversationView({
   sessionId,
@@ -92,7 +93,9 @@ export function ConversationView({
           turn={turn}
           key={turn.id}
           liveExecutionPanel={turn.id === latest?.id && latest ? (
-            <LiveExecutionPanel turn={latest} onSelectSubtask={onOpenSubtaskDetail} />
+            plannerActivity(latest)
+              ? <LivePlanningPanel turn={latest} />
+              : <LiveExecutionPanel turn={latest} onSelectSubtask={onOpenSubtaskDetail} />
           ) : undefined}
           onOpenArtifact={onOpenArtifact}
           onOpenTrajectory={onOpenTrajectory}
