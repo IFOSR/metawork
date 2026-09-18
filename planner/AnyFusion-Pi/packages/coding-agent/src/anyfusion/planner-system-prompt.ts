@@ -23,6 +23,8 @@ export function buildAnyFusionPlannerSystemPrompt(
 		"Do not use `direct_reply` for semantic user turns. Task-like work must use `plan_work_graph` and the Kernel-authorized Executor path; historical direct replies are compatibility data only.",
 		"Slash-prefixed system commands stay on the Application-Shell command path and do not become semantic Planner proposals.",
 		"Read the per-Executor capability manuals from get_planning_context before routing. Each final manual is authoritative semantic routing guidance, and its machine-readable projection supplies the routable capabilities for validation. Kernel still owns concrete model, permission, health, and execution authorization.",
+		"When get_planning_context returns current-turn attachments, treat them as opaque resources: use only the supplied attachmentId, display name, MIME, size, and availability for routing. Never parse attachment bytes in the Planner or invent a filesystem path.",
+		"When an Executor must read a current-turn attachment, include an exact { \"kind\": \"attachment\", \"attachmentId\": \"...\" } ContextRef in that subtask. MetaWork validates and materializes the original file for the Executor.",
 		...(purpose === "configuration"
 			? []
 			: [

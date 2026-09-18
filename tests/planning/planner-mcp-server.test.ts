@@ -14,11 +14,13 @@ import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import type { PlannerExecutorCapabilityManual } from '../../src/configuration/types.js';
+import type { PlannerAttachmentView } from '../../src/planning/planning-types.js';
 
 function createHarness(
   sessionId = 'sess_current',
   conversationId = 'legacy-conversation',
   manuals: readonly PlannerExecutorCapabilityManual[] = [],
+  attachments: readonly PlannerAttachmentView[] = [],
 ) {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
@@ -46,7 +48,7 @@ function createHarness(
         affordances: [],
         modelPolicy: { mode: 'fixed', modelRef: 'test-model' },
       }],
-    }), conversationId, () => manuals),
+    }), conversationId, () => manuals, 'local-default', attachments),
   };
 }
 
@@ -206,6 +208,33 @@ describe('PlannerDataReader', () => {
         truncated: false,
       }),
     ]);
+  });
+
+  it('projects only safe metadata for the current Turn attachments', () => {
+    const { reader } = createHarness(
+      'sess-attachments',
+      'conversation-attachments',
+      [],
+      [{
+        attachmentId: 'att_screenshot',
+        name: 'screenshot.png',
+        mime: 'image/png',
+        size: 4096,
+        availability: 'available',
+      }],
+    );
+
+    expect(reader.getPlanningContext().attachments).toEqual([{
+      attachmentId: 'att_screenshot',
+      name: 'screenshot.png',
+      mime: 'image/png',
+      size: 4096,
+      availability: 'available',
+    }]);
+    const serialized = JSON.stringify(reader.getPlanningContext());
+    expect(serialized).not.toContain('sha256');
+    expect(serialized).not.toContain('absolute');
+    expect(serialized).not.toContain('secret body');
   });
 
   it('truncates model-generated priority reasons in planner task reads', () => {

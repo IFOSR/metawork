@@ -13,7 +13,7 @@ It is built for teams who need agents to do more than answer the current turn. M
 
 > Current implementation baseline (2026-08-21): PlanningAgentPlan v8, Work
 > Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
-> and SQLite schema v37 with transactional 31→32→33→34→35→36→37 upgrade support.
+> and SQLite schema v38 with transactional 31→32→33→34→35→36→37→38 upgrade support.
 
 > ADR-0027 through ADR-0030 govern the active revisioned Configuration Control
 > Plane, generation-scoped AgentClass/Model/Harness binding, future
@@ -170,6 +170,21 @@ images, reports, HTML and text use `ContextRef.kind = "artifact"`; the older
 never returns private published paths, absolute Workspace paths or credentials.
 Published Artifact facts are marked available only when their source is a
 regular file and its content hash still matches the durable record.
+
+Current-Turn uploads use an opaque `attachment` ContextRef rather than being
+converted into Planner text. The Gateway exposes only attachment ID, name,
+MIME, size and availability to Planner; bytes, base64, extracted text and
+private storage paths do not cross the Planner RPC boundary. MetaWork validates
+the Account/Conversation/Workspace binding and SHA-256 again at attempt start,
+then materializes the original file under the attempt-local `inputs/`
+directory. Web click, drop and clipboard-file paste share the same upload
+path; ordinary text paste remains textarea input.
+
+Document parsing is Executor-owned. The default engineering Executor
+advertises the `document-processing` Routing Capability and processes
+materialized originals with its own base model and tools; MetaWork ships no
+document parser. Upload availability and document
+processing capability remain separate contracts.
 
 Semantic RPC does not expose Web reconnaissance tools. Historical `direct_reply`
 proposals remain replayable for compatibility, but production semantic
@@ -1143,7 +1158,7 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 MetaWork can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product uses SQLite schema v37 and supports transactional 31→32→33→34→35→36→37 upgrades; unsupported older schemas are refused. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product uses SQLite schema v38 and supports transactional 31→32→33→34→35→36→37→38 upgrades; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Historical Artifact refs are validated against Account/Conversation/Workspace ownership, publication status, regular-file safety and content hash, then copied to attempt-local `inputs/` with stable `input-XX-*` names. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; image-capable adapters consume only the materialized input directory.
 

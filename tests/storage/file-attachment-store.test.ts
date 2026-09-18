@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   FileAttachmentStore,
-  AttachmentTypeError,
+  MAX_ATTACHMENT_BYTES,
 } from '../../src/storage/file-attachment-store.js';
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -17,10 +17,18 @@ function pngBytes(size = 64): Buffer {
 
 const temporaryRoots: string[] = [];
 
-async function createStore(): Promise<{ store: FileAttachmentStore; root: string }> {
+async function createStore(options: { maxAttachmentBytes?: number } = {}): Promise<{
+  store: FileAttachmentStore;
+  root: string;
+}> {
   const root = await mkdtemp(join(tmpdir(), 'anyfusion-attachments-'));
   temporaryRoots.push(root);
-  const store = new FileAttachmentStore(join(root, 'attachments'));
+  const store = new FileAttachmentStore(join(root, 'attachments'), {
+    accountId: 'local-default',
+    ...(options.maxAttachmentBytes !== undefined
+      ? { maxAttachmentBytes: options.maxAttachmentBytes }
+      : {}),
+  });
   await store.initialize();
   return { store, root };
 }
@@ -36,13 +44,18 @@ describe('FileAttachmentStore', () => {
   it('saves a png image with sniffed mime and image kind', async () => {
     const { store, root } = await createStore();
     const meta = await store.saveAttachment({
-      sessionId: 'sess_web_abc',
+      conversationId: 'sess_web_abc',
+      workspaceId: 'workspace_alpha',
       name: 'chart.png',
       bytes: pngBytes(),
     });
 
-    expect(meta.kind).toBe('image');
+    expect(meta.mediaClass).toBe('image');
     expect(meta.mime).toBe('image/png');
+    expect(meta.accountId).toBe('local-default');
+    expect(meta.conversationId).toBe('sess_web_abc');
+    expect(meta.workspaceId).toBe('workspace_alpha');
+    expect(meta.status).toBe('available');
     expect(meta.name).toBe('chart.png');
     expect(meta.size).toBe(64);
     expect(meta.sha256).toMatch(/^[0-9a-f]{64}$/u);
@@ -57,56 +70,85 @@ describe('FileAttachmentStore', () => {
   it('sniffs jpeg regardless of misleading extension', async () => {
     const { store } = await createStore();
     const meta = await store.saveAttachment({
-      sessionId: 'sess_web_abc',
+      conversationId: 'sess_web_abc',
+      workspaceId: 'workspace_alpha',
       name: 'photo.txt',
       bytes: Buffer.concat([JPEG_MAGIC, Buffer.alloc(32, 1)]),
     });
 
-    expect(meta.kind).toBe('image');
+    expect(meta.mediaClass).toBe('image');
     expect(meta.mime).toBe('image/jpeg');
   });
 
   it('stores text files under the text kind', async () => {
     const { store } = await createStore();
     const meta = await store.saveAttachment({
-      sessionId: 'sess_web_abc',
+      conversationId: 'sess_web_abc',
+      workspaceId: 'workspace_alpha',
       name: 'notes.md',
       bytes: Buffer.from('# hello\n内容', 'utf8'),
     });
 
-    expect(meta.kind).toBe('text');
+    expect(meta.mediaClass).toBe('text');
     expect(meta.mime).toBe('text/markdown');
   });
 
-  it('rejects disallowed binary types', async () => {
+  it.each([
+    ['report.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    ['report.pdf', 'application/pdf'],
+    ['report.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    ['report.pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+  ])('stores supported document input %s without parsing it', async (name, mime) => {
     const { store } = await createStore();
+    const bytes = name.endsWith('.pdf')
+      ? Buffer.from('%PDF-1.7\nopaque-document', 'utf8')
+      : Buffer.from([0x50, 0x4b, 0x03, 0x04, 1, 2, 3, 4]);
 
-    await expect(store.saveAttachment({
-      sessionId: 'sess_web_abc',
-      name: 'evil.exe',
-      bytes: Buffer.from([0x4d, 0x5a, 0x90, 0x00]),
-    })).rejects.toBeInstanceOf(AttachmentTypeError);
+    const meta = await store.saveAttachment({
+      conversationId: 'sess_web_abc',
+      workspaceId: 'workspace_alpha',
+      name,
+      bytes,
+    });
+
+    expect(meta).toMatchObject({
+      mediaClass: 'document',
+      mime,
+      size: bytes.length,
+    });
+    expect(await store.readAttachmentMetadata('sess_web_abc', meta.attachmentId))
+      .toEqual(meta);
   });
 
-  it('stores images and text files larger than the retired fixed limits', async () => {
+  it('stores unknown binary input as an opaque resource', async () => {
     const { store } = await createStore();
-    const legacyImageLimit = 10 * 1024 * 1024;
-    const legacyTextLimit = 5 * 1024 * 1024;
 
-    const image = await store.saveAttachment({
-      sessionId: 's',
-      name: 'big.png',
-      bytes: pngBytes(legacyImageLimit + 1),
+    const meta = await store.saveAttachment({
+      conversationId: 'sess_web_abc',
+      workspaceId: 'workspace_alpha',
+      name: 'sample.bin',
+      bytes: Buffer.from([0x4d, 0x5a, 0x90, 0x00]),
     });
 
-    const text = await store.saveAttachment({
-      sessionId: 's',
-      name: 'big.md',
-      bytes: Buffer.alloc(legacyTextLimit + 1, 97),
-    });
+    expect(meta.mediaClass).toBe('unknown');
+    expect(meta.mime).toBe('application/octet-stream');
+  });
 
-    expect(image.size).toBe(legacyImageLimit + 1);
-    expect(text.size).toBe(legacyTextLimit + 1);
+  it('bounds the single-file upload contract at 100 MiB', () => {
+    expect(MAX_ATTACHMENT_BYTES).toBe(100 * 1024 * 1024);
+  });
+
+  it('rejects a streaming upload above the bounded file limit and removes temporary data', async () => {
+    const limit = 4096;
+    const { store } = await createStore({ maxAttachmentBytes: limit });
+
+    await expect(store.saveAttachmentStream({
+      conversationId: 's',
+      workspaceId: 'workspace_alpha',
+      name: 'too-large.bin',
+      source: [Buffer.alloc(limit), Buffer.from([1])],
+    })).rejects.toThrow(/exceeds/u);
+    expect(await store.listAttachments('s')).toEqual([]);
   });
 
   it('removes temporary files when a streaming upload fails', async () => {
@@ -117,7 +159,8 @@ describe('FileAttachmentStore', () => {
     }
 
     await expect(store.saveAttachmentStream({
-      sessionId: 's',
+      conversationId: 's',
+      workspaceId: 'workspace_alpha',
       name: 'interrupted.png',
       source: failingSource(),
     })).rejects.toThrow('client disconnected');
@@ -129,19 +172,22 @@ describe('FileAttachmentStore', () => {
     const { store } = await createStore();
 
     await expect(store.saveAttachment({
-      sessionId: '../escape',
+      conversationId: '../escape',
+      workspaceId: 'workspace_alpha',
       name: 'a.md',
       bytes: Buffer.from('x'),
-    })).rejects.toThrow(/Invalid session ID/u);
+    })).rejects.toThrow(/Invalid conversation ID/u);
 
     await expect(store.saveAttachment({
-      sessionId: 's',
+      conversationId: 's',
+      workspaceId: 'workspace_alpha',
       name: '../../escape.md',
       bytes: Buffer.from('x'),
     })).rejects.toThrow(/Invalid attachment name/u);
 
     await expect(store.saveAttachment({
-      sessionId: 's',
+      conversationId: 's',
+      workspaceId: 'workspace_alpha',
       name: '',
       bytes: Buffer.from('x'),
     })).rejects.toThrow(/Invalid attachment name/u);
@@ -150,17 +196,20 @@ describe('FileAttachmentStore', () => {
   it('lists attachments of a session', async () => {
     const { store } = await createStore();
     await store.saveAttachment({
-      sessionId: 'sess_web_abc',
+      conversationId: 'sess_web_abc',
+      workspaceId: 'workspace_alpha',
       name: 'a.md',
       bytes: Buffer.from('a'),
     });
     await store.saveAttachment({
-      sessionId: 'sess_web_abc',
+      conversationId: 'sess_web_abc',
+      workspaceId: 'workspace_alpha',
       name: 'b.png',
       bytes: pngBytes(),
     });
     await store.saveAttachment({
-      sessionId: 'sess_other',
+      conversationId: 'sess_other',
+      workspaceId: 'workspace_beta',
       name: 'c.md',
       bytes: Buffer.from('c'),
     });
@@ -173,7 +222,8 @@ describe('FileAttachmentStore', () => {
   it('deletes all attachments of a session', async () => {
     const { store, root } = await createStore();
     await store.saveAttachment({
-      sessionId: 'sess_web_abc',
+      conversationId: 'sess_web_abc',
+      workspaceId: 'workspace_alpha',
       name: 'a.md',
       bytes: Buffer.from('a'),
     });

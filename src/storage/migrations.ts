@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 
-export const CURRENT_SCHEMA_VERSION = 37;
+export const CURRENT_SCHEMA_VERSION = 38;
 
 const CURRENT_SCHEMA_SQL = `
 CREATE TABLE tasks (
@@ -296,6 +296,14 @@ CREATE TABLE planner_proposal_submissions (
       );
 CREATE INDEX idx_planner_proposal_submissions_turn
   ON planner_proposal_submissions(session_id, turn_id, created_at);
+
+CREATE TABLE planner_turn_inputs (
+        conversation_id TEXT PRIMARY KEY,
+        user_input_hash TEXT NOT NULL,
+        attachment_views_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
 
 CREATE TABLE planner_tool_calls (
         id TEXT PRIMARY KEY,
@@ -1319,6 +1327,7 @@ export function runMigrations(
       migrateSchema34To35(db);
       migrateSchema35To36(db);
       migrateSchema36To37(db);
+      migrateSchema37To38(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 32) {
@@ -1327,27 +1336,37 @@ export function runMigrations(
       migrateSchema34To35(db);
       migrateSchema35To36(db);
       migrateSchema36To37(db);
+      migrateSchema37To38(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 33) {
       migrateSchema33To34(db);
       migrateSchema34To35(db);
       migrateSchema35To36(db);
+      migrateSchema36To37(db);
+      migrateSchema37To38(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 34) {
       migrateSchema34To35(db);
       migrateSchema35To36(db);
       migrateSchema36To37(db);
+      migrateSchema37To38(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 35) {
       migrateSchema35To36(db);
       migrateSchema36To37(db);
+      migrateSchema37To38(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 36) {
       migrateSchema36To37(db);
+      migrateSchema37To38(db);
+      return;
+    }
+    if (versions.length === 1 && versions[0]?.version === 37) {
+      migrateSchema37To38(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 30) {
@@ -1364,6 +1383,7 @@ export function runMigrations(
       migrateSchema34To35(db);
       migrateSchema35To36(db);
       migrateSchema36To37(db);
+      migrateSchema37To38(db);
       return;
     }
     const found = versions.map(row => row.version).join(', ') || 'empty';
@@ -1490,6 +1510,24 @@ function migrateSchema36To37(db: Database.Database): void {
         ON task_artifacts(publication_id);
       UPDATE schema_version SET version = 37 WHERE version = 36;
     `);
+  });
+  migrate();
+}
+
+function migrateSchema37To38(db: Database.Database): void {
+  const migrate = db.transaction(() => {
+    if (!tableExists(db, 'planner_turn_inputs')) {
+      db.exec(`
+        CREATE TABLE planner_turn_inputs (
+          conversation_id TEXT PRIMARY KEY,
+          user_input_hash TEXT NOT NULL,
+          attachment_views_json TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+    }
+    db.exec('UPDATE schema_version SET version = 38 WHERE version = 37;');
   });
   migrate();
 }

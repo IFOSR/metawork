@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -13,6 +13,7 @@ import type { Subtask, Task } from '../../src/core/types.js';
 import { seedWorkGraphRevision, testExecutorBinding } from '../support/seed-work-graph.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
+import { FileAttachmentStore } from '../../src/storage/file-attachment-store.js';
 
 function node(id: string, title: string, dependencies: Subtask['dependencies'] = []): Subtask {
   return {
@@ -391,6 +392,114 @@ describe('SubtaskExecutionContextBuilder', () => {
     } finally {
       rmSync(sourceRoot, { recursive: true, force: true });
       rmSync(inputRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('materializes a Planner-selected attachment after validating task ownership and content hash', async () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    const root = mkdtempSync(join(tmpdir(), 'metawork-attachment-context-'));
+    const attachmentStore = new FileAttachmentStore(join(root, 'attachments'), {
+      accountId: 'account_attachment',
+    });
+    const inputRoot = join(root, 'attempt', 'inputs');
+    await attachmentStore.initialize();
+    const bytes = Buffer.from('opaque attachment bytes');
+    const metadata = await attachmentStore.saveAttachment({
+      conversationId: 'conversation_attachment',
+      workspaceId: 'workspace_attachment',
+      name: 'brief.docx',
+      bytes,
+    });
+    const task = new TaskEngine(new TaskRepo(db), join(root, 'snapshots')).create({
+      id: 'task_attachment',
+      title: 'Process attachment',
+      goal: 'Process the uploaded document',
+      accountId: 'account_attachment',
+      conversationId: 'conversation_attachment',
+      workspaceId: 'workspace_attachment',
+    });
+    const subtask = node('attachment', 'Read attachment');
+    subtask.taskId = task.id;
+    subtask.contextRefs = [{ kind: 'attachment', attachmentId: metadata.attachmentId }];
+
+    try {
+      const built = new SubtaskExecutionContextBuilder(db, {
+        accountId: 'account_attachment',
+        resultRoot: join(root, 'results'),
+        attachmentStore,
+      }).build({
+        executionId: 'exec',
+        task,
+        subtask,
+        allSubtasks: [subtask],
+        attemptId: 'attempt_attachment',
+        workUnitId: 'work-unit',
+        sessionId: 'conversation_attachment',
+        inputFilesPath: inputRoot,
+        workspaceContext: { allowFilesystem: true, workingDirectory: root, targetPaths: [root] },
+        evidenceToolsAvailable: false,
+      });
+
+      expect(built.context.selectedAttachments).toEqual([expect.objectContaining({
+        attachmentId: metadata.attachmentId,
+        displayName: 'brief.docx',
+        relativeInputPath: 'input-01-brief.docx',
+        mediaType: metadata.mime,
+        contentHash: metadata.sha256,
+      })]);
+      expect(readFileSync(join(inputRoot, 'input-01-brief.docx'))).toEqual(bytes);
+      expect(existsSync(join(inputRoot, 'input-01-brief.docx'))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a selected attachment owned by another workspace', async () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    const root = mkdtempSync(join(tmpdir(), 'metawork-attachment-ownership-'));
+    const attachmentStore = new FileAttachmentStore(join(root, 'attachments'), {
+      accountId: 'account_attachment',
+    });
+    await attachmentStore.initialize();
+    const metadata = await attachmentStore.saveAttachment({
+      conversationId: 'conversation_attachment',
+      workspaceId: 'workspace_other',
+      name: 'brief.pdf',
+      bytes: Buffer.from('%PDF-test'),
+    });
+    const task = new TaskEngine(new TaskRepo(db), join(root, 'snapshots')).create({
+      id: 'task_attachment_wrong_workspace',
+      title: 'Process attachment',
+      goal: 'Process the uploaded document',
+      accountId: 'account_attachment',
+      conversationId: 'conversation_attachment',
+      workspaceId: 'workspace_attachment',
+    });
+    const subtask = node('attachment_wrong_workspace', 'Read attachment');
+    subtask.taskId = task.id;
+    subtask.contextRefs = [{ kind: 'attachment', attachmentId: metadata.attachmentId }];
+
+    try {
+      expect(() => new SubtaskExecutionContextBuilder(db, {
+        accountId: 'account_attachment',
+        resultRoot: join(root, 'results'),
+        attachmentStore,
+      }).build({
+        executionId: 'exec',
+        task,
+        subtask,
+        allSubtasks: [subtask],
+        attemptId: 'attempt_attachment',
+        workUnitId: 'work-unit',
+        sessionId: 'conversation_attachment',
+        inputFilesPath: join(root, 'attempt', 'inputs'),
+        workspaceContext: { allowFilesystem: true, workingDirectory: root, targetPaths: [root] },
+        evidenceToolsAvailable: false,
+      })).toThrow('attachment_context_wrong_workspace');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

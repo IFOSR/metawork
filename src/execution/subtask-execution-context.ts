@@ -9,7 +9,9 @@ import {
   readFileSync,
   readSync,
   statSync,
+  writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { basename, extname, isAbsolute, join } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Subtask, Task, WorkspaceContext } from '../core/types.js';
@@ -32,6 +34,10 @@ import {
   ScopedExecutionResultReferencePort,
 } from './execution-result-reference-port.js';
 import { TaskArtifactRepo, hashContent } from '../storage/task-artifact-repo.js';
+import type {
+  GatewayAttachmentMetadata,
+  GatewayAttachmentStore,
+} from '../gateway/attachment-store-port.js';
 
 export interface SelectedExecutionEvidence {
   ref: ContextRef;
@@ -50,6 +56,15 @@ export interface SelectedExecutionArtifact {
   contentHash: string;
 }
 
+export interface SelectedExecutionAttachment {
+  ref: Extract<ContextRef, { kind: 'attachment' }>;
+  attachmentId: string;
+  displayName: string;
+  relativeInputPath: string;
+  mediaType: string;
+  contentHash: string;
+}
+
 export interface SubtaskExecutionContext {
   taskBackground: { id: string; title: string; goal: string; instruction: 'background_only' };
   currentSubtask: Pick<
@@ -60,6 +75,7 @@ export interface SubtaskExecutionContext {
   outgoingHandoffRequirements: Array<{ toSubtaskId: string; requiredItems: WorkGraphRequiredItem[] }>;
   selectedEvidence: SelectedExecutionEvidence[];
   selectedArtifacts?: SelectedExecutionArtifact[];
+  selectedAttachments?: SelectedExecutionAttachment[];
   outOfScopeSiblings: Array<{ id: string; title: string }>;
   workspaceContext: WorkspaceContext;
   identity: { executionId: string; taskId: string; subtaskId: string; attemptId: string; workUnitId: string };
@@ -93,7 +109,11 @@ export class SubtaskExecutionContextBuilder {
 
   constructor(
     private readonly db: Database.Database,
-    options: { accountId?: string; resultRoot: string },
+    options: {
+      accountId?: string;
+      resultRoot: string;
+      attachmentStore?: GatewayAttachmentStore;
+    },
   ) {
     this.evidenceRepo = new TaskExecutionEvidenceRepo(db);
     this.handoffRepo = new SubtaskHandoffRepo(db);
@@ -104,9 +124,11 @@ export class SubtaskExecutionContextBuilder {
     );
     this.artifactRepo = new TaskArtifactRepo(db);
     this.accountId = options.accountId ?? 'local-default';
+    this.attachmentStore = options.attachmentStore;
   }
 
   private readonly accountId: string;
+  private readonly attachmentStore?: GatewayAttachmentStore;
 
   build(input: {
     executionId: string;
@@ -143,6 +165,7 @@ export class SubtaskExecutionContextBuilder {
     });
     const selectedEvidence = this.resolveSelectedEvidence(input);
     const selectedArtifacts = this.resolveSelectedArtifacts(input);
+    const selectedAttachments = this.resolveSelectedAttachments(input, selectedArtifacts.length);
     const exactEvidenceIds = new Set(selectedEvidence
       .filter((item): item is SelectedExecutionEvidence & {
         ref: Extract<ContextRef, { kind: 'interaction'; side: 'assistant' }>;
@@ -192,6 +215,7 @@ export class SubtaskExecutionContextBuilder {
         outgoingHandoffRequirements,
         selectedEvidence,
         selectedArtifacts,
+        selectedAttachments,
         outOfScopeSiblings: input.allSubtasks
           .filter(candidate => candidate.id !== input.subtask.id)
           .map(candidate => ({ id: candidate.id, title: candidate.title })),
@@ -267,10 +291,85 @@ export class SubtaskExecutionContextBuilder {
     sessionId: string;
   }): SelectedExecutionEvidence[] {
     const refs = [...input.subtask.contextRefs]
-      .filter((ref): ref is Exclude<ContextRef, { kind: 'artifact' }> => ref.kind !== 'artifact')
+      .filter((ref): ref is Exclude<ContextRef, { kind: 'artifact' | 'attachment' }> =>
+        ref.kind !== 'artifact' && ref.kind !== 'attachment')
       .sort((left, right) => contextRefKey(left).localeCompare(contextRefKey(right)));
     const perRefBudget = Math.min(4_000, refs.length > 0 ? Math.floor(24_000 / refs.length) : 4_000);
     return refs.map(ref => this.resolveEvidenceRef(ref, input.task, input.sessionId, perRefBudget));
+  }
+
+  private resolveSelectedAttachments(
+    input: {
+      task: Task;
+      subtask: Subtask;
+      inputFilesPath?: string;
+    },
+    inputNameOffset: number,
+  ): SelectedExecutionAttachment[] {
+    const refs = input.subtask.contextRefs
+      .filter((ref): ref is Extract<ContextRef, { kind: 'attachment' }> => ref.kind === 'attachment')
+      .sort((left, right) => contextRefKey(left).localeCompare(contextRefKey(right)));
+    if (refs.length === 0) return [];
+    if (!this.attachmentStore) throw new Error('attachment_context_store_unavailable');
+    if (!input.task.accountId || !input.task.conversationId || !input.task.workspaceId) {
+      throw new Error('attachment_context_task_identity_missing');
+    }
+    if (input.task.accountId !== this.accountId) {
+      throw new Error(`attachment_context_wrong_account: ${input.task.accountId}`);
+    }
+
+    const selected: SelectedExecutionAttachment[] = [];
+    for (const [index, ref] of refs.entries()) {
+      const attachment: ReturnType<
+        NonNullable<GatewayAttachmentStore['readAttachmentSync']>
+      > | null = this.attachmentStore.readAttachmentSync?.(
+        input.task.conversationId,
+        ref.attachmentId,
+      ) ?? null;
+      if (!attachment) throw new Error(`attachment_context_not_found: ${ref.attachmentId}`);
+      const metadata: GatewayAttachmentMetadata = attachment.metadata;
+      const { bytes } = attachment;
+      if (metadata.accountId !== input.task.accountId) {
+        throw new Error(`attachment_context_wrong_account: ${ref.attachmentId}`);
+      }
+      if (metadata.conversationId !== input.task.conversationId) {
+        throw new Error(`attachment_context_wrong_conversation: ${ref.attachmentId}`);
+      }
+      if (metadata.workspaceId !== input.task.workspaceId) {
+        throw new Error(`attachment_context_wrong_workspace: ${ref.attachmentId}`);
+      }
+      if (metadata.status !== 'available') {
+        throw new Error(`attachment_context_unavailable: ${ref.attachmentId}`);
+      }
+      if (metadata.size !== bytes.byteLength) {
+        throw new Error(`attachment_context_size_mismatch: ${ref.attachmentId}`);
+      }
+      const actualHash = createHash('sha256').update(bytes).digest('hex');
+      if (actualHash !== metadata.sha256) {
+        throw new Error(`attachment_context_content_hash_mismatch: ${ref.attachmentId}`);
+      }
+      const relativeInputPath = safeInputAttachmentName(
+        metadata.name,
+        inputNameOffset + index,
+      );
+      if (input.inputFilesPath) {
+        mkdirSync(input.inputFilesPath, { recursive: true });
+        materializeAttachmentFile(
+          join(input.inputFilesPath, relativeInputPath),
+          bytes,
+          actualHash,
+        );
+      }
+      selected.push({
+        ref,
+        attachmentId: ref.attachmentId,
+        displayName: metadata.name,
+        relativeInputPath,
+        mediaType: metadata.mime,
+        contentHash: actualHash,
+      });
+    }
+    return selected;
   }
 
   private resolveSelectedArtifacts(input: {
@@ -454,6 +553,33 @@ function safeInputArtifactName(name: string, index: number): string {
     .replace(/^\.{1,2}$/u, '_')
     .slice(-160);
   return `input-${String(index + 1).padStart(2, '0')}-${normalized || 'artifact'}`;
+}
+
+function safeInputAttachmentName(name: string, index: number): string {
+  const normalized = basename(name).normalize('NFC')
+    .replace(/[^A-Za-z0-9._-]+/gu, '_')
+    .replace(/^\.{1,2}$/u, '_')
+    .slice(-160);
+  return `input-${String(index + 1).padStart(2, '0')}-${normalized || 'attachment'}`;
+}
+
+function materializeAttachmentFile(
+  destinationPath: string,
+  bytes: Buffer,
+  expectedHash: string,
+): void {
+  if (existsSync(destinationPath)) {
+    const existing = lstatSync(destinationPath, { throwIfNoEntry: false });
+    if (!existing?.isFile() || existing.isSymbolicLink()) {
+      throw new Error(`attachment_context_destination_invalid: ${destinationPath}`);
+    }
+    const existingHash = createHash('sha256').update(readFileSync(destinationPath)).digest('hex');
+    if (existingHash !== expectedHash) {
+      throw new Error(`attachment_context_destination_hash_mismatch: ${destinationPath}`);
+    }
+    return;
+  }
+  writeFileSync(destinationPath, bytes, { flag: 'wx', mode: 0o600 });
 }
 
 function materializeArtifactFile(

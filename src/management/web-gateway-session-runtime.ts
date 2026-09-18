@@ -22,12 +22,14 @@ import type {
   WorkspaceInitializationResult,
 } from './web-session-types.js';
 import type { GatewayAttachmentStore } from '../gateway/attachment-store-port.js';
+import {
+  evaluateAttachmentBudget,
+  evaluateAttachmentCount,
+  type AttachmentBudgetEntry,
+} from '../gateway/attachment-budget.js';
 import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
 import { turnStatusFromTimeline } from './web-conversation-projector.js';
 
-const MAX_ATTACHMENTS_PER_MESSAGE = 32;
-const MAX_ENRICHMENT_BYTES = 16 * 1024;
-const EXCERPT_MAX_LINES = 64;
 const WEB_WORKSPACE_PRINCIPAL = 'web:local-web-user';
 
 export class WebGatewayAdmissionError extends Error {
@@ -47,16 +49,6 @@ function formatByteSize(size: number): string {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function buildTextExcerpt(bytes: Buffer, maxBytes: number): string | null {
-  const text = bytes.toString('utf8');
-  if (!text.trim()) return null;
-  const lines = text.split('\n').slice(0, EXCERPT_MAX_LINES);
-  let excerpt = lines.join('\n');
-  while (Buffer.byteLength(excerpt, 'utf8') > maxBytes && excerpt.length > 0) {
-    excerpt = excerpt.slice(0, Math.floor(excerpt.length / 2));
-  }
-  return excerpt.length < text.length ? `${excerpt}\n…（已截断）` : excerpt;
-}
 import type {
   WebSessionRuntimeCatalog,
   WebSessionRuntimeEvent,
@@ -165,11 +157,13 @@ class WebGatewayClientSession {
   ): Promise<void> {
     const targetSessionId = this.activeSessionId;
     const effectiveRequestId = requestId ?? this.id('req');
-    const effectiveText = await this.enrichWithAttachments(text, attachments, targetSessionId);
+    // Enforce the per-message attachment budget before the turn is admitted so
+    // a rejected message never consumes Planner/Kernel work.
+    if (attachments.length > 0) await this.assertAttachmentBudget(attachments);
     this.pendingInputs.set(effectiveRequestId, text);
-    const command: GatewayCommand = effectiveText.startsWith('/')
-      ? { kind: 'slash_command', text: effectiveText }
-      : { kind: 'user_message', text: effectiveText, attachments };
+    const command: GatewayCommand = text.startsWith('/')
+      ? { kind: 'slash_command', text }
+      : { kind: 'user_message', text, attachments };
     const receipt = await this.deps.gateway.submit({
       protocolVersion: 2,
       requestId: effectiveRequestId,
@@ -192,40 +186,37 @@ class WebGatewayClientSession {
     }
   }
 
-  /** 将已上传附件解析为 Planner 提示增强块；无附件或未配置存储时返回原文。 */
-  private async enrichWithAttachments(
-    text: string,
+  /**
+   * Resolves the admitted attachment set and enforces the per-message budget.
+   * Metadata comes from the same store the upload endpoint wrote to, so a
+   * stale or foreign reference fails closed instead of entering Planner.
+   */
+  private async assertAttachmentBudget(
     attachments: Array<{ attachmentId: string; kind: string }>,
-    sessionId: string,
-  ): Promise<string> {
+  ): Promise<void> {
     const store = this.deps.attachments;
-    if (!store || attachments.length === 0) return text;
-    const sections: string[] = [];
-    let budget = MAX_ENRICHMENT_BYTES;
-    for (const reference of attachments.slice(0, MAX_ATTACHMENTS_PER_MESSAGE)) {
-      const resolved = await store.readAttachment(sessionId, reference.attachmentId);
-      if (!resolved) continue;
-      const { metadata } = resolved;
-      const sizeLabel = formatByteSize(metadata.size);
-      const header = `${sections.length + 1}. ${metadata.name} (${metadata.mime}, ${sizeLabel}) — 路径: ${resolved.path}`;
-      let section = header;
-      if (metadata.kind === 'text') {
-        const excerpt = buildTextExcerpt(resolved.bytes, Math.max(1_000, budget));
-        if (excerpt) section = `${header}\n   文本摘录（前 64 行）:\n${excerpt}`;
-      }
-      // 图片：内容已随消息以多模态 images 通道原生提供给 Planner；
-      // 此处保留路径，供 Executor 在工作区读取原图。
-      sections.push(section);
-      budget -= Buffer.byteLength(section, 'utf8');
-      if (budget <= 0) break;
+    const conversationId = this.activeSessionId;
+    const countViolation = evaluateAttachmentCount(attachments.length);
+    if (countViolation) {
+      throw new WebGatewayAdmissionError(countViolation.code, undefined, countViolation.message);
     }
-    if (sections.length === 0) return text;
-    return [
-      text,
-      '---',
-      `[附件] ${sections.length} 个文件随本消息提交；请结合以下内容理解意图，并让 Executor 通过上述路径读取完整原文：`,
-      ...sections,
-    ].join('\n');
+    if (!store || !conversationId) return;
+    const entries: AttachmentBudgetEntry[] = [];
+    for (const reference of attachments) {
+      const metadata = store.readAttachmentMetadata
+        ? await store.readAttachmentMetadata(conversationId, reference.attachmentId)
+        : (await store.readAttachment(conversationId, reference.attachmentId))?.metadata;
+      if (!metadata || metadata.status !== 'available') {
+        throw new WebGatewayAdmissionError(
+          'attachment_unavailable',
+          undefined,
+          '附件不存在或已不可用，请重新上传后再发送。',
+        );
+      }
+      entries.push({ name: metadata.name, size: metadata.size });
+    }
+    const violation = evaluateAttachmentBudget(entries);
+    if (violation) throw new WebGatewayAdmissionError(violation.code, undefined, violation.message);
   }
 
   async listSessions(query = ''): Promise<WebSessionDirectoryMetadataProjection[]> {

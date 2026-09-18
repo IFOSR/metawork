@@ -159,6 +159,7 @@ export class FeishuConversationRouting {
     conversationId: string,
     channel: FeishuChannelBinding,
     attachments: Array<{ path: string; name: string; kind: 'image' | 'file' }> | undefined,
+    workspaceId: string,
   ): Promise<Array<{ attachmentId: string; kind: string }>> {
     if (!attachments || attachments.length === 0 || !this.deps.attachments) return [];
     const references: Array<{ attachmentId: string; kind: string }> = [];
@@ -167,7 +168,8 @@ export class FeishuConversationRouting {
       try {
         const bytes = await readFile(attachment.path);
         const saved = await this.deps.attachments.saveAttachment({
-          sessionId: conversationId,
+          conversationId,
+          workspaceId,
           name: attachment.name,
           bytes,
         }) as { attachmentId: string };
@@ -465,6 +467,7 @@ export class FeishuConversationRouting {
         conversationId,
         channel,
         rawAttachments,
+        context.binding.workspaceId,
       );
       if (references.length > 0) {
         command = { ...command, attachments: references };

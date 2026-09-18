@@ -7,6 +7,7 @@ export const ROUTING_CAPABILITY_IDS = [
   'current-web-research',
   'image-editing',
   'image-generation',
+  'document-processing',
   'workspace-engineering',
 ] as const;
 
@@ -53,6 +54,14 @@ export const ROUTING_CAPABILITY_REGISTRY = {
     requiredAffordances: [],
     requiredModelCapabilities: ['image-generation'],
     requiredHarnessProtocols: ['workspace-image-artifact-v1'],
+    recoverySafety: 'workspace_reconcilable',
+  },
+  'document-processing': {
+    deliveryContract:
+      '读取用户提供的文档附件，提取并处理其中的内容，再交付可验证的结果。',
+    requiredAffordances: ['workspace-read-write'],
+    requiredModelCapabilities: [],
+    requiredHarnessProtocols: [],
     recoverySafety: 'workspace_reconcilable',
   },
   'workspace-engineering': {

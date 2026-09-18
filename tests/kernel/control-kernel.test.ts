@@ -573,6 +573,38 @@ describe('ControlKernel', () => {
     });
   });
 
+  it('names an unqualified attachment reference as 附件 in the clarification', () => {
+    const proposal = workGraphPlan({ goal: '分析附件' });
+    proposal.workGraph!.subtasks[0]!.contextRefs = [
+      { kind: 'attachment', attachmentId: 'att_missing' },
+    ];
+
+    const decision = new ControlKernel().decide({ ...event, proposal }, {
+      ...snapshot,
+      eligibleContextRefKeys: [],
+    });
+
+    expect(decision.action).toMatchObject({ type: 'request_clarification' });
+    const question = decision.action.type === 'request_clarification'
+      ? decision.action.question
+      : '';
+    expect(question).toContain('（附件）');
+    expect(question).not.toContain('attachment');
+    expect(decision.reason).toContain('attachment:att_missing');
+  });
+
+  it('admits an attachment reference that belongs to the current Turn', () => {
+    const proposal = workGraphPlan({ goal: '分析附件' });
+    proposal.workGraph!.subtasks[0]!.contextRefs = [
+      { kind: 'attachment', attachmentId: 'att_current' },
+    ];
+
+    expect(new ControlKernel().decide({ ...event, proposal }, {
+      ...snapshot,
+      eligibleContextRefKeys: ['attachment:att_current'],
+    }).action).toMatchObject({ type: 'authorize_task_plan' });
+  });
+
   it('rejects an empty non-null task reference instead of authorizing it as a new Task', () => {
     const proposal = workGraphPlan({ goal: 'Create an artifact' });
     proposal.task.taskId = '';

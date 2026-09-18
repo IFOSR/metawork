@@ -45,6 +45,7 @@ import {
 import { useThemePreference } from './theme';
 import { projectTurnForPresentation } from './turn-task-presentation';
 import { requiredAgentBlock } from './agent-readiness';
+import { evaluateAttachmentBudget } from './attachment-limits';
 
 let startupAuthentication: ReturnType<typeof establishWebSession> | null = null;
 let startupLaunchSuggestionPromise: Promise<WebLaunchSuggestion | null> | null = null;
@@ -348,18 +349,26 @@ export function App() {
         }
       },
       onError: (message, detail) => {
-        if (
-          detail?.code === 'required_agent_unavailable'
-          && detail.requestId
-          && pendingInputsRef.current.has(detail.requestId)
-        ) {
-          const pending = pendingInputsRef.current.get(detail.requestId)!;
+        const pending = detail?.requestId
+          ? pendingInputsRef.current.get(detail.requestId)
+          : undefined;
+        if (detail?.code === 'required_agent_unavailable' && pending && detail.requestId) {
           pendingInputsRef.current.delete(detail.requestId);
           setDraft(pending.draft);
           setPendingAttachments(pending.attachments);
           setActivationNotice(
             `当前无法开始新工作，请先安装${requiredAgentBlock(agentReadiness).agent?.displayName ?? '必需智能体'}。`,
           );
+          return;
+        }
+        // A rejected attachment budget never became a turn: restore the draft
+        // and the pending attachments so the user can trim them instead of
+        // losing the message.
+        if (detail?.code?.startsWith('attachment_') && pending && detail.requestId) {
+          pendingInputsRef.current.delete(detail.requestId);
+          setDraft(pending.draft);
+          setPendingAttachments(pending.attachments);
+          setActivationNotice(message);
           return;
         }
         setActivationNotice(`执行错误：${message}`);
@@ -694,9 +703,17 @@ export function App() {
       return;
     }
     setUploadError(null);
+    // Track the selection locally: React state does not advance inside this
+    // loop, so counting `pendingAttachments` here would miss every file added
+    // by the current batch.
+    const selection = pendingAttachments.map(attachment => ({
+      name: attachment.name,
+      size: attachment.size,
+    }));
     for (const file of files) {
-      if (pendingAttachments.length >= 32) {
-        setUploadError('单条消息最多 32 个附件。');
+      const violation = evaluateAttachmentBudget([...selection, { name: file.name, size: file.size }]);
+      if (violation) {
+        setUploadError(violation.message);
         break;
       }
       try {
@@ -705,6 +722,7 @@ export function App() {
           file.name,
           file,
         );
+        selection.push({ name: metadata.name, size: metadata.size });
         setPendingAttachments(current => [...current, metadata]);
       } catch (error) {
         setUploadError(`上传 ${file.name} 失败：${(error as Error).message}`);

@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react';
 import type { AttachmentMetadata } from '../api/session-types';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { MAX_ATTACHMENTS_PER_MESSAGE } from '../attachment-limits';
 
-const MAX_ATTACHMENTS = 32;
+const MAX_ATTACHMENTS = MAX_ATTACHMENTS_PER_MESSAGE;
 
 export interface PendingAttachment {
   metadata: AttachmentMetadata;
@@ -83,6 +84,13 @@ export function Composer({
         const files = Array.from(event.dataTransfer.files ?? []);
         if (files.length > 0) onFilesSelected(files);
       }}
+      onPaste={event => {
+        if (disabled) return;
+        const files = Array.from(event.clipboardData.files ?? []);
+        if (files.length === 0) return;
+        event.preventDefault();
+        onFilesSelected(files);
+      }}
     >
       {blockedReason && <div className="composer-notice">{blockedReason}</div>}
       <form
@@ -109,14 +117,14 @@ export function Composer({
             }, 0);
           }}
           onKeyDown={handleKeyDown}
-          placeholder={disabled ? '激活此历史会话后才能继续' : '描述目标，MetaWork 会展示完整执行过程…（可拖入或点击 📎 添加图片/文本附件）'}
+          placeholder={disabled ? '激活此历史会话后才能继续' : '描述目标，MetaWork 会展示完整执行过程…（可拖入、粘贴或点击 📎 添加附件）'}
           rows={2}
         />
         {(attachments.length > 0 || uploadError) && (
           <div className="attachment-strip">
             {attachments.map(entry => (
               <span className="attachment-chip" key={entry.metadata.attachmentId} title={`${entry.metadata.name} · ${entry.metadata.mime}`}>
-                {entry.metadata.kind === 'image' ? '🖼' : '📄'} {entry.metadata.name}
+                {entry.metadata.mediaClass === 'image' ? '🖼' : entry.metadata.mediaClass === 'document' ? '▤' : '📄'} {entry.metadata.name}
                 <button
                   type="button"
                   aria-label={`移除附件 ${entry.metadata.name}`}
@@ -135,7 +143,6 @@ export function Composer({
             ref={fileInputRef}
             type="file"
             multiple
-            accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.markdown,.csv,.json,.ts,.tsx,.js,.mjs,.jsx,.py,.go,.rs,.java,.c,.h,.cpp,.sh,.yml,.yaml,.html,.css,.sql"
             hidden
             onChange={event => {
               const files = Array.from(event.target.files ?? []);
@@ -150,7 +157,7 @@ export function Composer({
               className="attach-button"
               disabled={disabled || attachments.length >= MAX_ATTACHMENTS}
               onClick={() => fileInputRef.current?.click()}
-              title="添加图片或文本附件"
+              title="添加附件"
             >
               📎
             </button>

@@ -45,6 +45,26 @@ function model(
 }
 
 describe('Executor capability manuals', () => {
+  it('renders document processing as a routable Executor capability', () => {
+    const result = buildExecutorCapabilityManual({
+      agentClassRef: 'codex-engineering',
+      agentClass: {
+        ...executor({ mode: 'fixed', modelRef: 'engineering' }),
+        routingCapabilities: ['workspace-engineering', 'document-processing'],
+      },
+      models: {
+        engineering: model(['coding', 'tools']),
+      },
+      providers: {
+        openai: { enabled: true, region: 'international' },
+      },
+      configurationRevision: 'revision-1',
+    });
+
+    expect(result.routableCapabilities).toContain('document-processing');
+    expect(result.markdown).toContain('文档处理');
+  });
+
   it('uses Chinese system prose and Chinese derived tags', () => {
     const result = buildExecutorCapabilityManual({
       agentClassRef: 'codex-engineering',

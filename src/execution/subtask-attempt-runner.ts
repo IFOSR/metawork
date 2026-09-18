@@ -25,6 +25,7 @@ import {
   type CompletionHandoffV3,
 } from './completion-protocol.js';
 import { SubtaskExecutionContextBuilder } from './subtask-execution-context.js';
+import type { GatewayAttachmentStore } from '../gateway/attachment-store-port.js';
 import type { WorkUnitClaimService } from './work-unit-claim-service.js';
 import { generateInteractionId } from '../utils/id.js';
 import { ExecutionEvidenceToolServer } from './execution-evidence-tool-server.js';
@@ -145,6 +146,7 @@ export interface SubtaskAttemptRunnerDeps {
   controlNetwork: string;
   accountId?: string;
   resultRoot: string;
+  attachmentStore?: GatewayAttachmentStore;
   /**
    * When present, attempt-output files are registered as user-visible
    * artifacts at landing — independent of the git publication ceremony, so
@@ -171,6 +173,7 @@ export class SubtaskAttemptRunner {
     this.contextBuilder = new SubtaskExecutionContextBuilder(deps.db, {
       accountId: deps.accountId,
       resultRoot: deps.resultRoot,
+      attachmentStore: deps.attachmentStore,
     });
     this.receiptRepo = new ExecutorAttemptReceiptRepo(deps.db);
     this.handoffRepo = new SubtaskHandoffRepo(deps.db);

@@ -751,6 +751,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     const workspace = await workspaceCatalogStore.findById(task.workspace_id);
     return workspace && workspace.availability === 'available' ? workspace.canonicalPath : null;
   };
+  const webAttachmentStore = new FileAttachmentStore(
+    resolve(accountPaths.conversations, 'web-attachments'),
+    { accountId: LOCAL_DEFAULT_ACCOUNT_ID },
+  );
+  await webAttachmentStore.initialize();
   accountRuntimeComposition = buildAccountRuntimeComposition({
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     db,
@@ -763,6 +768,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     workspaceRoot: accountPaths.workspaceStore,
     attemptsRoot: accountPaths.attempts,
     resultsRoot: accountPaths.results,
+    attachmentStore: webAttachmentStore,
     generatedRuntimeRoot: accountPaths.generatedAgentRuntime,
     sourceRoot: accountPaths.workspaceStore,
     resolveUserWorkspaceRoot: async conversationId => {
@@ -1071,10 +1077,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     ),
     normalizeTurnPresentation,
   });
-  const webAttachmentStore = new FileAttachmentStore(
-    resolve(accountPaths.conversations, 'web-attachments'),
-  );
-  await webAttachmentStore.initialize();
   const knownConversationIds = new Set<string>([sessionId]);
   const rememberConversation = (accountId: string, conversationId: string): void => {
     if (accountId === LOCAL_DEFAULT_ACCOUNT_ID) knownConversationIds.add(conversationId);

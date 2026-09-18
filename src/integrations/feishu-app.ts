@@ -3157,13 +3157,13 @@ async function collectFeishuCommandAttachments(input: {
       messageId: record.messageId,
     })));
   }
-  // §5.5.6 deterministic visibility: files are saved as Gateway attachments
-  // but only images flow into the Planner multimodal input — say so instead
-  // of silently saving a file no downstream consumer reads.
+  // §5.5.6 deterministic visibility: all files are saved as opaque Gateway
+  // attachments. Planner receives bounded metadata and selects the attachment;
+  // the authorized Executor owns content parsing.
   const fileCount = collected.filter(item => item.resourceType === 'file').length;
   if (fileCount > 0) {
     input.deps.session.appendSystemMessage(
-      `→ 已保存 ${fileCount} 个文件附件；Planner 多模态输入仅接收图片，文件请在需求中明确引用。`,
+      `→ 已保存 ${fileCount} 个文件附件；Planner 将根据附件元数据编排，Executor 负责读取和处理原件。`,
     );
   }
   return collected;

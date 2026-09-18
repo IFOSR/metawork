@@ -411,7 +411,7 @@ export class LegacyConfigurationReader {
         harnessRef: 'codex-cli',
         modelPolicy: { mode: 'fixed', modelRef: defaultModelRef },
         permissionProfileRef: 'workspace-engineering',
-        routingCapabilities: ['workspace-engineering'],
+        routingCapabilities: ['workspace-engineering', 'document-processing'],
         primaryUseCases: ['repository implementation', 'tests', 'engineering documentation', 'image generation', 'image editing'],
         avoidUseCases: ['current public-web research requiring source-backed delivery'],
         plannerAffordances: ['workspace-read-write', 'workspace-command-validation'],
@@ -528,7 +528,9 @@ export class LegacyConfigurationReader {
           harnessRef,
           modelPolicy: { mode: 'fixed', modelRef: record.modelRef },
           permissionProfileRef: profileRef,
-          routingCapabilities: [isPi ? 'current-web-research' : 'workspace-engineering'],
+          routingCapabilities: [
+            ...(isPi ? ['current-web-research' as const] : ['workspace-engineering' as const, 'document-processing' as const]),
+          ],
           primaryUseCases: [],
           avoidUseCases: [],
           plannerAffordances: isPi

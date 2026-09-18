@@ -14,7 +14,7 @@ export interface PlannerInputProfile {
 }
 
 /** Builds routing facts from message shape only; it never interprets intent. */
-export function buildPlannerInputProfile(context: Pick<PlanningContext, 'userInput' | 'images'> & {
+export function buildPlannerInputProfile(context: Pick<PlanningContext, 'userInput' | 'images' | 'attachments'> & {
   continuation?: boolean;
   attachmentCount?: number;
 }): PlannerInputProfile {
@@ -25,7 +25,11 @@ export function buildPlannerInputProfile(context: Pick<PlanningContext, 'userInp
     (total, image) => total + Math.ceil((image.data.length * 3) / 4),
     0,
   );
-  const attachmentCount = Math.max(context.attachmentCount ?? 0, imageCount);
+  const attachmentCount = Math.max(
+    context.attachmentCount ?? 0,
+    imageCount,
+    context.attachments?.length ?? 0,
+  );
   const preferredCapabilities: ModelCapability[] = ['planning', 'structured-output'];
   if (imageCount > 0) preferredCapabilities.push('vision');
   if (textTokens > 16_000) preferredCapabilities.push('long-context');

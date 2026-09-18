@@ -65,17 +65,25 @@ export interface PlanningAgentPlan {
   source: string;
 }
 
-/** 随用户输入提交给 Planner 的多模态图片（base64，Pi RPC images 协议）。 */
+/** Planner may use this bounded view to select an opaque attachment resource. */
+export interface PlannerAttachmentView {
+  attachmentId: string;
+  name: string;
+  mime: string;
+  size: number;
+  availability: 'available' | 'unavailable';
+}
+
+/** @deprecated Planner no longer receives attachment bytes by default. */
 export interface PlannerImageAttachment {
-  /** 原始文件名，供 Planner 在提案中引用。 */
   name: string;
   mimeType: string;
-  /** base64 编码的图片内容。 */
   data: string;
 }
 
 export interface PlanningContext {
   userInput: string;
+  attachments?: PlannerAttachmentView[];
   /** 多模态图片附件；Planner 进程以 RPC images 通道原生消费。 */
   images?: PlannerImageAttachment[];
   request: {

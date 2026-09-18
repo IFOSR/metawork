@@ -952,23 +952,28 @@ it('resolves image attachment refs into planner multimodal images', async () => 
     // 图片被解析为多模态 images（文本附件不进入 images），缺失引用被忽略。
     expect(createdSessions).toHaveLength(1);
     const options = createdSessions[0]!.lastExecuteOptions.at(-1) ?? {};
-    const images = options.images as Array<{ name: string; mimeType: string; data: string }>;
-    expect(images).toHaveLength(1);
-    expect(images[0]).toMatchObject({ name: 'chart.png', mimeType: 'image/png' });
-    expect(Buffer.from(images[0]!.data, 'base64').subarray(0, 8)).toEqual(pngMagic);
+    const attachments = options.attachments as Array<{
+      attachmentId: string;
+      name: string;
+      mime: string;
+      size: number;
+      availability: string;
+    }>;
+    expect(attachments).toEqual([{
+      attachmentId: image.attachmentId,
+      name: 'chart.png',
+      mime: 'image/png',
+      size: pngMagic.byteLength,
+      availability: 'available',
+    }, {
+      attachmentId: doc.attachmentId,
+      name: 'notes.md',
+      mime: 'text/markdown',
+      size: 12,
+      availability: 'available',
+    }]);
+    expect(options.images).toBeUndefined();
 
-    // §5.5.7: the durable journal proves whether the attachments reached the
-    // Planner turn — 1 resolved of 2 requested image refs.
-    const replay = await journal.replay('local-default', 'conv_1');
-    const resolutionEvent = [...replay.snapshot, ...replay.deltas]
-      .find(event => event.kind === 'trace_delta'
-        && JSON.stringify(event.payload).includes('gateway_attachment_resolved'));
-    expect(resolutionEvent).toBeDefined();
-    const payload = resolutionEvent!.payload as { events: Array<{ status: string; details: { requested: number; resolved: number } }> };
-    expect(payload.events[0]).toMatchObject({
-      status: 'completed',
-      details: { requested: 3, resolved: 1 },
-    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

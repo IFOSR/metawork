@@ -18,7 +18,7 @@ import type { EventJournal } from './event-journal.js';
 import type { GatewaySubscriptions } from './gateway-subscriptions.js';
 import type { GatewayTurnOrigin } from './gateway-delivery-context.js';
 import type { GatewayAttachmentStore } from './attachment-store-port.js';
-import type { PlannerImageAttachment } from '../planning/planning-types.js';
+import type { PlannerAttachmentView } from '../planning/planning-types.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 
 export interface ConversationGatewayRuntimeDeps {
@@ -30,7 +30,7 @@ export interface ConversationGatewayRuntimeDeps {
   ) => ConversationSession | Promise<ConversationSession>;
   readonly journal: EventJournal;
   readonly subscriptions: GatewaySubscriptions;
-  /** 会话附件存储；提供后 user_message 的附件引用会解析为 Planner 多模态图片。 */
+  /** Conversation-scoped opaque attachment store. */
   readonly attachments?: GatewayAttachmentStore;
   readonly readHistory?: (
     conversationId: string,
@@ -402,43 +402,6 @@ export class ConversationGatewayRuntime {
         { commandKind: mailboxCommand.command.kind },
         origin,
       );
-      const images = await this.resolvePlannerImages(
-        conversation.conversationId,
-        mailboxCommand.command,
-      );
-      // §5.5.7: durable proof whether the message's attachments reached the
-      // Planner turn — "downloaded" must never silently mean "delivered".
-      if (mailboxCommand.command.kind === 'user_message'
-        && mailboxCommand.command.attachments.length > 0) {
-        await this.publish(
-          conversation.conversationId,
-          mailboxCommand.requestId,
-          turnId,
-          'trace_delta',
-          {
-            events: [{
-              id: `attachment-resolution-${mailboxCommand.requestId}`,
-              sequence: 0,
-              occurredAt: this.now(),
-              phase: 'planning',
-              actor: 'planner',
-              kind: 'gateway_attachment_resolved',
-              status: images && images.length > 0 ? 'completed' : 'failed',
-              title: images && images.length > 0
-                ? `Planner 接收到 ${images.length} 个图片附件`
-                : `图片附件未能进入 Planner 输入（引用 ${mailboxCommand.command.attachments.length} 个）`,
-              summary: '',
-              details: {
-                requested: mailboxCommand.command.attachments.length,
-                resolved: images?.length ?? 0,
-              },
-              taskId: null,
-              subtaskId: null,
-            }],
-          },
-          origin,
-        );
-      }
       await conversation.executeGatewayCommand(
         mailboxCommand.command,
         {
@@ -446,7 +409,12 @@ export class ConversationGatewayRuntime {
           rethrowErrors: true,
           interactionTurnId: turnId,
           principalId: mailboxCommand.principalId,
-          ...(images && images.length > 0 ? { images } : {}),
+          ...(mailboxCommand.command.kind === 'user_message'
+            ? { attachments: await this.resolveAttachmentViews(
+                conversation.conversationId,
+                mailboxCommand.command,
+              ) }
+            : {}),
         },
       );
       if (workspaceCommand) {
@@ -680,30 +648,32 @@ export class ConversationGatewayRuntime {
     return appended;
   }
 
-  /** 把 user_message 携带的图片附件引用解析为 Planner 多模态 images。 */
-  private async resolvePlannerImages(
+  private async resolveAttachmentViews(
     conversationId: string,
-    command: GatewayCommand,
-  ): Promise<PlannerImageAttachment[] | undefined> {
+    command: Extract<GatewayCommand, { kind: 'user_message' }>,
+  ): Promise<PlannerAttachmentView[]> {
     const store = this.deps.attachments;
-    if (!store || command.kind !== 'user_message' || command.attachments.length === 0) {
-      return undefined;
-    }
-    const images: PlannerImageAttachment[] = [];
+    if (!store || command.attachments.length === 0) return [];
+    const views: PlannerAttachmentView[] = [];
     for (const reference of command.attachments) {
       try {
-        const resolved = await store.readAttachment(conversationId, reference.attachmentId);
-        if (!resolved || resolved.metadata.kind !== 'image') continue;
-        images.push({
-          name: resolved.metadata.name,
-          mimeType: resolved.metadata.mime,
-          data: resolved.bytes.toString('base64'),
+        const metadata = store.readAttachmentMetadata
+          ? await store.readAttachmentMetadata(conversationId, reference.attachmentId)
+          : (await store.readAttachment(conversationId, reference.attachmentId))?.metadata;
+        if (!metadata || metadata.accountId !== this.deps.accountId
+          || metadata.conversationId !== conversationId) continue;
+        views.push({
+          attachmentId: reference.attachmentId,
+          name: metadata.name,
+          mime: metadata.mime,
+          size: metadata.size,
+          availability: metadata.status,
         });
       } catch {
-        // 单个附件解析失败不阻塞消息；文本清单中仍有路径可循。
+        // Invalid or missing references remain unavailable to Planner and Kernel.
       }
     }
-    return images.length > 0 ? images : undefined;
+    return views;
   }
 
   private id(prefix: string): string {

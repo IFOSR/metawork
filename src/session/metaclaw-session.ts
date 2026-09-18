@@ -2170,7 +2170,11 @@ export class MetaclawSession {
         event.configurationRevision,
       ),
       v5WorkGraphTaskIds: this.subtaskRepo.listTaskIds(),
-      eligibleContextRefKeys: this.buildEligibleContextRefKeys(event.proposal as PlanningAgentPlan, userInput),
+      eligibleContextRefKeys: this.buildEligibleContextRefKeys(
+        event.proposal as PlanningAgentPlan,
+        userInput,
+        event.attachmentIds,
+      ),
       pendingAuthorizationRequest: (() => {
         const pending = this.permissionRepository.findOldestPendingForConversation(
           event.conversationId ?? this.deps.sessionId,
@@ -2180,13 +2184,18 @@ export class MetaclawSession {
     };
   }
 
-  private buildEligibleContextRefKeys(plan: PlanningAgentPlan, userInput: string): string[] {
+  private buildEligibleContextRefKeys(
+    plan: PlanningAgentPlan,
+    userInput: string,
+    attachmentIds: readonly string[] = [],
+  ): string[] {
     const targetTask = plan.task.taskId ? this.taskRuntimeService.findTask(plan.task.taskId) : null;
     return buildEligibleContextRefKeys({
       db: this.deps.db,
       sessionId: this.deps.sessionId,
       conversationId: this.deps.sessionId,
       refs: (plan.workGraph?.subtasks ?? []).flatMap(subtask => subtask.contextRefs),
+      attachmentIds,
       targetTask,
       userInput,
     });

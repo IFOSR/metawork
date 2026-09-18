@@ -919,6 +919,281 @@ describe('ConversationSession', () => {
     expect(receivedContext?.images).toEqual(images);
   });
 
+  it('keeps the current Turn attachments eligible when the Planner submits through the bridge', async () => {
+    const db = new (await import('better-sqlite3')).default(':memory:');
+    const { runMigrations } = await import('../../src/storage/migrations.js');
+    const { PlannerProposalRepo } = await import('../../src/storage/planner-proposal-repo.js');
+    const { workGraphPlan } = await import('../support/planning-agent-plans.js');
+    runMigrations(db);
+    // planner_proposal_submissions.configuration_revision references this table.
+    db.prepare(`
+      INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)
+      VALUES ('revision-test', 'hash', 'native', ?)
+    `).run(new Date(0).toISOString());
+    const proposalRepo = new PlannerProposalRepo(db);
+    const sessionId = 'planner_bridge_attachments';
+    const turnId = 'turn_bridge_attachments';
+    // The native Planner submits its proposal through the host bridge while the
+    // planning run is still in flight, so the session must rebuild the same
+    // eligible attachment set the Planner was given.
+    const plan = workGraphPlan({
+      goal: '分析这两份材料',
+      contextRefs: [{ kind: 'attachment', attachmentId: 'att_current' }],
+    });
+    const configuration = {
+      revisionId: 'revision-test',
+      contentHash: 'hash',
+      models: [{ id: 'codex-model', capabilities: ['coding', 'tools'], reasoning: 'high', region: 'international' }],
+      routingCatalog: {
+        version: 2,
+        configurationRevision: 'revision-test',
+        capabilities: [{ id: 'workspace-engineering', deliveryContract: 'Modify and verify workspace files.' }],
+        agentClasses: [{
+          id: 'codex-cli',
+          routingCapabilities: ['workspace-engineering'],
+          primaryUseCases: ['workspace implementation'],
+          avoidUseCases: [],
+          affordances: ['workspace-read-write', 'workspace-command-validation'],
+          modelPolicy: { mode: 'fixed', modelRef: 'codex-model' },
+        }],
+      },
+    };
+    const submittedEvents: Array<{ attachmentIds?: string[] }> = [];
+    let session!: ConversationSession;
+    session = new ConversationSession({
+      conversationId: 'conversation_bridge_attachments',
+      plannerSessionId: sessionId,
+      runtimePort: makePort('local-default', {
+        planning: {
+          submit: async (context: PlanningContext) => {
+            const submissionId = createPlannerProposalSubmissionId(sessionId, turnId, plan);
+            await session.submitPlannerProposal({
+              sessionId,
+              turnId,
+              userInput: context.userInput,
+              submissionId,
+              plan,
+            });
+            return {
+              status: 'transport_uncertain',
+              turnId,
+              submissionId,
+              retryableByReplay: true,
+              message: 'stop after the bridge submission',
+            };
+          },
+        } as never,
+        commands: {
+          submitKernel: async (event: { attachmentIds?: string[] }) => {
+            submittedEvents.push(event);
+            return { decisions: [], quiescent: true, pendingRecovery: 0 };
+          },
+        } as never,
+      }),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      plannerProposalRepo: proposalRepo,
+      planningContextBuilder: {
+        build: (input: {
+          userInput: string;
+          attachments?: PlanningContext['attachments'];
+        }) => ({
+          userInput: input.userInput,
+          ...(input.attachments && input.attachments.length > 0
+            ? { attachments: input.attachments }
+            : {}),
+          request: { sessionId, source: 'gateway' },
+          pendingAuthorizationRequest: null,
+          configuration,
+          timeoutMs: 1_000,
+        }),
+        getPlannerConfiguration: () => configuration,
+      } as never,
+      sessionKernelRuntime: {
+        forInput: () => ({ apply: async () => null }),
+      } as never,
+      db,
+    });
+
+    await session.handleNaturalLanguageInput('分析这两份材料', undefined, [{
+      attachmentId: 'att_current',
+      name: '菜单.xlsx',
+      mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      size: 1024,
+      availability: 'available',
+    }]).catch(() => undefined);
+
+    expect(submittedEvents).toHaveLength(1);
+    expect(submittedEvents[0]!.attachmentIds).toEqual(['att_current']);
+    db.close();
+  });
+
+  it('keeps the Turn attachments eligible when the bridge submission comes from a restarted process', async () => {
+    const db = new (await import('better-sqlite3')).default(':memory:');
+    const { runMigrations } = await import('../../src/storage/migrations.js');
+    const { PlannerProposalRepo } = await import('../../src/storage/planner-proposal-repo.js');
+    const { workGraphPlan } = await import('../support/planning-agent-plans.js');
+    runMigrations(db);
+    db.prepare(`
+      INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)
+      VALUES ('revision-test', 'hash', 'native', ?)
+    `).run(new Date(0).toISOString());
+    const proposalRepo = new PlannerProposalRepo(db);
+    const conversationId = 'conversation_restart_attachments';
+    const sessionId = 'planner_restart_attachments';
+    const turnId = 'turn_restart_attachments';
+    const plan = workGraphPlan({
+      goal: '分析这两份材料',
+      contextRefs: [{ kind: 'attachment', attachmentId: 'att_current' }],
+    });
+    const configuration = replanConfiguration();
+    const submittedEvents: Array<{ attachmentIds?: string[] }> = [];
+    const planningContextBuilder = {
+      build: (input: {
+        userInput: string;
+        attachments?: PlanningContext['attachments'];
+      }) => ({
+        userInput: input.userInput,
+        ...(input.attachments && input.attachments.length > 0
+          ? { attachments: input.attachments }
+          : {}),
+        request: { sessionId, source: 'gateway' },
+        pendingAuthorizationRequest: null,
+        configuration,
+        timeoutMs: 1_000,
+      }),
+      getPlannerConfiguration: () => configuration,
+    };
+
+    // The process that owns the bridge socket: a different ConversationSession
+    // instance with no in-flight Turn of its own.
+    const bridgeSession = new ConversationSession({
+      conversationId,
+      plannerSessionId: sessionId,
+      runtimePort: makePort('local-default', {
+        commands: {
+          submitKernel: async (event: { attachmentIds?: string[] }) => {
+            submittedEvents.push(event);
+            return { decisions: [], quiescent: true, pendingRecovery: 0 };
+          },
+        } as never,
+      }),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      plannerProposalRepo: proposalRepo,
+      planningContextBuilder: planningContextBuilder as never,
+      sessionKernelRuntime: {
+        forInput: () => ({ apply: async () => null }),
+      } as never,
+      db,
+    });
+
+    // The process that started the Turn and then died mid-run.
+    const turnSession = new ConversationSession({
+      conversationId,
+      plannerSessionId: sessionId,
+      runtimePort: makePort('local-default', {
+        planning: {
+          submit: async (context: PlanningContext) => {
+            await bridgeSession.submitPlannerProposal({
+              sessionId,
+              turnId,
+              userInput: context.userInput,
+              submissionId: createPlannerProposalSubmissionId(sessionId, turnId, plan),
+              plan,
+            });
+            return {
+              status: 'transport_uncertain',
+              turnId,
+              submissionId: 'submission_restart',
+              retryableByReplay: true,
+              message: 'stop after the bridge submission',
+            };
+          },
+        } as never,
+      }),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      plannerProposalRepo: proposalRepo,
+      planningContextBuilder: planningContextBuilder as never,
+      db,
+    });
+
+    await turnSession.handleNaturalLanguageInput('分析这两份材料', undefined, [{
+      attachmentId: 'att_current',
+      name: '菜单.xlsx',
+      mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      size: 1024,
+      availability: 'available',
+    }]).catch(() => undefined);
+
+    expect(submittedEvents).toHaveLength(1);
+    expect(submittedEvents[0]!.attachmentIds).toEqual(['att_current']);
+    db.close();
+  });
+
+  it('lets a replan reference the attachments its originating Turn was admitted with', async () => {
+    const { workGraphPlan } = await import('../support/planning-agent-plans.js');
+    const configuration = replanConfiguration();
+    const session = new ConversationSession({
+      conversationId: 'conversation_replan_attachments',
+      plannerSessionId: 'planner_replan_attachments',
+      runtimePort: makePort('local-default', {
+        planning: {
+          plan: async () => workGraphPlan({
+            goal: 'remaining work',
+            contextRefs: [{ kind: 'attachment', attachmentId: 'att_original' }],
+          }),
+        } as never,
+        queries: {
+          findTask: () => ({
+            id: 'task_1',
+            title: 'Task',
+            goal: 'Task goal',
+            status: 'running',
+            conversationId: 'conversation_replan_attachments',
+          }) as never,
+          listKernelDecisionsByTask: () => ([{
+            eventId: 'event_original_admission',
+            eventType: 'plan_proposed',
+          }]) as never,
+          findKernelEvent: () => ({
+            type: 'plan_proposed',
+            attachmentIds: ['att_original'],
+          }) as never,
+        } as never,
+      }),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      planningContextBuilder: {
+        build: (input: { userInput: string }) => ({
+          userInput: input.userInput,
+          request: { sessionId: 'planner_replan_attachments', source: 'session' },
+          pendingAuthorizationRequest: null,
+          configuration,
+          timeoutMs: 1_000,
+        }),
+      } as never,
+    });
+
+    const event = await session.getKernelExecutionCallbacks().kernelExecutionCallbacks.requestReplan({
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      id: 'decision_replan',
+      eventId: 'event_replan_request',
+      action: {
+        type: 'request_replan',
+        taskId: 'task_1',
+        generationId: 'generation_1',
+        sourceRevision: 1,
+      },
+      reason: 'generation is quiescent',
+    } as never);
+
+    expect(event).toMatchObject({
+      type: 'plan_proposed',
+      proposalSource: 'replan',
+      attachmentIds: ['att_original'],
+      targetGraphRevision: 2,
+    });
+  });
+
   it('reconstructs an accepted proposal from an already-applied Kernel decision after a completion crash', async () => {
     const db = new (await import('better-sqlite3')).default(':memory:');
     const { runMigrations } = await import('../../src/storage/migrations.js');
@@ -1034,6 +1309,32 @@ describe('ConversationSession', () => {
     db.close();
   });
 });
+
+function replanConfiguration() {
+  return {
+    revisionId: 'revision-test',
+    contentHash: 'hash',
+    models: [{
+      id: 'codex-model',
+      capabilities: ['coding', 'tools'],
+      reasoning: 'high',
+      region: 'international',
+    }],
+    routingCatalog: {
+      version: 2,
+      configurationRevision: 'revision-test',
+      capabilities: [{ id: 'workspace-engineering', deliveryContract: 'Modify and verify workspace files.' }],
+      agentClasses: [{
+        id: 'codex-cli',
+        routingCapabilities: ['workspace-engineering'],
+        primaryUseCases: ['workspace implementation'],
+        avoidUseCases: [],
+        affordances: ['workspace-read-write', 'workspace-command-validation'],
+        modelPolicy: { mode: 'fixed', modelRef: 'codex-model' },
+      }],
+    },
+  };
+}
 
 function permissionRequest(permissionRequestId: string): PlannerTuiPermissionRequest {
   return {

@@ -9,6 +9,7 @@ import type {
   ConfigurationRoutingCatalog,
 } from '../routing/types.js';
 import type { PlannerExecutorCapabilityManual } from '../configuration/types.js';
+import type { PlannerAttachmentView } from './planning-types.js';
 import { resolvePreviewKind } from '../delivery/user-artifact-types.js';
 import { FileConfigurationRepository } from '../configuration/file-configuration-repository.js';
 import { buildPlannerConfigurationView } from '../configuration/projections.js';
@@ -29,6 +30,7 @@ export class PlannerDataReader {
     private readonly conversationId = sessionId,
     private readonly getExecutorCapabilityManuals: () => readonly PlannerExecutorCapabilityManual[] = () => [],
     private readonly accountId = 'local-default',
+    private readonly attachments: readonly PlannerAttachmentView[] = [],
   ) {}
 
   searchTasks(input: { query?: string; statuses?: string[]; limit?: number }) {
@@ -300,6 +302,13 @@ export class PlannerDataReader {
     `).get(this.conversationId) as Record<string, unknown> | undefined;
     return {
       sessionId: this.sessionId,
+      attachments: this.attachments.map(attachment => ({
+        attachmentId: attachment.attachmentId,
+        name: truncateText(attachment.name, 240),
+        mime: attachment.mime,
+        size: attachment.size,
+        availability: attachment.availability,
+      })),
       confirmedPreferences: preferences.map(row => ({
         id: row.id,
         type: row.type,
@@ -433,9 +442,42 @@ export async function runPlannerMcpServer(): Promise<void> {
       conversationId,
       () => plannerView.executorCapabilityManuals ?? [],
       process.env.METACLAW_ACCOUNT_ID ?? 'local-default',
+      parsePlannerAttachments(process.env.METAWORK_PLANNER_ATTACHMENTS_JSON),
     ),
   );
   await server.connect(new StdioServerTransport());
+}
+
+function parsePlannerAttachments(value: string | undefined): readonly PlannerAttachmentView[] {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(isPlannerAttachmentView)
+      .slice(0, 32)
+      .map(attachment => ({
+        attachmentId: attachment.attachmentId,
+        name: truncateText(attachment.name, 240),
+        mime: attachment.mime,
+        size: attachment.size,
+        availability: attachment.availability,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function isPlannerAttachmentView(value: unknown): value is PlannerAttachmentView {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.attachmentId === 'string'
+    && typeof candidate.name === 'string'
+    && typeof candidate.mime === 'string'
+    && typeof candidate.size === 'number'
+    && Number.isSafeInteger(candidate.size)
+    && candidate.size >= 0
+    && (candidate.availability === 'available' || candidate.availability === 'unavailable');
 }
 
 export function resolvePlannerMcpRuntimePaths(input: {

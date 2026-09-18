@@ -111,11 +111,16 @@ export interface WebSessionCreationResult {
 
 export interface AttachmentMetadata {
   attachmentId: string;
-  sessionId: string;
+  accountId: string;
+  conversationId: string;
+  workspaceId: string;
   name: string;
   mime: string;
-  kind: 'image' | 'text';
+  mediaClass: 'image' | 'text' | 'document' | 'archive' | 'binary' | 'unknown';
+  /** Legacy projection retained for older persisted client state. */
+  kind?: 'image' | 'text' | 'file';
   size: number;
   sha256: string;
+  status: 'available' | 'unavailable';
   createdAt: string;
 }

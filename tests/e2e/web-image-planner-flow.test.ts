@@ -43,16 +43,20 @@ describe('Web image to Planner end-to-end path', () => {
       bytes: imageBytes,
     });
 
-    let promptImageData = '';
-    const plannerProcess = largeImagePlannerProcess(data => {
-      promptImageData = data;
+    let promptImages: unknown;
+    let plannerEnvironment: NodeJS.ProcessEnv | undefined;
+    const plannerProcess = largeImagePlannerProcess(images => {
+      promptImages = images;
     });
     const plannerSupervisor = new PlannerProcessSupervisor({
       command: '/release/planner',
       plannerHome: join(root, 'planner-home'),
       sessionDir: join(root, 'planner-sessions'),
       expectedModel: { provider: 'deepseek', modelId: 'deepseek-v4-pro' },
-      spawn: (() => plannerProcess as never) as never,
+      spawn: ((_command, _args, options) => {
+        plannerEnvironment = options.env;
+        return plannerProcess as never;
+      }) as never,
     });
     const realPlanningAgent = new AnyFusionPlanningAgent({ runner: plannerSupervisor });
     const planningCalls: string[] = [];
@@ -111,9 +115,10 @@ describe('Web image to Planner end-to-end path', () => {
         runtimePort,
         mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
         planningContextBuilder: {
-          build: (input: { userInput: string; images?: unknown }) => ({
+          build: (input: { userInput: string; images?: unknown; attachments?: unknown }) => ({
             userInput: input.userInput,
             images: input.images,
+            attachments: input.attachments,
             request: { sessionId: `planner_${conversationId}`, source: 'gateway' },
             pendingAuthorizationRequest: null,
             configuration: {
@@ -174,7 +179,14 @@ describe('Web image to Planner end-to-end path', () => {
       await expect(completion).resolves.toEqual({ status: 'completed' });
       expect(gatewayCalls).toEqual(['handle']);
       expect(planningCalls).toEqual(['submit']);
-      expect(Buffer.from(promptImageData, 'base64')).toEqual(imageBytes);
+      expect(promptImages).toBeUndefined();
+      expect(JSON.parse(plannerEnvironment?.METAWORK_PLANNER_ATTACHMENTS_JSON ?? 'null')).toEqual([{
+        attachmentId: image.attachmentId,
+        name: 'large-screenshot.jpg',
+        mime: 'image/jpeg',
+        size: imageBytes.byteLength,
+        availability: 'available',
+      }]);
       expect(journalKinds).toContain('final_answer');
       expect(journalKinds).not.toContain('terminal_error');
     } finally {
@@ -188,7 +200,7 @@ describe('Web image to Planner end-to-end path', () => {
   });
 });
 
-function largeImagePlannerProcess(onPromptImage: (data: string) => void): FakePlannerProcess {
+function largeImagePlannerProcess(onPromptImages: (images: unknown) => void): FakePlannerProcess {
   const child = new EventEmitter() as FakePlannerProcess;
   child.stdin = new PassThrough();
   child.stdout = new PassThrough();
@@ -209,7 +221,7 @@ function largeImagePlannerProcess(onPromptImage: (data: string) => void): FakePl
       const command = JSON.parse(inputBuffer.slice(0, newline)) as {
         id: string;
         type: string;
-        images?: Array<{ data: string }>;
+        images?: unknown;
       };
       inputBuffer = inputBuffer.slice(newline + 1);
       if (command.type === 'get_state') {
@@ -221,8 +233,7 @@ function largeImagePlannerProcess(onPromptImage: (data: string) => void): FakePl
           data: { model: { provider: 'deepseek', id: 'deepseek-v4-pro' } },
         })}\n`);
       } else if (command.type === 'prompt') {
-        const data = command.images?.[0]?.data ?? '';
-        onPromptImage(data);
+        onPromptImages(command.images);
         child.stdout.write(`${JSON.stringify({
           type: 'message_start',
           message: {

@@ -1,4 +1,4 @@
-import type { PlanningContext } from './planning-types.js';
+import type { PlannerAttachmentView, PlanningContext } from './planning-types.js';
 
 export interface PlanningContextBuilderDeps {
   sessionId: string;
@@ -18,11 +18,15 @@ export class PlanningContextBuilder {
   build(input: {
     userInput: string;
     images?: PlanningContext['images'];
+    attachments?: PlannerAttachmentView[];
     pendingAuthorizationRequest?: PlanningContext['pendingAuthorizationRequest'];
   }): PlanningContext {
     return {
       userInput: input.userInput,
       ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
+      ...(input.attachments && input.attachments.length > 0
+        ? { attachments: input.attachments }
+        : {}),
       request: {
         sessionId: this.deps.sessionId,
         ...(this.deps.conversationId ? { conversationId: this.deps.conversationId } : {}),

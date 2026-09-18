@@ -22,6 +22,7 @@ export function buildEligibleContextRefKeys(input: {
   refs: ContextRef[];
   targetTask: Task | null;
   userInput: string;
+  attachmentIds?: readonly string[];
 }): string[] {
   const eligible = new Set<string>();
   for (const ref of input.refs) {
@@ -32,6 +33,12 @@ export function buildEligibleContextRefKeys(input: {
     if (ref.kind === 'task_resource') {
       if (input.targetTask?.resources.includes(ref.locator)
         || (!input.targetTask && input.userInput.includes(ref.locator))) {
+        eligible.add(contextRefKey(ref));
+      }
+      continue;
+    }
+    if (ref.kind === 'attachment') {
+      if (input.attachmentIds?.includes(ref.attachmentId)) {
         eligible.add(contextRefKey(ref));
       }
       continue;

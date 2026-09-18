@@ -159,7 +159,7 @@ function buildTestSnapshot(): ConfigurationSnapshot {
         harnessRef: 'codex-cli',
         modelPolicy: { mode: 'fixed', modelRef },
         permissionProfileRef: 'workspace-engineering',
-        routingCapabilities: ['workspace-engineering'],
+        routingCapabilities: ['workspace-engineering', 'document-processing'],
         primaryUseCases: ['repository implementation', 'tests', 'engineering documentation', 'image generation', 'image editing'],
         avoidUseCases: ['current public-web research requiring source-backed delivery'],
         plannerAffordances: ['workspace-read-write', 'workspace-command-validation'],

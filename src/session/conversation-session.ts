@@ -34,7 +34,11 @@ import type { KernelDecision, KernelEvent, KernelSnapshot } from '../kernel/cont
 import type { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
 import { buildExecutorDisplayFacts } from '../execution/execution-transparency.js';
 import type { PlanningContextBuilder } from '../planning/planning-context-builder.js';
-import type { PlannerImageAttachment, PlanningContext } from '../planning/planning-types.js';
+import type {
+  PlannerAttachmentView,
+  PlannerImageAttachment,
+  PlanningContext,
+} from '../planning/planning-types.js';
 import type { PlannerProposalResult } from '../planning/planner-proposal.js';
 import {
   createPlannerProposalSubmissionId,
@@ -43,6 +47,10 @@ import {
   type PlannerProposalSubmission,
 } from '../planning/planner-proposal.js';
 import { PlannerProposalRepo } from '../storage/planner-proposal-repo.js';
+import {
+  PlannerTurnInputRepo,
+  plannerTurnInputHash,
+} from '../storage/planner-turn-input-repo.js';
 import { PlanningAgentPlanSchema } from '../planning/planning-agent-plan-schema.js';
 import { normalizePlanningAgentPlanInput } from '../planning/planning-agent-plan-normalizer.js';
 import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
@@ -105,6 +113,17 @@ export interface ConversationResultDelivery {
   readonly certification: 'certified' | 'uncertified';
 }
 
+/**
+ * A Planner turn's input facts. The eligible attachment set belongs to the
+ * Turn; every admission step reads it from here instead of from a locally
+ * rebuilt context.
+ */
+interface PlannerTurnFacts {
+  userInput: string;
+  images?: PlannerImageAttachment[];
+  attachments: PlannerAttachmentView[];
+}
+
 export interface ConversationSessionDeps {
   readonly conversationId: string;
   readonly plannerSessionId: string;
@@ -154,6 +173,16 @@ export class ConversationSession {
   };
   private focusContext: { kind: 'conversation' | 'task'; taskId: string | null } | null = null;
   private activePlannerRuns = 0;
+  /**
+   * Current Planner turn input facts.
+   *
+   * The eligible attachment set belongs to the Turn, not to a call site: the
+   * native Planner submits its proposal through the host bridge, so the plan
+   * arrives after the local planning context is out of scope. Every path that
+   * builds a `plan_proposed` event reads this one record (in memory while this
+   * process ran the turn, otherwise the durable record written at turn start).
+   */
+  private activePlannerTurn: PlannerTurnFacts | null = null;
   private latestGuidance: GuidanceState | null = null;
   private runningExecutorsByAttempt = new Map<string, { taskId: string; subtaskId: string; name: string }>();
   private backgroundWork = new Set<Promise<void>>();
@@ -172,16 +201,19 @@ export class ConversationSession {
   private attachedClients = 0;
   private disposePromise: Promise<void> | null = null;
   private readonly allowLegacyDirectReply: boolean;
+  private readonly plannerTurnInputRepo: PlannerTurnInputRepo | null;
 
   constructor(private readonly deps: ConversationSessionDeps) {
     this.allowLegacyDirectReply = deps.allowLegacyDirectReply ?? process.env.NODE_ENV === 'test';
     this.kernelExecutionRuntime = deps.kernelExecutionRuntime ?? null;
     this.sessionKernelRuntime = deps.sessionKernelRuntime ?? null;
     this.taskExecutionApplicationService = deps.taskExecutionApplicationService ?? null;
+    this.plannerTurnInputRepo = deps.db ? new PlannerTurnInputRepo(deps.db) : null;
     this.inputController = new InputController({
       appendUserInput: input => this.appendOutput('', `> ${input}`),
       handleCommand: (input, options) => this.handleCommand(input, options?.principalId),
-      handleNaturalLanguageInput: (input, images) => this.handleNaturalLanguageInput(input, images),
+      handleNaturalLanguageInput: (input, images, attachments) =>
+        this.handleNaturalLanguageInput(input, images, attachments),
       waitForAsyncWork: async () => { await this.waitForBackgroundWork(); },
       handleSubmitError: error => this.appendOutput(`错误: ${(error as Error).message}`),
     });
@@ -408,9 +440,50 @@ export class ConversationSession {
     await this.kernelExecutionRuntime?.cancelTask(taskId, reason);
   }
 
+  /**
+   * Records the Turn's input facts for every later admission step. The durable
+   * copy is what makes a bridge resubmission survive a Server restart in the
+   * middle of a Planner run; the in-memory copy is the fast path.
+   */
+  private beginPlannerTurn(
+    userInput: string,
+    images?: PlannerImageAttachment[],
+    attachments?: PlannerAttachmentView[],
+  ): void {
+    this.activePlannerTurn = {
+      userInput,
+      ...(images && images.length > 0 ? { images } : {}),
+      attachments: attachments ?? [],
+    };
+    this.plannerTurnInputRepo?.upsert({
+      conversationId: this.deps.conversationId,
+      userInput,
+      attachmentViews: this.activePlannerTurn.attachments,
+    });
+  }
+
+  private endPlannerTurn(): void {
+    this.activePlannerTurn = null;
+    this.plannerTurnInputRepo?.clear(this.deps.conversationId);
+  }
+
+  /**
+   * Turn facts for `userInput`: the in-flight Turn when this process ran it,
+   * otherwise the durable record verified against the submitted request text.
+   */
+  private turnFactsFor(userInput: string): PlannerTurnFacts | null {
+    if (this.activePlannerTurn) return this.activePlannerTurn;
+    const persisted = this.plannerTurnInputRepo?.read(this.deps.conversationId) ?? null;
+    if (!persisted) return null;
+    return persisted.userInputHash === plannerTurnInputHash(userInput)
+      ? { userInput, attachments: persisted.attachmentViews }
+      : null;
+  }
+
   buildPlanningContext(
     userInput: string,
     images?: PlannerImageAttachment[],
+    attachments?: PlannerAttachmentView[],
   ): PlanningContext | null {
     if (!this.deps.planningContextBuilder) return null;
     const pendingPermission = this.deps.runtimePort.queries.findOldestPendingPermission(
@@ -419,6 +492,7 @@ export class ConversationSession {
     return this.deps.planningContextBuilder.build({
       userInput,
       ...(images && images.length > 0 ? { images } : {}),
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
       pendingAuthorizationRequest: pendingPermission
         ? {
             requestId: pendingPermission.request.id,
@@ -475,6 +549,7 @@ export class ConversationSession {
       eligibleContextRefKeys: this.buildEligibleContextRefKeys(
         event.proposal as PlanningAgentPlan,
         event.requestText,
+        event.attachmentIds,
       ),
       pendingAuthorizationRequest: (() => {
         const pending = port.queries.findOldestPendingPermission(this.deps.conversationId);
@@ -500,6 +575,7 @@ export class ConversationSession {
   async handleNaturalLanguageInput(
     userInput: string,
     images?: PlannerImageAttachment[],
+    attachments?: PlannerAttachmentView[],
   ): Promise<void> {
     if (this.deps.workspace && !(await this.deps.workspace.getWorkspace())) {
       throw workspaceError(
@@ -507,7 +583,7 @@ export class ConversationSession {
         '请先使用 `/workspace /absolute/path` 设置当前 Conversation 的 Workspace。',
       );
     }
-    const handled = await this.handlePlanningKernelDecision(userInput, images);
+    const handled = await this.handlePlanningKernelDecision(userInput, images, attachments);
     if (handled) return;
     this.appendOutput(
       '-> ControlKernel did not produce a runtime action.',
@@ -518,6 +594,7 @@ export class ConversationSession {
   private async handlePlanningKernelDecision(
     userInput: string,
     images?: PlannerImageAttachment[],
+    attachments?: PlannerAttachmentView[],
   ): Promise<boolean> {
     const planningAgent = this.deps.runtimePort.planning;
     if (!planningAgent) return false;
@@ -525,8 +602,12 @@ export class ConversationSession {
     // combinations (uncertain cancellations) before the Planner classifies a
     // same-topic conflict, so explicit new work is not held by dead state.
     await this.reconcileAdmissionBeforePlanning();
-    const context = this.buildPlanningContext(userInput, images);
-    if (!context) return false;
+    this.beginPlannerTurn(userInput, images, attachments);
+    const context = this.buildPlanningContext(userInput, images, attachments);
+    if (!context) {
+      this.endPlannerTurn();
+      return false;
+    }
     this.appendTrace({
       phase: 'planning',
       actor: 'planner',
@@ -542,7 +623,7 @@ export class ConversationSession {
     let result: PlannerProposalResult;
     try {
       result = await planningAgent.submit(context, {
-        submit: async plan => this.submitValidatedPlannerProposal(userInput, plan, context),
+        submit: async plan => this.submitValidatedPlannerProposal(userInput, plan),
         onProgress: progress => this.recordPlannerProgressTrace(progress),
       });
     } catch (error) {
@@ -560,6 +641,7 @@ export class ConversationSession {
       throw error;
     } finally {
       this.activePlannerRuns = Math.max(0, this.activePlannerRuns - 1);
+      this.endPlannerTurn();
       this.notify();
     }
     this.recordPlannerProposalTerminalTrace(result);
@@ -577,13 +659,17 @@ export class ConversationSession {
     return result.status === 'accepted' || result.status === 'rejected';
   }
 
+  /**
+   * The single admission path for a Planner proposal, shared by the in-process
+   * submitter callback and by the host-bridge submission. It takes no context:
+   * the Turn facts (attachments, request text) come from one record, so the two
+   * entry points cannot drift apart.
+   */
   private async submitValidatedPlannerProposal(
     userInput: string,
     plan: PlanningAgentPlan,
-    context: PlanningContext,
     eventId = `plan_event_${plan.id}_${generateInteractionId()}`,
-  ): Promise<PlannerProposalResult> {
-    if (!this.allowLegacyDirectReply && plan.action === 'direct_reply') {
+  ): Promise<PlannerProposalResult> {    if (!this.allowLegacyDirectReply && plan.action === 'direct_reply') {
       return {
         status: 'rejected',
         turnId: eventId,
@@ -606,24 +692,22 @@ export class ConversationSession {
       return { status: 'accepted' } as PlannerProposalResult;
     }
 
-    const event: KernelEvent = {
-      schemaVersion: 5,
-      configurationRevision: context?.configuration.revisionId ?? null,
-      type: 'plan_proposed',
-      id: eventId,
+    const event = this.buildPlanProposedEvent({
+      plan,
+      configurationRevision: this.deps.planningContextBuilder
+        ?.getPlannerConfiguration().revisionId ?? null,
+      attachmentIds: (this.turnFactsFor(userInput)?.attachments ?? [])
+        .map(attachment => attachment.attachmentId),
+      proposalSource: 'initial',
+      eventId,
       correlationId: plan.id,
       causationId: null,
-      occurredAt: new Date().toISOString(),
-      sessionId: this.deps.plannerSessionId,
-      conversationId: this.deps.conversationId,
       workspaceId: (await this.getWorkspace())?.workspaceId,
       taskId: plan.task.taskId ?? undefined,
-      proposal: plan,
-      requestText: userInput.slice(0, 24_000),
+      requestText: userInput,
       generationId: `generation_${eventId}`,
-      proposalSource: 'initial',
       targetGraphRevision: 1,
-    };
+    });
     const result = await port.commands.submitKernel(event, {
       buildSnapshot: claimed => this.buildPlanAdmissionSnapshot(
         claimed as Extract<KernelEvent, { type: 'plan_proposed' }>,
@@ -1063,7 +1147,15 @@ export class ConversationSession {
       };
     }
     const parsed = PlanningAgentPlanSchema.safeParse(normalizedPlan);
-    const context = this.buildPlanningContext(userInput);
+    // Validation uses the same Turn facts the Planner was given. The admission
+    // event itself no longer takes this context: `submitValidatedPlannerProposal`
+    // reads the Turn record, so both submission paths share one source.
+    const turnFacts = this.turnFactsFor(userInput);
+    const context = this.buildPlanningContext(
+      userInput,
+      turnFacts?.images,
+      turnFacts?.attachments,
+    );
     const validation = context
       ? validatePlanningAgentPlan(
           normalizedPlan,
@@ -1161,7 +1253,6 @@ export class ConversationSession {
       const result = await this.submitValidatedPlannerProposal(
         userInput,
         parsed.data as PlanningAgentPlan,
-        context,
         eventId!,
       );
       if (result.status === 'accepted' || result.status === 'rejected') {
@@ -1671,17 +1762,83 @@ export class ConversationSession {
     }
   }
 
-  private buildEligibleContextRefKeys(plan: PlanningAgentPlan, userInput: string): string[] {
+  private buildEligibleContextRefKeys(
+    plan: PlanningAgentPlan,
+    userInput: string,
+    attachmentIds: readonly string[] = [],
+  ): string[] {
     return buildEligibleContextRefKeys({
       db: this.deps.db ?? null,
       sessionId: this.deps.plannerSessionId,
       conversationId: this.deps.conversationId,
       refs: (plan.workGraph?.subtasks ?? []).flatMap(subtask => subtask.contextRefs),
+      attachmentIds,
       targetTask: plan.task.taskId
         ? this.deps.runtimePort.queries.findTask(plan.task.taskId)
         : null,
       userInput,
     });
+  }
+
+  /**
+   * The only place a `plan_proposed` event is constructed.
+   *
+   * `attachmentIds` is a required input so no call site can silently drop the
+   * Turn's eligible attachment set: an omitted set makes every
+   * `{ kind: 'attachment' }` ContextRef fail Kernel admission, which is how the
+   * bridge submission path used to lose current-Turn attachments.
+   */
+  private buildPlanProposedEvent(input: {
+    plan: PlanningAgentPlan;
+    configurationRevision: string | null;
+    attachmentIds: readonly string[];
+    proposalSource: 'initial' | 'replan' | 'conflict_replan';
+    eventId: string;
+    correlationId: string;
+    causationId: string | null;
+    taskId?: string;
+    workspaceId?: string;
+    requestText: string;
+    generationId: string;
+    targetGraphRevision: number;
+    availabilityExplanation?: string | null;
+  }): Extract<KernelEvent, { type: 'plan_proposed' }> {
+    return {
+      schemaVersion: 5,
+      configurationRevision: input.configurationRevision,
+      type: 'plan_proposed',
+      id: input.eventId,
+      correlationId: input.correlationId,
+      causationId: input.causationId,
+      occurredAt: new Date().toISOString(),
+      sessionId: this.deps.plannerSessionId,
+      conversationId: this.deps.conversationId,
+      ...(input.workspaceId !== undefined ? { workspaceId: input.workspaceId } : {}),
+      ...(input.taskId !== undefined ? { taskId: input.taskId } : {}),
+      proposal: input.plan,
+      requestText: input.requestText.slice(0, 24_000),
+      generationId: input.generationId,
+      proposalSource: input.proposalSource,
+      targetGraphRevision: input.targetGraphRevision,
+      attachmentIds: [...input.attachmentIds],
+      ...(input.availabilityExplanation !== undefined
+        ? { availabilityExplanation: input.availabilityExplanation }
+        : {}),
+    } as Extract<KernelEvent, { type: 'plan_proposed' }>;
+  }
+
+  /**
+   * Attachment IDs a replan of this Task may still reference: the ones its
+   * originating admission was admitted with. The Kernel ledger is the durable
+   * source, so a replan cannot invent new attachment references after a
+   * restart and cannot silently lose the original ones.
+   */
+  private resolveTaskTurnAttachmentIds(taskId: string): string[] {
+    const decisions = this.deps.runtimePort.queries.listKernelDecisionsByTask(taskId);
+    const origin = decisions.find(record => record.eventType === 'plan_proposed');
+    if (!origin) return [];
+    const event = this.deps.runtimePort.queries.findKernelEvent(origin.eventId);
+    return event?.type === 'plan_proposed' ? [...(event.attachmentIds ?? [])] : [];
   }
 
   private async requestKernelReplan(
@@ -1731,23 +1888,22 @@ export class ConversationSession {
     ].join('\n\n').slice(0, 24_000);
     const context = this.deps.planningContextBuilder!.build({ userInput: request });
     const plan = await this.runPlanningAgent(context);
-    return {
-      schemaVersion: 5,
+    return this.buildPlanProposedEvent({
+      plan,
       configurationRevision: context.configuration.revisionId,
-      type: 'plan_proposed',
-      id: `replan_event_${decision.id}`,
+      // A replan may only reference attachments the originating Turn was
+      // admitted with, so the durable admission event is the source.
+      attachmentIds: this.resolveTaskTurnAttachmentIds(task.id),
+      proposalSource: 'replan',
+      eventId: `replan_event_${decision.id}`,
       correlationId: decision.eventId,
       causationId: decision.id,
-      occurredAt: new Date().toISOString(),
-      sessionId: this.deps.plannerSessionId,
       taskId: task.id,
-      proposal: plan,
-      requestText: redactSensitiveText(request).slice(0, 24_000),
+      requestText: redactSensitiveText(request),
       generationId: decision.action.generationId,
-      proposalSource: 'replan',
       targetGraphRevision: decision.action.sourceRevision + 1,
       availabilityExplanation: null,
-    };
+    });
   }
 
   private async requestKernelMergeReplan(
@@ -1772,23 +1928,20 @@ export class ConversationSession {
     ].join('\n\n').slice(0, 24_000);
     const context = this.deps.planningContextBuilder!.build({ userInput: request });
     const plan = await this.runPlanningAgent(context);
-    return {
-      schemaVersion: 5,
+    return this.buildPlanProposedEvent({
+      plan,
       configurationRevision: context.configuration.revisionId,
-      type: 'plan_proposed',
-      id: `merge_replan_event_${decision.id}`,
+      attachmentIds: this.resolveTaskTurnAttachmentIds(task.id),
+      proposalSource: 'conflict_replan',
+      eventId: `merge_replan_event_${decision.id}`,
       correlationId: decision.eventId,
       causationId: decision.id,
-      occurredAt: new Date().toISOString(),
-      sessionId: this.deps.plannerSessionId,
       taskId: task.id,
-      proposal: plan,
-      requestText: redactSensitiveText(request).slice(0, 24_000),
+      requestText: redactSensitiveText(request),
       generationId: revision.generationId,
-      proposalSource: 'conflict_replan',
       targetGraphRevision: revision.revision + 1,
       availabilityExplanation: null,
-    };
+    });
   }
 
   private appendTaskQueueSnapshot(trigger: string): void {

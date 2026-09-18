@@ -412,21 +412,25 @@ export class ManagementServer {
     request: IncomingMessage,
     response: ServerResponse,
     url: URL,
+    clientId: string,
   ): Promise<void> {
     const store = this.deps.attachmentStore;
     if (!store) {
       this.sendJson(response, 503, { error: 'attachment uploads disabled' });
       return;
     }
-    const sessionId = url.searchParams.get('sessionId') ?? '';
+    const conversationId = url.searchParams.get('sessionId') ?? '';
     const name = url.searchParams.get('name') ?? '';
-    if (!sessionId || !name) {
+    const state = this.deps.sessionRuntime.getClientState(clientId);
+    if (!conversationId || !name || !state.activeWorkspaceId
+      || conversationId !== state.activeSessionId) {
       this.sendJson(response, 400, { error: 'sessionId and name query parameters are required' });
       return;
     }
     try {
       const metadata = await store.saveAttachmentStream({
-        sessionId,
+        conversationId,
+        workspaceId: state.activeWorkspaceId,
         name,
         source: request,
       });
@@ -636,7 +640,7 @@ export class ManagementServer {
     const clientId = authSession?.clientId ?? 'manual-bearer-client';
 
     if (request.method === 'POST' && url.pathname === '/api/attachments') {
-      await this.handleAttachmentUpload(request, response, url);
+      await this.handleAttachmentUpload(request, response, url, clientId);
       return;
     }
 

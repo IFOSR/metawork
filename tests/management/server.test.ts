@@ -525,7 +525,15 @@ describe('ManagementServer WebSocket authentication', () => {
     const root = await mkdtemp(join(tmpdir(), 'anyfusion-attachment-upload-'));
     const store = new FileAttachmentStore(join(root, 'attachments'));
     await store.initialize();
-    const server = createManagementServer(port, { attachmentStore: store });
+    const server = createManagementServer(port, {
+      attachmentStore: store,
+      sessionRuntime: createSessionRuntime({
+        getClientState: () => ({
+          activeWorkspaceId: 'workspace_repo',
+          activeSessionId: 'sess_web_abc',
+        }),
+      }),
+    });
     await server.start();
 
     const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -545,11 +553,13 @@ describe('ManagementServer WebSocket authentication', () => {
         attachmentId: string;
         kind: string;
         mime: string;
-        sessionId: string;
+        conversationId: string;
+        workspaceId: string;
       };
       expect(meta.kind).toBe('image');
       expect(meta.mime).toBe('image/png');
-      expect(meta.sessionId).toBe('sess_web_abc');
+      expect(meta.conversationId).toBe('sess_web_abc');
+      expect(meta.workspaceId).toBe('workspace_repo');
 
       const unauthenticated = await fetch(
         `http://127.0.0.1:${port}/api/attachments?sessionId=s&name=a.png`,
@@ -564,21 +574,27 @@ describe('ManagementServer WebSocket authentication', () => {
       expect(missingParams.status).toBe(400);
 
       const badType = await fetch(
-        `http://127.0.0.1:${port}/api/attachments?sessionId=s&name=virus.exe`,
+        `http://127.0.0.1:${port}/api/attachments?sessionId=sess_web_abc&name=virus.exe`,
         {
           method: 'POST',
           headers: { ...headers, 'content-type': 'application/octet-stream' },
           body: Buffer.from([0x4d, 0x5a, 0x90, 0x00]),
         },
       );
-      expect(badType.status).toBe(415);
+      expect(badType.status).toBe(201);
+      await expect(badType.json()).resolves.toMatchObject({
+        kind: 'file',
+        mediaClass: 'unknown',
+        mime: 'application/octet-stream',
+        name: 'virus.exe',
+      });
 
       const legacyOversizedBytes = Buffer.concat([
         Buffer.from([0xff, 0xd8, 0xff, 0xe1]),
         Buffer.alloc(10 * 1024 * 1024, 0xff),
       ]);
       const largeUpload = await fetch(
-        `http://127.0.0.1:${port}/api/attachments?sessionId=s&name=large.jpg`,
+        `http://127.0.0.1:${port}/api/attachments?sessionId=sess_web_abc&name=large.jpg`,
         {
           method: 'POST',
           headers: { ...headers, 'content-type': 'application/octet-stream' },
@@ -593,7 +609,7 @@ describe('ManagementServer WebSocket authentication', () => {
       });
 
       const listed = await store.listAttachments('sess_web_abc');
-      expect(listed).toHaveLength(1);
+      expect(listed).toHaveLength(3);
     } finally {
       await server.stop();
       await rm(root, { recursive: true, force: true });
@@ -603,6 +619,12 @@ describe('ManagementServer WebSocket authentication', () => {
   it('does not misclassify unexpected attachment storage failures as media errors', async () => {
     const port = await reservePort();
     const server = createManagementServer(port, {
+      sessionRuntime: createSessionRuntime({
+        getClientState: () => ({
+          activeWorkspaceId: 'workspace_repo',
+          activeSessionId: 's',
+        }),
+      }),
       attachmentStore: {
         saveAttachment: async () => {
           throw new Error('unused');

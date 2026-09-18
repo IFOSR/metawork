@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-09-02
-- **Scope:** Conversation continuity, Planner MCP facts, historical Artifact references, Kernel eligibility, Runtime materialization and image Executor inputs
+- **Scope:** Conversation continuity, Planner MCP facts, opaque user Attachment references, historical Artifact references, Kernel eligibility, Runtime materialization and Executor inputs
 - **Amends:** ADR-0015, ADR-0021, ADR-0023, ADR-0032, ADR-0033, ADR-0035, ADR-0037
 - **Preserves:** ADR-0020, ADR-0022, ADR-0024, ADR-0031, ADR-0034, ADR-0036
 - **Related design:** `docs/plans/2026-09-02-planner-metawork-executor-context-bridge-design.md`
@@ -43,6 +43,7 @@ The Work Graph `ContextRef` union includes:
 
 ```ts
 { kind: 'artifact'; artifactId: string }
+{ kind: 'attachment'; attachmentId: string }
 ```
 
 This reference means a published historical image, document, HTML, TXT, code
@@ -75,12 +76,36 @@ same durable Artifact identity. Schema v37 updates the `task_artifacts`
 constraint to allow `image` preview kinds and migrates v36 databases by table
 rebuild without changing Artifact identity.
 
+Current-Turn user attachments are opaque resources rather than historical
+Artifacts. Gateway storage persists the original bytes with Account,
+Conversation, Workspace, size, MIME/media class, availability and SHA-256
+metadata. Planner receives only bounded attachment views containing the
+attachment ID, display name, MIME, size and availability. Bytes, extracted
+text, base64 and private storage paths never cross the Planner RPC boundary.
+
+The Kernel admits an `attachment` reference only when it belongs to the
+current Turn's eligible attachment set. Runtime repeats Account,
+Conversation, Workspace, availability, size and SHA-256 validation immediately
+before execution, then copies the original into the attempt-local `inputs/`
+directory with a collision-safe relative name. Retries, fallbacks and
+continuations use the same identity and materialization contract. The
+Executor prompt exposes only the safe relative path and presentation
+metadata.
+
+MetaWork does not parse attachment contents and ships no document parser or
+Executor-side document-reading helper. Document parsing is Executor-owned: the
+routed Executor's own base model and tools process the original file
+materialized under `inputs/`. Upload acceptance alone does not imply that every
+Executor can process every file format; an Executor that cannot process a
+format reports a normalized failure instead of guessing the contents.
+
 ## Consequences
 
 - Planner semantic understanding remains single-owner and no second LLM router is introduced.
 - Context Bridge failures, missing objects, cross-Conversation references, source disappearance and hash changes fail closed.
 - Historical image editing works without re-uploading the image or exposing internal paths.
 - Executor prompts contain only selected materialized input metadata, not Artifact Store paths or full Conversation transcripts.
+- Current-Turn attachment prompts contain only safe relative input metadata; original file parsing remains inside the authorized Executor attempt.
 - Context Bridge source verification performs bounded file reads on selected published records; it does not turn MetaWork into a semantic retrieval layer.
 - Existing Web preview/download projections remain unchanged and do not become an authorization shortcut.
 
@@ -96,3 +121,4 @@ Focused tests cover:
 - Image input loading and API Runner behavior.
 - SQLite v36→v37 migration and fresh schema constraints.
 - End-to-end bridge from Planner-selected reference through Runtime materialization.
+- Current-Turn attachment materialization, ownership/hash validation and the absence of any MetaWork-provided document parser.

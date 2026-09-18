@@ -28,6 +28,7 @@ import type { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
 import type { SqliteWorkspaceRepository } from '../storage/workspace-repo.js';
 import type { SqliteAttemptExecutionRepository } from '../storage/attempt-execution-backend-repo.js';
 import type { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
+import type { GatewayAttachmentStore } from '../gateway/attachment-store-port.js';
 
 export interface AccountRuntimeExecutionServices {
   readonly resourceLeaseService: ResourceLeaseService;
@@ -60,6 +61,7 @@ export function buildAccountRuntimeExecutionServices(deps: {
   resolveWorkspacePath?: (taskId: string) => Promise<string | null>;
   accountId?: string;
   resultRoot: string;
+  attachmentStore?: GatewayAttachmentStore;
   userArtifactPublication?: import('../delivery/user-artifact-publication-service.js').UserArtifactPublicationService | null;
 }): AccountRuntimeExecutionServices {
   const resourceLeaseService = new ResourceLeaseService(new SqliteResourceLeaseRepository(deps.db));
@@ -104,6 +106,7 @@ export function buildAccountRuntimeExecutionServices(deps: {
     controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
     accountId: deps.accountId,
     resultRoot: deps.resultRoot,
+    attachmentStore: deps.attachmentStore,
     userArtifactPublication: deps.userArtifactPublication ?? null,
   });
 

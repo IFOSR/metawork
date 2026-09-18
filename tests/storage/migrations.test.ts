@@ -13,7 +13,7 @@ describe('current SQLite baseline', () => {
     expect(() => runMigrations(db)).not.toThrow();
 
     expect(db.prepare('SELECT version FROM schema_version').all())
-      .toEqual([{ version: 37 }]);
+      .toEqual([{ version: 38 }]);
     for (const table of [
       'tasks',
       'subtasks',
@@ -37,6 +37,7 @@ describe('current SQLite baseline', () => {
       'kernel_binding_status',
       'planner_proposal_turns',
       'planner_proposal_submissions',
+      'planner_turn_inputs',
       'result_objects',
       'result_references',
       'conversation_task_slots',
@@ -178,6 +179,25 @@ describe('current SQLite baseline', () => {
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 
+  it('adds the durable Planner Turn input table when upgrading schema 37', () => {
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+      INSERT INTO schema_version VALUES (37);
+    `);
+
+    runMigrations(db);
+
+    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 38 });
+    expect(db.prepare('PRAGMA table_info(planner_turn_inputs)').all())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'conversation_id' }),
+        expect.objectContaining({ name: 'user_input_hash' }),
+        expect.objectContaining({ name: 'attachment_views_json' }),
+      ]));
+    expect(() => runMigrations(db)).not.toThrow();
+  });
+
   it('upgrades schema 36 task artifacts to allow image preview kinds', () => {
     const db = new Database(':memory:');
     db.exec(`
@@ -219,7 +239,7 @@ describe('current SQLite baseline', () => {
 
     runMigrations(db);
 
-    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 37 });
+    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 38 });
     expect(() => db.prepare(`
       INSERT INTO task_artifacts (
         artifact_id, account_id, task_id, display_name, relative_path,
@@ -320,7 +340,7 @@ describe('current SQLite baseline', () => {
     runMigrations(db, migrationContext());
     expect(() => runMigrations(db)).not.toThrow();
 
-    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 37 });
+    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 38 });
     expect(readJson(db, 'SELECT executor_bindings_json FROM subtasks WHERE id = ?', 'subtask'))
       .toEqual([{
         agentClassRef: 'codex-engineering',
@@ -498,7 +518,7 @@ describe('current SQLite baseline', () => {
     `);
 
     expect(() => runMigrations(db)).toThrow(
-      'unsupported pre-release SQLite schema (26); create a fresh database for schema 37',
+      'unsupported pre-release SQLite schema (26); create a fresh database for schema 38',
     );
     expect(db.prepare('SELECT version FROM schema_version').all())
       .toEqual([{ version: 26 }]);

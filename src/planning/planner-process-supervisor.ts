@@ -346,6 +346,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       runtimeConfigurationRevision,
       context.timeoutMs,
       context.request.conversationId ?? context.request.sessionId,
+      context.attachments,
     );
     if (context.configuration?.revisionId && !this.currentExpectedModel) {
       throw new Error(
@@ -757,6 +758,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       ?? process.env.METACLAW_CONFIGURATION_REVISION,
     rpcTimeoutMs?: number,
     conversationId = sessionId,
+    attachments: PlanningContext['attachments'] = [],
   ): Promise<{
     command: string;
     args: string[];
@@ -859,6 +861,15 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
         ANYFUSION_PLANNER_SESSION_ID: sessionId,
         METACLAW_PLANNER_SESSION_ID: sessionId,
         METACLAW_PLANNER_CONVERSATION_ID: conversationId,
+        METAWORK_PLANNER_ATTACHMENTS_JSON: JSON.stringify(
+          (attachments ?? []).slice(0, 32).map(attachment => ({
+            attachmentId: attachment.attachmentId,
+            name: attachment.name,
+            mime: attachment.mime,
+            size: attachment.size,
+            availability: attachment.availability,
+          })),
+        ),
         ANYFUSION_PLANNER_REQUEST_SOURCE: requestSource,
         ANYFUSION_PLANNER_TURN_PURPOSE: purpose,
         ...(mode === 'rpc' && Number.isFinite(rpcTimeoutMs) && rpcTimeoutMs! > 0

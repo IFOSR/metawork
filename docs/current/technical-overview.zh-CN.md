@@ -8,7 +8,7 @@ MetaWork 是本仓库统一呈现的闭源商业产品。AnyFusion 是独立的�
 
 > 当前实现基线（2026-08-21）：PlanningAgentPlan v8、Work Graph
 > v7、Kernel event/snapshot/decision contract v5、Completion Protocol v4，
-> 以及支持事务式 31→32→33→34→35→36→37 升级路径的 SQLite schema v37。`KernelWorkflow` 串行完成
+> 以及支持事务式 31→32→33→34→35→36→37→38 升级路径的 SQLite schema v38。`KernelWorkflow` 串行完成
 > event、Decision 和 application，attempt supervisor 在单一活跃顶层 Task
 > 内并行启动最多四个隔离 attempt。ADR-0037 已将顶层 Task 并行扩展为
 > Conversation 级单 slot：不同 Conversation 可并行，同一 Conversation 的后续
@@ -1044,7 +1044,7 @@ MetaWork 可以把复杂需求表示成 work graph，而不是把整段需求一
 
 `SubtaskExecutionContext` 是唯一生产 Executor 输入。Task 标题/目标仅作背景，当前 Subtask 目标是唯一操作指令，越界 sibling 只暴露标题。Runtime 不把 Task/Subtask/attempt/WorkUnit 身份及 acceptance/handoff key 交给模型复制。Completion Protocol v4 将正文交付、完成认证和安全处置分轴评估：marker、trailer、evidence 数量/长度和物理传输限制不能丢弃安全正文；普通 Workspace 和用户态文件操作允许 Executor 按任务需要执行，系统控制面、凭据、提权、设备、Docker 控制面和未授权 ResultReference 仍 fail-closed。Runtime 以 Result Object 保存 raw stream、business result 和 safe projection，并以 Gateway 分块事件交付 safe projection。
 
-在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 Work Graph v7 `Subtask` revision。未发布产品使用 SQLite schema v37，支持事务式 31→32→33→34→35→36→37 升级路径，unsupported older schema 会拒绝启动。当前 schema 还包含 immutable Result Objects、direct-edge ResultReferences、revision-pinned `artifact` ContextRefs、Planner proposal configuration-revision pin 和结果分块交付事实；v37 同时允许 `task_artifacts` 记录图片预览类型。下游只有在直接依赖 publication 成功后才进入 frontier，并通过授权引用按需读取上游结果；integration branch 不会隐式成为 sibling 基线。Certified Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts；safe uncertified body 可以先交付给用户，但不会释放下游。
+在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 Work Graph v7 `Subtask` revision。未发布产品使用 SQLite schema v38，支持事务式 31→32→33→34→35→36→37→38 升级路径，unsupported older schema 会拒绝启动。v38 用 `planner_turn_inputs` 保存一个 Planner Turn 的附件事实，使 host-bridge 提交在 Server 重启后仍可通过准入。当前 schema 还包含 immutable Result Objects、direct-edge ResultReferences、revision-pinned `artifact` ContextRefs、Planner proposal configuration-revision pin 和结果分块交付事实；v37 同时允许 `task_artifacts` 记录图片预览类型。下游只有在直接依赖 publication 成功后才进入 frontier，并通过授权引用按需读取上游结果；integration branch 不会隐式成为 sibling 基线。Certified Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts；safe uncertified body 可以先交付给用户，但不会释放下游。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 

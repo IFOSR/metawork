@@ -4,6 +4,7 @@ export const WORK_GRAPH_KEY_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 
 export type WorkGraphViolationCode =
   | 'acceptance_count_invalid'
+  | 'attachment_reference_invalid'
   | 'dependency_cycle'
   | 'dependency_items_count_invalid'
   | 'description_invalid'
@@ -168,6 +169,7 @@ export function contextRefKey(ref: ContextRef): string {
   switch (ref.kind) {
     case 'current_user_input': return ref.kind;
     case 'interaction': return `${ref.kind}:${ref.interactionId}:${ref.side}`;
+    case 'attachment': return `${ref.kind}:${ref.attachmentId}`;
     case 'artifact': return `${ref.kind}:${ref.artifactId}`;
     case 'task_resource': return `${ref.kind}:${ref.locator}`;
     case 'task_evidence': return `${ref.kind}:${ref.evidenceId}`;

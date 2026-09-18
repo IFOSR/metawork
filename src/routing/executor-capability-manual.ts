@@ -21,6 +21,7 @@ const ROUTING_CAPABILITY_LABELS: Record<RoutingCapabilityId, string> = {
   'current-web-research': '当前公共网络研究',
   'image-editing': '图片编辑',
   'image-generation': '图片生成',
+  'document-processing': '文档处理',
   'workspace-engineering': '工作区工程',
 };
 const MODEL_CAPABILITY_LABELS: Record<ModelCapability, string> = {
@@ -445,6 +446,10 @@ const ROUTING_CAPABILITY_SEMANTIC_PATTERNS: Readonly<
   'image-generation': [
     /\bimage generation\b/iu,
     /图片生成/u,
+  ],
+  'document-processing': [
+    /\b(?:document|office|docx|pdf|spreadsheet|presentation)\b/iu,
+    /(?:文档|附件|文件|表格|演示文稿|合同|报告)/u,
   ],
   'workspace-engineering': [
     /\b(?:code|coding|engineering|implementation|monorepo|refactor|repository|test|typescript)\b/iu,

@@ -101,7 +101,17 @@ describe('WebGatewaySessionRuntime', () => {
     }]);
     await runtime.activateSession('browser-a', 'conv_2');
     attachmentRead.resolve({
-      metadata: { name: 'a.txt', mime: 'text/plain', kind: 'text', size: 1 },
+      metadata: {
+        name: 'a.txt',
+        mime: 'text/plain',
+        mediaClass: 'text',
+        size: 1,
+        accountId: 'local-default',
+        conversationId: 'conv_1',
+        workspaceId: 'workspace_repo',
+        sha256: 'sha256:a',
+        status: 'available',
+      },
       bytes: Buffer.from('A'),
       path: '/tmp/a.txt',
     });
@@ -504,7 +514,7 @@ describe('WebGatewaySessionRuntime', () => {
     expect(() => runtime.getClientState('browser-a')).toThrow('disposed');
   });
 
-  it('enriches submitted user input with resolved attachment context', async () => {
+  it('forwards opaque attachment references without injecting file content into Planner input', async () => {
     const root = await mkdtemp(join(tmpdir(), 'anyfusion-runtime-attachments-'));
     try {
       const store = new FileAttachmentStore(join(root, 'attachments'));
@@ -559,11 +569,9 @@ describe('WebGatewaySessionRuntime', () => {
       ]);
       await runtime.dispose();
 
-      expect(capturedText.startsWith('分析这些材料')).toBe(true);
-      expect(capturedText).toContain('[附件] 2 个文件');
-      expect(capturedText).toContain('chart.png (image/png');
-      expect(capturedText).toContain('notes.md (text/markdown');
-      expect(capturedText).toContain('第一行内容');
+      expect(capturedText).toBe('分析这些材料');
+      expect(capturedText).not.toContain('chart.png');
+      expect(capturedText).not.toContain('第一行内容');
       expect(capturedAttachments).toEqual([
         { attachmentId: image.attachmentId, kind: 'file' },
         { attachmentId: doc.attachmentId, kind: 'file' },
@@ -571,6 +579,118 @@ describe('WebGatewaySessionRuntime', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it('rejects a message whose attachments exceed the per-message budget before admitting it', async () => {
+    // Metadata-only stub: the budget rule reads sizes, never bytes, so this
+    // test must not materialize hundreds of megabytes of files.
+    const oversized = 90 * 1024 * 1024;
+    const attachments = {
+      readAttachmentMetadata: async (_conversationId: string, attachmentId: string) => ({
+        attachmentId,
+        accountId: 'local-default',
+        conversationId: 'conv_1',
+        workspaceId: 'workspace_repo',
+        name: `${attachmentId}.bin`,
+        mime: 'application/octet-stream',
+        mediaClass: 'binary' as const,
+        size: oversized,
+        sha256: 'sha256:stub',
+        status: 'available' as const,
+        createdAt: new Date(0).toISOString(),
+      }),
+    } as unknown as GatewayAttachmentStore;
+
+    let submitCalls = 0;
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway: gatewayFixture({
+        submit: async envelope => {
+          submitCalls += 1;
+          return {
+            requestId: envelope.requestId,
+            idempotencyKey: envelope.idempotencyKey,
+            status: 'accepted' as const,
+            conversationId: 'conv_1',
+          };
+        },
+      }),
+      attachments,
+    });
+
+    await attachBrowser(runtime);
+    await expect(runtime.submit(
+      'browser-a',
+      '分析这六份材料',
+      Array.from({ length: 6 }, (_, index) => ({
+        attachmentId: `att_${index}`,
+        kind: 'file',
+      })),
+    )).rejects.toMatchObject({ code: 'attachment_total_too_large' });
+    await runtime.dispose();
+
+    expect(submitCalls).toBe(0);
+  });
+
+  it('rejects an attachment that is missing or no longer available', async () => {
+    const attachments = {
+      readAttachmentMetadata: async () => null,
+    } as unknown as GatewayAttachmentStore;
+    let submitCalls = 0;
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway: gatewayFixture({
+        submit: async envelope => {
+          submitCalls += 1;
+          return {
+            requestId: envelope.requestId,
+            idempotencyKey: envelope.idempotencyKey,
+            status: 'accepted' as const,
+            conversationId: 'conv_1',
+          };
+        },
+      }),
+      attachments,
+    });
+
+    await attachBrowser(runtime);
+    await expect(runtime.submit('browser-a', '看这个', [
+      { attachmentId: 'att_missing', kind: 'file' },
+    ])).rejects.toMatchObject({ code: 'attachment_unavailable' });
+    await runtime.dispose();
+
+    expect(submitCalls).toBe(0);
+  });
+
+  it('rejects an oversized attachment count before resolving metadata', async () => {
+    let submitCalls = 0;
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway: gatewayFixture({
+        submit: async envelope => {
+          submitCalls += 1;
+          return {
+            requestId: envelope.requestId,
+            idempotencyKey: envelope.idempotencyKey,
+            status: 'accepted' as const,
+            conversationId: 'conv_1',
+          };
+        },
+      }),
+    });
+
+    await attachBrowser(runtime);
+    await expect(runtime.submit(
+      'browser-a',
+      '太多了',
+      Array.from({ length: 33 }, (_, index) => ({ attachmentId: `att_${index}`, kind: 'file' })),
+    )).rejects.toMatchObject({ code: 'attachment_count_exceeded' });
+    await runtime.dispose();
+
+    expect(submitCalls).toBe(0);
   });
 
   it('projects live turn lifecycle events with the pending user input', async () => {

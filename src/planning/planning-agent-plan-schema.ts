@@ -64,6 +64,10 @@ const ContextRefSchema = z.union([
     side: z.enum(['user', 'assistant']),
   }).strict(),
   z.object({
+    kind: z.literal('attachment'),
+    attachmentId: z.string().trim().min(1).max(240),
+  }).strict(),
+  z.object({
     kind: z.literal('artifact'),
     artifactId: z.string().trim().min(1).max(240),
   }).strict(),

@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { readFileSync, readdirSync } from 'node:fs';
 import { mkdir, open, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { MAX_ATTACHMENT_BYTES } from '../gateway/attachment-store-port.js';
 import {
   AttachmentInputError,
   AttachmentTypeError,
@@ -9,47 +11,70 @@ import {
 export {
   AttachmentInputError,
   AttachmentTypeError,
+  MAX_ATTACHMENT_BYTES,
 } from '../gateway/attachment-store-port.js';
 
 /**
- * Web 会话附件存储（图片 + 文本类）。
+ * Conversation-scoped opaque attachment storage.
  *
- * 目录布局：`<root>/<sessionId>/<attachmentId>__<safeName>`，
- * 元数据写入同名 `.meta.json` 旁车文件，供上传端点与 Planner 链路读取。
+ * 目录布局：`<root>/<conversationId>/<attachmentId>__<safeName>`。
+ * Runtime owns identity/hash validation but never parses attachment contents.
  */
 
-const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/u;
+const IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/u;
 const SAFE_NAME_PATTERN = /^[^/\\<>:"|?*\x00-\x1f]{1,180}$/u;
 const SIGNATURE_BYTES = 12;
 
-export type AttachmentKind = 'image' | 'text';
+export type AttachmentMediaClass =
+  | 'image'
+  | 'text'
+  | 'document'
+  | 'archive'
+  | 'binary'
+  | 'unknown';
 
 export interface AttachmentMetadata {
   readonly attachmentId: string;
-  readonly sessionId: string;
+  readonly accountId: string;
+  readonly conversationId: string;
+  readonly workspaceId: string;
   readonly name: string;
   readonly mime: string;
-  readonly kind: AttachmentKind;
+  readonly mediaClass: AttachmentMediaClass;
+  /** @deprecated Use mediaClass. Retained while Gateway clients migrate. */
+  readonly kind: 'image' | 'text' | 'file';
   readonly size: number;
   readonly sha256: string;
+  readonly status: 'available' | 'unavailable';
   readonly createdAt: string;
 }
 
 export interface SaveAttachmentInput {
-  readonly sessionId: string;
+  readonly conversationId?: string;
+  /** @deprecated Use conversationId. */
+  readonly sessionId?: string;
+  readonly workspaceId?: string;
   readonly name: string;
   readonly bytes: Buffer;
 }
 
 export interface SaveAttachmentStreamInput {
-  readonly sessionId: string;
+  readonly conversationId?: string;
+  /** @deprecated Use conversationId. */
+  readonly sessionId?: string;
+  readonly workspaceId?: string;
   readonly name: string;
   readonly source: AsyncIterable<Uint8Array> | Iterable<Uint8Array>;
 }
 
 interface SniffResult {
-  readonly kind: AttachmentKind;
+  readonly mediaClass: AttachmentMediaClass;
   readonly mime: string;
+}
+
+export interface FileAttachmentStoreOptions {
+  readonly accountId: string;
+  readonly maxAttachmentBytes?: number;
 }
 
 const IMAGE_SIGNATURES: Array<{ mime: string; test: (bytes: Buffer) => boolean }> = [
@@ -89,11 +114,36 @@ const TEXT_EXTENSIONS: Record<string, string> = {
   '.sql': 'text/x-sql',
 };
 
+const DOCUMENT_EXTENSIONS: Record<string, string> = {
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.pdf': 'application/pdf',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.rtf': 'application/rtf',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+};
+
+const ARCHIVE_EXTENSIONS: Record<string, string> = {
+  '.7z': 'application/x-7z-compressed',
+  '.gz': 'application/gzip',
+  '.tar': 'application/x-tar',
+  '.zip': 'application/zip',
+};
+
 export class FileAttachmentStore {
   readonly rootDir: string;
+  readonly accountId: string;
+  readonly maxAttachmentBytes: number;
 
-  constructor(rootDir: string) {
+  constructor(rootDir: string, options: FileAttachmentStoreOptions = { accountId: 'local-default' }) {
     this.rootDir = resolve(rootDir);
+    this.accountId = options.accountId;
+    this.maxAttachmentBytes = options.maxAttachmentBytes ?? MAX_ATTACHMENT_BYTES;
+    if (!IDENTIFIER_PATTERN.test(this.accountId)) {
+      throw new AttachmentInputError(`Invalid account ID: ${this.accountId}`);
+    }
   }
 
   async initialize(): Promise<void> {
@@ -102,22 +152,29 @@ export class FileAttachmentStore {
 
   async saveAttachment(input: SaveAttachmentInput): Promise<AttachmentMetadata> {
     return this.saveAttachmentStream({
+      conversationId: input.conversationId,
       sessionId: input.sessionId,
+      workspaceId: input.workspaceId,
       name: input.name,
       source: [input.bytes],
     });
   }
 
   async saveAttachmentStream(input: SaveAttachmentStreamInput): Promise<AttachmentMetadata> {
-    if (!SESSION_ID_PATTERN.test(input.sessionId)) {
-      throw new AttachmentInputError(`Invalid session ID: ${input.sessionId}`);
+    const conversationId = input.conversationId ?? input.sessionId ?? '';
+    if (!IDENTIFIER_PATTERN.test(conversationId)) {
+      throw new AttachmentInputError(`Invalid conversation ID: ${conversationId}`);
+    }
+    const workspaceId = input.workspaceId ?? 'workspace-unknown';
+    if (!IDENTIFIER_PATTERN.test(workspaceId)) {
+      throw new AttachmentInputError(`Invalid workspace ID: ${workspaceId}`);
     }
     if (!input.name || !SAFE_NAME_PATTERN.test(input.name)) {
       throw new AttachmentInputError(`Invalid attachment name: ${JSON.stringify(input.name)}`);
     }
 
     const attachmentId = `att_${randomBytes(10).toString('base64url')}`;
-    const directory = this.sessionDirectory(input.sessionId);
+    const directory = this.conversationDirectory(conversationId);
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const extension = normalizedExtension(input.name);
     const safeName = sanitizeFileName(input.name);
@@ -138,6 +195,11 @@ export class FileAttachmentStore {
           const chunk = Buffer.from(value);
           if (chunk.byteLength === 0) continue;
           size += chunk.byteLength;
+          if (size > this.maxAttachmentBytes) {
+            throw new AttachmentInputError(
+              `Attachment "${input.name}" exceeds ${this.maxAttachmentBytes} bytes`,
+            );
+          }
           hash.update(chunk);
           if (signatureSize < SIGNATURE_BYTES) {
             const prefix = chunk.subarray(0, SIGNATURE_BYTES - signatureSize);
@@ -157,18 +219,24 @@ export class FileAttachmentStore {
         await handle.close();
       }
 
-      const sniffed = this.sniffOrThrow(
+      const sniffed = this.sniff(
         input.name,
         Buffer.concat(signatureChunks, signatureSize),
       );
       const metadata: AttachmentMetadata = {
         attachmentId,
-        sessionId: input.sessionId,
+        accountId: this.accountId,
+        conversationId,
+        workspaceId,
         name: input.name,
         mime: sniffed.mime,
-        kind: sniffed.kind,
+        mediaClass: sniffed.mediaClass,
+        kind: sniffed.mediaClass === 'image'
+          ? 'image'
+          : sniffed.mediaClass === 'text' ? 'text' : 'file',
         size,
         sha256: hash.digest('hex'),
+        status: 'available',
         createdAt: new Date().toISOString(),
       };
       await writeFile(
@@ -190,15 +258,55 @@ export class FileAttachmentStore {
     }
   }
 
-  async readAttachment(sessionId: string, attachmentId: string): Promise<{
+  async readAttachment(conversationId: string, attachmentId: string): Promise<{
     metadata: AttachmentMetadata;
     bytes: Buffer;
     path: string;
   } | null> {
-    if (!SESSION_ID_PATTERN.test(sessionId)) {
-      throw new Error(`Invalid session ID: ${sessionId}`);
+    const located = await this.locateAttachment(conversationId, attachmentId);
+    if (!located) return null;
+    const { readFile } = await import('node:fs/promises');
+    const metadata = JSON.parse(await readFile(located.metadataPath, 'utf8')) as AttachmentMetadata;
+    const bytes = await readFile(located.dataPath);
+    return { metadata, bytes, path: located.dataPath };
+  }
+
+  readAttachmentSync(conversationId: string, attachmentId: string): {
+    metadata: AttachmentMetadata;
+    bytes: Buffer;
+    path: string;
+  } | null {
+    const located = this.locateAttachmentSync(conversationId, attachmentId);
+    if (!located) return null;
+    const metadata = JSON.parse(readFileSync(located.metadataPath, 'utf8')) as AttachmentMetadata;
+    return {
+      metadata,
+      bytes: readFileSync(located.dataPath),
+      path: located.dataPath,
+    };
+  }
+
+  async readAttachmentMetadata(
+    conversationId: string,
+    attachmentId: string,
+  ): Promise<AttachmentMetadata | null> {
+    const located = await this.locateAttachment(conversationId, attachmentId);
+    if (!located) return null;
+    const { readFile } = await import('node:fs/promises');
+    return JSON.parse(await readFile(located.metadataPath, 'utf8')) as AttachmentMetadata;
+  }
+
+  private async locateAttachment(
+    conversationId: string,
+    attachmentId: string,
+  ): Promise<{ dataPath: string; metadataPath: string } | null> {
+    if (!IDENTIFIER_PATTERN.test(conversationId)) {
+      throw new Error(`Invalid conversation ID: ${conversationId}`);
     }
-    const directory = this.sessionDirectory(sessionId);
+    if (!IDENTIFIER_PATTERN.test(attachmentId)) {
+      throw new Error(`Invalid attachment ID: ${attachmentId}`);
+    }
+    const directory = this.conversationDirectory(conversationId);
     let names: string[];
     try {
       names = await readdir(directory);
@@ -210,20 +318,47 @@ export class FileAttachmentStore {
     if (!dataName) return null;
     const metaName = names.find(name => name === `${dataName}.meta.json`);
     if (!metaName) return null;
-
-    const { readFile } = await import('node:fs/promises');
-    const metadata = JSON.parse(await readFile(join(directory, metaName), 'utf8')) as AttachmentMetadata;
-    const bytes = await readFile(join(directory, dataName));
-    return { metadata, bytes, path: join(directory, dataName) };
+    return {
+      dataPath: join(directory, dataName),
+      metadataPath: join(directory, metaName),
+    };
   }
 
-  async listAttachments(sessionId: string): Promise<AttachmentMetadata[]> {
-    if (!SESSION_ID_PATTERN.test(sessionId)) {
-      throw new Error(`Invalid session ID: ${sessionId}`);
+  private locateAttachmentSync(
+    conversationId: string,
+    attachmentId: string,
+  ): { dataPath: string; metadataPath: string } | null {
+    if (!IDENTIFIER_PATTERN.test(conversationId)) {
+      throw new Error(`Invalid conversation ID: ${conversationId}`);
+    }
+    if (!IDENTIFIER_PATTERN.test(attachmentId)) {
+      throw new Error(`Invalid attachment ID: ${attachmentId}`);
+    }
+    const directory = this.conversationDirectory(conversationId);
+    let names: string[];
+    try {
+      names = readdirSync(directory);
+    } catch {
+      return null;
+    }
+    const dataName = names.find(name => name.startsWith(`${attachmentId}__`)
+      && !name.endsWith('.meta.json'));
+    if (!dataName) return null;
+    const metaName = names.find(name => name === `${dataName}.meta.json`);
+    if (!metaName) return null;
+    return {
+      dataPath: join(directory, dataName),
+      metadataPath: join(directory, metaName),
+    };
+  }
+
+  async listAttachments(conversationId: string): Promise<AttachmentMetadata[]> {
+    if (!IDENTIFIER_PATTERN.test(conversationId)) {
+      throw new Error(`Invalid conversation ID: ${conversationId}`);
     }
     let names: string[];
     try {
-      names = await readdir(this.sessionDirectory(sessionId));
+      names = await readdir(this.conversationDirectory(conversationId));
     } catch {
       return [];
     }
@@ -231,7 +366,9 @@ export class FileAttachmentStore {
     const metadata: AttachmentMetadata[] = [];
     for (const name of names.filter(candidate => candidate.endsWith('.meta.json'))) {
       try {
-        metadata.push(JSON.parse(await readFile(join(this.sessionDirectory(sessionId), name), 'utf8')) as AttachmentMetadata);
+        metadata.push(JSON.parse(
+          await readFile(join(this.conversationDirectory(conversationId), name), 'utf8'),
+        ) as AttachmentMetadata);
       } catch {
         // 损坏的元数据直接忽略。
       }
@@ -239,11 +376,11 @@ export class FileAttachmentStore {
     return metadata.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
-  async deleteSessionAttachments(sessionId: string): Promise<number> {
-    if (!SESSION_ID_PATTERN.test(sessionId)) {
-      throw new Error(`Invalid session ID: ${sessionId}`);
+  async deleteSessionAttachments(conversationId: string): Promise<number> {
+    if (!IDENTIFIER_PATTERN.test(conversationId)) {
+      throw new Error(`Invalid conversation ID: ${conversationId}`);
     }
-    const directory = this.sessionDirectory(sessionId);
+    const directory = this.conversationDirectory(conversationId);
     let names: string[];
     try {
       names = await readdir(directory);
@@ -252,7 +389,7 @@ export class FileAttachmentStore {
     }
     const quarantine = join(this.rootDir, 'quarantine');
     await mkdir(quarantine, { recursive: true, mode: 0o700 });
-    const destination = join(quarantine, `${sessionId}.${Date.now()}`);
+    const destination = join(quarantine, `${conversationId}.${Date.now()}`);
     try {
       await rename(directory, destination);
     } catch {
@@ -261,29 +398,32 @@ export class FileAttachmentStore {
     return names.filter(name => !name.endsWith('.meta.json')).length;
   }
 
-  private sessionDirectory(sessionId: string): string {
-    const path = resolve(this.rootDir, sessionId);
+  private conversationDirectory(conversationId: string): string {
+    const path = resolve(this.rootDir, conversationId);
     if (!path.startsWith(`${this.rootDir}/`)) {
-      throw new Error(`Invalid session ID: ${sessionId}`);
+      throw new Error(`Invalid conversation ID: ${conversationId}`);
     }
     return path;
   }
 
-  private sniffOrThrow(name: string, bytes: Buffer): SniffResult {
+  private sniff(name: string, bytes: Buffer): SniffResult {
     for (const signature of IMAGE_SIGNATURES) {
       if (signature.test(bytes)) {
-        return { kind: 'image', mime: signature.mime };
+        return { mediaClass: 'image', mime: signature.mime };
       }
     }
 
     const extension = normalizedExtension(name);
     if (extension in TEXT_EXTENSIONS) {
-      return { kind: 'text', mime: TEXT_EXTENSIONS[extension]! };
+      return { mediaClass: 'text', mime: TEXT_EXTENSIONS[extension]! };
     }
-
-    throw new AttachmentTypeError(
-      `Unsupported attachment type for "${name}" (extension ${extension || 'none'}); allowed: images (png/jpg/webp/gif) and text files.`,
-    );
+    if (extension in DOCUMENT_EXTENSIONS) {
+      return { mediaClass: 'document', mime: DOCUMENT_EXTENSIONS[extension]! };
+    }
+    if (extension in ARCHIVE_EXTENSIONS) {
+      return { mediaClass: 'archive', mime: ARCHIVE_EXTENSIONS[extension]! };
+    }
+    return { mediaClass: 'unknown', mime: 'application/octet-stream' };
   }
 }
 

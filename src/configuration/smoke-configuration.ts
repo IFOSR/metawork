@@ -193,7 +193,7 @@ function agentClass(
       ? []
       : permissionProfileRef === 'public-web-research'
         ? ['current-web-research']
-        : ['workspace-engineering'],
+        : ['workspace-engineering', 'document-processing'],
     primaryUseCases: kind === 'planner'
       ? []
       : permissionProfileRef === 'public-web-research'

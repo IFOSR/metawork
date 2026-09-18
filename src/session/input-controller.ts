@@ -1,6 +1,6 @@
 // Routes one raw user submission through the session port as wizard input,
 // slash command input, or natural-language work.
-import type { PlannerImageAttachment } from '../planning/planning-types.js';
+import type { PlannerAttachmentView, PlannerImageAttachment } from '../planning/planning-types.js';
 
 export interface InputControllerSubmitOptions {
   awaitAsyncWork?: boolean;
@@ -8,6 +8,7 @@ export interface InputControllerSubmitOptions {
   interactionTurnId?: string;
   /** 多模态图片附件，随自然语言输入进入规划上下文。 */
   images?: PlannerImageAttachment[];
+  attachments?: PlannerAttachmentView[];
   principalId?: string;
 }
 
@@ -18,7 +19,11 @@ export interface InputControllerSubmitResult {
 export interface InputControllerPort {
   appendUserInput(input: string): void;
   handleCommand(input: string, options?: InputControllerSubmitOptions): Promise<boolean>;
-  handleNaturalLanguageInput(input: string, images?: PlannerImageAttachment[]): Promise<void>;
+  handleNaturalLanguageInput(
+    input: string,
+    images?: PlannerImageAttachment[],
+    attachments?: PlannerAttachmentView[],
+  ): Promise<void>;
   waitForAsyncWork(): Promise<void>;
   handleSubmitError(error: unknown): void;
 }
@@ -47,7 +52,11 @@ export class InputController {
         return { exitRequested };
       }
 
-      await this.port.handleNaturalLanguageInput(userInput, options.images);
+      if (options.attachments !== undefined) {
+        await this.port.handleNaturalLanguageInput(userInput, options.images, options.attachments);
+      } else {
+        await this.port.handleNaturalLanguageInput(userInput, options.images);
+      }
       if (options.awaitAsyncWork) {
         await this.port.waitForAsyncWork();
       }

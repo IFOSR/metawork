@@ -197,4 +197,23 @@ describe('Subtask execution prompt layering', () => {
     expect(prompt).not.toContain('internal-source-attempt-id');
     expect(prompt).not.toContain('sourceAttemptId');
   });
+
+  it('keeps document parsing Executor-owned instead of naming a MetaWork parser', () => {
+    const attachmentInput = input();
+    attachmentInput.context.selectedAttachments = [{
+      ref: { kind: 'attachment', attachmentId: 'internal-attachment-id' },
+      attachmentId: 'internal-attachment-id',
+      displayName: 'menu.xlsx',
+      relativeInputPath: '01-menu.xlsx',
+      mediaType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      contentHash: 'sha256:attachment',
+    }];
+
+    const prompt = buildExecutorContextPrompt(attachmentInput);
+    expect(prompt).toContain('01-menu.xlsx');
+    expect(prompt).toContain('Attachment processing:');
+    expect(prompt).toContain('MetaWork ships no document parser');
+    expect(prompt).not.toContain('METAWORK_DOCUMENT_READER');
+    expect(prompt).not.toContain('metawork-document-reader');
+  });
 });

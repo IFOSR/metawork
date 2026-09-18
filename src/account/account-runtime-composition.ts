@@ -48,6 +48,7 @@ import { createSqliteAccountPermissionService } from './sqlite-account-permissio
 import { AccountStartupRecoveryService } from './account-startup-recovery-service.js';
 import type { ConfigurationActivationGate } from '../configuration/configuration-activation-gate.js';
 import type { ConversationActivityProjection } from '../workspace/conversation-activity-projector.js';
+import type { GatewayAttachmentStore } from '../gateway/attachment-store-port.js';
 
 export interface AccountRuntimeComposition {
   readonly accountRuntime: AccountRuntime;
@@ -74,6 +75,7 @@ export function buildAccountRuntimeComposition(deps: {
   workspaceRoot: string;
   attemptsRoot: string;
   resultsRoot: string;
+  attachmentStore?: GatewayAttachmentStore;
   generatedRuntimeRoot: string;
   sourceRoot: string;
   sessionId: string;
@@ -146,6 +148,7 @@ export function buildAccountRuntimeComposition(deps: {
     getSessionId: () => conversationExecutionBinder.currentSessionId() ?? deps.sessionId,
     accountId: deps.accountId,
     resultRoot: deps.resultsRoot,
+    attachmentStore: deps.attachmentStore,
     sourceRoot: deps.sourceRoot,
     taskRuntimeService: taskServices.taskRuntimeService,
     subtaskRepo: repositories.subtaskRepo,

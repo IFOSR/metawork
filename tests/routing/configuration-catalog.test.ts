@@ -102,6 +102,11 @@ describe('configuration routing catalog', () => {
             '研究当前公共网络信息，保留可追溯来源，并交付有来源支撑的结论。',
         },
         {
+          id: 'document-processing',
+          deliveryContract:
+            '读取用户提供的文档附件，提取并处理其中的内容，再交付可验证的结果。',
+        },
+        {
           id: 'image-editing',
           deliveryContract:
             '使用明确支持图片编辑的模型处理输入图片，并交付可验证的图片产物。',
