@@ -238,6 +238,14 @@
 
 ### Git State
 
-- No Git commit was created.
-- No GitHub push was performed.
-- Closing commit: pending explicit user confirmation.
+- Closing commits: `c85383f feat(attachments): deliver opaque user attachments into Executor inputs`
+  and `chore(release): 1.2.0-preview.5`.
+- Pushed to `origin/main` on 2026-09-18; tag `v1.2.0-preview.5` published.
+- Release `1.2.0-preview.5-05ef4bb` is live at
+  `https://14.103.216.193/metawork-release/latest/` for `darwin-x64` and
+  `darwin-arm64`, both signed by `metawork-release-2026-03` and verified against
+  the trusted key embedded in the published `install.sh`.
+- Known carry-forward: the `linux-x64` manifest in that release directory still
+  serves `1.2.0-preview.4-96c6771` (schema 37), because the Linux tree cannot be
+  cross-packaged from the macOS workstation; build it on a Linux host and
+  re-publish that manifest to bring Linux onto preview.5.
