@@ -38,7 +38,12 @@ Turn cancellation is a first-class Client control with these semantics:
    Management surface forwards it to the Gateway as the existing
    `cancel_turn` command, so admission and ownership stay on the ordinary
    command path.
-2. **Cancellation is latched in the Application Shell for that Turn.** The latch
+2. **Cancellation is a control command, not a queued turn.** A stop request must
+   never wait behind the run it is stopping: `cancel_turn` executes immediately
+   through the Conversation mailbox control path (the same bypass that already
+   served control slash commands), so the latch, the Planner abort and the Task
+   cancellation fence apply while the active turn is still running.
+8. **Cancellation is latched in the Application Shell for that Turn.** The latch
    is what makes the cancellation a fact rather than a UI gesture: a Planner
    proposal that was already submitted, or that races the abort, is rejected with
    `turn cancelled by user` and never reaches the Kernel. A new Turn clears the

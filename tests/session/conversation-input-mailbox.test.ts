@@ -187,6 +187,42 @@ describe('ConversationInputMailbox', () => {
     expect(executed).toEqual(['req_active', 'req_control']);
   });
 
+  it('executes a Gateway turn cancellation immediately while a turn is active', async () => {
+    // Regression: `cancel_turn` used to queue behind the active turn, so a stop
+    // request could not take effect until the run it was stopping had finished
+    // (observed on a live Executor attempt).
+    const executed: string[] = [];
+    let releaseActive!: () => void;
+    const mailbox = new ConversationInputMailbox({
+      execute: async command => {
+        executed.push(command.requestId);
+        if (command.requestId === 'req_active') {
+          await new Promise<void>(resolve => { releaseActive = resolve; });
+        }
+      },
+    });
+
+    mailbox.submit({
+      requestId: 'req_active',
+      idempotencyKey: 'idem_active',
+      command: { kind: 'user_message', text: '机差有什么影响啊？', attachments: [] },
+    });
+    await waitFor(() => mailbox.isActive);
+
+    expect(mailbox.submit({
+      requestId: 'req_cancel',
+      idempotencyKey: 'idem_cancel',
+      command: { kind: 'cancel_turn', turnId: 'turn_active' },
+    }).status).toBe('accepted');
+
+    await waitFor(() => executed.includes('req_cancel'));
+    expect(mailbox.isActive).toBe(true);
+    expect(mailbox.queueLength).toBe(0);
+
+    releaseActive!();
+    await waitFor(() => mailbox.isIdle);
+  });
+
   it('keeps conversational slash commands in the FIFO queue', async () => {
     const executed: string[] = [];
     let releaseActive!: () => void;

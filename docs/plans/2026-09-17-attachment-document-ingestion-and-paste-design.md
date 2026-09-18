@@ -753,4 +753,14 @@ Executor executes
 
 同时补上一条 replan 语义指令：自动 replan 的请求已经携带本代失败候选（`agentClassName/failure/code/summary`），现明确要求 Planner 不得在未说明"这次为何会不同"的情况下把剩余工作重新绑定到刚失败的 Executor 候选。
 
-状态：F1–F4 落地，模型切换调和与 replan 指令落地；F5（技能侧）按用户决定不做；未发 release。
+### 2026-09-18：Turn 取消必须绕过串行邮箱
+
+现象：用户发请求后立刻点停止，界面提示"已请求停止当前轮"，但 Executor 仍在流式输出（实测 Pi/deepseek-flash 27 秒仍在跑）。
+
+根因：`cancel_turn` 是 Gateway 命令，而会话邮箱的"控制命令立即执行"白名单只匹配**控制类斜杠命令**（`/task clear|cancel|stop|list|show`、`/clear`、`/status`、`/doctor`），因此 `cancel_turn` 会排在**正在运行的那一轮之后**；而那一轮要等后台 Executor 完成才结束 → 停止请求实际上从未被执行。会话侧的锁存/abort/任务取消逻辑本身是对的，但拿不到执行机会。
+
+修复：`ConversationInputMailbox` 的控制命令判定扩展为 `isControlCommand`（包含 `cancel_turn`），使停止请求与既有控制斜杠命令一样立即执行、不排队。
+
+验证：`tests/session/conversation-input-mailbox.test.ts` 新增"Gateway turn 取消在活跃轮次期间立即执行"用例（去掉该判定即 waitFor timeout，复现本次现象）。取消链路的其余部分（锁存 → abortSession → Kernel 取消围栏 → `Executor.abort`）在前一节已覆盖。
+
+状态：F1–F4 落地，模型切换调和、replan 指令、turn 取消（含邮箱绕过）落地；F5（技能侧）按用户决定不做；未发 release。

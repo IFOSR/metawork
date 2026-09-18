@@ -44,6 +44,17 @@ const DEFAULT_MAX_QUEUE_SIZE = 16;
  */
 const CONTROL_COMMAND_PATTERN = /^\/(?:task\s+(?:clear|cancel|stop|list|show)|clear\b|status\b|doctor\b)/iu;
 
+/**
+ * Turn control commands that must never wait for the active turn. This includes
+ * Gateway-level turn cancellation, not only slash commands: a stop request that
+ * queues behind the run it is stopping can never take effect (observed
+ * 2026-09-18 on a live Executor attempt).
+ */
+export function isControlCommand(command: MailboxCommand): boolean {
+  if (command.command?.kind === 'cancel_turn') return true;
+  return isControlSlashCommand(command);
+}
+
 export function isControlSlashCommand(command: MailboxCommand): boolean {
   return command.command?.kind === 'slash_command'
     && CONTROL_COMMAND_PATTERN.test(command.command.text.trim());
@@ -86,7 +97,7 @@ export class ConversationInputMailbox {
       };
     }
 
-    if (isControlSlashCommand(command)) {
+    if (isControlCommand(command)) {
       const receipt: MailboxReceipt = {
         requestId: command.requestId,
         idempotencyKey: command.idempotencyKey,
