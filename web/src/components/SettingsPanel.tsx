@@ -9,6 +9,8 @@ import type {
   ExecutorCapabilityManual,
   ExecutorManualAnalysis,
   ProviderCredentialStatus,
+  ExecutorManagementView,
+  ExecutorConfigurationChange,
 } from '../api/types';
 import {
   maskApiKey,
@@ -16,6 +18,8 @@ import {
 } from './provider-secret-state';
 import { buildPlannerScopedConfiguration, keepActivePlanner } from '../planner-update';
 import { ModelConnectionDialog, type NewModelConnectionDraft } from './ModelConnectionDialog';
+import { ExecutorEditorDialog } from './ExecutorEditorDialog';
+import { applyExecutorSnapshot } from '../executor-management';
 import {
   AgentClassConfig,
 } from './AgentClassConfig';
@@ -372,6 +376,11 @@ export function SettingsPanel({
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
+  const [executorView, setExecutorView] = useState<ExecutorManagementView | null>(null);
+  const [executorEditor, setExecutorEditor] = useState<{
+    operation: ExecutorConfigurationChange['operation']; agentClassRef?: string;
+  } | null>(null);
+  const [executorLoading, setExecutorLoading] = useState(false);
   const secretStatusVersion = useRef(0);
 
   const applyConfigSnapshot = (
@@ -392,6 +401,15 @@ export function SettingsPanel({
   useEffect(() => {
     setActivationState(runtime);
   }, [runtime]);
+
+  useEffect(() => {
+    if (!http || !revisionId) return;
+    let cancelled = false;
+    void http.getExecutorManagement().then(view => {
+      if (!cancelled) setExecutorView(view);
+    }).catch(() => { if (!cancelled) setExecutorView(null); });
+    return () => { cancelled = true; };
+  }, [http, revisionId]);
 
   useEffect(() => {
     if (!http) return;
@@ -574,11 +592,37 @@ export function SettingsPanel({
     }
     return [...new Set(warnings)];
   })();
-  // 就绪卡片与“智能体名称”必须同名：卡片直接用服务端按 AgentClass 解析出的
-  // displayName，这里的必需智能体名用于卡片正文里的交叉引用。
-  const requiredAgentName = agentReadiness.find(agent => agent.required)?.displayName
-    ?? '必需智能体';
-  const editingDisabled = loading || activationState?.activationAllowed === false;
+  const editingDisabled = loading || plannerUpdating || executorLoading || activationState?.activationAllowed === false;
+
+  const openExecutorEditor = async (
+    operation: ExecutorConfigurationChange['operation'], agentClassRef?: string,
+  ) => {
+    if (!http || editingDisabled) return;
+    setExecutorLoading(true);
+    try {
+      const view = await http.getExecutorManagement();
+      if (view.baseRevisionId !== revisionId) {
+        setLoadError('配置已在其他窗口更新。请先重新打开设置，再管理助手。');
+        return;
+      }
+      setExecutorView(view);
+      setExecutorEditor({ operation, agentClassRef });
+    } catch (error) { setLoadError((error as Error).message); }
+    finally { setExecutorLoading(false); }
+  };
+
+  const executorSaved = (snapshot: ConfigSnapshot, agentClassRef: string) => {
+    const nextDraft = loadRoutingDraft(snapshot.config as RawRecord);
+    const nextFacts = loadRoutingFacts(snapshot.config as RawRecord);
+    setDraft(current => applyExecutorSnapshot(current ?? {}, nextDraft, agentClassRef, {
+      preserveLocal: executorEditor?.operation === 'enable' || executorEditor?.operation === 'disable',
+    }));
+    setActiveRoutingDraft(current => applyExecutorSnapshot(current ?? {}, nextDraft, agentClassRef));
+    setFacts(current => applyExecutorSnapshot(current ?? {}, nextFacts, agentClassRef));
+    setRevisionId(snapshot.revisionId);
+    setExecutorEditor(null);
+    setResult({ ok: true, revisionId: snapshot.revisionId });
+  };
 
   const buildCandidateConfiguration = (originalConfig: RawRecord): {
     config: Record<string, unknown>;
@@ -1548,10 +1592,15 @@ export function SettingsPanel({
                     <h3 id="agents-heading">智能体</h3>
                     <p>每个智能体可以单独选择模型、路由方式和能力配置。</p>
                   </div>
+                  <button type="button" className="primary-button" disabled={editingDisabled}
+                    onClick={() => { void openExecutorEditor('create'); }}>新增执行助手</button>
                 </div>
+                {executorView?.executors.length === 0 && <p role="status">尚无执行助手。新增并启用助手后才能开始新工作。</p>}
+                {executorView && executorView.executors.length > 0 && executorView.executors.every(agent => !agent.enabled)
+                  && <p role="status">全部执行助手已停用，请先启用至少一名助手。</p>}
                 {agentReadiness.length > 0 && (
                   <div className="agent-readiness-settings">
-                    {agentReadiness.filter(agent => agent.agentId === 'pi-agent').map(agent => (
+                    {agentReadiness.filter(agent => agent.required).map(agent => (
                       <div className={`agent-readiness-settings-card agent-readiness-settings-${agent.status}`} key={agent.agentId}>
                         <div>
                           <strong>
@@ -1559,8 +1608,8 @@ export function SettingsPanel({
                           </strong>
                           <p>
                             {agent.status === 'installed'
-                              ? 'MetaWork 可以开始新工作。'
-                              : '这是运行新工作的必需组件，请先安装后再开始任务。'}
+                              ? '此执行工具已安装，可供多名助手共用。'
+                              : '当前启用的助手需要此工具。请先安装，或在空闲时停用使用它的助手。'}
                           </p>
                         </div>
                         {agent.status !== 'installed' && (
@@ -1576,7 +1625,7 @@ export function SettingsPanel({
                         )}
                       </div>
                     ))}
-                    {agentReadiness.filter(agent => agent.agentId === 'codex-cli').map(agent => (
+                    {agentReadiness.filter(agent => !agent.required).map(agent => (
                       <div className="agent-readiness-settings-card agent-readiness-settings-optional" key={agent.agentId}>
                         <div>
                           <strong>
@@ -1584,8 +1633,8 @@ export function SettingsPanel({
                           </strong>
                           <p>
                             {agent.status === 'installed'
-                              ? '已提供额外的 GPT/Codex 路由与回退选择。'
-                              : `安装后对 GPT/Codex 系列模型兼容性更强，更适合代码理解、修改、测试和仓库级工程任务，并提供额外的路由与回退选择。${requiredAgentName} 仍可通过模型和能力配置完成代码、研究等任务。`}
+                              ? '执行工具已安装，目前没有启用的助手需要它。'
+                              : '当前没有启用的助手需要此工具，不影响其他助手的配置保存。'}
                           </p>
                         </div>
                         {agent.status !== 'installed' && (
@@ -1608,7 +1657,21 @@ export function SettingsPanel({
                   {Object.entries(draft).filter(([ref]) => ref !== 'planner').map(([ref, entry]) => {
                     const agentFacts = facts[ref];
                     if (!agentFacts) return null;
+                    const managed = executorView?.executors.find(agent => agent.agentClassRef === ref);
                     return (
+                      <div key={ref}>
+                        <div className="executor-management-actions">
+                          <span>{managed?.enabled === false ? '已停用' : '已启用'}</span>
+                          <button type="button" className="ghost-button" disabled={editingDisabled || !managed?.tool}
+                            onClick={() => { void openExecutorEditor('update', ref); }}>编辑助手</button>
+                          <button type="button" className="ghost-button" disabled={editingDisabled || !managed}
+                            onClick={() => { void openExecutorEditor(managed?.enabled ? 'disable' : 'enable', ref); }}>
+                            {managed?.enabled ? '停用' : '启用'}
+                          </button>
+                          <button type="button" className="ghost-button" disabled={editingDisabled || !managed}
+                            onClick={() => { void openExecutorEditor('remove', ref); }}>删除</button>
+                        </div>
+                        <fieldset disabled={editingDisabled} className="executor-editor-fields">
                       <AgentClassConfig
                         key={ref}
                         facts={agentFacts}
@@ -1635,6 +1698,8 @@ export function SettingsPanel({
                           }
                         }}
                       />
+                        </fieldset>
+                      </div>
                     );
                   })}
                 </div>
@@ -1736,6 +1801,13 @@ export function SettingsPanel({
           onCancel={() => setModelDialogOpen(false)}
           onConfirm={createModelConnection}
         />
+        {executorEditor && executorView && http && <ExecutorEditorDialog
+          key={`${executorEditor.operation}:${executorEditor.agentClassRef ?? 'new'}`}
+          http={http} view={executorView} {...executorEditor}
+          disabled={editingDisabled}
+          onClose={() => setExecutorEditor(null)}
+          onSaved={executorSaved}
+        />}
       </div>
     </div>
   );

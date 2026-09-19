@@ -12,6 +12,19 @@ afterEach(async () => {
 });
 
 describe('production configuration probe', () => {
+  it('does not require an unused tool to be installed', async () => {
+    const candidate = snapshot(true, true);
+    candidate.config.agentClasses.codex!.enabled = false;
+    const detectCommand = vi.fn(async (command: string) => command === 'pi');
+    const probe = createProductionConfigurationProbe({
+      releaseRoot: await fixtureRelease(),
+      secretStore: { get: async () => 'secret', put: vi.fn(), delete: vi.fn() },
+      detectCommand,
+    });
+    expect(await probe(candidate, { contentHash: 'hash', files: {} })).toEqual({ ok: true });
+    expect(detectCommand).not.toHaveBeenCalledWith('codex');
+  });
+
   it('checks referenced secrets, the Planner artifact, and enabled Executor commands', async () => {
     const releaseRoot = await fixtureRelease();
     const get = vi.fn(async () => 'secret');
@@ -167,7 +180,14 @@ function snapshot(codexEnabled: boolean, piEnabled: boolean): ConfigurationSnaps
           enabled: piEnabled,
         },
       },
-      agentClasses: {},
+      agentClasses: Object.fromEntries(['planner', 'codex', 'pi'].map(ref => [ref, {
+        kind: ref === 'planner' ? 'planner' : 'executor',
+        harnessRef: ref,
+        modelPolicy: { mode: 'fixed', modelRef: 'model' },
+        routingCapabilities: [], primaryUseCases: [], avoidUseCases: [], plannerAffordances: [],
+        skills: [], mcpServers: [], plugins: [], generatedRuntimeRef: ref,
+        enabled: ref === 'planner' || (ref === 'codex' ? codexEnabled : piEnabled),
+      }])),
       permissionProfiles: {},
       runtimePolicy: {},
       gateway: {},

@@ -195,7 +195,7 @@ const AutoModelPolicySchema = z.object({
   }
 });
 
-const ModelPolicySchema = z.union([
+export const ModelPolicySchema = z.union([
   FixedModelPolicySchema,
   AutoModelPolicySchema,
 ]);

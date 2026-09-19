@@ -5,6 +5,23 @@ import {
 } from '../../src/configuration/configuration-activation-gate.js';
 
 describe('ConfigurationActivationGate', () => {
+  it('does not let a different request claim nested activation privileges', async () => {
+    const gate = new ConfigurationActivationGate(() => ({
+      activeTaskId: null, plannerTurnActive: false, activeAttemptCount: 0,
+      activeLeaseCount: 0, publicationPending: false, recoveryInProgress: false,
+    }));
+    let release!: () => void;
+    const first = gate.withActivation(async () => {
+      await gate.withActivation(async () => undefined, { allowNested: true });
+      await new Promise<void>(resolve => { release = resolve; });
+    });
+    while (!release) await Promise.resolve();
+    try {
+      await expect(gate.withActivation(async () => 'bypass', { allowNested: true }))
+        .rejects.toThrow(ConfigurationActivationBlockedError);
+    } finally { release(); await first; }
+  });
+
   it('allows activation while clients are connected but no work is active', () => {
     const gate = new ConfigurationActivationGate(() => ({
       activeTaskId: null,

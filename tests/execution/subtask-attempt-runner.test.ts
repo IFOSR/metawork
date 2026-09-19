@@ -143,6 +143,11 @@ function setup(rawResponse: string) {
       output: rawResponse, error: null, artifacts: [], subtaskResults: [], durationMs: 10,
     }),
     supportsResponseOnly: vi.fn().mockReturnValue(true),
+    resolvePermissionProfile: vi.fn((binding: AuthorizedExecutorBinding) => (
+      binding.permissionProfileRef === 'research-policy'
+        ? 'public-web-research'
+        : binding.permissionProfileRef
+    )),
     runResponseOnly: vi.fn(),
   };
   const attemptExecutionBackend: AttemptExecutionBackend = {
@@ -320,6 +325,20 @@ function validResponse(): string {
 }
 
 describe('SubtaskAttemptRunner', () => {
+  it('resolves the authorized permission alias before preparing execution capabilities', async () => {
+    const setupResult = setup(validResponse());
+    const binding = { ...authorizedBinding, permissionProfileRef: 'research-policy' };
+    setupResult.subtaskRepo.upsert({ ...setupResult.a, executorBindings: [binding] });
+    const outcome = await setupResult.runner.run({
+      attemptId: 'attempt_alias', executionId: 'exec_1', taskId: 'task_phase2',
+      subtaskId: setupResult.a.id, ...attemptIdentity(binding),
+      executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+
+    expect(outcome).toMatchObject({ outcome: 'completed' });
+    expect(setupResult.executionRuntime.resolvePermissionProfile).toHaveBeenCalledWith(binding);
+  });
+
   it('completes directly when the body is empty but the report file exists (format never gates)', async () => {
     // Result-first redesign: an empty trailer body with a produced report
     // file certifies as a warning; artifacts register; no correction loop.

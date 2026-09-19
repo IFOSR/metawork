@@ -7,6 +7,7 @@ import {
   ExecutorConfigurationError,
   parseExecutorConfigurationChange,
   resolveExecutorToolHarness,
+  projectExecutorManagement,
 } from '../../src/configuration/executor-configuration.js';
 import {
   ConfigurationService,
@@ -175,6 +176,18 @@ function editableFields(overrides: Record<string, unknown> = {}) {
 }
 
 describe('parseExecutorConfigurationChange', () => {
+  it('preserves the full existing Auto objective when editing', () => {
+    const modelPolicy = {
+      mode: 'auto',
+      allowedModelRefs: ['executor-model'],
+      objective: { priority: 'cost', maxCostPerTurn: 2, maxLatencyMs: 1000, minimumQualityTier: 'high' },
+    };
+    const parsed = parseExecutorConfigurationChange({
+      operation: 'update', agentClassRef: 'pi-agent', fields: editableFields({ modelPolicy }),
+    });
+    expect(parsed).toMatchObject({ fields: { modelPolicy } });
+  });
+
   it('rejects extra fields and harness/driver/command injection', () => {
     expect(() => parseExecutorConfigurationChange({
       operation: 'create',
@@ -201,6 +214,16 @@ describe('parseExecutorConfigurationChange', () => {
 });
 
 describe('resolveExecutorToolHarness', () => {
+  it('projects model choices from real tools, including Auto compatibility', () => {
+    const base = baseSnapshot();
+    const view = projectExecutorManagement(base);
+    expect(view.tools.find(tool => tool.id === 'codex')?.models.find(model => model.ref === 'alt-model'))
+      .toMatchObject({ fixedAllowed: true, autoAllowed: false });
+    expect(view.tools.find(tool => tool.id === 'pi')?.models.find(model => model.ref === 'alt-model'))
+      .toMatchObject({ fixedAllowed: true, autoAllowed: true });
+    expect(view.executors[0]).toMatchObject({ agentClassRef: 'pi-agent', tool: 'pi', enabled: true });
+  });
+
   it('resolves by real driverId, not by harness key name', () => {
     const config = baseConfiguration();
     expect(resolveExecutorToolHarness(config, 'codex')).toBe('my-codex-tool');
@@ -228,6 +251,29 @@ describe('resolveExecutorToolHarness', () => {
 });
 
 describe('buildExecutorConfigurationCandidate', () => {
+  it('preserves routing facts on a name-only edit with an aliased permission profile', () => {
+    const base = baseSnapshot();
+    base.config.permissionProfiles.research = base.config.permissionProfiles['public-web-research']!;
+    const existing = base.config.agentClasses['pi-agent']!;
+    existing.permissionProfileRef = 'research';
+    const candidate = buildExecutorConfigurationCandidate(base, {
+      operation: 'update', agentClassRef: 'pi-agent',
+      fields: editableFields({ permissionProfileRef: 'research', displayName: 'New name' }),
+    });
+    expect(candidate.config.agentClasses['pi-agent']!.routingCapabilities).toEqual(existing.routingCapabilities);
+    expect(candidate.config.agentClasses['pi-agent']!.plannerAffordances).toEqual(existing.plannerAffordances);
+  });
+
+  it('derives creation and permission changes from the actual profile, not its ref', () => {
+    const base = baseSnapshot();
+    base.config.permissionProfiles.research = base.config.permissionProfiles['public-web-research']!;
+    const candidate = buildExecutorConfigurationCandidate(base, {
+      operation: 'create', tool: 'pi', fields: editableFields({ permissionProfileRef: 'research' }),
+    });
+    expect(candidate.config.agentClasses[candidate.createdAgentClassRef!]!.routingCapabilities)
+      .toEqual(['current-web-research']);
+  });
+
   it('creates an executor with server-filled controlled fields', () => {
     let ids = 0;
     const candidate = buildExecutorConfigurationCandidate(

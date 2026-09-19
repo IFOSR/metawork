@@ -1,4 +1,7 @@
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
+import { AnyFusionConfigurationV2Schema } from './schema.js';
+import { buildExecutorConfigurationCandidate } from './executor-configuration.js';
+import type { AnyFusionConfigurationV2, AgentClassDefinition } from './types.js';
 
 export interface ConfigurationDiffEntry {
   path: string;
@@ -31,8 +34,12 @@ export function classifyConfigurationDiff(
   after: unknown,
 ): ConfigurationDiffClassification {
   const entries = diffConfigurations(before, after);
+  const lifecycleRefs = boundedExecutorChanges(before, after);
   const restartPaths = entries
-    .filter(entry => !isHotPath(entry.path))
+    .filter(entry => !isHotPath(entry.path)
+      && ![...lifecycleRefs].some(ref => (
+        entry.path === `agentClasses.${ref}` || entry.path.startsWith(`agentClasses.${ref}.`)
+      )))
     .map(entry => entry.path);
   const classification: ConfigurationChangeClass = entries.length === 0
     ? 'none'
@@ -45,6 +52,57 @@ export function classifyConfigurationDiff(
     entries,
     restartPaths,
   };
+}
+
+function boundedExecutorChanges(before: unknown, after: unknown): Set<string> {
+  const result = new Set<string>();
+  const parse = (value: unknown) => {
+    try { return AnyFusionConfigurationV2Schema.safeParse(value); } catch { return null; }
+  };
+  const oldParsed = parse(before);
+  const nextParsed = parse(after);
+  if (!oldParsed?.success || !nextParsed?.success) return result;
+  const old = oldParsed.data as AnyFusionConfigurationV2;
+  const next = nextParsed.data as AnyFusionConfigurationV2;
+  for (const ref of new Set([...Object.keys(old.agentClasses), ...Object.keys(next.agentClasses)])) {
+    const previous = old.agentClasses[ref];
+    const candidate = next.agentClasses[ref];
+    const definition = candidate ?? previous;
+    if (definition?.kind !== 'executor' || (previous && previous.kind !== 'executor')) continue;
+    const harness = old.harnesses[definition.harnessRef];
+    if (!harness || harness.kind !== 'executor'
+      || !['pi-cli', 'codex-cli'].includes(harness.driverId)
+      || stableJson(harness) !== stableJson(next.harnesses[definition.harnessRef])) continue;
+    if (!candidate) {
+      result.add(ref);
+      continue;
+    }
+    try {
+      const fields = {
+        displayName: candidate.displayName ?? ref,
+        modelPolicy: candidate.modelPolicy,
+        permissionProfileRef: candidate.permissionProfileRef!,
+        manualSourceText: candidate.executorManual?.sourceText ?? '',
+        enabled: candidate.enabled,
+      };
+      const expected = buildExecutorConfigurationCandidate(
+        { revisionId: 'classification', contentHash: '', config: old },
+        previous
+          ? { operation: 'update', agentClassRef: ref, fields }
+          : { operation: 'create', tool: harness.driverId === 'pi-cli' ? 'pi' : 'codex', fields },
+        () => ref,
+      ).config.agentClasses[ref]!;
+      // Manual semantics and routing hints have their own existing validation path.
+      const structural = (value: AgentClassDefinition) => {
+        const { displayName, modelPolicy, enabled, executorManual, primaryUseCases, avoidUseCases, ...rest } = value;
+        return rest;
+      };
+      if (stableJson(structural(expected)) === stableJson(structural(candidate))) result.add(ref);
+    } catch {
+      // Invalid or unbounded additions remain restart-required.
+    }
+  }
+  return result;
 }
 
 function isHotPath(path: string): boolean {

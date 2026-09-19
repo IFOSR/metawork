@@ -46,6 +46,7 @@ export interface AgentInstallationReadinessServiceDeps {
   ttlMs?: number;
   timeoutMs?: number;
   resolveDisplayName?: (agentId: SupportedAgentId) => string | undefined;
+  requiredAgentIds?: () => readonly SupportedAgentId[];
   catalog?: readonly AgentInstallationDefinition[];
 }
 
@@ -61,7 +62,7 @@ export class AgentInstallationReadinessService {
   private lastRefreshAt = 0;
   private refreshPromise: Promise<readonly AgentReadiness[]> | null = null;
 
-  constructor(deps: AgentInstallationReadinessServiceDeps = {}) {
+  constructor(private readonly deps: AgentInstallationReadinessServiceDeps = {}) {
     this.probe = deps.probe ?? defaultVersionProbe;
     this.now = deps.now ?? Date.now;
     this.ttlMs = deps.ttlMs ?? DEFAULT_TTL_MS;
@@ -86,10 +87,13 @@ export class AgentInstallationReadinessService {
   }
 
   private deriveNames(agents: readonly AgentReadiness[]): readonly AgentReadiness[] {
+    const requiredIds = this.deps.requiredAgentIds?.();
     return agents.map(agent => {
       const displayName = this.resolveDisplayName(agent.agentId)?.trim()
         || resolveAgentDisplayName(agent.agentId);
-      return displayName === agent.displayName ? agent : { ...agent, displayName };
+      const required = requiredIds ? requiredIds.includes(agent.agentId) : agent.required;
+      return displayName === agent.displayName && required === agent.required
+        ? agent : { ...agent, displayName, required };
     });
   }
 
@@ -125,10 +129,8 @@ export class AgentInstallationReadinessService {
   }
 
   isRequiredAgentReady(): boolean {
-    return this.catalog
-      .filter(definition => definition.required)
-      .every(definition => this.state
-        .find(agent => agent.agentId === definition.agentId)?.status === 'installed');
+    return this.getState().filter(agent => agent.required)
+      .every(agent => agent.status === 'installed');
   }
 
   private initialState(definition: AgentInstallationDefinition): AgentReadiness {

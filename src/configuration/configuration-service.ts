@@ -4,6 +4,7 @@ import {
   buildKernelConfigurationView,
   buildPlannerConfigurationView,
   buildRuntimeConfigurationView,
+  buildExecutorManualPreview,
 } from './projections.js';
 import {
   FileConfigurationRepository,
@@ -33,7 +34,9 @@ import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import {
   fingerprintExecutorManualSemantics,
   fingerprintExecutorManualSourceText,
+  validateExecutorManualSourceText,
 } from './executor-manual-source.js';
+export { validateExecutorManualSourceText } from './executor-manual-source.js';
 import {
   buildExecutorConfigurationCandidate,
   parseExecutorConfigurationChange,
@@ -137,15 +140,6 @@ function normalizeExecutorManualProfile(
     ...structuredClone(profile),
     assertions,
   };
-}
-
-export function validateExecutorManualSourceText(sourceText: string): void {
-  if (sourceText.length > 8_000 || Buffer.byteLength(sourceText, 'utf8') > 8_000) {
-    throw new Error('Executor manual sourceText exceeds 8000 UTF-8 bytes');
-  }
-  if (redactSensitiveText(sourceText) !== sourceText) {
-    throw new Error('Executor manual guidance must not contain credential-like content');
-  }
 }
 
 export interface PreparedExecutorDraft {
@@ -533,15 +527,7 @@ export class ConfigurationService implements ConfigurationServicePort {
           .join('; '));
       }
       this.compileDraft(draft.revisionId);
-      const manual = buildPlannerConfigurationView(
-        this.getDraftSnapshot(draft.revisionId),
-      ).executorCapabilityManuals?.find(candidate => (
-        candidate.agentClassRef === agentClassRef
-      ));
-      if (!manual) {
-        throw new Error(`Executor capability manual not found: ${agentClassRef}`);
-      }
-      return manual;
+      return buildExecutorManualPreview(this.getDraftSnapshot(draft.revisionId), agentClassRef);
     } finally {
       this.discardDraft(draft.revisionId);
     }
@@ -552,10 +538,14 @@ export class ConfigurationService implements ConfigurationServicePort {
    * 补齐底层字段构造候选配置，创建普通草稿并完成校验；不激活、不占锁。
    * prepare 时核对一次门禁；activate 仍由既有门禁与版本检查兜底。
    */
-  async prepareExecutorDraft(rawChange: unknown): Promise<PreparedExecutorDraft> {
+  async prepareExecutorDraft(rawChange: unknown, expectedRevisionId?: string): Promise<PreparedExecutorDraft> {
     const change = parseExecutorConfigurationChange(rawChange);
     this.assertActivationIdle();
     const base = await this.getActiveSnapshot();
+    this.assertActivationIdle();
+    if (expectedRevisionId !== undefined && expectedRevisionId !== base.revisionId) {
+      throw Object.assign(new Error('配置已更新，请刷新后重试。'), { code: 'revision_conflict' });
+    }
     let candidate: ExecutorConfigurationCandidate;
     try {
       candidate = buildExecutorConfigurationCandidate(base, change);

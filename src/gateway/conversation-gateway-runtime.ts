@@ -5,6 +5,7 @@ import type { RuntimeRegistry } from '../account/runtime-registry.js';
 import type { ConversationRegistry } from '../session/conversation-registry.js';
 import type { ConversationSession } from '../session/conversation-session.js';
 import type { MailboxCommand, MailboxReceipt } from '../session/conversation-input-mailbox.js';
+import { isControlCommand } from '../session/conversation-input-mailbox.js';
 import type { InteractionTrace } from '../management/interaction-trace.js';
 import type { GatewayCommand } from './client-protocol.js';
 import {
@@ -267,7 +268,8 @@ export class ConversationGatewayRuntime {
     // 从接收连续占用到执行完成，不给配置事务留下空窗（ADR-0033 修正案）。
     // 查询、历史、权限决议和取消不视为新业务工作。
     const accountRuntime = this.deps.registry.getIfLoaded(this.deps.accountId);
-    const isBusinessWork = command.kind === 'user_message' || command.kind === 'slash_command';
+    const isBusinessWork = (command.kind === 'user_message' || command.kind === 'slash_command')
+      && !isControlCommand({ requestId, idempotencyKey, command });
     let reserved = false;
     if (isBusinessWork && accountRuntime?.reserveWork) {
       try {

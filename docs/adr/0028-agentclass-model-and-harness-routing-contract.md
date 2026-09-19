@@ -205,8 +205,19 @@ apply to that surface:
 - Zero Executors or zero enabled Executors is a valid configuration. Login,
   history, and settings remain available, while new business work is rejected
   at the application boundary with an explicit no-enabled-executor reason.
-  This admission rule coexists with Pi installation readiness and never
-  substitutes one for the other.
+  This admission rule coexists with installation readiness for currently
+  enabled tools (ADR-0033), rather than a fixed Pi-required rule.
+
+The implementation preserves all existing Auto objective fields. Ordinary
+name/model/manual edits retain structural capability facts; a permission
+reference change derives its controlled template from the referenced
+`profileId`, not the reference's spelling. Shared Pi/Codex runtime homes contain
+tool/provider facts only; the authorized attempt supplies the concrete model.
+Before capability preparation, Execution resolves the permission reference to
+its code-owned `profileId` in the exact authorized revision. An unavailable
+revision or mismatched reference fails closed; active configuration is not a fallback.
+Management manual previews include disabled assistants without publishing them
+into the active Planner catalog.
 
 Internal IDs are server-generated and immutable; recreating a same-named
 Executor produces a new ID, and deleting the last Executor does not delete

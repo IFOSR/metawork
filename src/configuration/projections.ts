@@ -7,8 +7,26 @@ import type {
   ModelPolicy,
   PermissionProfile,
   PlannerConfigurationView,
+  PlannerExecutorCapabilityManual,
   RuntimeConfigurationView,
 } from './types.js';
+
+/** Management previews include disabled assistants, unlike the planning catalog. */
+export function buildExecutorManualPreview(
+  snapshot: ConfigurationSnapshot,
+  agentClassRef: string,
+): PlannerExecutorCapabilityManual {
+  const agentClass = snapshot.config.agentClasses[agentClassRef];
+  if (!agentClass || agentClass.kind !== 'executor') {
+    throw new Error(`Executor capability manual not found: ${agentClassRef}`);
+  }
+  return compileExecutorCapabilityProfile({
+    agentClassRef, agentClass,
+    models: snapshot.config.models, providers: snapshot.config.providers,
+    harness: snapshot.config.harnesses[agentClass.harnessRef],
+    configurationRevision: snapshot.revisionId,
+  }).manual;
+}
 
 export function buildPlannerConfigurationView(
   snapshot: ConfigurationSnapshot,

@@ -1,4 +1,17 @@
 // 与 src/management/ 投影类型同构的前端类型。初期手动同步。
+export type {
+  ExecutorManagementView,
+  ExecutorConfigurationChange,
+  ExecutorEditableFields,
+  ExecutorToolId,
+} from '../../../src/configuration/executor-configuration';
+
+export interface PreparedExecutorConfiguration {
+  baseRevisionId: string;
+  createdAgentClassRef?: string;
+  summary: string[];
+  config: Record<string, unknown>;
+}
 
 export type StagePhase = 'planning' | 'authorization' | 'execution' | 'verification' | 'delivery';
 export type StageStatus = 'pending' | 'running' | 'done' | 'failed' | 'blocked';

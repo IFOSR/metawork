@@ -12,7 +12,7 @@ export function AgentReadinessBanner({
 }) {
   const block = requiredAgentBlock(agents);
   const codex = agents.find(agent => agent.agentId === 'codex-cli');
-  const showCodexNotice = codex && codex.status !== 'installed';
+  const showCodexNotice = codex && !codex.required && codex.status !== 'installed';
   // 文案一律用服务端按 AgentClass 解析出的名字，与设置里的“智能体名称”保持一致。
   const requiredAgentName = block.agent?.displayName ?? '必需智能体';
 
@@ -25,8 +25,7 @@ export function AgentReadinessBanner({
           <div>
             <strong>{block.message}</strong>
             <p>
-              {requiredAgentName} 是 MetaWork 的基础运行环境。安装它不会限制代码能力，
-              代码、研究等能力仍由你在智能体设置中配置的模型和能力决定。
+              当前启用的助手需要 {requiredAgentName}。请安装该执行工具，或在系统空闲时停用使用它的助手。
             </p>
             {block.agent?.detail && <small>{block.agent.detail}</small>}
           </div>
@@ -52,7 +51,7 @@ export function AgentReadinessBanner({
             <strong>{codex.displayName} 未安装，可选增强</strong>
             <p>
               安装后对 GPT/Codex 系列模型的兼容性更强，更适合代码理解、修改、测试和仓库级工程任务，
-              并提供额外的智能体、路由与回退选择。{requiredAgentName} 仍可承担代码和研究能力。
+              并提供额外的执行工具选择。多个助手可以共用同一个工具。
             </p>
           </div>
           <div className="agent-readiness-actions">

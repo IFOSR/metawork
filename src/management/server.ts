@@ -126,6 +126,13 @@ export interface ProviderModelDiscoveryResponse {
 }
 
 export interface ConfigQuery {
+  getExecutorManagement?(): Promise<import('../configuration/executor-configuration.js').ExecutorManagementView>;
+  prepareExecutor?(input: { baseRevisionId: string; change: unknown }): Promise<{
+    baseRevisionId: string;
+    config: unknown;
+    summary: string[];
+    createdAgentClassRef?: string;
+  }>;
   getActive(): Promise<ConfigSnapshotResponse>;
   listRevisions(): Promise<RevisionSummary[]>;
   getSnapshot(revisionId: string): Promise<ConfigSnapshotResponse | null>;
@@ -528,6 +535,15 @@ export class ManagementServer {
     error: unknown,
   ): void {
     const message = error instanceof Error ? error.message : String(error);
+    const code = (error as { code?: string })?.code;
+    if (code === 'runtime_busy' || code === 'revision_conflict') {
+      this.sendJson(response, 409, { ok: false, code, error: message, issues: [message] });
+      return;
+    }
+    if (code === 'invalid_configuration' || code === 'unsupported_change' || code === 'tool_unavailable') {
+      this.sendJson(response, 422, { ok: false, code, error: message, issues: [message] });
+      return;
+    }
     const path = request.url ?? '/';
     console.error('[MetaWork Web] request failed', {
       method: request.method ?? 'UNKNOWN',
@@ -905,6 +921,30 @@ export class ManagementServer {
       return;
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/config/executors') {
+      if (!this.deps.configQuery.getExecutorManagement) {
+        this.sendJson(response, 503, { error: 'Executor configuration unavailable' });
+        return;
+      }
+      this.sendJson(response, 200, await this.deps.configQuery.getExecutorManagement());
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/config/executors/prepare') {
+      if (!this.deps.configQuery.prepareExecutor) {
+        this.sendJson(response, 503, { error: 'Executor configuration unavailable' });
+        return;
+      }
+      const body = await readRequestBody(request);
+      if (typeof body.baseRevisionId !== 'string' || !body.baseRevisionId.trim() || !isRecord(body.change)) {
+        this.sendJson(response, 400, { error: 'baseRevisionId and change are required' });
+        return;
+      }
+      this.sendJson(response, 200, await this.deps.configQuery.prepareExecutor({
+        baseRevisionId: body.baseRevisionId, change: body.change,
+      }));
+      return;
+    }
+
     const capabilityManualMatch = /^\/api\/config\/executors\/([^/]+)\/capability-manual$/u
       .exec(url.pathname);
     if (request.method === 'GET' && capabilityManualMatch) {
@@ -949,6 +989,7 @@ export class ManagementServer {
         );
         this.sendJson(response, 200, analysis);
       } catch (error) {
+        if ((error as { code?: string }).code === 'runtime_busy') throw error;
         this.sendJson(response, 422, { error: (error as Error).message });
       }
       return;
@@ -979,6 +1020,7 @@ export class ManagementServer {
         );
         this.sendJson(response, 200, compilation);
       } catch (error) {
+        if ((error as { code?: string }).code === 'runtime_busy') throw error;
         this.sendJson(response, 422, { error: (error as Error).message });
       }
       return;
@@ -1293,6 +1335,7 @@ export class ManagementServer {
 }
 
 interface RequestBody {
+  change?: unknown;
   token?: string;
   username?: string;
   password?: string;

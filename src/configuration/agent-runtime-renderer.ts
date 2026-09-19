@@ -83,7 +83,8 @@ export class AgentRuntimeRenderer {
     const agent = join(root, 'pi-home', '.pi', 'agent');
     await mkdir(agent, { recursive: true });
     await writeFile(join(agent, 'models.json'), `${JSON.stringify(buildModelsJson(config), null, 2)}\n`, 'utf8');
-    await writeFile(join(agent, 'settings.json'), `${JSON.stringify(buildSettingsJson(config, 'pi-agent'), null, 2)}\n`, 'utf8');
+    const { defaultProvider, defaultModel, ...sharedSettings } = buildSettingsJson(config, '');
+    await writeFile(join(agent, 'settings.json'), `${JSON.stringify(sharedSettings, null, 2)}\n`, 'utf8');
   }
 
   private async renderCodex(config: AnyFusionConfigurationV2, root: string): Promise<void> {
@@ -178,12 +179,7 @@ export function buildSettingsJson(config: AnyFusionConfigurationV2, agentClassId
 
 function buildCodexConfigToml(config: AnyFusionConfigurationV2): string {
   const providers = enabledProviders(config);
-  const modelRef = resolveModelRef(config, 'codex-cli');
-  const model = modelRef ? config.models[modelRef] : null;
-  const modelProvider = model?.providerRef ?? providers[0]?.[0] ?? '';
   const lines = [
-    `model = "${model?.modelId ?? ''}"`,
-    `model_provider = "${modelProvider}"`,
     'model_reasoning_effort = "high"',
     'preferred_auth_method = "apikey"',
     'web_search = "disabled"',

@@ -111,6 +111,20 @@ function snapshot(revisionId: string, config: AnyFusionConfigurationV2): Configu
 }
 
 describe('AgentRuntimeRenderer', () => {
+  it('does not bake one built-in Executor model into a shared tool home', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-renderer-'));
+    try {
+      const config = makeConfig();
+      config.agentClasses['codex-cli'] = { ...config.agentClasses.engineering!, modelPolicy: { mode: 'fixed', modelRef: 'model-b' } };
+      config.agentClasses['pi-agent'] = { ...config.agentClasses.engineering!, modelPolicy: { mode: 'fixed', modelRef: 'model-b' } };
+      await new AgentRuntimeRenderer(root).render(snapshot('rev-shared', config));
+      const codex = await readFile(join(root, 'rev-shared', 'codex', 'config.toml'), 'utf8');
+      const pi = JSON.parse(await readFile(join(root, 'rev-shared', 'pi-home', '.pi', 'agent', 'settings.json'), 'utf8'));
+      expect(codex).not.toMatch(/^model =/mu);
+      expect(pi.defaultModel).toBeUndefined();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('renders one provider section per enabled provider', async () => {
     const root = await mkdtemp(join(tmpdir(), 'anyfusion-renderer-'));
     try {

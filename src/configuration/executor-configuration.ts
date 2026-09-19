@@ -16,7 +16,69 @@ import type {
   ModelPolicy,
 } from './types.js';
 import type { ExecutorAffordanceId, RoutingCapabilityId } from '../routing/types.js';
-import { validateExecutorManualSourceText } from './configuration-service.js';
+import { validateExecutorManualSourceText } from './executor-manual-source.js';
+import { ModelPolicySchema } from './schema.js';
+import { projectConfigurationCandidates } from '../routing/configuration-candidate-projection.js';
+
+export interface ExecutorManagementView {
+  baseRevisionId: string;
+  executors: Array<ExecutorEditableFields & { agentClassRef: string; tool: ExecutorToolId | null }>;
+  tools: Array<{
+    id: ExecutorToolId;
+    label: string;
+    available: boolean;
+    reason?: string;
+    models: Array<{ ref: string; label: string; fixedAllowed: boolean; autoAllowed: boolean }>;
+  }>;
+  permissions: Array<{ ref: string; label: string }>;
+}
+
+export function projectExecutorManagement(snapshot: ConfigurationSnapshot): ExecutorManagementView {
+  const config = snapshot.config;
+  const permissionLabels: Record<string, string> = {
+    'workspace-engineering': '工作区开发和文档处理',
+    'public-web-research': '公共网络资料研究',
+    'restricted-custom': '受限操作',
+  };
+  return {
+    baseRevisionId: snapshot.revisionId,
+    executors: Object.entries(config.agentClasses)
+      .filter(([, agent]) => agent.kind === 'executor')
+      .map(([agentClassRef, agent]) => {
+        const driver = config.harnesses[agent.harnessRef]?.driverId;
+        return {
+          agentClassRef,
+          tool: driver === 'pi-cli' ? 'pi' : driver === 'codex-cli' ? 'codex' : null,
+          displayName: agent.displayName ?? agentClassRef,
+          modelPolicy: structuredClone(agent.modelPolicy),
+          permissionProfileRef: agent.permissionProfileRef ?? '',
+          manualSourceText: agent.executorManual?.sourceText ?? '',
+          enabled: agent.enabled,
+        };
+      }),
+    tools: (['pi', 'codex'] as const).map(id => {
+      try {
+        const harnessRef = resolveExecutorToolHarness(config, id);
+        const candidates = projectConfigurationCandidates({
+          ...config, agentClasses: { assistant: { kind: 'executor', harnessRef } },
+        }, 'assistant', { mode: 'auto' });
+        return {
+          id, label: TOOL_LABELS[id], available: true,
+          models: candidates.map(model => ({
+            ref: model.modelRef,
+            label: `${config.providers[model.providerRef]?.displayName ?? model.providerRef} / ${model.modelId}`,
+            fixedAllowed: true, autoAllowed: model.harnessCompatible !== false,
+          })),
+        };
+      } catch (error) {
+        return { id, label: TOOL_LABELS[id], available: false, reason: (error as Error).message, models: [] };
+      }
+    }),
+    permissions: Object.entries(config.permissionProfiles).map(([ref, profile]) => ({
+      ref, label: `${permissionLabels[profile.profileId] ?? '受限操作'} (${ref})`,
+    })),
+  };
+}
 
 export type ExecutorToolId = 'pi' | 'codex';
 
@@ -65,25 +127,9 @@ export interface ExecutorConfigurationCandidate {
 
 const ReferenceIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/u);
 
-const ModelPolicyInputSchema = z.union([
-  z.object({
-    mode: z.literal('fixed'),
-    modelRef: ReferenceIdSchema,
-  }).strict(),
-  z.object({
-    mode: z.literal('auto'),
-    allowedModelRefs: z.array(ReferenceIdSchema).min(1).max(64),
-    defaultModelRef: ReferenceIdSchema.optional(),
-    fallback: z.object({
-      enabled: z.boolean(),
-      order: z.array(ReferenceIdSchema).max(64),
-    }).strict().optional(),
-  }).strict(),
-]);
-
 const ExecutorEditableFieldsSchema = z.object({
   displayName: z.string().trim().min(1).max(80),
-  modelPolicy: ModelPolicyInputSchema,
+  modelPolicy: ModelPolicySchema,
   permissionProfileRef: ReferenceIdSchema,
   manualSourceText: z.string().trim().max(8_000),
   enabled: z.boolean(),
@@ -169,18 +215,27 @@ export function resolveExecutorToolHarness(
 }
 
 /** 受控能力模板：按既有权限方案派生，不从用户说明文字中自由发明。 */
-function controlledExecutorTemplate(permissionProfileRef: string): {
+function controlledExecutorTemplate(config: AnyFusionConfigurationV2, permissionProfileRef: string): {
   routingCapabilities: RoutingCapabilityId[];
   plannerAffordances: ExecutorAffordanceId[];
   primaryUseCases: string[];
   avoidUseCases: string[];
 } {
-  if (permissionProfileRef === 'public-web-research') {
+  const profileId = config.permissionProfiles[permissionProfileRef]?.profileId;
+  if (profileId === 'public-web-research') {
     return {
       routingCapabilities: ['current-web-research'],
       plannerAffordances: ['public-web-search', 'public-web-fetch', 'source-citation'],
       primaryUseCases: ['current public-web research', 'source verification'],
       avoidUseCases: ['repository modification and engineering verification'],
+    };
+  }
+  if (profileId !== 'workspace-engineering') {
+    return {
+      routingCapabilities: [],
+      plannerAffordances: [],
+      primaryUseCases: [],
+      avoidUseCases: [],
     };
   }
   return {
@@ -287,7 +342,7 @@ export function buildExecutorConfigurationCandidate(
           '内部 ID 冲突，请重试。',
         );
       }
-      const template = controlledExecutorTemplate(change.fields.permissionProfileRef);
+      const template = controlledExecutorTemplate(config, change.fields.permissionProfileRef);
       const definition: AgentClassDefinition = {
         displayName: change.fields.displayName,
         kind: 'executor',
@@ -324,12 +379,9 @@ export function buildExecutorConfigurationCandidate(
         displayName: change.fields.displayName,
         modelPolicy: structuredClone(change.fields.modelPolicy),
         permissionProfileRef: change.fields.permissionProfileRef,
-        routingCapabilities: controlledExecutorTemplate(
-          change.fields.permissionProfileRef,
-        ).routingCapabilities,
-        plannerAffordances: controlledExecutorTemplate(
-          change.fields.permissionProfileRef,
-        ).plannerAffordances,
+        ...(existing.permissionProfileRef !== change.fields.permissionProfileRef
+          ? controlledExecutorTemplate(config, change.fields.permissionProfileRef)
+          : {}),
         executorManual: {
           // 语义断言只能经既有回执流程写入；普通编辑保留已有断言。
           ...(existing.executorManual ?? { assertions: [] }),

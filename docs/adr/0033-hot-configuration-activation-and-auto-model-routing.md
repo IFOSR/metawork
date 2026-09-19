@@ -163,9 +163,25 @@ read-only credential queries never import or replace keys as a side effect,
 and automatic credential import runs only inside a protected initialization or
 configuration transaction.
 
-CLI executor administration uses the authenticated loopback Management API of
-the verified live Server and the same gate. When the Server is unreachable or
-authentication fails the CLI errors out; no offline file-write fallback exists.
+**2026-09-19 scope adjustment:** the owner explicitly deferred CLI administration
+to its upcoming redesign. The existing CLI admin path is unchanged and is not
+covered by this delivery's live-Server gate. Until that redesign removes direct
+file writes, operators must not run CLI configuration mutations alongside a live
+Server. The target remains authenticated live-Server administration with no
+offline write fallback.
+
+Web/Management now expose bounded preparation and confirmation through the
+existing activation transaction. Nested service activation is authorized by
+transaction-local ownership, not a caller's boolean alone. Manual compilation
+and shared Key writes hold the account gate; credential reads are side-effect
+free. Failed compensation latches a recovery-required block until service
+restart/recovery. Passive notification failure does not undo committed state.
+
+This amendment also supersedes the fixed Pi-required/Codex-optional installation
+rule above: required tool installation is derived from currently enabled
+Executor Harness drivers. Installation cards identify tools, not one assistant
+sharing that tool. No enabled Executor rejects new user work with
+`no_enabled_executor`; creating/browsing Conversations remains available.
 
 ## Consequences
 

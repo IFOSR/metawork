@@ -6,12 +6,118 @@ import { extname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { buildStagedLegacyConfiguration } from '../../src/configuration/staged-legacy-configuration.js';
+import { buildExecutorConfigurationCandidate, parseExecutorConfigurationChange, projectExecutorManagement } from '../../src/configuration/executor-configuration.js';
+import { buildExecutorManualPreview } from '../../src/configuration/projections.js';
 
 const chromePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const runBrowserE2e = process.env.RUN_BROWSER_E2E === '1';
 const e2e = runBrowserE2e ? describe : describe.skip;
 
 e2e('Settings workbench browser flow', () => {
+  it('creates, renames, disables, enables and deletes an assistant, and blocks busy editing on mobile', async () => {
+    const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
+    const server = await startMockServer(join(root, 'web', 'dist'), 'executor-management');
+    const profile = await mkdtemp(join(tmpdir(), 'metawork-executor-chrome-'));
+    let chrome: ChildProcess | null = null;
+    try {
+      chrome = spawn(chromePath, [
+        '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+        '--window-size=1440,1000', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
+        `http://127.0.0.1:${server.port}/`,
+      ], { stdio: 'ignore' });
+      const target = await waitForPageTarget(await waitForDebuggingPort(profile));
+      const cdp = await CdpClient.connect(target.webSocketDebuggerUrl);
+      try {
+        const click = async (label: string, selector = 'button') => {
+          await waitForExpression(cdp, `[...document.querySelectorAll(${JSON.stringify(selector)})].some(b => b.textContent.trim() === ${JSON.stringify(label)} && !b.disabled)`);
+          await cdp.evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].find(b => b.textContent.trim() === ${JSON.stringify(label)}).click()`);
+        };
+        const save = async () => {
+          await click('预览变更', '.executor-editor-dialog button');
+          await click('确认并热生效', '.executor-editor-dialog button');
+          await waitForExpression(cdp, `!document.querySelector('.executor-editor-dialog')`);
+        };
+        await waitForExpression(cdp, `Boolean(document.querySelector('.sidebar-settings'))`);
+        await cdp.evaluate(`document.querySelector('.sidebar-settings').click()`);
+        await click('新增执行助手');
+        await waitForExpression(cdp, `Boolean(document.querySelector('.executor-editor-dialog'))`);
+        await cdp.evaluate(`(() => {
+          const form = document.querySelector('.executor-editor-dialog');
+          const name = form.querySelector('input');
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(name, 'Browser assistant');
+          name.dispatchEvent(new Event('input', { bubbles: true }));
+          const model = form.querySelectorAll('select')[2];
+          model.value = model.options[1].value;
+          model.dispatchEvent(new Event('change', { bubbles: true }));
+        })()`);
+        await save();
+        await waitForExpression(cdp, `document.querySelectorAll('.executor-management-actions').length === 3`);
+        const action = async (label: string) => {
+          await waitForExpression(cdp, `(() => {
+            const row = [...document.querySelectorAll('.executor-management-actions')].at(-1);
+            return [...row.querySelectorAll('button')].some(b => b.textContent.trim() === ${JSON.stringify(label)} && !b.disabled);
+          })()`);
+          await cdp.evaluate(`(() => {
+            const row = [...document.querySelectorAll('.executor-management-actions')].at(-1);
+            [...row.querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(label)}).click();
+          })()`);
+          await waitForExpression(cdp, `Boolean(document.querySelector('.executor-editor-dialog'))`);
+        };
+        await action('编辑助手');
+        await cdp.evaluate(`(() => {
+          const name = document.querySelector('.executor-editor-dialog input');
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(name, 'Renamed assistant');
+          name.dispatchEvent(new Event('input', { bubbles: true }));
+        })()`);
+        await save();
+        await cdp.evaluate(`(() => {
+          const card = [...document.querySelectorAll('.agent-route-card')].at(-1);
+          const name = card.querySelector('.agent-name-field input');
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(name, 'Unsaved local name');
+          name.dispatchEvent(new Event('input', { bubbles: true }));
+        })()`);
+        await waitForExpression(cdp, `[...document.querySelectorAll('.agent-name-field input')].at(-1).value === 'Unsaved local name'`);
+        const unsavedModel = await cdp.evaluate(`(() => {
+          const card = [...document.querySelectorAll('.agent-route-card')].at(-1);
+          const model = [...card.querySelectorAll('select')].at(-1);
+          const alternative = [...model.options].find(option => option.value && !option.disabled && option.value !== model.value);
+          if (!alternative) throw new Error('Expected an alternate model');
+          model.value = alternative.value;
+          model.dispatchEvent(new Event('change', { bubbles: true }));
+          return model.value;
+        })()`);
+        await action('停用');
+        await save();
+        await waitForExpression(cdp, `[...document.querySelectorAll('.executor-management-actions')].at(-1).textContent.includes('已停用')`);
+        expect(await cdp.evaluate(`[...document.querySelectorAll('.agent-name-field input')].at(-1).value`))
+          .toBe('Unsaved local name');
+        expect(await cdp.evaluate(`[...[...document.querySelectorAll('.agent-route-card')].at(-1).querySelectorAll('select')].at(-1).value`))
+          .toBe(unsavedModel);
+        await action('启用');
+        await save();
+        expect(await cdp.evaluate(`[...document.querySelectorAll('.agent-name-field input')].at(-1).value`))
+          .toBe('Unsaved local name');
+        await action('删除');
+        await save();
+        await waitForExpression(cdp, `document.querySelectorAll('.executor-management-actions').length === 2`);
+        await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+        await click('新增执行助手');
+        await waitForExpression(cdp, `Boolean(document.querySelector('.executor-editor-dialog'))`);
+        expect(await cdp.evaluate(`document.documentElement.scrollWidth <= window.innerWidth`)).toBe(true);
+        server.setBusy(true);
+        await waitForExpression(cdp, `document.querySelector('.executor-editor-dialog button[type=submit]').disabled`);
+        expect(await cdp.evaluate(`document.querySelector('.executor-editor-dialog input').closest('fieldset').disabled`)).toBe(true);
+        server.setBusy(false);
+        await waitForExpression(cdp, `!document.querySelector('.executor-editor-dialog button[type=submit]').disabled`);
+      } finally { cdp.close(); }
+    } finally {
+      chrome?.kill('SIGTERM');
+      await server.close();
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
   it('renders the capability workbench without horizontal overflow and edits an Auto pool', async () => {
     const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
     const webDist = join(root, 'web', 'dist');
@@ -354,9 +460,12 @@ async function startMockServer(webDist: string): Promise<{
   getActivationPayload(): unknown;
   setBusy(value: boolean): void;
 }>;
+async function startMockServer(webDist: string, mode: 'provider-recovery' | 'executor-management'): Promise<{
+  port: number; close(): Promise<void>; getActivationPayload(): unknown; setBusy(value: boolean): void;
+}>;
 async function startMockServer(
   webDist: string,
-  mode?: 'provider-recovery',
+  mode?: 'provider-recovery' | 'executor-management',
 ): Promise<{
   port: number;
   close(): Promise<void>;
@@ -365,8 +474,53 @@ async function startMockServer(
 }> {
   let activationPayload: unknown = null;
   let busy = false;
+  let executorSnapshot = buildStagedLegacyConfiguration({ testMode: true }).snapshot;
+  if (mode === 'executor-management') {
+    for (const [ref, model] of Object.entries(executorSnapshot.config.models)) {
+      executorSnapshot.config.models[`${ref}-alternate`] = {
+        ...model, modelId: `${model.modelId}-alternate`,
+      };
+    }
+  }
+  let activationOrdinal = 0;
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    if (mode === 'executor-management') {
+      if (url.pathname === '/api/config') {
+        json(response, { ...executorSnapshot, runningRevisionId: executorSnapshot.revisionId });
+        return;
+      }
+      if (url.pathname === '/api/config/executors') {
+        json(response, projectExecutorManagement(executorSnapshot));
+        return;
+      }
+      if (url.pathname === '/api/config/executors/prepare') {
+        void readJsonBody(request).then(body => {
+          json(response, buildExecutorConfigurationCandidate(executorSnapshot, parseExecutorConfigurationChange(body.change)));
+        });
+        return;
+      }
+      const manual = /^\/api\/config\/executors\/([^/]+)\/capability-manual(?:\/compile)?$/u.exec(url.pathname);
+      if (manual) {
+        if (request.method === 'POST') {
+          void readJsonBody(request).then(body => {
+            const snapshot = { ...executorSnapshot, config: body.config as typeof executorSnapshot.config };
+            json(response, { config: snapshot.config, manual: buildExecutorManualPreview(snapshot, manual[1]),
+              sourceText: '', analysisMode: 'semantic', userProfile: { sourceText: '', assertions: [] } });
+          });
+        } else json(response, buildExecutorManualPreview(executorSnapshot, manual[1]));
+        return;
+      }
+      if (url.pathname === '/api/config/activate') {
+        void readJsonBody(request).then(body => {
+          activationPayload = body;
+          executorSnapshot = { ...executorSnapshot, config: body.config as typeof executorSnapshot.config,
+            revisionId: `executor-browser-${++activationOrdinal}` };
+          json(response, { ok: true, revisionId: executorSnapshot.revisionId });
+        });
+        return;
+      }
+    }
     if (url.pathname === '/api/auth/session') {
       json(response, { authenticated: true, launchContext: null });
       return;

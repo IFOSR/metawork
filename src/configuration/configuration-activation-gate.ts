@@ -1,7 +1,10 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 export type ConfigurationActivationStatus = 'idle' | 'busy' | 'activating';
 
 export type ConfigurationActivationBlockCode =
   | 'activation_in_progress'
+  | 'activation_recovery_required'
   | 'planner_turn_active'
   | 'work_request_pending'
   | 'unfinished_task'
@@ -68,6 +71,9 @@ export class ConfigurationActivationBlockedError extends Error {
 
 export class ConfigurationActivationGate {
   private activating = false;
+  private recoveryRequired = false;
+  private readonly transaction = new AsyncLocalStorage<symbol>();
+  private owner: symbol | null = null;
 
   constructor(
     private readonly readFacts: () => ConfigurationActivationRuntimeFacts,
@@ -77,6 +83,12 @@ export class ConfigurationActivationGate {
   getStatus(): ConfigurationActivationStatusSnapshot {
     const facts = this.readFacts();
     const blockingReasons: ConfigurationActivationBlock[] = [];
+    if (this.recoveryRequired) {
+      blockingReasons.push({
+        code: 'activation_recovery_required',
+        message: '配置恢复未完成，已暂停新工作和配置写入。请重启服务并检查配置。',
+      });
+    }
     if (this.activating) {
       blockingReasons.push({
         code: 'activation_in_progress',
@@ -157,7 +169,11 @@ export class ConfigurationActivationGate {
 
   /** 配置事务是否正在进行；新工作接收入口据此对称拒绝。 */
   isActivationInProgress(): boolean {
-    return this.activating;
+    return this.activating || this.recoveryRequired;
+  }
+
+  requireRecovery(): void {
+    this.recoveryRequired = true;
   }
 
   async withActivation<T>(
@@ -165,7 +181,7 @@ export class ConfigurationActivationGate {
     options: { allowNested?: boolean } = {},
   ): Promise<T> {
     if (this.activating) {
-      if (!options.allowNested) {
+      if (!options.allowNested || this.transaction.getStore() !== this.owner) {
         throw new ConfigurationActivationBlockedError(this.getStatus());
       }
       return operation();
@@ -175,14 +191,16 @@ export class ConfigurationActivationGate {
       throw new ConfigurationActivationBlockedError(status);
     }
     this.activating = true;
+    this.owner = Symbol('configuration-transaction');
     try {
       const rechecked = this.getStatus();
       if (rechecked.blockingReasons.some(reason => reason.code !== 'activation_in_progress')) {
         throw new ConfigurationActivationBlockedError(rechecked);
       }
-      return await operation();
+      return await this.transaction.run(this.owner, operation);
     } finally {
       this.activating = false;
+      this.owner = null;
     }
   }
 }

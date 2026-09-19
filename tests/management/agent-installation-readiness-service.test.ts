@@ -9,6 +9,19 @@ function installed(stdout = 'pi 1.2.3'): VersionProbeResult {
 }
 
 describe('AgentInstallationReadinessService', () => {
+  it('projects requirements from currently enabled tools, not built-in assistant names', async () => {
+    let required: Array<'pi-agent' | 'codex-cli'> = ['codex-cli'];
+    const service = new AgentInstallationReadinessService({
+      requiredAgentIds: () => required,
+      probe: async command => command === 'codex' ? installed() : { kind: 'missing' },
+    });
+    await service.refresh();
+    expect(service.isRequiredAgentReady()).toBe(true);
+    expect(service.getState().find(agent => agent.agentId === 'pi-agent')?.required).toBe(false);
+    required = ['pi-agent'];
+    expect(service.isRequiredAgentReady()).toBe(false);
+  });
+
   it('reports installed agents with a bounded version and configured display name', async () => {
     const service = new AgentInstallationReadinessService({
       probe: async command => installed(`${command} ${'x'.repeat(300)}`),

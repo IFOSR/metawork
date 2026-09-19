@@ -22,6 +22,19 @@ function executorAgentClass(overrides: Partial<AgentClassDefinition> = {}): Agen
 }
 
 describe('AgentClassService configuration projection', () => {
+  it('reads the current configuration after enable, create and remove without reconstruction', () => {
+    let classes: Record<string, AgentClassDefinition> = {
+      assistant: executorAgentClass({ enabled: false }),
+    };
+    const service = new AgentClassService({ getAgentClasses: () => classes });
+    expect(service.hasExecutorAgentClass('assistant')).toBe(false);
+    classes = { assistant: executorAgentClass(), second: executorAgentClass() };
+    expect(service.hasExecutorAgentClass('assistant')).toBe(true);
+    expect(service.listExecutorAgentClassNames()).toEqual(['assistant', 'second']);
+    classes = {};
+    expect(service.listExecutorAgentClassNames()).toEqual([]);
+  });
+
   it('lists only enabled executor AgentClass names in sorted order', () => {
     const service = new AgentClassService({
       agentClasses: {

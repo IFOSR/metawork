@@ -5,25 +5,27 @@
 import type { AgentClassDefinition } from '../configuration/types.js';
 
 export interface AgentClassServiceDeps {
-  agentClasses: Readonly<Record<string, AgentClassDefinition>>;
+  agentClasses?: Readonly<Record<string, AgentClassDefinition>>;
+  getAgentClasses?: () => Readonly<Record<string, AgentClassDefinition>>;
 }
 
 export class AgentClassService {
-  private readonly agentClasses: Readonly<Record<string, AgentClassDefinition>>;
+  private readonly getAgentClasses: () => Readonly<Record<string, AgentClassDefinition>>;
 
   constructor(deps: AgentClassServiceDeps) {
-    this.agentClasses = deps.agentClasses;
+    if (!deps.getAgentClasses && !deps.agentClasses) throw new Error('AgentClass configuration is required');
+    this.getAgentClasses = deps.getAgentClasses ?? (() => deps.agentClasses!);
   }
 
   listExecutorAgentClassNames(): string[] {
-    return Object.entries(this.agentClasses)
+    return Object.entries(this.getAgentClasses())
       .filter(([, agentClass]) => agentClass.kind === 'executor' && agentClass.enabled)
       .map(([name]) => name)
       .sort((left, right) => left.localeCompare(right));
   }
 
   hasExecutorAgentClass(name: string): boolean {
-    const agentClass = this.agentClasses[name];
+    const agentClass = this.getAgentClasses()[name];
     return Boolean(agentClass && agentClass.kind === 'executor' && agentClass.enabled);
   }
 }

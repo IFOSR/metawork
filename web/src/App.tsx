@@ -354,12 +354,14 @@ export function App() {
         const pending = detail?.requestId
           ? pendingInputsRef.current.get(detail.requestId)
           : undefined;
-        if (detail?.code === 'required_agent_unavailable' && pending && detail.requestId) {
+        if ((detail?.code === 'required_agent_unavailable' || detail?.code === 'no_enabled_executor') && pending && detail.requestId) {
           pendingInputsRef.current.delete(detail.requestId);
           setDraft(pending.draft);
           setPendingAttachments(pending.attachments);
           setActivationNotice(
-            `当前无法开始新工作，请先安装${requiredAgentBlock(agentReadiness).agent?.displayName ?? '必需智能体'}。`,
+            detail.code === 'no_enabled_executor'
+              ? '当前没有启用的执行助手，请在设置中新增或启用至少一名助手。'
+              : `当前无法开始新工作，请先安装${requiredAgentBlock(agentReadiness).agent?.displayName ?? '必需执行工具'}。`,
           );
           return;
         }

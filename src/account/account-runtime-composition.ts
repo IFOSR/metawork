@@ -110,7 +110,7 @@ export function buildAccountRuntimeComposition(deps: {
   let startupRecovery!: AccountStartupRecoveryService;
   const taskServices = buildAccountTaskServices({
     taskEngine: deps.taskEngine,
-    agentClasses: deps.stagedConfiguration.snapshot.config.agentClasses,
+    getAgentClasses: () => deps.stagedConfiguration.snapshot.config.agentClasses,
     attemptExecutionBackend: deps.attemptExecutionBackend,
   });
   const executionServices = buildAccountExecutionServices({

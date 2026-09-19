@@ -83,6 +83,13 @@ describe('configuration admission interlock', () => {
     });
     expect(permission.status).toBe('accepted');
 
+    for (const [index, text] of ['/status', '/task list', '/task cancel task_1'].entries()) {
+      const receipt = await fixture.submit('conv_1', `req_s${index}`, `idem_s${index}`, {
+        kind: 'slash_command', text,
+      });
+      expect(receipt.status).toBe('accepted');
+    }
+
     release();
     await activation;
   });

@@ -109,6 +109,7 @@ export interface ConfigurationRuntimeCoordinatorDeps {
   prepareConfig?: (input: {
     config: unknown;
     secrets: Record<string, string>;
+    baseRevisionId: string;
   }) => Promise<unknown> | unknown;
   /**
    * Applies candidate secrets only for the duration of activation and returns
@@ -218,14 +219,21 @@ export class ConfigurationRuntimeCoordinator {
         issues: initialValidation.issues.map(issue => `${issue.path || '(root)'}: ${issue.message}`),
       };
     }
-    // Preparation must remain side-effect free. Secret persistence, when
-    // needed, happens only after the candidate has passed validation.
-    const preparedConfig = input.secrets && Object.keys(input.secrets).length > 0
-      ? await this.deps.prepareConfig?.({
-          config: input.config,
-          secrets: input.secrets,
-        }) ?? input.config
-      : input.config;
+    // Semantic preparation belongs to this transaction. Persist credentials
+    // only after the prepared candidate has passed validation.
+    let preparedConfig: unknown;
+    try {
+      preparedConfig = await this.deps.prepareConfig?.({
+        config: input.config,
+        secrets: input.secrets ?? {},
+        baseRevisionId: current.revisionId,
+      }) ?? input.config;
+    } catch (error) {
+      return {
+        ok: false, code: 'invalid_configuration', activeRevisionId: current.revisionId,
+        issues: [error instanceof Error ? error.message : String(error)],
+      };
+    }
     const draft = preparedConfig === input.config
       ? initialDraft
       : this.deps.service.createDraft(preparedConfig, input.expectedRevisionId);
@@ -251,7 +259,12 @@ export class ConfigurationRuntimeCoordinator {
     }
     let rollbackSecrets: (() => Promise<void>) | undefined;
     const rollbackCandidate = async (): Promise<void> => {
-      await rollbackSecrets?.();
+      try {
+        await rollbackSecrets?.();
+      } catch (error) {
+        this.deps.gate.requireRecovery();
+        throw error;
+      }
       rollbackSecrets = undefined;
     };
     let compiled: ReturnType<ConfigurationRuntimeCoordinatorDeps['service']['compileDraft']>;
@@ -309,11 +322,19 @@ export class ConfigurationRuntimeCoordinator {
           issues: error.status.blockingReasons.map(reason => reason.message),
         };
       }
-      if (this.deps.service.restoreActiveSnapshot) {
-        await this.deps.service.restoreActiveSnapshot(
-          current.revisionId,
-          draft.revisionId,
-        ).catch(() => undefined);
+      try {
+        const observed = await this.deps.service.getActiveSnapshot();
+        if (observed.revisionId !== current.revisionId && observed.revisionId !== draft.revisionId) {
+          throw new Error('unexpected active configuration during rollback');
+        }
+        if (this.deps.service.restoreActiveSnapshot) {
+          // Rendering may fail before the durable pointer changes.
+          await this.deps.service.restoreActiveSnapshot(current.revisionId, observed.revisionId);
+        } else if (observed.revisionId !== current.revisionId) {
+          throw new Error('configuration rollback is unavailable');
+        }
+      } catch {
+        this.deps.gate.requireRecovery();
       }
       await rollbackCandidate();
       throw error;
@@ -326,8 +347,8 @@ export class ConfigurationRuntimeCoordinator {
         activeRevisionId: result.activeRevisionId ?? current.revisionId,
       };
     }
-    this.replaceLiveSnapshot(result.snapshot);
     try {
+      this.replaceLiveSnapshot(result.snapshot);
       await this.deps.onActivated?.({
         snapshot: this.activeSnapshot,
         planner: this.plannerView,
@@ -370,6 +391,7 @@ export class ConfigurationRuntimeCoordinator {
         );
       }
       if (rollbackFailures.length > 0) {
+        this.deps.gate.requireRecovery();
         throw new Error(
           `configuration activation failed and rollback failed: ${failure}; `
           + rollbackFailures.join('; '),
@@ -408,8 +430,13 @@ export class ConfigurationRuntimeCoordinator {
   }
 
   private emit(event: ConfigurationRuntimeEvent): void {
-    this.deps.publish?.(event);
-    for (const listener of this.listeners) listener(event);
+    for (const listener of [this.deps.publish, ...this.listeners]) {
+      try {
+        listener?.(event);
+      } catch {
+        // Passive notifications cannot undo a committed configuration transaction.
+      }
+    }
   }
 }
 

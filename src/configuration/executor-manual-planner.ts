@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { buildPlannerConfigurationView } from './projections.js';
+import { buildPlannerConfigurationView, buildExecutorManualPreview } from './projections.js';
 import type {
   ConfigurationService,
   ExecutorManualSemanticEdit,
@@ -133,7 +133,10 @@ export class ExecutorManualPlanner {
       });
     }
 
-    const plannerView = buildPlannerConfigurationView(base);
+    const plannerView = {
+      ...buildPlannerConfigurationView(base),
+      executorCapabilityManuals: [buildExecutorManualPreview(base, input.agentClassRef)],
+    };
     const sessionId = this.createSessionId();
     const unregister = this.dependencies.registerSession(
       sessionId,
@@ -313,11 +316,7 @@ export class ExecutorManualPlanner {
       if (!compiledUserProfile) {
         throw new Error(`Executor manual user profile was not generated: ${input.agentClassRef}`);
       }
-      const plannerView = buildPlannerConfigurationView(draftSnapshot);
-      const manual = plannerView.executorCapabilityManuals?.find(
-        candidate => candidate.agentClassRef === input.agentClassRef,
-      );
-      if (!manual) throw new Error(`Executor capability manual was not generated: ${input.agentClassRef}`);
+      const manual = buildExecutorManualPreview(draftSnapshot, input.agentClassRef);
       return {
         agentClassRef: input.agentClassRef,
         configurationRevision: draftSnapshot.revisionId,

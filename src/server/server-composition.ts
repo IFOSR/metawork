@@ -84,8 +84,6 @@ import { WorkspaceDirectoryBrowser } from '../management/workspace-directory-bro
 import {
   AgentInstallationReadinessService,
 } from '../management/agent-installation-readiness-service.js';
-import { resolveAgentDisplayName } from '../configuration/user-facing-names.js';
-import { agentClassRefForInstallation } from '../management/agent-installation-catalog.js';
 import { WorkspaceGatewayRuntime } from '../gateway/workspace-gateway-runtime.js';
 import { workspaceEventStreamId } from '../gateway/workspace-event-stream.js';
 import { clientConnectionEventStreamId } from '../gateway/client-connection-event-stream.js';
@@ -104,7 +102,8 @@ import { PlannerHostBridge } from '../tui-bridge/planner-host-bridge.js';
 import { PlannerProcessSupervisor } from '../planning/planner-process-supervisor.js';
 import { buildStagedLegacyConfiguration } from '../configuration/staged-legacy-configuration.js';
 import { buildPlannerInputProfile } from '../planning/planner-input-profile.js';
-import { buildPlannerConfigurationView } from '../configuration/projections.js';
+import { buildPlannerConfigurationView, buildExecutorManualPreview } from '../configuration/projections.js';
+import { projectExecutorManagement } from '../configuration/executor-configuration.js';
 import { AutoModelResolver } from '../routing/auto-model-resolver.js';
 import { authorizedExecutorBindingFingerprint } from '../core/authorized-executor-binding.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
@@ -830,14 +829,14 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     service: configurationService,
     gate: configurationActivationGate,
     initialSnapshot: migratedSnapshot,
-    prepareConfig: async ({ config, secrets }) => {
+    prepareConfig: async ({ config, secrets, baseRevisionId }) => {
       let prepared = structuredClone(config) as AnyFusionConfigurationV2;
       for (const [providerRef, apiKey] of Object.entries(secrets)) {
         const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
         const provider = prepared.providers[providerRef];
         if (provider) provider.apiKeyRef = reference;
       }
-      return prepared;
+      return (await executorManualPlanner.compileAll({ baseRevisionId, config: prepared })).config;
     },
     stageSecrets: async secrets => {
       const previous = new Map<string, string | null>();
@@ -856,10 +855,15 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           await secretStore.put(references.get(providerRef)!, apiKey.trim());
         }
       } catch (error) {
-        for (const [providerRef, value] of previous) {
-          const reference = references.get(providerRef)!;
-          if (value === null) await secretStore.delete(reference);
-          else await secretStore.put(reference, value);
+        try {
+          for (const [providerRef, value] of previous) {
+            const reference = references.get(providerRef)!;
+            if (value === null) await secretStore.delete(reference);
+            else await secretStore.put(reference, value);
+          }
+        } catch (rollbackError) {
+          configurationActivationGate.requireRecovery();
+          throw rollbackError;
         }
         throw error;
       }
@@ -936,23 +940,18 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
   });
   const agentReadiness = new AgentInstallationReadinessService({
-    // 就绪卡片必须和设置里的“智能体名称”显示同一个名字：先按 CLI 命令把安装
-    // 对应到它的 AgentClass，再走同一套命名解析（用户配置名优先，其次由 class
-    // ref 推导）。此前用 agentId 直接索引 agentClasses，键不匹配导致配置名永远
-    // 读不到，卡片只能退回硬编码的“智能体 1/2”。
-    resolveDisplayName: agentId => {
+    requiredAgentIds: () => {
       const config = configurationRuntimeCoordinator.getSnapshot().config;
-      const agentClassRef = agentClassRefForInstallation({
-        agentId,
-        agentClasses: config.agentClasses,
-        harnesses: config.harnesses,
-      });
-      if (!agentClassRef) return undefined;
-      return resolveAgentDisplayName(
-        agentClassRef,
-        (config.agentClasses[agentClassRef] as { displayName?: string } | undefined)?.displayName,
-      );
+      return [...new Set(Object.values(config.agentClasses)
+        .filter(agent => agent.kind === 'executor' && agent.enabled)
+        .flatMap(agent => {
+          const driver = config.harnesses[agent.harnessRef]?.driverId;
+          return driver === 'pi-cli' ? ['pi-agent' as const]
+            : driver === 'codex-cli' ? ['codex-cli' as const] : [];
+        }))];
     },
+    // Installation belongs to the shared tool, not one arbitrarily chosen assistant.
+    resolveDisplayName: agentId => agentId === 'pi-agent' ? 'Pi' : 'Codex CLI',
   });
   republishAgentReadiness = () => agentReadiness.republish();
   const runtimePort = activatedAccountRuntime.getConversationPort();
@@ -1246,13 +1245,17 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     handleWorkspaceCommand: (command, context) =>
       workspaceGatewayRuntime.handle(command, context),
     newWorkAdmission: {
-      check: () => agentReadiness.isRequiredAgentReady()
-        ? { allowed: true as const }
-        : {
-            allowed: false as const,
-            reason: 'required_agent_unavailable' as const,
-            agentId: 'pi-agent' as const,
-          },
+      check: command => {
+        if (command.kind === 'create_conversation') return { allowed: true };
+        if (!Object.values(configurationRuntimeCoordinator.getSnapshot().config.agentClasses)
+          .some(agent => agent.kind === 'executor' && agent.enabled)) {
+          return { allowed: false, reason: 'no_enabled_executor' };
+        }
+        const missing = agentReadiness.getState().find(agent => agent.required && agent.status !== 'installed');
+        return missing
+          ? { allowed: false, reason: 'required_agent_unavailable', agentId: missing.agentId }
+          : { allowed: true };
+      },
     },
   });
   const webGatewayAdapter = new WebGatewayAdapter({
@@ -1543,34 +1546,42 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             config: snapshot.config,
           };
         },
+        getExecutorManagement: async () => projectExecutorManagement(configurationRuntimeCoordinator.getSnapshot()),
+        prepareExecutor: async ({ baseRevisionId, change }) => {
+          const prepared = await configurationService.prepareExecutorDraft(change, baseRevisionId);
+          try {
+            return {
+              baseRevisionId: prepared.baseRevisionId,
+              createdAgentClassRef: prepared.createdAgentClassRef,
+              summary: prepared.summary,
+              config: configurationService.getDraftSnapshot(prepared.revisionId).config,
+            };
+          } finally {
+            configurationService.discardDraft(prepared.revisionId);
+          }
+        },
         getExecutorCapabilityManual: async (agentClassRef, revisionId) => {
           const snapshot = await configurationService.getSnapshot(
             revisionId ?? (await configurationService.getActiveSnapshot()).revisionId,
           );
-          const manual = buildPlannerConfigurationView(snapshot)
-            .executorCapabilityManuals
-            ?.find(candidate => candidate.agentClassRef === agentClassRef);
-          if (!manual) {
-            throw new Error(`Executor capability manual not found: ${agentClassRef}`);
-          }
-          return manual;
+          return buildExecutorManualPreview(snapshot, agentClassRef);
         },
-        analyzeExecutorManual: (agentClassRef, input) => executorManualPlanner.analyze({
+        analyzeExecutorManual: (agentClassRef, input) => configurationActivationGate.withActivation(() => executorManualPlanner.analyze({
           agentClassRef,
           baseRevisionId: input.baseRevisionId,
           sourceText: input.sourceText,
           ...(input.config ? {
             candidateConfig: input.config as AnyFusionConfigurationV2,
           } : {}),
-        }),
-        compileExecutorManual: (agentClassRef, input) => executorManualPlanner.compile({
+        })),
+        compileExecutorManual: (agentClassRef, input) => configurationActivationGate.withActivation(() => executorManualPlanner.compile({
           agentClassRef,
           baseRevisionId: input.baseRevisionId,
           sourceText: input.sourceText,
           ...(input.config ? {
             candidateConfig: input.config as AnyFusionConfigurationV2,
           } : {}),
-        }),
+        })),
         previewExecutorCapabilityManual: (agentClassRef, input) => (
           configurationService.previewExecutorCapabilityManual(
             agentClassRef,
@@ -1670,22 +1681,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           };
         },
         activate: async (baseRevisionId, nextConfig, secrets) => {
-          let compiledConfig: AnyFusionConfigurationV2;
-          try {
-            compiledConfig = (await executorManualPlanner.compileAll({
-              baseRevisionId,
-              config: nextConfig as AnyFusionConfigurationV2,
-            })).config;
-          } catch (error) {
-            return {
-              ok: false,
-              code: 'invalid_configuration',
-              issues: [error instanceof Error ? error.message : String(error)],
-            };
-          }
           const result = await configurationRuntimeCoordinator.activate({
             expectedRevisionId: baseRevisionId,
-            config: compiledConfig,
+            config: nextConfig,
             secrets,
           });
           if (result.ok) {
@@ -1731,7 +1729,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
               restartPaths: result.restartPaths,
             };
         },
-        writeSecret: async (providerRef, apiKey) => {
+        writeSecret: (providerRef, apiKey) => configurationActivationGate.withActivation(async () => {
           const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
           const normalized = apiKey.trim();
           await secretStore.put(reference, normalized);
@@ -1739,17 +1737,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             configured: true,
             maskedApiKey: maskApiKey(normalized),
           };
-        },
+        }),
         getSecretStatus: async providerRefs => {
-          const references = Object.fromEntries(providerRefs.map(providerRef => [
-            providerRef,
-            `file-secret:anyfusion/providers/${providerRef}` as const,
-          ]));
-          await importLocalAgentCredentialsForRefs({
-            ...localAgentCredentialSources(),
-            providers: references,
-            secretStore,
-          });
           const status: Record<string, {
             configured: boolean;
             maskedApiKey: string | null;

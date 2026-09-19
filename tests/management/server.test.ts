@@ -22,6 +22,58 @@ import {
 import type { WebSessionRecordProjection } from '../../src/management/web-session-types.js';
 import type { AgentReadiness } from '../../src/management/agent-installation-readiness-service.js';
 import { WebGatewayAdmissionError } from '../../src/management/web-gateway-session-runtime.js';
+import { ConfigurationActivationBlockedError, ConfigurationActivationGate } from '../../src/configuration/configuration-activation-gate.js';
+
+describe('executor management API', () => {
+  it('exposes authenticated prepare without activating a candidate', async () => {
+    const port = await reservePort();
+    const calls: unknown[] = [];
+    const server = createManagementServer(port, {
+      configQuery: {
+        prepareExecutor: async input => {
+          calls.push(input);
+          return { baseRevisionId: 'revision-test', config: {}, summary: ['新增助手'], createdAgentClassRef: 'executor-new' };
+        },
+      },
+    });
+    await server.start();
+    try {
+      const url = `http://127.0.0.1:${port}/api/config/executors/prepare`;
+      expect((await fetch(url, { method: 'POST', body: '{}' })).status).toBe(401);
+      const response = await fetch(url, {
+        method: 'POST', headers: { authorization: 'Bearer manual-token', 'content-type': 'application/json' },
+        body: JSON.stringify({ baseRevisionId: 'revision-test', change: { operation: 'remove', agentClassRef: 'x' } }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ createdAgentClassRef: 'executor-new' });
+      expect(calls).toHaveLength(1);
+    } finally { await server.stop(); }
+  });
+
+  it('returns a structured busy response for shared Key writes and manual compilation', async () => {
+    const port = await reservePort();
+    const gate = new ConfigurationActivationGate(() => ({
+      activeTaskId: 'task-1', plannerTurnActive: false, activeAttemptCount: 0,
+      activeLeaseCount: 0, publicationPending: false, recoveryInProgress: false,
+    }));
+    const blocked = async (): Promise<never> => { throw new ConfigurationActivationBlockedError(gate.getStatus()); };
+    const server = createManagementServer(port, { configQuery: { writeSecret: blocked, compileExecutorManual: blocked } });
+    await server.start();
+    try {
+      for (const [path, body] of [
+        ['/api/config/secrets', { providerRef: 'provider', apiKey: 'test-value' }],
+        ['/api/config/executors/x/capability-manual/compile', { baseRevisionId: 'revision-test', sourceText: '' }],
+      ] as const) {
+        const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+          method: 'POST', headers: { authorization: 'Bearer manual-token', 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({ code: 'runtime_busy' });
+      }
+    } finally { await server.stop(); }
+  });
+});
 
 function metadataFixture(id: string, active: boolean) {
   return {

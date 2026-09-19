@@ -50,8 +50,6 @@ import type { WorkspaceStore, WorkspaceHandle, StoredWorkspaceCheckpoint } from 
 import type { AttemptExecutionBackend } from './attempt-execution-backend.js';
 import {
   buildPermissionRules,
-  PERMISSION_PROFILE_IDS,
-  type PermissionProfileId,
   type PermissionRepositoryPort,
   type ResourceClaim,
 } from '../resource/index.js';
@@ -593,8 +591,8 @@ export class SubtaskAttemptRunner {
         attemptId,
         agentClassName,
         configurationRevision: dispatch.configurationRevision,
-        permissionProfileId: requirePermissionProfile(
-          dispatch.authorizedBinding.permissionProfileRef,
+        permissionProfileId: this.deps.executionRuntime.resolvePermissionProfile(
+          dispatch.authorizedBinding,
         ),
         containerId: '',
         workspaceId: workspace.id,
@@ -1900,13 +1898,6 @@ function sameAuthorizedBinding(
     && left.modelRef === right.modelRef
     && left.permissionProfileRef === right.permissionProfileRef
     && left.configurationRevision === right.configurationRevision;
-}
-
-function requirePermissionProfile(permissionProfileRef: string): PermissionProfileId {
-  if (!PERMISSION_PROFILE_IDS.includes(permissionProfileRef as PermissionProfileId)) {
-    throw new Error(`authorized permission profile is not supported: ${permissionProfileRef}`);
-  }
-  return permissionProfileRef as PermissionProfileId;
 }
 
 function deriveTopologyLayer(subtaskId: string, subtasks: Subtask[]): number {

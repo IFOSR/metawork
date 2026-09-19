@@ -59,7 +59,11 @@ export function createProductionConfigurationProbe(input: {
       }
     }
 
-    for (const harness of Object.values(snapshot.config.harnesses)) {
+    const requiredHarnesses = new Set(Object.values(snapshot.config.agentClasses)
+      .filter(agent => agent.enabled)
+      .map(agent => agent.harnessRef));
+    for (const [ref, harness] of Object.entries(snapshot.config.harnesses)) {
+      if (!requiredHarnesses.has(ref)) continue;
       if (harness.transport !== 'local-cli' || !harness.enabled) continue;
       const commandAvailable = await detectCommand(harness.command);
       if (!commandAvailable) {

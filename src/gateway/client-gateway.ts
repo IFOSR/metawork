@@ -75,8 +75,8 @@ export type NewWorkAdmissionResult =
   | { readonly allowed: true }
   | {
       readonly allowed: false;
-      readonly reason: 'required_agent_unavailable';
-      readonly agentId: 'pi-agent';
+      readonly reason: 'required_agent_unavailable' | 'no_enabled_executor';
+      readonly agentId?: 'pi-agent' | 'codex-cli';
     };
 
 export interface NewWorkAdmission {

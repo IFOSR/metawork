@@ -20,6 +20,7 @@ import type {
 import type { HarnessDriverRegistry } from '../executor/harness-driver-registry.js';
 import { AutoModelResolver } from '../routing/auto-model-resolver.js';
 import { projectConfigurationCandidates } from '../routing/configuration-candidate-projection.js';
+import { PERMISSION_PROFILE_IDS, type PermissionProfileId } from '../resource/index.js';
 
 // Shared normalized result of running a task's work graph. Previously exported by
 // the retired core/execution-planning-service module; kept here on the live path.
@@ -60,6 +61,22 @@ export interface ExecutorRegistrationInspection {
 /** Resolves AgentClasses to the canonical executor adapter and active backend. */
 export class ExecutorRegistry {
   constructor(private readonly deps: ExecutorRegistryDeps) {}
+
+  resolvePermissionProfile(binding: AuthorizedExecutorBinding): PermissionProfileId {
+    const configuration = this.deps.getRuntimeConfiguration(binding.configurationRevision);
+    if (!configuration || configuration.revisionId !== binding.configurationRevision) {
+      throw new Error(`authorized permission configuration is unavailable: ${binding.configurationRevision}`);
+    }
+    const agentClass = configuration.agentClasses[binding.agentClassRef];
+    if (!agentClass || agentClass.permissionProfileRef !== binding.permissionProfileRef) {
+      throw new Error('authorized permission reference does not match the executor configuration');
+    }
+    const profile = configuration.permissionProfiles[binding.permissionProfileRef];
+    if (!profile || !PERMISSION_PROFILE_IDS.includes(profile.profileId)) {
+      throw new Error(`authorized permission profile is not supported: ${binding.permissionProfileRef}`);
+    }
+    return profile.profileId;
+  }
 
   async resolve(binding: AuthorizedExecutorBinding): Promise<ExecutorAdapter | null> {
     const configuration = this.deps.getRuntimeConfiguration(
@@ -240,6 +257,10 @@ export class ExecutionRuntime implements ActiveExecutionControl {
   private executionTokenSequence = 0;
 
   constructor(private readonly registry: ExecutorRegistry) {}
+
+  resolvePermissionProfile(binding: AuthorizedExecutorBinding): PermissionProfileId {
+    return this.registry.resolvePermissionProfile(binding);
+  }
 
   async isExecutorAvailable(binding: AuthorizedExecutorBinding): Promise<boolean> {
     return (await this.registry.probe(binding)).available;

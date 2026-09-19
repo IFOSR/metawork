@@ -289,7 +289,7 @@ describe('Settings workbench model semantics', () => {
     expect(changedSourceWhitespace).toBe(executorManualInputKey(draft, models));
   });
 
-  it('labels agent readiness with the same agent name that settings shows', async () => {
+  it('labels shared installation readiness by tool and republishes configuration requirements', async () => {
     const [settingsSource, bannerSource, appSource, serviceSource, compositionSource] =
       await Promise.all([
         readFile(new URL('../../web/src/components/SettingsPanel.tsx', import.meta.url), 'utf8'),
@@ -302,7 +302,7 @@ describe('Settings workbench model semantics', () => {
         readFile(new URL('../../src/server/server-composition.ts', import.meta.url), 'utf8'),
       ]);
 
-    // 就绪卡片标题使用服务端按 AgentClass 解析出的 displayName。
+    // 多个助手共用执行工具；安装卡片使用服务端工具名称。
     expect(settingsSource).toContain(
       "{agent.displayName} {agent.status === 'installed' ? '已就绪' : '未就绪'}",
     );
@@ -317,8 +317,8 @@ describe('Settings workbench model semantics', () => {
     expect(appSource).not.toMatch(/智能体 [12]/u);
     expect(serviceSource).not.toMatch(/智能体 [12]/u);
 
-    // 服务端必须把安装对应到 AgentClass 后再取名，而不是用 agentId 索引 agentClasses。
-    expect(compositionSource).toContain('agentClassRefForInstallation({');
+    expect(compositionSource).toContain("resolveDisplayName: agentId => agentId === 'pi-agent' ? 'Pi' : 'Codex CLI'");
+    expect(compositionSource).toContain('requiredAgentIds:');
     expect(compositionSource).not.toContain('config.agentClasses[agentId]');
 
     // 名字是被缓存的探测结果之外的东西：改名后必须重新投影并广播，

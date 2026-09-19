@@ -17,6 +17,14 @@ const pi = (status: AgentReadiness['status']): AgentReadiness => ({
 });
 
 describe('Web Agent readiness projection', () => {
+  it('checks all configured required tools instead of only the first one', () => {
+    expect(requiredAgentBlock([pi('installed'), {
+      ...pi('missing'), agentId: 'codex-cli', displayName: 'Codex CLI',
+    }])).toMatchObject({ blocked: true, agent: { agentId: 'codex-cli' } });
+    expect(requiredAgentBlock([{ ...pi('missing'), required: false }]))
+      .toMatchObject({ blocked: false });
+  });
+
   it('blocks new work until the required Pi Agent is installed', () => {
     expect(requiredAgentBlock([pi('missing')])).toEqual({
       blocked: true,

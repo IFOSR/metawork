@@ -3,8 +3,35 @@ import {
   classifyConfigurationDiff,
   type ConfigurationChangeClass,
 } from '../../src/configuration/configuration-diff.js';
+import { buildStagedLegacyConfiguration } from '../../src/configuration/staged-legacy-configuration.js';
+import { buildExecutorConfigurationCandidate } from '../../src/configuration/executor-configuration.js';
 
 describe('configuration diff classification', () => {
+  it('hot activates bounded creation, removal and permission changes, not arbitrary tool fields', () => {
+    const base = buildStagedLegacyConfiguration({ testMode: true }).snapshot;
+    const existing = base.config.agentClasses['pi-agent']!;
+    const created = buildExecutorConfigurationCandidate(base, {
+      operation: 'create', tool: 'pi', fields: {
+        displayName: 'Research', modelPolicy: existing.modelPolicy,
+        permissionProfileRef: existing.permissionProfileRef!, manualSourceText: '', enabled: true,
+      },
+    });
+    expect(classifyConfigurationDiff(base.config, created.config).classification).toBe('hot');
+    expect(classifyConfigurationDiff(created.config, base.config).classification).toBe('hot');
+    const changed = buildExecutorConfigurationCandidate(base, {
+      operation: 'update', agentClassRef: 'pi-agent', fields: {
+        displayName: 'Engineering', modelPolicy: existing.modelPolicy,
+        permissionProfileRef: 'workspace-engineering', manualSourceText: '', enabled: true,
+      },
+    });
+    expect(classifyConfigurationDiff(base.config, changed.config).classification).toBe('hot');
+    created.config.agentClasses[created.createdAgentClassRef!]!.skills = ['untrusted-skill'];
+    expect(classifyConfigurationDiff(base.config, created.config).classification).toBe('restart_required');
+    const plannerRemoved = structuredClone(base.config);
+    delete plannerRemoved.agentClasses.planner;
+    expect(classifyConfigurationDiff(base.config, plannerRemoved).classification).toBe('restart_required');
+  });
+
   it('classifies Provider, Model, and AgentClass routing changes as hot activation', () => {
     const result = classifyConfigurationDiff(
       {

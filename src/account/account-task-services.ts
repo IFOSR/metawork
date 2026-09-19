@@ -20,7 +20,8 @@ export interface AccountTaskServices {
 
 export function buildAccountTaskServices(deps: {
   taskEngine: TaskEngine;
-  agentClasses: ConstructorParameters<typeof AgentClassService>[0]['agentClasses'];
+  agentClasses?: ConstructorParameters<typeof AgentClassService>[0]['agentClasses'];
+  getAgentClasses?: ConstructorParameters<typeof AgentClassService>[0]['getAgentClasses'];
   attemptExecutionBackend?: AttemptExecutionBackend;
 }): AccountTaskServices {
   return {
@@ -30,6 +31,7 @@ export function buildAccountTaskServices(deps: {
     }),
     agentClassService: new AgentClassService({
       agentClasses: deps.agentClasses,
+      getAgentClasses: deps.getAgentClasses,
     }),
     attemptExecutionBackend: deps.attemptExecutionBackend ?? createDefaultAttemptExecutionBackend(),
   };

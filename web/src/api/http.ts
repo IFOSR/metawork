@@ -9,6 +9,9 @@ import type {
   ProviderModelDiscoveryResult,
   ProviderCredentialStatus,
   AgentReadiness,
+  ExecutorManagementView,
+  ExecutorConfigurationChange,
+  PreparedExecutorConfiguration,
   TaskSummary,
   WorkGraphPresentationProjection,
 } from './types';
@@ -45,6 +48,17 @@ export class HttpClient {
 
   getConfig(): Promise<ConfigSnapshot> {
     return this.request<ConfigSnapshot>('/api/config');
+  }
+
+  getExecutorManagement(): Promise<ExecutorManagementView> {
+    return this.request('/api/config/executors');
+  }
+
+  prepareExecutor(baseRevisionId: string, change: ExecutorConfigurationChange): Promise<PreparedExecutorConfiguration> {
+    return this.request('/api/config/executors/prepare', {
+      method: 'POST',
+      body: JSON.stringify({ baseRevisionId, change }),
+    });
   }
 
   getActivationStatus(): Promise<Pick<ConfigSnapshot, 'activationStatus' | 'activationAllowed' | 'blockingReasons' | 'activeTaskId' | 'activeAttemptCount' | 'plannerTurnActive' | 'hotActivationSupported' | 'restartRequired' | 'checkedAt'>> {

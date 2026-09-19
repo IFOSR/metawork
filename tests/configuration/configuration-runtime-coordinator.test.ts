@@ -62,6 +62,120 @@ function fakeService(initial: ReturnType<typeof snapshot>, next: ReturnType<type
 }
 
 describe('ConfigurationRuntimeCoordinator', () => {
+  it.each(['revision-1', 'revision-2'])(
+    'restores the observed pointer after activation throws with %s active',
+    async observedRevision => {
+      const before = snapshot('revision-1', {});
+      const after = snapshot('revision-2', {});
+      let active = before;
+      const rollback = vi.fn(async () => undefined);
+      const restoreActiveSnapshot = vi.fn(async (_revision: string, expected: string) => {
+        if (active.revisionId !== expected) throw new Error('revision conflict');
+        active = before;
+        return before;
+      });
+      const coordinator = new ConfigurationRuntimeCoordinator({
+        service: {
+          ...fakeService(before, after),
+          getActiveSnapshot: async () => active,
+          activateDraft: async () => {
+            active = observedRevision === after.revisionId ? after : before;
+            throw new Error('render failed');
+          },
+          restoreActiveSnapshot,
+        } as never,
+        initialSnapshot: before,
+        stageSecrets: async () => rollback,
+        gate: new ConfigurationActivationGate(() => ({
+          activeTaskId: null, plannerTurnActive: false, activeAttemptCount: 0,
+          activeLeaseCount: 0, publicationPending: false, recoveryInProgress: false,
+        })),
+      });
+
+      await expect(coordinator.activate({
+        config: after.config, expectedRevisionId: before.revisionId,
+      })).rejects.toThrow('render failed');
+      expect(coordinator.getState().activationAllowed).toBe(true);
+      expect(restoreActiveSnapshot).toHaveBeenCalledWith(before.revisionId, observedRevision);
+      expect(rollback).toHaveBeenCalledOnce();
+      expect(active.revisionId).toBe(before.revisionId);
+    },
+  );
+
+  it.each(['foreign-revision', 'unreadable-pointer', 'restore-failed'])(
+    'keeps admission blocked when failed activation compensation encounters %s',
+    async failure => {
+      const before = snapshot('revision-1', {});
+      const after = snapshot('revision-2', {});
+      let activationThrew = false;
+      const rollback = vi.fn(async () => undefined);
+      const restoreActiveSnapshot = vi.fn(async () => { throw new Error('restore failed'); });
+      const coordinator = new ConfigurationRuntimeCoordinator({
+        service: {
+          ...fakeService(before, after),
+          getActiveSnapshot: async () => {
+            if (!activationThrew) return before;
+            if (failure === 'unreadable-pointer') throw new Error('read failed');
+            return failure === 'foreign-revision' ? snapshot('revision-foreign', {}) : after;
+          },
+          activateDraft: async () => {
+            activationThrew = true;
+            throw new Error('activation failed');
+          },
+          restoreActiveSnapshot,
+        } as never,
+        initialSnapshot: before,
+        stageSecrets: async () => rollback,
+        gate: new ConfigurationActivationGate(() => ({
+          activeTaskId: null, plannerTurnActive: false, activeAttemptCount: 0,
+          activeLeaseCount: 0, publicationPending: false, recoveryInProgress: false,
+        })),
+      });
+
+      await expect(coordinator.activate({
+        config: after.config, expectedRevisionId: before.revisionId,
+      })).rejects.toThrow('activation failed');
+      expect(coordinator.getState().activationAllowed).toBe(false);
+      expect(rollback).toHaveBeenCalledOnce();
+      expect(restoreActiveSnapshot).toHaveBeenCalledTimes(failure === 'restore-failed' ? 1 : 0);
+    },
+  );
+
+  it('does not turn a committed activation into a failure when a notification subscriber throws', async () => {
+    const before = snapshot('revision-1', {});
+    const after = snapshot('revision-2', {});
+    const coordinator = new ConfigurationRuntimeCoordinator({
+      service: fakeService(before, after) as never, initialSnapshot: before,
+      gate: new ConfigurationActivationGate(() => ({
+        activeTaskId: null, plannerTurnActive: false, activeAttemptCount: 0,
+        activeLeaseCount: 0, publicationPending: false, recoveryInProgress: false,
+      })),
+      publish: () => { throw new Error('disconnected subscriber'); },
+    });
+    expect(await coordinator.activate({ config: after.config, expectedRevisionId: before.revisionId }))
+      .toMatchObject({ ok: true });
+  });
+
+  it('prepares configuration semantics inside the gate even without secrets', async () => {
+    const before = snapshot('revision-1', {});
+    const after = snapshot('revision-2', {});
+    const gate = new ConfigurationActivationGate(() => ({
+      activeTaskId: null, plannerTurnActive: false, activeAttemptCount: 0,
+      activeLeaseCount: 0, publicationPending: false, recoveryInProgress: false,
+    }));
+    const prepareConfig = vi.fn(async () => {
+      expect(gate.isActivationInProgress()).toBe(true);
+      await expect(gate.withActivation(async () => undefined)).rejects.toThrow();
+      return after.config;
+    });
+    const coordinator = new ConfigurationRuntimeCoordinator({
+      service: fakeService(before, after) as never, gate, initialSnapshot: before, prepareConfig,
+    });
+    expect(await coordinator.activate({ config: after.config, expectedRevisionId: before.revisionId }))
+      .toMatchObject({ ok: true });
+    expect(prepareConfig).toHaveBeenCalledOnce();
+  });
+
   it('atomically updates live views for a hot activation and publishes audit events', async () => {
     const before = snapshot('revision-1', { providers: { p: { baseUrl: 'https://old.example/v1' } } });
     const after = snapshot('revision-2', { providers: { p: { baseUrl: 'https://new.example/v1' } } });
@@ -501,5 +615,8 @@ describe('ConfigurationRuntimeCoordinator', () => {
       secrets: { p: 'candidate-secret' },
     })).rejects.toThrow('pointer rollback failed');
     expect(rollback).toHaveBeenCalledOnce();
+    expect(coordinator.getState().activationAllowed).toBe(false);
+    expect(coordinator.getState().blockingReasons.map(reason => reason.code))
+      .toContain('activation_recovery_required');
   });
 });

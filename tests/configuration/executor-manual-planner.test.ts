@@ -70,6 +70,33 @@ function configuration() {
 }
 
 describe('ExecutorManualPlanner', () => {
+  it('previews a disabled assistant without publishing it to the planning catalog', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'executor-manual-disabled-'));
+    try {
+      const service = new ConfigurationService({
+        repository: new FileConfigurationRepository(join(root, 'config')),
+        probe: async () => ({ ok: true }),
+      });
+      await service.initialize();
+      const initial = service.createDraft(configuration(), null);
+      service.validateDraft(initial.revisionId);
+      service.compileDraft(initial.revisionId);
+      await service.probeDraft(initial.revisionId);
+      await service.activateDraft(initial.revisionId, null);
+      const candidate = structuredClone((await service.getActiveSnapshot()).config);
+      candidate.agentClasses.engineering.enabled = false;
+      const planner = new ExecutorManualPlanner({
+        configuration: service, registerSession: () => () => undefined,
+        runner: { async run() { throw new Error('not needed for empty guidance'); } },
+      });
+      const result = await planner.compile({
+        baseRevisionId: initial.revisionId, agentClassRef: 'engineering', sourceText: '', candidateConfig: candidate,
+      });
+      expect(result.manual.agentClassRef).toBe('engineering');
+      expect(result.config.agentClasses.engineering.enabled).toBe(false);
+    } finally { await makeWritable(root); await rm(root, { recursive: true, force: true }); }
+  });
+
   it('reuses saved semantic guidance while recompiling changed model facts', async () => {
     const root = await mkdtemp(join(tmpdir(), 'executor-manual-recompile-'));
     try {

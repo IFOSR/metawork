@@ -348,6 +348,34 @@ function createRunInput(
 }
 
 describe('ExecutorRegistry', () => {
+  it('resolves permission aliases using the exact authorized configuration', () => {
+    const { registry, getRuntimeConfiguration } = createRegistry();
+    const binding = createAuthorizedBinding();
+    expect(new ExecutionRuntime(registry).resolvePermissionProfile(binding))
+      .toBe('workspace-engineering');
+    expect(getRuntimeConfiguration).toHaveBeenCalledWith(binding.configurationRevision);
+  });
+
+  it.each(['missing', 'wrong-revision', 'wrong-reference', 'missing-profile', 'invalid-profile'])(
+    'rejects permission resolution with %s instead of using an active fallback',
+    failure => {
+      const configuration = createRuntimeConfiguration();
+      if (failure === 'wrong-revision') configuration.revisionId = 'other-revision';
+      if (failure === 'wrong-reference') {
+        configuration.agentClasses['implementation-alpha'].permissionProfileRef = 'other-profile';
+      }
+      if (failure === 'missing-profile') configuration.permissionProfiles = {};
+      if (failure === 'invalid-profile') {
+        configuration.permissionProfiles['workspace-default'].profileId = 'unsupported' as never;
+      }
+      const { registry } = createRegistry({
+        getRuntimeConfiguration: () => failure === 'missing' ? null : configuration,
+      });
+      expect(() => registry.resolvePermissionProfile(createAuthorizedBinding()))
+        .toThrow(/authorized permission/);
+    },
+  );
+
   it('does not expose an implicit Runtime binding for Auto AgentClasses', () => {
     const configuration = createRuntimeConfiguration({
       agentClasses: {

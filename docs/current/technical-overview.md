@@ -891,13 +891,13 @@ fixed-only, Codex Auto is limited to GPT-family models across enabled Providers,
 and Pi Auto may use all enabled Provider models. The gate
 rechecks Planner turns, running Tasks, blocking Dispatch/Attempt facts, child
 processes, leases, publication/merge work, recovery, and concurrent activation
-inside the backend transaction; connected clients and idle ready/parked/blocked
-Tasks do not block it. Application releases, schema, Harness/process
+inside the backend transaction; connected idle clients do not block it, but
+continuable ready/parked/blocked Tasks do. Application releases, schema, Harness/process
 artifacts, Permission Profile semantics, Planner RPC, and runtime directory
 protocol changes remain restart-required.
 
-ADR-0033's 2026-09-19 amendment (accepted target; implementation in progress)
-replaces that idle definition with the strict idle rule: any continuable Task
+ADR-0033's 2026-09-19 amendment implements the strict idle rule for
+Web/Management configuration writes: any continuable Task
 (`created`/`ready`/`running`/`parked`/`blocked`), Planner turn,
 accepted-but-unprocessed work request, execution, publication, cancellation
 cleanup, or recovery marks the whole account busy, and unknown activity fails
@@ -909,8 +909,23 @@ created, edited (display name, model policy, existing permission-profile
 reference, manual text, enablement), enabled, disabled, and removed with hot
 activation; tool compatibility derives from the resolved Harness driver, never
 from names (ADR-0028 §6). Shared credential, Provider/Model, full-activation,
-and rollback writes use the same gate, and CLI administration routes through
-the live Server Management API with no offline write fallback.
+and rollback writes through the Server use the same gate. CLI administration
+was explicitly deferred to its upcoming redesign; the unchanged CLI direct
+write path must not be used alongside a live Server.
+
+Settings now supports assistant creation/editing and confirmed enable/disable/
+removal using `GET /api/config/executors` and
+`POST /api/config/executors/prepare`, followed by the existing capability-manual
+preview and activation endpoints. Models' Fixed/Auto tool compatibility is
+projected server-side. Disabled assistants remain editable and previewable;
+no enabled assistants means new work is rejected with `no_enabled_executor`.
+Installation cards describe shared Pi/Codex tools and derive required status
+from enabled assistants. Live AgentClass queries refresh with activation,
+while common tool homes no longer choose a built-in assistant's model.
+Execution resolves permission aliases from the exact authorized revision.
+Enable/disable preserves that assistant's unsaved routing edits in Settings.
+Activation failures restore the observed pointer, including pre-cutover failures.
+Failed compensation holds the account in a recovery-required state.
 
 `ConfigurationRuntimeCoordinator` validates, compiles, probes, renders and
 persists the immutable candidate before pointer cutover, then updates the live
