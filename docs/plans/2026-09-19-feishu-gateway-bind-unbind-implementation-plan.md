@@ -2,77 +2,19 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 让单台机器可以通过 CLI（`bind-feishu`/`unbind-feishu`）和 Web 设置页开关与飞书解绑/重绑，本机操作不影响其他机器。
+**Goal:** 让单台机器可以通过 CLI（`metawork server bind-feishu` / `unbind-feishu`）与飞书解绑/重绑，本机操作不影响其他机器。
 
-**Architecture:** 解绑 = 通过权威 ConfigurationService 将本机 `gateway.platforms.feishu.enabled` 置 false 并热激活；运行中的 Server 经既有 `FeishuRuntimeManager.applyConfiguration` 停掉长连接。凭据保留。Web 端复用现有 `http.activate()` 全量激活，不新增服务端 API。
+**Architecture:** 解绑 = 通过权威 ConfigurationService 将本机 `gateway.platforms.feishu.enabled` 置 false 并激活；运行中的 Server 经既有 `FeishuRuntimeManager.applyConfiguration` 停掉长连接。凭据保留，重绑一键恢复。仅 CLI，不改 Web 端、不改热路径契约。
 
-**Tech Stack:** Node 22.19+ TypeScript ESM、vitest、React（web/）。
+**Tech Stack:** Node 22.19+ TypeScript ESM、vitest。
 
 **设计文档:** [飞书接入本机绑定/解绑机制设计](2026-09-19-feishu-gateway-bind-unbind-design.md)
 
----
-
-### Task 1: `gateway.platforms.feishu.` 标记为热路径
-
-**Files:**
-- Modify: `src/configuration/configuration-diff.ts`（`isHotPath`，约 108-121 行）
-- Test: `tests/configuration/configuration-diff-classification.test.ts`
-
-**Step 1: Write the failing test**
-
-在 `tests/configuration/configuration-diff-classification.test.ts` 的 `describe` 末尾追加：
-
-```ts
-  it('classifies Feishu gateway platform binding changes as hot, but process-level gateway fields as restart', () => {
-    const binding = classifyConfigurationDiff(
-      { gateway: { platforms: { feishu: { enabled: true, app_id: 'cli_a' } } } },
-      { gateway: { platforms: { feishu: { enabled: false, app_id: 'cli_a' } } } },
-    );
-    expect(binding.classification).toBe('hot');
-    expect(binding.restartRequired).toBe(false);
-    expect(binding.restartPaths).toEqual([]);
-
-    const processLevel = classifyConfigurationDiff(
-      { gateway: { port: 8788 } },
-      { gateway: { port: 9999 } },
-    );
-    expect(processLevel.classification).toBe('restart_required');
-    expect(processLevel.restartPaths).toEqual(['gateway.port']);
-  });
-```
-
-**Step 2: Run test to verify it fails**
-
-Run: `npx vitest run tests/configuration/configuration-diff-classification.test.ts`
-Expected: FAIL — `binding.classification` 实际为 `'restart_required'`。
-
-**Step 3: Write minimal implementation**
-
-在 `src/configuration/configuration-diff.ts` 的 `isHotPath` 中追加一条（附注释）：
-
-```ts
-    // The Feishu platform bridge is recreated by FeishuRuntimeManager on any
-    // fingerprint change during hot activation, so binding/unbinding this
-    // machine (and other platform-scoped fields) is hot-safe. Process-level
-    // gateway fields (port/bindHost) stay restart_required.
-    || path.startsWith('gateway.platforms.feishu.')
-```
-
-**Step 4: Run test to verify it passes**
-
-Run: `npx vitest run tests/configuration/configuration-diff-classification.test.ts`
-Expected: PASS（全部用例）。
-
-**Step 5: Commit**
-
-```bash
-git add src/configuration/configuration-diff.ts tests/configuration/configuration-diff-classification.test.ts
-git commit -m "feat: classify feishu gateway platform changes as hot activation"
-```
+**范围说明（2026-09-19 修订）：** Web 端开关与首次绑定向导已按用户决定移出范围；原计划的 `isHotPath` 热路径扩展随之取消（其唯一消费者是 Web 激活门控）。
 
 ---
 
-### Task 2: FeishuRuntimeManager 解绑即停桥测试
+### Task 1: FeishuRuntimeManager 解绑即停桥测试
 
 **Files:**
 - Test: `tests/gateway/feishu-runtime.test.ts`
@@ -126,7 +68,7 @@ git commit -m "test: cover feishu bridge shutdown on machine unbind"
 
 ---
 
-### Task 3: CLI 平台启停的配置激活函数
+### Task 2: CLI 平台启停的配置激活函数
 
 **Files:**
 - Modify: `src/gateway/feishu-activation.ts`
@@ -134,7 +76,7 @@ git commit -m "test: cover feishu bridge shutdown on machine unbind"
 
 **Step 1: Write the failing test**
 
-新建 `tests/gateway/feishu-platform-binding.test.ts`（夹具模式参考 `tests/configuration/executor-manual-planner.test.ts:73-95` 的 ConfigurationService + 临时仓库用法，配置校验参考 `tests/configuration/file-configuration-repository.test.ts:26-38` 的 `AnyFusionConfigurationV2Schema.parse`）：
+新建 `tests/gateway/feishu-platform-binding.test.ts`（ConfigurationService + 临时仓库夹具模式参考 `tests/configuration/executor-manual-planner.test.ts:73-95`；配置校验参考 `tests/configuration/file-configuration-repository.test.ts:26-38` 的 `AnyFusionConfigurationV2Schema.parse`）：
 
 ```ts
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -193,7 +135,7 @@ describe('Feishu platform bind/unbind', () => {
       .toThrow(/setup-feishu/);
   });
 
-  it('activates the unbound revision through ConfigurationService as a hot change', async () => {
+  it('activates the unbound revision through ConfigurationService', async () => {
     const root = await mkdtemp(join(tmpdir(), 'feishu-binding-'));
     roots.push(root);
     const service = new ConfigurationService({
@@ -254,7 +196,7 @@ export function withFeishuGatewayEnabled(
 }
 ```
 
-并新增与 `activateFeishuGatewayPlatform` 对称的入口（复用其仓库/SecretStore/Service 装配；可将两者公共部分提取为内部 helper `activateFeishuPlatformMutation(installRoot, revisionPrefix, mutate)` 以保持 DRY）：
+并新增与 `activateFeishuGatewayPlatform` 对称的入口（两者公共的仓库/SecretStore/Service 装配提取为内部 helper 以保持 DRY）：
 
 ```ts
 export interface SetFeishuGatewayBindingInput {
@@ -265,10 +207,11 @@ export interface SetFeishuGatewayBindingInput {
 
 export async function setFeishuGatewayBinding(
   input: SetFeishuGatewayBindingInput,
-): Promise<{ revisionId: string; changed: boolean }> {
-  // 与 activateFeishuGatewayPlatform 相同的装配，mutate 为：
+): Promise<{ revisionId: string | null; changed: boolean }> {
+  // 与 activateFeishuGatewayPlatform 相同的装配；mutate 为：
   //   next = withFeishuGatewayEnabled(snapshot.config, input.enabled)
-  // changed = feishu.enabled 原值 !== input.enabled
+  // changed = 原 feishu.enabled !== input.enabled
+  // changed === false 时不创建新 revision，返回 { revisionId: null, changed: false }
   // 校验/编译/探针/激活失败时抛出带「飞书绑定状态」前缀的错误，语义同现有函数。
 }
 ```
@@ -289,10 +232,10 @@ git commit -m "feat: add feishu platform bind/unbind activation entry"
 
 ---
 
-### Task 4: CLI 命令接入 `server bind-feishu` / `server unbind-feishu`
+### Task 3: CLI 命令接入 `server bind-feishu` / `server unbind-feishu`
 
 **Files:**
-- Modify: `src/cli/args.ts`（`ServerAction`、`parseServerArgs`、`formatCliHelp`）
+- Modify: `src/cli/args.ts`（`ServerAction`、`SERVER_ACTIONS`、`formatCliHelp`）
 - Modify: `src/index.ts`（action 分派）
 - Test: `tests/cli/args.test.ts`
 
@@ -331,7 +274,6 @@ const SERVER_ACTIONS: readonly ServerAction[] = [
 `formatCliHelp` 的 Server 列表中 `setup-feishu` 后补两行：
 
 ```
-  metawork server setup-feishu
   metawork server bind-feishu       重新启用本机飞书接入（保留凭据）
   metawork server unbind-feishu     停用本机飞书接入（保留凭据，不影响其他机器）
 ```
@@ -343,12 +285,10 @@ const SERVER_ACTIONS: readonly ServerAction[] = [
   ? runSetFeishuBinding(command.action === 'bind-feishu')
 ```
 
-并实现：
+并实现（静态 import `setFeishuGatewayBinding`，与同文件 `activateFeishuGatewayPlatform` 的 import 风格一致）：
 
 ```ts
 async function runSetFeishuBinding(enabled: boolean): Promise<void> {
-  const { setFeishuGatewayBinding } = await import('./gateway/feishu-binding.js');
-  // 或在 feishu-activation.ts 顶部静态 import，风格与同文件其他 import 一致
   const result = await setFeishuGatewayBinding({ enabled });
   process.stdout.write(
     !result.changed
@@ -359,8 +299,6 @@ async function runSetFeishuBinding(enabled: boolean): Promise<void> {
   );
 }
 ```
-
-实现位置：把 `setFeishuGatewayBinding` 留在 `src/gateway/feishu-activation.ts` 并静态 import（与 `activateFeishuGatewayPlatform` 一致），不新建文件。
 
 **Step 4: Run tests**
 
@@ -376,310 +314,47 @@ git commit -m "feat: add server bind-feishu and unbind-feishu commands"
 
 ---
 
-### Task 5: Web 纯逻辑模块 `gateway-binding.ts`
+### Task 4: 文档同步与全量验证
 
 **Files:**
-- Create: `web/src/gateway-binding.ts`
-- Test: `tests/web/gateway-binding.test.ts`（新建）
-
-**Step 1: Write the failing test**
-
-```ts
-import { describe, expect, it } from 'vitest';
-import {
-  applyFeishuGatewayEnabled,
-  maskAppId,
-  readFeishuGatewayBinding,
-} from '../../web/src/gateway-binding.js';
-
-const boundConfig = {
-  gateway: {
-    port: 8788,
-    platforms: {
-      feishu: {
-        enabled: true,
-        domain: 'feishu',
-        connection_mode: 'websocket',
-        app_id: 'cli_aa13c101a4389bea',
-        app_secret_env: 'FEISHU_APP_SECRET',
-      },
-    },
-  },
-};
-
-describe('Feishu gateway binding (web)', () => {
-  it('reads the current binding state without exposing secrets', () => {
-    const binding = readFeishuGatewayBinding(boundConfig);
-    expect(binding).toEqual({
-      configured: true,
-      enabled: true,
-      appId: 'cli_aa13c101a4389bea',
-      maskedAppId: maskAppId('cli_aa13c101a4389bea'),
-      connectionMode: 'websocket',
-    });
-    expect(JSON.stringify(binding)).not.toContain('app_secret');
-  });
-
-  it('reports unconfigured machines without a platform definition', () => {
-    expect(readFeishuGatewayBinding({ gateway: {} })).toEqual({ configured: false, enabled: false });
-    expect(readFeishuGatewayBinding({})).toEqual({ configured: false, enabled: false });
-  });
-
-  it('applies enabled flips immutably while preserving credentials and other gateway fields', () => {
-    const next = applyFeishuGatewayEnabled(boundConfig, false) as typeof boundConfig;
-    expect(next.gateway.platforms.feishu.enabled).toBe(false);
-    expect(next.gateway.platforms.feishu.app_id).toBe('cli_aa13c101a4389bea');
-    expect(next.gateway.port).toBe(8788);
-    expect(boundConfig.gateway.platforms.feishu.enabled).toBe(true);
-  });
-
-  it('masks app ids keeping prefix and suffix recognizable', () => {
-    expect(maskAppId('cli_aa13c101a4389bea')).toBe('cli_aa13…9bea');
-    expect(maskAppId('short')).toBe('short');
-  });
-});
-```
-
-**Step 2: Run test to verify it fails**
-
-Run: `npx vitest run tests/web/gateway-binding.test.ts`
-Expected: FAIL — 模块不存在。
-
-**Step 3: Write minimal implementation**
-
-新建 `web/src/gateway-binding.ts`（`RawRecord` 处理方式参考 `web/src/settings-model.ts` 中的 `asRecord` 模式）：
-
-```ts
-type RawRecord = Record<string, unknown>;
-
-const asRecord = (value: unknown): RawRecord =>
-  value && typeof value === 'object' && !Array.isArray(value) ? value as RawRecord : {};
-
-export interface FeishuGatewayBinding {
-  configured: boolean;
-  enabled: boolean;
-  appId?: string;
-  maskedAppId?: string;
-  connectionMode?: string;
-}
-
-export function maskAppId(appId: string): string {
-  return appId.length > 10 ? `${appId.slice(0, 8)}…${appId.slice(-4)}` : appId;
-}
-
-export function readFeishuGatewayBinding(config: RawRecord): FeishuGatewayBinding {
-  const feishu = asRecord(asRecord(asRecord(config.gateway).platforms).feishu);
-  const appId = typeof feishu.app_id === 'string' && feishu.app_id ? feishu.app_id : undefined;
-  if (!appId && Object.keys(feishu).length === 0) return { configured: false, enabled: false };
-  return {
-    configured: true,
-    enabled: feishu.enabled !== false,
-    ...(appId ? { appId, maskedAppId: maskAppId(appId) } : {}),
-    ...(typeof feishu.connection_mode === 'string' ? { connectionMode: feishu.connection_mode } : {}),
-  };
-}
-
-export function applyFeishuGatewayEnabled(config: RawRecord, enabled: boolean): RawRecord {
-  const gateway = asRecord(config.gateway);
-  const platforms = asRecord(gateway.platforms);
-  const feishu = asRecord(platforms.feishu);
-  return {
-    ...config,
-    gateway: {
-      ...gateway,
-      platforms: { ...platforms, feishu: { ...feishu, enabled } },
-    },
-  };
-}
-```
-
-**Step 4: Run test to verify it passes**
-
-Run: `npx vitest run tests/web/gateway-binding.test.ts`
-Expected: PASS。
-
-**Step 5: Commit**
-
-```bash
-git add web/src/gateway-binding.ts tests/web/gateway-binding.test.ts
-git commit -m "feat: add web feishu gateway binding helpers"
-```
-
----
-
-### Task 6: SettingsPanel 高级设置中的「飞书接入」区块
-
-**Files:**
-- Modify: `web/src/components/SettingsPanel.tsx`
-- Test: `tests/web/settings-workbench.test.ts`
-
-**Step 1: Write the failing test**
-
-在 `tests/web/settings-workbench.test.ts` 追加（该文件已有 `readFile` + `webRoot` 的源码断言模式，参考 "keeps internal revision identifiers out of the primary Settings UI" 用例）：
-
-```ts
-  it('exposes a Feishu binding toggle in advanced settings that ships with save-and-activate', async () => {
-    const source = await readFile(new URL('components/SettingsPanel.tsx', webRoot), 'utf8');
-    expect(source).toContain('飞书接入');
-    expect(source).toContain('在本机启用飞书接入');
-    expect(source).toContain('applyFeishuGatewayEnabled');
-    expect(source).toContain('readFeishuGatewayBinding');
-    // 勾选不立即激活：区块内不允许出现独立的 activate 调用按钮文案
-    expect(source).not.toContain('立即解绑');
-  });
-```
-
-**Step 2: Run test to verify it fails**
-
-Run: `npx vitest run tests/web/settings-workbench.test.ts`
-Expected: FAIL — 不包含 `飞书接入`。
-
-**Step 3: Write minimal implementation**
-
-`web/src/components/SettingsPanel.tsx`：
-
-1. 顶部 import：
-
-```ts
-import {
-  applyFeishuGatewayEnabled,
-  readFeishuGatewayBinding,
-  type FeishuGatewayBinding,
-} from '../gateway-binding';
-```
-
-2. 状态（放在 `runtimePolicy` state 旁，约 361 行）：
-
-```ts
-const [feishuBinding, setFeishuBinding] = useState<FeishuGatewayBinding | null>(null);
-const [feishuEnabled, setFeishuEnabled] = useState<boolean>(false);
-```
-
-3. `applyConfigSnapshot`（约 386 行）中在 `setRuntimePolicy(loadRuntimePolicy(config))` 后同步基线：
-
-```ts
-const binding = readFeishuGatewayBinding(config);
-setFeishuBinding(binding);
-setFeishuEnabled(binding.enabled);
-```
-
-4. `buildCandidateConfiguration` 的返回 config 中（约 754-765 行，`runtimePolicy` 之后）追加：
-
-```ts
-        ...(feishuBinding?.configured && feishuEnabled !== feishuBinding.enabled
-          ? { gateway: applyFeishuGatewayEnabled(originalConfig, feishuEnabled) }
-          : {}),
-```
-
-5. 在「高级设置」的 `advanced-settings-body` 内、`runtime-policy-section` 之后、`{plannerSection}` 之前插入新区块：
-
-```tsx
-<section className="runtime-policy-section feishu-binding-section">
-  <div className="section-heading">
-    <div>
-      <div className="settings-eyebrow">GATEWAY</div>
-      <h3>飞书接入</h3>
-      <p>绑定状态只影响本机；停用后本机不再接收飞书消息，其他机器不受影响。</p>
-    </div>
-  </div>
-  {feishuBinding?.configured ? (
-    <>
-      <div className="runtime-policy-grid">
-        <label className="settings-field feishu-binding-toggle">
-          <span>
-            应用 {feishuBinding.maskedAppId}
-            {feishuBinding.connectionMode
-              ? ` · ${feishuBinding.connectionMode === 'websocket' ? '长连接' : 'Webhook'}`
-              : ''}
-          </span>
-          <label className="executor-enable-row">
-            <input
-              type="checkbox"
-              checked={feishuEnabled}
-              disabled={editingDisabled}
-              onChange={event => setFeishuEnabled(event.target.checked)}
-            />
-            <span>在本机启用飞书接入</span>
-          </label>
-          <small>勾选后随「保存并激活」一起生效；凭据保留在本机。</small>
-        </label>
-      </div>
-    </>
-  ) : (
-    <div className="routing-section-note">
-      本机尚未绑定飞书，请先运行 `metawork server setup-feishu` 完成初始绑定。
-    </div>
-  )}
-</section>
-```
-
-6. footer 提示文案（两处，约 1779-1783 行）把「只应用模型列表、智能体路由与运行时策略」改为「应用模型列表、智能体路由、运行时策略与飞书接入开关」。
-
-注意：`editingDisabled` 为文件内既有变量（含门控判断）；若名称不同以实际为准。
-
-**Step 4: Run tests**
-
-Run: `npx vitest run tests/web/settings-workbench.test.ts tests/web/gateway-binding.test.ts && cd web && npx tsc --noEmit && cd ..`
-Expected: PASS + web 类型检查无错误。
-
-**Step 5: Commit**
-
-```bash
-git add web/src/components/SettingsPanel.tsx tests/web/settings-workbench.test.ts
-git commit -m "feat: add feishu binding toggle to advanced settings"
-```
-
----
-
-### Task 7: 文档同步（ADR-0033 / CONTEXT.md）
-
-**Files:**
-- Modify: `docs/adr/0033-hot-configuration-activation-and-auto-model-routing.md`
 - Modify: `CONTEXT.md`
-- Modify: `docs/plans/2026-09-19-feishu-gateway-bind-unbind-design.md`（状态行）
+- Modify: `docs/plans/2026-09-19-feishu-gateway-bind-unbind-design.md`（状态行与实施记录）
 
-**Step 1: 更新 ADR-0033**
+**Step 1: 更新 CONTEXT.md**
 
-在热路径清单中补充：`gateway.platforms.feishu.` 前缀为热路径，理由是
-`FeishuRuntimeManager` 在激活成功/回滚回调中对任何平台 fingerprint 变化执行
-全量停旧建新；`gateway.port`/`bindHost` 等进程级字段仍为 restart_required。
-同时记录新增的 `server bind-feishu` / `server unbind-feishu` 命令语义。
+在网关/运行时不变量相关小节补一条：飞书绑定状态是机器本地的
+（`gateway.platforms.feishu.enabled`），通过 `metawork server bind-feishu` /
+`unbind-feishu` 切换；解绑保留凭据、不影响其他机器；Web 端不提供该操作。
 
-**Step 2: 更新 CONTEXT.md**
+**Step 2: 设计文档收尾**
 
-在运行时不变量/网关节中补一条：飞书绑定状态是机器本地的
-（`gateway.platforms.feishu.enabled`），解绑保留凭据、不影响其他机器。
+状态行改为"已实现"，填写完成日期、验证命令与收尾 commit hash。
 
-**Step 3: 设计文档状态行**改为"已实现"，并填写实施记录（完成日期、验证命令、收尾 commit）。
-
-**Step 4: 全量验证**
+**Step 3: 全量验证**
 
 ```bash
 npm run lint
-npx vitest run tests/configuration/configuration-diff-classification.test.ts \
-  tests/gateway/feishu-platform-binding.test.ts \
+npx vitest run tests/gateway/feishu-platform-binding.test.ts \
   tests/gateway/feishu-runtime.test.ts \
-  tests/cli/args.test.ts \
-  tests/web/gateway-binding.test.ts \
-  tests/web/settings-workbench.test.ts
+  tests/cli/args.test.ts
 npm run build
 ```
 
 Expected: 全部通过。
 
-**Step 5: Commit**
+**Step 4: Commit**
 
 ```bash
-git add docs/adr/0033-hot-configuration-activation-and-auto-model-routing.md CONTEXT.md docs/plans/2026-09-19-feishu-gateway-bind-unbind-design.md
-git commit -m "docs: record feishu bind/unbind hot path contract"
+git add CONTEXT.md docs/plans/2026-09-19-feishu-gateway-bind-unbind-design.md
+git commit -m "docs: record feishu bind/unbind machine-local contract"
 ```
 
 ---
 
 ### 验收清单
 
-- [ ] `metawork server unbind-feishu` 后本机日志出现桥接停止、不再收飞书消息；Linux 机器不受影响
-- [ ] `metawork server bind-feishu` 一键恢复，无需重新走向导
-- [ ] Web 高级设置中勾选/取消勾选后「保存并激活」热生效，系统不空闲时开关禁用
-- [ ] 未配置飞书的机器显示引导文案而非开关
+- [ ] `metawork server unbind-feishu` 后本机不再接收飞书消息；运行中的 Server 热停桥；Linux 机器不受影响
+- [ ] `metawork server bind-feishu` 一键恢复，无需重新走 `setup-feishu` 向导
+- [ ] 未绑定过的机器执行两个命令均报错并提示 `setup-feishu`
+- [ ] 重复执行同状态命令时不创建新 revision，输出"已处于…状态"
 - [ ] `npm run lint` 与上述聚焦测试全部通过
