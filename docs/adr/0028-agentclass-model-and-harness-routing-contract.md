@@ -171,6 +171,47 @@ The grammar remains consistent with ADR-0024:
 
 Any new permission grammar requires a code change and a new ADR or explicit ADR amendment. Configuration stores reference the grammar; they do not own it.
 
+### 6. Executor idle management amendment (2026-09-19)
+
+Executor AgentClasses may be created, updated, enabled, disabled, and removed
+through the bounded executor-management surface while the account is strictly
+idle (the gate and interlock rules live in ADR-0033). The following bounds
+apply to that surface:
+
+- The user-selectable tool scope is fixed to existing Harness configurations
+  whose registered driver is `pi-cli` or `codex-cli`. Model compatibility and
+  capability conclusions derive from the resolved Harness's registered
+  `driverId`; AgentClass refs, Harness keys, and display names never
+  participate in tool-type inference, and an unknown or unsupported driver
+  fails closed instead of being guessed as Pi.
+- Editable fields are bounded to `displayName`, `modelPolicy`,
+  `permissionProfileRef` (referencing an existing Permission Profile only),
+  manual source text, and `enabled`. Harness reference, driver, command,
+  arguments, image, working directory, Skills, MCP, and plugins are not
+  editable through executor management, and Permission Profile grammar remains
+  code-owned per §5.
+- An Executor's Harness binding is immutable after creation; changing tools
+  means creating a new Executor and removing the old one. Planner AgentClasses
+  cannot be created, removed, or re-typed through this surface; the existing
+  Planner model-policy editing capability is unchanged and passes through the
+  same configuration write gate.
+- Multiple Executor AgentClasses may share one Harness/driver with different
+  models and permission-profile references. Each execution still uses the
+  concrete authorized binding of §2; no runtime input may rely on the built-in
+  `pi-agent` / `codex-cli` names for a default model, permission, or runtime
+  fact. A deleted AgentClass — including one carrying a built-in compatibility
+  name — is never resurrected by Server restart, and its deletion does not
+  cascade to other AgentClasses sharing the same Harness.
+- Zero Executors or zero enabled Executors is a valid configuration. Login,
+  history, and settings remain available, while new business work is rejected
+  at the application boundary with an explicit no-enabled-executor reason.
+  This admission rule coexists with Pi installation readiness and never
+  substitutes one for the other.
+
+Internal IDs are server-generated and immutable; recreating a same-named
+Executor produces a new ID, and deleting the last Executor does not delete
+Harnesses, Providers, credentials, history, artifacts, or revision records.
+
 ## Out Of Scope
 
 - A2A transport details, remote harness mechanics, and any Scheduler/Router interpretation of remote execution.

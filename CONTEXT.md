@@ -284,6 +284,24 @@ presentation-only projections of validated graph and durable runtime facts;
 they cannot schedule, cancel, retry, fallback, mutate bindings, or access
 storage directly.
 
+ADR-0033's 2026-09-19 amendment (accepted target; implementation in progress,
+not yet delivered) tightens activation admission to the strict idle rule:
+any continuable Task (`created`/`ready`/`running`/`parked`/`blocked`), Planner
+turn, accepted-but-unprocessed work request, execution, publication,
+cancellation cleanup, or recovery marks the whole account busy, and unknown
+activity fails closed. New-work admission and configuration transactions share
+one account-scoped interlock so neither can overlap the other, and a work
+reservation covers the full span from authenticated admission to Planner
+completion or Task persistence. While strictly idle, Executor AgentClasses
+backed by existing `pi-cli`/`codex-cli` Harnesses may be created, edited
+(display name, model policy, existing permission-profile reference, manual
+text, enablement), enabled, disabled, and removed with hot activation; tool
+changes, Planner lifecycle, Harness/driver/command, and permission grammar
+stay outside this surface (ADR-0028 §6). Tool compatibility derives from the
+resolved Harness driver, never from names. Shared credential, Provider/Model,
+full-activation, and rollback writes use the same gate, and CLI administration
+routes through the live Server Management API with no offline write fallback.
+
 The active settings contract is Provider-first. Models added to a Provider
 catalog form the global candidate source; the settings page does not expose a
 separate user-editable Model Facts resource. Planner is fixed-only and must be

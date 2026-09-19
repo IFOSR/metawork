@@ -124,6 +124,49 @@ compatibility and coding benefits but never blocks work or implies that Pi
 lacks coding capability. Readiness is projected through Management and the
 unified Gateway and is not Kernel Executor health.
 
+### Executor idle management amendment (2026-09-19)
+
+This amendment supersedes the earlier allowance that idle `ready`, `parked`,
+or `blocked` Tasks do not block activation. Configuration writes are admitted
+only under the strict idle rule: any Task in `created`, `ready`, `running`,
+`parked`, or `blocked` that can still continue, any in-progress Planner turn,
+any accepted-but-unprocessed work request, execution, result verification,
+publication, cancellation cleanup, and startup or periodic recovery each mark
+the account busy. `done`, `archived`, and `cancelled` Tasks block until their
+cleanup has completed. Unknown or unconfirmable activity states fail closed
+and reject the write with diagnostics. Connected clients, history browsing,
+settings reads, logins, and task cancellation requests are not new work.
+
+New-work admission and configuration transactions share one account-scoped
+interlock. A business request holds a work reservation continuously from
+authenticated admission through Planner completion or Task persistence, so no
+"not yet `beginWork`" window exists. If work is reserved first, configuration
+writes return `runtime_busy`; if the configuration transaction starts first,
+new work is explicitly rejected with a configuration-updating reason rather
+than silently dropped or started. The configuration transaction holds the same
+interlock across validation, manual compilation, probe, activation, in-memory
+refresh, and compensation; transaction-owned analysis and probe steps run
+inside that context and are not counted as ordinary business work. UI disabled
+state remains non-authoritative. If activation compensation cannot prove the
+previous active/runtime revision, credentials, and catalogs were restored, the
+account stays blocked for new work instead of releasing into a false idle.
+
+Executor AgentClass lifecycle operations — create, update, enable, disable,
+remove — for Executors backed by existing `pi-cli` / `codex-cli` Harness
+configurations are hot-activatable while strictly idle, subject to the field
+bounds in ADR-0028. Changing an Executor's tool, adding or removing a Planner
+AgentClass or changing its type, and Harness command/driver/image/argument or
+Permission Profile grammar changes remain outside ordinary executor
+management. Shared credential writes, Provider/Model mutations, full
+configuration activation, and rollback all pass through the same strict gate;
+read-only credential queries never import or replace keys as a side effect,
+and automatic credential import runs only inside a protected initialization or
+configuration transaction.
+
+CLI executor administration uses the authenticated loopback Management API of
+the verified live Server and the same gate. When the Server is unreachable or
+authentication fails the CLI errors out; no offline file-write fallback exists.
+
 ## Consequences
 
 - A successful idle activation affects the next Planner turn and new

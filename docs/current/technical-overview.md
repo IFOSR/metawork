@@ -896,6 +896,22 @@ Tasks do not block it. Application releases, schema, Harness/process
 artifacts, Permission Profile semantics, Planner RPC, and runtime directory
 protocol changes remain restart-required.
 
+ADR-0033's 2026-09-19 amendment (accepted target; implementation in progress)
+replaces that idle definition with the strict idle rule: any continuable Task
+(`created`/`ready`/`running`/`parked`/`blocked`), Planner turn,
+accepted-but-unprocessed work request, execution, publication, cancellation
+cleanup, or recovery marks the whole account busy, and unknown activity fails
+closed. New-work admission and configuration transactions share one
+account-scoped interlock, with a work reservation spanning authenticated
+admission through Planner completion or Task persistence. While strictly idle,
+Executor AgentClasses backed by existing `pi-cli`/`codex-cli` Harnesses can be
+created, edited (display name, model policy, existing permission-profile
+reference, manual text, enablement), enabled, disabled, and removed with hot
+activation; tool compatibility derives from the resolved Harness driver, never
+from names (ADR-0028 §6). Shared credential, Provider/Model, full-activation,
+and rollback writes use the same gate, and CLI administration routes through
+the live Server Management API with no offline write fallback.
+
 `ConfigurationRuntimeCoordinator` validates, compiles, probes, renders and
 persists the immutable candidate before pointer cutover, then updates the live
 Planner/Kernel/Runtime views and broadcasts `configuration_runtime_state` and
