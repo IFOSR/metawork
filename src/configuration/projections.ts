@@ -92,6 +92,7 @@ export function buildKernelConfigurationView(
           displayName: agentClass.displayName,
           kind: agentClass.kind,
           harnessRef: agentClass.harnessRef,
+          driverId: harness.driverId,
           modelPolicy: cloneModelPolicy(agentClass.modelPolicy),
           permissionProfileRef: agentClass.permissionProfileRef ?? null,
           routingCapabilities: agentClass.kind === 'executor'

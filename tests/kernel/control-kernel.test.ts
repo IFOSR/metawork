@@ -82,6 +82,7 @@ const kernelConfiguration: KernelConfigurationView = {
     'codex-cli': {
       kind: 'executor',
       harnessRef: 'codex-harness',
+      driverId: 'codex-cli',
       modelPolicy: { mode: 'fixed', modelRef: 'codex-model' },
       permissionProfileRef: 'workspace-default',
       routingCapabilities: ['workspace-engineering'],
@@ -94,6 +95,7 @@ const kernelConfiguration: KernelConfigurationView = {
     'pi-agent': {
       kind: 'executor',
       harnessRef: 'pi-harness',
+      driverId: 'pi-cli',
       modelPolicy: { mode: 'fixed', modelRef: 'pi-model' },
       permissionProfileRef: 'workspace-default',
       routingCapabilities: ['current-web-research', 'workspace-engineering'],

@@ -316,6 +316,8 @@ export interface KernelAgentClassConfiguration {
   displayName?: string;
   kind: HarnessKind;
   harnessRef: string;
+  /** 受控真实 Driver 标识（来自 Harness 定义），供兼容性判断，不推断实现。 */
+  driverId: HarnessDriverId;
   modelPolicy: ModelPolicy;
   permissionProfileRef: string | null;
   routingCapabilities: RoutingCapabilityId[];

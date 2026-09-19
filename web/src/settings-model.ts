@@ -315,21 +315,18 @@ export function evaluateModelCompatibility(
     required.add('planning');
     required.add('structured-output');
   }
-  if (facts.kind === 'executor' && facts.harnessRef === 'codex-cli') {
-    required.add('gpt-family');
-  } else if (
-    facts.kind === 'executor'
-    && facts.harnessRef !== 'pi-cli'
-    && facts.routingCapabilities.includes('workspace-engineering')
-  ) {
-    required.add('coding');
-    required.add('tools');
-  } else if (
-    facts.kind === 'executor'
-    && facts.harnessRef !== 'pi-cli'
-    && facts.routingCapabilities.includes('current-web-research')
-  ) {
-    required.add('tools');
+  // Executor 兼容性由服务端投影的真实 driverId 决定，不按名字猜测；
+  // 未知或不受支持的 Driver 失败关闭。
+  if (facts.kind === 'executor') {
+    if (facts.driverId === 'codex-cli') {
+      required.add('gpt-family');
+    } else if (facts.driverId !== 'pi-cli') {
+      return {
+        eligible: false,
+        requiredCapabilities: [],
+        missingCapabilities: ['supported-executor-driver'],
+      };
+    }
   }
   const requiredCapabilities = [...required].sort();
   const missingCapabilities = requiredCapabilities

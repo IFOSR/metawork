@@ -7,8 +7,10 @@ import {
 function configuration(): CandidateProjectionConfiguration {
   return {
     agentClasses: {
-      'codex-cli': { harnessRef: 'codex-harness' },
-      'pi-agent': { harnessRef: 'pi-harness' },
+      // 故意使用与工具无关的键名与 Harness 名：兼容性必须由真实 driverId 决定。
+      'codex-cli': { kind: 'executor', harnessRef: 'codex-harness', driverId: 'codex-cli' },
+      'pi-agent': { kind: 'executor', harnessRef: 'pi-harness', driverId: 'pi-cli' },
+      planner: { kind: 'planner', harnessRef: 'planner-harness', driverId: 'anyfusion-planner-host-v2' },
     },
     providers: {
       primary: { enabled: true },
@@ -71,6 +73,54 @@ describe('configuration candidate projection', () => {
       'gpt-primary',
       'gpt-secondary',
     ]);
+    expect(candidates.every(candidate => candidate.harnessCompatible !== false)).toBe(true);
+  });
+
+  it('resolves Codex compatibility from the harness driverId, not from names', () => {
+    const input = configuration();
+    // 自定义助手名与 Harness 键名，真实 Driver 仍是 codex-cli。
+    input.agentClasses['dev-assistant'] = {
+      kind: 'executor',
+      harnessRef: 'my-build-tool',
+    };
+    input.harnesses = {
+      'my-build-tool': { driverId: 'codex-cli' },
+    };
+
+    const candidates = projectConfigurationCandidates(input, 'dev-assistant');
+    expect(candidates.find(candidate => candidate.modelRef === 'deepseek'))
+      .toMatchObject({ harnessCompatible: false });
+    expect(candidates.find(candidate => candidate.modelRef === 'gpt-primary'))
+      .toMatchObject({ harnessCompatible: true });
+  });
+
+  it('does not apply Codex rules to a Pi driver even when names contain codex', () => {
+    const input = configuration();
+    input.agentClasses['codex-helper'] = {
+      kind: 'executor',
+      harnessRef: 'codex-lookalike',
+      driverId: 'pi-cli',
+    };
+
+    const candidates = projectConfigurationCandidates(input, 'codex-helper');
+    expect(candidates.every(candidate => candidate.harnessCompatible !== false)).toBe(true);
+  });
+
+  it('fails closed for executors with an unknown driver', () => {
+    const input = configuration();
+    input.agentClasses.mystery = {
+      kind: 'executor',
+      harnessRef: 'mystery-harness',
+      driverId: 'a2a-v1',
+    };
+
+    const candidates = projectConfigurationCandidates(input, 'mystery');
+    expect(candidates.every(candidate => candidate.harnessCompatible === false)).toBe(true);
+  });
+
+  it('keeps the Planner candidate projection driver-independent', () => {
+    const candidates = projectConfigurationCandidates(configuration(), 'planner');
+    expect(candidates.length).toBeGreaterThan(0);
     expect(candidates.every(candidate => candidate.harnessCompatible !== false)).toBe(true);
   });
 

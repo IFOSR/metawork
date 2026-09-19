@@ -143,8 +143,31 @@ describe('Settings workbench model semantics', () => {
       ...codexFacts,
       agentClassRef: 'pi-research',
       harnessRef: 'pi-cli',
+      driverId: 'pi-cli',
       routingCapabilities: ['current-web-research'],
     }).eligible).toBe(true);
+    // 名字像 Pi、真实 Driver 是 Codex：兼容性仍按 Codex 规则。
+    expect(evaluateModelCompatibility({
+      ...models[0]!,
+      providerRef: 'kimi',
+      modelId: 'k3',
+      capabilities: [],
+    }, {
+      ...codexFacts,
+      agentClassRef: 'pi-research',
+      harnessRef: 'pi-cli',
+      driverId: 'codex-cli',
+      routingCapabilities: ['current-web-research'],
+    }).eligible).toBe(false);
+    // 未知 Driver 失败关闭。
+    expect(evaluateModelCompatibility(models[0]!, {
+      ...codexFacts,
+      driverId: 'a2a-v1',
+    })).toEqual({
+      eligible: false,
+      requiredCapabilities: [],
+      missingCapabilities: ['supported-executor-driver'],
+    });
   });
 
   it('allows Provider candidates without confirmed capabilities for the Pi harness', () => {

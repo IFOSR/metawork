@@ -4,9 +4,14 @@ import type { AutoModelCandidate } from './auto-model-resolver.js';
 
 export interface CandidateProjectionConfiguration {
   agentClasses: Record<string, {
+    kind?: 'planner' | 'executor';
     harnessRef: string;
+    /** Kernel-safe 投影携带的受控真实 Driver 标识；优先于 harnesses 查找。 */
+    driverId?: string;
     modelCapabilities?: Record<string, ModelCapability[]>;
   }>;
+  /** 完整配置投影提供的 Harness 表，用于沿引用解析真实 driverId。 */
+  harnesses?: Record<string, { driverId: string }>;
   providers?: Record<string, {
     enabled: boolean;
   }>;
@@ -36,8 +41,21 @@ export function projectConfigurationCandidates(
   agentClassRef: string,
   options: CandidateProjectionOptions = {},
 ): AutoModelCandidate[] {
-  const codexAuto = options.mode !== 'fixed'
-    && isCodexAgentClass(configuration, agentClassRef);
+  const agentClass = configuration.agentClasses[agentClassRef];
+  const harnessCompatible = (modelId: string): boolean => {
+    // Fixed 模式不应用 Auto 池的 Driver 限制。
+    if (options.mode === 'fixed') return true;
+    // Planner 候选与 Executor 工具无关。
+    if (agentClass?.kind === 'planner') return true;
+    // 缺少助手定义的历史调用保持既有行为。
+    if (!agentClass) return true;
+    const driverId = resolveAgentClassDriverId(configuration, agentClassRef);
+    // 兼容性只由真实 Driver 决定：Codex 执行 GPT-family 筛选，Pi 使用全部
+    // 启用模型；未知 Driver 失败关闭，不能猜成 Pi。
+    if (driverId === 'codex-cli') return isGptRelatedModel(modelId);
+    if (driverId === 'pi-cli') return true;
+    return false;
+  };
   return Object.entries(configuration.models)
     .filter(([, model]) => {
       const provider = configuration.providers?.[model.providerRef];
@@ -60,22 +78,26 @@ export function projectConfigurationCandidates(
       health: 'healthy' as const,
       available: true,
       providerEnabled: true,
-      harnessCompatible: codexAuto ? isGptRelatedModel(model.modelId) : true,
+      harnessCompatible: harnessCompatible(model.modelId),
     }))
     .sort((left, right) => left.modelRef.localeCompare(right.modelRef));
 }
 
-export function isGptRelatedModel(modelId: string): boolean {
-  return /(?:^|[/:._-])gpt(?:[/:._-]|\d|$)/iu.test(modelId);
-}
-
-function isCodexAgentClass(
+/**
+ * 沿配置引用解析真实 driverId：优先使用 Kernel-safe 投影携带的受控标识，
+ * 否则查 Harness 表。不使用助手名或 Harness 键名推断。
+ */
+export function resolveAgentClassDriverId(
   configuration: CandidateProjectionConfiguration,
   agentClassRef: string,
-): boolean {
+): string | null {
   const agentClass = configuration.agentClasses[agentClassRef];
-  return agentClassRef === 'codex-cli'
-    || agentClassRef === 'code-cli'
-    || agentClass?.harnessRef === 'codex-cli'
-    || agentClass?.harnessRef.includes('codex') === true;
+  if (!agentClass) return null;
+  return agentClass.driverId
+    ?? configuration.harnesses?.[agentClass.harnessRef]?.driverId
+    ?? null;
+}
+
+export function isGptRelatedModel(modelId: string): boolean {
+  return /(?:^|[/:._-])gpt(?:[/:._-]|\d|$)/iu.test(modelId);
 }
