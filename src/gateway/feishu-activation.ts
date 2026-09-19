@@ -26,9 +26,79 @@ export interface ActivateFeishuPlatformInput {
   revisionPrefix?: string;
 }
 
+export interface SetFeishuGatewayBindingInput {
+  enabled: boolean;
+  installRoot?: string;
+  revisionPrefix?: string;
+}
+
+/**
+ * Returns a copy of the configuration with this machine's Feishu platform
+ * enabled/disabled. Credentials and the rest of the platform definition are
+ * preserved so rebinding does not require the setup wizard.
+ */
+export function withFeishuGatewayEnabled(
+  config: AnyFusionConfigurationV2,
+  enabled: boolean,
+): AnyFusionConfigurationV2 {
+  const feishu = config.gateway?.platforms?.feishu;
+  if (!feishu) {
+    throw new Error('本机尚未绑定飞书，请先运行 `metawork server setup-feishu`');
+  }
+  const next = structuredClone(config);
+  next.gateway = {
+    ...next.gateway,
+    platforms: { ...next.gateway.platforms, feishu: { ...feishu, enabled } },
+  };
+  return next;
+}
+
 export async function activateFeishuGatewayPlatform(
   input: ActivateFeishuPlatformInput,
 ): Promise<{ revisionId: string }> {
+  const result = await activateFeishuPlatformMutation({
+    installRoot: input.installRoot,
+    revisionPrefix: input.revisionPrefix ?? 'feishu-setup',
+    mutate: config => {
+      const next: AnyFusionConfigurationV2 = structuredClone(config);
+      next.gateway = {
+        ...next.gateway,
+        enabled: true,
+        platforms: {
+          ...next.gateway.platforms,
+          feishu: input.feishu,
+        },
+      };
+      return next;
+    },
+  });
+  return { revisionId: result.revisionId! };
+}
+
+/**
+ * Flips this machine's Feishu platform binding through the same authoritative
+ * activation path as the setup wizard. When the platform is already in the
+ * requested state no new revision is created and `changed` is false.
+ */
+export async function setFeishuGatewayBinding(
+  input: SetFeishuGatewayBindingInput,
+): Promise<{ revisionId: string | null; changed: boolean }> {
+  return activateFeishuPlatformMutation({
+    installRoot: input.installRoot,
+    revisionPrefix: input.revisionPrefix ?? 'feishu-binding',
+    mutate: config => {
+      const current = config.gateway?.platforms?.feishu?.enabled;
+      const next = withFeishuGatewayEnabled(config, input.enabled);
+      return current === input.enabled ? null : next;
+    },
+  });
+}
+
+async function activateFeishuPlatformMutation(input: {
+  installRoot?: string;
+  revisionPrefix: string;
+  mutate: (config: AnyFusionConfigurationV2) => AnyFusionConfigurationV2 | null;
+}): Promise<{ revisionId: string | null; changed: boolean }> {
   const paths = resolveMetaWorkPaths(undefined, input.installRoot);
   const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
   const repository = new FileConfigurationRepository(accountPaths.config);
@@ -51,19 +121,14 @@ export async function activateFeishuGatewayPlatform(
     legacyStore: legacySecretStore,
   });
 
-  const next: AnyFusionConfigurationV2 = structuredClone(snapshot.config);
-  next.gateway = {
-    ...next.gateway,
-    enabled: true,
-    platforms: {
-      ...next.gateway.platforms,
-      feishu: input.feishu,
-    },
-  };
+  const next = input.mutate(snapshot.config);
+  if (!next) {
+    return { revisionId: null, changed: false };
+  }
 
   const service = new ConfigurationService({
     repository,
-    createRevisionId: () => `${input.revisionPrefix ?? 'feishu-setup'}-${Date.now()}`,
+    createRevisionId: () => `${input.revisionPrefix}-${Date.now()}`,
     probe: createProductionConfigurationProbe({
       releaseRoot: paths.appCurrent,
       secretStore,
@@ -90,5 +155,5 @@ export async function activateFeishuGatewayPlatform(
       `Feishu 配置激活失败: ${activated.code}（active revision: ${activated.activeRevisionId ?? 'none'}）`,
     );
   }
-  return { revisionId: draft.revisionId };
+  return { revisionId: draft.revisionId, changed: true };
 }
