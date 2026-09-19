@@ -1,6 +1,7 @@
 import { parseAdminArgs, type AdminCommand } from './admin-args.js';
 
-export type ServerAction = 'start' | 'stop' | 'restart' | 'status' | 'doctor' | 'setup-feishu';
+export type ServerAction = 'start' | 'stop' | 'restart' | 'status' | 'doctor' | 'setup-feishu'
+  | 'bind-feishu' | 'unbind-feishu';
 
 export type CliCommand =
   | { kind: 'server'; action: ServerAction }
@@ -19,6 +20,8 @@ const SERVER_ACTIONS: readonly ServerAction[] = [
   'status',
   'doctor',
   'setup-feishu',
+  'bind-feishu',
+  'unbind-feishu',
 ];
 
 export function parseCliArgs(argv: readonly string[]): CliCommand {
@@ -79,6 +82,8 @@ export function formatCliHelp(): string {
     '  metawork server status',
     '  metawork server doctor',
     '  metawork server setup-feishu',
+    '  metawork server bind-feishu       重新启用本机飞书接入（保留凭据）',
+    '  metawork server unbind-feishu     停用本机飞书接入（保留凭据，不影响其他机器）',
     '',
     '构建并激活最新版本（不启动 Server 或 Client）:',
     '  metawork build',

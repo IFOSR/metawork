@@ -4,7 +4,7 @@ import { main as runServerCommand } from './server/server-application.js';
 import { runBuildCommand } from './build/build-command.js';
 import { resolveMetaWorkPaths } from './installation/paths.js';
 import { runGatewaySetup } from './gateway/setup.js';
-import { activateFeishuGatewayPlatform } from './gateway/feishu-activation.js';
+import { activateFeishuGatewayPlatform, setFeishuGatewayBinding } from './gateway/feishu-activation.js';
 import { runGatewayPairingCommand } from './gateway/pairing-cli.js';
 import { runTaskStateReconciler } from './execution/task-state-reconciler.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from './account/account-id.js';
@@ -23,6 +23,8 @@ const run = command.kind === 'build'
     ? restartServerWithCurrentRelease()
     : command.kind === 'server' && command.action === 'setup-feishu'
       ? runSetupFeishu()
+      : command.kind === 'server' && (command.action === 'bind-feishu' || command.action === 'unbind-feishu')
+        ? runSetFeishuBinding(command.action === 'bind-feishu')
       : command.kind === 'gateway-pairing'
         ? runPairing(command.command, command.userId)
         : command.kind === 'maintenance-reconcile'
@@ -37,6 +39,17 @@ async function runSetupFeishu(): Promise<void> {
     metaclawDir: paths.root,
     activate: feishu => activateFeishuGatewayPlatform({ feishu }),
   });
+}
+
+async function runSetFeishuBinding(enabled: boolean): Promise<void> {
+  const result = await setFeishuGatewayBinding({ enabled });
+  process.stdout.write(
+    !result.changed
+      ? `本机飞书接入已处于${enabled ? '启用' : '停用'}状态，无需变更。\n`
+      : enabled
+        ? `本机飞书接入已启用（revision ${result.revisionId}）。\n`
+        : `本机飞书接入已停用（revision ${result.revisionId}）。凭据保留在本机，其他机器不受影响。\n`,
+  );
 }
 
 async function runPairing(

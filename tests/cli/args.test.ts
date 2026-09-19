@@ -100,6 +100,13 @@ describe('parseCliArgs', () => {
       .toEqual({ kind: 'server', action: 'setup-feishu' });
   });
 
+  it('parses Feishu bind and unbind as Server actions', () => {
+    expect(parseCliArgs(['server', 'bind-feishu']))
+      .toEqual({ kind: 'server', action: 'bind-feishu' });
+    expect(parseCliArgs(['server', 'unbind-feishu']))
+      .toEqual({ kind: 'server', action: 'unbind-feishu' });
+  });
+
   it('parses the maintenance reconcile command', () => {
     expect(parseCliArgs(['maintenance', 'reconcile-tasks']))
       .toEqual({ kind: 'maintenance-reconcile' });
