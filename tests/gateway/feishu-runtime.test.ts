@@ -78,6 +78,35 @@ describe('Feishu runtime bridge', () => {
     expect(session.appendSystemMessage).toHaveBeenCalledWith('⚠️ 飞书应用桥接未启动: missing secret');
   });
 
+  it('stops the active bridge when this machine unbinds Feishu', async () => {
+    const bridge = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    };
+    const createBridge = vi.fn()
+      .mockReturnValueOnce(bridge)
+      .mockReturnValueOnce(null);
+    const manager = new FeishuRuntimeManager({
+      session: { appendSystemMessage: vi.fn() } as any,
+      createBridge,
+    });
+
+    await manager.applyConfiguration(baseConfig);
+    expect(bridge.start).toHaveBeenCalledTimes(1);
+
+    await manager.applyConfiguration({
+      ...baseConfig,
+      integrations: {
+        ...baseConfig.integrations,
+        feishu: { ...baseConfig.integrations.feishu, enabled: false },
+      },
+    });
+
+    expect(bridge.stop).toHaveBeenCalledTimes(1);
+    await manager.stop();
+    expect(bridge.stop).toHaveBeenCalledTimes(1);
+  });
+
   it('restarts the Server-owned bridge when active configuration changes', async () => {
     const first = {
       start: vi.fn().mockResolvedValue(undefined),
