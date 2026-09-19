@@ -227,6 +227,15 @@ one bounded Workspace Conversation Directory; detailed history, trace and
 results remain Conversation-scoped and require attach. Each admitted Turn
 retains its authorized `workspaceId` and canonical path.
 
+Feishu platform binding is machine-local. `gateway.platforms.feishu.enabled`
+flips only through `metawork server bind-feishu` / `unbind-feishu` (or the
+initial `setup-feishu` wizard), all of which activate through the authoritative
+ConfigurationService so a running Server starts or stops its long-connection
+bridge via `FeishuRuntimeManager`. Unbinding preserves the local app
+credentials, never touches Feishu-side app state, and has no effect on other
+machines sharing the same Feishu app. The Web surface offers no bind/unbind
+operation.
+
 `src/kernel/` owns the pure `ControlKernel` and the deep control-loop interface. Kernel contract v5 includes the executor-recovery and deferred-availability lifecycle in addition to the Phase 6 dispatch, cancellation, publication and permission contracts. `ControlKernel` reads no time, IDs, repositories, adapters or raw logs. Storage and Runtime implement the ledger and apply seams from outside the Kernel module.
 
 `src/execution/subtask-attempt-runner.ts` executes one Kernel-authorized deterministic attempt. A successful primary/correction attempt commits an immutable receipt and candidate Git commit, then moves the Subtask to `awaiting_integration`; it does not publish result, artifacts, handoffs or `done`. The publication worker integrates candidates in topology/first-dispatch/Subtask-ID order and atomically publishes all completion facts only after Git succeeds. Every non-success commits a terminal receipt and returns control to Kernel policy. A first completion-contract failure may receive one response-only correction on the same AgentClass; merge conflicts instead use the original AgentClass for up to three isolated `merge_repair` attempts, followed by one conflict-chain Planner replan and then park.
@@ -284,8 +293,8 @@ presentation-only projections of validated graph and durable runtime facts;
 they cannot schedule, cancel, retry, fallback, mutate bindings, or access
 storage directly.
 
-ADR-0033's 2026-09-19 amendment (accepted target; implementation in progress,
-not yet delivered) tightens activation admission to the strict idle rule:
+ADR-0033's 2026-09-19 amendment tightens Web/Management activation admission
+to the strict idle rule (CLI administration is explicitly deferred):
 any continuable Task (`created`/`ready`/`running`/`parked`/`blocked`), Planner
 turn, accepted-but-unprocessed work request, execution, publication,
 cancellation cleanup, or recovery marks the whole account busy, and unknown
@@ -299,8 +308,16 @@ text, enablement), enabled, disabled, and removed with hot activation; tool
 changes, Planner lifecycle, Harness/driver/command, and permission grammar
 stay outside this surface (ADR-0028 §6). Tool compatibility derives from the
 resolved Harness driver, never from names. Shared credential, Provider/Model,
-full-activation, and rollback writes use the same gate, and CLI administration
-routes through the live Server Management API with no offline write fallback.
+full-activation, and rollback writes through the Server use the same gate.
+Shared Key reads never import credentials; manual compilation runs inside the
+activation transaction. AgentClass queries read current configuration rather
+than a startup copy. Execution resolves permission aliases to code-owned
+profile IDs in the exact authorized revision, never by name or active fallback.
+Failed compensation blocks further work and configuration
+changes pending restart/recovery. Required installation facts follow enabled
+tools; zero enabled Executors rejects new work but not settings/history.
+The legacy CLI administration path is unchanged by owner request and must not
+be used to mutate configuration alongside a running Server.
 
 The active settings contract is Provider-first. Models added to a Provider
 catalog form the global candidate source; the settings page does not expose a

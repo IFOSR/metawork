@@ -1,7 +1,8 @@
 # 飞书接入本机绑定/解绑机制设计
 
 - 文档日期：2026-09-19
-- 状态：设计已确认，待实施
+- 状态：已实现（2026-09-19）
+- 实施记录：验证命令 `npm run lint`、`npx vitest run tests/gateway/feishu-platform-binding.test.ts tests/gateway/feishu-runtime.test.ts tests/cli/args.test.ts`、`npm run build` 全部通过；收尾 commit 见分支 `feat/executor-idle-management` 上 `feat: add server bind-feishu and unbind-feishu commands` 及其前后提交
 - 已确认范围：仅在 CLI 提供本机绑定/解绑（`metawork server bind-feishu` / `unbind-feishu`）；走权威 ConfigurationService 激活路径；解绑保留本机凭据（仅停用）
 - 已确认边界：Web 端不提供任何绑定/解绑操作（含开关与首次绑定向导，2026-09-19 用户确认砍掉）；飞书后台应用凭据不做任何变更；不新增热路径契约
 - 决策记录：曾设计"Web 高级设置勾选开关（随保存并激活生效）"与"Web 首次绑定向导"，用户于 2026-09-19 明确改为仅 CLI；`gateway.platforms.feishu.` 的 `isHotPath` 扩展随之不再需要（无 Web 激活消费者，CLI 激活与 `setup-feishu` 同路）
