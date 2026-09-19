@@ -23,6 +23,7 @@ import type { AccountRuntimeHandle, ConversationRuntimePort } from './account-ru
 import {
   ConfigurationActivationGate,
   type ConfigurationActivationStatusSnapshot,
+  type UnfinishedWorkSummary,
 } from '../configuration/configuration-activation-gate.js';
 import {
   ConversationActivityProjector,
@@ -51,6 +52,25 @@ export interface AccountRuntimeDeps {
   readonly dispose?: () => Promise<void>;
 }
 
+/**
+ * 配置事务进行中时新工作接收的对称拒绝（ADR-0033 2026-09-19 修正案）。
+ * 调用方应把它映射为明确的“配置正在更新，请稍后重试”反馈。
+ */
+export class WorkAdmissionBlockedError extends Error {
+  readonly code = 'configuration_updating';
+
+  constructor(message = '系统正在更新配置，暂时不能开始新工作，请稍后重试。') {
+    super(message);
+    this.name = 'WorkAdmissionBlockedError';
+  }
+}
+
+/** 未结束任务摘要的展示条数上限；count 仍包含全部记录。 */
+const MAX_UNFINISHED_WORK_ITEMS = 20;
+
+/** 仍可继续、因此阻止配置写入的任务状态（严格空闲规则）。 */
+const UNFINISHED_TASK_STATUSES = ['created', 'ready', 'parked', 'blocked'] as const;
+
 export class AccountRuntime implements AccountRuntimeHandle {
   private initialized = false;
   private initialization: Promise<void> | null = null;
@@ -58,6 +78,7 @@ export class AccountRuntime implements AccountRuntimeHandle {
   private closing: Promise<void> | null = null;
   private attachedClients = 0;
   private activeWorkCount = 0;
+  private workReservationCount = 0;
   private readonly activePlannerTurns = new Map<string, { count: number; updatedAt: string }>();
   private periodicReview: Promise<boolean> | null = null;
   private readonly configurationActivationGate: ConfigurationActivationGate;
@@ -140,11 +161,28 @@ export class AccountRuntime implements AccountRuntimeHandle {
   beginWork(): void {
     if (this.disposed) throw new Error(`AccountRuntime is closed: ${this.accountId}`);
     if (this.closing) throw new Error(`AccountRuntime is closing: ${this.accountId}`);
+    if (this.configurationActivationGate.isActivationInProgress()) {
+      throw new WorkAdmissionBlockedError();
+    }
     this.activeWorkCount += 1;
   }
 
   endWork(): void {
     this.activeWorkCount = Math.max(0, this.activeWorkCount - 1);
+  }
+
+  /**
+   * 业务工作 reservation：从已认证的接收入口持有到 Planner 完成或任务持久化，
+   * 消除“尚未 beginWork”的门禁空窗。配置事务进行中拒绝新 reservation。
+   */
+  reserveWork(): void {
+    this.beginWork();
+    this.workReservationCount += 1;
+  }
+
+  releaseWork(): void {
+    this.workReservationCount = Math.max(0, this.workReservationCount - 1);
+    this.endWork();
   }
 
   setConversationPlannerActive(
@@ -239,7 +277,7 @@ export class AccountRuntime implements AccountRuntimeHandle {
       activeTaskId: [...activeTaskIds].sort()[0] ?? null,
       activeTaskIds: [...activeTaskIds].sort(),
       activeConversationCount: occupiedConversationIds.size,
-      plannerTurnActive: this.activeWorkCount > 0,
+      plannerTurnActive: this.activeWorkCount > this.workReservationCount,
       activeAttemptCount: new Set([
         ...activeDispatchItems.map(item => item.attemptId),
         ...activeAttempts.map(attempt => attempt.attemptId),
@@ -249,11 +287,33 @@ export class AccountRuntime implements AccountRuntimeHandle {
       recoveryInProgress: Boolean(
         (this.initialization && !this.initialized) || this.periodicReview,
       ),
+      pendingWorkRequestCount: this.workReservationCount,
+      unfinishedWork: this.getUnfinishedWorkSummary(),
+    };
+  }
+
+  private getUnfinishedWorkSummary(): UnfinishedWorkSummary {
+    const taskRuntimeService = this.deps.taskServices?.taskRuntimeService;
+    if (!taskRuntimeService) return { count: 0, items: [] };
+    const unfinished = UNFINISHED_TASK_STATUSES.flatMap(status => (
+      taskRuntimeService.listTasksByStatus(status)
+    ));
+    return {
+      count: unfinished.length,
+      items: unfinished.slice(0, MAX_UNFINISHED_WORK_ITEMS).map(task => ({
+        taskId: task.id,
+        status: task.status,
+        conversationId: task.conversationId ?? this.originConversationId(task.id),
+      })),
     };
   }
 
   reviewTaskPoolOnTimer(nowMs = Date.now()): Promise<boolean> {
     if (this.disposed || this.closing) return Promise.resolve(false);
+    // 配置事务期间不启动定时恢复副作用；下一个定时周期再试。
+    if (this.configurationActivationGate.isActivationInProgress()) {
+      return Promise.resolve(false);
+    }
     if (this.periodicReview) return this.periodicReview;
     const operation = this.deps.reviewTaskPoolOnTimer?.(nowMs) ?? Promise.resolve(false);
     const review = operation.finally(() => {

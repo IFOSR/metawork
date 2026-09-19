@@ -39,6 +39,12 @@ export interface AccountRuntimeHandle {
   detachClient(): void;
   beginWork(): void;
   endWork(): void;
+  /**
+   * 业务工作 reservation：从认证接收持有到 Planner 完成或任务持久化。
+   * 配置事务进行中抛出 code 为 `configuration_updating` 的错误。
+   */
+  reserveWork?(): void;
+  releaseWork?(): void;
   setConversationPlannerActive?(
     conversationId: string,
     active: boolean,

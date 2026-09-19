@@ -263,16 +263,61 @@ export class ConversationGatewayRuntime {
     const conversation = await this.open(conversationId);
     const completion = deferredCompletion();
     this.completions.set(completionKey, completion);
-    const receipt = conversation.submitCommand({
-      requestId,
-      idempotencyKey,
-      principalId,
-      command,
-      origin,
-    });
+    // 业务工作在进入持久接收/会话队列之前建立账户级 reservation，
+    // 从接收连续占用到执行完成，不给配置事务留下空窗（ADR-0033 修正案）。
+    // 查询、历史、权限决议和取消不视为新业务工作。
+    const accountRuntime = this.deps.registry.getIfLoaded(this.deps.accountId);
+    const isBusinessWork = command.kind === 'user_message' || command.kind === 'slash_command';
+    let reserved = false;
+    if (isBusinessWork && accountRuntime?.reserveWork) {
+      try {
+        accountRuntime.reserveWork();
+        reserved = true;
+      } catch (error) {
+        this.completions.delete(completionKey);
+        if ((error as { code?: unknown }).code === 'configuration_updating') {
+          const reason = 'configuration_updating';
+          return {
+            requestId,
+            idempotencyKey,
+            status: 'rejected',
+            reason,
+            completion: Promise.resolve({ status: 'failed', reason }),
+          };
+        }
+        throw error;
+      }
+    }
+    const releaseReservation = () => {
+      if (reserved) {
+        reserved = false;
+        accountRuntime?.releaseWork?.();
+      }
+    };
+    let receipt: MailboxReceipt;
+    try {
+      receipt = conversation.submitCommand({
+        requestId,
+        idempotencyKey,
+        principalId,
+        command,
+        origin,
+      });
+    } catch (error) {
+      releaseReservation();
+      this.completions.delete(completionKey);
+      completion.resolve({
+        status: 'failed',
+        reason: (error as Error).message,
+      });
+      throw error;
+    }
     if (receipt.status === 'rejected') {
       completion.resolve({ status: 'failed', reason: receipt.reason });
       this.completions.delete(completionKey);
+      releaseReservation();
+    } else {
+      void completion.promise.then(releaseReservation, releaseReservation);
     }
     return { ...receipt, completion: completion.promise };
   }
@@ -392,7 +437,15 @@ export class ConversationGatewayRuntime {
     const workspaceBefore = workspaceCommand
       ? await conversation.getWorkspace()
       : null;
-    accountRuntime?.beginWork();
+    // 取消、权限决议等非业务命令在配置事务期间仍须可用；业务命令已在接收时
+    // 持有 reservation，此处不会遇到进行中的配置事务。
+    let workBegun = false;
+    try {
+      accountRuntime?.beginWork();
+      workBegun = true;
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== 'configuration_updating') throw error;
+    }
     try {
       await this.publish(
         conversation.conversationId,
@@ -486,7 +539,7 @@ export class ConversationGatewayRuntime {
       if (this.completions.get(completionKey) === completion) {
         this.completions.delete(completionKey);
       }
-      accountRuntime?.endWork();
+      if (workBegun) accountRuntime?.endWork();
     }
   }
 

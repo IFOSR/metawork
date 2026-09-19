@@ -3,6 +3,8 @@ export type ConfigurationActivationStatus = 'idle' | 'busy' | 'activating';
 export type ConfigurationActivationBlockCode =
   | 'activation_in_progress'
   | 'planner_turn_active'
+  | 'work_request_pending'
+  | 'unfinished_task'
   | 'task_running'
   | 'executor_attempt_active'
   | 'resource_lease_active'
@@ -17,6 +19,21 @@ export interface ConfigurationActivationBlock {
   count?: number;
 }
 
+/**
+ * 严格空闲事实：仍可继续的未结束任务摘要（ADR-0033 2026-09-19 修正案）。
+ * `count` 是全部记录数，`items` 有固定条数上限，仅用于安全诊断展示。
+ */
+export interface UnfinishedWorkItem {
+  taskId: string;
+  status: string;
+  conversationId: string | null;
+}
+
+export interface UnfinishedWorkSummary {
+  count: number;
+  items: UnfinishedWorkItem[];
+}
+
 export interface ConfigurationActivationRuntimeFacts {
   activeTaskId: string | null;
   activeTaskIds?: readonly string[];
@@ -26,6 +43,10 @@ export interface ConfigurationActivationRuntimeFacts {
   activeLeaseCount: number;
   publicationPending: boolean;
   recoveryInProgress: boolean;
+  /** 已接收但尚未处理完的业务请求数（工作 reservation）。 */
+  pendingWorkRequestCount?: number;
+  /** created/ready/parked/blocked 等仍可继续的未结束任务。 */
+  unfinishedWork?: UnfinishedWorkSummary;
 }
 
 export interface ConfigurationActivationStatusSnapshot
@@ -66,6 +87,24 @@ export class ConfigurationActivationGate {
       blockingReasons.push({
         code: 'planner_turn_active',
         message: 'Planner 正在处理当前请求。',
+      });
+    }
+    if ((facts.pendingWorkRequestCount ?? 0) > 0) {
+      blockingReasons.push({
+        code: 'work_request_pending',
+        message: `${facts.pendingWorkRequestCount} 个已接收的工作请求仍在排队或处理中。`,
+        count: facts.pendingWorkRequestCount,
+      });
+    }
+    if ((facts.unfinishedWork?.count ?? 0) > 0) {
+      const first = facts.unfinishedWork?.items[0];
+      blockingReasons.push({
+        code: 'unfinished_task',
+        message: first
+          ? `${facts.unfinishedWork!.count} 个任务尚未结束（例如 ${first.taskId} 处于 ${first.status}）。请先完成或取消这些任务。`
+          : '存在尚未结束的任务，暂时不能修改配置。',
+        count: facts.unfinishedWork!.count,
+        ...(first ? { taskId: first.taskId } : {}),
       });
     }
     if (facts.activeTaskId) {
@@ -114,6 +153,11 @@ export class ConfigurationActivationGate {
       hotActivationSupported: true,
       checkedAt: this.now(),
     };
+  }
+
+  /** 配置事务是否正在进行；新工作接收入口据此对称拒绝。 */
+  isActivationInProgress(): boolean {
+    return this.activating;
   }
 
   async withActivation<T>(

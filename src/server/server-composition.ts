@@ -565,12 +565,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   let accountRuntimeComposition: ReturnType<typeof buildAccountRuntimeComposition> | null = null;
   const configurationActivationGate = new ConfigurationActivationGate(() => (
     accountRuntimeComposition?.accountRuntime.getConfigurationActivationFacts() ?? {
+      // 账户运行时尚未装配完成时失败关闭：启动恢复未确认前不允许配置写入。
       activeTaskId: null,
       plannerTurnActive: false,
       activeAttemptCount: 0,
       activeLeaseCount: 0,
       publicationPending: false,
-      recoveryInProgress: false,
+      recoveryInProgress: true,
     }
   ));
   const configurationService = new ConfigurationService({

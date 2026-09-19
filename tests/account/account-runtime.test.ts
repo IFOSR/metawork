@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { AccountRuntime } from '../../src/account/account-runtime.js';
+import { AccountRuntime, WorkAdmissionBlockedError } from '../../src/account/account-runtime.js';
 import { AccountRuntimeFactory } from '../../src/account/account-runtime-factory.js';
 import type { AccountKernelCoordinator } from '../../src/account/account-kernel-coordinator.js';
+import {
+  ConfigurationActivationBlockedError,
+} from '../../src/configuration/configuration-activation-gate.js';
+import type { Task, TaskStatus } from '../../src/core/types.js';
 
 function makeMockCoordinator(): AccountKernelCoordinator {
   return {
@@ -13,6 +17,48 @@ function makeMockCoordinator(): AccountKernelCoordinator {
       reconciledProcessingEvents: 0,
       applicationCounts: { pending: 0, applying: 0, applied: 0, uncertain: 0, failed: 0 },
     }),
+  };
+}
+
+function makeTask(taskId: string, status: TaskStatus, conversationId = 'conv-1'): Task {
+  return {
+    id: taskId,
+    title: taskId,
+    status,
+    conversationId,
+    dependencies: [],
+    createdAt: '2026-09-19T00:00:00.000Z',
+    updatedAt: '2026-09-19T00:00:00.000Z',
+  } as unknown as Task;
+}
+
+function makeIdleRuntimeDeps(tasks: Task[] = []) {
+  return {
+    accountId: 'local-default',
+    kernelCoordinator: makeMockCoordinator(),
+    kernelServices: {
+      kernelDecisionRepo: { listByTask: () => [] },
+    } as never,
+    repositories: {
+      conversationTaskSchedulerRepo: { listSlots: () => [] },
+      workGraphRevisionRepo: { findActive: () => null },
+    } as never,
+    workspaceServices: {
+      attemptExecutionRepository: { listActive: () => [] },
+    } as never,
+    runtimeExecutionServices: {
+      dispatchItemRepo: { listBlocking: () => [] },
+      resourceLeaseService: { findActive: () => [] },
+      publicationRepo: { hasAnyBlockingResidue: () => false },
+    } as never,
+    taskServices: {
+      taskRuntimeService: {
+        listTasks: () => tasks,
+        listTasksByStatus: (status: TaskStatus) => tasks.filter(task => task.status === status),
+        findTask: (taskId: string) => tasks.find(task => task.id === taskId) ?? null,
+      },
+    } as never,
+    recoverDurableStartup: async () => undefined,
   };
 }
 
@@ -195,6 +241,103 @@ describe('AccountRuntime', () => {
     disposal.resolve();
     await expect(closing).resolves.toBe('closed');
     expect(() => runtime.attachClient()).toThrow('AccountRuntime is closed');
+  });
+
+  it('rejects new work while a configuration transaction is active', async () => {
+    const runtime = new AccountRuntime(makeIdleRuntimeDeps());
+    await runtime.initialize();
+
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const activation = runtime.withConfigurationActivation(async () => hold);
+    await Promise.resolve();
+
+    expect(() => runtime.beginWork()).toThrow(WorkAdmissionBlockedError);
+    try {
+      runtime.beginWork();
+    } catch (error) {
+      expect((error as WorkAdmissionBlockedError).code).toBe('configuration_updating');
+    }
+    expect(() => runtime.reserveWork()).toThrow(WorkAdmissionBlockedError);
+
+    release();
+    await activation;
+    expect(() => runtime.beginWork()).not.toThrow();
+    runtime.endWork();
+  });
+
+  it('blocks configuration activation while admitted work is still active', async () => {
+    const runtime = new AccountRuntime(makeIdleRuntimeDeps());
+    await runtime.initialize();
+
+    runtime.reserveWork();
+    const status = runtime.getConfigurationActivationStatus();
+    expect(status.activationAllowed).toBe(false);
+    expect(status.blockingReasons.map(reason => reason.code))
+      .toContain('work_request_pending');
+    await expect(runtime.withConfigurationActivation(async () => undefined))
+      .rejects.toThrow(ConfigurationActivationBlockedError);
+
+    runtime.releaseWork();
+    await expect(runtime.withConfigurationActivation(async () => 'ok')).resolves.toBe('ok');
+  });
+
+  it('reports continuable unfinished tasks as activation-blocking facts', async () => {
+    const tasks = [
+      makeTask('task-created', 'created'),
+      makeTask('task-ready', 'ready'),
+      makeTask('task-parked', 'parked', 'conv-2'),
+      makeTask('task-blocked', 'blocked'),
+      makeTask('task-done', 'done'),
+      makeTask('task-cancelled', 'cancelled'),
+    ];
+    const runtime = new AccountRuntime(makeIdleRuntimeDeps(tasks));
+    await runtime.initialize();
+
+    const facts = runtime.getConfigurationActivationFacts();
+    expect(facts.unfinishedWork.count).toBe(4);
+    expect(facts.unfinishedWork.items.map(item => item.taskId).sort()).toEqual([
+      'task-blocked',
+      'task-created',
+      'task-parked',
+      'task-ready',
+    ]);
+    const status = runtime.getConfigurationActivationStatus();
+    expect(status.activationAllowed).toBe(false);
+    expect(status.blockingReasons.map(reason => reason.code)).toContain('unfinished_task');
+
+    const idleRuntime = new AccountRuntime(makeIdleRuntimeDeps([
+      makeTask('task-done', 'done'),
+      makeTask('task-archived', 'archived'),
+      makeTask('task-cancelled', 'cancelled'),
+    ]));
+    await idleRuntime.initialize();
+    expect(idleRuntime.getConfigurationActivationStatus().activationAllowed).toBe(true);
+  });
+
+  it('skips periodic recovery side effects while a configuration transaction is active', async () => {
+    let reviews = 0;
+    const runtime = new AccountRuntime({
+      ...makeIdleRuntimeDeps(),
+      reviewTaskPoolOnTimer: async () => {
+        reviews += 1;
+        return true;
+      },
+    });
+    await runtime.initialize();
+
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const activation = runtime.withConfigurationActivation(async () => hold);
+    await Promise.resolve();
+
+    await expect(runtime.reviewTaskPoolOnTimer()).resolves.toBe(false);
+    expect(reviews).toBe(0);
+
+    release();
+    await activation;
+    await expect(runtime.reviewTaskPoolOnTimer()).resolves.toBe(true);
+    expect(reviews).toBe(1);
   });
 });
 
