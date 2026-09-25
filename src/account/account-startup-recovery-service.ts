@@ -7,6 +7,12 @@ import { SessionPersistenceService } from '../session/session-persistence-servic
 import { SessionPresentationService } from '../session/session-presentation-service.js';
 import type { KernelEvent } from '../kernel/control-kernel.js';
 import type { KernelDecision, KernelSnapshot } from '../kernel/control-kernel.js';
+import type { PlanningAgent } from '../planning/planning-agent.js';
+import { PlanningContextBuilder } from '../planning/planning-context-builder.js';
+import {
+  GenerationReplanWorker,
+  type GenerationReplanPlannerPort,
+} from './generation-replan-worker.js';
 import type {
   KernelConfigurationView,
   PlannerConfigurationView,
@@ -24,6 +30,8 @@ import type { AccountKernelCoordinator } from './account-kernel-coordinator.js';
 import { buildEligibleContextRefKeys } from '../work-graph/index.js';
 import {
   isRetrySafeLegacySystemBindingReplan,
+  isRetrySafeUncertainReplanScheduling,
+  isSatisfiedReplanScheduling,
   legacySystemBindingRecoveryEvent,
 } from '../execution/kernel-application-recovery.js';
 import { reconcileUncertainCancellations } from '../execution/cancellation-reconciliation.js';
@@ -35,6 +43,7 @@ import type { ConversationResultDelivery } from '../session/conversation-session
 export class AccountStartupRecoveryService {
   private lastBlockedRecheckAt: number | null = null;
   private readonly promotionInFlight = new Map<string, Promise<void>>();
+  private replanWorker: GenerationReplanWorker | null = null;
 
   constructor(private readonly deps: {
     readonly db: Database.Database;
@@ -48,6 +57,7 @@ export class AccountStartupRecoveryService {
     readonly kernelCoordinator: AccountKernelCoordinator;
     readonly plannerConfiguration: PlannerConfigurationView;
     readonly kernelConfiguration: KernelConfigurationView;
+    readonly planningAgent: PlanningAgent;
     readonly binder: AccountConversationExecutionBinder;
     readonly notifier: NotificationService;
     readonly verificationAndDeliveryService: VerificationAndDeliveryService;
@@ -227,6 +237,7 @@ export class AccountStartupRecoveryService {
     await this.deps.runtimeExecutionServices.cancellationCoordinator.recover();
     this.deps.repositories.effectOutboxRepo.reconcileSending(now);
     this.deps.kernelServices.kernelWorkflowRepo.reconcileProcessing();
+    this.convergeUncertainReplanScheduling(now);
     this.enqueueRetrySafeSystemBindingRecoveries(now);
     await this.deliverPendingEffects(now);
     await this.recoverKernelCoordinator();
@@ -349,6 +360,11 @@ export class AccountStartupRecoveryService {
   }
 
   async recoverPeriodic(nowMs = Date.now()): Promise<boolean> {
+    // Durable Replan Jobs are consumed first: they are the account-scoped
+    // replacement for the foreground Conversation replan callback, so they must
+    // run before any blocked-Task recovery that might dismiss the Task.
+    const replan = await this.runReplanWorker();
+
     for (const task of this.deps.taskServices.taskRuntimeService.listTasksByStatus('blocked')) {
       const sessionId = this.originForTask(task.id);
       if (!sessionId) continue;
@@ -360,6 +376,8 @@ export class AccountStartupRecoveryService {
       ));
       if (recovered) return true;
     }
+
+    if (replan.claimed > 0) return true;
 
     if (!this.deps.blockedRecheckEnabled) return false;
     if (this.lastBlockedRecheckAt !== null
@@ -380,6 +398,61 @@ export class AccountStartupRecoveryService {
         occurredAt: new Date(nowMs).toISOString(),
       })
     ));
+  }
+
+  /**
+   * Account-scoped Planner Worker pass (2026-09-25 convergence plan §5). Owns
+   * every scheduled Replan Job; no foreground client is required.
+   */
+  private async runReplanWorker(): Promise<{ claimed: number }> {
+    const worker = this.replanWorker ??= new GenerationReplanWorker({
+      replanRepo: this.deps.runtimeExecutionServices.generationReplanRepo,
+      planner: this.buildReplanPlannerPort(),
+      findTask: taskId => this.deps.taskServices.taskRuntimeService.findTask(taskId),
+      now: () => new Date().toISOString(),
+    });
+    try {
+      const report = await worker.run();
+      return { claimed: report.claimed };
+    } catch {
+      // A worker failure must never take the account periodic review down; the
+      // Job keeps its durable identity and the next pass retries it.
+      return { claimed: 0 };
+    }
+  }
+
+  private buildReplanPlannerPort(): GenerationReplanPlannerPort {
+    return {
+      plan: context => this.deps.planningAgent.plan(context),
+      buildPlanningContext: input => new PlanningContextBuilder({
+        sessionId: input.sessionId,
+        ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+        requestSource: 'system-replan',
+        getTimeoutMs: () => {
+          const configured = Number(process.env.METACLAW_PLANNER_TIMEOUT_MS);
+          return Number.isFinite(configured) && configured > 0 ? configured : 180_000;
+        },
+        getPlannerConfiguration: () => this.deps.plannerConfiguration,
+      }).build({ userInput: input.userInput }),
+      materializeCompletedEvidence: (taskId, revision) => {
+        this.deps.repositories.workGraphRuntimeService.materializeCompletedEvidence(taskId, revision);
+      },
+      listTaskEvidence: (taskId, generationId) => (
+        this.deps.repositories.taskExecutionEvidenceRepo
+          .listTaskEvidenceByGeneration(taskId, generationId)
+      ),
+      listAttemptReceipts: taskId => (
+        this.deps.repositories.attemptReceiptRepo.listByTask(taskId)
+      ),
+      resolveTurnAttachmentIds: taskId => {
+        const decisions = this.deps.kernelServices.kernelDecisionRepo.listByTask(taskId);
+        const origin = decisions.find(record => record.eventType === 'plan_proposed');
+        if (!origin) return [];
+        const event = this.deps.kernelServices.kernelWorkflowRepo.findEvent(origin.eventId);
+        return event?.type === 'plan_proposed' ? [...(event.attachmentIds ?? [])] : [];
+      },
+      drainKernel: async () => { await this.recoverKernelCoordinator(); },
+    };
   }
 
   private async recoverTask(taskId: string): Promise<void> {
@@ -415,6 +488,35 @@ export class AccountStartupRecoveryService {
         apply: decision => this.applyCoordinatorDecision(decision),
       },
     });
+  }
+
+  /**
+   * Convergent recovery for the replan action family (2026-09-25 plan §6).
+   * Every uncertain application reaches `applied`, a safe retry, or explicit
+   * Kernel-authorized recovery; it can never stay uncertain forever while the
+   * Task remains `running`.
+   */
+  private convergeUncertainReplanScheduling(now: string): void {
+    const workflow = this.deps.kernelServices.kernelWorkflowRepo;
+    for (const application of workflow.listUncertainApplications([
+      'schedule_replan',
+      'request_replan',
+    ])) {
+      const action = application.decision.action;
+      if (action.type !== 'schedule_replan' && action.type !== 'request_replan') continue;
+      const request = this.deps.runtimeExecutionServices.generationReplanRepo.findByGeneration(
+        action.taskId,
+        action.generationId,
+        action.sourceRevision,
+      );
+      if (isSatisfiedReplanScheduling({ application, replanRequest: request })) {
+        workflow.resolveUncertainApplication(application.decisionId, 'applied', now);
+        continue;
+      }
+      if (isRetrySafeUncertainReplanScheduling({ application, replanRequest: request })) {
+        workflow.resolveUncertainApplication(application.decisionId, 'retry', now);
+      }
+    }
   }
 
   private enqueueRetrySafeSystemBindingRecoveries(now: string): void {
@@ -615,7 +717,10 @@ export class AccountStartupRecoveryService {
         setLatestGuidance: () => ({ scene: '', taskId: '', taskTitle: '', recommendedAction: '', reasons: [] }),
         queueProposal: () => undefined,
         requestReplan: async () => {
-          throw new Error('startup recovery requires the originating Conversation Planner for replan');
+          // Removed in the 2026-09-25 convergence: replans are durable Replan
+          // Jobs consumed by the account-scoped Planner Worker, so no foreground
+          // Conversation Planner callback exists any more.
+          throw new Error('legacy Conversation requestReplan callback was removed; use the durable Replan Job worker');
         },
         requestMergeReplan: async () => {
           throw new Error('startup recovery requires the originating Conversation Planner for merge replan');

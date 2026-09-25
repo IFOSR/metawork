@@ -26,6 +26,13 @@ export interface GatewayTaskViewSnapshot {
   readonly taskId: string;
   readonly title: string;
   readonly status: string;
+  /**
+   * 统一的只读生命周期投影（2026-09-25 Task lifecycle 收敛 §7）。
+   *
+   * 展示层必须消费 `lifecycle.phase` 作为用户可见状态；`status` 仅为历史
+   * 兼容字段，不得直接渲染为面向用户的文案。
+   */
+  readonly lifecycle: GatewayTaskViewLifecycle;
   readonly goal: string | null;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
@@ -49,6 +56,29 @@ export interface GatewayTaskViewRouting {
   readonly provider: string | null;
   readonly model: string | null;
   readonly harness: string | null;
+}
+
+/**
+ * 统一 TaskView 投影的 wire 形态。字段来自 `projectTaskView`，不复制第二套
+ * 状态计算；客户端只解释 phase 与 nextAuthorizedAction。
+ */
+export interface GatewayTaskViewLifecycle {
+  readonly lifecycle: string;
+  readonly phase: string;
+  readonly activeAttempt: {
+    readonly attemptId: string;
+    readonly subtaskId: string;
+    readonly kind: string;
+    readonly ordinal: number;
+    readonly lifecycle: string;
+    readonly outcome: string | null;
+  } | null;
+  readonly blockingResidue: readonly string[];
+  readonly nextAuthorizedAction: string;
+  readonly explanation: string;
+  readonly lastProgressAt: string | null;
+  readonly lastAttemptSettledAt: string | null;
+  readonly nextWakeAt: string | null;
 }
 
 export interface GatewayTaskViewSubtask {

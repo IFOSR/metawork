@@ -115,6 +115,104 @@ export class GenerationReplanRequestRepo {
     return row ? rowToRecord(row) : null;
   }
 
+  listByTask(taskId: string): GenerationReplanRequestRecord[] {
+    return (this.db.prepare(`
+      SELECT * FROM generation_replan_requests
+      WHERE task_id = ?
+      ORDER BY created_at ASC, id ASC
+    `).all(taskId) as ReplanRow[]).map(rowToRecord);
+  }
+
+  /**
+   * Durable scheduling postcondition for the Kernel `schedule_replan` action.
+   * Moves a quiescent Job from `pending_quiescence` to `planning` with no
+   * Planner claim recorded yet, so an account-scoped Planner Worker owns the
+   * turn without needing an attached foreground Conversation.
+   */
+  scheduleForPlanner(id: string, quiescenceToken: string, now: string): boolean {
+    const changed = this.db.prepare(`
+      UPDATE generation_replan_requests
+      SET status = 'planning', quiescence_token = ?,
+          planning_started_at = NULL, updated_at = ?
+      WHERE id = ? AND status = 'pending_quiescence'
+    `).run(quiescenceToken, now, id).changes;
+    if (changed === 1) return true;
+    return this.isScheduledForPlanner(id, quiescenceToken);
+  }
+
+  /**
+   * Idempotent postcondition check: the Job is already durably scheduled under
+   * the same quiescence token and has not been cancelled or failed.
+   */
+  isScheduledForPlanner(id: string, quiescenceToken: string): boolean {
+    const record = this.find(id);
+    return Boolean(
+      record
+      && record.quiescenceToken === quiescenceToken
+      && ['planning', 'submitted', 'waiting_for_availability', 'resolved'].includes(record.status),
+    );
+  }
+
+  /**
+   * Bounded Planner claim. `leaseCutoff` is the oldest `planning_started_at`
+   * that may still be considered in-flight; a crashed Planner Worker therefore
+   * becomes claimable again without a synthetic SQL repair.
+   */
+  claimForPlanner(id: string, now: string, leaseCutoff: string): boolean {
+    return this.db.prepare(`
+      UPDATE generation_replan_requests
+      SET planning_started_at = ?, updated_at = ?
+      WHERE id = ? AND status = 'planning'
+        AND (planning_started_at IS NULL OR planning_started_at <= ?)
+    `).run(now, now, id, leaseCutoff).changes === 1;
+  }
+
+  listPlannerClaimable(
+    leaseCutoff: string,
+    retryNotBefore: string,
+    limit = 10,
+  ): GenerationReplanRequestRecord[] {
+    return (this.db.prepare(`
+      SELECT * FROM generation_replan_requests
+      WHERE status = 'planning'
+        AND (planning_started_at IS NULL OR planning_started_at <= ?)
+        AND (error_summary IS NULL OR updated_at <= ?)
+      ORDER BY created_at ASC, id ASC
+      LIMIT ?
+    `).all(leaseCutoff, retryNotBefore, limit) as ReplanRow[]).map(rowToRecord);
+  }
+
+  /**
+   * Latest non-resolved, non-cancelled Job for a generation. Unlike
+   * `findActive`, this includes `failed` Jobs so the Kernel can observe an
+   * exhausted Planner retry budget and authorize an explicit block.
+   */
+  findLatestOpen(
+    taskId: string,
+    generationId: string,
+  ): GenerationReplanRequestRecord | null {
+    const row = this.db.prepare(`
+      SELECT * FROM generation_replan_requests
+      WHERE task_id = ? AND generation_id = ?
+        AND status IN ('pending_quiescence', 'planning', 'submitted', 'waiting_for_availability', 'failed')
+      ORDER BY source_revision DESC
+      LIMIT 1
+    `).get(taskId, generationId) as ReplanRow | undefined;
+    return row ? rowToRecord(row) : null;
+  }
+
+  /**
+   * Releases a Planner claim after a retryable transport or process failure so
+   * the next bounded worker pass can retry the same Job without a new Job id.
+   */
+  releasePlannerClaim(id: string, errorSummary: string, now: string): void {
+    this.db.prepare(`
+      UPDATE generation_replan_requests
+      SET planning_started_at = NULL, error_summary = ?, updated_at = ?
+      WHERE id = ? AND status = 'planning'
+    `).run(errorSummary, now, id);
+  }
+
   markPlanning(id: string, quiescenceToken: string, now: string): boolean {
     const changed = this.db.prepare(`
       UPDATE generation_replan_requests

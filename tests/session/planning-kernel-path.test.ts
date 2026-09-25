@@ -1142,6 +1142,35 @@ describe('natural-language planning/kernel path', () => {
 
     await harness.session.submit('Implement a feature', { awaitAsyncWork: true });
 
+    // Durable Replan Job boundary (2026-09-25 convergence §5): the exhaustion
+    // decision only schedules a Job; the Planner turn is a separate durable
+    // step, so the submit does not synchronously run a second Planner turn.
+    const scheduled = harness.db.prepare(`
+      SELECT id, status, quiescence_token, planning_started_at
+      FROM generation_replan_requests
+    `).all() as Array<{
+      id: string;
+      status: string;
+      quiescence_token: string | null;
+      planning_started_at: string | null;
+    }>;
+    expect(plannerCalls).toBe(1);
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0]).toMatchObject({ status: 'planning', planning_started_at: null });
+    expect(scheduled[0]!.quiescence_token).toMatch(/^quiescence_/u);
+    expect(harness.db.prepare(`
+      SELECT status, error_summary FROM kernel_decision_applications
+    `).all()).toEqual([
+      expect.objectContaining({ status: 'applied', error_summary: null }),
+      expect.objectContaining({ status: 'applied', error_summary: null }),
+      expect.objectContaining({ status: 'applied', error_summary: null }),
+      expect.objectContaining({ status: 'applied', error_summary: null }),
+    ]);
+
+    // The account-scoped Planner Worker (or the legacy facade's parity entry
+    // point) consumes the scheduled Job without any foreground TUI/Web.
+    await harness.session.runScheduledReplanJobs();
+
     const contextBuildCalls = contextBuild.mock.calls.length;
     contextBuild.mockRestore();
     const replanDiagnostics = JSON.stringify({
@@ -1183,7 +1212,7 @@ describe('natural-language planning/kernel path', () => {
       { revision: 2, status: 'completed', automatic_replan: 1 },
     ]);
     expect(harness.kernelDecisionRepo.listBySession('sess_replan').map(item => item.action)).toEqual(
-      expect.arrayContaining(['request_replan', 'authorize_task_plan', 'complete_task']),
+      expect.arrayContaining(['schedule_replan', 'authorize_task_plan', 'complete_task']),
     );
   });
 

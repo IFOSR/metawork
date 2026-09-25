@@ -124,6 +124,10 @@ import type { GatewaySession } from './session-transport-adapter.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
+import {
+  GenerationReplanWorker,
+  type GenerationReplanWorkerReport,
+} from '../account/generation-replan-worker.js';
 import { TaskCancellationCoordinator } from '../execution/task-cancellation-coordinator.js';
 import { SessionKernelRuntime } from './session-kernel-runtime.js';
 import { PlannerRunRepo } from '../storage/planner-run-repo.js';
@@ -393,6 +397,7 @@ export class MetaclawSession {
   private readonly executorRecoveryRefreshService: ExecutorRecoveryRefreshService;
   private readonly plannerProposalRepo: PlannerProposalRepo;
   private readonly publicationRepo: WorkspacePublicationRepo;
+  private readonly generationReplanRepo: GenerationReplanRequestRepo;
   private readonly plannerConfiguration: PlannerConfigurationView;
   private readonly kernelConfiguration: KernelConfigurationView;
   private readonly plannerBinding: RevisionedAgentBinding;
@@ -551,6 +556,7 @@ export class MetaclawSession {
     const dispatchItemRepo = runtimeExecutionServices.dispatchItemRepo;
     this.publicationRepo = runtimeExecutionServices.publicationRepo;
     const generationReplanRepo = runtimeExecutionServices.generationReplanRepo;
+    this.generationReplanRepo = generationReplanRepo;
     const cancellationCoordinator = runtimeExecutionServices.cancellationCoordinator;
     this.attemptRunner = runtimeExecutionServices.attemptRunner;
     const kernelExecutionServices = deps.accountKernelExecutionServices ?? buildAccountKernelExecutionServices({
@@ -2007,6 +2013,57 @@ export class MetaclawSession {
         });
       });
     }
+  }
+
+  /**
+   * Durable Replan Job parity for the retained legacy facade
+   * (2026-09-25 convergence plan §5).
+   *
+   * Production AccountRuntimes drive the same worker from their periodic
+   * review; this entry point lets a session-scoped host consume Jobs owned by
+   * its own Tasks without waiting for the account timer. The worker claim is
+   * idempotent, so both paths can run concurrently without a duplicate Planner
+   * turn or graph revision.
+   */
+  async runScheduledReplanJobs(): Promise<GenerationReplanWorkerReport> {
+    await this.initialization;
+    const report = await new GenerationReplanWorker({
+      replanRepo: this.generationReplanRepo,
+      planner: {
+        plan: context => this.runPlanningAgent(context),
+        buildPlanningContext: input => this.planningContextBuilder.build({
+          userInput: input.userInput,
+        }),
+        materializeCompletedEvidence: (taskId, revision) => {
+          this.workGraphRuntimeService.materializeCompletedEvidence(taskId, revision);
+        },
+        listTaskEvidence: (taskId, generationId) => (
+          this.taskExecutionEvidenceRepo.listTaskEvidenceByGeneration(taskId, generationId)
+        ),
+        listAttemptReceipts: taskId => this.attemptReceiptRepo.listByTask(taskId),
+        resolveTurnAttachmentIds: taskId => {
+          const origin = this.kernelDecisionRepo.listByTask(taskId)
+            .find(record => record.eventType === 'plan_proposed');
+          if (!origin) return [];
+          const event = this.kernelWorkflowRepo.findEvent(origin.eventId);
+          return event?.type === 'plan_proposed' ? [...(event.attachmentIds ?? [])] : [];
+        },
+        drainKernel: async ({ userInput, event }) => {
+          await this.kernelCoordinator.submit(event, {
+            buildSnapshot: claimed => this.buildPlanAdmissionSnapshot(
+              claimed as Extract<KernelEvent, { type: 'plan_proposed' }>,
+            ),
+            runtime: this.sessionKernelRuntime.forInput(userInput),
+          });
+        },
+      },
+      findTask: taskId => this.taskRuntimeService.findTask(taskId),
+      now: () => new Date().toISOString(),
+    }).run();
+    // An activated replan revision starts its own background execution; the
+    // legacy facade owns that work, so it is awaited before the next period.
+    if (report.submitted > 0) await this.waitForAsyncWork();
+    return report;
   }
 
   private async requestKernelReplan(

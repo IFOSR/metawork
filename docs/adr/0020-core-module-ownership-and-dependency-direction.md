@@ -147,3 +147,27 @@ Kernel Executor Status Projection 的稳定词汇和数据契约属于 Routing C
 - Repository port 的具体数量和命名；
 - Resource Model 的最终字段、lease API 和 worktree 策略；
 - Memory、Guidance、Learning、Delivery 等非本路线图领域的完整解耦方案。
+
+### Task lifecycle status-contract amendment (2026-09-25)
+
+The ownership matrix gains one explicit seam: cross-module status contracts.
+
+- **Task Domain** owns the canonical Task and Subtask lifecycle vocabulary, the
+  valid transition table and the raw-status mapping functions. They live in
+  `src/task/task-lifecycle.ts` and are the only place a persisted status column
+  becomes a business lifecycle state.
+- **Presentation (Gateway/TUI/Web/Feishu) never owns a status contract.** It
+  consumes the read-only `TaskView` projection in `src/task/task-view.ts`
+  (`projectTaskView`) and renders `phase`. It may not interpret `tasks.status`,
+  `kernel_dispatch_items.status`, `work_units.state` or
+  `kernel_decision_applications.status` as user-facing prose.
+- **Planning** still may not depend on Kernel, Runtime repositories or Executor
+  process implementations. The durable Replan Job consumer therefore lives in
+  the Account/Application Shell layer (`src/account/generation-replan-worker.ts`),
+  not in `src/planning/`.
+- Duplicate public status unions are removed where they were only a copy of the
+  persisted column; remaining wire contracts stay owned by their module and map
+  explicitly rather than re-exporting raw columns.
+
+Current matrix, transition table and projection priority:
+[`docs/current/task-lifecycle-state-contracts.md`](../../docs/current/task-lifecycle-state-contracts.md).

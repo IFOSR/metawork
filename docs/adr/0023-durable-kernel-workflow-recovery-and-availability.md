@@ -137,3 +137,54 @@ The Phase 4 gated evaluation closed on 2026-07-21 without adoption. The replacea
 ## Consequences
 
 Crashes no longer create an uninspectable ledger/apply gap, and repeated submission resumes the same application instead of duplicating authorization. Retry, fallback, replan, availability, permission, partition waiting and sandbox recovery are auditable Kernel actions. The hard schema cuts require coordinated migration and replacement of every manual issue/apply path. Phase 5 remains serial; multi-Task and concurrent-frontier scheduling remain Phase 6.
+
+### Durable Replan Job and uncertain-application convergence amendment (2026-09-25)
+
+The 2026-09-25 production failure was not a lost Kernel outcome. Two
+`heartbeat_lost` attempts were durably landed, the `execution_outcome` events
+were processed, and the chain stopped only because `request_replan` was applied
+through the startup system binding, which required the originating foreground
+Conversation Planner. The application became `uncertain` and the Task stayed
+`running` with an occupied Conversation slot indefinitely.
+
+The durable workflow therefore changes as follows.
+
+**Durable Replan Job.** A new Kernel action `schedule_replan` replaces
+`request_replan` at the generation-quiescence seam. Its only postcondition is
+that the Replan Job (`generation_replan_requests`) is durably schedulable under
+the Decision-derived quiescence token `quiescence_<decisionId>`, recorded as
+`status = 'planning'` with no Planner claim yet. The Decision application is
+`applied` immediately; the Runtime never performs a Planner call, so no Runtime
+action requires a live TUI, Web connection, ConversationSession callback or user
+input channel merely to record a durable intent. `request_replan` remains in the
+ledger vocabulary for historical replay and is applied with the same durable
+semantics.
+
+**Planner Worker.** An account-scoped `GenerationReplanWorker` is the only
+consumer of a scheduled Job. It claims the Job with a bounded Planner lease,
+performs one Planner turn, inserts the `plan_proposed` event together with the
+`submitted` transition, and drains the normal Kernel ingress. The claim is a
+single conditional `UPDATE` and the Job id is deterministic, so a duplicate
+recovery pass or a concurrent session/account pass cannot produce a second
+Planner turn or a second graph revision.
+
+**Bounded Planner unavailability.** A retryable transport or process failure
+releases the claim with backoff; the Job keeps its identity. Past the absolute
+retry budget the Job fails closed as `planner_unavailable`, which the Kernel
+projects into an explicit `block_work` instead of leaving the Task `running`.
+Planner semantic rejection remains a normalized Planner failure fact.
+
+**Uncertain application convergence.** Every action family declares an explicit
+postcondition. Startup and periodic recovery inspect it, mark the application
+`applied` when present, retry the same Decision when the action is retry-safe,
+and otherwise let the ControlKernel authorize a bounded retry or explicit
+blocking:
+
+```text
+uncertain application -> applied -> retry_pending -> recovery_required/blocked
+```
+
+The replan postcondition is implemented as
+`isSatisfiedReplanScheduling()` / `isRetrySafeUncertainReplanScheduling()` in
+`src/execution/kernel-application-recovery.ts`. An uncertain application may
+never remain permanently paired with `Task = running` and `Slot = occupied`.

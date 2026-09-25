@@ -93,6 +93,53 @@ describe('AccountStartupRecoveryService production composition', () => {
     expect(recoverCalls).toBe(1);
   });
 
+  it('schedules a durable Replan Job at generation quiescence without a foreground Planner', async () => {
+    const fixture = createFixture('durable-replan');
+    const task = createRunningTask(fixture, 'Generate the downstream HTML report');
+    const seeded = seedQuiescentGenerationReplan(fixture, task.id);
+
+    await fixture.composition.accountRuntime.initialize();
+
+    const workflow = new KernelWorkflowRepo(fixture.db);
+    const decisions = fixture.composition.accountRuntime.kernelServices.kernelDecisionRepo
+      .listByTask(task.id);
+    const schedule = decisions.find(record => record.action === 'schedule_replan');
+    expect(schedule, JSON.stringify(decisions)).toBeDefined();
+    expect(workflow.findApplicationByDecisionId(schedule!.id)).toMatchObject({
+      status: 'applied',
+      errorSummary: null,
+    });
+    const repo = new GenerationReplanRequestRepo(fixture.db);
+    const job = repo.find(seeded.requestId)!;
+    expect(job.status).toBe('planning');
+    expect(job.quiescenceToken).toBe(`quiescence_${schedule!.id}`);
+    // The durable Job is now claimable by the account-scoped Planner Worker
+    // without any attached TUI, Web or ConversationSession.
+    expect(repo.listPlannerClaimable(
+      '2099-01-01T00:00:00.000Z',
+      '2099-01-01T00:00:00.000Z',
+    )).toHaveLength(1);
+    // The failure chain must never leave an uncertain application paired with a
+    // running Task and an occupied Conversation slot.
+    expect(workflow.listUncertainApplications([], task.id)).toEqual([]);
+  });
+
+  it('converges an uncertain replan scheduling by postcondition instead of synthetic SQL repair', async () => {
+    const fixture = createFixture('uncertain-schedule');
+    const task = createRunningTask(fixture, 'Converge the uncertain replan');
+    const seeded = seedUncertainReplanScheduling(fixture, task.id);
+
+    await fixture.composition.accountRuntime.initialize();
+
+    const workflow = new KernelWorkflowRepo(fixture.db);
+    expect(workflow.findApplicationByDecisionId(seeded.decision.id)).toMatchObject({
+      status: 'applied',
+      errorSummary: null,
+    });
+    expect(new GenerationReplanRequestRepo(fixture.db).find(seeded.requestId)?.status)
+      .toBe('planning');
+  });
+
   it('applies a pending replan decision through the system Conversation binding', async () => {
     const fixture = createFixture('pending-replan');
     const task = createRunningTask(fixture, 'Generate the downstream HTML report');
@@ -584,6 +631,169 @@ function seedPendingReplanApplication(
     createdAt: now,
   });
   return { decision, generationId, requestId };
+}
+
+/**
+ * Production-shaped characterization fixture: a running Task whose generation is
+ * quiescent and whose authorized Replan Job is still waiting for quiescence.
+ * This is the R-2026-09-25 chain that used to require the originating
+ * Conversation Planner during startup recovery.
+ */
+function seedQuiescentGenerationReplan(
+  fixture: ReturnType<typeof createFixture>,
+  taskId: string,
+  options: { enqueueTrigger?: boolean } = {},
+) {
+  const now = '2026-09-25T00:00:00.000Z';
+  const revision = new WorkGraphRevisionRepo(fixture.db).findActive(taskId)!;
+  const subtaskRepo = new SubtaskRepo(fixture.db);
+  for (const subtask of subtaskRepo.listActiveByTask(taskId)) {
+    subtaskRepo.updateStatus(subtask.id, 'done', { result: 'completed research' });
+  }
+  const requestId = `generation_replan_${taskId}_${revision.generationId}_${revision.revision}`;
+  new GenerationReplanRequestRepo(fixture.db).enqueue({
+    id: requestId,
+    taskId,
+    generationId: revision.generationId,
+    sourceRevision: revision.revision,
+    configurationRevision: 'revision-test',
+    triggerDecisionId: 'trigger_queue_replan',
+    now,
+  });
+  seedKernelInboxEvent(fixture.db, {
+    id: `dispatch_event_replan_${taskId}`,
+    type: 'dispatch_requested',
+    taskId,
+    sessionId: 'conversation-origin',
+    reason: 'startup recovery fixture',
+    occurredAt: now,
+  });
+  seedTaskOriginDecision(fixture.db, taskId, 'conversation-origin');
+  if (options.enqueueTrigger === false) {
+    fixture.db.prepare('DELETE FROM kernel_events WHERE id = ?')
+      .run(`dispatch_event_replan_${taskId}`);
+  }
+  return { requestId, generationId: revision.generationId };
+}
+
+/**
+ * A `schedule_replan` application that crashed after the Job was durably
+ * scheduled. The postcondition inspector must mark it applied without any SQL
+ * repair.
+ */
+function seedUncertainReplanScheduling(
+  fixture: ReturnType<typeof createFixture>,
+  taskId: string,
+) {
+  const now = '2026-09-25T00:00:00.000Z';
+  const seeded = seedQuiescentGenerationReplan(fixture, taskId, { enqueueTrigger: false });
+  const event = {
+    schemaVersion: 5 as const,
+    configurationRevision: 'revision-test',
+    type: 'generation_quiescence_observed' as const,
+    id: `quiescence_event_${taskId}`,
+    correlationId: seeded.requestId,
+    causationId: null,
+    occurredAt: now,
+    sessionId: 'conversation-origin',
+    taskId,
+    requestId: seeded.requestId,
+    generationId: seeded.generationId,
+    sourceRevision: 1,
+  };
+  const decision: KernelDecision = {
+    schemaVersion: 5,
+    configurationRevision: 'revision-test',
+    id: `decision_schedule_${taskId}`,
+    eventId: event.id,
+    action: {
+      type: 'schedule_replan',
+      taskId,
+      generationId: seeded.generationId,
+      sourceRevision: 1,
+      replanJobId: seeded.requestId,
+    },
+    reason: 'generation quiescence token accepted; durable Replan Job scheduled for the Planner Worker',
+  };
+  const workflow = new KernelWorkflowRepo(fixture.db);
+  expect(workflow.enqueue(event as KernelEvent)).toBe(true);
+  expect(workflow.claimNext(now)).toEqual(event);
+  workflow.issue(event.id, {
+    id: decision.id,
+    schemaVersion: 5,
+    eventId: event.id,
+    eventType: event.type,
+    correlationId: event.correlationId,
+    causationId: null,
+    sessionId: event.sessionId,
+    taskId,
+    subtaskId: null,
+    attemptId: null,
+    event: event as KernelEvent,
+    snapshot: { schemaVersion: 5, type: 'invalid', reason: 'replan scheduling fixture' },
+    decision,
+    action: decision.action.type,
+    reason: decision.reason,
+    configurationRevision: decision.configurationRevision,
+    authorizedBindings: [],
+    bindingFingerprints: [],
+    createdAt: now,
+  });
+  // The Job was already scheduled under this Decision's quiescence token before
+  // the process died, so the postcondition is present.
+  const repo = new GenerationReplanRequestRepo(fixture.db);
+  expect(repo.scheduleForPlanner(
+    seeded.requestId,
+    `quiescence_${decision.id}`,
+    now,
+  )).toBe(true);
+  workflow.markApplying(decision.id, now);
+  workflow.markApplicationFailed(decision.id, 'uncertain', 'process exit during apply', now);
+  return { decision, ...seeded };
+}
+
+function seedKernelInboxEvent(
+  db: Database.Database,
+  input: {
+    id: string;
+    type: KernelEvent['type'];
+    taskId: string;
+    sessionId: string;
+    reason: string;
+    occurredAt: string;
+  },
+): void {
+  const event = {
+    schemaVersion: 5,
+    configurationRevision: 'revision-test',
+    type: input.type,
+    id: input.id,
+    correlationId: input.taskId,
+    causationId: null,
+    occurredAt: input.occurredAt,
+    sessionId: input.sessionId,
+    taskId: input.taskId,
+    reason: input.reason,
+  };
+  db.prepare(`
+    INSERT OR IGNORE INTO kernel_events (
+      id, schema_version, event_type, correlation_id, causation_id,
+      session_id, task_id, subtask_id, attempt_id, event_json,
+      available_at, status, processing_started_at, processed_at,
+      last_error, configuration_revision, created_at, updated_at
+    ) VALUES (?, 5, ?, ?, NULL, ?, ?, NULL, NULL, ?, ?, 'pending', NULL, NULL,
+      NULL, 'revision-test', ?, ?)
+  `).run(
+    event.id,
+    event.type,
+    event.correlationId,
+    event.sessionId,
+    input.taskId,
+    JSON.stringify(event),
+    input.occurredAt,
+    input.occurredAt,
+    input.occurredAt,
+  );
 }
 
 function executionBinding(db: Database.Database): ConversationExecutionBinding {

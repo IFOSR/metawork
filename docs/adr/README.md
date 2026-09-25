@@ -17,9 +17,9 @@ concurrent dispatch, Git publication, cancellation and generation recovery.
 ADR-0023 owns the durable-workflow evolution. The earlier v3 contract and
 migration record are archived as ADR-0019.
 
-ADR-0022 is the origin authority for the unified Kernel event/snapshot/decision Interface, decision ledger, `awaiting_decision`, synchronous control loop, capacity candidate switching, and response-only correction. Its contract has since been amended through ADR-0023/0024/0025/0026 and the current Kernel wire version is v5.
+ADR-0022 is the origin authority for the unified Kernel event/snapshot/decision Interface, decision ledger, `awaiting_decision`, synchronous control loop, capacity candidate switching, and response-only correction. Its contract has since been amended through ADR-0023/0024/0025/0026 and the current Kernel wire version is v5. Its 2026-09-25 amendment renames the public vocabulary to "attempt settled" and canonical `awaiting_completion` while retaining the persisted column spellings for migration and audit.
 
-ADR-0023 is the current authority for the durable KernelWorkflow, structured failure and availability rules, idempotent application recovery, Work Graph revisions, continuation, outbox, manual recovery, and the 2026-07-30 deferred-availability/executor-recovery amendment.
+ADR-0023 is the current authority for the durable KernelWorkflow, structured failure and availability rules, idempotent application recovery, Work Graph revisions, continuation, outbox, manual recovery, and the 2026-07-30 deferred-availability/executor-recovery amendment. Its 2026-09-25 amendment replaces the foreground `request_replan` callback application with the durable `schedule_replan` Job plus an account-scoped Planner Worker, and requires every uncertain application to converge through its declared postcondition.
 
 ADR-0024 is the current authority for Phase 5 resource partitions, persistent workspaces, per-attempt Docker sandboxes, durable resource leases and runtime capability elevation.
 
@@ -102,7 +102,9 @@ ADR-0037 supersedes the account-wide single-active-Task restriction with
 durable Conversation execution slots and account-scoped scheduling. It governs
 same-Conversation queueing, cross-Conversation parallelism, capacity,
 fairness, immutable Task routing, recovery isolation and bounded Workspace
-summaries.
+summaries. Its 2026-09-25 amendment fixes slot release as residue-convergence
+only and makes TaskView the single projection that reports replan/blocked
+phases.
 
 ADR-0042 governs the accepted Query usage metering, billing and external
 consumption target. It makes Query the accrual root (Task is only an aggregation
@@ -117,6 +119,7 @@ gate completes; `observe -> shadow -> export` is the release order.
 
 | Topic | Current authority | What it decides |
 | --- | --- | --- |
+| Task lifecycle state contracts | [ADR-0020](0020-core-module-ownership-and-dependency-direction.md) §2026-09-25 amendment, [ADR-0022](0022-unified-kernel-control-plane-and-decision-ledger.md), [ADR-0023](0023-durable-kernel-workflow-recovery-and-availability.md), [ADR-0037](0037-multi-conversation-task-parallelism.md) | Canonical Task/Subtask/Attempt lifecycle ownership and transitions, durable Replan Jobs and uncertain-application postconditions, residue-based slot release, and the read-only TaskView projection |
 | Origin-scoped live delivery and replay | [ADR-0036](0036-origin-scoped-live-delivery-and-replay.md) | Detailed live events deliver only to the turn's origin connection; durable history replays every authorized origin on attach/refresh/reconnect |
 | Workspace-scoped Conversation organization | [ADR-0035](0035-workspace-scoped-conversation-organization.md) | Workspace Catalog identity, Account -> Workspace -> Conversations navigation, immutable Conversation binding, Client Workspace selection, bounded directory projection and migration |
 | Independent Server and Client lifecycle | [ADR-0034](0034-independent-server-and-client-process-lifecycle.md) | Persistent Server ownership, independent TUI/Web launch, endpoint manifest, Client-default and durable Conversation Workspace admission, protocol/draining, and Server-owned Feishu lifecycle |

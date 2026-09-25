@@ -1143,13 +1143,13 @@ export class KernelExecutionRuntime {
         ),
       generationReplanRequest: activeRevision
         ? (() => {
-            const request = this.deps.generationReplanRepo.findActive(
+            const request = this.deps.generationReplanRepo.findLatestOpen(
               taskId,
               activeRevision.generationId,
             );
             return request ? {
               id: request.id,
-              status: request.status as 'pending_quiescence' | 'planning' | 'submitted',
+              status: request.status as 'pending_quiescence' | 'planning' | 'submitted' | 'failed',
             } : null;
           })()
         : null,
@@ -1663,44 +1663,29 @@ export class KernelExecutionRuntime {
         reason: 'generation replan queued; continue independent work until quiescence',
       });
     }
-    if (action.type === 'request_replan') {
-      const request = this.deps.generationReplanRepo.findByGeneration(
-        action.taskId,
-        action.generationId,
-        action.sourceRevision,
-      );
-      if (!request) throw new Error('generation replan request is missing');
+    if (action.type === 'request_replan' || action.type === 'schedule_replan') {
+      // Durable Replan Job boundary (2026-09-25 convergence plan §5). Applying
+      // this decision only has to make the Job durably schedulable; the Planner
+      // turn is owned by the account-scoped Planner Worker. No foreground
+      // Conversation, TUI or Web connection is required, so the application is
+      // never left `uncertain` by a missing Planner callback.
+      const jobId = action.type === 'schedule_replan'
+        ? action.replanJobId
+        : this.deps.generationReplanRepo.findByGeneration(
+            action.taskId,
+            action.generationId,
+            action.sourceRevision,
+          )?.id;
+      if (!jobId) throw new Error('generation replan job is missing for scheduling');
       const token = `quiescence_${decision.id}`;
-      if (!this.deps.generationReplanRepo.markPlanning(
-        request.id,
+      if (!this.deps.generationReplanRepo.scheduleForPlanner(
+        jobId,
         token,
         new Date().toISOString(),
       )) {
-        return null;
+        throw new Error(`generation replan job could not be durably scheduled: ${jobId}`);
       }
-      try {
-        const event = await this.deps.callbacks.requestReplan(
-          decision as KernelDecision & {
-            action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
-          },
-        );
-        if (!this.deps.generationReplanRepo.submitPlan(
-          request.id,
-          token,
-          event,
-          new Date().toISOString(),
-        )) {
-          return null;
-        }
-        return event;
-      } catch (error) {
-        this.deps.generationReplanRepo.fail(
-          request.id,
-          error instanceof Error ? error.message : String(error),
-          new Date().toISOString(),
-        );
-        throw error;
-      }
+      return null;
     }
     if (action.type === 'request_merge_replan') {
       const now = new Date().toISOString();
@@ -2518,7 +2503,7 @@ export class KernelExecutionRuntime {
       ],
       acceptedActions: [
         'resume_task', 'dispatch_batch', 'probe_capacity', 'wait_for_capacity', 'wait_for_retry',
-        'block_work', 'park_for_replan', 'complete_task', 'request_replan',
+        'block_work', 'park_for_replan', 'complete_task', 'request_replan', 'schedule_replan',
         'queue_generation_replan',
         'request_merge_replan',
         'authorize_task_plan', 'defer_task_plan_for_availability', 'no_op',
@@ -2903,7 +2888,7 @@ export class KernelExecutionRuntime {
       ],
       acceptedActions: [
         'dispatch_batch', 'probe_capacity', 'wait_for_capacity', 'wait_for_retry',
-        'block_work', 'park_for_replan', 'complete_task', 'request_replan',
+        'block_work', 'park_for_replan', 'complete_task', 'request_replan', 'schedule_replan',
         'queue_generation_replan',
         'request_merge_replan',
         'authorize_task_plan', 'defer_task_plan_for_availability', 'no_op',

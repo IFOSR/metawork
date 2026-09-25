@@ -300,6 +300,7 @@ export function buildAccountRuntimeComposition(deps: {
     kernelCoordinator,
     plannerConfiguration: deps.stagedConfiguration.planner,
     kernelConfiguration: deps.stagedConfiguration.kernel,
+    planningAgent: plannerServices.planningAgent,
     binder: conversationExecutionBinder,
     notifier: deps.notifier,
     verificationAndDeliveryService,

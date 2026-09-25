@@ -68,3 +68,26 @@ visible to the user while the Subtask remains under Kernel control.
 Response-only correction is best-effort metadata repair. Its failure cannot
 discard a safe body or independently create a permanent block. Security,
 authorization and unsafe workspace facts remain fail-closed.
+
+### Attempt settlement and Subtask waiting amendment (2026-09-25)
+
+The `awaiting_decision` Subtask state and the `terminal` attempt state are
+renamed in public vocabulary, not in the persisted schema:
+
+- "attempt settled" replaces "dispatch terminal". Settlement is proven by the
+  immutable `executor_attempt_receipts` row plus the closed dispatch item, and
+  carries an immutable outcome (`succeeded`, `failed`, `heartbeat_lost`,
+  `cancelled`, `unknown`) that is derived by `toAttemptOutcome()`. Attempt
+  lifecycle (`authorized -> launched -> running -> settling -> settled`) and
+  attempt outcome are separate values; a settled attempt with a
+  `heartbeat_lost` outcome is not a Task outcome.
+- `awaiting_decision` is the persisted spelling of the canonical
+  `awaiting_completion` Subtask state: the Subtask has no active Attempt and the
+  ControlKernel must decide the next authorized action. The raw column is
+  retained for migration and audit only.
+- A settled attempt alone never completes a Task. `Task = completed` remains a
+  `complete_task` Decision whose postcondition includes empty completion residue.
+
+`ControlKernel` remains the only authority for retry, fallback, replan, block,
+completion and cancellation. Runtime callers must not write strategic Task or
+Subtask states; they apply one authorized action and report one normalized fact.

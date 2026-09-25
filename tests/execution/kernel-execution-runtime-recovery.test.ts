@@ -851,6 +851,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
       },
       generationReplanRepo: {
         findActive: vi.fn().mockReturnValue(null),
+        findLatestOpen: vi.fn().mockReturnValue(null),
       },
       cancellationCoordinator: {
         findCleanupTaskId: vi.fn().mockReturnValue(null),
@@ -954,6 +955,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
       },
       generationReplanRepo: {
         findActive: vi.fn().mockReturnValue(null),
+        findLatestOpen: vi.fn().mockReturnValue(null),
       },
       cancellationCoordinator: {
         findCleanupTaskId: vi.fn().mockReturnValue(null),

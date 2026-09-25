@@ -109,6 +109,8 @@ import { authorizedExecutorBindingFingerprint } from '../core/authorized-executo
 import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
 import { projectTaskViewFacts } from '../gateway/task-view-facts.js';
+import { projectTaskView } from '../task/task-view.js';
+import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
@@ -1422,6 +1424,56 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         findObject: resultId => deliveryResults.findObject(resultId),
         readConfiguration: revisionId => configurationRepository.readSnapshot(revisionId),
       });
+      const lifecycleProjection = projectTaskView({
+        task: { id: task.id, status: task.status, updatedAt: task.updatedAt },
+        subtasks: new SubtaskRepo(db).listByTask(taskId)
+          .map(subtask => ({ id: subtask.id, status: subtask.status })),
+        dispatches: new KernelDispatchItemRepo(db).listByTask(taskId).map(item => ({
+          attemptId: item.attemptId,
+          subtaskId: item.subtaskId,
+          status: item.status,
+          attemptKind: item.attemptKind,
+          createdAt: item.createdAt,
+          updatedAt: item.updatedAt,
+        })),
+        receipts: new ExecutorAttemptReceiptRepo(db).listByTask(taskId).map(receipt => ({
+          attemptId: receipt.attemptId,
+          terminalState: receipt.terminalState,
+          failure: receipt.failure,
+          completedAt: receipt.completedAt,
+        })),
+        replanJobs: new GenerationReplanRequestRepo(db).listByTask(taskId).map(job => ({
+          id: job.id,
+          status: job.status,
+          generationId: job.generationId,
+          sourceRevision: job.sourceRevision,
+          updatedAt: job.updatedAt,
+        })),
+        uncertainApplications: accountRuntimeComposition.runtimePort.queries
+          .listRecoveryApplications(taskId)
+          .filter(item => item.status === 'uncertain')
+          .map(item => ({
+            applicationId: item.decisionId,
+            action: item.decision.action.type,
+            errorSummary: item.errorSummary,
+            updatedAt: item.updatedAt,
+          })),
+        publications: new WorkspacePublicationRepo(db).listByTask(taskId)
+          .map(publication => ({ id: publication.id, status: publication.status })),
+        completionResidue: [],
+        pendingPermission: taskPermission ? { requestId: taskPermission.request.id } : null,
+        retryWakeAt: accountRuntimeComposition.runtimePort.queries
+          .listCurrentKernelDecisions('wait_for_retry')
+          .filter(record => record.taskId === taskId)
+          .map(record => record.decision.action)
+          .filter((action): action is Extract<typeof action, { type: 'wait_for_retry' }> => (
+            action.type === 'wait_for_retry'
+          ))
+          .map(action => action.resumeAt)
+          .sort()
+          .at(-1) ?? null,
+        result: executionFacts.result,
+      });
       const timeline = executionProjector.project(task);
       const publicExecutors = new Map(executionFacts.subtasks.map(subtask => [subtask.id, subtask.executor]));
       for (const stage of timeline.stages) {
@@ -1437,6 +1489,26 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         taskId,
         title: task.title,
         status: timeline.status,
+        lifecycle: {
+          lifecycle: lifecycleProjection.lifecycle,
+          phase: lifecycleProjection.phase,
+          activeAttempt: lifecycleProjection.activeAttempt
+            ? {
+                attemptId: lifecycleProjection.activeAttempt.attemptId,
+                subtaskId: lifecycleProjection.activeAttempt.subtaskId,
+                kind: lifecycleProjection.activeAttempt.attemptKind,
+                ordinal: lifecycleProjection.activeAttempt.ordinal,
+                lifecycle: lifecycleProjection.activeAttempt.lifecycle,
+                outcome: lifecycleProjection.activeAttempt.outcome,
+              }
+            : null,
+          blockingResidue: lifecycleProjection.blockingResidue,
+          nextAuthorizedAction: lifecycleProjection.nextAuthorizedAction,
+          explanation: lifecycleProjection.explanation,
+          lastProgressAt: lifecycleProjection.timestamps.lastProgressAt,
+          lastAttemptSettledAt: lifecycleProjection.timestamps.lastAttemptSettledAt,
+          nextWakeAt: lifecycleProjection.timestamps.nextWakeAt,
+        },
         goal: task.goal ? task.goal.slice(0, 2_000) : null,
         startedAt: recordedTurn?.startedAt ?? liveTurn?.startedAt
           ?? (association.status === 'matched' ? association.startedAt : null),

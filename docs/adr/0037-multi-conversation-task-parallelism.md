@@ -113,3 +113,27 @@ single-Task assumptions from Kernel policy and Runtime projections, add focused
 tests for A/B overlap and same-Conversation serialization, and pass native and
 Docker acceptance scenarios before this ADR is considered operationally
 closed.
+
+### Conversation slot release and TaskView interaction amendment (2026-09-25)
+
+Slot release and Task status are different facts and stay with different owners.
+
+- The Account scheduler owns the slot claim and promotion race. A slot is not a
+  substitute for Task status and is never directly changed by a presentation
+  surface.
+- A slot may be released only after the Task is in a releasable state **and** the
+  residue reader confirms that no active or uncertain dispatch, publication,
+  backend, lease, WorkUnit or control operation remains. A scheduled or failed
+  durable Replan Job is a control operation and therefore residue.
+- A Task that is blocked with no residue must release its Conversation slot. The
+  durable Replan Job path added by ADR-0023 is what makes that state reachable
+  without a foreground client: a blocked Task no longer needs an attached
+  Conversation Planner to converge.
+- TaskView (`projectTaskView`) reports `phase = 'waiting_for_plan'` while a
+  Replan Job is outstanding and `phase = 'blocked'` once the Job fails closed as
+  `planner_unavailable`; both phases keep the residue visible in
+  `blockingResidue`. Scheduling and presentation surfaces only read this
+  projection and never reconcile it themselves.
+
+A released slot promotes the next same-Conversation Task exactly once; the
+existing reservation epoch and promotion fence remain authoritative.

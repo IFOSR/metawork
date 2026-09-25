@@ -118,6 +118,29 @@ export interface GatewayTaskViewSnapshot {
   readonly goal: string | null;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
+  /**
+   * 统一只读生命周期投影（task lifecycle 收敛 §7）。展示层必须消费
+   * `lifecycle.phase`；`status` 仅为历史兼容字段。旧 Server 可能不返回该
+   * 字段，因此客户端按可选处理。
+   */
+  readonly lifecycle?: {
+    readonly lifecycle: string;
+    readonly phase: string;
+    readonly activeAttempt: {
+      readonly attemptId: string;
+      readonly subtaskId: string;
+      readonly kind: string;
+      readonly ordinal: number;
+      readonly lifecycle: string;
+      readonly outcome: string | null;
+    } | null;
+    readonly blockingResidue: readonly string[];
+    readonly nextAuthorizedAction: string;
+    readonly explanation: string;
+    readonly lastProgressAt: string | null;
+    readonly lastAttemptSettledAt: string | null;
+    readonly nextWakeAt: string | null;
+  };
   readonly routing: {
     readonly executor: string | null;
     readonly provider: string | null;

@@ -133,6 +133,7 @@ export class SessionKernelRuntime {
       case 'dispatch_batch':
       case 'complete_task':
       case 'request_replan':
+      case 'schedule_replan':
       case 'queue_generation_replan':
       case 'request_merge_replan':
       case 'cancel_task':

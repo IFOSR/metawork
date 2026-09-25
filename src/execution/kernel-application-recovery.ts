@@ -9,6 +9,41 @@ export const LEGACY_SYSTEM_BINDING_CALLBACK_ERROR =
 export const MERGE_REPLAN_SYSTEM_BINDING_CALLBACK_ERROR =
   'startup recovery requires the originating Conversation Planner for merge replan';
 
+/**
+ * Postcondition for the durable Replan Job action family (2026-09-25 plan §6).
+ *
+ * `schedule_replan` and its legacy predecessor `request_replan` are satisfied
+ * once the Job carries the quiescence token derived from this exact Decision,
+ * because that token is only written together with the durable Job state
+ * transition. A Job still in `pending_quiescence` is safe to retry; anything
+ * else must fail closed through Kernel-authorized recovery rather than loop.
+ */
+export function isSatisfiedReplanScheduling(input: {
+  application: KernelDecisionApplicationRecord;
+  replanRequest: GenerationReplanRequestRecord | null;
+}): boolean {
+  const action = input.application.decision.action;
+  if (input.application.status !== 'uncertain') return false;
+  if (action.type !== 'schedule_replan' && action.type !== 'request_replan') return false;
+  const request = input.replanRequest;
+  if (!request || request.taskId !== action.taskId) return false;
+  if (action.type === 'schedule_replan' && request.id !== action.replanJobId) return false;
+  if (request.quiescenceToken !== `quiescence_${input.application.decisionId}`) return false;
+  return ['planning', 'submitted', 'waiting_for_availability', 'resolved', 'failed']
+    .includes(request.status);
+}
+
+/** True when an uncertain replan scheduling is safe to re-apply unchanged. */
+export function isRetrySafeUncertainReplanScheduling(input: {
+  application: KernelDecisionApplicationRecord;
+  replanRequest: GenerationReplanRequestRecord | null;
+}): boolean {
+  const action = input.application.decision.action;
+  if (input.application.status !== 'uncertain') return false;
+  if (action.type !== 'schedule_replan' && action.type !== 'request_replan') return false;
+  return input.replanRequest?.status === 'pending_quiescence';
+}
+
 export function isRetrySafeLegacySystemBindingReplan(input: {
   taskId: string;
   application: KernelDecisionApplicationRecord;

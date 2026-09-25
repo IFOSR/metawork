@@ -355,7 +355,7 @@ export type KernelSnapshot =
       completionBlockedReasons: string[];
       generationReplanRequest: {
         id: string;
-        status: 'pending_quiescence' | 'planning' | 'submitted';
+        status: 'pending_quiescence' | 'planning' | 'submitted' | 'failed';
       } | null;
       generationQuiescent: boolean;
     }
@@ -515,6 +515,20 @@ export type KernelDecisionAction =
       sourceAttemptId: string;
     }
   | { type: 'request_replan'; taskId: string; generationId: string; sourceRevision: number }
+  | {
+      /**
+       * Durable Replan Job authorization (2026-09-25 convergence plan §5). The
+       * Runtime only has to make the Job durably schedulable; an account-scoped
+       * Planner Worker owns the Planner turn. No foreground Conversation, TUI or
+       * Web connection may be required to apply this action.
+       */
+      type: 'schedule_replan';
+      taskId: string;
+      generationId: string;
+      sourceRevision: number;
+      /** Deterministic Job id; doubles as the idempotency key. */
+      replanJobId: string;
+    }
   | {
       type: 'queue_generation_replan';
       taskId: string;
@@ -962,14 +976,26 @@ export class ControlKernel {
           `dependency materialization failed: ${terminalDependencyFailure.sourceSubtaskId} -> ${terminalDependencyFailure.targetSubtaskId}; ${terminalDependencyFailure.detail}`,
         );
       }
+      if (snapshot.generationReplanRequest?.status === 'failed') {
+        // Bounded Planner retry budget exhausted. The Task converges to an
+        // explicit block instead of remaining `running` with an occupied slot.
+        return snapshot.task?.status === 'blocked'
+          ? decision(event, { type: 'no_op' }, 'planner_unavailable blocker is already recorded')
+          : decision(event, {
+              type: 'block_work',
+              taskId: event.taskId,
+              subtaskId: null,
+            }, 'planner_unavailable: the authorized Replan Job exhausted its retry budget');
+      }
       if (snapshot.generationReplanRequest?.status === 'pending_quiescence') {
         return snapshot.generationQuiescent
           ? decision(event, {
-              type: 'request_replan',
+              type: 'schedule_replan',
               taskId: event.taskId,
               generationId: snapshot.generationId,
               sourceRevision: snapshot.graphRevision,
-            }, 'generation is quiescent; the coalesced automatic replan may start')
+              replanJobId: snapshot.generationReplanRequest.id,
+            }, 'generation is quiescent; the coalesced automatic replan job may be scheduled')
           : decision(event, { type: 'no_op' }, 'generation replan is waiting for quiescence');
       }
       if (snapshot.subtasks.length > 0 && snapshot.subtasks.every(item => item.status === 'done')) {
@@ -1400,11 +1426,12 @@ export class ControlKernel {
       return decision(event, { type: 'no_op' }, 'generation quiescence observation is stale or incomplete');
     }
     return decision(event, {
-      type: 'request_replan',
+      type: 'schedule_replan',
       taskId: event.taskId,
       generationId: event.generationId,
       sourceRevision: event.sourceRevision,
-    }, 'generation quiescence token accepted');
+      replanJobId: request.id,
+    }, 'generation quiescence token accepted; durable Replan Job scheduled for the Planner Worker');
   }
 
   private decideContractFailure(event: Extract<KernelEvent, { type: 'handoff_contract_failed' }>, snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>): KernelDecision {
