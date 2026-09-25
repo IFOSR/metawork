@@ -1,4 +1,5 @@
 import type { TaskStatus } from '../core/types.js';
+import { deriveTaskLifecycleState } from '../task/task-lifecycle.js';
 import type { ConversationActivityState } from './workspace-conversation-projector.js';
 
 const MAX_TASK_ID_LENGTH = 160;
@@ -73,10 +74,22 @@ function taskState(
   task: ConversationActivityTaskFact,
   hasActiveAttempt: boolean,
 ): ConversationActivityState | null {
-  if (task.status === 'blocked') return 'blocked';
-  if (task.status === 'running' || hasActiveAttempt) return 'executing';
+  // 2026-09-25 plan §7: a persisted `running` Task without an active authorized
+  // Attempt is not "executing". The activity card consumes the same canonical
+  // lifecycle as TaskView instead of re-deriving its own rule.
+  const lifecycle = deriveTaskLifecycleState({
+    status: task.status,
+    hasActiveAttempt,
+    hasOutstandingReplanJob: false,
+    hasPendingRetryWake: task.dependencies.some(dependency => (
+      dependency.status === 'waiting' && dependency.type === 'kernel_retry'
+    )),
+    hasPendingUserDecision: false,
+  });
+  if (lifecycle === 'blocked') return 'blocked';
+  if (lifecycle === 'executing') return 'executing';
   if (
-    ['created', 'ready', 'parked'].includes(task.status)
+    (lifecycle === 'queued' || lifecycle === 'coordinating' || lifecycle === 'waiting_for_user')
     && task.dependencies.some(dependency => (
       dependency.status === 'waiting'
       && ['kernel_capacity', 'kernel_retry', 'kernel_availability'].includes(dependency.type)

@@ -29,21 +29,32 @@ import type { AccountCoordinatorServices } from './account-coordinator-services.
 import type { AccountKernelCoordinator } from './account-kernel-coordinator.js';
 import { buildEligibleContextRefKeys } from '../work-graph/index.js';
 import {
+  inspectApplicationAgainstSources,
   isRetrySafeLegacySystemBindingReplan,
-  isRetrySafeUncertainReplanScheduling,
-  isSatisfiedReplanScheduling,
   legacySystemBindingRecoveryEvent,
+  type ApplicationPostconditionFactSource,
 } from '../execution/kernel-application-recovery.js';
+import {
+  createTaskLifecycleTransitionPort,
+  type TaskLifecycleTransitionPort,
+} from '../task/task-lifecycle-transition-port.js';
 import { reconcileUncertainCancellations } from '../execution/cancellation-reconciliation.js';
 import type { QueuedTaskPayload } from '../storage/conversation-task-scheduler-repo.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { QueryUsageLifecycle } from '../metering/query-lifecycle.js';
 import type { ConversationResultDelivery } from '../session/conversation-session.js';
 
+/**
+ * Bounded retry budget for a `retry_safe` uncertain application before it must
+ * stay `uncertain` and surface as explicit `recovery_required`.
+ */
+const MAX_UNSAFE_APPLICATION_RETRIES = 3;
+
 export class AccountStartupRecoveryService {
   private lastBlockedRecheckAt: number | null = null;
   private readonly promotionInFlight = new Map<string, Promise<void>>();
   private replanWorker: GenerationReplanWorker | null = null;
+  private lifecycle: TaskLifecycleTransitionPort | null = null;
 
   constructor(private readonly deps: {
     readonly db: Database.Database;
@@ -72,11 +83,7 @@ export class AccountStartupRecoveryService {
     const scheduler = this.deps.repositories.conversationTaskSchedulerRepo;
     const conversationId = task?.conversationId;
     if (!task || !conversationId) return;
-    if (this.deps.runtimeExecutionServices.dispatchItemRepo.hasBlockingResidue(taskId)
-      || this.deps.runtimeExecutionServices.publicationRepo.hasBlockingResidue(taskId)
-      || this.deps.coordinatorServices.workUnitClaimService.hasClaimedByTask(taskId)
-      || this.deps.runtimeExecutionServices.resourceLeaseService.findActive()
-        .some(lease => lease.taskId === taskId)) {
+    if (this.hasReleasableResidue(taskId)) {
       scheduler.releaseSlotAndPromote(conversationId, taskId, new Date().toISOString(), true);
       return;
     }
@@ -102,6 +109,39 @@ export class AccountStartupRecoveryService {
       await this.promoteConversationTask(promotion.taskId, conversationId);
     }
     await this.promoteAvailableQueuedTasks(new Date().toISOString());
+  }
+
+  /**
+   * Bounded residue reader for Conversation slot release (2026-09-25 plan
+   * §3.4). A slot is released only when none of these still own the Task:
+   * dispatch/WorkUnit/lease/backend capacity, publication, an uncertain Kernel
+   * application, or an outstanding durable Replan Job.
+   */
+  private hasReleasableResidue(taskId: string): boolean {
+    if (this.deps.runtimeExecutionServices.dispatchItemRepo.hasBlockingResidue(taskId)) {
+      return true;
+    }
+    if (this.deps.runtimeExecutionServices.publicationRepo.hasBlockingResidue(taskId)) {
+      return true;
+    }
+    if (this.deps.coordinatorServices.workUnitClaimService.hasClaimedByTask(taskId)) {
+      return true;
+    }
+    if (this.deps.runtimeExecutionServices.resourceLeaseService.findActive()
+      .some(lease => lease.taskId === taskId)) {
+      return true;
+    }
+    if (this.deps.workspaceServices.attemptExecutionRepository.listActive()
+      .some(attempt => attempt.taskId === taskId)) {
+      return true;
+    }
+    if (this.deps.kernelServices.kernelWorkflowRepo
+      .listUncertainApplications([], taskId).length > 0) {
+      return true;
+    }
+    return this.deps.runtimeExecutionServices.generationReplanRepo.listByTask(taskId)
+      .some(job => ['pending_quiescence', 'planning', 'submitted', 'waiting_for_availability']
+        .includes(job.status));
   }
 
   private promoteConversationTask(taskId: string, conversationId: string): Promise<void> {
@@ -237,7 +277,7 @@ export class AccountStartupRecoveryService {
     await this.deps.runtimeExecutionServices.cancellationCoordinator.recover();
     this.deps.repositories.effectOutboxRepo.reconcileSending(now);
     this.deps.kernelServices.kernelWorkflowRepo.reconcileProcessing();
-    this.convergeUncertainReplanScheduling(now);
+    this.convergeUncertainApplications(now);
     this.enqueueRetrySafeSystemBindingRecoveries(now);
     await this.deliverPendingEffects(now);
     await this.recoverKernelCoordinator();
@@ -292,11 +332,16 @@ export class AccountStartupRecoveryService {
             // Only a still-running orphan needs a new manual blocker.
             const currentTask = this.deps.taskServices.taskRuntimeService.findTask(task.id);
             if (currentTask?.status === 'running') {
-              this.deps.taskServices.taskRuntimeService.blockTask(task.id, {
+              this.lifecyclePort().blockTask({
                 taskId: task.id,
-                type: 'manual',
-                description: 'startup recovery found running work without authorized dispatch',
-                status: 'waiting',
+                dependency: {
+                  taskId: task.id,
+                  type: 'manual',
+                  description: 'startup recovery found running work without authorized dispatch',
+                  status: 'waiting',
+                },
+                actor: 'account-startup-recovery',
+                reason: 'startup recovery found running work without authorized dispatch',
               });
             }
             if (currentTask?.status === 'running' || currentTask?.status === 'blocked') continue;
@@ -319,6 +364,7 @@ export class AccountStartupRecoveryService {
     for (const task of this.deps.taskServices.taskRuntimeService.listTasksByStatus('blocked')) {
       await this.recoverTask(task.id);
     }
+    await this.convergeConversationSlots(now);
     await this.promoteAvailableQueuedTasks(now);
   }
 
@@ -491,30 +537,118 @@ export class AccountStartupRecoveryService {
   }
 
   /**
-   * Convergent recovery for the replan action family (2026-09-25 plan §6).
-   * Every uncertain application reaches `applied`, a safe retry, or explicit
-   * Kernel-authorized recovery; it can never stay uncertain forever while the
-   * Task remains `running`.
+   * Convergent recovery for every managed action family (2026-09-25 plan §6).
+   * Each uncertain application is inspected against its declared postcondition
+   * and reaches `applied`, a safe retry, or explicit `recovery_required`; it can
+   * never stay uncertain forever while the Task remains `running`.
    */
-  private convergeUncertainReplanScheduling(now: string): void {
+  private convergeUncertainApplications(now: string): void {
     const workflow = this.deps.kernelServices.kernelWorkflowRepo;
-    for (const application of workflow.listUncertainApplications([
-      'schedule_replan',
-      'request_replan',
-    ])) {
-      const action = application.decision.action;
-      if (action.type !== 'schedule_replan' && action.type !== 'request_replan') continue;
-      const request = this.deps.runtimeExecutionServices.generationReplanRepo.findByGeneration(
-        action.taskId,
-        action.generationId,
-        action.sourceRevision,
-      );
-      if (isSatisfiedReplanScheduling({ application, replanRequest: request })) {
+    const sources = this.recoveryFactSource();
+    for (const application of workflow.listUncertainApplications()) {
+      const inspection = inspectApplicationAgainstSources(application, sources);
+      if (inspection.verdict === 'applied') {
         workflow.resolveUncertainApplication(application.decisionId, 'applied', now);
         continue;
       }
-      if (isRetrySafeUncertainReplanScheduling({ application, replanRequest: request })) {
+      // Bounded retry: after the declared budget the application stays
+      // `uncertain` so it surfaces as explicit `recovery_required` instead of
+      // oscillating forever between pending and uncertain.
+      if (inspection.verdict === 'retry_safe'
+        && application.applyAttempts < MAX_UNSAFE_APPLICATION_RETRIES) {
         workflow.resolveUncertainApplication(application.decisionId, 'retry', now);
+      }
+    }
+  }
+
+  private lifecyclePort(): TaskLifecycleTransitionPort {
+    return this.lifecycle ??= createTaskLifecycleTransitionPort({
+      taskRuntimeService: this.deps.taskServices.taskRuntimeService,
+      subtaskRepo: this.deps.repositories.subtaskRepo,
+    });
+  }
+
+  private recoveryFactSource(): ApplicationPostconditionFactSource {
+    return {
+      findTask: taskId => {
+        const task = this.deps.taskServices.taskRuntimeService.findTask(taskId);
+        return task ? { id: task.id, status: task.status } : null;
+      },
+      listSubtasks: taskId => this.deps.repositories.subtaskRepo.listByTask(taskId)
+        .map(subtask => ({ id: subtask.id, status: subtask.status })),
+      listDispatchItems: taskId => this.deps.runtimeExecutionServices.dispatchItemRepo
+        .listByTask(taskId)
+        .map(item => ({
+          attemptId: item.attemptId,
+          decisionId: item.decisionId,
+          subtaskId: item.subtaskId,
+          status: item.status,
+        })),
+      findWorkGraphRevision: (taskId, revision) => {
+        const record = this.deps.repositories.workGraphRevisionRepo.find(taskId, revision);
+        return record
+          ? {
+              revision: record.revision,
+              generationId: record.generationId,
+              authorizedDecisionId: record.authorizedDecisionId,
+            }
+          : null;
+      },
+      findReplanRequest: (taskId, generationId, sourceRevision) => (
+        this.deps.runtimeExecutionServices.generationReplanRepo.findByGeneration(
+          taskId,
+          generationId,
+          sourceRevision,
+        )
+      ),
+    };
+  }
+
+  /**
+   * Conversation slot convergence (2026-09-25 plan §3.4, §5.2). A slot whose
+   * Task is releasable and whose residue is clear is released and its queued
+   * successor promoted exactly once; a Task with residue keeps the slot and the
+   * residue stays visible through TaskView.
+   */
+  private async convergeConversationSlots(now: string): Promise<void> {
+    const scheduler = this.deps.repositories.conversationTaskSchedulerRepo;
+    const tasks = this.deps.taskServices.taskRuntimeService;
+    for (const slot of scheduler.listSlots()) {
+      const taskId = slot.activeTaskId;
+      if (!taskId || slot.state === 'free') continue;
+      const task = tasks.findTask(taskId);
+      if (!task) {
+        scheduler.releaseSlotAndPromote(slot.conversationId, taskId, now, false);
+        continue;
+      }
+      const terminal = ['done', 'archived', 'cancelled'].includes(task.status);
+      const releasableBlock = task.status === 'blocked';
+      if (!terminal && !releasableBlock) continue;
+      if (this.hasReleasableResidue(taskId)) {
+        scheduler.releaseSlotAndPromote(slot.conversationId, taskId, now, true);
+        continue;
+      }
+      if (task.status === 'blocked') {
+        // A blocked Task with no residue must not hold its Conversation.
+        const promotion = scheduler.releaseSlotAndPromote(
+          slot.conversationId,
+          taskId,
+          now,
+          false,
+        );
+        if (promotion) {
+          await this.promoteConversationTask(promotion.taskId, slot.conversationId);
+        }
+        continue;
+      }
+      try {
+        this.deps.queryUsageLifecycle?.finalizeQueriesForTask(taskId, now);
+      } catch {
+        // Billing reconciliation is durable; it must not block slot release.
+      }
+      const promotion = scheduler.releaseSlotAndPromote(slot.conversationId, taskId, now, false);
+      if (promotion) {
+        await this.promoteConversationTask(promotion.taskId, slot.conversationId);
       }
     }
   }
@@ -716,12 +850,6 @@ export class AccountStartupRecoveryService {
         persistSessionState: () => undefined,
         setLatestGuidance: () => ({ scene: '', taskId: '', taskTitle: '', recommendedAction: '', reasons: [] }),
         queueProposal: () => undefined,
-        requestReplan: async () => {
-          // Removed in the 2026-09-25 convergence: replans are durable Replan
-          // Jobs consumed by the account-scoped Planner Worker, so no foreground
-          // Conversation Planner callback exists any more.
-          throw new Error('legacy Conversation requestReplan callback was removed; use the durable Replan Job worker');
-        },
         requestMergeReplan: async () => {
           throw new Error('startup recovery requires the originating Conversation Planner for merge replan');
         },

@@ -50,8 +50,9 @@ export class MetaWorkTaskDashboard implements Component {
 		}
 
 		lines.push(truncateToWidth(theme.fg("text", `Task: ${turn.taskId}`), safeWidth));
-		if (turn.taskTitle || turn.taskStatus) {
-			lines.push(truncateToWidth(`${turn.taskTitle ?? ""} · ${turn.taskStatus ?? "暂无信息"}`, safeWidth));
+		const taskPhase = turn.taskPhase ?? turn.taskStatus;
+		if (turn.taskTitle || taskPhase) {
+			lines.push(truncateToWidth(`${turn.taskTitle ?? ""} · ${taskPhase ?? "暂无信息"}`, safeWidth));
 		}
 		const schedulingLabel = schedulingReasonLabel(turn.schedulingReason);
 		if (schedulingLabel) {

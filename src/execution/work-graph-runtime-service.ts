@@ -8,6 +8,10 @@ import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { TaskEventRecorder } from '../storage/task-event-recorder.js';
 import { createEvidenceId, TaskExecutionEvidenceRepo } from './execution-evidence-port.js';
 import { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
+import {
+  createSubtaskLifecyclePort,
+  type SubtaskLifecyclePort,
+} from '../task/task-lifecycle-transition-port.js';
 
 export interface WorkGraphAuthorization {
   decisionId: string;
@@ -34,6 +38,7 @@ export type WorkGraphRuntimeResult =
 /** Runtime materialization deliberately has no planning or routing fallback. */
 export class WorkGraphRuntimeService {
   private readonly taskEvents: TaskEventRecorder;
+  private readonly lifecycle: SubtaskLifecyclePort;
 
   constructor(
     private readonly subtaskRepo: SubtaskRepo,
@@ -42,6 +47,7 @@ export class WorkGraphRuntimeService {
     private readonly evidenceRepo?: TaskExecutionEvidenceRepo,
   ) {
     this.taskEvents = new TaskEventRecorder(taskEventRepo);
+    this.lifecycle = createSubtaskLifecyclePort({ subtaskRepo });
   }
 
   apply(input: {
@@ -158,8 +164,12 @@ export class WorkGraphRuntimeService {
         continue;
       }
       if (subtask.status !== 'cancelled') {
-        this.subtaskRepo.updateStatus(subtask.id, 'cancelled', {
-          error: `superseded by graph revision ${revision + 1}`,
+        this.lifecycle.transitionSubtask({
+          subtaskId: subtask.id,
+          to: 'cancelled',
+          actor: 'work-graph-runtime-service',
+          reason: `superseded by graph revision ${revision + 1}`,
+          changes: { error: `superseded by graph revision ${revision + 1}` },
         });
         this.taskEvents.record(taskId, subtask.id, 'subtask_superseded', `graph revision ${revision + 1}`, {
           previousRevision: revision,

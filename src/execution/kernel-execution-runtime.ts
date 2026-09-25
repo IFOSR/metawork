@@ -59,6 +59,10 @@ import {
   reconcileUncertainCancellations,
   type CancellationReconciliationEntry,
 } from './cancellation-reconciliation.js';
+import {
+  createTaskLifecycleTransitionPort,
+  type TaskLifecycleTransitionPort,
+} from '../task/task-lifecycle-transition-port.js';
 import type { TaskClearOutcome } from '../task/task-control-types.js';
 import type {
   WorkspacePublicationWorker,
@@ -442,9 +446,6 @@ export interface KernelExecutionRuntimeDeps {
     }): void;
     setLatestGuidance(scene: string, suggestion: Suggestion): GuidanceState;
     queueProposal(scene: string, proposal: GuidanceProposal): void;
-    requestReplan(decision: KernelDecision & {
-      action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
-    }): Promise<KernelEvent>;
     requestMergeReplan(decision: KernelDecision & {
       action: Extract<KernelDecision['action'], { type: 'request_merge_replan' }>;
     }): Promise<KernelEvent | null>;
@@ -461,9 +462,19 @@ export class KernelExecutionRuntime {
   private readonly decisionSession = new AsyncLocalStorage<string>();
   private disposed = false;
   private disposePromise: Promise<void> | null = null;
+  /**
+   * The single owner of strategic Task/Subtask lifecycle writes
+   * (2026-09-25 plan §8 Phase 4). This Runtime applies one Kernel-authorized
+   * action; it never writes a Task/Subtask status directly.
+   */
+  private readonly lifecycle: TaskLifecycleTransitionPort;
 
   constructor(private readonly deps: KernelExecutionRuntimeDeps) {
     this.taskEvents = new TaskEventRecorder(deps.taskEventRepo);
+    this.lifecycle = createTaskLifecycleTransitionPort({
+      taskRuntimeService: deps.taskRuntimeService,
+      subtaskRepo: deps.subtaskRepo,
+    });
     this.attemptSupervisor = new AttemptSupervisor(
       deps.dispatchItemRepo,
       deps.maxConcurrentAttempts,
@@ -728,7 +739,11 @@ export class KernelExecutionRuntime {
             });
             if (result.outcome === 'not_executable') return null;
             this.deps.generationReplanRepo.resolve(currentRequest.id, new Date().toISOString());
-            this.deps.taskRuntimeService.unblockTask(currentTask.id);
+            this.lifecycle.unblockTask({
+              taskId: currentTask.id,
+              actor: 'kernel-execution-runtime',
+              reason: 'deferred availability proposal activated',
+            });
             this.deps.callbacks.refreshRuntimeState();
             return null;
           },
@@ -1354,13 +1369,37 @@ export class KernelExecutionRuntime {
           || subtask.status === 'cancelled'
         ) continue;
         if (subtask.status === 'blocked') {
-          this.deps.subtaskRepo.updateStatus(subtask.id, 'ready', { error: null });
+          this.lifecycle.transitionSubtask({
+            subtaskId: subtask.id,
+            to: 'ready',
+            actor: 'kernel-execution-runtime',
+            reason: 'Kernel-authorized resume cleared the Subtask blocker',
+            changes: { error: null },
+          });
         }
       }
-      if (task.status === 'parked') this.deps.taskRuntimeService.resumeParkedTask(task.id);
-      else if (task.status === 'blocked') this.deps.taskRuntimeService.unblockTask(task.id);
+      if (task.status === 'parked') {
+        this.lifecycle.resumeParkedTask({
+          taskId: task.id,
+          actor: 'kernel-execution-runtime',
+          reason: `Kernel-authorized resume after ${action.blockerCategory} blocker`,
+        });
+      } else if (task.status === 'blocked') {
+        this.lifecycle.unblockTask({
+          taskId: task.id,
+          actor: 'kernel-execution-runtime',
+          reason: `Kernel-authorized resume after ${action.blockerCategory} blocker`,
+        });
+      }
       const current = this.deps.taskRuntimeService.findTask(task.id);
-      if (current?.status === 'ready') this.deps.taskRuntimeService.transitionTask(task.id, 'running');
+      if (current?.status === 'ready') {
+        this.lifecycle.transitionTask({
+          taskId: task.id,
+          to: 'running',
+          actor: 'kernel-execution-runtime',
+          reason: 'authorized resume re-entered execution',
+        });
+      }
       this.deps.callbacks.refreshRuntimeState();
       if (action.recovery) {
         const recoverySubtask = this.deps.subtaskRepo.findById(action.recovery.subtaskId);
@@ -1368,11 +1407,13 @@ export class KernelExecutionRuntime {
           action.recovery.attemptKind === 'contract_correction'
           && recoverySubtask?.status === 'blocked'
         ) {
-          this.deps.subtaskRepo.updateStatus(
-            recoverySubtask.id,
-            'awaiting_decision',
-            { error: 'metadata-only completion correction authorized' },
-          );
+          this.lifecycle.transitionSubtask({
+            subtaskId: recoverySubtask.id,
+            to: 'awaiting_decision',
+            actor: 'kernel-execution-runtime',
+            reason: 'metadata-only completion correction authorized',
+            changes: { error: 'metadata-only completion correction authorized' },
+          });
         }
         return this.eventFromDecision(decision, {
           type: 'dispatch_requested',
@@ -1405,11 +1446,13 @@ export class KernelExecutionRuntime {
         if (item.attemptKind !== 'merge_repair') continue;
         const subtask = this.deps.subtaskRepo.findById(item.subtaskId);
         if (subtask?.taskId === action.taskId && subtask.status === 'blocked') {
-          this.deps.subtaskRepo.updateStatus(
-            subtask.id,
-            'awaiting_decision',
-            { error: 'recovering legacy blocked merge conflict' },
-          );
+          this.lifecycle.transitionSubtask({
+            subtaskId: subtask.id,
+            to: 'awaiting_decision',
+            actor: 'kernel-execution-runtime',
+            reason: 'recovering legacy blocked merge conflict',
+            changes: { error: 'recovering legacy blocked merge conflict' },
+          });
         }
       }
       const attempts = Object.fromEntries(action.items.map(item => [
@@ -1540,11 +1583,23 @@ export class KernelExecutionRuntime {
           ? 'ready'
           : 'awaiting_decision';
         if (subtask.status !== 'done' && subtask.status !== 'cancelled') {
-          this.deps.subtaskRepo.updateStatus(subtask.id, recoveryStatus, {
-            error: `recovering workspace ${action.workspaceId} from checkpoint ${action.checkpointId ?? 'latest'}`,
+          this.lifecycle.transitionSubtask({
+            subtaskId: subtask.id,
+            to: recoveryStatus,
+            actor: 'kernel-execution-runtime',
+            reason: `recovering workspace ${action.workspaceId} from checkpoint ${action.checkpointId ?? 'latest'}`,
+            changes: {
+              error: `recovering workspace ${action.workspaceId} from checkpoint ${action.checkpointId ?? 'latest'}`,
+            },
           });
         }
-        if (task.status === 'blocked') this.deps.taskRuntimeService.unblockTask(task.id);
+        if (task.status === 'blocked') {
+          this.lifecycle.unblockTask({
+            taskId: task.id,
+            actor: 'kernel-execution-runtime',
+            reason: `workspace recovery for ${action.workspaceId}`,
+          });
+        }
         return this.eventFromDecision(decision, {
           type: 'dispatch_requested',
           taskId: action.taskId,
@@ -1561,11 +1616,23 @@ export class KernelExecutionRuntime {
         });
       }
       if (subtask.status !== 'done' && subtask.status !== 'cancelled') {
-        this.deps.subtaskRepo.updateStatus(subtask.id, 'ready', {
-          error: `recovering workspace ${action.workspaceId} from checkpoint ${action.checkpointId ?? 'latest'}`,
+        this.lifecycle.transitionSubtask({
+          subtaskId: subtask.id,
+          to: 'ready',
+          actor: 'kernel-execution-runtime',
+          reason: `recovering workspace ${action.workspaceId} from checkpoint ${action.checkpointId ?? 'latest'}`,
+          changes: {
+            error: `recovering workspace ${action.workspaceId} from checkpoint ${action.checkpointId ?? 'latest'}`,
+          },
         });
       }
-      if (task.status === 'blocked') this.deps.taskRuntimeService.unblockTask(task.id);
+      if (task.status === 'blocked') {
+        this.lifecycle.unblockTask({
+          taskId: task.id,
+          actor: 'kernel-execution-runtime',
+          reason: `recovering workspace ${action.workspaceId}`,
+        });
+      }
       return this.eventFromDecision(decision, {
         type: 'dispatch_requested', taskId: action.taskId,
         reason: `recover persistent workspace ${action.workspaceId}`,
@@ -1577,7 +1644,13 @@ export class KernelExecutionRuntime {
         && !action.preserveSubtaskState
         && this.deps.subtaskRepo.findById(action.subtaskId)?.status === 'awaiting_decision'
       ) {
-        this.deps.subtaskRepo.updateStatus(action.subtaskId, 'blocked', { error: decision.reason });
+        this.lifecycle.transitionSubtask({
+          subtaskId: action.subtaskId,
+          to: 'blocked',
+          actor: 'kernel-execution-runtime',
+          reason: decision.reason,
+          changes: { error: decision.reason },
+        });
       }
       // Result-first gate model: a blocked task with a safe result still
       // delivers that result to the user (marked as unverified) — content
@@ -1605,7 +1678,14 @@ export class KernelExecutionRuntime {
     }
     if (action.type === 'park_for_replan') {
       const task = this.deps.taskRuntimeService.findTask(action.taskId);
-      if (task && task.status !== 'parked') this.deps.taskRuntimeService.transitionTask(task.id, 'parked');
+      if (task && task.status !== 'parked') {
+        this.lifecycle.transitionTask({
+          taskId: task.id,
+          to: 'parked',
+          actor: 'kernel-execution-runtime',
+          reason: decision.reason,
+        });
+      }
       await input.finishExecution([decision.reason]);
       return null;
     }
@@ -1878,11 +1958,33 @@ export class KernelExecutionRuntime {
     for (const resource of input.request.newlyProvidedResources ?? []) {
       this.deps.taskRuntimeService.attachResource(task.id, resource);
     }
-    if (task.status === 'created') this.deps.taskRuntimeService.transitionTask(task.id, 'ready');
-    else if (task.status === 'parked') this.deps.taskRuntimeService.resumeParkedTask(task.id);
-    else if (task.status === 'blocked') this.deps.taskRuntimeService.unblockTask(task.id);
+    if (task.status === 'created') {
+      this.lifecycle.transitionTask({
+        taskId: task.id,
+        to: 'ready',
+        actor: 'kernel-execution-runtime',
+        reason: 'authorized dispatch admitted the Task',
+      });
+    } else if (task.status === 'parked') {
+      this.lifecycle.resumeParkedTask({
+        taskId: task.id,
+        actor: 'kernel-execution-runtime',
+        reason: 'authorized dispatch resumed the parked Task',
+      });
+    } else if (task.status === 'blocked') {
+      this.lifecycle.unblockTask({
+        taskId: task.id,
+        actor: 'kernel-execution-runtime',
+        reason: 'authorized dispatch cleared the Task blocker',
+      });
+    }
     if (this.deps.taskRuntimeService.findTask(task.id)?.status === 'ready') {
-      this.deps.taskRuntimeService.transitionTask(task.id, 'running');
+      this.lifecycle.transitionTask({
+        taskId: task.id,
+        to: 'running',
+        actor: 'kernel-execution-runtime',
+        reason: 'attempt dispatch re-entered execution',
+      });
     }
     this.deps.callbacks.setRunningExecutorName(
       item.taskId,
@@ -2944,11 +3046,16 @@ export class KernelExecutionRuntime {
   ): Promise<void> {
     const blockedReason = this.blockReasonWithCause(taskId, reason);
     if (this.deps.taskRuntimeService.findTask(taskId)?.status === 'running') {
-      this.deps.taskRuntimeService.blockTask(taskId, {
+      this.lifecycle.blockTask({
         taskId,
-        type: dependencyType,
-        description: blockedReason,
-        status: 'waiting',
+        dependency: {
+          taskId,
+          type: dependencyType,
+          description: blockedReason,
+          status: 'waiting',
+        },
+        actor: 'kernel-execution-runtime',
+        reason: blockedReason,
       });
     }
     this.recordTaskEvent(taskId, null, 'phase2_execution_blocked', blockedReason, {});
@@ -2980,11 +3087,16 @@ export class KernelExecutionRuntime {
   ): Promise<void> {
     const reason = `retry scheduled for ${resumeAt}`;
     if (this.deps.taskRuntimeService.findTask(taskId)?.status === 'running') {
-      this.deps.taskRuntimeService.blockTask(taskId, {
+      this.lifecycle.blockTask({
         taskId,
-        type: 'kernel_retry',
-        description: reason,
-        status: 'waiting',
+        dependency: {
+          taskId,
+          type: 'kernel_retry',
+          description: reason,
+          status: 'waiting',
+        },
+        actor: 'kernel-execution-runtime',
+        reason,
       });
     }
     this.recordTaskEvent(taskId, null, 'phase2_execution_waiting_retry', reason, {});
@@ -3075,7 +3187,12 @@ export class KernelExecutionRuntime {
       if (['running', 'blocked'].includes(
         this.deps.taskRuntimeService.findTask(input.taskId)?.status ?? '',
       )) {
-        this.deps.taskRuntimeService.transitionTask(input.taskId, 'done');
+        this.lifecycle.transitionTask({
+          taskId: input.taskId,
+          to: 'done',
+          actor: 'kernel-execution-runtime',
+          reason: `Kernel decision ${input.decisionId} completed the Task`,
+        });
       }
       const now = new Date().toISOString();
       this.deps.effectOutboxRepo.enqueue({

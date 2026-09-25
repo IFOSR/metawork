@@ -60,7 +60,7 @@ describe('unified TaskView projection', () => {
         completedAt: NOW,
       }],
     }));
-    expect(view.lifecycle).toBe('executing');
+    expect(view.lifecycle).toBe('coordinating');
     expect(view.phase).not.toBe('executing');
     expect(view.activeAttempt).toBeNull();
     expect(view.timestamps.lastAttemptSettledAt).toBe(NOW);

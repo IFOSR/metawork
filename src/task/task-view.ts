@@ -22,7 +22,7 @@ import {
   toAttemptLifecycleState,
   toAttemptOutcome,
   toSubtaskLifecycleState,
-  toTaskLifecycleState,
+  deriveTaskLifecycleState,
   type AttemptLifecycleState,
   type AttemptOutcome,
   type SubtaskLifecycleState,
@@ -170,7 +170,6 @@ const RESIDUAL_PUBLICATION_STATUSES = new Set([
  * waiting_for_user; remaining residue -> blocked; otherwise canonical queue.
  */
 export function projectTaskView(facts: TaskViewFacts): TaskView {
-  const lifecycle = toTaskLifecycleState(facts.task.status);
   const attempts = orderAttempts(facts);
   const activeAttempt = attempts.find(attempt => (
     isActiveDispatchStatus(attempt.dispatchStatus)
@@ -182,6 +181,15 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
     .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))[0] ?? null;
   const publishingResidue = facts.publications
     .filter(publication => RESIDUAL_PUBLICATION_STATUSES.has(publication.status));
+  // Canonical lifecycle comes from durable facts, not the persisted column
+  // alone: a `running` Task with no active Attempt is coordinating work.
+  const lifecycle = deriveTaskLifecycleState({
+    status: facts.task.status,
+    hasActiveAttempt: activeAttempt !== null,
+    hasOutstandingReplanJob: replanJob !== null,
+    hasPendingRetryWake: facts.retryWakeAt !== null,
+    hasPendingUserDecision: facts.pendingPermission !== null,
+  });
   const blockingResidue = deriveBlockingResidue({
     activeAttempt,
     replanJob,

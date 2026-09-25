@@ -140,6 +140,121 @@ describe('AccountStartupRecoveryService production composition', () => {
       .toBe('planning');
   });
 
+  it('converges an uncertain complete_task by postcondition instead of synthetic SQL repair', async () => {
+    const fixture = createFixture('uncertain-complete');
+    const task = createRunningTask(fixture, 'Converge the uncertain completion');
+    const seeded = seedUncertainTaskTransition(fixture, task.id, {
+      type: 'complete_task',
+      taskId: task.id,
+    });
+    // The durable completion already landed before the process died.
+    new TaskRepo(fixture.db).updateStatus(task.id, 'done');
+
+    await fixture.composition.accountRuntime.initialize();
+
+    const workflow = new KernelWorkflowRepo(fixture.db);
+    expect(workflow.findApplicationByDecisionId(seeded.decision.id)).toMatchObject({
+      status: 'applied',
+      errorSummary: null,
+    });
+  });
+
+  it('keeps a bounded retry budget for an uncertain attempt that never landed', async () => {
+    const fixture = createFixture('uncertain-dispatch-retry');
+    const task = createRunningTask(fixture, 'Retry the uncertain dispatch');
+    const seeded = seedUncertainTaskTransition(fixture, task.id, {
+      type: 'dispatch_batch',
+      taskId: task.id,
+      items: [{
+        order: 0,
+        subtaskId: `${task.id}_execute`,
+        attemptId: 'attempt_never_landed',
+        authorizedBinding: new SubtaskRepo(fixture.db)
+          .listActiveByTask(task.id)[0]!.executorBindings[0]!,
+        bindingFingerprint: 'fp-never-landed',
+        attemptKind: 'primary',
+        sourceAttemptId: null,
+        recoveryMode: 'fresh',
+        attemptPayload: null,
+        defaultResourceGrant: [],
+      }],
+    });
+
+    await fixture.composition.accountRuntime.initialize();
+
+    // The declared dispatch postcondition is absent and re-application is safe,
+    // so the application is re-queued rather than staying uncertain forever.
+    const workflow = new KernelWorkflowRepo(fixture.db);
+    const application = workflow.findApplicationByDecisionId(seeded.decision.id);
+    expect(application?.status).not.toBe('uncertain');
+    expect(application?.applyAttempts).toBeGreaterThan(1);
+  });
+
+  it('releases a blocked Task Conversation slot once its Replan Job failed closed', async () => {
+    const fixture = createFixture('blocked-slot-release');
+    const task = createRunningTask(fixture, 'Block on an unavailable Planner');
+    const requestId = seedFailedReplanJob(fixture, task.id);
+    const scheduler = new ConversationTaskSchedulerRepo(fixture.db);
+    scheduler.claimSlot('conversation-origin', task.id, 'reservation-1', '2026-09-25T00:00:00.000Z');
+    seedTaskOriginDecision(fixture.db, task.id, 'conversation-origin');
+    seedKernelInboxEvent(fixture.db, {
+      id: `dispatch_event_blocked_${task.id}`,
+      type: 'dispatch_requested',
+      taskId: task.id,
+      sessionId: 'conversation-origin',
+      reason: 'startup recovery fixture',
+      occurredAt: '2026-09-25T00:00:00.000Z',
+    });
+
+    await fixture.composition.accountRuntime.initialize();
+
+    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('blocked');
+    expect(new GenerationReplanRequestRepo(fixture.db).find(requestId)?.status).toBe('failed');
+    const slot = scheduler.getSlot('conversation-origin');
+    expect(slot).toMatchObject({ state: 'free', activeTaskId: null });
+  });
+
+  it('promotes the next same-Conversation Task exactly once when a blocked Task releases its slot', async () => {
+    const fixture = createFixture('blocked-slot-promotion');
+    const blockedTask = createRunningTask(fixture, 'Block on an unavailable Planner');
+    seedFailedReplanJob(fixture, blockedTask.id);
+    const scheduler = new ConversationTaskSchedulerRepo(fixture.db);
+    scheduler.claimSlot('conversation-origin', blockedTask.id, 'reservation-1', '2026-09-25T00:00:00.000Z');
+    seedTaskOriginDecision(fixture.db, blockedTask.id, 'conversation-origin');
+    seedKernelInboxEvent(fixture.db, {
+      id: `dispatch_event_blocked_${blockedTask.id}`,
+      type: 'dispatch_requested',
+      taskId: blockedTask.id,
+      sessionId: 'conversation-origin',
+      reason: 'startup recovery fixture',
+      occurredAt: '2026-09-25T00:00:00.000Z',
+    });
+    // A successor already admitted to the same Conversation slot queue.
+    const successor = createQueuedTask(fixture, 'Follow-up work', 'task_successor');
+    const successorRevision = new WorkGraphRevisionRepo(fixture.db).findActive(successor.id)!;
+    scheduler.enqueueTask(successor.id, 'conversation-origin', '2026-09-25T00:00:01.000Z', {
+      requestText: 'Follow-up work',
+      generationId: successorRevision.generationId,
+      graphRevision: successorRevision.revision,
+      workGraph: { schemaVersion: 7, configurationRevision: 'revision-test', reason: 'fixture', subtasks: [] },
+      authorizedBindingsBySubtask: {},
+      workspaceId: 'workspace-origin',
+      plannerSessionId: 'conversation-origin',
+    });
+
+    await fixture.composition.accountRuntime.initialize();
+
+    expect(new TaskRepo(fixture.db).findById(blockedTask.id)?.status).toBe('blocked');
+    // Released exactly once: the successor is no longer queued, and the slot no
+    // longer belongs to the blocked Task.
+    expect(scheduler.getSlot('conversation-origin').activeTaskId).not.toBe(blockedTask.id);
+    // Exactly-once promotion: the successor left the queue exactly once and no
+    // other entry was promoted in its place.
+    expect(scheduler.getQueuedPayload(successor.id)).not.toBeNull();
+    expect(scheduler.getQueuedReason(successor.id)).toBeNull();
+    expect(scheduler.listQueuedTasks('conversation-origin')).toEqual([]);
+  });
+
   it('applies a pending replan decision through the system Conversation binding', async () => {
     const fixture = createFixture('pending-replan');
     const task = createRunningTask(fixture, 'Generate the downstream HTML report');
@@ -519,8 +634,9 @@ function createFixture(name: string, coordinator?: AccountKernelCoordinator) {
 function createRunningTask(
   fixture: ReturnType<typeof createFixture>,
   goal: string,
+  id?: string,
 ) {
-  const task = fixture.taskEngine.create({ title: goal, goal });
+  const task = fixture.taskEngine.create({ id, title: goal, goal });
   seedPersistedWorkGraph(fixture.db, task.id, goal);
   fixture.taskEngine.transition(task.id, 'ready');
   fixture.taskEngine.transition(task.id, 'running');
@@ -639,6 +755,26 @@ function seedPendingReplanApplication(
  * This is the R-2026-09-25 chain that used to require the originating
  * Conversation Planner during startup recovery.
  */
+/** A Task admitted but still waiting for its Conversation slot. */
+function createQueuedTask(
+  fixture: ReturnType<typeof createFixture>,
+  goal: string,
+  id: string,
+) {
+  const task = fixture.taskEngine.create({
+    id,
+    title: goal,
+    goal,
+    accountId: 'local-default',
+    conversationId: 'conversation-origin',
+    workspaceId: 'workspace-origin',
+    ownerPlannerSessionId: 'conversation-origin',
+  });
+  seedPersistedWorkGraph(fixture.db, task.id, goal);
+  fixture.taskEngine.transition(task.id, 'ready');
+  return task;
+}
+
 function seedQuiescentGenerationReplan(
   fixture: ReturnType<typeof createFixture>,
   taskId: string,
@@ -796,6 +932,96 @@ function seedKernelInboxEvent(
   );
 }
 
+/**
+ * A Task whose authorized Replan Job exhausted its bounded Planner retry budget.
+ * This is the state that used to leave the Task permanently `running` with an
+ * occupied Conversation slot.
+ */
+function seedFailedReplanJob(
+  fixture: ReturnType<typeof createFixture>,
+  taskId: string,
+): string {
+  const now = '2026-09-25T00:00:00.000Z';
+  const revision = new WorkGraphRevisionRepo(fixture.db).findActive(taskId)!;
+  const subtaskRepo = new SubtaskRepo(fixture.db);
+  for (const subtask of subtaskRepo.listActiveByTask(taskId)) {
+    subtaskRepo.updateStatus(subtask.id, 'done', { result: 'completed research' });
+  }
+  const requestId = `generation_replan_${taskId}_${revision.generationId}_${revision.revision}`;
+  const repo = new GenerationReplanRequestRepo(fixture.db);
+  repo.enqueue({
+    id: requestId,
+    taskId,
+    generationId: revision.generationId,
+    sourceRevision: revision.revision,
+    configurationRevision: 'revision-test',
+    triggerDecisionId: 'trigger_queue_replan',
+    now,
+  });
+  expect(repo.scheduleForPlanner(requestId, 'quiescence_decision_schedule', now)).toBe(true);
+  repo.fail(requestId, 'planner_unavailable: retry budget exhausted', now);
+  return requestId;
+}
+
+/**
+ * One uncertain application for an arbitrary action, so a test can assert the
+ * generic postcondition sweep for that action family.
+ */
+function seedUncertainTaskTransition(
+  fixture: ReturnType<typeof createFixture>,
+  taskId: string,
+  action: KernelDecision['action'],
+) {
+  const now = '2026-09-25T00:00:00.000Z';
+  const event = {
+    schemaVersion: 5 as const,
+    configurationRevision: 'revision-test',
+    type: 'dispatch_requested' as const,
+    id: `uncertain_event_${taskId}_${action.type}`,
+    correlationId: taskId,
+    causationId: null,
+    occurredAt: now,
+    sessionId: 'conversation-origin',
+    taskId,
+    reason: 'uncertain application fixture',
+  };
+  const decision: KernelDecision = {
+    schemaVersion: 5,
+    configurationRevision: 'revision-test',
+    id: `uncertain_decision_${taskId}_${action.type}`,
+    eventId: event.id,
+    action,
+    reason: 'uncertain application fixture',
+  };
+  const workflow = new KernelWorkflowRepo(fixture.db);
+  expect(workflow.enqueue(event as KernelEvent)).toBe(true);
+  expect(workflow.claimNext(now)).toEqual(event);
+  workflow.issue(event.id, {
+    id: decision.id,
+    schemaVersion: 5,
+    eventId: event.id,
+    eventType: event.type,
+    correlationId: event.correlationId,
+    causationId: null,
+    sessionId: event.sessionId,
+    taskId,
+    subtaskId: null,
+    attemptId: null,
+    event: event as KernelEvent,
+    snapshot: { schemaVersion: 5, type: 'invalid', reason: 'uncertain application fixture' },
+    decision,
+    action: decision.action.type,
+    reason: decision.reason,
+    configurationRevision: decision.configurationRevision,
+    authorizedBindings: [],
+    bindingFingerprints: [],
+    createdAt: now,
+  });
+  workflow.markApplying(decision.id, now);
+  workflow.markApplicationFailed(decision.id, 'uncertain', 'process exit during apply', now);
+  return { decision };
+}
+
 function executionBinding(db: Database.Database): ConversationExecutionBinding {
   return {
     sessionId: 'conversation-origin',
@@ -813,9 +1039,6 @@ function executionBinding(db: Database.Database): ConversationExecutionBinding {
       persistSessionState: () => undefined,
       setLatestGuidance: () => ({ scene: '', taskId: '', taskTitle: '', recommendedAction: '', reasons: [] }),
       queueProposal: () => undefined,
-      requestReplan: async () => {
-        throw new Error('test does not expect a new replan');
-      },
       requestMergeReplan: async () => {
         throw new Error('test does not expect a merge replan');
       },

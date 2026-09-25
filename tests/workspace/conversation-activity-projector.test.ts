@@ -107,10 +107,39 @@ describe('ConversationActivityProjector', () => {
         dependencies: [],
         updatedAt: NOW,
       }],
+      activeAttemptTaskIds: ['task_execute'],
     });
 
     expect(projection.project('conv_origin', NOW).state).toBe('executing');
     expect(projection.project('conv_other', NOW).state).toBe('idle');
+  });
+
+  it('never reports a running Task without an active Attempt as executing', () => {
+    const projection = projector({
+      tasks: [{
+        id: 'task_waiting_plan',
+        originConversationId: 'conv_alpha',
+        status: 'running',
+        dependencies: [],
+        updatedAt: NOW,
+      }],
+    });
+
+    expect(projection.project('conv_alpha', NOW).state).toBe('idle');
+  });
+
+  it('reports a persisted running Task with only a retry wake as waiting', () => {
+    const projection = projector({
+      tasks: [{
+        id: 'task_retry',
+        originConversationId: 'conv_alpha',
+        status: 'running',
+        dependencies: [{ type: 'kernel_retry', status: 'waiting' }],
+        updatedAt: NOW,
+      }],
+    });
+
+    expect(projection.project('conv_alpha', NOW).state).toBe('waiting');
   });
 
   it('bounds taskId and normalizes updatedAt', () => {

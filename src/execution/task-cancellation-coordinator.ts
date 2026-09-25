@@ -15,6 +15,10 @@ import type { GenerationReplanRequestRepo } from '../storage/generation-replan-r
 import type { ResourceLeaseService } from './resource-lease-service.js';
 import type { WorkUnitClaimService } from './work-unit-claim-service.js';
 import { TaskResidueReader } from './task-residue-reader.js';
+import {
+  createTaskLifecycleTransitionPort,
+  type TaskLifecycleTransitionPort,
+} from '../task/task-lifecycle-transition-port.js';
 
 export interface CancellationReceipt {
   taskId: string;
@@ -36,6 +40,7 @@ type CancellationDecision = KernelDecision & {
 export class TaskCancellationCoordinator {
   private readonly taskEvents: TaskEventRecorder;
   private readonly residueReader: TaskResidueReader;
+  private readonly lifecycle: TaskLifecycleTransitionPort;
 
   constructor(private readonly deps: {
     db: Database.Database;
@@ -54,6 +59,10 @@ export class TaskCancellationCoordinator {
     attemptExecutionRepository: AttemptExecutionRepositoryPort;
   }) {
     this.taskEvents = new TaskEventRecorder(deps.taskEventRepo);
+    this.lifecycle = createTaskLifecycleTransitionPort({
+      taskRuntimeService: deps.taskRuntimeService,
+      subtaskRepo: deps.subtaskRepo,
+    });
     this.residueReader = new TaskResidueReader({
       db: deps.db,
       dispatchItemRepo: deps.dispatchItemRepo,
@@ -113,7 +122,11 @@ export class TaskCancellationCoordinator {
         // which kept the Task blocked with its Conversation slot occupied.
         const alreadyCancelled = task.status === 'cancelled';
         if (!alreadyCancelled) {
-          this.deps.taskRuntimeService.cancelTask(action.taskId, decision.reason);
+          this.lifecycle.cancelTask({
+            taskId: action.taskId,
+            reason: decision.reason,
+            actor: 'task-cancellation-coordinator',
+          });
         }
         const subtasks = revision
           ? this.deps.subtaskRepo.listActiveByTask(action.taskId)
@@ -122,8 +135,12 @@ export class TaskCancellationCoordinator {
           .filter(subtask => !['done', 'cancelled'].includes(subtask.status))
           .map(subtask => subtask.id);
         for (const subtaskId of affected) {
-          this.deps.subtaskRepo.updateStatus(subtaskId, 'cancelled', {
-            error: `Task cancelled by ${decision.id}`,
+          this.lifecycle.transitionSubtask({
+            subtaskId,
+            to: 'cancelled',
+            actor: 'task-cancellation-coordinator',
+            reason: `Task cancelled by ${decision.id}`,
+            changes: { error: `Task cancelled by ${decision.id}` },
           });
           this.taskEvents.record(
             action.taskId,
@@ -183,8 +200,12 @@ export class TaskCancellationCoordinator {
         throw new Error('Subtask cancellation closure changed before application');
       }
       for (const subtaskId of action.subtaskIds) {
-        this.deps.subtaskRepo.updateStatus(subtaskId, 'cancelled', {
-          error: `Subtask cancelled by ${decision.id}`,
+        this.lifecycle.transitionSubtask({
+          subtaskId,
+          to: 'cancelled',
+          actor: 'task-cancellation-coordinator',
+          reason: `Subtask cancelled by ${decision.id}`,
+          changes: { error: `Subtask cancelled by ${decision.id}` },
         });
         this.taskEvents.record(
           action.taskId,

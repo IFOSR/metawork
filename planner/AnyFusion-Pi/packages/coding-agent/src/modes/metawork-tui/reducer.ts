@@ -420,6 +420,9 @@ function reduceConnectionStreamEvent(
 		taskId: view.taskId,
 		taskTitle: view.title,
 		taskStatus: view.status,
+		// 展示层消费统一投影的 phase；旧 Server 无 lifecycle 时回退到原始状态。
+		taskPhase: view.lifecycle?.phase ?? turn.taskPhase ?? view.status,
+		taskNextAction: view.lifecycle?.nextAuthorizedAction ?? turn.taskNextAction,
 		routing: view.routing,
 		progressSummary: view.progressSummary ?? turn.progressSummary,
 		schedulingReason: view.schedulingReason,

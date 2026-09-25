@@ -1,13 +1,304 @@
 import type { KernelEvent } from '../kernel/control-kernel.js';
 import type { KernelDecisionApplicationRecord } from '../kernel/kernel-workflow.js';
 import type { KernelAttemptPayload, KernelAttemptKind, KernelDispatchItemStatus } from '../kernel/control-kernel.js';
-import type { GenerationReplanRequestRecord } from '../storage/generation-replan-request-repo.js';
+import type {
+  GenerationReplanRequestRecord,
+  GenerationReplanRequestStatus,
+} from '../storage/generation-replan-request-repo.js';
 import type { WorkGraphRevisionRecord } from '../storage/work-graph-revision-repo.js';
 
 export const LEGACY_SYSTEM_BINDING_CALLBACK_ERROR =
   'Conversation execution callback is unavailable: onDecisionApplying';
 export const MERGE_REPLAN_SYSTEM_BINDING_CALLBACK_ERROR =
   'startup recovery requires the originating Conversation Planner for merge replan';
+
+/**
+ * Action-specific postcondition verdict (2026-09-25 plan §6).
+ *
+ * - `applied`: the declared postcondition is durably present.
+ * - `retry_safe`: the postcondition is absent and re-applying the same Decision
+ *   cannot duplicate a durable effect.
+ * - `unresolved`: the outcome is unknowable or contradictory; the application
+ *   stays `uncertain` and must reach the user as `recovery_required`.
+ * - `not_managed`: a dedicated reconciler owns this action family.
+ */
+export type ApplicationPostconditionVerdict =
+  | 'applied'
+  | 'retry_safe'
+  | 'unresolved'
+  | 'not_managed';
+
+export type ApplicationPostconditionFamily =
+  | 'dispatch'
+  | 'replan'
+  | 'task_transition'
+  | 'plan_activation'
+  | 'observation_only'
+  | 'not_managed';
+
+export interface ApplicationPostconditionInspection {
+  readonly family: ApplicationPostconditionFamily;
+  readonly verdict: ApplicationPostconditionVerdict;
+  readonly reason: string;
+}
+
+export interface ApplicationPostconditionFacts {
+  readonly application: KernelDecisionApplicationRecord;
+  readonly task: { id: string; status: string } | null;
+  readonly subtasks: readonly { id: string; status: string }[];
+  readonly dispatchItems: readonly {
+    attemptId: string;
+    decisionId: string;
+    subtaskId: string;
+    status: KernelDispatchItemStatus;
+  }[];
+  /** The graph revision named by the Decision, when the action names one. */
+  readonly workGraphRevision: Pick<
+    WorkGraphRevisionRecord,
+    'revision' | 'generationId' | 'authorizedDecisionId'
+  > | null;
+  readonly replanRequest: GenerationReplanRequestRecord | null;
+}
+
+/**
+ * Narrow read ports one postcondition inspection needs. Both the startup sweep
+ * and the explicit `/task recovery` diagnostic read through this seam so the
+ * verdict the user sees is the same verdict recovery acts on.
+ */
+export interface ApplicationPostconditionFactSource {
+  findTask(taskId: string): { id: string; status: string } | null;
+  listSubtasks(taskId: string): readonly { id: string; status: string }[];
+  listDispatchItems(taskId: string): readonly {
+    attemptId: string;
+    decisionId: string;
+    subtaskId: string;
+    status: KernelDispatchItemStatus;
+  }[];
+  findWorkGraphRevision(
+    taskId: string,
+    revision: number,
+  ): Pick<WorkGraphRevisionRecord, 'revision' | 'generationId' | 'authorizedDecisionId'> | null;
+  findReplanRequest(
+    taskId: string,
+    generationId: string,
+    sourceRevision: number,
+  ): GenerationReplanRequestRecord | null;
+}
+
+export function inspectApplicationAgainstSources(
+  application: KernelDecisionApplicationRecord,
+  sources: ApplicationPostconditionFactSource,
+): ApplicationPostconditionInspection {
+  const action = application.decision.action;
+  const taskId = 'taskId' in action ? action.taskId : null;
+  const namesRevision = action.type === 'authorize_task_plan'
+    || action.type === 'activate_deferred_task_plan';
+  return inspectApplicationPostcondition({
+    application,
+    task: taskId ? sources.findTask(taskId) : null,
+    subtasks: taskId ? sources.listSubtasks(taskId) : [],
+    dispatchItems: taskId ? sources.listDispatchItems(taskId) : [],
+    workGraphRevision: taskId && namesRevision
+      ? sources.findWorkGraphRevision(taskId, action.graphRevision)
+      : null,
+    replanRequest: action.type === 'schedule_replan' || action.type === 'request_replan'
+      ? sources.findReplanRequest(action.taskId, action.generationId, action.sourceRevision)
+      : null,
+  });
+}
+
+/**
+ * Action families that a dedicated reconciler already owns. The generic sweep
+ * must not double-resolve them: cancellation has
+ * `reconcileUncertainCancellations`, external effects have the outbox, and the
+ * merge/system-binding paths have their own Kernel-authorized recovery events.
+ */
+const UNMANAGED_ACTIONS = new Set<string>([
+  'cancel_task',
+  'cancel_subtasks',
+  'request_merge_replan',
+  'resolve_recovery',
+  'grant_capability',
+  'deny_capability',
+  'escalate_capability',
+  'deliver_direct_reply',
+  'authorize_task_control',
+  'reject_request',
+  'request_clarification',
+  'record_permission_resolution',
+  'recover_workspace_attempt',
+]);
+
+/**
+ * Actions whose only durable effect is the observation event that
+ * `markApplied` inserts atomically with the `applied` transition. Re-applying
+ * the same Decision id is therefore idempotent.
+ */
+const OBSERVATION_ONLY_ACTIONS = new Set<string>([
+  'no_op',
+  'wait_for_retry',
+  'wait_for_capacity',
+  'probe_capacity',
+  'wait_for_partition',
+  'park_for_replan',
+  'resume_task',
+  'queue_generation_replan',
+  'defer_task_plan_for_availability',
+]);
+
+export function inspectApplicationPostcondition(
+  facts: ApplicationPostconditionFacts,
+): ApplicationPostconditionInspection {
+  const action = facts.application.decision.action;
+  if (UNMANAGED_ACTIONS.has(action.type)) {
+    return {
+      family: 'not_managed',
+      verdict: 'not_managed',
+      reason: `${action.type} is owned by a dedicated reconciler`,
+    };
+  }
+  switch (action.type) {
+    case 'dispatch_batch':
+      return inspectDispatch(facts, action.items.map(item => item.attemptId));
+    case 'schedule_replan':
+    case 'request_replan':
+      return inspectReplanScheduling(facts);
+    case 'authorize_task_plan':
+    case 'activate_deferred_task_plan':
+      return inspectPlanActivation(facts);
+    case 'block_work':
+    case 'complete_task':
+    case 'accept_partial_result':
+      return inspectTaskTransition(facts);
+    default:
+      if (OBSERVATION_ONLY_ACTIONS.has(action.type)) {
+        return {
+          family: 'observation_only',
+          verdict: 'retry_safe',
+          reason: `${action.type} only emits its Decision observation and is idempotent by Decision id`,
+        };
+      }
+      return {
+        family: 'not_managed',
+        verdict: 'unresolved',
+        reason: `no postcondition is declared for ${action.type}`,
+      };
+  }
+}
+
+function inspectDispatch(
+  facts: ApplicationPostconditionFacts,
+  expectedAttemptIds: readonly string[],
+): ApplicationPostconditionInspection {
+  const decisionId = facts.application.decisionId;
+  const present = expectedAttemptIds.filter(attemptId => facts.dispatchItems.some(
+    item => item.attemptId === attemptId && item.decisionId === decisionId,
+  ));
+  if (present.length === expectedAttemptIds.length && expectedAttemptIds.length > 0) {
+    return {
+      family: 'dispatch',
+      verdict: 'applied',
+      reason: 'every authorized dispatch item exists with the same Decision id',
+    };
+  }
+  if (present.length === 0) {
+    return {
+      family: 'dispatch',
+      verdict: 'retry_safe',
+      reason: 'no authorized dispatch item landed; the Decision may be re-applied',
+    };
+  }
+  return {
+    family: 'dispatch',
+    verdict: 'unresolved',
+    reason: `partial dispatch batch: ${present.length}/${expectedAttemptIds.length} items landed`,
+  };
+}
+
+function inspectReplanScheduling(
+  facts: ApplicationPostconditionFacts,
+): ApplicationPostconditionInspection {
+  if (isSatisfiedReplanScheduling({
+    application: facts.application,
+    replanRequest: facts.replanRequest,
+  })) {
+    return {
+      family: 'replan',
+      verdict: 'applied',
+      reason: 'the Replan Job carries this Decision quiescence token',
+    };
+  }
+  if (isRetrySafeUncertainReplanScheduling({
+    application: facts.application,
+    replanRequest: facts.replanRequest,
+  })) {
+    return {
+      family: 'replan',
+      verdict: 'retry_safe',
+      reason: 'the Replan Job is still waiting for quiescence',
+    };
+  }
+  return {
+    family: 'replan',
+    verdict: 'unresolved',
+    reason: `Replan Job is ${facts.replanRequest?.status ?? 'missing'}`,
+  };
+}
+
+function inspectPlanActivation(
+  facts: ApplicationPostconditionFacts,
+): ApplicationPostconditionInspection {
+  const action = facts.application.decision.action;
+  if (action.type !== 'authorize_task_plan' && action.type !== 'activate_deferred_task_plan') {
+    return { family: 'plan_activation', verdict: 'unresolved', reason: 'unexpected action' };
+  }
+  const revision = facts.workGraphRevision;
+  if (revision
+    && revision.revision === action.graphRevision
+    && revision.generationId === action.generationId) {
+    return {
+      family: 'plan_activation',
+      verdict: 'applied',
+      reason: `graph revision ${action.graphRevision} is durable`,
+    };
+  }
+  if (action.type === 'authorize_task_plan' && action.proposalSource === 'initial') {
+    return {
+      family: 'plan_activation',
+      verdict: 'retry_safe',
+      reason: 'the initial graph revision did not land and its Task id is deterministic',
+    };
+  }
+  return {
+    family: 'plan_activation',
+    verdict: 'unresolved',
+    reason: 'a replan graph revision requires explicit recovery',
+  };
+}
+
+function inspectTaskTransition(
+  facts: ApplicationPostconditionFacts,
+): ApplicationPostconditionInspection {
+  const action = facts.application.decision.action;
+  const taskStatus = facts.task?.status ?? null;
+  if (action.type === 'complete_task' || action.type === 'accept_partial_result') {
+    return taskStatus === 'done' || taskStatus === 'archived'
+      ? { family: 'task_transition', verdict: 'applied', reason: 'the Task reached its terminal state' }
+      : { family: 'task_transition', verdict: 'retry_safe', reason: 'the Task is not terminal yet' };
+  }
+  if (action.type === 'block_work') {
+    const subtaskBlocked = action.subtaskId !== null
+      && facts.subtasks.some(item => item.id === action.subtaskId && item.status === 'blocked');
+    return taskStatus === 'blocked' || subtaskBlocked
+      ? { family: 'task_transition', verdict: 'applied', reason: 'the blocker is durable' }
+      : { family: 'task_transition', verdict: 'retry_safe', reason: 'the blocker is not durable yet' };
+  }
+  return {
+    family: 'task_transition',
+    verdict: 'unresolved',
+    reason: `no Task transition postcondition is declared for ${action.type}`,
+  };
+}
 
 /**
  * Postcondition for the durable Replan Job action family (2026-09-25 plan §6).

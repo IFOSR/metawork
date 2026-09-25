@@ -1921,9 +1921,16 @@ export class ConversationSession {
   private formatTaskRecovery(taskId: string): string {
     const port = this.deps.runtimePort;
     const task = port.queries.findTask(taskId);
-    const applications = port.queries.listRecoveryApplications(taskId).map(item =>
-      `- ${item.id} [application/${item.status}] ${item.decision.action.type}: ${item.errorSummary ?? 'no error summary'}`
-    );
+    const applications = port.queries.listRecoveryApplications(taskId).map(item => {
+      // The user-facing diagnostic must name the declared postcondition verdict
+      // that recovery itself acts on, not just a raw application status.
+      const diagnosis = port.queries.diagnoseRecoveryApplication(item.decisionId);
+      const detail = diagnosis
+        ? ` -> ${diagnosis.family}/${diagnosis.verdict}: ${diagnosis.reason}`
+        : '';
+      return `- ${item.id} [application/${item.status}] ${item.decision.action.type}: `
+        + `${item.errorSummary ?? 'no error summary'}${detail}`;
+    });
     const effects = port.queries.listRecoveryEffects(taskId).map(item =>
       `- ${item.id} [effect/${item.status}] ${item.effectType}: ${item.errorSummary ?? 'no error summary'}`
     );
@@ -2117,72 +2124,6 @@ export class ConversationSession {
     return event?.type === 'plan_proposed' ? [...(event.attachmentIds ?? [])] : [];
   }
 
-  private async requestKernelReplan(
-    decision: KernelDecision & {
-      action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
-    },
-  ): Promise<Extract<KernelEvent, { type: 'plan_proposed' }>> {
-    const port = this.deps.runtimePort;
-    const task = port.queries.findTask(decision.action.taskId);
-    if (!task) throw new Error(`replan Task not found: ${decision.action.taskId}`);
-    port.commands.materializeCompletedEvidence(task.id, decision.action.sourceRevision);
-    const evidence = port.queries.listTaskEvidence(
-      task.id,
-      decision.action.generationId,
-    );
-    const failures = port.queries.listAttemptReceipts(task.id)
-      .filter(item =>
-        item.generationId === decision.action.generationId
-        && item.graphRevision === decision.action.sourceRevision
-        && item.terminalState !== 'completed'
-      )
-      .sort((left, right) =>
-        left.completedAt.localeCompare(right.completedAt)
-        || left.attemptId.localeCompare(right.attemptId)
-      );
-    const request = [
-      'Produce a replan for the remaining work of the existing Task. Return plan_work_graph only.',
-      `Task id: ${task.id}`,
-      `Task goal: ${task.goal}`,
-      `Generation: ${decision.action.generationId}`,
-      `Superseded revision: ${decision.action.sourceRevision}`,
-      'The new graph must describe only remaining work and may reference the task_evidence IDs below.',
-      'Do not bind the remaining work back to an Executor candidate that already failed in this generation unless you explain why this attempt would behave differently.',
-      `Completed evidence: ${JSON.stringify(evidence.map(item => ({
-        evidenceId: item.id,
-        title: item.title,
-        summary: item.content.slice(0, 2_000),
-      })))}`,
-      `Structured failures and attempted candidates: ${JSON.stringify(failures.map(item => ({
-        attemptId: item.attemptId,
-        agentClassName: item.agentClassName,
-        terminalState: item.terminalState,
-        failure: item.failure,
-        code: item.errorCode,
-        summary: String(item.errorDetail ?? '').slice(0, 1_000),
-      })))}`,
-      'Bind the proposal to the exact existing Task id. Do not include raw Executor responses.',
-    ].join('\n\n').slice(0, 24_000);
-    const context = this.deps.planningContextBuilder!.build({ userInput: request });
-    const plan = await this.runPlanningAgent(context);
-    return this.buildPlanProposedEvent({
-      plan,
-      configurationRevision: context.configuration.revisionId,
-      // A replan may only reference attachments the originating Turn was
-      // admitted with, so the durable admission event is the source.
-      attachmentIds: this.resolveTaskTurnAttachmentIds(task.id),
-      proposalSource: 'replan',
-      eventId: `replan_event_${decision.id}`,
-      correlationId: decision.eventId,
-      causationId: decision.id,
-      taskId: task.id,
-      requestText: redactSensitiveText(request),
-      generationId: decision.action.generationId,
-      targetGraphRevision: decision.action.sourceRevision + 1,
-      availabilityExplanation: null,
-    });
-  }
-
   private async requestKernelMergeReplan(
     decision: KernelDecision & {
       action: Extract<KernelDecision['action'], { type: 'request_merge_replan' }>;
@@ -2350,7 +2291,6 @@ export class ConversationSession {
         persistSessionState: changes => this.persistSessionState(changes),
         setLatestGuidance: (scene, suggestion) => this.setLatestGuidance(scene, suggestion)!,
         queueProposal: (scene, proposal) => this.queueProposal(scene, proposal),
-        requestReplan: decision => this.requestKernelReplan(decision),
         requestMergeReplan: decision => this.requestKernelMergeReplan(decision),
         buildPlanAdmissionSnapshot: event => this.buildPlanAdmissionSnapshot(event)!,
       },

@@ -133,14 +133,16 @@ Runtime does
 not rewrite the receipt or Kernel ledger, does not relax permission, material,
 contract or external-effect recovery, and `ControlKernel` remains the sole
 authority for `resume_task`. Task and Subtask state restoration is applied only
-with the Kernel decision. A legacy `authorize_task_plan` application made uncertain solely by
-the former system-binding `onDecisionApplying` presentation callback defect is
-the one bounded exception to ordinary manual uncertainty handling. Startup
-recovery or an explicit Resume may submit a deterministic
-`recovery_resolution_requested(retry)` only when the exact error, submitted
-generation replan request, generation identity and adjacent graph revision all
-match. ControlKernel still authorizes the retry; no other uncertain application
-or external effect is retried automatically.
+with the Kernel decision. Uncertain Kernel applications converge by declared postcondition rather than
+by manual SQLite repair. Startup and periodic recovery inspect each managed
+action family (`dispatch`, `replan`, `task_transition`, `plan_activation`) and
+resolve the application to `applied`, a safe retry inside a bounded budget, or
+explicit `recovery_required`. Cancellation, external effects and the merge path
+keep their dedicated reconcilers. `/task recovery <taskId>` reports the same
+declared postcondition family and verdict that recovery acts on. A legacy
+`authorize_task_plan` application made uncertain solely by the former
+system-binding `onDecisionApplying` presentation callback defect keeps its own
+bounded Kernel-authorized retry path.
 
 Task-control command acknowledgement is not execution authority. `/task resume`
 reports authorization and pending dispatch after the first authoritative Kernel
@@ -659,8 +661,10 @@ Account, Conversation, Workspace, Planner session and generation identity.
 Independent Subtasks inside one Task may execute concurrently. A Conversation
 may execute or clean up only one top-level Task at a time; Tasks from different
 Conversations may run concurrently. The Task's Conversation slot remains
-occupied while cancellation, publication, container, WorkUnit or lease cleanup
-is active or uncertain.
+occupied while cancellation, publication, container, WorkUnit, lease, uncertain
+Kernel application or outstanding Replan Job residue remains; a Task that is
+blocked with no such residue releases its slot and promotes the next
+same-Conversation Task exactly once.
 _Avoid_: request, prompt, executor run, browser tab
 
 **Subtask**:
@@ -668,8 +672,20 @@ A decomposed piece of work inside a Task, planned so it can have at most one pen
 _Avoid_: work unit, executor instance, raw prompt
 
 **Task State**:
-The top-level Task lifecycle: created, ready, running, parked, blocked, done, archived, and cancelled. It never contains `awaiting_decision`.
-_Avoid_: executor state, work unit state
+The persisted top-level Task lifecycle: created, ready, running, parked, blocked, done, archived, and cancelled. It never contains `awaiting_decision`. The canonical business lifecycle is `queued | executing | coordinating | waiting_for_user | blocked | completed | failed | cancelled`, owned by the Task Domain in `src/task/task-lifecycle.ts`; a persisted `running` Task with no active authorized Attempt is `coordinating`, never `executing`. Presentation surfaces render `TaskView.phase`, not this column.
+_Avoid_: executor state, work unit state, raw status as user-facing prose
+
+**Task View**:
+The one read-only projection of a Task's lifecycle for TUI, Web, Feishu and command output (`src/task/task-view.ts`). It derives `phase` (`queued | executing | retrying | waiting_for_plan | waiting_for_user | publishing | recovery_required | blocked | completed | failed | cancelled`), the active Attempt, the blocking residue categories, the next authorized action and the relevant timestamps from durable facts only. It never mutates state and never equates `running` with active work. The Gateway exposes it additively as `GatewayTaskViewSnapshot.lifecycle`.
+_Avoid_: per-surface status mapping, dashboard-owned reconciliation
+
+**Task Lifecycle Transition Port**:
+The single owner of strategic Task and Subtask status writes (`src/task/task-lifecycle-transition-port.ts`). Runtime handlers apply one Kernel-authorized action; they call this port instead of writing a status directly. It validates every transition against the canonical lifecycle contract, records the requesting actor and reason for audit, treats a replayed cancellation or block as idempotent, and rejects a cross-layer transition out of a terminal state. User-driven `/task` commands remain Task Domain operations through `TaskEngine`.
+_Avoid_: per-module status writes, TaskView-owned repair
+
+**Attempt Settlement**:
+An Attempt is `authorized -> launched -> running -> settling -> settled`. Settlement is proven by the immutable `executor_attempt_receipts` row plus the closed dispatch item, and carries a separate immutable outcome (`succeeded | failed | heartbeat_lost | cancelled | unknown`). "Attempt settled" replaces the public phrase "dispatch terminal"; a settled Attempt alone never completes a Task.
+_Avoid_: attempt as Task status, dispatch status as outcome
 
 **Agent Class**:
 A fixed configuration template for a type of agent, including its harness, model, skills, MCP servers, plugins, runtime command, affinity metadata, and runtime settings. MetaClaw starts with canonical planner and executor classes.
@@ -776,8 +792,8 @@ The durable Kernel-authorized transaction that makes a Task or an atomic downstr
 _Avoid_: best-effort process abort, status-only update, rollback of published facts
 
 **Generation Replan Request**:
-The one durable ordinary automatic-replan request for a Task generation/revision. Multiple exhausted Subtasks coalesce into it; independent work drains first, Planner runs only at quiescence, and an exact token prevents a cancelled or stale Planner result from superseding the graph.
-_Avoid_: conflict-chain replan, per-attempt hidden retry, parallel Planner calls
+The one durable ordinary automatic-replan request for a Task generation/revision. Multiple exhausted Subtasks coalesce into it; independent work drains first, and the Kernel authorizes `schedule_replan`, whose only Runtime postcondition is that this Job is durably schedulable under the Decision-derived quiescence token. The Decision application is `applied` immediately with no Planner call, so no foreground TUI, Web connection or ConversationSession callback is required. An account-scoped Planner Worker claims the Job with a bounded Planner lease, performs one Planner turn, and inserts the `plan_proposed` event together with the `submitted` transition; the deterministic Job id and single conditional claim make a duplicate recovery pass idempotent. A retryable Planner failure backs off and keeps the Job identity; past the absolute retry budget the Job fails closed as `planner_unavailable`, which the Kernel projects into an explicit `block_work`.
+_Avoid_: conflict-chain replan, per-attempt hidden retry, parallel Planner calls, foreground Planner callback
 
 **Work Unit Event**:
 A durable runtime event about a work unit, such as state changes, claims, heartbeats, failures, draining, or stop events.

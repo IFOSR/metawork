@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  inspectApplicationPostcondition,
   isRetrySafeUncertainReplanScheduling,
   isSatisfiedReplanScheduling,
   isSupersededMergeReplanApplication,
   isRetrySafeMergeRepairReplan,
   mergeReplanAssumeAppliedRecoveryEvent,
   mergeRepairReplanRecoveryEvent,
+  type ApplicationPostconditionFacts,
 } from '../../src/execution/kernel-application-recovery.js';
 import type { KernelDecisionApplicationRecord } from '../../src/kernel/kernel-workflow.js';
 import type {
@@ -15,6 +17,32 @@ import type {
 
 const taskId = 'task-report';
 const publicationId = 'publication-report';
+
+function dispatchItem(attemptId: string) {
+  return {
+    order: 0,
+    subtaskId: 'subtask-a',
+    attemptId,
+    authorizedBinding: binding(),
+    bindingFingerprint: 'fp',
+    attemptKind: 'primary' as const,
+    sourceAttemptId: null,
+    recoveryMode: 'fresh' as const,
+    attemptPayload: null,
+    defaultResourceGrant: [],
+  };
+}
+
+function binding() {
+  return {
+    agentClassRef: 'codex-cli',
+    harnessRef: 'codex-cli',
+    providerRef: 'test-provider',
+    modelRef: 'test-model',
+    permissionProfileRef: 'workspace-engineering',
+    configurationRevision: 'revision-a',
+  };
+}
 
 function application(): KernelDecisionApplicationRecord {
   return {
@@ -241,5 +269,138 @@ describe('durable replan scheduling recovery', () => {
       application,
       replanRequest: replanRequest('planning'),
     })).toBe(false);
+  });
+});
+
+describe('application postcondition inspection', () => {
+  function app(
+    action: KernelDecisionApplicationRecord['decision']['action'],
+    decisionId = 'decision-1',
+    applyAttempts = 1,
+  ): KernelDecisionApplicationRecord {
+    return {
+      id: `application-${decisionId}`,
+      decisionId,
+      eventId: `event-${decisionId}`,
+      idempotencyKey: `decision:${decisionId}`,
+      status: 'uncertain',
+      applyAttempts,
+      observationEvent: null,
+      errorSummary: 'process exit during apply',
+      createdAt: '2026-09-25T00:00:00.000Z',
+      updatedAt: '2026-09-25T00:00:01.000Z',
+      decision: {
+        schemaVersion: 5,
+        configurationRevision: 'revision-a',
+        id: decisionId,
+        eventId: `event-${decisionId}`,
+        reason: 'fixture',
+        action,
+      },
+    };
+  }
+
+  function facts(
+    overrides: Partial<ApplicationPostconditionFacts> = {},
+  ): ApplicationPostconditionFacts {
+    return {
+      application: app({ type: 'no_op' }),
+      task: { id: taskId, status: 'running' },
+      subtasks: [],
+      dispatchItems: [],
+      workGraphRevision: null,
+      replanRequest: null,
+      ...overrides,
+    };
+  }
+
+  it('requires every authorized dispatch item with the same Decision id', () => {
+    const action = {
+      type: 'dispatch_batch' as const,
+      taskId,
+      items: [dispatchItem('attempt-1'), dispatchItem('attempt-2')],
+    };
+    const application = app(action);
+    expect(inspectApplicationPostcondition(facts({ application }))).toMatchObject({
+      family: 'dispatch',
+      verdict: 'retry_safe',
+    });
+    expect(inspectApplicationPostcondition(facts({
+      application,
+      dispatchItems: [{ attemptId: 'attempt-1', decisionId: 'decision-1', subtaskId: 'subtask-a', status: 'running' }],
+    }))).toMatchObject({ family: 'dispatch', verdict: 'unresolved' });
+    expect(inspectApplicationPostcondition(facts({
+      application,
+      dispatchItems: [
+        { attemptId: 'attempt-1', decisionId: 'decision-1', subtaskId: 'subtask-a', status: 'running' },
+        { attemptId: 'attempt-2', decisionId: 'decision-1', subtaskId: 'subtask-b', status: 'pending_launch' },
+      ],
+    }))).toMatchObject({ family: 'dispatch', verdict: 'applied' });
+    expect(inspectApplicationPostcondition(facts({
+      application,
+      dispatchItems: [
+        { attemptId: 'attempt-1', decisionId: 'other-decision', subtaskId: 'subtask-a', status: 'running' },
+      ],
+    }))).toMatchObject({ family: 'dispatch', verdict: 'retry_safe' });
+  });
+
+  it('reads the durable Task transition for block and complete', () => {
+    const complete = app({ type: 'complete_task', taskId });
+    expect(inspectApplicationPostcondition(facts({
+      application: complete,
+      task: { id: taskId, status: 'done' },
+    }))).toMatchObject({ family: 'task_transition', verdict: 'applied' });
+    expect(inspectApplicationPostcondition(facts({ application: complete })))
+      .toMatchObject({ family: 'task_transition', verdict: 'retry_safe' });
+
+    const block = app({ type: 'block_work', taskId, subtaskId: 'subtask-a' });
+    expect(inspectApplicationPostcondition(facts({
+      application: block,
+      task: { id: taskId, status: 'blocked' },
+    }))).toMatchObject({ family: 'task_transition', verdict: 'applied' });
+    expect(inspectApplicationPostcondition(facts({
+      application: block,
+      subtasks: [{ id: 'subtask-a', status: 'blocked' }],
+    }))).toMatchObject({ family: 'task_transition', verdict: 'applied' });
+  });
+
+  it('accepts a durable graph revision as plan activation', () => {
+    const application = app({
+      type: 'authorize_task_plan',
+      taskId,
+      task: { binding: 'reference', taskId, control: 'none', scope: null, title: null, goal: null, includeRecentConversationContext: false, priority: null },
+      workGraph: { schemaVersion: 7, configurationRevision: 'revision-a', reason: 'fixture', subtasks: [] },
+      authorizedBindingsBySubtask: {},
+      generationId: 'generation-1',
+      graphRevision: 2,
+      proposalSource: 'replan',
+    });
+    expect(inspectApplicationPostcondition(facts({
+      application,
+      workGraphRevision: { revision: 2, generationId: 'generation-1', authorizedDecisionId: 'decision-1' },
+    }))).toMatchObject({ family: 'plan_activation', verdict: 'applied' });
+    // A replan revision cannot be re-applied blindly.
+    expect(inspectApplicationPostcondition(facts({ application })))
+      .toMatchObject({ family: 'plan_activation', verdict: 'unresolved' });
+  });
+
+  it('leaves dedicated reconciler families untouched', () => {
+    for (const action of [
+      { type: 'cancel_task' as const, taskId, generationId: 'generation-1' },
+      { type: 'request_merge_replan' as const, taskId, subtaskId: 'subtask-a', publicationId: 'pub-1', conflictChainId: 'chain-1' },
+      { type: 'deliver_direct_reply' as const, response: 'hi', taskId: null },
+    ]) {
+      expect(inspectApplicationPostcondition(facts({ application: app(action) })))
+        .toMatchObject({ verdict: 'not_managed' });
+    }
+  });
+
+  it('declares observation-only actions retry-safe and unknown actions unresolved', () => {
+    expect(inspectApplicationPostcondition(facts({
+      application: app({ type: 'wait_for_retry', taskId, subtaskId: 'subtask-a', resumeAt: '2026-09-25T00:10:00.000Z', authorizedBinding: binding(), bindingFingerprint: 'fp' }),
+    }))).toMatchObject({ family: 'observation_only', verdict: 'retry_safe' });
+    expect(inspectApplicationPostcondition(facts({
+      application: app({ type: 'recover_workspace_attempt', taskId, subtaskId: 'subtask-a', workspaceId: 'ws', checkpointId: null, lostAttemptId: 'attempt-1', attemptKind: 'primary', recoveryMode: 'fresh', defaultResourceGrant: [] }),
+    }))).toMatchObject({ verdict: 'not_managed' });
   });
 });

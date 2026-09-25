@@ -37,6 +37,10 @@ import type { KernelFailure } from '../core/kernel-failure.js';
 import type { Subtask } from '../core/types.js';
 import { ExecutorAttemptRuntimeRepo, type ExecutorAttemptRuntimeRecord } from '../storage/executor-attempt-runtime-repo.js';
 import { deriveRecoverySafety } from '../routing/types.js';
+import {
+  createSubtaskLifecyclePort,
+  type SubtaskLifecyclePort,
+} from '../task/task-lifecycle-transition-port.js';
 import type {
   KernelAttemptKind,
   KernelAttemptPayload,
@@ -174,8 +178,10 @@ export class SubtaskAttemptRunner {
   private readonly publicationRepo: WorkspacePublicationRepo;
   private readonly terminalService: AttemptTerminalService;
   private readonly resultObjectRepo: ResultObjectRepo;
+  private readonly lifecycle: SubtaskLifecyclePort;
 
   constructor(private readonly deps: SubtaskAttemptRunnerDeps) {
+    this.lifecycle = createSubtaskLifecyclePort({ subtaskRepo: deps.subtaskRepo });
     this.contextBuilder = new SubtaskExecutionContextBuilder(deps.db, {
       accountId: deps.accountId,
       resultRoot: deps.resultRoot,
@@ -421,7 +427,12 @@ export class SubtaskAttemptRunner {
           throw new Error(`merge repair budget or publication state is stale: ${dispatch.attemptPayload.publicationId}`);
         }
       }
-      this.deps.subtaskRepo.updateStatus(subtask.id, 'running');
+      this.lifecycle.transitionSubtask({
+        subtaskId: subtask.id,
+        to: 'running',
+        actor: 'subtask-attempt-runner',
+        reason: `attempt ${attemptId} claimed the Subtask`,
+      });
       claim.markRunning();
       if (
         !this.deps.agentClassService.hasExecutorAgentClass(agentClassName)
@@ -1331,7 +1342,12 @@ export class SubtaskAttemptRunner {
     const startedAt = new Date().toISOString();
     try {
       claim.startAttempt();
-      this.deps.subtaskRepo.updateStatus(subtask.id, 'running');
+      this.lifecycle.transitionSubtask({
+        subtaskId: subtask.id,
+        to: 'running',
+        actor: 'subtask-attempt-runner',
+        reason: `contract correction claimed the Subtask`,
+      });
       claim.markRunning();
       const sourceResult = this.readCorrectionSourceResult(source);
       const sourceDelta = parseWorkspaceDelta(sourceRuntime.workspaceDelta);

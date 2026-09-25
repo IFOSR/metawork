@@ -128,6 +128,11 @@ import {
   GenerationReplanWorker,
   type GenerationReplanWorkerReport,
 } from '../account/generation-replan-worker.js';
+import { inspectApplicationAgainstSources } from '../execution/kernel-application-recovery.js';
+import {
+  createTaskLifecycleTransitionPort,
+  type TaskLifecycleTransitionPort,
+} from '../task/task-lifecycle-transition-port.js';
 import { TaskCancellationCoordinator } from '../execution/task-cancellation-coordinator.js';
 import { SessionKernelRuntime } from './session-kernel-runtime.js';
 import { PlannerRunRepo } from '../storage/planner-run-repo.js';
@@ -398,6 +403,8 @@ export class MetaclawSession {
   private readonly plannerProposalRepo: PlannerProposalRepo;
   private readonly publicationRepo: WorkspacePublicationRepo;
   private readonly generationReplanRepo: GenerationReplanRequestRepo;
+  private readonly dispatchItemRepo: KernelDispatchItemRepo;
+  private lifecycle: TaskLifecycleTransitionPort | null = null;
   private readonly plannerConfiguration: PlannerConfigurationView;
   private readonly kernelConfiguration: KernelConfigurationView;
   private readonly plannerBinding: RevisionedAgentBinding;
@@ -557,6 +564,7 @@ export class MetaclawSession {
     this.publicationRepo = runtimeExecutionServices.publicationRepo;
     const generationReplanRepo = runtimeExecutionServices.generationReplanRepo;
     this.generationReplanRepo = generationReplanRepo;
+    this.dispatchItemRepo = runtimeExecutionServices.dispatchItemRepo;
     const cancellationCoordinator = runtimeExecutionServices.cancellationCoordinator;
     this.attemptRunner = runtimeExecutionServices.attemptRunner;
     const kernelExecutionServices = deps.accountKernelExecutionServices ?? buildAccountKernelExecutionServices({
@@ -610,7 +618,6 @@ export class MetaclawSession {
         persistSessionState: changes => this.persistSessionState(changes),
         setLatestGuidance: (scene, suggestion) => this.setLatestGuidance(scene, suggestion),
         queueProposal: (scene, proposal) => this.queueProposal(scene, proposal),
-        requestReplan: decision => this.requestKernelReplan(decision),
         requestMergeReplan: decision => this.requestKernelMergeReplan(decision),
         buildPlanAdmissionSnapshot: event => this.buildPlanAdmissionSnapshot(event),
       },
@@ -2066,73 +2073,6 @@ export class MetaclawSession {
     return report;
   }
 
-  private async requestKernelReplan(
-    decision: KernelDecision & {
-      action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
-    },
-  ): Promise<Extract<KernelEvent, { type: 'plan_proposed' }>> {
-    const task = this.taskRuntimeService.findTask(decision.action.taskId);
-    if (!task) throw new Error(`replan Task not found: ${decision.action.taskId}`);
-    this.workGraphRuntimeService.materializeCompletedEvidence(task.id, decision.action.sourceRevision);
-    const evidence = this.taskExecutionEvidenceRepo.listTaskEvidenceByGeneration(
-      task.id,
-      decision.action.generationId,
-    );
-    const failures = this.attemptReceiptRepo.listByTask(task.id)
-      .filter(item =>
-        item.generationId === decision.action.generationId
-        && item.graphRevision === decision.action.sourceRevision
-        && item.terminalState !== 'completed'
-      )
-      .sort((left, right) =>
-        left.completedAt.localeCompare(right.completedAt)
-        || left.attemptId.localeCompare(right.attemptId)
-      );
-    const request = [
-      'Produce a replan for the remaining work of the existing Task. Return plan_work_graph only.',
-      `Task id: ${task.id}`,
-      `Task goal: ${task.goal}`,
-      `Generation: ${decision.action.generationId}`,
-      `Superseded revision: ${decision.action.sourceRevision}`,
-      'The new graph must describe only remaining work and may reference the task_evidence IDs below.',
-      `Completed evidence: ${JSON.stringify(evidence.map(item => ({
-        evidenceId: item.id,
-        title: item.title,
-        summary: item.content.slice(0, 2_000),
-      })))}`,
-      `Structured failures and attempted candidates: ${JSON.stringify(failures.map(item => ({
-        attemptId: item.attemptId,
-        agentClassName: item.agentClassName,
-        terminalState: item.terminalState,
-        failure: item.failure,
-        code: item.errorCode,
-        summary: String(item.errorDetail ?? '').slice(0, 1_000),
-      })))}`,
-      'Bind the proposal to the exact existing Task id. Do not include raw Executor responses.',
-    ].join('\n\n').slice(0, 24_000);
-    const context = this.planningContextBuilder.build({
-      userInput: request,
-    });
-    const plan = await this.runPlanningAgent(context);
-    return {
-      schemaVersion: 5,
-      configurationRevision: context.configuration.revisionId,
-      type: 'plan_proposed',
-      id: `replan_event_${decision.id}`,
-      correlationId: decision.eventId,
-      causationId: decision.id,
-      occurredAt: new Date().toISOString(),
-      sessionId: this.deps.sessionId,
-      taskId: task.id,
-      proposal: plan,
-      requestText: boundedKernelRequestText(request),
-      generationId: decision.action.generationId,
-      proposalSource: 'replan',
-      targetGraphRevision: decision.action.sourceRevision + 1,
-      availabilityExplanation: null,
-    };
-  }
-
   private async requestKernelMergeReplan(
     decision: KernelDecision & {
       action: Extract<KernelDecision['action'], { type: 'request_merge_replan' }>;
@@ -2512,11 +2452,47 @@ export class MetaclawSession {
     });
   }
 
+  private lifecyclePort(): TaskLifecycleTransitionPort {
+    return this.lifecycle ??= createTaskLifecycleTransitionPort({
+      taskRuntimeService: this.taskRuntimeService,
+      subtaskRepo: this.subtaskRepo,
+    });
+  }
+
   private formatTaskRecovery(taskId: string): string {
     const task = this.findLocalTask(taskId);
-    const applications = this.kernelWorkflowRepo.listRecoveryItems(taskId).map(item =>
-      `- ${item.id} [application/${item.status}] ${item.decision.action.type}: ${item.errorSummary ?? 'no error summary'}`
-    );
+    const applications = this.kernelWorkflowRepo.listRecoveryItems(taskId).map(item => {
+      const diagnosis = inspectApplicationAgainstSources(item, {
+        findTask: id => {
+          const record = this.taskRuntimeService.findTask(id);
+          return record ? { id: record.id, status: record.status } : null;
+        },
+        listSubtasks: id => this.subtaskRepo.listByTask(id)
+          .map(subtask => ({ id: subtask.id, status: subtask.status })),
+        listDispatchItems: id => this.dispatchItemRepo.listByTask(id).map(dispatch => ({
+          attemptId: dispatch.attemptId,
+          decisionId: dispatch.decisionId,
+          subtaskId: dispatch.subtaskId,
+          status: dispatch.status,
+        })),
+        findWorkGraphRevision: (id, revision) => {
+          const record = this.workGraphRevisionRepo.find(id, revision);
+          return record
+            ? {
+                revision: record.revision,
+                generationId: record.generationId,
+                authorizedDecisionId: record.authorizedDecisionId,
+              }
+            : null;
+        },
+        findReplanRequest: (id, generationId, sourceRevision) => (
+          this.generationReplanRepo.findByGeneration(id, generationId, sourceRevision)
+        ),
+      });
+      return `- ${item.id} [application/${item.status}] ${item.decision.action.type}: `
+        + `${item.errorSummary ?? 'no error summary'}`
+        + ` -> ${diagnosis.family}/${diagnosis.verdict}: ${diagnosis.reason}`;
+    });
     const effects = this.effectOutboxRepo.listRecoveryItems(taskId).map(item =>
       `- ${item.id} [effect/${item.status}] ${item.effectType}: ${item.errorSummary ?? 'no error summary'}`
     );
@@ -2836,11 +2812,16 @@ export class MetaclawSession {
       const blocked: Task[] = [];
       for (const task of this.listLocalTasksByStatus('running')) {
         try {
-          this.taskRuntimeService.blockTask(task.id, {
+          this.lifecyclePort().blockTask({
             taskId: task.id,
-            type: 'manual',
-            description: `startup recovery blocked: ${recoveryBlockedReason}`,
-            status: 'waiting',
+            dependency: {
+              taskId: task.id,
+              type: 'manual',
+              description: `startup recovery blocked: ${recoveryBlockedReason}`,
+              status: 'waiting',
+            },
+            actor: 'account-startup-recovery',
+            reason: `startup recovery blocked: ${recoveryBlockedReason}`,
           });
         } catch {
           // Keep the in-memory recovery fence even if persistence is unavailable.
@@ -2954,11 +2935,16 @@ export class MetaclawSession {
       const blocked: Task[] = [];
       for (const task of this.listLocalTasksByStatus('running')) {
         try {
-          this.taskRuntimeService.blockTask(task.id, {
+          this.lifecyclePort().blockTask({
             taskId: task.id,
-            type: 'manual',
-            description: `startup recovery blocked: ${reason}`,
-            status: 'waiting',
+            dependency: {
+              taskId: task.id,
+              type: 'manual',
+              description: `startup recovery blocked: ${reason}`,
+              status: 'waiting',
+            },
+            actor: 'account-startup-recovery',
+            reason: `startup recovery blocked: ${reason}`,
           });
         } catch {
           // Preserve durable attempt ownership if even the diagnostic Task update fails.

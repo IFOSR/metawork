@@ -14,6 +14,7 @@ import type { RevisionedKernelDecisionLedgerRecord } from '../storage/kernel-dec
 import type { RevisionedKernelExecutorStatusProjection } from '../storage/kernel-executor-status-repo.js';
 import type { PermissionRequestRecord } from '../resource/index.js';
 import type { KernelDecisionApplicationRecord } from '../kernel/kernel-workflow.js';
+import type { ApplicationPostconditionInspection } from '../execution/kernel-application-recovery.js';
 import type { KernelEffectRecord } from '../storage/kernel-effect-outbox-repo.js';
 import type { WorkspacePublicationRecord } from '../storage/workspace-publication-repo.js';
 import type { TaskEvidenceRecord } from '../execution/execution-evidence-port.js';
@@ -83,6 +84,14 @@ export interface ConversationRuntimePort {
     listIntegratedPublications(taskIds: string[]): WorkspacePublicationRecord[];
     listRecoveryApplications(taskId: string): KernelDecisionApplicationRecord[];
     findRecoveryApplication(recoveryItemId: string): KernelDecisionApplicationRecord | null;
+    /**
+     * Declared-postcondition diagnosis for one Kernel application, so the
+     * explicit `/task recovery` surface shows the same verdict that startup and
+     * periodic recovery act on (2026-09-25 plan §6).
+     */
+    diagnoseRecoveryApplication(
+      decisionId: string,
+    ): ApplicationPostconditionInspection | null;
     listRecoveryEffects(taskId: string): KernelEffectRecord[];
     findRecoveryEffect(recoveryItemId: string): KernelEffectRecord | null;
     findActiveWorkGraphRevision(taskId: string): WorkGraphRevisionRecord | null;

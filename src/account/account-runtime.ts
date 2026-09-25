@@ -29,6 +29,7 @@ import {
   ConversationActivityProjector,
   type ConversationActivityProjection,
 } from '../workspace/conversation-activity-projector.js';
+import { inspectApplicationAgainstSources } from '../execution/kernel-application-recovery.js';
 
 export interface AccountRuntimeDeps {
   readonly accountId: string;
@@ -385,6 +386,44 @@ export class AccountRuntime implements AccountRuntimeHandle {
         findRecoveryApplication: recoveryItemId => (
           this.deps.kernelServices.kernelWorkflowRepo.findRecoveryItem(recoveryItemId)
         ),
+        diagnoseRecoveryApplication: decisionId => {
+          const application = this.deps.kernelServices.kernelWorkflowRepo
+            .findApplicationByDecisionId(decisionId);
+          if (!application || application.status === 'applied') return null;
+          return inspectApplicationAgainstSources(application, {
+            findTask: taskId => {
+              const task = this.deps.taskServices?.taskRuntimeService.findTask(taskId);
+              return task ? { id: task.id, status: task.status } : null;
+            },
+            listSubtasks: taskId => this.deps.repositories.subtaskRepo.listByTask(taskId)
+              .map(subtask => ({ id: subtask.id, status: subtask.status })),
+            listDispatchItems: taskId => (
+              this.deps.runtimeExecutionServices?.dispatchItemRepo.listByTask(taskId) ?? []
+            ).map(item => ({
+              attemptId: item.attemptId,
+              decisionId: item.decisionId,
+              subtaskId: item.subtaskId,
+              status: item.status,
+            })),
+            findWorkGraphRevision: (taskId, revision) => {
+              const record = this.deps.repositories.workGraphRevisionRepo.find(taskId, revision);
+              return record
+                ? {
+                    revision: record.revision,
+                    generationId: record.generationId,
+                    authorizedDecisionId: record.authorizedDecisionId,
+                  }
+                : null;
+            },
+            findReplanRequest: (taskId, generationId, sourceRevision) => (
+              this.deps.runtimeExecutionServices?.generationReplanRepo.findByGeneration(
+                taskId,
+                generationId,
+                sourceRevision,
+              ) ?? null
+            ),
+          });
+        },
         listRecoveryEffects: taskId => (
           this.deps.repositories.effectOutboxRepo.listRecoveryItems(taskId)
         ),

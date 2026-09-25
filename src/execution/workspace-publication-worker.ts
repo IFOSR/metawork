@@ -15,6 +15,10 @@ import type { WorkspaceRepositoryPort } from './repositories.js';
 import type { WorkspaceStore } from './workspace-store.js';
 import type { ResourceLeaseService } from './resource-lease-service.js';
 import { ManagedGitWorkspaceService } from './managed-git-workspace.js';
+import {
+  createSubtaskLifecyclePort,
+  type SubtaskLifecyclePort,
+} from '../task/task-lifecycle-transition-port.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import { ResultObjectRepo } from '../storage/result-object-repo.js';
 import type { PersistedSubtaskHandoffItem } from '../storage/subtask-handoff-repo.js';
@@ -91,8 +95,10 @@ export class WorkspacePublicationWorker {
   private readonly results: ResultObjectRepo;
   private readonly reconciledGenerations = new Set<string>();
   private readonly activeDrains = new Map<string, Promise<WorkspacePublicationOutcome[]>>();
+  private readonly lifecycle: SubtaskLifecyclePort;
 
   constructor(private readonly deps: WorkspacePublicationWorkerDeps) {
+    this.lifecycle = createSubtaskLifecyclePort({ subtaskRepo: deps.subtaskRepo });
     this.publications = new WorkspacePublicationRepo(deps.db);
     this.handoffs = new SubtaskHandoffRepo(deps.db);
     this.git = new ManagedGitWorkspaceService(deps.workspaceStore);
@@ -393,8 +399,12 @@ export class WorkspacePublicationWorker {
             createdAt: now,
           });
           this.publications.markConflicted(publication.id, conflictChainId, summary, now);
-          this.deps.subtaskRepo.updateStatus(publication.subtaskId, 'awaiting_decision', {
-            error: summary,
+          this.lifecycle.transitionSubtask({
+            subtaskId: publication.subtaskId,
+            to: 'awaiting_decision',
+            actor: 'workspace-publication-worker',
+            reason: summary,
+            changes: { error: summary },
           });
         })();
         if (cancelled) {
@@ -514,14 +524,20 @@ export class WorkspacePublicationWorker {
         // handoff row (undeclared by the executor) is materialized from the
         // source's safe projection instead of hard-blocking downstream.
         this.materializeEdgeHandoffs(publication, safeProjection, now);
-        this.deps.subtaskRepo.updateStatus(publication.subtaskId, 'done', {
-          result: publication.originalCompletion.body,
-          artifacts: publication.originalCompletion.artifacts,
-          verification: {
-            warnings: publication.originalCompletion.warnings,
-            completionSchemaVersion: publication.originalCompletion.completionSchemaVersion,
+        this.lifecycle.transitionSubtask({
+          subtaskId: publication.subtaskId,
+          to: 'done',
+          actor: 'workspace-publication-worker',
+          reason: `publication ${publication.id} integrated`,
+          changes: {
+            result: publication.originalCompletion.body,
+            artifacts: publication.originalCompletion.artifacts,
+            verification: {
+              warnings: publication.originalCompletion.warnings,
+              completionSchemaVersion: publication.originalCompletion.completionSchemaVersion,
+            },
+            error: null,
           },
-          error: null,
         });
         this.publications.markIntegrated(publication.id, merged.integrationCommit, now);
         if (workspace) {

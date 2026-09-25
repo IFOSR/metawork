@@ -13,6 +13,10 @@ import type {
   QueuedTaskPayload,
 } from '../storage/conversation-task-scheduler-repo.js';
 import { taskBelongsToConversation } from '../task/task-ownership.js';
+import {
+  createTaskLifecyclePort,
+  type TaskLifecyclePort,
+} from '../task/task-lifecycle-transition-port.js';
 
 interface FocusContext {
   kind: 'conversation' | 'task';
@@ -48,7 +52,11 @@ export interface SessionKernelRuntimeDeps {
 
 /** Session-side Runtime handlers for Kernel decisions; it contains no next-action policy. */
 export class SessionKernelRuntime {
-  constructor(private readonly deps: SessionKernelRuntimeDeps) {}
+  private readonly lifecycle: TaskLifecyclePort;
+
+  constructor(private readonly deps: SessionKernelRuntimeDeps) {
+    this.lifecycle = createTaskLifecyclePort({ taskRuntimeService: deps.taskRuntimeService });
+  }
 
   forInput(userInput?: string, conversationId?: string, queryId?: string | null): KernelRuntime {
     return {
@@ -115,8 +123,16 @@ export class SessionKernelRuntime {
       case 'block_work': {
         const task = this.deps.taskRuntimeService.findTask(decision.action.taskId);
         if (task?.status === 'running') {
-          this.deps.taskRuntimeService.blockTask(task.id, {
-            taskId: task.id, type: 'manual', description: decision.reason, status: 'waiting',
+          this.lifecycle.blockTask({
+            taskId: task.id,
+            dependency: {
+              taskId: task.id,
+              type: 'manual',
+              description: decision.reason,
+              status: 'waiting',
+            },
+            actor: 'session-kernel-runtime',
+            reason: decision.reason,
           });
         }
         this.deps.callbacks.refreshRuntimeState();
@@ -124,7 +140,14 @@ export class SessionKernelRuntime {
       }
       case 'park_for_replan': {
         const task = this.deps.taskRuntimeService.findTask(decision.action.taskId);
-        if (task && task.status !== 'parked') this.deps.taskRuntimeService.transitionTask(task.id, 'parked');
+        if (task && task.status !== 'parked') {
+          this.lifecycle.transitionTask({
+            taskId: task.id,
+            to: 'parked',
+            actor: 'session-kernel-runtime',
+            reason: decision.reason,
+          });
+        }
         return null;
       }
       case 'wait_for_capacity':

@@ -174,9 +174,11 @@ export function isSettledDispatchStatus(status: KernelDispatchItemStatus): boole
 const TASK_TRANSITIONS: Record<TaskLifecycleState, readonly TaskLifecycleState[]> = {
   queued: ['executing', 'coordinating', 'waiting_for_user', 'blocked', 'failed', 'cancelled'],
   executing: ['coordinating', 'waiting_for_user', 'blocked', 'completed', 'failed', 'cancelled'],
-  coordinating: ['executing', 'waiting_for_user', 'blocked', 'completed', 'failed', 'cancelled'],
-  waiting_for_user: ['executing', 'coordinating', 'blocked', 'completed', 'failed', 'cancelled'],
-  blocked: ['executing', 'coordinating', 'waiting_for_user', 'completed', 'failed', 'cancelled'],
+  // `queued` is reachable again after an explicit unblock or resume, which is
+  // how the Kernel clears a resolver blocker without going back to execution.
+  coordinating: ['queued', 'executing', 'waiting_for_user', 'blocked', 'completed', 'failed', 'cancelled'],
+  waiting_for_user: ['queued', 'executing', 'coordinating', 'blocked', 'completed', 'failed', 'cancelled'],
+  blocked: ['queued', 'executing', 'coordinating', 'waiting_for_user', 'completed', 'failed', 'cancelled'],
   completed: [],
   failed: [],
   cancelled: [],
@@ -188,6 +190,60 @@ export function isTaskTransitionAllowed(
 ): boolean {
   if (from === to) return true;
   return TASK_TRANSITIONS[from].includes(to);
+}
+
+/**
+ * Subtask node transitions. Owned by Work Graph/Task Domain. A node may not go
+ * back to `pending` once it produced an attempt receipt; that requires a new
+ * graph revision instead.
+ */
+const SUBTASK_TRANSITIONS: Record<SubtaskLifecycleState, readonly SubtaskLifecycleState[]> = {
+  pending: ['executing', 'awaiting_completion', 'blocked', 'cancelled'],
+  executing: ['pending', 'awaiting_completion', 'blocked', 'completed', 'cancelled'],
+  awaiting_completion: ['executing', 'completed', 'blocked', 'cancelled'],
+  completed: [],
+  blocked: ['pending', 'executing', 'awaiting_completion', 'completed', 'cancelled'],
+  cancelled: [],
+};
+
+export function isSubtaskTransitionAllowed(
+  from: SubtaskLifecycleState,
+  to: SubtaskLifecycleState,
+): boolean {
+  if (from === to) return true;
+  return SUBTASK_TRANSITIONS[from].includes(to);
+}
+
+/** Terminal Subtask node states. */
+export function isTerminalSubtaskLifecycle(state: SubtaskLifecycleState): boolean {
+  return state === 'completed' || state === 'cancelled';
+}
+
+/**
+ * Fact-aware canonical Task lifecycle (2026-09-25 plan §4).
+ *
+ * The persisted column cannot express `coordinating`, so the canonical state is
+ * refined by durable facts: a Task with no active authorized Attempt is never
+ * `executing`, and outstanding coordination work makes it `coordinating`
+ * instead of `blocked` or `waiting_for_user`.
+ */
+export function deriveTaskLifecycleState(input: {
+  status: TaskStatus;
+  hasActiveAttempt: boolean;
+  hasOutstandingReplanJob: boolean;
+  hasPendingRetryWake: boolean;
+  hasPendingUserDecision: boolean;
+}): TaskLifecycleState {
+  const persisted = toTaskLifecycleState(input.status);
+  if (isTerminalTaskLifecycle(persisted)) return persisted;
+  if (input.hasPendingUserDecision) return 'waiting_for_user';
+  if (persisted === 'blocked') return 'blocked';
+  if (input.hasActiveAttempt) return 'executing';
+  if (input.hasOutstandingReplanJob || input.hasPendingRetryWake) return 'coordinating';
+  if (persisted === 'queued') return 'queued';
+  // A persisted `running` Task without an active Attempt is coordinating the
+  // next authorized action, never executing.
+  return 'coordinating';
 }
 
 /** Terminal business lifecycle states. */

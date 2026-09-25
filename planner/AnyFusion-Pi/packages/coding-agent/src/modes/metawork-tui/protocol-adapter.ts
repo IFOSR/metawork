@@ -344,6 +344,24 @@ export interface NormalizedTaskView {
 	readonly taskId: string;
 	readonly title: string;
 	readonly status: string;
+	/**
+	 * 统一只读生命周期投影（task lifecycle 收敛 §7）。旧 Server 不返回时
+	 * 为 null，展示层回退到 status。
+	 */
+	readonly lifecycle: {
+		readonly lifecycle: string;
+		readonly phase: string;
+		readonly nextAuthorizedAction: string;
+		readonly explanation: string;
+		readonly activeAttempt: {
+			readonly attemptId: string;
+			readonly subtaskId: string;
+			readonly kind: string;
+			readonly ordinal: number;
+			readonly lifecycle: string;
+			readonly outcome: string | null;
+		} | null;
+	} | null;
 	readonly routing: MetaWorkRoutingProjection | null;
 	readonly attempts: Record<string, MetaWorkAttemptProjection[]>;
 	readonly goal: string | null;
@@ -473,6 +491,27 @@ export function normalizeTaskView(
 			});
 		}
 	}
+	const lifecycleRecord = asRecord(payload.lifecycle);
+	const lifecycle: NormalizedTaskView["lifecycle"] = (
+		lifecycleRecord && asString(lifecycleRecord.phase)
+	) ? {
+		lifecycle: asString(lifecycleRecord.lifecycle) ?? "",
+		phase: asString(lifecycleRecord.phase)!,
+		nextAuthorizedAction: asString(lifecycleRecord.nextAuthorizedAction) ?? "",
+		explanation: asString(lifecycleRecord.explanation) ?? "",
+		activeAttempt: (() => {
+			const attempt = asRecord(lifecycleRecord.activeAttempt);
+			const attemptId = asString(attempt?.attemptId);
+			return attempt && attemptId ? {
+				attemptId,
+				subtaskId: asString(attempt.subtaskId) ?? "",
+				kind: asString(attempt.kind) ?? "",
+				ordinal: asNumber(attempt.ordinal) ?? 0,
+				lifecycle: asString(attempt.lifecycle) ?? "",
+				outcome: asString(attempt.outcome),
+			} : null;
+		})(),
+	} : null;
 	let result: NormalizedTaskView["result"] = null;
 	const resultRecord = asRecord(payload.result);
 	if (resultRecord) {
@@ -497,6 +536,7 @@ export function normalizeTaskView(
 		taskId,
 		title: asString(payload.title) ?? "",
 		status: asString(payload.status) ?? "",
+		lifecycle,
 		routing,
 		attempts,
 		goal: asString(payload.goal),
