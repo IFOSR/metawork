@@ -931,8 +931,35 @@ Startup and periodic recovery inspect each action family's declared
 postcondition. The replan postcondition inspector marks an uncertain
 `schedule_replan`/`request_replan` application `applied` once the Job carries
 `quiescence_<decisionId>`, and retries the same Decision only while the Job is
-still `pending_quiescence`. Full contracts, the Task transition table and the
-projection priority are recorded in
+still `pending_quiescence`. The generic sweep covers `dispatch_batch`
+(every authorized attempt exists with the same Decision id), `complete_task` /
+`accept_partial_result` (Task is terminal), `block_work` (blocker durable),
+`authorize_task_plan` / `activate_deferred_task_plan` (named graph revision
+durable) and the observation-only actions; cancellation, external effects and
+the merge path keep their dedicated reconcilers. An application that is not yet
+resolvable stays `uncertain` inside a bounded `applyAttempts < 3` budget and
+surfaces as `recovery_required`. `/task recovery <taskId>` prints the same
+`family/verdict` diagnosis the sweep acts on.
+
+Strategic Task and Subtask status writes have one owner: the Task Domain
+`createTaskLifecyclePort()` and the Work Graph `createSubtaskLifecyclePort()` in
+`src/task/task-lifecycle-transition-port.ts`. Every call validates the canonical
+transition, records the requesting actor and reason, treats a replayed
+cancellation or block as idempotent, and rejects any transition out of a
+terminal lifecycle. The Kernel Execution Runtime, cancellation coordinator, work
+graph runtime, publication worker, attempt runner and session Kernel runtime no
+longer write a status directly.
+
+Conversation slot release is a residue question. A slot is released only when
+the Task is terminal, or blocked, and no blocking dispatch, publication,
+backend execution, lease, WorkUnit claim, uncertain Kernel application or
+outstanding Replan Job remains; the released slot promotes the next
+same-Conversation Task exactly once. The Feishu/Web activity card and the
+vendored TUI dashboard consume the same projection, so a persisted `running`
+Task with no active Attempt is never presented as executing.
+
+Full contracts, the Task transition table and the projection priority are
+recorded in
 [Task lifecycle state contracts](task-lifecycle-state-contracts.md).
 
 The native AnyFusion-Pi TUI remains the default Client for bare `metawork`.

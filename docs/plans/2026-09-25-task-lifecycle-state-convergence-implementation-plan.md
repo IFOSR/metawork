@@ -338,44 +338,47 @@ Update `CONTEXT.md` and the current technical overview only after the contract i
 ## 12. Current Status
 
 - Plan date: 2026-09-25
-- Status: Phases 0-3 implemented on `feat/task-lifecycle-state-convergence`;
-  Phases 4-5 remain. Not archived.
-- Implementation commit: `fbc0ddc` `feat: converge task lifecycle ownership with durable Replan Jobs`, recorded 2026-09-25.
-- Production database: unchanged by this work stream (no schema migration was
-  needed; the durable Replan Job reuses `generation_replan_requests`).
+- Completion date: 2026-09-25
+- Status: complete (Phases 0-5 implemented). Archived by
+  [docs/README.md](../../docs/README.md) as a completed delivery.
+- Production database: unchanged (no schema migration was needed; the durable
+  Replan Job reuses `generation_replan_requests`).
 - Runtime services: changed. `schedule_replan` replaces the foreground
-  `request_replan` callback application, and the account periodic review now
-  drives `GenerationReplanWorker`.
+  `request_replan` callback application, the account periodic review drives
+  `GenerationReplanWorker`, every strategic Task/Subtask status write goes
+  through the transition port, and Conversation slot release is residue-driven.
 
-### Delivered (2026-09-25)
+### Delivered
 
 **Phase 0 — contract freeze and characterization**
 
-- Canonical ownership matrix, Task transition table, causal chain, replan
-  idempotency rules, uncertain-application postconditions and TaskView priority
-  recorded in [`docs/current/task-lifecycle-state-contracts.md`](../current/task-lifecycle-state-contracts.md).
+- Canonical ownership matrix, Task and Subtask transition tables, causal chain,
+  replan idempotency rules, per-family uncertain-application postconditions and
+  the TaskView priority recorded in
+  [`docs/current/task-lifecycle-state-contracts.md`](../current/task-lifecycle-state-contracts.md).
 - Executable contracts: [`src/task/task-lifecycle.ts`](../../src/task/task-lifecycle.ts),
   [`src/task/task-view.ts`](../../src/task/task-view.ts).
-- ADR amendments: ADR-0020 (status-contract seam), ADR-0022 (attempt
-  settlement / `awaiting_completion`), ADR-0023 (durable Replan Job and
-  uncertain-application convergence), ADR-0037 (slot release / TaskView).
+- ADR amendments: ADR-0020 (status-contract seam and transition port), ADR-0022
+  (attempt settlement / `awaiting_completion`), ADR-0023 (durable Replan Job and
+  uncertain-application convergence), ADR-0037 (residue-based slot release /
+  TaskView).
 - Characterization fixture `schedules a durable Replan Job at generation
-  quiescence without a foreground Planner` in
-  [`tests/account/account-startup-recovery-service.test.ts`](../../tests/account/account-startup-recovery-service.test.ts)
-  reproduces the 2026-09-25 chain and fails on the pre-change implementation
-  because that decision was applied through the foreground system binding and
-  left the application `uncertain`.
+  quiescence without a foreground Planner` reproduces the 2026-09-25 chain and
+  fails on the pre-change implementation because that decision was applied
+  through the foreground system binding and left the application `uncertain`.
 
 **Phase 1 — canonical contracts and read projection**
 
-- `projectTaskView()` is a pure read projection over durable facts. A `running`
-  Task with no active Attempt is never projected as `executing`.
-- Gateway `GatewayTaskViewSnapshot.lifecycle` exposes the projection additively
-  (`phase`, `activeAttempt`, `blockingResidue`, `nextAuthorizedAction`,
-  `explanation`, timestamps). The vendored AnyFusion-Pi mirror accepts it as an
-  optional extension; Web does not consume `task_view_snapshot`.
-- Remaining for the Phase 1 exit gate: TUI/Feishu render `lifecycle.phase`
-  instead of raw status strings.
+- `projectTaskView()` is a pure read projection over durable facts. A persisted
+  `running` Task with no active authorized Attempt is never projected as
+  `executing`; `deriveTaskLifecycleState()` reports `coordinating`.
+- Gateway `GatewayTaskViewSnapshot.lifecycle` exposes the projection additively.
+- Surfaces consume it: the vendored MetaWork TUI dashboard renders
+  `taskPhase ?? taskStatus` from the normalized `lifecycle.phase`, its mirror
+  protocol treats `lifecycle` as an optional extension, and the
+  Feishu/Web `ConversationActivityProjector` derives its card state from the same
+  canonical lifecycle instead of raw `task.status`. Web does not consume
+  `task_view_snapshot` at all.
 
 **Phase 2 — durable Replan Job**
 
@@ -385,45 +388,92 @@ Update `CONTEXT.md` and the current technical overview only after the contract i
 - `GenerationReplanRequestRepo` gains `scheduleForPlanner`, `isScheduledForPlanner`,
   `claimForPlanner`, `listPlannerClaimable`, `releasePlannerClaim`, `listByTask`
   and `findLatestOpen`.
-- `GenerationReplanWorker` (account-scoped) is the only consumer. It is driven
-  by `AccountStartupRecoveryService.recoverPeriodic`, which the Server task-pool
-  timer already calls, so a replan converges with no attached client.
+- `GenerationReplanWorker` (account-scoped) is the only consumer, driven by
+  `AccountStartupRecoveryService.recoverPeriodic` from the Server task-pool
+  timer, so a replan converges with no attached client.
 - Planner unavailability is bounded: backoff, then fail-closed
   `planner_unavailable`, which the Kernel projects into an explicit `block_work`.
 
-**Phase 3 (replan action family) — convergent uncertain applications**
+**Phase 3 — convergent uncertain applications and slot release**
 
-- `isSatisfiedReplanScheduling()` / `isRetrySafeUncertainReplanScheduling()`
-  inspect the durable Job postcondition during `recover()`. Satisfied
-  applications become `applied`; a Job still `pending_quiescence` is retried with
-  the same Decision; nothing stays `uncertain` while the Task remains `running`.
+- `inspectApplicationPostcondition()` / `inspectApplicationAgainstSources()`
+  declare a postcondition for every managed action family: `dispatch`,
+  `replan`, `task_transition`, `plan_activation` and observation-only actions.
+  Cancellation, external effects and the merge path keep their dedicated
+  reconcilers.
+- Startup and periodic recovery resolve `applied` / bounded `retry_safe`
+  (`applyAttempts < 3`) / `recovery_required`; an unresolved control operation is
+  never silently repaired with SQL.
+- `hasReleasableResidue()` extends the residue reader to backend executions,
+  uncertain Kernel applications and outstanding Replan Jobs;
+  `convergeConversationSlots()` releases a terminal or blocked Task's slot only
+  when residue is clear and promotes the next same-Conversation Task exactly
+  once.
+- `/task recovery <taskId>` prints the declared `family/verdict` diagnosis from
+  the same inspector the sweep acts on.
+
+**Phase 4 — lifecycle transition ownership**
+
+- `src/task/task-lifecycle-transition-port.ts` is the single owner of strategic
+  Task and Subtask writes, with a validation guard, an actor/reason audit trail,
+  idempotent replay of cancellation and blocking, and rejection of any
+  transition out of a terminal lifecycle.
+- Every Runtime caller is migrated: `KernelExecutionRuntime`,
+  `TaskCancellationCoordinator`, `WorkGraphRuntimeService`,
+  `WorkspacePublicationWorker`, `SubtaskAttemptRunner`, `SessionKernelRuntime`
+  and `AccountStartupRecoveryService`. `TaskRuntimeService` is no longer written
+  directly by Runtime code; user `/task` commands remain Task Domain operations
+  through `TaskEngine`.
+- The canonical Subtask transition table and the fact-aware canonical Task
+  lifecycle are part of the same contract module.
+
+**Phase 5 — cleanup, documentation and operational closure**
+
+- Removed the dead foreground replan callback: the `requestReplan` entry was
+  deleted from `KernelExecutionRuntimeCallbacks`, the account system binding,
+  `ConversationSession`, `MetaclawSession` and the test bindings, along with the
+  now-unreachable `requestKernelReplan` methods. The merge-replan path keeps its
+  own callback.
+- Removed the duplicate status interpretation in the Feishu/Web activity card
+  and the TUI dashboard.
+- Updated `CONTEXT.md` (Task State, Task View, Task Lifecycle Transition Port,
+  Attempt Settlement, Generation Replan Request), the current technical
+  overview, the ADR authority index and the contract document.
 
 ### Validation
 
 - `npx tsc --noEmit` clean.
-- Full suite: 2611 tests, 2597 passed, 3 pre-existing failures
+- Full suite: 2628 tests, 2614 passed, 3 pre-existing failures
   (`tests/billing/bill-finality.test.ts`,
   `tests/configuration/configuration-module-boundary.test.ts`,
   `tests/docker/shell-schema-isolation.test.ts`) and 6 pre-existing
   configuration-dependent `tests/session/*` files. All nine fail identically on
-  the pre-change revision in this environment.
-- Focused new coverage: `tests/task/task-lifecycle.test.ts`,
-  `tests/task/task-view.test.ts`, `tests/account/generation-replan-worker.test.ts`,
+  the pre-change revision in this environment and are unrelated to this work.
+- New focused coverage: `tests/task/task-lifecycle.test.ts`,
+  `tests/task/task-view.test.ts`,
+  `tests/task/task-lifecycle-transition-port.test.ts`,
+  `tests/account/generation-replan-worker.test.ts`,
   `tests/execution/kernel-application-recovery.test.ts`.
-- Updated contract test: `tests/session/planning-kernel-path.test.ts`
-  "routes exhausted task failure through one Kernel-authorized replan revision"
-  now asserts the durable scheduling postcondition and then drives the worker.
+- New integration coverage in
+  `tests/account/account-startup-recovery-service.test.ts`: durable Replan Job
+  scheduling without a foreground Planner; uncertain replan and `complete_task`
+  postcondition convergence; bounded retry for an uncertain `dispatch_batch`;
+  blocked Task slot release with exactly-once successor promotion.
+- Updated contract tests: `tests/session/planning-kernel-path.test.ts`
+  (durable scheduling then worker-driven replan),
+  `tests/workspace/conversation-activity-projector.test.ts` (a running Task with
+  no active Attempt is never `executing`).
+- Docker: `Dockerfile.test` runs `npm test`, so every scenario above is part of
+  the supported container gate. `npm run smoke:metawork` remains the live native
+  Planner-to-Executor gate.
+- Not executed in this environment: a live native Server restart / TUI reconnect
+  / Web attach acceptance pass, and a live Planner-unavailable fault injection.
+  Both require external Planner/Web/provider processes; the equivalent durable
+  paths are covered by the SQLite-backed account-runtime integration tests
+  above. Recorded as an explicit residual validation gap rather than a claim.
 
-### Remaining (Phases 3-5)
+### Closing commit
 
-- Phase 3 for the remaining action families (dispatch, block/complete, slot
-  release) and the explicit recovery command surface.
-- Phase 4: a central Task/Work Graph transition port so Runtime callers stop
-  writing strategic Task/Subtask states directly; today only the mapping and
-  guard functions exist.
-- Phase 5: remove the now-dead `requestReplan` execution callback from
-  `ConversationSession`/`MetaclawSession` and the binder, remove Ink-era
-  duplicates, and add Docker/native smoke coverage for Planner-unavailable and
-  queued-Task promotion.
-- Task phase 4 also owns turning `Task = running` plus an outstanding durable
-  Replan Job into the canonical `coordinating` Task lifecycle state.
+Phases 3-5 and the plan closure are recorded on
+`feat/task-lifecycle-state-convergence`; the exact revision is in the delivery
+commit immediately preceding this plan-closure commit.
