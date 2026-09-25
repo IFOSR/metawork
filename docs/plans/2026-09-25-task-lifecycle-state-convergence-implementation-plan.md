@@ -474,6 +474,7 @@ Update `CONTEXT.md` and the current technical overview only after the contract i
 
 ### Closing commit
 
-Phases 3-5 and the plan closure are recorded on
-`feat/task-lifecycle-state-convergence`; the exact revision is in the delivery
-commit immediately preceding this plan-closure commit.
+`11660a1` `feat: converge uncertain applications and centralize lifecycle
+transitions` delivers Phases 3-5; `939aded` `docs: complete task lifecycle state
+convergence phases 3-5` records this closure, on
+`feat/task-lifecycle-state-convergence`.
