@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
+import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 38;
+export const CURRENT_SCHEMA_VERSION = 41;
 
 const CURRENT_SCHEMA_SQL = `
 CREATE TABLE tasks (
@@ -1313,11 +1314,27 @@ export function runMigrations(
   db: Database.Database,
   migrationContext?: Schema30MigrationContext,
 ): void {
+  runBaseMigrations(db, migrationContext);
+}
+
+function runBaseMigrations(
+  db: Database.Database,
+  migrationContext?: Schema30MigrationContext,
+): void {
   if (tableExists(db, 'schema_version')) {
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
     ).all() as Array<{ version: number }>;
-    if (versions.length === 1 && versions[0]?.version === CURRENT_SCHEMA_VERSION) {
+    if (versions.length === 1 && versions[0]!.version === CURRENT_SCHEMA_VERSION) {
+      return;
+    }
+    if (versions.length === 1 && versions[0]?.version === 40) {
+      migrateSchema40To41(db);
+      return;
+    }
+    if (versions.length === 1 && versions[0]?.version === 39) {
+      migrateSchema39To40(db);
+      migrateSchema40To41(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 31) {
@@ -1328,6 +1345,9 @@ export function runMigrations(
       migrateSchema35To36(db);
       migrateSchema36To37(db);
       migrateSchema37To38(db);
+      migrateSchema38To39(db);
+      migrateSchema39To40(db);
+      migrateSchema40To41(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 32) {
@@ -1337,6 +1357,9 @@ export function runMigrations(
       migrateSchema35To36(db);
       migrateSchema36To37(db);
       migrateSchema37To38(db);
+      migrateSchema38To39(db);
+      migrateSchema39To40(db);
+      migrateSchema40To41(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 33) {
@@ -1345,6 +1368,9 @@ export function runMigrations(
       migrateSchema35To36(db);
       migrateSchema36To37(db);
       migrateSchema37To38(db);
+      migrateSchema38To39(db);
+      migrateSchema39To40(db);
+      migrateSchema40To41(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 34) {
@@ -1352,21 +1378,39 @@ export function runMigrations(
       migrateSchema35To36(db);
       migrateSchema36To37(db);
       migrateSchema37To38(db);
+      migrateSchema38To39(db);
+      migrateSchema39To40(db);
+      migrateSchema40To41(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 35) {
       migrateSchema35To36(db);
       migrateSchema36To37(db);
       migrateSchema37To38(db);
+      migrateSchema38To39(db);
+      migrateSchema39To40(db);
+      migrateSchema40To41(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 36) {
       migrateSchema36To37(db);
       migrateSchema37To38(db);
+      migrateSchema38To39(db);
+      migrateSchema39To40(db);
+      migrateSchema40To41(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 37) {
       migrateSchema37To38(db);
+      migrateSchema38To39(db);
+      migrateSchema39To40(db);
+      migrateSchema40To41(db);
+      return;
+    }
+    if (versions.length === 1 && versions[0]?.version === 38) {
+      migrateSchema38To39(db);
+      migrateSchema39To40(db);
+      migrateSchema40To41(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 30) {
@@ -1384,6 +1428,9 @@ export function runMigrations(
       migrateSchema35To36(db);
       migrateSchema36To37(db);
       migrateSchema37To38(db);
+      migrateSchema38To39(db);
+      migrateSchema39To40(db);
+      migrateSchema40To41(db);
       return;
     }
     const found = versions.map(row => row.version).join(', ') || 'empty';
@@ -1407,6 +1454,7 @@ export function runMigrations(
   db.transaction(() => {
     db.exec('CREATE TABLE schema_version (version INTEGER PRIMARY KEY)');
     db.exec(CURRENT_SCHEMA_SQL);
+    createBillingSchema(db);
     db.prepare('INSERT INTO schema_version (version) VALUES (?)')
       .run(CURRENT_SCHEMA_VERSION);
   })();
@@ -1532,6 +1580,54 @@ function migrateSchema37To38(db: Database.Database): void {
   migrate();
 }
 
+function migrateSchema38To39(db: Database.Database): void {
+  const migrate = db.transaction(() => {
+    createBillingSchema(db);
+    db.exec('UPDATE schema_version SET version = 39 WHERE version = 38;');
+  });
+  migrate();
+}
+
+function migrateSchema39To40(db: Database.Database): void {
+  const migrate = db.transaction(() => {
+    if (!columnsOf(db, 'query_usage_contexts').includes('external_account_ref')) {
+      db.exec('ALTER TABLE query_usage_contexts ADD COLUMN external_account_ref TEXT');
+    }
+    if (!columnsOf(db, 'usage_observations').includes('cumulative_value')) {
+      db.exec('ALTER TABLE usage_observations ADD COLUMN cumulative_value TEXT');
+    }
+    const updated = db.prepare(
+      'UPDATE schema_version SET version = 40 WHERE version = 39',
+    ).run();
+    if (updated.changes !== 1) {
+      throw new Error('schema version changed during 39 to 40 migration');
+    }
+  });
+  migrate();
+}
+
+function migrateSchema40To41(db: Database.Database): void {
+  const migrate = db.transaction(() => {
+    const columns = columnsOf(db, 'usage_observations');
+    if (!columns.includes('agent_class_ref')) {
+      db.exec('ALTER TABLE usage_observations ADD COLUMN agent_class_ref TEXT');
+    }
+    if (!columns.includes('provider_ref')) {
+      db.exec('ALTER TABLE usage_observations ADD COLUMN provider_ref TEXT');
+    }
+    if (!columns.includes('model_id')) {
+      db.exec('ALTER TABLE usage_observations ADD COLUMN model_id TEXT');
+    }
+    const updated = db.prepare(
+      'UPDATE schema_version SET version = 41 WHERE version = 40',
+    ).run();
+    if (updated.changes !== 1) {
+      throw new Error('schema version changed during 40 to 41 migration');
+    }
+  });
+  migrate();
+}
+
 function migrateSchema30To31(
   db: Database.Database,
   context: Schema30MigrationContext,
@@ -1541,6 +1637,7 @@ function migrateSchema30To31(
     throw new Error('schema 30 to 31 migration cannot start with foreign key violations');
   }
   const foreignKeysEnabled = db.pragma('foreign_keys', { simple: true }) === 1;
+  if (foreignKeysEnabled) db.pragma('foreign_keys = OFF');
   const migrate = db.transaction(() => {
     validateLegacyBindings(db, context);
     migrateRecoverableJson30To31(db, context);
@@ -1634,7 +1731,6 @@ function migrateSchema30To31(
     const updated = db.prepare('UPDATE schema_version SET version = 31 WHERE version = 30').run();
     if (updated.changes !== 1) throw new Error('schema version changed during 30 to 31 migration');
   });
-  if (foreignKeysEnabled) db.pragma('foreign_keys = OFF');
   try {
     migrate();
   } finally {

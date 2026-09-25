@@ -10,6 +10,12 @@ import { MANAGEABLE_TASK_STATUSES, type TaskClearScope } from '../task/task-cont
 import { buildMaterialSummary, extractMaterialTextSnippets, isWebLink, splitTaskResources } from '../intent/material-utils.js';
 import type { Task, TaskStatus } from '../core/types.js';
 import { TaskSearchIndexRepo } from '../storage/task-search-index-repo.js';
+import {
+  formatBlockedTaskRecoveryAction,
+  formatBlockedTaskNextStep,
+  formatBlockedTaskReason,
+  isUnknownTaskBlocker,
+} from '../task/task-blocker-guidance.js';
 
 const CLEAR_SCOPE_STATUSES: Record<TaskClearScope, TaskStatus[]> = {
   all: MANAGEABLE_TASK_STATUSES,
@@ -93,7 +99,7 @@ function formatTaskLine(task: {
   } else if (task.status === 'parked') {
     lines.push(`    → 原因：${task.lastInterruptionReason || '等待恢复'}`);
   } else if (task.status === 'blocked') {
-    lines.push(`    → 阻塞：${task.dependencies.find(dep => dep.status === 'waiting')?.description || '未知原因'}`);
+    lines.push(`    → 阻塞：${formatBlockedTaskReason(task.dependencies.find(dep => dep.status === 'waiting')?.description || '未知原因')}`);
   }
 
   return lines.join('\n');
@@ -106,7 +112,9 @@ function buildStatusExplanation(task: {
   dependencies: Array<{ status: string; description: string }>;
 }): string {
   if (task.status === 'blocked') {
-    return task.dependencies.find(dep => dep.status === 'waiting')?.description || '等待解除阻塞';
+    return formatBlockedTaskReason(
+      task.dependencies.find(dep => dep.status === 'waiting')?.description || '等待解除阻塞',
+    );
   }
 
   if (task.status === 'parked') {
@@ -125,6 +133,7 @@ function buildStatusExplanation(task: {
 }
 
 function buildLatestNextStep(task: {
+  id: string;
   status: string;
   snapshots: Array<{ nextStep: string }>;
   dependencies: Array<{ status: string; description: string }>;
@@ -136,7 +145,7 @@ function buildLatestNextStep(task: {
 
   if (task.status === 'blocked') {
     const blocker = task.dependencies.find(dep => dep.status === 'waiting')?.description;
-    return blocker ? `先解除阻塞：${blocker}` : '先确认阻塞条件';
+    return blocker ? formatBlockedTaskNextStep(task.id, blocker) : '先确认阻塞条件';
   }
 
   if (task.status === 'done') {
@@ -151,8 +160,12 @@ function buildRecoveryAction(task: {
   status: string;
   resources?: string[];
   materialSummary?: { status: 'missing' | 'partial' | 'ready'; sufficiency: string };
+  blockerReason?: string;
 }): string {
   if (task.status === 'blocked') {
+    if (task.blockerReason && isUnknownTaskBlocker(task.blockerReason)) {
+      return formatBlockedTaskRecoveryAction(task.id, task.blockerReason);
+    }
     const hasLinks = (task.resources ?? []).some(resource => isWebLink(resource));
     if (task.materialSummary?.status === 'ready') {
       return `现有材料已具备可读内容，可直接执行 /task unblock ${task.id}；如仍不够，再补充材料：/task unblock ${task.id} [材料路径]`;
@@ -253,6 +266,7 @@ export async function showTask(args: ResolvedCommandArgs, context: CommandContex
   const recoveryAction = buildRecoveryAction({
     ...task,
     materialSummary,
+    blockerReason: blocker,
   });
 
   const lines = [

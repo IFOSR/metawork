@@ -1,5 +1,3 @@
-import type { PathMetadata } from "./package-manager.ts";
-
 export type SourceScope = "user" | "project" | "temporary";
 export type SourceOrigin = "package" | "top-level";
 
@@ -11,7 +9,7 @@ export interface SourceInfo {
 	baseDir?: string;
 }
 
-export function createSourceInfo(path: string, metadata: PathMetadata): SourceInfo {
+export function createSourceInfo(path: string, metadata: Omit<SourceInfo, "path">): SourceInfo {
 	return {
 		path,
 		source: metadata.source,

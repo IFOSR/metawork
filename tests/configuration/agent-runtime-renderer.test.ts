@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   AgentRuntimeRenderer,
+  buildModelsJson,
   resolveCurrentRuntimeHome,
 } from '../../src/configuration/agent-runtime-renderer.js';
 import { buildPlannerConfigurationView } from '../../src/configuration/projections.js';
@@ -111,6 +112,31 @@ function snapshot(revisionId: string, config: AnyFusionConfigurationV2): Configu
 }
 
 describe('AgentRuntimeRenderer', () => {
+  it('preserves GLM auto-compatibility instead of forcing OpenAI reasoning_effort', () => {
+    const config = makeConfig();
+    config.providers['glm-provider'] = {
+      protocol: 'openai-compatible',
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      apiKeyRef: 'file-secret:anyfusion/providers/glm-provider',
+      region: null,
+      enabled: true,
+    };
+    config.models['glm-model'] = {
+      modelId: 'glm-5.3-flash',
+      providerRef: 'glm-provider',
+      capabilities: ['planning', 'tools'],
+      reasoning: 'high',
+      enabled: true,
+    };
+
+    const models = buildModelsJson(config) as {
+      providers: Record<string, { models: Array<{ id: string; compat?: { supportsReasoningEffort?: boolean } }> }>;
+    };
+    const glm = models.providers['glm-provider'].models.find(model => model.id === 'glm-5.3-flash');
+
+    expect(glm).toEqual({ id: 'glm-5.3-flash', reasoning: true });
+  });
+
   it('does not bake one built-in Executor model into a shared tool home', async () => {
     const root = await mkdtemp(join(tmpdir(), 'anyfusion-renderer-'));
     try {
@@ -132,10 +158,14 @@ describe('AgentRuntimeRenderer', () => {
       await renderer.render(snapshot('rev-1', makeConfig()));
 
       const modelsRaw = await readFile(join(root, 'rev-1', 'planner', 'models.json'), 'utf8');
-      const models = JSON.parse(modelsRaw) as { providers: Record<string, { baseUrl: string }> };
+      const models = JSON.parse(modelsRaw) as {
+        providers: Record<string, { baseUrl: string; api: string }>;
+      };
       expect(Object.keys(models.providers).sort()).toEqual(['provider-a', 'provider-b']);
       expect(models.providers['provider-a'].baseUrl).toBe('https://a.example/v1');
       expect(models.providers['provider-b'].baseUrl).toBe('https://b.example/v1');
+      expect(models.providers['provider-a'].api).toBe('openai-completions');
+      expect(models.providers['provider-b'].api).toBe('openai-completions');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

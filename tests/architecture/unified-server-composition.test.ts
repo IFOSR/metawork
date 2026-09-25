@@ -82,7 +82,7 @@ describe('unified server composition', () => {
   it('starts shared adapters before selecting the foreground client', () => {
     const index = readFileSync(join(process.cwd(), 'src', 'server', 'server-composition.ts'), 'utf8');
     const sharedStart = index.indexOf('await gatewayServer.start()');
-    const foregroundSelection = index.indexOf('const taskArtifactRepo = new TaskArtifactRepo');
+    const foregroundSelection = index.indexOf('managementServer = await startWebMode');
 
     expect(sharedStart).toBeGreaterThan(0);
     expect(foregroundSelection).toBeGreaterThan(sharedStart);

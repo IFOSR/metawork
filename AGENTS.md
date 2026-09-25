@@ -51,7 +51,8 @@ the composition root. Detailed ownership and dependency rules live in
 | Attempts, recovery, execution backends, Git publication | [`src/execution/`](src/execution/), [`src/executor/`](src/executor/), [`src/resource/`](src/resource/) |
 | Durable facts | [`src/storage/`](src/storage/) |
 | Task and explicit memory | [`src/task/`](src/task/), [`src/memory/`](src/memory/) |
-| CLI, commands, native TUI bridge, and standby Ink UI | [`src/cli/`](src/cli/), [`src/commands/`](src/commands/), [`src/tui-bridge/`](src/tui-bridge/), [`src/tui/`](src/tui/) |
+| CLI, commands, native TUI bridge, and retired Ink UI | [`src/cli/`](src/cli/), [`src/commands/`](src/commands/), [`src/tui-bridge/`](src/tui-bridge/), [`src/tui/`](src/tui/) |
+| Single MetaWork TUI (Gateway-only client) | [`planner/AnyFusion-Pi/packages/coding-agent/src/modes/metawork-tui/`](planner/AnyFusion-Pi/packages/coding-agent/src/modes/metawork-tui/) |
 | Gateway, Feishu, notifications, delivery | [`src/gateway/`](src/gateway/), [`src/integrations/`](src/integrations/), [`src/notifications/`](src/notifications/), [`src/delivery/`](src/delivery/) |
 | Supporting domains | [`src/guidance/`](src/guidance/), [`src/learning/`](src/learning/), [`src/intent/`](src/intent/), [`src/core/`](src/core/) |
 
@@ -68,7 +69,7 @@ Main entry points:
   [`src/execution/subtask-attempt-runner.ts`](src/execution/subtask-attempt-runner.ts) — execution chain.
 - [`src/tui-bridge/planner-tui-bridge.ts`](src/tui-bridge/planner-tui-bridge.ts) and
   [`src/tui-bridge/planner-tui-process.ts`](src/tui-bridge/planner-tui-process.ts) — default native Planner TUI adapter.
-- [`src/tui/app.tsx`](src/tui/app.tsx) — preserved standby Ink UI; it is not the default local surface.
+- [`src/tui/app.tsx`](src/tui/app.tsx) — retired Ink UI kept only until the single-TUI cutover cleanup; it is not reachable from `metawork tui`.
 - [`src/gateway/server.ts`](src/gateway/server.ts) and
   [`src/gateway/feishu-runtime.ts`](src/gateway/feishu-runtime.ts) — remote surfaces.
 
@@ -85,9 +86,9 @@ Tests mirror source domains under [`tests/`](tests/). Scenarios and fixtures are
   bridge are presentation/Application-Shell adapters only: they may project state and hand a
   Planner proposal to the existing validation path, but may not mutate storage, schedule work,
   authorize execution, or control an Executor.
-- The Ink TUI under `src/tui/` is a preserved standby module. Do not delete its editor,
-  completion, panels, progress, Guidance, Feishu, activity-state behavior, tests, or Ink/React
-  dependencies. Do not invest migration work in it unless a separate restoration plan is approved.
+- The Ink TUI under `src/tui/` and the vendored standalone agent TUI
+  (`InteractiveMode`) are deleted. ADR-0041 converges the product on the single MetaWork TUI:
+  do not reintroduce a second surface, a standalone agent TUI, or `METACLAW_STANDBY_TUI`.
 - Do not add a second semantic router, Runtime-owned recovery policy, Planner
   storage mutation, or pre-release compatibility path without an ADR.
 - Persistence changes must follow `CONTEXT.md` and update repositories and Docker

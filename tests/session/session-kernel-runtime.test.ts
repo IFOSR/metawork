@@ -82,7 +82,7 @@ describe('SessionKernelRuntime parallel admission', () => {
       },
     });
 
-    await runtime.forInput('queued task').apply(decision);
+    await runtime.forInput('queued task', 'conversation-a', 'query-queued-task').apply(decision);
 
     expect(prepared).toEqual([]);
     expect(output).toContain('任务已加入当前会话队列；当前任务完成或释放后执行');
@@ -93,6 +93,9 @@ describe('SessionKernelRuntime parallel admission', () => {
       ownerPlannerSessionId: 'planner-a',
     });
     expect(scheduler.listQueuedTasks('conversation-a')).toEqual(['task-b']);
+    expect(scheduler.getQueuedPayload('task-b')).toMatchObject({
+      queryId: 'query-queued-task',
+    });
   });
 
   it('keeps clear_tasks scoped to the current Conversation', async () => {

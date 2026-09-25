@@ -13,8 +13,6 @@ import type {
 import type {
   AgentReadiness,
   ConfigurationRuntimeState,
-  InteractionTrace,
-  InteractionTraceEvent,
 } from './api/types';
 import { WsClient } from './api/ws';
 import {
@@ -25,6 +23,7 @@ import {
   type WebLaunchSuggestion,
 } from './auth';
 import { ConversationView } from './components/ConversationView';
+import { BillingView } from './components/BillingView';
 import { SettingsPanel } from './components/SettingsPanel';
 import { TokenGate } from './components/TokenGate';
 import { TrajectoryView } from './components/TrajectoryView';
@@ -39,6 +38,10 @@ import { ExecutionDetailDrawer } from './components/ExecutionDetailDrawer';
 import type { WorkspaceTab } from './components/WorkspaceHeader';
 import {
   isCurrentConversationRecordRequest,
+  mergeFinalAnswer,
+  mergeTraceDelta,
+  mergeTraceSnapshot,
+  mergeBilling,
   retainTerminalLiveTurnInRecord,
   retainLiveTurnForConversation,
 } from './conversation-live-turn';
@@ -66,6 +69,7 @@ export function App() {
   const [liveTurn, setLiveTurn] = useState<ConversationTurnProjection | null>(null);
   const [tab, setTab] = useState<WorkspaceTab>('conversation');
   const [selectedTrajectoryTurnId, setSelectedTrajectoryTurnId] = useState<string | null>(null);
+  const [selectedBillingTurnId, setSelectedBillingTurnId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [search, setSearch] = useState('');
   const [activationNotice, setActivationNotice] = useState<string | null>(null);
@@ -268,6 +272,12 @@ export function App() {
         );
         setLiveTurn(liveTurnRef.current);
       },
+      onBilling: (turnId, queryBill, taskUsageSummary, turnBilling) => {
+        liveTurnRef.current = mergeBilling(
+          liveTurnRef.current, turnId, queryBill, taskUsageSummary, turnBilling,
+        );
+        setLiveTurn(liveTurnRef.current);
+      },
       onConfigurationRuntimeState: state => setConfigurationRuntime(state),
       onAgentReadinessState: agents => setAgentReadiness(agents),
       onExecution: (turnId, taskId, timeline) => {
@@ -295,14 +305,9 @@ export function App() {
         setLiveTurn(liveTurnRef.current);
       },
       onFinalAnswer: (_requestId, turnId, lines, completedAt, backgroundWorkPending) => {
-        liveTurnRef.current = liveTurnRef.current && liveTurnRef.current.id === turnId
-          ? {
-            ...liveTurnRef.current,
-            status: backgroundWorkPending ? 'running' : 'completed',
-            finalAnswer: lines.join('\n'),
-            completedAt: backgroundWorkPending ? null : completedAt,
-          }
-          : liveTurnRef.current;
+        liveTurnRef.current = mergeFinalAnswer(
+          liveTurnRef.current, turnId, lines, completedAt, backgroundWorkPending,
+        );
         setLiveTurn(liveTurnRef.current);
       },
       onResultDeliveryAvailable: (_requestId, turnId, _resultId, certification) => {
@@ -466,6 +471,7 @@ export function App() {
   }, [authenticated, activeWorkspaceId, search]);
 
   useEffect(() => setSelectedTrajectoryTurnId(null), [activeWorkspaceId, browsedSessionId]);
+  useEffect(() => setSelectedBillingTurnId(null), [activeWorkspaceId, browsedSessionId]);
 
   useEffect(() => {
     if (previewState.status === 'closed' && !executionDetail) return;
@@ -804,6 +810,9 @@ export function App() {
   const selectedTrajectoryTurn = selectedTrajectoryTurnId
     ? turns.find(turn => turn.id === selectedTrajectoryTurnId) ?? latestTurn
     : latestTurn;
+  const selectedBillingTurn = selectedBillingTurnId
+    ? turns.find(turn => turn.id === selectedBillingTurnId) ?? latestTurn
+    : latestTurn;
   const running = Boolean(selectedId === activeSessionId && liveTurn?.status === 'running');
   const requiredBlock = requiredAgentBlock(agentReadiness);
   const composerDisabled = selectedId !== activeSessionId || !connected || requiredBlock.blocked;
@@ -913,7 +922,15 @@ export function App() {
         onRemoveAttachment={attachmentId => setPendingAttachments(current =>
           current.filter(entry => entry.attachmentId !== attachmentId))}
       >
-        {!selectedId
+        {tab === 'billing'
+          ? (
+            <BillingView
+              bill={selectedBillingTurn?.queryBill ?? null}
+              requestSummary={selectedBillingTurn?.userInput}
+              taskTitle={selectedBillingTurn?.executionTimeline?.title}
+            />
+          )
+          : !selectedId
           ? (
             <div className="workspace-home">
               <span className="workspace-home-kicker">WORKSPACE HOME</span>
@@ -948,6 +965,10 @@ export function App() {
               onOpenTrajectory={turnId => {
                 setSelectedTrajectoryTurnId(turnId);
                 setTab('trajectory');
+              }}
+              onOpenBilling={turnId => {
+                setSelectedBillingTurnId(turnId);
+                setTab('billing');
               }}
             />
           )
@@ -996,41 +1017,6 @@ function appendUtf8Chunk(current: string, offset: number, chunk: string): string
   if (offset === bytes.byteLength) return current + chunk;
   if (offset > bytes.byteLength) return current;
   return decoder.decode(bytes.slice(0, offset)) + chunk;
-}
-
-function mergeTraceSnapshot(
-  current: ConversationTurnProjection | null,
-  trace: InteractionTrace,
-): ConversationTurnProjection | null {
-  if (!current || current.id !== trace.turnId) return current;
-  return {
-    ...current,
-    taskId: trace.taskId,
-    status: trace.status,
-    startedAt: trace.startedAt,
-    completedAt: trace.completedAt,
-    traceEvents: trace.events,
-  };
-}
-
-function mergeTraceDelta(
-  current: ConversationTurnProjection | null,
-  turnId: string,
-  events: InteractionTraceEvent[],
-  status?: InteractionTrace['status'],
-  completedAt?: string | null,
-): ConversationTurnProjection | null {
-  if (!current || current.id !== turnId) return current;
-  const byId = new Map(current.traceEvents.map(event => [event.id, event]));
-  for (const event of events) byId.set(event.id, event);
-  return {
-    ...current,
-    ...(status ? {
-      status,
-      completedAt: status === 'running' ? null : completedAt ?? current.completedAt,
-    } : {}),
-    traceEvents: [...byId.values()].sort((left, right) => left.sequence - right.sequence),
-  };
 }
 
 function mergeArtifacts(

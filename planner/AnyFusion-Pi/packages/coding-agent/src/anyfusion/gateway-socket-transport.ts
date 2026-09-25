@@ -1,4 +1,5 @@
 import { createConnection, type Socket } from "node:net";
+import { GATEWAY_EVENT_KINDS } from "./gateway-protocol.ts";
 import type { GatewayClientDeps } from "./gateway-client.ts";
 import type {
 	GatewayCommandEnvelope,
@@ -69,6 +70,7 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 	}>();
 	private readonly socketPath: string;
 	private readonly maxFrameBytes: number;
+	private serverCapabilities: string[] = [];
 	private closed = false;
 
 	constructor(socketPath: string, maxFrameBytes = MAX_GATEWAY_JSONL_FRAME_BYTES) {
@@ -99,6 +101,10 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 		return new Promise<void>((resolve, reject) => {
 			this.helloWaiters.add({ resolve, reject });
 		});
+	}
+
+	getServerCapabilities(): string[] {
+		return [...this.serverCapabilities];
 	}
 
 	async replay(
@@ -200,6 +206,9 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 	private handleMessage(message: GatewayWireServerMessage): void {
 		if (message.type === "hello") {
 			this.connectionReady = true;
+			this.serverCapabilities = Array.isArray(message.capabilities)
+				? [...message.capabilities]
+				: [];
 			if (message.attached) this.currentConversationId = message.sessionId;
 			for (const waiter of this.helloWaiters) waiter.resolve();
 			this.helloWaiters.clear();
@@ -372,7 +381,10 @@ function malformedFrame(frameBytes: number, maxFrameBytes: number): GatewayFrame
 function isGatewayWireServerMessage(value: unknown): value is GatewayWireServerMessage {
 	if (!isRecord(value) || typeof value.type !== "string") return false;
 	if (value.type === "hello") {
-		return isNonEmptyString(value.sessionId) && typeof value.attached === "boolean";
+		return isNonEmptyString(value.sessionId) && typeof value.attached === "boolean"
+			&& (value.capabilities === undefined
+				|| (Array.isArray(value.capabilities)
+					&& value.capabilities.every((item) => typeof item === "string")));
 	}
 	if (value.type === "receipt") return isGatewayReceipt(value.receipt);
 	if (value.type === "event") return isGatewayEvent(value.event);
@@ -418,28 +430,7 @@ function isGatewayEvent(value: unknown): value is GatewayEventEnvelope {
 }
 
 function isGatewayEventKind(value: unknown): boolean {
-	return [
-		"conversation_snapshot",
-		"workspace_changed",
-		"workspace_directory_snapshot",
-		"workspace_conversation_upserted",
-		"workspace_conversation_removed",
-		"workspace_activity_changed",
-		"workspace_availability_changed",
-		"conversation_history_page",
-		"turn_started",
-		"trace_delta",
-		"task_projection",
-		"execution_delta",
-		"permission_request",
-		"artifact",
-		"result_delivery_available",
-		"result_chunk",
-		"result_completed",
-		"final_answer",
-		"terminal_error",
-		"delivery_status",
-	].includes(String(value));
+	return typeof value === "string" && (GATEWAY_EVENT_KINDS as readonly string[]).includes(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

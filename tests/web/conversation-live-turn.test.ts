@@ -5,6 +5,10 @@ import type {
 } from '../../web/src/api/session-types';
 import {
   isCurrentConversationRecordRequest,
+  mergeFinalAnswer,
+  mergeBilling,
+  mergeTraceDelta,
+  mergeTraceSnapshot,
   retainTerminalLiveTurnInRecord,
   retainLiveTurnForConversation,
 } from '../../web/src/conversation-live-turn';
@@ -27,6 +31,67 @@ function liveTurn(sessionId: string): ConversationTurnProjection {
 }
 
 describe('Conversation live Turn ownership', () => {
+  it('stays running for a cancellation request and stops on the terminal trace without reloading', () => {
+    const running = liveTurn('conversation-a');
+    const requested = mergeTraceDelta(running, running.id, [], 'running');
+    expect(requested?.status).toBe('running');
+    const cancelled = mergeTraceDelta(requested, running.id, [], 'cancelled', '2026-09-21T00:00:00.000Z');
+    expect(cancelled).toMatchObject({
+      status: 'cancelled',
+      completedAt: '2026-09-21T00:00:00.000Z',
+    });
+  });
+
+  it.each([true, false])('does not reopen a cancelled Turn on a late final answer (background=%s)', backgroundWorkPending => {
+    const running = liveTurn('conversation-a');
+    const cancelled = mergeTraceDelta(running, running.id, [], 'cancelled', '2026-09-21T00:00:00.000Z');
+    const result = mergeFinalAnswer(cancelled, running.id, ['late answer'], '2026-09-21T00:01:00.000Z', backgroundWorkPending);
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      completedAt: '2026-09-21T00:00:00.000Z',
+      finalAnswer: 'late answer',
+    });
+  });
+
+  it('does not reopen a terminal Turn on late trace deltas or snapshots', () => {
+    const running = liveTurn('conversation-a');
+    const cancelled = mergeTraceDelta(running, running.id, [], 'cancelled', '2026-09-21T00:00:00.000Z');
+    expect(mergeTraceDelta(cancelled, running.id, [], 'running')).toMatchObject({
+      status: 'cancelled',
+      completedAt: '2026-09-21T00:00:00.000Z',
+    });
+    expect(mergeTraceSnapshot(cancelled, {
+      sessionId: running.sessionId,
+      turnId: running.id,
+      taskId: running.taskId,
+      status: 'running',
+      startedAt: running.startedAt,
+      completedAt: null,
+      events: [],
+    })).toMatchObject({
+      status: 'cancelled',
+      completedAt: '2026-09-21T00:00:00.000Z',
+    });
+  });
+
+  it('ignores a cancellation for a different Turn', () => {
+    const running = liveTurn('conversation-a');
+    expect(mergeTraceDelta(running, 'another-turn', [], 'cancelled')).toBe(running);
+    expect(mergeFinalAnswer(running, 'another-turn', ['stopped'], '2026-09-21T00:00:00.000Z')).toBe(running);
+  });
+
+  it('merges a late billing projection without reopening a terminal Turn', () => {
+    const running = liveTurn('conversation-a');
+    const completed = mergeTraceDelta(running, running.id, [], 'completed', '2026-09-21T00:00:00.000Z');
+    const projected = mergeBilling(completed, running.id, {
+      billId: 'bill-1', queryId: 'query-1', taskId: null, state: 'finalized',
+      assessedMicroCoin: '1400000', assessedIsFinal: true, externalState: 'received',
+      externalEntryId: null, confirmedDeductedMicroCoin: null, coverage: 'complete',
+      coverageNote: null, platformAbsorption: false, lines: [], adjustments: [], finalizedAt: '2026-09-21T00:00:00.000Z',
+    }, null);
+    expect(projected).toMatchObject({ status: 'completed', queryBill: { externalState: 'received' } });
+  });
+
   it('clears the previous Conversation and preserves a replayed target Turn', () => {
     const targetSessionId = 'conversation-a';
     let current = retainLiveTurnForConversation(liveTurn('conversation-b'), targetSessionId);

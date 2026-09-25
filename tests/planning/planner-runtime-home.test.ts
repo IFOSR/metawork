@@ -73,6 +73,31 @@ describe('materializePlannerRuntimeHome', () => {
     expect(second).toBe(first);
     expect(await readFile(join(second, 'models.json'), 'utf8')).toBe('{"a":1}\n');
   });
+
+  it('keeps GLM fallback configuration on Pi auto-compatibility', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'planner-runtime-home-'));
+    roots.push(root);
+    const sourceHome = join(root, 'generated', 'revision-1', 'planner');
+    const runtimeRoot = join(root, 'planner-runtime');
+    await mkdir(sourceHome, { recursive: true, mode: 0o700 });
+
+    const runtimeHome = await materializePlannerRuntimeHome(
+      sourceHome,
+      runtimeRoot,
+      'revision-1',
+      {
+        runtimeEnvironment: { OPENAI_BASE_URL: 'https://open.bigmodel.cn/api/coding/paas/v4' },
+        expectedModel: { provider: 'custom-provider', modelId: 'glm-5.3-flash' },
+      },
+    );
+
+    const models = JSON.parse(await readFile(join(runtimeHome, 'models.json'), 'utf8')) as {
+      providers: Record<string, { models: Array<{ id: string; compat?: unknown }> }>;
+    };
+    expect(models.providers['custom-provider'].models).toEqual([
+      { id: 'glm-5.3-flash', reasoning: true },
+    ]);
+  });
 });
 
 async function makeWritable(path: string): Promise<void> {

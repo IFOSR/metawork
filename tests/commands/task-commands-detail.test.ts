@@ -206,6 +206,30 @@ describe('showTask detail view', () => {
     expect(result.content).toContain('若现有链接信息已足够');
   });
 
+  it('does not recommend unblock when the previous executor result is unknown', async () => {
+    const task = taskEngine.create({
+      title: '未知执行结果任务',
+      goal: '确认上次执行是否产生外部副作用',
+      resources: ['/tmp/already-readable.md'],
+    });
+    taskEngine.transition(task.id, 'ready');
+    taskEngine.transition(task.id, 'running');
+    taskEngine.block(task.id, {
+      taskId: task.id,
+      type: 'manual',
+      description: 'unknown requires explicit recovery: unknown_executor_failure',
+      status: 'waiting',
+    });
+
+    const result = await showTask({ positionals: { taskId: task.id }, options: {} }, context);
+
+    expect(result.content).toContain('状态说明: 上次执行结果不确定');
+    expect(result.content).toContain('最新下一步: 材料齐全不等于可以安全恢复');
+    expect(result.content).toContain('材料齐全不等于可以安全恢复');
+    expect(result.content).toContain(`/task recovery ${task.id}`);
+    expect(result.content).not.toContain(`/task unblock ${task.id}`);
+  });
+
   it('uses readable material snippets in task detail so the summary matches the real execution context', async () => {
     const html = '<html><head><title>Phoenix Weekly</title></head><body><main>本周完成 Phoenix 核心模块联调，当前风险在跨团队依赖。</main></body></html>';
     const task = taskEngine.create({

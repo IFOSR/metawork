@@ -125,6 +125,29 @@ function enabledModelsFor(config: AnyFusionConfigurationV2, providerRef: string)
     .filter(([, model]) => model.enabled && model.providerRef === providerRef);
 }
 
+function isZaiCompatibleBaseUrl(baseUrl: string): boolean {
+  const normalized = baseUrl.trim().toLowerCase();
+  return normalized.includes('api.z.ai') || normalized.includes('open.bigmodel.cn');
+}
+
+function buildPlannerModelEntry(
+  provider: AnyFusionConfigurationV2['providers'][string],
+  model: AnyFusionConfigurationV2['models'][string],
+): Record<string, unknown> {
+  const entry: Record<string, unknown> = {
+    id: model.modelId,
+    reasoning: model.reasoning !== 'disabled',
+  };
+  // Pi auto-detects Z.ai/GLM's `thinking` protocol from the endpoint. An
+  // explicit OpenAI `reasoning_effort` override breaks GLM tool-call turns.
+  if (!isZaiCompatibleBaseUrl(provider.baseUrl)) {
+    entry.compat = {
+      supportsReasoningEffort: model.reasoning === 'high' || model.reasoning === 'medium',
+    };
+  }
+  return entry;
+}
+
 function apiKeyVariable(providerRef: string, providerCount: number): string {
   return providerCount === 1
     ? '$OPENAI_API_KEY'
@@ -137,15 +160,14 @@ export function buildModelsJson(config: AnyFusionConfigurationV2): Record<string
   for (const [ref, provider] of providers) {
     providerEntries[ref] = {
       baseUrl: provider.baseUrl,
-      api: 'openai-responses',
+      // openai-compatible 即 OpenAI Chat Completions 兼容端点；不能写死
+      // openai-responses —— GLM/DeepSeek 等服务商没有 /responses 路径，
+      // 会得到 404 Not Found（见 docs/current/query-billing-operations.md 之外的
+      // 运行事故：custom-provider-4 API error (404)）。
+      api: 'openai-completions',
       apiKey: apiKeyVariable(ref, providers.length),
-      models: enabledModelsFor(config, ref).map(([, model]) => ({
-        id: model.modelId,
-        reasoning: model.reasoning !== 'disabled',
-        compat: {
-          supportsReasoningEffort: model.reasoning === 'high' || model.reasoning === 'medium',
-        },
-      })),
+      models: enabledModelsFor(config, ref)
+        .map(([, model]) => buildPlannerModelEntry(provider, model)),
     };
   }
   return { providers: providerEntries };

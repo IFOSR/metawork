@@ -33,6 +33,37 @@ afterEach(() => {
 });
 
 describe('ConversationGatewayRuntime', () => {
+  it('delivers a delayed result to the original Turn and origin after another client submits', async () => {
+    const fixture = createFixture();
+    const firstEvents = fixture.capture('conv_1');
+    const laterEvents: GatewayEventEnvelope[] = [];
+    fixture.subscriptions.subscribe({
+      accountId: 'local-default', conversationId: 'conv_1', liveConnectionId: 'later_conn',
+      listener: event => laterEvents.push(event),
+    });
+    const first = await fixture.submit('conv_1', 'req_original', 'idem_original', userMessage('queued'));
+    await first.completion;
+    const turnId = firstEvents.find(event => event.kind === 'turn_started')!.turnId!;
+    const second = await fixture.submit('conv_1', 'req_later', 'idem_later', userMessage('status'),
+      undefined, { connectionId: 'later_conn', surface: 'local' });
+    await second.completion;
+    firstEvents.length = 0;
+    laterEvents.length = 0;
+    await fixture.runtime.publishBackgroundResult({
+      conversationId: 'conv_1', turnId, requestId: 'req_original',
+      delivery: { resultId: 'result_delayed', content: 'Actual result', completeness: 'complete', certification: 'certified' },
+    });
+    expect(firstEvents.map(event => event.kind)).toEqual([
+      'result_delivery_available', 'result_chunk', 'result_completed', 'final_answer',
+    ]);
+    expect(firstEvents.every(event => event.turnId === turnId && event.requestId === 'req_original')).toBe(true);
+    expect(laterEvents).toEqual([]);
+    const replay = await fixture.journal.replay('local-default', 'conv_1');
+    expect([...replay.snapshot, ...replay.deltas]).toContainEqual(expect.objectContaining({
+      kind: 'result_chunk', turnId, payload: expect.objectContaining({ chunk: 'Actual result' }),
+    }));
+  });
+
   it('returns duplicate without executing a second turn', async () => {
     const fixture = createFixture();
     const command = userMessage('hello');
@@ -220,6 +251,31 @@ describe('ConversationGatewayRuntime', () => {
       lines: ['已发起任务恢复'],
       backgroundWorkPending: true,
     });
+  });
+
+  it('keeps a denied resume command result authoritative alongside an uncertified partial result', async () => {
+    const explanation = '任务未重新执行：Kernel 未授权恢复，未启动新的 Executor';
+    const fixture = createFixture(async (_conversationId, _command, session) => {
+      session.recordResultDelivery({
+        resultId: 'old_partial_result', content: '改从其他渠道获取信息。',
+        completeness: 'partial', certification: 'uncertified',
+      });
+      session.output.push(explanation);
+    });
+    const events = fixture.capture('conv_1');
+    const receipt = await fixture.submit('conv_1', 'req_resume_denied', 'idem_resume_denied', {
+      kind: 'slash_command', text: '/task resume task_blocked',
+    });
+    await expect(receipt.completion).resolves.toEqual({ status: 'completed' });
+    const final = events.find(event => event.kind === 'final_answer')!;
+    expect(final.payload).toMatchObject({ lines: [explanation] });
+    expect(final.payload).not.toMatchObject({ resultId: 'old_partial_result' });
+    expect(events.find(event => event.kind === 'result_delivery_available')?.payload).toMatchObject({
+      resultId: 'old_partial_result', completeness: 'partial', certification: 'uncertified',
+    });
+    const replay = await fixture.journal.replay('local-default', 'conv_1', 0);
+    expect([...replay.snapshot, ...replay.deltas].find(event => event.kind === 'final_answer')?.payload)
+      .toMatchObject({ lines: [explanation] });
   });
 
   it('keeps user messages waiting for their semantic background work', async () => {

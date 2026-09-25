@@ -16,6 +16,7 @@ import {
   parseGatewayCommandEnvelope,
   type GatewayCommandEnvelope,
   type GatewayCommand,
+  type GatewayScope,
 } from './client-protocol.js';
 import type { ConversationResolver } from './conversation-resolver.js';
 import {
@@ -68,8 +69,47 @@ export interface ClientGatewayDeps {
   }>;
   commandAdmissionStore?: CommandAdmissionStore;
   newWorkAdmission?: NewWorkAdmission;
+  /**
+   * 受限只读查询分支（统一 TUI 设计 §9.3）：complete_command / get_task_view。
+   * 不进入语义 mailbox，不启动 Planner，不创建 Turn，不占业务 work reservation。
+   */
+  handleReadOnlyQuery?(
+    command: GatewayReadOnlyQuery,
+    context: GatewayReadOnlyQueryContext,
+  ): Promise<GatewayReadOnlyQueryResult>;
   now?: () => string;
 }
+
+export type GatewayReadOnlyQuery = Extract<GatewayCommand, {
+  kind:
+    | 'complete_command'
+    | 'get_task_view'
+    | 'get_query_bill'
+    | 'get_query_bill_for_turn'
+    | 'get_task_usage_summary'
+    | 'list_query_bills'
+    | 'get_usage_summary';
+}>;
+
+export interface GatewayReadOnlyQueryContext {
+  readonly accountId: string;
+  readonly principalId: string;
+  readonly connectionId: string;
+  readonly requestId: string;
+  readonly scope: GatewayScope;
+}
+
+export interface GatewayReadOnlyQueryResult {
+  readonly status: 'accepted' | 'rejected';
+  readonly conversationId?: string | null;
+  readonly reason?: string;
+}
+
+/** 只读分支的临时回执缓存上限（FIFO 淘汰）；不复用持久业务 admission。 */
+const MAX_READ_ONLY_RECEIPTS = 256;
+/** 每连接的只读查询频率限制：窗口内最多 MAX_READ_ONLY_QUERIES_PER_WINDOW 次。 */
+const READ_ONLY_RATE_WINDOW_MS = 1_000;
+const MAX_READ_ONLY_QUERIES_PER_WINDOW = 10;
 
 export type NewWorkAdmissionResult =
   | { readonly allowed: true }
@@ -91,6 +131,10 @@ export class ClientGateway {
   private readonly admissionStore: CommandAdmissionStore;
   private readonly inFlight = new Map<string, Promise<CommandReceipt>>();
   private readonly activeHandles = new Set<Promise<ClientGatewayResult>>();
+  private readonly readOnlyReceipts = new Map<string, CommandReceipt>();
+  private readonly readOnlyInFlight = new Map<string, Promise<CommandReceipt>>();
+  private readonly readOnlyFingerprints = new Map<string, string>();
+  private readonly readOnlyRateWindows = new Map<string, number[]>();
   private readonly recovery: Promise<void>;
   private admissionClosed = false;
 
@@ -164,6 +208,10 @@ export class ClientGateway {
       return gatewayError('authorization', 'unauthorized', account.reason, envelope.requestId);
     }
 
+    if (isReadOnlyQuery(envelope.command)) {
+      return this.handleReadOnly(envelope, account.accountId, `${principal.kind}:${principal.id}`);
+    }
+
     const admissionCheck = newWorkAdmissionFor(envelope.command, this.deps.newWorkAdmission);
     if (admissionCheck && !admissionCheck.allowed) {
       return {
@@ -220,6 +268,120 @@ export class ClientGateway {
     } finally {
       if (this.inFlight.get(key) === execution) this.inFlight.delete(key);
     }
+  }
+
+  /**
+   * 只读查询：临时、有限的回执缓存与连接内限频；不触碰持久 CommandAdmissionStore，
+   * 因此补全草稿与查询正文不会写入业务 admission / audit 存储。
+   */
+  private async handleReadOnly(
+    envelope: GatewayCommandEnvelope,
+    accountId: string,
+    principalId: string,
+  ): Promise<ClientGatewayResult> {
+    if (!this.deps.handleReadOnlyQuery) {
+      return {
+        requestId: envelope.requestId,
+        idempotencyKey: envelope.idempotencyKey,
+        status: 'rejected',
+        conversationId: null,
+        reason: 'readonly_query_unavailable',
+      };
+    }
+    const key = admissionKey(accountId, envelope.idempotencyKey);
+    const fingerprint = commandFingerprint(envelope);
+    const rememberedFingerprint = this.readOnlyFingerprints.get(key);
+    if (rememberedFingerprint !== undefined && rememberedFingerprint !== fingerprint) {
+      return gatewayError(
+        'conflict',
+        'idempotency_conflict',
+        'idempotency key was already used for a different command',
+        envelope.requestId,
+      );
+    }
+    const remembered = this.readOnlyReceipts.get(key);
+    if (remembered) {
+      return remembered.status === 'accepted'
+        ? { ...remembered, requestId: envelope.requestId, status: 'duplicate' as const }
+        : { ...remembered, requestId: envelope.requestId };
+    }
+    const active = this.readOnlyInFlight.get(key);
+    if (active) return replayReceipt(await active, envelope.requestId);
+
+    const execution = this.executeReadOnly(envelope, accountId, principalId, key, fingerprint);
+    this.readOnlyInFlight.set(key, execution);
+    try {
+      return await execution;
+    } finally {
+      if (this.readOnlyInFlight.get(key) === execution) this.readOnlyInFlight.delete(key);
+    }
+  }
+
+  private async executeReadOnly(
+    envelope: GatewayCommandEnvelope,
+    accountId: string,
+    principalId: string,
+    key: string,
+    fingerprint: string,
+  ): Promise<CommandReceipt> {
+    if (!this.consumeReadOnlyRate(envelope.connectionId)) {
+      return {
+        requestId: envelope.requestId,
+        idempotencyKey: envelope.idempotencyKey,
+        status: 'rejected',
+        conversationId: null,
+        reason: 'rate_limited',
+      };
+    }
+    const command = envelope.command;
+    if (!isReadOnlyQuery(command)) {
+      throw new Error('executeReadOnly received a non read-only command');
+    }
+    let result: GatewayReadOnlyQueryResult;
+    try {
+      result = await this.deps.handleReadOnlyQuery!(command, {
+        accountId,
+        principalId,
+        connectionId: envelope.connectionId,
+        requestId: envelope.requestId,
+        scope: envelope.scope,
+      });
+    } catch (error) {
+      result = { status: 'rejected', reason: (error as Error).message };
+    }
+    const receipt: CommandReceipt = {
+      requestId: envelope.requestId,
+      idempotencyKey: envelope.idempotencyKey,
+      status: result.status,
+      conversationId: result.conversationId ?? null,
+      ...(result.reason ? { reason: result.reason } : {}),
+    };
+    this.rememberReadOnlyReceipt(key, fingerprint, receipt);
+    return receipt;
+  }
+
+  private rememberReadOnlyReceipt(key: string, fingerprint: string, receipt: CommandReceipt): void {
+    while (this.readOnlyReceipts.size >= MAX_READ_ONLY_RECEIPTS) {
+      const oldest = this.readOnlyReceipts.keys().next().value;
+      if (oldest === undefined) break;
+      this.readOnlyReceipts.delete(oldest);
+      this.readOnlyFingerprints.delete(oldest);
+    }
+    this.readOnlyReceipts.set(key, receipt);
+    this.readOnlyFingerprints.set(key, fingerprint);
+  }
+
+  private consumeReadOnlyRate(connectionId: string): boolean {
+    const now = Date.now();
+    const window = (this.readOnlyRateWindows.get(connectionId) ?? [])
+      .filter(timestamp => now - timestamp < READ_ONLY_RATE_WINDOW_MS);
+    if (window.length >= MAX_READ_ONLY_QUERIES_PER_WINDOW) {
+      this.readOnlyRateWindows.set(connectionId, window);
+      return false;
+    }
+    window.push(now);
+    this.readOnlyRateWindows.set(connectionId, window);
+    return true;
   }
 
   private async recoverPersisted(): Promise<void> {
@@ -409,6 +571,16 @@ function newWorkAdmissionFor(
     return null;
   }
   return admission.check(command);
+}
+
+function isReadOnlyQuery(command: GatewayCommand): command is GatewayReadOnlyQuery {
+  return command.kind === 'complete_command'
+    || command.kind === 'get_task_view'
+    || command.kind === 'get_query_bill'
+    || command.kind === 'get_query_bill_for_turn'
+    || command.kind === 'get_task_usage_summary'
+    || command.kind === 'list_query_bills'
+    || command.kind === 'get_usage_summary';
 }
 
 function requestIdFromUntrustedEnvelope(input: unknown): string | null {

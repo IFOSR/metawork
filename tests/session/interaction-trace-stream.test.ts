@@ -112,6 +112,49 @@ describe('InteractionTraceStream', () => {
     unsubscribe();
   });
 
+  it.each([null, undefined])('preserves the Turn Task binding for an event with taskId=%s', (taskId) => {
+    const stream = new InteractionTraceStream('conversation-task-binding');
+    stream.beginTurn({ turnId: 'turn-task', userInput: 'Run the task' });
+    stream.append({
+      phase: 'authorization',
+      actor: 'kernel',
+      kind: 'kernel_decision',
+      status: 'completed',
+      title: 'Task authorized',
+      summary: 'Task authorized',
+      taskId: 'task_1',
+      details: {},
+    });
+    const listener = vi.fn();
+    stream.subscribe(listener);
+    const event = stream.append({
+      phase: 'authorization',
+      actor: 'kernel',
+      kind: 'kernel_decision_applied',
+      status: 'completed',
+      title: 'Kernel applied no_op',
+      summary: 'work is already executing or awaiting publication',
+      taskId,
+      details: { action: 'no_op' },
+    });
+
+    // Event-local absence is not an instruction to detach the whole Turn.
+    expect(event.taskId).toBeNull();
+    expect(stream.getSnapshot()).toMatchObject({
+      turnId: 'turn-task',
+      taskId: 'task_1',
+      status: 'running',
+    });
+    expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ taskId: 'task_1' }));
+
+    // A genuinely new Turn must not inherit the previous Task.
+    stream.beginTurn({ turnId: 'turn-next', userInput: 'Another request' });
+    expect(stream.getSnapshot()).toMatchObject({
+      turnId: 'turn-next',
+      taskId: null,
+    });
+  });
+
   it('projects explicit terminal statuses without exposing hidden reasoning', () => {
     const stream = new InteractionTraceStream('session-terminal', {
       now: () => '2026-08-17T00:00:00.000Z',

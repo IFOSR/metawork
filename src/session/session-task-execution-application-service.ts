@@ -4,6 +4,7 @@ import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { QueuedExecutionRequest } from './session-helpers.js';
 import type { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
 import type { SessionPresentationService } from './session-presentation-service.js';
+import { isUnknownTaskBlocker } from '../task/task-blocker-guidance.js';
 
 export interface SessionTaskExecutionApplicationDeps {
   taskRuntimeService: TaskRuntimeService;
@@ -24,7 +25,7 @@ export interface TaskExecutionStart {
 
 export function formatTaskResumeDecision(taskId: string, decision: KernelDecision): string {
   if (decision.action.type === 'resume_task') {
-    return `任务 #${taskId} 已获 Kernel 授权，恢复执行已开始`;
+    return `任务 #${taskId} 已获 Kernel 授权，等待执行调度；实际启动状态请查看执行轨迹`;
   }
   const explanation = resumeDecisionExplanation(decision);
   return `任务 #${taskId} 未重新执行：${explanation}（Kernel: ${decision.reason}）`;
@@ -39,6 +40,13 @@ function resumeDecisionExplanation(decision: KernelDecision): string {
   }
   if (decision.reason === 'resume target is not an active recoverable Task') {
     return '目标任务不处于可恢复状态，未启动新的 Executor';
+  }
+  if (
+    decision.action.type === 'block_work'
+    && isUnknownTaskBlocker(decision.reason)
+  ) {
+    return '上次执行结果不确定，材料齐全也不能证明没有外部副作用；未启动新的 Executor。'
+      + `请先执行 /task recovery ${decision.action.taskId} 查看恢复项`;
   }
   if (decision.action.type === 'block_work') {
     return '阻塞条件尚未解决，未启动新的 Executor';

@@ -49,6 +49,10 @@ import { AccountStartupRecoveryService } from './account-startup-recovery-servic
 import type { ConfigurationActivationGate } from '../configuration/configuration-activation-gate.js';
 import type { ConversationActivityProjection } from '../workspace/conversation-activity-projector.js';
 import type { GatewayAttachmentStore } from '../gateway/attachment-store-port.js';
+import type { RawUsageEvent } from '../metering/usage-normalizer.js';
+import type { Payer } from '../billing/cost-policy.js';
+import type { QueryUsageLifecycle } from '../metering/query-lifecycle.js';
+import type { ConversationResultDelivery } from '../session/conversation-session.js';
 
 export interface AccountRuntimeComposition {
   readonly accountRuntime: AccountRuntime;
@@ -102,6 +106,14 @@ export function buildAccountRuntimeComposition(deps: {
     activity: ConversationActivityProjection,
   ): Promise<void> | void;
   configurationActivationGate?: ConfigurationActivationGate;
+  usageObserver?: (event: RawUsageEvent) => void;
+  usageSpanOpener?: import('../metering/ports.js').MeteringSpanRecord extends infer T
+    ? (span: T) => void
+    : never;
+  usageSpanCloser?: (spanId: string, state: 'closed' | 'uncertain', closedAt: string) => void;
+  usagePayer?: Payer;
+  queryUsageLifecycle?: QueryUsageLifecycle;
+  onSystemResultDelivery?: (sessionId: string, delivery: ConversationResultDelivery) => Promise<void>;
 }): AccountRuntimeComposition {
   const kernelServices = buildAccountKernelServices(deps.db);
   const repositories = buildAccountRepositories(deps.db);
@@ -165,6 +177,10 @@ export function buildAccountRuntimeComposition(deps: {
     attemptExecutionRepository: workspaceServices.attemptExecutionRepository,
     conversationTaskSchedulerRepo: repositories.conversationTaskSchedulerRepo,
     ...(userArtifactPublication ? { userArtifactPublication } : {}),
+    usageObserver: deps.usageObserver,
+    usageSpanOpener: deps.usageSpanOpener,
+    usageSpanCloser: deps.usageSpanCloser,
+    usagePayer: deps.usagePayer,
   });
   const plannerModel = deps.stagedConfiguration.snapshot.config.models[
     deps.plannerBinding.modelRef
@@ -289,6 +305,8 @@ export function buildAccountRuntimeComposition(deps: {
     verificationAndDeliveryService,
     blockedRecheckEnabled: deps.blockedRecheckEnabled !== false,
     blockedRecheckIntervalMs: deps.blockedRecheckIntervalMs ?? 60_000,
+    queryUsageLifecycle: deps.queryUsageLifecycle,
+    onSystemResultDelivery: deps.onSystemResultDelivery,
   });
 
   const factory = new AccountRuntimeFactory({

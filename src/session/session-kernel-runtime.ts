@@ -50,12 +50,13 @@ export interface SessionKernelRuntimeDeps {
 export class SessionKernelRuntime {
   constructor(private readonly deps: SessionKernelRuntimeDeps) {}
 
-  forInput(userInput?: string, conversationId?: string): KernelRuntime {
+  forInput(userInput?: string, conversationId?: string, queryId?: string | null): KernelRuntime {
     return {
       apply: decision => this.apply(
         decision,
         userInput ?? this.deps.callbacks.resolveRequestText(decision.eventId),
         conversationId,
+        queryId,
       ),
     };
   }
@@ -64,6 +65,7 @@ export class SessionKernelRuntime {
     decision: KernelDecision,
     userInput: string,
     conversationId = this.deps.conversationId ?? this.deps.sessionId,
+    queryId: string | null | undefined = null,
   ): Promise<KernelEvent | null> {
     this.deps.callbacks.onDecisionApplying?.(decision);
     switch (decision.action.type) {
@@ -88,7 +90,7 @@ export class SessionKernelRuntime {
         this.deps.callbacks.refreshRuntimeState();
         return null;
       case 'authorize_task_control':
-        await this.applyTaskControl(decision, userInput, conversationId);
+        await this.applyTaskControl(decision, userInput, conversationId, queryId);
         return null;
       case 'resume_task': {
         const task = this.deps.taskRuntimeService.findTask(decision.action.taskId);
@@ -100,12 +102,13 @@ export class SessionKernelRuntime {
             ? 'resume-parked'
             : 'resume-blocked',
           origin: 'user',
+          queryId,
           schedulingReason: `Kernel-authorized resume after ${decision.action.blockerCategory} blocker`,
         });
         return null;
       }
       case 'authorize_task_plan':
-        await this.applyTaskPlan(decision, userInput);
+        await this.applyTaskPlan(decision, userInput, queryId);
         return null;
       case 'record_permission_resolution':
         return null;
@@ -151,6 +154,7 @@ export class SessionKernelRuntime {
     decision: Extract<KernelDecision, { action: { type: 'authorize_task_control' } }> | KernelDecision,
     userInput: string,
     conversationId: string,
+    queryId?: string | null,
   ): Promise<void> {
     if (decision.action.type !== 'authorize_task_control') return;
     const taskCommand = decision.action.task;
@@ -272,6 +276,7 @@ export class SessionKernelRuntime {
       taskId: task.id,
       executionMode: task.status === 'blocked' ? 'resume-blocked' : 'resume-parked',
       decision,
+      queryId,
       recoveryTrigger: task.status === 'blocked'
         ? {
             kind: /^\/task\s+/iu.test(userInput) ? 'explicit-task-command' : 'natural-language-resume',
@@ -290,6 +295,7 @@ export class SessionKernelRuntime {
   private async applyTaskPlan(
     decision: Extract<KernelDecision, { action: { type: 'authorize_task_plan' } }> | KernelDecision,
     userInput: string,
+    queryId?: string | null,
   ): Promise<void> {
     if (decision.action.type !== 'authorize_task_plan') return;
     const command = decision.action.task;
@@ -360,6 +366,7 @@ export class SessionKernelRuntime {
       const now = new Date().toISOString();
       const payload: QueuedTaskPayload = {
         requestText: userInput.slice(0, 24_000),
+        queryId: queryId ?? null,
         generationId: decision.action.generationId,
         graphRevision: decision.action.graphRevision,
         workGraph: decision.action.workGraph,
@@ -413,6 +420,7 @@ export class SessionKernelRuntime {
     this.deps.callbacks.setFocusContext({ kind: 'task', taskId: task.id });
     this.deps.callbacks.prepareTaskExecution(task.id, {
       ...buildExecutionRequest({ userInput, taskId: task.id, executionMode: 'fresh', decision }),
+      queryId,
       authorizedWorkGraph: decision.action.workGraph,
       authorizedBindingsBySubtask: decision.action.authorizedBindingsBySubtask,
       workGraphAuthorization: {
@@ -456,10 +464,12 @@ function buildExecutionRequest(input: {
   executionMode: QueuedExecutionRequest['executionMode'];
   decision: KernelDecision;
   recoveryTrigger?: QueuedExecutionRequest['recoveryTrigger'];
+  queryId?: string | null;
 }): QueuedExecutionRequest {
   return {
     userPrompt: input.userInput,
     contextTaskId: input.taskId,
+    queryId: input.queryId,
     executionMode: input.executionMode,
     kernelDecisionId: input.decision.id,
     schedulingReason: input.decision.reason,

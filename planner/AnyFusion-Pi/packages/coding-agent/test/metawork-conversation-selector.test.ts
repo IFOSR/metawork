@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { MetaWorkConversationSelector } from "../src/modes/interactive/components/metawork-conversation-selector.ts";
+import { MetaWorkConversationSelector } from "../src/modes/metawork-tui/components/conversation-selector.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 

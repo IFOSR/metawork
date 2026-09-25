@@ -16,6 +16,7 @@ This directory contains both current technical documentation and historical plan
 - [中文技术总览](current/technical-overview.zh-CN.md): the previous long-form Chinese README, preserved as the Chinese deep architecture and runtime reference.
 - [Phase 5 Runtime Security And AgentClass Operations](current/phase-5-runtime-security.md): worktree Executor processes, Docker compatibility attempts, persistent workspace retention, image profiles, and runtime elevation operations.
 - [Account Runtime And Gateway Operations](current/account-runtime-and-gateway-operations.md): unified Server lifecycle, account data paths, Gateway replay, restart/recovery diagnostics, and the future App transport contract.
+- [Query Usage And Billing Operations](current/query-billing-operations.md): ADR-0042 delivery status, `observe -> shadow -> export` stage gates, per-resource capability matrix, price/payer operations, external consumption protocol and rollback/restore rules.
 - [Repository README](../README.md): public project overview, install path, repository structure, and high-level architecture.
 - [CONTEXT](../CONTEXT.md): current PlanningAgent, ControlKernel, decision-ledger, and work-unit vocabulary.
 
@@ -52,6 +53,7 @@ replacing those semantics.
 
 ## Completed Roadmap
 
+- [Web stop live-state fix](plans/2026-09-21-web-stop-live-state-fix.md): cancellation cleanup publishes a terminal Turn trace; Web preserves terminal state against late answers and progress so the Composer returns to Send without reloading.
 - [Web session workspace redesign](plans/2026-08-17-web-session-workspace-redesign.md): persistent session rail, safe single-live-session activation, detailed Conversation narrative, dense Trajectory view, and sticky composer.
 - [Planner progress streaming](plans/2026-08-17-planner-progress-streaming.md): streams safe Planner lifecycle and tool progress into the existing Web interaction trace without exposing hidden reasoning or raw model/tool content.
 - [Web interaction trace and Planner socket reliability](plans/2026-08-17-web-interaction-trace-and-planner-socket-reliability-design.md): completed shared composition locking, Planner Host socket ownership protection, preserved transport uncertainty, and the streaming redacted Web execution trace.
@@ -61,6 +63,10 @@ replacing those semantics.
 - [Executor error recovery refresh](archive/plans/2026-07-30-executor-error-recovery-refresh.md): completed Kernel v5 / SQLite v28 event-driven `error -> healthy` recovery, same-thread Planner revision, and deferred availability proposal lifecycle.
 
 ## Completed Delivery
+
+- [TUI review fixes](plans/2026-09-20-tui-review-fixes.md): review follow-up for
+  socket query parsing, completion ordering, navigation, Task/Attempt projection,
+  history paging, authoritative permissions and client entry dependency isolation.
 
 - [Web workspace creation and login](plans/2026-09-16-web-workspace-creation-and-login.md): delivered explicit Web login with fixed built-in `admin` / `123456` credentials, non-authenticating one-time launch directory hints applied only after authentication, a cookie-only read-only local directory browser for creating a Workspace from the Web surface with Server-owned path resolution and `realpath`-resolved paths and Server-built `crumbs`, removal of the `launchContext` / `initializeClient` / `workspaceInitialization` contracts, and a startup-snapshot race fix in the Web client. Recorded by [ADR-0039](adr/0039-web-workspace-creation-and-login.md), which amends ADR-0034 and ADR-0035. Three browser E2E suites fail identically on the pre-change baseline and are recorded as pre-existing.
 - [Executor idle timeout and retry presentation](plans/2026-09-10-executor-idle-timeout-and-retry-presentation.md): delivered an idle-only Executor watchdog with no overall attempt-duration limit, operation-aware timer pausing, and Web continuity across Kernel-authorized retry.
@@ -83,6 +89,8 @@ replacing those semantics.
 - [附件资源执行实施计划](plans/2026-09-17-attachment-resource-execution-implementation-plan.md): delivered attachment storage, Planner metadata projection, Kernel eligibility, attempt-local materialization, document-processing routing, Web migration, and local validation evidence. The standalone document-reader bundle was reversed on 2026-09-18. Docker image validation remains network-blocked.
 
 ## Active Delivery
+- [Incomplete response resume repair](plans/2026-09-24-incomplete-response-resume-fix.md): bounded explicit recovery for incomplete model streams, authoritative control-command results, newest-result projection, and live research-task validation.
+- [统一 Gateway 完整 Pi TUI 详细设计](plans/2026-09-19-unified-gateway-full-pi-tui-design.md)：已实施并由 [ADR-0041](../adr/0041-single-tui-convergence-and-gateway-read-only-queries.md) 治理。唯一 MetaWork TUI（Gateway-only Client）交付多 Turn 展示模型、Pi 编辑器/主题/组件、Task Dashboard、只读 `complete_command`/`get_task_view`；简版客户端、vendored 本地交互 Agent TUI 与 `src/tui/` Ink 面及其依赖/开关已删除；Server Planner RPC 与 Web/Feishu 行为保留。macOS PTY 三尺寸终端验收与 `smoke:gateway`/`smoke:clients` 通过；Docker 因镜像仓库不可达未执行，真实 Planner/飞书依赖外部环境未执行（见计划 §18.3）。
 - [执行助手空闲态管理设计](plans/2026-09-19-executor-idle-management-design.md) 与 [实施计划](plans/2026-09-19-executor-idle-management-implementation-plan.md)：Web/Server 的 Pi/Codex 助手空闲态增删改启停及热生效已实现，排队、暂停、阻塞任务均阻止写入；本地回归、浏览器和配置消费者集成测试已执行。CLI 由用户明确延期，真实模型和 Docker 发布验收仍待执行，详见计划内交付记录。
 - [Planner 检索职责归位：检索下沉执行器，Planner 只做理解与拆解](plans/2026-09-12-planner-search-ownership-handoff.md): 提案待定稿。Planner 侧移除 `web_search`（并评估移除 `web_fetch`）并重写提示词/技能，MetaWork 侧把“决策耗尽”从硬失败改为兜底委派到 `current-web-research`（`pi-research`），消除 `Planner unavailable` 整轮失败。
 - [飞书任务生命周期与交付可靠性闭环](plans/2026-09-06-feishu-task-lifecycle-and-delivery-reliability-closure.md): records the confirmed residual failures after the prior reliability work and the Feishu-only system closure for cancellation convergence, explicit abandon-and-create, message-scoped screenshot continuity, throttled activity cards, and cloud-document/artifact delivery. Web behavior is explicitly preserved.
@@ -101,9 +109,14 @@ replacing those semantics.
 - [Pi Executor status and result projection fix](plans/2026-08-04-pi-executor-status-and-result-projection.md): adds a native animated Executor status block and passively persists each integrated Subtask publication into the Pi conversation without triggering a Planner turn or moving Kernel/Execution authority.
 - [Worktree Executor backend migration](plans/2026-08-06-worktree-executor-backend-migration.md): keeps the Runtime containerized where needed while moving trusted Executor attempts to per-Subtask Git worktrees and native Runtime processes.
 
+## Implementation Plans
+
+- [MetaCoin usage and Query billing implementation](plans/2026-09-21-metacoin-query-billing-implementation-plan.md): implementation completed on 2026-09-22 without a commit. The 11-task plan covers single-user multi-task reliability, per-Query usage/stage costs, assessed MetaCoin bills, Task rollups, three-client projections, and idempotent external consumption reporting. Queries need not have Tasks; assessed charges and externally confirmed deductions are separate. Wallets, subscriptions/payment collection, recharge and refunds belong to an independent external system; Provider restrictions, a mandatory model proxy, local balance enforcement and shared-runtime multi-tenancy are excluded.
+
 ## Future Roadmap
 
-- [Multi-top-level-Task scheduling](plans/future-multi-task-scheduling-roadmap.md): deferred independent work for admission, priority, fairness and starvation protection. It is not an unfinished Phase 6 stage; ADR-0011 remains active.
+- [Multi-tenant service and Query metering assessment](plans/2026-09-21-multi-tenant-and-query-metering-assessment.md): earlier code-grounded assessment of single-account deployment, queue wake-up/limit gaps and broader tenant isolation/metering proposals. Retained as evidence and deferred roadmap context; the finalized MetaCoin plan above governs this release, not the assessment's broader recommendations.
+- [Earlier multi-top-level-Task scheduling proposal](plans/future-multi-task-scheduling-roadmap.md): historical planning context. [ADR-0037](adr/0037-multi-conversation-task-parallelism.md) now defines multi-Conversation concurrency and supersedes ADR-0011's account-wide single-active-Task restriction; see the assessment above for remaining production scheduling gaps.
 
 ## Historical Plans
 

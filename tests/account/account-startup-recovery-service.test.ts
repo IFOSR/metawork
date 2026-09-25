@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildAccountRuntimeComposition } from '../../src/account/account-runtime-composition.js';
+import { AccountStartupRecoveryService } from '../../src/account/account-startup-recovery-service.js';
+import { createAccountConversationExecutionBinder } from '../../src/account/account-conversation-execution-binder.js';
 import type { AccountKernelCoordinator } from '../../src/account/account-kernel-coordinator.js';
 import type { ConversationExecutionBinding } from '../../src/account/account-conversation-execution-binder.js';
 import { RuntimeRegistry } from '../../src/account/runtime-registry.js';
@@ -44,6 +46,25 @@ afterEach(() => {
 });
 
 describe('AccountStartupRecoveryService production composition', () => {
+  it('flushes system-bound results after background execution using the original session', async () => {
+    const binder = createAccountConversationExecutionBinder();
+    const delivered: unknown[] = [];
+    const service = new AccountStartupRecoveryService({
+      binder,
+      onSystemResultDelivery: async (sessionId: string, delivery: unknown) => {
+        delivered.push({ sessionId, delivery });
+      },
+    } as never);
+    const delivery = { resultId: 'safe_result', content: 'Queued result', completeness: 'complete', certification: 'certified' } as const;
+    await service['withSystemBinding']('conv_original', async () => {
+      await binder.routedTaskCallbacks().startBackgroundExecution('task_queued', async () => {
+        await Promise.resolve();
+        binder.routedKernelCallbacks().recordResultDelivery(delivery);
+      });
+    });
+    expect(delivered).toEqual([{ sessionId: 'conv_original', delivery }]);
+  });
+
   it('recovers the account Kernel coordinator before exposing the Runtime', async () => {
     let recoverCalls = 0;
     const coordinator: AccountKernelCoordinator = {

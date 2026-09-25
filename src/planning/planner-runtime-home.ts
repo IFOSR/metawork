@@ -15,6 +15,11 @@ interface PlannerRuntimeHomeInput {
   revisionId: string;
 }
 
+function isZaiCompatibleBaseUrl(baseUrl: string): boolean {
+  const normalized = baseUrl.trim().toLowerCase();
+  return normalized.includes('api.z.ai') || normalized.includes('open.bigmodel.cn');
+}
+
 /**
  * Copies the immutable generated Planner configuration into a writable,
  * account-scoped home. Planner persists trust and other runtime state there.
@@ -136,12 +141,16 @@ async function writeCompatibilityConfigIfNeeded(
         providers: {
           [expected.provider]: {
             baseUrl,
-            api: 'openai-responses',
+            // OPENAI_BASE_URL 是 Chat Completions 兼容端点；GLM 等服务商
+            // 没有 /responses 路径。
+            api: 'openai-completions',
             apiKey: '$OPENAI_API_KEY',
             models: [{
               id: expected.modelId,
               reasoning: true,
-              compat: { supportsReasoningEffort: true },
+              ...(isZaiCompatibleBaseUrl(baseUrl)
+                ? {}
+                : { compat: { supportsReasoningEffort: true } }),
             }],
           },
         },

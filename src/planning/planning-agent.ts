@@ -1,10 +1,12 @@
 import type { PlannerProposalResult } from './planner-proposal.js';
 import type { PlannerRunProgressObserver } from './planner-progress.js';
+import type { HarnessUsageEvent } from '../executor/harness-driver.js';
 import type { PlanningAgentPlan, PlanningContext } from './planning-types.js';
 
 export interface PlanningProposalSubmitter {
   submit(plan: PlanningAgentPlan): Promise<PlannerProposalResult>;
   onProgress?: PlannerRunProgressObserver;
+  onUsage?: (event: HarnessUsageEvent) => void;
 }
 
 export interface PlanningAgent {

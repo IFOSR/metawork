@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { WorkspaceHandle, WorkspaceIdentity, WorkspaceStore } from './workspace-store.js';
@@ -619,38 +620,64 @@ async function mergeTree(input: {
   | { type: 'integrated'; tree: string }
   | { type: 'conflicted'; conflictPaths: string[] }
 > {
-  const args = withSafeDirectory([
-    '-C', input.workspacePath,
-    'merge-tree',
-    '--write-tree',
-    '--merge-base', input.baseCommit,
-    '--name-only',
-    '--no-messages',
-    '-z',
-    input.oursCommit,
-    input.theirsCommit,
-  ]);
+  // Apple Git 2.39 (and other older Git versions) does not support the
+  // newer `merge-tree --merge-base` interface. A temporary index preserves
+  // the explicit base semantics without mutating the managed worktree.
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), 'metawork-merge-tree-'));
+  const indexPath = join(temporaryDirectory, 'index');
   try {
-    const result = await execFileAsync('git', args, {
-      encoding: 'buffer',
-      windowsHide: true,
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    const tree = Buffer.from(result.stdout).toString('utf8').split('\0', 1)[0]?.trim() ?? '';
-    if (!/^[a-f0-9]{40,64}$/u.test(tree)) throw new Error('merge-tree did not return an integration tree');
-    return { type: 'integrated', tree };
-  } catch (error) {
-    const failure = error as Error & { code?: number | string; stdout?: Buffer | string };
-    if (Number(failure.code) !== 1) throw error;
-    const fields = Buffer.isBuffer(failure.stdout)
-      ? failure.stdout.toString('utf8').split('\0')
-      : String(failure.stdout ?? '').split('\0');
-    const conflictPaths = fields.slice(1).map(path => path.trim()).filter(Boolean);
-    if (conflictPaths.length === 0) {
-      throw new Error('merge-tree reported a conflict without path-scoped repair material');
+    await gitWithTemporaryIndex([
+      '-C', input.workspacePath,
+      'read-tree', '-m',
+      input.baseCommit,
+      input.oursCommit,
+      input.theirsCommit,
+    ], indexPath);
+    try {
+      const result = await gitWithTemporaryIndex([
+        '-C', input.workspacePath,
+        'write-tree',
+      ], indexPath);
+      const tree = result.toString('utf8').trim();
+      if (!/^[a-f0-9]{40,64}$/u.test(tree)) {
+        throw new Error('merge-tree did not return an integration tree');
+      }
+      return { type: 'integrated', tree };
+    } catch (error) {
+      const conflictPaths = await listTemporaryIndexConflicts(input.workspacePath, indexPath);
+      if (conflictPaths.length === 0) throw error;
+      return { type: 'conflicted', conflictPaths };
     }
-    return { type: 'conflicted', conflictPaths: [...new Set(conflictPaths)].sort() };
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
   }
+}
+
+async function gitWithTemporaryIndex(args: string[], indexPath: string): Promise<Buffer> {
+  const result = await execFileAsync('git', withSafeDirectory(args), {
+    encoding: 'buffer',
+    windowsHide: true,
+    maxBuffer: 16 * 1024 * 1024,
+    env: { ...process.env, GIT_INDEX_FILE: indexPath },
+  });
+  return Buffer.from(result.stdout);
+}
+
+async function listTemporaryIndexConflicts(
+  workspacePath: string,
+  indexPath: string,
+): Promise<string[]> {
+  const output = await gitWithTemporaryIndex([
+    '-C', workspacePath,
+    'ls-files', '--unmerged', '-z',
+  ], indexPath);
+  const paths = output.toString('utf8').split('\0')
+    .map(record => {
+      const separator = record.indexOf('\t');
+      return separator >= 0 ? record.slice(separator + 1).trim() : '';
+    })
+    .filter(Boolean);
+  return [...new Set(paths)].sort();
 }
 
 function withSafeDirectory(args: string[]): string[] {

@@ -15,6 +15,55 @@ import {
 } from '../../src/executor/local-cli-executor-adapter.js';
 
 describe('LocalCliExecutorAdapter', () => {
+  it('does not launch when cancelled while its isolated Home is being prepared', async () => {
+    const driver = harnessDriver('codex-cli');
+    const original = driver.materializeHome;
+    let resume!: () => void;
+    driver.materializeHome = vi.fn(async input => {
+      await new Promise<void>(resolve => { resume = resolve; });
+      return original(input);
+    });
+    const processRunner = {
+      run: vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })),
+      abort: vi.fn(),
+    };
+    const adapter = new LocalCliExecutorAdapter({
+      agentClassId: 'quality-beta', driver, runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(), modelId: 'test-model',
+      attemptsRoot: '/runtime/attempts', processRunner,
+    });
+    const pending = adapter.execute(executorInput('attempt-preparing'));
+    adapter.abort('attempt-preparing');
+    resume();
+    const result = await pending;
+    expect(processRunner.run).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ success: false, interrupted: true, exitCode: 130 });
+    driver.materializeHome = original;
+    await adapter.execute(executorInput('attempt-next'));
+    expect(processRunner.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains cancellation even when the child returns a parseable successful response', async () => {
+    const driver = harnessDriver('codex-cli');
+    let finish!: () => void;
+    const processRunner = {
+      run: vi.fn(() => new Promise<{ exitCode: number; stdout: string; stderr: string }>(resolve => {
+        finish = () => resolve({ exitCode: 0, stdout: 'late result', stderr: '' });
+      })),
+      abort: vi.fn(),
+    };
+    const adapter = new LocalCliExecutorAdapter({
+      agentClassId: 'quality-beta', driver, runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(), modelId: 'test-model',
+      attemptsRoot: '/runtime/attempts', processRunner,
+    });
+    const pending = adapter.execute(executorInput('attempt-running'));
+    await vi.waitFor(() => expect(processRunner.run).toHaveBeenCalled());
+    adapter.abort('attempt-running');
+    finish();
+    expect(await pending).toMatchObject({ success: false, interrupted: true });
+  });
+
   it('runs the selected Harness driver with an isolated attempt Home', async () => {
     const driver = harnessDriver('pi-cli');
     const processRunner: LocalCliChildProcessRunner = {
@@ -439,6 +488,38 @@ describe('LocalCliExecutorAdapter', () => {
 
     expect(rawChunks.join('')).toBe(`${prefix}${finalEvent}`);
     expect(Buffer.byteLength(result.stdout, 'utf8')).toBeLessThanOrEqual(16 * 1024 * 1024);
+  });
+
+  it('escalates repeated aborts without resetting the deadline and waits for confirmed exit', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = controllableChildProcess();
+      const signalProcess = vi.fn();
+      const runner = new SpawnLocalCliChildProcessRunner({
+        spawnProcess: () => child, signalProcess, terminationGraceMs: 100,
+      });
+      const pending = runner.run({
+        attemptId: 'attempt-abort', command: 'codex', args: [],
+        cwd: '/workspace', environment: {}, idleTimeoutMs: 50,
+      });
+      const settled = vi.fn();
+      void pending.then(settled);
+      runner.abort('attempt-abort');
+      await vi.advanceTimersByTimeAsync(60);
+      runner.abort('attempt-abort');
+      child.emitStdout('still active\n');
+      await vi.advanceTimersByTimeAsync(40);
+      expect(signalProcess.mock.calls).toEqual([[-123, 'SIGTERM'], [-123, 'SIGKILL']]);
+      expect(settled).not.toHaveBeenCalled();
+      child.emitExit(null);
+      expect(await pending).toMatchObject({
+        diagnostics: { terminationSource: 'abort', sigkillSentAt: expect.any(String) },
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(signalProcess).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('terminates a local CLI process after the configured idle timeout', async () => {

@@ -59,6 +59,7 @@ describe('Web workspace shell', () => {
     expect(app).toContain('retainLiveTurnForConversation(liveTurnRef.current, sessionId)');
     expect(app).toContain("composerVisible={tab === 'conversation' && Boolean(selectedId)}");
     expect(app).toContain('workspace-home');
+    expect(app.indexOf("tab === 'billing'")).toBeLessThan(app.indexOf('!selectedId'));
     expect(http).toContain('/api/workspaces');
     expect(http).toContain('/conversations');
     expect(http).not.toContain('/api/sessions');
@@ -69,7 +70,7 @@ describe('Web workspace shell', () => {
     expect(styles).toContain('.agent-readiness-banner');
     expect(banner).toContain('Codex');
     expect(banner).toContain('GPT/Codex');
-    expect(banner).toContain('仍可承担代码和研究能力');
+    expect(banner).toContain('更适合代码理解、修改、测试和仓库级工程任务');
   });
 
   it('creates a Workspace by browsing local directories', async () => {

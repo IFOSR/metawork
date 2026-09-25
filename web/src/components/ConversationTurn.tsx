@@ -2,6 +2,7 @@ import type { ArtifactProjection, ConversationTurnProjection } from '../api/sess
 import type { ReactNode } from 'react';
 import { ArtifactAwareMarkdownContent } from './ArtifactAwareMarkdownContent';
 import { ArtifactLink } from './ArtifactLink';
+import { TurnBillCard } from './TurnBillCard';
 
 function executionStatusLabel(status: ConversationTurnProjection['status']): string {
   if (status === 'running') return '执行中';
@@ -44,11 +45,13 @@ export function ConversationTurnView({
   liveExecutionPanel,
   onOpenArtifact,
   onOpenTrajectory,
+  onOpenBilling,
 }: {
   turn: ConversationTurnProjection;
   liveExecutionPanel?: ReactNode;
   onOpenArtifact?: (artifact: ArtifactProjection) => void;
   onOpenTrajectory?: (turnId: string) => void;
+  onOpenBilling?: (turnId: string) => void;
 }) {
   // 历史会话记录可能没有 artifacts 字段；防御性兜底避免整树卸载。
   const artifacts = Array.isArray(turn.artifacts) ? turn.artifacts : [];
@@ -113,6 +116,14 @@ export function ConversationTurnView({
             onOpenArtifact={onOpenArtifact}
           />
         </section>
+      )}
+      {/* 账单放在任务结果之后；对话中只保留阶段/模型摘要，详情进入账单 Tab。 */}
+      {!isSystemCommand && turn.status !== 'running' && (
+        <TurnBillCard
+          turn={turn}
+          taskTitle={turn.executionTimeline?.title}
+          onOpenBilling={onOpenBilling ? () => onOpenBilling(turn.id) : undefined}
+        />
       )}
       {onOpenArtifact && artifacts.length > 0 && (
         <section className="turn-artifacts" aria-label="任务产物">

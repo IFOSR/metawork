@@ -3,6 +3,93 @@ import type {
   ConversationTurnProjection,
   WebSessionRecord,
 } from './api/session-types';
+import type { InteractionTrace, InteractionTraceEvent } from './api/types';
+import type {
+  QueryBillProjection,
+  TaskUsageSummary,
+  TurnBillUserView,
+} from './api/session-types';
+
+export function mergeBilling(
+  current: ConversationTurnProjection | null,
+  turnId: string,
+  queryBill: QueryBillProjection | null,
+  taskUsageSummary: TaskUsageSummary | null,
+  turnBilling?: TurnBillUserView | null,
+): ConversationTurnProjection | null {
+  if (!current || current.id !== turnId) return current;
+  return {
+    ...current,
+    queryBill,
+    taskUsageSummary,
+    turnBilling: turnBilling ?? current.turnBilling ?? null,
+  };
+}
+
+export function mergeTraceSnapshot(
+  current: ConversationTurnProjection | null,
+  trace: InteractionTrace,
+): ConversationTurnProjection | null {
+  if (!current || current.id !== trace.turnId) return current;
+  return {
+    ...current,
+    taskId: trace.taskId,
+    ...mergeTraceStatus(current, trace.status, trace.completedAt),
+    startedAt: trace.startedAt,
+    traceEvents: trace.events,
+  };
+}
+
+export function mergeTraceDelta(
+  current: ConversationTurnProjection | null,
+  turnId: string,
+  events: InteractionTraceEvent[],
+  status?: InteractionTrace['status'],
+  completedAt?: string | null,
+): ConversationTurnProjection | null {
+  if (!current || current.id !== turnId) return current;
+  const byId = new Map(current.traceEvents.map(event => [event.id, event]));
+  for (const event of events) byId.set(event.id, event);
+  return {
+    ...current,
+    ...(status ? mergeTraceStatus(current, status, completedAt) : {}),
+    traceEvents: [...byId.values()].sort((left, right) => left.sequence - right.sequence),
+  };
+}
+
+export function mergeFinalAnswer(
+  current: ConversationTurnProjection | null,
+  turnId: string,
+  lines: string[],
+  completedAt: string,
+  backgroundWorkPending?: boolean,
+): ConversationTurnProjection | null {
+  if (!current || current.id !== turnId) return current;
+  return {
+    ...current,
+    ...(current.status === 'running' ? {
+      status: backgroundWorkPending ? 'running' as const : 'completed' as const,
+      completedAt: backgroundWorkPending ? null : completedAt,
+    } : {}),
+    finalAnswer: lines.join('\n'),
+  };
+}
+
+function mergeTraceStatus(
+  current: ConversationTurnProjection,
+  incoming: InteractionTrace['status'],
+  completedAt?: string | null,
+): Pick<ConversationTurnProjection, 'status' | 'completedAt'> {
+  // Late progress can enrich a terminal Turn, but cannot restart it.
+  if (current.status === 'cancelled'
+    || (current.status !== 'running' && incoming === 'running')) {
+    return { status: current.status, completedAt: current.completedAt };
+  }
+  return {
+    status: incoming,
+    completedAt: incoming === 'running' ? null : completedAt ?? current.completedAt,
+  };
+}
 
 export function retainLiveTurnForConversation(
   turn: ConversationTurnProjection | null,

@@ -85,6 +85,21 @@ describe('canonical task control commands', () => {
     });
   });
 
+  it('accepts the hash-prefixed task id shown by the TUI', async () => {
+    const harness = createHarness();
+    const task = createRunningTask(harness.taskEngine, 'recover-hash-prefixed');
+
+    const result = await harness.catalog.execute(`/task recovery #${task.id}`, harness.context);
+
+    expect(result).toMatchObject({
+      type: 'directive',
+      directive: {
+        kind: 'show-task-recovery',
+        taskId: task.id,
+      },
+    });
+  });
+
   it('removes the manual complete command from the command surface', async () => {
     const harness = createHarness();
     const task = createRunningTask(harness.taskEngine, 'complete');

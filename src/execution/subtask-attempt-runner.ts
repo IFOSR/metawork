@@ -5,6 +5,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import type Database from 'better-sqlite3';
 import type { ExecutorProgressEvent } from '../executor/adapter.js';
 import type { ExecutorAdapter } from '../executor/adapter.js';
+import type { HarnessUsageEvent } from '../executor/harness-driver.js';
+import type { Payer } from '../billing/cost-policy.js';
+import type { MeteringSpanRecord } from '../metering/ports.js';
+import type { RawUsageEvent } from '../metering/usage-normalizer.js';
 import type { AgentClassService } from '../executor/agent-class-service.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import {
@@ -153,6 +157,10 @@ export interface SubtaskAttemptRunnerDeps {
    * a no-op for identical content.
    */
   userArtifactPublication?: import('../delivery/user-artifact-publication-service.js').UserArtifactPublicationService | null;
+  usageObserver?: (event: RawUsageEvent) => void;
+  usageSpanOpener?: (span: MeteringSpanRecord) => void;
+  usageSpanCloser?: (spanId: string, state: 'closed' | 'uncertain', closedAt: string) => void;
+  usagePayer?: Payer;
 }
 
 /** Owns one Subtask attempt from claim through immutable terminal persistence. */
@@ -277,6 +285,7 @@ export class SubtaskAttemptRunner {
     sourceRoot?: string;
     defaultResourceGrant: ResourceClaim[];
     onProgress?: ProgressCallback;
+    queryId?: string | null;
   } & AuthorizedAttemptIdentity): Promise<SubtaskAttemptOutcome> {
     const attemptId = input.attemptId;
     const dispatch = this.requireAuthorizedDispatch(input);
@@ -382,6 +391,18 @@ export class SubtaskAttemptRunner {
       filePolicy: Record<string, 'text' | 'binary'>;
     } | null = null;
     let capabilityToolServer: CapabilityRequestToolServer | null = null;
+    let usageSpanId: string | null = null;
+    let usageSpanClosed = false;
+    const closeUsageSpan = (state: 'closed' | 'uncertain'): void => {
+      if (!usageSpanId || usageSpanClosed || !this.deps.usageSpanCloser) return;
+      try {
+        this.deps.usageSpanCloser(usageSpanId, state, new Date().toISOString());
+      } catch {
+        // Metering persistence must not change the authorized execution result.
+      } finally {
+        usageSpanClosed = true;
+      }
+    };
     let finalCheckpointReason: 'success' | 'failure' | 'cancelled' = 'failure';
     const heartbeat = setInterval(() => {
       claim.heartbeat();
@@ -640,6 +661,44 @@ export class SubtaskAttemptRunner {
         advertisedHost: attemptControlHost,
       });
       const capabilityBinding = await capabilityToolServer.start();
+      // Workspace and tool preparation yield; the durable fence may have won
+      // before ExecutionRuntime has an adapter registered to abort.
+      if (!this.isStillCurrent(task.id, subtask.id, attemptId, claim.workUnit.id)) {
+        const detail = 'Task, Subtask, or WorkUnit claim changed before Executor launch';
+        finalCheckpointReason = 'cancelled';
+        this.persistNonSuccess({
+          attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
+          workUnitId: claim.workUnit.id, agentClassName, startedAt,
+          terminalState: 'cancelled_or_stale', rawResponse,
+          errorCode: 'attempt_cancelled', errorDetail: detail,
+          resultObjects: this.persistAttemptResults({
+            attemptId, taskId: task.id, generationId: subtask.generationId,
+            subtaskId: subtask.id, rawResponse, body: null,
+            completeness: 'incomplete', rawResultWriter,
+          }),
+        });
+        if (this.isAttemptClaimCurrent(attemptId, claim.workUnit.id)) claim.markFailed(detail);
+        return { outcome: 'cancelled_or_stale', attemptId, reason: detail };
+      }
+      const usageSourceId = `harness:${dispatch.authorizedBinding.harnessRef}:${input.attemptId}`;
+      const usageCallId = `${input.attemptId}:harness`;
+      if (input.queryId && this.deps.usageSpanOpener) {
+        usageSpanId = `span_${usageSourceId}_${input.attemptId}`;
+        this.deps.usageSpanOpener({
+          spanId: usageSpanId,
+          queryId: input.queryId,
+          executionSegmentId: `attempt:${input.attemptId}`,
+          sourceId: usageSourceId,
+          sourceScope: 'harness_turn',
+          callId: usageCallId,
+          stage: 'execution',
+          reason: dispatch.attemptKind === 'merge_repair' ? 'merge_repair' : 'primary',
+          state: 'started',
+          payer: this.deps.usagePayer ?? 'unknown',
+          startedAt,
+          closedAt: null,
+        });
+      }
       const execution = await this.deps.executionRuntime.run({
         taskId: input.taskId,
         executionId: input.executionId,
@@ -676,6 +735,7 @@ export class SubtaskAttemptRunner {
             ),
           },
           onRawOutput: chunk => rawResultWriter.append(chunk),
+          onUsage: usage => this.observeUsage(input, dispatch, usage),
         },
         onProgress: (event, executor) => {
           const safeText = formatExecutorProgress(event.text);
@@ -688,6 +748,7 @@ export class SubtaskAttemptRunner {
           input.onProgress?.(event, executor);
         },
       });
+      closeUsageSpan('closed');
       if (execution.diagnostics) {
         this.attemptRuntimeRepo.recordDiagnostics(
           attemptId,
@@ -1150,6 +1211,7 @@ export class SubtaskAttemptRunner {
         },
       };
     } finally {
+      closeUsageSpan('uncertain');
       clearInterval(heartbeat);
       if (workspace) {
         try {
@@ -1192,6 +1254,35 @@ export class SubtaskAttemptRunner {
         claim.release();
       }
     }
+  }
+
+  private observeUsage(
+    input: { attemptId: string; executionId: string; taskId: string; subtaskId: string; queryId?: string | null },
+    dispatch: KernelDispatchItemRecord,
+    usage: HarnessUsageEvent,
+  ): void {
+    if (!input.queryId || !this.deps.usageObserver) return;
+    const now = new Date().toISOString();
+    this.deps.usageObserver({
+      sourceId: `harness:${dispatch.authorizedBinding.harnessRef}:${input.attemptId}`,
+      sourceEventKey: usage.sourceEventKey,
+      sourceScope: 'harness_turn',
+      callId: `${input.attemptId}:harness`,
+      queryId: input.queryId,
+      executionSegmentId: `attempt:${input.attemptId}`,
+      taskId: input.taskId,
+      stage: 'execution',
+      reason: dispatch.attemptKind === 'merge_repair' ? 'merge_repair' : 'primary',
+      payer: this.deps.usagePayer ?? 'unknown',
+      agentClassRef: usage.agentClassRef ?? dispatch.authorizedBinding.agentClassRef,
+      providerRef: usage.providerRef ?? dispatch.authorizedBinding.providerRef,
+      modelId: usage.modelId ?? this.deps.executionRuntime.resolveModelId(dispatch.authorizedBinding),
+      capturedAt: now,
+      providerBindingVersion: dispatch.bindingFingerprint,
+      evidenceRef: `attempt:${input.attemptId}`,
+      counters: usage.counters,
+      missing: usage.missing,
+    });
   }
 
   async runCorrection(input: {

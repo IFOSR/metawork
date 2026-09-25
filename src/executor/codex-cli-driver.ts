@@ -21,6 +21,8 @@ import type {
   HarnessProgressEvent,
   HarnessProgressLineInput,
   HarnessResultInput,
+  HarnessUsageCounter,
+  HarnessUsageEvent,
   MaterializedRuntimeHome,
   ProbeCommandRunner,
   RuntimeHomeInput,
@@ -217,6 +219,32 @@ export class CodexCliDriver implements HarnessDriver {
     return null;
   }
 
+  parseUsageLine(input: HarnessProgressLineInput): HarnessUsageEvent | null {
+    if (input.stream !== 'stdout') return null;
+    const event = parseJsonLine(input.line);
+    if (!event || !['turn.completed', 'response.completed'].includes(String(event.type))) {
+      return null;
+    }
+    const response = asRecord(event.response);
+    const usage = asRecord(event.usage) ?? asRecord(response?.usage) ?? asRecord(event.token_usage);
+    const callId = firstString(event.turn_id, event.response_id, response?.id)
+      ?? `${String(event.type)}:unknown`;
+    const counters = codexUsageCounters(usage);
+    return {
+      sourceEventKey: `${String(event.type)}:${callId}`,
+      callId,
+      counters,
+      ...(counters.length === 0
+        ? {
+            missing: [
+              { resource: 'model_tokens', metric: 'input', unit: 'token' },
+              { resource: 'model_tokens', metric: 'output', unit: 'token' },
+            ],
+          }
+        : {}),
+    };
+  }
+
   parseActivityLine(input: HarnessProgressLineInput): HarnessActivitySignal | null {
     if (input.stream !== 'stdout') return null;
     const event = parseJsonLine(input.line);
@@ -260,6 +288,36 @@ export class CodexCliDriver implements HarnessDriver {
     await copyFile(source, target);
     await chmod(target, 0o600);
   }
+}
+
+function codexUsageCounters(usage: Record<string, unknown> | null): HarnessUsageCounter[] {
+  if (!usage) return [];
+  const counters: HarnessUsageCounter[] = [];
+  const input = integerString(usage.input_tokens ?? usage.input);
+  const cached = integerString(usage.cached_input_tokens ?? usage.cache_read_tokens ?? usage.cacheRead);
+  const output = integerString(usage.output_tokens ?? usage.output);
+  const reasoning = integerString(usage.reasoning_output_tokens ?? usage.reasoning_tokens ?? usage.reasoning);
+  if (input !== null) counters.push({ resource: 'model_tokens', metric: 'input', unit: 'token', kind: 'delta', value: input });
+  if (cached !== null) counters.push({ resource: 'model_tokens', metric: 'cache_read', unit: 'token', kind: 'delta', value: cached, subsetOf: 'input' });
+  if (output !== null) counters.push({ resource: 'model_tokens', metric: 'output', unit: 'token', kind: 'delta', value: output });
+  if (reasoning !== null) counters.push({ resource: 'model_tokens', metric: 'reasoning', unit: 'token', kind: 'delta', value: reasoning, subsetOf: 'output' });
+  return counters;
+}
+
+function integerString(value: unknown): string | null {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return String(value);
+  if (typeof value === 'string' && /^\d+$/u.test(value)) return value;
+  return null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function firstString(...values: unknown[]): string | null {
+  return values.find((value): value is string => typeof value === 'string' && value.trim().length > 0) ?? null;
 }
 
 /** Codex 工具调用参数的安全摘要：只取白名单键，脱敏截断。 */

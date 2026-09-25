@@ -95,6 +95,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
   private readonly attemptsRoot: string;
   private readonly idleTimeoutMs: number;
   private readonly processRunner: LocalCliChildProcessRunner;
+  private readonly activeAttempts = new Map<string, { cancelled: boolean }>();
 
   constructor(dependencies: LocalCliExecutorAdapterDependencies) {
     this.name = dependencies.agentClassId;
@@ -119,6 +120,8 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
       );
     }
 
+    const cancellation = { cancelled: false };
+    this.activeAttempts.set(executionBinding.attemptId, cancellation);
     try {
       const runtimeHome = await this.driver.materializeHome({
         attemptId: executionBinding.attemptId,
@@ -131,6 +134,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           ? { executorAffordances: this.executorAffordances }
           : {}),
       });
+      if (cancellation.cancelled) return cancelledResult(startedAt);
       const launch = this.driver.buildLaunch({
         prompt: buildExecutorContextPrompt(input),
         cwd: executionBinding.workspacePath,
@@ -176,6 +180,13 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
             if (excerpt) lastStep = excerpt.slice(0, 200);
             input.onProgress?.(progress);
           }
+          const usage = this.driver.parseUsageLine?.({ line, stream });
+          if (usage) input.onUsage?.({
+            ...usage,
+            agentClassRef: this.name,
+            providerRef: this.authorizedBinding.providerRef,
+            modelId: this.modelId,
+          });
           return this.driver.parseActivityLine?.({ line, stream });
         },
         onRawChunk: (chunk, stream) => input.onRawOutput?.(Buffer.from(chunk), stream),
@@ -200,6 +211,9 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         harness: streamSnapshot?.diagnostics ?? null,
         provisionalOutput: streamSnapshot?.provisional ?? false,
       };
+      if (cancellation.cancelled) {
+        return { ...cancelledResult(startedAt), output: result.output, diagnostics };
+      }
       if (result.success) {
         return {
           success: true,
@@ -222,6 +236,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         diagnostics,
       };
     } catch (error) {
+      if (cancellation.cancelled) return cancelledResult(startedAt);
       const message = error instanceof Error ? error.message : String(error);
       return {
         success: false,
@@ -231,6 +246,8 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         exitCode: 1,
         durationMs: Date.now() - startedAt,
       };
+    } finally {
+      this.activeAttempts.delete(executionBinding.attemptId);
     }
   }
 
@@ -353,6 +370,9 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
   }
 
   abort(attemptId?: string): void {
+    for (const [id, state] of this.activeAttempts) {
+      if (!attemptId || id === attemptId) state.cancelled = true;
+    }
     this.processRunner.abort(attemptId);
   }
 }
@@ -474,6 +494,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
         if (
           settled
           || timedOut
+          || terminationSource === 'abort'
           || timeoutMs === undefined
           || !Number.isFinite(timeoutMs)
           || timeoutMs <= 0
@@ -530,10 +551,17 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       this.activeProcesses.set(input.attemptId, {
         child,
         abort: () => {
-          if (settled) return;
+          if (settled || terminationSource === 'abort') return;
+          clearWatchdogs();
           terminationSource = 'abort';
           sigtermSentAt = new Date().toISOString();
           signalChild('SIGTERM');
+          forceKillTimer = setTimeout(() => {
+            sigkillSentAt = new Date().toISOString();
+            signalChild('SIGKILL');
+            // Keep the attempt occupied until the child exit is observed.
+          }, this.terminationGraceMs);
+          forceKillTimer.unref();
         },
       });
       resetIdleWatchdog();
@@ -548,6 +576,17 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       : [...this.activeProcesses.values()];
     for (const activeProcess of processes) activeProcess.abort();
   }
+}
+
+function cancelledResult(startedAt: number): ExecutorResult {
+  return {
+    success: false,
+    interrupted: true,
+    output: '',
+    error: 'Executor attempt cancelled',
+    exitCode: 130,
+    durationMs: Date.now() - startedAt,
+  };
 }
 
 function appendBoundedTail(current: Buffer, chunk: Buffer | string): Buffer {

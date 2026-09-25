@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -28,11 +28,13 @@ describe('production composition root', () => {
     expect(index).toContain('await renderer.render(migratedSnapshot)');
   });
 
-  it('passes the runtime binding resolver to the preserved standby TUI', () => {
+  it('keeps the retired Ink surface out of the runtime binding path', () => {
     const server = readFileSync(resolve(root, 'src/server/server-composition.ts'), 'utf8');
     expect(server).not.toContain('serverSurface');
-    expect(readFileSync(resolve(root, 'src/tui/app.tsx'), 'utf8'))
-      .toContain('MetaclawSession');
+    // ADR-0041：旧 Ink 客户端已删除，不再有第二个 TUI 入口或保留开关。
+    expect(existsSync(resolve(root, 'src/tui'))).toBe(false);
+    expect(existsSync(resolve(root, 'src/gateway/client-ui.tsx'))).toBe(false);
+    expect(server).not.toContain('METACLAW_STANDBY_TUI');
   });
 
   it('uses the local-default account paths for runtime and configuration administration', () => {

@@ -38,6 +38,8 @@ const MAX_WORKSPACE_ACTIVITY_SNAPSHOTS = 100;
 
 export class FileEventJournal implements EventJournal {
   private readonly appendTails = new Map<string, Promise<void>>();
+  /** 连接流临时序号的内存高水位；不持久化，但防止 append 复用已保留序号。 */
+  private readonly ephemeralSequences = new Map<string, number>();
 
   constructor(private readonly rootDir: string) {}
 
@@ -57,7 +59,31 @@ export class FileEventJournal implements EventJournal {
     )) {
       throw new Error('Gateway event batch must target one account and conversation');
     }
-    const key = `${first.accountId}\0${first.conversationId}`;
+    return this.serialized(
+      `${first.accountId}\0${first.conversationId}`,
+      () => this.appendBatchSerial(events),
+    );
+  }
+
+  async reserveSequence(accountId: string, conversationId: string): Promise<number> {
+    return this.serialized(`${accountId}\0${conversationId}`, async () => {
+      const key = `${accountId}\0${conversationId}`;
+      const file = await this.read(accountId, conversationId);
+      const next = Math.max(file.lastSequence, this.ephemeralSequences.get(key) ?? 0) + 1;
+      this.ephemeralSequences.set(key, next);
+      return next;
+    });
+  }
+
+  async lastSequence(accountId: string, conversationId: string): Promise<number> {
+    const file = await this.read(accountId, conversationId);
+    return Math.max(
+      file.lastSequence,
+      this.ephemeralSequences.get(`${accountId}\0${conversationId}`) ?? 0,
+    );
+  }
+
+  private serialized<T>(key: string, operation: () => Promise<T>): Promise<T> {
     const previous = this.appendTails.get(key) ?? Promise.resolve();
     let release!: () => void;
     const current = new Promise<void>(resolve => {
@@ -65,22 +91,24 @@ export class FileEventJournal implements EventJournal {
     });
     const tail = previous.then(() => current);
     this.appendTails.set(key, tail);
-    await previous;
-    try {
-      return await this.appendBatchSerial(events);
-    } finally {
+    return previous.then(operation).finally(() => {
       release();
       if (this.appendTails.get(key) === tail) {
         this.appendTails.delete(key);
       }
-    }
+    });
   }
 
   private async appendBatchSerial(
     events: GatewayEventEnvelope[],
   ): Promise<GatewayEventEnvelope[]> {
     const first = events[0]!;
+    const streamKey = `${first.accountId}\0${first.conversationId}`;
     const file = await this.read(first.accountId, first.conversationId);
+    file.lastSequence = Math.max(
+      file.lastSequence,
+      this.ephemeralSequences.get(streamKey) ?? 0,
+    );
     const byId = new Map(file.events.map(event => [event.eventId, event]));
     const appended: GatewayEventEnvelope[] = [];
     let changed = false;
@@ -329,15 +357,13 @@ function retainedResultEvents(
       .map(resultIdFrom)
       .filter((resultId): resultId is string => Boolean(resultId)),
   );
-  const latestResultId = [...events]
-    .reverse()
-    .map(resultIdFrom)
-    .find((resultId): resultId is string => Boolean(resultId));
   return events.filter(event => {
     const resultId = resultIdFrom(event);
     if (!resultId || !resultIds.has(resultId)) return false;
-    if (resultId === latestResultId) return true;
-    return event.kind === 'result_delivery_available' || event.kind === 'result_completed';
+    // Every result stream must remain independently replayable. Keeping only
+    // completion metadata for older results makes a later Attach unable to
+    // verify or render the answer body.
+    return true;
   });
 }
 

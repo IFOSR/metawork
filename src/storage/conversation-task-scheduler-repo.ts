@@ -14,6 +14,8 @@ export interface ConversationTaskSlot {
 
 export interface QueuedTaskPayload {
   requestText: string;
+  /** Query that admitted this Task; retained for delayed Executor metering. */
+  queryId?: string | null;
   generationId: string;
   graphRevision: number;
   workGraph: unknown;
@@ -46,6 +48,37 @@ interface ScheduleRow {
   last_scheduled_at: string | null;
   scheduling_reason: string;
   payload_json: string;
+}
+
+interface CandidateRow {
+  task_id: string;
+  conversation_id: string;
+  eligible_since: string;
+  enqueued_at: string;
+  priority_json: string | null;
+  fairness_sequence: number;
+}
+
+const PRIORITY_RANK: Record<string, number> = { normal: 0, high: 1, urgent: 2 };
+const AGING_WINDOW_MS = 5 * 60 * 1000;
+
+function priorityOf(priorityJson: string | null): number {
+  if (!priorityJson) return PRIORITY_RANK.normal;
+  try {
+    const value = JSON.parse(priorityJson) as { semanticPriority?: unknown };
+    return typeof value.semanticPriority === 'string'
+      ? PRIORITY_RANK[value.semanticPriority] ?? PRIORITY_RANK.normal
+      : PRIORITY_RANK.normal;
+  } catch {
+    return PRIORITY_RANK.normal;
+  }
+}
+
+function isAged(eligibleSince: string, now: string): boolean {
+  const eligible = Date.parse(eligibleSince);
+  const current = Date.parse(now);
+  return Number.isFinite(eligible) && Number.isFinite(current)
+    && current - eligible >= AGING_WINDOW_MS;
 }
 
 export class ConversationTaskSchedulerRepo {
@@ -151,6 +184,87 @@ export class ConversationTaskSchedulerRepo {
     return this.db.transaction(() => this.promoteQueuedInTransaction(conversationId, now))();
   }
 
+  /**
+   * Promote the oldest fair queued Task whose Conversation is free. This is
+   * the account-level wakeup primitive used after any slot release; callers
+   * still own the Kernel-authorized launch that follows the reservation.
+   */
+  promoteNextAvailable(
+    maxConcurrentTasks: number,
+    now: string,
+  ): { taskId: string; conversationId: string; reservationId: string } | null {
+    return this.promoteAvailable(maxConcurrentTasks, now)[0] ?? null;
+  }
+
+  promoteAvailable(
+    maxConcurrentTasks: number,
+    now: string,
+  ): Array<{ taskId: string; conversationId: string; reservationId: string }> {
+    return this.db.transaction(() => {
+      const occupied = this.db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM conversation_task_slots
+        WHERE active_task_id IS NOT NULL
+          AND state IN ('occupied', 'releasing', 'recovery_blocked')
+      `).get() as { count: number };
+      const result: Array<{
+        taskId: string;
+        conversationId: string;
+        reservationId: string;
+      }> = [];
+      const limit = Math.max(0, maxConcurrentTasks - occupied.count);
+      for (let index = 0; index < limit; index += 1) {
+        const candidates = this.db.prepare(`
+          SELECT entry.task_id, entry.conversation_id, entry.eligible_since,
+                 entry.enqueued_at, tasks.priority_json,
+                 slot.fairness_sequence
+          FROM task_schedule_entries entry
+          JOIN tasks ON tasks.id = entry.task_id
+          JOIN conversation_task_slots slot
+            ON slot.conversation_id = entry.conversation_id
+          WHERE entry.state = 'queued'
+            AND slot.state = 'free'
+            AND slot.active_task_id IS NULL
+        `).all() as CandidateRow[];
+        const candidate = candidates.sort((left, right) => (
+          Number(isAged(right.eligible_since, now)) - Number(isAged(left.eligible_since, now))
+          || priorityOf(right.priority_json) - priorityOf(left.priority_json)
+          || left.fairness_sequence - right.fairness_sequence
+          || left.eligible_since.localeCompare(right.eligible_since)
+          || left.enqueued_at.localeCompare(right.enqueued_at)
+          || left.task_id.localeCompare(right.task_id)
+        ))[0];
+        if (!candidate) break;
+        const reservationId = `reservation_${candidate.conversation_id}_${candidate.task_id}`;
+        const claimed = this.db.prepare(`
+          UPDATE conversation_task_slots
+          SET active_task_id = ?, state = 'occupied', reservation_id = ?,
+              fairness_sequence = fairness_sequence + 1,
+              last_served_at = ?, updated_at = ?
+          WHERE conversation_id = ? AND state = 'free' AND active_task_id IS NULL
+        `).run(
+          candidate.task_id,
+          reservationId,
+          now,
+          now,
+          candidate.conversation_id,
+        );
+        if (claimed.changes !== 1) break;
+        this.db.prepare(`
+          UPDATE task_schedule_entries
+          SET state = 'reserved', last_scheduled_at = ?
+          WHERE task_id = ? AND state = 'queued'
+        `).run(now, candidate.task_id);
+        result.push({
+          taskId: candidate.task_id,
+          conversationId: candidate.conversation_id,
+          reservationId,
+        });
+      }
+      return result;
+    })();
+  }
+
   markRecoveryBlocked(conversationId: string, taskId: string, now: string): boolean {
     return this.db.prepare(`
       UPDATE conversation_task_slots
@@ -222,6 +336,14 @@ export class ConversationTaskSchedulerRepo {
     `).get(taskId) as { payload_json: string } | undefined;
     if (!row) return null;
     return JSON.parse(row.payload_json) as QueuedTaskPayload;
+  }
+
+  getQueuedReason(taskId: string): string | null {
+    const row = this.db.prepare(`
+      SELECT scheduling_reason FROM task_schedule_entries
+      WHERE task_id = ? AND state = 'queued'
+    `).get(taskId) as { scheduling_reason: string } | undefined;
+    return row?.scheduling_reason ?? null;
   }
 
   listQueuedTasks(conversationId: string): string[] {

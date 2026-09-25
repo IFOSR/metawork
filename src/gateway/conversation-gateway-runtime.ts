@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import type { AccountRuntimeHandle } from '../account/account-runtime-ports.js';
 import type { RuntimeRegistry } from '../account/runtime-registry.js';
 import type { ConversationRegistry } from '../session/conversation-registry.js';
-import type { ConversationSession } from '../session/conversation-session.js';
+import type { ConversationSession, ConversationResultDelivery } from '../session/conversation-session.js';
 import type { MailboxCommand, MailboxReceipt } from '../session/conversation-input-mailbox.js';
 import { isControlCommand } from '../session/conversation-input-mailbox.js';
 import type { InteractionTrace } from '../management/interaction-trace.js';
@@ -72,6 +72,7 @@ export class ConversationGatewayRuntime {
   private readonly activeOrigins = new Map<string, GatewayTurnOrigin>();
   /** Stable correlation for background trace events after the command returns. */
   private readonly turnRequestIds = new Map<string, string>();
+  private readonly turnOrigins = new Map<string, GatewayTurnOrigin>();
   private admissionClosed = false;
 
   constructor(private readonly deps: ConversationGatewayRuntimeDeps) {}
@@ -184,6 +185,22 @@ export class ConversationGatewayRuntime {
 
   closeAdmission(): void {
     this.admissionClosed = true;
+  }
+
+  async publishBackgroundResult(input: {
+    conversationId: string;
+    turnId: string;
+    requestId: string;
+    delivery: ConversationResultDelivery;
+    backgroundWorkPending?: boolean;
+    originTurnId?: string;
+  }): Promise<void> {
+    const { conversationId, turnId, requestId, delivery } = input;
+    const origin = this.turnOrigins.get(input.originTurnId ?? turnId);
+    const result = await this.publishResultDelivery(conversationId, requestId, turnId,
+      delivery.content, delivery.certification, delivery.completeness, delivery.resultId, origin);
+    await this.publish(conversationId, requestId, turnId, 'final_answer',
+      finalAnswerPayload([], result, input.backgroundWorkPending === true), origin);
   }
 
   async drain(): Promise<void> {
@@ -432,6 +449,7 @@ export class ConversationGatewayRuntime {
     const accountRuntime = this.deps.registry.getIfLoaded(this.deps.accountId);
     const turnId = this.id('turn');
     this.turnRequestIds.set(turnId, mailboxCommand.requestId);
+    if (origin) this.turnOrigins.set(turnId, origin);
     const before = conversation.getOutput().length;
     const beforeResultDeliveries = conversation.getResultDeliveries().length;
     const workspaceCommand = mailboxCommand.command.kind === 'slash_command'
@@ -463,6 +481,10 @@ export class ConversationGatewayRuntime {
           awaitAsyncWork: mailboxCommand.command.kind === 'user_message',
           rethrowErrors: true,
           interactionTurnId: turnId,
+          requestId: mailboxCommand.requestId,
+          idempotencyKey: mailboxCommand.idempotencyKey,
+          billingIngress: origin?.surface === 'feishu' ? 'feishu'
+            : origin?.surface === 'web' ? 'web' : 'tui',
           principalId: mailboxCommand.principalId,
           ...(mailboxCommand.command.kind === 'user_message'
             ? { attachments: await this.resolveAttachmentViews(
@@ -488,9 +510,18 @@ export class ConversationGatewayRuntime {
         conversation.getOutput().slice(before),
         mailboxCommand.command,
       );
-      const projectedResult = conversation.getResultDeliveries()
+      const delivery = conversation.getResultDeliveries()
         .slice(beforeResultDeliveries)
         .at(-1);
+      // A task result may arrive while a control command runs. Keep its metadata,
+      // but never substitute it for the outcome of the command itself.
+      const projectedResult = mailboxCommand.command.kind === 'user_message' ? delivery : undefined;
+      if (delivery && !projectedResult) {
+        await this.publishResultDelivery(
+          conversation.conversationId, mailboxCommand.requestId, turnId,
+          delivery.content, delivery.certification, delivery.completeness, delivery.resultId, origin,
+        );
+      }
       const backgroundWorkPending = conversation.hasBackgroundWork();
       const result = await this.publishResultDelivery(
         conversation.conversationId,

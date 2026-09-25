@@ -10,6 +10,7 @@ import type { InteractionTraceEvent } from '../management/interaction-trace.js';
 import type { EventJournal } from './event-journal.js';
 import type { FeishuGatewayAdapter } from './feishu-gateway-adapter.js';
 import type { GatewaySubscriptions } from './gateway-subscriptions.js';
+import type { BillQueryService } from '../billing/bill-query-service.js';
 import { ResultStreamAssembler } from './result-stream-assembler.js';
 import {
   createTaskActivityTracker,
@@ -20,6 +21,31 @@ import {
   formatFeishuWorkspaceConfirmation,
   formatFeishuWorkspaceRequired,
 } from './feishu-events.js';
+import type { QueryBillProjection } from '../billing/bill-query-service.js';
+
+function formatFeishuBillingSummary(bill: QueryBillProjection): string {
+  const external = bill.confirmedDeductedMicroCoin !== null
+    ? `已确认扣款 ${bill.confirmedDeductedMicroCoin} microCoin`
+    : bill.externalState === 'received'
+      ? '外部已接收，扣款待确认'
+      : bill.externalState === 'rejected'
+        ? '外部消费已拒绝'
+        : bill.externalState === 'unknown'
+          ? '外部消费状态待核对'
+          : `外部消费 ${bill.externalState}`;
+  const coverage = bill.coverage === 'complete'
+    ? '计量完整'
+    : `计量${bill.coverageNote ? `不完整：${bill.coverageNote}` : '不完整'}`;
+  const payerLabels = (bill.payerSummary ?? []).map(item => {
+    const payer = item.payer === 'user_direct' ? '用户直付' : item.payer === 'unknown' ? '付款方未知' : item.payer;
+    const disposition = item.disposition === 'eligible' ? '计入应计' : item.disposition === 'pending' ? '待核对' : '不计入平台收费';
+    return `${payer}${disposition}`;
+  });
+  const payer = bill.platformAbsorption ? '平台承担部分缺失成本' : null;
+  return [`费用摘要：应计 ${bill.assessedMicroCoin} microCoin${bill.assessedIsFinal ? '' : '（暂计）'}`, external, coverage, ...payerLabels, payer]
+    .filter((line): line is string => Boolean(line))
+    .join('；');
+}
 
 export interface FeishuGatewaySessionPortDeps {
   readonly accountId: string;
@@ -39,6 +65,8 @@ export interface FeishuGatewaySessionPortDeps {
     previewKind: string;
   }>;
   readonly runtimePaths?: FeishuSessionPort['runtimePaths'];
+  /** Shared server-side billing projection; Feishu only renders its result. */
+  readonly billing?: BillQueryService;
 }
 
 export class FeishuGatewaySessionPort implements FeishuSessionPort {
@@ -758,7 +786,12 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
           resolvePromise(lines);
           return lines;
         }
-        rejectPromise(new Error(message));
+        const bill = event.turnId
+          ? this.deps.billing?.getQueryBillForTurn(this.deps.accountId, event.turnId)
+          : null;
+        rejectPromise(new Error(bill
+          ? `${message}\n${formatFeishuBillingSummary(bill)}`
+          : message));
         return null;
       }
       if (event.kind === 'final_answer') {
@@ -775,7 +808,11 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
           : null;
         const lines = completed ? completed.content.split('\n') : payload.lines ?? [];
         const artifacts = this.taskArtifactsFor(activity.snapshot().taskId);
-        const value = artifacts.length > 0 ? { lines, artifacts } : lines;
+        const bill = event.turnId
+          ? this.deps.billing?.getQueryBillForTurn(this.deps.accountId, event.turnId)
+          : null;
+        const billedLines = bill ? [...lines, '', formatFeishuBillingSummary(bill)] : lines;
+        const value = artifacts.length > 0 ? { lines: billedLines, artifacts } : billedLines;
         settled = true;
         cleanup();
         resolvePromise(value);

@@ -24,6 +24,29 @@ export interface HarnessProgressEvent {
   text: string;
 }
 
+export interface HarnessUsageCounter {
+  readonly resource: 'model_tokens';
+  readonly metric: string;
+  readonly unit: 'token';
+  readonly kind: 'delta' | 'cumulative';
+  readonly value: string;
+  readonly subsetOf?: string;
+}
+
+export interface HarnessUsageEvent {
+  readonly sourceEventKey: string;
+  readonly callId: string;
+  readonly agentClassRef?: string | null;
+  readonly providerRef?: string | null;
+  readonly modelId?: string | null;
+  readonly counters: readonly HarnessUsageCounter[];
+  readonly missing?: readonly {
+    readonly resource: 'model_tokens';
+    readonly metric: string;
+    readonly unit: 'token';
+  }[];
+}
+
 export interface HarnessActivitySignal {
   type: 'operation_started' | 'operation_finished';
   operationId: string;
@@ -105,6 +128,11 @@ export interface HarnessDriver {
   createResultStreamTracker?(): HarnessResultStreamTracker;
   parseResultLine?(input: HarnessProgressLineInput): string | null;
   parseProgressLine?(input: HarnessProgressLineInput): HarnessProgressEvent | null;
+  /**
+   * Parse only provider-reported usage records. Display/progress events are
+   * deliberately not usage evidence.
+   */
+  parseUsageLine?(input: HarnessProgressLineInput): HarnessUsageEvent | null;
   parseActivityLine?(input: HarnessProgressLineInput): HarnessActivitySignal | null;
 }
 

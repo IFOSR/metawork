@@ -44,6 +44,9 @@ The implementation plan — characterization, contracts, account storage and
 migration, AccountRuntime ownership, Conversation runtime, unified Gateway core,
 and surface adapters — is delivered with focused tests, and production surfaces
 route through the unified Gateway.
+ADR-0041 extends that command plane with the versioned read-only queries
+(`complete_command`, `get_task_view`) and hello capability advertisement required
+by the single-TUI convergence, and fixes the client forbidden-dependency rules.
 The runtime-wide service extraction from MetaclawSession into account-scoped
 factories is complete across nine service clusters (Kernel, repositories,
 workspace, execution, task, coordinator, runtime-execution, kernel-execution,
@@ -101,6 +104,15 @@ same-Conversation queueing, cross-Conversation parallelism, capacity,
 fairness, immutable Task routing, recovery isolation and bounded Workspace
 summaries.
 
+ADR-0042 governs the accepted Query usage metering, billing and external
+consumption target. It makes Query the accrual root (Task is only an aggregation
+dimension), separates metering, billing and the third-party funded account,
+fixes exact money precision and immutable price versions, keeps missing usage
+from becoming zero, keeps clients read-only, and gates `export` on a trusted
+deployment boundary. Like the ADR-0027 through ADR-0030 transition, it does not
+describe delivered behavior until the governing implementation plan's release
+gate completes; `observe -> shadow -> export` is the release order.
+
 ## Current authority matrix
 
 | Topic | Current authority | What it decides |
@@ -130,7 +142,9 @@ summaries.
 | Planner semantics and context | [ADR-0015](0015-planner-owned-semantics-and-tool-mediated-context.md) | semantic ownership, isolated planner runner, bounded/tool-mediated read-only context and fail-closed behavior |
 | Conversation Task serialization | [ADR-0037](0037-multi-conversation-task-parallelism.md) | One executing/cleaning-up top-level Task per Conversation; later same-Conversation Tasks queue; different Conversations may run in parallel |
 | User-initiated turn cancellation | [ADR-0040](0040-user-initiated-turn-cancellation.md) | The Client stop control cancels the current Turn: the Planner run is aborted without closing the session, late proposals are rejected, an already-admitted Task is cancelled through the existing fence, and the Turn ends as `cancelled` |
+| Single-TUI convergence and Gateway read-only queries | [ADR-0041](0041-single-tui-convergence-and-gateway-read-only-queries.md) | One product TUI on the unified Gateway, `complete_command`/`get_task_view` read-only branch, hello capability advertisement, and client forbidden dependencies |
 | Web workspace creation and login | [ADR-0039](0039-web-workspace-creation-and-login.md) | Explicit Web login, non-authenticating launch hints, fixed built-in credentials, and cookie-only local directory browsing for Workspace creation; amends ADR-0034 and ADR-0035 |
+| Query usage metering, billing and external consumption | [ADR-0042](0042-query-usage-billing-and-external-consumption.md) | Query-scoped attribution, metering spans/observations and coverage, payer policy, exact money precision, immutable final Query bills, Task/account rollups, idempotent third-party consumption, client read-only projection and the trusted-export gate |
 
 When two current ADRs appear to overlap, the more specific topic ADR defines its data contract while ADR-0020 defines module ownership and dependency direction. A newer ADR must explicitly amend or supersede an older one; implementation plans cannot silently override ADRs.
 

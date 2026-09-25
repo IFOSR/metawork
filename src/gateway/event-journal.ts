@@ -11,4 +11,12 @@ export interface EventJournal {
   append(event: GatewayEventEnvelope): Promise<GatewayEventEnvelope>;
   appendBatch?(events: GatewayEventEnvelope[]): Promise<GatewayEventEnvelope[]>;
   replay(accountId: string, conversationId: string, afterSequence?: number): Promise<GatewayReplay>;
+  /**
+   * 为不持久的连接流只读响应分配序号（统一 TUI 设计 §9.3）。
+   * 与同一流上的持久事件共用序号分配器：返回的序号单调递增且不会被后续
+   * append 复用，但不写入任何持久事件正文。
+   */
+  reserveSequence?(accountId: string, conversationId: string): Promise<number>;
+  /** 流的当前水位；无事件时为 0。 */
+  lastSequence?(accountId: string, conversationId: string): Promise<number>;
 }

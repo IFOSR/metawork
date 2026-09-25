@@ -61,7 +61,7 @@ describe('SessionTaskExecutionApplicationService', () => {
     );
   });
 
-  it('reports an authorized resume as started rather than merely submitted', () => {
+  it('reports resume authorization without claiming an Executor has started', () => {
     expect(formatTaskResumeDecision('task_1', {
       id: 'decision_resume',
       schemaVersion: 5,
@@ -78,6 +78,27 @@ describe('SessionTaskExecutionApplicationService', () => {
         blockerCategory: 'parked',
       },
       reason: 'Kernel authorized explicit Task resume',
-    })).toBe('任务 #task_1 已获 Kernel 授权，恢复执行已开始');
+    })).toBe('任务 #task_1 已获 Kernel 授权，等待执行调度；实际启动状态请查看执行轨迹');
+  });
+
+  it('explains that an unknown blocker is a safety fence, not an unresolved material condition', () => {
+    expect(formatTaskResumeDecision('task_1', {
+      id: 'decision_resume_unknown',
+      schemaVersion: 5,
+      eventId: 'resume_event_task_1',
+      correlationId: 'exec_1',
+      causationId: null,
+      configurationRevision: 'revision-test',
+      action: {
+        type: 'block_work',
+        taskId: 'task_1',
+        subtaskId: 'subtask_1',
+      },
+      reason: 'resume requires resolving the unknown blocker first',
+    })).toBe(
+      '任务 #task_1 未重新执行：上次执行结果不确定，材料齐全也不能证明没有外部副作用；'
+      + '未启动新的 Executor。请先执行 /task recovery task_1 查看恢复项'
+      + '（Kernel: resume requires resolving the unknown blocker first）',
+    );
   });
 });

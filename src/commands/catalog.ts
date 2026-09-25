@@ -281,12 +281,21 @@ function positionalValue(args: ResolvedCommandArgs, name: string): string | unde
   return typeof value === 'string' ? value : undefined;
 }
 
+/** Task ids are rendered with a leading `#` in user-facing views. */
+export function normalizeTaskIdArgument(value: string): string {
+  return value.startsWith('#') ? value.slice(1) : value;
+}
+
 export function stringArg(args: ResolvedCommandArgs, name: string): string {
-  return positionalValue(args, name) ?? '';
+  const value = positionalValue(args, name) ?? '';
+  return name === 'taskId' ? normalizeTaskIdArgument(value) : value;
 }
 
 export function optionalStringArg(args: ResolvedCommandArgs, name: string): string | undefined {
-  return positionalValue(args, name);
+  const value = positionalValue(args, name);
+  return value !== undefined && name === 'taskId'
+    ? normalizeTaskIdArgument(value)
+    : value;
 }
 
 export function stringListArg(args: ResolvedCommandArgs, name: string): string[] {
@@ -633,7 +642,10 @@ export class CommandCatalog {
         continue;
       }
 
-      const value = positionalTokens[tokenIndex];
+      const rawValue = positionalTokens[tokenIndex];
+      const value = rawValue !== undefined && argument.name === 'taskId'
+        ? normalizeTaskIdArgument(rawValue)
+        : rawValue;
       if (!value) {
         if (argument.optional) {
           positionals[argument.name] = undefined;

@@ -665,8 +665,13 @@ export function SettingsPanel({
       const originalModel = asRecord(asRecord(originalConfig.models)[model.ref]);
       const sameIdentity = originalModel.providerRef === model.providerRef
         && originalModel.modelId === model.modelId;
+      const {
+        costInputPerMillion: _oldInputPrice,
+        costOutputPerMillion: _oldOutputPrice,
+        ...originalModelWithoutPrices
+      } = originalModel;
       models[model.ref] = {
-        ...(sameIdentity ? originalModel : {}),
+        ...(sameIdentity ? originalModelWithoutPrices : {}),
         modelId: model.modelId,
         providerRef: model.providerRef,
         capabilities: model.capabilities,
@@ -1028,6 +1033,25 @@ export function SettingsPanel({
     setDraft(current => current ? removeModelRefsFromRoutingDraft(current, modelRefs) : current);
   };
 
+  const updateModelPrice = (
+    modelRef: string,
+    field: 'costInputPerMillion' | 'costOutputPerMillion',
+    value: string,
+  ) => {
+    const trimmed = value.trim();
+    const parsed = trimmed === '' ? undefined : Number(trimmed);
+    if (parsed !== undefined && (!Number.isFinite(parsed) || parsed < 0)) return;
+    setCatalog(current => {
+      if (!current) return current;
+      const model = current.models[modelRef];
+      if (!model) return current;
+      const nextModel = { ...model };
+      if (parsed === undefined) delete nextModel[field];
+      else nextModel[field] = parsed;
+      return { ...current, models: { ...current.models, [modelRef]: nextModel } };
+    });
+  };
+
   const capabilitiesForModelId = (modelId: string): string[] => (
     [...new Set(capabilityCatalog[modelId] ?? [])].sort()
   );
@@ -1298,7 +1322,10 @@ export function SettingsPanel({
                   <div>
                     <div className="settings-eyebrow">01 / MODEL CONNECTIONS</div>
                     <h3 id="models-heading">模型列表</h3>
-                    <p>每个模型连接可以独立命名、更新 API Key，并提供给智能体进行路由。</p>
+                    <p>
+                      每个模型连接可以独立命名、更新 API Key，并提供给智能体进行路由。
+                      要生成正式账单，还需要填写该模型的输入/输出价格。
+                    </p>
                   </div>
                   <button
                     className="primary-button"
@@ -1508,6 +1535,46 @@ export function SettingsPanel({
                                     </button>
                                   )}
                                 </div>
+                                {option.configured && option.modelRef && (
+                                  <div className="model-price-editor">
+                                    <label className="settings-field">
+                                      <span>输入价格（CNY / 1M tokens）</span>
+                                      <input
+                                        className="text-input"
+                                        type="number"
+                                        min="0"
+                                        step="any"
+                                        inputMode="decimal"
+                                        value={catalog.models[option.modelRef]?.costInputPerMillion ?? ''}
+                                        placeholder="未配置"
+                                        disabled={editingDisabled}
+                                        onChange={event => updateModelPrice(
+                                          option.modelRef!,
+                                          'costInputPerMillion',
+                                          event.target.value,
+                                        )}
+                                      />
+                                    </label>
+                                    <label className="settings-field">
+                                      <span>输出价格（CNY / 1M tokens）</span>
+                                      <input
+                                        className="text-input"
+                                        type="number"
+                                        min="0"
+                                        step="any"
+                                        inputMode="decimal"
+                                        value={catalog.models[option.modelRef]?.costOutputPerMillion ?? ''}
+                                        placeholder="未配置"
+                                        disabled={editingDisabled}
+                                        onChange={event => updateModelPrice(
+                                          option.modelRef!,
+                                          'costOutputPerMillion',
+                                          event.target.value,
+                                        )}
+                                      />
+                                    </label>
+                                  </div>
+                                )}
                                 {option.configured
                                   && option.modelRef
                                   && capabilityEditorRef === option.modelRef && (

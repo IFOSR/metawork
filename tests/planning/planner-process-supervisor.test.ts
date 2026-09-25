@@ -32,6 +32,12 @@ function fakeProcess(): FakeProcess {
 function completeRpcTurn(
   child: FakeProcess,
   expectedModel?: { provider: string; modelId: string },
+  usage?: {
+    input: number;
+    output: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+  },
 ): void {
   let inputBuffer = '';
   child.stdin.on('data', chunk => {
@@ -69,6 +75,16 @@ function completeRpcTurn(
         };
         for (const event of [
           { type: 'response', command: 'prompt', success: true, id: request.id },
+          ...(usage
+            ? [{
+                type: 'message_end',
+                message: {
+                  role: 'assistant',
+                  id: 'assistant-message-1',
+                  usage,
+                },
+              }]
+            : []),
           {
             type: 'tool_execution_start',
             toolCallId: 'tool-1',
@@ -258,6 +274,41 @@ describe('PlannerProcessSupervisor', () => {
       process.cwd(),
       'planner/AnyFusion-Pi/packages/coding-agent/dist/cli.js',
     ));
+  });
+
+  it('forwards each completed Planner message usage with the active model identity', async () => {
+    const child = fakeProcess();
+    completeRpcTurn(child, { provider: 'deepseek', modelId: 'deepseek-flash' }, {
+      input: 139,
+      output: 1_733,
+      cacheRead: 17_920,
+    });
+    const usage: unknown[] = [];
+    const supervisor = new PlannerProcessSupervisor({
+      plannerHome: join(tmpdir(), `planner-home-usage-${process.pid}`),
+      sessionDir: join(tmpdir(), `planner-session-usage-${process.pid}`),
+      expectedModel: {
+        provider: 'deepseek',
+        modelId: 'deepseek-flash',
+      },
+      spawn: (() => child as never) as never,
+    });
+
+    await supervisor.run('plan this', {
+      timeoutMs: 1_000,
+      request: { sessionId: 'session-usage', source: 'gateway' },
+    } as never, 'kernel', undefined, event => usage.push(event));
+
+    expect(usage).toEqual([expect.objectContaining({
+      sourceEventKey: 'message_end:assistant-message-1',
+      callId: 'assistant-message-1',
+      providerRef: 'deepseek',
+      modelId: 'deepseek-flash',
+      counters: expect.arrayContaining([
+        { resource: 'model_tokens', metric: 'input', unit: 'token', kind: 'delta', value: '139' },
+        { resource: 'model_tokens', metric: 'output', unit: 'token', kind: 'delta', value: '1733' },
+      ]),
+    })]);
   });
 
   it('uses the revision-pinned Planner runtime instead of a legacy environment override', async () => {

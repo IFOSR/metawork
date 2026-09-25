@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { GatewayClient } from '../../planner/AnyFusion-Pi/packages/coding-agent/src/anyfusion/gateway-client.js';
 import type {
   GatewayCommandEnvelope,
@@ -102,16 +102,35 @@ describe('native TUI gateway client', () => {
       'planner/AnyFusion-Pi/packages/coding-agent/src/main.ts',
       'utf8',
     );
-    const clientModeSource = readFileSync(
+    // ADR-0041：唯一产品 TUI 入口按需加载，仍先于本地 Agent 运行时。
+    expect(mainSource).toContain('runMetaWorkTui');
+    expect(mainSource).toContain('./modes/metawork-tui/index.ts');
+    expect(mainSource.indexOf('await runMetaWorkTui'))
+      .toBeLessThan(mainSource.indexOf('await import("./main-runtime.ts")'));
+
+    // 简版客户端与本地交互 Agent TUI 已删除；无 Gateway 的交互调用明确失败。
+    expect(mainSource).not.toContain('runAnyFusionClientMode');
+    expect(mainSource).not.toContain('InteractiveMode');
+    const runtimeSource = readFileSync(
+      'planner/AnyFusion-Pi/packages/coding-agent/src/main-runtime.ts', 'utf8',
+    );
+    expect(runtimeSource).toContain('standalone interactive agent UI is retired');
+    expect(existsSync(
       'planner/AnyFusion-Pi/packages/coding-agent/src/modes/interactive/anyfusion-client-mode.ts',
+    )).toBe(false);
+    expect(existsSync(
+      'planner/AnyFusion-Pi/packages/coding-agent/src/modes/interactive/interactive-mode.ts',
+    )).toBe(false);
+
+    // 新 TUI 树无本地 Agent/模型/工具实现。
+    const tuiEntry = readFileSync(
+      'planner/AnyFusion-Pi/packages/coding-agent/src/modes/metawork-tui/index.ts',
       'utf8',
     );
-
-    expect(mainSource).toContain('runAnyFusionClientMode');
-    expect(mainSource.indexOf('await runAnyFusionClientMode'))
-      .toBeLessThan(mainSource.indexOf('createAgentSessionRuntime(createRuntime'));
-    expect(clientModeSource).not.toContain('AgentSession');
-    expect(clientModeSource).not.toContain('.prompt(');
+    expect(tuiEntry).toContain('runMetaWorkTui');
+    expect(tuiEntry).not.toContain('AgentSession');
+    expect(tuiEntry).not.toContain('.prompt(');
+    expect(tuiEntry).not.toContain('SessionManager');
   });
 
   it('accepts only the untrusted Web launch hint on the local control message', () => {

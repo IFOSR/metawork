@@ -160,6 +160,14 @@ export function normalizeExecutorFailure(
   if (/adapter|unsupported executor|binding/i.test(rawText)) {
     return kernelFailure({ kind: 'adapter', scope: 'agent_class', code: 'executor_adapter_failed', summary, ...passthrough });
   }
+  if (/\bStream ended without finish_reason\b/i.test(rawText)) {
+    // The protocol failure is known; its transport cause and prior tool effects are not.
+    return kernelFailure({
+      kind: 'unknown', scope: 'attempt', code: 'model_response_incomplete', summary,
+      ...passthrough,
+      label: '模型响应流未完整结束，本次执行失败；可显式请求安全恢复',
+    });
+  }
   return kernelFailure({ kind: 'unknown', scope: 'attempt', code: 'unknown_executor_failure', summary, ...passthrough });
 }
 

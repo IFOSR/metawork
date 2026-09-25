@@ -90,6 +90,22 @@ the corresponding generation replan request remains `submitted`.
 ID is replayed idempotently. This rule does not permit generic automatic replay
 of uncertain applications or external effects.
 
+### Explicit incomplete-response recovery amendment (2026-09-24)
+
+The exact `Stream ended without finish_reason` adapter error uses the stable
+`model_response_incomplete` code with conservative unknown-kind automatic recovery.
+On explicit Resume only, Runtime can normalize the latest immutable failure
+summary to the existing `retry` blocker category, including older unknown receipts.
+This does not assert a network cause or certify any partial output. Material,
+contract, orphan and external-effect blockers take precedence. Kernel retains
+authorization and rejects retry of externally non-idempotent work; blocked nodes
+contribute to the snapshot safety classification even when the runnable frontier
+is empty. Receipts and prior decisions remain immutable.
+
+Control-command acknowledgement reports authorization, not process start. Gateway
+must retain a denied-resume explanation as the command result even if a previous
+uncertified partial result is delivered in the same turn.
+
 ## LangGraph Boundary
 
 LangGraph may replace only the durable workflow cursor/replay implementation after the MetaClaw contracts and fault tests freeze. The evaluation uses Functional API tasks and an independent SQLite checkpointer. Checkpoints are disposable implementation state: loss or corruption must be recoverable from the main database. LangGraph never owns Kernel policy, retry semantics, Work Graph topology, ledger authority, domain types or model/agent abstraction.

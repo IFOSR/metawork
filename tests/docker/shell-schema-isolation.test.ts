@@ -68,7 +68,7 @@ describe('Docker shell SQLite schema isolation', () => {
     );
     const model = 'gpt-5.6-terra';
 
-    expect(plannerModels.providers.anyint.api).toBe('openai-responses');
+    expect(plannerModels.providers.anyint.api).toBe('openai-completions');
     expect(plannerModels.providers.anyint.models).toContainEqual(
       expect.objectContaining({ id: model }),
     );
@@ -76,7 +76,7 @@ describe('Docker shell SQLite schema isolation', () => {
     expect(plannerSettings.defaultThinkingLevel).toBe('high');
     expect(plannerSettings.enabledModels).toEqual([`anyint/${model}`]);
     expect(plannerModels.providers.anyint.models[0]).not.toHaveProperty('thinkingLevelMap');
-    expect(piModels.providers.anyint.api).toBe('openai-responses');
+    expect(piModels.providers.anyint.api).toBe('openai-completions');
     expect(piModels.providers.anyint.models).toContainEqual(
       expect.objectContaining({ id: model }),
     );

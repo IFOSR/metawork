@@ -124,6 +124,17 @@ describe('formatExecutorError', () => {
 });
 
 describe('normalizeExecutorFailure', () => {
+  it('identifies an incomplete model response without asserting a network cause or automatic recovery', () => {
+    expect(normalizeExecutorFailure('Stream ended without finish_reason')).toMatchObject({
+      kind: 'unknown', scope: 'attempt', code: 'model_response_incomplete',
+      summary: 'Stream ended without finish_reason',
+      label: '模型响应流未完整结束，本次执行失败；可显式请求安全恢复',
+    });
+    expect(isRecoverableExecutorFailure('Stream ended without finish_reason')).toBe(false);
+    expect(normalizeExecutorFailure('Stream ended without finish_reason', true).kind).toBe('cancelled');
+    expect(normalizeExecutorFailure('permission denied: Stream ended without finish_reason').kind).toBe('permission');
+  });
+
   it('normalizes infrastructure text once at the Adapter boundary', () => {
     expect(normalizeExecutorFailure('temporary failure in name resolution')).toMatchObject({
       kind: 'network', scope: 'agent_class', code: 'network_failure',

@@ -457,6 +457,97 @@ describe("GatewayClient", () => {
 			await rm(socketPath, { force: true });
 		}
 	});
+
+	it("exposes history, completion and task view queries as versioned commands", async () => {
+		const { client, submitted } = fixture();
+
+		await client.getConversationHistory("conv_native", "cursor_1", 50);
+		expect(submitted.at(-1)?.command).toEqual({
+			kind: "get_conversation_history",
+			conversationId: "conv_native",
+			cursor: "cursor_1",
+			limit: 50,
+		});
+		expect(submitted.at(-1)?.scope).toEqual({
+			kind: "conversation",
+			selection: { mode: "attach", conversationId: "conv_native" },
+		});
+
+		// Workspace scope 补全：targetConversationId 为 null 语义。
+		await client.completeCommand("/wo", 3);
+		expect(submitted.at(-1)?.command).toEqual({
+			kind: "complete_command",
+			text: "/wo",
+			cursor: 3,
+		});
+		expect(submitted.at(-1)?.scope).toEqual({ kind: "workspace" });
+
+		// Conversation scope 补全必须显式 attach。
+		await client.completeCommand("/task", undefined, "conv_native");
+		expect(submitted.at(-1)?.command).toEqual({
+			kind: "complete_command",
+			text: "/task",
+		});
+		expect(submitted.at(-1)?.scope).toEqual({
+			kind: "conversation",
+			selection: { mode: "attach", conversationId: "conv_native" },
+		});
+
+		await client.getTaskView("conv_native", "turn_1", "task_1");
+		expect(submitted.at(-1)?.command).toEqual({
+			kind: "get_task_view",
+			conversationId: "conv_native",
+			turnId: "turn_1",
+			taskId: "task_1",
+		});
+	});
+
+	it("replays an unconfirmed submission with the identical envelope", async () => {
+		const { client, submitted } = fixture();
+
+		const { envelope, receipt } = await client.submitWithEnvelope(
+			{ kind: "user_message", text: "hello", attachments: [] },
+			{
+				kind: "conversation",
+				selection: { mode: "attach", conversationId: "conv_native" },
+			},
+		);
+		expect(receipt.status).toBe("accepted");
+
+		// 断线丢 receipt 后重放：同一 requestId / idempotencyKey / 目标与内容。
+		const replayed = await client.resubmitEnvelope(envelope);
+		expect(replayed.status).toBe("accepted");
+		expect(submitted).toHaveLength(2);
+		expect(submitted[1]).toEqual(envelope);
+		expect(submitted[1]?.requestId).toBe(envelope.requestId);
+		expect(submitted[1]?.idempotencyKey).toBe(envelope.idempotencyKey);
+	});
+
+	it("exposes server capabilities reported by the transport hello", async () => {
+		const { client } = fixture();
+		expect(client.serverCapabilities).toEqual([]);
+		expect(client.hasServerCapability("task_view_v1")).toBe(false);
+
+		const withCapabilities = new GatewayClient({
+			submit: async (envelope) => ({
+				requestId: envelope.requestId,
+				status: "accepted",
+				conversationId: null,
+			}),
+			replay: async (_conversationId, afterSequence = 0) => ({
+				lastSequence: afterSequence,
+				snapshot: [],
+				deltas: [],
+			}),
+			subscribe: () => () => undefined,
+			getServerCapabilities: () => ["command_completion_v1", "task_view_v1"],
+		});
+		expect(withCapabilities.serverCapabilities).toEqual([
+			"command_completion_v1",
+			"task_view_v1",
+		]);
+		expect(withCapabilities.hasServerCapability("task_view_v1")).toBe(true);
+	});
 });
 
 function commandEnvelope(requestId: string): GatewayCommandEnvelope {

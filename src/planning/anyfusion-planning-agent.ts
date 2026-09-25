@@ -15,6 +15,7 @@ import type {
 } from './planner-proposal.js';
 import type { PlanningAgent, PlanningProposalSubmitter } from './planning-agent.js';
 import type { PlannerRunProgressObserver } from './planner-progress.js';
+import type { HarnessUsageEvent } from '../executor/harness-driver.js';
 import type { PlanningAgentPlan, PlanningContext } from './planning-types.js';
 import { PlanningAgentPlanSchema } from './planning-agent-plan-schema.js';
 
@@ -64,7 +65,7 @@ export class AnyFusionPlanningAgent implements PlanningAgent {
     submitter?: PlanningProposalSubmitter,
   ): Promise<PlannerProposalResult> {
     try {
-      const result = (await this.run(context, 'kernel', submitter?.onProgress)).proposalResult;
+      const result = (await this.run(context, 'kernel', submitter?.onProgress, submitter?.onUsage)).proposalResult;
       if (!isPlannerProposalResult(result)) {
         throw new Error('Planner returned an Executor manual result on a semantic planning turn');
       }
@@ -110,6 +111,7 @@ export class AnyFusionPlanningAgent implements PlanningAgent {
     context: PlanningContext,
     purpose: PlannerProposalPurpose,
     onProgress?: PlannerRunProgressObserver,
+    onUsage?: (event: HarnessUsageEvent) => void,
   ) {
     const effectiveContext = {
       ...context,
@@ -118,9 +120,37 @@ export class AnyFusionPlanningAgent implements PlanningAgent {
     const auditRun = await this.startAudit(context);
     const startedAt = Date.now();
     try {
-      const result = onProgress
-        ? await this.deps.runner.run(context.userInput, effectiveContext, purpose, onProgress)
-        : await this.deps.runner.run(context.userInput, effectiveContext, purpose);
+      let result;
+      if (onProgress && onUsage) {
+        result = await this.deps.runner.run(
+          context.userInput,
+          effectiveContext,
+          purpose,
+          onProgress,
+          onUsage,
+        );
+      } else if (onProgress) {
+        result = await this.deps.runner.run(
+          context.userInput,
+          effectiveContext,
+          purpose,
+          onProgress,
+        );
+      } else if (onUsage) {
+        result = await this.deps.runner.run(
+          context.userInput,
+          effectiveContext,
+          purpose,
+          undefined,
+          onUsage,
+        );
+      } else {
+        result = await this.deps.runner.run(
+          context.userInput,
+          effectiveContext,
+          purpose,
+        );
+      }
       if (auditRun) this.finishAudit({
         id: auditRun.id,
         status: 'completed',

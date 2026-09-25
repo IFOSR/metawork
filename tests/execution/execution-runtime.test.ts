@@ -493,6 +493,29 @@ describe('ExecutorRegistry', () => {
 });
 
 describe('ExecutionRuntime', () => {
+  it.each(['attempt', 'task'])('latches %s cancellation while resolving the private binding', async scope => {
+    const adapter = createAdapter('implementation-alpha');
+    let resume!: () => void;
+    const { registry } = createRegistry({
+      harnessDriverRegistry: createHarnessDriverRegistry(() => adapter),
+      getRuntimeBinding: async binding => {
+        await new Promise<void>(resolve => { resume = resolve; });
+        return createRuntimeBinding(binding);
+      },
+    });
+    const runtime = new ExecutionRuntime(registry);
+    const pending = runtime.run(createRunInput());
+    const aborted = scope === 'attempt'
+      ? runtime.abortAttempt('task_runtime', 'attempt_runtime')
+      : runtime.abortTask('task_runtime');
+    resume();
+    const result = await pending;
+    expect(aborted).toBe(scope === 'attempt' ? true : 1);
+    expect(adapter.execute).not.toHaveBeenCalled();
+    expect(result.status).toBe('cancelled');
+    expect(runtime.abortTask('task_runtime')).toBe(0);
+  });
+
   it('runs through the adapter selected by the explicit authorized binding', async () => {
     const adapter = createAdapter('implementation-alpha');
     const { registry } = createRegistry({

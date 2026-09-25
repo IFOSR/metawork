@@ -81,6 +81,12 @@ export interface WsHandlers {
     status?: InteractionTraceStatus,
     completedAt?: string | null,
   ) => void;
+  onBilling?: (
+    turnId: string,
+    queryBill: import('./session-types').QueryBillProjection | null,
+    taskUsageSummary: import('./session-types').TaskUsageSummary | null,
+    turnBilling?: import('./session-types').TurnBillUserView | null,
+  ) => void;
   onConfigurationRuntimeState?: (state: ConfigurationRuntimeState) => void;
   onError?: (message: string, detail?: {
     requestId?: string;
@@ -214,6 +220,14 @@ export class WsClient {
             message.events,
             message.status,
             message.completedAt,
+          );
+          break;
+        case 'billing':
+          this.handlers.onBilling?.(
+            message.turnId,
+            message.queryBill,
+            message.taskUsageSummary,
+            message.turnBilling ?? null,
           );
           break;
         case 'configuration_runtime_state':

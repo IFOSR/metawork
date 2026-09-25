@@ -2,7 +2,7 @@ import type { ThemePreference } from '../theme';
 import type { WorkspaceSummary } from '../api/session-types';
 import { ThemeControl } from './ThemeControl';
 
-export type WorkspaceTab = 'conversation' | 'trajectory';
+export type WorkspaceTab = 'conversation' | 'trajectory' | 'billing';
 
 export function WorkspaceHeader({
   title,
@@ -40,6 +40,9 @@ export function WorkspaceHeader({
         </button>
         <button data-active={tab === 'trajectory'} onClick={() => onTabChange('trajectory')}>
           轨迹
+        </button>
+        <button data-active={tab === 'billing'} onClick={() => onTabChange('billing')}>
+          账单
         </button>
       </nav>
       <div className="workspace-runtime">

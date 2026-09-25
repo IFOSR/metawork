@@ -14,6 +14,7 @@ import type { WorkspacePublicationRepo } from '../storage/workspace-publication-
 import type { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
 import type { ResourceLeaseService } from './resource-lease-service.js';
 import type { WorkUnitClaimService } from './work-unit-claim-service.js';
+import { TaskResidueReader } from './task-residue-reader.js';
 
 export interface CancellationReceipt {
   taskId: string;
@@ -34,6 +35,7 @@ type CancellationDecision = KernelDecision & {
  */
 export class TaskCancellationCoordinator {
   private readonly taskEvents: TaskEventRecorder;
+  private readonly residueReader: TaskResidueReader;
 
   constructor(private readonly deps: {
     db: Database.Database;
@@ -52,6 +54,12 @@ export class TaskCancellationCoordinator {
     attemptExecutionRepository: AttemptExecutionRepositoryPort;
   }) {
     this.taskEvents = new TaskEventRecorder(deps.taskEventRepo);
+    this.residueReader = new TaskResidueReader({
+      db: deps.db,
+      dispatchItemRepo: deps.dispatchItemRepo,
+      publicationRepo: deps.publicationRepo,
+      workUnitClaimService: deps.workUnitClaimService,
+    });
   }
 
   buildSnapshot(taskId: string): Extract<KernelSnapshot, { type: 'task_control' }> {
@@ -329,61 +337,7 @@ export class TaskCancellationCoordinator {
     generationId: string | null,
     excludedDecisionId?: string,
   ): string[] {
-    const reasons: string[] = [];
-    const generation = generationId ? ' AND generation_id = ?' : '';
-    const dispatchGeneration = generationId ? ' AND dispatch.generation_id = ?' : '';
-    const parameters = generationId ? [taskId, generationId] : [taskId];
-    if (this.deps.dispatchItemRepo.hasBlockingResidue(taskId, generationId ?? undefined)) {
-      reasons.push('dispatch');
-    }
-    if (this.deps.publicationRepo.hasBlockingResidue(taskId, generationId ?? undefined)) {
-      reasons.push('publication');
-    }
-    if (this.deps.db.prepare(`
-      SELECT 1 FROM attempt_sandboxes
-      WHERE task_id = ?${generation}
-        AND status IN ('created', 'running', 'paused')
-      LIMIT 1
-    `).get(...parameters)) reasons.push('execution_backend');
-    if (this.deps.workUnitClaimService.hasClaimedByTask(taskId)) reasons.push('work_unit');
-    if (this.deps.db.prepare(`
-      SELECT 1 FROM resource_leases
-      WHERE task_id = ?${generation} AND released_at IS NULL
-      LIMIT 1
-    `).get(...parameters)) reasons.push('resource_lease');
-    if (this.deps.db.prepare(`
-      SELECT 1 FROM generation_replan_requests
-      WHERE task_id = ?${generation}
-        AND status IN ('pending_quiescence', 'planning', 'submitted')
-      LIMIT 1
-    `).get(...parameters)) reasons.push('generation_replan');
-    const applicationParameters: unknown[] = [taskId];
-    let decisionFilter = '';
-    if (excludedDecisionId) {
-      decisionFilter = ' AND application.decision_id <> ?';
-      applicationParameters.push(excludedDecisionId);
-    }
-    if (this.deps.db.prepare(`
-      SELECT 1
-      FROM kernel_decision_applications AS application
-      INNER JOIN kernel_events AS event ON event.id = application.event_id
-      WHERE event.task_id = ?
-        AND application.status IN ('pending', 'applying', 'uncertain')
-        ${decisionFilter}
-      LIMIT 1
-    `).get(...applicationParameters)) reasons.push('kernel_application');
-    if (this.deps.db.prepare(`
-      SELECT 1
-      FROM kernel_dispatch_items AS dispatch
-      LEFT JOIN executor_attempt_receipts AS receipt
-        ON receipt.attempt_id = dispatch.attempt_id
-      WHERE dispatch.task_id = ?${dispatchGeneration}
-        AND dispatch.status = 'terminal'
-        AND (dispatch.work_unit_id IS NOT NULL OR dispatch.sandbox_container_id IS NOT NULL)
-        AND receipt.attempt_id IS NULL
-      LIMIT 1
-    `).get(...parameters)) reasons.push('attempt_receipt');
-    return reasons;
+    return this.residueReader.blockingReasons(taskId, generationId, excludedDecisionId);
   }
 
   findCleanupTaskId(): string | null {

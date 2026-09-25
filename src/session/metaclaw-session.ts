@@ -49,6 +49,7 @@ import { buildPermissionRules } from '../resource/index.js';
 import { AttemptExecutionBackendReconciler } from '../execution/attempt-execution-backend-reconciler.js';
 import { InputController } from './input-controller.js';
 import { SessionPresentationService, type GuidanceState } from './session-presentation-service.js';
+import { formatEmptyTaskRecovery } from '../task/task-blocker-guidance.js';
 import { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
 import {
   formatTaskResumeDecision,
@@ -2455,6 +2456,7 @@ export class MetaclawSession {
   }
 
   private formatTaskRecovery(taskId: string): string {
+    const task = this.findLocalTask(taskId);
     const applications = this.kernelWorkflowRepo.listRecoveryItems(taskId).map(item =>
       `- ${item.id} [application/${item.status}] ${item.decision.action.type}: ${item.errorSummary ?? 'no error summary'}`
     );
@@ -2462,6 +2464,17 @@ export class MetaclawSession {
       `- ${item.id} [effect/${item.status}] ${item.effectType}: ${item.errorSummary ?? 'no error summary'}`
     );
     const items = [...applications, ...effects];
+    if (items.length === 0) {
+      const emptyRecovery = formatEmptyTaskRecovery(taskId, {
+        status: task?.status,
+        blockerReason: task?.dependencies
+          .filter(dependency => dependency.status === 'waiting')
+          .map(dependency => dependency.description)
+          .filter(Boolean)
+          .join('；'),
+      });
+      if (emptyRecovery) return emptyRecovery;
+    }
     return items.length > 0
       ? `Task #${taskId} recovery items:\n${items.join('\n')}`
       : `Task #${taskId} has no uncertain or failed recovery items.`;

@@ -90,6 +90,7 @@ export interface ConversationRuntimePort {
     listAttemptReceipts(taskId: string): ExecutorAttemptReceipt[];
     getConversationTaskSlot(conversationId: string): ConversationTaskSlot;
     listQueuedTaskIds(conversationId: string): string[];
+    getQueuedTaskReason(taskId: string): string | null;
     listConversationTaskSlots(): ConversationTaskSlot[];
   };
   readonly commands: {

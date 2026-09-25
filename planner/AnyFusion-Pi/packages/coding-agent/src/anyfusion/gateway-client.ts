@@ -22,6 +22,8 @@ export interface GatewayClientDeps {
   subscribe(listener: (event: GatewayEventEnvelope) => void): () => void;
   onDisconnect?(listener: () => void): () => void;
   createId?(prefix: string): string;
+  /** Server hello 公布的安全能力清单（command_completion_v1 / task_view_v1 等）。 */
+  getServerCapabilities?(): string[];
 }
 
 let sequenceCounter = 0;
@@ -54,6 +56,20 @@ export class GatewayClient {
 
 	connect(): Promise<void> {
 		return this.deps.connect?.() ?? Promise.resolve();
+	}
+
+	get serverCapabilities(): string[] {
+		return this.deps.getServerCapabilities?.() ?? [];
+	}
+
+	/** Server 是否公布指定能力（缺失时客户端明确提示升级，不静默降级）。 */
+	hasServerCapability(capability: string): boolean {
+		return this.serverCapabilities.includes(capability);
+	}
+
+	/** 客户端稳定的 connectionId（用于日志与诊断展示）。 */
+	get clientConnectionId(): string {
+		return this.connectionId;
 	}
 
 	onDisconnect(listener: () => void): () => void {
@@ -131,6 +147,84 @@ export class GatewayClient {
     );
   }
 
+  getConversationHistory(
+    conversationId: string,
+    cursor?: string,
+    limit?: number,
+  ): Promise<GatewayCommandReceipt> {
+    return this.submit(
+      {
+        kind: 'get_conversation_history',
+        conversationId,
+        ...(cursor ? { cursor } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+      },
+      {
+        kind: 'conversation',
+        selection: { mode: 'attach', conversationId },
+      },
+    );
+  }
+
+  /**
+   * 受限只读命令补全（command_completion_v1）。不传 conversationId 时为
+   * Workspace scope，只返回该范围合法的导航/只读候选。
+   */
+  completeCommand(
+    text: string,
+    cursor?: number,
+    conversationId?: string,
+  ): Promise<GatewayCommandReceipt> {
+    return this.submit(
+      {
+        kind: 'complete_command',
+        text,
+        ...(cursor !== undefined ? { cursor } : {}),
+      },
+      conversationId
+        ? {
+            kind: 'conversation',
+            selection: { mode: 'attach', conversationId },
+          }
+        : { kind: 'workspace' },
+    );
+  }
+
+  /** 受限只读 Task 视图查询（task_view_v1）。 */
+  getTaskView(
+    conversationId: string,
+    turnId: string,
+    taskId: string,
+  ): Promise<GatewayCommandReceipt> {
+    return this.submit(
+      { kind: 'get_task_view', conversationId, turnId, taskId },
+      {
+        kind: 'conversation',
+        selection: { mode: 'attach', conversationId },
+      },
+    );
+  }
+
+  getQueryBill(queryId: string): Promise<GatewayCommandReceipt> {
+    return this.submit({ kind: 'get_query_bill', queryId }, { kind: 'workspace' });
+  }
+
+  getQueryBillForTurn(turnId: string): Promise<GatewayCommandReceipt> {
+    return this.submit({ kind: 'get_query_bill_for_turn', turnId }, { kind: 'workspace' });
+  }
+
+  getTaskUsageSummary(taskId: string): Promise<GatewayCommandReceipt> {
+    return this.submit({ kind: 'get_task_usage_summary', taskId }, { kind: 'workspace' });
+  }
+
+  /**
+   * 重放一个未确认的提交 envelope（断线丢 receipt 场景）：必须复用完全相同的
+   * requestId / idempotencyKey / 目标与内容，不生成新 ID。
+   */
+  resubmitEnvelope(envelope: GatewayCommandEnvelope): Promise<GatewayCommandReceipt> {
+    return this.awaitReconnect().then(() => this.deps.submit(envelope));
+  }
+
   onEvent(listener: (event: GatewayEventEnvelope) => void): () => void {
     this.listeners.add(listener);
     this.transportUnsubscribe ??= this.deps.subscribe(event => {
@@ -194,19 +288,54 @@ export class GatewayClient {
     scope: GatewayScope,
   ): Promise<GatewayCommandReceipt> {
     await this.awaitReconnect();
-    const requestId = this.createId('req');
-    const idempotencyKey = this.createId('idem');
-    const receipt = await this.deps.submit({
+    return this.submitEnvelope({
       protocolVersion: 2,
-      requestId,
-      idempotencyKey,
+      requestId: this.createId('req'),
+      idempotencyKey: this.createId('idem'),
       connectionId: this.connectionId,
       scope,
       command,
       clientCapabilities: ['trace_v1'],
     });
+  }
+
+  /**
+   * 只构造不可变 envelope，不发送。控制器先持久化 envelope（进程内）再发送，
+   * 以便发送后断线丢 receipt 时能重放同一 requestId/目标/内容。
+   */
+  async buildEnvelope(
+    command: GatewayCommandEnvelope['command'],
+    scope: GatewayScope,
+  ): Promise<GatewayCommandEnvelope> {
+    await this.awaitReconnect();
+    return {
+      protocolVersion: 2,
+      requestId: this.createId('req'),
+      idempotencyKey: this.createId('idem'),
+      connectionId: this.connectionId,
+      scope,
+      command,
+      clientCapabilities: ['trace_v1'],
+    };
+  }
+
+  /** 发送已构造的 envelope；同一 envelope 可重复发送（幂等键保证只受理一次）。 */
+  async submitEnvelope(
+    envelope: GatewayCommandEnvelope,
+  ): Promise<GatewayCommandReceipt> {
+    const receipt = await this.deps.submit(envelope);
     if (receipt.conversationId) this.activeConversationId = receipt.conversationId;
     return receipt;
+  }
+
+  /** 构造并提交一个 envelope，同时返回固定下来的不可变 envelope 供断线重放。 */
+  async submitWithEnvelope(
+    command: GatewayCommandEnvelope['command'],
+    scope: GatewayScope,
+  ): Promise<{ envelope: GatewayCommandEnvelope; receipt: GatewayCommandReceipt }> {
+    const envelope = await this.buildEnvelope(command, scope);
+    const receipt = await this.submitEnvelope(envelope);
+    return { envelope, receipt };
   }
 
   private async awaitReconnect(): Promise<void> {
@@ -257,6 +386,10 @@ function asError(error: unknown): Error {
 
 function isWorkspaceEvent(kind: GatewayEventEnvelope['kind']): boolean {
   return [
+    'workspace_changed',
+    'command_completion',
+    'task_view_snapshot',
+    'usage_billing_projection',
     'workspace_directory_snapshot',
     'workspace_conversation_upserted',
     'workspace_conversation_removed',

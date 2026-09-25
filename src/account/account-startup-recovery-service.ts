@@ -29,6 +29,8 @@ import {
 import { reconcileUncertainCancellations } from '../execution/cancellation-reconciliation.js';
 import type { QueuedTaskPayload } from '../storage/conversation-task-scheduler-repo.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
+import type { QueryUsageLifecycle } from '../metering/query-lifecycle.js';
+import type { ConversationResultDelivery } from '../session/conversation-session.js';
 
 export class AccountStartupRecoveryService {
   private lastBlockedRecheckAt: number | null = null;
@@ -51,6 +53,8 @@ export class AccountStartupRecoveryService {
     readonly verificationAndDeliveryService: VerificationAndDeliveryService;
     readonly blockedRecheckEnabled: boolean;
     readonly blockedRecheckIntervalMs: number;
+    readonly queryUsageLifecycle?: QueryUsageLifecycle;
+    readonly onSystemResultDelivery?: (sessionId: string, delivery: ConversationResultDelivery) => Promise<void>;
   }) {}
 
   async onTaskTerminal(taskId: string): Promise<void> {
@@ -66,6 +70,12 @@ export class AccountStartupRecoveryService {
       scheduler.releaseSlotAndPromote(conversationId, taskId, new Date().toISOString(), true);
       return;
     }
+    try {
+      this.deps.queryUsageLifecycle?.finalizeQueriesForTask(taskId, new Date().toISOString());
+    } catch {
+      // Billing reconciliation is durable and must not turn Task completion
+      // into an execution failure.
+    }
     const occupiedOtherCount = scheduler.listSlots().filter(slot => (
       slot.activeTaskId !== taskId
       && (slot.state === 'occupied' || slot.state === 'releasing')
@@ -78,8 +88,10 @@ export class AccountStartupRecoveryService {
       false,
       occupiedOtherCount < maxConcurrentTasks,
     );
-    if (!promotion) return;
-    await this.promoteConversationTask(promotion.taskId, conversationId);
+    if (promotion) {
+      await this.promoteConversationTask(promotion.taskId, conversationId);
+    }
+    await this.promoteAvailableQueuedTasks(new Date().toISOString());
   }
 
   private promoteConversationTask(taskId: string, conversationId: string): Promise<void> {
@@ -296,16 +308,15 @@ export class AccountStartupRecoveryService {
     for (const task of this.deps.taskServices.taskRuntimeService.listTasksByStatus('blocked')) {
       await this.recoverTask(task.id);
     }
-    for (const conversationId of this.deps.repositories.conversationTaskSchedulerRepo.listQueuedConversations()) {
-      const slot = this.deps.repositories.conversationTaskSchedulerRepo.getSlot(conversationId);
-      if (slot.state !== 'free' || slot.activeTaskId !== null) continue;
-      const occupied = this.deps.repositories.conversationTaskSchedulerRepo.listSlots()
-        .filter(candidate => candidate.state === 'occupied' && candidate.activeTaskId !== null).length;
-      if (occupied >= (this.deps.kernelConfiguration.runtimePolicy.maxConcurrentTasks ?? 2)) continue;
-      const promotion = this.deps.repositories.conversationTaskSchedulerRepo
-        .promoteNextQueued(conversationId, now);
-      if (promotion) await this.promoteConversationTask(promotion.taskId, conversationId);
-    }
+    await this.promoteAvailableQueuedTasks(now);
+  }
+
+  private async promoteAvailableQueuedTasks(now: string): Promise<void> {
+    const scheduler = this.deps.repositories.conversationTaskSchedulerRepo;
+    const maxConcurrentTasks = this.deps.kernelConfiguration.runtimePolicy.maxConcurrentTasks ?? 2;
+    const promotions = scheduler.promoteAvailable(maxConcurrentTasks, now);
+    await Promise.all(promotions.map(promotion =>
+      this.promoteConversationTask(promotion.taskId, promotion.conversationId)));
   }
 
   private collectRecoveryTaskIds(claimedOrphans: ReturnType<
@@ -567,12 +578,16 @@ export class AccountStartupRecoveryService {
 
   private async withSystemBinding<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
     const background = new Set<Promise<void>>();
+    const deliveries: ConversationResultDelivery[] = [];
     const result = await this.deps.binder.runWith(
-      this.systemBinding(sessionId, background),
+      this.systemBinding(sessionId, background, deliveries),
       operation,
     );
     while (background.size > 0) {
       await Promise.all([...background]);
+    }
+    for (const delivery of deliveries) {
+      await this.deps.onSystemResultDelivery?.(sessionId, delivery);
     }
     return result;
   }
@@ -580,6 +595,7 @@ export class AccountStartupRecoveryService {
   private systemBinding(
     sessionId: string,
     background: Set<Promise<void>>,
+    deliveries: ConversationResultDelivery[],
   ): ConversationExecutionBinding {
     const persistenceService = new SessionPersistenceService(this.deps.db);
     return {
@@ -588,7 +604,7 @@ export class AccountStartupRecoveryService {
       presentation: new SessionPresentationService(),
       kernelExecutionCallbacks: {
         appendOutput: () => undefined,
-        recordResultDelivery: () => undefined,
+        recordResultDelivery: delivery => { deliveries.push(delivery); },
         appendExecutionTrace: () => undefined,
         refreshRuntimeState: () => undefined,
         appendTaskQueueSnapshot: () => undefined,
@@ -664,6 +680,7 @@ function promotedExecutionRequest(payload: QueuedTaskPayload, taskId: string) {
   return {
     userPrompt: payload.requestText.slice(0, 24_000),
     contextTaskId: taskId,
+    queryId: payload.queryId ?? null,
     executionMode: payload.executionMode ?? 'fresh' as const,
     origin: 'system' as const,
     schedulingReason: payload.schedulingReason ?? 'queued Conversation Task promoted',

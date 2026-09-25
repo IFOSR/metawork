@@ -72,6 +72,7 @@ export function createProductionRuntimeBindings(input: {
           `configuration revision is unavailable: ${binding.configurationRevision}`,
         );
       }
+      snapshots.set(snapshot.revisionId, snapshot);
       return resolveRuntimePrivateConfigurationBinding({
         configuration: buildRuntimeConfigurationView(snapshot),
         authorizedBinding: binding,

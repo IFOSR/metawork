@@ -308,8 +308,6 @@ export {
 export { type MainOptions, main } from "./main.ts";
 // Run modes for programmatic SDK usage
 export {
-	InteractiveMode,
-	type InteractiveModeOptions,
 	type ModelInfo,
 	type PrintModeOptions,
 	RpcClient,
@@ -323,43 +321,18 @@ export {
 	runPrintMode,
 	runRpcMode,
 } from "./modes/index.ts";
-// UI components for extensions
+// UI components still shared by non-interactive surfaces (CLI startup, tools).
 export {
-	ArminComponent,
-	AssistantMessageComponent,
-	BashExecutionComponent,
-	BorderedLoader,
-	BranchSummaryMessageComponent,
-	CompactionSummaryMessageComponent,
-	CustomEditor,
-	CustomMessageComponent,
 	DynamicBorder,
-	ExtensionEditorComponent,
 	ExtensionInputComponent,
 	ExtensionSelectorComponent,
-	FooterComponent,
 	keyHint,
 	keyText,
-	LoginDialogComponent,
-	ModelSelectorComponent,
-	OAuthSelectorComponent,
 	type RenderDiffOptions,
 	rawKeyHint,
 	renderDiff,
 	SessionSelectorComponent,
-	type SettingsCallbacks,
-	type SettingsConfig,
-	SettingsSelectorComponent,
-	ShowImagesSelectorComponent,
-	SkillInvocationMessageComponent,
-	ThemeSelectorComponent,
-	ThinkingSelectorComponent,
-	ToolExecutionComponent,
-	type ToolExecutionOptions,
-	TreeSelectorComponent,
 	truncateToVisualLines,
-	UserMessageComponent,
-	UserMessageSelectorComponent,
 	type VisualTruncateResult,
 } from "./modes/interactive/components/index.ts";
 // Theme utilities for custom tools and extensions

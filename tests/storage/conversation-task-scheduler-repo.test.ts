@@ -23,6 +23,17 @@ function db(): Database.Database {
 }
 
 describe('ConversationTaskSchedulerRepo', () => {
+  it('exposes a waiting reason only while the Task is queued', () => {
+    const database = db();
+    const repository = new ConversationTaskSchedulerRepo(database);
+    expect(repository.getQueuedReason('task-a')).toBeNull();
+    repository.enqueueTask('task-a', 'conversation-a', '2026-08-29T00:00:00.000Z', 'account_task_capacity');
+    expect(repository.getQueuedReason('task-a')).toBe('account_task_capacity');
+    repository.claimSlot('conversation-a', 'task-a', 'reservation-a', '2026-08-29T00:01:00.000Z');
+    expect(repository.getQueuedReason('task-a')).toBeNull();
+    database.close();
+  });
+
   it('claims one free Conversation slot and rejects a second claim', () => {
     const repository = new ConversationTaskSchedulerRepo(db());
 
@@ -109,5 +120,30 @@ describe('ConversationTaskSchedulerRepo', () => {
       state: 'recovery_blocked',
     });
     expect(repository.promoteNextQueued('conversation-a', '2026-08-29T00:05:00.000Z')).toBeNull();
+  });
+
+  it('counts recovery-blocked slots against account capacity', () => {
+    const database = db();
+    const repository = new ConversationTaskSchedulerRepo(database);
+    repository.enqueueTask('task-a', 'conversation-a', '2026-08-29T00:00:00.000Z');
+    repository.enqueueTask('task-b', 'conversation-b', '2026-08-29T00:01:00.000Z');
+    repository.claimSlot('conversation-a', 'task-a', 'reservation-a', '2026-08-29T00:02:00.000Z');
+    repository.markRecoveryBlocked('conversation-a', 'task-a', '2026-08-29T00:03:00.000Z');
+
+    expect(repository.promoteAvailable(1, '2026-08-29T00:04:00.000Z')).toEqual([]);
+    expect(repository.listQueuedTasks('conversation-b')).toEqual(['task-b']);
+  });
+
+  it('uses persisted priority before aging and stable queue order', () => {
+    const database = db();
+    const repository = new ConversationTaskSchedulerRepo(database);
+    database.prepare('UPDATE tasks SET priority_json = ? WHERE id = ?')
+      .run(JSON.stringify({ semanticPriority: 'urgent' }), 'task-b');
+    repository.enqueueTask('task-a', 'conversation-a', '2026-08-29T00:00:00.000Z');
+    repository.enqueueTask('task-b', 'conversation-b', '2026-08-29T00:01:00.000Z');
+
+    expect(repository.promoteAvailable(1, '2026-08-29T00:02:00.000Z')).toMatchObject([
+      { taskId: 'task-b', conversationId: 'conversation-b' },
+    ]);
   });
 });

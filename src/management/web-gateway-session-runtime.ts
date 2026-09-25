@@ -28,7 +28,31 @@ import {
   type AttachmentBudgetEntry,
 } from '../gateway/attachment-budget.js';
 import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
+import type {
+  BillQueryService,
+  QueryBillProjection,
+  TaskUsageSummary,
+  TurnBillUserView,
+} from '../billing/bill-query-service.js';
+import type {
+  BillingRecordPageView,
+  BillingRecordView,
+  BillingStatusFilter,
+  BillingTaskView,
+  TaskBillingDetailView,
+} from './web-session-types.js';
 import { turnStatusFromTimeline } from './web-conversation-projector.js';
+
+function isSystemCommandTurn(turn: ConversationTurn): boolean {
+  return turn.interactionKind === 'system_command' || turn.userInput.trim().startsWith('/');
+}
+
+/** 账单页请求摘要：单行、截断，只作为展示摘要，不含原始 Prompt 全文。 */
+function singleLineSummary(userInput: string, limit = 80): string | null {
+  const collapsed = userInput.replace(/\s+/gu, ' ').trim();
+  if (!collapsed) return null;
+  return collapsed.length > limit ? `${collapsed.slice(0, limit)}…` : collapsed;
+}
 
 const WEB_WORKSPACE_PRINCIPAL = 'web:local-web-user';
 
@@ -62,8 +86,17 @@ export interface WebGatewaySessionRuntimeDeps {
   readonly attachments?: GatewayAttachmentStore;
   /** Read-only durable execution projection used to rebuild a turn after reconnect. */
   readonly projectExecutionTimeline?: (taskId: string) => ExecutionTimeline | null;
+  /** Explicit account/Task authorization for billing detail projections. */
+  readonly authorizeTask?: (accountId: string, taskId: string) => boolean;
+  /** Account-scoped historical Task catalog used by the billing page. */
+  readonly listAccountTasks?: (accountId: string) => readonly {
+    id: string;
+    title: string;
+  }[];
   /** Read-only published artifact projection used to rebuild completed turns. */
   readonly projectTaskArtifacts?: (taskId: string) => ArtifactProjection[];
+  /** Read-only billing projection shared with the other Gateway surfaces. */
+  readonly billing?: BillQueryService;
   readonly normalizeTurnPresentation?: (turn: ConversationTurn) => ConversationTurn;
   readonly createId?: (prefix: string) => string;
   readonly now?: () => string;
@@ -94,6 +127,7 @@ class WebGatewayClientSession {
   private disposePromise: Promise<void> | null = null;
   private activeWorkspaceId: string | null = null;
   private navigationQueue: Promise<void> = Promise.resolve();
+  private readonly billingRefreshTimers = new Map<string, ReturnType<typeof setTimeout>[]>();
 
   constructor(
     private readonly deps: WebGatewaySessionRuntimeDeps,
@@ -145,6 +179,10 @@ class WebGatewayClientSession {
     this.persistedTurnIds.clear();
     this.persistedTurns.clear();
     this.workspaces.clear();
+    for (const timers of this.billingRefreshTimers.values()) {
+      for (const timer of timers) clearTimeout(timer);
+    }
+    this.billingRefreshTimers.clear();
     this.deps.gateway.closeConnection?.(this.connectionId);
     this.disposePromise = Promise.allSettled([...this.pendingAttaches]).then(() => undefined);
     return this.disposePromise;
@@ -240,6 +278,9 @@ class WebGatewayClientSession {
       clientCapabilities: ['trace_v1'],
     });
     if ('kind' in receipt) throw new Error(receipt.message);
+    if (receipt.status === 'rejected') {
+      throw new Error(receipt.reason ?? 'Gateway rejected cancellation');
+    }
   }
 
   async listSessions(query = ''): Promise<WebSessionDirectoryMetadataProjection[]> {
@@ -260,6 +301,153 @@ class WebGatewayClientSession {
     const record = await this.deps.catalog.read(sessionId, this._activeSessionId);
     if (!record) return null;
     return this.projectRecord(this.enrichRecord(record));
+  }
+
+  async listBillingRecords(input: {
+    readonly cursor?: string;
+    readonly filter?: BillingStatusFilter;
+    readonly limit?: number;
+  } = {}): Promise<BillingRecordPageView> {
+    const billing = this.deps.billing;
+    if (!billing) return { items: [], nextCursor: null };
+    const limit = input.limit ?? 20;
+    const page = billing.listQueryBillsPage
+      ? billing.listQueryBillsPage({
+        accountId: this.deps.accountId,
+        limit,
+        ...(input.filter && input.filter !== 'all' ? { filter: input.filter } : {}),
+        ...(input.cursor ? { cursor: input.cursor } : {}),
+      })
+      : {
+        items: billing.listQueryBills({ accountId: this.deps.accountId, limit }),
+        nextCursor: null as string | null,
+      };
+    const filter = input.filter ?? 'all';
+    const filtered = page.items.filter(bill => filter === 'all' || bill.userStatus === filter);
+    const summaries = new Map<string, string | null>();
+    const taskTitles = new Map<string, string | null>();
+    const routing = new Map<string, {
+      providerDisplayName: string | null;
+      modelDisplayName: string | null;
+    }>();
+    const items: BillingRecordView[] = [];
+    for (const bill of filtered) {
+      items.push({
+        bill,
+        requestSummary: await this.billingRequestSummary(bill, summaries),
+        taskTitle: await this.billingTaskTitle(bill.taskId, taskTitles),
+        ...(await this.billingRoutingFacts(bill, routing)),
+      });
+    }
+    return { items, nextCursor: page.nextCursor };
+  }
+
+  async listBillingTasks(): Promise<readonly BillingTaskView[]> {
+    const billing = this.deps.billing;
+    const tasks = this.deps.listAccountTasks?.(this.deps.accountId) ?? [];
+    return tasks.map(task => ({
+      taskId: task.id,
+      taskTitle: task.title,
+      queryCount: billing?.listQueryBillsForTask(this.deps.accountId, task.id).length ?? 0,
+    }));
+  }
+
+  async getTaskBillingDetail(taskId: string): Promise<TaskBillingDetailView | null> {
+    const billing = this.deps.billing;
+    if (!billing) return null;
+    if (this.deps.authorizeTask) {
+      try {
+        if (!this.deps.authorizeTask(this.deps.accountId, taskId)) return null;
+      } catch {
+        return null;
+      }
+    }
+    const bills = billing.listQueryBillsForTask(this.deps.accountId, taskId);
+    if (!this.deps.authorizeTask && bills.length === 0) return null;
+    const summaries = new Map<string, string | null>();
+    const routing = new Map<string, {
+      providerDisplayName: string | null;
+      modelDisplayName: string | null;
+    }>();
+    const items: BillingRecordView[] = [];
+    for (const bill of bills) {
+      items.push({
+        bill,
+        requestSummary: await this.billingRequestSummary(bill, summaries),
+        taskTitle: null,
+        ...(await this.billingRoutingFacts(bill, routing)),
+      });
+    }
+    return {
+      taskId,
+      taskTitle: await this.billingTaskTitle(taskId, new Map()),
+      items,
+    };
+  }
+
+  private async billingRoutingFacts(
+    bill: QueryBillProjection,
+    cache: Map<string, { providerDisplayName: string | null; modelDisplayName: string | null }>,
+  ): Promise<{ providerDisplayName: string | null; modelDisplayName: string | null }> {
+    const key = `${bill.conversationId ?? ''}:${bill.turnId ?? ''}`;
+    const cached = cache.get(key);
+    if (cached) return cached;
+    let result: {
+      providerDisplayName: string | null;
+      modelDisplayName: string | null;
+    } = { providerDisplayName: null, modelDisplayName: null };
+    if (bill.conversationId && bill.turnId) {
+      const record = await this.deps.catalog.read(bill.conversationId).catch(() => null);
+      const turn = record?.turns.find(candidate => candidate.id === bill.turnId) ?? null;
+      for (const event of [...(turn?.traceEvents ?? [])].reverse()) {
+        const details = event.details as Record<string, unknown> | undefined;
+        if (!details) continue;
+        const provider = details.providerDisplayName;
+        const model = details.modelDisplayName;
+        if (typeof provider === 'string' || typeof model === 'string') {
+          result = {
+            providerDisplayName: typeof provider === 'string' ? provider : null,
+            modelDisplayName: typeof model === 'string' ? model : null,
+          };
+          break;
+        }
+      }
+    }
+    cache.set(key, result);
+    return result;
+  }
+
+  /** 请求摘要只取会话目录中的 userInput 单行截断；不含 Prompt 原文全文。 */
+  private async billingRequestSummary(
+    bill: QueryBillProjection,
+    cache: Map<string, string | null>,
+  ): Promise<string | null> {
+    const key = `${bill.conversationId ?? ''}:${bill.turnId ?? ''}`;
+    if (cache.has(key)) return cache.get(key) ?? null;
+    let summary: string | null = null;
+    if (bill.conversationId && bill.turnId) {
+      const record = await this.deps.catalog.read(bill.conversationId).catch(() => null);
+      const turn = record?.turns.find(candidate => candidate.id === bill.turnId) ?? null;
+      summary = turn ? singleLineSummary(turn.userInput) : null;
+    }
+    cache.set(key, summary);
+    return summary;
+  }
+
+  private async billingTaskTitle(
+    taskId: string | null,
+    cache: Map<string, string | null>,
+  ): Promise<string | null> {
+    if (!taskId) return null;
+    if (cache.has(taskId)) return cache.get(taskId) ?? null;
+    let title: string | null = null;
+    try {
+      title = this.deps.projectExecutionTimeline?.(taskId)?.title ?? null;
+    } catch {
+      title = null;
+    }
+    cache.set(taskId, title);
+    return title;
   }
 
   async createSession(): Promise<WebSessionCreationResult> {
@@ -489,6 +677,7 @@ class WebGatewayClientSession {
       if (
         state.sessionId !== sessionId
         || state.status !== 'running'
+        || !state.userInput.trim()
         || this.persistedTurnIds.has(state.id)
       ) continue;
       this.emit({
@@ -536,6 +725,7 @@ class WebGatewayClientSession {
     }
     const userInput = event.requestId ? this.pendingInputs.get(event.requestId) : undefined;
     const state = this.rememberTurnEvent(event, userInput);
+    const billing = state ? this.projectBilling(state) : null;
     const artifacts = state ? this.projectArtifactsFromState(state) : null;
     if (artifacts) {
       if (replay) this.replayEvents.push(artifacts);
@@ -545,6 +735,13 @@ class WebGatewayClientSession {
       ? traceEventWithNormalizedPresentation(event, state)
       : event;
     const resultEvent = this.consumeResultEvent(event);
+    if (resultEvent?.type === 'result_completed' && state) {
+      // final_answer intentionally carries no duplicate body for streamed
+      // results. Promote the verified assembly into the Turn state before the
+      // terminal snapshot is persisted.
+      state.finalAnswer = resultEvent.content;
+      this.turnStates.set(state.id, state);
+    }
     if (resultEvent) {
       if (replay) this.replayEvents.push(resultEvent);
       else this.emit(resultEvent);
@@ -559,6 +756,25 @@ class WebGatewayClientSession {
     if (mapped) {
       if (replay) this.replayEvents.push(mapped);
       else this.emit(mapped);
+    }
+    if (billing && state && (billing.queryBill || billing.taskUsageSummary)
+      && (event.kind === 'turn_started' || event.kind === 'final_answer'
+      || event.kind === 'terminal_error' || event.kind === 'trace_delta')) {
+      const billingEvent: WebSessionRuntimeEvent = {
+        type: 'billing',
+        turnId: state!.id,
+        queryBill: billing.queryBill,
+        taskUsageSummary: billing.taskUsageSummary,
+        turnBilling: billing.turnBilling,
+      };
+      if (replay) this.replayEvents.push(billingEvent);
+      else this.emit(billingEvent);
+    }
+    if (!replay && state && (
+      event.kind === 'final_answer' || event.kind === 'terminal_error'
+      || (event.kind === 'trace_delta' && state.taskId && state.status !== 'running')
+    )) {
+      this.scheduleBillingRefresh(state.id, state.taskId);
     }
     const execution = this.projectExecutionFromEvent(event);
     if (execution) {
@@ -723,6 +939,11 @@ class WebGatewayClientSession {
     const turnId = event.turnId;
     if (!turnId) return null;
     const existing = this.turnStates.get(turnId);
+    // Journal retention can leave result metadata after a Turn's context has
+    // expired. Such fragments are not evidence of a new running interaction.
+    if (!existing && [
+      'result_delivery_available', 'result_chunk', 'result_completed', 'delivery_status',
+    ].includes(event.kind)) return null;
     const state = existing ?? {
       id: turnId,
       sessionId: event.conversationId,
@@ -751,6 +972,16 @@ class WebGatewayClientSession {
       const traceEvents = Array.isArray(payload.events)
         ? payload.events.filter(isInteractionTraceEvent)
         : [];
+      // A replay has no browser-local pending input. Only the actual intake
+      // can supply it; arbitrary progress fragments must not become blank turns.
+      if (!state.userInput.trim()) {
+        const query = traceEvents.find(item => item.kind === 'query_received'
+          && item.actor === 'user' && item.phase === 'intake' && item.summary.trim());
+        if (query) {
+          state.userInput = query.summary;
+          state.interactionKind = interactionKindForInput(query.summary);
+        }
+      }
       const payloadTaskId = stringValue(payload.taskId);
       state.taskId ??= payloadTaskId;
       const byId = new Map(state.traceEvents.map(item => [item.id, item]));
@@ -785,15 +1016,15 @@ class WebGatewayClientSession {
     if (event.kind === 'final_answer') {
       const payload = asRecord(event.payload);
       state.backgroundWorkPending = payload.backgroundWorkPending === true;
-      state.finalAnswer = arrayStringValue(payload.lines)?.join('\n')
-        ?? state.finalAnswer;
+      const lines = arrayStringValue(payload.lines);
+      if (lines && lines.length > 0) state.finalAnswer = lines.join('\n');
       if (!state.backgroundWorkPending) {
         // The answer closes the turn, but never downgrades a terminal trace
-        // status (blocked/failed) observed before the answer arrived.
-        if (state.status !== 'blocked' && state.status !== 'failed') {
+        // status (blocked/failed/cancelled) observed before the answer arrived.
+        if (state.status === 'running') {
           state.status = 'completed';
         }
-        state.completedAt = event.occurredAt;
+        state.completedAt ??= event.occurredAt;
       }
     } else if (event.kind === 'terminal_error') {
       state.status = 'failed';
@@ -945,10 +1176,14 @@ class WebGatewayClientSession {
     timelineByTask: Map<string, ExecutionTimeline | null>,
     artifactsByTask: Map<string, ArtifactProjection[]>,
   ): import('./web-session-types.js').ConversationTurnProjection {
+    const billing = this.projectBillingForTurn(turn.id, taskId, isSystemCommandTurn(turn));
     if (!taskId) {
       return {
         ...structuredClone(turn),
         traceEvents: filterTraceEventsForTask(turn.traceEvents, null),
+        queryBill: billing.queryBill,
+        taskUsageSummary: billing.taskUsageSummary,
+        turnBilling: billing.turnBilling,
       };
     }
     if (!hydrateDurableFacts) {
@@ -958,6 +1193,9 @@ class WebGatewayClientSession {
         taskId,
         traceEvents: filterTraceEventsForTask(turn.traceEvents, taskId),
         executionTimeline: executionTimeline ? structuredClone(executionTimeline) : null,
+        queryBill: billing.queryBill,
+        taskUsageSummary: billing.taskUsageSummary,
+        turnBilling: billing.turnBilling,
       };
     }
     if (!timelineByTask.has(taskId)) {
@@ -993,7 +1231,122 @@ class WebGatewayClientSession {
       executionTimeline: executionTimeline ? structuredClone(executionTimeline) : null,
       artifactRefs,
       artifacts,
+      queryBill: billing.queryBill,
+      taskUsageSummary: billing.taskUsageSummary,
+      turnBilling: billing.turnBilling,
     };
+  }
+
+  private projectBilling(state: RuntimeTurnState): {
+    queryBill: QueryBillProjection | null;
+    taskUsageSummary: TaskUsageSummary | null;
+    turnBilling: TurnBillUserView | null;
+  } {
+    return this.projectBillingForTurn(state.id, state.taskId, false, true);
+  }
+
+  private projectBillingForTurn(
+    turnId: string,
+    taskId: string | null,
+    systemCommand = false,
+    liveTurn = false,
+  ): {
+    queryBill: QueryBillProjection | null;
+    taskUsageSummary: TaskUsageSummary | null;
+    turnBilling: TurnBillUserView | null;
+  } {
+    const billing = this.deps.billing;
+    if (!billing) {
+      if (systemCommand) return { queryBill: null, taskUsageSummary: null, turnBilling: null };
+      const projectedAt = this.deps.now?.() ?? new Date().toISOString();
+      return {
+        queryBill: null,
+        taskUsageSummary: null,
+        turnBilling: {
+          turnId,
+          queryId: null,
+          conversationId: null,
+          taskId,
+          userStatus: 'unconfirmed',
+          headline: '费用暂时无法确认',
+          amountMicroCoin: null,
+          amountIsFinal: false,
+          diagnosticCode: 'missing_billing_projection',
+          diagnosticMessage: '账单事实存在，但页面投影暂时不可用',
+          observedUsageCount: 0,
+          missingCategories: [],
+          usageBreakdown: [],
+          stageBreakdown: [],
+          billId: null,
+          finalizedAt: null,
+          projectedAt,
+        },
+      };
+    }
+    // 系统命令 Turn 不产生账单卡（账单简化设计 §3.1）。
+    const queryBill = billing.getQueryBillForTurn(this.deps.accountId, turnId);
+    let turnBilling: TurnBillUserView | null = null;
+    if (!systemCommand) {
+      try {
+        turnBilling = billing.getTurnBillUserView(this.deps.accountId, turnId, {
+          liveFallback: liveTurn,
+        });
+      } catch {
+        // 投影失败也必须给用户明确原因，不得静默空白（账单简化设计 §5）。
+        turnBilling = {
+          turnId,
+          queryId: queryBill?.queryId ?? null,
+          conversationId: queryBill?.conversationId ?? null,
+          taskId,
+          userStatus: 'unconfirmed',
+          headline: '费用暂时无法确认',
+          amountMicroCoin: null,
+          amountIsFinal: false,
+          diagnosticCode: 'missing_billing_projection',
+          diagnosticMessage: '账单事实存在，但页面投影暂时不可用',
+          observedUsageCount: 0,
+          missingCategories: [],
+          usageBreakdown: [],
+          stageBreakdown: [],
+          billId: queryBill?.billId ?? null,
+          finalizedAt: null,
+          projectedAt: this.deps.now?.() ?? new Date().toISOString(),
+        };
+      }
+    }
+    return {
+      queryBill,
+      taskUsageSummary: taskId
+        ? billing.getTaskUsageSummaryForAccount(this.deps.accountId, taskId)
+        : null,
+      turnBilling,
+    };
+  }
+
+  private scheduleBillingRefresh(turnId: string, taskId: string | null): void {
+    if (!this.deps.billing || this.billingRefreshTimers.has(turnId)) return;
+    const delays = [250, 1_000, 3_000, 10_000];
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    delays.forEach((delay, index) => {
+      const timer = setTimeout(() => {
+        const billing = this.projectBillingForTurn(turnId, taskId, false, true);
+        // 最后一次刷新无论如何都发布：账单卡必须出现，没有金额时给出原因。
+        const finalTick = index === delays.length - 1;
+        if (finalTick || billing.queryBill || billing.turnBilling || billing.taskUsageSummary) {
+          this.emit({
+            type: 'billing',
+            turnId,
+            queryBill: billing.queryBill,
+            taskUsageSummary: billing.taskUsageSummary,
+            turnBilling: billing.turnBilling,
+          });
+        }
+        if (finalTick) this.billingRefreshTimers.delete(turnId);
+      }, delay);
+      timers.push(timer);
+    });
+    for (const timer of timers) timer.unref?.();
+    this.billingRefreshTimers.set(turnId, timers);
   }
 
   private consumeResultEvent(event: GatewayEventEnvelope): WebSessionRuntimeEvent | null {
@@ -1146,6 +1499,25 @@ export class WebGatewaySessionRuntime {
 
   readSession(clientId: string, sessionId: string): Promise<WebSessionRecordProjection | null> {
     return this.client(clientId).readSession(sessionId);
+  }
+
+  listBillingRecords(
+    clientId: string,
+    input: {
+      readonly cursor?: string;
+      readonly filter?: BillingStatusFilter;
+      readonly limit?: number;
+    } = {},
+  ): Promise<BillingRecordPageView> {
+    return this.client(clientId).listBillingRecords(input);
+  }
+
+  listBillingTasks(clientId: string): Promise<readonly BillingTaskView[]> {
+    return this.client(clientId).listBillingTasks();
+  }
+
+  getTaskBillingDetail(clientId: string, taskId: string): Promise<TaskBillingDetailView | null> {
+    return this.client(clientId).getTaskBillingDetail(taskId);
   }
 
   createSession(clientId: string): Promise<WebSessionCreationResult> {
@@ -1406,6 +1778,7 @@ function canAdvanceTurnStatus(
   current: InteractionTraceStatus,
   incoming: InteractionTraceStatus,
 ): boolean {
+  if (current === 'cancelled') return incoming === 'cancelled';
   return current === 'running' || incoming !== 'running';
 }
 

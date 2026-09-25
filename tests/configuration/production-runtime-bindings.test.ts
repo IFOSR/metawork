@@ -73,6 +73,8 @@ describe('production runtime configuration bindings', () => {
         OPENAI_API_KEY: 'secret-value',
       },
     });
+    expect(bindings.getRuntimeConfiguration('revision-previous')?.revisionId).toBe('revision-previous');
+    expect(bindings.getActiveRuntimeConfiguration().revisionId).toBe('revision-production');
   });
 
   it('keeps old revision bindings while exposing an activated revision to new attempts', async () => {

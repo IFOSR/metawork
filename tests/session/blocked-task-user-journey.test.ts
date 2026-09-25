@@ -43,6 +43,43 @@ function createConfig(): Config {
 }
 
 describe('blocked task user journey', () => {
+  it('resumes an incomplete response only on explicit request and delivers a certified report', async () => {
+    const db = createTestDb();
+    const taskRepo = new TaskRepo(db);
+    const taskEngine = new TaskEngine(taskRepo, '/tmp/metawork-incomplete-response-journey');
+    const backend = new FakeAttemptExecutionBackend((_input, attemptIndex) => attemptIndex === 0
+      ? { body: 'Stream ended without finish_reason', exitCode: 1 }
+      : { body: 'Recovered research report with complete evidence.' });
+    const session = new MetaclawSession({
+      taskEngine, memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
+      orchestration: new OrchestrationEngine(taskEngine), attemptExecutionBackend: backend,
+      db, config: createConfig(), sessionId: 'session-incomplete-response',
+      contextRecaller: new ContextRecaller(db),
+      notifier: { notifyTaskCompleted: vi.fn().mockResolvedValue(undefined) },
+      planningAgent: stubPlanningAgent(workGraphPlan({
+        goal: 'Research report', executor: 'codex-cli', matchedBoundary: ['general'],
+      })),
+    });
+    try {
+      session.initialize();
+      await session.submit('Research report', { awaitAsyncWork: true });
+      const task = taskRepo.findByStatus('blocked')[0]!;
+      expect(task).toBeTruthy();
+      expect(backend.create).toHaveBeenCalledTimes(1);
+      const original = db.prepare('SELECT * FROM executor_attempt_receipts WHERE task_id = ?').all(task.id);
+      await session.submit(`/task resume ${task.id}`, { awaitAsyncWork: true });
+      expect(backend.create).toHaveBeenCalledTimes(2);
+      expect(taskRepo.findById(task.id)?.status).toBe('done');
+      expect(session.getSnapshot().output.join('\n')).toContain('Recovered research report with complete evidence.');
+      const receipts = db.prepare('SELECT * FROM executor_attempt_receipts WHERE task_id = ?').all(task.id);
+      expect(receipts).toEqual(expect.arrayContaining(original));
+      expect(receipts).toEqual(expect.arrayContaining([expect.objectContaining({ terminal_state: 'completed' })]));
+    } finally {
+      await session.dispose();
+      db.close();
+    }
+  });
+
   it('lets the user inspect a fail-closed attempt but does not retry unknown work through /task unblock', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
@@ -85,11 +122,19 @@ describe('blocked task user journey', () => {
     let output = session.getSnapshot().output.join('\n');
     expect(output).toContain('Execution blocked: unknown requires explicit recovery');
 
+    await session.submit(`/task recovery ${blockedTask.id}`, { awaitAsyncWork: true });
+    output = session.getSnapshot().output.join('\n');
+    expect(output).toContain(`任务 #${blockedTask.id} 当前仍为 BLOCKED`);
+    expect(output).toContain('没有可供 /task recover 使用的恢复项');
+    expect(output).toContain('这不表示阻塞已解除');
+    expect(output).toContain('不会自动重试');
+
     await session.submit('当前有没有被阻塞的任务？', { awaitAsyncWork: true });
     output = session.getSnapshot().output.join('\n');
     expect(output).toContain('当前有 1 个阻塞任务');
     expect(output).toContain(`#${blockedTask.id} [BLOCKED] ${blockedTask.title}`);
-    expect(output).toContain(`建议动作：/task unblock ${blockedTask.id}，或直接补充材料/说明后让我继续`);
+    expect(output).toContain('材料齐全不等于可以安全恢复');
+    expect(output).toContain(`/task recovery ${blockedTask.id}`);
 
     await session.submit(`/task unblock ${blockedTask.id}`, { awaitAsyncWork: true });
 
@@ -98,7 +143,8 @@ describe('blocked task user journey', () => {
 
     output = session.getSnapshot().output.join('\n');
     expect(output).toContain(`任务 #${blockedTask.id} 未重新执行`);
-    expect(output).toContain('阻塞条件尚未解决，未启动新的 Executor');
+    expect(output).toContain('上次执行结果不确定');
+    expect(output).toContain(`/task recovery ${blockedTask.id}`);
     expect(output).toContain('resume requires resolving the unknown blocker first');
     expect(output).not.toContain('阻塞解除后已完成用户旅程验收报告');
     expect(notifier.notifyTaskCompleted).not.toHaveBeenCalled();

@@ -16,6 +16,150 @@ import type { WebSessionRecord } from '../../src/management/web-session-types.js
 import type { ExecutionTimeline } from '../../src/management/execution-projector.js';
 
 describe('WebGatewaySessionRuntime', () => {
+  it.each(['trace_delta', 'task_projection', 'turn_started'] as const)(
+    'does not announce an empty running Turn from a retained %s fragment',
+    async kind => {
+      const projected: WebSessionRuntimeEvent[] = [];
+      const runtime = new WebGatewaySessionRuntime({
+        accountId: 'local-default',
+        catalog: catalogFixture(),
+        gateway: gatewayFixture({
+          replay: async () => ({
+            lastSequence: 1,
+            snapshot: [],
+            deltas: [{
+              ...outputEvent('orphan_trace', 1, []),
+              kind,
+              turnId: 'turn_without_intake',
+              requestId: 'req_old',
+              payload: { commandKind: 'user_message', status: 'running', events: [] },
+            }],
+          }),
+        }),
+      });
+      runtime.subscribe('browser-a', event => projected.push(event));
+      try {
+        await attachBrowser(runtime);
+        expect(projected.filter(event => event.type === 'turn_started')).toEqual([]);
+        expect(runtime.getReplayEvents('browser-a').filter(event => event.type === 'turn_started')).toEqual([]);
+      } finally { await runtime.dispose(); }
+    },
+  );
+
+  it('restores real in-flight user input from query intake on a fresh browser attachment', async () => {
+    const trace = traceDeltaEvent('intake_trace', 2, 'turn_1');
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway: gatewayFixture({
+        replay: async () => ({
+          lastSequence: 2,
+          snapshot: [],
+          deltas: [
+            turnStartedEvent('start', 1, 'req_other_client', 'turn_1'),
+            { ...trace, payload: {
+              turnId: 'turn_1', status: 'running',
+              events: [{
+                id: 'query', sequence: 1, kind: 'query_received', actor: 'user',
+                phase: 'intake', status: 'completed', title: 'User query received',
+                summary: 'Analyze the repository', details: {}, occurredAt: trace.occurredAt,
+              }],
+            } },
+          ],
+        }),
+      }),
+    });
+    const projected: WebSessionRuntimeEvent[] = [];
+    runtime.subscribe('browser-a', event => projected.push(event));
+    try {
+      await attachBrowser(runtime);
+      expect(projected.filter(event => event.type === 'turn_started')).toEqual([
+        expect.objectContaining({ turnId: 'turn_1', userInput: 'Analyze the repository' }),
+      ]);
+    } finally { await runtime.dispose(); }
+  });
+
+  it('surfaces a rejected Stop receipt instead of reporting silent success', async () => {
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway: gatewayFixture({
+        submit: async envelope => ({
+          requestId: envelope.requestId, idempotencyKey: envelope.idempotencyKey,
+          status: envelope.command.kind === 'cancel_turn' ? 'rejected' : 'accepted',
+          reason: 'turn_not_running', conversationId: 'conv_1', workspaceId: 'workspace_repo',
+        }),
+      }),
+    });
+    try {
+      await attachBrowser(runtime);
+      await expect(runtime.cancelTurn('browser-a', 'turn_old')).rejects.toThrow('turn_not_running');
+    } finally { await runtime.dispose(); }
+  });
+
+  it('does not recreate running Turns from retained historical result metadata', async () => {
+    const projected: WebSessionRuntimeEvent[] = [];
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway: gatewayFixture({
+        replay: async () => ({
+          lastSequence: 2,
+          snapshot: [],
+          deltas: ['result_delivery_available', 'result_completed'].map((kind, index) => ({
+            ...outputEvent(`orphan_${index}`, index + 1, []),
+            kind: kind as GatewayEventEnvelope['kind'],
+            turnId: 'turn_trimmed',
+            requestId: 'req_trimmed',
+            payload: { resultId: 'old_result', certification: 'certified', completeness: 'complete' },
+          })),
+        }),
+      }),
+    });
+    runtime.subscribe('browser-a', event => projected.push(event));
+    await attachBrowser(runtime);
+    expect(projected.filter(event => event.type === 'turn_started')).toEqual([]);
+  });
+
+  it('keeps a cancelled Turn terminal when a late final answer and trace arrive', async () => {
+    let listener!: (event: GatewayEventEnvelope) => void;
+    const projected: WebSessionRuntimeEvent[] = [];
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway: gatewayFixture({
+        subscribe: (_accountId, _conversationId, next) => {
+          listener = next;
+          return () => undefined;
+        },
+      }),
+    });
+    runtime.subscribe('browser-a', event => projected.push(event));
+    await attachBrowser(runtime);
+    const emit = (sequence: number, kind: GatewayEventEnvelope['kind'], payload: unknown) => listener({
+      ...outputEvent(`cancel_${sequence}`, sequence, []),
+      kind,
+      requestId: 'req_cancel',
+      turnId: 'turn_cancel',
+      occurredAt: sequence <= 2 ? '2026-09-21T00:00:00.000Z' : '2026-09-21T00:01:00.000Z',
+      payload,
+    });
+    emit(1, 'turn_started', { commandKind: 'user_message', text: 'Run a task' });
+    emit(2, 'trace_delta', {
+      turnId: 'turn_cancel', taskId: 'task_cancel', status: 'cancelled',
+      completedAt: '2026-09-21T00:00:00.000Z', events: [],
+    });
+    emit(3, 'final_answer', { lines: ['Stopped'], backgroundWorkPending: false });
+    emit(4, 'trace_delta', {
+      turnId: 'turn_cancel', taskId: 'task_cancel', status: 'running', events: [],
+    });
+    expect(projected.filter(event => event.type === 'trace_delta').at(-1)).toMatchObject({
+      turnId: 'turn_cancel',
+      status: 'cancelled',
+      completedAt: '2026-09-21T00:00:00.000Z',
+    });
+  });
+
   it('serializes Workspace navigation so a later selection cannot be overtaken', async () => {
     const firstSelection = deferred<{
       requestId: string;
@@ -1924,6 +2068,181 @@ describe('WebGatewaySessionRuntime', () => {
       }),
     ]);
   });
+
+  it('persists the completed result when final_answer carries no inline lines', async () => {
+    const listeners = new Map<string, (event: GatewayEventEnvelope) => void>();
+    const persisted: WebSessionRecord['turns'] = [];
+    let submittedRequestId: string | null = null;
+    const gateway = {
+      attachClient: async () => () => undefined,
+      submit: async (envelope: { requestId: string }) => {
+        submittedRequestId = envelope.requestId;
+        return {
+          requestId: envelope.requestId,
+          idempotencyKey: 'idem_result_persist',
+          status: 'accepted' as const,
+          conversationId: 'conv_1',
+        };
+      },
+      subscribe: (
+        _accountId: string,
+        conversationId: string,
+        next: (event: GatewayEventEnvelope) => void,
+      ) => {
+        listeners.set(conversationId, next);
+        return () => undefined;
+      },
+      replay: async () => ({ lastSequence: 0, snapshot: [], deltas: [] }),
+    } as unknown as WebGatewayAdapter;
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: {
+        ...catalogFixture(),
+        appendTurn: async (_sessionId, turn) => {
+          persisted.push(turn);
+          return true;
+        },
+      },
+      gateway,
+    });
+    const projected: WebSessionRuntimeEvent[] = [];
+    runtime.subscribe('browser-a', event => projected.push(event));
+    await attachBrowser(runtime);
+    projected.length = 0;
+    await runtime.submit('browser-a', '生成结果');
+    const listener = listeners.get('conv_1')!;
+    expect(submittedRequestId).toBeTruthy();
+    const content = '结果正文';
+    const bytes = Buffer.from(content, 'utf8');
+    const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    const base = {
+      ...outputEvent('event_result_persist', 1, []),
+      requestId: submittedRequestId,
+      turnId: 'turn_result_persist',
+    };
+    listener({
+      ...base,
+      eventId: 'persist_turn_started',
+      kind: 'turn_started',
+      payload: {},
+    });
+    listener({
+      ...base,
+      eventId: 'persist_available',
+      kind: 'result_delivery_available',
+      payload: {
+        resultId: 'result_persist', contentHash, byteLength: bytes.byteLength,
+        mediaType: 'text/markdown', completeness: 'complete', certification: 'uncertified',
+      },
+    });
+    listener({
+      ...base,
+      eventId: 'persist_chunk',
+      kind: 'result_chunk',
+      payload: { resultId: 'result_persist', offset: 0, chunk: content },
+    });
+    listener({
+      ...base,
+      eventId: 'persist_completed',
+      kind: 'result_completed',
+      payload: {
+        resultId: 'result_persist', contentHash, byteLength: bytes.byteLength,
+        mediaType: 'text/markdown', completeness: 'complete', certification: 'uncertified',
+      },
+    });
+    listener({
+      ...base,
+      eventId: 'persist_final',
+      kind: 'final_answer',
+      payload: { resultId: 'result_persist', lines: [] },
+    });
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(projected).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'final_answer', lines: [content] }),
+    ]));
+    expect(persisted.at(-1)?.finalAnswer).toBe(content);
+  });
+
+  it('repairs an empty persisted answer from streamed result events during replay', async () => {
+    const content = '回放后应补回的结果正文';
+    const bytes = Buffer.from(content, 'utf8');
+    const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    const persisted: WebSessionRecord['turns'] = [];
+    const turn = {
+      ...persistedTurnFixture({ id: 'turn_replay_repair' }),
+      finalAnswer: '',
+      taskId: 'task_replay_repair',
+    };
+    const replayBase = {
+      ...outputEvent('replay_result', 1, []),
+      requestId: 'req_replay_repair',
+      turnId: 'turn_replay_repair',
+    };
+    const replay: GatewayReplay = {
+      lastSequence: 4,
+      snapshot: [
+        {
+          ...replayBase,
+          eventId: 'replay_available',
+          sequence: 1,
+          kind: 'result_delivery_available',
+          payload: {
+            resultId: 'result_replay_repair', contentHash, byteLength: bytes.byteLength,
+            mediaType: 'text/markdown', completeness: 'complete', certification: 'uncertified',
+          },
+        },
+        {
+          ...replayBase,
+          eventId: 'replay_chunk',
+          sequence: 2,
+          kind: 'result_chunk',
+          payload: { resultId: 'result_replay_repair', offset: 0, chunk: content },
+        },
+        {
+          ...replayBase,
+          eventId: 'replay_completed',
+          sequence: 3,
+          kind: 'result_completed',
+          payload: {
+            resultId: 'result_replay_repair', contentHash, byteLength: bytes.byteLength,
+            mediaType: 'text/markdown', completeness: 'complete', certification: 'uncertified',
+          },
+        },
+        {
+          ...replayBase,
+          eventId: 'replay_final',
+          sequence: 4,
+          kind: 'final_answer',
+          payload: { resultId: 'result_replay_repair', lines: [] },
+        },
+      ],
+      deltas: [],
+    };
+    const record: WebSessionRecord = {
+      ...sessionRecord('conv_1', true),
+      turns: [turn],
+    };
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: {
+        ...catalogFixture(),
+        read: async () => structuredClone(record),
+        appendTurn: async (_sessionId, nextTurn) => {
+          persisted.push(nextTurn);
+          return true;
+        },
+      },
+      gateway: {
+        ...gatewayFixture(),
+        replay: async () => replay,
+      },
+    });
+
+    await attachBrowser(runtime);
+
+    expect(persisted.at(-1)?.finalAnswer).toBe(content);
+  });
 });
 
 function catalogFixture(): WebSessionRuntimeCatalog {
@@ -2249,3 +2568,416 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+// ===== 可见账单：Turn 三态账单卡与账单页（账单简化设计 §3/§4） =====
+
+import Database from 'better-sqlite3';
+import { runMigrations } from '../../src/storage/migrations.js';
+import { SqliteQueryContextStore } from '../../src/storage/query-usage-context-repo.js';
+import { SqliteMeteringStore } from '../../src/storage/metering-repo.js';
+import {
+  SqliteBillAdjustmentStore,
+  SqliteBillStore,
+  SqliteBillingUnitOfWork,
+  SqliteCostEntryStore,
+  SqlitePriceStore,
+} from '../../src/storage/billing-repo.js';
+import { SqliteConsumptionOutboxStore } from '../../src/storage/consumption-outbox-repo.js';
+import { createQueryBillService } from '../../src/billing/query-bill-service.js';
+import { createBillQueryService } from '../../src/billing/bill-query-service.js';
+import type { BillQueryService } from '../../src/billing/bill-query-service.js';
+import type { QueryUsageContext } from '../../src/metering/ports.js';
+import { PLATFORM_PRICE_BOOK } from '../billing/harness.js';
+
+function createRuntimeBillingService(): {
+  billing: BillQueryService;
+  contexts: SqliteQueryContextStore;
+  metering: SqliteMeteringStore;
+  bills: SqliteBillStore;
+  billService: ReturnType<typeof createQueryBillService>;
+  close: () => void;
+} {
+  const db = new Database(':memory:');
+  runMigrations(db);
+  const contexts = new SqliteQueryContextStore(db);
+  const metering = new SqliteMeteringStore(db);
+  const prices = new SqlitePriceStore(db);
+  const costEntries = new SqliteCostEntryStore(db);
+  const bills = new SqliteBillStore(db);
+  const adjustments = new SqliteBillAdjustmentStore(db);
+  const outbox = new SqliteConsumptionOutboxStore(db);
+  const unitOfWork = new SqliteBillingUnitOfWork(db);
+  outbox.ensureSourceInstanceId('instance-runtime-test', '2026-09-22T00:00:00.000Z');
+  // 刻意不播种价格书：Query 上下文固定 'unconfigured'，终结尝试进入待核对，
+  // 正好覆盖「待确认 + missing_price_book」的用户路径。
+  const billService = createQueryBillService({
+    queryContexts: contexts,
+    metering,
+    prices,
+    costEntries,
+    bills,
+    unitOfWork,
+    consumption: outbox,
+    exportEnabled: () => false,
+    resolveExternalAccountRef: () => null,
+    createCostEntryId: (observationId, kind) => `cost_${kind}_${observationId}`,
+  });
+  const billing = createBillQueryService({
+    bills,
+    adjustments,
+    consumption: outbox,
+    costs: costEntries,
+    queryContexts: contexts,
+    metering,
+    prices,
+    exportEnabled: () => false,
+    now: () => '2026-09-22T01:00:00.000Z',
+  });
+  return {
+    billing,
+    contexts,
+    metering,
+    bills,
+    billService,
+    close: () => db.close(),
+  };
+}
+
+function seedTurnQuery(
+  store: SqliteQueryContextStore,
+  input: {
+    readonly queryId: string;
+    readonly turnId: string;
+    readonly accountId?: string;
+    readonly conversationId?: string;
+  },
+): void {
+  const context: QueryUsageContext = {
+    queryId: input.queryId,
+    accountId: input.accountId ?? 'local-default',
+    ingress: 'web',
+    requestKey: `req-${input.queryId}`,
+    requestPayloadDigest: `digest-${input.queryId}`,
+    conversationId: input.conversationId ?? 'conv_1',
+    requestId: `request-${input.queryId}`,
+    turnId: input.turnId,
+    executionSegmentId: null,
+    priceBookVersion: 'unconfigured',
+    feePolicyVersion: 'unconfigured',
+    payerPolicyVersion: 'unknown-v1',
+    acceptedAt: '2026-09-22T00:00:00.000Z',
+  };
+  store.insert(context);
+}
+
+function persistedTurnFixture(overrides: {
+  readonly id: string;
+  readonly userInput?: string;
+  readonly status?: 'completed' | 'failed';
+  readonly queryBill?: unknown;
+}): WebSessionRecord['turns'][number] {
+  return {
+    id: overrides.id,
+    sessionId: 'conv_1',
+    userInput: overrides.userInput ?? '调研鸡蛋期货上涨原因',
+    interactionKind: 'ai_turn',
+    status: overrides.status ?? 'completed',
+    finalAnswer: '结论……',
+    taskId: 'task_billing',
+    startedAt: '2026-09-22T00:00:00.000Z',
+    completedAt: '2026-09-22T00:05:00.000Z',
+    traceEvents: [],
+    executionTimeline: null,
+    artifactRefs: [],
+    artifacts: [],
+    ...(overrides.queryBill !== undefined ? { queryBill: overrides.queryBill as null } : {}),
+  };
+}
+
+function billingCatalogFixture(turns: WebSessionRecord['turns']): WebSessionRuntimeCatalog {
+  const record: WebSessionRecord = {
+    ...sessionRecord('conv_1', true),
+    turns: turns.map(turn => structuredClone(turn)),
+  };
+  return {
+    initialize: async () => undefined,
+    create: async () => record,
+    list: async () => [record.session],
+    search: async () => [record.session],
+    read: async () => structuredClone(record),
+    workspaceIdForConversation: async () => 'workspace_repo',
+    listWorkspaces: async () => [],
+    archive: async () => true,
+    clearWorkspace: async () => 0,
+    appendTurn: async () => record,
+  };
+}
+
+describe('WebGatewaySessionRuntime 可见账单', () => {
+  it('历史记录读取时按 Turn 重新投影三态账单，替换持久化的陈旧账单', async () => {
+    const store = createRuntimeBillingService();
+    try {
+      seedTurnQuery(store.contexts, { queryId: 'query_1', turnId: 'turn_1' });
+      store.metering.insertObservations([{
+        observationId: 'obs_1',
+        spanId: null,
+        sourceId: 'planner',
+        sourceEventKey: 'evt_1',
+        sourceScope: 'model_request',
+        callId: 'call_1',
+        queryId: 'query_1',
+        executionSegmentId: null,
+        taskId: 'task_billing',
+        stage: 'planning',
+        reason: 'primary',
+        resource: 'model_tokens',
+        metric: 'input',
+        unit: 'token',
+        quantityNumerator: '1000',
+        quantityDenominator: '1',
+        quality: 'reported',
+        countsTowardTotal: true,
+        payer: 'platform',
+        capturedAt: '2026-09-22T00:01:00.000Z',
+        providerBindingVersion: null,
+        evidenceRef: null,
+        normalizationRuleVersion: 'usage-normalizer-v1',
+      }]);
+      store.billService.finalizeQueryBill({
+        queryId: 'query_1',
+        finalizedAt: '2026-09-22T00:02:00.000Z',
+      });
+      const runtime = new WebGatewaySessionRuntime({
+        accountId: 'local-default',
+        catalog: billingCatalogFixture([
+          // 持久化记录里故意放置没有 userStatus 的陈旧账单投影
+          persistedTurnFixture({ id: 'turn_1', queryBill: { billId: 'stale' } }),
+        ]),
+        gateway: gatewayFixture(),
+        billing: store.billing,
+        projectExecutionTimeline: taskId => ({
+          taskId,
+          title: '鸡蛋期货近期上涨原因调研',
+          status: 'completed',
+          stages: [],
+        }),
+      });
+      runtime.subscribe('browser-a', () => undefined);
+      await attachBrowser(runtime);
+      const record = await runtime.readSession('browser-a', 'conv_1');
+      expect(record).not.toBeNull();
+      const turn = record!.turns[0]!;
+      expect(turn.turnBilling).not.toBeNull();
+      expect(turn.turnBilling!.userStatus).toBe('unconfirmed');
+      expect(turn.turnBilling!.diagnosticCode).toBe('missing_price_book');
+      expect(turn.queryBill?.userStatus).toBe('unconfirmed');
+      expect(turn.queryBill?.billId).not.toBe('stale');
+    } finally {
+      store.close();
+    }
+  });
+
+  it('没有任何账单事实的历史 Turn 仍得到待确认视图，不静默空白', async () => {
+    const store = createRuntimeBillingService();
+    try {
+      const runtime = new WebGatewaySessionRuntime({
+        accountId: 'local-default',
+        catalog: billingCatalogFixture([
+          persistedTurnFixture({ id: 'turn_ancient' }),
+        ]),
+        gateway: gatewayFixture(),
+        billing: store.billing,
+      });
+      runtime.subscribe('browser-a', () => undefined);
+      await attachBrowser(runtime);
+      const record = await runtime.readSession('browser-a', 'conv_1');
+      expect(record!.turns[0]!.turnBilling).toMatchObject({
+        turnId: 'turn_ancient',
+        userStatus: 'unconfirmed',
+        diagnosticCode: 'historical_unavailable',
+        amountMicroCoin: null,
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it('账单服务缺失时仍显示明确的账单投影失败原因', async () => {
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: billingCatalogFixture([
+        persistedTurnFixture({ id: 'turn_without_billing_service' }),
+      ]),
+      gateway: gatewayFixture(),
+    });
+    runtime.subscribe('browser-a', () => undefined);
+    await attachBrowser(runtime);
+    const record = await runtime.readSession('browser-a', 'conv_1');
+    expect(record!.turns[0]!.turnBilling).toMatchObject({
+      turnId: 'turn_without_billing_service',
+      userStatus: 'unconfirmed',
+      diagnosticCode: 'missing_billing_projection',
+      amountMicroCoin: null,
+    });
+  });
+
+  it('系统命令 Turn 不投影账单卡', async () => {
+    const store = createRuntimeBillingService();
+    try {
+      const runtime = new WebGatewaySessionRuntime({
+        accountId: 'local-default',
+        catalog: billingCatalogFixture([
+          persistedTurnFixture({ id: 'turn_cmd', userInput: '/status' }),
+        ]),
+        gateway: gatewayFixture(),
+        billing: store.billing,
+      });
+      runtime.subscribe('browser-a', () => undefined);
+      await attachBrowser(runtime);
+      const record = await runtime.readSession('browser-a', 'conv_1');
+      expect(record!.turns[0]!.turnBilling).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it('listBillingRecords 联合请求摘要与 Task 标题，并支持三态筛选', async () => {
+    const store = createRuntimeBillingService();
+    try {
+      seedTurnQuery(store.contexts, { queryId: 'query_1', turnId: 'turn_1' });
+      seedTurnQuery(store.contexts, { queryId: 'query_2', turnId: 'turn_2' });
+      // Query→Task 授权链接必须在终结前建立，账单行才会携带 taskId。
+      store.contexts.linkTask({
+        queryId: 'query_1',
+        costTaskId: 'task_billing',
+        decisionId: 'decision_1',
+        basis: 'authorized_application',
+        linkedAt: '2026-09-22T00:00:30.000Z',
+      });
+      store.contexts.linkTask({
+        queryId: 'query_2',
+        costTaskId: 'task_billing',
+        decisionId: 'decision_2',
+        basis: 'authorized_application',
+        linkedAt: '2026-09-22T00:00:30.000Z',
+      });
+      // 价格版本未配置 → 终结尝试进入待核对，用户状态为待确认
+      store.billService.finalizeQueryBill({
+        queryId: 'query_1',
+        finalizedAt: '2026-09-22T00:02:00.000Z',
+      });
+      store.billService.finalizeQueryBill({
+        queryId: 'query_2',
+        finalizedAt: '2026-09-22T00:02:00.000Z',
+      });
+      const runtime = new WebGatewaySessionRuntime({
+        accountId: 'local-default',
+        catalog: billingCatalogFixture([
+          persistedTurnFixture({ id: 'turn_1' }),
+          persistedTurnFixture({ id: 'turn_2', userInput: '第二个请求' }),
+        ]),
+        gateway: gatewayFixture(),
+        billing: store.billing,
+        projectExecutionTimeline: taskId => ({
+          taskId,
+          title: '鸡蛋期货近期上涨原因调研',
+          status: 'completed',
+          stages: [],
+        }),
+      });
+      runtime.subscribe('browser-a', () => undefined);
+      await attachBrowser(runtime);
+      const page = await runtime.listBillingRecords('browser-a', {});
+      expect(page.items).toHaveLength(2);
+      const first = page.items.find(entry => entry.bill.queryId === 'query_1')!;
+      const second = page.items.find(entry => entry.bill.queryId === 'query_2')!;
+      expect(first.requestSummary).toBe('调研鸡蛋期货上涨原因');
+      expect(first.taskTitle).toBe('鸡蛋期货近期上涨原因调研');
+      expect(first.bill.userStatus).toBe('unconfirmed');
+      expect(second.requestSummary).toBe('第二个请求');
+      const billed = await runtime.listBillingRecords('browser-a', { filter: 'billed' });
+      expect(billed.items).toHaveLength(0);
+      const unconfirmed = await runtime.listBillingRecords('browser-a', {
+        filter: 'unconfirmed',
+      });
+      expect(unconfirmed.items).toHaveLength(2);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('getTaskBillingDetail 列出同 Task 的关联请求；无事实时返回空列表', async () => {
+    const store = createRuntimeBillingService();
+    try {
+      seedTurnQuery(store.contexts, { queryId: 'query_1', turnId: 'turn_1' });
+      seedTurnQuery(store.contexts, { queryId: 'query_2', turnId: 'turn_2' });
+      store.billService.finalizeQueryBill({
+        queryId: 'query_1',
+        finalizedAt: '2026-09-22T00:02:00.000Z',
+      });
+      store.billService.finalizeQueryBill({
+        queryId: 'query_2',
+        finalizedAt: '2026-09-22T00:02:00.000Z',
+      });
+      const runtime = new WebGatewaySessionRuntime({
+        accountId: 'local-default',
+        catalog: billingCatalogFixture([]),
+        gateway: gatewayFixture(),
+        billing: store.billing,
+        authorizeTask: () => true,
+      });
+      runtime.subscribe('browser-a', () => undefined);
+      await attachBrowser(runtime);
+      // 账单行的 taskId 来自 Query→Task 授权链接；这里尚未建立链接，应为空列表。
+      const detail = await runtime.getTaskBillingDetail('browser-a', 'task_billing');
+      expect(detail?.items).toEqual([]);
+      expect(detail?.taskId).toBe('task_billing');
+    } finally {
+      store.close();
+    }
+  });
+
+  it('不会为未授权账户解析 Task 标题', async () => {
+    const store = createRuntimeBillingService();
+    try {
+      const runtime = new WebGatewaySessionRuntime({
+        accountId: 'local-default',
+        catalog: billingCatalogFixture([]),
+        gateway: gatewayFixture(),
+        billing: store.billing,
+        authorizeTask: () => false,
+        projectExecutionTimeline: () => ({
+          taskId: 'foreign-task',
+          title: '不应泄露的任务',
+          status: 'completed',
+          stages: [],
+        }),
+      });
+      runtime.subscribe('browser-a', () => undefined);
+      await attachBrowser(runtime);
+      await expect(runtime.getTaskBillingDetail('browser-a', 'foreign-task')).resolves.toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it('列出账户内没有 Query 计量记录的历史 Task', async () => {
+    const store = createRuntimeBillingService();
+    try {
+      const runtime = new WebGatewaySessionRuntime({
+        accountId: 'local-default',
+        catalog: billingCatalogFixture([]),
+        gateway: gatewayFixture(),
+        billing: store.billing,
+        listAccountTasks: () => [{ id: 'task_without_query', title: '历史无计量任务' }],
+      });
+      await expect(runtime.listBillingTasks()).resolves.toEqual([{
+        taskId: 'task_without_query',
+        taskTitle: '历史无计量任务',
+        queryCount: 0,
+      }]);
+    } finally {
+      store.close();
+    }
+  });
+});

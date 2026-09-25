@@ -12,6 +12,7 @@ import {
 import { buildEnvFromFile } from '../utils/env-file.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { truncateText } from '../utils/truncate-text.js';
+import type { HarnessUsageCounter, HarnessUsageEvent } from '../executor/harness-driver.js';
 import type { PlanningContext } from './planning-types.js';
 import type {
   ExecutorManualProposalResult,
@@ -42,12 +43,65 @@ const DEFAULT_PROGRESS_HEARTBEAT_MS = 30_000;
 const SENSITIVE_PROGRESS_FIELD =
   /(?:^|[_-])(secret|token|password|passwd|credential|authorization|private[_-]?key|api[_-]?key|prompt|conversation|content|reasoning|thoughts?|signature)(?:$|[_-])/iu;
 
+function plannerUsageFromEvent(
+  event: Record<string, unknown>,
+  turn: number,
+  expectedModel?: { provider: string; modelId: string },
+): HarnessUsageEvent | null {
+  if (event.type !== 'message_end') return null;
+  if (!isRecord(event.message)) return null;
+  const message = event.message;
+  if (message.role !== 'assistant') return null;
+  const usage = isRecord(message.usage) ? message.usage : null;
+  const callId = typeof message.id === 'string' && message.id.trim()
+    ? message.id
+    : `planner-turn-${turn}`;
+  const counters: HarnessUsageCounter[] = [];
+  const input = usageInteger(usage?.input);
+  const output = usageInteger(usage?.output);
+  const cacheRead = usageInteger(usage?.cacheRead);
+  const cacheWrite = usageInteger(usage?.cacheWrite);
+  if (input !== null) counters.push({ resource: 'model_tokens', metric: 'input', unit: 'token', kind: 'delta', value: input });
+  if (output !== null) counters.push({ resource: 'model_tokens', metric: 'output', unit: 'token', kind: 'delta', value: output });
+  if (cacheRead !== null) counters.push({ resource: 'model_tokens', metric: 'cache_read', unit: 'token', kind: 'delta', value: cacheRead, subsetOf: 'input' });
+  if (cacheWrite !== null) counters.push({
+    resource: 'model_tokens',
+    metric: 'cache_write',
+    unit: 'token',
+    kind: 'delta',
+    value: cacheWrite,
+    subsetOf: 'input',
+  });
+  return {
+    sourceEventKey: `message_end:${callId}`,
+    callId,
+    providerRef: expectedModel?.provider ?? null,
+    modelId: expectedModel?.modelId ?? null,
+    counters,
+    ...(counters.length === 0
+      ? {
+          missing: [
+            { resource: 'model_tokens', metric: 'input', unit: 'token' },
+            { resource: 'model_tokens', metric: 'output', unit: 'token' },
+          ],
+        }
+      : {}),
+  };
+}
+
+function usageInteger(value: unknown): string | null {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return String(value);
+  if (typeof value === 'string' && /^\d+$/u.test(value)) return value;
+  return null;
+}
+
 export interface PlannerRunner {
   run(
     prompt: string,
     context: PlanningContext,
     purpose: PlannerProposalPurpose,
     onProgress?: PlannerRunProgressObserver,
+    onUsage?: (event: HarnessUsageEvent) => void,
   ): Promise<PlannerRunResult>;
 }
 
@@ -188,6 +242,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     context: PlanningContext,
     purpose: PlannerProposalPurpose,
     onProgress?: PlannerRunProgressObserver,
+    onUsage?: (event: HarnessUsageEvent) => void,
   ): Promise<PlannerRunResult> {
     return this.runRpcTurn({
       sessionId: context.request.sessionId,
@@ -196,6 +251,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       context,
       purpose,
       onProgress,
+      onUsage,
     });
   }
 
@@ -207,6 +263,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     context: PlanningContext;
     purpose: PlannerProposalPurpose;
     onProgress?: PlannerRunProgressObserver;
+    onUsage?: (event: HarnessUsageEvent) => void;
   }): Promise<PlannerRunResult> {
     if (input.context.request.sessionId !== input.sessionId) {
       throw new Error('Planner RPC sessionId must match PlanningContext');
@@ -231,7 +288,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       return await this.runRpc(input.prompt, {
         ...input.context,
         request: { ...input.context.request, sessionId: input.sessionId },
-      }, input.purpose, input.cwd, input.onProgress);
+      }, input.purpose, input.cwd, input.onProgress, input.onUsage);
     } finally {
       release();
       if (this.sessionQueues.get(sessionId) === tail) {
@@ -335,6 +392,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     purpose: PlannerProposalPurpose,
     cwdOverride?: string,
     onProgress?: PlannerRunProgressObserver,
+    onUsage?: (event: HarnessUsageEvent) => void,
   ): Promise<PlannerRunResult> {
     const startedAt = Date.now();
     if (this.deps.resolvePlannerBinding) {
@@ -505,6 +563,16 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
         } catch (error) {
           fail(new Error(`AnyFusion Planner RPC emitted malformed JSONL: ${error instanceof Error ? error.message : String(error)}`));
           return;
+        }
+        if (onUsage) {
+          const usage = plannerUsageFromEvent(event, turn, this.currentExpectedModel);
+          if (usage) {
+            try {
+              onUsage(usage);
+            } catch {
+              // Metering must never affect Planner control flow.
+            }
+          }
         }
         if (
           event.type === 'response'

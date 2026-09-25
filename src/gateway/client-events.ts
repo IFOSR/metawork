@@ -32,7 +32,10 @@ export type GatewayEventKind =
   | 'result_completed'
   | 'final_answer'
   | 'terminal_error'
-  | 'delivery_status';
+  | 'delivery_status'
+  | 'command_completion'
+  | 'task_view_snapshot'
+  | 'usage_billing_projection';
 
 export const GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
   'conversation_snapshot',
@@ -55,6 +58,9 @@ export const GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
   'final_answer',
   'terminal_error',
   'delivery_status',
+  'command_completion',
+  'task_view_snapshot',
+  'usage_billing_projection',
 ];
 
 export const TERMINAL_GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [

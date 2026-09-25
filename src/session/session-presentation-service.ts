@@ -1,8 +1,12 @@
 // Formats session-facing status, guidance, queue, and recovery
 // messages so orchestration code can work with domain facts instead of strings.
-import { isPermissionFailure, isRecoverableExecutorFailure } from '../executor/error-utils.js';
+import { isPermissionFailure } from '../executor/error-utils.js';
 import type { Dashboard, GuidanceProposal, RuntimeState, Task } from '../core/types.js';
 import type { TaskClearScope, TaskStatusQueryScope } from '../task/task-control-types.js';
+import {
+  formatBlockedTaskNextStep,
+  formatBlockedTaskReason,
+} from '../task/task-blocker-guidance.js';
 
 export interface GuidanceState {
   scene: string;
@@ -199,8 +203,8 @@ export class SessionPresentationService {
         `当前有 ${input.blockedTasks.length} 个阻塞任务：`,
         ...input.blockedTasks.map(task => [
           `  #${task.id} [BLOCKED] ${task.title}`,
-          `    → 阻塞原因：${task.blockReason}`,
-          `    → 建议动作：/task unblock ${task.id}，或直接补充材料/说明后让我继续`,
+          `    → 阻塞原因：${formatBlockedTaskReason(task.blockReason)}`,
+          `    → 建议动作：${formatBlockedTaskNextStep(task.id, task.blockReason)}`,
         ].join('\n')),
       ].join('\n');
     }
@@ -292,8 +296,8 @@ export class SessionPresentationService {
       for (const task of blockedTasks.slice(0, this.queueLimit)) {
         const reason = getWaitingBlockReason(task) || '等待解除阻塞';
         lines.push(`│   #${task.id} ${task.title}`);
-        lines.push(`│     原因：${reason}`);
-        lines.push(`│     还差：${this.describeBlockedTaskMissingCondition(reason, task.id)}`);
+        lines.push(`│     原因：${formatBlockedTaskReason(reason)}`);
+        lines.push(`│     还差：${formatBlockedTaskNextStep(task.id, reason)}`);
       }
       if (blockedTasks.length > this.queueLimit) {
         lines.push(`│   ... 还有 ${blockedTasks.length - this.queueLimit} 个阻塞任务`);
@@ -350,7 +354,9 @@ export class SessionPresentationService {
         return {
           task,
           score: evaluated.score.total,
-          reason: evaluated.reasons[0] ?? this.defaultQueueSnapshotReason(task),
+          reason: task.status === 'blocked'
+            ? this.defaultQueueSnapshotReason(task)
+            : evaluated.reasons[0] ?? this.defaultQueueSnapshotReason(task),
         };
       });
 
@@ -434,22 +440,6 @@ export class SessionPresentationService {
     return `→ 任务 #${taskId} 已转为阻塞，排除问题后执行 /task unblock ${taskId} 继续`;
   }
 
-  private describeBlockedTaskMissingCondition(reason: string, taskId: string): string {
-    if (/材料|文件|链接|文档|资料|补充|缺少|等待/i.test(reason)) {
-      return `补充材料/文件/链接后，我会自动恢复；也可执行 /task unblock ${taskId} [材料路径]`;
-    }
-
-    if (/授权|权限|permission|authorized|access/i.test(reason)) {
-      return `确认权限/授权后，直接说“已授权，继续任务 ${taskId}”或执行 /task unblock ${taskId}`;
-    }
-
-    if (isRecoverableExecutorFailure(reason)) {
-      return '等待执行器或网络恢复；定时检查会自动重试';
-    }
-
-    return `确认阻塞条件已解除后执行 /task unblock ${taskId}`;
-  }
-
   private buildResumeGuidanceReasons(task: Task): string[] {
     const reasons: string[] = [];
     const latestSnapshot = task.snapshots[task.snapshots.length - 1];
@@ -500,7 +490,9 @@ export class SessionPresentationService {
       return task.lastInterruptionReason || '任务已挂起';
     }
     if (task.status === 'blocked') {
-      return task.dependencies.find(dependency => dependency.status === 'waiting')?.description || '等待解除阻塞';
+      const reason = task.dependencies.find(dependency => dependency.status === 'waiting')?.description
+        || '等待解除阻塞';
+      return formatBlockedTaskReason(reason);
     }
     if (task.prioritySignals.semanticPriorityReason) {
       return `语义优先级：${task.prioritySignals.semanticPriorityReason}`;

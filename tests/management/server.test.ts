@@ -25,6 +25,103 @@ import { WebGatewayAdmissionError } from '../../src/management/web-gateway-sessi
 import { ConfigurationActivationBlockedError, ConfigurationActivationGate } from '../../src/configuration/configuration-activation-gate.js';
 
 describe('executor management API', () => {
+  it('serves read-only billing records and task detail through the session runtime', async () => {
+    const port = await reservePort();
+    const listCalls: Array<Record<string, unknown>> = [];
+    const detailCalls: string[] = [];
+    const bill = {
+      billId: 'bill_1',
+      queryId: 'query_1',
+      taskId: 'task_1',
+      turnId: 'turn_1',
+      conversationId: 'conv_1',
+      createdAt: '2026-09-22T00:00:00.000Z',
+      state: 'finalized',
+      userStatus: 'billed',
+      assessedMicroCoin: '28',
+      assessedIsFinal: true,
+      externalState: 'not_exported',
+      externalEntryId: null,
+      confirmedDeductedMicroCoin: null,
+      coverage: 'complete',
+      coverageNote: null,
+      platformAbsorption: null,
+      payerSummary: [],
+      lines: [],
+      adjustments: [],
+      finalizedAt: '2026-09-22T00:01:00.000Z',
+      diagnosticCode: null,
+      diagnosticMessage: null,
+      observedUsageCount: 2,
+      missingCategories: [],
+    };
+    const sessionRuntime = createSessionRuntime({
+      listBillingTasks: async () => [{
+        taskId: 'task_without_query',
+        taskTitle: '历史无计量任务',
+        queryCount: 0,
+      }],
+      listBillingRecords: async (_clientId, input = {}) => {
+        listCalls.push({ ...input });
+        return {
+          items: [{ bill, requestSummary: '调研请求', taskTitle: '调研任务' }],
+          nextCursor: null,
+        };
+      },
+      getTaskBillingDetail: async (_clientId, taskId) => {
+        detailCalls.push(taskId);
+        return {
+          taskId,
+          taskTitle: '调研任务',
+          items: [{ bill, requestSummary: '调研请求', taskTitle: '调研任务' }],
+        };
+      },
+    });
+    const server = createManagementServer(port, { sessionRuntime });
+    await server.start();
+    try {
+      const headers = { authorization: 'Bearer manual-token' };
+      // 未认证请求 fail closed。
+      const denied = await fetch(`http://127.0.0.1:${port}/api/billing/records`);
+      expect(denied.status).toBe(401);
+
+      const records = await fetch(
+        `http://127.0.0.1:${port}/api/billing/records?filter=billed&limit=5`,
+        { headers },
+      );
+      expect(records.status).toBe(200);
+      expect(await records.json()).toEqual({
+        items: [{ bill, requestSummary: '调研请求', taskTitle: '调研任务' }],
+        nextCursor: null,
+      });
+      expect(listCalls[0]).toEqual({ filter: 'billed', limit: 5 });
+
+      const invalidFilter = await fetch(
+        `http://127.0.0.1:${port}/api/billing/records?filter=hacker`,
+        { headers },
+      );
+      expect(invalidFilter.status).toBe(200);
+      expect(listCalls[1]).toEqual({ filter: 'all' });
+
+      const detail = await fetch(`http://127.0.0.1:${port}/api/billing/tasks/task_1`, {
+        headers,
+      });
+      expect(detail.status).toBe(200);
+      expect(await detail.json()).toMatchObject({ taskId: 'task_1' });
+      expect(detailCalls).toEqual(['task_1']);
+
+      const tasks = await fetch(`http://127.0.0.1:${port}/api/billing/tasks`, { headers });
+      expect(tasks.status).toBe(200);
+      expect(await tasks.json()).toEqual([{
+        taskId: 'task_without_query',
+        taskTitle: '历史无计量任务',
+        queryCount: 0,
+      }]);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it('exposes authenticated prepare without activating a candidate', async () => {
     const port = await reservePort();
     const calls: unknown[] = [];

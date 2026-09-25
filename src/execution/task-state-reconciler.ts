@@ -6,6 +6,14 @@ import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
 import { resolveAccountPaths } from '../account/account-paths.js';
 import { createDatabase } from '../storage/database.js';
 import { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
+import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
+import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
+import { WorkUnitRepo } from '../storage/work-unit-repo.js';
+import { WorkUnitClaimService } from './work-unit-claim-service.js';
+import {
+  TaskResidueReader,
+  type TaskResidueCategory,
+} from './task-residue-reader.js';
 import { resolveMetaWorkPaths } from '../installation/paths.js';
 
 export interface TaskStateReconcilerReport {
@@ -13,6 +21,13 @@ export interface TaskStateReconcilerReport {
   lines: string[];
   closedDispatchItems: number;
   releasedSlots: number;
+  /** Slots retained because live or uncertain residue has not converged. */
+  retainedSlots: number;
+  retainedSlotResidue: ReadonlyArray<{
+    conversationId: string;
+    taskId: string;
+    residue: readonly TaskResidueCategory[];
+  }>;
   closedScheduleEntries: number;
 }
 
@@ -37,6 +52,8 @@ export async function runTaskStateReconciler(input: {
       lines: ['no reconcilable database found; nothing to do'],
       closedDispatchItems: 0,
       releasedSlots: 0,
+      retainedSlots: 0,
+      retainedSlotResidue: [],
       closedScheduleEntries: 0,
     };
   }
@@ -52,10 +69,17 @@ function reconcile(
   now: () => string,
 ): TaskStateReconcilerReport {
   const scheduler = new ConversationTaskSchedulerRepo(db);
+  const residueReader = new TaskResidueReader({
+    db,
+    dispatchItemRepo: new KernelDispatchItemRepo(db),
+    publicationRepo: new WorkspacePublicationRepo(db),
+    workUnitClaimService: new WorkUnitClaimService(new WorkUnitRepo(db)),
+  });
   const lines: string[] = [];
 
-  // 1. Dispatch items whose task or subtask reached a terminal state while
-  //    the item is still claimable or draining.
+  // 1. Dispatch items for terminal tasks that never reached a live backend.
+  //    `cancelling`, `uncertain` and backend-backed items are left alone: they
+  //    are resolved along the durable Kernel path, never by a SQL shortcut.
   const closedDispatchItems = db.prepare(`
     UPDATE kernel_dispatch_items AS item
     SET status = 'cancelled',
@@ -64,7 +88,9 @@ function reconcile(
         cancelled_at = COALESCE(cancelled_at, ?),
         error_summary = COALESCE(error_summary, 'reconciled: task already terminal'),
         updated_at = ?
-    WHERE item.status IN ('pending_launch', 'launching', 'cancelling', 'uncertain')
+    WHERE item.status IN ('pending_launch', 'launching')
+      AND item.work_unit_id IS NULL
+      AND item.sandbox_container_id IS NULL
       AND EXISTS (
         SELECT 1 FROM tasks
         WHERE tasks.id = item.task_id AND tasks.status IN ('cancelled', 'done', 'failed', 'archived')
@@ -86,12 +112,34 @@ function reconcile(
       )
   `).all() as Array<{ conversation_id: string; active_task_id: string }>;
   let releasedSlots = 0;
+  const retainedSlotResidue: Array<{
+    conversationId: string;
+    taskId: string;
+    residue: readonly TaskResidueCategory[];
+  }> = [];
   for (const slot of staleSlots) {
-    const release = scheduler.releaseTaskSlotAndPromote(slot.active_task_id, now());
-    releasedSlots += 1;
-    if (release?.promotedTaskId) {
-      lines.push(`promoted queued task ${release.promotedTaskId} in ${release.conversationId}`);
+    // A terminal Task status is not proof that its side effects converged: the
+    // slot may only be released once the unified residue reader is clean.
+    const residue = residueReader.blockingReasons(slot.active_task_id, null);
+    if (residue.length > 0) {
+      retainedSlotResidue.push({
+        conversationId: slot.conversation_id,
+        taskId: slot.active_task_id,
+        residue,
+      });
+      lines.push(
+        `retained conversation slot in ${slot.conversation_id}: task ${slot.active_task_id} `
+        + `still owns ${residue.join(', ')}`,
+      );
+      continue;
     }
+    // This maintenance pass may run before AccountRuntime is composed. It may
+    // release stale capacity, but it must not reserve a successor that it
+    // cannot launch. AccountStartupRecoveryService performs promotion and
+    // Kernel-authorized launch through the normal account path.
+    const released = scheduler.releaseSlot(slot.conversation_id, slot.active_task_id, now());
+    releasedSlots += 1;
+    if (released) lines.push(`released stale conversation slot in ${slot.conversation_id}`);
   }
   if (releasedSlots > 0) {
     lines.push(`released ${releasedSlots} conversation slot(s) held by terminal tasks`);
@@ -113,5 +161,13 @@ function reconcile(
 
   const ok = true;
   if (lines.length === 0) lines.push('task state is consistent; nothing to reconcile');
-  return { ok, lines, closedDispatchItems, releasedSlots, closedScheduleEntries };
+  return {
+    ok,
+    lines,
+    closedDispatchItems,
+    releasedSlots,
+    retainedSlots: retainedSlotResidue.length,
+    retainedSlotResidue,
+    closedScheduleEntries,
+  };
 }

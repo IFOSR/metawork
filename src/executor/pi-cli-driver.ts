@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { chmod, copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -22,6 +23,8 @@ import type {
   HarnessResultStreamSnapshot,
   HarnessResultStreamTracker,
   HarnessResultInput,
+  HarnessUsageCounter,
+  HarnessUsageEvent,
   MaterializedRuntimeHome,
   ProbeCommandRunner,
   RuntimeHomeInput,
@@ -215,6 +218,36 @@ export class PiCliDriver implements HarnessDriver {
     return null;
   }
 
+  parseUsageLine(input: HarnessProgressLineInput): HarnessUsageEvent | null {
+    if (input.stream !== 'stdout') return null;
+    const event = parseJsonLine(input.line);
+    if (event?.type !== 'message_end' || messageRole(event.message) !== 'assistant') return null;
+    const message = asRecord(event.message);
+    const usage = asRecord(message?.usage);
+    const explicitCallId = firstString(message?.id, message?.messageId);
+    const fallbackCallId = `message_end:${createHash('sha256')
+      .update(input.line, 'utf8')
+      .digest('hex')
+      .slice(0, 24)}`;
+    const callId = explicitCallId ?? fallbackCallId;
+    const counters = piUsageCounters(usage);
+    return {
+      sourceEventKey: callId.startsWith('message_end:')
+        ? callId
+        : `message_end:${callId}`,
+      callId,
+      counters,
+      ...(counters.length === 0
+        ? {
+            missing: [
+              { resource: 'model_tokens', metric: 'input', unit: 'token' },
+              { resource: 'model_tokens', metric: 'output', unit: 'token' },
+            ],
+          }
+        : {}),
+    };
+  }
+
   parseActivityLine(input: HarnessProgressLineInput): HarnessActivitySignal | null {
     if (input.stream !== 'stdout') return null;
     const event = parseJsonLine(input.line);
@@ -378,6 +411,43 @@ function findPiTerminalError(events: Record<string, unknown>[]): string | null {
     }
   }
   return null;
+}
+
+function piUsageCounters(usage: Record<string, unknown> | null): HarnessUsageCounter[] {
+  if (!usage) return [];
+  const counters: HarnessUsageCounter[] = [];
+  const input = integerString(usage.input);
+  const output = integerString(usage.output);
+  const cacheRead = integerString(usage.cacheRead ?? usage.cache_read);
+  const cacheWrite = integerString(usage.cacheWrite ?? usage.cache_write);
+  if (input !== null) counters.push({ resource: 'model_tokens', metric: 'input', unit: 'token', kind: 'delta', value: input });
+  if (output !== null) counters.push({ resource: 'model_tokens', metric: 'output', unit: 'token', kind: 'delta', value: output });
+  if (cacheRead !== null) counters.push({ resource: 'model_tokens', metric: 'cache_read', unit: 'token', kind: 'delta', value: cacheRead, subsetOf: 'input' });
+  if (cacheWrite !== null) counters.push({
+    resource: 'model_tokens',
+    metric: 'cache_write',
+    unit: 'token',
+    kind: 'delta',
+    value: cacheWrite,
+    subsetOf: 'input',
+  });
+  return counters;
+}
+
+function integerString(value: unknown): string | null {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return String(value);
+  if (typeof value === 'string' && /^\d+$/u.test(value)) return value;
+  return null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function firstString(...values: unknown[]): string | null {
+  return values.find((value): value is string => typeof value === 'string' && value.trim().length > 0) ?? null;
 }
 
 function lastAssistantMessageText(events: Record<string, unknown>[]): string | null {

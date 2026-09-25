@@ -1031,6 +1031,20 @@ describe('ControlKernel', () => {
     });
   });
 
+  it('does not retry a blocked Task with unresolved external effects', () => {
+    const snapshot = dispatchSnapshot();
+    snapshot.task = { id: 'task_1', status: 'blocked' };
+    snapshot.subtasks[0]!.status = 'blocked';
+    snapshot.recoverySafety = 'external_non_idempotent';
+    const result = new ControlKernel().decide(runtimeEvent({
+      type: 'task_resume_requested', blockerCategory: 'retry',
+      sourceInputExcerpt: 'continue', newlyProvidedResources: [],
+      idempotencyKey: 'resume:unsafe',
+    }), snapshot);
+    expect(result.action.type).toBe('block_work');
+    expect(result.reason).toContain('external effect safety');
+  });
+
   it('keeps an unknown blocker fail-closed even for read-only work', () => {
     const snapshot = dispatchSnapshot();
     snapshot.task = { id: 'task_1', status: 'blocked' };

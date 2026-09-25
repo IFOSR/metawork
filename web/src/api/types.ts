@@ -294,6 +294,9 @@ import type {
   ArtifactProjection,
   ConversationWorkspaceProjection,
   ConversationTurnProjection,
+  QueryBillProjection,
+  TaskUsageSummary,
+  TurnBillUserView,
   WebSessionMetadata,
 } from './session-types';
 
@@ -385,6 +388,13 @@ export type ServerMessage =
     artifacts: ArtifactProjection[];
   }
   | { type: 'trace_snapshot'; trace: InteractionTrace }
+  | {
+    type: 'billing';
+    turnId: string;
+    queryBill: QueryBillProjection | null;
+    taskUsageSummary: TaskUsageSummary | null;
+    turnBilling?: TurnBillUserView | null;
+  }
   | { type: 'configuration_runtime_state'; state: ConfigurationRuntimeState }
   | {
       type: 'trace_delta';

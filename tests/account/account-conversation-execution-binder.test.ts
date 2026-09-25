@@ -51,6 +51,31 @@ describe('AccountConversationExecutionBinder', () => {
       'persist:conversation_b:second',
     ]);
   });
+
+  it('forwards the Query identity used to attribute Executor usage', async () => {
+    const binder = createAccountConversationExecutionBinder();
+    let received: unknown[] = [];
+    const shared = {
+      kernelExecutionRuntime: {},
+      taskExecutionApplicationService: {},
+      sessionKernelRuntime: {
+        forInput(...args: unknown[]) {
+          received = args;
+          return { apply: async () => null };
+        },
+      },
+    };
+    binder.bindSharedServices(shared as never);
+
+    const services = binder.bind(binding('conversation_a', []));
+    services.sessionKernelRuntime.forInput(
+      'user request',
+      'conversation-a',
+      'query-a',
+    );
+
+    expect(received).toEqual(['user request', 'conversation-a', 'query-a']);
+  });
 });
 
 function binding(

@@ -108,6 +108,7 @@ import { AutoModelResolver } from '../routing/auto-model-resolver.js';
 import { authorizedExecutorBindingFingerprint } from '../core/authorized-executor-binding.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
+import { projectTaskViewFacts } from '../gateway/task-view-facts.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
@@ -124,6 +125,11 @@ import { ManagementServer, type ConfigQuery, type ExecutionQuery } from '../mana
 import { ArtifactPreviewService } from '../management/artifact-preview-service.js';
 import { TaskArtifactRepo } from '../storage/task-artifact-repo.js';
 import { ExecutionProjector } from '../management/execution-projector.js';
+import {
+  createGatewayReadOnlyQueryHandler,
+  completeWorkspaceNavigationCommand,
+} from '../gateway/read-only-query-handler.js';
+import { GATEWAY_TASK_VIEW_QUERY_VERSION } from '../gateway/task-view.js';
 import { WorkGraphPresentationProjector } from '../management/work-graph-presentation-projector.js';
 import { WebAuthService } from '../management/web-auth.js';
 import { WebLaunchContextService } from '../management/web-launch-context.js';
@@ -164,6 +170,17 @@ import {
   createServerApplication,
 } from './server-application.js';
 import { createServerComposition } from './server-composition-contract.js';
+import {
+  billingModelPriceInputs,
+  createServerBillingServices,
+  resolveConfiguredUsagePayer,
+} from './billing-composition.js';
+import { createUsageRecorder } from '../metering/usage-service.js';
+import { resolveTaskViewTurnAssociation } from '../gateway/task-view-association.js';
+import { ResultObjectRepo } from '../storage/result-object-repo.js';
+import { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
+import type { ConversationResultDelivery } from '../session/conversation-session.js';
+import { createBackgroundResultDelivery } from '../gateway/background-result-delivery.js';
 
 function toMutationResult(result: ActivateDraftResult): ConfigurationMutationResult {
   if (result.ok) return { ok: true, revisionId: result.snapshot.revisionId };
@@ -602,6 +619,34 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     secretStore,
   });
   const db = createDatabase(accountPaths.database);
+  const billingServices = createServerBillingServices(db, {
+    configurationRevision: migratedSnapshot.revisionId,
+    models: billingModelPriceInputs(Object.values(migratedSnapshot.config.models)),
+  });
+  const reconciledBillingCount = billingServices.reconcilePendingBills(
+    LOCAL_DEFAULT_ACCOUNT_ID,
+    new Date().toISOString(),
+  );
+  if (reconciledBillingCount > 0) {
+    console.log(`[billing] reconciled ${reconciledBillingCount} pending bill(s) after startup`);
+  }
+  const usageRecorder = createUsageRecorder({ metering: billingServices.metering });
+  const configuredUsagePayer = resolveConfiguredUsagePayer(process.env);
+  if (billingServices.priceBookVersion === 'unconfigured') {
+    console.warn(
+      '[billing] no configured price book is active; new Query bills will remain 待确认 '
+      + 'until Model Profile input/output prices are activated.',
+    );
+  }
+  if (
+    configuredUsagePayer === 'unknown'
+    && process.env.METAWORK_BILLING_DEFAULT_PAYER?.trim() === 'unknown'
+  ) {
+    console.warn(
+      '[billing] METAWORK_BILLING_DEFAULT_PAYER=unknown; usage will be recorded '
+      + 'but formal fees will remain 待确认.',
+    );
+  }
   const configurationRevisionRepo = new ConfigurationRevisionRepo(db);
   ensureActiveConfigurationRevision(db, {
     revisionId: migratedSnapshot.revisionId,
@@ -765,6 +810,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     { accountId: LOCAL_DEFAULT_ACCOUNT_ID },
   );
   await webAttachmentStore.initialize();
+  const pendingSystemDeliveries: Array<{ sessionId: string; delivery: ConversationResultDelivery }> = [];
+  let deliverSystemResult: ((sessionId: string, delivery: ConversationResultDelivery, originTurnId?: string) => Promise<void>) | null = null;
   accountRuntimeComposition = buildAccountRuntimeComposition({
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     db,
@@ -808,6 +855,15 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     onConversationActivityChanged: (conversationId, activity) => (
       publishWorkspaceActivity(conversationId, activity)
     ),
+    usageObserver: event => usageRecorder.record(event),
+    usageSpanOpener: span => usageRecorder.openSpan(span),
+    usageSpanCloser: (spanId, state, closedAt) => billingServices.metering.closeSpan(spanId, state, closedAt),
+    usagePayer: configuredUsagePayer,
+    queryUsageLifecycle: billingServices.lifecycle,
+    onSystemResultDelivery: async (sessionId, delivery) => {
+      if (deliverSystemResult) await deliverSystemResult(sessionId, delivery);
+      else pendingSystemDeliveries.push({ sessionId, delivery });
+    },
   });
   const accountRegistry = new RuntimeRegistry({
     // The composition helper has already bound all account-scoped services to
@@ -908,6 +964,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       stagedConfiguration.kernel = nextStaged.kernel;
       stagedConfiguration.plannerBinding = nextStaged.plannerBinding;
       stagedConfiguration.plannerBindingFingerprint = nextStaged.plannerBindingFingerprint;
+      billingServices.refreshConfiguration({
+        configurationRevision: snapshot.revisionId,
+        models: billingModelPriceInputs(Object.values(snapshot.config.models)),
+      });
       await gatewayFeishuManager?.applyConfiguration(buildApplicationConfig(snapshot));
       republishAgentReadiness?.();
     },
@@ -935,6 +995,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       stagedConfiguration.kernel = restored.kernel;
       stagedConfiguration.plannerBinding = restored.plannerBinding;
       stagedConfiguration.plannerBindingFingerprint = restored.plannerBindingFingerprint;
+      billingServices.refreshConfiguration({
+        configurationRevision: snapshot.revisionId,
+        models: billingModelPriceInputs(Object.values(snapshot.config.models)),
+      });
       await gatewayFeishuManager?.applyConfiguration(buildApplicationConfig(snapshot));
       republishAgentReadiness?.();
     },
@@ -1019,8 +1083,15 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       },
     });
     conversation = new ConversationSession({
+      onBackgroundResultDelivery: async (delivery, originTurnId) => {
+        if (!deliverSystemResult) throw new Error('Result delivery is unavailable');
+        await deliverSystemResult(conversationId, delivery, originTurnId);
+      },
       conversationId,
       plannerSessionId: conversationId,
+      plannerBindingFingerprint: stagedConfiguration.plannerBindingFingerprint,
+      plannerProviderRef: stagedConfiguration.plannerBinding.providerRef,
+      plannerModelId: plannerModel.modelId,
       runtimePort: port,
       mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
       presentation,
@@ -1038,6 +1109,18 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       orchestration,
       config,
       plannerProposalRepo: new PlannerProposalRepo(db),
+      queryUsage: {
+        lifecycle: billingServices.lifecycle,
+        externalAccountRef: billingServices.externalAccountRef,
+        priceBookVersion: billingServices.priceBookVersion,
+        feePolicyVersion: billingServices.feePolicyVersion,
+        getPriceBookVersion: () => billingServices.priceBookVersion,
+        getFeePolicyVersion: () => billingServices.feePolicyVersion,
+        payerPolicyVersion: billingServices.payerPolicyVersion,
+        ingress: 'tui',
+        usageObserver: event => usageRecorder.record(event),
+        usagePayer: configuredUsagePayer,
+      },
       workspace,
       dispose: async () => unregisterPlannerHost(),
     });
@@ -1141,6 +1224,17 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
   });
   const gatewaySubscriptions = new GatewaySubscriptions();
+  // ExecutionProjector / TaskArtifactRepo 同时服务 Web 管理面与 Gateway 只读
+  // Task 视图查询（统一 TUI 设计 §9.3）：同一投影 owner，不复制状态计算。
+  const taskArtifactRepo = new TaskArtifactRepo(db);
+  const executionProjector = new ExecutionProjector({
+    subtaskRepo: new SubtaskRepo(db),
+    receiptRepo: new ExecutorAttemptReceiptRepo(db),
+    decisionRepo: new KernelDecisionRepo(db),
+    publicationRepo: new WorkspacePublicationRepo(db),
+    attemptRuntimeRepo: new ExecutorAttemptRuntimeRepo(db),
+    dispatchItemRepo: new KernelDispatchItemRepo(db),
+  });
   const conversationGatewayRuntime = new ConversationGatewayRuntime({
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     registry: accountRegistry,
@@ -1167,6 +1261,50 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       };
     },
   });
+  const deliveryResults = new ResultObjectRepo(db, accountPaths.results);
+  const deliveryScheduler = new ConversationTaskSchedulerRepo(db);
+  deliverSystemResult = createBackgroundResultDelivery({
+    accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+    resolveTask: resultId => {
+      const object = deliveryResults.findObject(resultId);
+      return object?.accountId === LOCAL_DEFAULT_ACCOUNT_ID && object.kind !== 'raw_attempt_output'
+        ? taskRepo.findById(object.taskId) : null;
+    },
+    resolveQuery: taskId => {
+      const queryId = deliveryScheduler.getQueuedPayload(taskId)?.queryId
+        ?? billingServices.contexts.listQueryIdsForTask(taskId)[0];
+      return queryId ? billingServices.contexts.findById(queryId) : null;
+    },
+    taskForQuery: queryId => billingServices.contexts.findTaskLink(queryId)?.costTaskId ?? null,
+    read: conversationId => webSessionCatalog.read(conversationId),
+    requestText: taskId => deliveryScheduler.getQueuedPayload(taskId)?.requestText ?? null,
+    project: task => executionProjector.project(task),
+    append: (conversationId, turn) => webSessionCatalog.appendTurn(conversationId, turn),
+    replay: conversationId => eventJournal.replay(LOCAL_DEFAULT_ACCOUNT_ID, conversationId),
+    publish: input => conversationGatewayRuntime.publishBackgroundResult(input),
+  });
+  for (const pending of pendingSystemDeliveries.splice(0)) {
+    await deliverSystemResult(pending.sessionId, pending.delivery);
+  }
+  // Older system bindings discarded the presentation callback. Recover only
+  // safe result objects of completed queued Tasks, never raw attempt output.
+  for (const task of taskRepo.findByStatus('done')) {
+    const queued = deliveryScheduler.getQueuedPayload(task.id);
+    if (!task.conversationId || !queued?.queryId
+      || !['account_task_capacity', 'conversation_slot_occupied'].includes(queued.schedulingReason ?? '')) continue;
+    if (new SubtaskRepo(db).listByTask(task.id).length !== 1) continue;
+    const receipt = new ExecutorAttemptReceiptRepo(db).listByTask(task.id)
+      .find(item => item.terminalState === 'completed');
+    const resultId = asPayloadRecord(receipt?.parsing.resultObjects).safeProjectionId;
+    if (typeof resultId !== 'string') continue;
+    const object = deliveryResults.findObject(resultId);
+    if (!object || object.kind !== 'safe_projection' || object.byteLength === 0
+      || object.accountId !== task.accountId || object.taskId !== task.id) continue;
+    await deliverSystemResult(task.conversationId, {
+      resultId, content: deliveryResults.readRange(resultId, 0, object.byteLength).content,
+      completeness: object.completeness, certification: 'certified',
+    });
+  }
   const workspaceGatewayRuntime = new WorkspaceGatewayRuntime(workspaceDirectory, {
     publish: async (kind, workspaceId, payload) => {
       const event = await eventJournal.append({
@@ -1208,6 +1346,126 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       activity,
     });
   };
+  const gatewayReadOnlyQueryHandler = createGatewayReadOnlyQueryHandler({
+    subscriptions: gatewaySubscriptions,
+    journal: eventJournal,
+    billing: billingServices.queries,
+    authorizeTask: (accountId, taskId) => {
+      const task = taskRepo.findById(taskId);
+      return Boolean(task && task.accountId === accountId);
+    },
+    authorizeConversation: authorizeConversationAttach,
+    completeCommand: ({ scope, text, cursor }) => {
+      if (scope.kind === 'workspace') {
+        return completeWorkspaceNavigationCommand(text, cursor);
+      }
+      // Conversation scope 必须显式 attach；会话未打开时 fail closed，
+      // 不为补全隐式启动 Planner 或创建绑定。
+      if (scope.selection.mode !== 'attach') {
+        return { state: 'inactive', suggestions: [], hint: null, error: null };
+      }
+      const conversation = conversationRegistry.getIfOpen(scope.selection.conversationId);
+      if (!conversation) {
+        return { state: 'inactive', suggestions: [], hint: null, error: null };
+      }
+      return conversation.completeCommand(text, cursor);
+    },
+    getTaskView: async ({ accountId, conversationId, turnId, taskId, requestId }) => {
+      if (accountId !== LOCAL_DEFAULT_ACCOUNT_ID) return { error: 'task_view_unavailable' };
+      const record = await webSessionCatalog.read(conversationId).catch(() => null);
+      const recordedTurn = record?.turns.find(turn => turn.id === turnId) ?? null;
+      const liveTrace = conversationRegistry.getIfOpen(conversationId)?.getInteractionTrace() ?? null;
+      const liveTurn = liveTrace && liveTrace.turnId === turnId ? liveTrace : null;
+      const replay = await eventJournal.replay(accountId, conversationId);
+      const queryContext = billingServices.contexts.findByTurnId(accountId, turnId);
+      const queryTaskId = queryContext?.conversationId === conversationId
+        ? billingServices.contexts.findTaskLink(queryContext.queryId)?.costTaskId ?? null
+        : null;
+      const association = resolveTaskViewTurnAssociation({
+        accountId,
+        conversationId,
+        turnId,
+        taskId,
+        replayEvents: [...replay.snapshot, ...replay.deltas],
+        queryTaskId,
+        liveTaskId: liveTurn?.taskId,
+        presentationTaskId: recordedTurn?.taskId,
+      });
+      if (association.status === 'not_found') {
+        return { error: 'turn_not_found' };
+      }
+      const recordedTaskId = recordedTurn?.taskId ?? null;
+      if (association.status === 'mismatch' || (recordedTaskId && recordedTaskId !== taskId)) {
+        return { error: 'turn_task_mismatch' };
+      }
+      const task = taskRepo.findById(taskId);
+      if (!task || task.accountId !== accountId || task.conversationId !== conversationId) {
+        return { error: 'task_not_found' };
+      }
+      const pendingPermission = accountRegistry.getIfLoaded(accountId)
+        ?.getConversationPort().queries.findOldestPendingPermission(conversationId) ?? null;
+      const taskPermission = pendingPermission && pendingPermission.request.taskId === taskId
+        ? pendingPermission
+        : null;
+      const associationProgressSummary = association.status === 'matched'
+        ? association.progressSummary
+        : null;
+      const progressSummary = liveTurn?.events.at(-1)?.summary
+        ?? recordedTurn?.traceEvents.at(-1)?.summary
+        ?? associationProgressSummary
+        ?? null;
+      const executionFacts = await projectTaskViewFacts({
+        task,
+        subtasks: new SubtaskRepo(db).listByTask(taskId),
+        dispatches: new KernelDispatchItemRepo(db).listByTask(taskId),
+        receipts: new ExecutorAttemptReceiptRepo(db).listByTask(taskId),
+        findObject: resultId => deliveryResults.findObject(resultId),
+        readConfiguration: revisionId => configurationRepository.readSnapshot(revisionId),
+      });
+      const timeline = executionProjector.project(task);
+      const publicExecutors = new Map(executionFacts.subtasks.map(subtask => [subtask.id, subtask.executor]));
+      for (const stage of timeline.stages) {
+        for (const subtask of stage.subtasks ?? []) {
+          subtask.executor = publicExecutors.get(subtask.id) ?? undefined;
+        }
+      }
+      return {
+        queryVersion: GATEWAY_TASK_VIEW_QUERY_VERSION,
+        requestId,
+        targetConversationId: conversationId,
+        turnId,
+        taskId,
+        title: task.title,
+        status: timeline.status,
+        goal: task.goal ? task.goal.slice(0, 2_000) : null,
+        startedAt: recordedTurn?.startedAt ?? liveTurn?.startedAt
+          ?? (association.status === 'matched' ? association.startedAt : null),
+        completedAt: recordedTurn?.completedAt ?? liveTurn?.completedAt
+          ?? (association.status === 'matched' ? association.completedAt : null),
+        routing: executionFacts.routing,
+        subtasks: executionFacts.subtasks,
+        timeline,
+        progressSummary: progressSummary ? progressSummary.slice(0, 500) : null,
+        schedulingReason: accountRuntimeComposition.runtimePort.queries.getQueuedTaskReason(taskId),
+        pendingPermission: taskPermission
+          ? {
+              requestId: taskPermission.request.id,
+              status: 'pending',
+              summary: `${taskPermission.request.operation} ${taskPermission.request.resource}`
+                .trim().slice(0, 200) || null,
+            }
+          : null,
+        artifacts: taskArtifactRepo.listByTask(taskId)
+          .filter(artifact => (
+            artifact.accountId === LOCAL_DEFAULT_ACCOUNT_ID
+            && artifact.status === 'published'
+          ))
+          .map(artifact => taskArtifactRepo.toProjection(artifact)),
+        result: executionFacts.result,
+        asOfSequence: replay.lastSequence,
+      };
+    },
+  });
   const clientGateway = new ClientGateway({
     authenticator: {
       authenticate: async ({ transport, credential }) => {
@@ -1244,6 +1502,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       ),
     handleWorkspaceCommand: (command, context) =>
       workspaceGatewayRuntime.handle(command, context),
+    handleReadOnlyQuery: (command, context) => gatewayReadOnlyQueryHandler(command, context),
     newWorkAdmission: {
       check: command => {
         if (command.kind === 'create_conversation') return { allowed: true };
@@ -1398,6 +1657,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           mediaType: record.mediaType,
           previewKind: record.previewKind,
         })),
+      billing: billingServices.queries,
       runtimePaths: {
         pairing: resolve(accountPaths.gateway, 'feishu-pairings.json'),
         audit: resolve(accountPaths.gateway, 'gateway-audit.jsonl'),
@@ -1411,15 +1671,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   }
 
   if (cliCommand.kind === 'server') {
-    const taskArtifactRepo = new TaskArtifactRepo(db);
-    const executionProjector = new ExecutionProjector({
-      subtaskRepo: new SubtaskRepo(db),
-      receiptRepo: new ExecutorAttemptReceiptRepo(db),
-      decisionRepo: new KernelDecisionRepo(db),
-      publicationRepo: new WorkspacePublicationRepo(db),
-      attemptRuntimeRepo: new ExecutorAttemptRuntimeRepo(db),
-      dispatchItemRepo: new KernelDispatchItemRepo(db),
-    });
     const workGraphPresentationProjector = new WorkGraphPresentationProjector();
     managementServer = await startWebMode({
       launchContexts: webLaunchContexts,
@@ -1449,6 +1700,14 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         gateway: webGatewayAdapter,
         attachments: webAttachmentStore,
         normalizeTurnPresentation,
+        billing: billingServices.queries,
+        authorizeTask: (accountId, taskId) => {
+          const task = taskRepo.findById(taskId);
+          return Boolean(task && task.accountId === accountId);
+        },
+        listAccountTasks: accountId => taskRepo.findAll()
+          .filter(task => task.accountId === accountId)
+          .map(task => ({ id: task.id, title: task.title })),
         projectExecutionTimeline: taskId => {
           const task = taskRepo.findById(taskId);
           return task ? executionProjector.project(task) : null;

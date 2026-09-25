@@ -29,6 +29,8 @@ import type { SqliteWorkspaceRepository } from '../storage/workspace-repo.js';
 import type { SqliteAttemptExecutionRepository } from '../storage/attempt-execution-backend-repo.js';
 import type { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
 import type { GatewayAttachmentStore } from '../gateway/attachment-store-port.js';
+import type { RawUsageEvent } from '../metering/usage-normalizer.js';
+import type { Payer } from '../billing/cost-policy.js';
 
 export interface AccountRuntimeExecutionServices {
   readonly resourceLeaseService: ResourceLeaseService;
@@ -63,6 +65,10 @@ export function buildAccountRuntimeExecutionServices(deps: {
   resultRoot: string;
   attachmentStore?: GatewayAttachmentStore;
   userArtifactPublication?: import('../delivery/user-artifact-publication-service.js').UserArtifactPublicationService | null;
+  usageObserver?: (event: RawUsageEvent) => void;
+  usageSpanOpener?: (span: import('../metering/ports.js').MeteringSpanRecord) => void;
+  usageSpanCloser?: (spanId: string, state: 'closed' | 'uncertain', closedAt: string) => void;
+  usagePayer?: Payer;
 }): AccountRuntimeExecutionServices {
   const resourceLeaseService = new ResourceLeaseService(new SqliteResourceLeaseRepository(deps.db));
   const dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
@@ -108,6 +114,10 @@ export function buildAccountRuntimeExecutionServices(deps: {
     resultRoot: deps.resultRoot,
     attachmentStore: deps.attachmentStore,
     userArtifactPublication: deps.userArtifactPublication ?? null,
+    usageObserver: deps.usageObserver,
+    usageSpanOpener: deps.usageSpanOpener,
+    usageSpanCloser: deps.usageSpanCloser,
+    usagePayer: deps.usagePayer,
   });
 
   return {

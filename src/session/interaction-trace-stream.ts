@@ -102,7 +102,9 @@ export class InteractionTraceStream {
     if (this.current.events.length > this.maxEvents) {
       this.current.events.splice(0, this.current.events.length - this.maxEvents);
     }
-    if (input.taskId !== undefined) this.current.taskId = input.taskId;
+    // An unscoped event does not detach the Turn from its Task.
+    // Only beginTurn resets that association.
+    if (input.taskId != null) this.current.taskId = input.taskId;
     if (input.traceStatus) {
       this.current.status = input.traceStatus;
       this.current.completedAt = input.traceStatus === 'running' ? null : occurredAt;

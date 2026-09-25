@@ -55,6 +55,167 @@ describe('ClientGateway', () => {
     expect(result).toMatchObject({ kind: 'authorization', requestId: 'req_1' });
   });
 
+  it('routes read-only queries to the transient branch without durable admission', async () => {
+    const store = new MemoryCommandAdmissionStore();
+    const queries: string[] = [];
+    const gateway = new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
+      activateAccount: async () => { throw new Error('read-only queries must not activate accounts'); },
+      submitToConversation: async () => { throw new Error('read-only queries must not reach the mailbox'); },
+      commandAdmissionStore: store,
+      handleReadOnlyQuery: async command => {
+        queries.push(command.kind);
+        return { status: 'accepted' };
+      },
+    });
+
+    const completionEnvelope: GatewayCommandEnvelope = {
+      ...envelope,
+      requestId: 'req_completion',
+      idempotencyKey: 'idem_completion',
+      scope: {
+        kind: 'conversation',
+        selection: { mode: 'attach', conversationId: 'conv_1' },
+      },
+      command: { kind: 'complete_command', text: '/task', cursor: 5 },
+    };
+    const receipt = await gateway.handle(completionEnvelope, 'local');
+    expect(receipt).toMatchObject({ requestId: 'req_completion', status: 'accepted' });
+    expect(queries).toEqual(['complete_command']);
+    // 补全草稿不写入持久 admission 存储。
+    await expect(store.listRecoverable()).resolves.toEqual([]);
+
+    // 相同 idempotencyKey 重放得到 duplicate，不重复执行查询。
+    const replay = await gateway.handle(completionEnvelope, 'local');
+    expect(replay).toMatchObject({ status: 'duplicate' });
+    expect(queries).toEqual(['complete_command']);
+
+    // 相同 idempotencyKey 不同内容冲突。
+    const conflict = await gateway.handle({
+      ...completionEnvelope,
+      requestId: 'req_completion_2',
+      command: { kind: 'complete_command', text: '/memory' },
+    }, 'local');
+    expect(conflict).toMatchObject({ kind: 'conflict', code: 'idempotency_conflict' });
+    expect(queries).toEqual(['complete_command']);
+  });
+
+  it('routes billing projections through the read-only branch without activating or submitting work', async () => {
+    const queries: string[] = [];
+    const gateway = new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
+      activateAccount: async () => {
+        throw new Error('billing projections must not activate accounts');
+      },
+      submitToConversation: async () => {
+        throw new Error('billing projections must not reach the mailbox');
+      },
+      handleReadOnlyQuery: async command => {
+        queries.push(command.kind);
+        return { status: 'accepted' };
+      },
+    });
+
+    const result = await gateway.handle({
+      ...envelope,
+      requestId: 'req_bill',
+      idempotencyKey: 'idem_bill',
+      scope: { kind: 'workspace' },
+      command: { kind: 'get_usage_summary', accountId: 'local-default' },
+    }, 'local');
+
+    expect(result).toMatchObject({ requestId: 'req_bill', status: 'accepted' });
+    expect(queries).toEqual(['get_usage_summary']);
+  });
+
+  it('routes the Turn bill query through the read-only branch, not workspace admission', async () => {
+    const queries: string[] = [];
+    const gateway = new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
+      activateAccount: async () => {
+        throw new Error('Turn bill queries must not activate accounts');
+      },
+      submitToConversation: async () => {
+        throw new Error('Turn bill queries must not reach the mailbox');
+      },
+      handleWorkspaceCommand: async () => {
+        throw new Error('Turn bill queries must not reach workspace admission');
+      },
+      handleReadOnlyQuery: async command => {
+        queries.push(command.kind);
+        return { status: 'accepted' };
+      },
+    });
+
+    // 回归：isReadOnlyQuery 白名单漏掉 get_query_bill_for_turn 时，
+    // 查询会掉进 workspace admission 分支并被 workspace_command_unavailable 拒绝，
+    // TUI 永远拿不到账单投影。
+    const result = await gateway.handle({
+      ...envelope,
+      requestId: 'req_turn_bill',
+      idempotencyKey: 'idem_turn_bill',
+      scope: { kind: 'workspace' },
+      command: { kind: 'get_query_bill_for_turn', turnId: 'turn_1' },
+    }, 'local');
+
+    expect(result).toMatchObject({ requestId: 'req_turn_bill', status: 'accepted' });
+    expect(queries).toEqual(['get_query_bill_for_turn']);
+  });
+
+  it('rejects read-only queries when the branch is unavailable and rate limits per connection', async () => {
+    const unavailability = new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
+      activateAccount: async () => undefined,
+      submitToConversation: async () => ({ status: 'accepted' }),
+    });
+    const taskViewEnvelope: GatewayCommandEnvelope = {
+      ...envelope,
+      requestId: 'req_task_view',
+      idempotencyKey: 'idem_task_view',
+      scope: {
+        kind: 'conversation',
+        selection: { mode: 'attach', conversationId: 'conv_1' },
+      },
+      command: {
+        kind: 'get_task_view',
+        conversationId: 'conv_1',
+        turnId: 'turn_1',
+        taskId: 'task_1',
+      },
+    };
+    const unavailable = await unavailability.handle(taskViewEnvelope, 'local');
+    expect(unavailable).toMatchObject({ status: 'rejected', reason: 'readonly_query_unavailable' });
+
+    const gateway = new ClientGateway({
+      authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+      accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+      conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
+      activateAccount: async () => undefined,
+      submitToConversation: async () => ({ status: 'accepted' }),
+      handleReadOnlyQuery: async () => ({ status: 'accepted' }),
+    });
+    let rateLimited: unknown = null;
+    for (let index = 0; index < 12; index += 1) {
+      const result = await gateway.handle({
+        ...taskViewEnvelope,
+        requestId: `req_rl_${index}`,
+        idempotencyKey: `idem_rl_${index}`,
+      }, 'local');
+      if ('status' in result && result.status === 'rejected' && result.reason === 'rate_limited') {
+        rateLimited = result;
+      }
+    }
+    expect(rateLimited).toMatchObject({ status: 'rejected', reason: 'rate_limited' });
+  });
+
   it('rejects an oversized command before authentication or durable admission', async () => {
     let authenticated = false;
     const store = new MemoryCommandAdmissionStore();

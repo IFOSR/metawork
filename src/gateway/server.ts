@@ -4,7 +4,10 @@ import { nanoid } from 'nanoid';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
 import type { ClientGateway } from './client-gateway.js';
 import type { GatewayEventEnvelope, GatewayReplay } from './client-events.js';
-import type { GatewayCommand } from './client-protocol.js';
+import {
+  GATEWAY_SERVER_CAPABILITIES,
+  type GatewayCommand,
+} from './client-protocol.js';
 import type { EventJournal } from './event-journal.js';
 import type { GatewaySubscriptions } from './gateway-subscriptions.js';
 import { createJsonLineParser, encodeJsonLine } from './jsonl.js';
@@ -243,10 +246,20 @@ export class MetaclawGatewayServer {
       for (const event of orderedUniqueEvents(buffered)) {
         if (event.sequence > replay.lastSequence) sendAttachedEvent(event);
       }
-      send({ type: 'hello', sessionId: nextConversationId, attached: true });
+      send({
+        type: 'hello',
+        sessionId: nextConversationId,
+        attached: true,
+        capabilities: [...GATEWAY_SERVER_CAPABILITIES],
+      });
     };
 
-    send({ type: 'hello', sessionId: socketConnectionId, attached: false });
+    send({
+      type: 'hello',
+      sessionId: socketConnectionId,
+      attached: false,
+      capabilities: [...GATEWAY_SERVER_CAPABILITIES],
+    });
     const cleanup = () => {
       latestAttachRequest += 1;
       activeAttachment?.detachClient();

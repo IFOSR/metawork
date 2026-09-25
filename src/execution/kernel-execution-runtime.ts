@@ -317,10 +317,13 @@ export function classifyResumeBlocker(
   // 启动恢复对“活跃但无 authorized dispatch”的 Subtask 只做 fail-closed 手动阻塞；
   // 描述里的 "authorized" 指 dispatch 授权，而不是缺材料/权限，不能归为 explicit_resource。
   if (normalized.includes('without authorized dispatch')) return 'manual';
-  if (
-    latestFailure?.kind === 'unknown'
-    && normalizeExecutorFailure(latestFailure.summary).kind === 'network'
-  ) return 'retry';
+  if (normalized.includes('external effect safety')) return 'manual';
+  if (normalized.includes('contract') || normalized.includes('契约')) return 'contract';
+  if (/permission|权限|授权|material|材料|explicit.resource/iu.test(normalized)) return 'explicit_resource';
+  if (latestFailure?.kind === 'unknown') {
+    const classified = normalizeExecutorFailure(latestFailure.summary);
+    if (classified.kind === 'network' || classified.code === 'model_response_incomplete') return 'retry';
+  }
   if (normalized.includes('capacity') || normalized.includes('资源')) return 'capacity';
   if (
     normalized.includes('retry')
@@ -535,7 +538,14 @@ export class KernelExecutionRuntime {
     if (residue.length === 0) {
       // No asynchronous cleanup is pending: release the Conversation slot and
       // close the schedule entry right now so the outcome is accurate (§4.1).
-      this.deps.cancellationCoordinator.releaseAdmission(taskId);
+      // AccountRuntime owns the follow-up launch after promotion. Keeping the
+      // release and launch in that callback prevents a promoted row from being
+      // left in `reserved` when this synchronous command path is used.
+      if (this.deps.onTaskTerminal) {
+        await this.deps.onTaskTerminal(taskId);
+      } else {
+        this.deps.cancellationCoordinator.releaseAdmission(taskId);
+      }
       return {
         taskId,
         status: alreadyCancelled ? 'already_cleared' : 'cleared',
@@ -640,10 +650,13 @@ export class KernelExecutionRuntime {
     if (['cancelled', 'done', 'failed', 'archived'].includes(task.status)) {
       // §4.1: never release the slot while dispatch/publication/backend/lease
       // residue remains — releaseAdmission re-checks every blocking category.
-      const released = this.deps.cancellationCoordinator.releaseAdmission(
-        activeTaskId,
-        new Date().toISOString(),
-      );
+      const released = this.deps.onTaskTerminal
+        ? null
+        : this.deps.cancellationCoordinator.releaseAdmission(
+          activeTaskId,
+          new Date().toISOString(),
+        );
+      if (this.deps.onTaskTerminal) void this.deps.onTaskTerminal(activeTaskId);
       this.deps.callbacks.refreshRuntimeState();
       return { releasedStaleSlot: released !== null, reconciliation };
     }
@@ -855,6 +868,19 @@ export class KernelExecutionRuntime {
       const task = this.deps.taskRuntimeService.findTask(taskId);
       if (task?.status === 'cancelled'
         && this.deps.cancellationCoordinator.completionBlockedReasons(taskId, null).length === 0) {
+        // Admission alone is not completion: publish only after cleanup settles.
+        this.appendExecutionTrace({
+          phase: 'delivery',
+          actor: 'runtime',
+          kind: 'turn_cancelled',
+          status: 'completed',
+          title: 'Task cancellation completed',
+          summary: 'Task cancellation and execution cleanup completed.',
+          details: { taskId },
+          eventKey: `${taskId}:cancelled`,
+          taskId,
+          traceStatus: 'cancelled',
+        });
         await this.deps.onTaskTerminal?.(taskId);
       }
       this.deps.callbacks.refreshRuntimeState();
@@ -1042,7 +1068,10 @@ export class KernelExecutionRuntime {
     const recoverySubtask = recoverySubtaskId
       ? subtasks.find(subtask => subtask.id === recoverySubtaskId)
       : subtasks.find(subtask => frontier.includes(subtask.id));
-    const recoverySafety = deriveRecoverySafety(recoverySubtask?.requiredCapabilities ?? []);
+    const recoverySafety = deriveRecoverySafety(recoverySubtask
+      ? recoverySubtask.requiredCapabilities
+      : subtasks.filter(subtask => ['ready', 'blocked'].includes(subtask.status))
+        .flatMap(subtask => subtask.requiredCapabilities));
     return {
       schemaVersion: 5,
       type: 'dispatch',
@@ -1274,7 +1303,8 @@ export class KernelExecutionRuntime {
         configurationRevision: decision.configurationRevision,
       },
       eventKey: `${decision.id}:applied`,
-      taskId: 'taskId' in action ? action.taskId : null,
+      // no_op has no action target, but still belongs to this execution's Task.
+      taskId: 'taskId' in action ? action.taskId : input.request.contextTaskId,
     });
     if (action.type === 'resolve_recovery') {
       const application = this.deps.kernelWorkflowStore.findRecoveryItem?.(
@@ -1906,7 +1936,7 @@ export class KernelExecutionRuntime {
       kind: 'executor_dispatch_started',
       status: 'running',
       title: 'Executor dispatch started',
-      summary: `Kernel started ${item.authorizedBinding.agentClassRef} for "${subtask.title}".`,
+      summary: `Kernel started ${display.executorDisplayName} for "${subtask.title}".`,
       details: {
         taskId: item.taskId,
         attemptId: item.attemptId,
@@ -1963,7 +1993,7 @@ export class KernelExecutionRuntime {
     });
     this.deps.callbacks.appendOutput(
       ...this.deps.presentation.formatExecutorDispatch(
-        item.authorizedBinding.agentClassRef,
+        display.executorDisplayName,
       ),
     );
 
@@ -2080,6 +2110,7 @@ export class KernelExecutionRuntime {
             recoveryMode: item.recoveryMode,
             defaultResourceGrant: item.resourceGrant,
             sourceRoot: request.workspacePath,
+            queryId: request.queryId,
             onProgress,
           });
     } finally {
@@ -2898,7 +2929,7 @@ export class KernelExecutionRuntime {
       const safe = receipts
         .map(receipt => (receipt.parsing?.resultObjects as { safeProjectionId?: string | null } | undefined)?.safeProjectionId)
         .filter((id): id is string => typeof id === 'string' && id.length > 0)
-        .at(-1);
+        .at(0);
       if (!safe) return;
       const object = this.deps.resultObjectRepo?.findObject(safe);
       if (!object || object.completeness === 'incomplete' || object.byteLength === 0) return;
@@ -2913,7 +2944,7 @@ export class KernelExecutionRuntime {
       this.deps.callbacks.appendOutput(
         content,
         '',
-        `⚠️ 未通过内容校验（${reason}），结果已交付供人工判断；任务保持阻塞，不向下游流转。`,
+        `未认证部分输出（${reason}），仅供人工参考，不代表任务完成；任务保持阻塞。`,
       );
     } catch {
       // Delivery-on-block is best-effort and must never mask the block itself.
@@ -2948,7 +2979,7 @@ export class KernelExecutionRuntime {
     const failure = (this.deps.attemptReceiptRepo?.listByTask(taskId) ?? [])
       .map(receipt => receipt.failure)
       .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate))
-      .at(-1);
+      .at(0);
     if (!failure) return reason;
     const cause = [failure.code, failure.summary]
       .filter((part): part is string => Boolean(part && part.trim()))

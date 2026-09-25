@@ -53,9 +53,14 @@ const rootAcceptanceFiles = [
   'tests/web/workspace-shell.test.ts',
 ];
 const plannerAcceptanceFiles = [
-  'test/anyfusion-client-mode.test.ts',
   'test/anyfusion-gateway-client.test.ts',
   'test/metawork-conversation-selector.test.ts',
+  // 唯一新 TUI（ADR-0041）：模型、组件、控制器与应用装配。
+  'test/metawork-tui-reducer.test.ts',
+  'test/metawork-tui-render.test.ts',
+  'test/metawork-tui-controller.test.ts',
+  'test/metawork-tui-completion-and-preferences.test.ts',
+  'test/metawork-tui-app.test.ts',
 ];
 const releaseId = JSON.parse(
   readFileSync(join(repoRoot, 'package.json'), 'utf8'),
@@ -93,6 +98,15 @@ try {
   process.stdout.write(`Unified Gateway smoke passed with isolated root ${smokeRoot}\n`);
 } finally {
   if (activeServer?.exitCode === null) activeServer.kill('SIGTERM');
+  // restart 会 detached 启动新实例：按 manifest PID 兜底清理，避免遗留进程。
+  try {
+    if (existsSync(endpointManifest)) {
+      const pid = JSON.parse(readFileSync(endpointManifest, 'utf8')).pid;
+      if (Number.isSafeInteger(pid) && pid > 0) process.kill(pid, 'SIGTERM');
+    }
+  } catch {
+    // best-effort cleanup only
+  }
   removeTree(smokeRoot);
 }
 
@@ -259,11 +273,14 @@ async function startServer(action) {
   });
   child.stdout.on('data', chunk => { output += chunk.toString(); });
   child.stderr.on('data', chunk => { output += chunk.toString(); });
-  await waitFor(() => (
-    existsSync(endpointManifest)
-    && output.includes('MetaWork Server ready:')
-  ), 30_000, () => {
-    if (child.exitCode !== null) {
+  // `server start` 前台运行并打印 "MetaWork Server ready:"；`server restart`
+  // 会 detached 拉起新实例并打印 "MetaWork Server 已启动。" 后自身退出。
+  const ready = () => existsSync(endpointManifest) && (
+    output.includes('MetaWork Server ready:')
+    || output.includes('MetaWork Server 已启动。')
+  );
+  await waitFor(ready, 30_000, () => {
+    if (child.exitCode !== null && !ready()) {
       throw new Error(`Server ${action} exited early (${child.exitCode}): ${output}`);
     }
   });
@@ -289,22 +306,24 @@ async function runServerCommand(label, action, allowFailure = false) {
 async function runInstalledTui(cwd) {
   if (process.platform !== 'darwin') return;
   const launcher = join(smokeHome, '.local', 'bin', 'metawork');
-  let output = '';
-  const tui = spawn('/usr/bin/script', [
-    '-q',
-    '/dev/null',
-    launcher,
-    'tui',
-  ], {
+  // 唯一 MetaWork TUI 直接启动：stdin 保持打开（客户端把终端 EOF/Ctrl+D
+  // 视为“退出客户端”），输出为管道由本验收断言顶部栏内容。
+  const tui = spawn(launcher, ['tui'], {
     cwd,
     env: nativeEnvironment,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
+    // 独立进程组：launcher -> Server 入口 -> 唯一 TUI 客户端三层进程，
+    // 结束时必须整组清理，避免遗留客户端让验收进程无法退出。
+    detached: true,
   });
+  let output = '';
   tui.stdout.on('data', chunk => { output += chunk.toString(); });
   tui.stderr.on('data', chunk => { output += chunk.toString(); });
   try {
     await waitFor(() => (
-      output.includes('connected')
+      // 顶部栏渲染 MetaWork 标题、中文连接状态与 Workspace basename。
+      output.includes('MetaWork')
+      && output.includes('已连接')
       && output.includes(basename(cwd))
     ), 30_000, () => {
       if (tui.exitCode !== null) {
@@ -312,8 +331,21 @@ async function runInstalledTui(cwd) {
       }
     });
   } finally {
-    if (tui.exitCode === null) tui.kill('SIGTERM');
-    await waitForExit(tui).catch(() => tui.kill('SIGKILL'));
+    killProcessGroup(tui);
+    await waitForExit(tui).catch(() => killProcessGroup(tui, 'SIGKILL'));
+  }
+}
+
+function killProcessGroup(child, signal = 'SIGTERM') {
+  if (child.exitCode !== null) return;
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {
+      // best-effort cleanup only
+    }
   }
 }
 

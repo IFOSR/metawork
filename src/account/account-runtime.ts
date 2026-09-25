@@ -407,6 +407,9 @@ export class AccountRuntime implements AccountRuntimeHandle {
         listQueuedTaskIds: conversationId => (
           this.deps.repositories.conversationTaskSchedulerRepo.listQueuedTasks(conversationId)
         ),
+        getQueuedTaskReason: taskId => (
+          this.deps.repositories.conversationTaskSchedulerRepo.getQueuedReason(taskId)
+        ),
         listConversationTaskSlots: () => (
           this.deps.repositories.conversationTaskSchedulerRepo.listSlots()
         ),

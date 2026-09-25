@@ -1067,6 +1067,13 @@ export class ControlKernel {
     if (snapshot.task.status === 'running') {
       return decision(event, { type: 'no_op' }, 'running Task has no exact recoverable Subtask');
     }
+    if (event.blockerCategory === 'retry' && snapshot.recoverySafety === 'external_non_idempotent') {
+      return decision(
+        event,
+        { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId ?? null },
+        'explicit resume cannot prove external effect safety',
+      );
+    }
     if (['manual', 'material', 'contract', 'unknown'].includes(event.blockerCategory)) {
       return decision(
         event,

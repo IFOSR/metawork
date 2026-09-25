@@ -39,6 +39,8 @@ export type GatewayServerMessage =
       type: 'hello';
       sessionId: string;
       attached: boolean;
+      /** Gateway v2 显式能力清单（ADR-0031 / 统一 TUI 设计 §9.4）。 */
+      capabilities: string[];
     }
   | {
       type: 'output';

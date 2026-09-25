@@ -6,9 +6,13 @@ MetaWork 是本仓库统一呈现的闭源商业产品。AnyFusion 是独立的�
 `AnyFusion-Pi` 及其他 AnyFusion 名称用于标识已归属组件或兼容契约，不代表本仓库的
 产品身份。
 
-> 当前实现基线（2026-08-21）：PlanningAgentPlan v8、Work Graph
+> 当前实现基线（2026-09-22）：PlanningAgentPlan v8、Work Graph
 > v7、Kernel event/snapshot/decision contract v5、Completion Protocol v4，
-> 以及支持事务式 31→32→33→34→35→36→37→38 升级路径的 SQLite schema v38。`KernelWorkflow` 串行完成
+> 以及支持事务式 31→32→33→34→35→36→37→38→39→40→41 升级路径的 SQLite schema v41。
+> v39/v40 新增 ADR-0042 定义的 Query 用量与账单事实（Query 归因上下文、计量
+> span/观测、不可变价格版本、成本记录、每 Query 最终单及明细、消费 outbox/
+> 回执、账单调整和稳定实例标识）；计量、账单与外部消费导出在发布门禁通过前
+> 已交付 Server-side observe/shadow 与只读投影；外部消费导出仍需发布门禁。`KernelWorkflow` 串行完成
 > event、Decision 和 application，attempt supervisor 在单一活跃顶层 Task
 > 内并行启动最多四个隔离 attempt。ADR-0037 已将顶层 Task 并行扩展为
 > Conversation 级单 slot：不同 Conversation 可并行，同一 Conversation 的后续
@@ -52,8 +56,9 @@ MetaWork 是一个本地优先的 AI Task OS。它把自然语言需求变成可
 - 生成文件自动记录为任务产物。
 - 飞书回复、文件同步和 Markdown 在线预览由后端统一处理。
 - 本地 Gateway 支持多个终端连接同一个 MetaWork runtime。
-- 默认本地界面使用 `planner/AnyFusion-Pi` 下的 Gateway-only TUI，以独立的执行轨迹和对话区域流式展示安全事件，不创建本地语义 runtime。
-- 支持按游标重放与重连、版本化斜杠命令和权限决议；原 Ink UI 完整保留为备用模块。
+- 唯一产品终端界面是 `planner/AnyFusion-Pi/packages/coding-agent/src/modes/metawork-tui/` 下的 MetaWork TUI：多 Turn 对话投影、Pi 完整编辑器/主题/组件、Task Dashboard、只读 `complete_command` / `get_task_view` 查询，以及游标重放、重连、版本化斜杠命令、权限决议与取消。
+- 2026-09-20 审查修复将 CLI 分发与 `main-runtime.ts` 运行时依赖分离，接通 Workspace/Conversation 导航、Task/Attempt 快照与历史分页，提供 PgUp/PgDn 有界视口滚动。权限操作先刷新权威 Task 快照，不将受理回执当成授权完成；不修改 Gateway v2 协议及 Web/飞书生产处理路径。
+- 客户端只做 Gateway 客户端，不创建本地语义 runtime。此前的简版客户端模式与 `src/tui/` 下的 Ink 实现不再被任何入口选中；按 ADR-0041 删除它们是收敛的剩余步骤。客户端偏好（主题）保存在 MetaWork 配置目录。
 - 提供 `npm run smoke:metawork` 烟测，默认验证同一持久 AnyFusion-Pi Planner session 的两轮对话记忆；文件产物场景可显式选择。
 
 ## 核心架构
@@ -639,7 +644,7 @@ anyfusion
 - 权限请求只作为有界 UI 事实；`/approve` 与 `/deny` 只提交 request ID 和决议。
 - client 不能写 Task 状态、选择策略、调度 attempt、调用 Kernel 或控制 Executor。
 - 原始 v8 plan、prompt、隐藏推理、凭据和原始进程输出都保留在服务端。
-- 设置 `METACLAW_STANDBY_TUI=1` 可启动完整保留的 Ink 备用实现；该模块不是默认入口，未来启用也必须通过 Gateway。
+- `METACLAW_STANDBY_TUI=1` 与 `src/tui/` 下的 Ink 实现已按 ADR-0041 删除；终端入口只有唯一 MetaWork TUI。
 
 先启动常驻 Server：
 
@@ -1000,7 +1005,7 @@ MetaWork 会：
 AnyFusion-Pi Gateway TUI 是默认本地入口。client 只拥有编辑器和展示状态；
 `ClientGateway`、`ConversationSession`、AccountRuntime 和 ControlKernel
 继续独占命令校验、语义规划、持久化 mutation 和执行权限。原 Ink TUI 完整
-保留在 `src/tui/`，可通过 `METACLAW_STANDBY_TUI=1` 启动，但它只是源码保留
+已按 ADR-0041 删除（原 `src/tui/` 的 Ink 实现不再存在）
 的备用模块，不是第二套持续维护的前端。
 
 ## 任务检索
@@ -1026,6 +1031,18 @@ MetaWork 为每个 Conversation 调度一个执行或清理中的顶层 Task。A
 
 整 Task 取消和显式 Subtask 取消也必须进入 durable Kernel seam。取消栅栏先提交，`cancelling` dispatch/publication 在精确执行后端实例退出或确认缺失、WorkUnit 与 lease 释放前继续占用容量；晚到 outcome 只记为 `no_op`。Subtask 取消按下游闭包原子执行，不影响独立 sibling；剩余工作收束后 Task 进入 `blocked`，用户只能取消整个 Task，或通过 `/task <taskId> accept-partial` 显式接受已发布部分。
 
+## Query 用量与账单（目标态）
+
+ADR-0042 接受按 Query 归因的用量计量、精确 MetaCoin 账单，以及幂等的外部消费提交作为目标契约。在本计划发布门禁通过前，本节不描述已交付能力；发布顺序固定为 `observe -> shadow -> export`。
+
+**Query** 是 Server 接受的一次语义请求，或明确启动新执行段的用户操作，是耐久的计费归因根；它不是 Task，并且可以没有 Task（澄清、规划失败、对既有 Task 的解释、纯控制请求）。一个 Query 最多通过 Kernel 授权的应用事实关联一个收费归属 Task；`TaskAssessedTotal` 只相加归属该 Task 的已终结 Query 金额，不用当前价格重算历史，也不会产生第二笔扣款。
+
+计量保留三个正交维度 `stage`、`reason`、`resource`，彼此不相加；同一覆盖范围只汇总一个权威层级，并用 `reported`/`estimated`/`unavailable` 显式标记质量与覆盖率。缺失用量不等于 `0`。付款方（`platform`、`user_direct`、`system`、`unknown`）由可信服务端配置或可核实凭据关系决定，因此自定义 Provider 继续受支持，不因计费受限。
+
+账单以精确有理数保存数量与单价，`1 MetaCoin = 1,000,000 microCoin`、`1 CNY = 1,000,000,000 nanoCny`，每个 Query 汇总时按 half-even 只舍入一次，阶段金额由最终总额用最大余数法分配，保证明细之和等于总额。Query 最终单不可变：本地状态 `collecting -> pending_reconciliation -> finalized`，外部状态 `not_exported -> pending -> received -> confirmed` 加 `unknown`/`rejected`。`received` 不等于已扣款，迟到成本以独立 `bill_adjustments` 事实记录，不做静默补扣。MetaWork 不保存余额，不做充值、支付、退款，也不按余额控制准入。
+
+外部提交暴露 `ExternalConsumptionPort` 领域端口，具体协议适配放在 `src/integrations/`。最终单与 `consumption_outbox` 在同一事务写入；幂等键为 `sourceInstanceId + billId`，payload digest 覆盖账户、单位、金额、版本和归因字段。超时视为 `unknown`，用原键查询对账。Web、TUI、飞书通过可选能力 `usage_billing_v1` 的 Gateway 只读查询展示 Query 账单、Task 用量汇总和账户用量汇总（遵循 ADR-0041 只读分支规则）；客户端不计算权威价格，也不发送消费请求。只有可信部署边界、第三方幂等与状态查询、金额精度和稳定实例标识全部验证通过才允许开启 export。
+
 ## PlanningAgent、ControlKernel 和 Work Unit
 
 自然语言 dispatch 拆成 Planner 理解、Kernel 授权和 Runtime 执行三层。除 slash command、显式 ID、路径、URL 和附件外，raw input 都进入 `PlanningAgent`；自然语言“记住”不再是快路。Planner 可按需调用只读 MCP，并通过原生 proposal 工具提交严格 v8 `PlanningAgentPlan`。Work Graph 使用 v7 契约，固定配置 revision 并携带完整 Executor bindings；授权确认只能解释同一 Task 中既有精确 request ID，不能修改 target、scope 或 grant。
@@ -1045,7 +1062,7 @@ MetaWork 可以把复杂需求表示成 work graph，而不是把整段需求一
 
 `SubtaskExecutionContext` 是唯一生产 Executor 输入。Task 标题/目标仅作背景，当前 Subtask 目标是唯一操作指令，越界 sibling 只暴露标题。Runtime 不把 Task/Subtask/attempt/WorkUnit 身份及 acceptance/handoff key 交给模型复制。Completion Protocol v4 将正文交付、完成认证和安全处置分轴评估：marker、trailer、evidence 数量/长度和物理传输限制不能丢弃安全正文；普通 Workspace 和用户态文件操作允许 Executor 按任务需要执行，系统控制面、凭据、提权、设备、Docker 控制面和未授权 ResultReference 仍 fail-closed。Runtime 以 Result Object 保存 raw stream、business result 和 safe projection，并以 Gateway 分块事件交付 safe projection。
 
-在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 Work Graph v7 `Subtask` revision。未发布产品使用 SQLite schema v38，支持事务式 31→32→33→34→35→36→37→38 升级路径，unsupported older schema 会拒绝启动。v38 用 `planner_turn_inputs` 保存一个 Planner Turn 的附件事实，使 host-bridge 提交在 Server 重启后仍可通过准入。当前 schema 还包含 immutable Result Objects、direct-edge ResultReferences、revision-pinned `artifact` ContextRefs、Planner proposal configuration-revision pin 和结果分块交付事实；v37 同时允许 `task_artifacts` 记录图片预览类型。下游只有在直接依赖 publication 成功后才进入 frontier，并通过授权引用按需读取上游结果；integration branch 不会隐式成为 sibling 基线。Certified Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts；safe uncertified body 可以先交付给用户，但不会释放下游。
+在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 Work Graph v7 `Subtask` revision。未发布产品使用 SQLite schema v40，支持事务式 31→32→33→34→35→36→37→38→39→40 升级路径，unsupported older schema 会拒绝启动。v40 保存 ADR-0042 的 Query 用量与账单事实：`query_usage_contexts`（请求作用域幂等键唯一）、`query_task_links`、`execution_usage_contexts`、`metering_spans`、`usage_observations`（`(source_id, source_event_key, metric)` 唯一）、`usage_normalization_issues`、`billing_price_versions`、`cost_entries`、`query_bills`/`query_bill_lines`、`consumption_outbox`/`consumption_receipts`、`bill_adjustments` 与稳定实例标识表 `billing_source_instance`；金额以有约束的十进制文本保存，聚合在精确金额层完成，不使用 SQLite 浮点求和。v38 用 `planner_turn_inputs` 保存一个 Planner Turn 的附件事实，使 host-bridge 提交在 Server 重启后仍可通过准入。当前 schema 还包含 immutable Result Objects、direct-edge ResultReferences、revision-pinned `artifact` ContextRefs、Planner proposal configuration-revision pin 和结果分块交付事实；v37 同时允许 `task_artifacts` 记录图片预览类型。下游只有在直接依赖 publication 成功后才进入 frontier，并通过授权引用按需读取上游结果；integration branch 不会隐式成为 sibling 基线。Certified Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts；safe uncertified body 可以先交付给用户，但不会释放下游。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 

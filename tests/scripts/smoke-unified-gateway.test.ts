@@ -44,7 +44,6 @@ describe('unified Gateway smoke command', () => {
     expect(source).toContain('tests/server/server-lifecycle.test.ts');
     expect(source).toContain('tests/client/web-client-launcher.test.ts');
     expect(source).toContain('planner/AnyFusion-Pi');
-    expect(source).toContain('test/anyfusion-client-mode.test.ts');
     expect(source).toContain('test/metawork-conversation-selector.test.ts');
     expect(source).toContain('Planner TUI acceptance');
     expect(source).toContain('dist/install-cli.js');

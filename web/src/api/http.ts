@@ -18,6 +18,10 @@ import type {
 import type {
   ArtifactProjection,
   AttachmentMetadata,
+  BillingRecordPageView,
+  BillingTaskView,
+  QueryBillUserStatus,
+  TaskBillingDetailView,
   WebSessionActivationResult,
   WebSessionCreationResult,
   WebSessionMetadata,
@@ -204,6 +208,29 @@ export class HttpClient {
 
   getConversation(sessionId: string): Promise<WebSessionRecord> {
     return this.request(`/api/conversations/${encodeURIComponent(sessionId)}`);
+  }
+
+  /** 只读账单页：分页历史账单；金额与状态全部来自 Server 投影。 */
+  getBillingRecords(input: {
+    cursor?: string;
+    filter?: 'all' | QueryBillUserStatus;
+    limit?: number;
+  } = {}): Promise<BillingRecordPageView> {
+    const params = new URLSearchParams();
+    if (input.cursor) params.set('cursor', input.cursor);
+    if (input.filter && input.filter !== 'all') params.set('filter', input.filter);
+    if (input.limit) params.set('limit', String(input.limit));
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    return this.request(`/api/billing/records${suffix}`);
+  }
+
+  /** Task 详情的关联请求；无事实时 items 为空（页面显示未建立计量记录）。 */
+  getTaskBillingDetail(taskId: string): Promise<TaskBillingDetailView> {
+    return this.request(`/api/billing/tasks/${encodeURIComponent(taskId)}`);
+  }
+
+  getBillingTasks(): Promise<readonly BillingTaskView[]> {
+    return this.request('/api/billing/tasks');
   }
 
   createConversation(workspaceId: string): Promise<WebSessionCreationResult> {

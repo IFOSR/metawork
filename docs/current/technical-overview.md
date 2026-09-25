@@ -11,9 +11,14 @@ MetaWork is a local AI Task OS for agentic work. It turns natural-language reque
 
 It is built for teams who need agents to do more than answer the current turn. MetaWork gives long-running AI work a task state machine, memory boundary, unified ControlKernel decision plane, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
 
-> Current implementation baseline (2026-08-21): PlanningAgentPlan v8, Work
+> Current implementation baseline (2026-09-22): PlanningAgentPlan v8, Work
 > Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
-> and SQLite schema v38 with transactional 31→32→33→34→35→36→37→38 upgrade support.
+> and SQLite schema v41 with transactional 31→32→33→34→35→36→37→38→39→40→41 upgrade support.
+> Schema v39/v40 adds the Query usage/billing facts (Query attribution contexts,
+> metering spans/observations, immutable price versions, cost entries, per-Query
+> bills and lines, the consumption outbox/receipts and bill adjustments) that
+> ADR-0042 governs. Server-side observe/shadow billing and read-only projections
+> are delivered; external consumption export remains release-gated.
 
 > ADR-0027 through ADR-0030 govern the active revisioned Configuration Control
 > Plane, generation-scoped AgentClass/Model/Harness binding, future
@@ -52,10 +57,25 @@ implementation is deferred to a separate roadmap.
 - Sends Feishu chat replies, file artifacts, and Markdown preview links through the backend delivery layer.
 - Provides a local Gateway so multiple terminals can connect to one MetaWork runtime.
 - Uses the nested `planner/AnyFusion-Pi` fork as the default local Planner conversation surface, with an isolated process/dependency tree and MetaWork-managed provider/model configuration in both native and optional container runtimes.
-- Runs the native AnyFusion-Pi interface as an independent Gateway-only client with a single Turn timeline, cursor-based replay, reconnect, versioned slash/permission commands, and no local semantic runtime. The original Ink UI remains source-preserved as a standby module.
+- Runs the single MetaWork TUI (`modes/metawork-tui` in the vendored AnyFusion-Pi fork) as an independent Gateway-only client: multi-Turn conversation projection, Pi editor/theme/components, Task Dashboard, cursor-based replay, reconnect, versioned slash/permission/cancel commands and the read-only `complete_command`/`get_task_view` queries (ADR-0041), with no local semantic runtime. The former simplified client mode and the Ink UI are no longer reachable from `metawork tui`; their deletion is the remaining step of the single-TUI cutover.
 - Ships with `npm run smoke:metawork`, whose default gate verifies two-turn memory in one persisted AnyFusion-Pi Planner session; artifact scenarios remain available explicitly.
 
 ## Core Architecture
+
+Explicit Resume recognizes incomplete model streams (`model_response_incomplete`)
+without treating them as successful results or enabling automatic unknown retries.
+The Kernel still authorizes recovery and checks external-effect safety, including
+blocked nodes with no runnable frontier. Gateway command results retain the actual
+authorization or refusal explanation alongside explicitly uncertified partial output.
+See the [September 24 recovery repair](../plans/2026-09-24-incomplete-response-resume-fix.md).
+
+The September 20 TUI review fixes isolate CLI mode dispatch from
+`main-runtime.ts`, connect Workspace/Conversation navigation and Task snapshot
+queries, and render existing routing/Attempt facts. History selection and
+PgUp/PgDn use a bounded terminal viewport. Permission controls refresh the
+authoritative Task view before submitting a decision; receipt acceptance alone
+does not resolve a permission. These fixes do not change the Gateway v2 wire
+contract or Web/Feishu production handlers.
 
 MetaWork is task-oriented rather than session-only. A normal agent session answers the current turn. MetaWork decides whether an input should stay as a lightweight conversation, control an existing task, or become durable work that can be scheduled, blocked, resumed, searched, verified, delivered, and audited.
 
@@ -671,7 +691,12 @@ The default command launches the pinned AnyFusion-Pi Gateway client:
 - Permission requests remain bounded UI facts; `/approve` and `/deny` submit only the request ID and resolution.
 - The client cannot write Task state, choose policy, schedule attempts, call Kernel, or control Executor processes.
 - The raw v8 plan, prompts, hidden reasoning, credentials and raw process output remain server-side.
-- Set `METACLAW_STANDBY_TUI=1` to start the preserved Ink implementation for fallback investigation. That module is not the default and any future activation must remain Gateway-backed.
+- The former `METACLAW_STANDBY_TUI=1` Ink path and the Ink sources under
+  `src/tui/` are deleted (ADR-0041); the single TUI is selected for every
+  `metawork tui` invocation. Client UI preferences (theme) are stored in the
+  MetaWork config home (`METAWORK_TUI_PREFERENCES`, otherwise
+  `$METAWORK_CONFIG_HOME/tui-preferences.json`), never in Planner home or the
+  SecretStore.
 
 Start the persistent Server before launching a Client:
 
@@ -1146,13 +1171,15 @@ Useful commands:
 /exit
 ```
 
-The AnyFusion-Pi Gateway TUI is the default local surface. The client owns only
-editor and presentation state; `ClientGateway`, `ConversationSession`,
-AccountRuntime and ControlKernel retain command validation, semantic planning,
-durable mutation and execution authority. The old Ink TUI remains intact under
-`src/tui/` and can be selected with `METACLAW_STANDBY_TUI=1`, but it is a
-standby source-preservation module rather than a second actively maintained
-frontend.
+The MetaWork TUI (`metawork`, `metawork tui`) is the only product terminal
+surface. The client owns only editor, layout and presentation state;
+`ClientGateway`, `ConversationSession`, AccountRuntime and ControlKernel retain
+command validation, semantic planning, durable mutation and execution
+authority. The unique component tree lives under
+`planner/AnyFusion-Pi/packages/coding-agent/src/modes/metawork-tui/` and is
+loaded lazily by the `--gateway-socket` branch. The earlier simplified client
+mode, the vendored standalone agent TUI (`InteractiveMode`) and the Ink UI under
+`src/tui/` are deleted; ADR-0041 keeps exactly one TUI and no fallback switch.
 
 ## Task Search
 
@@ -1175,6 +1202,51 @@ Every natural-language proposal and deterministic execution entrypoint enters th
 
 Whole-Task and explicit Subtask cancellation use the same durable control chain. The cancellation fence commits before process termination; `cancelling` dispatch/publication rows continue to own capacity until the exact backend execution has exited or is confirmed missing and WorkUnit/resource leases are released. Late outcomes are `no_op`. Subtask cancellation atomically includes every downstream dependent while independent siblings continue. After the surviving graph drains, the Task blocks until the user either cancels it or explicitly accepts the published subset with `/task <taskId> accept-partial`.
 
+## Query Usage And Billing (Target)
+
+ADR-0042 accepts Query-scoped usage metering, exact MetaCoin billing and
+idempotent external consumption submission as a target contract. Nothing in
+this section is a delivered capability until the governing implementation plan's
+release gate passes; the release order is `observe -> shadow -> export`.
+
+A **Query** is one Server-accepted semantic request or one explicit user action
+that starts a new execution segment. It is the durable accrual root; it is not a
+Task, and it may exist without a Task (clarification, planning failure,
+explanation of an existing Task, control-only request). A Query links to at most
+one cost-bearing Task, and only through a Kernel-authorized application fact.
+`TaskAssessedTotal` sums the finalized amounts of the Queries assigned to that
+Task; it never re-prices history and never issues a second charge.
+
+Metering keeps three orthogonal dimensions — `stage`, `reason`, `resource` —
+that are never summed into each other, one authoritative coverage level per
+covered range, and an explicit quality marker (`reported`/`estimated`/
+`unavailable`) with coverage and missing counts. Missing usage is never `0`. The
+payer (`platform`, `user_direct`, `system`, `unknown`) is derived from trusted
+Server configuration or verifiable credential relationships, so custom
+Providers stay supported and are never restricted for billing reasons.
+
+Billing stores exact rational quantities and unit prices, uses
+`1 MetaCoin = 1_000_000 microCoin` and `1 CNY = 1_000_000_000 nanoCny`, rounds
+once per Query total with half-even, and distributes stage-level display amounts
+from the finalized total so detail sums to the total. A final Query bill is
+immutable; local state is `collecting -> pending_reconciliation -> finalized`
+and the external leg is `not_exported -> pending -> received -> confirmed` plus
+`unknown`/`rejected`. `received` never means deducted, and late cost becomes a
+separate `bill_adjustments` fact instead of a silent top-up. MetaWork stores no
+balance and performs no top-up, payment, refund or balance-based admission.
+
+External submission publishes the `ExternalConsumptionPort` domain port whose
+concrete protocol translation lives in `src/integrations/`. A finalized bill and
+its `consumption_outbox` row are written in one transaction; the idempotency key
+is `sourceInstanceId + billId` and a payload digest covers account, unit,
+amount, version and attribution. Timeouts are `unknown` and are reconciled by
+querying the original key. Web, TUI and Feishu project bills, Task usage
+summaries and account usage summaries through Gateway read-only queries under
+the optional `usage_billing_v1` capability (ADR-0041 branch rules); clients
+never compute authoritative prices and never send a consumption charge. Export
+is blocked unless the trusted deployment boundary, third-party idempotency and
+state query, amount precision and stable instance identity are all verified.
+
 ## Planning Agent, Control Kernel, And Work Units
 
 Natural-language dispatch is split into Planner understanding, kernel authorization, and runtime execution. Raw natural-language input enters `PlanningAgent`; only slash commands and deterministic IDs, paths, URLs, and attachments bypass semantic planning. Natural-language memory capture is not a fast path. The dedicated AnyFusion-Pi runner submits a strict v8 `PlanningAgentPlan` through the native proposal tool and queries bounded read-only MCP tools when evidence is needed. Work Graph uses the v7 contract and pins one configuration revision with complete Executor bindings; authorization resolution remains limited to an exact pending request and does not add resource claims.
@@ -1192,7 +1264,7 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 MetaWork can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product uses SQLite schema v38 and supports transactional 31→32→33→34→35→36→37→38 upgrades; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product uses SQLite schema v40 and supports transactional 31→32→33→34→35→36→37→38→39→40 upgrades; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Historical Artifact refs are validated against Account/Conversation/Workspace ownership, publication status, regular-file safety and content hash, then copied to attempt-local `inputs/` with stable `input-XX-*` names. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; image-capable adapters consume only the materialized input directory.
 
@@ -1341,7 +1413,6 @@ src/
 ├── storage/        # SQLite migrations and repositories
 ├── task/           # Task domain state machine and runtime
 ├── tui-bridge/     # Native Planner TUI process and read-only Unix JSONL bridge
-├── tui/            # Preserved standby Ink terminal UI
 ├── utils/          # Config, paths, logger, IDs
 └── work-graph/     # Shared graph types, validation, cancellation closure, and runnable frontier
 ```

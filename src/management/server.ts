@@ -798,6 +798,41 @@ export class ManagementServer {
       return;
     }
 
+    // 只读账单页（账单简化设计 §3.2/§3.3）：金额与状态全部来自 Server 投影，
+    // 不创建 Turn，不进入 Planner mailbox，不改变账单状态。
+    if (request.method === 'GET' && url.pathname === '/api/billing/records') {
+      const filterParam = url.searchParams.get('filter') ?? 'all';
+      const filter = ['all', 'billed', 'unconfirmed', 'no_charge'].includes(filterParam)
+        ? filterParam as 'all' | 'billed' | 'unconfirmed' | 'no_charge'
+        : 'all';
+      const limitParam = Number.parseInt(url.searchParams.get('limit') ?? '', 10);
+      this.sendJson(response, 200, await this.deps.sessionRuntime.listBillingRecords(clientId, {
+        ...(url.searchParams.get('cursor') ? { cursor: url.searchParams.get('cursor')! } : {}),
+        filter,
+        ...(Number.isSafeInteger(limitParam) && limitParam > 0 ? { limit: Math.min(limitParam, 100) } : {}),
+      }));
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/billing/tasks') {
+      this.sendJson(response, 200, await this.deps.sessionRuntime.listBillingTasks?.(clientId) ?? []);
+      return;
+    }
+
+    const billingTaskMatch = /^\/api\/billing\/tasks\/([^/]+)$/u.exec(url.pathname);
+    if (request.method === 'GET' && billingTaskMatch) {
+      const detail = await this.deps.sessionRuntime.getTaskBillingDetail(
+        clientId,
+        decodeURIComponent(billingTaskMatch[1]!),
+      );
+      if (!detail) {
+        this.sendJson(response, 404, { error: 'billing unavailable' });
+        return;
+      }
+      this.sendJson(response, 200, detail);
+      return;
+    }
+
     const conversationAttachMatch = /^\/api\/conversations\/([^/]+)\/attach$/u.exec(url.pathname);
     if (request.method === 'POST' && conversationAttachMatch) {
       this.sendJson(

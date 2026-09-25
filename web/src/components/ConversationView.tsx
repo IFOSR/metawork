@@ -10,12 +10,14 @@ export function ConversationView({
   onOpenArtifact,
   onOpenSubtaskDetail,
   onOpenTrajectory,
+  onOpenBilling,
 }: {
   sessionId?: string | null;
   turns: ConversationTurnProjection[];
   onOpenArtifact?: (artifact: ArtifactProjection) => void;
   onOpenSubtaskDetail?: (subtaskId: string, subtaskTitle: string) => void;
   onOpenTrajectory?: (turnId: string) => void;
+  onOpenBilling?: (turnId: string) => void;
 }) {
   const viewRef = useRef<HTMLDivElement | null>(null);
   const previousSessionIdRef = useRef<string | null | undefined>(sessionId);
@@ -99,6 +101,7 @@ export function ConversationView({
           ) : undefined}
           onOpenArtifact={onOpenArtifact}
           onOpenTrajectory={onOpenTrajectory}
+          onOpenBilling={onOpenBilling}
         />
       ))}
       {locked && (

@@ -78,6 +78,16 @@ export class ExecutorRegistry {
     return profile.profileId;
   }
 
+  /**
+   * Usage attribution needs the Provider-facing model ID, not the internal
+   * configuration key carried by an authorized binding.
+   */
+  resolveModelId(binding: AuthorizedExecutorBinding): string | null {
+    return this.deps.getRuntimeConfiguration(binding.configurationRevision)
+      ?.models[binding.modelRef]?.modelId
+      ?? null;
+  }
+
   async resolve(binding: AuthorizedExecutorBinding): Promise<ExecutorAdapter | null> {
     const configuration = this.deps.getRuntimeConfiguration(
       binding.configurationRevision,
@@ -247,19 +257,26 @@ export interface SubtaskExecutionSpec {
   deliveryKind: Subtask['deliveryKind'];
 }
 
+interface ActiveExecutor {
+  attemptId: string;
+  workUnitId: string;
+  executor: ExecutorAdapter | null;
+  cancelled: boolean;
+}
+
 /** Runs a claimed subtask with its selected executor and converts adapter output into the shared ExecutionResult shape. */
 export class ExecutionRuntime implements ActiveExecutionControl {
-  private readonly activeByTask = new Map<string, Map<string, {
-    attemptId: string;
-    workUnitId: string;
-    executor: ExecutorAdapter;
-  }>>();
+  private readonly activeByTask = new Map<string, Map<string, ActiveExecutor>>();
   private executionTokenSequence = 0;
 
   constructor(private readonly registry: ExecutorRegistry) {}
 
   resolvePermissionProfile(binding: AuthorizedExecutorBinding): PermissionProfileId {
     return this.registry.resolvePermissionProfile(binding);
+  }
+
+  resolveModelId(binding: AuthorizedExecutorBinding): string | null {
+    return this.registry.resolveModelId(binding);
   }
 
   async isExecutorAvailable(binding: AuthorizedExecutorBinding): Promise<boolean> {
@@ -300,10 +317,45 @@ export class ExecutionRuntime implements ActiveExecutionControl {
   }
 
   async run(input: ExecutionRuntimeRunInput): Promise<ExecutionResult> {
+    const executionToken = `${input.executionId}:${input.spec.workUnit.id}:${this.executionTokenSequence += 1}`;
+    const active: ActiveExecutor = {
+      attemptId: input.executorInput.context.identity.attemptId,
+      workUnitId: input.spec.workUnit.id,
+      executor: null,
+      cancelled: false,
+    };
+    const task = this.activeByTask.get(input.taskId) ?? new Map<string, ActiveExecutor>();
+    task.set(executionToken, active);
+    this.activeByTask.set(input.taskId, task);
+    try {
+      return await this.runRegistered(input, active);
+    } finally {
+      this.clearActive(input.taskId, executionToken);
+    }
+  }
+
+  private async runRegistered(input: ExecutionRuntimeRunInput, active: ActiveExecutor): Promise<ExecutionResult> {
     let executor: ExecutorAdapter | null;
     try {
       executor = await this.registry.resolve(input.authorizedBinding);
     } catch (error) {
+      if (active.cancelled) {
+        return {
+          taskId: input.taskId,
+          executionId: input.executionId,
+          status: 'cancelled',
+          executorName: input.authorizedBinding.agentClassRef,
+          output: '',
+          error: 'Executor attempt cancelled before launch',
+          failure: null,
+          artifacts: [],
+          subtaskResults: [],
+          durationMs: 0,
+          userPrompt: input.executorInput.context.currentSubtask.goal,
+          preferences: [],
+          context: input.executorInput.context,
+        };
+      }
       const summary = error instanceof Error ? error.message : String(error);
       return {
         taskId: input.taskId,
@@ -349,45 +401,45 @@ export class ExecutionRuntime implements ActiveExecutionControl {
         context: input.executorInput.context,
       };
     }
-    const executionToken = `${input.executionId}:${input.spec.workUnit.id}:${this.executionTokenSequence += 1}`;
-    this.registerActive(
-      input.taskId,
-      executionToken,
-      input.executorInput.context.identity.attemptId,
-      input.spec.workUnit.id,
-      executor,
-    );
-    try {
-      const result = await this.executeOnce(
-        executor,
-        {
-          ...input.executorInput,
-          executionBinding: input.executorInput.executionBinding
-            ? {
-                ...input.executorInput.executionBinding,
-                authorization: {
-                  agentClassRef: input.authorizedBinding.agentClassRef,
-                  harnessRef: input.authorizedBinding.harnessRef,
-                  providerRef: input.authorizedBinding.providerRef,
-                  modelRef: input.authorizedBinding.modelRef,
-                  permissionProfileRef: input.authorizedBinding.permissionProfileRef,
-                  configurationRevision: input.authorizedBinding.configurationRevision,
-                  bindingFingerprint: authorizedExecutorBindingFingerprint(input.authorizedBinding),
-                },
-              }
-            : input.executorInput.executionBinding,
-        },
-        input.onProgress,
-      );
+    active.executor = executor;
+    if (active.cancelled) {
       return this.toExecutionResult({
         input,
         executor,
-        result,
+        result: {
+          success: false, interrupted: true, output: '',
+          error: 'Executor attempt cancelled before launch', exitCode: 130, durationMs: 0,
+        },
         subtaskResults: [],
       });
-    } finally {
-      this.clearActive(input.taskId, executionToken);
     }
+    const result = await this.executeOnce(
+      executor,
+      {
+        ...input.executorInput,
+        executionBinding: input.executorInput.executionBinding
+          ? {
+              ...input.executorInput.executionBinding,
+              authorization: {
+                agentClassRef: input.authorizedBinding.agentClassRef,
+                harnessRef: input.authorizedBinding.harnessRef,
+                providerRef: input.authorizedBinding.providerRef,
+                modelRef: input.authorizedBinding.modelRef,
+                permissionProfileRef: input.authorizedBinding.permissionProfileRef,
+                configurationRevision: input.authorizedBinding.configurationRevision,
+                bindingFingerprint: authorizedExecutorBindingFingerprint(input.authorizedBinding),
+              },
+            }
+          : input.executorInput.executionBinding,
+      },
+      input.onProgress,
+    );
+    return this.toExecutionResult({
+      input,
+      executor,
+      result,
+      subtaskResults: [],
+    });
   }
 
   abortAttempt(taskId: string, attemptId: string): boolean {
@@ -396,7 +448,8 @@ export class ExecutionRuntime implements ActiveExecutionControl {
       ? [...active.values()].find(candidate => candidate.attemptId === attemptId)
       : null;
     if (!entry) return false;
-    entry.executor.abort(attemptId);
+    entry.cancelled = true;
+    entry.executor?.abort(attemptId);
     return true;
   }
 
@@ -407,21 +460,10 @@ export class ExecutionRuntime implements ActiveExecutionControl {
     }
 
     for (const entry of active.values()) {
-      entry.executor.abort(entry.attemptId);
+      entry.cancelled = true;
+      entry.executor?.abort(entry.attemptId);
     }
     return active.size;
-  }
-
-  private registerActive(
-    taskId: string,
-    executionToken: string,
-    attemptId: string,
-    workUnitId: string,
-    executor: ExecutorAdapter,
-  ): void {
-    const active = this.activeByTask.get(taskId) ?? new Map();
-    active.set(executionToken, { attemptId, workUnitId, executor });
-    this.activeByTask.set(taskId, active);
   }
 
   private clearActive(taskId: string, executionToken: string): void {

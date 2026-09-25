@@ -102,7 +102,7 @@ describe("AnyFusion Planner bootstrap", () => {
 	});
 
 	it("wires the bootstrap tool allowlist into the real CLI AgentSession", () => {
-		const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+		const mainSource = readFileSync(new URL("../src/main-runtime.ts", import.meta.url), "utf8");
 		expect(mainSource).toContain("tools: plannerBootstrap?.activeToolNames ?? sessionOptions.tools");
 	});
 });

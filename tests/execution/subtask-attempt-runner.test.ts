@@ -78,7 +78,10 @@ function node(
   };
 }
 
-function setup(rawResponse: string) {
+function setup(
+  rawResponse: string,
+  usageObserver?: (event: import('../../src/metering/usage-normalizer.js').RawUsageEvent) => void,
+) {
   const artifactPublicationStub = {
     publishIntegratedArtifacts: vi.fn().mockResolvedValue({
       projections: [],
@@ -148,6 +151,7 @@ function setup(rawResponse: string) {
         ? 'public-web-research'
         : binding.permissionProfileRef
     )),
+    resolveModelId: vi.fn(() => 'actual-provider-model'),
     runResponseOnly: vi.fn(),
   };
   const attemptExecutionBackend: AttemptExecutionBackend = {
@@ -183,6 +187,7 @@ function setup(rawResponse: string) {
     sourceRoot,
     controlNetwork: 'metaclaw-control',
     userArtifactPublication: artifactPublicationStub as never,
+    usageObserver,
   });
   const defaultResourceGrant = buildDefaultResourceClaims({
     workspaceId: `workspace-task_phase2-${a.generationId}-${a.id}`,
@@ -271,6 +276,7 @@ function setup(rawResponse: string) {
     b,
     defaultResourceGrant,
     artifactPublicationStub,
+    workspaceStore,
   };
 }
 
@@ -325,6 +331,76 @@ function validResponse(): string {
 }
 
 describe('SubtaskAttemptRunner', () => {
+  it('does not launch an Executor after cancellation during workspace preparation', async () => {
+    const fixture = setup('late result');
+    const original = fixture.workspaceStore.createCheckpoint.bind(fixture.workspaceStore);
+    vi.spyOn(fixture.workspaceStore, 'createCheckpoint').mockImplementation(async (...args) => {
+      const checkpoint = await original(...args);
+      if (args[1].reason === 'attempt_start') {
+        fixture.taskRuntimeService.cancelTask('task_phase2', 'cancel during preparation');
+        fixture.subtaskRepo.updateStatus(fixture.a.id, 'cancelled');
+        fixture.dispatchItems.requestCancellation({
+          taskId: 'task_phase2', generationId: fixture.a.generationId, subtaskIds: null,
+          decisionId: 'decision_cancel', now: new Date().toISOString(),
+        });
+      }
+      return checkpoint;
+    });
+    try {
+      const result = await fixture.runner.run({
+        taskId: 'task_phase2', subtaskId: fixture.a.id, executionId: 'exec_cancel',
+        attemptId: 'attempt_prepare_cancel', ...attemptIdentity(),
+        defaultResourceGrant: fixture.defaultResourceGrant,
+      });
+      expect(fixture.executionRuntime.run).not.toHaveBeenCalled();
+      expect(result.outcome).toBe('cancelled_or_stale');
+      expect(fixture.db.prepare(
+        'SELECT terminal_state FROM executor_attempt_receipts WHERE attempt_id = ?',
+      ).get('attempt_prepare_cancel')).toEqual({ terminal_state: 'cancelled_or_stale' });
+      expect(fixture.db.prepare(
+        'SELECT COUNT(*) AS count FROM resource_leases WHERE released_at IS NULL',
+      ).get()).toEqual({ count: 0 });
+      expect(fixture.workUnitRepo.findById('executor-codex')?.claimedTaskId).toBeNull();
+    } finally {
+      fixture.db.close();
+    }
+  });
+
+  it.each([null, 'actual-provider-model'])(
+    'records the measured model identity %s without substituting a model profile ref',
+    async modelId => {
+      const usageObserver = vi.fn();
+      const fixture = setup(validResponse(), usageObserver);
+      fixture.executionRuntime.run.mockImplementationOnce(async input => {
+        input.executorInput.onUsage({
+          sourceEventKey: 'usage-1',
+          modelId,
+          counters: [{
+            resource: 'model_tokens', metric: 'input', unit: 'token',
+            kind: 'delta', value: '100',
+          }],
+        });
+        return {
+          taskId: 'task_phase2', executionId: 'exec_1', status: 'success',
+          executorName: 'codex-cli', output: validResponse(), error: null,
+          artifacts: [], subtaskResults: [], durationMs: 10,
+        };
+      });
+      await fixture.runner.run({
+        attemptId: 'attempt_usage', executionId: 'exec_1', taskId: 'task_phase2',
+        subtaskId: fixture.a.id, queryId: 'query_usage',
+        ...attemptIdentity(), executionMode: 'fresh',
+        defaultResourceGrant: fixture.defaultResourceGrant,
+      });
+      expect(usageObserver).toHaveBeenCalledWith(expect.objectContaining({
+        queryId: 'query_usage',
+        agentClassRef: 'codex-cli',
+        providerRef: 'openai',
+        modelId: modelId ?? 'actual-provider-model',
+      }));
+    },
+  );
+
   it('resolves the authorized permission alias before preparing execution capabilities', async () => {
     const setupResult = setup(validResponse());
     const binding = { ...authorizedBinding, permissionProfileRef: 'research-policy' };

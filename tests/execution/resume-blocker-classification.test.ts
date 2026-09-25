@@ -2,6 +2,26 @@ import { describe, expect, it } from 'vitest';
 import { classifyResumeBlocker } from '../../src/execution/kernel-execution-runtime.js';
 
 describe('classifyResumeBlocker', () => {
+  it.each(['unknown_executor_failure', 'model_response_incomplete'])(
+    'recognizes an incomplete response from an immutable %s receipt during explicit resume', code => {
+      expect(classifyResumeBlocker('unknown requires explicit recovery', {
+        kind: 'unknown', scope: 'attempt', code, summary: 'Stream ended without finish_reason',
+      })).toBe('retry');
+    },
+  );
+
+  it.each([
+    ['startup recovery found running work without authorized dispatch', 'manual'],
+    ['permission denied', 'explicit_resource'],
+    ['contract validation failed', 'contract'],
+    ['automatic recovery cannot prove external effect safety', 'manual'],
+  ])('does not let a historical response failure override %s', (reason, category) => {
+    expect(classifyResumeBlocker(reason, {
+      kind: 'unknown', scope: 'attempt', code: 'unknown_executor_failure',
+      summary: 'Stream ended without finish_reason',
+    })).toBe(category);
+  });
+
   it('classifies the startup-recovery orphan blocker as a manual blocker', () => {
     // The startup recovery orphan description contains the word "authorized",
     // but it is a manual (fail-closed) blocker, not an explicit-resource blocker.

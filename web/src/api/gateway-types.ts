@@ -23,7 +23,10 @@ export type GatewayEventKind =
   | 'result_completed'
   | 'final_answer'
   | 'terminal_error'
-  | 'delivery_status';
+  | 'delivery_status'
+  | 'command_completion'
+  | 'task_view_snapshot'
+  | 'usage_billing_projection';
 
 export const GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
   'conversation_snapshot',
@@ -46,6 +49,10 @@ export const GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
   'final_answer',
   'terminal_error',
   'delivery_status',
+  // ADR-0041 只读查询响应：Web 不消费，但识别为合法 kind（未知可选扩展允许忽略）。
+  'command_completion',
+  'task_view_snapshot',
+  'usage_billing_projection',
 ];
 
 export interface GatewayEventEnvelope {

@@ -11,6 +11,7 @@
  * callbacks（appendOutput/setCurrentTaskId/getCurrentTaskId/refreshRuntimeState）。
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { GuidanceProposal, RuntimeState } from '../core/types.js';
 import type { Config } from '../core/types.js';
 import type { Task, TaskRecoveryTrigger } from '../core/types.js';
@@ -61,6 +62,7 @@ import {
   type RuntimeConfigurationView,
 } from '../configuration/index.js';
 import { generateInteractionId } from '../utils/id.js';
+import { createHash } from 'node:crypto';
 import {
   buildCanonicalSubtaskIdentityMap,
   buildEligibleContextRefKeys,
@@ -72,10 +74,14 @@ import type {
   SessionKernelRuntimeCallbacks,
 } from '../account/account-kernel-execution-services.js';
 import type { SessionKernelRuntime } from './session-kernel-runtime.js';
+import { formatEmptyTaskRecovery } from '../task/task-blocker-guidance.js';
 import type { SessionSnapshot, SessionSwitchingState } from './session-types.js';
 import type { InteractionTrace } from '../management/interaction-trace.js';
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import type { PlannerRunProgress } from '../planning/planner-progress.js';
+import type { HarnessUsageEvent } from '../executor/harness-driver.js';
+import type { RawUsageEvent } from '../metering/usage-normalizer.js';
+import type { Payer } from '../billing/cost-policy.js';
 import type { ExecutionTraceAppendInput } from '../execution/execution-trace.js';
 import {
   ConversationInputMailbox,
@@ -90,6 +96,9 @@ import type {
   WorkspaceCommandResult,
 } from '../workspace/conversation-workspace-service.js';
 import type { GatewayCommand } from '../gateway/client-protocol.js';
+import type { QueryIngress } from '../metering/ports.js';
+import type { QueryUsageLifecycle } from '../metering/query-lifecycle.js';
+import type { BeginQueryResult } from '../metering/query-context-service.js';
 import type { CommandCompletion } from '../commands/catalog.js';
 import type {
   PlannerTuiCommandSubmissionResult,
@@ -125,8 +134,12 @@ interface PlannerTurnFacts {
 }
 
 export interface ConversationSessionDeps {
+  readonly onBackgroundResultDelivery?: (delivery: ConversationResultDelivery, originTurnId: string) => Promise<void>;
   readonly conversationId: string;
   readonly plannerSessionId: string;
+  readonly plannerBindingFingerprint?: string;
+  readonly plannerProviderRef?: string;
+  readonly plannerModelId?: string;
   readonly runtimePort: ConversationRuntimePort;
   readonly mailbox: ConversationInputMailbox;
   readonly presentation?: SessionPresentationService;
@@ -153,6 +166,18 @@ export interface ConversationSessionDeps {
   readonly plannerProposalRepo?: PlannerProposalRepo;
   readonly dispose?: () => Promise<void>;
   readonly workspace?: ConversationWorkspacePort;
+  readonly queryUsage?: {
+    readonly lifecycle: QueryUsageLifecycle;
+    readonly externalAccountRef: string | null;
+    readonly priceBookVersion: string;
+    readonly feePolicyVersion: string;
+    readonly payerPolicyVersion: string;
+    readonly getPriceBookVersion?: () => string;
+    readonly getFeePolicyVersion?: () => string;
+    readonly ingress: QueryIngress;
+    readonly usageObserver?: (event: RawUsageEvent) => void;
+    readonly usagePayer?: Payer;
+  };
   /**
    * Compatibility switch for historical low-level tests/replay fixtures.
    * Production semantic Planner ingress keeps this disabled.
@@ -206,10 +231,13 @@ export class ConversationSession {
   private readonly inputController: InputController;
   private listeners = new Set<(snapshot: SessionSnapshot) => void>();
   private resultDeliveries: ConversationResultDelivery[] = [];
+  private readonly submissionScope = new AsyncLocalStorage<{ turnId: string; detached: boolean }>();
+  private readonly backgroundDeliveryScope = new AsyncLocalStorage<ConversationResultDelivery[]>();
   private attachedClients = 0;
   private disposePromise: Promise<void> | null = null;
   private readonly allowLegacyDirectReply: boolean;
   private readonly plannerTurnInputRepo: PlannerTurnInputRepo | null;
+  private activeQueryId: string | null = null;
 
   constructor(private readonly deps: ConversationSessionDeps) {
     this.allowLegacyDirectReply = deps.allowLegacyDirectReply ?? process.env.NODE_ENV === 'test';
@@ -220,8 +248,8 @@ export class ConversationSession {
     this.inputController = new InputController({
       appendUserInput: input => this.appendOutput('', `> ${input}`),
       handleCommand: (input, options) => this.handleCommand(input, options?.principalId),
-      handleNaturalLanguageInput: (input, images, attachments) =>
-        this.handleNaturalLanguageInput(input, images, attachments),
+      handleNaturalLanguageInput: (input, images, attachments, options) =>
+        this.handleNaturalLanguageInput(input, images, attachments, options),
       waitForAsyncWork: async () => { await this.waitForBackgroundWork(); },
       handleSubmitError: error => this.appendOutput(`错误: ${(error as Error).message}`),
     });
@@ -267,6 +295,7 @@ export class ConversationSession {
 
   recordResultDelivery(delivery: ConversationResultDelivery): void {
     this.resultDeliveries.push({ ...delivery });
+    this.backgroundDeliveryScope.getStore()?.push({ ...delivery });
   }
 
   getResultDeliveries(): readonly ConversationResultDelivery[] {
@@ -584,6 +613,7 @@ export class ConversationSession {
     userInput: string,
     images?: PlannerImageAttachment[],
     attachments?: PlannerAttachmentView[],
+    options?: InputControllerSubmitOptions,
   ): Promise<void> {
     if (this.deps.workspace && !(await this.deps.workspace.getWorkspace())) {
       throw workspaceError(
@@ -591,12 +621,70 @@ export class ConversationSession {
         '请先使用 `/workspace /absolute/path` 设置当前 Conversation 的 Workspace。',
       );
     }
-    const handled = await this.handlePlanningKernelDecision(userInput, images, attachments);
-    if (handled) return;
-    this.appendOutput(
-      '-> ControlKernel did not produce a runtime action.',
-      'Please clarify whether you want to chat, create a new task, resume an existing task, or dispatch an executor.',
-    );
+    const query = this.beginQuery(userInput, images, attachments, options);
+    try {
+      const handled = await this.handlePlanningKernelDecision(userInput, images, attachments);
+      if (handled) return;
+      this.appendOutput(
+        '-> ControlKernel did not produce a runtime action.',
+        'Please clarify whether you want to chat, create a new task, resume an existing task, or dispatch an executor.',
+      );
+    } finally {
+      if (query) {
+        const lifecycle = this.deps.queryUsage?.lifecycle;
+        // Planner returns before a bound Task finishes. Task terminal
+        // recovery owns finalization for that asynchronous path.
+        if (!lifecycle || lifecycle.getCostTaskId(query.context.queryId) === null) {
+          lifecycle?.finalizeQuery({
+            queryId: query.context.queryId,
+            finalizedAt: new Date().toISOString(),
+          });
+        }
+        if (this.activeQueryId === query.context.queryId) this.activeQueryId = null;
+      }
+    }
+  }
+
+  private beginQuery(
+    userInput: string,
+    images: PlannerImageAttachment[] | undefined,
+    attachments: PlannerAttachmentView[] | undefined,
+    options: InputControllerSubmitOptions | undefined,
+  ): Extract<BeginQueryResult, { status: 'created' | 'reused' }> | null {
+    const billing = this.deps.queryUsage;
+    if (!billing) return null;
+    const requestId = options?.requestId ?? `request_${generateInteractionId()}`;
+    const requestKey = options?.idempotencyKey ?? requestId;
+    const payloadDigest = createHash('sha256')
+      .update(JSON.stringify({
+        text: userInput,
+        images: images ?? [],
+        attachments: (attachments ?? []).map(attachment => ({
+          attachmentId: attachment.attachmentId,
+          mime: attachment.mime,
+        })),
+      }))
+      .digest('hex');
+    const result = billing.lifecycle.beginQuery({
+      externalAccountRef: billing.externalAccountRef,
+      accountId: this.accountId,
+      ingress: options?.billingIngress ?? billing.ingress,
+      requestKey,
+      requestPayloadDigest: payloadDigest,
+      conversationId: this.deps.conversationId,
+      requestId,
+      turnId: this.activeInteractionTurnId,
+      executionSegmentId: null,
+      priceBookVersion: billing.getPriceBookVersion?.() ?? billing.priceBookVersion,
+      feePolicyVersion: billing.getFeePolicyVersion?.() ?? billing.feePolicyVersion,
+      payerPolicyVersion: billing.payerPolicyVersion,
+      acceptedAt: new Date().toISOString(),
+    });
+    if (result.status === 'conflict') {
+      throw new Error('query_request_payload_conflict');
+    }
+    this.activeQueryId = result.context.queryId;
+    return result;
   }
 
   private async handlePlanningKernelDecision(
@@ -632,6 +720,7 @@ export class ConversationSession {
     try {
       result = await planningAgent.submit(context, {        submit: async plan => this.submitValidatedPlannerProposal(userInput, plan),
         onProgress: progress => this.recordPlannerProgressTrace(progress),
+        onUsage: usage => this.recordPlannerUsage(usage),
       });
     } catch (error) {
       if (this.isCancelledTurn()) {
@@ -694,6 +783,36 @@ export class ConversationSession {
       throw new Error(result.message);
     }
     return result.status === 'accepted' || result.status === 'rejected';
+  }
+
+  private recordPlannerUsage(usage: HarnessUsageEvent): void {
+    const queryId = this.activeQueryId;
+    const observer = this.deps.queryUsage?.usageObserver;
+    if (!queryId || !observer) return;
+    const now = new Date().toISOString();
+    observer({
+      sourceId: 'planner',
+      // Pi may omit a message id and the supervisor then uses a turn-local
+      // fallback. Scope that fallback to the Query before SQLite's global
+      // metering uniqueness constraint is applied.
+      sourceEventKey: `${queryId}:${usage.sourceEventKey}`,
+      sourceScope: 'model_request',
+      callId: `${queryId}:${usage.callId}`,
+      queryId,
+      executionSegmentId: null,
+      taskId: null,
+      stage: 'planning',
+      reason: 'primary',
+      payer: this.deps.queryUsage?.usagePayer ?? 'unknown',
+      capturedAt: now,
+      providerBindingVersion: this.deps.plannerBindingFingerprint ?? null,
+      evidenceRef: `query:${queryId}`,
+      agentClassRef: usage.agentClassRef ?? 'planner',
+      providerRef: usage.providerRef ?? this.deps.plannerProviderRef ?? null,
+      modelId: usage.modelId ?? this.deps.plannerModelId ?? null,
+      counters: usage.counters,
+      missing: usage.missing,
+    });
   }
 
   /**
@@ -763,7 +882,7 @@ export class ConversationSession {
       buildSnapshot: claimed => this.buildPlanAdmissionSnapshot(
         claimed as Extract<KernelEvent, { type: 'plan_proposed' }>,
       )!,
-      runtime: sessionKernelRuntime.forInput(userInput),
+      runtime: sessionKernelRuntime.forInput(userInput, this.deps.conversationId, this.activeQueryId),
     });
     const decision = result.decisions.find(item => item.eventId === eventId)
       ?? port.queries.listKernelDecisionsBySession(this.deps.plannerSessionId)
@@ -790,6 +909,26 @@ export class ConversationSession {
           : 'Kernel application did not reach the applied state.',
       };
     }
+    const taskId = plan.task.taskId
+      ?? ('taskId' in decision.action && typeof decision.action.taskId === 'string'
+        ? decision.action.taskId
+        : null);
+    if (
+      this.activeQueryId
+      && taskId
+      && decision.action.type === 'authorize_task_plan'
+    ) {
+      const binding = this.deps.queryUsage?.lifecycle.bindCostTask({
+        queryId: this.activeQueryId,
+        taskId,
+        decisionId: decision.id,
+        basis: 'authorized_application',
+        linkedAt: new Date().toISOString(),
+      });
+      if (binding?.status === 'conflict') {
+        throw new Error('query_task_attribution_conflict');
+      }
+    }
     if (decision.action.type === 'reject_request') {
       return {
         status: 'rejected',
@@ -812,10 +951,7 @@ export class ConversationSession {
       planId: plan.id,
       outcome: plannerOutcome(decision.action.type),
       displayText: plannerDecisionDisplayText(decision, this.output.at(-1)),
-      taskId: plan.task.taskId
-        ?? ('taskId' in decision.action && typeof decision.action.taskId === 'string'
-          ? decision.action.taskId
-          : null),
+      taskId,
       kernel: {
         decisionId: decision.id,
         action: decision.action.type,
@@ -829,16 +965,27 @@ export class ConversationSession {
   }
 
   startBackgroundExecution(taskId: string, launch: () => Promise<void>): Promise<void> {
+    const submission = this.submissionScope.getStore();
+    const deliveries: ConversationResultDelivery[] = [];
     const trace = this.deps.interactionTraceStream?.getSnapshot();
     if (trace?.status === 'running') {
       this.taskTraceTurnIds.set(taskId, trace.turnId);
     }
     let promise!: Promise<void>;
     promise = Promise.resolve()
-      .then(launch)
+      .then(() => this.backgroundDeliveryScope.run(deliveries, launch))
       .catch(() => undefined)
-      .finally(() => {
+      .finally(async () => {
         this.backgroundWork.delete(promise);
+        if (submission?.detached && this.deps.onBackgroundResultDelivery) {
+          for (const delivery of deliveries) {
+            try {
+              await this.deps.onBackgroundResultDelivery(delivery, submission.turnId);
+            } catch {
+              this.appendOutput('后台结果交付失败；执行回执已保留，请刷新任务查看结果。');
+            }
+          }
+        }
       });
     this.backgroundWork.add(promise);
     return promise;
@@ -847,6 +994,7 @@ export class ConversationSession {
   hasBackgroundWork(): boolean {
     if (this.backgroundWork.size > 0) return true;
     if (!this.currentTaskId) return false;
+    if (this.deps.runtimePort.queries.listQueuedTaskIds(this.conversationId).includes(this.currentTaskId)) return true;
     const task = this.deps.runtimePort.queries.findTask(this.currentTaskId);
     return task?.status === 'running'
       || Boolean(
@@ -1428,7 +1576,10 @@ export class ConversationSession {
         userInput,
       });
     }
-    const result = await this.inputController.submit(text, options);
+    const result = await this.submissionScope.run({
+      turnId: interactionTurnId,
+      detached: userInput.startsWith('/') && !options.awaitAsyncWork,
+    }, () => this.inputController.submit(text, options));
     this.workspacePath = (await this.getWorkspace())?.path ?? this.workspacePath;
     if (
       startsTrace
@@ -1769,6 +1920,7 @@ export class ConversationSession {
 
   private formatTaskRecovery(taskId: string): string {
     const port = this.deps.runtimePort;
+    const task = port.queries.findTask(taskId);
     const applications = port.queries.listRecoveryApplications(taskId).map(item =>
       `- ${item.id} [application/${item.status}] ${item.decision.action.type}: ${item.errorSummary ?? 'no error summary'}`
     );
@@ -1776,6 +1928,17 @@ export class ConversationSession {
       `- ${item.id} [effect/${item.status}] ${item.effectType}: ${item.errorSummary ?? 'no error summary'}`
     );
     const items = [...applications, ...effects];
+    if (items.length === 0) {
+      const emptyRecovery = formatEmptyTaskRecovery(taskId, {
+        status: task?.status,
+        blockerReason: task?.dependencies
+          .filter(dependency => dependency.status === 'waiting')
+          .map(dependency => dependency.description)
+          .filter(Boolean)
+          .join('；'),
+      });
+      if (emptyRecovery) return emptyRecovery;
+    }
     return items.length > 0
       ? `Task #${taskId} recovery items:\n${items.join('\n')}`
       : `Task #${taskId} has no uncertain or failed recovery items.`;

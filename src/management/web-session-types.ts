@@ -4,6 +4,13 @@ import type {
   InteractionTraceStatus,
 } from './interaction-trace.js';
 import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
+import type {
+  BillQueryService,
+  QueryBillProjection,
+  QueryBillUserStatus,
+  TaskUsageSummary,
+  TurnBillUserView,
+} from '../billing/bill-query-service.js';
 
 export const WEB_SESSION_FORMAT_VERSION = 1 as const;
 export const MAX_WEB_SESSION_TURNS = 100;
@@ -69,6 +76,44 @@ export interface ConversationTurn {
   artifactRefs: string[];
   /** 受限的用户 artifact projection；不含任何内部路径。 */
   artifacts: ArtifactProjection[];
+  /** Server-owned billing projection; the client never calculates amounts. */
+  queryBill?: QueryBillProjection | null;
+  taskUsageSummary?: TaskUsageSummary | null;
+  /**
+   * Server-owned 三态账单用户视图（账单简化设计 §3.1）；非系统 Turn 恒有，
+   * 无金额时携带稳定诊断。由 enrichTurn 按持久事实重新投影，不信任历史存储。
+   */
+  turnBilling?: TurnBillUserView | null;
+}
+
+/** 账单页列表行：Server 投影 + 会话目录联合出的展示模型。 */
+export interface BillingRecordView {
+  readonly bill: QueryBillProjection;
+  /** 用户请求摘要（来自会话目录的 userInput 单行截断）；非 Web 入口为 null。 */
+  readonly requestSummary: string | null;
+  readonly taskTitle: string | null;
+  readonly providerDisplayName?: string | null;
+  readonly modelDisplayName?: string | null;
+}
+
+export type BillingStatusFilter = 'all' | QueryBillUserStatus;
+
+export interface BillingRecordPageView {
+  readonly items: readonly BillingRecordView[];
+  readonly nextCursor: string | null;
+}
+
+/** Task 详情的关联请求展示（账单简化设计 §3.3）。 */
+export interface TaskBillingDetailView {
+  readonly taskId: string;
+  readonly taskTitle: string | null;
+  readonly items: readonly BillingRecordView[];
+}
+
+export interface BillingTaskView {
+  readonly taskId: string;
+  readonly taskTitle: string;
+  readonly queryCount: number;
 }
 
 export interface ConversationTurnProjection

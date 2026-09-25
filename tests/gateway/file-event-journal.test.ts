@@ -539,6 +539,52 @@ describe('FileEventJournal', () => {
       .map(event => resultIdFrom(event)))
       .toEqual(['result_1', 'result_2']);
   });
+
+  it('retains chunks for older results so a replay can reconstruct every answer', async () => {
+    const journal = await makeJournal();
+    const result = (id: string, sequence: number) => [
+      {
+        ...makeEvent(`${id}_available`, 'result_delivery_available'),
+        payload: {
+          resultId: id,
+          contentHash: `sha256:${id}`,
+          byteLength: 3,
+          completeness: 'complete',
+          certification: 'certified',
+        },
+      },
+      {
+        ...makeEvent(`${id}_chunk`, 'result_chunk'),
+        payload: { resultId: id, offset: 0, chunk: id.slice(-3), byteLength: 3 },
+      },
+      {
+        ...makeEvent(`${id}_completed`, 'result_completed'),
+        payload: {
+          resultId: id,
+          contentHash: `sha256:${id}`,
+          byteLength: 3,
+          completeness: 'complete',
+          certification: 'certified',
+        },
+      },
+      makeEvent(`${id}_answer_${sequence}`, 'final_answer'),
+    ];
+    await journal.appendBatch([
+      ...result('result_one', 1),
+      ...Array.from({ length: 205 }, (_, index) => makeEvent(`filler_${index}`, 'trace_delta')),
+      ...result('result_two', 2),
+    ]);
+
+    const replay = await journal.replay('local-default', 'conv_1', 0);
+    const resultOneEvents = [...replay.snapshot, ...replay.deltas]
+      .filter(event => resultIdFrom(event) === 'result_one');
+
+    expect(resultOneEvents.map(event => event.kind)).toEqual([
+      'result_delivery_available',
+      'result_chunk',
+      'result_completed',
+    ]);
+  });
 });
 
 function resultIdFrom(event: GatewayEventEnvelope): string | null {

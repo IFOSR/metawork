@@ -97,6 +97,32 @@ function makeSession(
 }
 
 describe('ConversationSession', () => {
+  it('delivers results produced after an asynchronous resume command returns', async () => {
+    const release = deferred<void>();
+    const delivered: unknown[] = [];
+    const trace = new InteractionTraceStream('conv');
+    const result = { resultId: 'report', content: 'Complete report', completeness: 'complete', certification: 'certified' } as const;
+    let work!: Promise<void>;
+    const session = new ConversationSession({
+      conversationId: 'conv', plannerSessionId: 'planner', runtimePort: makePort('local-default'),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }), interactionTraceStream: trace,
+      onBackgroundResultDelivery: async (delivery, originTurnId) => { delivered.push({ delivery, originTurnId }); },
+      handleCommand: async () => {
+        work = session.startBackgroundExecution('task', async () => {
+          await release.promise;
+          session.recordResultDelivery(result);
+        });
+        return false;
+      },
+    });
+    await session.submitUserInput('/task resume task', { interactionTurnId: 'resume-turn', awaitAsyncWork: false });
+    expect(delivered).toEqual([]);
+    release.resolve();
+    await work;
+    expect(delivered).toEqual([{ delivery: result, originTurnId: 'resume-turn' }]);
+    await session.dispose();
+  });
+
   it('projects runtime state from the current Conversation only', () => {
     const session = makeSession('conversation-a', 'planner-a', 'local-default', makePort('local-default', {
       queries: {
@@ -824,12 +850,29 @@ describe('ConversationSession', () => {
       runtimePort: makePort('local-default', {
         queries: {
           findTask: taskId => taskId === task.id ? task as never : null,
+          listQueuedTaskIds: () => [],
         } as never,
       }),
       mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
     });
     session.setCurrentTaskId(task.id);
 
+    expect(session.hasBackgroundWork()).toBe(true);
+  });
+
+  it('keeps queued work pending before an Executor starts', () => {
+    const session = new ConversationSession({
+      conversationId: 'conv_queued',
+      plannerSessionId: 'conv_queued',
+      runtimePort: makePort('local-default', {
+        queries: {
+          findTask: () => ({ id: 'task_queued', status: 'ready', dependencies: [] }),
+          listQueuedTaskIds: () => ['task_queued'],
+        } as never,
+      }),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+    });
+    session.setCurrentTaskId('task_queued');
     expect(session.hasBackgroundWork()).toBe(true);
   });
 

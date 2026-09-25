@@ -163,6 +163,76 @@ describe('SessionPresentationService', () => {
     expect(lines.join('\n')).toContain('进度 50%');
   });
 
+  it('shows the real blocker instead of readiness for blocked queue entries', () => {
+    const blocked = task({
+      id: 'blocked_unknown',
+      title: '外部副作用不确定的任务',
+      status: 'blocked',
+      dependencies: [{
+        taskId: 'blocked_unknown',
+        type: 'manual',
+        description: 'unknown requires explicit recovery: unknown_executor_failure',
+        status: 'waiting',
+        createdAt: baseTime,
+      }],
+    });
+
+    const entries = presenter.buildTaskQueueSnapshotEntries({
+      tasks: [blocked],
+      runningTaskId: null,
+      evaluateTask: () => ({
+        score: { total: 20 },
+        reasons: ['所有输入材料已齐全'],
+      }),
+    });
+
+    expect(entries[0]?.reason).toContain('unknown requires explicit recovery');
+    expect(entries[0]?.reason).not.toContain('所有输入材料已齐全');
+
+    const status = presenter.formatTaskStatus({
+      scope: 'blocked',
+      blockedTasks: [{ ...blocked, blockReason: entries[0]!.reason }],
+      runningTask: null,
+      activeTasks: [blocked],
+      latestDone: null,
+      dashboard: {
+        summary: { active: 0, blocked: 1, parked: 0, done: 0 },
+        priorityTask: null,
+        blockedTasks: [{ ...blocked, blockReason: entries[0]!.reason }],
+        readyTasks: [],
+      },
+    });
+
+    expect(status).toContain('材料齐全不等于可以安全恢复');
+    expect(status).toContain(`/task recovery ${blocked.id}`);
+    expect(status).not.toContain(`/task unblock ${blocked.id}`);
+  });
+
+  it('explains that an unknown blocker needs recovery inspection rather than a retry', () => {
+    const blocked = task({
+      id: 'blocked_unknown',
+      title: '外部副作用不确定的任务',
+      status: 'blocked',
+      dependencies: [{
+        taskId: 'blocked_unknown',
+        type: 'manual',
+        description: 'unknown requires explicit recovery: unknown_executor_failure',
+        status: 'waiting',
+        createdAt: baseTime,
+      }],
+    });
+
+    const lines = presenter.formatTaskPoolWatchdogReminder({
+      blockedTasks: [blocked],
+      parkedTasks: [],
+      getWaitingBlockReason: current => current.dependencies[0]?.description ?? null,
+    });
+
+    expect(lines.join('\n')).toContain('上次执行结果不确定');
+    expect(lines.join('\n')).toContain(`/task recovery ${blocked.id}`);
+    expect(lines.join('\n')).not.toContain(`/task unblock ${blocked.id}`);
+  });
+
   it('formats executor wizard summary and failure hints', () => {
     const wizardSummary = presenter.formatExecutorRegisterWizardSummary({
       name: 'claude',

@@ -1,6 +1,7 @@
 // Routes one raw user submission through the session port as wizard input,
 // slash command input, or natural-language work.
 import type { PlannerAttachmentView, PlannerImageAttachment } from '../planning/planning-types.js';
+import type { QueryIngress } from '../metering/ports.js';
 
 export interface InputControllerSubmitOptions {
   awaitAsyncWork?: boolean;
@@ -10,6 +11,9 @@ export interface InputControllerSubmitOptions {
   images?: PlannerImageAttachment[];
   attachments?: PlannerAttachmentView[];
   principalId?: string;
+  requestId?: string;
+  idempotencyKey?: string;
+  billingIngress?: QueryIngress;
 }
 
 export interface InputControllerSubmitResult {
@@ -23,6 +27,7 @@ export interface InputControllerPort {
     input: string,
     images?: PlannerImageAttachment[],
     attachments?: PlannerAttachmentView[],
+    options?: InputControllerSubmitOptions,
   ): Promise<void>;
   waitForAsyncWork(): Promise<void>;
   handleSubmitError(error: unknown): void;
@@ -53,9 +58,14 @@ export class InputController {
       }
 
       if (options.attachments !== undefined) {
-        await this.port.handleNaturalLanguageInput(userInput, options.images, options.attachments);
+        await this.port.handleNaturalLanguageInput(
+          userInput,
+          options.images,
+          options.attachments,
+          options,
+        );
       } else {
-        await this.port.handleNaturalLanguageInput(userInput, options.images);
+        await this.port.handleNaturalLanguageInput(userInput, options.images, undefined, options);
       }
       if (options.awaitAsyncWork) {
         await this.port.waitForAsyncWork();

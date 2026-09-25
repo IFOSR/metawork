@@ -6,11 +6,13 @@ import type { ExecutorResult } from '../core/types.js';
 import type { KernelFailure } from '../core/kernel-failure.js';
 import type { SubtaskExecutionContext } from '../execution/subtask-execution-context.js';
 import type { ParsedSkillUsageEvent } from './skill-usage-event-parser.js';
+import type { HarnessUsageEvent } from './harness-driver.js';
 
 export interface ExecutorInput {
   context: SubtaskExecutionContext;
   onProgress?: (event: ExecutorProgressEvent) => void;
   onRawOutput?: (chunk: string | Uint8Array, stream: 'stdout' | 'stderr') => void;
+  onUsage?: (event: HarnessUsageEvent) => void;
   recovery?: {
     mode: 'native_session' | 'recovery_packet' | 'fresh';
     continuationToken: string | null;

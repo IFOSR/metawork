@@ -6,7 +6,9 @@ import {
   type AuthorizedExecutorBinding,
 } from '../../src/core/authorized-executor-binding.js';
 import { KernelExecutionRuntime } from '../../src/execution/kernel-execution-runtime.js';
+import type { ExecutionTraceAppendInput } from '../../src/execution/execution-trace.js';
 import type { KernelDecision, KernelEvent } from '../../src/kernel/control-kernel.js';
+import { InteractionTraceStream } from '../../src/session/interaction-trace-stream.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 
@@ -14,6 +16,85 @@ const NOW = '2026-08-13T00:00:00.000Z';
 const AGENT_CLASS = 'codex-engineering';
 
 describe('KernelExecutionRuntime executor recovery', () => {
+  it('delivers the newest safe partial result and explains the newest failure', () => {
+    const recordResultDelivery = vi.fn();
+    const runtime = new KernelExecutionRuntime({
+      callbacks: { recordResultDelivery, appendOutput: vi.fn() },
+      attemptReceiptRepo: { listByTask: () => [
+        { parsing: { resultObjects: { safeProjectionId: 'new-result' } },
+          failure: { code: 'model_response_incomplete', summary: 'new failure' } },
+        { parsing: { resultObjects: { safeProjectionId: 'old-result' } },
+          failure: { code: 'unknown_executor_failure', summary: 'old failure' } },
+      ] },
+      resultObjectRepo: {
+        findObject: () => ({ completeness: 'partial', byteLength: 11 }),
+        readRange: (id: string) => ({ content: id }),
+      },
+      dispatchItemRepo: {}, maxConcurrentAttempts: 4,
+    } as never);
+    const projection = runtime as unknown as {
+      deliverSafeResultOnBlock(taskId: string, reason: string): void;
+      blockReasonWithCause(taskId: string, reason: string): string;
+    };
+    projection.deliverSafeResultOnBlock('task', 'blocked');
+    expect(recordResultDelivery).toHaveBeenCalledWith(expect.objectContaining({
+      resultId: 'new-result', completeness: 'partial', certification: 'uncertified',
+    }));
+    expect(projection.blockReasonWithCause('task', 'blocked')).toContain('new failure');
+    expect(projection.blockReasonWithCause('task', 'blocked')).not.toContain('old failure');
+  });
+
+  it('preserves the execution Task identity when projecting a no_op decision', async () => {
+    const trace = new InteractionTraceStream('conversation-no-op');
+    trace.beginTurn({ turnId: 'turn-no-op', userInput: 'Run the task' });
+    const appendExecutionTrace = vi.fn((input: ExecutionTraceAppendInput) => trace.append(input));
+    const finishExecution = vi.fn();
+    const runtime = new KernelExecutionRuntime({
+      callbacks: { appendExecutionTrace },
+      taskEventRepo: {},
+      dispatchItemRepo: {},
+      maxConcurrentAttempts: 4,
+    } as never);
+    const decision = {
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      id: 'decision-no-op',
+      eventId: 'event-execution-outcome',
+      reason: 'work is already executing or awaiting publication',
+      action: { type: 'no_op' },
+    } as const;
+
+    const nextEvent = await (runtime as unknown as {
+      applyExecutionDecision(input: Record<string, unknown>): Promise<KernelEvent | null>;
+    }).applyExecutionDecision({
+      decision,
+      executionId: 'execution-no-op',
+      request: {
+        userPrompt: 'Run the task',
+        contextTaskId: 'task-no-op',
+        executionMode: 'fresh',
+      },
+      progressTracker: {},
+      supervisorContext: {},
+      attemptFacts: [],
+      finishExecution,
+    });
+
+    expect(appendExecutionTrace).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'kernel_decision_applied',
+      taskId: 'task-no-op',
+      details: expect.objectContaining({ action: 'no_op' }),
+    }));
+    expect(trace.getSnapshot()).toMatchObject({
+      turnId: 'turn-no-op',
+      taskId: 'task-no-op',
+      status: 'running',
+    });
+    expect(nextEvent).toBeNull();
+    expect(finishExecution).not.toHaveBeenCalled();
+    expect(decision.action).toEqual({ type: 'no_op' });
+  });
+
   it('preserves an Executor timeout as a failed execution outcome for Kernel recovery', async () => {
     const timeoutFailure = {
       kind: 'timeout' as const,
@@ -21,7 +102,13 @@ describe('KernelExecutionRuntime executor recovery', () => {
       code: 'executor_timeout',
       summary: 'Executor produced partial output, then became silent',
     };
+    const formatExecutorDispatch = vi.fn().mockReturnValue([]);
+    const appendExecutionTrace = vi.fn();
     const runtime = new KernelExecutionRuntime({
+      getRuntimeConfiguration: () => ({
+        revisionId: 'revision-a', models: {}, providers: {}, harnesses: {},
+        agentClasses: { [AGENT_CLASS]: { displayName: 'Research assistant' } },
+      }),
       resolveWorkspacePath: vi.fn().mockResolvedValue('/Users/ylfego/Program/test'),
       attemptReceiptRepo: {
         findByAttemptId: vi.fn().mockReturnValue(null),
@@ -56,10 +143,10 @@ describe('KernelExecutionRuntime executor recovery', () => {
         }),
       },
       presentation: {
-        formatExecutorDispatch: vi.fn().mockReturnValue([]),
+        formatExecutorDispatch,
       },
       callbacks: {
-        appendExecutionTrace: vi.fn(),
+        appendExecutionTrace,
         appendOutput: vi.fn(),
         setRunningExecutorName: vi.fn(),
         clearRunningExecutorName: vi.fn(),
@@ -94,6 +181,11 @@ describe('KernelExecutionRuntime executor recovery', () => {
       attemptId: 'attempt-timeout',
       failure: timeoutFailure,
     });
+    expect(formatExecutorDispatch).toHaveBeenCalledWith('Research assistant');
+    expect(appendExecutionTrace).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'executor_dispatch_started',
+      summary: 'Kernel started Research assistant for "Research report".',
+    }));
     expect((runtime as unknown as {
       deps: { attemptRunner: { run: ReturnType<typeof vi.fn> } };
     }).deps.attemptRunner.run).toHaveBeenCalledWith(expect.objectContaining({
