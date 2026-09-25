@@ -340,6 +340,7 @@ Update `CONTEXT.md` and the current technical overview only after the contract i
 - Plan date: 2026-09-25
 - Status: Phases 0-3 implemented on `feat/task-lifecycle-state-convergence`;
   Phases 4-5 remain. Not archived.
+- Implementation commit: `fbc0ddc` `feat: converge task lifecycle ownership with durable Replan Jobs`, recorded 2026-09-25.
 - Production database: unchanged by this work stream (no schema migration was
   needed; the durable Replan Job reuses `generation_replan_requests`).
 - Runtime services: changed. `schedule_replan` replaces the foreground
