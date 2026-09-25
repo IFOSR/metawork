@@ -900,6 +900,41 @@ sockets before reclaiming a confirmed stale socket and records the created
 device/inode so shutdown cannot unlink a replacement. Planner RPC preserves
 structured transport uncertainty and partial tool audit.
 
+### Task lifecycle state convergence (2026-09-25)
+
+Attempt settlement, Kernel application and Task lifecycle are separated by
+explicit ownership. The canonical Task/Subtask/Attempt lifecycle vocabulary,
+its transition table and the raw-status mapping functions live in
+`src/task/task-lifecycle.ts`; the read-only `TaskView` projection lives in
+`src/task/task-view.ts`. Presentation surfaces render
+`TaskView.phase` (`queued`, `executing`, `retrying`, `waiting_for_plan`,
+`waiting_for_user`, `publishing`, `recovery_required`, `blocked`, `completed`,
+`failed`, `cancelled`) and never interpret raw `tasks.status`,
+`kernel_dispatch_items.status`, `work_units.state` or
+`kernel_decision_applications.status`. The Gateway exposes the same projection
+additively as `GatewayTaskViewSnapshot.lifecycle`.
+
+Automatic replan no longer invokes a foreground Conversation Planner callback.
+ControlKernel authorizes `schedule_replan`, whose only Runtime postcondition is
+that the Replan Job is durably schedulable under the Decision-derived
+quiescence token. The Decision application is `applied` immediately. An
+account-scoped `GenerationReplanWorker`, driven by the AccountRuntime periodic
+review, claims the Job with a bounded Planner lease, performs one Planner turn,
+and inserts the `plan_proposed` event together with the `submitted` transition.
+The deterministic Job id and single conditional claim make the turn idempotent
+across restarts and concurrent session/account passes. A retryable Planner
+failure backs off and keeps the Job identity; past the absolute retry budget the
+Job fails closed as `planner_unavailable`, which ControlKernel projects into an
+explicit `block_work` instead of leaving the Task `running`.
+
+Startup and periodic recovery inspect each action family's declared
+postcondition. The replan postcondition inspector marks an uncertain
+`schedule_replan`/`request_replan` application `applied` once the Job carries
+`quiescence_<decisionId>`, and retries the same Decision only while the Job is
+still `pending_quiescence`. Full contracts, the Task transition table and the
+projection priority are recorded in
+[Task lifecycle state contracts](task-lifecycle-state-contracts.md).
+
 The native AnyFusion-Pi TUI remains the default Client for bare `metawork`.
 Web and TUI own only connection and presentation state; both attach to the same
 persistent Server-owned RuntimeRegistry, AccountRuntime, WorkspaceDirectory,
