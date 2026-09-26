@@ -22,6 +22,14 @@ export interface ConversationActivityFacts {
   }>;
   readonly tasks: ReadonlyArray<ConversationActivityTaskFact>;
   readonly activeAttemptTaskIds: ReadonlyArray<string>;
+  /**
+   * Tasks with an outstanding durable Replan Job. Required so the activity card
+   * derives the same canonical lifecycle as TaskView instead of assuming the
+   * fact away (2026-09-25 review fix 6).
+   */
+  readonly openReplanJobTaskIds: ReadonlyArray<string>;
+  /** Tasks with a Kernel-authorized retry wake pending. */
+  readonly pendingRetryWakeTaskIds: ReadonlyArray<string>;
 }
 
 export interface ConversationActivityProjection {
@@ -48,13 +56,19 @@ export class ConversationActivityProjector {
   project(conversationId: string, fallbackUpdatedAt: string): ConversationActivityProjection {
     const fallback = validTimestamp(fallbackUpdatedAt, new Date(0).toISOString());
     const activeAttempts = new Set(this.facts.activeAttemptTaskIds);
+    const openReplanJobs = new Set(this.facts.openReplanJobTaskIds);
+    const pendingRetryWakes = new Set(this.facts.pendingRetryWakeTaskIds);
     const candidates: Candidate[] = this.facts.plannerTurns
       .filter(turn => turn.conversationId === conversationId)
       .map(turn => candidate('planning', null, turn.updatedAt, fallback));
 
     for (const task of this.facts.tasks) {
       if (task.originConversationId !== conversationId) continue;
-      const state = taskState(task, activeAttempts.has(task.id));
+      const state = taskState(task, {
+        hasActiveAttempt: activeAttempts.has(task.id),
+        hasOutstandingReplanJob: openReplanJobs.has(task.id),
+        hasPendingRetryWake: pendingRetryWakes.has(task.id),
+      });
       if (state) candidates.push(candidate(state, task.id, task.updatedAt, fallback));
     }
 
@@ -72,24 +86,30 @@ export class ConversationActivityProjector {
 
 function taskState(
   task: ConversationActivityTaskFact,
-  hasActiveAttempt: boolean,
+  input: {
+    hasActiveAttempt: boolean;
+    hasOutstandingReplanJob: boolean;
+    hasPendingRetryWake: boolean;
+  },
 ): ConversationActivityState | null {
-  // 2026-09-25 plan §7: a persisted `running` Task without an active authorized
-  // Attempt is not "executing". The activity card consumes the same canonical
-  // lifecycle as TaskView instead of re-deriving its own rule.
+  // 2026-09-25 plan §7: the activity card consumes the same canonical lifecycle
+  // as TaskView instead of re-deriving its own rule, so a persisted `running`
+  // Task with no authorized Attempt is never "executing" and an outstanding
+  // Replan Job is never reported as idle.
   const lifecycle = deriveTaskLifecycleState({
     status: task.status,
-    hasActiveAttempt,
-    hasOutstandingReplanJob: false,
-    hasPendingRetryWake: task.dependencies.some(dependency => (
-      dependency.status === 'waiting' && dependency.type === 'kernel_retry'
-    )),
+    hasActiveAttempt: input.hasActiveAttempt,
+    hasOutstandingReplanJob: input.hasOutstandingReplanJob,
+    hasPendingRetryWake: input.hasPendingRetryWake,
     hasPendingUserDecision: false,
   });
   if (lifecycle === 'blocked') return 'blocked';
   if (lifecycle === 'executing') return 'executing';
+  // Coordinating work (Plan, retry wake, user decision) is reported as waiting;
+  // the card must not claim the Conversation is idle.
+  if (lifecycle === 'coordinating' || lifecycle === 'waiting_for_user') return 'waiting';
   if (
-    (lifecycle === 'queued' || lifecycle === 'coordinating' || lifecycle === 'waiting_for_user')
+    lifecycle === 'queued'
     && task.dependencies.some(dependency => (
       dependency.status === 'waiting'
       && ['kernel_capacity', 'kernel_retry', 'kernel_availability'].includes(dependency.type)

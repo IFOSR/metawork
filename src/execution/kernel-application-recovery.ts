@@ -134,6 +134,15 @@ const UNMANAGED_ACTIONS = new Set<string>([
  * `markApplied` inserts atomically with the `applied` transition. Re-applying
  * the same Decision id is therefore idempotent.
  */
+/**
+ * Actions whose durable effect is an observation event created by
+ * `markApplied` together with the `applied` transition. Re-applying the same
+ * Decision is safe **only because** the Runtime's apply for these actions is
+ * itself replay-idempotent (deterministic observation ids are deduplicated by
+ * the inbox, and state writes are guarded). `resume_task` is the one action
+ * here that does mutate Task/Subtask state, so its apply must never short
+ * circuit a replay before emitting the observation.
+ */
 const OBSERVATION_ONLY_ACTIONS = new Set<string>([
   'no_op',
   'wait_for_retry',
@@ -141,10 +150,16 @@ const OBSERVATION_ONLY_ACTIONS = new Set<string>([
   'probe_capacity',
   'wait_for_partition',
   'park_for_replan',
-  'resume_task',
   'queue_generation_replan',
   'defer_task_plan_for_availability',
 ]);
+
+/**
+ * `resume_task` mutates Task/Subtask state before emitting its dispatch
+ * observation, so it is retry-safe only in the sense that its apply must be
+ * replay-idempotent. Kept separate so the contract is explicit.
+ */
+const RESUME_ACTIONS = new Set<string>(['resume_task']);
 
 export function inspectApplicationPostcondition(
   facts: ApplicationPostconditionFacts,
@@ -178,12 +193,52 @@ export function inspectApplicationPostcondition(
           reason: `${action.type} only emits its Decision observation and is idempotent by Decision id`,
         };
       }
+      if (RESUME_ACTIONS.has(action.type) && action.type === 'resume_task') {
+        return inspectResume(facts);
+      }
       return {
         family: 'not_managed',
         verdict: 'unresolved',
         reason: `no postcondition is declared for ${action.type}`,
       };
   }
+}
+
+/**
+ * `resume_task` is satisfied once the resumed Subtask is no longer blocked and
+ * the Task is back in an executing-facing state; the dispatch observation is
+ * emitted deterministically by the same apply, so a replay that completes the
+ * remaining steps is the correct recovery action.
+ */
+function inspectResume(
+  facts: ApplicationPostconditionFacts,
+): ApplicationPostconditionInspection {
+  const action = facts.application.decision.action;
+  if (action.type !== 'resume_task') {
+    return { family: 'not_managed', verdict: 'unresolved', reason: 'unexpected action' };
+  }
+  const taskStatus = facts.task?.status ?? null;
+  const blockedSubtasks = action.subtaskIds.filter(subtaskId => (
+    facts.subtasks.find(item => item.id === subtaskId)?.status === 'blocked'
+  ));
+  if (
+    taskStatus === 'running'
+    && blockedSubtasks.length === 0
+    && facts.dispatchItems.some(item => item.decisionId === facts.application.decisionId)
+  ) {
+    return {
+      family: 'observation_only',
+      verdict: 'applied',
+      reason: 'the resumed Task re-entered execution and its dispatch item is durable',
+    };
+  }
+  return {
+    family: 'observation_only',
+    verdict: 'retry_safe',
+    reason: blockedSubtasks.length > 0
+      ? `resume is incomplete: Subtask ${blockedSubtasks.join(', ')} is still blocked`
+      : 'resume has not produced its dispatch fact yet; replay is idempotent by Decision id',
+  };
 }
 
 function inspectDispatch(
@@ -287,11 +342,27 @@ function inspectTaskTransition(
       : { family: 'task_transition', verdict: 'retry_safe', reason: 'the Task is not terminal yet' };
   }
   if (action.type === 'block_work') {
-    const subtaskBlocked = action.subtaskId !== null
-      && facts.subtasks.some(item => item.id === action.subtaskId && item.status === 'blocked');
-    return taskStatus === 'blocked' || subtaskBlocked
-      ? { family: 'task_transition', verdict: 'applied', reason: 'the blocker is durable' }
-      : { family: 'task_transition', verdict: 'retry_safe', reason: 'the blocker is not durable yet' };
+    // The Runtime performs the Subtask blocker write *before* the Task block, so
+    // a half-applied decision leaves the Task `running` with a blocked Subtask.
+    // The postcondition must require the whole operation, otherwise recovery
+    // would skip the missing Task block (2026-09-25 review fix 3).
+    const namedSubtask = action.subtaskId === null
+      ? null
+      : facts.subtasks.find(item => item.id === action.subtaskId) ?? null;
+    const subtaskResolved = action.subtaskId === null
+      || action.preserveSubtaskState === true
+      || namedSubtask === null
+      || ['blocked', 'done', 'cancelled'].includes(namedSubtask.status);
+    if (taskStatus === 'blocked' && subtaskResolved) {
+      return { family: 'task_transition', verdict: 'applied', reason: 'the Task block is durable' };
+    }
+    return {
+      family: 'task_transition',
+      verdict: 'retry_safe',
+      reason: taskStatus === 'blocked'
+        ? `the Task is blocked but Subtask ${action.subtaskId} is still ${namedSubtask?.status ?? 'missing'}`
+        : 'the Task block is not durable yet',
+    };
   }
   return {
     family: 'task_transition',

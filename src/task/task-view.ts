@@ -125,6 +125,11 @@ export interface TaskView {
   readonly blockingResidue: readonly string[];
   /** One canonical next authorized action, or `none` in a terminal phase. */
   readonly nextAuthorizedAction: TaskAction;
+  /**
+   * Why a `recovery_required` phase was reached, so a surface can offer the
+   * right entry point instead of a generic message.
+   */
+  readonly recoveryDiagnosis: TaskViewRecoveryDiagnosis | null;
   /** Why the phase is what it is, in user-facing terms. */
   readonly explanation: string;
   readonly result: TaskViewResultFact | null;
@@ -134,6 +139,8 @@ export interface TaskView {
     readonly nextWakeAt: string | null;
   };
 }
+
+export type TaskViewRecoveryDiagnosis = 'uncertain_application' | 'no_authorized_driver';
 
 export type TaskAction =
   | 'await_attempt_settlement'
@@ -199,6 +206,15 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
     pendingPermission: facts.pendingPermission,
   });
 
+  // A Task can only be `coordinating` when a durable driver exists (an active
+  // Attempt, a retry wake, a Replan Job or a publication). Without one the
+  // phase must say so instead of implying a driver that is not there
+  // (2026-09-25 review fix 6).
+  const recoveryDiagnosis: TaskViewRecoveryDiagnosis | null = recovery
+    ? 'uncertain_application'
+    : lifecycle === 'coordinating'
+      ? 'no_authorized_driver'
+      : null;
   const phase = derivePhase({
     lifecycle,
     activeAttempt: activeAttempt !== null,
@@ -231,8 +247,9 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
     currentReplanJob: replanJob,
     currentRecovery: recovery,
     blockingResidue,
-    nextAuthorizedAction: nextAuthorizedAction(phase),
-    explanation: explain({ phase, lifecycle, blockingResidue }),
+    nextAuthorizedAction: nextAuthorizedAction(phase, phase === 'recovery_required' ? recoveryDiagnosis : null),
+    recoveryDiagnosis,
+    explanation: explain({ phase, lifecycle, blockingResidue, recoveryDiagnosis }),
     result: facts.result,
     timestamps: {
       lastProgressAt: latestTimestamp([
@@ -313,16 +330,17 @@ function derivePhase(input: {
   if (input.pendingPermission) return 'waiting_for_user';
   if (input.lifecycle === 'blocked') return 'blocked';
   if (input.lifecycle === 'waiting_for_user') return 'waiting_for_user';
-  if (input.lifecycle === 'coordinating') return 'waiting_for_plan';
-  if (input.lifecycle === 'executing') {
-    // A `running` Task with no active Attempt is never "executing"; it either
-    // has residue above or is waiting for its next authorized action.
-    return 'waiting_for_plan';
-  }
-  return 'queued';
+  if (input.lifecycle === 'queued') return 'queued';
+  // Nothing above is driving the Task: a persisted `running` Task with no
+  // active Attempt, no retry wake and no Replan Job must not claim it is
+  // waiting for a plan that was never requested. It is a recovery situation.
+  return 'recovery_required';
 }
 
-function nextAuthorizedAction(phase: TaskUserFacingPhase): TaskAction {
+function nextAuthorizedAction(
+  phase: TaskUserFacingPhase,
+  diagnosis: TaskViewRecoveryDiagnosis | null,
+): TaskAction {
   switch (phase) {
     case 'executing':
       return 'await_attempt_settlement';
@@ -331,7 +349,9 @@ function nextAuthorizedAction(phase: TaskUserFacingPhase): TaskAction {
     case 'waiting_for_plan':
       return 'await_planner_proposal';
     case 'recovery_required':
-      return 'resolve_uncertain_application';
+      return diagnosis === 'uncertain_application'
+        ? 'resolve_uncertain_application'
+        : 'explicit_resume_required';
     case 'publishing':
       return 'await_publication';
     case 'waiting_for_user':
@@ -351,6 +371,7 @@ function explain(input: {
   phase: TaskUserFacingPhase;
   lifecycle: TaskLifecycleState;
   blockingResidue: readonly string[];
+  recoveryDiagnosis: TaskViewRecoveryDiagnosis | null;
 }): string {
   switch (input.phase) {
     case 'executing':
@@ -360,7 +381,10 @@ function explain(input: {
     case 'waiting_for_plan':
       return 'The Kernel requested a Replan Job; a Planner proposal is still outstanding.';
     case 'recovery_required':
-      return 'A Kernel action outcome is uncertain and must be reconciled.';
+      return input.recoveryDiagnosis === 'uncertain_application'
+        ? 'A Kernel action outcome is uncertain and must be reconciled before the Task can continue.'
+        : 'No authorized Attempt, retry wake, Replan Job or publication is driving the Task; '
+          + 'explicit recovery is required.';
     case 'publishing':
       return 'Execution finished but publication or certification is still pending.';
     case 'waiting_for_user':

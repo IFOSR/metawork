@@ -136,6 +136,8 @@ export interface GatewayTaskViewSnapshot {
     } | null;
     readonly blockingResidue: readonly string[];
     readonly nextAuthorizedAction: string;
+    /** `uncertain_application` 或 `no_authorized_driver`；其他情况为 null。 */
+    readonly recoveryDiagnosis?: string | null;
     readonly explanation: string;
     readonly lastProgressAt: string | null;
     readonly lastAttemptSettledAt: string | null;

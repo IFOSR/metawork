@@ -101,6 +101,12 @@ export interface ConversationRuntimePort {
     listQueuedTaskIds(conversationId: string): string[];
     getQueuedTaskReason(taskId: string): string | null;
     listConversationTaskSlots(): ConversationTaskSlot[];
+    /**
+     * The unified residue reasons that currently block Task completion for one
+     * Task. Read from the same `TaskResidueReader` the slot-release paths use,
+     * so TaskView never invents its own residue list (2026-09-25 review fix 6).
+     */
+    listCompletionResidue(taskId: string): string[];
   };
   readonly commands: {
     submitKernel: AccountKernelCoordinator['submit'];

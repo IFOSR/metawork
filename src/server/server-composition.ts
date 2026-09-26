@@ -1460,7 +1460,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           })),
         publications: new WorkspacePublicationRepo(db).listByTask(taskId)
           .map(publication => ({ id: publication.id, status: publication.status })),
-        completionResidue: [],
+        completionResidue: accountRuntimeComposition.runtimePort.queries
+          .listCompletionResidue(taskId),
         pendingPermission: taskPermission ? { requestId: taskPermission.request.id } : null,
         retryWakeAt: accountRuntimeComposition.runtimePort.queries
           .listCurrentKernelDecisions('wait_for_retry')
@@ -1504,6 +1505,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             : null,
           blockingResidue: lifecycleProjection.blockingResidue,
           nextAuthorizedAction: lifecycleProjection.nextAuthorizedAction,
+          recoveryDiagnosis: lifecycleProjection.recoveryDiagnosis,
           explanation: lifecycleProjection.explanation,
           lastProgressAt: lifecycleProjection.timestamps.lastProgressAt,
           lastAttemptSettledAt: lifecycleProjection.timestamps.lastAttemptSettledAt,

@@ -2055,6 +2055,13 @@ export class MetaclawSession {
           const event = this.kernelWorkflowRepo.findEvent(origin.eventId);
           return event?.type === 'plan_proposed' ? [...(event.attachmentIds ?? [])] : [];
         },
+        findPersistedProposal: eventId => {
+          const event = this.kernelWorkflowRepo.findEvent(eventId);
+          return event?.type === 'plan_proposed' ? event : null;
+        },
+        persistProposal: event => {
+          this.kernelWorkflowRepo.enqueue(event);
+        },
         drainKernel: async ({ userInput, event }) => {
           await this.kernelCoordinator.submit(event, {
             buildSnapshot: claimed => this.buildPlanAdmissionSnapshot(

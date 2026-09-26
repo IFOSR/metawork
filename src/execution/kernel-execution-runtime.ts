@@ -1353,12 +1353,16 @@ export class KernelExecutionRuntime {
     }
     if (action.type === 'resume_task') {
       const task = this.deps.taskRuntimeService.findTask(action.taskId);
+      if (!task) return null;
+      // Replay-idempotent by design (2026-09-25 review fix 3): a first apply can
+      // have moved the Task to `running` without landing its dispatch
+      // observation. Returning early there would strand the Task, so the guard
+      // only excludes terminal states; the observation event id is derived from
+      // the Decision and is deduplicated by the Kernel inbox.
+      if (['done', 'archived', 'cancelled'].includes(task.status)) return null;
       if (
-        !task
-        || (
-          !['blocked', 'parked'].includes(task.status)
-          && !(task.status === 'running' && action.recovery)
-        )
+        !['blocked', 'parked', 'ready', 'running'].includes(task.status)
+        && !(task.status === 'created' && action.recovery)
       ) return null;
       for (const subtaskId of action.subtaskIds) {
         const subtask = this.deps.subtaskRepo.findById(subtaskId);
@@ -2557,6 +2561,13 @@ export class KernelExecutionRuntime {
               : null;
           })(),
         }
+      : event.type === 'recovery_required_observed' ? {
+          schemaVersion: 5,
+          type: 'recovery_required',
+          task: { id: task.id, status: task.status },
+          recoveryItemId: event.recoveryItemId,
+          reason: event.reason,
+        }
       : this.buildDispatchSnapshot(
           event.taskId ?? taskId,
           graphState,
@@ -2602,6 +2613,7 @@ export class KernelExecutionRuntime {
         'timer_tick', 'plan_proposed',
         'partition_conflict_observed', 'sandbox_lost', 'merge_conflict_observed',
         'generation_quiescence_observed', 'recovery_resolution_requested',
+        'recovery_required_observed',
       ],
       acceptedActions: [
         'resume_task', 'dispatch_batch', 'probe_capacity', 'wait_for_capacity', 'wait_for_retry',
@@ -2987,6 +2999,7 @@ export class KernelExecutionRuntime {
         'timer_tick', 'plan_proposed',
         'partition_conflict_observed', 'sandbox_lost', 'merge_conflict_observed',
         'generation_quiescence_observed',
+        'recovery_required_observed',
       ],
       acceptedActions: [
         'dispatch_batch', 'probe_capacity', 'wait_for_capacity', 'wait_for_retry',

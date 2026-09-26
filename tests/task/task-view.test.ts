@@ -159,6 +159,47 @@ describe('unified TaskView projection', () => {
     expect(view.result?.certification).toBe('certified');
   });
 
+  it('requires an authorized driver before claiming the Task is waiting for a plan', () => {
+    // Review fix 6: the previous fallback turned "false executing" into "false
+    // waiting_for_plan" for a running Task with no Attempt and no Replan Job.
+    const view = projectTaskView(facts({
+      subtasks: [{ id: 'task_1_execute', status: 'awaiting_decision' }],
+      dispatches: [{
+        attemptId: 'attempt_1',
+        subtaskId: 'task_1_execute',
+        status: 'terminal',
+        attemptKind: 'primary',
+        createdAt: NOW,
+        updatedAt: NOW,
+      }],
+      receipts: [{
+        attemptId: 'attempt_1',
+        terminalState: 'executor_failed',
+        failure: null,
+        completedAt: NOW,
+      }],
+    }));
+    expect(view.phase).toBe('recovery_required');
+    expect(view.recoveryDiagnosis).toBe('no_authorized_driver');
+    expect(view.nextAuthorizedAction).toBe('explicit_resume_required');
+    expect(view.explanation).toContain('No authorized Attempt');
+  });
+
+  it('names the uncertain application as the recovery entry point', () => {
+    const view = projectTaskView(facts({
+      dispatches: [],
+      uncertainApplications: [{
+        applicationId: 'decision_1',
+        action: 'dispatch_batch',
+        errorSummary: 'partial batch',
+        updatedAt: NOW,
+      }],
+    }));
+    expect(view.phase).toBe('recovery_required');
+    expect(view.recoveryDiagnosis).toBe('uncertain_application');
+    expect(view.nextAuthorizedAction).toBe('resolve_uncertain_application');
+  });
+
   it('reports queued for an admitted Task awaiting a Conversation slot', () => {
     const view = projectTaskView(facts({
       task: { id: 'task_1', status: 'ready', updatedAt: NOW },

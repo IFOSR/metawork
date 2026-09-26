@@ -45,10 +45,22 @@ export interface GenerationReplanPlannerPort {
   /** Attachment ids the originating admission was admitted with. */
   resolveTurnAttachmentIds(taskId: string): readonly string[];
   /**
-   * Submits the already-durable proposal through the Kernel ingress and resolves
-   * the resulting Decision. The proposal event is already in the inbox before
-   * this is called, so a crash or a rejected drain is recovered by the normal
-   * Kernel recovery sweep.
+   * Reads a proposal this Job already produced. The proposal event id is
+   * derived from the Job's trigger Decision, so a crash between the Planner
+   * turn and the `submitted` transition is recoverable without a second Planner
+   * turn (2026-09-25 review fix 5).
+   */
+  findPersistedProposal(eventId: string): Extract<KernelEvent, { type: 'plan_proposed' }> | null;
+  /**
+   * Durably records the Planner result *before* the `submitted` transition, so
+   * "the Planner already produced a proposal" is a recoverable fact rather than
+   * an in-memory one.
+   */
+  persistProposal(event: Extract<KernelEvent, { type: 'plan_proposed' }>): void;
+  /**
+   * Drains the Kernel inbox for the originating Conversation inside the system
+   * binding. The proposal event is already durable before this is called, so a
+   * crash or a rejected drain is recovered by the normal Kernel recovery sweep.
    */
   drainKernel(input: {
     sessionId: string;
@@ -152,7 +164,22 @@ export class GenerationReplanWorker {
       return 'failed';
     }
     const conversationId = task.conversationId ?? null;
+    const eventId = generationReplanProposalEventId(job);
     try {
+      // A proposal this Job already produced is the recoverable Planner turn.
+      // Re-planning it would be a second turn with a different result
+      // (2026-09-25 review fix 5).
+      const recovered = this.deps.planner.findPersistedProposal(eventId);
+      if (recovered) {
+        this.deps.replanRepo.markSubmitted(job.id, job.quiescenceToken, this.deps.now());
+        await this.safeDrain({
+          sessionId,
+          conversationId,
+          userInput: recovered.requestText,
+          event: recovered,
+        });
+        return 'submitted';
+      }
       const userInput = this.buildRequestText(job, task);
       const context = this.deps.planner.buildPlanningContext({
         sessionId,
@@ -166,7 +193,7 @@ export class GenerationReplanWorker {
         conversationId,
         attachmentIds: this.deps.planner.resolveTurnAttachmentIds(task.id),
         plan,
-        eventId: `replan_event_${job.triggerDecisionId}`,
+        eventId,
         correlationId: job.id,
         causationId: job.triggerDecisionId,
         taskId: task.id,
@@ -174,26 +201,29 @@ export class GenerationReplanWorker {
         generationId: job.generationId,
         targetGraphRevision: job.sourceRevision + 1,
       });
-      if (!this.deps.replanRepo.submitPlan(
-        job.id,
-        job.quiescenceToken,
-        event,
-        this.deps.now(),
-      )) {
-        // A concurrent or previous pass already landed this proposal. The
-        // duplicate Planner turn must not create a second graph revision.
-        return 'submitted';
-      }
-      try {
-        await this.deps.planner.drainKernel({ sessionId, conversationId, userInput, event });
-      } catch {
-        // The proposal event is already durable; the Kernel recovery sweep owns
-        // the remaining drain. This is not a Planner failure.
-      }
+      // Persist before the `submitted` transition: a crash in between leaves a
+      // recoverable proposal instead of an unknown submission.
+      this.deps.planner.persistProposal(event);
+      this.deps.replanRepo.markSubmitted(job.id, job.quiescenceToken, this.deps.now());
+      await this.safeDrain({ sessionId, conversationId, userInput, event });
       return 'submitted';
     } catch (error) {
       this.deps.replanRepo.releasePlannerClaim(job.id, boundedError(error), this.deps.now());
       return 'retry';
+    }
+  }
+
+  private async safeDrain(input: {
+    sessionId: string;
+    conversationId: string | null;
+    userInput: string;
+    event: Extract<KernelEvent, { type: 'plan_proposed' }>;
+  }): Promise<void> {
+    try {
+      await this.deps.planner.drainKernel(input);
+    } catch {
+      // The proposal event is already durable; the Kernel recovery sweep owns
+      // the remaining drain. This is not a Planner failure.
     }
   }
 
@@ -219,6 +249,17 @@ export class GenerationReplanWorker {
       failures,
     });
   }
+}
+
+/**
+ * Deterministic proposal event id for one Replan Job. It is the durable
+ * Planner-turn identity, so a lookup by this id answers "did this Job already
+ * produce a proposal".
+ */
+export function generationReplanProposalEventId(job: {
+  triggerDecisionId: string;
+}): string {
+  return `replan_event_${job.triggerDecisionId}`;
 }
 
 /**

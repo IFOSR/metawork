@@ -188,6 +188,44 @@ describe('Task lifecycle transition port', () => {
     expect(fx.subtaskRepo.findById(subtaskId)?.status).toBe('done');
   });
 
+  it('merges the composed Task and Subtask observation streams in call order', () => {
+    const fx = fixture('composed');
+    taskWithGraph(fx);
+    const composed = createTaskLifecycleTransitionPort({
+      taskRuntimeService: fx.taskRuntimeService,
+      subtaskRepo: fx.subtaskRepo,
+      onTransition: record => fx.transitions.push(record),
+    });
+    composed.transitionTask({
+      taskId: 'task_lifecycle',
+      to: 'ready',
+      actor: 'task-domain',
+      reason: 'admitted',
+    });
+    composed.transitionSubtask({
+      subtaskId: 'task_lifecycle_execute',
+      to: 'running',
+      actor: 'subtask-attempt-runner',
+      reason: 'attempt claimed',
+    });
+    composed.transitionTask({
+      taskId: 'task_lifecycle',
+      to: 'running',
+      actor: 'kernel-execution-runtime',
+      reason: 'authorized dispatch',
+    });
+
+    // Regression: the previous composition let the Subtask port overwrite the
+    // Task port's listTransitions, so Task transitions disappeared from the
+    // shared observation stream.
+    expect(composed.listTransitions().map(record => [record.kind, record.id])).toEqual([
+      ['task', 'task_lifecycle'],
+      ['subtask', 'task_lifecycle_execute'],
+      ['task', 'task_lifecycle'],
+    ]);
+    expect(fx.transitions.map(record => record.kind)).toEqual(['task', 'subtask', 'task']);
+  });
+
   it('keeps the Subtask port independent of the Task repository', () => {
     const fx = fixture('split');
     taskWithGraph(fx);

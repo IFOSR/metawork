@@ -57,6 +57,7 @@ function taskViewSnapshot(requestId: string, conversationId: string): GatewayTas
         outcome: null,
       },
       blockingResidue: ['attempt:attempt_1'],
+      recoveryDiagnosis: null,
       nextAuthorizedAction: 'await_attempt_settlement',
       explanation: 'An authorized Attempt is actively running.',
       lastProgressAt: '2026-09-19T00:00:00.000Z',

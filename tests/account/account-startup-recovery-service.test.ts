@@ -190,28 +190,55 @@ describe('AccountStartupRecoveryService production composition', () => {
     expect(application?.applyAttempts).toBeGreaterThan(1);
   });
 
-  it('releases a blocked Task Conversation slot once its Replan Job failed closed', async () => {
+  it('blocks the Task, then releases its slot, when the Replan Job failed closed', async () => {
     const fixture = createFixture('blocked-slot-release');
     const task = createRunningTask(fixture, 'Block on an unavailable Planner');
     const requestId = seedFailedReplanJob(fixture, task.id);
     const scheduler = new ConversationTaskSchedulerRepo(fixture.db);
     scheduler.claimSlot('conversation-origin', task.id, 'reservation-1', '2026-09-25T00:00:00.000Z');
     seedTaskOriginDecision(fixture.db, task.id, 'conversation-origin');
-    seedKernelInboxEvent(fixture.db, {
-      id: `dispatch_event_blocked_${task.id}`,
-      type: 'dispatch_requested',
-      taskId: task.id,
-      sessionId: 'conversation-origin',
-      reason: 'startup recovery fixture',
-      occurredAt: '2026-09-25T00:00:00.000Z',
-    });
+    // No dispatch event is seeded: recovery itself must produce the durable fact
+    // that makes the Kernel authorize the block (review fix 1).
 
     await fixture.composition.accountRuntime.initialize();
 
+    const decisions = fixture.composition.accountRuntime.kernelServices.kernelDecisionRepo
+      .listByTask(task.id);
+    expect(decisions.some(record => record.eventType === 'recovery_required_observed')).toBe(true);
+    expect(decisions.find(record => record.action === 'block_work')?.reason)
+      .toContain('recovery_required');
     expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('blocked');
     expect(new GenerationReplanRequestRepo(fixture.db).find(requestId)?.status).toBe('failed');
     const slot = scheduler.getSlot('conversation-origin');
     expect(slot).toMatchObject({ state: 'free', activeTaskId: null });
+  });
+
+  it('fails a stalled Replan Job and converges it from the periodic entry point', async () => {
+    const fixture = createFixture('blocked-slot-release-periodic');
+    const task = createRunningTask(fixture, 'Block on an unavailable Planner');
+    // Scheduled but already past the Planner retry budget, so the periodic
+    // Planner Worker pass fails it closed after startup.
+    const requestId = seedScheduledReplanJob(fixture, task.id, {
+      createdAt: '2026-09-24T00:00:00.000Z',
+    });
+    const scheduler = new ConversationTaskSchedulerRepo(fixture.db);
+    scheduler.claimSlot('conversation-origin', task.id, 'reservation-1', '2026-09-25T00:00:00.000Z');
+    seedTaskOriginDecision(fixture.db, task.id, 'conversation-origin');
+
+    await fixture.composition.accountRuntime.initialize();
+    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('running');
+    expect(new GenerationReplanRequestRepo(fixture.db).find(requestId)?.status).toBe('planning');
+
+    // The periodic entry owns the Planner Worker, the Kernel wake fact and the
+    // slot convergence, so one timer pass completes the whole chain.
+    await fixture.composition.accountRuntime.reviewTaskPoolOnTimer();
+
+    expect(new GenerationReplanRequestRepo(fixture.db).find(requestId)?.status).toBe('failed');
+    const decisions = fixture.composition.accountRuntime.kernelServices.kernelDecisionRepo
+      .listByTask(task.id);
+    expect(decisions.some(record => record.eventType === 'recovery_required_observed')).toBe(true);
+    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('blocked');
+    expect(scheduler.getSlot('conversation-origin')).toMatchObject({ state: 'free', activeTaskId: null });
   });
 
   it('promotes the next same-Conversation Task exactly once when a blocked Task releases its slot', async () => {
@@ -221,14 +248,6 @@ describe('AccountStartupRecoveryService production composition', () => {
     const scheduler = new ConversationTaskSchedulerRepo(fixture.db);
     scheduler.claimSlot('conversation-origin', blockedTask.id, 'reservation-1', '2026-09-25T00:00:00.000Z');
     seedTaskOriginDecision(fixture.db, blockedTask.id, 'conversation-origin');
-    seedKernelInboxEvent(fixture.db, {
-      id: `dispatch_event_blocked_${blockedTask.id}`,
-      type: 'dispatch_requested',
-      taskId: blockedTask.id,
-      sessionId: 'conversation-origin',
-      reason: 'startup recovery fixture',
-      occurredAt: '2026-09-25T00:00:00.000Z',
-    });
     // A successor already admitted to the same Conversation slot queue.
     const successor = createQueuedTask(fixture, 'Follow-up work', 'task_successor');
     const successorRevision = new WorkGraphRevisionRepo(fixture.db).findActive(successor.id)!;
@@ -941,7 +960,22 @@ function seedFailedReplanJob(
   fixture: ReturnType<typeof createFixture>,
   taskId: string,
 ): string {
-  const now = '2026-09-25T00:00:00.000Z';
+  const requestId = seedScheduledReplanJob(fixture, taskId);
+  new GenerationReplanRequestRepo(fixture.db).fail(
+    requestId,
+    'planner_unavailable: retry budget exhausted',
+    '2026-09-25T00:00:00.000Z',
+  );
+  return requestId;
+}
+
+/** A Task whose authorized Replan Job is scheduled but not yet consumed. */
+function seedScheduledReplanJob(
+  fixture: ReturnType<typeof createFixture>,
+  taskId: string,
+  options: { createdAt?: string } = {},
+): string {
+  const now = options.createdAt ?? '2026-09-25T00:00:00.000Z';
   const revision = new WorkGraphRevisionRepo(fixture.db).findActive(taskId)!;
   const subtaskRepo = new SubtaskRepo(fixture.db);
   for (const subtask of subtaskRepo.listActiveByTask(taskId)) {
@@ -958,8 +992,10 @@ function seedFailedReplanJob(
     triggerDecisionId: 'trigger_queue_replan',
     now,
   });
+  fixture.db.prepare(`
+    UPDATE generation_replan_requests SET created_at = ?, updated_at = ? WHERE id = ?
+  `).run(now, now, requestId);
   expect(repo.scheduleForPlanner(requestId, 'quiescence_decision_schedule', now)).toBe(true);
-  repo.fail(requestId, 'planner_unavailable: retry budget exhausted', now);
   return requestId;
 }
 

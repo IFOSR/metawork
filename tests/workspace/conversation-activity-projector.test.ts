@@ -11,6 +11,8 @@ function projector(facts: Partial<ConversationActivityFacts> = {}) {
     plannerTurns: facts.plannerTurns ?? [],
     tasks: facts.tasks ?? [],
     activeAttemptTaskIds: facts.activeAttemptTaskIds ?? [],
+    openReplanJobTaskIds: facts.openReplanJobTaskIds ?? [],
+    pendingRetryWakeTaskIds: facts.pendingRetryWakeTaskIds ?? [],
   });
 }
 
@@ -125,7 +127,28 @@ describe('ConversationActivityProjector', () => {
       }],
     });
 
-    expect(projection.project('conv_alpha', NOW).state).toBe('idle');
+    expect(projection.project('conv_alpha', NOW).state).toBe('waiting');
+  });
+
+  it('reports an outstanding Replan Job as waiting, not idle', () => {
+    // The exact case the review reproduced: TaskView said waiting_for_plan while
+    // the activity card said idle because it assumed the fact away.
+    const projection = projector({
+      tasks: [{
+        id: 'task_waiting_plan',
+        originConversationId: 'conv_alpha',
+        status: 'running',
+        dependencies: [],
+        updatedAt: NOW,
+      }],
+      openReplanJobTaskIds: ['task_waiting_plan'],
+    });
+
+    expect(projection.project('conv_alpha', NOW)).toEqual({
+      state: 'waiting',
+      taskId: 'task_waiting_plan',
+      updatedAt: NOW,
+    });
   });
 
   it('reports a persisted running Task with only a retry wake as waiting', () => {
@@ -134,9 +157,10 @@ describe('ConversationActivityProjector', () => {
         id: 'task_retry',
         originConversationId: 'conv_alpha',
         status: 'running',
-        dependencies: [{ type: 'kernel_retry', status: 'waiting' }],
+        dependencies: [],
         updatedAt: NOW,
       }],
+      pendingRetryWakeTaskIds: ['task_retry'],
     });
 
     expect(projection.project('conv_alpha', NOW).state).toBe('waiting');
@@ -168,6 +192,8 @@ describe('ConversationActivityProjector', () => {
         updatedAt: NOW,
       }],
       activeAttemptTaskIds: [],
+      openReplanJobTaskIds: [],
+      pendingRetryWakeTaskIds: [],
     };
 
     expect(projector(facts).project('conv_alpha', NOW))

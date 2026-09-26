@@ -184,6 +184,17 @@ export type KernelEvent =
       resolution: 'assume_applied' | 'retry';
     })
   | (KernelEventEnvelope & {
+      /**
+       * Durable fact that a Task can no longer make progress on its own and no
+       * Kernel-authorized driver remains (2026-09-25 review fix). Recovery
+       * emits it instead of leaving the Task `running` forever.
+       */
+      type: 'recovery_required_observed';
+      taskId: string;
+      recoveryItemId: string;
+      reason: string;
+    })
+  | (KernelEventEnvelope & {
       type: 'permission_requested';
       request: NormalizedCapabilityRequest;
     })
@@ -391,6 +402,13 @@ export type KernelSnapshot =
         status: 'uncertain' | 'failed';
         retrySafe: boolean;
       } | null;
+    }
+  | {
+      schemaVersion: 5;
+      type: 'recovery_required';
+      task: KernelTaskFact | null;
+      recoveryItemId: string;
+      reason: string;
     }
   | {
       schemaVersion: 5;
@@ -676,6 +694,11 @@ export class ControlKernel {
         return this.decideTimer(event, snapshot as Extract<KernelSnapshot, { type: 'timer' }>);
       case 'recovery_resolution_requested':
         return this.decideRecovery(event, snapshot as Extract<KernelSnapshot, { type: 'recovery' }>);
+      case 'recovery_required_observed':
+        return this.decideRecoveryRequired(
+          event,
+          snapshot as Extract<KernelSnapshot, { type: 'recovery_required' }>,
+        );
       case 'permission_requested':
       case 'permission_resolution_received':
         return this.decidePermission(event, snapshot as Extract<KernelSnapshot, { type: 'permission' }>);
@@ -1576,6 +1599,26 @@ export class ControlKernel {
     }, `manual recovery ${event.resolution} authorized`);
   }
 
+  private decideRecoveryRequired(
+    event: Extract<KernelEvent, { type: 'recovery_required_observed' }>,
+    snapshot: Extract<KernelSnapshot, { type: 'recovery_required' }>,
+  ): KernelDecision {
+    if (!snapshot.task || snapshot.task.id !== event.taskId) {
+      return decision(event, { type: 'no_op' }, 'recovery_required observation has no matching Task');
+    }
+    if (snapshot.task.status === 'blocked') {
+      return decision(event, { type: 'no_op' }, 'recovery_required blocker is already recorded');
+    }
+    if (['done', 'archived', 'cancelled'].includes(snapshot.task.status)) {
+      return decision(event, { type: 'no_op' }, 'recovery_required observation arrived after the Task terminal state');
+    }
+    return decision(event, {
+      type: 'block_work',
+      taskId: event.taskId,
+      subtaskId: null,
+    }, `recovery_required: ${event.reason}`);
+  }
+
   private decidePermission(
     event: Extract<KernelEvent, { type: 'permission_requested' | 'permission_resolution_received' }>,
     snapshot: Extract<KernelSnapshot, { type: 'permission' }>,
@@ -1768,6 +1811,7 @@ function snapshotMatches(event: KernelEvent, snapshot: KernelSnapshot): boolean 
   if (event.type === 'timer_tick') return snapshot.type === 'timer';
   if (event.type === 'task_resume_requested') return snapshot.type === 'dispatch';
   if (event.type === 'recovery_resolution_requested') return snapshot.type === 'recovery';
+  if (event.type === 'recovery_required_observed') return snapshot.type === 'recovery_required';
   if (event.type === 'permission_requested' || event.type === 'permission_resolution_received') return snapshot.type === 'permission';
   if (event.type === 'partition_conflict_observed') return snapshot.type === 'partition';
   if (event.type === 'sandbox_lost') return snapshot.type === 'sandbox_recovery';

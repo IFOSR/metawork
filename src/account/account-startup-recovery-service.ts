@@ -39,6 +39,7 @@ import {
   type TaskLifecycleTransitionPort,
 } from '../task/task-lifecycle-transition-port.js';
 import { reconcileUncertainCancellations } from '../execution/cancellation-reconciliation.js';
+import { TaskResidueReader } from '../execution/task-residue-reader.js';
 import type { QueuedTaskPayload } from '../storage/conversation-task-scheduler-repo.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { QueryUsageLifecycle } from '../metering/query-lifecycle.js';
@@ -55,6 +56,7 @@ export class AccountStartupRecoveryService {
   private readonly promotionInFlight = new Map<string, Promise<void>>();
   private replanWorker: GenerationReplanWorker | null = null;
   private lifecycle: TaskLifecycleTransitionPort | null = null;
+  private residue: TaskResidueReader | null = null;
 
   constructor(private readonly deps: {
     readonly db: Database.Database;
@@ -83,7 +85,7 @@ export class AccountStartupRecoveryService {
     const scheduler = this.deps.repositories.conversationTaskSchedulerRepo;
     const conversationId = task?.conversationId;
     if (!task || !conversationId) return;
-    if (this.hasReleasableResidue(taskId)) {
+    if (this.hasReleasableResidue(taskId, this.activeGenerationId(taskId))) {
       scheduler.releaseSlotAndPromote(conversationId, taskId, new Date().toISOString(), true);
       return;
     }
@@ -112,36 +114,31 @@ export class AccountStartupRecoveryService {
   }
 
   /**
-   * Bounded residue reader for Conversation slot release (2026-09-25 plan
-   * §3.4). A slot is released only when none of these still own the Task:
-   * dispatch/WorkUnit/lease/backend capacity, publication, an uncertain Kernel
-   * application, or an outstanding durable Replan Job.
+   * The one residue contract for slot release (2026-09-25 plan §3.4, review
+   * fix 4). Completion, cancellation, startup recovery, periodic recovery and
+   * TaskView must all ask the same reader; a Task-local re-derivation would
+   * disagree about `pending`/`applying` applications and receipt-less terminal
+   * dispatch items.
    */
-  private hasReleasableResidue(taskId: string): boolean {
-    if (this.deps.runtimeExecutionServices.dispatchItemRepo.hasBlockingResidue(taskId)) {
-      return true;
-    }
-    if (this.deps.runtimeExecutionServices.publicationRepo.hasBlockingResidue(taskId)) {
-      return true;
-    }
-    if (this.deps.coordinatorServices.workUnitClaimService.hasClaimedByTask(taskId)) {
-      return true;
-    }
-    if (this.deps.runtimeExecutionServices.resourceLeaseService.findActive()
-      .some(lease => lease.taskId === taskId)) {
-      return true;
-    }
-    if (this.deps.workspaceServices.attemptExecutionRepository.listActive()
-      .some(attempt => attempt.taskId === taskId)) {
-      return true;
-    }
-    if (this.deps.kernelServices.kernelWorkflowRepo
-      .listUncertainApplications([], taskId).length > 0) {
-      return true;
-    }
-    return this.deps.runtimeExecutionServices.generationReplanRepo.listByTask(taskId)
-      .some(job => ['pending_quiescence', 'planning', 'submitted', 'waiting_for_availability']
-        .includes(job.status));
+  private residueReader(): TaskResidueReader {
+    return this.residue ??= new TaskResidueReader({
+      db: this.deps.db,
+      dispatchItemRepo: this.deps.runtimeExecutionServices.dispatchItemRepo,
+      publicationRepo: this.deps.runtimeExecutionServices.publicationRepo,
+      workUnitClaimService: this.deps.coordinatorServices.workUnitClaimService,
+    });
+  }
+
+  private hasReleasableResidue(
+    taskId: string,
+    generationId: string | null,
+    excludedDecisionId?: string,
+  ): boolean {
+    return this.residueReader().blockingReasons(
+      taskId,
+      generationId,
+      excludedDecisionId,
+    ).length > 0;
   }
 
   private promoteConversationTask(taskId: string, conversationId: string): Promise<void> {
@@ -276,11 +273,9 @@ export class AccountStartupRecoveryService {
     void cancellationReconciliation;
     await this.deps.runtimeExecutionServices.cancellationCoordinator.recover();
     this.deps.repositories.effectOutboxRepo.reconcileSending(now);
-    this.deps.kernelServices.kernelWorkflowRepo.reconcileProcessing();
-    this.convergeUncertainApplications(now);
-    this.enqueueRetrySafeSystemBindingRecoveries(now);
     await this.deliverPendingEffects(now);
     await this.recoverKernelCoordinator();
+    await this.convergeRecovery(now);
 
     for (const taskId of recoveryTaskIds) {
       const task = this.deps.taskServices.taskRuntimeService.findTask(taskId);
@@ -364,8 +359,99 @@ export class AccountStartupRecoveryService {
     for (const task of this.deps.taskServices.taskRuntimeService.listTasksByStatus('blocked')) {
       await this.recoverTask(task.id);
     }
+  }
+
+  /**
+   * Shared convergence entry for startup and periodic recovery
+   * (2026-09-25 review fix 2). Work is selected from durable pending facts —
+   * uncertain applications, scheduled or failed Replan Jobs, residue — not from
+   * a single `Task.status` scan, so a Task that never reaches `blocked` still
+   * converges.
+   */
+  private async convergeRecovery(now: string): Promise<boolean> {
+    const workflow = this.deps.kernelServices.kernelWorkflowRepo;
+    workflow.reconcileProcessing();
+    this.convergeUncertainApplications(now);
+    this.enqueueRetrySafeSystemBindingRecoveries(now);
+    const signalled = await this.convergeRecoveryRequired(now);
     await this.convergeConversationSlots(now);
     await this.promoteAvailableQueuedTasks(now);
+    return signalled;
+  }
+
+  /**
+   * Emits one durable `recovery_required_observed` fact per Task that can no
+   * longer progress on its own, so the Kernel authorizes an explicit
+   * `block_work` instead of the Task staying `running` forever
+   * (2026-09-25 review fix 1). The event id is deterministic per recovery item,
+   * so repeated passes cannot accumulate duplicate blocker decisions.
+   */
+  private async convergeRecoveryRequired(now: string): Promise<boolean> {
+    let signalled = false;
+    for (const task of this.deps.taskServices.taskRuntimeService.listTasks()) {
+      if (['done', 'archived', 'cancelled', 'blocked'].includes(task.status)) continue;
+      const fact = this.recoveryRequiredFact(task.id);
+      if (!fact) continue;
+      const revision = this.deps.repositories.workGraphRevisionRepo.findActive(task.id);
+      const sessionId = this.originForTask(task.id);
+      if (!revision || !sessionId) continue;
+      this.deps.kernelServices.kernelWorkflowRepo.enqueue({
+        schemaVersion: 5,
+        configurationRevision: revision.configurationRevision,
+        type: 'recovery_required_observed',
+        id: `recovery_required_${fact.recoveryItemId}`,
+        correlationId: task.id,
+        causationId: fact.recoveryItemId,
+        occurredAt: now,
+        sessionId,
+        taskId: task.id,
+        recoveryItemId: fact.recoveryItemId,
+        reason: fact.reason,
+      });
+      signalled = true;
+      await this.withSystemBinding(sessionId, () => (
+        this.deps.kernelExecutionServices.kernelExecutionRuntime.recoverDue(
+          task.id,
+          'account recovery_required convergence',
+        )
+      ));
+    }
+    return signalled;
+  }
+
+  /**
+   * The durable reasons a Task has no remaining Kernel-authorized driver: a
+   * Replan Job that exhausted its Planner retry budget, or an uncertain
+   * application that exhausted its bounded re-application budget.
+   */
+  private recoveryRequiredFact(
+    taskId: string,
+  ): { recoveryItemId: string; reason: string } | null {
+    const revision = this.deps.repositories.workGraphRevisionRepo.findActive(taskId);
+    if (!revision) return null;
+    const failedJob = this.deps.runtimeExecutionServices.generationReplanRepo
+      .listByTask(taskId)
+      .filter(job => job.generationId === revision.generationId && job.status === 'failed')
+      .at(-1);
+    if (failedJob) {
+      return {
+        recoveryItemId: failedJob.id,
+        reason: failedJob.errorSummary
+          ?? 'planner_unavailable: the authorized Replan Job failed',
+      };
+    }
+    const stuck = this.deps.kernelServices.kernelWorkflowRepo
+      .listUncertainApplications([], taskId)
+      .filter(application => application.applyAttempts >= MAX_UNSAFE_APPLICATION_RETRIES)
+      .at(-1);
+    if (stuck) {
+      return {
+        recoveryItemId: stuck.decisionId,
+        reason: `unresolved_application: ${stuck.decision.action.type}`
+          + `${stuck.errorSummary ? ` ${stuck.errorSummary}` : ''}`,
+      };
+    }
+    return null;
   }
 
   private async promoteAvailableQueuedTasks(now: string): Promise<void> {
@@ -406,10 +492,14 @@ export class AccountStartupRecoveryService {
   }
 
   async recoverPeriodic(nowMs = Date.now()): Promise<boolean> {
+    const now = new Date(nowMs).toISOString();
     // Durable Replan Jobs are consumed first: they are the account-scoped
     // replacement for the foreground Conversation replan callback, so they must
-    // run before any blocked-Task recovery that might dismiss the Task.
+    // run before recovery converges the Tasks they own.
     const replan = await this.runReplanWorker();
+    // The same convergence entry as startup recovery, selected from durable
+    // pending facts rather than a blocked-only Task scan (review fix 2).
+    const converged = await this.convergeRecovery(now);
 
     for (const task of this.deps.taskServices.taskRuntimeService.listTasksByStatus('blocked')) {
       const sessionId = this.originForTask(task.id);
@@ -423,7 +513,7 @@ export class AccountStartupRecoveryService {
       if (recovered) return true;
     }
 
-    if (replan.claimed > 0) return true;
+    if (replan.claimed > 0 || converged) return true;
 
     if (!this.deps.blockedRecheckEnabled) return false;
     if (this.lastBlockedRecheckAt !== null
@@ -497,6 +587,13 @@ export class AccountStartupRecoveryService {
         const event = this.deps.kernelServices.kernelWorkflowRepo.findEvent(origin.eventId);
         return event?.type === 'plan_proposed' ? [...(event.attachmentIds ?? [])] : [];
       },
+      findPersistedProposal: eventId => {
+        const event = this.deps.kernelServices.kernelWorkflowRepo.findEvent(eventId);
+        return event?.type === 'plan_proposed' ? event : null;
+      },
+      persistProposal: event => {
+        this.deps.kernelServices.kernelWorkflowRepo.enqueue(event);
+      },
       drainKernel: async () => { await this.recoverKernelCoordinator(); },
     };
   }
@@ -568,6 +665,10 @@ export class AccountStartupRecoveryService {
     });
   }
 
+  private activeGenerationId(taskId: string): string | null {
+    return this.deps.repositories.workGraphRevisionRepo.findActive(taskId)?.generationId ?? null;
+  }
+
   private recoveryFactSource(): ApplicationPostconditionFactSource {
     return {
       findTask: taskId => {
@@ -624,7 +725,7 @@ export class AccountStartupRecoveryService {
       const terminal = ['done', 'archived', 'cancelled'].includes(task.status);
       const releasableBlock = task.status === 'blocked';
       if (!terminal && !releasableBlock) continue;
-      if (this.hasReleasableResidue(taskId)) {
+      if (this.hasReleasableResidue(taskId, this.activeGenerationId(taskId))) {
         scheduler.releaseSlotAndPromote(slot.conversationId, taskId, now, true);
         continue;
       }

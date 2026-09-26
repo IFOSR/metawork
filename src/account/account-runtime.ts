@@ -9,6 +9,7 @@
  * 活动工作；closeWhenIdle 仅在无客户端且无活动工作时 dispose 一次。
  */
 
+import type { Task } from '../core/types.js';
 import type { AccountKernelCoordinator } from './account-kernel-coordinator.js';
 import type { AccountKernelServices } from './account-kernel-services.js';
 import type { AccountRepositories } from './account-repositories.js';
@@ -226,8 +227,43 @@ export class AccountRuntime implements AccountRuntimeHandle {
         updatedAt: task.updatedAt,
       })),
       activeAttemptTaskIds,
+      // Same durable facts TaskView consumes, so both surfaces agree on the
+      // phase instead of the card assuming "no Replan Job".
+      openReplanJobTaskIds: this.collectOpenReplanJobTaskIds(tasks),
+      pendingRetryWakeTaskIds: this.collectPendingRetryWakeTaskIds(),
     });
     return projector.project(conversationId, fallbackUpdatedAt);
+  }
+
+  /**
+   * Activity publication is a presentation projection: an optional repository
+   * that is absent or not queryable must degrade the projection, never turn the
+   * whole activity update into a failure. The TaskView surface has the same
+   * facts available for an authoritative read.
+   */
+  private collectOpenReplanJobTaskIds(tasks: readonly Task[]): string[] {
+    const repo = this.deps.runtimeExecutionServices?.generationReplanRepo;
+    if (!repo) return [];
+    try {
+      return tasks
+        .filter(task => repo.listByTask(task.id)
+          .some(job => ['pending_quiescence', 'planning', 'submitted', 'waiting_for_availability']
+            .includes(job.status)))
+        .map(task => task.id);
+    } catch {
+      return [];
+    }
+  }
+
+  private collectPendingRetryWakeTaskIds(): string[] {
+    try {
+      return this.deps.kernelServices.kernelDecisionRepo
+        .listCurrentByAction('wait_for_retry')
+        .map(record => record.taskId)
+        .filter((taskId): taskId is string => Boolean(taskId));
+    } catch {
+      return [];
+    }
   }
 
   refreshConversationActivity(conversationId: string): Promise<void> {
@@ -451,6 +487,13 @@ export class AccountRuntime implements AccountRuntimeHandle {
         ),
         listConversationTaskSlots: () => (
           this.deps.repositories.conversationTaskSchedulerRepo.listSlots()
+        ),
+        listCompletionResidue: taskId => (
+          this.deps.runtimeExecutionServices?.cancellationCoordinator
+            .completionBlockedReasons(
+              taskId,
+              this.deps.repositories.workGraphRevisionRepo.findActive(taskId)?.generationId ?? null,
+            ) ?? []
         ),
       },
       commands: {

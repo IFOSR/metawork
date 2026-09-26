@@ -357,11 +357,58 @@ describe('application postcondition inspection', () => {
     expect(inspectApplicationPostcondition(facts({
       application: block,
       task: { id: taskId, status: 'blocked' },
-    }))).toMatchObject({ family: 'task_transition', verdict: 'applied' });
-    expect(inspectApplicationPostcondition(facts({
-      application: block,
       subtasks: [{ id: 'subtask-a', status: 'blocked' }],
     }))).toMatchObject({ family: 'task_transition', verdict: 'applied' });
+    // The Runtime writes the Subtask blocker before the Task block, so a
+    // half-applied decision must not be mistaken for success.
+    expect(inspectApplicationPostcondition(facts({
+      application: block,
+      task: { id: taskId, status: 'running' },
+      subtasks: [{ id: 'subtask-a', status: 'blocked' }],
+    }))).toMatchObject({ family: 'task_transition', verdict: 'retry_safe' });
+    expect(inspectApplicationPostcondition(facts({
+      application: block,
+      task: { id: taskId, status: 'blocked' },
+      subtasks: [{ id: 'subtask-a', status: 'awaiting_decision' }],
+    }))).toMatchObject({ family: 'task_transition', verdict: 'retry_safe' });
+    // A Task-level block with no named Subtask is complete on its own.
+    const taskWideBlock = app({ type: 'block_work', taskId, subtaskId: null });
+    expect(inspectApplicationPostcondition(facts({
+      application: taskWideBlock,
+      task: { id: taskId, status: 'blocked' },
+    }))).toMatchObject({ family: 'task_transition', verdict: 'applied' });
+  });
+
+  it('requires the resume observation before treating resume_task as applied', () => {
+    const application = app({
+      type: 'resume_task',
+      taskId,
+      generationId: 'generation-1',
+      graphRevision: 1,
+      subtaskIds: ['subtask-a'],
+      blockerCategory: 'manual',
+    });
+    expect(inspectApplicationPostcondition(facts({
+      application,
+      task: { id: taskId, status: 'running' },
+      subtasks: [{ id: 'subtask-a', status: 'ready' }],
+    }))).toMatchObject({ family: 'observation_only', verdict: 'retry_safe' });
+    expect(inspectApplicationPostcondition(facts({
+      application,
+      task: { id: taskId, status: 'running' },
+      subtasks: [{ id: 'subtask-a', status: 'ready' }],
+      dispatchItems: [{
+        attemptId: 'attempt-1',
+        decisionId: 'decision-1',
+        subtaskId: 'subtask-a',
+        status: 'running',
+      }],
+    }))).toMatchObject({ family: 'observation_only', verdict: 'applied' });
+    expect(inspectApplicationPostcondition(facts({
+      application,
+      task: { id: taskId, status: 'running' },
+      subtasks: [{ id: 'subtask-a', status: 'blocked' }],
+    }))).toMatchObject({ family: 'observation_only', verdict: 'retry_safe' });
   });
 
   it('accepts a durable graph revision as plan activation', () => {

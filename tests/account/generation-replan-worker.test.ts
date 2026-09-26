@@ -25,7 +25,7 @@ describe('GenerationReplanWorker', () => {
   it('consumes a scheduled Replan Job without any foreground Conversation', async () => {
     const fixture = createFixture();
     const jobId = fixture.seedScheduledJob();
-    const planner = fakePlannerPort();
+    const planner = fakePlannerPort(fixture.db);
 
     const report = await fixture.worker(planner.port).run();
 
@@ -44,7 +44,7 @@ describe('GenerationReplanWorker', () => {
   it('does not create a second Planner turn for an already submitted Job', async () => {
     const fixture = createFixture();
     fixture.seedScheduledJob();
-    const planner = fakePlannerPort();
+    const planner = fakePlannerPort(fixture.db);
 
     await fixture.worker(planner.port).run();
     const second = await fixture.worker(planner.port).run();
@@ -54,10 +54,40 @@ describe('GenerationReplanWorker', () => {
     expect(fixture.submittedProposals()).toHaveLength(1);
   });
 
+  it('reuses a persisted proposal instead of running a second Planner turn', async () => {
+    const fixture = createFixture();
+    const jobId = fixture.seedScheduledJob();
+    const planner = fakePlannerPort(fixture.db);
+
+    // A crash after the Planner returned but before the `submitted` transition:
+    // the proposal is durable in the Kernel inbox, the Job is still claimable.
+    await expect(fixture.worker(planner.port).run()).resolves.toEqual({
+      claimed: 1,
+      submitted: 1,
+      retried: 0,
+      failed: 0,
+    });
+    expect(planner.plans).toBe(1);
+    fixture.db.prepare(`
+      UPDATE generation_replan_requests
+      SET status = 'planning', planning_started_at = NULL, submitted_at = NULL, updated_at = ?
+      WHERE id = ?
+    `).run('2026-09-25T00:00:00.000Z', jobId);
+    fixture.db.prepare(`UPDATE kernel_events SET status = 'pending', processed_at = NULL`).run();
+
+    const retry = await fixture.worker(planner.port, { backoffMs: 0 }).run();
+
+    expect(retry).toEqual({ claimed: 1, submitted: 1, retried: 0, failed: 0 });
+    // The Planner turn is not repeated; the persisted proposal is reused.
+    expect(planner.plans).toBe(1);
+    expect(fixture.submittedProposals()).toHaveLength(1);
+    expect(fixture.repo.find(jobId)?.status).toBe('submitted');
+  });
+
   it('retries the same Job identity after a Planner transport failure', async () => {
     const fixture = createFixture();
     const jobId = fixture.seedScheduledJob();
-    const planner = fakePlannerPort({ failPlans: 1 });
+    const planner = fakePlannerPort(fixture.db, { failPlans: 1 });
 
     const first = await fixture.worker(planner.port).run();
     expect(first).toEqual({ claimed: 1, submitted: 0, retried: 1, failed: 0 });
@@ -82,7 +112,7 @@ describe('GenerationReplanWorker', () => {
     const jobId = fixture.seedScheduledJob();
     expect(fixture.repo.claimForPlanner(jobId, '2026-09-25T00:00:00.000Z', fixture.cutoff()))
       .toBe(true);
-    const planner = fakePlannerPort();
+    const planner = fakePlannerPort(fixture.db);
 
     const report = await fixture.worker(planner.port, { leaseMs: 0 }).run();
 
@@ -95,7 +125,7 @@ describe('GenerationReplanWorker', () => {
   it('fails the Job closed as planner_unavailable once the retry budget is exhausted', async () => {
     const fixture = createFixture();
     const jobId = fixture.seedScheduledJob({ createdAt: '2026-09-25T00:00:00.000Z' });
-    const planner = fakePlannerPort();
+    const planner = fakePlannerPort(fixture.db);
 
     const report = await fixture.worker(planner.port, { budgetMs: 500 }).run();
 
@@ -110,7 +140,7 @@ describe('GenerationReplanWorker', () => {
     const fixture = createFixture();
     const jobId = fixture.seedScheduledJob({ ownerPlannerSessionId: null, conversationId: null });
 
-    const report = await fixture.worker(fakePlannerPort().port).run();
+    const report = await fixture.worker(fakePlannerPort(fixture.db).port).run();
 
     expect(report.failed).toBe(1);
     expect(fixture.repo.find(jobId)?.status).toBe('failed');
@@ -243,7 +273,10 @@ function createFixture(): Fixture {
   };
 }
 
-function fakePlannerPort(options: { failPlans?: number } = {}): {
+function fakePlannerPort(
+  db: Database.Database,
+  options: { failPlans?: number } = {},
+): {
   port: GenerationReplanPlannerPort;
   readonly plans: number;
   readonly drains: number;
@@ -277,6 +310,36 @@ function fakePlannerPort(options: { failPlans?: number } = {}): {
     listTaskEvidence: () => [],
     listAttemptReceipts: () => [],
     resolveTurnAttachmentIds: () => [],
+    findPersistedProposal: eventId => {
+      const row = db
+        .prepare('SELECT event_json FROM kernel_events WHERE id = ?')
+        .get(eventId) as { event_json: string } | undefined;
+      return row
+        ? JSON.parse(row.event_json) as Extract<KernelEvent, { type: 'plan_proposed' }>
+        : null;
+    },
+    persistProposal: event => {
+      db.prepare(`
+        INSERT OR IGNORE INTO kernel_events (
+          id, schema_version, event_type, correlation_id, causation_id,
+          session_id, task_id, subtask_id, attempt_id, event_json,
+          available_at, status, processing_started_at, processed_at,
+          last_error, configuration_revision, created_at, updated_at
+        ) VALUES (?, 5, 'plan_proposed', ?, ?, ?, ?, NULL, NULL, ?, ?, 'pending',
+          NULL, NULL, NULL, ?, ?, ?)
+      `).run(
+        event.id,
+        event.correlationId,
+        event.causationId ?? null,
+        event.sessionId,
+        event.taskId ?? null,
+        JSON.stringify(event),
+        event.occurredAt,
+        event.configurationRevision,
+        event.occurredAt,
+        event.occurredAt,
+      );
+    },
     drainKernel: async () => { state.drains += 1; },
   };
   return {

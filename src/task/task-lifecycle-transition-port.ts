@@ -1,10 +1,17 @@
 /**
- * Central Task/Work Graph lifecycle transition port
+ * Central Task and Subtask lifecycle transition port
  * (2026-09-25 Task lifecycle state convergence plan §8 Phase 4).
  *
  * Every strategic Task or Subtask status write goes through this seam so there
- * is exactly one owner of a transition, it is validated against the canonical
- * lifecycle contract, and it is auditable with the layer that requested it.
+ * is exactly one owner of a transition and it is validated against the canonical
+ * lifecycle contract.
+ *
+ * ADR-0020 assigns the persisted Task/Subtask lifecycle and its transition
+ * invariants to the **Task Domain**. Work Graph owns the proposal topology, node
+ * identity, DAG derivation and frontier, and explicitly does *not* own Subtask
+ * run state. Both ports therefore live in `src/task/`; a Work Graph consumer
+ * asks `createSubtaskLifecyclePort()` for the node transition the Decision
+ * requires instead of writing the repository.
  *
  * Runtime handlers apply one Kernel-authorized action and report one normalized
  * fact. They may ask this port for the transition that the Decision requires;
@@ -13,9 +20,10 @@
  * Non-strategic bookkeeping (priority, resources, snapshots, evidence) stays on
  * the regular Task/Work Graph services.
  *
- * Task lifecycle is owned by the Task Domain (`createTaskLifecyclePort`) and
- * Subtask node lifecycle by the Work Graph (`createSubtaskLifecyclePort`), so a
- * caller only depends on the repository it actually owns.
+ * `listTransitions()` is an in-process observation seam for diagnostics and
+ * ownership tests. It is deliberately **not** a durable audit: the durable
+ * record of a status change is the Kernel Decision, receipt and Task/Subtask row
+ * that the transition produced.
  */
 
 import type {
@@ -111,7 +119,7 @@ export interface TaskLifecyclePort {
   listTransitions(): readonly TaskLifecycleTransitionRecord[];
 }
 
-/** Work Graph node lifecycle port. */
+/** Task Domain Subtask node lifecycle port. */
 export interface SubtaskLifecyclePort {
   transitionSubtask(input: TransitionSubtaskInput): Subtask;
   listTransitions(): readonly TaskLifecycleTransitionRecord[];
@@ -131,14 +139,14 @@ export interface TaskLifecyclePortDeps {
     | 'unblockTask'
     | 'resumeParkedTask'
   >;
-  /** Observation seam for diagnostics and focused ownership tests. */
+  /** In-process observation seam for diagnostics and focused ownership tests. */
   onTransition?(record: TaskLifecycleTransitionRecord): void;
   now?(): string;
 }
 
 export interface SubtaskLifecyclePortDeps {
   subtaskRepo: Pick<SubtaskRepo, 'findById' | 'updateStatus'>;
-  /** Observation seam for diagnostics and focused ownership tests. */
+  /** In-process observation seam for diagnostics and focused ownership tests. */
   onTransition?(record: TaskLifecycleTransitionRecord): void;
   now?(): string;
 }
@@ -298,16 +306,28 @@ export function createSubtaskLifecyclePort(deps: SubtaskLifecyclePortDeps): Subt
   };
 }
 
-/** Composes both ports for a caller that owns the Task and Work Graph repos. */
+/**
+ * Composes both ports for a caller that owns both repositories. `listTransitions`
+ * merges the two observation streams in call order rather than letting one port
+ * overwrite the other.
+ */
 export function createTaskLifecycleTransitionPort(deps: {
   taskRuntimeService: TaskLifecyclePortDeps['taskRuntimeService'];
   subtaskRepo: SubtaskLifecyclePortDeps['subtaskRepo'];
   onTransition?(record: TaskLifecycleTransitionRecord): void;
   now?(): string;
 }): TaskLifecycleTransitionPort {
+  const order: TaskLifecycleTransitionRecord[] = [];
+  const observe = (record: TaskLifecycleTransitionRecord) => {
+    order.push(record);
+    deps.onTransition?.(record);
+  };
+  const tasks = createTaskLifecyclePort({ ...deps, onTransition: observe });
+  const subtasks = createSubtaskLifecyclePort({ ...deps, onTransition: observe });
   return {
-    ...createTaskLifecyclePort(deps),
-    ...createSubtaskLifecyclePort(deps),
+    ...tasks,
+    ...subtasks,
+    listTransitions: () => [...order],
   };
 }
 

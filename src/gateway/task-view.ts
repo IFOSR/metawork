@@ -75,6 +75,8 @@ export interface GatewayTaskViewLifecycle {
   } | null;
   readonly blockingResidue: readonly string[];
   readonly nextAuthorizedAction: string;
+  /** Why `phase` is `recovery_required`, so a surface can offer the entry point. */
+  readonly recoveryDiagnosis: string | null;
   readonly explanation: string;
   readonly lastProgressAt: string | null;
   readonly lastAttemptSettledAt: string | null;
