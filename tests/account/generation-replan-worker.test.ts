@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   GenerationReplanWorker,
+  buildGenerationReplanProposedEvent,
   buildGenerationReplanRequestText,
   type GenerationReplanPlannerPort,
 } from '../../src/account/generation-replan-worker.js';
@@ -110,8 +111,12 @@ describe('GenerationReplanWorker', () => {
   it('re-claims an abandoned in-flight Planner turn after its lease expires', async () => {
     const fixture = createFixture();
     const jobId = fixture.seedScheduledJob();
-    expect(fixture.repo.claimForPlanner(jobId, '2026-09-25T00:00:00.000Z', fixture.cutoff()))
-      .toBe(true);
+    expect(fixture.repo.claimForPlanner(
+      jobId,
+      '2026-09-25T00:00:00.000Z',
+      fixture.cutoff(),
+      'claim-token-abandoned',
+    )).toBe(true);
     const planner = fakePlannerPort(fixture.db);
 
     const report = await fixture.worker(planner.port, { leaseMs: 0 }).run();
@@ -144,6 +149,84 @@ describe('GenerationReplanWorker', () => {
 
     expect(report.failed).toBe(1);
     expect(fixture.repo.find(jobId)?.status).toBe('failed');
+  });
+
+  it('fences out a worker whose claim was taken over by another worker', async () => {
+    const fixture = createFixture();
+    const jobId = fixture.seedScheduledJob();
+    const planner = fakePlannerPort(fixture.db);
+    // Worker A claims, then worker B re-claims after the lease expired.
+    expect(fixture.repo.claimForPlanner(
+      jobId,
+      '2026-09-25T00:00:00.000Z',
+      fixture.cutoff(),
+      'claim-token-A',
+    )).toBe(true);
+    expect(fixture.repo.claimForPlanner(
+      jobId,
+      '2026-09-25T00:00:01.000Z',
+      fixture.cutoff(),
+      'claim-token-B',
+    )).toBe(true);
+
+    // Worker A's result must not land: the fence rejects it.
+    const event = buildGenerationReplanProposedEvent({
+      configurationRevision: REVISION,
+      sessionId: 'conversation-1',
+      conversationId: 'conversation-1',
+      attachmentIds: [],
+      plan: workGraphPlan({
+        goal: 'Generate the downstream report',
+        executor: 'codex-cli',
+        deliveryKind: 'edit',
+      }) as PlanningAgentPlan,
+      eventId: 'replan_event_trigger_replan',
+      correlationId: jobId,
+      causationId: 'trigger_replan',
+      taskId: TASK_ID,
+      requestText: 'replan',
+      generationId: GENERATION_ID,
+      targetGraphRevision: 2,
+    });
+    expect(fixture.repo.submitPlannerProposal({
+      id: jobId,
+      claimToken: 'claim-token-A',
+      event,
+      now: '2026-09-25T00:00:02.000Z',
+    })).toBe(false);
+    expect(fixture.submittedProposals()).toHaveLength(0);
+    expect(fixture.repo.find(jobId)?.status).toBe('planning');
+
+    // Worker B still owns the Job and completes it exactly once.
+    expect(fixture.repo.submitPlannerProposal({
+      id: jobId,
+      claimToken: 'claim-token-B',
+      event,
+      now: '2026-09-25T00:00:03.000Z',
+    })).toBe(true);
+    expect(fixture.submittedProposals()).toHaveLength(1);
+    expect(fixture.repo.find(jobId)?.status).toBe('submitted');
+  });
+
+  it('fails a Job pinned to a configuration revision that is no longer current', async () => {
+    const fixture = createFixture();
+    const jobId = fixture.seedScheduledJob();
+    // A second revision so the FK to configuration_revisions stays valid.
+    fixture.db.prepare(`
+      INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)
+      VALUES ('revision-older', 'hash-older', 'schema-30-import', '2026-09-25T00:00:00.000Z')
+    `).run();
+    fixture.db.prepare(
+      'UPDATE generation_replan_requests SET configuration_revision = ? WHERE id = ?',
+    ).run('revision-older', jobId);
+    const planner = fakePlannerPort(fixture.db);
+
+    const report = await fixture.worker(planner.port).run();
+
+    expect(report).toEqual({ claimed: 1, submitted: 0, retried: 0, failed: 1 });
+    expect(planner.plans).toBe(0);
+    expect(fixture.repo.find(jobId)).toMatchObject({ status: 'failed' });
+    expect(fixture.repo.find(jobId)?.errorSummary).toContain('configuration_revision_changed');
   });
 
   it('builds one bounded replan prompt from durable evidence and failures', () => {
@@ -317,28 +400,6 @@ function fakePlannerPort(
       return row
         ? JSON.parse(row.event_json) as Extract<KernelEvent, { type: 'plan_proposed' }>
         : null;
-    },
-    persistProposal: event => {
-      db.prepare(`
-        INSERT OR IGNORE INTO kernel_events (
-          id, schema_version, event_type, correlation_id, causation_id,
-          session_id, task_id, subtask_id, attempt_id, event_json,
-          available_at, status, processing_started_at, processed_at,
-          last_error, configuration_revision, created_at, updated_at
-        ) VALUES (?, 5, 'plan_proposed', ?, ?, ?, ?, NULL, NULL, ?, ?, 'pending',
-          NULL, NULL, NULL, ?, ?, ?)
-      `).run(
-        event.id,
-        event.correlationId,
-        event.causationId ?? null,
-        event.sessionId,
-        event.taskId ?? null,
-        JSON.stringify(event),
-        event.occurredAt,
-        event.configurationRevision,
-        event.occurredAt,
-        event.occurredAt,
-      );
     },
     drainKernel: async () => { state.drains += 1; },
   };

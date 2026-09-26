@@ -1,6 +1,11 @@
 import type { KernelEvent } from '../kernel/control-kernel.js';
 import type { KernelDecisionApplicationRecord } from '../kernel/kernel-workflow.js';
-import type { KernelAttemptPayload, KernelAttemptKind, KernelDispatchItemStatus } from '../kernel/control-kernel.js';
+import type {
+  KernelAttemptPayload,
+  KernelAttemptKind,
+  KernelDecisionAction,
+  KernelDispatchItemStatus,
+} from '../kernel/control-kernel.js';
 import type {
   GenerationReplanRequestRecord,
   GenerationReplanRequestStatus,
@@ -42,22 +47,40 @@ export interface ApplicationPostconditionInspection {
   readonly reason: string;
 }
 
+export interface DispatchItemFact {
+  readonly attemptId: string;
+  readonly decisionId: string;
+  readonly subtaskId: string;
+  readonly generationId: string;
+  readonly attemptKind: string;
+  readonly bindingFingerprint: string;
+  readonly configurationRevision: string;
+  readonly status: KernelDispatchItemStatus;
+}
+
+export interface TaskFact {
+  readonly id: string;
+  readonly status: string;
+  readonly dependencies: readonly { type: string; status: string }[];
+}
+
+export interface WorkGraphRevisionFact {
+  readonly revision: number;
+  readonly generationId: string;
+  readonly authorizedDecisionId: string | null;
+  readonly status: string;
+}
+
 export interface ApplicationPostconditionFacts {
   readonly application: KernelDecisionApplicationRecord;
-  readonly task: { id: string; status: string } | null;
+  readonly task: TaskFact | null;
   readonly subtasks: readonly { id: string; status: string }[];
-  readonly dispatchItems: readonly {
-    attemptId: string;
-    decisionId: string;
-    subtaskId: string;
-    status: KernelDispatchItemStatus;
-  }[];
+  readonly dispatchItems: readonly DispatchItemFact[];
   /** The graph revision named by the Decision, when the action names one. */
-  readonly workGraphRevision: Pick<
-    WorkGraphRevisionRecord,
-    'revision' | 'generationId' | 'authorizedDecisionId'
-  > | null;
+  readonly workGraphRevision: WorkGraphRevisionFact | null;
   readonly replanRequest: GenerationReplanRequestRecord | null;
+  /** Replan Job looked up by its deterministic id, for `queue_generation_replan`. */
+  readonly queuedReplanRequest: GenerationReplanRequestRecord | null;
 }
 
 /**
@@ -66,23 +89,17 @@ export interface ApplicationPostconditionFacts {
  * verdict the user sees is the same verdict recovery acts on.
  */
 export interface ApplicationPostconditionFactSource {
-  findTask(taskId: string): { id: string; status: string } | null;
+  findTask(taskId: string): TaskFact | null;
   listSubtasks(taskId: string): readonly { id: string; status: string }[];
-  listDispatchItems(taskId: string): readonly {
-    attemptId: string;
-    decisionId: string;
-    subtaskId: string;
-    status: KernelDispatchItemStatus;
-  }[];
-  findWorkGraphRevision(
-    taskId: string,
-    revision: number,
-  ): Pick<WorkGraphRevisionRecord, 'revision' | 'generationId' | 'authorizedDecisionId'> | null;
+  listDispatchItems(taskId: string): readonly DispatchItemFact[];
+  findWorkGraphRevision(taskId: string, revision: number): WorkGraphRevisionFact | null;
   findReplanRequest(
     taskId: string,
     generationId: string,
     sourceRevision: number,
   ): GenerationReplanRequestRecord | null;
+  /** Replan Job by its deterministic id, independent of generation/revision. */
+  findReplanRequestById(id: string): GenerationReplanRequestRecord | null;
 }
 
 export function inspectApplicationAgainstSources(
@@ -103,6 +120,9 @@ export function inspectApplicationAgainstSources(
       : null,
     replanRequest: action.type === 'schedule_replan' || action.type === 'request_replan'
       ? sources.findReplanRequest(action.taskId, action.generationId, action.sourceRevision)
+      : null,
+    queuedReplanRequest: action.type === 'queue_generation_replan'
+      ? sources.findReplanRequestById(action.requestId)
       : null,
   });
 }
@@ -130,36 +150,15 @@ const UNMANAGED_ACTIONS = new Set<string>([
 ]);
 
 /**
- * Actions whose only durable effect is the observation event that
- * `markApplied` inserts atomically with the `applied` transition. Re-applying
- * the same Decision id is therefore idempotent.
+ * Actions with no durable state write at all. `markApplied` inserts their
+ * observation event atomically with the `applied` transition, and their apply
+ * has no other effect, so re-applying the same Decision cannot duplicate
+ * anything.
  */
-/**
- * Actions whose durable effect is an observation event created by
- * `markApplied` together with the `applied` transition. Re-applying the same
- * Decision is safe **only because** the Runtime's apply for these actions is
- * itself replay-idempotent (deterministic observation ids are deduplicated by
- * the inbox, and state writes are guarded). `resume_task` is the one action
- * here that does mutate Task/Subtask state, so its apply must never short
- * circuit a replay before emitting the observation.
- */
-const OBSERVATION_ONLY_ACTIONS = new Set<string>([
+const EFFECT_FREE_ACTIONS = new Set<string>([
   'no_op',
-  'wait_for_retry',
-  'wait_for_capacity',
   'probe_capacity',
-  'wait_for_partition',
-  'park_for_replan',
-  'queue_generation_replan',
-  'defer_task_plan_for_availability',
 ]);
-
-/**
- * `resume_task` mutates Task/Subtask state before emitting its dispatch
- * observation, so it is retry-safe only in the sense that its apply must be
- * replay-idempotent. Kept separate so the contract is explicit.
- */
-const RESUME_ACTIONS = new Set<string>(['resume_task']);
 
 export function inspectApplicationPostcondition(
   facts: ApplicationPostconditionFacts,
@@ -174,7 +173,7 @@ export function inspectApplicationPostcondition(
   }
   switch (action.type) {
     case 'dispatch_batch':
-      return inspectDispatch(facts, action.items.map(item => item.attemptId));
+      return inspectDispatch(facts, action.items);
     case 'schedule_replan':
     case 'request_replan':
       return inspectReplanScheduling(facts);
@@ -185,16 +184,34 @@ export function inspectApplicationPostcondition(
     case 'complete_task':
     case 'accept_partial_result':
       return inspectTaskTransition(facts);
+    case 'resume_task':
+      return inspectResume(facts);
+    case 'park_for_replan':
+      return inspectParkedForReplan(facts);
+    case 'defer_task_plan_for_availability':
+      return inspectAvailabilityDeferral(facts);
+    case 'queue_generation_replan':
+      return inspectQueuedGenerationReplan(facts);
+    case 'wait_for_capacity':
+      return inspectCapacityWait(facts);
+    case 'wait_for_retry':
+    case 'wait_for_partition':
+      // The apply blocks the Task and emits the wake observation that is the
+      // real continuation trigger. `markApplied` is atomic, so an uncertain
+      // outcome proves the wake was never emitted; re-applying the same
+      // Decision re-blocks (a no-op) and re-emits it.
+      return {
+        family: 'observation_only',
+        verdict: 'retry_safe',
+        reason: `${action.type} must re-emit its wake observation; re-application is idempotent`,
+      };
     default:
-      if (OBSERVATION_ONLY_ACTIONS.has(action.type)) {
+      if (EFFECT_FREE_ACTIONS.has(action.type)) {
         return {
           family: 'observation_only',
-          verdict: 'retry_safe',
-          reason: `${action.type} only emits its Decision observation and is idempotent by Decision id`,
+          verdict: 'applied',
+          reason: `${action.type} has no durable state write`,
         };
-      }
-      if (RESUME_ACTIONS.has(action.type) && action.type === 'resume_task') {
-        return inspectResume(facts);
       }
       return {
         family: 'not_managed',
@@ -205,10 +222,11 @@ export function inspectApplicationPostcondition(
 }
 
 /**
- * `resume_task` is satisfied once the resumed Subtask is no longer blocked and
- * the Task is back in an executing-facing state; the dispatch observation is
- * emitted deterministically by the same apply, so a replay that completes the
- * remaining steps is the correct recovery action.
+ * `resume_task` writes Subtask and Task state and then emits the
+ * `dispatch_requested` observation that drives the *next* Decision. The
+ * downstream `dispatch_batch` therefore carries its own Decision id, so the
+ * resume is satisfied only when a dispatch item for the resumed Subtask in the
+ * same generation is already durable (2026-09-25 review fix).
  */
 function inspectResume(
   facts: ApplicationPostconditionFacts,
@@ -217,46 +235,59 @@ function inspectResume(
   if (action.type !== 'resume_task') {
     return { family: 'not_managed', verdict: 'unresolved', reason: 'unexpected action' };
   }
-  const taskStatus = facts.task?.status ?? null;
-  const blockedSubtasks = action.subtaskIds.filter(subtaskId => (
+  const stillBlocked = action.subtaskIds.filter(subtaskId => (
     facts.subtasks.find(item => item.id === subtaskId)?.status === 'blocked'
   ));
-  if (
-    taskStatus === 'running'
-    && blockedSubtasks.length === 0
-    && facts.dispatchItems.some(item => item.decisionId === facts.application.decisionId)
-  ) {
+  const dispatchLanded = action.subtaskIds.some(subtaskId => facts.dispatchItems.some(item => (
+    item.subtaskId === subtaskId
+    && item.generationId === action.generationId
+    && item.status !== 'cancelled'
+  )));
+  if (stillBlocked.length === 0 && dispatchLanded) {
     return {
       family: 'observation_only',
       verdict: 'applied',
-      reason: 'the resumed Task re-entered execution and its dispatch item is durable',
+      reason: 'the resumed Subtask is unblocked and its downstream dispatch is durable',
     };
   }
   return {
     family: 'observation_only',
     verdict: 'retry_safe',
-    reason: blockedSubtasks.length > 0
-      ? `resume is incomplete: Subtask ${blockedSubtasks.join(', ')} is still blocked`
-      : 'resume has not produced its dispatch fact yet; replay is idempotent by Decision id',
+    reason: stillBlocked.length > 0
+      ? `resume is incomplete: Subtask ${stillBlocked.join(', ')} is still blocked`
+      : 'the resume continuation is not durable yet; replay is idempotent by Decision id',
   };
 }
 
+/**
+ * A dispatch batch is satisfied only when each authorized item landed with its
+ * full authorization identity: the same Decision, Subtask, generation, attempt
+ * kind, binding fingerprint and configuration revision (2026-09-25 review fix).
+ */
 function inspectDispatch(
   facts: ApplicationPostconditionFacts,
-  expectedAttemptIds: readonly string[],
+  expected: readonly Extract<
+    KernelDecisionAction,
+    { type: 'dispatch_batch' }
+  >['items'][number][],
 ): ApplicationPostconditionInspection {
   const decisionId = facts.application.decisionId;
-  const present = expectedAttemptIds.filter(attemptId => facts.dispatchItems.some(
-    item => item.attemptId === attemptId && item.decisionId === decisionId,
-  ));
-  if (present.length === expectedAttemptIds.length && expectedAttemptIds.length > 0) {
+  const matched = expected.filter(item => facts.dispatchItems.some(candidate => (
+    candidate.attemptId === item.attemptId
+    && candidate.decisionId === decisionId
+    && candidate.subtaskId === item.subtaskId
+    && candidate.attemptKind === item.attemptKind
+    && candidate.bindingFingerprint === item.bindingFingerprint
+    && candidate.configurationRevision === facts.application.decision.configurationRevision
+  )));
+  if (matched.length === expected.length && expected.length > 0) {
     return {
       family: 'dispatch',
       verdict: 'applied',
-      reason: 'every authorized dispatch item exists with the same Decision id',
+      reason: 'every authorized dispatch item landed with the same Decision and binding identity',
     };
   }
-  if (present.length === 0) {
+  if (matched.length === 0) {
     return {
       family: 'dispatch',
       verdict: 'retry_safe',
@@ -266,7 +297,7 @@ function inspectDispatch(
   return {
     family: 'dispatch',
     verdict: 'unresolved',
-    reason: `partial dispatch batch: ${present.length}/${expectedAttemptIds.length} items landed`,
+    reason: `partial dispatch batch: ${matched.length}/${expected.length} items landed with matching identity`,
   };
 }
 
@@ -311,10 +342,20 @@ function inspectPlanActivation(
   if (revision
     && revision.revision === action.graphRevision
     && revision.generationId === action.generationId) {
+    // The revision must have been authorized by *this* Decision. A revision
+    // written by another Decision is a conflict, not a success.
+    const authorizedBy = revision.authorizedDecisionId;
+    if (authorizedBy === null || authorizedBy === facts.application.decisionId) {
+      return {
+        family: 'plan_activation',
+        verdict: 'applied',
+        reason: `graph revision ${action.graphRevision} is durable and authorized by this Decision`,
+      };
+    }
     return {
       family: 'plan_activation',
-      verdict: 'applied',
-      reason: `graph revision ${action.graphRevision} is durable`,
+      verdict: 'unresolved',
+      reason: `graph revision ${action.graphRevision} was authorized by ${authorizedBy}`,
     };
   }
   if (action.type === 'authorize_task_plan' && action.proposalSource === 'initial') {
@@ -349,25 +390,156 @@ function inspectTaskTransition(
     const namedSubtask = action.subtaskId === null
       ? null
       : facts.subtasks.find(item => item.id === action.subtaskId) ?? null;
-    const subtaskResolved = action.subtaskId === null
-      || action.preserveSubtaskState === true
-      || namedSubtask === null
-      || ['blocked', 'done', 'cancelled'].includes(namedSubtask.status);
-    if (taskStatus === 'blocked' && subtaskResolved) {
+    const subtaskIncomplete = action.subtaskId !== null
+      && action.preserveSubtaskState !== true
+      && (namedSubtask === null
+        || !['blocked', 'done', 'cancelled'].includes(namedSubtask.status));
+    if (taskStatus === 'blocked' && subtaskIncomplete && namedSubtask === null) {
+      // The Decision named a Subtask that does not exist: the operation cannot
+      // be verified and must not be optimistically closed.
+      return {
+        family: 'task_transition',
+        verdict: 'unresolved',
+        reason: `the named Subtask ${action.subtaskId} does not exist`,
+      };
+    }
+    if (taskStatus === 'blocked' && !subtaskIncomplete) {
       return { family: 'task_transition', verdict: 'applied', reason: 'the Task block is durable' };
     }
     return {
       family: 'task_transition',
       verdict: 'retry_safe',
       reason: taskStatus === 'blocked'
-        ? `the Task is blocked but Subtask ${action.subtaskId} is still ${namedSubtask?.status ?? 'missing'}`
+        ? `the Task is blocked but Subtask ${action.subtaskId} is still ${namedSubtask?.status}`
         : 'the Task block is not durable yet',
     };
+  }
+  if (action.type === 'park_for_replan') {
+    return taskStatus === 'parked' || taskStatus === 'blocked'
+      ? { family: 'task_transition', verdict: 'applied', reason: 'the Task is parked for replan' }
+      : { family: 'task_transition', verdict: 'retry_safe', reason: 'the Task is not parked yet' };
   }
   return {
     family: 'task_transition',
     verdict: 'unresolved',
     reason: `no Task transition postcondition is declared for ${action.type}`,
+  };
+}
+
+/**
+ * `park_for_replan` writes the Task's strategic `parked` state, so it is a real
+ * transition rather than an observation.
+ */
+function inspectParkedForReplan(
+  facts: ApplicationPostconditionFacts,
+): ApplicationPostconditionInspection {
+  const taskStatus = facts.task?.status ?? null;
+  if (taskStatus === 'parked') {
+    return { family: 'task_transition', verdict: 'applied', reason: 'the Task is parked' };
+  }
+  if (taskStatus !== null && ['done', 'archived', 'cancelled'].includes(taskStatus)) {
+    return {
+      family: 'task_transition',
+      verdict: 'applied',
+      reason: 'the Task already reached a terminal state',
+    };
+  }
+  return {
+    family: 'task_transition',
+    verdict: 'retry_safe',
+    reason: 'the Task is not parked yet',
+  };
+}
+
+/**
+ * `defer_task_plan_for_availability` persists the deferred proposal *and* blocks
+ * the Task. Both halves are required: a persisted deferral with a still-running
+ * Task must be re-applied so the block lands (2026-09-25 review fix).
+ */
+function inspectAvailabilityDeferral(
+  facts: ApplicationPostconditionFacts,
+): ApplicationPostconditionInspection {
+  const deferred = facts.replanRequest?.status === 'waiting_for_availability';
+  const taskStatus = facts.task?.status ?? null;
+  if (deferred && taskStatus === 'blocked') {
+    return {
+      family: 'task_transition',
+      verdict: 'applied',
+      reason: 'the deferred proposal and the Task blocker are both durable',
+    };
+  }
+  if (deferred) {
+    return {
+      family: 'task_transition',
+      verdict: 'retry_safe',
+      reason: `the proposal is deferred but the Task is ${taskStatus ?? 'missing'}`,
+    };
+  }
+  return {
+    family: 'task_transition',
+    verdict: 'retry_safe',
+    reason: `the Replan Job is ${facts.replanRequest?.status ?? 'missing'}; the deferral may be re-applied`,
+  };
+}
+
+/**
+ * `queue_generation_replan` persists the coalesced Replan Job and emits the
+ * observation that lets the Kernel continue independent work. While the Task is
+ * still executing, that observation is the only thing that will re-evaluate
+ * quiescence, so it must be re-emitted rather than assumed.
+ */
+function inspectQueuedGenerationReplan(
+  facts: ApplicationPostconditionFacts,
+): ApplicationPostconditionInspection {
+  const action = facts.application.decision.action;
+  if (action.type !== 'queue_generation_replan') {
+    return { family: 'not_managed', verdict: 'unresolved', reason: 'unexpected action' };
+  }
+  if (!facts.queuedReplanRequest) {
+    return {
+      family: 'replan',
+      verdict: 'retry_safe',
+      reason: 'the Replan Job was not persisted; the Decision may be re-applied',
+    };
+  }
+  const taskStatus = facts.task?.status ?? null;
+  if (taskStatus !== null && ['blocked', 'parked', 'done', 'archived', 'cancelled'].includes(taskStatus)) {
+    return {
+      family: 'replan',
+      verdict: 'applied',
+      reason: 'the Replan Job is durable and the Task is not executing',
+    };
+  }
+  return {
+    family: 'replan',
+    verdict: 'retry_safe',
+    reason: 'the Replan Job is durable but the quiescence observation still has to be re-emitted',
+  };
+}
+
+/**
+ * `wait_for_capacity` blocks the Task and relies on the periodic capacity
+ * recheck as its wake, which is driven independently of this Decision. Once the
+ * block is durable the Decision is complete.
+ */
+function inspectCapacityWait(
+  facts: ApplicationPostconditionFacts,
+): ApplicationPostconditionInspection {
+  const task = facts.task;
+  if (task?.status === 'blocked') {
+    return {
+      family: 'task_transition',
+      verdict: 'applied',
+      reason: 'the capacity blocker is durable and the periodic recheck owns the wake',
+    };
+  }
+  if (task !== null && ['done', 'archived', 'cancelled'].includes(task.status)) {
+    return { family: 'task_transition', verdict: 'applied', reason: 'the Task is terminal' };
+  }
+  return {
+    family: 'task_transition',
+    verdict: 'retry_safe',
+    reason: 'the capacity blocker is not durable yet',
   };
 }
 

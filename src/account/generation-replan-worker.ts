@@ -21,6 +21,7 @@
  * `block_work` instead of leaving the Task permanently `running`.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { Task } from '../core/types.js';
 import type { KernelEvent } from '../kernel/control-kernel.js';
 import type { ExecutorAttemptReceipt } from '../storage/executor-attempt-receipt-repo.js';
@@ -51,12 +52,6 @@ export interface GenerationReplanPlannerPort {
    * turn (2026-09-25 review fix 5).
    */
   findPersistedProposal(eventId: string): Extract<KernelEvent, { type: 'plan_proposed' }> | null;
-  /**
-   * Durably records the Planner result *before* the `submitted` transition, so
-   * "the Planner already produced a proposal" is a recoverable fact rather than
-   * an in-memory one.
-   */
-  persistProposal(event: Extract<KernelEvent, { type: 'plan_proposed' }>): void;
   /**
    * Drains the Kernel inbox for the originating Conversation inside the system
    * binding. The proposal event is already durable before this is called, so a
@@ -124,11 +119,15 @@ export class GenerationReplanWorker {
     let retried = 0;
     let failed = 0;
     for (const job of jobs) {
-      if (!this.deps.replanRepo.claimForPlanner(job.id, this.deps.now(), leaseCutoff)) {
+      // The claim token fences every later write for this Job: a worker whose
+      // lease expired while another worker re-claimed cannot land a second
+      // proposal or a second `submitted` transition.
+      const claimToken = `${this.deps.now()}_${randomUUID()}`;
+      if (!this.deps.replanRepo.claimForPlanner(job.id, this.deps.now(), leaseCutoff, claimToken)) {
         continue;
       }
       claimed += 1;
-      const outcome = await this.consume(job, nowMs);
+      const outcome = await this.consume(job, nowMs, claimToken);
       if (outcome === 'submitted') submitted += 1;
       else if (outcome === 'failed') failed += 1;
       else retried += 1;
@@ -139,6 +138,7 @@ export class GenerationReplanWorker {
   private async consume(
     job: GenerationReplanRequestRecord,
     nowMs: number,
+    claimToken: string,
   ): Promise<'submitted' | 'retry' | 'failed'> {
     const budgetMs = this.deps.plannerRetryBudgetMs ?? DEFAULT_PLANNER_RETRY_BUDGET_MS;
     if (nowMs - Date.parse(job.createdAt) > budgetMs) {
@@ -171,7 +171,16 @@ export class GenerationReplanWorker {
       // (2026-09-25 review fix 5).
       const recovered = this.deps.planner.findPersistedProposal(eventId);
       if (recovered) {
-        this.deps.replanRepo.markSubmitted(job.id, job.quiescenceToken, this.deps.now());
+        // The Planner turn is already durable for this Job; only the fenced
+        // `submitted` transition is missing.
+        if (!this.deps.replanRepo.completePlannerTurn({
+          id: job.id,
+          claimToken,
+          now: this.deps.now(),
+        })) {
+          // Another worker owns or already finished this Job.
+          return 'submitted';
+        }
         await this.safeDrain({
           sessionId,
           conversationId,
@@ -186,6 +195,19 @@ export class GenerationReplanWorker {
         conversationId,
         userInput,
       });
+      // The Job is pinned to the configuration revision that authorized its
+      // generation. Replanning it against a different revision would silently
+      // break the one-revision-per-generation rule, so fail closed instead.
+      if (job.configurationRevision !== context.configuration.revisionId) {
+        this.deps.replanRepo.fail(
+          job.id,
+          `configuration_revision_changed: Job ${job.id} is pinned to `
+            + `${job.configurationRevision} but the current Planner revision is `
+            + `${context.configuration.revisionId}`,
+          this.deps.now(),
+        );
+        return 'failed';
+      }
       const plan = await this.deps.planner.plan(context);
       const event = buildGenerationReplanProposedEvent({
         configurationRevision: context.configuration.revisionId,
@@ -201,10 +223,19 @@ export class GenerationReplanWorker {
         generationId: job.generationId,
         targetGraphRevision: job.sourceRevision + 1,
       });
-      // Persist before the `submitted` transition: a crash in between leaves a
-      // recoverable proposal instead of an unknown submission.
-      this.deps.planner.persistProposal(event);
-      this.deps.replanRepo.markSubmitted(job.id, job.quiescenceToken, this.deps.now());
+      // Persist the proposal and mark the turn submitted in one fenced
+      // transaction: a crash in between leaves a recoverable proposal, and a
+      // lost claim cannot land anything.
+      const submitted = this.deps.replanRepo.submitPlannerProposal({
+        id: job.id,
+        claimToken,
+        event,
+        now: this.deps.now(),
+      });
+      if (!submitted) {
+        // The claim was fenced out; the owning worker lands the proposal.
+        return 'submitted';
+      }
       await this.safeDrain({ sessionId, conversationId, userInput, event });
       return 'submitted';
     } catch (error) {

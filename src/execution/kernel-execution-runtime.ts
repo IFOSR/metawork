@@ -1788,13 +1788,20 @@ export class KernelExecutionRuntime {
         action.proposalEvent.targetGraphRevision - 1,
       );
       if (!request) throw new Error('generation replan request is missing for availability deferral');
-      if (!this.deps.generationReplanRepo.deferForAvailability(
+      // Idempotent replay: a previous attempt may already have persisted the
+      // deferral without landing the Task block. Skipping the block there would
+      // let the Kernel record the application as applied while the Task is
+      // still running (2026-09-25 review fix).
+      const alreadyDeferred = request.status === 'waiting_for_availability';
+      if (!alreadyDeferred && !this.deps.generationReplanRepo.deferForAvailability(
         request.id,
         action.proposalEvent,
         action.explanation,
         Object.values(action.authorizedBindingsBySubtask).flat(),
         new Date().toISOString(),
       )) {
+        // The Job moved on without this deferral, so no Task blocker is
+        // authorized by this Decision.
         return null;
       }
       await this.blockTask(

@@ -252,6 +252,132 @@ describe('AccountStartupRecoveryService production composition', () => {
     expect(scheduler.getSlot('conversation-origin').state).not.toBe('free');
   });
 
+  it('blocks a Task whose unresolved application cannot make progress', async () => {
+    const fixture = createFixture('unresolved-application');
+    const task = createRunningTask(fixture, 'Block on an unresolved application');
+    const scheduler = new ConversationTaskSchedulerRepo(fixture.db);
+    scheduler.claimSlot('conversation-origin', task.id, 'reservation-1', '2026-09-25T00:00:00.000Z');
+    seedTaskOriginDecision(fixture.db, task.id, 'conversation-origin');
+    // A replan proposal that no longer matches its Job is `unresolved`, and it
+    // never increments applyAttempts, so an attempt-count-only rule would leave
+    // it uncertain forever.
+    const seeded = seedUncertainTaskTransition(fixture, task.id, {
+      type: 'schedule_replan',
+      taskId: task.id,
+      generationId: 'generation-missing',
+      sourceRevision: 9,
+      replanJobId: 'job-missing',
+    });
+
+    await fixture.composition.accountRuntime.initialize();
+
+    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('blocked');
+    const application = new KernelWorkflowRepo(fixture.db)
+      .findApplicationByDecisionId(seeded.decision.id);
+    expect(application?.applyAttempts).toBe(1);
+    const decisions = fixture.composition.accountRuntime.kernelServices.kernelDecisionRepo
+      .listByTask(task.id);
+    expect(decisions.some(record => record.eventType === 'recovery_required_observed')).toBe(true);
+    expect(decisions.find(record => record.action === 'block_work')?.reason)
+      .toContain('recovery_required');
+    // The unresolved application is real residue: the slot stays held so no
+    // successor can run against an unknown outcome, and the Task is blocked with
+    // an explicit recovery entry point.
+    expect(scheduler.getSlot('conversation-origin')).toMatchObject({
+      state: 'releasing',
+      activeTaskId: task.id,
+    });
+  });
+
+  it('escalates a Task whose initial plan failed before any graph revision existed', async () => {
+    const fixture = createFixture('no-revision');
+    const task = fixture.taskEngine.create({
+      id: 'task_no_revision',
+      title: 'Initial plan that never landed',
+      goal: 'Initial plan that never landed',
+      accountId: 'local-default',
+      conversationId: 'conversation-origin',
+      workspaceId: 'workspace-origin',
+      ownerPlannerSessionId: 'conversation-origin',
+    });
+    fixture.taskEngine.transition(task.id, 'ready');
+    fixture.taskEngine.transition(task.id, 'running');
+    fixture.db.prepare(`
+      INSERT OR IGNORE INTO configuration_revisions (
+        revision_id, content_hash, source_kind, imported_at
+      ) VALUES ('revision-test', 'hash', 'schema-30-import', '2026-09-25T00:00:00.000Z')
+    `).run();
+    const scheduler = new ConversationTaskSchedulerRepo(fixture.db);
+    scheduler.claimSlot('conversation-origin', task.id, 'reservation-1', '2026-09-25T00:00:00.000Z');
+    seedTaskOriginDecision(fixture.db, task.id, 'conversation-origin');
+    // No active Work Graph revision exists at all, and the application already
+    // exhausted its bounded re-application budget.
+    const seeded = seedUncertainTaskTransition(fixture, task.id, {
+      type: 'authorize_task_plan',
+      taskId: task.id,
+      task: {
+        binding: 'reference', taskId: task.id, control: 'none', scope: null,
+        title: null, goal: null, includeRecentConversationContext: false, priority: null,
+      },
+      workGraph: {
+        schemaVersion: 7,
+        configurationRevision: 'revision-test',
+        reason: 'fixture',
+        subtasks: [],
+      },
+      authorizedBindingsBySubtask: {},
+      generationId: `generation_${task.id}_1`,
+      graphRevision: 1,
+      proposalSource: 'initial',
+    }, { applyAttempts: 3 });
+    expect(new WorkGraphRevisionRepo(fixture.db).findActive(task.id)).toBeNull();
+
+    await fixture.composition.accountRuntime.initialize();
+
+    const decisions = fixture.composition.accountRuntime.kernelServices.kernelDecisionRepo
+      .listByTask(task.id);
+    expect(decisions.some(record => record.eventType === 'recovery_required_observed')).toBe(true);
+    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('blocked');
+    // The event still had a valid configuration revision to carry.
+    expect(decisions.find(record => record.action === 'block_work')?.configurationRevision)
+      .toBe('revision-test');
+    void seeded;
+  });
+
+  it('ignores a stale failed Replan Job from an older graph revision', async () => {
+    const fixture = createFixture('stale-failed-job');
+    const task = createRunningTask(fixture, 'Ignore the stale Planner failure');
+    const requestId = seedFailedReplanJob(fixture, task.id);
+    // A newer graph revision succeeded in the same generation: the older Job
+    // failure must not block the Task that is now working on revision 2.
+    const revision = new WorkGraphRevisionRepo(fixture.db).findActive(task.id)!;
+    new WorkGraphRevisionRepo(fixture.db).activate({
+      id: `work_graph_${task.id}_2`,
+      taskId: task.id,
+      revision: revision.revision + 1,
+      generationId: revision.generationId,
+      configurationRevision: 'revision-test',
+      authorizedDecisionId: null,
+      proposalSource: 'replan',
+      automaticReplan: true,
+      createdAt: '2026-09-25T00:02:00.000Z',
+      updatedAt: '2026-09-25T00:02:00.000Z',
+    });
+    const scheduler = new ConversationTaskSchedulerRepo(fixture.db);
+    scheduler.claimSlot('conversation-origin', task.id, 'reservation-1', '2026-09-25T00:00:00.000Z');
+    seedTaskOriginDecision(fixture.db, task.id, 'conversation-origin');
+
+    await fixture.composition.accountRuntime.initialize();
+    await fixture.composition.accountRuntime.reviewTaskPoolOnTimer();
+
+    expect(new GenerationReplanRequestRepo(fixture.db).find(requestId)?.status).toBe('failed');
+    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('running');
+    expect(scheduler.getSlot('conversation-origin').activeTaskId).toBe(task.id);
+    expect(fixture.composition.accountRuntime.kernelServices.kernelDecisionRepo
+      .listByTask(task.id)
+      .some(record => record.eventType === 'recovery_required_observed')).toBe(false);
+  });
+
   it('blocks the Task, then releases its slot, when the Replan Job failed closed', async () => {
     const fixture = createFixture('blocked-slot-release');
     const task = createRunningTask(fixture, 'Block on an unavailable Planner');
@@ -1069,6 +1195,7 @@ function seedUncertainTaskTransition(
   fixture: ReturnType<typeof createFixture>,
   taskId: string,
   action: KernelDecision['action'],
+  options: { applyAttempts?: number } = {},
 ) {
   const now = '2026-09-25T00:00:00.000Z';
   const event = {
@@ -1115,6 +1242,12 @@ function seedUncertainTaskTransition(
     bindingFingerprints: [],
     createdAt: now,
   });
+  const attempts = options.applyAttempts ?? 1;
+  for (let attempt = 0; attempt < attempts - 1; attempt += 1) {
+    workflow.markApplying(decision.id, now);
+    workflow.markApplicationFailed(decision.id, 'uncertain', 'process exit during apply', now);
+    workflow.resolveUncertainApplication(decision.id, 'retry', now);
+  }
   workflow.markApplying(decision.id, now);
   workflow.markApplicationFailed(decision.id, 'uncertain', 'process exit during apply', now);
   return { decision };

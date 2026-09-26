@@ -24,6 +24,8 @@ export interface GenerationReplanRequestRecord {
   deferredPlan: Extract<KernelEvent, { type: 'plan_proposed' }> | null;
   deferredBindings: AuthorizedExecutorBinding[];
   availabilityExplanation: string | null;
+  /** Fencing token of the Planner claim currently held, if any. */
+  plannerClaimToken: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -41,6 +43,7 @@ interface ReplanRow {
   deferred_plan_json: string | null;
   deferred_bindings_json: string;
   availability_explanation: string | null;
+  planner_claim_token: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -158,13 +161,84 @@ export class GenerationReplanRequestRepo {
    * that may still be considered in-flight; a crashed Planner Worker therefore
    * becomes claimable again without a synthetic SQL repair.
    */
-  claimForPlanner(id: string, now: string, leaseCutoff: string): boolean {
+  claimForPlanner(id: string, now: string, leaseCutoff: string, token: string): boolean {
     return this.db.prepare(`
       UPDATE generation_replan_requests
-      SET planning_started_at = ?, updated_at = ?
+      SET planning_started_at = ?, planner_claim_token = ?, updated_at = ?
       WHERE id = ? AND status = 'planning'
         AND (planning_started_at IS NULL OR planning_started_at <= ?)
-    `).run(now, now, id, leaseCutoff).changes === 1;
+    `).run(now, token, now, id, leaseCutoff).changes === 1;
+  }
+
+  /**
+   * Fenced completion of one Planner turn. The claim token proves this worker
+   * still owns the Job, so a worker whose lease expired while another worker
+   * re-claimed cannot land a second proposal or a second `submitted`
+   * transition (2026-09-25 review fix).
+   */
+  submitPlannerProposal(input: {
+    id: string;
+    claimToken: string;
+    event: Extract<KernelEvent, { type: 'plan_proposed' }>;
+    now: string;
+  }): boolean {
+    return this.db.transaction(() => {
+      if (!this.holdsPlannerClaim(input.id, input.claimToken)) return false;
+      this.insertProposalEvent(input.event, this.find(input.id)?.configurationRevision ?? null);
+      return this.db.prepare(`
+        UPDATE generation_replan_requests
+        SET status = 'submitted', submitted_at = ?, updated_at = ?,
+            error_summary = NULL
+        WHERE id = ? AND status = 'planning' AND planner_claim_token = ?
+      `).run(input.now, input.now, input.id, input.claimToken).changes === 1;
+    })();
+  }
+
+  /**
+   * Fenced `submitted` transition for a Job whose proposal was already persisted
+   * by an earlier pass of this same claim.
+   */
+  completePlannerTurn(input: { id: string; claimToken: string; now: string }): boolean {
+    if (!this.holdsPlannerClaim(input.id, input.claimToken)) return false;
+    return this.db.prepare(`
+      UPDATE generation_replan_requests
+      SET status = 'submitted', submitted_at = ?, updated_at = ?, error_summary = NULL
+      WHERE id = ? AND status IN ('planning', 'submitted') AND planner_claim_token = ?
+    `).run(input.now, input.now, input.id, input.claimToken).changes === 1;
+  }
+
+  holdsPlannerClaim(id: string, token: string): boolean {
+    const record = this.find(id);
+    return record?.status === 'planning' && record.plannerClaimToken === token;
+  }
+
+  insertProposalEvent(
+    event: Extract<KernelEvent, { type: 'plan_proposed' }>,
+    configurationRevision: string | null,
+  ): void {
+    this.db.prepare(`
+      INSERT OR IGNORE INTO kernel_events (
+        id, schema_version, event_type, correlation_id, causation_id,
+        session_id, task_id, subtask_id, attempt_id, event_json,
+        available_at, status, processing_started_at, processed_at,
+        last_error, configuration_revision, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL, ?, ?, ?)
+    `).run(
+      event.id,
+      event.schemaVersion,
+      event.type,
+      event.correlationId,
+      event.causationId,
+      event.sessionId,
+      event.taskId ?? null,
+      event.subtaskId ?? null,
+      event.attemptId ?? null,
+      JSON.stringify(event),
+      event.occurredAt,
+      configurationRevision ?? event.configurationRevision,
+      event.occurredAt,
+      event.occurredAt,
+    );
   }
 
   listPlannerClaimable(
@@ -208,7 +282,8 @@ export class GenerationReplanRequestRepo {
   releasePlannerClaim(id: string, errorSummary: string, now: string): void {
     this.db.prepare(`
       UPDATE generation_replan_requests
-      SET planning_started_at = NULL, error_summary = ?, updated_at = ?
+      SET planning_started_at = NULL, planner_claim_token = NULL,
+          error_summary = ?, updated_at = ?
       WHERE id = ? AND status = 'planning'
     `).run(errorSummary, now, id);
   }
@@ -371,6 +446,7 @@ function rowToRecord(row: ReplanRow): GenerationReplanRequestRecord {
       : null,
     deferredBindings: JSON.parse(row.deferred_bindings_json) as AuthorizedExecutorBinding[],
     availabilityExplanation: row.availability_explanation,
+    plannerClaimToken: row.planner_claim_token,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

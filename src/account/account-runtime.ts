@@ -429,7 +429,16 @@ export class AccountRuntime implements AccountRuntimeHandle {
           return inspectApplicationAgainstSources(application, {
             findTask: taskId => {
               const task = this.deps.taskServices?.taskRuntimeService.findTask(taskId);
-              return task ? { id: task.id, status: task.status } : null;
+              return task
+                ? {
+                    id: task.id,
+                    status: task.status,
+                    dependencies: task.dependencies.map(dependency => ({
+                      type: dependency.type,
+                      status: dependency.status,
+                    })),
+                  }
+                : null;
             },
             listSubtasks: taskId => this.deps.repositories.subtaskRepo.listByTask(taskId)
               .map(subtask => ({ id: subtask.id, status: subtask.status })),
@@ -439,6 +448,10 @@ export class AccountRuntime implements AccountRuntimeHandle {
               attemptId: item.attemptId,
               decisionId: item.decisionId,
               subtaskId: item.subtaskId,
+              generationId: item.generationId,
+              attemptKind: item.attemptKind,
+              bindingFingerprint: item.bindingFingerprint,
+              configurationRevision: item.configurationRevision,
               status: item.status,
             })),
             findWorkGraphRevision: (taskId, revision) => {
@@ -448,6 +461,7 @@ export class AccountRuntime implements AccountRuntimeHandle {
                     revision: record.revision,
                     generationId: record.generationId,
                     authorizedDecisionId: record.authorizedDecisionId,
+                    status: record.status,
                   }
                 : null;
             },
@@ -457,6 +471,9 @@ export class AccountRuntime implements AccountRuntimeHandle {
                 generationId,
                 sourceRevision,
               ) ?? null
+            ),
+            findReplanRequestById: id => (
+              this.deps.runtimeExecutionServices?.generationReplanRepo.find(id) ?? null
             ),
           });
         },

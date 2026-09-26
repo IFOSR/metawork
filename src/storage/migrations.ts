@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 41;
+export const CURRENT_SCHEMA_VERSION = 42;
 
 const CURRENT_SCHEMA_SQL = `
 CREATE TABLE tasks (
@@ -905,6 +905,7 @@ CREATE TABLE generation_replan_requests (
             configuration_revision TEXT NOT NULL,
             deferred_bindings_json TEXT NOT NULL DEFAULT '[]',
             planning_started_at TEXT,
+            planner_claim_token TEXT,
             submitted_at TEXT,
             resolved_at TEXT,
             cancelled_at TEXT,
@@ -1330,11 +1331,13 @@ function runBaseMigrations(
     }
     if (versions.length === 1 && versions[0]?.version === 40) {
       migrateSchema40To41(db);
+      migrateSchema41To42(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 39) {
       migrateSchema39To40(db);
       migrateSchema40To41(db);
+      migrateSchema41To42(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 31) {
@@ -1348,6 +1351,7 @@ function runBaseMigrations(
       migrateSchema38To39(db);
       migrateSchema39To40(db);
       migrateSchema40To41(db);
+      migrateSchema41To42(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 32) {
@@ -1360,6 +1364,7 @@ function runBaseMigrations(
       migrateSchema38To39(db);
       migrateSchema39To40(db);
       migrateSchema40To41(db);
+      migrateSchema41To42(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 33) {
@@ -1371,6 +1376,7 @@ function runBaseMigrations(
       migrateSchema38To39(db);
       migrateSchema39To40(db);
       migrateSchema40To41(db);
+      migrateSchema41To42(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 34) {
@@ -1381,6 +1387,7 @@ function runBaseMigrations(
       migrateSchema38To39(db);
       migrateSchema39To40(db);
       migrateSchema40To41(db);
+      migrateSchema41To42(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 35) {
@@ -1390,6 +1397,7 @@ function runBaseMigrations(
       migrateSchema38To39(db);
       migrateSchema39To40(db);
       migrateSchema40To41(db);
+      migrateSchema41To42(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 36) {
@@ -1398,6 +1406,7 @@ function runBaseMigrations(
       migrateSchema38To39(db);
       migrateSchema39To40(db);
       migrateSchema40To41(db);
+      migrateSchema41To42(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 37) {
@@ -1405,12 +1414,14 @@ function runBaseMigrations(
       migrateSchema38To39(db);
       migrateSchema39To40(db);
       migrateSchema40To41(db);
+      migrateSchema41To42(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 38) {
       migrateSchema38To39(db);
       migrateSchema39To40(db);
       migrateSchema40To41(db);
+      migrateSchema41To42(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 30) {
@@ -1431,6 +1442,7 @@ function runBaseMigrations(
       migrateSchema38To39(db);
       migrateSchema39To40(db);
       migrateSchema40To41(db);
+      migrateSchema41To42(db);
       return;
     }
     const found = versions.map(row => row.version).join(', ') || 'empty';
@@ -1601,6 +1613,24 @@ function migrateSchema39To40(db: Database.Database): void {
     ).run();
     if (updated.changes !== 1) {
       throw new Error('schema version changed during 39 to 40 migration');
+    }
+  });
+  migrate();
+}
+
+function migrateSchema41To42(db: Database.Database): void {
+  const migrate = db.transaction(() => {
+    // Tolerate partial fixtures: a schema-version row without the table is
+    // upgraded by the fresh-schema path, not by this column addition.
+    const columns = columnsOf(db, 'generation_replan_requests');
+    if (columns.length > 0 && !columns.includes('planner_claim_token')) {
+      db.exec('ALTER TABLE generation_replan_requests ADD COLUMN planner_claim_token TEXT');
+    }
+    const updated = db.prepare(
+      'UPDATE schema_version SET version = 42 WHERE version = 41',
+    ).run();
+    if (updated.changes !== 1) {
+      throw new Error('schema version changed during 41 to 42 migration');
     }
   });
   migrate();

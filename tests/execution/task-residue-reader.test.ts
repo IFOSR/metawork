@@ -140,4 +140,33 @@ describe('TaskResidueReader', () => {
     expect(reader.blockingReasons(TASK_ID, GENERATION_ID))
       .toEqual(expect.arrayContaining(['work_unit', 'generation_replan']));
   });
+
+  it('treats a deferred-for-availability Replan Job as unfinished residue', () => {
+    const { db, reader } = fixture();
+    for (const status of [
+      'pending_quiescence',
+      'planning',
+      'submitted',
+      'waiting_for_availability',
+    ]) {
+      db.prepare('DELETE FROM generation_replan_requests').run();
+      db.prepare(`
+        INSERT INTO generation_replan_requests (
+          id, task_id, generation_id, source_revision, status, trigger_decision_id,
+          configuration_revision, deferred_bindings_json, created_at, updated_at
+        ) VALUES ('job-1', ?, ?, 1, ?, 'trigger', 'revision-test', '[]', ?, ?)
+      `).run(TASK_ID, GENERATION_ID, status, NOW, NOW);
+      expect(reader.blockingReasons(TASK_ID, GENERATION_ID), status)
+        .toContain('generation_replan');
+    }
+    // A resolved or failed Job is terminal residue and must not hold the slot.
+    db.prepare('DELETE FROM generation_replan_requests').run();
+    db.prepare(`
+      INSERT INTO generation_replan_requests (
+        id, task_id, generation_id, source_revision, status, trigger_decision_id,
+        configuration_revision, deferred_bindings_json, created_at, updated_at
+      ) VALUES ('job-1', ?, ?, 1, 'resolved', 'trigger', 'revision-test', '[]', ?, ?)
+    `).run(TASK_ID, GENERATION_ID, NOW, NOW);
+    expect(reader.blockingReasons(TASK_ID, GENERATION_ID)).toEqual([]);
+  });
 });

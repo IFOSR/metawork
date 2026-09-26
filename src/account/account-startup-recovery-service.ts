@@ -403,12 +403,17 @@ export class AccountStartupRecoveryService {
       if (['done', 'archived', 'cancelled', 'blocked'].includes(task.status)) continue;
       const fact = this.recoveryRequiredFact(task.id);
       if (!fact) continue;
-      const revision = this.deps.repositories.workGraphRevisionRepo.findActive(task.id);
+      // Prefer the active revision's pin, but fall back to the recovery item's
+      // own recorded revision so a Task with no active revision (an initial
+      // plan that failed before creating one) still converges.
+      const configurationRevision = this.deps.repositories.workGraphRevisionRepo
+        .findActive(task.id)?.configurationRevision
+        ?? this.configurationRevisionForRecoveryItem(task.id, fact.recoveryItemId);
       const sessionId = this.originForTask(task.id);
-      if (!revision || !sessionId) continue;
+      if (!configurationRevision || !sessionId) continue;
       this.deps.kernelServices.kernelWorkflowRepo.enqueue({
         schemaVersion: 5,
-        configurationRevision: revision.configurationRevision,
+        configurationRevision,
         type: 'recovery_required_observed',
         id: `recovery_required_${fact.recoveryItemId}`,
         correlationId: task.id,
@@ -431,33 +436,60 @@ export class AccountStartupRecoveryService {
   }
 
   /**
-   * The durable reasons a Task has no remaining Kernel-authorized driver: a
-   * Replan Job that exhausted its Planner retry budget, or an uncertain
-   * application that exhausted its bounded re-application budget.
+   * The durable reasons a Task has no remaining Kernel-authorized driver.
+   *
+   * Two independent sources:
+   *
+   * 1. A Replan Job that failed closed **for the currently active graph
+   *    revision**. A stale failure from an older revision must not block a Task
+   *    whose newer revision already succeeded (2026-09-25 review fix).
+   * 2. An uncertain application that can no longer converge: either its
+   *    declared postcondition is `unresolved`, or its bounded re-application
+   *    budget is exhausted. `unresolved` never increments `applyAttempts`, so
+   *    counting attempts alone would leave it uncertain forever.
+   *
+   * Neither source requires an active Work Graph revision: an initial
+   * `authorize_task_plan` can fail before any revision exists, and that must
+   * still converge.
    */
   private recoveryRequiredFact(
     taskId: string,
   ): { recoveryItemId: string; reason: string } | null {
     const revision = this.deps.repositories.workGraphRevisionRepo.findActive(taskId);
-    if (!revision) return null;
-    const failedJob = this.deps.runtimeExecutionServices.generationReplanRepo
-      .listByTask(taskId)
-      .filter(job => job.generationId === revision.generationId && job.status === 'failed')
-      .at(-1);
-    if (failedJob) {
-      return {
-        recoveryItemId: failedJob.id,
-        reason: failedJob.errorSummary
-          ?? 'planner_unavailable: the authorized Replan Job failed',
-      };
+    if (revision) {
+      const jobsForGeneration = this.deps.runtimeExecutionServices.generationReplanRepo
+        .listByTask(taskId)
+        .filter(job => job.generationId === revision.generationId);
+      const latest = jobsForGeneration
+        .slice()
+        .sort((left, right) => left.sourceRevision - right.sourceRevision)
+        .at(-1);
+      if (
+        latest?.status === 'failed'
+        && latest.sourceRevision === revision.revision
+      ) {
+        return {
+          recoveryItemId: latest.id,
+          reason: latest.errorSummary
+            ?? 'planner_unavailable: the authorized Replan Job failed',
+        };
+      }
     }
+    const sources = this.recoveryFactSource();
     const stuck = this.deps.kernelServices.kernelWorkflowRepo
-      .listUncertainApplications([], taskId)
-      .filter(application => application.applyAttempts >= MAX_UNSAFE_APPLICATION_RETRIES)
+      .listUncertainApplications(undefined, taskId)
+      .filter(application => {
+        const inspection = inspectApplicationAgainstSources(application, sources);
+        if (inspection.verdict === 'unresolved') return true;
+        return inspection.verdict === 'retry_safe'
+          && application.applyAttempts >= MAX_UNSAFE_APPLICATION_RETRIES;
+      })
       .at(-1);
     if (stuck) {
       return {
-        recoveryItemId: stuck.decisionId,
+        // The application id, so the Kernel recovery item and the revision
+        // fallback resolve to the same durable row.
+        recoveryItemId: stuck.id,
         reason: `unresolved_application: ${stuck.decision.action.type}`
           + `${stuck.errorSummary ? ` ${stuck.errorSummary}` : ''}`,
       };
@@ -602,9 +634,6 @@ export class AccountStartupRecoveryService {
         const event = this.deps.kernelServices.kernelWorkflowRepo.findEvent(eventId);
         return event?.type === 'plan_proposed' ? event : null;
       },
-      persistProposal: event => {
-        this.deps.kernelServices.kernelWorkflowRepo.enqueue(event);
-      },
       drainKernel: async () => { await this.recoverKernelCoordinator(); },
     };
   }
@@ -680,6 +709,19 @@ export class AccountStartupRecoveryService {
     });
   }
 
+  private configurationRevisionForRecoveryItem(
+    taskId: string,
+    recoveryItemId: string,
+  ): string | null {
+    const application = this.deps.kernelServices.kernelWorkflowRepo
+      .findRecoveryItem(recoveryItemId);
+    if (application?.decision.configurationRevision) {
+      return application.decision.configurationRevision;
+    }
+    return this.deps.runtimeExecutionServices.generationReplanRepo
+      .find(recoveryItemId)?.configurationRevision ?? null;
+  }
+
   private activeGenerationId(taskId: string): string | null {
     return this.deps.repositories.workGraphRevisionRepo.findActive(taskId)?.generationId ?? null;
   }
@@ -688,7 +730,16 @@ export class AccountStartupRecoveryService {
     return {
       findTask: taskId => {
         const task = this.deps.taskServices.taskRuntimeService.findTask(taskId);
-        return task ? { id: task.id, status: task.status } : null;
+        return task
+          ? {
+              id: task.id,
+              status: task.status,
+              dependencies: task.dependencies.map(dependency => ({
+                type: dependency.type,
+                status: dependency.status,
+              })),
+            }
+          : null;
       },
       listSubtasks: taskId => this.deps.repositories.subtaskRepo.listByTask(taskId)
         .map(subtask => ({ id: subtask.id, status: subtask.status })),
@@ -698,6 +749,10 @@ export class AccountStartupRecoveryService {
           attemptId: item.attemptId,
           decisionId: item.decisionId,
           subtaskId: item.subtaskId,
+          generationId: item.generationId,
+          attemptKind: item.attemptKind,
+          bindingFingerprint: item.bindingFingerprint,
+          configurationRevision: item.configurationRevision,
           status: item.status,
         })),
       findWorkGraphRevision: (taskId, revision) => {
@@ -707,6 +762,7 @@ export class AccountStartupRecoveryService {
               revision: record.revision,
               generationId: record.generationId,
               authorizedDecisionId: record.authorizedDecisionId,
+              status: record.status,
             }
           : null;
       },
@@ -716,6 +772,9 @@ export class AccountStartupRecoveryService {
           generationId,
           sourceRevision,
         )
+      ),
+      findReplanRequestById: id => (
+        this.deps.runtimeExecutionServices.generationReplanRepo.find(id)
       ),
     };
   }

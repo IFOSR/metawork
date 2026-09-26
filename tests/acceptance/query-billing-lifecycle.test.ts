@@ -70,7 +70,7 @@ describe('billing schema migration and recovery', () => {
     }
     db.exec('UPDATE schema_version SET version = 38');
     runMigrations(db);
-    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 41 });
+    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 42 });
     expect(billingSchemaTables(db)).toEqual(expect.arrayContaining([
       'query_usage_contexts',
       'query_bills',

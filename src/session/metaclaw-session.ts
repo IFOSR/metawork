@@ -2059,9 +2059,6 @@ export class MetaclawSession {
           const event = this.kernelWorkflowRepo.findEvent(eventId);
           return event?.type === 'plan_proposed' ? event : null;
         },
-        persistProposal: event => {
-          this.kernelWorkflowRepo.enqueue(event);
-        },
         drainKernel: async ({ userInput, event }) => {
           await this.kernelCoordinator.submit(event, {
             buildSnapshot: claimed => this.buildPlanAdmissionSnapshot(
@@ -2472,7 +2469,16 @@ export class MetaclawSession {
       const diagnosis = inspectApplicationAgainstSources(item, {
         findTask: id => {
           const record = this.taskRuntimeService.findTask(id);
-          return record ? { id: record.id, status: record.status } : null;
+          return record
+            ? {
+                id: record.id,
+                status: record.status,
+                dependencies: record.dependencies.map(dependency => ({
+                  type: dependency.type,
+                  status: dependency.status,
+                })),
+              }
+            : null;
         },
         listSubtasks: id => this.subtaskRepo.listByTask(id)
           .map(subtask => ({ id: subtask.id, status: subtask.status })),
@@ -2480,6 +2486,10 @@ export class MetaclawSession {
           attemptId: dispatch.attemptId,
           decisionId: dispatch.decisionId,
           subtaskId: dispatch.subtaskId,
+          generationId: dispatch.generationId,
+          attemptKind: dispatch.attemptKind,
+          bindingFingerprint: dispatch.bindingFingerprint,
+          configurationRevision: dispatch.configurationRevision,
           status: dispatch.status,
         })),
         findWorkGraphRevision: (id, revision) => {
@@ -2489,12 +2499,14 @@ export class MetaclawSession {
                 revision: record.revision,
                 generationId: record.generationId,
                 authorizedDecisionId: record.authorizedDecisionId,
+                status: record.status,
               }
             : null;
         },
         findReplanRequest: (id, generationId, sourceRevision) => (
           this.generationReplanRepo.findByGeneration(id, generationId, sourceRevision)
         ),
+        findReplanRequestById: id => this.generationReplanRepo.find(id),
       });
       return `- ${item.id} [application/${item.status}] ${item.decision.action.type}: `
         + `${item.errorSummary ?? 'no error summary'}`

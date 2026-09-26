@@ -73,7 +73,9 @@ export class TaskResidueReader {
     if (this.deps.db.prepare(`
       SELECT 1 FROM generation_replan_requests
       WHERE task_id = ?${generation}
-        AND status IN ('pending_quiescence', 'planning', 'submitted')
+        AND status IN (
+          'pending_quiescence', 'planning', 'submitted', 'waiting_for_availability'
+        )
       LIMIT 1
     `).get(...parameters)) reasons.push('generation_replan');
     const applicationParameters: unknown[] = [taskId];
