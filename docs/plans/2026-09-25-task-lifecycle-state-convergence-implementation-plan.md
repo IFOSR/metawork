@@ -448,12 +448,15 @@ Update `CONTEXT.md` and the current technical overview only after the contract i
 ### Validation
 
 - `npx tsc --noEmit` clean.
-- Full suite after the review corrections: 2642 tests, 2628 passed, 3
-  pre-existing failures (`tests/billing/bill-finality.test.ts`,
-  `tests/configuration/configuration-module-boundary.test.ts`,
-  `tests/docker/shell-schema-isolation.test.ts`) and 6 pre-existing
-  configuration-dependent `tests/session/*` files. All nine fail identically on
-  the pre-change revision in this environment and are unrelated to this work.
+- Full suite after both review-correction rounds: 2650 tests, 2637 passed, 2
+  remaining failures (`tests/billing/bill-finality.test.ts`,
+  `tests/configuration/configuration-module-boundary.test.ts`) and 6
+  configuration-dependent `tests/session/*` files excluded. All eight fail
+  identically on the pre-change revision in this environment and are unrelated to
+  this work. `tests/docker/shell-schema-isolation.test.ts` was a pre-existing
+  failure that this round fixed: `docker/shell.ps1` had been left on the schema
+  38 data volume through the v41 bump (and is now on v42, per the persistence
+  rule that schema changes update the Docker workflow together).
 - New focused coverage: `tests/task/task-lifecycle.test.ts`,
   `tests/task/task-view.test.ts`,
   `tests/task/task-lifecycle-transition-port.test.ts`,
@@ -502,12 +505,37 @@ by a focused test.
 | 8 | Re-queuing an uncertain application did not drain it, so the retried Decision was never re-applied | `convergeRecovery()` drains every Task it re-queued in the same pass and tolerates a Task without a resolvable origin. Covered by `retries a safe uncertain application in the same pass it re-queues it`. |
 | 9 | No test covered the residue categories the duplicated check missed | `tests/execution/task-residue-reader.test.ts` covers `pending`/`applying`/`uncertain` applications, a terminal dispatch item without a receipt, identity-scoped Decision exclusion and a claimed WorkUnit with an outstanding Replan Job. |
 
+### Second review corrections (2026-09-25)
+
+A second review of the corrected work found that several fixes were still
+incomplete. Corrections are listed below and are covered by focused tests.
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| 10 | The `resume_task` postcondition required the dispatch item's Decision id to equal the resume Decision id, which never holds because the downstream `dispatch_batch` has its own id | The postcondition is now "no named Subtask is still blocked **and** a dispatch item for that Subtask in the same generation is durable". `inspectResume` and its test were rewritten. |
+| 11 | `unresolved` applications never increment `applyAttempts`, so the attempt-count-based recovery fact never fired and the Task stayed uncertain forever | `recoveryRequiredFact()` now selects on the *verdict*: `unresolved`, or `retry_safe` with an exhausted budget. The shape of the rule moved from "attempts" to "declared postcondition". |
+| 12 | `recoveryRequiredFact()` returned early without an active graph revision, so an initial `authorize_task_plan` that failed before creating one could never converge | The revision is no longer required; the event carries the recovery item's own configuration revision via `configurationRevisionForRecoveryItem()`. Covered by `escalates a Task whose initial plan failed before any graph revision existed`. |
+| 13 | `waiting_for_availability` was not residue, so a deferred proposal could release its Conversation slot and let a successor run | `TaskResidueReader` now treats `pending_quiescence`, `planning`, `submitted` **and** `waiting_for_availability` as `generation_replan` residue. |
+| 14 | `defer_task_plan_for_availability` returned early when the deferral was already persisted, so a replay could mark the application `applied` with the Task still `running` | The apply distinguishes "already deferred" from "not authorized" and always lands the Task block; `inspectAvailabilityDeferral` requires both halves. |
+| 15 | The Planner claim had no fencing, and `markSubmitted()`'s result was ignored | Schema v42 adds `generation_replan_requests.planner_claim_token`; `claimForPlanner()` returns/writes the token and `submitPlannerProposal()` / `completePlannerTurn()` re-check it inside the same transaction that lands the proposal and the `submitted` transition. |
+| 16 | The Worker used the current Planner configuration while the Job carried an older pinned revision | The Worker fails the Job closed with `configuration_revision_changed` on a mismatch instead of silently moving a proposal across revisions. |
+| 17 | A `block_work` that named a Subtask which does not exist was read as resolved | A missing named Subtask is now `unresolved`. |
+| 18 | Plan activation did not check `authorizedDecisionId`, so a revision written by another Decision satisfied the postcondition | `inspectPlanActivation()` requires `authorizedDecisionId` to be null or this Decision. |
+| 19 | The dispatch postcondition checked only attempt id and Decision id | It now also matches Subtask, attempt kind, binding fingerprint and configuration revision. |
+| 20 | `recoveryRequiredFact()` matched any failed Job in the generation, so a stale failure could block a Task whose newer revision succeeded | It now takes the latest Job for the active generation and requires its `sourceRevision` to equal the active revision. Covered by `ignores a stale failed Replan Job from an older graph revision`. |
+| 21 | The contract document listed `wait_for_retry`, `park_for_replan` and `defer_task_plan_for_availability` as observation-only although they write Task/Job state | The table now declares a concrete postcondition per action, separates "no durable state write" from "must re-emit its wake observation", and states that `markApplied` is atomic so an uncertain application proves the observation never landed. |
+
+Earlier §13 row 3 (`block_work` / `resume_task`) and row 5 (Planner turn
+identity) were incomplete; rows 10–21 supersede them.
+
 ### Closing revision
 
 `11660a1` `feat: converge uncertain applications and centralize lifecycle
-transitions` delivered Phases 3-5 and `939aded` recorded that closure. The review
-corrections in §13 and the §14 work are the current head of
-`feat/task-lifecycle-state-convergence`.
+transitions` delivered Phases 3-5 and `939aded` recorded that closure. The two
+review-correction rounds in §13 are the current head of
+`feat/task-lifecycle-state-convergence`. §13 must be read as a list of specific
+defects found and fixed, not as a claim that the convergence chain has passed
+end-to-end acceptance; §14 lists what is still unverified.
 
 ### Remaining before the plan can be marked complete
 

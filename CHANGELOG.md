@@ -74,6 +74,19 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
   Run `docker/shell.ps1 -Rebuild` to move to
   `metaclaw-shell-data-v38-anyfusion-planner`; the previous volume is preserved
   for manual recovery, as the volume isolation intends.
+- The Docker shell data volume now tracks the current schema. It had stayed on
+  `metaclaw-shell-data-v38-anyfusion-planner` through the v41 and v42 bumps, so
+  the workflow could mount a v38 database into a v42 build. Run
+  `docker/shell.ps1 -Rebuild` to move to
+  `metaclaw-shell-data-v42-anyfusion-planner`; the previous volume is preserved
+  for manual recovery.
+- SQLite schema v42 fences the durable Replan Job's Planner turn. Two account
+  workers can both re-claim a Job after its Planner lease expires, so
+  `generation_replan_requests` now carries a `planner_claim_token` and the
+  proposal plus the `submitted` transition land in one transaction that re-checks
+  the token. A Job pinned to a configuration revision that is no longer current
+  fails closed as `configuration_revision_changed` instead of carrying a proposal
+  across revisions.
 
 ## [1.2.0-preview.5] - 2026-09-18
 

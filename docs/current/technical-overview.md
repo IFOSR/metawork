@@ -937,16 +937,24 @@ Task that never reaches `blocked` still converges. It inspects each action
 family's declared postcondition. The replan postcondition inspector marks an
 uncertain `schedule_replan`/`request_replan` application `applied` once the Job
 carries `quiescence_<decisionId>`, and retries the same Decision only while the
-Job is still `pending_quiescence`. The sweep covers `dispatch_batch` (every
-authorized attempt exists with the same Decision id), `complete_task` /
-`accept_partial_result` (Task is terminal), `block_work` (the whole operation:
-Task blocked **and** the named Subtask resolved), `resume_task` (resumed Subtask
-unblocked and its dispatch item durable, with a replay-idempotent apply),
-`authorize_task_plan` / `activate_deferred_task_plan` (named graph revision
-durable) and the observation-only actions; cancellation, external effects and the
-merge path keep their dedicated reconcilers. An application that is not yet
-resolvable stays `uncertain` inside a bounded `applyAttempts < 3` budget and then
-produces `recovery_required`. All slot-release paths read the single
+Job is still `pending_quiescence`. The sweep requires an action's full durable
+effect, never half of it: `dispatch_batch` matches attempt id, Subtask, attempt
+kind, binding fingerprint and configuration revision; `block_work` requires the
+Task block **and** the named Subtask resolved; `defer_task_plan_for_availability`
+requires the deferred proposal **and** the Task block; `resume_task` requires the
+downstream dispatch for the resumed Subtask in the same generation, because the
+following `dispatch_batch` carries its own Decision id. `authorize_task_plan` /
+`activate_deferred_task_plan` additionally require the revision to have been
+authorized by this Decision. `wait_for_retry` and `wait_for_partition` are
+retry-safe only: their wake observation is the continuation trigger and
+`markApplied` is atomic, so an uncertain outcome proves it was never emitted.
+Cancellation, external effects and the merge path keep their dedicated
+reconcilers. An application that cannot converge — declared `unresolved`, or
+`retry_safe` past its bounded `applyAttempts < 3` budget — produces
+`recovery_required`, and the pass drains whatever it re-queued so the next
+verdict is actually observed. A failed Replan Job only blocks the Task when it
+belongs to the *currently active* graph revision, and no active revision is
+required for the escalation to fire. All slot-release paths read the single
 `TaskResidueReader`; `/task recovery <taskId>` and the Gateway
 `listCompletionResidue()` print the same `family/verdict` and residue diagnosis
 the sweep acts on.

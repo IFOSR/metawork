@@ -150,12 +150,21 @@ Idempotency rules:
 - The claim is a single conditional `UPDATE`; a duplicate recovery pass cannot
   start a second Planner turn.
 - The Planner turn has a durable identity. The proposal event id is derived from
-  the Job's trigger Decision (`generationReplanProposalEventId()`), and the
-  proposal is written to the Kernel inbox **before** the `submitted` transition.
-  A worker pass therefore distinguishes three states — no proposal yet (plan),
-  a persisted proposal (reuse it, never re-plan) and a held claim with no
-  proposal (retry after the lease expires). This is what makes the *Planner turn*
-  idempotent, not merely the proposal event.
+  the Job's trigger Decision (`generationReplanProposalEventId()`), so a worker
+  pass distinguishes three states — no proposal yet (plan), a persisted proposal
+  (reuse it, never re-plan) and a held claim with no proposal (retry after the
+  lease expires).
+- The claim is **fenced**. `claimForPlanner()` records a
+  `planner_claim_token`, and `submitPlannerProposal()` /
+  `completePlannerTurn()` write the proposal and the `submitted` transition in
+  one transaction that re-checks the token. Two workers may both re-claim after
+  a lease expiry, but only the current claim holder can land a proposal, so the
+  Planner turn is at-most-once in effect even though a lease-expired re-claim may
+  repeat the model call.
+- The Job is pinned to the configuration revision that authorized its
+  generation. If the current Planner revision differs, the Worker fails the Job
+  closed with `configuration_revision_changed` instead of carrying a proposal
+  from one revision into another.
 - A retryable Planner failure releases the claim with backoff; the absolute retry
   budget fails the Job closed as `planner_unavailable`, and recovery emits the
   `recovery_required_observed` fact above so the Kernel blocks the Task instead
@@ -173,24 +182,57 @@ inspect each managed application once and resolve it to one of four verdicts:
 | `unresolved` | Outcome unknowable or contradictory | Stay `uncertain` and surface as `recovery_required` |
 | `not_managed` | A dedicated reconciler owns the family | Leave untouched |
 
+`markApplied` inserts a Decision's observation event **in the same transaction**
+as the `applied` transition. An `uncertain` application therefore proves the
+observation was never emitted, which makes "did the observation land" useless as
+a postcondition. Every postcondition below is either a durable state write of the
+apply or a *downstream* effect that only this Decision could have caused.
+
 | Action family | Postcondition |
 | --- | --- |
-| `dispatch_batch` | Every authorized attempt id exists as a dispatch item with the same Decision id (partial → `unresolved`) |
+| `dispatch_batch` | Every authorized item landed with its full identity: the same Decision, attempt id, Subtask, attempt kind, binding fingerprint and configuration revision (partial → `unresolved`) |
 | `schedule_replan`, legacy `request_replan` | Replan Job carries `quiescence_<decisionId>` and is `planning`/`submitted`/`waiting_for_availability`/`resolved`/`failed` |
-| `authorize_task_plan`, `activate_deferred_task_plan` | The named graph revision is durable; an initial revision is safe to retry, a replan revision is not |
+| `queue_generation_replan` | The Replan Job named by `requestId` is durable **and** the Task is no longer executing. While the Task still runs, only the Decision's observation re-evaluates quiescence, so re-emit it (`retry_safe`) |
+| `authorize_task_plan`, `activate_deferred_task_plan` | The named graph revision is durable **and** `authorizedDecisionId` is null or this Decision. A revision written by another Decision is `unresolved`, not success. An initial revision whose Task id is deterministic is safe to retry; a replan revision is not |
 | `complete_task`, `accept_partial_result` | Task is `done`/`archived` |
-| `block_work` | The **whole** operation: Task is `blocked` **and** the named Subtask (unless `preserveSubtaskState`) is `blocked`/`done`/`cancelled`. The Runtime writes the Subtask blocker before the Task block, so a half-applied decision must not read as success |
-| `resume_task` | Either the resumed Subtask is no longer `blocked` and the resumed dispatch item for this Decision is durable (`applied`), or the resume is incomplete (`retry_safe`). Its apply is replay-idempotent: state writes are guarded and the observation id is derived from the Decision |
-| `no_op`, `wait_for_retry`, `wait_for_capacity`, `probe_capacity`, `wait_for_partition`, `park_for_replan`, `queue_generation_replan`, `defer_task_plan_for_availability` | Observation-only: the `markApplied` observation insert is atomic with the transition, so replay by Decision id is safe |
+| `block_work` | The **whole** operation: Task is `blocked` **and** the named Subtask (unless `preserveSubtaskState`) is `blocked`/`done`/`cancelled`. The Runtime writes the Subtask blocker before the Task block, so a half-applied decision must not read as success. A named Subtask that does not exist is `unresolved` |
+| `park_for_replan` | Task is `parked` (or already terminal) |
+| `defer_task_plan_for_availability` | The Replan Job is `waiting_for_availability` **and** the Task is `blocked`. The deferral is persisted before the block, so a persisted deferral with a running Task must be re-applied (`retry_safe`) |
+| `wait_for_capacity` | The Task block is durable; the periodic capacity recheck owns the wake |
+| `resume_task` | No named Subtask is still `blocked` **and** a dispatch item for that Subtask in the same generation is durable. The downstream `dispatch_batch` carries its own Decision id, so requiring equality with the resume Decision would never succeed. The apply is replay-idempotent and must never short-circuit before emitting its observation |
+| `wait_for_retry`, `wait_for_partition` | `retry_safe` only. The apply blocks the Task and emits the wake observation that is the real continuation trigger, so it must be re-emitted rather than assumed |
+| `no_op`, `probe_capacity` | No durable state write; `applied` |
 | `cancel_task`, `cancel_subtasks` | `reconcileUncertainCancellations` (dedicated) |
 | `request_merge_replan` | Bounded merge/system-binding recovery events (dedicated) |
 | Capability grants/denials/escalations, `deliver_direct_reply`, `recover_workspace_attempt` | External effect or resource protocol; outbox/manual recovery owns it |
 
-A budget-exhausted application is not left as a silent `uncertain`: recovery
-emits a deterministic `recovery_required_observed` Kernel event, and
+### Recovery-required sources
+
+An application that can no longer converge is not left as a silent `uncertain`.
+Recovery emits a deterministic `recovery_required_observed` Kernel event and
 `ControlKernel.decideRecoveryRequired()` authorizes `block_work` with a
-`recovery_required: <reason>` blocker. The Task therefore leaves `running` and
-TaskView reports `recovery_required` with an explicit entry point.
+`recovery_required: <reason>` blocker, so the Task leaves `running` and TaskView
+reports `recovery_required` with an explicit entry point.
+
+Two independent sources produce that fact:
+
+1. A Replan Job that failed closed **for the currently active graph revision**.
+   A stale failure from an older revision must not block a Task whose newer
+   revision already succeeded.
+2. An uncertain application that can no longer converge: its declared
+   postcondition is `unresolved`, or its bounded re-application budget
+   (`applyAttempts < 3`) is exhausted. `unresolved` never increments
+   `applyAttempts`, so an attempt-count-only rule would leave it uncertain
+   forever.
+
+Neither source requires an active graph revision, because an initial
+`authorize_task_plan` can fail before any revision exists; the event carries the
+recovery item's own configuration revision in that case. Re-queuing a
+`retry_safe` application is not convergence on its own: the recovery pass drains
+the Task in the same pass so the Decision is re-applied and its next verdict is
+observed.
+
+### Slot release
 
 Slot release is not a Kernel application. It converges as a residue question,
 answered only by `TaskResidueReader.blockingReasons()` — the single reader shared
@@ -198,9 +240,11 @@ by completion, cancellation, startup recovery, periodic recovery and TaskView. A
 slot is released only when the Task is terminal, or blocked, and the reader
 reports no blocking `dispatch`, `publication`, `execution_backend`, `work_unit`,
 `resource_lease`, `generation_replan`, `kernel_application` or `attempt_receipt`
-residue. A path that must discount its own in-flight Decision passes that
-Decision id explicitly instead of ignoring the whole `kernel_application`
-category.
+residue. `generation_replan` covers `pending_quiescence`, `planning`, `submitted`
+**and `waiting_for_availability`**, because a deferred proposal is unfinished
+work. `kernel_application` covers `pending`, `applying` and `uncertain`. A path
+that must discount its own in-flight Decision passes that Decision id explicitly
+instead of ignoring the whole category.
 
 The invariant is:
 
