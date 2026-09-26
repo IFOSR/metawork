@@ -22,7 +22,7 @@ Task statuses.
 | Domain | Canonical owner | Contract |
 | --- | --- | --- |
 | Task lifecycle | Task Domain, applied only from Kernel-authorized actions | `queued`, `executing`, `coordinating`, `waiting_for_user`, `blocked`, `completed`, `failed`, `cancelled` |
-| Subtask node lifecycle | Work Graph / Task Domain | `pending`, `executing`, `awaiting_completion`, `completed`, `blocked`, `cancelled` |
+| Subtask node lifecycle | Task Domain | `pending`, `executing`, `awaiting_completion`, `completed`, `blocked`, `cancelled` |
 | Attempt | Execution Runtime | lifecycle `authorized -> launched -> running -> settling -> settled`, plus immutable outcome `succeeded`, `failed`, `heartbeat_lost`, `cancelled`, `unknown` |
 | Kernel application | KernelWorkflow / AccountRuntime | `pending`, `applying`, `applied`, `uncertain`, `failed`; internal recovery state only |
 | WorkUnit / lease | Execution Runtime and Resource Model | claim, lease expiry, release; `heartbeat_lost` is a normalized Attempt/lease fact |
@@ -57,13 +57,22 @@ not listed; a self-transition is always allowed so idempotent replay is safe.
 
 ## 2b. Transition ownership
 
-Strategic Task and Subtask writes have exactly one owner:
+Strategic Task and Subtask writes have exactly one owner, the Task Domain per
+ADR-0020:
 
-- `createTaskLifecyclePort()` (Task Domain) owns Task status transitions.
-- `createSubtaskLifecyclePort()` (Work Graph) owns Subtask node transitions.
+- `createTaskLifecyclePort()` owns Task status transitions.
+- `createSubtaskLifecyclePort()` owns Subtask node transitions.
+
+Work Graph owns proposal topology, node identity, DAG derivation and the
+runnable frontier; it explicitly does **not** own Subtask run state. A Work Graph
+consumer therefore calls the Subtask port for the node transition a Kernel
+Decision requires.
 
 Every call records `kind`, `id`, `from`, `to`, `actor`, `reason` and `at`, so a
-contradictory status can be traced to the layer that asked for it. The guards
+contradictory status can be attributed to the layer that asked for it. The record
+is an **in-process** observation seam, not a durable audit: the durable evidence
+of a status change remains the Kernel Decision, the attempt receipt and the
+Task/Subtask row the transition produced. The guards
 reject a transition that is invalid in the canonical model — most importantly
 any transition out of a terminal Task or Subtask lifecycle. Replayed
 transitions with the same target are idempotent (`cancelTask` on a terminal
@@ -140,11 +149,17 @@ Idempotency rules:
   and unique per `(task_id, generation_id, source_revision)`.
 - The claim is a single conditional `UPDATE`; a duplicate recovery pass cannot
   start a second Planner turn.
-- The proposal event is inserted together with the `submitted` transition, so a
-  crash after the Planner turn cannot lose or duplicate the turn.
+- The Planner turn has a durable identity. The proposal event id is derived from
+  the Job's trigger Decision (`generationReplanProposalEventId()`), and the
+  proposal is written to the Kernel inbox **before** the `submitted` transition.
+  A worker pass therefore distinguishes three states — no proposal yet (plan),
+  a persisted proposal (reuse it, never re-plan) and a held claim with no
+  proposal (retry after the lease expires). This is what makes the *Planner turn*
+  idempotent, not merely the proposal event.
 - A retryable Planner failure releases the claim with backoff; the absolute retry
-  budget fails the Job closed as `planner_unavailable`, which the Kernel turns
-  into an explicit `block_work` instead of leaving the Task `running`.
+  budget fails the Job closed as `planner_unavailable`, and recovery emits the
+  `recovery_required_observed` fact above so the Kernel blocks the Task instead
+  of leaving it `running`.
 
 ## 5. Uncertain application recovery
 
@@ -164,17 +179,28 @@ inspect each managed application once and resolve it to one of four verdicts:
 | `schedule_replan`, legacy `request_replan` | Replan Job carries `quiescence_<decisionId>` and is `planning`/`submitted`/`waiting_for_availability`/`resolved`/`failed` |
 | `authorize_task_plan`, `activate_deferred_task_plan` | The named graph revision is durable; an initial revision is safe to retry, a replan revision is not |
 | `complete_task`, `accept_partial_result` | Task is `done`/`archived` |
-| `block_work` | Task is `blocked` or the named Subtask is `blocked` |
-| `no_op`, `wait_for_retry`, `wait_for_capacity`, `probe_capacity`, `wait_for_partition`, `park_for_replan`, `resume_task`, `queue_generation_replan`, `defer_task_plan_for_availability` | Observation-only: the `markApplied` observation insert is atomic with the transition, so replay by Decision id is safe |
+| `block_work` | The **whole** operation: Task is `blocked` **and** the named Subtask (unless `preserveSubtaskState`) is `blocked`/`done`/`cancelled`. The Runtime writes the Subtask blocker before the Task block, so a half-applied decision must not read as success |
+| `resume_task` | Either the resumed Subtask is no longer `blocked` and the resumed dispatch item for this Decision is durable (`applied`), or the resume is incomplete (`retry_safe`). Its apply is replay-idempotent: state writes are guarded and the observation id is derived from the Decision |
+| `no_op`, `wait_for_retry`, `wait_for_capacity`, `probe_capacity`, `wait_for_partition`, `park_for_replan`, `queue_generation_replan`, `defer_task_plan_for_availability` | Observation-only: the `markApplied` observation insert is atomic with the transition, so replay by Decision id is safe |
 | `cancel_task`, `cancel_subtasks` | `reconcileUncertainCancellations` (dedicated) |
 | `request_merge_replan` | Bounded merge/system-binding recovery events (dedicated) |
 | Capability grants/denials/escalations, `deliver_direct_reply`, `recover_workspace_attempt` | External effect or resource protocol; outbox/manual recovery owns it |
 
-Slot release is not a Kernel application. It converges as a residue question:
-the slot is released only when the Task is terminal, or blocked, and
-`hasReleasableResidue()` reports no blocking dispatch, publication, backend
-execution, lease, WorkUnit claim, uncertain application or outstanding Replan
-Job.
+A budget-exhausted application is not left as a silent `uncertain`: recovery
+emits a deterministic `recovery_required_observed` Kernel event, and
+`ControlKernel.decideRecoveryRequired()` authorizes `block_work` with a
+`recovery_required: <reason>` blocker. The Task therefore leaves `running` and
+TaskView reports `recovery_required` with an explicit entry point.
+
+Slot release is not a Kernel application. It converges as a residue question,
+answered only by `TaskResidueReader.blockingReasons()` — the single reader shared
+by completion, cancellation, startup recovery, periodic recovery and TaskView. A
+slot is released only when the Task is terminal, or blocked, and the reader
+reports no blocking `dispatch`, `publication`, `execution_backend`, `work_unit`,
+`resource_lease`, `generation_replan`, `kernel_application` or `attempt_receipt`
+residue. A path that must discount its own in-flight Decision passes that
+Decision id explicitly instead of ignoring the whole `kernel_application`
+category.
 
 The invariant is:
 
@@ -201,17 +227,30 @@ acts on (`inspectApplicationAgainstSources`).
 active authorized Attempt exists    -> executing
 retry wake exists                   -> retrying
 active Replan Job exists            -> waiting_for_plan (blocked if the Task is already blocked)
-uncertain Kernel application exists -> recovery_required
+uncertain Kernel application exists -> recovery_required (uncertain_application)
 publication residue exists          -> publishing
 terminal Task lifecycle             -> completed / failed / cancelled
 pending user decision               -> waiting_for_user
-remaining residue                   -> blocked
-otherwise                           -> queued
+Task lifecycle blocked              -> blocked
+Task lifecycle queued               -> queued
+otherwise (coordinating, no driver) -> recovery_required (no_authorized_driver)
 ```
 
-A `running` Task with no active Attempt is never projected as `executing`.
+A `running` Task with no active Attempt is never projected as `executing`, and
+`waiting_for_plan` is only reported when a durable Replan Job actually exists. A
+Task with no active Attempt, no retry wake, no Replan Job and no publication has
+no authorized driver, so it is projected as `recovery_required` with
+`recoveryDiagnosis = 'no_authorized_driver'` and
+`nextAuthorizedAction = 'explicit_resume_required'`; when the cause is an
+uncertain application the diagnosis is `uncertain_application` and the action is
+`resolve_uncertain_application`.
+
 Presentation surfaces must render `TaskView.phase`, never `tasks.status`,
 `dispatch.status`, `work_units.state` or `kernel_decision_applications.status`.
+The Feishu/Web activity card consumes the same facts (`openReplanJobTaskIds`,
+`pendingRetryWakeTaskIds`, `activeAttemptTaskIds`) and the same
+`deriveTaskLifecycleState()`, so it cannot disagree with TaskView about whether a
+Conversation is idle.
 
 The Gateway wire form is `GatewayTaskViewSnapshot.lifecycle` in
 [`src/gateway/task-view.ts`](../../src/gateway/task-view.ts); the vendored

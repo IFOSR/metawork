@@ -338,9 +338,14 @@ Update `CONTEXT.md` and the current technical overview only after the contract i
 ## 12. Current Status
 
 - Plan date: 2026-09-25
-- Completion date: 2026-09-25
-- Status: complete (Phases 0-5 implemented). Archived by
-  [docs/README.md](../../docs/README.md) as a completed delivery.
+- Status: **core structure implemented, closure acceptance not completed.**
+  Phases 0-5 are implemented and reviewed; the 2026-09-25 review found real
+  control-chain, postcondition, residue and projection defects that are listed
+  in §13 and were fixed in the follow-up revision. The plan is not archived as a
+  completed delivery until the fault-injection and real-client acceptance in §14
+  are executed.
+- Review scope: `55184d8..dc1c533`, reviewed without modifying code, the
+  production database or running services.
 - Production database: unchanged (no schema migration was needed; the durable
   Replan Job reuses `generation_replan_requests`).
 - Runtime services: changed. `schedule_replan` replaces the foreground
@@ -472,9 +477,36 @@ Update `CONTEXT.md` and the current technical overview only after the contract i
   paths are covered by the SQLite-backed account-runtime integration tests
   above. Recorded as an explicit residual validation gap rather than a claim.
 
-### Closing commit
+### Review corrections (2026-09-25)
+
+A follow-up review of Phases 0-3 found that several completion claims exceeded
+the implementation. Each finding below is fixed, with the fix named and covered
+by a focused test.
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| 1 | A failed Replan Job did not wake the Kernel, so the Task stayed `running` forever | Recovery emits a deterministic `recovery_required_observed` event; `ControlKernel.decideRecoveryRequired()` authorizes `block_work` with a `recovery_required: …` blocker. `AccountStartupRecoveryService.convergeRecoveryRequired()` drives it from both entry points. |
+| 2 | `convergeUncertainApplications` / `convergeConversationSlots` ran only at startup | Both are reached through one shared `convergeRecovery()` entry used by `recover()` and `recoverPeriodic()`, selected from durable pending facts rather than a blocked-only Task scan. A budget-exhausted application now produces the recovery fact above instead of staying silently `uncertain`. |
+| 3 | `block_work` postcondition used `Task || Subtask`, so a half-applied decision read as success; `resume_task` was mis-classified and its replay short-circuited | `block_work` now requires the whole operation (Task blocked **and** the named Subtask resolved). `resume_task` keeps its own inspector and its apply no longer returns early for a `running` Task, so a replay completes the missing dispatch observation. |
+| 4 | A second residue definition (`hasReleasableResidue`) disagreed with `TaskResidueReader` | The local check is deleted; every release path calls `TaskResidueReader.blockingReasons()` with an explicit generation and an explicit excluded Decision id. |
+| 5 | Job idempotency did not make the Planner turn idempotent | The proposal event id is derived from the Job (`generationReplanProposalEventId()`) and the proposal is persisted in the Kernel inbox **before** the `submitted` transition, so the worker distinguishes "not yet planned / proposal persisted / claim with unknown submission" and never re-plans a persisted proposal. |
+| 6 | The activity card hardcoded "no Replan Job" and TaskView fell back to a false `waiting_for_plan`; Gateway `completionResidue` was fixed to `[]` | The activity card receives `openReplanJobTaskIds` and `pendingRetryWakeTaskIds` and consumes `deriveTaskLifecycleState()`. TaskView reports `recovery_required` with `recoveryDiagnosis` when no driver exists. `listCompletionResidue()` reads the same residue reader as the release paths. |
+| 7 | Contract and port comments said Work Graph owns the Subtask lifecycle; the composed port's two `listTransitions()` overwrote each other | ADR-0020 assigns Task and Subtask lifecycle to the **Task Domain**; the wording is unified and the composed port merges the observation streams. The record is documented as an in-process observation seam, not a durable audit. |
+
+### Closing revision
 
 `11660a1` `feat: converge uncertain applications and centralize lifecycle
-transitions` delivers Phases 3-5; `939aded` `docs: complete task lifecycle state
-convergence phases 3-5` records this closure, on
+transitions` delivered Phases 3-5 and `939aded` recorded that closure. The review
+corrections in §13 and the §14 work are the current head of
 `feat/task-lifecycle-state-convergence`.
+
+### Remaining before the plan can be marked complete
+
+1. Fault injection at the durable seams the review exercised manually: a Planner
+   failure via the real periodic entry point (covered), a crash between the
+   Planner turn and the proposal persist (covered), and a crash between the
+   `recovery_required_observed` event and the Task block (covered by the
+   `task_transition` postcondition retry).
+2. Real client acceptance that this environment cannot run: live native Server
+   restart, TUI reconnect, Web attach and a live Planner-unavailable fault with a
+   running Server. Until those are executed the plan stays in Active Delivery.

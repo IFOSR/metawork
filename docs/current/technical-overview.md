@@ -922,28 +922,39 @@ account-scoped `GenerationReplanWorker`, driven by the AccountRuntime periodic
 review, claims the Job with a bounded Planner lease, performs one Planner turn,
 and inserts the `plan_proposed` event together with the `submitted` transition.
 The deterministic Job id and single conditional claim make the turn idempotent
-across restarts and concurrent session/account passes. A retryable Planner
-failure backs off and keeps the Job identity; past the absolute retry budget the
-Job fails closed as `planner_unavailable`, which ControlKernel projects into an
-explicit `block_work` instead of leaving the Task `running`.
+across restarts and concurrent session/account passes, and the Planner turn has a
+durable identity of its own: the proposal event id is derived from the Job and
+the proposal is persisted in the Kernel inbox before the `submitted` transition,
+so a worker pass reuses a persisted proposal instead of running a second Planner
+turn. A retryable Planner failure backs off and keeps the Job identity; past the
+absolute retry budget the Job fails closed as `planner_unavailable`, and recovery
+emits a deterministic `recovery_required_observed` event that ControlKernel turns
+into an explicit `block_work` — the Task cannot stay `running`.
 
-Startup and periodic recovery inspect each action family's declared
-postcondition. The replan postcondition inspector marks an uncertain
-`schedule_replan`/`request_replan` application `applied` once the Job carries
-`quiescence_<decisionId>`, and retries the same Decision only while the Job is
-still `pending_quiescence`. The generic sweep covers `dispatch_batch`
-(every authorized attempt exists with the same Decision id), `complete_task` /
-`accept_partial_result` (Task is terminal), `block_work` (blocker durable),
+One shared convergence entry runs at startup and on the account periodic review,
+selected from durable pending facts rather than a blocked-only Task scan, so a
+Task that never reaches `blocked` still converges. It inspects each action
+family's declared postcondition. The replan postcondition inspector marks an
+uncertain `schedule_replan`/`request_replan` application `applied` once the Job
+carries `quiescence_<decisionId>`, and retries the same Decision only while the
+Job is still `pending_quiescence`. The sweep covers `dispatch_batch` (every
+authorized attempt exists with the same Decision id), `complete_task` /
+`accept_partial_result` (Task is terminal), `block_work` (the whole operation:
+Task blocked **and** the named Subtask resolved), `resume_task` (resumed Subtask
+unblocked and its dispatch item durable, with a replay-idempotent apply),
 `authorize_task_plan` / `activate_deferred_task_plan` (named graph revision
-durable) and the observation-only actions; cancellation, external effects and
-the merge path keep their dedicated reconcilers. An application that is not yet
-resolvable stays `uncertain` inside a bounded `applyAttempts < 3` budget and
-surfaces as `recovery_required`. `/task recovery <taskId>` prints the same
-`family/verdict` diagnosis the sweep acts on.
+durable) and the observation-only actions; cancellation, external effects and the
+merge path keep their dedicated reconcilers. An application that is not yet
+resolvable stays `uncertain` inside a bounded `applyAttempts < 3` budget and then
+produces `recovery_required`. All slot-release paths read the single
+`TaskResidueReader`; `/task recovery <taskId>` and the Gateway
+`listCompletionResidue()` print the same `family/verdict` and residue diagnosis
+the sweep acts on.
 
-Strategic Task and Subtask status writes have one owner: the Task Domain
-`createTaskLifecyclePort()` and the Work Graph `createSubtaskLifecyclePort()` in
-`src/task/task-lifecycle-transition-port.ts`. Every call validates the canonical
+Strategic Task and Subtask status writes have one owner, the Task Domain:
+`createTaskLifecyclePort()` and `createSubtaskLifecyclePort()` in
+`src/task/task-lifecycle-transition-port.ts`. Work Graph owns topology, node
+identity and the runnable frontier, not Subtask run state. Every call validates the canonical
 transition, records the requesting actor and reason, treats a replayed
 cancellation or block as idempotent, and rejects any transition out of a
 terminal lifecycle. The Kernel Execution Runtime, cancellation coordinator, work

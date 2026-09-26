@@ -133,13 +133,18 @@ Runtime does
 not rewrite the receipt or Kernel ledger, does not relax permission, material,
 contract or external-effect recovery, and `ControlKernel` remains the sole
 authority for `resume_task`. Task and Subtask state restoration is applied only
-with the Kernel decision. Uncertain Kernel applications converge by declared postcondition rather than
-by manual SQLite repair. Startup and periodic recovery inspect each managed
-action family (`dispatch`, `replan`, `task_transition`, `plan_activation`) and
-resolve the application to `applied`, a safe retry inside a bounded budget, or
-explicit `recovery_required`. Cancellation, external effects and the merge path
-keep their dedicated reconcilers. `/task recovery <taskId>` reports the same
-declared postcondition family and verdict that recovery acts on. A legacy
+with the Kernel decision. Uncertain Kernel applications converge by declared postcondition rather than by
+manual SQLite repair. One shared convergence entry runs at startup and on the
+account periodic review, selected from durable pending facts rather than a
+blocked-only Task scan. It inspects each managed action family (`dispatch`,
+`replan`, `task_transition`, `plan_activation`, `resume_task`) and resolves the
+application to `applied`, a safe retry inside a bounded budget, or explicit
+`recovery_required`. Cancellation, external effects and the merge path keep their
+dedicated reconcilers. A budget-exhausted application or a failed Replan Job
+emits a deterministic `recovery_required_observed` Kernel event, and
+`ControlKernel` authorizes `block_work` with a `recovery_required` blocker, so the
+Task cannot stay `running`. `/task recovery <taskId>` reports the same declared
+postcondition family and verdict that recovery acts on. A legacy
 `authorize_task_plan` application made uncertain solely by the former
 system-binding `onDecisionApplying` presentation callback defect keeps its own
 bounded Kernel-authorized retry path.
@@ -680,8 +685,12 @@ The one read-only projection of a Task's lifecycle for TUI, Web, Feishu and comm
 _Avoid_: per-surface status mapping, dashboard-owned reconciliation
 
 **Task Lifecycle Transition Port**:
-The single owner of strategic Task and Subtask status writes (`src/task/task-lifecycle-transition-port.ts`). Runtime handlers apply one Kernel-authorized action; they call this port instead of writing a status directly. It validates every transition against the canonical lifecycle contract, records the requesting actor and reason for audit, treats a replayed cancellation or block as idempotent, and rejects a cross-layer transition out of a terminal state. User-driven `/task` commands remain Task Domain operations through `TaskEngine`.
-_Avoid_: per-module status writes, TaskView-owned repair
+The single owner of strategic Task and Subtask status writes (`src/task/task-lifecycle-transition-port.ts`), both assigned to the Task Domain by ADR-0020; Work Graph owns proposal topology, node identity and the runnable frontier, not Subtask run state. Runtime handlers apply one Kernel-authorized action; they call this port instead of writing a status directly. It validates every transition against the canonical lifecycle contract, records the requesting actor and reason, treats a replayed cancellation or block as idempotent, and rejects a cross-layer transition out of a terminal state. `listTransitions()` is an in-process observation seam, not a durable audit. User-driven `/task` commands remain Task Domain operations through `TaskEngine`.
+_Avoid_: per-module status writes, TaskView-owned repair, one residue rule per caller
+
+**Task Residue**:
+The one answer to "can this Task's Conversation slot be released", produced by `TaskResidueReader.blockingReasons()`. Completion, cancellation, startup recovery, periodic recovery and TaskView all read it; a caller that must discount its own in-flight Decision passes that Decision id explicitly. A Task that is blocked with no residue releases its slot; a Task with `pending`/`applying`/`uncertain` applications, a terminal dispatch item without a receipt, an outstanding Replan Job or a live lease keeps it.
+_Avoid_: local residue re-derivation, optimistic release
 
 **Attempt Settlement**:
 An Attempt is `authorized -> launched -> running -> settling -> settled`. Settlement is proven by the immutable `executor_attempt_receipts` row plus the closed dispatch item, and carries a separate immutable outcome (`succeeded | failed | heartbeat_lost | cancelled | unknown`). "Attempt settled" replaces the public phrase "dispatch terminal"; a settled Attempt alone never completes a Task.
@@ -792,7 +801,7 @@ The durable Kernel-authorized transaction that makes a Task or an atomic downstr
 _Avoid_: best-effort process abort, status-only update, rollback of published facts
 
 **Generation Replan Request**:
-The one durable ordinary automatic-replan request for a Task generation/revision. Multiple exhausted Subtasks coalesce into it; independent work drains first, and the Kernel authorizes `schedule_replan`, whose only Runtime postcondition is that this Job is durably schedulable under the Decision-derived quiescence token. The Decision application is `applied` immediately with no Planner call, so no foreground TUI, Web connection or ConversationSession callback is required. An account-scoped Planner Worker claims the Job with a bounded Planner lease, performs one Planner turn, and inserts the `plan_proposed` event together with the `submitted` transition; the deterministic Job id and single conditional claim make a duplicate recovery pass idempotent. A retryable Planner failure backs off and keeps the Job identity; past the absolute retry budget the Job fails closed as `planner_unavailable`, which the Kernel projects into an explicit `block_work`.
+The one durable ordinary automatic-replan request for a Task generation/revision. Multiple exhausted Subtasks coalesce into it; independent work drains first, and the Kernel authorizes `schedule_replan`, whose only Runtime postcondition is that this Job is durably schedulable under the Decision-derived quiescence token. The Decision application is `applied` immediately with no Planner call, so no foreground TUI, Web connection or ConversationSession callback is required. An account-scoped Planner Worker claims the Job with a bounded Planner lease, performs one Planner turn, and inserts the `plan_proposed` event together with the `submitted` transition; the deterministic Job id and single conditional claim make a duplicate recovery pass idempotent. The Planner turn has a durable identity: the proposal event id is derived from the Job and the proposal is written to the Kernel inbox before the `submitted` transition, so a worker pass distinguishes "not yet planned", "proposal persisted" (reuse it) and "claim with unknown submission" (retry after the lease) and never re-plans a persisted proposal. A retryable Planner failure backs off and keeps the Job identity; past the absolute retry budget the Job fails closed as `planner_unavailable`, and recovery emits `recovery_required_observed` so the Kernel projects an explicit `block_work`.
 _Avoid_: conflict-chain replan, per-attempt hidden retry, parallel Planner calls, foreground Planner callback
 
 **Work Unit Event**:
