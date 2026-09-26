@@ -371,12 +371,23 @@ export class AccountStartupRecoveryService {
   private async convergeRecovery(now: string): Promise<boolean> {
     const workflow = this.deps.kernelServices.kernelWorkflowRepo;
     workflow.reconcileProcessing();
-    this.convergeUncertainApplications(now);
+    const retriedTaskIds = this.convergeUncertainApplications(now);
     this.enqueueRetrySafeSystemBindingRecoveries(now);
+    // Re-queuing an application is not convergence on its own: the same pass
+    // must drain the Task so the retried Decision is actually re-applied and
+    // the next verdict is observed (2026-09-25 review, bounded retry closure).
+    for (const taskId of retriedTaskIds) {
+      try {
+        await this.recoverTask(taskId);
+      } catch {
+        // A Task without a resolvable origin keeps the application observable
+        // as `recovery_required`; it must not take the recovery pass down.
+      }
+    }
     const signalled = await this.convergeRecoveryRequired(now);
     await this.convergeConversationSlots(now);
     await this.promoteAvailableQueuedTasks(now);
-    return signalled;
+    return signalled || retriedTaskIds.length > 0;
   }
 
   /**
@@ -639,9 +650,10 @@ export class AccountStartupRecoveryService {
    * and reaches `applied`, a safe retry, or explicit `recovery_required`; it can
    * never stay uncertain forever while the Task remains `running`.
    */
-  private convergeUncertainApplications(now: string): void {
+  private convergeUncertainApplications(now: string): string[] {
     const workflow = this.deps.kernelServices.kernelWorkflowRepo;
     const sources = this.recoveryFactSource();
+    const retriedTaskIds = new Set<string>();
     for (const application of workflow.listUncertainApplications()) {
       const inspection = inspectApplicationAgainstSources(application, sources);
       if (inspection.verdict === 'applied') {
@@ -654,8 +666,11 @@ export class AccountStartupRecoveryService {
       if (inspection.verdict === 'retry_safe'
         && application.applyAttempts < MAX_UNSAFE_APPLICATION_RETRIES) {
         workflow.resolveUncertainApplication(application.decisionId, 'retry', now);
+        const action = application.decision.action;
+        if ('taskId' in action && action.taskId) retriedTaskIds.add(action.taskId);
       }
     }
+    return [...retriedTaskIds];
   }
 
   private lifecyclePort(): TaskLifecycleTransitionPort {

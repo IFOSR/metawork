@@ -28,9 +28,11 @@ import { SqliteResourceLeaseRepository } from '../../src/storage/resource-lease-
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
+import { WorkspacePublicationRepo } from '../../src/storage/workspace-publication-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import { ConversationTaskSchedulerRepo } from '../../src/storage/conversation-task-scheduler-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
+import { TaskResidueReader } from '../../src/execution/task-residue-reader.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 import { builtinCodexAgentClass } from '../support/builtin-agent-classes.js';
@@ -169,14 +171,7 @@ describe('AccountStartupRecoveryService production composition', () => {
         order: 0,
         subtaskId: `${task.id}_execute`,
         attemptId: 'attempt_never_landed',
-        authorizedBinding: new SubtaskRepo(fixture.db)
-          .listActiveByTask(task.id)[0]!.executorBindings[0]!,
-        bindingFingerprint: 'fp-never-landed',
-        attemptKind: 'primary',
-        sourceAttemptId: null,
-        recoveryMode: 'fresh',
-        attemptPayload: null,
-        defaultResourceGrant: [],
+        ...realDispatchItem(fixture, task.id, 'attempt_never_landed'),
       }],
     });
 
@@ -188,6 +183,73 @@ describe('AccountStartupRecoveryService production composition', () => {
     const application = workflow.findApplicationByDecisionId(seeded.decision.id);
     expect(application?.status).not.toBe('uncertain');
     expect(application?.applyAttempts).toBeGreaterThan(1);
+  });
+
+  it('retries a safe uncertain application in the same pass it re-queues it', async () => {
+    const fixture = createFixture('uncertain-retry-drain');
+    const task = createRunningTask(fixture, 'Retry the uncertain dispatch');
+    const seeded = seedUncertainTaskTransition(fixture, task.id, {
+      type: 'dispatch_batch',
+      taskId: task.id,
+      items: [{
+        order: 0,
+        subtaskId: `${task.id}_execute`,
+        attemptId: 'attempt_retry_drain',
+        ...realDispatchItem(fixture, task.id, 'attempt_retry_drain'),
+      }],
+    });
+
+    await fixture.composition.accountRuntime.initialize();
+
+    // Re-queuing without draining would leave the application `pending` with no
+    // observer; the same pass must re-apply it and record the next verdict.
+    const application = new KernelWorkflowRepo(fixture.db)
+      .findApplicationByDecisionId(seeded.decision.id);
+    expect(application?.status).not.toBe('pending');
+    expect(application?.applyAttempts).toBeGreaterThan(1);
+    expect(new KernelDispatchItemRepo(fixture.db).find('attempt_retry_drain')).not.toBeNull();
+  });
+
+  it('keeps a blocked Task slot held while it still owns convergent residue', async () => {
+    const fixture = createFixture('blocked-slot-residue');
+    const task = createRunningTask(fixture, 'Hold the slot for live residue');
+    seedFailedReplanJob(fixture, task.id);
+    const scheduler = new ConversationTaskSchedulerRepo(fixture.db);
+    scheduler.claimSlot('conversation-origin', task.id, 'reservation-1', '2026-09-25T00:00:00.000Z');
+    seedTaskOriginDecision(fixture.db, task.id, 'conversation-origin');
+    await fixture.composition.accountRuntime.initialize();
+    expect(scheduler.getSlot('conversation-origin').state).toBe('free');
+
+    // A publication still applying is residue the Kernel cannot dismiss, and the
+    // release path must reach the same conclusion as TaskResidueReader.
+    scheduler.claimSlot('conversation-origin', task.id, 'reservation-2', '2026-09-25T00:01:00.000Z');
+    const revision = new WorkGraphRevisionRepo(fixture.db).findActive(task.id)!;
+    const publications = new WorkspacePublicationRepo(fixture.db);
+    publications.insertCandidate({
+      id: 'publication-residue',
+      taskId: task.id,
+      generationId: revision.generationId,
+      subtaskId: `${task.id}_execute`,
+      sourceAttemptId: 'attempt-residue',
+      agentClassName: 'codex-cli',
+      candidateCommit: 'commit-residue',
+      completion: {} as never,
+      topologyLayer: 0,
+      firstDispatchOrder: 0,
+      createdAt: '2026-09-25T00:01:00.000Z',
+    });
+    publications.markApplying('publication-residue', '2026-09-25T00:01:00.000Z');
+
+    await fixture.composition.accountRuntime.reviewTaskPoolOnTimer();
+
+    const reader = new TaskResidueReader({
+      db: fixture.db,
+      dispatchItemRepo: new KernelDispatchItemRepo(fixture.db),
+      publicationRepo: new WorkspacePublicationRepo(fixture.db),
+      workUnitClaimService: { hasClaimedByTask: () => false } as never,
+    });
+    expect(reader.blockingReasons(task.id, revision.generationId)).toContain('publication');
+    expect(scheduler.getSlot('conversation-origin').state).not.toBe('free');
   });
 
   it('blocks the Task, then releases its slot, when the Replan Job failed closed', async () => {
@@ -1056,6 +1118,33 @@ function seedUncertainTaskTransition(
   workflow.markApplying(decision.id, now);
   workflow.markApplicationFailed(decision.id, 'uncertain', 'process exit during apply', now);
   return { decision };
+}
+
+/**
+ * A dispatch batch item whose binding and fingerprint are the real authorized
+ * values, so re-applying the Decision passes ledger validation.
+ */
+function realDispatchItem(
+  fixture: ReturnType<typeof createFixture>,
+  taskId: string,
+  attemptId: string,
+) {
+  const binding = new SubtaskRepo(fixture.db)
+    .listActiveByTask(taskId)[0]!.executorBindings[0]!;
+  return {
+    attemptId,
+    authorizedBinding: binding,
+    bindingFingerprint: authorizedExecutorBindingFingerprint(binding),
+    attemptKind: 'primary' as const,
+    sourceAttemptId: null,
+    recoveryMode: 'fresh' as const,
+    attemptPayload: null,
+    defaultResourceGrant: [],
+  };
+}
+
+function activeGeneration(fixture: ReturnType<typeof createFixture>, taskId: string): string | null {
+  return new WorkGraphRevisionRepo(fixture.db).findActive(taskId)?.generationId ?? null;
 }
 
 function executionBinding(db: Database.Database): ConversationExecutionBinding {
