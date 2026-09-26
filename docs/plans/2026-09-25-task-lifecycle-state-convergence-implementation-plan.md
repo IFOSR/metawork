@@ -448,8 +448,8 @@ Update `CONTEXT.md` and the current technical overview only after the contract i
 ### Validation
 
 - `npx tsc --noEmit` clean.
-- Full suite: 2628 tests, 2614 passed, 3 pre-existing failures
-  (`tests/billing/bill-finality.test.ts`,
+- Full suite after the review corrections: 2642 tests, 2628 passed, 3
+  pre-existing failures (`tests/billing/bill-finality.test.ts`,
   `tests/configuration/configuration-module-boundary.test.ts`,
   `tests/docker/shell-schema-isolation.test.ts`) and 6 pre-existing
   configuration-dependent `tests/session/*` files. All nine fail identically on
@@ -479,6 +479,13 @@ Update `CONTEXT.md` and the current technical overview only after the contract i
 
 ### Review corrections (2026-09-25)
 
+Review scope `55184d8..dc1c533`. Corrections: `528755b`
+(`fix: close the task lifecycle convergence gaps found in review`), `ddcc5b6`
+(`docs: correct the convergence status and contracts after review`) and
+`1a9e1b8` (`fix: drain a retried uncertain application in the same recovery
+pass`).
+
+
 A follow-up review of Phases 0-3 found that several completion claims exceeded
 the implementation. Each finding below is fixed, with the fix named and covered
 by a focused test.
@@ -492,6 +499,8 @@ by a focused test.
 | 5 | Job idempotency did not make the Planner turn idempotent | The proposal event id is derived from the Job (`generationReplanProposalEventId()`) and the proposal is persisted in the Kernel inbox **before** the `submitted` transition, so the worker distinguishes "not yet planned / proposal persisted / claim with unknown submission" and never re-plans a persisted proposal. |
 | 6 | The activity card hardcoded "no Replan Job" and TaskView fell back to a false `waiting_for_plan`; Gateway `completionResidue` was fixed to `[]` | The activity card receives `openReplanJobTaskIds` and `pendingRetryWakeTaskIds` and consumes `deriveTaskLifecycleState()`. TaskView reports `recovery_required` with `recoveryDiagnosis` when no driver exists. `listCompletionResidue()` reads the same residue reader as the release paths. |
 | 7 | Contract and port comments said Work Graph owns the Subtask lifecycle; the composed port's two `listTransitions()` overwrote each other | ADR-0020 assigns Task and Subtask lifecycle to the **Task Domain**; the wording is unified and the composed port merges the observation streams. The record is documented as an in-process observation seam, not a durable audit. |
+| 8 | Re-queuing an uncertain application did not drain it, so the retried Decision was never re-applied | `convergeRecovery()` drains every Task it re-queued in the same pass and tolerates a Task without a resolvable origin. Covered by `retries a safe uncertain application in the same pass it re-queues it`. |
+| 9 | No test covered the residue categories the duplicated check missed | `tests/execution/task-residue-reader.test.ts` covers `pending`/`applying`/`uncertain` applications, a terminal dispatch item without a receipt, identity-scoped Decision exclusion and a claimed WorkUnit with an outstanding Replan Job. |
 
 ### Closing revision
 
