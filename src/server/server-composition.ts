@@ -1073,13 +1073,16 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   // Server-only Span advisor. It resolves the credential from the pinned
   // revision's SecretStore reference; Planner, Executor, and clients never see
   // the key or the raw provider payload.
+  const spanRoutingShutdown = new AbortController();
   const spanRoutingAdvisor = new SpanRoutingAdvisor({
     resolveApiKey: async configurationRevision => {
       // Resolve the exact pinned revision, not the currently active one: a
       // retried or replanned event must not be re-scored with newer policy.
       const snapshot = await configurationService.getSnapshot(configurationRevision);
       const span = snapshot.config.routing?.span;
-      if (!span?.enabled || !span.apiKeyRef) return null;
+      // Only the Server-owned internal reference is ever readable here, even if
+      // an unvalidated snapshot carries something else.
+      if (!span?.enabled || span.apiKeyRef !== SPAN_ROUTING_SECRET_REFERENCE) return null;
       try {
         assertSecretReference(span.apiKeyRef);
         const apiKey = (await secretStore.get(span.apiKeyRef as SecretReference)).trim();
@@ -1088,6 +1091,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         return null;
       }
     },
+    lifetimeSignal: spanRoutingShutdown.signal,
   });
 
   // ADR-0031: 直接构造 ConversationSession（不经过 MetaclawSession 桥接），
@@ -2143,6 +2147,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     const composition = createServerComposition({
       startListeners: async () => ({ unixSocketPath: gatewaySocketPath, webOrigin }),
       stopListeners: async () => {
+        // Stop admitting new Turns first, then interrupt in-flight Span calls
+        // so shutdown never waits on an external request and no late ranking
+        // observation can be admitted afterwards.
+        spanRoutingShutdown.abort();
         clientGateway.closeAdmission();
         conversationGatewayRuntime.closeAdmission();
         await Promise.all([

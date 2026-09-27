@@ -52,7 +52,7 @@ const runtimeConfiguration = {
   schemaVersion: 2 as const,
   providers: {}, models: {}, harnesses: {}, agentClasses: {}, permissionProfiles: {},
   runtimePolicy: {}, gateway: {},
-  routing: { span: { enabled: true, model: 'respan/span-01-lite' as const, apiKeyRef: 'file-secret:anyfusion/routing/span', timeoutMs: 3_000 } },
+  routing: { span: { enabled: true, model: 'respan/span-01-lite' as const, apiKeyRef: 'file-secret:anyfusion/internal/routing-span', timeoutMs: 3_000 } },
 };
 
 const workGraph: WorkGraphProposal = {

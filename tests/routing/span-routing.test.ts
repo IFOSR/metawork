@@ -418,6 +418,39 @@ describe('Span routing advisor', () => {
     await expect(evaluation).rejects.toBeInstanceOf(SpanEvaluationAbortedError);
   });
 
+  it('aborts in-flight requests when the Server lifetime signal aborts', async () => {
+    const lifetime = new AbortController();
+    const entered = deferred<void>();
+    let observed: AbortSignal | undefined;
+    const client: SpanDecisionClient = {
+      create: (_request, options) => new Promise((_resolve, reject) => {
+        observed = options.signal;
+        entered.resolve();
+        options.signal.addEventListener('abort', () => {
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          reject(error);
+        }, { once: true });
+      }),
+    };
+    const evaluation = new SpanRoutingAdvisor({
+      resolveApiKey: async () => 'sk-or-test',
+      createClient: () => client,
+      lifetimeSignal: lifetime.signal,
+    }).evaluate({
+      configurationRevision: 'revision-1',
+      deadlineMs: Date.now() + 5_000,
+      requests: [request()],
+    });
+
+    await entered.promise;
+    lifetime.abort();
+
+    // Shutdown must cancel the request itself, not just the waiting caller.
+    expect(observed?.aborted).toBe(true);
+    await expect(evaluation).rejects.toBeInstanceOf(SpanEvaluationAbortedError);
+  });
+
   it('caps concurrent requests', async () => {    let active = 0;
     let peak = 0;
     const client: SpanDecisionClient = {

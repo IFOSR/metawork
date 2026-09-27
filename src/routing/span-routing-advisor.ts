@@ -34,6 +34,12 @@ export interface SpanRoutingAdvisorDeps {
   /** Test seam; defaults to the real OpenRouter SDK client. */
   createClient?: (apiKey: string) => SpanDecisionClient;
   maxConcurrent?: number;
+  /**
+   * Server lifetime signal. Aborting it interrupts every in-flight Span
+   * request and releases queued waiters, so a stopping Server cannot leave
+   * external calls running or hand a late observation to a live Turn.
+   */
+  lifetimeSignal?: AbortSignal;
 }
 
 /**
@@ -65,6 +71,9 @@ export class SpanRoutingAdvisor implements SpanRoutingEvaluator {
     requests: readonly SpanSubtaskEvaluationRequest[];
   }): Promise<{ subtasks: SpanSubtaskObservation[]; usage?: SpanUsage }> {
     if (input.requests.length === 0) return { subtasks: [] };
+    // Fold in the Server lifetime so shutdown aborts the request itself, not
+    // just the waiting caller.
+    const signal = combineAbortSignals(input.signal, this.deps.lifetimeSignal);
     const fallbackAll = (
       reason: 'span_secret_unavailable' | 'span_timeout',
     ): SpanSubtaskObservation[] => input.requests.map(request => ({
@@ -73,7 +82,11 @@ export class SpanRoutingAdvisor implements SpanRoutingEvaluator {
       status: 'fallback',
       reason,
     }));
-    const credential = await this.resolveCredential(input);
+    const credential = await this.resolveCredential({
+      configurationRevision: input.configurationRevision,
+      deadlineMs: input.deadlineMs,
+      signal,
+    });
     if (typeof credential !== 'object') {
       return { subtasks: fallbackAll(credential) };
     }
@@ -81,7 +94,7 @@ export class SpanRoutingAdvisor implements SpanRoutingEvaluator {
     const subtasks = await Promise.all(input.requests.map(request => this.evaluateOne({
       request,
       deadlineMs: input.deadlineMs,
-      ...(input.signal ? { signal: input.signal } : {}),
+      signal,
       client,
     })));
     const usage = aggregateUsage(subtasks);
@@ -281,6 +294,20 @@ class ConcurrencyLimiter {
       this.active = Math.max(0, this.active - 1);
     };
   }
+}
+
+/**
+ * Merges the caller signal with the Server lifetime into one abort signal.
+ * Always returns a signal, so callers never need a `signal === undefined`
+ * branch when combining sources.
+ */
+function combineAbortSignals(
+  ...signals: ReadonlyArray<AbortSignal | undefined>
+): AbortSignal {
+  const live = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  if (live.length === 0) return new AbortController().signal;
+  if (live.length === 1) return live[0]!;
+  return AbortSignal.any(live);
 }
 
 function aggregateUsage(subtasks: readonly SpanSubtaskObservation[]): SpanUsage | undefined {

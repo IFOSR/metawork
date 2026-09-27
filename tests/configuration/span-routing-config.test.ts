@@ -134,12 +134,12 @@ describe('Span routing configuration schema', () => {
   it('accepts a valid Span section and applies the default timeout', () => {
     const config = parseAnyFusionConfigurationV2({
       ...baseConfiguration(),
-      routing: { span: { enabled: true, model: 'respan/span-01-lite', apiKeyRef: 'file-secret:anyfusion/routing/span' } },
+      routing: { span: { enabled: true, model: 'respan/span-01-lite', apiKeyRef: SPAN_ROUTING_SECRET_REFERENCE } },
     });
     expect(config.routing?.span).toEqual({
       enabled: true,
       model: 'respan/span-01-lite',
-      apiKeyRef: 'file-secret:anyfusion/routing/span',
+      apiKeyRef: SPAN_ROUTING_SECRET_REFERENCE,
       timeoutMs: SPAN_ROUTING_DEFAULT_TIMEOUT_MS,
     });
   });
@@ -150,6 +150,10 @@ describe('Span routing configuration schema', () => {
       { enabled: true, model: 'respan/span-01-lite', timeoutMs: 100 },
       { enabled: true, model: 'respan/span-01-lite', timeoutMs: 60_000 },
       { enabled: true, model: 'respan/span-01-lite', apiKeyRef: 'plaintext-key' },
+      // A Provider credential must never be reachable as the Span key, even
+      // when the reference is otherwise well formed.
+      { enabled: true, model: 'respan/span-01-lite', apiKeyRef: 'file-secret:anyfusion/providers/openai' },
+      { enabled: true, model: 'respan/span-01-lite', apiKeyRef: 'file-secret:anyfusion/routing-span' },
     ]) {
       expect(AnyFusionConfigurationV2Schema.safeParse({
         ...baseConfiguration(),
@@ -166,7 +170,7 @@ describe('Span routing projections', () => {
       span: {
         enabled: true,
         model: 'respan/span-01-lite',
-        apiKeyRef: 'file-secret:anyfusion/routing/span',
+        apiKeyRef: SPAN_ROUTING_SECRET_REFERENCE,
         timeoutMs: 2_500,
       },
     },
@@ -179,18 +183,18 @@ describe('Span routing projections', () => {
       model: 'respan/span-01-lite',
       timeoutMs: 2_500,
     });
-    expect(JSON.stringify(kernel)).not.toContain('routing/span');
+    expect(JSON.stringify(kernel)).not.toContain('internal/routing-span');
   });
 
   it('does not leak Span configuration into the Planner projection', () => {
     const planner = buildPlannerConfigurationView(config);
     expect(JSON.stringify(planner)).not.toContain('span-01-lite');
-    expect(JSON.stringify(planner)).not.toContain('routing/span');
+    expect(JSON.stringify(planner)).not.toContain('internal/routing-span');
   });
 
   it('keeps the full Span section (including apiKeyRef) in the Runtime view for the Server adapter', () => {
     const runtime = buildRuntimeConfigurationView(config);
-    expect(runtime.routing?.span?.apiKeyRef).toBe('file-secret:anyfusion/routing/span');
+    expect(runtime.routing?.span?.apiKeyRef).toBe(SPAN_ROUTING_SECRET_REFERENCE);
   });
 });
 
@@ -279,7 +283,7 @@ describe('Span routing credential activation', () => {
       const candidate = structuredClone(config) as Record<string, unknown>;
       if (spanApiKey !== undefined) {
         candidate.routing = {
-          span: { enabled: true, model: 'respan/span-01-lite', timeoutMs: 3_000, apiKeyRef: 'file-secret:anyfusion/routing/span' },
+          span: { enabled: true, model: 'respan/span-01-lite', timeoutMs: 3_000, apiKeyRef: SPAN_ROUTING_SECRET_REFERENCE },
         };
       }
       return candidate;

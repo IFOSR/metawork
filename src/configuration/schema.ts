@@ -438,7 +438,10 @@ const RoutingConfigurationSchema = z.object({
   span: z.object({
     enabled: z.boolean(),
     model: z.literal(SPAN_ROUTING_MODEL),
-    apiKeyRef: z.string().regex(SECRET_REFERENCE).optional(),
+    // Server-owned, non-Provider reference. Pinning the literal here stops a
+    // hand-edited revision from pointing the advisor at another Provider's
+    // credential; only Span activation writes this exact reference.
+    apiKeyRef: z.literal(SPAN_ROUTING_SECRET_REFERENCE).optional(),
     timeoutMs: z.number().int()
       .min(SPAN_ROUTING_MIN_TIMEOUT_MS)
       .max(SPAN_ROUTING_MAX_TIMEOUT_MS)

@@ -71,7 +71,7 @@ describe('Span routing advanced settings draft', () => {
 
   it('loads an existing Span section without exposing any stored key', () => {
     const draft = loadSpanRoutingDraft({
-      routing: { span: { enabled: true, model: 'respan/span-01-lite', apiKeyRef: 'file-secret:anyfusion/routing/span', timeoutMs: 4_000 } },
+      routing: { span: { enabled: true, model: 'respan/span-01-lite', apiKeyRef: 'file-secret:anyfusion/internal/routing-span', timeoutMs: 4_000 } },
     });
     expect(draft).toEqual({
       enabled: true,
@@ -89,14 +89,14 @@ describe('Span routing advanced settings draft', () => {
   it('materializes the fixed model, timeout and the existing credential reference', () => {
     const section = buildSpanRoutingSection(
       { enabled: true, model: 'respan/span-01-lite', timeoutMs: 2_000, apiKey: '' },
-      { routing: { span: { enabled: false, apiKeyRef: 'file-secret:anyfusion/routing/span' } } },
+      { routing: { span: { enabled: false, apiKeyRef: 'file-secret:anyfusion/internal/routing-span' } } },
     );
     expect(section).toEqual({
       span: {
         enabled: true,
         model: 'respan/span-01-lite',
         timeoutMs: 2_000,
-        apiKeyRef: 'file-secret:anyfusion/routing/span',
+        apiKeyRef: 'file-secret:anyfusion/internal/routing-span',
       },
     });
     expect(JSON.stringify(section)).not.toContain('sk-');
@@ -105,9 +105,9 @@ describe('Span routing advanced settings draft', () => {
   it('keeps a disabled Span section so the stored key survives a toggle', () => {
     const section = buildSpanRoutingSection(
       { enabled: false, model: 'respan/span-01-lite', timeoutMs: 3_000, apiKey: '' },
-      { routing: { span: { enabled: true, model: 'respan/span-01-lite', apiKeyRef: 'file-secret:anyfusion/routing/span', timeoutMs: 3_000 } } },
+      { routing: { span: { enabled: true, model: 'respan/span-01-lite', apiKeyRef: 'file-secret:anyfusion/internal/routing-span', timeoutMs: 3_000 } } },
     );
-    expect(section).toMatchObject({ span: { enabled: false, apiKeyRef: 'file-secret:anyfusion/routing/span' } });
+    expect(section).toMatchObject({ span: { enabled: false, apiKeyRef: 'file-secret:anyfusion/internal/routing-span' } });
   });
 
   it('clamps the timeout into the server-accepted range', () => {
