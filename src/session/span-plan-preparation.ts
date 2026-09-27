@@ -103,6 +103,7 @@ export async function attachSpanRoutingObservation(
       subtask,
       groups,
       agentClasses: input.configuration.agentClasses,
+      models: input.configuration.models,
     });
     if (!built.ok) {
       skippedOrFailed.push(built.reason === 'no_eligible_candidate'
@@ -123,6 +124,7 @@ export async function attachSpanRoutingObservation(
   let usage: SpanRoutingObservation['usage'];
   if (requests.length > 0) {
     const result = await input.evaluator.evaluate({
+      configurationRevision: event.configurationRevision,
       deadlineMs: deadLine,
       ...(input.signal ? { signal: input.signal } : {}),
       requests,

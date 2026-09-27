@@ -35,6 +35,12 @@ export function buildSpanSubtaskEvaluationRequest(input: {
   subtask: WorkGraphSubtask;
   groups: readonly PlanSubtaskCandidateGroup[];
   agentClasses: KernelConfigurationView['agentClasses'];
+  /**
+   * Kernel-safe model metadata for the pinned revision. Adds the real Provider
+   * model identity and the existing reasoning/cost/latency/quality facts so the
+   * advisor compares the actual models instead of opaque internal refs.
+   */
+  models?: KernelConfigurationView['models'];
   maxCandidates?: number;
 }): SpanQuestionBuildResult {
   const maxCandidates = input.maxCandidates ?? SPAN_MAX_CANDIDATES_PER_SUBTASK;
@@ -74,9 +80,17 @@ export function buildSpanSubtaskEvaluationRequest(input: {
       modelRef: entry.modelRef,
     });
     const agentClass = input.agentClasses[entry.agentClassRef];
+    const model = input.models?.[entry.modelRef];
     stateCandidates[questionId] = {
       agentClass: entry.agentClassRef,
       model: entry.modelRef,
+      // Internal refs can be opaque aliases; the real model identity is what the
+      // advisor must judge. Both are already visible to the Kernel and contain
+      // no credential material.
+      modelId: entry.modelId,
+      ...(model?.reasoning ? { reasoning: model.reasoning } : {}),
+      ...(model?.contextLimit ? { contextLimit: model.contextLimit } : {}),
+      ...(model?.costTier ? { costTier: model.costTier } : {}),
       capabilities: [...entry.capabilities].sort().slice(0, CAPABILITY_LIMIT),
       ...(entry.qualityTier ? { qualityTier: entry.qualityTier } : {}),
       ...(entry.latencyTier ? { latencyTier: entry.latencyTier } : {}),

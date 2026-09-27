@@ -12,7 +12,10 @@ import {
   planRoutingCandidateSetFingerprint,
   planSubtaskCandidateGroups,
 } from '../../src/routing/plan-routing-candidates.js';
-import type { SpanRoutingObservation } from '../../src/routing/span-routing-types.js';
+import {
+  SPAN_QUESTION_VERSION,
+  type SpanRoutingObservation,
+} from '../../src/routing/span-routing-types.js';
 
 const configurationRevision = 'revision-span-kernel';
 
@@ -211,7 +214,7 @@ function observation(
   return {
     schemaVersion: 1,
     policyVersion: 'span-routing-v1',
-    questionVersion: 'span-fit-v1',
+    questionVersion: SPAN_QUESTION_VERSION,
     model: 'respan/span-01-lite',
     eventId: event.id,
     proposalFingerprint,

@@ -8,7 +8,12 @@
 
 export const SPAN_OBSERVATION_SCHEMA_VERSION = 1 as const;
 export const SPAN_OBSERVATION_POLICY_VERSION = 'span-routing-v1' as const;
-export const SPAN_QUESTION_VERSION = 'span-fit-v1' as const;
+/**
+ * Bumped when the bounded question/state payload changes. A Kernel-side mismatch
+ * discards an older observation and keeps the deterministic resolver instead of
+ * ranking on data produced under a different contract.
+ */
+export const SPAN_QUESTION_VERSION = 'span-fit-v2' as const;
 export const SPAN_MODEL = 'respan/span-01-lite' as const;
 
 /** Per-request and per-proposal limits (design §6). */
@@ -138,6 +143,21 @@ export type SpanEvaluationOutcome =
     };
 
 /**
+ * Raised when the caller aborted Span evaluation. Cancellation propagates
+ * instead of becoming a scored fallback, so a cancelled Turn never admits work
+ * on the strength of a late observation.
+ *
+ * It lives in this pure module so the Application Shell can distinguish it
+ * without importing the SDK-backed adapter.
+ */
+export class SpanEvaluationAbortedError extends Error {
+  constructor() {
+    super('Span evaluation aborted');
+    this.name = 'AbortError';
+  }
+}
+
+/**
  * Application-Shell seam consumed by `ConversationSession`. The Server
  * composition injects the SecretStore-backed implementation; recovery/system
  * bindings inject `null` and the plan path simply keeps the deterministic
@@ -145,6 +165,12 @@ export type SpanEvaluationOutcome =
  */
 export interface SpanRoutingEvaluator {
   evaluate(input: {
+    /**
+     * Exact pinned configuration revision of the proposal. The Server resolves
+     * that revision's credential instead of whatever is currently active, so a
+     * retried or replanned event cannot be re-scored with newer routing policy.
+     */
+    configurationRevision: string;
     /** Absolute deadline for the whole proposal, in milliseconds. */
     deadlineMs: number;
     signal?: AbortSignal;

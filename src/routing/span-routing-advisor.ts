@@ -2,11 +2,14 @@ import { OpenRouter } from '@openrouter/sdk';
 import { validateSpanDecisionsResponse } from './span-response-validator.js';
 import {
   SPAN_MAX_CONCURRENT_REQUESTS,
+  SpanEvaluationAbortedError,
   type SpanRoutingEvaluator,
   type SpanSubtaskEvaluationRequest,
   type SpanSubtaskObservation,
   type SpanUsage,
 } from './span-routing-types.js';
+
+export { SpanEvaluationAbortedError } from './span-routing-types.js';
 
 /** Narrow callable seam around the Decisions API so tests never hit the network. */
 export interface SpanDecisionClient {
@@ -21,19 +24,16 @@ export interface SpanDecisionClient {
 }
 
 export interface SpanRoutingAdvisorDeps {
-  /** Resolves the OpenRouter credential for the pinned revision; null when unset. */
-  resolveApiKey: () => Promise<string | null>;
+  /**
+   * Resolves the OpenRouter credential for the exact pinned configuration
+   * revision the proposal belongs to; null when unset. Resolution is bounded by
+   * the proposal deadline and any failure degrades to a scored fallback instead
+   * of failing plan admission.
+   */
+  resolveApiKey: (configurationRevision: string) => Promise<string | null>;
   /** Test seam; defaults to the real OpenRouter SDK client. */
   createClient?: (apiKey: string) => SpanDecisionClient;
   maxConcurrent?: number;
-}
-
-/** Internal abort marker: cancellation must not become a scored fallback. */
-export class SpanEvaluationAbortedError extends Error {
-  constructor() {
-    super('Span evaluation aborted');
-    this.name = 'AbortError';
-  }
 }
 
 /**
@@ -45,44 +45,93 @@ export class SpanEvaluationAbortedError extends Error {
  * candidate set; it returns an observation for the Kernel to validate.
  */
 export class SpanRoutingAdvisor implements SpanRoutingEvaluator {
-  private readonly maxConcurrent: number;
+  /**
+   * One Server-wide limiter, not one per proposal: the design bounds total
+   * concurrent Span requests rather than allowing every Conversation to open
+   * its own pair.
+   */
+  private readonly limiter: ConcurrencyLimiter;
 
   constructor(private readonly deps: SpanRoutingAdvisorDeps) {
-    this.maxConcurrent = Math.max(1, deps.maxConcurrent ?? SPAN_MAX_CONCURRENT_REQUESTS);
+    this.limiter = new ConcurrencyLimiter(
+      Math.max(1, deps.maxConcurrent ?? SPAN_MAX_CONCURRENT_REQUESTS),
+    );
   }
 
   async evaluate(input: {
+    configurationRevision: string;
     deadlineMs: number;
     signal?: AbortSignal;
     requests: readonly SpanSubtaskEvaluationRequest[];
   }): Promise<{ subtasks: SpanSubtaskObservation[]; usage?: SpanUsage }> {
     if (input.requests.length === 0) return { subtasks: [] };
-    const fallbackAll = (reason: 'span_secret_unavailable'): SpanSubtaskObservation[] => input.requests.map(request => ({
+    const fallbackAll = (
+      reason: 'span_secret_unavailable' | 'span_timeout',
+    ): SpanSubtaskObservation[] => input.requests.map(request => ({
       subtaskId: request.subtaskId,
       candidateSetFingerprint: request.candidateSetFingerprint,
       status: 'fallback',
       reason,
     }));
-    const apiKey = await this.deps.resolveApiKey();
-    if (!apiKey) return { subtasks: fallbackAll('span_secret_unavailable') };
-    const client = (this.deps.createClient ?? defaultSpanDecisionClient)(apiKey);
-    const limiter = new ConcurrencyLimiter(this.maxConcurrent);
+    const credential = await this.resolveCredential(input);
+    if (typeof credential !== 'object') {
+      return { subtasks: fallbackAll(credential) };
+    }
+    const client = (this.deps.createClient ?? defaultSpanDecisionClient)(credential.apiKey);
     const subtasks = await Promise.all(input.requests.map(request => this.evaluateOne({
       request,
       deadlineMs: input.deadlineMs,
       ...(input.signal ? { signal: input.signal } : {}),
-      limiter,
       client,
     })));
     const usage = aggregateUsage(subtasks);
     return { subtasks, ...(usage ? { usage } : {}) };
   }
 
+  /**
+   * Resolves the pinned-revision credential within the proposal deadline.
+   * Missing, failed, or over-deadline resolution is a bounded fallback reason;
+   * only a caller abort propagates.
+   */
+  private async resolveCredential(input: {
+    configurationRevision: string;
+    deadlineMs: number;
+    signal?: AbortSignal;
+  }): Promise<{ apiKey: string } | 'span_secret_unavailable' | 'span_timeout'> {
+    if (input.signal?.aborted) throw new SpanEvaluationAbortedError();
+    const remaining = input.deadlineMs - Date.now();
+    if (remaining <= 0) return 'span_timeout';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    try {
+      const outcome = await Promise.race([
+        this.deps.resolveApiKey(input.configurationRevision).then(
+          apiKey => (typeof apiKey === 'string' && apiKey.trim().length > 0
+            ? { kind: 'resolved' as const, apiKey: apiKey.trim() }
+            : { kind: 'missing' as const }),
+          () => ({ kind: 'missing' as const }),
+        ),
+        new Promise<'timeout'>(resolve => {
+          timer = setTimeout(() => resolve('timeout'), remaining);
+        }),
+        new Promise<'aborted'>(resolve => {
+          onAbort = () => resolve('aborted');
+          input.signal?.addEventListener('abort', onAbort, { once: true });
+        }),
+      ]);
+      if (outcome === 'timeout') return 'span_timeout';
+      if (outcome === 'aborted') throw new SpanEvaluationAbortedError();
+      return outcome.kind === 'resolved' ? { apiKey: outcome.apiKey } : 'span_secret_unavailable';
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (onAbort) input.signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
   private async evaluateOne(input: {
     request: SpanSubtaskEvaluationRequest;
     deadlineMs: number;
     signal?: AbortSignal;
-    limiter: ConcurrencyLimiter;
     client: SpanDecisionClient;
   }): Promise<SpanSubtaskObservation> {
     const { request } = input;
@@ -98,7 +147,7 @@ export class SpanRoutingAdvisor implements SpanRoutingEvaluator {
       durationMs: Date.now() - startedAt,
     });
 
-    const release = await input.limiter.acquire(input.deadlineMs, input.signal);
+    const release = await this.limiter.acquire(input.deadlineMs, input.signal);
     if (!release) {
       if (input.signal?.aborted) throw new SpanEvaluationAbortedError();
       return fallback('span_timeout');
@@ -182,7 +231,7 @@ export function defaultSpanDecisionClient(apiKey: string): SpanDecisionClient {
   };
 }
 
-/** Small FIFO limiter; waiting counts against the proposal deadline. */
+/** Small FIFO limiter shared by every proposal on one Server. */
 class ConcurrencyLimiter {
   private active = 0;
   private readonly waiters: Array<(release: (() => void) | null) => void> = [];

@@ -1,4 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
 import {
   buildSpanSubtaskEvaluationRequest,
 } from '../../src/routing/span-question-builder.js';
@@ -164,6 +170,47 @@ describe('Span question builder', () => {
     expect(built).toEqual({ ok: false, reason: 'span_input_too_large' });
   });
 
+  it('sends the real model identity and the pinned model facts, not only opaque refs', () => {
+    const built = buildSpanSubtaskEvaluationRequest({
+      subtask: subtask(),
+      groups: groups(),
+      agentClasses: agentClasses(),
+      models: {
+        'model-fast': {
+          providerRef: 'provider-a', modelId: 'gpt-fast', capabilities: ['coding', 'tools'],
+          reasoning: 'low', contextLimit: 128_000, costTier: 'low', latencyTier: 'low',
+          qualityTier: 'medium', enabled: true,
+        },
+      } as never,
+    });
+    if (!built.ok) throw new Error(`unexpected build failure: ${built.reason}`);
+    // c000 sorts first by AgentClass ref (`codex-fast`).
+    expect(built.request.state.candidates).toMatchObject({
+      c000: {
+        model: 'model-fast',
+        modelId: 'gpt-fast',
+        reasoning: 'low',
+        costTier: 'low',
+        contextLimit: 128_000,
+      },
+    });
+  });
+
+  it('changes the request when only the real model identity changes', () => {
+    const withModelId = (modelId: string) => {
+      const varied = groups().map(group => ({
+        ...group,
+        eligible: group.eligible.map(candidate => ({ ...candidate, modelId })),
+      }));
+      return buildSpanSubtaskEvaluationRequest({
+        subtask: subtask(),
+        groups: varied,
+        agentClasses: agentClasses(),
+      });
+    };
+    expect(withModelId('gpt-fast')).not.toEqual(withModelId('gpt-other-actual-model'));
+  });
+
   it('reports no eligible candidate when every group is empty', () => {
     const built = buildSpanSubtaskEvaluationRequest({
       subtask: subtask(),
@@ -280,6 +327,7 @@ describe('Span routing advisor', () => {
       }),
     };
     const result = await advisor(client).evaluate({
+      configurationRevision: 'revision-1',
       deadlineMs: Date.now() + 3_000,
       requests: [request()],
     });
@@ -296,6 +344,7 @@ describe('Span routing advisor', () => {
   it('falls back without calling the API when no credential is available', async () => {
     const create = vi.fn();
     const result = await advisor({ create }, null).evaluate({
+      configurationRevision: 'revision-1',
       deadlineMs: Date.now() + 3_000,
       requests: [request()],
     });
@@ -314,6 +363,7 @@ describe('Span routing advisor', () => {
       }),
     };
     const result = await advisor(client).evaluate({
+      configurationRevision: 'revision-1',
       deadlineMs: Date.now() + 40,
       requests: [request()],
     });
@@ -327,6 +377,7 @@ describe('Span routing advisor', () => {
       },
     };
     const result = await advisor(client).evaluate({
+      configurationRevision: 'revision-1',
       deadlineMs: Date.now() + 3_000,
       requests: [request()],
     });
@@ -339,6 +390,7 @@ describe('Span routing advisor', () => {
       create: async () => ({ model: 'respan/span-01-lite-20260925', answers: {} }),
     };
     const result = await advisor(client).evaluate({
+      configurationRevision: 'revision-1',
       deadlineMs: Date.now() + 3_000,
       requests: [request()],
     });
@@ -357,6 +409,7 @@ describe('Span routing advisor', () => {
       }),
     };
     const evaluation = advisor(client).evaluate({
+      configurationRevision: 'revision-1',
       deadlineMs: Date.now() + 5_000,
       signal: controller.signal,
       requests: [request()],
@@ -365,8 +418,7 @@ describe('Span routing advisor', () => {
     await expect(evaluation).rejects.toBeInstanceOf(SpanEvaluationAbortedError);
   });
 
-  it('caps concurrent requests', async () => {
-    let active = 0;
+  it('caps concurrent requests', async () => {    let active = 0;
     let peak = 0;
     const client: SpanDecisionClient = {
       create: async () => {
@@ -385,15 +437,114 @@ describe('Span routing advisor', () => {
       ...request(),
       subtaskId: `subtask-${index}`,
     }));
-    await advisor(client).evaluate({ deadlineMs: Date.now() + 3_000, requests });
+    await advisor(client).evaluate({ configurationRevision: 'revision-1', deadlineMs: Date.now() + 3_000, requests });
     expect(peak).toBeLessThanOrEqual(2);
   });
 
   it('returns no subtask observations for an empty plan', async () => {
     const result = await advisor({ create: vi.fn() }).evaluate({
+      configurationRevision: 'revision-1',
       deadlineMs: Date.now() + 3_000,
       requests: [],
     });
     expect(result.subtasks).toEqual([]);
+  });
+
+  it('bounds total concurrency across concurrent proposals on one Server advisor', async () => {
+    const release = deferred<void>();
+    let active = 0;
+    let peak = 0;
+    const instance = advisor({
+      create: async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await release.promise;
+        active -= 1;
+        return {
+          model: 'respan/span-01-lite-20260925',
+          answers: { c000: { type: 'noul', noul: 0.5 }, c001: { type: 'noul', noul: 0.5 } },
+          usage: { inputTokens: 1, outputTokens: 0 },
+        };
+      },
+    });
+    const requests = [request('a'), request('b')];
+    const proposals = [
+      instance.evaluate({ configurationRevision: 'revision-1', deadlineMs: Date.now() + 3_000, requests }),
+      instance.evaluate({ configurationRevision: 'revision-1', deadlineMs: Date.now() + 3_000, requests }),
+    ];
+    await vi.waitFor(() => expect(active).toBeGreaterThan(0));
+    // Let the limiter hand out whatever slots it intends to hand out.
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(peak).toBeLessThanOrEqual(2);
+    release.resolve();
+    await Promise.all(proposals);
+  });
+
+  it('resolves the credential for the pinned configuration revision', async () => {
+    const resolveApiKey = vi.fn(async () => 'sk-or-test');
+    const client: SpanDecisionClient = {
+      create: async () => ({
+        model: 'respan/span-01-lite-20260925',
+        answers: { c000: { type: 'noul', noul: 0.9 }, c001: { type: 'noul', noul: 0.2 } },
+        usage: { inputTokens: 1, outputTokens: 0 },
+      }),
+    };
+    const instance = new SpanRoutingAdvisor({ resolveApiKey, createClient: () => client });
+    await instance.evaluate({
+      configurationRevision: 'revision-pinned',
+      deadlineMs: Date.now() + 3_000,
+      requests: [request()],
+    });
+    expect(resolveApiKey).toHaveBeenCalledWith('revision-pinned');
+  });
+
+  it('reports a bounded fallback when credential resolution rejects', async () => {
+    const instance = new SpanRoutingAdvisor({
+      resolveApiKey: async () => { throw new Error('RAW provider body must not surface'); },
+      createClient: () => ({ create: async () => ({}) }),
+    });
+    const result = await instance.evaluate({
+      configurationRevision: 'revision-1',
+      deadlineMs: Date.now() + 3_000,
+      requests: [request()],
+    });
+    expect(result.subtasks[0]).toMatchObject({
+      status: 'fallback',
+      reason: 'span_secret_unavailable',
+    });
+    expect(JSON.stringify(result)).not.toContain('RAW provider body');
+  });
+
+  it('bounds credential resolution by the proposal deadline', async () => {
+    const release = deferred<string>();
+    const instance = new SpanRoutingAdvisor({
+      resolveApiKey: () => release.promise,
+      createClient: () => ({ create: async () => ({}) }),
+    });
+    const result = await instance.evaluate({
+      configurationRevision: 'revision-1',
+      deadlineMs: Date.now() + 30,
+      requests: [request()],
+    });
+    expect(result.subtasks[0]).toMatchObject({ status: 'fallback', reason: 'span_timeout' });
+    release.resolve('sk-or-late');
+  });
+
+  it('propagates caller cancellation instead of scoring it', async () => {
+    const release = deferred<string>();
+    const instance = new SpanRoutingAdvisor({
+      resolveApiKey: () => release.promise,
+      createClient: () => ({ create: async () => ({}) }),
+    });
+    const controller = new AbortController();
+    const evaluation = instance.evaluate({
+      configurationRevision: 'revision-1',
+      deadlineMs: Date.now() + 5_000,
+      signal: controller.signal,
+      requests: [request()],
+    });
+    controller.abort();
+    await expect(evaluation).rejects.toBeInstanceOf(SpanEvaluationAbortedError);
+    release.resolve('sk-or-late');
   });
 });
