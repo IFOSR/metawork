@@ -1068,21 +1068,25 @@ update with an unavailable Provider secret.
 
 The advanced settings section offers one optional external routing advisor:
 `respan/span-01-lite` on OpenRouter. Its OpenRouter Key uses the same secret
-flow as a Provider Key — the Server writes it to the account SecretStore under
-the fixed `routing-span` reference and the revision stores only that reference.
+flow as a Provider Key — the Server writes it to the account SecretStore under a
+fixed reference in the non-Provider `internal` namespace and the revision stores
+only that reference, so a Provider named `routing-span` can never share the slot.
 The section has no Provider or Model picker, and a blank Key field keeps the
 stored value.
 
 When enabled, the Server evaluates only the candidates that already passed the
 shared hard filter and attaches a bounded `spanRouting` observation to the
-`plan_proposed` event before it is durably enqueued. `ControlKernel`
-re-validates that observation and uses the probabilities solely to order
-already-authorized AgentClass and Model candidates. Disabled, missing-key,
-timeout, HTTP error, invalid response, candidate mismatch, or over-budget input
-all fall back to the deterministic resolver; cancellation is propagated instead
-of becoming a fallback. Replaying a stored event makes no external call. Span
-usage is internal routing observation only and adds no separate user billing
-stage.
+`plan_proposed` event before it is durably enqueued. If that event is already
+stored, the stored event is reused and no second request is made. The Server
+resolves the credential for the proposal's pinned configuration revision, and
+that read is bounded by the proposal deadline. `ControlKernel` re-validates the
+observation and uses the probabilities solely to order already-authorized
+AgentClass and Model candidates. Disabled, missing-key, timeout, HTTP error,
+invalid response, candidate mismatch, or over-budget input all fall back to the
+deterministic resolver; cancellation aborts the in-flight request and never
+becomes a fallback. Span usage is internal routing observation only and adds no
+separate user billing stage. Total concurrent Span requests are capped
+Server-wide.
 
 Export the Feishu app secret before starting the runtime:
 

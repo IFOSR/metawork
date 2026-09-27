@@ -51,7 +51,7 @@ interface SpanRoutingConfiguration {
 
 默认 model 固定、enabled=false、timeoutMs=3000；timeout 允许 500–10000ms 的服务端校验范围。模型在 UI 中只读展示，无模型/provider 选择器。高级设置提供启用开关、password 类型 OpenRouter API key 输入框、已配置/未配置状态；超时可以保留服务端默认，不要求用户填写。保存空输入表示保留 key，禁用不删除 key，重新输入表示替换，成功后清空输入框。无需新增在线 probe 按钮或将网络探测作为保存成功的条件。
 
-key 仅作为写入请求中的临时字段，不能并入 config 对象。复用 Provider 现有激活事务的 stageSecrets 和 rollback 回调，但当前 `secrets` 映射按 providerRef 解释，不能伪造 Provider 或将 Span key 塞进这个映射。新增一个有类型的 Span 凭据写入字段，服务端固定解析为专用引用（`file-secret:anyfusion/routing-span`，与 Provider 共用 SecretStore staging 工具，且同时兼容 `CredentialsFileSecretStore` 的引用格式）。客户端不能提交任意 secretRef 读取/写入目标。
+key 仅作为写入请求中的临时字段，不能并入 config 对象。复用 Provider 现有激活事务的 stageSecrets 和 rollback 回调，但当前 `secrets` 映射按 providerRef 解释，不能伪造 Provider 或将 Span key 塞进这个映射。新增一个有类型的 Span 凭据写入字段，服务端固定解析为专用引用（`file-secret:anyfusion/internal/routing-span`）。该引用位于 SecretStore 的**非 Provider internal 命名空间**，因此与任何合法 Provider 名称（包括用户可能创建的 `routing-span` Provider）都不会共享、覆盖或互相读取；客户端不能提交任意 secretRef 读取/写入目标。
 
 revision 只保存 apiKeyRef，读取接口只显示凭据状态。引用格式不合法应拒绝配置；启用但未提供引用、或存储中 key 不可读时允许保留可选功能配置，并显示提示，运行时走 `secret_unavailable` 回退。SecretStore 写失败属于保存失败，不能假装配置已成功。
 
@@ -162,3 +162,15 @@ Span usage 保存为内部路由观测，不冒充 Planner/Executor 用量或自
 ## 10. 完成记录
 
 设计与计划产出日期：2026-09-27。产品实现在同一日期完成于分支 `feat/span-routing`（起点 `main@55184d84`），关闭提交见实施计划的交付记录。真实 OpenRouter 集成 smoke 需要运维提供已轮换的密钥并显式执行 `npm run smoke:span-routing`，未在本次自动化验证中运行；Docker 持久化验证同样未执行。部署尚未进行。
+
+### 评审修正（2026-09-27）
+
+实现完成后的独立评审发现并修复了以下偏差，设计文本已同步：
+
+1. Turn 取消现在会 abort 进行中的 Span 请求，且提交前会再次核对取消闩锁；取消期间到达的评分不会导致 admission。
+2. `plan_proposed` 已持久化时直接复用存储事件，重交不再产生第二次外部请求（仍不承诺入库前崩溃的恰好一次）。
+3. 并发限制提升为 Server 共享实例，跨提案总量不超过 2；排队等待计入提案总截至时间。
+4. Span 凭据改用 internal 命名空间，消除与同名 Provider 的存储冲突。
+5. 凭据解析受提案总截至时间约束，读取失败或超时均回退为有限枚举，不再向外抛错。
+6. 评分请求补充真实 Provider 模型身份与既有 reasoning/cost/latency/quality/context 事实；`questionVersion` 提升为 `span-fit-v2`，旧 observation 因版本不匹配被 Kernel 废弃。
+7. 真实 smoke 脚本改用与产品一致的严格响应校验（空集/部分答案不算成功），且只输出有限错误码与 HTTP status，不再回显原始 SDK/Provider 文本。

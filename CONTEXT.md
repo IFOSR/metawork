@@ -98,7 +98,8 @@ recover a public model identity, the projection reports that the historical
 model information is unavailable instead of exposing the internal ref.
 Optional Span routing is the only external routing advisor. Advanced settings
 store its OpenRouter credential through the same SecretStore path as a Provider
-key, and the revision keeps only the fixed `routing-span` reference. After the
+key, but under the non-Provider `internal` namespace, and the revision keeps
+only that fixed reference. After the
 shared hard filter and before the `plan_proposed` event is durably enqueued, the
 Server may attach a bounded `spanRouting` observation to that event. Replay
 reuses the persisted observation and never re-calls the advisor. `ControlKernel`

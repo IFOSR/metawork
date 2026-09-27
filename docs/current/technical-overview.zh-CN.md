@@ -899,15 +899,18 @@ SecretStore 接口解析，但默认由 `~/.metawork/credentials.json` 提供；
 
 高级设置提供唯一一个可选的外部路由决策模型：OpenRouter 上的
 `respan/span-01-lite`。它的 OpenRouter Key 与 Provider Key 走同一套密钥流程：
-服务端写入账户 SecretStore 的固定 `routing-span` 引用，revision 只保存该引用。
-界面不提供 Provider/Model 选择器，Key 留空表示保留已存值。
+服务端写入账户 SecretStore 中**非 Provider 的 internal 命名空间**固定引用，
+revision 只保存该引用，同名 Provider（例如名为 `routing-span` 的 Provider）
+不会与之共享或互相覆盖。界面不提供 Provider/Model 选择器，Key 留空表示保留已存值。
 
 启用后，服务端只对已通过共用硬过滤的候选进行评估，并在 `plan_proposed` 事件
-持久入队前把有界的 `spanRouting` observation 附着在事件上。`ControlKernel`
-会重新校验该 observation，仅用概率对已授权的 AgentClass/Model 候选排序。
-未启用、缺少 Key、超时、HTTP 错误、响应非法、候选不匹配或超出预算时，
-一律回退到确定性 resolver；取消会向上传递，不会变成评分回退。重放已存储的
-事件不会发起外部调用。Span 用量只作为内部路由观测，不新增用户计费阶段。
+持久入队前把有界的 `spanRouting` observation 附着在事件上；该事件已入库时直接
+复用存储事件，不再发起第二次请求。凭据按提案锁定的 configuration revision 解析，
+并受提案总截止时间约束。`ControlKernel` 会重新校验该 observation，仅用概率对已授权
+的 AgentClass/Model 候选排序。未启用、缺少 Key、超时、HTTP 错误、响应非法、
+候选不匹配或超出预算时，一律回退到确定性 resolver；取消会 abort 进行中的请求，
+不会变成评分回退。服务端总并发请求数受限。Span 用量只作为内部路由观测，
+不新增用户计费阶段。
 
 启动前导出飞书密钥：
 

@@ -321,5 +321,25 @@ docker run --rm metawork-span-test
   `tests/planning/planner-process-supervisor.test.ts`、`tests/session/task-boundary-round3-acceptance.test.ts`（2）、`tests/session/scripted-session.test.ts`、`tests/docker/shell-schema-isolation.test.ts`、`tests/billing/bill-finality.test.ts`、`tests/session/executor-router-command-acceptance.test.ts`、`tests/configuration/configuration-module-boundary.test.ts`、`tests/session/inline-materials-round7-acceptance.test.ts`、`tests/session/input-controller.test.ts`、`tests/session/inline-web-links-round8-acceptance.test.ts`。
 - 新增/相关测试均通过：`tests/configuration/span-routing-config.test.ts`（12）、`tests/routing/plan-routing-candidates.test.ts`（12）、`tests/routing/span-routing.test.ts`（23）、`tests/kernel/span-routing-kernel.test.ts`（10）、`tests/session/span-plan-preparation.test.ts`（9）、`tests/e2e/span-routing.test.ts`（3）、`tests/web/config-edit.test.ts`（10）。
 - 已知偏差：高级设置在 Span 关闭且从未配置时不写入 `routing` 节点，避免无关节省。
+
+### 评审修正（2026-09-27）
+
+实现完成后的独立评审发现 8 处与设计不一致或未完成项，均已修复并补回归测试：
+
+| 问题 | 修复 |
+| --- | --- |
+| 取消期间仍会提交 Kernel 事件 | Turn 级 `AbortController`：取消时 abort 进行中的请求，提交前再次核对取消闩锁 |
+| 已入库事件重交时重复评分 | `preparePlanProposedEvent` 先经 runtime port 查 `findKernelEvent(event.id)`，命中则直接复用存储事件 |
+| 并发上限按提案而非 Server 共享 | `ConcurrencyLimiter` 提升为 advisor 实例级共享，排队计入总截止时间 |
+| Span 凭据与同名 Provider 冲突 | SecretStore 新增非 Provider `internal` 命名空间；引用改为 `file-secret:anyfusion/internal/routing-span` |
+| 凭据解析不受截止时间约束且异常外抛 | advisor 内限时解析，超时/失败归一为 `span_timeout`/`span_secret_unavailable` 回退 |
+| 请求缺少真实模型身份与用途/成本信息 | state 增加 `modelId`、`reasoning`、`contextLimit`、`costTier`；`questionVersion` 提升为 `span-fit-v2` |
+| smoke 把空答案集当成功 | 改用与产品一致的严格校验（集合完整 + finite + [0,1]） |
+| smoke 回显原始 SDK/Provider 错误 | 只输出有限 `errorCode` 与可选 `httpStatus` |
+| 凭据未按 pinned revision 解析 | Server 改为 `getSnapshot(event.configurationRevision)` |
+
+补充的回归测试：`tests/session/span-routing-session-integration.test.ts`（4）、`tests/routing/span-routing-smoke-script.test.ts`（4），以及 `credentials-file-secret-store`、`span-routing-config`、`span-routing` 中的命名空间隔离、跨提案并发、限时凭据、模型身份与取消用例。
+
+仍未完成（已知缺口，不影响上述修复）：system/recovery 绑定不注入 advisor（该绑定的 replan 回调本就直接拒绝，Span 路径不可达）；真实 OpenRouter smoke 与 Docker 持久化验证仍待运维执行。
 - 文档 closing commit：`181a65a docs: plan Span routing integration`。
 - 产品实现 closing commit：本计划最后一批提交（含文档与验收）。
