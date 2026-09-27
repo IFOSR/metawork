@@ -480,6 +480,56 @@ describe('Span routing advisor', () => {
     await Promise.all(proposals);
   });
 
+  it('never over-admits when new work arrives after a slot hand-off', async () => {
+    let active = 0;
+    let peak = 0;
+    const gates: Array<() => void> = [];
+    const instance = new SpanRoutingAdvisor({
+      resolveApiKey: async () => 'sk-or-test',
+      createClient: () => ({
+        create: async () => {
+          active += 1;
+          peak = Math.max(peak, active);
+          await new Promise<void>(resolve => { gates.push(resolve); });
+          active -= 1;
+          return {
+            model: 'respan/span-01-lite-20260925',
+            answers: { c000: { type: 'noul', noul: 0.5 }, c001: { type: 'noul', noul: 0.5 } },
+            usage: { inputTokens: 1, outputTokens: 0 },
+          };
+        },
+      }),
+    });
+    const evaluate = (subtaskId: string) => instance.evaluate({
+      configurationRevision: 'revision-1',
+      deadlineMs: Date.now() + 3_000,
+      requests: [request(subtaskId)],
+    });
+
+    // Occupy both slots, then queue a third request behind them.
+    const first = evaluate('a');
+    const second = evaluate('b');
+    await vi.waitFor(() => expect(active).toBe(2));
+    const queued = evaluate('c');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(gates).toHaveLength(2);
+
+    // Free one slot. The queued request takes it, so two are still outstanding.
+    gates[0]!();
+    await vi.waitFor(() => expect(gates).toHaveLength(3));
+
+    // New work must NOT be admitted: a hand-off keeps its slot reserved.
+    const late = evaluate('d');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(peak).toBeLessThanOrEqual(2);
+    expect(gates).toHaveLength(3);
+
+    for (const gate of gates.splice(0)) gate();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    for (const gate of gates.splice(0)) gate();
+    await Promise.all([first, second, queued, late]);
+  });
+
   it('resolves the credential for the pinned configuration revision', async () => {
     const resolveApiKey = vi.fn(async () => 'sk-or-test');
     const client: SpanDecisionClient = {

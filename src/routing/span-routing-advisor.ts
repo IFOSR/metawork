@@ -234,40 +234,51 @@ export function defaultSpanDecisionClient(apiKey: string): SpanDecisionClient {
 /** Small FIFO limiter shared by every proposal on one Server. */
 class ConcurrencyLimiter {
   private active = 0;
-  private readonly waiters: Array<(release: (() => void) | null) => void> = [];
+  /** Queued acquirers; each returns true only if it actually accepted a slot. */
+  private readonly waiters: Array<() => boolean> = [];
 
   constructor(private readonly limit: number) {}
 
   acquire(deadlineMs: number, signal?: AbortSignal): Promise<(() => void) | null> {
+    if (signal?.aborted) return Promise.resolve(null);
     if (this.active < this.limit) {
       this.active += 1;
       return Promise.resolve(this.makeRelease());
     }
     return new Promise(resolve => {
       let settled = false;
-      const waiter = (release: (() => void) | null) => {
-        if (settled) return;
+      const settle = (accepted: boolean): boolean => {
+        if (settled) return false;
         settled = true;
         clearTimeout(timer);
         signal?.removeEventListener('abort', onAbort);
-        resolve(release);
+        resolve(accepted ? this.makeRelease() : null);
+        return true;
       };
-      const onAbort = () => waiter(null);
+      const onAbort = () => { settle(false); };
       const remaining = deadlineMs - Date.now();
-      const timer = setTimeout(() => waiter(null), Math.max(0, remaining));
+      const timer = setTimeout(() => { settle(false); }, Math.max(0, remaining));
       signal?.addEventListener('abort', onAbort, { once: true });
-      this.waiters.push(waiter);
+      this.waiters.push(() => settle(true));
     });
   }
 
+  /**
+   * Releases one slot. A waiting acquirer inherits the slot directly instead of
+   * the slot being counted down and re-granted, which previously let a newly
+   * arriving request be admitted while the inherited slot was still held.
+   */
   private makeRelease(): () => void {
     let released = false;
     return () => {
       if (released) return;
       released = true;
+      while (this.waiters.length > 0) {
+        // A waiter that already timed out or aborted refuses the slot, so the
+        // next live waiter is offered it instead of leaking a slot.
+        if (this.waiters.shift()!()) return;
+      }
       this.active = Math.max(0, this.active - 1);
-      const next = this.waiters.shift();
-      next?.(this.active < this.limit ? this.makeRelease() : null);
     };
   }
 }
