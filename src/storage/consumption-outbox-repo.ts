@@ -170,6 +170,27 @@ export class SqliteConsumptionOutboxStore implements ConsumptionOutboxPort {
     return row ? rowToReceipt(row) : null;
   }
 
+  findForBills(billIds: readonly string[]): ConsumptionOutboxRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM consumption_outbox WHERE bill_id IN (SELECT value FROM json_each(?))
+    `).all(JSON.stringify(billIds)) as OutboxRow[];
+    return rows.map(rowToOutbox);
+  }
+
+  latestReceiptsForBills(billIds: readonly string[]): ConsumptionReceiptRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM (
+        SELECT *, row_number() OVER (
+          PARTITION BY bill_id
+          ORDER BY CASE state WHEN 'applied' THEN 4 WHEN 'rejected' THEN 3
+            WHEN 'received' THEN 2 ELSE 1 END DESC, observed_at DESC, receipt_id DESC
+        ) AS position FROM consumption_receipts
+        WHERE bill_id IN (SELECT value FROM json_each(?))
+      ) WHERE position = 1
+    `).all(JSON.stringify(billIds)) as ReceiptRow[];
+    return rows.map(rowToReceipt);
+  }
+
   readSourceInstanceId(): string | null {
     const row = this.db.prepare(
       'SELECT source_instance_id FROM billing_source_instance LIMIT 1',

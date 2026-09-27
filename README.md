@@ -318,6 +318,13 @@ or a Client and refuses to run while Server is active. Restart the Server
 after an install, update, or build so all clients use the newly activated
 Runtime and Web assets.
 
+The workspace `dist/` directory is only a build artifact; it is never a Server
+runtime. The repository `npm run server:*` and `npm start` commands delegate to
+the installed `app/current` release as well. After changing source code, run
+`metawork server stop`, `npm run setup:native`, and
+`metawork server start` so the change is built and activated in the one
+production Runtime.
+
 `runtimePolicy.executorIdleTimeoutMs` is the optional Executor watchdog. It is
 an idle timeout, not a maximum Task or attempt duration. Existing installations
 that used the retired `attemptTimeoutMs` field are normalized to the new name

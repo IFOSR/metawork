@@ -12,6 +12,49 @@ changes, subtask planning, executor instance claims, and fallback behavior.
 
 ## Current Implementation Notes
 
+Navigation remediation is in active delivery; installed acceptance is not
+complete. The source schema is now **44**. Schema 43 added the Workspace directory
+projection/invalidation/rebuild tables and Conversation metadata/history and
+Gateway segment-index read models. This supersedes the schema-42 baseline
+description below; 42-to-43 is transactional and preserves existing facts.
+The separate 43-to-44 transaction adds indexed Gateway command admissions.
+Gateway retains admission policy and receipt ownership; Storage provides
+account/key point operations and a recoverable-state index. The legacy account
+JSON is imported once, including terminal idempotency receipts, atomically with
+its account marker, then retained read-only. No parallel admission writer or
+navigation-specific durability bypass is allowed.
+Workspace owns the directory projection contract, Session/Application Shell
+owns Conversation history/metadata ports, and Gateway owns its snapshot and
+segment-index ports. Storage adapters never become lifecycle owners.
+Ordinary directory reads must not replay Conversation journals or scan all
+Tasks. Indexed history cursors retain insertion order across Turn replacement.
+File-to-history updates use a durable write intent, replayed before serving a
+record or page after interruption. Legacy JSON is retained for migration.
+Source production composition now selects one `SegmentedEventJournal` writer
+with bounded background compaction/orphan maintenance. `FileEventJournal` is
+its read-only legacy import source, not a parallel writer. Reconnect negotiates
+`bounded_replay_v1`: expired, future or over-budget cursors receive an explicit
+reset and snapshot; clients reload indexed history rather than replaying the
+audit. Unsupported clients receive an explicit reset-required error.
+Historical Task views use an exact Account/Conversation/Turn trace-observation
+index, not the current-Turn snapshot or a full audit replay. Gateway folds safe
+trace evidence; Storage commits its opaque projection with the segment index.
+Two retained distinct Task IDs permanently preserve fail-closed ambiguity.
+First/latest trace times and latest completion/progress fields remain
+presentation evidence, never Task lifecycle authority. Legacy retained import
+builds the same projection, which survives restart and segment compaction.
+Visible history enrichment uses set reads for Task/timeline/artifact/billing
+facts and preserves canonical billing authorization and projection semantics.
+Native update checkpoints also protect the immutable journal bodies referenced
+by the source database; rollback verifies/restores that companion before any
+pointer switch (ADR-0030). A standalone SQLite backup is not a complete Gateway
+checkpoint after segment compaction.
+Schemas 43 and 44 have been canonically installed and tested on the real
+account. Final rollout acceptance remains open in the navigation remediation
+plan; earlier source-only checkpoints are historical. Web restoration
+reattaches an off-page remembered Conversation with an expected-Workspace
+guard before reading history; inactive history access remains unavailable.
+
 Phase 6 established the durable attempt, publication and recovery substrate, and
 ADR-0037 now extends it to parallel top-level Tasks across Conversations. The
 active path remains `event -> durable inbox -> KernelWorkflow -> snapshot -> ControlKernel.decide -> immutable decision ledger + application -> durable dispatch items -> attempt supervisor -> normalized observation inbox`. `KernelWorkflow` serializes authorization and application, while independent top-level Tasks from different Conversations may run concurrently within configured account limits. A Conversation has one durable execution slot; its later Tasks queue and never overlap its executing or cleaning-up Task. Every attempt owns a Task-generation/Subtask Git worktree that persists across retry, fallback, takeover and merge repair. The default backend runs the canonical Codex/Pi CLIs as child processes in those worktrees; the Docker attempt backend remains an explicit compatibility mode. The isolated AnyFusion-Pi `PlanningAgent` owns user conversation, read-only queries and natural-language planning semantics; `ControlKernel` owns scheduling, cancellation and recovery policy, and Execution owns WorkUnit claims, leases, backend runtimes and Git side effects. See ADR-0037 and the active implementation plan for the multi-Conversation rollout.

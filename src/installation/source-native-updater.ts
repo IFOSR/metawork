@@ -27,6 +27,7 @@ import {
   ReleasePointerTransaction,
   recoverPreparedReleaseActivations,
   readReleaseActivationJournal,
+  type ReleaseActivationJournal,
   type ReleasePointerName,
 } from './release-pointer-transaction.js';
 import { createMigrationContextFromSnapshot } from './schema30-migration-context.js';
@@ -35,6 +36,7 @@ import { AccountLayoutMigrator } from './account-layout-migrator.js';
 import { acquireRuntimeUpdateLock } from './runtime-update-lock.js';
 import { buildSourceMetadataPath, writeBuildSourceMetadata } from './build-source.js';
 import { assertLauncherAvailable, installNativeLauncher } from './native-launcher.js';
+import { backupGatewayJournal, restoreGatewayJournal } from './gateway-journal-backup.js';
 
 export interface SourceNativeUpdateInput {
   releaseId: string;
@@ -75,12 +77,14 @@ export class SourceNativeUpdater {
       await new AccountLayoutMigrator({ paths }).migrate();
       await ensureRevisionedDatabasePointer(accountPaths);
       const pointerPaths = releasePointerPaths(paths, accountPaths);
-      await recoverPreparedReleaseActivations(paths.upgradeJournals, pointerPaths);
+      await recoverPreparedReleaseActivations(paths.upgradeJournals, pointerPaths,
+        (journal, path) => restoreActivationJournal(accountPaths, journal, activationId(path)));
+      const currentActivation = await findCurrentActivation(paths.upgradeJournals, pointerPaths);
       const upgradeId = `update-${input.releaseId}-${randomUUID()}`;
       const release = resolveReleasePaths(paths.root, input.releaseId);
       const repository = new FileConfigurationRepository(accountPaths.config);
       await repository.initialize();
-      await repository.recover();
+      await recoverConfiguration(repository, pointerPaths, currentActivation);
       const snapshot = await repository.getActiveSnapshot();
 
       // The one-time cutover to the credentials file runs during Server startup,
@@ -130,6 +134,11 @@ export class SourceNativeUpdater {
         sentinelTables: ['schema_version'],
       });
       await chmod(candidateDatabase, 0o600);
+      await backupGatewayJournal({
+        databasePath: accountPaths.database,
+        journalRoot: join(accountPaths.gateway, 'events'),
+        backupRoot: join(accountPaths.backups, upgradeId, 'gateway-events'),
+      });
 
       const candidateTargets: Record<ReleasePointerName, string> = {
         database: relative(dirname(accountPaths.database), candidateDatabase),
@@ -146,6 +155,8 @@ export class SourceNativeUpdater {
       const activation = new ReleasePointerTransaction({
         paths: pointerPaths,
         journalPath,
+        previousActivationId: currentActivation?.upgradeId,
+        beforeRollback: journal => restoreActivationJournal(accountPaths, journal, upgradeId),
         afterSwitch: this.dependencies.afterSwitch,
         healthCheck: async () => {
           const probeResult = await probe(snapshot, { contentHash: snapshot.contentHash, files: {} });
@@ -190,32 +201,22 @@ export class SourceNativeUpdater {
       await new AccountLayoutMigrator({ paths }).migrate();
       await ensureRevisionedDatabasePointer(accountPaths);
       const pointerPaths = releasePointerPaths(paths, accountPaths);
-      await recoverPreparedReleaseActivations(paths.upgradeJournals, pointerPaths);
-      const currentApplication = await readlink(paths.appCurrent);
-      const names = await readdir(paths.upgradeJournals)
-        .catch((error: NodeJS.ErrnoException) => {
-          if (error.code === 'ENOENT') return [];
-          throw error;
-        });
-      let target: Awaited<ReturnType<typeof readReleaseActivationJournal>> | null = null;
-      for (const name of names.filter(name => name.endsWith('-activation.json')).sort().reverse()) {
-        const journal = await readReleaseActivationJournal(join(paths.upgradeJournals, name));
-        if (
-          journal.phase === 'committed'
-          && journal.candidateTargets.application === currentApplication
-          && basename(journal.previousTargets.application) === releaseId
-        ) {
-          target = journal;
-          break;
-        }
-      }
-      if (!target) {
+      await recoverPreparedReleaseActivations(paths.upgradeJournals, pointerPaths,
+        (journal, path) => restoreActivationJournal(accountPaths, journal, activationId(path)));
+      const currentActivation = await findCurrentActivation(paths.upgradeJournals, pointerPaths);
+      if (!currentActivation
+        || basename(currentActivation.journal.previousTargets.application) !== releaseId) {
         throw new Error(`rollback target was not previously verified compatible: ${releaseId}`);
       }
+      const target = currentActivation.journal;
+
+      // The activation journal identifies the companion for this exact previous DB.
+      // Restore before any pointer switch; current bodies are never removed.
+      await restoreActivationJournal(accountPaths, target, currentActivation.upgradeId);
 
       const repository = new FileConfigurationRepository(accountPaths.config);
       await repository.initialize();
-      await repository.recover();
+      await recoverConfiguration(repository, pointerPaths, currentActivation);
       const targetRevision = basename(target.previousTargets.configuration);
       const targetSnapshot = await repository.readSnapshot(targetRevision);
       // Rollback probes the target configuration before activation, so it needs
@@ -277,9 +278,17 @@ export class SourceNativeUpdater {
         generated: relative(dirname(accountPaths.generatedCurrent), compiledRuntime.rootPath),
       };
       const journalPath = join(paths.upgradeJournals, `${upgradeId}-activation.json`);
+      // A manual rollback is itself an activation; preserve its previous index too.
+      await backupGatewayJournal({
+        databasePath: accountPaths.database,
+        journalRoot: join(accountPaths.gateway, 'events'),
+        backupRoot: join(accountPaths.backups, upgradeId, 'gateway-events'),
+      });
       const activation = new ReleasePointerTransaction({
         paths: pointerPaths,
         journalPath,
+        previousActivationId: currentActivation.upgradeId,
+        beforeRollback: journal => restoreActivationJournal(accountPaths, journal, upgradeId),
         afterSwitch: this.dependencies.afterSwitch,
         healthCheck: async () => {
           const probeResult = await probe(rollbackSnapshot, {
@@ -294,12 +303,97 @@ export class SourceNativeUpdater {
           verifyCompatibleDatabase(accountPaths.database);
         },
       });
+      // The current config transaction is already recovered and verified. Retire
+      // it durably before the release transaction takes over its pointer, so both
+      // crash recovery and ordinary Server startup accept either pointer set.
+      await repository.journal.clear();
       await activation.activate(rollbackTargets);
       return { outcome: 'committed', upgradeId, journalPath };
     } finally {
       await lock.release();
     }
   }
+}
+
+interface CommittedActivation {
+  upgradeId: string;
+  journal: ReleaseActivationJournal;
+}
+
+function activationId(journalPath: string): string {
+  return basename(journalPath).slice(0, -'-activation.json'.length);
+}
+
+async function restoreActivationJournal(
+  accountPaths: AccountPaths,
+  journal: ReleaseActivationJournal,
+  upgradeId: string,
+): Promise<void> {
+  await restoreGatewayJournal({
+    databasePath: resolve(dirname(accountPaths.database), journal.previousTargets.database),
+    journalRoot: join(accountPaths.gateway, 'events'),
+    backupRoot: join(accountPaths.backups, upgradeId, 'gateway-events'),
+  });
+}
+
+async function findCurrentActivation(
+  journalDirectory: string,
+  paths: Record<ReleasePointerName, string>,
+): Promise<CommittedActivation | null> {
+  const names = await readdir(journalDirectory).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  const activations: CommittedActivation[] = [];
+  const pointerNames = Object.keys(paths) as ReleasePointerName[];
+  for (const name of names.filter(name => name.endsWith('-activation.json'))) {
+    const journal = await readReleaseActivationJournal(join(journalDirectory, name));
+    if (journal.phase === 'committed'
+      && pointerNames.every(key => journal.paths[key] === paths[key])) {
+      activations.push({ upgradeId: activationId(name), journal });
+    }
+  }
+  const sameTarget = (name: ReleasePointerName, left: string, right: string) =>
+    resolve(dirname(paths[name]), left) === resolve(dirname(paths[name]), right);
+  const currentDatabase = await readlink(paths.database);
+  const currentApplication = await readlink(paths.application);
+  // A rollback can revisit an app/DB pair. Only the unconsumed activation owns
+  // its current checkpoint. Config/generated pointers may advance independently.
+  const candidates = activations.filter(entry =>
+    sameTarget('database', entry.journal.candidateTargets.database, currentDatabase)
+    && sameTarget('application', entry.journal.candidateTargets.application, currentApplication)
+    && !activations.some(next => next.upgradeId !== entry.upgradeId && (
+      next.journal.previousActivationId === entry.upgradeId
+      || (next.journal.previousActivationId === undefined && pointerNames.every(name =>
+        sameTarget(name, next.journal.previousTargets[name], entry.journal.candidateTargets[name])))
+    )));
+  if (candidates.length > 1) {
+    throw new Error('ambiguous committed release activation lineage');
+  }
+  return candidates[0] ?? null;
+}
+
+async function recoverConfiguration(
+  repository: FileConfigurationRepository,
+  paths: Record<ReleasePointerName, string>,
+  activation: CommittedActivation | null,
+): Promise<void> {
+  const journal = await repository.journal.read();
+  if (journal?.phase === 'committed' && activation) {
+    const configuration = await readlink(paths.configuration);
+    const generated = await readlink(paths.generated);
+    const { previousTargets, candidateTargets } = activation.journal;
+    // A committed release rollback supersedes the prior config-only journal.
+    // Do not discard pending or independently advanced configuration activations.
+    if (configuration === candidateTargets.configuration
+      && generated === candidateTargets.generated
+      && basename(configuration) !== journal.nextRevisionId
+      && basename(previousTargets.configuration) === journal.nextRevisionId) {
+      await repository.getActiveSnapshot();
+      await repository.journal.clear();
+    }
+  }
+  await repository.recover();
 }
 
 function releasePointerPaths(

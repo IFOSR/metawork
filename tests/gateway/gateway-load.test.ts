@@ -183,7 +183,7 @@ describe('gateway load bounds', () => {
     });
     const published: unknown[] = [];
     const runtime = new WorkspaceGatewayRuntime(directory, {
-      publish: async (_kind, _workspaceId, payload) => {
+      publishConnection: async (_kind, _connectionId, payload) => {
         published.push(payload);
       },
     });

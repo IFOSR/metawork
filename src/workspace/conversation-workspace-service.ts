@@ -1,3 +1,4 @@
+import { updateConversationCatalog } from '../session/conversation-catalog-mutation.js';
 import type {
   ConversationRecord,
   ConversationStore,
@@ -51,8 +52,10 @@ export class ConversationWorkspaceService implements ConversationWorkspacePort {
   constructor(private readonly deps: ConversationWorkspaceServiceDeps) {}
 
   async getWorkspace(): Promise<ConversationWorkspaceSelection | null> {
-    const record = await this.deps.store.readConversation(this.deps.conversationId);
-    const binding = record?.conversation.workspaceBinding;
+    const metadata = this.deps.store.readMetadata
+      ? await this.deps.store.readMetadata(this.deps.conversationId)
+      : (await this.deps.store.readConversation(this.deps.conversationId))?.conversation;
+    const binding = metadata?.workspaceBinding;
     if (!binding) return null;
     const workspace = await this.deps.workspaceCatalog.findById(binding.workspaceId);
     if (!workspace || workspace.archived || workspace.availability !== 'available') return null;
@@ -110,13 +113,12 @@ export class ConversationWorkspaceService implements ConversationWorkspacePort {
       },
     };
     await this.deps.store.writeConversation(updated);
-    const catalog = await this.deps.store.readCatalog();
-    await this.deps.store.writeCatalog({
+    await updateConversationCatalog(this.deps.store, catalog => ({
       ...catalog,
       conversations: catalog.conversations.map(metadata => (
         metadata.id === updated.conversation.id ? updated.conversation : metadata
       )),
-    });
+    }));
     return {
       status: 'changed',
       workspace: {

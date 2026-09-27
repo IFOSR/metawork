@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { createQueryBillService, type QueryBillService } from '../billing/query-bill-service.js';
 import { createBillQueryService, type BillQueryService } from '../billing/bill-query-service.js';
+import { createBillHistoryReader } from '../billing/bill-history-read-port.js';
 import { SqliteConsumptionOutboxStore } from '../storage/consumption-outbox-repo.js';
 import {
   SqliteBillAdjustmentStore,
@@ -189,6 +190,16 @@ export function createServerBillingServices(
       queryContexts: contexts,
       metering,
       prices,
+      historyReader: createBillHistoryReader({
+        readSnapshot: read => db.transaction(read).deferred(),
+        contexts,
+        bills,
+        metering,
+        costs: costEntries,
+        prices,
+        consumption: outbox,
+        adjustments,
+      }),
       exportEnabled: () => exportEnabled,
     }),
     billService,

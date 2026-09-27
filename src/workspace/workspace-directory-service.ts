@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { basename, isAbsolute } from 'node:path';
 import type { ConversationMetadata, ConversationStore } from '../session/conversation-store.js';
+import { updateConversationCatalog } from '../session/conversation-catalog-mutation.js';
 import type { WorkspaceCatalogStore } from './workspace-catalog-store.js';
 import {
   normalizeWorkspaceDisplayName,
@@ -13,6 +14,8 @@ import {
   type WorkspaceConversationSummary,
 } from './workspace-conversation-projector.js';
 import type { ConversationActivityProjection } from './conversation-activity-projector.js';
+import type { WorkspaceDirectoryProjection } from './workspace-directory-projection.js';
+import { measureNavigationStageSync } from '../utils/navigation-diagnostics.js';
 
 export interface WorkspaceSelectionResult {
   readonly workspace: WorkspaceRecord;
@@ -31,6 +34,7 @@ export interface WorkspaceConversationPageRequest {
 export interface WorkspaceConversationPage {
   readonly items: WorkspaceConversationSummary[];
   readonly nextCursor: string | null;
+  readonly projectionVersion?: number;
 }
 
 export interface WorkspaceDirectoryServiceDeps {
@@ -42,10 +46,14 @@ export interface WorkspaceDirectoryServiceDeps {
   readonly createConversationId?: () => string;
   readonly now?: () => string;
   readonly projector?: WorkspaceConversationProjector;
+  readonly projection?: WorkspaceDirectoryProjection;
   readonly getConversationActivity?: (
     conversationId: string,
     fallbackUpdatedAt: string,
   ) => ConversationActivityProjection;
+  readonly getConversationActivities?: (
+    conversations: readonly { conversationId: string; updatedAt: string }[],
+  ) => ReadonlyMap<string, ConversationActivityProjection>;
 }
 
 export class WorkspaceDirectoryService {
@@ -111,22 +119,39 @@ export class WorkspaceDirectoryService {
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
+  getWorkspace(workspaceId: string, principalId: string): Promise<WorkspaceRecord> {
+    return this.requireWorkspaceAccess(workspaceId, principalId);
+  }
+
   async listConversations(
     workspaceId: string,
     principalId: string,
     page: WorkspaceConversationPageRequest = {},
   ): Promise<WorkspaceConversationPage> {
     await this.requireWorkspaceAccess(workspaceId, principalId);
+    if (this.deps.projection) {
+      return measureNavigationStageSync('directory_read', () => this.deps.projection!.page(workspaceId, page));
+    }
     const limit = Math.min(Math.max(page.limit ?? 50, 1), 100);
     const offset = decodeCursor(page.cursor);
     const query = page.query?.trim().toLocaleLowerCase();
-    const items = (await this.deps.conversationStore.readCatalog()).conversations
+    const metadata = (await this.deps.conversationStore.readCatalog()).conversations
       .filter(metadata => metadata.accountId === this.deps.accountId)
-      .map(metadata => this.projector.project(metadata))
+      .filter(metadata => metadata.workspaceBinding?.workspaceId === workspaceId)
+      .filter(metadata => page.includeArchived || !metadata.archived)
+      .filter(metadata => !query || metadata.title.slice(0, 160).toLocaleLowerCase().includes(query));
+    const activities = this.deps.getConversationActivities?.(
+      metadata.map(item => ({ conversationId: item.id, updatedAt: item.updatedAt })),
+    );
+    const projector = activities
+      ? new WorkspaceConversationProjector({
+          project: (id, updatedAt) => activities.get(id)
+            ?? { state: 'idle', taskId: null, updatedAt },
+        })
+      : this.projector;
+    const items = metadata
+      .map(metadata => projector.project(metadata))
       .filter((item): item is WorkspaceConversationSummary => item !== null)
-      .filter(item => item.workspaceId === workspaceId)
-      .filter(item => page.includeArchived || !item.archived)
-      .filter(item => !query || item.title.toLocaleLowerCase().includes(query))
       .sort(compareSummaries);
     const selected = items.slice(offset, offset + limit);
     return {
@@ -166,11 +191,10 @@ export class WorkspaceDirectoryService {
       conversation: metadata,
       turns: [],
     });
-    const catalog = await this.deps.conversationStore.readCatalog();
-    await this.deps.conversationStore.writeCatalog({
+    await updateConversationCatalog(this.deps.conversationStore, catalog => ({
       ...catalog,
       conversations: [...catalog.conversations, metadata],
-    });
+    }));
     return metadata;
   }
 
@@ -178,9 +202,11 @@ export class WorkspaceDirectoryService {
     conversationId: string,
     principalId: string,
   ): Promise<string | null> {
-    const record = await this.deps.conversationStore.readConversation(conversationId);
-    if (!record || record.conversation.accountId !== this.deps.accountId) return null;
-    const workspaceId = record.conversation.workspaceBinding?.workspaceId;
+    const metadata = this.deps.conversationStore.readMetadata
+      ? await this.deps.conversationStore.readMetadata(conversationId)
+      : (await this.deps.conversationStore.readConversation(conversationId))?.conversation;
+    if (!metadata || metadata.accountId !== this.deps.accountId) return null;
+    const workspaceId = metadata.workspaceBinding?.workspaceId;
     if (!workspaceId) return null;
     const workspace = await this.deps.workspaceCatalog.findById(workspaceId);
     if (
@@ -230,13 +256,12 @@ export class WorkspaceDirectoryService {
       ...record,
       conversation: metadata,
     });
-    const catalog = await this.deps.conversationStore.readCatalog();
-    await this.deps.conversationStore.writeCatalog({
+    await updateConversationCatalog(this.deps.conversationStore, catalog => ({
       ...catalog,
       conversations: catalog.conversations.map(item => (
         item.id === conversationId ? metadata : item
       )),
-    });
+    }));
   }
 
   private async mutate<T>(operation: () => Promise<T>): Promise<T> {

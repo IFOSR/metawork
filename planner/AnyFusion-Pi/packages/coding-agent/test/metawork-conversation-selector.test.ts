@@ -40,6 +40,18 @@ const conversations = [
 ];
 
 describe("MetaWork Conversation selector", () => {
+	it("offers explicit load-more and restores the unfiltered server directory after cancelling search", () => {
+		const actions = { attach: vi.fn(), create: vi.fn(), refresh: vi.fn(), cancel: vi.fn(), loadMore: vi.fn() };
+		const selector = new MetaWorkConversationSelector(workspace, conversations, actions);
+		selector.update(workspace, conversations, true);
+		selector.handleInput("\u001b[6~");
+		expect(actions.loadMore).toHaveBeenCalledOnce();
+		selector.handleInput("/");
+		selector.handleInput("文");
+		selector.handleInput("\u001b");
+		expect(actions.refresh).toHaveBeenLastCalledWith();
+	});
+
 	it("renders title, activity, and recent update without internal IDs", () => {
 		const selector = new MetaWorkConversationSelector(
 			workspace,

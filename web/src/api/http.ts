@@ -184,7 +184,11 @@ export class HttpClient {
   selectWorkspace(path: string): Promise<{
     selection:
       | { status: 'not_requested' }
-      | { status: 'accepted' }
+      | {
+        status: 'accepted'; workspace?: WorkspaceSummary;
+        conversations?: WebSessionMetadata[]; nextCursor?: string | null;
+        projectionVersion?: number;
+      }
       | { status: 'failed'; reason: string };
     activeWorkspaceId: string | null;
     activeSessionId: string | null;
@@ -195,19 +199,24 @@ export class HttpClient {
     });
   }
 
-  getConversations(workspaceId: string, query = ''): Promise<{
+  getConversations(workspaceId: string, query = '', cursor?: string): Promise<{
     activeWorkspaceId: string;
     activeConversationId: string | null;
     conversations: WebSessionMetadata[];
+    nextCursor?: string | null;
   }> {
-    const suffix = query.trim() ? `?q=${encodeURIComponent(query)}` : '';
+    const params = new URLSearchParams();
+    if (query.trim()) params.set('q', query);
+    if (cursor) params.set('cursor', cursor);
+    const suffix = params.size ? `?${params}` : '';
     return this.request(
       `/api/workspaces/${encodeURIComponent(workspaceId)}/conversations${suffix}`,
     );
   }
 
-  getConversation(sessionId: string): Promise<WebSessionRecord> {
-    return this.request(`/api/conversations/${encodeURIComponent(sessionId)}`);
+  getConversation(sessionId: string, cursor?: string): Promise<WebSessionRecord> {
+    const suffix = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
+    return this.request(`/api/conversations/${encodeURIComponent(sessionId)}${suffix}`);
   }
 
   /** 只读账单页：分页历史账单；金额与状态全部来自 Server 投影。 */
@@ -239,8 +248,9 @@ export class HttpClient {
     });
   }
 
-  attachConversation(sessionId: string): Promise<WebSessionActivationResult> {
-    return this.request(`/api/conversations/${encodeURIComponent(sessionId)}/attach`, {
+  attachConversation(sessionId: string, expectedWorkspaceId?: string): Promise<WebSessionActivationResult> {
+    const scope = expectedWorkspaceId === undefined ? '' : `?workspaceId=${encodeURIComponent(expectedWorkspaceId)}`;
+    return this.request(`/api/conversations/${encodeURIComponent(sessionId)}/attach${scope}`, {
       method: 'POST',
     });
   }

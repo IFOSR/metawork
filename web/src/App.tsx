@@ -49,6 +49,9 @@ import { useThemePreference } from './theme';
 import { projectTurnForPresentation } from './turn-task-presentation';
 import { requiredAgentBlock } from './agent-readiness';
 import { evaluateAttachmentBudget } from './attachment-limits';
+import { canLoadDirectoryPage, createNavigationGuard, loadStartupWorkspace, loadWorkspaceSelection } from './navigation-requests';
+import { NavigationDirectoryChanges, shouldActivateConversation } from './navigation-directory-state';
+import { mergeNewestHistoryPage } from './navigation-history-state';
 
 let startupAuthentication: ReturnType<typeof establishWebSession> | null = null;
 let startupLaunchSuggestionPromise: Promise<WebLaunchSuggestion | null> | null = null;
@@ -62,16 +65,23 @@ export function App() {
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<WebSessionMetadata[]>([]);
+  const [directoryCursor, setDirectoryCursor] = useState<string | null>(null);
+  const [directoryLoading, setDirectoryLoading] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [browsedSessionId, setBrowsedSessionId] = useState<string | null>(null);
   const [workspaceSwitching, setWorkspaceSwitching] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState<WebSessionRecord | null>(null);
+  const directoryChangesRef = useRef(new NavigationDirectoryChanges());
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const historyRequestRef = useRef(0);
   const [liveTurn, setLiveTurn] = useState<ConversationTurnProjection | null>(null);
   const [tab, setTab] = useState<WorkspaceTab>('conversation');
   const [selectedTrajectoryTurnId, setSelectedTrajectoryTurnId] = useState<string | null>(null);
   const [selectedBillingTurnId, setSelectedBillingTurnId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [search, setSearch] = useState('');
+  const searchRef = useRef(search);
+  searchRef.current = search;
   const [activationNotice, setActivationNotice] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [workspaceCreatorOpen, setWorkspaceCreatorOpen] = useState(false);
@@ -91,6 +101,7 @@ export function App() {
   const httpRef = useRef<HttpClient | null>(null);
   const wsRef = useRef<WsClient | null>(null);
   const activeConversationRef = useRef<string | null>(null);
+  const activeWorkspaceRef = useRef<string | null>(null);
   const browsedConversationRef = useRef<string | null>(null);
   const liveTurnRef = useRef<ConversationTurnProjection | null>(null);
   const loadRecordRef = useRef<(sessionId: string) => void>(() => undefined);
@@ -98,6 +109,11 @@ export function App() {
   const recordRequestRef = useRef(0);
   const workspaceSwitchRef = useRef(false);
   const workspaceSwitchRequestRef = useRef(0);
+  const directoryLoadedRef = useRef<{ workspaceId: string; query: string } | null>(null);
+  const startupLaunchAppliedRef = useRef(false);
+  const conversationNavigationRef = useRef<{ generation: number; target: string | null }>({
+    generation: 0, target: null,
+  });
   const pendingInputsRef = useRef(new Map<string, {
     draft: string;
     attachments: AttachmentMetadata[];
@@ -126,28 +142,50 @@ export function App() {
 
   useEffect(() => {
     if (!authenticated) return;
+    const startupLifetime = createNavigationGuard(() => 'mounted');
+    const previousSelection = {
+      workspaceId: activeWorkspaceRef.current,
+      conversationId: browsedConversationRef.current,
+    };
+    const launchSuggestion = startupLaunchAppliedRef.current ? null : startupLaunchSuggestion;
+    let socketSelectionGeneration = 0;
     const handleUnauthorized = () => {
+      if (!startupLifetime.current()) return;
       setAuthenticated(false);
       setConnected(false);
       setAuthError('Web 会话已失效。请重新启动 Web 或输入 --no-open 显示的 token。');
     };
     const http = new HttpClient(handleUnauthorized);
     httpRef.current = http;
-    const loadRecord = (sessionId: string) => {
+    let recordRead: { key: string; promise: Promise<WebSessionRecord> } | null = null;
+    const readRecord = (sessionId: string, reuse: boolean) => {
+      const key = JSON.stringify([
+        sessionId, workspaceSwitchRequestRef.current, conversationNavigationRef.current.generation,
+      ]);
+      if (!reuse || recordRead?.key !== key) {
+        const promise = http.getConversation(sessionId);
+        recordRead = { key, promise };
+        void promise.catch(() => {
+          if (recordRead?.promise === promise) recordRead = null;
+        });
+      }
+      return recordRead.promise;
+    };
+    const loadRecord = (sessionId: string, reuse = false) => {
       const requestId = ++recordRequestRef.current;
-      void http.getConversation(sessionId)
+      void readRecord(sessionId, reuse)
         .then(record => {
-          if (isCurrentConversationRecordRequest({
+          if (startupLifetime.current() && isCurrentConversationRecordRequest({
             requestId,
             latestRequestId: recordRequestRef.current,
             requestedSessionId: sessionId,
             browsedSessionId: browsedConversationRef.current,
           })) {
-            setSelectedRecord(record);
+            setSelectedRecord(current => mergeNewestHistoryPage(current, record));
           }
         })
         .catch(error => {
-          if (isCurrentConversationRecordRequest({
+          if (startupLifetime.current() && isCurrentConversationRecordRequest({
             requestId,
             latestRequestId: recordRequestRef.current,
             requestedSessionId: sessionId,
@@ -167,13 +205,16 @@ export function App() {
             browsedConversationRef.current = sessionId;
             setBrowsedSessionId(sessionId);
           }
-          loadRecord(sessionId);
+          loadRecord(sessionId, true);
         }
       },
-      onSessionCatalog: (sessionId, nextSessions) => {
+      onSessionCatalog: (sessionId, nextSessions, nextCursor) => {
+        if (workspaceSwitchRef.current || searchRef.current) return;
+        ++conversationRequestRef.current;
         activeConversationRef.current = sessionId;
         setActiveSessionId(sessionId);
         setSessions(nextSessions);
+        setDirectoryCursor(nextCursor ?? null);
         if (
           browsedConversationRef.current === sessionId
           && nextSessions.some(session => session.id === sessionId)
@@ -181,11 +222,16 @@ export function App() {
           loadRecord(sessionId);
         }
       },
-      onWorkspaceDirectory: (workspaceId, sessionId, nextSessions) => {
+      onWorkspaceDirectory: (workspaceId, sessionId, nextSessions, nextCursor) => {
+        if (workspaceSwitchRef.current) return;
+        if (workspaceId === activeWorkspaceRef.current && searchRef.current) return;
+        ++conversationRequestRef.current;
+        activeWorkspaceRef.current = workspaceId;
         setActiveWorkspaceId(workspaceId);
         activeConversationRef.current = sessionId;
         setActiveSessionId(sessionId);
         setSessions(nextSessions);
+        setDirectoryCursor(nextCursor ?? null);
         const nextBrowsedSessionId = (
           browsedConversationRef.current
           && nextSessions.some(session => session.id === browsedConversationRef.current)
@@ -202,7 +248,21 @@ export function App() {
             : null
         ));
       },
+      onWorkspaceConversationChanged: event => {
+        const changes = directoryChangesRef.current;
+        changes.observe(event);
+        if (event.workspaceId !== activeWorkspaceRef.current) return;
+        const observed = changes.sequence - 1;
+        setSessions(current => changes.merge(current, event.workspaceId, searchRef.current, observed));
+        setSelectedRecord(current => current?.session.id === event.conversationId
+          && current.session.workspaceId === event.workspaceId && event.changes
+          ? { ...current, session: { ...current.session, ...event.changes } } : current);
+      },
       onActiveSessionChanged: sessionId => {
+        const navigation = conversationNavigationRef.current;
+        if (workspaceSwitchRef.current || (navigation.target
+          && navigation.target !== sessionId && navigation.target !== 'new')) return;
+        if (!navigation.target) socketSelectionGeneration += 1;
         activeConversationRef.current = sessionId;
         browsedConversationRef.current = sessionId;
         setActiveSessionId(sessionId);
@@ -213,7 +273,7 @@ export function App() {
         // 切换会话后旧会话的预览与执行详情不得残留。
         setPreviewState({ status: 'closed' });
         setExecutionDetail(null);
-        loadRecord(sessionId);
+        if (!navigation.target) loadRecord(sessionId);
       },
       onWorkspaceChanged: (
         sessionId: string,
@@ -383,7 +443,10 @@ export function App() {
         setActivationNotice(`执行错误：${message}`);
       },
       onUnauthorized: handleUnauthorized,
-      onStatusChange: setConnected,
+      onStatusChange: connected => {
+        if (!connected) recordRead = null;
+        if (startupLifetime.current()) setConnected(connected);
+      },
     });
     wsRef.current = ws;
     ws.connect();
@@ -398,52 +461,106 @@ export function App() {
         .catch(() => undefined);
     };
     window.addEventListener('focus', handleReadinessFocus);
+    const startupGuard = createNavigationGuard(() => JSON.stringify([
+      workspaceSwitchRequestRef.current, conversationNavigationRef.current.generation, socketSelectionGeneration,
+    ]));
+    const startupDirectoryGuard = createNavigationGuard(() => JSON.stringify([
+      conversationRequestRef.current, searchRef.current,
+    ]));
+    const startupEvents = directoryChangesRef.current.sequence;
     void Promise.all([http.getWorkspaces(), http.getConfig()])
       .then(async ([workspaceCatalog, config]) => {
-        const applied = await applyStartupLaunchSuggestion(
+        if (!startupLifetime.current()) return;
+        setConfigurationRuntime(config);
+        setWorkspaces(current => [...new Map(
+          [...workspaceCatalog.workspaces, ...current].map(workspace => [workspace.id, workspace]),
+        ).values()]);
+        if (!startupGuard.current()) {
+          startupLaunchAppliedRef.current = true;
+          return;
+        }
+        const applied = await loadStartupWorkspace(
           http,
           workspaceCatalog,
-          startupLaunchSuggestion,
+          launchSuggestion?.workspaceHint
+            ?? workspaceCatalog.workspaces.find(item => item.id === previousSelection.workspaceId)?.canonicalPath,
         );
-        setWorkspaces(applied.workspaces);
-        setActiveWorkspaceId(applied.activeWorkspaceId);
-        const catalog = applied.activeWorkspaceId
-          ? await http.getConversations(applied.activeWorkspaceId)
-          : null;
-        const requestedConversationId = startupLaunchSuggestion?.conversationId ?? null;
-        const initialSessionId = selectInitialSessionId(
+        if (startupLifetime.current()) startupLaunchAppliedRef.current = true;
+        if (!startupGuard.current()) return;
+        const catalog = applied.directory;
+        const requestedConversationId = launchSuggestion?.conversationId
+          ?? (applied.activeWorkspaceId === previousSelection.workspaceId
+            ? previousSelection.conversationId : null);
+        const offPageRequest = Boolean(applied.activeWorkspaceId && requestedConversationId
+          && !catalog?.conversations.some(session => session.id === requestedConversationId));
+        let initialSessionId = (offPageRequest ? requestedConversationId : null) ?? selectInitialSessionId(
           catalog?.conversations ?? [],
           requestedConversationId,
           catalog?.activeConversationId ?? null,
         );
-        const initialSession = initialSessionId
-          ? catalog?.conversations.find(session => session.id === initialSessionId)
-          : undefined;
         let resolvedActiveSessionId = catalog?.activeConversationId ?? null;
-        if (initialSession && initialSession.id !== catalog?.activeConversationId) {
-          const activation = await http.attachConversation(initialSession.id).catch(() => null);
-          if (activation?.state === 'active') resolvedActiveSessionId = initialSession.id;
+        if (initialSessionId && initialSessionId !== catalog?.activeConversationId) {
+          const navigation = conversationNavigationRef.current;
+          navigation.target = initialSessionId;
+          const activation = await (offPageRequest
+            ? http.attachConversation(initialSessionId, applied.activeWorkspaceId!)
+            : http.attachConversation(initialSessionId)).catch(() => null);
+          if (conversationNavigationRef.current === navigation && navigation.target === initialSessionId) {
+            navigation.target = null;
+          }
+          if (!startupGuard.current()) return;
+          if (activation?.state === 'active') resolvedActiveSessionId = initialSessionId;
+          else if (offPageRequest) initialSessionId = null;
         }
-        setSessions(catalog?.conversations ?? []);
+        setWorkspaces(applied.workspaces);
+        activeWorkspaceRef.current = applied.activeWorkspaceId;
+        setActiveWorkspaceId(applied.activeWorkspaceId);
+        // Startup owns an unfiltered page, never a newer search or directory response.
+        if (!applied.activeWorkspaceId) {
+          ++conversationRequestRef.current;
+          directoryLoadedRef.current = null;
+          setSessions([]);
+          setDirectoryCursor(null);
+        } else if (startupDirectoryGuard.current() && searchRef.current === '') {
+          const rows = applied.activeWorkspaceId
+            ? directoryChangesRef.current.merge(catalog?.conversations ?? [], applied.activeWorkspaceId, '', startupEvents)
+            : [];
+          setSessions(rows);
+          setDirectoryCursor(catalog?.nextCursor ?? null);
+          if (applied.activeWorkspaceId) directoryLoadedRef.current = {
+            workspaceId: applied.activeWorkspaceId, query: '',
+          };
+        }
         // WebSocket 事件可能在本启动快照返回前就已建立活动会话。此时不得用陈旧目录覆盖它，
         // 否则后续会话点击会误判为“已附加”而跳过 attach。
-        const liveSessionId = requestedConversationId ? null : activeConversationRef.current;
+        const liveSessionId = !requestedConversationId
+          && catalog?.conversations.some(session => session.id === activeConversationRef.current)
+          ? activeConversationRef.current : null;
         const activeInWorkspace = liveSessionId ?? (
-          catalog?.conversations.some(session => session.id === resolvedActiveSessionId)
+          (initialSessionId !== null && initialSessionId === resolvedActiveSessionId
+            || catalog?.conversations.some(session => session.id === resolvedActiveSessionId))
             ? resolvedActiveSessionId
             : null
         );
         const resolvedSessionId = initialSessionId ?? activeInWorkspace;
         activeConversationRef.current = activeInWorkspace;
         setActiveSessionId(activeInWorkspace);
-        const nextBrowsedSessionId = browsedConversationRef.current ?? resolvedSessionId;
+        const nextBrowsedSessionId = resolvedSessionId;
         browsedConversationRef.current = nextBrowsedSessionId;
         setBrowsedSessionId(nextBrowsedSessionId);
         setConfigurationRuntime(config);
-        if (activeInWorkspace) loadRecord(activeInWorkspace);
+        if (nextBrowsedSessionId) {
+          loadRecord(nextBrowsedSessionId, true);
+        } else {
+          ++recordRequestRef.current;
+          setSelectedRecord(null);
+        }
       })
       .catch(() => undefined);
     return () => {
+      startupLifetime.dispose();
+      startupGuard.dispose();
+      startupDirectoryGuard.dispose();
       loadRecordRef.current = () => undefined;
       window.removeEventListener('focus', handleReadinessFocus);
       ws.close();
@@ -452,22 +569,31 @@ export function App() {
 
   useEffect(() => {
     if (!authenticated || !httpRef.current || !activeWorkspaceId) return;
+    if (directoryLoadedRef.current?.workspaceId === activeWorkspaceId
+      && directoryLoadedRef.current.query === search) return;
     const requestId = ++conversationRequestRef.current;
     const requestedWorkspaceId = activeWorkspaceId;
+    let active = true;
     const timer = window.setTimeout(() => {
+      const eventsAtRequest = directoryChangesRef.current.sequence;
       void httpRef.current?.getConversations(requestedWorkspaceId, search)
         .then(result => {
           if (
-            requestId !== conversationRequestRef.current
+            !active || requestId !== conversationRequestRef.current
             || result.activeWorkspaceId !== requestedWorkspaceId
           ) {
             return;
           }
-          setSessions(result.conversations);
+          setSessions(directoryChangesRef.current.merge(result.conversations, requestedWorkspaceId, search, eventsAtRequest));
+          setDirectoryCursor(result.nextCursor ?? null);
+          directoryLoadedRef.current = { workspaceId: requestedWorkspaceId, query: search };
         })
         .catch(() => undefined);
     }, 180);
-    return () => window.clearTimeout(timer);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
   }, [authenticated, activeWorkspaceId, search]);
 
   useEffect(() => setSelectedTrajectoryTurnId(null), [activeWorkspaceId, browsedSessionId]);
@@ -504,36 +630,36 @@ export function App() {
     if (!http) return 'Workspace 服务尚未就绪，请稍后重试。';
     if (workspaceSwitchRef.current) return '正在切换 Workspace，请稍后重试。';
     workspaceSwitchRef.current = true;
+    conversationNavigationRef.current = {
+      generation: conversationNavigationRef.current.generation + 1, target: null,
+    };
     const switchRequestId = ++workspaceSwitchRequestRef.current;
     ++conversationRequestRef.current;
     ++recordRequestRef.current;
     setWorkspaceSwitching(true);
     setActivationNotice(null);
+    const eventsAtRequest = directoryChangesRef.current.sequence;
     try {
-      const result = await http.selectWorkspace(workspacePath);
-      if (result.selection.status === 'failed' || !result.activeWorkspaceId) {
-        const message = result.selection.status === 'failed'
-          ? `Workspace 切换失败：${result.selection.reason}`
-          : 'Workspace 切换失败：Server 未返回 workspaceId。';
-        setActivationNotice(message);
-        return message;
-      }
-      const [workspaceCatalog, catalog] = await Promise.all([
-        http.getWorkspaces(),
-        http.getConversations(result.activeWorkspaceId),
-      ]);
+      const result = await loadWorkspaceSelection(http, workspacePath);
       if (switchRequestId !== workspaceSwitchRequestRef.current) return null;
-      const workspaceActiveSessionId = catalog.conversations.some(
+      const workspaceActiveSessionId = result.conversations.some(
         session => session.id === result.activeSessionId,
       )
         ? result.activeSessionId
         : null;
-      setWorkspaces(workspaceCatalog.workspaces);
+      if (result.workspace) {
+        const workspace = result.workspace;
+        setWorkspaces(current => [...current.filter(item => item.id !== workspace.id), workspace]);
+      }
+      directoryLoadedRef.current = { workspaceId: result.activeWorkspaceId, query: '' };
+      activeWorkspaceRef.current = result.activeWorkspaceId;
+      setSearch('');
+      setDirectoryCursor(result.nextCursor ?? null);
       setActiveWorkspaceId(result.activeWorkspaceId);
       activeConversationRef.current = workspaceActiveSessionId;
       browsedConversationRef.current = workspaceActiveSessionId;
       setActiveSessionId(workspaceActiveSessionId);
-      setSessions(catalog.conversations);
+      setSessions(directoryChangesRef.current.merge(result.conversations, result.activeWorkspaceId, '', eventsAtRequest));
       setBrowsedSessionId(workspaceActiveSessionId);
       setSelectedRecord(null);
       liveTurnRef.current = null;
@@ -599,27 +725,88 @@ export function App() {
 
   const handleActivation = async (sessionId: string) => {
     if (!httpRef.current) return;
-    const result = await httpRef.current.attachConversation(sessionId);
-    setActivationNotice(activationMessage(result));
-    if (result.state === 'active') {
-      const record = await httpRef.current.getConversation(sessionId);
-      const targetWorkspaceId = record.session.workspaceId;
-      if (targetWorkspaceId) {
-        const [workspaceCatalog, catalog] = await Promise.all([
-          httpRef.current.getWorkspaces(),
-          httpRef.current.getConversations(targetWorkspaceId),
-        ]);
-        setWorkspaces(workspaceCatalog.workspaces);
-        setActiveWorkspaceId(targetWorkspaceId);
-        setSessions(catalog.conversations);
+    const generation = conversationNavigationRef.current.generation + 1;
+    conversationNavigationRef.current = { generation, target: sessionId };
+    const workspaceGeneration = workspaceSwitchRequestRef.current;
+    const current = () => conversationNavigationRef.current.generation === generation
+      && workspaceSwitchRequestRef.current === workspaceGeneration;
+    ++recordRequestRef.current;
+    try {
+      const result = await httpRef.current.attachConversation(sessionId);
+      if (!current()) return;
+      setActivationNotice(activationMessage(result));
+      if (result.state === 'active') {
+        const record = await httpRef.current.getConversation(sessionId);
+        if (!current()) return;
+        activeConversationRef.current = sessionId;
+        browsedConversationRef.current = sessionId;
+        setActiveSessionId(sessionId);
+        setBrowsedSessionId(sessionId);
+        setPreviewState({ status: 'closed' });
+        setExecutionDetail(null);
+        setSelectedRecord(record);
       }
-      activeConversationRef.current = sessionId;
-      browsedConversationRef.current = sessionId;
-      setActiveSessionId(sessionId);
-      setBrowsedSessionId(sessionId);
-      setPreviewState({ status: 'closed' });
-      setExecutionDetail(null);
-      setSelectedRecord(record);
+    } finally {
+      if (current()) conversationNavigationRef.current.target = null;
+    }
+  };
+
+  const handleLoadMoreConversations = async () => {
+    const http = httpRef.current;
+    if (!http || !activeWorkspaceId || !directoryCursor || directoryLoading) return;
+    if (!canLoadDirectoryPage(directoryLoadedRef.current, activeWorkspaceId, search)) return;
+    const request = ++conversationRequestRef.current;
+    const workspaceId = activeWorkspaceId;
+    const eventsAtRequest = directoryChangesRef.current.sequence;
+    setDirectoryLoading(true);
+    try {
+      let reset = false;
+      const page = await http.getConversations(workspaceId, search, directoryCursor).catch(async error => {
+        if (!(error as Error).message.includes('stale_directory_cursor')) throw error;
+        reset = true;
+        return http.getConversations(workspaceId, search);
+      });
+      if (request !== conversationRequestRef.current) return;
+      setSessions(current => directoryChangesRef.current.merge(reset ? page.conversations : [
+        ...current, ...page.conversations.filter(item => !current.some(existing => existing.id === item.id)),
+      ], workspaceId, search, eventsAtRequest));
+      setDirectoryCursor(page.nextCursor ?? null);
+    } catch (error) {
+      if (request === conversationRequestRef.current) setActivationNotice((error as Error).message);
+    } finally {
+      setDirectoryLoading(false);
+    }
+  };
+
+  const handleLoadOlderHistory = async () => {
+    const http = httpRef.current;
+    const record = selectedRecord;
+    if (!http || !record?.historyCursor || historyLoading) return;
+    const sessionId = record.session.id;
+    const navigation = conversationNavigationRef.current.generation;
+    const workspace = workspaceSwitchRequestRef.current;
+    const request = ++historyRequestRef.current;
+    const current = () => request === historyRequestRef.current
+      && navigation === conversationNavigationRef.current.generation
+      && workspace === workspaceSwitchRequestRef.current
+      && browsedConversationRef.current === sessionId;
+    setHistoryLoading(true);
+    try {
+      const page = await http.getConversation(sessionId, record.historyCursor);
+      if (!current()) return;
+      setSelectedRecord(existing => {
+        if (!existing || existing.session.id !== sessionId) return existing;
+        const ids = new Set(existing.turns.map(turn => turn.id));
+        return {
+          ...existing,
+          turns: [...page.turns.filter(turn => !ids.has(turn.id)), ...existing.turns],
+          historyCursor: page.historyCursor,
+        };
+      });
+    } catch (error) {
+      if (current()) setActivationNotice((error as Error).message);
+    } finally {
+      if (request === historyRequestRef.current) setHistoryLoading(false);
     }
   };
 
@@ -630,7 +817,7 @@ export function App() {
     setActivationNotice(null);
     setPreviewState({ status: 'closed' });
     setExecutionDetail(null);
-    if (sessionId === activeConversationRef.current) {
+    if (!shouldActivateConversation(sessionId, activeConversationRef.current, conversationNavigationRef.current.target)) {
       loadRecordRef.current(sessionId);
       return;
     }
@@ -653,10 +840,16 @@ export function App() {
       setActivationNotice('请先选择 Workspace，再新建会话。');
       return;
     }
+    const generation = conversationNavigationRef.current.generation + 1;
+    conversationNavigationRef.current = { generation, target: 'new' };
+    const workspaceGeneration = workspaceSwitchRequestRef.current;
     try {
       const result = await httpRef.current.createConversation(activeWorkspaceId);
-      const catalog = await httpRef.current.getConversations(activeWorkspaceId);
-      setSessions(catalog.conversations);
+      if (generation !== conversationNavigationRef.current.generation
+        || workspaceGeneration !== workspaceSwitchRequestRef.current) return;
+      setSessions(current => [
+        result.session.session, ...current.filter(item => item.id !== result.session.session.id),
+      ]);
       browsedConversationRef.current = result.session.session.id;
       setBrowsedSessionId(result.session.session.id);
       setSelectedRecord(result.session);
@@ -676,6 +869,10 @@ export function App() {
           ? `当前无法新建会话，请先安装${requiredAgentBlock(agentReadiness).agent?.displayName ?? '必需智能体'}。`
           : `新建会话失败：${message}`,
       );
+    } finally {
+      if (generation === conversationNavigationRef.current.generation) {
+        conversationNavigationRef.current.target = null;
+      }
     }
   };
 
@@ -836,6 +1033,9 @@ export function App() {
     <>
       <WorkspaceShell
         sessions={sessions}
+        hasMoreConversations={directoryCursor !== null}
+        directoryLoading={directoryLoading}
+        onLoadMoreConversations={() => void handleLoadMoreConversations()}
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
         activeSessionId={activeSessionId}
@@ -957,6 +1157,9 @@ export function App() {
             <ConversationView
               sessionId={selectedId}
               turns={turns}
+              hasOlderHistory={Boolean(selectedRecord?.historyCursor)}
+              historyLoading={historyLoading}
+              onLoadOlderHistory={handleLoadOlderHistory}
               onOpenArtifact={handleOpenArtifact}
               onOpenSubtaskDetail={(subtaskId, subtaskTitle) => {
                 const target = turns.at(-1);
@@ -1029,22 +1232,6 @@ function mergeArtifacts(
     (left, right) => left.publishedAt.localeCompare(right.publishedAt)
       || left.artifactId.localeCompare(right.artifactId),
   );
-}
-
-async function applyStartupLaunchSuggestion(
-  http: HttpClient,
-  catalog: { activeWorkspaceId: string | null; workspaces: WorkspaceSummary[] },
-  suggestion: WebLaunchSuggestion | null,
-): Promise<{ activeWorkspaceId: string | null; workspaces: WorkspaceSummary[] }> {
-  const hint = suggestion?.workspaceHint;
-  if (catalog.activeWorkspaceId || !hint) return catalog;
-  const selection = await http.selectWorkspace(hint).catch(() => null);
-  if (!selection?.activeWorkspaceId) return catalog;
-  const refreshed = await http.getWorkspaces().catch(() => null);
-  return {
-    activeWorkspaceId: selection.activeWorkspaceId,
-    workspaces: refreshed?.workspaces ?? catalog.workspaces,
-  };
 }
 
 /**

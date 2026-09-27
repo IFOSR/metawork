@@ -1,5 +1,6 @@
 import { nanoid } from 'nanoid';
 import { createHash } from 'node:crypto';
+import { measureNavigationStage, measureNavigationStageSync } from '../utils/navigation-diagnostics.js';
 import type { GatewayEventEnvelope, GatewayReplay } from '../gateway/client-events.js';
 import type { GatewayCommand } from '../gateway/client-protocol.js';
 import type {
@@ -77,6 +78,7 @@ import type {
   WebSessionRuntimeCatalog,
   WebSessionRuntimeEvent,
 } from './web-session-runtime-types.js';
+import { workspaceEventStreamId } from '../gateway/workspace-event-stream.js';
 
 export interface WebGatewaySessionRuntimeDeps {
   readonly accountId: string;
@@ -86,6 +88,7 @@ export interface WebGatewaySessionRuntimeDeps {
   readonly attachments?: GatewayAttachmentStore;
   /** Read-only durable execution projection used to rebuild a turn after reconnect. */
   readonly projectExecutionTimeline?: (taskId: string) => ExecutionTimeline | null;
+  readonly projectExecutionTimelines?: (taskIds: readonly string[]) => ReadonlyMap<string, ExecutionTimeline | null>;
   /** Explicit account/Task authorization for billing detail projections. */
   readonly authorizeTask?: (accountId: string, taskId: string) => boolean;
   /** Account-scoped historical Task catalog used by the billing page. */
@@ -95,6 +98,10 @@ export interface WebGatewaySessionRuntimeDeps {
   }[];
   /** Read-only published artifact projection used to rebuild completed turns. */
   readonly projectTaskArtifacts?: (taskId: string) => ArtifactProjection[];
+  readonly projectTasksArtifacts?: (taskIds: readonly string[]) => ReadonlyMap<string, ArtifactProjection[]>;
+  /** Read-only durable Query -> Task association used to rebuild legacy Turns. */
+  readonly resolveTaskIdForTurn?: (turnId: string) => string | null;
+  readonly resolveTaskIdsForTurns?: (turnIds: readonly string[]) => ReadonlyMap<string, string | null>;
   /** Read-only billing projection shared with the other Gateway surfaces. */
   readonly billing?: BillQueryService;
   readonly normalizeTurnPresentation?: (turn: ConversationTurn) => ConversationTurn;
@@ -103,6 +110,9 @@ export interface WebGatewaySessionRuntimeDeps {
 }
 
 class WebGatewayClientSession {
+  /** One-use attach -> visible GET handoff; invalidated by presentation writes. */
+  private initialHistoryPage: WebSessionRecord | null = null;
+  private initialHistoryVersion: string | null = null;
   private readonly listeners = new Set<(event: WebSessionRuntimeEvent) => void>();
   private readonly pendingInputs = new Map<string, string>();
   /** turn id → richness of what was persisted (skip re-persist without new information). */
@@ -284,23 +294,52 @@ class WebGatewayClientSession {
   }
 
   async listSessions(query = ''): Promise<WebSessionDirectoryMetadataProjection[]> {
-    if (!this.activeWorkspaceId) return [];
+    return (await this.listSessionPage({ query })).items;
+  }
+
+  async listSessionPage(request: { query?: string; cursor?: string } = {}) {
+    if (!this.activeWorkspaceId) return { items: [], nextCursor: null };
+    const query = request.query ?? '';
     const input = {
       workspaceId: this.activeWorkspaceId,
       principalId: WEB_WORKSPACE_PRINCIPAL,
       activeConversationId: this._activeSessionId,
       ...(query.trim() ? { query } : {}),
     };
-    const sessions = query.trim()
-      ? await this.deps.catalog.search(input)
-      : await this.deps.catalog.list(input);
-    return Promise.all(sessions.map(session => this.projectMetadata(session)));
+    const page = this.deps.catalog.listPage
+      ? await this.deps.catalog.listPage({ ...input, cursor: request.cursor })
+      : { items: query.trim()
+          ? await this.deps.catalog.search(input)
+          : await this.deps.catalog.list(input), nextCursor: null };
+    // A directory is a summary, not permission to hydrate every Conversation.
+    // Workspace binding comes from the directory; detailed workspace facts are
+    // populated only by an authorized attachment.
+    return {
+      ...page,
+      items: page.items.map(session => ({
+        ...structuredClone(session),
+        workspace: this.workspaces.get(session.id) ?? null,
+      })),
+    };
   }
-  async readSession(sessionId: string): Promise<WebSessionRecordProjection | null> {
+  async readSession(sessionId: string, cursor?: string): Promise<WebSessionRecordProjection | null> {
     if (sessionId !== this._activeSessionId) return null;
-    const record = await this.deps.catalog.read(sessionId, this._activeSessionId);
+    const initial = !cursor && this.initialHistoryPage?.session.id === sessionId
+      ? this.initialHistoryPage : null;
+    const version = this.initialHistoryVersion;
+    this.initialHistoryPage = null;
+    this.initialHistoryVersion = null;
+    const reusable = initial && version !== null
+      && version === await this.deps.catalog.readVersion?.(sessionId);
+    const record = (reusable ? initial : null) ?? await measureNavigationStage(
+      'record_read', () => this.deps.catalog.readPage
+        ? this.deps.catalog.readPage(sessionId, this._activeSessionId, { cursor })
+        : this.deps.catalog.read(sessionId, this._activeSessionId),
+    );
     if (!record) return null;
-    return this.projectRecord(this.enrichRecord(record));
+    return this.projectRecord(measureNavigationStageSync(
+      'history_enrichment', () => this.enrichRecord(record), record.turns.length,
+    ));
   }
 
   async listBillingRecords(input: {
@@ -473,38 +512,42 @@ class WebGatewayClientSession {
       }
       throw new Error(receipt.reason ?? 'conversation_create_failed');
     }
-    const created = await this.deps.catalog.read(receipt.conversationId);
+    const metadata = await this.deps.catalog.readMetadata?.(receipt.conversationId);
+    const created = metadata
+      ? { version: 1 as const, session: { ...metadata, active: true }, turns: [], historyCursor: null }
+      : await this.deps.catalog.read(receipt.conversationId);
     if (!created) throw new Error('created_conversation_unavailable');
-    const activation = await this.activateSessionNow(created.session.id);
+    const activation = await this.activateSessionNow(created.session.id, created);
+    this.initialHistoryPage = null;
+    this.initialHistoryVersion = null;
     return {
-      session: await this.readSession(created.session.id)
-        ?? await this.projectRecord(created),
+      session: await this.projectRecord(created),
       activation,
     };
   }
 
-  async activateSession(sessionId: string): Promise<WebSessionActivationResult> {
-    return this.enqueueNavigation(() => this.activateSessionNow(sessionId));
+  async activateSession(sessionId: string, expectedWorkspaceId?: string): Promise<WebSessionActivationResult> {
+    return this.enqueueNavigation(() => this.activateSessionNow(sessionId, undefined, expectedWorkspaceId));
   }
 
-  private async activateSessionNow(sessionId: string): Promise<WebSessionActivationResult> {
-    const target = await this.deps.catalog.read(sessionId);
-    if (!target || target.session.archived) {
+  private async activateSessionNow(
+    sessionId: string, created?: WebSessionRecord, expectedWorkspaceId?: string,
+  ): Promise<WebSessionActivationResult> {
+    const metadata = created ? created.session : await this.deps.catalog.readMetadata?.(sessionId);
+    const fallback = !created && !this.deps.catalog.readMetadata ? await this.deps.catalog.read(sessionId) : null;
+    const target = metadata ?? fallback?.session;
+    if (!target || target.archived) {
       return { state: 'activation_blocked', sessionId, reason: 'session_unavailable' };
     }
-    const workspaceId = await this.deps.catalog.workspaceIdForConversation(sessionId);
-    if (!workspaceId) {
+    const workspaceId = 'workspaceId' in target && typeof target.workspaceId === 'string'
+      ? target.workspaceId : await this.deps.catalog.workspaceIdForConversation(sessionId);
+    if (!workspaceId || (expectedWorkspaceId !== undefined && workspaceId !== expectedWorkspaceId)) {
       return { state: 'activation_blocked', sessionId, reason: 'session_unavailable' };
     }
     this.activeWorkspaceId = workspaceId;
     this.deps.gateway.restoreWorkspace?.(this.connectionId, workspaceId);
     this.followWorkspace(workspaceId);
-    await this.attach(sessionId, true);
-    this.emit({
-      type: 'session_catalog',
-      activeSessionId: sessionId,
-      sessions: await this.listSessions(),
-    });
+    await this.attach(sessionId, true, created ?? fallback ?? undefined);
     return { state: 'active', sessionId };
   }
 
@@ -517,13 +560,10 @@ class WebGatewayClientSession {
       WEB_WORKSPACE_PRINCIPAL,
     );
     if (!deleted) return 'not_found';
-    if (this._activeSessionId) {
-      this.emit({
-        type: 'session_catalog',
-        activeSessionId: this._activeSessionId,
-        sessions: await this.listSessions(),
-      });
-    }
+    this.emit({
+      type: 'workspace_conversation_changed', workspaceId: this.activeWorkspaceId,
+      conversationId: sessionId, removed: true,
+    });
     return 'deleted';
   }
 
@@ -536,10 +576,11 @@ class WebGatewayClientSession {
         )
       : 0;
     if (this._activeSessionId) {
+      const page = await this.listSessionPage();
       this.emit({
         type: 'session_catalog',
         activeSessionId: this._activeSessionId,
-        sessions: await this.listSessions(),
+        sessions: page.items, nextCursor: page.nextCursor,
       });
     }
     return { deleted };
@@ -554,10 +595,10 @@ class WebGatewayClientSession {
     return structuredClone(this.replayEvents);
   }
 
-  private attach(sessionId: string, announceActive = false): Promise<void> {
+  private attach(sessionId: string, announceActive = false, record?: WebSessionRecord): Promise<void> {
     if (this.disposed) return Promise.reject(new Error('Web Gateway runtime is disposed'));
     const generation = this.attachGeneration += 1;
-    const attachment = this.attachOnce(sessionId, generation, announceActive);
+    const attachment = this.attachOnce(sessionId, generation, announceActive, record);
     this.pendingAttaches.add(attachment);
     return attachment.finally(() => {
       this.pendingAttaches.delete(attachment);
@@ -568,6 +609,7 @@ class WebGatewayClientSession {
     sessionId: string,
     generation: number,
     announceActive: boolean,
+    record?: WebSessionRecord,
   ): Promise<void> {
     const detachClient = await this.deps.gateway.attachClient(this.deps.accountId, sessionId);
     const detachOnce = once(detachClient);
@@ -586,7 +628,15 @@ class WebGatewayClientSession {
     this.resultAssemblies.clear();
     this.completedResults.clear();
     this.turnStates.clear();
-    const existingRecord = await this.deps.catalog.read(sessionId, sessionId);
+    this.initialHistoryPage = null;
+    const beforeVersion = await this.deps.catalog.readVersion?.(sessionId);
+    const existingRecord = record ?? (this.deps.catalog.readPage
+      ? await this.deps.catalog.readPage(sessionId, sessionId)
+      : await this.deps.catalog.read(sessionId, sessionId));
+    this.initialHistoryPage = existingRecord;
+    const afterVersion = await this.deps.catalog.readVersion?.(sessionId);
+    this.initialHistoryVersion = beforeVersion != null && beforeVersion === afterVersion
+      ? beforeVersion : null;
     for (const turn of existingRecord?.turns ?? []) {
       this.persistedTurnIds.add(turn.id);
       this.persistedTurns.set(turn.id, {
@@ -633,7 +683,9 @@ class WebGatewayClientSession {
 
     let replay: GatewayReplay;
     try {
-      replay = await this.deps.gateway.replay(this.deps.accountId, sessionId);
+      replay = this.deps.gateway.snapshot
+        ? await this.deps.gateway.snapshot(this.deps.accountId, sessionId)
+        : await this.deps.gateway.replay(this.deps.accountId, sessionId);
     } catch (error) {
       if (generation === this.attachGeneration) {
         unsubscribeOnce();
@@ -840,6 +892,25 @@ class WebGatewayClientSession {
       if (!receipt.workspaceId) return { status: 'failed', reason: 'workspace_identity_missing' };
       this.activeWorkspaceId = receipt.workspaceId;
       this.followWorkspace(receipt.workspaceId);
+      if (receipt.directory) {
+        const { workspace, page } = receipt.directory;
+        const conversations = page.items.map(item => ({
+          id: item.conversationId, workspaceId: item.workspaceId,
+          title: item.title, createdAt: item.createdAt, updatedAt: item.updatedAt,
+          archived: item.archived, preview: item.preview, activity: item.activity,
+          active: item.conversationId === this._activeSessionId,
+          workspace: this.workspaces.get(item.conversationId) ?? null,
+        }));
+        this.emit({
+          type: 'workspace_directory', activeWorkspaceId: workspace.id,
+          activeSessionId: this._activeSessionId, sessions: conversations,
+          nextCursor: page.nextCursor,
+        });
+        return {
+          status: 'accepted', workspace, conversations, nextCursor: page.nextCursor,
+          projectionVersion: page.projectionVersion,
+        };
+      }
       await this.emitWorkspaceDirectory(receipt.workspaceId);
       return { status: 'accepted' };
     } catch (error) {
@@ -890,7 +961,9 @@ class WebGatewayClientSession {
     sessionId: string,
   ): Promise<ConversationWorkspaceProjection | null> {
     if (this.workspaces.has(sessionId)) return this.workspaces.get(sessionId) ?? null;
-    const replay = await this.deps.gateway.replay(this.deps.accountId, sessionId);
+    const replay = this.deps.gateway.snapshot
+      ? await this.deps.gateway.snapshot(this.deps.accountId, sessionId)
+      : await this.deps.gateway.replay(this.deps.accountId, sessionId);
     let workspace: ConversationWorkspaceProjection | null = null;
     for (const event of orderedUniqueReplayEvents(replay)) {
       if (event.kind !== 'conversation_snapshot' && event.kind !== 'workspace_changed') continue;
@@ -905,14 +978,50 @@ class WebGatewayClientSession {
     this.workspaceUnsubscribe?.();
     this.workspaceUnsubscribe = this.deps.gateway.subscribe(
       this.deps.accountId,
-      `workspace:${workspaceId}`,
+      workspaceEventStreamId(workspaceId),
       event => {
         if (this.disposed || this.activeWorkspaceId !== workspaceId) return;
+        const payload = asRecord(event.payload);
+        if (event.kind === 'workspace_activity_changed') {
+          const conversationId = stringValue(payload.conversationId);
+          const activity = asRecord(payload.activity);
+          if (!conversationId || !['idle', 'planning', 'executing', 'waiting', 'blocked'].includes(String(activity.state))
+            || typeof activity.updatedAt !== 'string') return;
+          this.emit({
+            type: 'workspace_conversation_changed', workspaceId, conversationId,
+            changes: { activity: {
+              state: activity.state as WebSessionDirectoryMetadata['activity']['state'],
+              taskId: stringValue(activity.taskId), updatedAt: activity.updatedAt,
+            } },
+          });
+          return;
+        }
+        if (event.kind === 'workspace_conversation_removed') {
+          const conversationId = stringValue(payload.conversationId);
+          if (conversationId) this.emit({
+            type: 'workspace_conversation_changed', workspaceId, conversationId, removed: true,
+          });
+          return;
+        }
+        if (event.kind === 'workspace_conversation_upserted') {
+          const item = asRecord(payload.conversation);
+          const conversationId = stringValue(item.conversationId);
+          if (conversationId && typeof item.title === 'string') {
+            this.emit({
+              type: 'workspace_conversation_changed', workspaceId, conversationId,
+              changes: {
+                id: conversationId, workspaceId, title: item.title,
+                createdAt: String(item.createdAt ?? ''), updatedAt: String(item.updatedAt ?? ''),
+                archived: item.archived === true, active: conversationId === this._activeSessionId,
+                preview: String(item.preview ?? ''), workspace: this.workspaces.get(conversationId) ?? null,
+                activity: item.activity as WebSessionDirectoryMetadata['activity'],
+              },
+            });
+          }
+          return;
+        }
         if (![
           'workspace_directory_snapshot',
-          'workspace_conversation_upserted',
-          'workspace_conversation_removed',
-          'workspace_activity_changed',
           'workspace_availability_changed',
         ].includes(event.kind)) return;
         void this.emitWorkspaceDirectory(workspaceId);
@@ -922,13 +1031,13 @@ class WebGatewayClientSession {
 
   private async emitWorkspaceDirectory(workspaceId: string): Promise<void> {
     if (this.disposed || this.activeWorkspaceId !== workspaceId) return;
-    const sessions = await this.listSessions();
+    const page = await this.listSessionPage();
     if (this.disposed || this.activeWorkspaceId !== workspaceId) return;
     this.emit({
       type: 'workspace_directory',
       activeWorkspaceId: workspaceId,
       activeSessionId: this._activeSessionId,
-      sessions,
+      sessions: page.items, nextCursor: page.nextCursor,
     });
   }
 
@@ -1013,6 +1122,10 @@ class WebGatewayClientSession {
         state.completedAt = traceStatus === 'running' ? null : event.occurredAt;
       }
     }
+    if (event.kind === 'task_projection') {
+      const payloadTaskId = stringValue(asRecord(event.payload).currentTaskId);
+      if (payloadTaskId) state.taskId ??= payloadTaskId;
+    }
     if (event.kind === 'final_answer') {
       const payload = asRecord(event.payload);
       state.backgroundWorkPending = payload.backgroundWorkPending === true;
@@ -1093,6 +1206,7 @@ class WebGatewayClientSession {
       : state.artifacts;
     this.persistedTurns.set(event.turnId, richness);
     this.persistedTurnIds.add(event.turnId);
+    this.initialHistoryPage = null;
     const appended = await this.deps.catalog.appendTurn(event.conversationId, {
       id: state.id,
       sessionId: event.conversationId,
@@ -1109,19 +1223,27 @@ class WebGatewayClientSession {
       artifacts,
     });
     if (!appended || this.disposed || !this._activeSessionId) return;
-    const sessions = await this.listSessions();
-    if (this.disposed || !this._activeSessionId) return;
+    const updated = appended as WebSessionRecord;
+    if (!updated.session || !this.activeWorkspaceId) return;
     this.emit({
-      type: 'session_catalog',
-      activeSessionId: this._activeSessionId,
-      sessions,
+      type: 'workspace_conversation_changed',
+      workspaceId: this.activeWorkspaceId,
+      conversationId: event.conversationId,
+      changes: {
+        title: updated.session.title,
+        updatedAt: updated.session.updatedAt,
+        preview: updated.session.title,
+      },
     });
   }
 
   private enrichRecord(record: WebSessionRecord) {
+    const unresolved = record.turns.filter(turn => !turn.taskId && !turn.executionTimeline?.taskId).map(turn => turn.id);
+    const resolved = this.deps.resolveTaskIdsForTurns?.(unresolved);
     const taskIds = record.turns.map(turn => (
       turn.taskId
       ?? turn.executionTimeline?.taskId
+      ?? (resolved ? resolved.get(turn.id) : this.deps.resolveTaskIdForTurn?.(turn.id))
       ?? inferTaskId(turn.userInput)
     ));
     const latestTurnByTask = new Map<string, number>();
@@ -1130,6 +1252,18 @@ class WebGatewayClientSession {
     });
     const timelineByTask = new Map<string, ExecutionTimeline | null>();
     const artifactsByTask = new Map<string, ArtifactProjection[]>();
+    const ids = [...latestTurnByTask.keys()];
+    const timelines = this.deps.projectExecutionTimelines?.(ids);
+    const artifacts = this.deps.projectTasksArtifacts?.(ids);
+    const billing = this.deps.billing?.forHistoryPage?.(
+      this.deps.accountId, record.turns.map(turn => turn.id), ids,
+    ) ?? this.deps.billing;
+    for (const [taskId, index] of latestTurnByTask) {
+      if (timelines) timelineByTask.set(taskId,
+        timelineForTask(timelines.get(taskId), taskId)
+        ?? timelineForTask(record.turns[index]!.executionTimeline, taskId));
+      if (artifacts) artifactsByTask.set(taskId, artifacts.get(taskId) ?? []);
+    }
     return {
       ...structuredClone(record),
       turns: record.turns.map((turn, index) => {
@@ -1143,6 +1277,7 @@ class WebGatewayClientSession {
           hydrateDurableFacts,
           timelineByTask,
           artifactsByTask,
+          billing,
         );
       }),
     };
@@ -1175,8 +1310,9 @@ class WebGatewayClientSession {
     hydrateDurableFacts: boolean,
     timelineByTask: Map<string, ExecutionTimeline | null>,
     artifactsByTask: Map<string, ArtifactProjection[]>,
+    billingService: BillQueryService | undefined,
   ): import('./web-session-types.js').ConversationTurnProjection {
-    const billing = this.projectBillingForTurn(turn.id, taskId, isSystemCommandTurn(turn));
+    const billing = this.projectBillingForTurn(turn.id, taskId, isSystemCommandTurn(turn), false, billingService);
     if (!taskId) {
       return {
         ...structuredClone(turn),
@@ -1250,12 +1386,12 @@ class WebGatewayClientSession {
     taskId: string | null,
     systemCommand = false,
     liveTurn = false,
+    billing = this.deps.billing,
   ): {
     queryBill: QueryBillProjection | null;
     taskUsageSummary: TaskUsageSummary | null;
     turnBilling: TurnBillUserView | null;
   } {
-    const billing = this.deps.billing;
     if (!billing) {
       if (systemCommand) return { queryBill: null, taskUsageSummary: null, turnBilling: null };
       const projectedAt = this.deps.now?.() ?? new Date().toISOString();
@@ -1312,6 +1448,19 @@ class WebGatewayClientSession {
           finalizedAt: null,
           projectedAt: this.deps.now?.() ?? new Date().toISOString(),
         };
+      }
+    } else {
+      // Legacy presentation records can misclassify a real AI Turn as a
+      // system command. A durable Query is stronger evidence than that
+      // presentation hint; retain its billing projection, while suppressing
+      // the card for commands that have no Query fact.
+      try {
+        const durableBilling = billing.getTurnBillUserView(this.deps.accountId, turnId, {
+          liveFallback: liveTurn,
+        });
+        if (durableBilling?.queryId) turnBilling = durableBilling;
+      } catch {
+        // A command without a durable Query remains intentionally silent.
       }
     }
     return {
@@ -1497,8 +1646,12 @@ export class WebGatewaySessionRuntime {
     return this.client(clientId).listSessions(query);
   }
 
-  readSession(clientId: string, sessionId: string): Promise<WebSessionRecordProjection | null> {
-    return this.client(clientId).readSession(sessionId);
+  listSessionPage(clientId: string, input: { query?: string; cursor?: string } = {}) {
+    return this.client(clientId).listSessionPage(input);
+  }
+
+  readSession(clientId: string, sessionId: string, cursor?: string): Promise<WebSessionRecordProjection | null> {
+    return this.client(clientId).readSession(sessionId, cursor);
   }
 
   listBillingRecords(
@@ -1524,8 +1677,8 @@ export class WebGatewaySessionRuntime {
     return this.client(clientId).createSession();
   }
 
-  activateSession(clientId: string, sessionId: string): Promise<WebSessionActivationResult> {
-    return this.client(clientId).activateSession(sessionId);
+  activateSession(clientId: string, sessionId: string, expectedWorkspaceId?: string): Promise<WebSessionActivationResult> {
+    return this.client(clientId).activateSession(sessionId, expectedWorkspaceId);
   }
 
   deleteSession(

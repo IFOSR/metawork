@@ -285,6 +285,11 @@ metawork server start
 运行时构建会直接失败。安装、升级或构建完成后需要重启 Server，所有 Client 才会
 使用新激活的 Runtime 和 Web 静态产物。
 
+工作区的 `dist/` 仅是构建产物，绝不作为 Server Runtime 运行。仓库中的
+`npm run server:*` 和 `npm start` 也会统一代理到已安装的 `app/current`
+release。修改源码后，执行 `metawork server stop`、`npm run setup:native`、
+`metawork server start`，确保改动经过构建并激活到唯一的生产 Runtime。
+
 `runtimePolicy.executorIdleTimeoutMs` 是可选的 Executor watchdog。它表示 idle
 超时，不是 Task 或 attempt 的总体时长限制。已有安装如果使用过旧的
 `attemptTimeoutMs` 字段，读取配置时会自动归一化为新字段。

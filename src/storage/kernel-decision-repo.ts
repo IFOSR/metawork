@@ -17,6 +17,12 @@ export interface KernelDecisionTimelineRecord {
   reason: string;
 }
 
+export interface KernelPlanPresentationIdentity {
+  taskId: string;
+  graphRevision: number;
+  subtaskIds: string[];
+}
+
 interface KernelDecisionRow {
   id: string;
   schema_version: number;
@@ -136,6 +142,48 @@ export class KernelDecisionRepo {
     });
   }
 
+  listTimelineByTasks(taskIds: readonly string[], limit: number): KernelDecisionTimelineRecord[] {
+    if (!taskIds.length) return [];
+    if (taskIds.length > 100 || !Number.isSafeInteger(limit) || limit < 1) throw new Error('timeline_task_limit');
+    return this.db.prepare(`
+      SELECT action, task_id AS taskId, subtask_id AS subtaskId, reason FROM (
+        SELECT action, task_id, subtask_id, reason, created_at, id,
+          row_number() OVER (PARTITION BY task_id ORDER BY created_at DESC, id DESC) AS position
+        FROM kernel_decisions WHERE task_id IN (${taskIds.map(() => '?').join(',')})
+      ) WHERE position <= ? ORDER BY created_at ASC, id ASC
+    `).all(...taskIds, Math.min(limit, 200)) as KernelDecisionTimelineRecord[];
+  }
+
+  listPresentationIdentitiesByTasks(taskIds: readonly string[]): KernelPlanPresentationIdentity[] {
+    if (!taskIds.length) return [];
+    if (taskIds.length > 100) throw new Error('presentation_task_limit');
+    const rows = this.db.prepare(`
+      SELECT task_id, schema_version, json_extract(decision_json, '$.schemaVersion') AS decision_schema,
+        json_extract(decision_json, '$.action.graphRevision') AS graph_revision,
+        (SELECT json_group_array(json_extract(value, '$.id'))
+          FROM json_each(decision_json, '$.action.workGraph.subtasks')) AS subtask_ids_json
+      FROM (
+        SELECT task_id, schema_version, decision_json,
+          row_number() OVER (PARTITION BY task_id ORDER BY created_at DESC, id DESC) AS position
+        FROM kernel_decisions
+        WHERE action = 'authorize_task_plan' AND task_id IN (${taskIds.map(() => '?').join(',')})
+      ) WHERE position = 1
+    `).all(...taskIds) as {
+      task_id: string; schema_version: number; decision_schema: number;
+      graph_revision: number; subtask_ids_json: string;
+    }[];
+    return rows.map(row => {
+      assertCurrentSchema(row.schema_version, 'decision');
+      assertCurrentSchema(row.decision_schema, 'decision');
+      const subtaskIds: unknown = JSON.parse(row.subtask_ids_json);
+      if (!Number.isSafeInteger(row.graph_revision) || row.graph_revision < 0
+        || !Array.isArray(subtaskIds) || !subtaskIds.every(id => typeof id === 'string')) {
+        throw new Error('invalid_plan_presentation_identity');
+      }
+      return { taskId: row.task_id, graphRevision: row.graph_revision, subtaskIds };
+    });
+  }
+
   listCurrentByAction(action: KernelDecision['action']['type']): RevisionedKernelDecisionLedgerRecord[] {
     return (this.db.prepare(`
       SELECT decision.*
@@ -152,6 +200,25 @@ export class KernelDecisionRepo {
         )
       ORDER BY decision.created_at ASC, decision.id ASC
     `).all(action) as KernelDecisionRow[]).map(rowToRecord);
+  }
+
+  /** Read-model identities only; never deserialize immutable control payloads. */
+  listCurrentTaskIdsByAction(action: KernelDecision['action']['type'], taskIds: readonly string[]): string[] {
+    if (taskIds.length === 0) return [];
+    const statement = this.db.prepare(`
+      SELECT decision.task_id
+      FROM kernel_decisions decision
+      WHERE decision.task_id = ? AND decision.action = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM kernel_decisions later
+          WHERE later.task_id = decision.task_id
+            AND later.action NOT IN ('no_op', 'probe_capacity')
+            AND (later.created_at > decision.created_at
+              OR (later.created_at = decision.created_at AND later.id > decision.id))
+        )
+      LIMIT 1
+    `);
+    return [...new Set(taskIds)].filter(taskId => statement.get(taskId, action) !== undefined);
   }
 }
 

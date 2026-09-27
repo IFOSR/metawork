@@ -27,11 +27,11 @@
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
     "setup:native": "node scripts/install-native-macos.mjs",
-    "server:start": "node dist/index.js server start",
-    "server:stop": "node dist/index.js server stop",
-    "server:restart": "node dist/index.js server restart",
-    "server:status": "node dist/index.js server status",
-    "server:doctor": "node dist/index.js server doctor",
+    "server:start": "node scripts/run-installed-cli.mjs server start",
+    "server:stop": "node scripts/run-installed-cli.mjs server stop",
+    "server:restart": "node scripts/run-installed-cli.mjs server restart",
+    "server:status": "node scripts/run-installed-cli.mjs server status",
+    "server:doctor": "node scripts/run-installed-cli.mjs server doctor",
     "package:release": "node scripts/package-release.mjs",
     "smoke:metawork": "node scripts/smoke-metaclaw-real-task.mjs",
     "smoke:anyfusion": "node scripts/smoke-metaclaw-real-task.mjs",
@@ -39,7 +39,7 @@
     "smoke:query-billing": "node scripts/smoke-query-billing.mjs",
     "smoke:clients": "vitest run tests/integration/independent-client-lifecycle.integration.test.ts",
     "smoke:metaclaw": "node scripts/smoke-metaclaw-real-task.mjs",
-    "start": "node dist/index.js"
+    "start": "node scripts/run-installed-cli.mjs"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.71.1",

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AccountRuntimeHandle } from '../../src/account/account-runtime-ports.js';
 import type { RuntimeRegistry } from '../../src/account/runtime-registry.js';
 import type { GatewayCommand } from '../../src/gateway/client-protocol.js';
@@ -33,6 +33,51 @@ afterEach(() => {
 });
 
 describe('ConversationGatewayRuntime', () => {
+  it('serves attach and history without durable submission replay or journaling read responses', async () => {
+    const fixture = createFixture();
+    const replay = vi.spyOn(fixture.journal, 'replay');
+    const append = vi.spyOn(fixture.journal, 'append');
+    const observed = fixture.capture('conv_1');
+    const attach = await fixture.submit('conv_1', 'attach_1', 'attach_1', { kind: 'attach_conversation', conversationId: 'conv_1' });
+    expect(attach.status).toBe('accepted');
+    const history = await fixture.submit('conv_1', 'history_1', 'history_1', { kind: 'get_conversation_history', conversationId: 'conv_1', limit: 10 });
+    expect(history.status).toBe('accepted');
+    expect(replay).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
+    expect(observed.at(-1)?.kind).toBe('conversation_history_page');
+    expect(fixture.executions).toEqual([]);
+  });
+
+  it('transports a large Unicode history page losslessly in bounded frames', async () => {
+    const page = {
+      turns: [{ id: 'history_long', userInput: 'question', finalAnswer: '报告结论'.repeat(20_000), status: 'completed' }],
+      previousCursor: null, nextCursor: 'older',
+    };
+    const fixture = createFixture(null, async () => page);
+    const events = fixture.capture('conv_1');
+    await fixture.submit('conv_1', 'req_history', 'idem_history', {
+      kind: 'get_conversation_history', conversationId: 'conv_1', limit: 10, acceptFragments: true,
+    });
+    expect(events.length).toBeGreaterThan(1);
+    expect(events.every(event => gatewayEventPayloadBytes(event.payload) <= MAX_GATEWAY_EVENT_PAYLOAD_BYTES)).toBe(true);
+    const frames = events.map(event => event.payload as { transfer: { data: string; index: number; count: number } });
+    expect(frames.map(frame => frame.transfer.index)).toEqual(frames.map((_, index) => index));
+    const encoded = frames.map(frame => frame.transfer.data).join('');
+    expect(JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))).toEqual(page);
+  });
+
+  it('rejects oversized history explicitly for an old client instead of sending unknown framing', async () => {
+    const fixture = createFixture(null, async () => ({
+      turns: [{ id: 'long', finalAnswer: 'x'.repeat(100_000) }], previousCursor: null, nextCursor: null,
+    }));
+    const events = fixture.capture('conv_1');
+    const receipt = await fixture.submit('conv_1', 'req_old', 'idem_old', {
+      kind: 'get_conversation_history', conversationId: 'conv_1',
+    });
+    expect(receipt).toMatchObject({ status: 'rejected', reason: 'history_page_fragmentation_required' });
+    expect(events).toEqual([]);
+  });
+
   it('delivers a delayed result to the original Turn and origin after another client submits', async () => {
     const fixture = createFixture();
     const firstEvents = fixture.capture('conv_1');
@@ -758,6 +803,8 @@ function createFixture(
     command: GatewayCommand,
     session: FakeConversationSession,
   ) => Promise<unknown> | null = null,
+  readHistory: NonNullable<import('../../src/gateway/conversation-gateway-runtime.js').ConversationGatewayRuntimeDeps['readHistory']>
+    = async () => ({ turns: [], previousCursor: null, nextCursor: null }),
 ) {
   const root = mkdtempSync(join(tmpdir(), 'anyfusion-conversation-gateway-'));
   roots.push(root);
@@ -843,6 +890,7 @@ function createFixture(
     conversationFactory: conversationId => fixture.conversationFactory(conversationId),
     journal,
     subscriptions,
+    readHistory,
     createId: prefix => `${prefix}_${Math.random().toString(36).slice(2)}`,
   });
   return fixture;
@@ -858,6 +906,7 @@ class FakeConversationSession {
     certification: 'certified' | 'uncertified';
   }> = [];
   private readonly mailbox: ConversationInputMailbox;
+  private latestTrace: unknown = null;
   workspace: {
     path: string;
     selectedAt: string;
@@ -932,7 +981,12 @@ class FakeConversationSession {
   }
 
   fireTrace(trace: unknown): void {
+    this.latestTrace = trace;
     this.traceListener?.(trace);
+  }
+
+  getInteractionTrace(): unknown {
+    return this.latestTrace;
   }
 
   attachClient(): void {}
@@ -1188,6 +1242,11 @@ describe('ConversationGatewayRuntime origin delivery (ADR-0036)', () => {
       expect.arrayContaining(['trace_delta', 'task_projection']),
     );
     expect(webEvents.find(event => event.kind === 'trace_delta')?.requestId).toBe('req_1');
+    expect(webEvents.find(event => event.kind === 'task_projection')).toMatchObject({
+      turnId,
+      requestId: 'req_1',
+      payload: { currentTaskId: 'task_1' },
+    });
     expect(tuiEvents.filter(event => (
       event.kind === 'trace_delta' || event.kind === 'task_projection'
     ))).toEqual([]);

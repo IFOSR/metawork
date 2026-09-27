@@ -494,6 +494,7 @@ describe('ManagementServer WebSocket authentication', () => {
       expect(await list.json()).toEqual({
         activeWorkspaceId: 'workspace_repo',
         activeConversationId: 'session_live',
+        nextCursor: null,
         conversations: [history],
       });
 

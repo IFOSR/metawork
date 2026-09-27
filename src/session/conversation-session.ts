@@ -726,17 +726,7 @@ export class ConversationSession {
       if (this.isCancelledTurn()) {
         // The user cancelled the turn; the aborted Planner process is an
         // expected consequence, not a failure to report.
-        this.appendTrace({
-          phase: 'planning',
-          actor: 'runtime',
-          kind: 'turn_cancelled',
-          status: 'completed',
-          title: 'Turn cancelled',
-          summary: '本轮到用户取消为止，未创建任务。',
-          details: {},
-          eventKey: 'turn_cancelled',
-          traceStatus: 'cancelled',
-        });
+        this.appendTurnCancelledTrace('本轮到用户取消为止，未创建任务。');
         return true;
       }
       this.appendTrace({
@@ -757,17 +747,7 @@ export class ConversationSession {
       this.notify();
     }
     if (this.isCancelledTurn()) {
-      this.appendTrace({
-        phase: 'planning',
-        actor: 'runtime',
-        kind: 'turn_cancelled',
-        status: 'completed',
-        title: 'Turn cancelled',
-        summary: '用户取消了本轮；Planner 结果未被采纳。',
-        details: {},
-        eventKey: 'turn_cancelled',
-        traceStatus: 'cancelled',
-      });
+      this.appendTurnCancelledTrace('用户取消了本轮；Planner 结果未被采纳。');
       return true;
     }
     this.recordPlannerProposalTerminalTrace(result);
@@ -1189,28 +1169,55 @@ export class ConversationSession {
       eventKey: 'turn_cancel_requested',
     });
     this.appendOutput('-> 已请求取消当前轮，正在终止 Planner 与执行器…');
-    try {
-      await this.deps.runtimePort.commands.cancelPlannerTurn?.(this.deps.plannerSessionId);
-    } catch (error) {
-      this.appendOutput(`终止 Planner 进程失败：${(error as Error).message}`);
+    let plannerCancellationRequested = false;
+    const cancelPlannerTurn = this.deps.runtimePort.commands.cancelPlannerTurn;
+    if (cancelPlannerTurn) {
+      try {
+        await cancelPlannerTurn(this.deps.plannerSessionId);
+        plannerCancellationRequested = true;
+      } catch (error) {
+        this.appendOutput(`终止 Planner 进程失败：${(error as Error).message}`);
+      }
     }
-    await this.cancelConversationWork('用户取消了当前轮');
+    const taskCancellationRequested = await this.cancelConversationWork('用户取消了当前轮');
+    if (plannerCancellationRequested || taskCancellationRequested) {
+      // Closing the Turn is a presentation fact. Executor cleanup continues
+      // asynchronously and keeps the Conversation admission slot occupied
+      // until the durable cancellation drain converges.
+      this.appendTurnCancelledTrace('用户已请求取消本轮；后台清理继续进行。');
+    }
     this.notify();
   }
 
-  private async cancelConversationWork(reason: string): Promise<void> {
+  private async cancelConversationWork(reason: string): Promise<boolean> {
     const runtime = this.kernelExecutionRuntime;
-    if (!runtime) return;
+    if (!runtime) return false;
     const taskId = this.getCurrentTaskId()
       ?? this.deps.runtimePort.queries.getConversationTaskSlot?.(this.deps.conversationId)?.activeTaskId
       ?? null;
-    if (!taskId) return;
+    if (!taskId) return false;
     try {
       await runtime.cancelTask(taskId, reason);
       this.appendOutput(`已取消任务 ${taskId} 的后续执行。`);
+      return true;
     } catch (error) {
       this.appendOutput(`取消任务失败：${(error as Error).message}`);
+      return false;
     }
+  }
+
+  private appendTurnCancelledTrace(summary: string): void {
+    this.appendTrace({
+      phase: 'planning',
+      actor: 'runtime',
+      kind: 'turn_cancelled',
+      status: 'completed',
+      title: 'Turn cancelled',
+      summary,
+      details: {},
+      eventKey: 'turn_cancelled',
+      traceStatus: 'cancelled',
+    });
   }
 
   private buildTaskStatusLines(): string[] {

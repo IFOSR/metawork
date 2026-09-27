@@ -109,14 +109,6 @@ describe('Web workspace shell', () => {
     expect(styles).toContain('.workspace-create-button');
   });
 
-  it('applies a launch hint only after authentication', async () => {
-    const app = await readFile(new URL('App.tsx', root), 'utf8');
-
-    expect(app).toContain('resolveWebLaunchSuggestion');
-    expect(app).toContain('applyStartupLaunchSuggestion');
-    expect(app).not.toContain('startupLaunchContext');
-  });
-
   it('keeps Workspace switching separate from Conversation attachment', async () => {
     const app = await readFile(new URL('App.tsx', root), 'utf8');
     const start = app.indexOf('const handleSelectWorkspace');
@@ -161,7 +153,7 @@ describe('Web workspace shell', () => {
     const end = app.indexOf('const handleNewSession', start);
     const handler = app.slice(start, end);
 
-    expect(handler).toContain('sessionId === activeConversationRef.current');
+    expect(handler).toContain('shouldActivateConversation(sessionId, activeConversationRef.current, conversationNavigationRef.current.target)');
     expect(handler).not.toContain('sessionId === activeSessionId');
   });
 

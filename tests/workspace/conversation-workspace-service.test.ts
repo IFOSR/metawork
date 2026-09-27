@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FileConversationStore } from '../../src/session/file-conversation-store.js';
 import { CONVERSATION_FORMAT_VERSION, type ConversationRecord } from '../../src/session/conversation-store.js';
 import { FileWorkspaceCatalogStore } from '../../src/storage/file-workspace-catalog-store.js';
@@ -74,6 +74,13 @@ async function fixture(withTurn = false) {
 }
 
 describe('ConversationWorkspaceService', () => {
+  it('resolves an attached Workspace from metadata without hydrating Conversation history', async () => {
+    const value = await fixture();
+    await value.service.bindEmptyConversation('workspace_repo', 'local:local-installation');
+    const read = vi.spyOn(value.store, 'readConversation');
+    expect(await value.service.getWorkspace()).toMatchObject({ workspaceId: 'workspace_repo' });
+    expect(read).not.toHaveBeenCalled();
+  });
   it('binds an empty Conversation to a Workspace id', async () => {
     const value = await fixture();
     const result = await value.service.bindEmptyConversation(

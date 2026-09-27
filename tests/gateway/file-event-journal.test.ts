@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   MAX_GATEWAY_EVENT_PAYLOAD_BYTES,
   type GatewayEventEnvelope,
@@ -53,6 +53,26 @@ function makeEvent(
 }
 
 describe('FileEventJournal', () => {
+  it('bounds snapshots with linear serialization work including escaped UTF-8 lines', async () => {
+    const journal = await makeJournal();
+    const lines = Array.from({ length: 1500 }, (_, index) => `${index}: 中文"\\\n`);
+    await journal.append({ ...makeEvent('snapshot', 'conversation_snapshot'), payload: { from: 0, lines } });
+    const stringify = JSON.stringify;
+    let visitedLines = 0;
+    const spy = vi.spyOn(JSON, 'stringify').mockImplementation(((value: unknown, ...rest: unknown[]) => {
+      if (value && typeof value === 'object' && 'lines' in value && Array.isArray(value.lines)) {
+        visitedLines += value.lines.length;
+      }
+      return (stringify as (...args: unknown[]) => string)(value, ...rest);
+    }) as typeof JSON.stringify);
+    try {
+      const replay = await journal.replay('local-default', 'conv_1');
+      expect(replay.snapshot[0]?.payload).toMatchObject({ lines, truncated: false });
+      expect(visitedLines).toBeLessThanOrEqual(lines.length * 4);
+      expect(Buffer.byteLength(stringify(replay.snapshot[0]!.payload)))
+        .toBeLessThanOrEqual(MAX_GATEWAY_EVENT_PAYLOAD_BYTES);
+    } finally { spy.mockRestore(); }
+  });
   it('rejects appending a legacy envelope to the current journal', async () => {
     const journal = await makeJournal();
 

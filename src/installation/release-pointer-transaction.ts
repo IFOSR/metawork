@@ -29,6 +29,8 @@ export class ReleasePointerTransaction {
   constructor(private readonly dependencies: {
     paths: Record<ReleasePointerName, string>;
     journalPath?: string;
+    previousActivationId?: string;
+    beforeRollback?: (journal: ReleaseActivationJournal) => Promise<void>;
     afterSwitch?: (name: ReleasePointerName) => Promise<void>;
     healthCheck(): Promise<void>;
   }) {}
@@ -38,13 +40,15 @@ export class ReleasePointerTransaction {
   ): Promise<void> {
     const previousTargets = await readTargets(this.dependencies.paths);
     const switched: ReleasePointerName[] = [];
-    await this.writeJournal({
+    const journal: ReleaseActivationJournal = {
       schemaVersion: 1,
       phase: 'prepared',
       paths: this.dependencies.paths,
       previousTargets,
       candidateTargets,
-    });
+      previousActivationId: this.dependencies.previousActivationId,
+    };
+    await this.writeJournal(journal);
     try {
       for (const name of SWITCH_ORDER) {
         await replaceSymlink(this.dependencies.paths[name], candidateTargets[name]);
@@ -53,13 +57,19 @@ export class ReleasePointerTransaction {
       }
       await this.dependencies.healthCheck();
       await this.writeJournal({
-        schemaVersion: 1,
+        ...journal,
         phase: 'committed',
-        paths: this.dependencies.paths,
-        previousTargets,
-        candidateTargets,
       });
     } catch (error) {
+      try {
+        await this.dependencies.beforeRollback?.(journal);
+      } catch (rollbackError) {
+        // Keep the prepared journal and all pointers untouched for a safe retry.
+        throw new AggregateError(
+          [error, rollbackError],
+          'candidate activation failed and rollback prerequisites failed',
+        );
+      }
       const rollbackErrors: unknown[] = [];
       for (const name of switched.reverse()) {
         try {
@@ -86,6 +96,7 @@ export class ReleasePointerTransaction {
     if (!journal) return { status: 'none' };
     assertSamePaths(journal.paths, this.dependencies.paths);
     if (journal.phase === 'prepared') {
+      await this.dependencies.beforeRollback?.(journal);
       for (const name of SWITCH_ORDER) {
         await replaceSymlink(this.dependencies.paths[name], journal.previousTargets[name]);
       }
@@ -145,11 +156,14 @@ export interface ReleaseActivationJournal {
   paths: Record<ReleasePointerName, string>;
   previousTargets: Record<ReleasePointerName, string>;
   candidateTargets: Record<ReleasePointerName, string>;
+  /** Stable predecessor identity, independent of filenames' lexical order or config changes. */
+  previousActivationId?: string;
 }
 
 export async function recoverPreparedReleaseActivations(
   journalDirectory: string,
   paths: Record<ReleasePointerName, string>,
+  beforeRollback?: (journal: ReleaseActivationJournal, journalPath: string) => Promise<void>,
 ): Promise<{ recoveredJournalPath: string | null }> {
   const names = await readdir(journalDirectory).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return [];
@@ -171,6 +185,7 @@ export async function recoverPreparedReleaseActivations(
   await new ReleasePointerTransaction({
     paths,
     journalPath,
+    beforeRollback: journal => beforeRollback?.(journal, journalPath) ?? Promise.resolve(),
     healthCheck: async () => undefined,
   }).recover();
   return { recoveredJournalPath: journalPath };

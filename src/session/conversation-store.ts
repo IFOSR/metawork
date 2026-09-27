@@ -55,4 +55,15 @@ export interface ConversationStore {
   writeCatalog(catalog: ConversationCatalogFile): Promise<void>;
   readConversation(conversationId: string): Promise<ConversationRecord | null>;
   writeConversation(record: ConversationRecord): Promise<void>;
+  readMetadata?(conversationId: string): Promise<ConversationMetadata | null>;
+  readHistoryVersion?(conversationId: string): Promise<string | null>;
+  readHistoryPage?(
+    conversationId: string,
+    request?: import('./conversation-history-store.js').ConversationHistoryRequest,
+  ): Promise<import('./conversation-history-store.js').ConversationHistoryPage<ConversationTurn>>;
+}
+
+export interface ConversationMetadataIndex {
+  find(conversationId: string): ConversationMetadata | null;
+  put(metadata: ConversationMetadata): void;
 }

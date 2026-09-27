@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ClientGateway } from '../../src/gateway/client-gateway.js';
 import { ClientGateway as ClientGatewayImpl } from '../../src/gateway/client-gateway.js';
 import type { GatewayEventEnvelope, GatewayEventKind } from '../../src/gateway/client-events.js';
@@ -88,6 +88,18 @@ async function makeAdapter(): Promise<WebGatewayAdapter> {
 }
 
 describe('WebGatewayAdapter', () => {
+  it('uses the bounded snapshot port rather than replay for an ordinary attach', async () => {
+    const snapshot = vi.fn(async () => ({ snapshotVersion: 1 as const, snapshot: [], deltas: [], lastSequence: 100 }));
+    const replay = vi.fn();
+    const adapter = new WebGatewayAdapter({
+      gateway: null as unknown as ClientGateway,
+      journal: { append: vi.fn(), replay, snapshot },
+      subscriptions: new GatewaySubscriptions(),
+    });
+    expect(await adapter.snapshot('local-default', 'conv_1')).toMatchObject({ lastSequence: 100, snapshotVersion: 1 });
+    expect(snapshot).toHaveBeenCalledWith('local-default', 'conv_1');
+    expect(replay).not.toHaveBeenCalled();
+  });
   it('routes a web command through the unified gateway', async () => {
     const adapter = await makeAdapter();
     const result = await adapter.submit(envelope);

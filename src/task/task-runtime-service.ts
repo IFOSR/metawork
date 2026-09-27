@@ -22,6 +22,10 @@ export class TaskRuntimeService {
     return this.deps.taskEngine.list();
   }
 
+  listTasksByConversation(conversationId: string): Task[] {
+    return this.deps.taskRepo.findByConversation(conversationId);
+  }
+
   listActiveTasks(): Task[] {
     return this.deps.taskRepo.findActive();
   }

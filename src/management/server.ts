@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { collectNavigationDiagnostics } from '../utils/navigation-diagnostics.js';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import type { Socket } from 'node:net';
 import { extname, join, normalize, resolve } from 'node:path';
@@ -244,7 +245,15 @@ export class ManagementServer {
       agents => this.broadcast({ type: 'agent_readiness_state', agents }),
     ) ?? null;
     const server = createServer((request, response) => {
-      void this.handleRequest(request, response).catch(error => {
+      const operation = () => this.handleRequest(request, response);
+      const diagnostic = process.env.METAWORK_NAVIGATION_DIAGNOSTICS === '1'
+        && /^\/api\/(?:workspaces|conversations)(?:[/?]|$)/u.test(request.url ?? '');
+      const handling = diagnostic
+        ? collectNavigationDiagnostics(operation).then(({ milliseconds, stages }) => {
+            console.info(JSON.stringify({ event: 'navigation_diagnostics', milliseconds, stages }));
+          })
+        : operation();
+      void handling.catch(error => {
         this.handleRequestError(request, response, error);
       });
     });
@@ -760,14 +769,25 @@ export class ManagementServer {
         this.sendJson(response, 409, { error: 'workspace is not selected' });
         return;
       }
-      this.sendJson(response, 200, {
-        activeWorkspaceId: state.activeWorkspaceId,
-        activeConversationId: state.activeSessionId,
-        conversations: await this.deps.sessionRuntime.listSessions(
-          clientId,
-          url.searchParams.get('q') ?? '',
-        ),
-      });
+      try {
+        const query = url.searchParams.get('q') ?? '';
+        const page = this.deps.sessionRuntime.listSessionPage
+          ? await this.deps.sessionRuntime.listSessionPage(clientId, {
+            query, cursor: url.searchParams.get('cursor') ?? undefined,
+          })
+          : { items: await this.deps.sessionRuntime.listSessions(clientId, query), nextCursor: null };
+        this.sendJson(response, 200, {
+          activeWorkspaceId: state.activeWorkspaceId,
+          activeConversationId: state.activeSessionId,
+          conversations: page.items, nextCursor: page.nextCursor,
+          projectionVersion: page.projectionVersion,
+        });
+      } catch (error) {
+        const code = (error as Error).message;
+        if (code === 'stale_directory_cursor' || code === 'directory_rebuilding' || code === 'invalid_cursor') {
+          this.sendJson(response, code === 'directory_rebuilding' ? 503 : 409, { error: code });
+        } else throw error;
+      }
       return;
     }
 
@@ -841,6 +861,7 @@ export class ManagementServer {
         await this.deps.sessionRuntime.activateSession(
           clientId,
           decodeURIComponent(conversationAttachMatch[1]!),
+          url.searchParams.get('workspaceId') ?? undefined,
         ),
       );
       return;
@@ -868,6 +889,7 @@ export class ManagementServer {
       const record = await this.deps.sessionRuntime.readSession(
         clientId,
         decodeURIComponent(conversationMatch[1]!),
+        url.searchParams.get('cursor') ?? undefined,
       );
       if (!record) {
         this.sendJson(response, 404, { error: 'session not found' });

@@ -36,6 +36,11 @@ export class WebGatewayAdapter {
     return this.deps.journal.replay(accountId, conversationId, afterSequence);
   }
 
+  snapshot(accountId: string, conversationId: string): Promise<GatewayReplay> {
+    return this.deps.journal.snapshot?.(accountId, conversationId)
+      ?? this.deps.journal.replay(accountId, conversationId);
+  }
+
   subscribe(
     accountId: string,
     conversationId: string | null,

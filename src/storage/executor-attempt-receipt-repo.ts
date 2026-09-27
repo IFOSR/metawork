@@ -39,6 +39,11 @@ export interface ExecutorAttemptReceipt {
   errorDetail: string | null;
 }
 
+export type TimelineReceiptRecord = Pick<ExecutorAttemptReceipt,
+  'attemptId' | 'taskId' | 'subtaskId' | 'attemptKind' | 'agentClassName'
+  | 'terminalState' | 'completedAt' | 'errorCode' | 'errorDetail'
+> & { hasViolations: boolean };
+
 export type ExecutorAttemptReceiptInsert = Omit<
   ExecutorAttemptReceipt,
   | 'graphRevision'
@@ -151,6 +156,30 @@ export class ExecutorAttemptReceiptRepo {
       ORDER BY completed_at DESC, attempt_id ASC
     `).all(taskId) as Record<string, unknown>[];
     return rows.map(rowToReceipt);
+  }
+
+  listByTasks(taskIds: readonly string[]): ExecutorAttemptReceipt[] {
+    if (!taskIds.length) return [];
+    if (taskIds.length > 100) throw new Error('timeline_task_limit');
+    return (this.db.prepare(`SELECT * FROM executor_attempt_receipts
+      WHERE task_id IN (${taskIds.map(() => '?').join(',')})
+      ORDER BY completed_at DESC, attempt_id ASC`).all(...taskIds) as Record<string, unknown>[]).map(rowToReceipt);
+  }
+
+  listTimelineByTasks(taskIds: readonly string[]): TimelineReceiptRecord[] {
+    if (!taskIds.length) return [];
+    if (taskIds.length > 100) throw new Error('timeline_task_limit');
+    const rows = this.db.prepare(`
+      SELECT attempt_id AS attemptId, task_id AS taskId, subtask_id AS subtaskId,
+        attempt_kind AS attemptKind, agent_class_name AS agentClassName,
+        terminal_state AS terminalState, completed_at AS completedAt,
+        error_code AS errorCode, error_detail AS errorDetail,
+        COALESCE(json_array_length(verification_json, '$.violations'), 0) > 0 AS hasViolations
+      FROM executor_attempt_receipts
+      WHERE task_id IN (${taskIds.map(() => '?').join(',')})
+      ORDER BY completed_at DESC, attempt_id ASC
+    `).all(...taskIds) as Array<Omit<TimelineReceiptRecord, 'hasViolations'> & { hasViolations: number }>;
+    return rows.map(row => ({ ...row, hasViolations: Boolean(row.hasViolations) }));
   }
 }
 

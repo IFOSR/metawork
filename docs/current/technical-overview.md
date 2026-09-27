@@ -11,9 +11,9 @@ MetaWork is a local AI Task OS for agentic work. It turns natural-language reque
 
 It is built for teams who need agents to do more than answer the current turn. MetaWork gives long-running AI work a task state machine, memory boundary, unified ControlKernel decision plane, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
 
-> Current implementation baseline (2026-09-22): PlanningAgentPlan v8, Work
+> Current implementation baseline (2026-09-26): PlanningAgentPlan v8, Work
 > Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
-> and SQLite schema v41 with transactional 31→32→33→34→35→36→37→38→39→40→41 upgrade support.
+> and SQLite schema v44 with transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44 upgrade support.
 > Schema v39/v40 adds the Query usage/billing facts (Query attribution contexts,
 > metering spans/observations, immutable price versions, cost entries, per-Query
 > bills and lines, the consumption outbox/receipts and bill adjustments) that
@@ -43,6 +43,46 @@ dispatch quiescence, database backup, candidate health checks and rollback. A2A
 implementation is deferred to a separate roadmap.
 
 ## What MetaWork Does
+
+### Navigation Delivery Status (2026-09-26)
+
+The active navigation remediation adds a Workspace-owned SQLite directory
+projection and Session-owned indexed Conversation metadata/history. Directory
+reads do not replay each Conversation. Web first loads a ten-Turn page and
+requests older pages explicitly; canonical terminal Turns remain visible without
+a prior Web attachment. Older cursors use stable insertion sequences, while
+directory cursors carry the mutable directory revision and reset on conflict.
+
+Source production composition selects the bounded snapshot and immutable-segment
+journal through `createAccountEventJournal`, with a bounded, drainable background
+maintenance worker. The legacy JSON adapter is read-only during import.
+Incremental reconnect has a segment/byte budget and an explicit negotiated
+snapshot reset, including legacy replay gaps; it never falls back to a full
+audit scan. Historical Task association uses a scoped exact lookup in
+`gateway_turn_task_observations`, atomically committed with journal segments.
+The Gateway-owned pure fold retains two distinct Task IDs (enough to preserve
+ambiguity), first/latest trace times and latest completion/progress evidence;
+Storage persists that projection without interpreting lifecycle. Legacy
+retained import uses the same fold, and compaction leaves observations intact.
+Page enrichment uses physical set reads, including a read-only
+billing snapshot that reuses the canonical user projection. Background activity
+and user-Workspace lookup read bindings from indexed metadata, not aggregate
+Conversation history. Native upgrade
+checkpoints include verified segment-body companions; rollback restores missing
+indexed bodies before switching the database pointer, not from legacy JSON or a
+SQLite-only backup. Schema 43 adds the navigation read models without changing Task/Kernel
+facts, and has been installed through the canonical updater. Source schema 44
+adds a separate transactional upgrade for Gateway command admissions: one
+SQLite row per account/idempotency key, indexed recovery candidates, and a
+one-time atomic import of all legacy receipts. Gateway still owns admission
+semantics; the old JSON remains read-only, not a second writer. Schema 44 has
+also been canonically installed; real Web reauthentication and TUI reconnect
+checks pass. Off-page restoration uses a Workspace-fenced attach before its
+history read, preserving active-attachment scoping.
+Final rollout acceptance and the provisional creation budget remain open in the
+[implementation plan](../plans/2026-09-26-navigation-performance-architecture-remediation.md).
+
+### Product Capabilities
 
 - Keeps durable tasks with explicit states: created, ready, running, parked, blocked, done, archived, and cancelled.
 - Restores interrupted work with resume context instead of restarting from scratch.
@@ -720,6 +760,14 @@ atomically switches `app/current`. It fails while Server is running. Server,
 TUI, and Web validate the same release identity before connecting, so old and
 new releases cannot silently mix.
 
+The workspace `dist/` is a build artifact only and is never a Server runtime.
+The repository `npm run server:*` and `npm start` commands also delegate to
+the installed `app/current` release, so running lifecycle commands from the
+source checkout cannot create a second Runtime. After changing source code,
+stop Server, run `npm run setup:native` to build and activate one release, then
+start Server again. A plain `npm run build` refreshes the workspace artifact
+but does not activate it.
+
 Launch independent Clients:
 
 ```bash
@@ -921,6 +969,10 @@ quiescence token. The Decision application is `applied` immediately. An
 account-scoped `GenerationReplanWorker`, driven by the AccountRuntime periodic
 review, claims the Job with a bounded Planner lease, performs one Planner turn,
 and inserts the `plan_proposed` event together with the `submitted` transition.
+The claim is fenced by `planner_claim_token`: proposal submission, recovered
+proposal completion, retryable release and fail-closed failure all verify the
+current token in the same transaction or conditional update, so an expired
+Worker cannot clear or fail a newer claim.
 The deterministic Job id and single conditional claim make the turn idempotent
 across restarts and concurrent session/account passes, and the Planner turn has a
 durable identity of its own: the proposal event id is derived from the Job and
@@ -940,10 +992,14 @@ carries `quiescence_<decisionId>`, and retries the same Decision only while the
 Job is still `pending_quiescence`. The sweep requires an action's full durable
 effect, never half of it: `dispatch_batch` matches attempt id, Subtask, attempt
 kind, binding fingerprint and configuration revision; `block_work` requires the
-Task block **and** the named Subtask resolved; `defer_task_plan_for_availability`
-requires the deferred proposal **and** the Task block; `resume_task` requires the
-downstream dispatch for the resumed Subtask in the same generation, because the
-following `dispatch_batch` carries its own Decision id. `authorize_task_plan` /
+Task block **and** the named Subtask resolved, while a missing named Subtask is
+`unresolved`; `defer_task_plan_for_availability` requires the deferred proposal
+**and** the Task block; `resume_task` requires every named Subtask to exist, be
+unblocked, and have a causally descended downstream dispatch in the same
+generation. Recovery resumes additionally match attempt kind, source attempt,
+binding fingerprint and configuration revision; the following `dispatch_batch`
+carries its own Decision id, so recovery follows its causation back to the
+resume Decision. `authorize_task_plan` /
 `activate_deferred_task_plan` additionally require the revision to have been
 authorized by this Decision. `wait_for_retry` and `wait_for_partition` are
 retry-safe only: their wake observation is the continuation trigger and
@@ -1345,7 +1401,7 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 MetaWork can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product uses SQLite schema v40 and supports transactional 31→32→33→34→35→36→37→38→39→40 upgrades; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product uses SQLite schema v44 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44 upgrades; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Historical Artifact refs are validated against Account/Conversation/Workspace ownership, publication status, regular-file safety and content hash, then copied to attempt-local `inputs/` with stable `input-XX-*` names. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; image-capable adapters consume only the materialized input directory.
 

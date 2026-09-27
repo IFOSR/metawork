@@ -2,6 +2,8 @@ import type Database from 'better-sqlite3';
 import type { Task, TaskSnapshot, TaskStatus, PrioritySignals, Dependency } from '../core/types.js';
 import type { TaskSearchIndexRepo } from './task-search-index-repo.js';
 
+export type TimelineTaskRecord = Pick<Task, 'id' | 'title' | 'status' | 'dependencies'>;
+
 interface TaskRow {
   id: string;
   title: string;
@@ -84,6 +86,30 @@ export class TaskRepo {
   findById(id: string): Task | null {
     const row = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as TaskRow | undefined;
     return row ? rowToTask(row) : null;
+  }
+
+  findByIds(accountId: string, ids: readonly string[]): Task[] {
+    if (!ids.length) return [];
+    if (ids.length > 100) throw new Error('history_task_limit');
+    return (this.db.prepare(`SELECT * FROM tasks WHERE account_id = ?
+      AND id IN (${ids.map(() => '?').join(',')}) ORDER BY id`)
+      .all(accountId, ...ids) as TaskRow[]).map(rowToTask);
+  }
+
+  findTimelineByIds(accountId: string, ids: readonly string[]): TimelineTaskRecord[] {
+    if (!ids.length) return [];
+    if (ids.length > 100) throw new Error('history_task_limit');
+    const rows = this.db.prepare(`
+      SELECT id, title, status, dependencies_json FROM tasks
+      WHERE account_id = ? AND id IN (${ids.map(() => '?').join(',')})
+      ORDER BY id
+    `).all(accountId, ...ids) as Array<Pick<TaskRow, 'id' | 'title' | 'status' | 'dependencies_json'>>;
+    return rows.map(row => ({
+      id: row.id,
+      title: row.title,
+      status: row.status as TaskStatus,
+      dependencies: JSON.parse(row.dependencies_json) as Dependency[],
+    }));
   }
 
   findByStatus(status: TaskStatus): Task[] {

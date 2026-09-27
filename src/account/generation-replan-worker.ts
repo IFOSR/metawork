@@ -142,8 +142,9 @@ export class GenerationReplanWorker {
   ): Promise<'submitted' | 'retry' | 'failed'> {
     const budgetMs = this.deps.plannerRetryBudgetMs ?? DEFAULT_PLANNER_RETRY_BUDGET_MS;
     if (nowMs - Date.parse(job.createdAt) > budgetMs) {
-      this.deps.replanRepo.fail(
+      this.deps.replanRepo.failPlannerClaim(
         job.id,
+        claimToken,
         `planner_unavailable: the authorized Replan Job exceeded its ${budgetMs}ms retry budget`,
         this.deps.now(),
       );
@@ -151,13 +152,19 @@ export class GenerationReplanWorker {
     }
     const task = this.deps.findTask(job.taskId);
     if (!task) {
-      this.deps.replanRepo.fail(job.id, `replan Task no longer exists: ${job.taskId}`, this.deps.now());
+      this.deps.replanRepo.failPlannerClaim(
+        job.id,
+        claimToken,
+        `replan Task no longer exists: ${job.taskId}`,
+        this.deps.now(),
+      );
       return 'failed';
     }
     const sessionId = task.ownerPlannerSessionId ?? task.conversationId ?? null;
     if (!sessionId || !job.quiescenceToken) {
-      this.deps.replanRepo.fail(
+      this.deps.replanRepo.failPlannerClaim(
         job.id,
+        claimToken,
         `replan Job ${job.id} is missing its immutable Planner owner or quiescence token`,
         this.deps.now(),
       );
@@ -199,8 +206,9 @@ export class GenerationReplanWorker {
       // generation. Replanning it against a different revision would silently
       // break the one-revision-per-generation rule, so fail closed instead.
       if (job.configurationRevision !== context.configuration.revisionId) {
-        this.deps.replanRepo.fail(
+        this.deps.replanRepo.failPlannerClaim(
           job.id,
+          claimToken,
           `configuration_revision_changed: Job ${job.id} is pinned to `
             + `${job.configurationRevision} but the current Planner revision is `
             + `${context.configuration.revisionId}`,
@@ -239,7 +247,12 @@ export class GenerationReplanWorker {
       await this.safeDrain({ sessionId, conversationId, userInput, event });
       return 'submitted';
     } catch (error) {
-      this.deps.replanRepo.releasePlannerClaim(job.id, boundedError(error), this.deps.now());
+      this.deps.replanRepo.releasePlannerClaim(
+        job.id,
+        claimToken,
+        boundedError(error),
+        this.deps.now(),
+      );
       return 'retry';
     }
   }

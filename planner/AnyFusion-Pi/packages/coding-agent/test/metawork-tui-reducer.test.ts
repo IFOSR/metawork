@@ -59,6 +59,61 @@ function resultPayload(content: string) {
 }
 
 describe("metawork-tui reducer", () => {
+	it("appends a matching directory page without accepting a stale page or changing selection", () => {
+		const row = (id: string) => ({ conversationId: id, workspaceId: "ws_1", title: id, preview: "", updatedAt: "now" });
+		let state = reduceGatewayEvent(emptyMetaWorkClientState(), event("directory", 1, "workspace_directory_snapshot", {
+			workspaceId: "ws_1", workspace: { id: "ws_1", path: "/repo" }, query: "", requestedCursor: null,
+			page: { items: [row("one")], nextCursor: "page_two" },
+		}));
+		state = selectConversation(state, "one");
+		state = reduceGatewayEvent(state, event("directory", 2, "workspace_directory_snapshot", {
+			workspaceId: "ws_1", query: "", requestedCursor: "page_two",
+			page: { items: [row("two")], nextCursor: null },
+		}));
+		expect(state.conversationSummaries.map(item => item.conversationId).sort()).toEqual(["one", "two"]);
+		expect(state.selectedConversationId).toBe("one");
+		state = reduceGatewayEvent(state, event("directory", 3, "workspace_directory_snapshot", {
+			workspaceId: "ws_1", query: "", requestedCursor: "page_two",
+			page: { items: [row("stale")], nextCursor: "wrong" },
+		}));
+		expect(state.conversationSummaries.map(item => item.conversationId)).not.toContain("stale");
+		expect(state.conversationDirectoryCursor).toBeNull();
+	});
+
+	it("assembles fragmented Unicode history atomically and preserves the older cursor", () => {
+		const answer = "完整报告结论".repeat(12_000);
+		const body = Buffer.from(JSON.stringify({
+			turns: [{ id: "long_turn", status: "completed", userInput: "question", finalAnswer: answer }],
+			nextCursor: "older", previousCursor: null,
+		}));
+		const data = body.toString("base64");
+		const size = 48 * 1024;
+		const count = Math.ceil(data.length / size);
+		let state = emptyMetaWorkClientState();
+		for (let index = 0; index < count; index += 1) {
+			state = reduceGatewayEvent(state, event("conv_1", index + 1, "conversation_history_page", {
+				transfer: { id: "page_one", index, count, byteLength: body.length,
+					hash: createHash("sha256").update(body).digest("hex"), data: data.slice(index * size, (index + 1) * size) },
+			}));
+			if (index < count - 1) {
+				expect(state.conversations.conv_1?.turns.long_turn).toBeUndefined();
+				expect(state.conversations.conv_1?.historyExhausted).toBe(false);
+			}
+		}
+		expect(state.conversations.conv_1?.turns.long_turn?.answer).toBe(answer);
+		expect(state.conversations.conv_1?.historyCursor).toBe("older");
+	});
+
+	it("rejects damaged history transfer without advancing the history cursor", () => {
+		const body = Buffer.from(JSON.stringify({ turns: [], nextCursor: null }));
+		const state = reduceGatewayEvent(emptyMetaWorkClientState(), event("conv_1", 1, "conversation_history_page", {
+			transfer: { id: "damaged", index: 0, count: 1, byteLength: body.length,
+				hash: "0".repeat(64), data: body.toString("base64") },
+		}));
+		expect(state.conversations.conv_1?.historyExhausted).toBe(false);
+		expect(state.notices.some(notice => notice.kind === "error")).toBe(true);
+	});
+
 	it("keeps completed historical results even when their user input is missing", () => {
 		const state = reduceGatewayEvent(emptyMetaWorkClientState(), event("conv_1", 1,
 			"conversation_history_page", {

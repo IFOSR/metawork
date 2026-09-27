@@ -1,5 +1,6 @@
 import type { GatewayCommand } from './client-protocol.js';
 import type { WorkspaceDirectoryService } from '../workspace/workspace-directory-service.js';
+import { WorkspaceConversationProjector } from '../workspace/workspace-conversation-projector.js';
 
 type WorkspaceGatewayCommand = Extract<GatewayCommand, {
   kind: 'select_workspace'
@@ -11,6 +12,7 @@ type WorkspaceGatewayCommand = Extract<GatewayCommand, {
 export interface WorkspaceGatewayRuntimeResult {
   readonly status: 'accepted' | 'rejected';
   readonly workspaceId?: string;
+  readonly directory?: import('./command-admission.js').CommandReceipt['directory'];
   readonly conversationId?: string;
   readonly reason?: string;
 }
@@ -54,17 +56,22 @@ export class WorkspaceGatewayRuntime {
     principalId: string,
   ): Promise<void> {
     this.restoreConnectionWorkspace(connectionId, workspaceId);
-    await this.publishWorkspaceSnapshot(workspaceId, principalId);
+    await this.publishWorkspaceSnapshot(workspaceId, principalId, connectionId);
   }
 
   async publishWorkspaceSnapshot(
     workspaceId: string,
     principalId: string,
+    connectionId?: string,
   ): Promise<void> {
-    const workspace = (await this.directory.listWorkspaces(principalId))
-      .find(item => item.id === workspaceId);
-    if (!workspace) throw new Error('workspace_unauthorized');
+    const workspace = await this.directory.getWorkspace(workspaceId, principalId);
     const page = await this.directory.listConversations(workspaceId, principalId, {});
+    if (connectionId) {
+      await this.options.publishConnection?.(
+        'workspace_directory_snapshot', connectionId, { workspaceId, workspace, page },
+      );
+      return;
+    }
     await this.options.publish?.(
       'workspace_directory_snapshot',
       workspaceId,
@@ -96,12 +103,16 @@ export class WorkspaceGatewayRuntime {
           context.principalId,
           {},
         );
-        await this.options.publish?.(
+        await this.options.publishConnection?.(
           'workspace_directory_snapshot',
-          selection.workspace.id,
-          { workspace: selection.workspace, page },
+          context.connectionId,
+          { workspaceId: selection.workspace.id, workspace: selection.workspace, page },
+          context.requestId,
         );
-        return { status: 'accepted', workspaceId: selection.workspace.id };
+        return {
+          status: 'accepted', workspaceId: selection.workspace.id,
+          directory: { workspace: selection.workspace, page },
+        };
       }
       const activeWorkspaceId = this.activeWorkspaceByConnection.get(context.connectionId);
       if (!activeWorkspaceId) {
@@ -111,9 +122,7 @@ export class WorkspaceGatewayRuntime {
         return { status: 'rejected', reason: 'workspace_not_selected' };
       }
       if (command.kind === 'list_workspace_conversations') {
-        const workspace = (await this.directory.listWorkspaces(context.principalId))
-          .find(item => item.id === activeWorkspaceId);
-        if (!workspace) throw new Error('workspace_unauthorized');
+        const workspace = await this.directory.getWorkspace(activeWorkspaceId, context.principalId);
         const page = await this.directory.listConversations(activeWorkspaceId, context.principalId, {
           ...(command.cursor ? { cursor: command.cursor } : {}),
           ...(command.query ? { query: command.query } : {}),
@@ -121,7 +130,7 @@ export class WorkspaceGatewayRuntime {
         await this.options.publishConnection?.(
           'workspace_directory_snapshot',
           context.connectionId,
-          { workspaceId: activeWorkspaceId, workspace, page },
+          { workspaceId: activeWorkspaceId, workspace, page, requestedCursor: command.cursor ?? null, query: command.query ?? '' },
           context.requestId,
         );
         return { status: 'accepted', workspaceId: activeWorkspaceId };
@@ -131,12 +140,7 @@ export class WorkspaceGatewayRuntime {
           activeWorkspaceId,
           context.principalId,
         );
-        const page = await this.directory.listConversations(
-          activeWorkspaceId,
-          context.principalId,
-          { query: conversation.title },
-        );
-        const summary = page.items.find(item => item.conversationId === conversation.id);
+        const summary = new WorkspaceConversationProjector().project(conversation);
         await this.options.publish?.(
           'workspace_conversation_upserted',
           activeWorkspaceId,

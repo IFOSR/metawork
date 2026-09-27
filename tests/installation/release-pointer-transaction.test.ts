@@ -12,6 +12,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   ReleasePointerTransaction,
+  recoverPreparedReleaseActivations,
   type ReleasePointerName,
 } from '../../src/installation/release-pointer-transaction.js';
 
@@ -24,6 +25,56 @@ afterEach(() => {
 });
 
 describe('ReleasePointerTransaction', () => {
+  it('verifies rollback prerequisites before recovery changes any pointer and preserves the journal on failure', async () => {
+    const fixture = pointerFixture();
+    const journalPath = join(dirname(fixture.paths.application), 'update-test-activation.json');
+    const transaction = new ReleasePointerTransaction({
+      paths: fixture.paths, journalPath, healthCheck: async () => undefined,
+    });
+    await transaction.activate(fixture.candidate);
+    const journal = JSON.parse(readFileSync(journalPath, 'utf8'));
+    journal.phase = 'prepared';
+    writeFileSync(journalPath, JSON.stringify(journal));
+    let verified = false;
+    const beforeRollback = async () => {
+      expect(readTargets(fixture.paths)).toEqual(fixture.candidate);
+      verified = true;
+      throw new Error('missing companion');
+    };
+    await expect(recoverPreparedReleaseActivations(
+      dirname(journalPath), fixture.paths, beforeRollback,
+    )).rejects.toThrow('missing companion');
+    expect(verified).toBe(true);
+    expect(readTargets(fixture.paths)).toEqual(fixture.candidate);
+    expect(JSON.parse(readFileSync(journalPath, 'utf8')).phase).toBe('prepared');
+
+    await recoverPreparedReleaseActivations(dirname(journalPath), fixture.paths, async (value, path) => {
+      expect(value.previousTargets).toEqual(fixture.previous);
+      expect(path).toBe(journalPath);
+      expect(readTargets(fixture.paths)).toEqual(fixture.candidate);
+    });
+    expect(readTargets(fixture.paths)).toEqual(fixture.previous);
+  });
+
+  it('keeps prepared recovery retryable when inline rollback prerequisites fail', async () => {
+    const fixture = pointerFixture();
+    const journalPath = join(dirname(fixture.paths.application), 'update-inline-activation.json');
+    let verified = false;
+    const transaction = new ReleasePointerTransaction({
+      paths: fixture.paths, journalPath,
+      healthCheck: async () => { throw new Error('unhealthy'); },
+      beforeRollback: async () => {
+        verified = true;
+        expect(readTargets(fixture.paths)).toEqual(fixture.candidate);
+        throw new Error('corrupt companion');
+      },
+    });
+    await expect(transaction.activate(fixture.candidate)).rejects.toThrow();
+    expect(verified).toBe(true);
+    expect(readTargets(fixture.paths)).toEqual(fixture.candidate);
+    expect(JSON.parse(readFileSync(journalPath, 'utf8')).phase).toBe('prepared');
+  });
+
   it('switches the complete compatible set and runs health before commit', async () => {
     const fixture = pointerFixture();
     const calls: string[] = [];

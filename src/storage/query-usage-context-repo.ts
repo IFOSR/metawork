@@ -172,6 +172,45 @@ export class SqliteQueryContextStore implements QueryContextStore {
     return row ? rowToContext(row) : null;
   }
 
+  findForTurns(accountId: string, turnIds: readonly string[]): QueryUsageContext[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM (
+        SELECT *, row_number() OVER (
+          PARTITION BY turn_id ORDER BY accepted_at DESC, query_id DESC
+        ) AS position FROM query_usage_contexts
+        WHERE account_id = ? AND turn_id IN (SELECT value FROM json_each(?))
+      ) WHERE position = 1
+    `).all(accountId, JSON.stringify(turnIds)) as ContextRow[];
+    return rows.map(rowToContext);
+  }
+
+  findByIds(queryIds: readonly string[]): QueryUsageContext[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM query_usage_contexts WHERE query_id IN (SELECT value FROM json_each(?))
+    `).all(JSON.stringify(queryIds)) as ContextRow[];
+    return rows.map(rowToContext);
+  }
+
+  findTaskLinks(queryIds: readonly string[]): QueryTaskLink[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM query_task_links WHERE query_id IN (SELECT value FROM json_each(?))
+    `).all(JSON.stringify(queryIds)) as LinkRow[];
+    return rows.map(rowToLink);
+  }
+
+  taskIdsForTurns(accountId: string, turnIds: readonly string[]): ReadonlyMap<string, string | null> {
+    if (!turnIds.length) return new Map();
+    if (turnIds.length > 100) throw new Error('history_turn_limit');
+    const rows = this.db.prepare(`
+      SELECT context.turn_id, link.cost_task_id FROM (
+        SELECT query_id, turn_id, row_number() OVER
+          (PARTITION BY turn_id ORDER BY accepted_at DESC, query_id DESC) AS position
+        FROM query_usage_contexts WHERE account_id = ? AND turn_id IN (${turnIds.map(() => '?').join(',')})
+      ) context LEFT JOIN query_task_links link ON link.query_id = context.query_id WHERE context.position = 1
+    `).all(accountId, ...turnIds) as { turn_id: string; cost_task_id: string | null }[];
+    return new Map(rows.map(row => [row.turn_id, row.cost_task_id]));
+  }
+
   listContextsForConversation(conversationId: string): QueryUsageContext[] {
     const rows = this.db.prepare(`
       SELECT * FROM query_usage_contexts

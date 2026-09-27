@@ -30,7 +30,7 @@ interface GatewayServerDeps {
     conversationId: string,
   ): Promise<string | null>;
   activateConnectionWorkspace?(connectionId: string, workspaceId: string): void;
-  publishWorkspaceSnapshot?(workspaceId: string): Promise<void>;
+  publishWorkspaceSnapshot?(workspaceId: string, connectionId: string): Promise<void>;
   closeConnection?(connectionId: string): void;
   registerWebLaunch?(
     input: { workspaceHint: string; conversationId?: string },
@@ -139,7 +139,9 @@ export class MetaclawGatewayServer {
       });
       let replay: GatewayReplay;
       try {
-        replay = await this.deps.journal.replay(accountId, channelId, 0);
+        replay = this.deps.journal.snapshot
+          ? await this.deps.journal.snapshot(accountId, channelId)
+          : await this.deps.journal.replay(accountId, channelId, 0);
       } catch (error) {
         nextUnsubscribe();
         throw error;
@@ -162,6 +164,7 @@ export class MetaclawGatewayServer {
       nextConversationId: string,
       resumeFromSequence = 0,
       authorize = true,
+      acceptCursorReset = false,
     ) => {
       const request = latestAttachRequest += 1;
       if (authorize && !await this.deps.authorizeAttach(accountId, nextConversationId)) {
@@ -185,7 +188,7 @@ export class MetaclawGatewayServer {
           request !== latestAttachRequest
           || workspaceRequest !== latestWorkspaceRequest
         ) return;
-        await this.deps.publishWorkspaceSnapshot?.(workspaceId);
+        await this.deps.publishWorkspaceSnapshot?.(workspaceId, connectionId);
       }
       if (request !== latestAttachRequest) return;
 
@@ -221,11 +224,12 @@ export class MetaclawGatewayServer {
 
       let replay: GatewayReplay;
       try {
-        replay = await this.deps.journal.replay(
-          accountId,
-          nextConversationId,
-          resumeFromSequence,
-        );
+        replay = resumeFromSequence === 0 && this.deps.journal.snapshot
+          ? await this.deps.journal.snapshot(accountId, nextConversationId)
+          : this.deps.journal.resume
+            ? await this.deps.journal.resume(accountId, nextConversationId, resumeFromSequence)
+            : await this.deps.journal.replay(accountId, nextConversationId, resumeFromSequence);
+        if (replay.cursorReset && !acceptCursorReset) throw new Error('gateway_cursor_reset_required');
       } catch (error) {
         if (activeAttachment?.token === token) {
           nextUnsubscribe();
@@ -241,6 +245,12 @@ export class MetaclawGatewayServer {
         return;
       }
 
+      if (replay.cursorReset) {
+        send({
+          type: 'replay_reset', conversationId: nextConversationId, lastSequence: replay.lastSequence,
+          reason: replay.cursorReset.reason, snapshotVersion: 1,
+        });
+      }
       for (const event of orderedUniqueReplayEvents(replay)) sendAttachedEvent(event);
       replaying = false;
       for (const event of orderedUniqueEvents(buffered)) {
@@ -251,6 +261,7 @@ export class MetaclawGatewayServer {
         sessionId: nextConversationId,
         attached: true,
         capabilities: [...GATEWAY_SERVER_CAPABILITIES],
+        lastSequence: replay.lastSequence,
       });
     };
 
@@ -301,6 +312,8 @@ export class MetaclawGatewayServer {
           message.connectionId,
           message.conversationId,
           message.resumeFromSequence,
+          true,
+          message.acceptCursorReset,
         ).catch(error => {
           send({ type: 'error', message: (error as Error).message });
         });

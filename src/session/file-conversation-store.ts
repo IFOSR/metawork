@@ -13,11 +13,14 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { measureNavigationStage } from '../utils/navigation-diagnostics.js';
 import { isValidConversationId } from './conversation-types.js';
+import type { ConversationHistoryStore, ConversationHistoryRequest } from './conversation-history-store.js';
 import {
   CONVERSATION_FORMAT_VERSION,
   type ConversationCatalogFile,
   type ConversationMetadata,
+  type ConversationMetadataIndex,
   type ConversationRecord,
   type ConversationStore,
   type ConversationTurn,
@@ -25,6 +28,7 @@ import {
 
 const PLANNER_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/u;
 const ACCOUNT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const recordOperations = new Map<string, Promise<unknown>>();
 
 export class FileConversationStore implements ConversationStore {
   readonly rootDir: string;
@@ -32,7 +36,13 @@ export class FileConversationStore implements ConversationStore {
   readonly recordsDir: string;
   readonly quarantineDir: string;
 
-  constructor(rootDir: string) {
+  constructor(rootDir: string, private readonly options: {
+    readonly onMetadataCommitted?: (metadata: ConversationMetadata) => void;
+    readonly history?: ConversationHistoryStore<ConversationTurn>;
+    readonly metadataIndex?: ConversationMetadataIndex;
+    /** One-time legacy presentation backfill; never called on an indexed page. */
+    readonly readLegacyHistory?: (conversationId: string) => Promise<readonly ConversationTurn[]>;
+  } = {}) {
     this.rootDir = resolve(rootDir);
     this.catalogPath = join(this.rootDir, 'catalog.json');
     this.recordsDir = join(this.rootDir, 'records');
@@ -56,8 +66,10 @@ export class FileConversationStore implements ConversationStore {
   }
 
   async readCatalog(): Promise<ConversationCatalogFile> {
-    const raw = await readFile(this.catalogPath, 'utf8');
-    return parseCatalog(raw);
+    return measureNavigationStage('catalog_read', async () => {
+      const raw = await readFile(this.catalogPath, 'utf8');
+      return parseCatalog(raw);
+    });
   }
 
   async writeCatalog(catalog: ConversationCatalogFile): Promise<void> {
@@ -66,6 +78,31 @@ export class FileConversationStore implements ConversationStore {
   }
 
   async readConversation(conversationId: string): Promise<ConversationRecord | null> {
+    return this.serialized(conversationId, async () => {
+      await this.recoverPendingHistory(conversationId);
+      return this.readRecord(conversationId);
+    });
+  }
+
+  async readMetadata(conversationId: string): Promise<ConversationMetadata | null> {
+    return this.serialized(conversationId, async () => {
+      await this.recoverPendingHistory(conversationId);
+      const existing = this.options.metadataIndex?.find(conversationId);
+      if (existing) return existing;
+      const record = await this.readRecord(conversationId);
+      if (record) this.options.metadataIndex?.put(record.conversation);
+      return record?.conversation ?? null;
+    });
+  }
+
+  async readHistoryVersion(conversationId: string): Promise<string | null> {
+    return this.serialized(conversationId, async () => {
+      await this.recoverPendingHistory(conversationId);
+      return this.options.history?.version(conversationId) ?? null;
+    });
+  }
+
+  private async readRecord(conversationId: string): Promise<ConversationRecord | null> {
     const path = this.recordPath(conversationId);
     let raw: string;
     try {
@@ -85,7 +122,110 @@ export class FileConversationStore implements ConversationStore {
   async writeConversation(record: ConversationRecord): Promise<void> {
     const path = this.recordPath(record.conversation.id);
     assertRecord(record, record.conversation.id);
+    await this.serialized(record.conversation.id, async () => {
+      await this.recoverPendingHistory(record.conversation.id);
+      const history = this.options.history;
+      if (!history) {
+        await atomicWriteJson(path, record);
+        this.options.metadataIndex?.put(record.conversation);
+        this.options.onMetadataCommitted?.(record.conversation);
+        return;
+      }
+      if (!history.isImported(record.conversation.id)) {
+        const previous = await this.readRecord(record.conversation.id);
+        if (!previous && record.turns.length === 0) {
+          // First creation has no old indexed state to protect. The atomic
+          // record itself recovers missing indexes if initialization is interrupted.
+          await atomicWriteJson(path, record);
+          await this.importHistory(record.conversation.id, []);
+          this.options.metadataIndex?.put(record.conversation);
+          this.options.onMetadataCommitted?.(record.conversation);
+          return;
+        }
+        await this.importHistory(record.conversation.id, previous?.turns ?? []);
+      }
+      // A durable write intent closes the JSON/index crash window. Recovery
+      // repeats this exact write before serving either the record or its pages.
+      await atomicWriteJson(`${path}.pending-history`, record);
+      await this.recoverPendingHistory(record.conversation.id);
+    });
+  }
+
+  async readHistoryPage(conversationId: string, request: ConversationHistoryRequest = {}) {
+    this.recordPath(conversationId);
+    const history = this.options.history;
+    if (!history) {
+      const record = await this.readConversation(conversationId);
+      if (!record) throw new Error('conversation_not_found');
+      const before = request.cursor ? Number(request.cursor) : record.turns.length;
+      const limit = request.limit ?? 10;
+      if (!Number.isSafeInteger(before) || before < 0) throw new Error('invalid_history_cursor');
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new Error('invalid_history_limit');
+      const start = Math.max(0, before - limit);
+      return { turns: record.turns.slice(start, before), nextCursor: start > 0 ? String(start) : null };
+    }
+    return this.serialized(conversationId, async () => {
+      await this.recoverPendingHistory(conversationId);
+      if (!history.isImported(conversationId)) {
+        const record = await this.readRecord(conversationId);
+        if (!record) throw new Error('conversation_not_found');
+        await this.importHistory(conversationId, record.turns);
+      }
+      return history.page(conversationId, request);
+    });
+  }
+
+  private async importHistory(conversationId: string, canonical: readonly ConversationTurn[]): Promise<void> {
+    const history = this.options.history!;
+    if (history.isImported(conversationId)) return;
+    const legacy = await this.options.readLegacyHistory?.(conversationId) ?? [];
+    // Canonical order wins for shared IDs. Rich-only runs are placed before
+    // their next shared anchor, never dropped because the rolling basic file
+    // has already evicted them. With no anchors the legacy archive precedes it.
+    const canonicalIds = new Set(canonical.map(turn => turn.id));
+    const before = new Map<string, ConversationTurn[]>();
+    let pending: ConversationTurn[] = [];
+    let anchored = false;
+    const seen = new Set<string>();
+    for (const turn of legacy) {
+      if (turn.conversationId !== conversationId || seen.has(turn.id)) continue;
+      seen.add(turn.id);
+      if (canonicalIds.has(turn.id)) {
+        before.set(turn.id, pending);
+        pending = [];
+        anchored = true;
+      } else pending.push(turn);
+    }
+    const merged = canonical.flatMap(turn => [...(before.get(turn.id) ?? []), turn]);
+    history.importOnce(conversationId, anchored ? [...merged, ...pending] : [...pending, ...merged]);
+  }
+
+  private async recoverPendingHistory(conversationId: string): Promise<void> {
+    const history = this.options.history;
+    if (!history) return;
+    const path = this.recordPath(conversationId);
+    let raw: string;
+    try { raw = await readFile(`${path}.pending-history`, 'utf8'); }
+    catch (error) {
+      if (isMissingFile(error)) return;
+      throw error;
+    }
+    const record = parseRecord(raw, conversationId);
     await atomicWriteJson(path, record);
+    await this.importHistory(conversationId, record.turns);
+    for (const turn of record.turns) history.upsert(conversationId, turn);
+    this.options.metadataIndex?.put(record.conversation);
+    await unlink(`${path}.pending-history`);
+    this.options.onMetadataCommitted?.(record.conversation);
+  }
+
+  private serialized<T>(conversationId: string, operation: () => Promise<T>): Promise<T> {
+    const key = this.recordPath(conversationId);
+    const pending = (recordOperations.get(key) ?? Promise.resolve()).catch(() => undefined).then(operation);
+    recordOperations.set(key, pending);
+    return pending.finally(() => {
+      if (recordOperations.get(key) === pending) recordOperations.delete(key);
+    });
   }
 
   private recordPath(conversationId: string): string {
@@ -125,6 +265,8 @@ async function atomicWriteJson(path: string, value: unknown): Promise<void> {
     await handle.close();
     handle = undefined;
     await rename(temporaryPath, path);
+    const directory = await open(dirname(path), 'r');
+    try { await directory.sync(); } finally { await directory.close(); }
   } catch (error) {
     await handle?.close().catch(() => undefined);
     await unlink(temporaryPath).catch(() => undefined);

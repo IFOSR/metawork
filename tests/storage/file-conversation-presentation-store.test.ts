@@ -7,6 +7,9 @@ import {
   FileConversationPresentationStore,
 } from '../../src/storage/file-conversation-presentation-store.js';
 import type { ConversationTurn } from '../../src/management/web-session-types.js';
+import Database from 'better-sqlite3';
+import { runMigrations } from '../../src/storage/migrations.js';
+import { SqliteConversationHistoryRepo } from '../../src/storage/conversation-history-repo.js';
 
 const roots: string[] = [];
 
@@ -40,6 +43,31 @@ async function fixture() {
 }
 
 describe('FileConversationPresentationStore', () => {
+  it('imports legacy rich history once, then pages and upserts without reopening the aggregate', async () => {
+    const { root, store: legacy } = await fixture();
+    const turns = Array.from({ length: 35 }, (_, index) => ({
+      ...turn('conv_alpha'), id: `turn_${index}`, finalAnswer: 'x'.repeat(80_000),
+    }));
+    await legacy.write({ version: 1, conversationId: 'conv_alpha', turns });
+    const db = new Database(':memory:');
+    try {
+      runMigrations(db);
+      const history = new SqliteConversationHistoryRepo<ConversationTurn>(db, 'local-default', 'presentation');
+      const store = new FileConversationPresentationStore(root, history);
+      const page = await store.readPage('conv_alpha', { limit: 5 });
+      expect(page.turns.map(turn => turn.id)).toEqual(['turn_30', 'turn_31', 'turn_32', 'turn_33', 'turn_34']);
+      await writeFile(join(root, 'records', 'conv_alpha.json'), '{must not parse again');
+      await store.upsert('conv_alpha', { ...turn('conv_alpha'), id: 'turn_new' });
+      const reopened = new FileConversationPresentationStore(root, history);
+      expect((await reopened.readPage('conv_alpha', { cursor: page.nextCursor!, limit: 5 })).turns
+        .map(turn => turn.id)).toEqual(['turn_25', 'turn_26', 'turn_27', 'turn_28', 'turn_29']);
+      expect((await reopened.readPage('conv_alpha', { limit: 1 })).turns[0]?.id).toBe('turn_new');
+      expect(await readFile(join(root, 'records', 'conv_alpha.json'), 'utf8')).toBe('{must not parse again');
+      await expect(reopened.delete('conv_alpha')).resolves.toBe(true);
+      await expect(reopened.read('conv_alpha')).resolves.toBeNull();
+      await expect(reopened.readPage('conv_alpha', {})).resolves.toEqual({ turns: [], nextCursor: null });
+    } finally { db.close(); }
+  });
   it('persists only Conversation-keyed rich presentation without a metadata catalog', async () => {
     const { root, store } = await fixture();
     await store.write({

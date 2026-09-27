@@ -22,6 +22,11 @@ import { resolveAnyFusionPaths } from '../../src/installation/paths.js';
 import { SourceNativeInstaller } from '../../src/installation/source-native-installer.js';
 import { SourceNativeUpdater } from '../../src/installation/source-native-updater.js';
 import { CURRENT_SCHEMA_VERSION } from '../../src/storage/migrations.js';
+import Database from 'better-sqlite3';
+import { createAccountEventJournal } from '../../src/server/account-event-journal.js';
+import { ConfigurationService } from '../../src/configuration/configuration-service.js';
+import { ConfigurationCompiler } from '../../src/configuration/configuration-compiler.js';
+import { backupGatewayJournal } from '../../src/installation/gateway-journal-backup.js';
 
 const cleanup: string[] = [];
 
@@ -33,6 +38,207 @@ afterEach(() => {
 });
 
 describe('SourceNativeUpdater', () => {
+  it.each([
+    ['update', 'update'], ['update', 'rollback'],
+    ['rollback', 'update'], ['rollback', 'rollback'],
+  ] as const)('restores prepared %s activation bodies before %s recovery switches pointers', async (interrupted, operation) => {
+    const fixture = await installedJournalFixture();
+    let update = await fixture.updater.update(fixture.next);
+    if (interrupted === 'rollback') update = await fixture.updater.rollback('1.2.0-preview.0');
+    await withJournal(fixture.accountPaths, async journal => {
+      await journal.compact(LOCAL_DEFAULT_ACCOUNT_ID, 'conv_backup');
+    });
+    const activation = JSON.parse(readFileSync(update.journalPath, 'utf8'));
+    activation.phase = 'prepared';
+    writeFileSync(update.journalPath, JSON.stringify(activation));
+
+    if (operation === 'update') {
+      await fixture.updater.update({ ...fixture.next, releaseId: '1.2.2-preview.0' });
+    } else {
+      // Stop after recovery rather than activate another release.
+      await expect(fixture.updater.rollback('never-installed')).rejects.toThrow('not previously verified');
+    }
+    await withJournal(fixture.accountPaths, async journal => {
+      expect((await journal.replay(LOCAL_DEFAULT_ACCOUNT_ID, 'conv_backup')).deltas.map(row => row.eventId))
+        .toEqual(['event_1', 'event_2', 'event_3']);
+    });
+    expect(() => readFileSync(update.journalPath)).toThrow();
+  });
+
+  it.each([
+    ['update', 'update', 'missing'], ['update', 'update', 'corrupt'],
+    ['update', 'rollback', 'missing'], ['update', 'rollback', 'corrupt'],
+    ['rollback', 'update', 'missing'], ['rollback', 'update', 'corrupt'],
+    ['rollback', 'rollback', 'missing'], ['rollback', 'rollback', 'corrupt'],
+  ] as const)('fails closed for prepared %s during %s recovery with a %s companion', async (interrupted, operation, fault) => {
+    const fixture = await installedJournalFixture();
+    let update = await fixture.updater.update(fixture.next);
+    if (interrupted === 'rollback') update = await fixture.updater.rollback('1.2.0-preview.0');
+    await withJournal(fixture.accountPaths, async journal => {
+      await journal.compact(LOCAL_DEFAULT_ACCOUNT_ID, 'conv_backup');
+    });
+    const activation = JSON.parse(readFileSync(update.journalPath, 'utf8'));
+    activation.phase = 'prepared';
+    writeFileSync(update.journalPath, JSON.stringify(activation));
+    const backup = join(fixture.accountPaths.backups, update.upgradeId, 'gateway-events');
+    if (fault === 'missing') rmSync(backup, { recursive: true });
+    else writeFileSync(join(backup, 'complete.json'), '{}');
+    const before = fixturePointers(fixture);
+    await expect(operation === 'update'
+      ? fixture.updater.update({ ...fixture.next, releaseId: '1.2.2-preview.0' })
+      : fixture.updater.rollback('1.2.0-preview.0')).rejects.toThrow();
+    expect(fixturePointers(fixture)).toEqual(before);
+    expect(JSON.parse(readFileSync(update.journalPath, 'utf8')).phase).toBe('prepared');
+  });
+
+  it.each(['update', 'rollback'] as const)('restores bodies before inline %s failure rolls pointers back', async operation => {
+    const fixture = await installedJournalFixture();
+    if (operation === 'rollback') await fixture.updater.update(fixture.next);
+    const before = fixturePointers(fixture);
+    const updater = new SourceNativeUpdater({
+      paths: fixture.paths, secretStore: fixture.secretStore,
+      detectCommand: async command => command === 'codex', isServerRunning: async () => false,
+      afterSwitch: async name => {
+        if (name !== 'application') return;
+        await withJournal(fixture.accountPaths, async journal => {
+          await journal.compact(LOCAL_DEFAULT_ACCOUNT_ID, 'conv_backup');
+        });
+        throw new Error('candidate startup failed after compaction');
+      },
+    });
+    await expect(operation === 'update'
+      ? updater.update(fixture.next)
+      : updater.rollback('1.2.0-preview.0')).rejects.toThrow('candidate startup failed after compaction');
+    expect(fixturePointers(fixture)).toEqual(before);
+    await withJournal(fixture.accountPaths, async journal => {
+      expect((await journal.replay(LOCAL_DEFAULT_ACCOUNT_ID, 'conv_backup')).deltas.map(row => row.eventId))
+        .toEqual(['event_1', 'event_2', 'event_3']);
+    });
+  });
+
+  it.each([false, true])('uses committed lineage across repeated rollback and compaction (independent config: %s)', async changeConfig => {
+    const fixture = await installedJournalFixture();
+    await fixture.updater.update(fixture.next);
+    await withJournal(fixture.accountPaths, async journal => {
+      await journal.append(journalEvent(4));
+      await journal.compact(LOCAL_DEFAULT_ACCOUNT_ID, 'conv_backup');
+    });
+    await fixture.updater.rollback('1.2.0-preview.0');
+    await withJournal(fixture.accountPaths, async journal => {
+      await journal.append(journalEvent(5));
+      await journal.compact(LOCAL_DEFAULT_ACCOUNT_ID, 'conv_backup');
+    });
+    if (changeConfig) await independentlyActivateConfiguration(fixture, 'config-after-first-rollback');
+    await fixture.updater.rollback('1.2.1-preview.0');
+    await withJournal(fixture.accountPaths, async journal => {
+      expect((await journal.replay(LOCAL_DEFAULT_ACCOUNT_ID, 'conv_backup')).deltas.map(row => row.eventId))
+        .toEqual(['event_1', 'event_2', 'event_3', 'event_4']);
+      await journal.append(journalEvent(6));
+      await journal.compact(LOCAL_DEFAULT_ACCOUNT_ID, 'conv_backup');
+    });
+    if (changeConfig) await independentlyActivateConfiguration(fixture, 'config-after-second-rollback');
+    await fixture.updater.rollback('1.2.0-preview.0');
+    await withJournal(fixture.accountPaths, async journal => {
+      expect((await journal.replay(LOCAL_DEFAULT_ACCOUNT_ID, 'conv_backup')).deltas.map(row => row.eventId))
+        .toEqual(['event_1', 'event_2', 'event_3', 'event_5']);
+    });
+    await fixture.updater.rollback('1.2.1-preview.0');
+    await withJournal(fixture.accountPaths, async journal => {
+      expect((await journal.replay(LOCAL_DEFAULT_ACCOUNT_ID, 'conv_backup')).deltas.map(row => row.eventId))
+        .toEqual(['event_1', 'event_2', 'event_3', 'event_4', 'event_6']);
+    });
+  });
+
+  it('allows another release rollback without an obsolete configuration journal blocking it', async () => {
+    const fixture = await installedJournalFixture();
+    await fixture.updater.update(fixture.next);
+    const configJournal = new FileConfigurationRepository(fixture.accountPaths.config).journal.path;
+    const legacyJournal = readFileSync(configJournal);
+    await fixture.updater.rollback('1.2.0-preview.0');
+    // Releases predating config-journal retirement left this committed record behind.
+    writeFileSync(configJournal, legacyJournal);
+    await expect(fixture.updater.rollback('1.2.1-preview.0'))
+      .resolves.toMatchObject({ outcome: 'committed' });
+  });
+
+  it('leaves configuration recovery healthy immediately after release rollback', async () => {
+    const fixture = await installedJournalFixture();
+    await fixture.updater.update(fixture.next);
+    await fixture.updater.rollback('1.2.0-preview.0');
+    await expect(new FileConfigurationRepository(fixture.accountPaths.config).recover())
+      .resolves.toMatchObject({ status: 'healthy' });
+  });
+
+  it('allows update after rollback supersedes the old configuration activation journal', async () => {
+    const fixture = await installedJournalFixture();
+    await fixture.updater.update(fixture.next);
+    await fixture.updater.rollback('1.2.0-preview.0');
+    await expect(fixture.updater.update({ ...fixture.next, releaseId: '1.2.2-preview.0' }))
+      .resolves.toMatchObject({ outcome: 'committed' });
+  });
+
+  it('does not select a journal for the same application but a different database', async () => {
+    const fixture = await installedJournalFixture();
+    const update = await fixture.updater.update(fixture.next);
+    const activation = JSON.parse(readFileSync(update.journalPath, 'utf8'));
+    activation.candidateTargets.database = 'database-revisions/not-current.db';
+    writeFileSync(update.journalPath, JSON.stringify(activation));
+    const before = fixturePointers(fixture);
+    await expect(fixture.updater.rollback('1.2.0-preview.0')).rejects.toThrow('not previously verified');
+    expect(fixturePointers(fixture)).toEqual(before);
+  });
+
+  it('rejects ambiguous committed lineage without relying on filenames', async () => {
+    const fixture = await installedJournalFixture();
+    const update = await fixture.updater.update(fixture.next);
+    writeFileSync(join(fixture.paths.upgradeJournals, 'zzz-duplicate-activation.json'),
+      readFileSync(update.journalPath));
+    const before = fixturePointers(fixture);
+    await expect(fixture.updater.rollback('1.2.0-preview.0')).rejects.toThrow('ambiguous');
+    expect(fixturePointers(fixture)).toEqual(before);
+  });
+
+  it('restores companion segments before switching to the previous database after compaction', async () => {
+    const fixture = await installedJournalFixture();
+    const originalDb = readlinkSync(fixture.accountPaths.database);
+    const before = readFileSync(fixture.accountPaths.database);
+    const update = await fixture.updater.update(fixture.next);
+    const manifest = join(fixture.accountPaths.backups, update.upgradeId, 'gateway-events', 'complete.json');
+    expect(JSON.parse(readFileSync(manifest, 'utf8')).version).toBe(1);
+    expect(readFileSync(resolve(dirname(fixture.accountPaths.database), originalDb))).toEqual(before);
+    await withJournal(fixture.accountPaths, async journal => {
+      await journal.compact(LOCAL_DEFAULT_ACCOUNT_ID, 'conv_backup');
+      await journal.append(journalEvent(4));
+    });
+    const directory = join(fixture.accountPaths.gateway, 'events', LOCAL_DEFAULT_ACCOUNT_ID, 'conv_backup.segments');
+    const currentFiles = readdirSync(directory);
+    await fixture.updater.rollback('1.2.0-preview.0');
+    expect(readlinkSync(fixture.accountPaths.database)).toBe(originalDb);
+    await withJournal(fixture.accountPaths, async journal => {
+      const replay = await journal.replay(LOCAL_DEFAULT_ACCOUNT_ID, 'conv_backup');
+      expect(replay.deltas.map(row => row.eventId)).toEqual(['event_1', 'event_2', 'event_3']);
+    });
+    for (const file of currentFiles) expect(readdirSync(directory)).toContain(file);
+  });
+
+  it.each(['missing', 'corrupt'] as const)('aborts rollback before pointer changes when the companion is %s', async fault => {
+    const fixture = await installedJournalFixture();
+    const update = await fixture.updater.update(fixture.next);
+    const pointers = () => [
+      fixture.accountPaths.database, fixture.accountPaths.configActive,
+      fixture.accountPaths.generatedCurrent, fixture.paths.appCurrent,
+    ].map(path => readlinkSync(path));
+    const before = pointers();
+    const backup = join(fixture.accountPaths.backups, update.upgradeId, 'gateway-events');
+    if (fault === 'missing') rmSync(backup, { recursive: true });
+    else {
+      const manifest = JSON.parse(readFileSync(join(backup, 'manifest.json'), 'utf8'));
+      writeFileSync(join(backup, manifest.segments[0].path), 'corrupt');
+    }
+    await expect(fixture.updater.rollback('1.2.0-preview.0')).rejects.toThrow();
+    expect(pointers()).toEqual(before);
+  });
+
   it('backs up and clones the database, then activates one complete candidate set', async () => {
     const fixture = await installedFixture();
     writeFileSync(
@@ -294,6 +500,11 @@ describe('SourceNativeUpdater', () => {
 
   it('recovers an earlier prepared activation journal before starting a new update', async () => {
     const fixture = await installedFixture();
+    await backupGatewayJournal({
+      databasePath: fixture.accountPaths.database,
+      journalRoot: join(fixture.accountPaths.gateway, 'events'),
+      backupRoot: join(fixture.accountPaths.backups, 'update-interrupted', 'gateway-events'),
+    });
     const previousTargets = {
       database: readlinkSync(fixture.accountPaths.database),
       configuration: readlinkSync(fixture.accountPaths.configActive),
@@ -445,6 +656,73 @@ describe('SourceNativeUpdater', () => {
       .toBe('runtime-orphan-next\n');
   });
 });
+
+function journalEvent(n: number): import('../../src/gateway/client-events.js').GatewayEventEnvelope {
+  return {
+    protocolVersion: 2, accountId: LOCAL_DEFAULT_ACCOUNT_ID, conversationId: 'conv_backup',
+    eventId: `event_${n}`, requestId: null, turnId: `turn_${n}`, sequence: 0,
+    kind: 'final_answer', payload: { lines: [`Answer ${n}`] }, occurredAt: '2026-09-27T00:00:00Z',
+  };
+}
+
+function fixturePointers(fixture: Awaited<ReturnType<typeof installedFixture>>) {
+  return [
+    fixture.accountPaths.database, fixture.accountPaths.configActive,
+    fixture.accountPaths.generatedCurrent, fixture.paths.appCurrent,
+  ].map(path => readlinkSync(path));
+}
+
+async function independentlyActivateConfiguration(
+  fixture: Awaited<ReturnType<typeof installedFixture>>,
+  revisionId: string,
+) {
+  const repository = new FileConfigurationRepository(fixture.accountPaths.config);
+  const snapshot = await repository.getActiveSnapshot();
+  const service = new ConfigurationService({
+    repository, createRevisionId: () => revisionId,
+    probe: async () => ({ ok: true }),
+  });
+  const draft = service.createDraft(snapshot.config, snapshot.revisionId);
+  expect(service.validateDraft(draft.revisionId).ok).toBe(true);
+  const compiled = service.compileDraft(draft.revisionId);
+  await repository.writeRevision({ revisionId, contentHash: compiled.contentHash, files: compiled.files });
+  const runtime = await new ConfigurationCompiler(fixture.accountPaths.generatedAgentRuntime)
+    .compile({ revisionId, contentHash: compiled.contentHash, config: snapshot.config });
+  await repository.activateRevision(revisionId, snapshot.revisionId);
+  rmSync(fixture.accountPaths.generatedCurrent);
+  symlinkSync(runtime.rootPath, fixture.accountPaths.generatedCurrent);
+}
+
+async function withJournal(
+  paths: ReturnType<typeof resolveAccountPaths>,
+  action: (journal: ReturnType<typeof createAccountEventJournal>['journal']) => Promise<void>,
+) {
+  const db = new Database(paths.database);
+  const runtime = createAccountEventJournal({
+    db, root: join(paths.gateway, 'events'), accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+    onError: error => { throw error; },
+  });
+  try { await action(runtime.journal); }
+  finally { await runtime.stop(); db.close(); }
+}
+
+async function installedJournalFixture() {
+  const fixture = await installedFixture();
+  await withJournal(fixture.accountPaths, async journal => {
+    for (const n of [1, 2, 3]) await journal.append(journalEvent(n));
+  });
+  const sourceRoot = join(fixture.home, 'source-journal-next');
+  const plannerRoot = join(fixture.home, 'planner-journal-next');
+  fixtureRelease(sourceRoot, plannerRoot, 'runtime-journal\n', 'planner-journal\n');
+  return {
+    ...fixture,
+    updater: new SourceNativeUpdater({
+      paths: fixture.paths, secretStore: fixture.secretStore,
+      detectCommand: async command => command === 'codex', isServerRunning: async () => false,
+    }),
+    next: { releaseId: '1.2.1-preview.0', sourceRoot, plannerRoot },
+  };
+}
 
 async function installedFixture() {
   const home = mkdtempSync(join(tmpdir(), 'anyfusion-source-update-'));

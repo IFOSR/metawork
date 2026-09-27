@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createDatabase } from '../../src/storage/database.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { CURRENT_SCHEMA_VERSION, runMigrations } from '../../src/storage/migrations.js';
 import { SqliteQueryContextStore } from '../../src/storage/query-usage-context-repo.js';
 import { SqliteMeteringStore } from '../../src/storage/metering-repo.js';
 import { SqliteConsumptionOutboxStore } from '../../src/storage/consumption-outbox-repo.js';
@@ -70,7 +70,7 @@ describe('billing schema migration and recovery', () => {
     }
     db.exec('UPDATE schema_version SET version = 38');
     runMigrations(db);
-    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 42 });
+    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: CURRENT_SCHEMA_VERSION });
     expect(billingSchemaTables(db)).toEqual(expect.arrayContaining([
       'query_usage_contexts',
       'query_bills',

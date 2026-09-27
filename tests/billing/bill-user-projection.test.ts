@@ -322,9 +322,7 @@ describe('三态用户状态与稳定诊断投影（账单简化设计 §2/§5�
       queryContexts: harness.contexts,
       metering: harness.metering,
       prices: {
-        insert: (...args) => harness.prices.insert(...args),
         find: () => null,
-        listVersions: () => harness.prices.listVersions(),
       },
       exportEnabled: () => false,
     }).getQueryBill('q-persisted-cost');

@@ -161,6 +161,14 @@ export class TaskArtifactRepo {
     `).all(taskId) as TaskArtifactRow[]).map(rowToRecord);
   }
 
+  listByTasks(accountId: string, taskIds: readonly string[]): TaskArtifactRecord[] {
+    if (!taskIds.length) return [];
+    if (taskIds.length > 100) throw new Error('history_task_limit');
+    return (this.db.prepare(`SELECT * FROM task_artifacts WHERE account_id = ?
+      AND task_id IN (${taskIds.map(() => '?').join(',')}) AND status = 'published'
+      ORDER BY created_at, artifact_id`).all(accountId, ...taskIds) as TaskArtifactRow[]).map(rowToRecord);
+  }
+
   listByPublication(publicationId: string): TaskArtifactRecord[] {
     return (this.db.prepare(`
       SELECT * FROM task_artifacts WHERE publication_id = ? ORDER BY created_at, artifact_id

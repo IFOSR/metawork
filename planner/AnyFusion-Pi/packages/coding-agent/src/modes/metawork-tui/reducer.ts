@@ -271,6 +271,34 @@ export function selectConversation(
 	};
 }
 
+/** Reset only the disposable read model; drafts and admission receipts survive. */
+export function resetConversationProjection(
+	state: MetaWorkClientState,
+	conversationId: string,
+): MetaWorkClientState {
+	if (!state.conversations[conversationId]) return state;
+	const selectedTurnIds = { ...state.ui.selectedTurnIds };
+	const completions = { ...state.completions };
+	const completionRequests = { ...state.completionRequests };
+	delete selectedTurnIds[conversationId];
+	delete completions[conversationId];
+	delete completionRequests[conversationId];
+	return {
+		...state,
+		// Snapshot events can reuse older IDs/sequences. Other streams retain their
+		// watermarks, so clearing this bounded ID window cannot replay their facts.
+		seenEventIds: [],
+		streamSequences: { ...state.streamSequences, [conversationId]: 0 },
+		conversations: {
+			...state.conversations,
+			[conversationId]: emptyConversationProjection(conversationId),
+		},
+		completions,
+		completionRequests,
+		ui: { ...state.ui, selectedTurnIds },
+	};
+}
+
 export function setDraft(
 	state: MetaWorkClientState,
 	conversationId: string,
@@ -535,6 +563,13 @@ function reduceWorkspaceDirectory(
 		? asString(workspace.canonicalPath) ?? asString(workspace.path)
 		: null;
 	const id = asString(payload.workspaceId) ?? (workspace ? asString(workspace.id) : null);
+	const requestedCursor = asString(payload.requestedCursor);
+	const query = asString(payload.query) ?? "";
+	if ("requestedCursor" in payload) {
+		if ((state.activeWorkspace && id !== state.activeWorkspace.id)
+			|| query !== (state.conversationDirectoryQuery ?? "")) return state;
+		if (requestedCursor && requestedCursor !== state.conversationDirectoryCursor) return state;
+	}
 	const activeWorkspace = path
 		? {
 			id: id ?? state.activeWorkspace?.id ?? "",
@@ -552,8 +587,11 @@ function reduceWorkspaceDirectory(
 	return {
 		...state,
 		activeWorkspace,
-		conversationSummaries: sortConversationSummaries(items),
+		conversationSummaries: sortConversationSummaries(requestedCursor
+			? [...new Map([...state.conversationSummaries, ...items].map(item => [item.conversationId, item])).values()]
+			: items),
 		conversationDirectoryCursor: page ? asString(page.nextCursor) : null,
+		conversationDirectoryQuery: query,
 	};
 }
 
@@ -755,6 +793,7 @@ function reduceHistoryPage(
 	conversation: MetaWorkConversationProjection,
 	payload: Record<string, unknown>,
 ): MetaWorkClientState {
+	if ("transfer" in payload) return reduceHistoryTransfer(state, conversation, payload);
 	const page = normalizeHistoryPage(payload);
 	if (!page) return state;
 	const turns = { ...conversation.turns };
@@ -824,12 +863,51 @@ function reduceHistoryPage(
 	}
 	return updateConversation(state, conversation.conversationId, sortTurnOrder({
 		...conversation,
+		historyTransfer: null,
 		turns,
 		turnOrder: order,
 		historyTurnIds: [...historyTurnIds],
 		historyCursor: page.nextCursor,
 		historyExhausted: page.nextCursor === null,
 	}));
+}
+
+function reduceHistoryTransfer(
+	state: MetaWorkClientState,
+	conversation: MetaWorkConversationProjection,
+	payload: Record<string, unknown>,
+): MetaWorkClientState {
+	const transfer = asRecord(payload.transfer);
+	const fail = () => addNotice(updateConversation(state, conversation.conversationId, {
+		...conversation, historyTransfer: null,
+	}), "error", "History transfer incomplete or invalid; reload this page.");
+	if (!transfer) return fail();
+	const { id, index, count, byteLength, hash, data } = transfer;
+	if (typeof id !== "string" || id.length > 160
+		|| typeof index !== "number" || !Number.isSafeInteger(index)
+		|| typeof count !== "number" || !Number.isSafeInteger(count) || count < 1 || count > 128
+		|| index < 0 || index >= count
+		|| typeof byteLength !== "number" || !Number.isSafeInteger(byteLength) || byteLength < 1 || byteLength > 4 * 1024 * 1024
+		|| typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash)
+		|| typeof data !== "string" || data.length > 48 * 1024 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return fail();
+	const pending = index === 0 ? { id, count, byteLength, hash, parts: [] as string[] } : conversation.historyTransfer;
+	if (!pending || pending.id !== id || pending.count !== count || pending.byteLength !== byteLength
+		|| pending.hash !== hash || pending.parts.length !== index) return fail();
+	const parts = [...pending.parts, data];
+	if (parts.length < count) {
+		return updateConversation(state, conversation.conversationId, {
+			...conversation, historyTransfer: { ...pending, parts },
+		});
+	}
+	const body = Buffer.from(parts.join(""), "base64");
+	if (body.length !== byteLength || createHash("sha256").update(body).digest("hex") !== hash) return fail();
+	try {
+		const page = asRecord(JSON.parse(body.toString("utf8")));
+		if (!page || "transfer" in page || !normalizeHistoryPage(page)) return fail();
+		return reduceHistoryPage(state, { ...conversation, historyTransfer: null }, page);
+	} catch {
+		return fail();
+	}
 }
 
 function reduceTurnStarted(

@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { access, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import type { ConversationTurn } from '../management/web-session-types.js';
+import { boundWebSessionTurns } from '../management/web-session-types.js';
 import { isValidConversationId } from '../session/conversation-types.js';
+import type {
+  ConversationHistoryStore, ConversationHistoryPage, ConversationHistoryRequest,
+} from '../session/conversation-history-store.js';
 
 export const CONVERSATION_PRESENTATION_VERSION = 1 as const;
 
@@ -13,8 +17,12 @@ export interface ConversationPresentationRecord {
 }
 
 export interface ConversationPresentationStore {
+  readVersion?(conversationId: string): Promise<string | null>;
   initialize(): Promise<void>;
   read(conversationId: string): Promise<ConversationPresentationRecord | null>;
+  readPage?(conversationId: string, request: ConversationHistoryRequest): Promise<ConversationHistoryPage<ConversationTurn>>;
+  upsert?(conversationId: string, turn: ConversationTurn): Promise<void>;
+  findMany?(conversationId: string, turnIds: readonly string[]): Promise<ReadonlyMap<string, ConversationTurn>>;
   write(record: ConversationPresentationRecord): Promise<void>;
   delete(conversationId: string): Promise<boolean>;
 }
@@ -24,7 +32,7 @@ export class FileConversationPresentationStore implements ConversationPresentati
   readonly recordsDir: string;
   readonly quarantineDir: string;
 
-  constructor(rootDir: string) {
+  constructor(rootDir: string, private readonly history?: ConversationHistoryStore<ConversationTurn>) {
     this.rootDir = resolve(rootDir);
     this.recordsDir = join(this.rootDir, 'records');
     this.quarantineDir = join(this.rootDir, 'quarantine');
@@ -37,7 +45,77 @@ export class FileConversationPresentationStore implements ConversationPresentati
     ]);
   }
 
+  async readVersion(conversationId: string): Promise<string | null> {
+    this.recordPath(conversationId);
+    return this.history?.version(conversationId) ?? null;
+  }
+
   async read(conversationId: string): Promise<ConversationPresentationRecord | null> {
+    if (this.history) {
+      if (!await this.ensureImported(conversationId)) return null;
+      const turns: ConversationTurn[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = this.history.page(conversationId, { limit: 50, cursor });
+        turns.unshift(...page.turns);
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor);
+      return { version: 1, conversationId, turns };
+    }
+    return this.readLegacy(conversationId);
+  }
+
+  async readPage(conversationId: string, request: ConversationHistoryRequest): Promise<ConversationHistoryPage<ConversationTurn>> {
+    if (this.history) {
+      if (!await this.ensureImported(conversationId)) return { turns: [], nextCursor: null };
+      return this.history.page(conversationId, request);
+    }
+    // Isolated legacy consumers do not have the durable index injected.
+    const turns = (await this.readLegacy(conversationId))?.turns ?? [];
+    const before = request.cursor ? Number(request.cursor) : turns.length;
+    if (!Number.isSafeInteger(before) || before < 0) throw new Error('invalid_history_cursor');
+    const limit = Math.min(request.limit ?? 10, 50);
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('invalid_history_limit');
+    const start = Math.max(0, before - limit);
+    return { turns: turns.slice(start, before), nextCursor: start > 0 ? String(start) : null };
+  }
+
+  async upsert(conversationId: string, turn: ConversationTurn): Promise<void> {
+    assertRecord({ version: 1, conversationId, turns: [turn] }, conversationId);
+    if (this.history) {
+      await this.ensureImported(conversationId);
+      this.history.importOnce(conversationId, []);
+      this.history.upsert(conversationId, turn);
+      return;
+    }
+    const turns = (await this.readLegacy(conversationId))?.turns ?? [];
+    const index = turns.findIndex(existing => existing.id === turn.id);
+    if (index === -1) turns.push(turn);
+    else turns[index] = turn;
+    await this.write({ version: 1, conversationId, turns: boundWebSessionTurns(turns) });
+  }
+
+  async findMany(conversationId: string, turnIds: readonly string[]): Promise<ReadonlyMap<string, ConversationTurn>> {
+    if (this.history) {
+      if (!await this.ensureImported(conversationId)) return new Map();
+      return this.history.findMany(conversationId, turnIds);
+    }
+    const ids = new Set(turnIds);
+    const record = await this.readLegacy(conversationId);
+    return new Map((record?.turns ?? []).filter(turn => ids.has(turn.id)).map(turn => [turn.id, turn]));
+  }
+
+  private async ensureImported(conversationId: string): Promise<boolean> {
+    this.recordPath(conversationId);
+    if (this.history!.isImported(conversationId)) return true;
+    const legacy = await this.readLegacy(conversationId);
+    if (!legacy) return false;
+    // importOnce rechecks inside the transaction after the asynchronous file read.
+    this.history!.importOnce(conversationId, legacy?.turns ?? []);
+    return true;
+  }
+
+  private async readLegacy(conversationId: string): Promise<ConversationPresentationRecord | null> {
     const path = this.recordPath(conversationId);
     try {
       return parseRecord(await readFile(path, 'utf8'), conversationId);
@@ -53,14 +131,20 @@ export class FileConversationPresentationStore implements ConversationPresentati
 
   async write(record: ConversationPresentationRecord): Promise<void> {
     assertRecord(record, record.conversationId);
+    if (this.history) {
+      await this.ensureImported(record.conversationId);
+      this.history.replace(record.conversationId, record.turns);
+      return;
+    }
     await atomicWriteJson(this.recordPath(record.conversationId), record);
   }
 
   async delete(conversationId: string): Promise<boolean> {
     const path = this.recordPath(conversationId);
-    if (!(await exists(path))) return false;
-    await this.quarantine(path, conversationId, 'deleted');
-    return true;
+    const legacy = await exists(path);
+    if (legacy) await this.quarantine(path, conversationId, 'deleted');
+    const indexed = this.history?.delete(conversationId) ?? false;
+    return legacy || indexed;
   }
 
   private recordPath(conversationId: string): string {

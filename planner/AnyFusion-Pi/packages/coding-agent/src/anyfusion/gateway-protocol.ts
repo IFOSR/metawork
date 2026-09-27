@@ -46,7 +46,7 @@ export type GatewayCommand =
   | { readonly kind: 'create_conversation'; readonly workspaceId: string }
   | { readonly kind: 'archive_conversation'; readonly conversationId: string }
   | { readonly kind: 'attach_conversation'; readonly conversationId: string }
-  | { readonly kind: 'get_conversation_history'; readonly conversationId: string; readonly cursor?: string; readonly limit?: number }
+  | { readonly kind: 'get_conversation_history'; readonly conversationId: string; readonly cursor?: string; readonly limit?: number; readonly acceptFragments?: boolean }
   | { readonly kind: 'user_message'; readonly text: string; readonly attachments: GatewayAttachmentRef[] }
   | { readonly kind: 'slash_command'; readonly text: string }
   | { readonly kind: 'permission_resolution'; readonly requestId: string; readonly resolution: 'approve' | 'deny' }
@@ -228,6 +228,14 @@ export interface GatewayReplay {
   readonly deltas: GatewayEventEnvelope[];
 }
 
+/** Transport control message, not a durable Conversation event. */
+export interface GatewayReplayReset {
+  readonly conversationId: string;
+  readonly lastSequence: number;
+  readonly reason: 'cursor_ahead' | 'cursor_expired' | 'replay_budget_exceeded';
+  readonly snapshotVersion: 1;
+}
+
 export type GatewayWireClientMessage =
   | { readonly type: 'command'; readonly envelope: GatewayCommandEnvelope }
   | {
@@ -235,6 +243,7 @@ export type GatewayWireClientMessage =
       readonly connectionId: string;
       readonly conversationId: string;
       readonly resumeFromSequence?: number;
+      readonly acceptCursorReset?: boolean;
     }
   | { readonly type: 'close' };
 
@@ -245,7 +254,9 @@ export type GatewayWireServerMessage =
       readonly attached: boolean;
       /** Server 公布的安全能力清单（旧 Server 可能缺失）。 */
       readonly capabilities?: string[];
+      readonly lastSequence?: number;
     }
+  | ({ readonly type: 'replay_reset' } & GatewayReplayReset)
   | { readonly type: 'event'; readonly event: GatewayEventEnvelope }
   | { readonly type: 'output'; readonly lines: string[]; readonly event: GatewayEventEnvelope }
   | { readonly type: 'receipt'; readonly receipt: GatewayCommandReceipt }

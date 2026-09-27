@@ -69,6 +69,11 @@ export interface CommandAdmissionStore {
   listRecoverable(): Promise<StoredCommandAdmission[]>;
 }
 
+/** Read-only startup migration source; never a second admission writer. */
+export interface CommandAdmissionLegacySource {
+  exportRetained(accountId: string): Promise<readonly StoredCommandAdmission[]>;
+}
+
 export class MemoryCommandAdmissionStore implements CommandAdmissionStore {
   private readonly entries = new Map<string, StoredCommandAdmission>();
   private tail: Promise<void> = Promise.resolve();
@@ -220,6 +225,10 @@ const fileTails = new Map<string, Promise<void>>();
 
 export class FileCommandAdmissionStore implements CommandAdmissionStore {
   constructor(private readonly rootDir: string) {}
+
+  exportRetained(accountId: string): Promise<readonly StoredCommandAdmission[]> {
+    return this.serial(accountId, async () => clone((await this.read(accountId, false)).admissions));
+  }
 
   find(accountId: string, idempotencyKey: string): Promise<StoredCommandAdmission | null> {
     return this.serial(accountId, async () => {
@@ -378,7 +387,7 @@ export class FileCommandAdmissionStore implements CommandAdmissionStore {
     return path;
   }
 
-  private async read(accountId: string): Promise<CommandAdmissionFile> {
+  private async read(accountId: string, persistLegacyMigration = true): Promise<CommandAdmissionFile> {
     try {
       const raw = await readFile(this.path(accountId), 'utf8');
       const parsed: unknown = JSON.parse(raw);
@@ -387,7 +396,7 @@ export class FileCommandAdmissionStore implements CommandAdmissionStore {
       }
       if (isLegacyCommandAdmissionFile(parsed, accountId)) {
         const migrated = migrateLegacyCommandAdmissionFile(parsed, accountId);
-        await this.write(accountId, migrated);
+        if (persistLegacyMigration) await this.write(accountId, migrated);
         return migrated;
       }
       throw new Error(`Invalid command admission file: ${accountId}`);
@@ -490,7 +499,19 @@ function migrateLegacyCommandAdmissionFile(
   };
 }
 
-function isStoredCommandAdmission(value: unknown, accountId: string): value is StoredCommandAdmission {
+export function isImportableCommandAdmission(value: unknown, accountId: string): value is StoredCommandAdmission {
+  if (!isStoredCommandAdmission(value, accountId)) return false;
+  if (value.state !== 'terminal') return true;
+  const receipt = value.receipt;
+  return receipt !== null
+    && !Array.isArray(receipt)
+    && (receipt.status === 'accepted' || receipt.status === 'duplicate' || receipt.status === 'rejected')
+    && receipt.requestId === value.requestId
+    && receipt.idempotencyKey === value.idempotencyKey
+    && (receipt.conversationId === null || typeof receipt.conversationId === 'string');
+}
+
+export function isStoredCommandAdmission(value: unknown, accountId: string): value is StoredCommandAdmission {
   if (typeof value !== 'object' || value === null) return false;
   const item = value as Partial<StoredCommandAdmission>;
   return item.accountId === accountId

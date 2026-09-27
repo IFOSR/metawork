@@ -38,6 +38,7 @@ import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-b
 import { builtinCodexAgentClass } from '../support/builtin-agent-classes.js';
 import { workGraphPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
+import type { QueryUsageLifecycle } from '../../src/metering/query-lifecycle.js';
 
 const roots: string[] = [];
 
@@ -250,6 +251,66 @@ describe('AccountStartupRecoveryService production composition', () => {
     });
     expect(reader.blockingReasons(task.id, revision.generationId)).toContain('publication');
     expect(scheduler.getSlot('conversation-origin').state).not.toBe('free');
+  });
+
+  it('finalizes Query usage for a terminal Task before releasing residue-held capacity', async () => {
+    const finalizedTaskIds: string[] = [];
+    const fixture = createFixture(
+      'terminal-slot-residue-billing',
+      undefined,
+      {
+        finalizeQueriesForTask: (taskId: string) => finalizedTaskIds.push(taskId),
+      } as QueryUsageLifecycle,
+    );
+    const task = createRunningTask(fixture, 'Finalize billing with residual cleanup');
+    fixture.taskEngine.transition(task.id, 'done');
+    const scheduler = new ConversationTaskSchedulerRepo(fixture.db);
+    scheduler.claimSlot('conversation-origin', task.id, 'reservation-terminal', '2026-09-25T00:00:00.000Z');
+    seedTaskOriginDecision(fixture.db, task.id, 'conversation-origin');
+    const revision = new WorkGraphRevisionRepo(fixture.db).findActive(task.id)!;
+    const replan = new GenerationReplanRequestRepo(fixture.db);
+    const replanId = `replan-terminal-residue-${task.id}`;
+    replan.enqueue({
+      id: replanId,
+      taskId: task.id,
+      generationId: revision.generationId,
+      sourceRevision: revision.revision,
+      configurationRevision: 'revision-test',
+      triggerDecisionId: 'trigger-terminal-residue',
+      now: '2026-09-25T00:01:00.000Z',
+    });
+    expect(replan.scheduleForPlanner(
+      replanId,
+      'quiescence-terminal-residue',
+      '2026-09-25T00:01:00.000Z',
+    )).toBe(true);
+    fixture.db.prepare(`
+      UPDATE generation_replan_requests
+      SET status = 'waiting_for_availability', availability_explanation = 'test residue'
+      WHERE id = ?
+    `).run(replanId);
+
+    await fixture.composition.accountRuntime.initialize();
+
+    expect(finalizedTaskIds).toEqual([task.id]);
+    expect(scheduler.getSlot('conversation-origin').state).not.toBe('free');
+  });
+
+  it('finalizes Query usage for terminal Tasks whose Conversation slot is already free', async () => {
+    const finalizedTaskIds: string[] = [];
+    const fixture = createFixture(
+      'terminal-task-without-slot',
+      undefined,
+      {
+        finalizeQueriesForTask: (taskId: string) => finalizedTaskIds.push(taskId),
+      } as QueryUsageLifecycle,
+    );
+    const task = createRunningTask(fixture, 'Finalize billing after slot release');
+    fixture.taskEngine.transition(task.id, 'done');
+
+    await fixture.composition.accountRuntime.initialize();
+
+    expect(finalizedTaskIds).toContain(task.id);
   });
 
   it('blocks a Task whose unresolved application cannot make progress', async () => {
@@ -792,7 +853,11 @@ describe('AccountStartupRecoveryService production composition', () => {
   });
 });
 
-function createFixture(name: string, coordinator?: AccountKernelCoordinator) {
+function createFixture(
+  name: string,
+  coordinator?: AccountKernelCoordinator,
+  queryUsageLifecycle?: QueryUsageLifecycle,
+) {
   const root = mkdtempSync(join(tmpdir(), `anyfusion-account-recovery-${name}-`));
   roots.push(root);
   const sourceRoot = join(root, 'source');
@@ -834,6 +899,7 @@ function createFixture(name: string, coordinator?: AccountKernelCoordinator) {
     attemptExecutionBackend: backend,
     getConfigurationRevision: () => staged.snapshot.revisionId,
     ...(coordinator ? { buildKernelCoordinator: () => coordinator } : {}),
+    ...(queryUsageLifecycle ? { queryUsageLifecycle } : {}),
   });
   return { root, db, taskEngine, backend, composition };
 }

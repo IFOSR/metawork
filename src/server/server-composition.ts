@@ -61,14 +61,17 @@ import { GatewayAuditLog } from '../gateway/audit.js';
 import { ClientGateway } from '../gateway/client-gateway.js';
 import { BindingConversationResolver } from '../gateway/conversation-resolver.js';
 import { ConversationBindingRepository } from '../session/conversation-binding-repository.js';
-import { FileEventJournal } from '../gateway/file-event-journal.js';
+import { createAccountEventJournal } from './account-event-journal.js';
+import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
 import { GatewaySubscriptions } from '../gateway/gateway-subscriptions.js';
 import { ConversationGatewayRuntime } from '../gateway/conversation-gateway-runtime.js';
 import { FileCommandAdmissionStore } from '../gateway/command-admission-store.js';
+import { SqliteCommandAdmissionStore } from '../storage/command-admission-repo.js';
 import { WebGatewayAdapter } from '../management/web-gateway-adapter.js';
 import { formatGatewayDoctorChecks, runGatewayDoctor } from '../gateway/doctor.js';
 import { ConversationSession } from '../session/conversation-session.js';
 import { FileConversationStore } from '../session/file-conversation-store.js';
+import { updateConversationCatalog } from '../session/conversation-catalog-mutation.js';
 import { FileWorkspaceCatalogStore } from '../storage/file-workspace-catalog-store.js';
 import {
   CONVERSATION_FORMAT_VERSION,
@@ -89,6 +92,8 @@ import { workspaceEventStreamId } from '../gateway/workspace-event-stream.js';
 import { clientConnectionEventStreamId } from '../gateway/client-connection-event-stream.js';
 import { resolveServerWebPort } from './server-web-port.js';
 import type { ConversationActivityProjection } from '../workspace/conversation-activity-projector.js';
+import { WorkspaceDirectoryProjector } from '../workspace/workspace-directory-projector.js';
+import { SqliteWorkspaceDirectoryProjectionRepo } from '../storage/workspace-directory-projection-repo.js';
 import { SessionPersistenceService } from '../session/session-persistence-service.js';
 import { SessionPresentationService } from '../session/session-presentation-service.js';
 import { SessionStateRepo } from '../storage/session-state-repo.js';
@@ -137,6 +142,8 @@ import { WebAuthService } from '../management/web-auth.js';
 import { WebLaunchContextService } from '../management/web-launch-context.js';
 import { resolveLoginCredentials } from '../management/login-credentials.js';
 import { FileConversationPresentationStore } from '../storage/file-conversation-presentation-store.js';
+import { SqliteConversationHistoryRepo } from '../storage/conversation-history-repo.js';
+import { SqliteConversationMetadataIndex } from '../storage/conversation-metadata-index-repo.js';
 import { FileAttachmentStore } from '../storage/file-attachment-store.js';
 import { WebSessionCatalog } from '../management/web-session-catalog.js';
 import { WebGatewaySessionRuntime } from '../management/web-gateway-session-runtime.js';
@@ -672,8 +679,23 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   // 8. 初始化上下文召回器
   const sessionId = `sess_${nanoid(10)}`;
   const contextRecaller = new ContextRecaller(db);
+  const directoryProjection = new SqliteWorkspaceDirectoryProjectionRepo(db, LOCAL_DEFAULT_ACCOUNT_ID);
+  let directoryProjector: WorkspaceDirectoryProjector | null = null;
+  const presentationStore = new FileConversationPresentationStore(
+    resolve(accountPaths.conversations, 'web-presentation'),
+    new SqliteConversationHistoryRepo(db, LOCAL_DEFAULT_ACCOUNT_ID, 'presentation'),
+  );
   const conversationStore = new FileConversationStore(
     resolve(accountPaths.conversations, 'gateway'),
+    {
+      onMetadataCommitted: metadata => directoryProjector?.observeMetadata(metadata),
+      history: new SqliteConversationHistoryRepo(db, LOCAL_DEFAULT_ACCOUNT_ID, 'conversation'),
+      metadataIndex: new SqliteConversationMetadataIndex(db, LOCAL_DEFAULT_ACCOUNT_ID),
+      readLegacyHistory: async conversationId => (await presentationStore.read(conversationId))?.turns.map(turn => ({
+        id: turn.id, conversationId, userInput: turn.userInput,
+        finalAnswer: turn.finalAnswer, status: turn.status,
+      })) ?? [],
+    },
   );
   const workspaceCatalogStore = new FileWorkspaceCatalogStore(accountPaths.workspaceCatalog);
   await new WorkspaceConversationMigrator({
@@ -687,12 +709,26 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     conversationId: string,
     activity: ConversationActivityProjection,
   ) => Promise<void> = async () => undefined;
+  directoryProjector = new WorkspaceDirectoryProjector({
+    accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+    projection: directoryProjection,
+    readMetadata: async () => (await conversationStore.readCatalog()).conversations,
+    getActivities: conversations => (
+      accountRuntimeComposition?.accountRuntime.getConversationActivities(conversations) ?? new Map()
+    ),
+    onActivity: (conversationId, activity) => publishWorkspaceActivity(conversationId, activity),
+  });
   const workspaceDirectory = new WorkspaceDirectoryService({
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     workspaceCatalog: workspaceCatalogStore,
     conversationStore,
+    projection: directoryProjection,
     authorize: (_path, principalId) => isAuthenticatedWorkspacePrincipalId(principalId),
     createConversationId: () => `conv_${nanoid(12)}`,
+    getConversationActivities: conversations => (
+      accountRuntimeComposition?.accountRuntime.getConversationActivities(conversations)
+        ?? new Map()
+    ),
     getConversationActivity: (conversationId, fallbackUpdatedAt) => (
       accountRuntimeComposition?.accountRuntime.getConversationActivity(
         conversationId,
@@ -830,8 +866,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     generatedRuntimeRoot: accountPaths.generatedAgentRuntime,
     sourceRoot: accountPaths.workspaceStore,
     resolveUserWorkspaceRoot: async conversationId => {
-      const binding = (await conversationStore.readConversation(conversationId))
-        ?.conversation.workspaceBinding;
+      const binding = (await conversationStore.readMetadata(conversationId))?.workspaceBinding;
       if (!binding) return null;
       return (await workspaceCatalogStore.findById(binding.workspaceId))?.canonicalPath ?? null;
     },
@@ -1026,10 +1061,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   // ADR-0031: 直接构造 ConversationSession（不经过 MetaclawSession 桥接），
   // 会话级 callbacks + 账户级 Kernel 执行服务后置绑定。
   const buildConversationSession = async (conversationId: string): Promise<ConversationSession> => {
-    let record = await conversationStore.readConversation(conversationId);
-    if (!record) {
+    const existingMetadata = await conversationStore.readMetadata(conversationId);
+    if (!existingMetadata) {
       const now = new Date().toISOString();
-      record = {
+      const record = {
         version: CONVERSATION_FORMAT_VERSION,
         conversation: {
           id: conversationId,
@@ -1044,14 +1079,14 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         turns: [],
       } satisfies ConversationRecord;
       await conversationStore.writeConversation(record);
-      const catalog = await conversationStore.readCatalog();
-      await conversationStore.writeCatalog({
+      const metadata = record.conversation;
+      await updateConversationCatalog(conversationStore, catalog => ({
         ...catalog,
         conversations: [
           ...catalog.conversations.filter(item => item.id !== conversationId),
-          record.conversation,
+          metadata,
         ],
-      });
+      }));
     }
     const port = runtimePort;
     const persistenceService = new SessionPersistenceService(db);
@@ -1146,30 +1181,26 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     resolve(accountPaths.gateway, 'conversation-bindings.json'),
   );
   await conversationBindings.initialize();
-  const eventJournal = new FileEventJournal(resolve(accountPaths.gateway, 'events'));
-  const normalizeTurnPresentation = (turn: ConversationTurn): ConversationTurn => {
-    if (!turn.taskId) return structuredClone(turn);
-    const graphDecision = [...new KernelDecisionRepo(db).listByTask(turn.taskId)]
-      .reverse()
-      .find(record => record.decision.action.type === 'authorize_task_plan');
-    const action = graphDecision?.decision.action;
-    if (!action || action.type !== 'authorize_task_plan') return structuredClone(turn);
-    return normalizeExecutionPresentation(
-      turn,
-      buildCanonicalSubtaskIdentityMap(
-        action.taskId,
-        action.graphRevision,
-        action.workGraph.subtasks,
-      ),
-    );
+  const eventJournalRuntime = createAccountEventJournal({
+    db, root: resolve(accountPaths.gateway, 'events'), accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+    onError: error => console.error(`Gateway journal maintenance failed: ${(error as Error).message}`),
+  });
+  const eventJournal = eventJournalRuntime.journal;
+  const normalizeHistoryPage = (turns: readonly ConversationTurn[]): ConversationTurn[] => {
+    const taskIds = [...new Set(turns.flatMap(turn => turn.taskId ? [turn.taskId] : []))];
+    const aliases = new Map(new KernelDecisionRepo(db).listPresentationIdentitiesByTasks(taskIds)
+      .map(plan => [plan.taskId, buildCanonicalSubtaskIdentityMap(
+        plan.taskId, plan.graphRevision, plan.subtaskIds.map(id => ({ id })),
+      )]));
+    return turns.map(turn => normalizeExecutionPresentation(turn, aliases.get(turn.taskId ?? '') ?? new Map()));
   };
+  const normalizeTurnPresentation = (turn: ConversationTurn): ConversationTurn => normalizeHistoryPage([turn])[0]!;
   const webSessionCatalog = new WebSessionCatalog({
     directory: workspaceDirectory,
     conversationStore,
-    presentationStore: new FileConversationPresentationStore(
-      resolve(accountPaths.conversations, 'web-presentation'),
-    ),
+    presentationStore,
     normalizeTurnPresentation,
+    normalizeHistoryPage,
   });
   const knownConversationIds = new Set<string>([sessionId]);
   const rememberConversation = (accountId: string, conversationId: string): void => {
@@ -1191,7 +1222,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     if (knownConversationIds.has(conversationId)) return true;
     if (conversationRegistry.getIfOpen(conversationId)) return true;
     try {
-      if (await webSessionCatalog.read(conversationId)) return true;
+      if (await conversationStore.readMetadata(conversationId)) return true;
       const owned = durableConversation.get(
         conversationId,
         conversationId,
@@ -1200,7 +1231,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         conversationId,
       ) as { owned: number } | undefined;
       if (owned) return true;
-      return (await eventJournal.replay(accountId, conversationId)).lastSequence > 0;
+      return await eventJournal.lastSequence(accountId, conversationId) > 0;
     } catch {
       return false;
     }
@@ -1246,20 +1277,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     subscriptions: gatewaySubscriptions,
     attachments: webAttachmentStore,
     readHistory: async (conversationId, cursor, requestedLimit) => {
-      const record = await conversationStore.readConversation(conversationId);
-      if (!record) throw new Error('conversation_not_found');
-      const limit = Math.min(Math.max(requestedLimit ?? 10, 1), 50);
-      const offset = decodeHistoryCursor(cursor);
-      const ordered = [...record.turns].reverse();
-      const turns = ordered.slice(offset, offset + limit);
+      const page = await conversationStore.readHistoryPage(conversationId, {
+        cursor: cursor === 'newest' ? undefined : cursor, limit: requestedLimit, maxBytes: 256 * 1024,
+      });
       return {
-        turns,
-        previousCursor: offset > 0
-          ? encodeHistoryCursor(Math.max(0, offset - limit))
-          : null,
-        nextCursor: offset + turns.length < ordered.length
-          ? encodeHistoryCursor(offset + turns.length)
-          : null,
+        turns: [...page.turns].reverse(),
+        previousCursor: cursor ? 'newest' : null,
+        nextCursor: page.nextCursor,
       };
     },
   });
@@ -1324,24 +1348,25 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       gatewaySubscriptions.publish(event);
     },
     publishConnection: async (kind, connectionId, payload, requestId) => {
-      const event = await eventJournal.append({
+      const streamId = clientConnectionEventStreamId(connectionId);
+      const sequence = await eventJournal.reserveSequence(LOCAL_DEFAULT_ACCOUNT_ID, streamId);
+      gatewaySubscriptions.publish({
         protocolVersion: 2,
         eventId: `event_${nanoid(12)}`,
-        sequence: 0,
+        sequence,
         accountId: LOCAL_DEFAULT_ACCOUNT_ID,
-        conversationId: clientConnectionEventStreamId(connectionId),
+        conversationId: streamId,
         requestId: requestId ?? null,
         turnId: null,
         kind,
         payload: asPayloadRecord(payload),
         occurredAt: new Date().toISOString(),
       });
-      gatewaySubscriptions.publish(event);
     },
   });
   publishWorkspaceActivity = async (conversationId, activity) => {
-    const binding = (await conversationStore.readConversation(conversationId))
-      ?.conversation.workspaceBinding;
+    directoryProjector!.observeActivity(conversationId, activity);
+    const binding = (await conversationStore.readMetadata(conversationId))?.workspaceBinding;
     if (!binding) return;
     await workspaceGatewayRuntime.publishActivity(binding.workspaceId, {
       conversationId,
@@ -1374,11 +1399,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
     getTaskView: async ({ accountId, conversationId, turnId, taskId, requestId }) => {
       if (accountId !== LOCAL_DEFAULT_ACCOUNT_ID) return { error: 'task_view_unavailable' };
-      const record = await webSessionCatalog.read(conversationId).catch(() => null);
-      const recordedTurn = record?.turns.find(turn => turn.id === turnId) ?? null;
+      const recordedTurn = await webSessionCatalog.readTurn(conversationId, turnId);
       const liveTrace = conversationRegistry.getIfOpen(conversationId)?.getInteractionTrace() ?? null;
       const liveTurn = liveTrace && liveTrace.turnId === turnId ? liveTrace : null;
-      const replay = await eventJournal.replay(accountId, conversationId);
+      const traceRead = await eventJournal.readTurnTaskObservation(accountId, conversationId, turnId);
       const queryContext = billingServices.contexts.findByTurnId(accountId, turnId);
       const queryTaskId = queryContext?.conversationId === conversationId
         ? billingServices.contexts.findTaskLink(queryContext.queryId)?.costTaskId ?? null
@@ -1388,7 +1412,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         conversationId,
         turnId,
         taskId,
-        replayEvents: [...replay.snapshot, ...replay.deltas],
+        traceObservation: traceRead.observation,
         queryTaskId,
         liveTaskId: liveTurn?.taskId,
         presentationTaskId: recordedTurn?.taskId,
@@ -1536,10 +1560,14 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           ))
           .map(artifact => taskArtifactRepo.toProjection(artifact)),
         result: executionFacts.result,
-        asOfSequence: replay.lastSequence,
+        asOfSequence: traceRead.lastSequence,
       };
     },
   });
+  const commandAdmissionStore = new SqliteCommandAdmissionStore(db, LOCAL_DEFAULT_ACCOUNT_ID);
+  await commandAdmissionStore.initialize(new FileCommandAdmissionStore(
+    resolve(accountPaths.gateway, 'command-admissions'),
+  ));
   const clientGateway = new ClientGateway({
     authenticator: {
       authenticate: async ({ transport, credential }) => {
@@ -1561,9 +1589,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       }),
     },
     conversationResolver,
-    commandAdmissionStore: new FileCommandAdmissionStore(
-      resolve(accountPaths.gateway, 'command-admissions'),
-    ),
+    commandAdmissionStore,
     activateAccount: accountId => conversationGatewayRuntime.activateAccount(accountId).then(() => undefined),
     submitToConversation: (conversationId, requestId, idempotencyKey, command, principalId, origin) =>
       conversationGatewayRuntime.submit(
@@ -1627,10 +1653,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     activateConnectionWorkspace: (connectionId, workspaceId) => {
       workspaceGatewayRuntime.restoreConnectionWorkspace(connectionId, workspaceId);
     },
-    publishWorkspaceSnapshot: workspaceId => {
+    publishWorkspaceSnapshot: (workspaceId, connectionId) => {
       return workspaceGatewayRuntime.publishWorkspaceSnapshot(
         workspaceId,
         'local:local-installation',
+        connectionId,
       );
     },
     closeConnection: connectionId => {
@@ -1672,6 +1699,20 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   });
 
   await gatewayServer.start();
+  eventJournalRuntime.start();
+  // Rebuild yields between bounded batches. Navigation reports rebuilding
+  // instead of doing an account-wide scan on a client request.
+  const directoryRebuild = directoryProjector.rebuild().catch((error: unknown) => {
+    console.error(`Workspace directory rebuild failed: ${(error as Error).message}`);
+  });
+  let directoryDrain: Promise<void> | null = null;
+  const directoryProjectionTimer = setInterval(() => {
+    if (directoryDrain) return;
+    directoryDrain = directoryProjector!.drainChanges()
+      .catch((error: unknown) => console.error(`Workspace activity projection failed: ${(error as Error).message}`))
+      .finally(() => { directoryDrain = null; });
+  }, 250);
+  directoryProjectionTimer.unref();
   if (cliCommand.kind === 'server') {
     const feishuRouting = new FeishuConversationRouting({
       accountId: LOCAL_DEFAULT_ACCOUNT_ID,
@@ -1785,6 +1826,28 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         projectExecutionTimeline: taskId => {
           const task = taskRepo.findById(taskId);
           return task ? executionProjector.project(task) : null;
+        },
+        projectExecutionTimelines: taskIds => executionProjector.projectMany(
+          taskRepo.findTimelineByIds(LOCAL_DEFAULT_ACCOUNT_ID, taskIds),
+        ),
+        resolveTaskIdsForTurns: turnIds => billingServices.contexts.taskIdsForTurns(LOCAL_DEFAULT_ACCOUNT_ID, turnIds),
+        projectTasksArtifacts: taskIds => {
+          const grouped = new Map<string, ArtifactProjection[]>();
+          for (const artifact of taskArtifactRepo.listByTasks(LOCAL_DEFAULT_ACCOUNT_ID, taskIds)) {
+            const items = grouped.get(artifact.taskId) ?? [];
+            items.push(taskArtifactRepo.toProjection(artifact));
+            grouped.set(artifact.taskId, items);
+          }
+          return grouped;
+        },
+        resolveTaskIdForTurn: turnId => {
+          const queryContext = billingServices.contexts.findByTurnId(
+            LOCAL_DEFAULT_ACCOUNT_ID,
+            turnId,
+          );
+          return queryContext
+            ? billingServices.contexts.findTaskLink(queryContext.queryId)?.costTaskId ?? null
+            : null;
         },
         projectTaskArtifacts: taskId => taskArtifactRepo.listByTask(taskId)
           .filter(artifact => (
@@ -2144,9 +2207,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       },
       drain: async () => {
         clearInterval(taskPoolReviewTimer);
+        clearInterval(directoryProjectionTimer);
+        await directoryRebuild;
+        await directoryDrain;
         await clientGateway.drain();
         await conversationGatewayRuntime.drain();
         await conversationRegistry.closeAll();
+        await eventJournalRuntime.stop();
       },
       stopRuntime: async () => {
         await Promise.all([
@@ -2192,17 +2259,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     await new Promise(() => undefined);
     return;
 }
-}
-
-function encodeHistoryCursor(offset: number): string {
-  return Buffer.from(String(offset), 'utf8').toString('base64url');
-}
-
-function decodeHistoryCursor(cursor: string | undefined): number {
-  if (!cursor) return 0;
-  const offset = Number(Buffer.from(cursor, 'base64url').toString('utf8'));
-  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('invalid_cursor');
-  return offset;
 }
 
 function asPayloadRecord(value: unknown): Record<string, unknown> {

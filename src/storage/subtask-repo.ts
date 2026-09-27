@@ -2,6 +2,11 @@ import type Database from 'better-sqlite3';
 import type { AgentClassRiskLevel, Subtask, SubtaskStatus } from '../core/types.js';
 import type { ContextRef, WorkGraphAcceptanceCriterion, WorkGraphDependency } from '../work-graph/index.js';
 
+export type TimelineSubtaskRecord = Pick<Subtask, 'id' | 'taskId' | 'title' | 'status'> & {
+  dependencies: Array<Pick<WorkGraphDependency, 'fromSubtaskId'>>;
+  executorBindings: Array<Pick<Subtask['executorBindings'][number], 'agentClassRef'>>;
+};
+
 interface SubtaskRow {
   id: string;
   task_id: string;
@@ -133,6 +138,37 @@ export class SubtaskRepo {
   listByTask(taskId: string): Subtask[] {
     const rows = this.db.prepare('SELECT * FROM subtasks WHERE task_id = ? ORDER BY created_at ASC').all(taskId) as SubtaskRow[];
     return rows.map(rowToSubtask);
+  }
+
+  listByTasks(taskIds: readonly string[]): Subtask[] {
+    if (!taskIds.length) return [];
+    if (taskIds.length > 100) throw new Error('timeline_task_limit');
+    return (this.db.prepare(`SELECT * FROM subtasks WHERE task_id IN (${taskIds.map(() => '?').join(',')})
+      ORDER BY created_at ASC`).all(...taskIds) as SubtaskRow[]).map(rowToSubtask);
+  }
+
+  listTimelineByTasks(taskIds: readonly string[]): TimelineSubtaskRecord[] {
+    if (!taskIds.length) return [];
+    if (taskIds.length > 100) throw new Error('timeline_task_limit');
+    const rows = this.db.prepare(`
+      SELECT id, task_id, title, status,
+        (SELECT json_group_array(json_object('fromSubtaskId', json_extract(value, '$.fromSubtaskId')))
+         FROM json_each(COALESCE(NULLIF(dependencies_json, ''), '[]'))) AS dependencies_json,
+        json_extract(COALESCE(NULLIF(executor_bindings_json, ''), '[]'), '$[0].agentClassRef') AS agent_class_ref
+      FROM subtasks
+      WHERE task_id IN (${taskIds.map(() => '?').join(',')})
+      ORDER BY created_at ASC
+    `).all(...taskIds) as Array<Pick<SubtaskRow, 'id' | 'task_id' | 'title' | 'status' | 'dependencies_json'> & {
+      agent_class_ref: string | null;
+    }>;
+    return rows.map(row => ({
+      id: row.id,
+      taskId: row.task_id,
+      title: row.title,
+      status: row.status,
+      dependencies: JSON.parse(row.dependencies_json) as TimelineSubtaskRecord['dependencies'],
+      executorBindings: row.agent_class_ref == null ? [] : [{ agentClassRef: row.agent_class_ref }],
+    }));
   }
 
   listActiveByTask(taskId: string): Subtask[] {

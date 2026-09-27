@@ -1,10 +1,11 @@
-import type { Subtask, Task } from '../core/types.js';
-import type { SubtaskRepo } from '../storage/subtask-repo.js';
-import type { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
+import type { Task } from '../core/types.js';
+import type { TimelineTaskRecord } from '../storage/task-repo.js';
+import type { SubtaskRepo, TimelineSubtaskRecord } from '../storage/subtask-repo.js';
+import type { ExecutorAttemptReceiptRepo, TimelineReceiptRecord } from '../storage/executor-attempt-receipt-repo.js';
 import type { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import type { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
-import type { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
-import type { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
+import type { ExecutorAttemptRuntimeRepo, TimelineRuntimeRecord } from '../storage/executor-attempt-runtime-repo.js';
+import type { KernelDispatchItemRepo, TimelineDispatchItemRecord } from '../storage/kernel-dispatch-item-repo.js';
 import { formatExecutorProgress } from '../executor/error-utils.js';
 import type { KernelAttemptKind } from '../kernel/control-kernel.js';
 
@@ -88,15 +89,46 @@ export interface ExecutionProjectorDeps {
 export class ExecutionProjector {
   constructor(private readonly deps: ExecutionProjectorDeps) {}
 
+  projectMany(tasks: readonly TimelineTaskRecord[]): ReadonlyMap<string, ExecutionTimeline> {
+    if (!tasks.length) return new Map();
+    const ids = [...new Set(tasks.map(task => task.id))];
+    const subtasks = groupByTask(this.deps.subtaskRepo.listTimelineByTasks(ids));
+    const receipts = groupByTask(this.deps.receiptRepo.listTimelineByTasks(ids));
+    const decisions = groupByTask(this.deps.decisionRepo.listTimelineByTasks(ids, MAX_TIMELINE_DECISIONS));
+    const dispatches = groupByTask(this.deps.dispatchItemRepo.listTimelineByTasks(ids));
+    const runtimes = new Map(this.deps.attemptRuntimeRepo.listTimelineByTasks(ids).map(runtime => [runtime.attemptId, runtime]));
+    const publications = this.deps.publicationRepo.timelineByTaskIds(ids);
+    return new Map(tasks.map(task => [task.id, this.projectFacts(
+      task, subtasks.get(task.id) ?? [], receipts.get(task.id) ?? [],
+      decisions.get(task.id) ?? [], dispatches.get(task.id) ?? [],
+      attemptId => runtimes.get(attemptId) ?? null, publications.get(task.id) ?? { integrated: false, blocking: false },
+    )]));
+  }
+
   project(task: Task): ExecutionTimeline {
     const subtasks = this.deps.subtaskRepo.listByTask(task.id);
-    const receipts = this.deps.receiptRepo.listByTask(task.id);
+    const receipts = this.deps.receiptRepo.listByTask(task.id).map(receipt => ({
+      ...receipt,
+      hasViolations: receipt.verification?.violations?.length > 0,
+    }));
     const decisions = this.deps.decisionRepo.listTimelineByTask(
       task.id,
       MAX_TIMELINE_DECISIONS,
     );
     const dispatchItems = this.deps.dispatchItemRepo.listByTask(task.id);
+    return this.projectFacts(task, subtasks, receipts, decisions, dispatchItems,
+      attemptId => this.deps.attemptRuntimeRepo.find(attemptId));
+  }
 
+  private projectFacts(
+    task: TimelineTaskRecord,
+    subtasks: TimelineSubtaskRecord[],
+    receipts: TimelineReceiptRecord[],
+    decisions: ReturnType<KernelDecisionRepo['listTimelineByTask']>,
+    dispatchItems: TimelineDispatchItemRecord[],
+    runtimeFor: (attemptId: string) => TimelineRuntimeRecord | null,
+    publication?: { integrated: boolean; blocking: boolean },
+  ): ExecutionTimeline {
     return {
       taskId: task.id,
       title: task.title,
@@ -109,14 +141,14 @@ export class ExecutionProjector {
       stages: [
         this.projectPlanning(subtasks),
         this.projectAuthorization(decisions),
-        this.projectExecution(subtasks, receipts, dispatchItems),
+        this.projectExecution(subtasks, receipts, dispatchItems, runtimeFor),
         this.projectVerification(subtasks, receipts),
-        this.projectDelivery(task, subtasks),
+        this.projectDelivery(task, subtasks, publication),
       ],
     };
   }
 
-  private projectPlanning(subtasks: Subtask[]): TimelineStage {
+  private projectPlanning(subtasks: TimelineSubtaskRecord[]): TimelineStage {
     if (subtasks.length === 0) {
       return { phase: 'planning', status: 'pending' };
     }
@@ -150,9 +182,10 @@ export class ExecutionProjector {
   }
 
   private projectExecution(
-    subtasks: Subtask[],
-    receipts: ReturnType<ExecutorAttemptReceiptRepo['listByTask']>,
-    dispatchItems: ReturnType<KernelDispatchItemRepo['listByTask']>,
+    subtasks: TimelineSubtaskRecord[],
+    receipts: TimelineReceiptRecord[],
+    dispatchItems: TimelineDispatchItemRecord[],
+    runtimeFor: (attemptId: string) => TimelineRuntimeRecord | null,
   ): TimelineStage {
     if (subtasks.length === 0) {
       return { phase: 'execution', status: 'pending' };
@@ -192,7 +225,7 @@ export class ExecutionProjector {
           attempts: attemptIds.map((attemptId, attemptIndex) => {
             const receipt = subtaskReceipts.find(item => item.attemptId === attemptId);
             const dispatch = subtaskDispatches.find(item => item.attemptId === attemptId);
-            const runtime = this.deps.attemptRuntimeRepo.find(attemptId);
+            const runtime = runtimeFor(attemptId);
             const progressHistory = progressHistoryFrom(runtime?.progress);
             const currentProgress = currentProgressFrom(runtime?.progress);
             const attemptKind = dispatch?.attemptKind ?? receipt?.attemptKind ?? 'primary';
@@ -224,13 +257,13 @@ export class ExecutionProjector {
   }
 
   private projectVerification(
-    subtasks: Subtask[],
-    receipts: ReturnType<ExecutorAttemptReceiptRepo['listByTask']>,
+    subtasks: TimelineSubtaskRecord[],
+    receipts: TimelineReceiptRecord[],
   ): TimelineStage {
     if (receipts.length === 0) {
       return { phase: 'verification', status: 'pending' };
     }
-    const hasViolation = receipts.some(receipt => receipt.verification?.violations?.length > 0);
+    const hasViolation = receipts.some(receipt => receipt.hasViolations);
     if (hasViolation) {
       return { phase: 'verification', status: 'failed' };
     }
@@ -242,15 +275,15 @@ export class ExecutionProjector {
     return { phase: 'verification', status: allDone ? 'done' : 'running' };
   }
 
-  private projectDelivery(task: Task, subtasks: Subtask[]): TimelineStage {
+  private projectDelivery(task: TimelineTaskRecord, subtasks: TimelineSubtaskRecord[], publication?: { integrated: boolean; blocking: boolean }): TimelineStage {
     if (subtasks.length === 0) {
       return { phase: 'delivery', status: 'pending' };
     }
-    const integrated = this.deps.publicationRepo.listIntegratedByTaskIds([task.id]);
-    if (integrated.length > 0) {
+    const integrated = publication?.integrated ?? (this.deps.publicationRepo.listIntegratedByTaskIds([task.id]).length > 0);
+    if (integrated) {
       return { phase: 'delivery', status: 'done' };
     }
-    if (this.deps.publicationRepo.hasBlockingResidue(task.id)) {
+    if (publication?.blocking ?? this.deps.publicationRepo.hasBlockingResidue(task.id)) {
       return { phase: 'delivery', status: 'blocked' };
     }
     if (task.status === 'done') {
@@ -261,6 +294,17 @@ export class ExecutionProjector {
     );
     return { phase: 'delivery', status: hasFinishedSubtask ? 'running' : 'pending' };
   }
+}
+
+function groupByTask<T extends { taskId: string | null }>(items: readonly T[]): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const item of items) {
+    if (!item.taskId) continue;
+    const group = grouped.get(item.taskId) ?? [];
+    group.push(item);
+    grouped.set(item.taskId, group);
+  }
+  return grouped;
 }
 
 function attemptLabel(kind: KernelAttemptKind): string {

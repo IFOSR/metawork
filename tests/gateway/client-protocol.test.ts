@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   GATEWAY_PROTOCOL_VERSION,
+  GATEWAY_SERVER_CAPABILITIES,
   parseGatewayCommandEnvelope,
   type GatewayCommandEnvelope,
 } from '../../src/gateway/client-protocol.js';
@@ -21,6 +22,43 @@ function conversationEnvelope(): GatewayCommandEnvelope {
 }
 
 describe('gateway client command protocol v2', () => {
+  it('advertises negotiated bounded replay resets', () => {
+    expect(GATEWAY_SERVER_CAPABILITIES).toContain('bounded_replay_v1');
+  });
+
+  it.each(['list_workspace_conversations', 'get_conversation_history'] as const)(
+    'accepts bounded opaque cursors independently of identifiers for %s',
+    kind => {
+      const envelope = {
+        ...conversationEnvelope(),
+        ...(kind === 'list_workspace_conversations' ? { scope: { kind: 'workspace' } } : {}),
+        command: {
+          kind,
+          ...(kind === 'list_workspace_conversations' ? { workspaceId: 'workspace_1' } : { conversationId: 'conv_1' }),
+        },
+      };
+      const cursor = Buffer.from(JSON.stringify({
+        version: 1, accountId: 'local-default',
+        workspaceId: 'workspace_00000000-0000-0000-0000-000000000001',
+        revision: 100, query: '', archived: false, rank: 0,
+        updatedAt: '2026-09-26T00:00:00.000Z',
+        id: 'conv_00000000-0000-0000-0000-000000000001',
+      })).toString('base64url');
+      expect(Buffer.byteLength(cursor)).toBeGreaterThan(256);
+      for (const value of [cursor, 'x'.repeat(4096), 'é'.repeat(2048)]) {
+        expect(parseGatewayCommandEnvelope({
+          ...envelope, command: { ...envelope.command, cursor: value },
+        })).not.toBeNull();
+      }
+      for (const value of ['', 42, null, 'x'.repeat(4097), 'é'.repeat(2049)]) {
+        expect(parseGatewayCommandEnvelope({
+          ...envelope, command: { ...envelope.command, cursor: value },
+        })).toBeNull();
+      }
+      expect(parseGatewayCommandEnvelope({ ...envelope, requestId: 'x'.repeat(257) })).toBeNull();
+    },
+  );
+
   it('accepts Conversation and Workspace scopes', () => {
     const conversation = conversationEnvelope();
     const workspace: GatewayCommandEnvelope = {

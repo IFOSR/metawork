@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AccountRuntime, WorkAdmissionBlockedError } from '../../src/account/account-runtime.js';
 import { AccountRuntimeFactory } from '../../src/account/account-runtime-factory.js';
 import type { AccountKernelCoordinator } from '../../src/account/account-kernel-coordinator.js';
@@ -63,6 +63,49 @@ function makeIdleRuntimeDeps(tasks: Task[] = []) {
 }
 
 describe('AccountRuntime', () => {
+  it('uses Conversation-scoped tasks and lightweight retry identities for incremental activity', () => {
+    const tasks = [makeTask('task_a', 'blocked', 'conv_a')];
+    const listTasks = vi.fn(() => { throw new Error('unrelated task scan'); });
+    const listTasksByConversation = vi.fn(() => tasks);
+    const listCurrentTaskIdsByAction = vi.fn(() => []);
+    const runtime = new AccountRuntime({
+      ...makeIdleRuntimeDeps(tasks),
+      taskServices: { taskRuntimeService: { listTasks, listTasksByConversation } } as never,
+      kernelServices: { kernelDecisionRepo: { listCurrentTaskIdsByAction } } as never,
+    });
+    expect(runtime.getConversationActivity('conv_a', tasks[0]!.updatedAt).state).toBe('blocked');
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(listTasksByConversation).toHaveBeenCalledWith('conv_a');
+    expect(listCurrentTaskIdsByAction).toHaveBeenCalledWith('wait_for_retry', ['task_a']);
+  });
+  it('builds activity facts once for a directory batch without per-task reloads', () => {
+    const tasks = [
+      makeTask('task_a', 'blocked', 'conv_a'),
+      makeTask('task_b', 'done', 'conv_b'),
+    ];
+    const listTasks = vi.fn(() => tasks);
+    const findTask = vi.fn(() => { throw new Error('redundant Task read'); });
+    const listByTask = vi.fn(() => []);
+    const deps = makeIdleRuntimeDeps(tasks);
+    const runtime = new AccountRuntime({
+      ...deps,
+      taskServices: { taskRuntimeService: { listTasks, findTask } } as never,
+      runtimeExecutionServices: {
+        dispatchItemRepo: { listBlocking: () => [] },
+        generationReplanRepo: { listByTask },
+      } as never,
+    });
+    const result = runtime.getConversationActivities([
+      { conversationId: 'conv_a', updatedAt: tasks[0]!.updatedAt },
+      { conversationId: 'conv_b', updatedAt: tasks[1]!.updatedAt },
+    ]);
+    expect(result.get('conv_a')?.state).toBe('blocked');
+    expect(result.get('conv_b')?.state).toBe('idle');
+    expect(listTasks).toHaveBeenCalledTimes(1);
+    expect(findTask).not.toHaveBeenCalled();
+    expect(listByTask).toHaveBeenCalledTimes(tasks.length);
+  });
+
   it('runs startup recovery exactly once per account', async () => {
     let recoveryCount = 0;
     const factory = new AccountRuntimeFactory({

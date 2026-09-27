@@ -195,6 +195,13 @@ export interface MetaWorkConversationProjection {
 	readonly historyCursor: string | null;
 	readonly historyExhausted: boolean;
 	readonly historyTurnIds: string[];
+	readonly historyTransfer?: {
+		readonly id: string;
+		readonly count: number;
+		readonly byteLength: number;
+		readonly hash: string;
+		readonly parts: string[];
+	} | null;
 	/** task_view_snapshot 的水位（asOfSequence），按 turnId 记录。 */
 	readonly taskViewWatermarks: Record<string, number>;
 	/** task_projection 投影的当前 Task（Conversation 级摘要）。 */
@@ -273,6 +280,7 @@ export interface MetaWorkClientState {
 	readonly activeWorkspace: MetaWorkWorkspaceProjection | null;
 	readonly conversationSummaries: MetaWorkConversationSummary[];
 	readonly conversationDirectoryCursor: string | null;
+	readonly conversationDirectoryQuery?: string;
 	readonly selectedConversationId: string | null;
 	/** 客户端递增导航代际；过时响应不得覆盖新选择。 */
 	readonly navigationGeneration: number;

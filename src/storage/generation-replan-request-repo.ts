@@ -199,12 +199,14 @@ export class GenerationReplanRequestRepo {
    * by an earlier pass of this same claim.
    */
   completePlannerTurn(input: { id: string; claimToken: string; now: string }): boolean {
-    if (!this.holdsPlannerClaim(input.id, input.claimToken)) return false;
-    return this.db.prepare(`
-      UPDATE generation_replan_requests
-      SET status = 'submitted', submitted_at = ?, updated_at = ?, error_summary = NULL
-      WHERE id = ? AND status IN ('planning', 'submitted') AND planner_claim_token = ?
-    `).run(input.now, input.now, input.id, input.claimToken).changes === 1;
+    return this.db.transaction(() => {
+      if (!this.holdsPlannerClaim(input.id, input.claimToken)) return false;
+      return this.db.prepare(`
+        UPDATE generation_replan_requests
+        SET status = 'submitted', submitted_at = ?, updated_at = ?, error_summary = NULL
+        WHERE id = ? AND status IN ('planning', 'submitted') AND planner_claim_token = ?
+      `).run(input.now, input.now, input.id, input.claimToken).changes === 1;
+    })();
   }
 
   holdsPlannerClaim(id: string, token: string): boolean {
@@ -279,13 +281,18 @@ export class GenerationReplanRequestRepo {
    * Releases a Planner claim after a retryable transport or process failure so
    * the next bounded worker pass can retry the same Job without a new Job id.
    */
-  releasePlannerClaim(id: string, errorSummary: string, now: string): void {
-    this.db.prepare(`
+  releasePlannerClaim(
+    id: string,
+    claimToken: string,
+    errorSummary: string,
+    now: string,
+  ): boolean {
+    return this.db.prepare(`
       UPDATE generation_replan_requests
       SET planning_started_at = NULL, planner_claim_token = NULL,
           error_summary = ?, updated_at = ?
-      WHERE id = ? AND status = 'planning'
-    `).run(errorSummary, now, id);
+      WHERE id = ? AND status = 'planning' AND planner_claim_token = ?
+    `).run(errorSummary, now, id, claimToken).changes === 1;
   }
 
   markPlanning(id: string, quiescenceToken: string, now: string): boolean {
@@ -421,12 +428,35 @@ export class GenerationReplanRequestRepo {
     `).run(now, now, `cancelled by ${decisionId}`, taskId).changes;
   }
 
-  fail(id: string, errorSummary: string, now: string): void {
-    this.db.prepare(`
+  /**
+   * Administrative failure for an unclaimed Job. A claimed Planner Worker must
+   * use `failPlannerClaim` so an expired Worker cannot fail a newer claim.
+   */
+  fail(id: string, errorSummary: string, now: string): boolean {
+    return this.db.prepare(`
       UPDATE generation_replan_requests
-      SET status = 'failed', error_summary = ?, updated_at = ?
+      SET status = 'failed', planning_started_at = NULL, planner_claim_token = NULL,
+          error_summary = ?, updated_at = ?
       WHERE id = ? AND status IN ('pending_quiescence', 'planning')
-    `).run(errorSummary, now, id);
+        AND planner_claim_token IS NULL
+    `).run(errorSummary, now, id).changes === 1;
+  }
+
+  /**
+   * Fenced failure for the currently owning Planner Worker.
+   */
+  failPlannerClaim(
+    id: string,
+    claimToken: string,
+    errorSummary: string,
+    now: string,
+  ): boolean {
+    return this.db.prepare(`
+      UPDATE generation_replan_requests
+      SET status = 'failed', planning_started_at = NULL, planner_claim_token = NULL,
+          error_summary = ?, updated_at = ?
+      WHERE id = ? AND status = 'planning' AND planner_claim_token = ?
+    `).run(errorSummary, now, id, claimToken).changes === 1;
   }
 }
 

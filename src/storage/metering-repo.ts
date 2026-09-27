@@ -114,6 +114,22 @@ export class SqliteMeteringStore implements MeteringStore {
     return rows.map(rowToSpan);
   }
 
+  listSpansForQueries(queryIds: readonly string[]): MeteringSpanRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM metering_spans WHERE query_id IN (SELECT value FROM json_each(?))
+      ORDER BY started_at, span_id
+    `).all(JSON.stringify(queryIds)) as SpanRow[];
+    return rows.map(rowToSpan);
+  }
+
+  listObservationsForQueries(queryIds: readonly string[]): PersistedUsageObservation[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM usage_observations WHERE query_id IN (SELECT value FROM json_each(?))
+      ORDER BY captured_at, observation_id
+    `).all(JSON.stringify(queryIds)) as ObservationRow[];
+    return rows.map(rowToObservation);
+  }
+
   insertObservations(observations: readonly PersistedUsageObservation[]): number {
     const statement = this.db.prepare(`
       INSERT INTO usage_observations (

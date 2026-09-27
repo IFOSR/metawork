@@ -20,6 +20,7 @@ import {
   type GatewayReplay,
 } from './client-events.js';
 import type { EventJournal } from './event-journal.js';
+import { measureNavigationStage } from '../utils/navigation-diagnostics.js';
 
 interface JournalFile {
   readonly version: 2;
@@ -143,6 +144,23 @@ export class FileEventJournal implements EventJournal {
     conversationId: string,
     afterSequence?: number,
   ): Promise<GatewayReplay> {
+    return measureNavigationStage('journal_replay', () => this.replayFromFile(
+      accountId, conversationId, afterSequence,
+    ));
+  }
+
+  exportRetained(accountId: string, conversationId: string) {
+    return this.serialized(`${accountId}\0${conversationId}`, async () => {
+      const file = await this.read(accountId, conversationId, false);
+      return { lastSequence: file.lastSequence, events: file.events };
+    });
+  }
+
+  private async replayFromFile(
+    accountId: string,
+    conversationId: string,
+    afterSequence?: number,
+  ): Promise<GatewayReplay> {
     const file = await this.read(accountId, conversationId);
     const oldestAvailableSequence = file.events[0]?.sequence;
     const staleCursor = afterSequence !== undefined
@@ -170,7 +188,7 @@ export class FileEventJournal implements EventJournal {
     return path;
   }
 
-  private async read(accountId: string, conversationId: string): Promise<JournalFile> {
+  private async read(accountId: string, conversationId: string, upgrade = true): Promise<JournalFile> {
     try {
       const raw = await readFile(this.path(accountId, conversationId), 'utf8');
       const parsed: unknown = JSON.parse(raw);
@@ -193,7 +211,7 @@ export class FileEventJournal implements EventJournal {
           return { ...event, payload };
         }),
       };
-      if (parsed.version === 1) {
+      if (parsed.version === 1 && upgrade) {
         await this.write(file, accountId, conversationId);
       }
       return file;
@@ -290,7 +308,7 @@ function boundHistoricalPayload(payload: unknown): unknown {
   };
 }
 
-function buildReplaySnapshot(events: readonly GatewayEventEnvelope[]): GatewayEventEnvelope[] {
+export function buildReplaySnapshot(events: readonly GatewayEventEnvelope[]): GatewayEventEnvelope[] {
   const snapshot = events.filter(event => isTerminalGatewayEvent(event.kind));
   snapshot.push(...retainedResultEvents(events));
   const workspaceDirectory = findLast(
@@ -442,15 +460,7 @@ function traceDeltaTurnId(event: GatewayEventEnvelope): string | null {
 }
 
 function boundTraceEvents(events: readonly Record<string, unknown>[]): Record<string, unknown>[] {
-  const bounded: Record<string, unknown>[] = [];
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const candidate = [events[index]!, ...bounded];
-    if (gatewayEventPayloadBytes({ events: candidate, replay: true }) > MAX_GATEWAY_EVENT_PAYLOAD_BYTES) {
-      break;
-    }
-    bounded.unshift(events[index]!);
-  }
-  return bounded;
+  return boundedSuffix(events, gatewayEventPayloadBytes({ events: [], replay: true }));
 }
 
 function numberValue(value: unknown): number {
@@ -510,20 +520,13 @@ function boundSnapshotLines(
   metadata: Readonly<Record<string, unknown>>,
   alreadyTruncated: boolean,
 ): { lines: string[]; truncated: boolean } {
-  const bounded: string[] = [];
-  let truncated = alreadyTruncated;
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const candidate = [lines[index]!, ...bounded];
-    const payload = { ...metadata, from: 0, lines: candidate, truncated: true };
-    if (gatewayEventPayloadBytes(payload) > MAX_GATEWAY_EVENT_PAYLOAD_BYTES) {
-      truncated = true;
-      break;
-    }
-    bounded.unshift(lines[index]!);
-  }
+  // false is one byte longer than true; budget for either final flag value.
+  const bounded = boundedSuffix(lines, gatewayEventPayloadBytes({
+    ...metadata, from: 0, lines: [], truncated: false,
+  }));
   return {
     lines: bounded,
-    truncated: truncated || bounded.length < lines.length,
+    truncated: alreadyTruncated || bounded.length < lines.length,
   };
 }
 
@@ -531,16 +534,20 @@ function boundPayloadLines(
   lines: readonly string[],
   metadata: Readonly<Record<string, unknown>>,
 ): string[] {
-  const bounded: string[] = [];
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const candidate = [lines[index]!, ...bounded];
-    if (gatewayEventPayloadBytes({ ...metadata, lines: candidate, truncated: true })
-      > MAX_GATEWAY_EVENT_PAYLOAD_BYTES) {
-      break;
-    }
-    bounded.unshift(lines[index]!);
+  return boundedSuffix(lines, gatewayEventPayloadBytes({ ...metadata, lines: [], truncated: true }));
+}
+
+function boundedSuffix<T>(items: readonly T[], emptyPayloadBytes: number): T[] {
+  let bytes = emptyPayloadBytes;
+  let first = items.length;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const additional = Buffer.byteLength(JSON.stringify(items[index]), 'utf8')
+      + (first < items.length ? 1 : 0);
+    if (bytes + additional > MAX_GATEWAY_EVENT_PAYLOAD_BYTES) break;
+    bytes += additional;
+    first = index;
   }
-  return bounded;
+  return items.slice(first);
 }
 
 function findLast(

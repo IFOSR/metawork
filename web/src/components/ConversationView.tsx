@@ -11,6 +11,9 @@ export function ConversationView({
   onOpenSubtaskDetail,
   onOpenTrajectory,
   onOpenBilling,
+  hasOlderHistory = false,
+  historyLoading = false,
+  onLoadOlderHistory,
 }: {
   sessionId?: string | null;
   turns: ConversationTurnProjection[];
@@ -18,6 +21,9 @@ export function ConversationView({
   onOpenSubtaskDetail?: (subtaskId: string, subtaskTitle: string) => void;
   onOpenTrajectory?: (turnId: string) => void;
   onOpenBilling?: (turnId: string) => void;
+  hasOlderHistory?: boolean;
+  historyLoading?: boolean;
+  onLoadOlderHistory?: () => Promise<void>;
 }) {
   const viewRef = useRef<HTMLDivElement | null>(null);
   const previousSessionIdRef = useRef<string | null | undefined>(sessionId);
@@ -90,6 +96,18 @@ export function ConversationView({
   const latest = turns.at(-1);
   return (
     <div className="conversation-view" ref={viewRef}>
+      {hasOlderHistory && (
+        <button
+          type="button"
+          disabled={historyLoading}
+          onClick={() => {
+            lock();
+            void onLoadOlderHistory?.();
+          }}
+        >
+          {historyLoading ? '正在加载…' : '加载更早的对话'}
+        </button>
+      )}
       {turns.map(turn => (
         <ConversationTurnView
           turn={turn}

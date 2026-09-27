@@ -85,15 +85,16 @@ export class AccountStartupRecoveryService {
     const scheduler = this.deps.repositories.conversationTaskSchedulerRepo;
     const conversationId = task?.conversationId;
     if (!task || !conversationId) return;
-    if (this.hasReleasableResidue(taskId, this.activeGenerationId(taskId))) {
-      scheduler.releaseSlotAndPromote(conversationId, taskId, new Date().toISOString(), true);
-      return;
-    }
+    const finalizedAt = new Date().toISOString();
     try {
-      this.deps.queryUsageLifecycle?.finalizeQueriesForTask(taskId, new Date().toISOString());
+      this.deps.queryUsageLifecycle?.finalizeQueriesForTask(taskId, finalizedAt);
     } catch {
       // Billing reconciliation is durable and must not turn Task completion
       // into an execution failure.
+    }
+    if (this.hasReleasableResidue(taskId, this.activeGenerationId(taskId))) {
+      scheduler.releaseSlotAndPromote(conversationId, taskId, finalizedAt, true);
+      return;
     }
     const occupiedOtherCount = scheduler.listSlots().filter(slot => (
       slot.activeTaskId !== taskId
@@ -371,6 +372,7 @@ export class AccountStartupRecoveryService {
   private async convergeRecovery(now: string): Promise<boolean> {
     const workflow = this.deps.kernelServices.kernelWorkflowRepo;
     workflow.reconcileProcessing();
+    this.convergeTerminalTaskBilling(now);
     const retriedTaskIds = this.convergeUncertainApplications(now);
     this.enqueueRetrySafeSystemBindingRecoveries(now);
     // Re-queuing an application is not convergence on its own: the same pass
@@ -388,6 +390,27 @@ export class AccountStartupRecoveryService {
     await this.convergeConversationSlots(now);
     await this.promoteAvailableQueuedTasks(now);
     return signalled || retriedTaskIds.length > 0;
+  }
+
+  /**
+   * Billing finalization is a Task-terminal consequence, not a Conversation
+   * slot consequence. A completed Task can already have released its slot
+   * before the process dies, and older releases could also miss the terminal
+   * callback entirely. Revisit every durable terminal Task on the same startup
+   * and periodic convergence pass; the billing lifecycle resolves its linked
+   * Queries idempotently.
+   */
+  private convergeTerminalTaskBilling(now: string): void {
+    const terminalStatuses = new Set(['done', 'archived', 'cancelled']);
+    for (const task of this.deps.taskServices.taskRuntimeService.listTasks()) {
+      if (!terminalStatuses.has(task.status)) continue;
+      try {
+        this.deps.queryUsageLifecycle?.finalizeQueriesForTask(task.id, now);
+      } catch {
+        // Billing reconciliation is durable and must not reopen or fail a
+        // terminal Task; the next convergence pass retries it.
+      }
+    }
   }
 
   /**
@@ -748,11 +771,14 @@ export class AccountStartupRecoveryService {
         .map(item => ({
           attemptId: item.attemptId,
           decisionId: item.decisionId,
+          causationId: this.deps.kernelServices.kernelDecisionRepo.findById(item.decisionId)
+            ?.causationId ?? null,
           subtaskId: item.subtaskId,
           generationId: item.generationId,
           attemptKind: item.attemptKind,
           bindingFingerprint: item.bindingFingerprint,
           configurationRevision: item.configurationRevision,
+          sourceAttemptId: item.sourceAttemptId,
           status: item.status,
         })),
       findWorkGraphRevision: (taskId, revision) => {
@@ -815,11 +841,6 @@ export class AccountStartupRecoveryService {
           await this.promoteConversationTask(promotion.taskId, slot.conversationId);
         }
         continue;
-      }
-      try {
-        this.deps.queryUsageLifecycle?.finalizeQueriesForTask(taskId, now);
-      } catch {
-        // Billing reconciliation is durable; it must not block slot release.
       }
       const promotion = scheduler.releaseSlotAndPromote(slot.conversationId, taskId, now, false);
       if (promotion) {

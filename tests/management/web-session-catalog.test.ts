@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSessionCatalog } from '../../src/management/web-session-catalog.js';
 import {
   MAX_WEB_SESSION_EVENTS_PER_TURN,
@@ -102,6 +102,85 @@ afterEach(async () => {
 });
 
 describe('WebSessionCatalog', () => {
+  it('overlays rich details without replacing a newer canonical terminal answer with a stale stub', async () => {
+    const fixture = await makeCatalog();
+    const created = await fixture.catalog.create({ workspaceId: fixture.workspaceId, principalId: PRINCIPAL });
+    const rich = { ...makeTurn(created.session.id, 0), status: 'blocked' as const, finalAnswer: 'waiting' };
+    await fixture.presentationStore.write({ version: 1, conversationId: created.session.id, turns: [rich] });
+    const record = (await fixture.conversationStore.readConversation(created.session.id))!;
+    await fixture.conversationStore.writeConversation({
+      ...record,
+      turns: [{ id: rich.id, conversationId: created.session.id, userInput: rich.userInput,
+        finalAnswer: 'completed in TUI', status: 'completed' }],
+    });
+    const page = await fixture.catalog.readPage(created.session.id);
+    expect(page?.turns[0]).toMatchObject({
+      finalAnswer: 'completed in TUI', status: 'completed', taskId: rich.taskId,
+      traceEvents: rich.traceEvents,
+    });
+  });
+
+  it('normalizes a visible history page once instead of reading plan facts per Turn', async () => {
+    const fixture = await makeCatalog();
+    const created = await fixture.catalog.create({ workspaceId: fixture.workspaceId, principalId: PRINCIPAL });
+    const turns = Array.from({ length: 10 }, (_, n) => makeTurn(created.session.id, n));
+    vi.spyOn(fixture.presentationStore, 'readPage').mockResolvedValue({ turns, nextCursor: null });
+    const normalizeHistoryPage = vi.fn((page: readonly ConversationTurn[]) => page.map(turn => ({
+      ...turn, finalAnswer: 'normalized',
+    })));
+    const normalizeTurnPresentation = vi.fn(() => { throw new Error('per_turn_normalization'); });
+    const catalog = new WebSessionCatalog({
+      directory: {} as WorkspaceDirectoryService,
+      conversationStore: fixture.conversationStore, presentationStore: fixture.presentationStore,
+      normalizeHistoryPage, normalizeTurnPresentation,
+    });
+    const page = await catalog.readPage(created.session.id);
+    expect(normalizeHistoryPage).toHaveBeenCalledTimes(1);
+    expect(page?.turns.map(turn => turn.finalAnswer)).toEqual(Array(10).fill('normalized'));
+    expect(normalizeTurnPresentation).not.toHaveBeenCalled();
+  });
+
+  it('reads a selected Task-panel Turn without loading the aggregate presentation', async () => {
+    const fixture = await makeCatalog();
+    const created = await fixture.catalog.create({ workspaceId: fixture.workspaceId, principalId: PRINCIPAL });
+    const turn = makeTurn(created.session.id, 0);
+    const findMany = vi.spyOn(fixture.presentationStore, 'findMany')
+      .mockResolvedValue(new Map([[turn.id, turn]]));
+    const read = vi.spyOn(fixture.presentationStore, 'read')
+      .mockRejectedValue(new Error('aggregate_read_forbidden'));
+    expect(await fixture.catalog.readTurn(created.session.id, turn.id)).toEqual(turn);
+    expect(findMany).toHaveBeenCalledWith(created.session.id, [turn.id]);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('includes completed TUI-only Turns even when no Web presentation was ever written', async () => {
+    const fixture = await makeCatalog();
+    const created = await fixture.catalog.create({ workspaceId: fixture.workspaceId, principalId: PRINCIPAL });
+    const record = (await fixture.conversationStore.readConversation(created.session.id))!;
+    await fixture.conversationStore.writeConversation({
+      ...record,
+      turns: [{ id: 'tui_turn', conversationId: record.conversation.id, userInput: 'TUI question',
+        finalAnswer: 'TUI conclusion', status: 'completed' }],
+    });
+    const page = await fixture.catalog.readPage(created.session.id);
+    expect(page?.turns.map(turn => ({ id: turn.id, answer: turn.finalAnswer })))
+      .toEqual([{ id: 'tui_turn', answer: 'TUI conclusion' }]);
+  });
+  it('reads a visible history page without using the aggregate presentation reader', async () => {
+    const fixture = await makeCatalog();
+    const created = await fixture.catalog.create({ workspaceId: fixture.workspaceId, principalId: PRINCIPAL });
+    await fixture.presentationStore.write({
+      version: 1, conversationId: created.session.id,
+      turns: Array.from({ length: 25 }, (_, index) => makeTurn(created.session.id, index)),
+    });
+    const aggregate = vi.spyOn(fixture.presentationStore, 'read');
+    const first = await fixture.catalog.readPage(created.session.id, created.session.id, { limit: 10 });
+    expect(first?.turns.map(turn => turn.id)).toEqual(Array.from({ length: 10 }, (_, i) => `turn_${i + 15}`));
+    expect(first?.historyCursor).toBeTruthy();
+    const older = await fixture.catalog.readPage(created.session.id, created.session.id, { cursor: first!.historyCursor! });
+    expect(older?.turns.map(turn => turn.id)).toEqual(Array.from({ length: 10 }, (_, i) => `turn_${i + 5}`));
+    expect(aggregate).not.toHaveBeenCalled();
+  });
   it('uses WorkspaceDirectory metadata and keeps active selection out of persistence', async () => {
     const fixture = await makeCatalog([
       '2026-08-27T08:00:00.000Z',

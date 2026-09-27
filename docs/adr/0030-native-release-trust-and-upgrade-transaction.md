@@ -148,6 +148,40 @@ checking required MetaClaw sentinel tables and recording a content hash, size
 and creation time in the transaction record. A failed verification aborts the
 upgrade and keeps the previous version active.
 
+### Gateway Segment Backup Amendment (2026-09-26)
+
+Schema 43's Gateway segment index references immutable files outside SQLite.
+A database backup is therefore not a complete Gateway rollback checkpoint.
+While the Server is quiesced and the update lock is held, the updater also
+copies the segment bodies named by the source index into an upgrade-scoped
+companion under `backups/<upgradeId>/gateway-events`. The sealed manifest binds
+the source database identity, journal root, account/Conversation/segment
+identities, sequence ranges, byte lengths and body hashes. The completion
+marker is published atomically only after the manifest and bodies are durable.
+It is a rollback checkpoint, never a second journal writer or deployment.
+
+Before a rollback pointer switch, the updater verifies the complete companion
+against the target database index, validates existing destination bodies, and
+durably restores missing bodies without replacing conflicting files or deleting
+current bodies. Missing, incomplete, corrupt or mismatched companions fail
+closed before pointer activation. Repeating an interrupted restore is safe.
+Databases without a segment index need no segment companion.
+
+The same prerequisite applies to failed inline activation and recovery of a
+prepared activation after process interruption, not only explicit rollback.
+Restoration failure preserves the prepared journal and leaves pointers untouched
+for a safe retry. Committed activations record their predecessor identity;
+rollback selects the current unconsumed activation lineage rather than release
+filename order. An ambiguous lineage fails closed. Independent configuration
+activation does not invalidate the current application/database checkpoint.
+
+Gateway background compaction may remove superseded live bodies only because
+upgrade checkpoints hold independent verified copies. Arbitrary SQLite-only
+backups are not sufficient to restore a segmented journal. Rollback retains the
+existing pre-upgrade, point-in-time semantics; unchanged legacy JSON does not
+make post-upgrade writes readable by an older binary and is not a promise of a
+lossless post-write downgrade.
+
 ### 6. Cloned Migration
 
 Migration runs only against a cloned copy derived from the verified backup. The

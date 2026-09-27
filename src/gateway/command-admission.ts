@@ -14,6 +14,10 @@ export interface CommandReceipt {
   readonly status: 'accepted' | 'duplicate' | 'rejected';
   readonly conversationId: string | null;
   readonly workspaceId?: string | null;
+  readonly directory?: {
+    readonly workspace: import('../workspace/workspace-types.js').WorkspaceRecord;
+    readonly page: import('../workspace/workspace-directory-service.js').WorkspaceConversationPage;
+  };
   readonly reason?: string;
   readonly code?: string;
   readonly agentId?: string;

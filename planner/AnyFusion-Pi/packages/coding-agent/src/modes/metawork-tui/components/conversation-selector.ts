@@ -19,6 +19,7 @@ export interface MetaWorkConversationSelectorActions {
 	readonly create: () => void;
 	readonly refresh: (query?: string) => void;
 	readonly cancel: () => void;
+	readonly loadMore?: () => void;
 }
 
 export class MetaWorkConversationSelector extends Container implements Focusable {
@@ -30,6 +31,7 @@ export class MetaWorkConversationSelector extends Container implements Focusable
 	private filtered: MetaWorkConversationSummary[];
 	private selectedIndex = 0;
 	private searching = false;
+	private hasMore = false;
 	private _focused = false;
 	private workspace: MetaWorkWorkspaceProjection | null;
 	private readonly actions: MetaWorkConversationSelectorActions;
@@ -72,7 +74,9 @@ export class MetaWorkConversationSelector extends Container implements Focusable
 	update(
 		workspace: MetaWorkWorkspaceProjection | null,
 		summaries: readonly MetaWorkConversationSummary[],
+		hasMore = false,
 	): void {
+		this.hasMore = hasMore;
 		this.workspace = workspace;
 		this.summaries = [...summaries];
 		this.applySearch(this.searchInput.getValue());
@@ -80,12 +84,17 @@ export class MetaWorkConversationSelector extends Container implements Focusable
 
 	handleInput(keyData: string): void {
 		const kb = getKeybindings();
+		if (kb.matches(keyData, "tui.select.pageDown") && this.hasMore) {
+			this.actions.loadMore?.();
+			return;
+		}
 		if (this.searching) {
 			if (kb.matches(keyData, "tui.select.cancel")) {
 				this.searching = false;
 				this.searchInput.focused = false;
 				this.searchInput.setValue("");
 				this.applySearch("");
+				this.actions.refresh();
 				return;
 			}
 			if (kb.matches(keyData, "tui.select.up")) {
@@ -157,7 +166,7 @@ export class MetaWorkConversationSelector extends Container implements Focusable
 			"muted",
 			this.searching
 				? "输入关键词搜索当前 Workspace，Enter 打开，Esc 返回"
-				: "↑/↓ 选择  Enter 打开  / 搜索  n 新建  r 刷新  Esc 返回",
+				: `↑/↓ 选择  Enter 打开  / 搜索  n 新建  r 刷新${this.hasMore ? "  PgDn 加载更多" : ""}  Esc 返回`,
 		));
 		this.list.clear();
 		if (this.filtered.length === 0) {
@@ -168,7 +177,9 @@ export class MetaWorkConversationSelector extends Container implements Focusable
 			));
 			return;
 		}
-		for (const [index, item] of this.filtered.entries()) {
+		const start = Math.max(0, this.selectedIndex - 7);
+		for (const [offset, item] of this.filtered.slice(start, start + 15).entries()) {
+			const index = start + offset;
 			const selected = index === this.selectedIndex;
 			const marker = selected ? theme.fg("accent", "›") : " ";
 			const activity = activityLabel(item.activity.state);

@@ -18,21 +18,16 @@ import {
 import { classifyCostEntry } from './cost-policy.js';
 import { costForUsage, findPriceUnit, type PriceBookVersion } from './pricing.js';
 import type {
-  BillAdjustmentPort,
-  BillStorePort,
-  ConsumptionOutboxPort,
   CostEntryRecord,
   ExternalState,
   QueryBillRecord,
   BillUserStatusFilter,
 } from './ports.js';
 import type {
-  MeteringStore,
   PersistedUsageObservation,
   MeteringSpanRecord,
-  QueryContextStore,
 } from '../metering/ports.js';
-import type { PriceStorePort } from './ports.js';
+import type { BillHistoryReadPort, BillQueryReadPorts } from './bill-history-read-port.js';
 
 /** 用户可见账单状态：最多三种，内部状态不直接堆叠展示（账单简化设计 §2）。 */
 export const BILLING_USER_STATUSES = ['billed', 'unconfirmed', 'no_charge'] as const;
@@ -198,21 +193,24 @@ export interface QueryBillListPage {
   readonly nextCursor: string | null;
 }
 
-export interface BillQueryServiceDeps {
-  readonly bills: BillStorePort;
-  readonly adjustments: BillAdjustmentPort;
-  readonly consumption: ConsumptionOutboxPort;
-  readonly costs?: import('./ports.js').CostEntryPort;
-  readonly queryContexts?: QueryContextStore;
-  /** 诊断投影事实源：usage 观测与计量 span；缺失时诊断退化为状态推导。 */
-  readonly metering?: MeteringStore;
-  readonly prices?: PriceStorePort;
+export interface BillQueryServiceDeps extends BillQueryReadPorts {
+  readonly historyReader?: BillHistoryReadPort;
   /** 外部消费提交开关；提供后已计费账单可给出 informational 诊断。 */
   readonly exportEnabled?: () => boolean;
   readonly now?: () => string;
 }
 
 export interface BillQueryService {
+  /**
+   * Synchronous read-only snapshot for up to 100 Turns and 100 Tasks.
+   * Turn reads must use the supplied account/Turn scope; Task reads cover all
+   * bills for supplied Tasks. Account-wide lists/summaries throw billing_history_scope.
+   */
+  forHistoryPage?(
+    accountId: string,
+    turnIds: readonly string[],
+    taskIds: readonly string[],
+  ): BillQueryService;
   getQueryBill(queryId: string): QueryBillProjection | null;
   getQueryBillForAccount(accountId: string, queryId: string): QueryBillProjection | null;
   getQueryBillForTurn(accountId: string, turnId: string): QueryBillProjection | null;
@@ -640,6 +638,15 @@ export function createBillQueryService(deps: BillQueryServiceDeps): BillQuerySer
   }
 
   return {
+    ...(deps.historyReader ? {
+      forHistoryPage(accountId: string, turnIds: readonly string[], taskIds: readonly string[]) {
+        return createBillQueryService({
+          ...deps.historyReader!.read(accountId, turnIds, taskIds),
+          exportEnabled: deps.exportEnabled,
+          now,
+        });
+      },
+    } : {}),
     getQueryBill(queryId) {
       const bill = deps.bills.findByQueryId(queryId);
       return bill ? project(bill) : null;

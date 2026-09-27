@@ -101,6 +101,10 @@ export interface GatewayReplay {
   readonly lastSequence: number;
   readonly snapshot: GatewayEventEnvelope[];
   readonly deltas: GatewayEventEnvelope[];
+  readonly cursorReset?: {
+    readonly reason: 'cursor_ahead' | 'cursor_expired' | 'replay_budget_exceeded';
+    readonly sequence: number;
+  };
 }
 
 export function isTerminalGatewayEvent(kind: GatewayEventKind): boolean {

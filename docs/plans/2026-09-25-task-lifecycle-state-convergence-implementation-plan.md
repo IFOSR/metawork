@@ -528,10 +528,34 @@ incomplete. Corrections are listed below and are covered by focused tests.
 Earlier §13 row 3 (`block_work` / `resume_task`) and row 5 (Planner turn
 identity) were incomplete; rows 10–21 supersede them.
 
+### Third review corrections (2026-09-26)
+
+The implementation was re-reviewed against the contract and the current
+runtime sources. One remaining postcondition hole was found and fixed:
+
+| Finding | Fix |
+| --- | --- |
+| A `block_work` naming a missing Subtask was only classified as `unresolved` after the Task had already become `blocked`; a still-`running` Task could be treated as `retry_safe` indefinitely | `inspectTaskTransition()` now rejects a missing named Subtask as `unresolved` before evaluating Task status. A focused regression test covers both `blocked` and `running` Task states. |
+
+The review also synchronized the technical overview with the implemented v42
+schema, Planner claim fencing, causal `resume_task` dispatch matching and
+the missing-target recovery rule. This correction does not change the
+architecture or the remaining acceptance boundary.
+
+Latest local verification on 2026-09-26:
+
+- `npx tsc --noEmit` and `git diff --check` pass.
+- Lifecycle/recovery focused suites pass: 110 tests, including the new
+  missing-Subtask regression.
+- Full suite: 2687 tests, 2667 passed, 9 known baseline/configuration-dependent
+  failures in 8 files, and 11 skipped. None of the failures are in the
+  lifecycle convergence or recovery suites; the real-client acceptance items
+  in §14 remain unexecuted.
+
 ### Closing revision
 
 `11660a1` `feat: converge uncertain applications and centralize lifecycle
-transitions` delivered Phases 3-5 and `939aded` recorded that closure. The two
+transitions` delivered Phases 3-5 and `939aded` recorded that closure. The three
 review-correction rounds in §13 are the current head of
 `feat/task-lifecycle-state-convergence`. §13 must be read as a list of specific
 defects found and fixed, not as a claim that the convergence chain has passed

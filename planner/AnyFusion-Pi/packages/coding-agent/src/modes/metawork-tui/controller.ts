@@ -13,6 +13,7 @@ import type {
 	GatewayCommandReceipt,
 	GatewayEventEnvelope,
 	GatewayReplay,
+	GatewayReplayReset,
 	GatewayScope,
 	GatewayCommand,
 } from "../../anyfusion/gateway-protocol.ts";
@@ -35,6 +36,7 @@ import {
 	reduceReceipt,
 	pushClientNotice,
 	requestCompletion,
+	resetConversationProjection,
 	selectConversation,
 	selectTurn,
 	setConnectionState,
@@ -47,6 +49,7 @@ export interface MetaWorkTuiGatewayPort {
 	connect?(): Promise<void>;
 	onEvent(listener: (event: GatewayEventEnvelope) => void): () => void;
 	onDisconnect?(listener: () => void): () => void;
+	onReplayReset?(listener: (reset: GatewayReplayReset) => void): () => void;
 	resume(conversationId: string): Promise<GatewayReplay>;
 	createConversation(workspaceId: string): Promise<GatewayCommandReceipt>;
 	attachConversation(conversationId: string): Promise<GatewayCommandReceipt>;
@@ -54,11 +57,13 @@ export interface MetaWorkTuiGatewayPort {
 		workspaceId: string,
 		query?: string,
 		cursor?: string,
+		onRequest?: (requestId: string) => void,
 	): Promise<GatewayCommandReceipt>;
 	getConversationHistory(
 		conversationId: string,
 		cursor?: string,
 		limit?: number,
+		onRequest?: (requestId: string) => void,
 	): Promise<GatewayCommandReceipt>;
 	completeCommand(
 		text: string,
@@ -130,6 +135,23 @@ interface PendingCompletion {
 	timer: ReturnType<typeof setTimeout> | null;
 }
 
+interface HistoryRequest {
+	readonly conversationId: string;
+	readonly generation: number;
+	readonly historyGeneration: number;
+	requestId: string | null;
+	promise: Promise<void>;
+	refreshPromise: Promise<void> | null;
+}
+
+interface DirectoryRequest {
+	readonly version: number;
+	readonly workspaceId: string;
+	readonly query: string;
+	readonly cursor: string | null;
+	requestId: string | null;
+}
+
 const DEFAULT_COMPLETION_DEBOUNCE_MS = 150;
 const DEFAULT_COMPLETION_TIMEOUT_MS = 4_000;
 const DEFAULT_HISTORY_PAGE_SIZE = 50;
@@ -139,6 +161,7 @@ export class MetaWorkTuiController {
 	private readonly deps: MetaWorkTuiControllerDeps;
 	private eventUnsubscribe: (() => void) | null = null;
 	private disconnectUnsubscribe: (() => void) | null = null;
+	private resetUnsubscribe: (() => void) | null = null;
 	private completionSeq = 0;
 	private pendingCompletion: PendingCompletion | null = null;
 	private readonly completionBuffer = new Map<string, GatewayEventEnvelope>();
@@ -149,6 +172,12 @@ export class MetaWorkTuiController {
 	private cancelTurnId: string | null = null;
 	private operation: string | null = null;
 	private historyLoading = false;
+	private historyGeneration = 0;
+	private historyFlight: HistoryRequest | null = null;
+	private historyResponse: HistoryRequest | null = null;
+	private directoryLoading = false;
+	private directoryRequest = 0;
+	private directoryResponse: DirectoryRequest | null = null;
 	private historyUnavailable = false;
 	private capabilitiesMissing: readonly string[] = [];
 	private taskPanelOpen = false;
@@ -157,6 +186,8 @@ export class MetaWorkTuiController {
 	private permissionRequestId: string | null = null;
 	/** 只有曾成功连接过才把断线视为可恢复的重连。 */
 	private hasBeenReady = false;
+	private recoveryGeneration = 0;
+	private readonly reconnectNotices = new WeakSet<MetaWorkClientState["notices"][number]>();
 	private disposed = false;
 	private conversationSelectorOpen = false;
 	private taskRefreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -208,6 +239,7 @@ export class MetaWorkTuiController {
 	}
 
 	async start(): Promise<void> {
+		this.resetUnsubscribe = this.deps.gateway.onReplayReset?.(reset => this.handleReplayReset(reset)) ?? null;
 		this.eventUnsubscribe = this.deps.gateway.onEvent(event => this.handleEvent(event));
 		this.disconnectUnsubscribe = this.deps.gateway.onDisconnect?.(() => this.handleDisconnect()) ?? null;
 		try {
@@ -266,6 +298,8 @@ export class MetaWorkTuiController {
 		this.eventUnsubscribe = null;
 		this.disconnectUnsubscribe?.();
 		this.disconnectUnsubscribe = null;
+		this.resetUnsubscribe?.();
+		this.resetUnsubscribe = null;
 		this.deps.gateway.dispose?.();
 		this.state = setConnectionState(this.state, "closed");
 		this.emit();
@@ -312,6 +346,7 @@ export class MetaWorkTuiController {
 			: { kind: "user_message", text, attachments: [] };
 		const scope = this.submitScope();
 		const conversationId = this.state.selectedConversationId;
+		const navigationGeneration = this.state.navigationGeneration;
 		this.submitting = true;
 		this.operation = "正在提交";
 		this.emit();
@@ -325,19 +360,24 @@ export class MetaWorkTuiController {
 			const receipt = await this.deps.gateway.submitEnvelope(envelope);
 			this.state = reduceReceipt(this.state, receipt);
 			if (conversationId) this.state = setDraft(this.state, conversationId, "");
-			this.operation = receipt.status === "rejected"
-				? `提交被拒绝：${receipt.reason ?? "unknown"}`
-				: null;
+			if (this.state.navigationGeneration === navigationGeneration) {
+				this.operation = receipt.status === "rejected"
+					? `提交被拒绝：${receipt.reason ?? "unknown"}`
+					: null;
+			}
 			conversationCreated = receipt.conversationId;
 		} catch (error) {
 			// 发送失败/没有 receipt：标为受理状态待确认，不谎称"发送失败"。
 			this.state = markPendingSubmissionsUncertain(this.state);
-			this.operation = `受理状态待确认：${formatClientError(error)}`;
+			if (this.state.navigationGeneration === navigationGeneration) {
+				this.operation = `受理状态待确认：${formatClientError(error)}`;
+			}
 		} finally {
 			this.submitting = false;
 			this.emit();
 		}
 		try {
+			if (this.disposed || this.state.navigationGeneration !== navigationGeneration) return;
 			if (conversationCreated && conversationCreated !== this.state.selectedConversationId) {
 				await this.attachConversation(conversationCreated, false);
 			} else if (conversationId) {
@@ -375,10 +415,13 @@ export class MetaWorkTuiController {
 		const previousConversationId = this.state.selectedConversationId;
 		const generation = this.state.navigationGeneration + 1;
 		this.cancelPendingCompletion(null);
-		this.state = selectConversation(this.state, conversationId);
+		this.state = { ...selectConversation(this.state, conversationId), navigationGeneration: generation };
+		this.historyUnavailable = false;
+		this.historyLoading = false;
+		this.historyResponse = null;
 		try {
 			const receipt = await this.deps.gateway.attachConversation(conversationId);
-			if (this.state.navigationGeneration > generation) return;
+			if (!this.isCurrentHistoryScope(conversationId, generation)) return;
 			if (receipt.status === "rejected") {
 				this.state = selectConversation(this.state, previousConversationId);
 				this.navigationPending = false;
@@ -387,14 +430,16 @@ export class MetaWorkTuiController {
 				return;
 			}
 			const replay = await this.deps.gateway.resume(conversationId);
-			if (this.state.navigationGeneration > generation) return;
+			if (!this.isCurrentHistoryScope(conversationId, generation)) return;
 			this.state = applyGatewayReplay(this.state, conversationId, replay);
 			await this.loadHistory(conversationId);
+			if (!this.isCurrentHistoryScope(conversationId, generation)) return;
+			if (this.state.connection === "reconnecting" || this.state.connection === "closed") this.finishRecovery();
 			this.conversationSelectorOpen = false;
 			this.scheduleTaskRefresh();
 			this.operation = null;
 		} finally {
-			if (this.state.navigationGeneration <= generation) {
+			if (this.isCurrentHistoryScope(conversationId, generation)) {
 				this.navigationPending = false;
 				this.emit();
 			}
@@ -415,14 +460,73 @@ export class MetaWorkTuiController {
 	async refreshConversationDirectory(query?: string): Promise<void> {
 		const workspaceId = this.state.activeWorkspace?.id;
 		if (!workspaceId) return;
+		const request = ++this.directoryRequest;
+		const response: DirectoryRequest = {
+			version: request, workspaceId, query: query ?? "", cursor: null, requestId: null,
+		};
+		this.directoryResponse = response;
+		this.directoryLoading = false;
+		this.state = { ...this.state, conversationDirectoryQuery: query ?? "", conversationDirectoryCursor: null };
 		this.operation = "正在加载 Conversation 目录";
 		this.emit();
 		try {
-			await this.deps.gateway.listWorkspaceConversations(workspaceId, query);
+			const receipt = await this.deps.gateway.listWorkspaceConversations(workspaceId, query, undefined,
+				requestId => { response.requestId = requestId; });
+			if (this.isCurrentDirectoryRequest(response) && receipt.status === "rejected") {
+				this.directoryResponse = null;
+				this.operation = `目录加载失败：${receipt.reason ?? "unknown"}`;
+				return;
+			}
+		} catch (error) {
+			if (this.isCurrentDirectoryRequest(response)) {
+				this.directoryResponse = null;
+				this.operation = `目录加载失败：${formatClientError(error)}`;
+			}
 		} finally {
-			this.operation = null;
-			this.emit();
+			if (this.isCurrentDirectoryRequest(response)) {
+				if (!this.operation?.startsWith("目录加载失败")) this.operation = null;
+				this.emit();
+			}
 		}
+	}
+
+	async loadMoreConversations(): Promise<void> {
+		const workspaceId = this.state.activeWorkspace?.id;
+		const cursor = this.state.conversationDirectoryCursor;
+		if (!workspaceId || !cursor || this.directoryLoading) return;
+		const query = this.state.conversationDirectoryQuery || undefined;
+		const request = ++this.directoryRequest;
+		const response: DirectoryRequest = {
+			version: request, workspaceId, query: query ?? "", cursor, requestId: null,
+		};
+		this.directoryResponse = response;
+		this.directoryLoading = true;
+		try {
+			const receipt = await this.deps.gateway.listWorkspaceConversations(workspaceId, query, cursor,
+				requestId => { response.requestId = requestId; });
+			if (!this.isCurrentDirectoryRequest(response)) return;
+			if (receipt.status === "rejected" && receipt.reason === "stale_directory_cursor") {
+				await this.refreshConversationDirectory(query);
+			} else if (receipt.status === "rejected") {
+				this.directoryResponse = null;
+				this.operation = `目录加载失败：${receipt.reason ?? "unknown"}`;
+			}
+		} catch (error) {
+			if (this.isCurrentDirectoryRequest(response)) {
+				this.directoryResponse = null;
+				this.operation = `目录加载失败：${formatClientError(error)}`;
+			}
+		} finally {
+			if (this.isCurrentDirectoryRequest(response)) {
+				this.directoryLoading = false;
+				this.emit();
+			}
+		}
+	}
+
+	private isCurrentDirectoryRequest(request: DirectoryRequest): boolean {
+		return !this.disposed && request.version === this.directoryRequest
+			&& request.workspaceId === this.state.activeWorkspace?.id;
 	}
 
 	async createConversation(): Promise<void> {
@@ -445,12 +549,13 @@ export class MetaWorkTuiController {
 	async loadOlderHistory(): Promise<void> {
 		const conversationId = this.state.selectedConversationId;
 		if (!conversationId) return;
+		const generation = this.state.navigationGeneration;
+		const historyGeneration = this.historyGeneration;
 		const before = this.state.conversations[conversationId]?.turnOrder ?? [];
 		if (this.state.conversations[conversationId]?.historyExhausted) return;
-		this.historyLoading = true;
-		this.emit();
 		try {
 			await this.loadHistory(conversationId, true);
+			if (!this.isCurrentHistoryScope(conversationId, generation, historyGeneration)) return;
 			const order = this.state.conversations[conversationId]?.turnOrder ?? [];
 			const added = order.filter(id => !before.includes(id));
 			if (added.length > 0 && this.state.selectedConversationId === conversationId) {
@@ -458,27 +563,71 @@ export class MetaWorkTuiController {
 				this.scheduleTaskRefresh();
 			}
 		} finally {
-			this.historyLoading = false;
-			this.emit();
+			if (this.isCurrentHistoryScope(conversationId, generation, historyGeneration)) this.emit();
 		}
 	}
 
 	private async loadHistory(conversationId: string, older = false): Promise<void> {
+		const generation = this.state.navigationGeneration;
+		const historyGeneration = this.historyGeneration;
+		if (!this.isCurrentHistoryScope(conversationId, generation)) return;
+		const flight = this.historyFlight;
+		if (flight?.conversationId === conversationId && flight.generation === generation
+			&& flight.historyGeneration === historyGeneration) {
+			// Paging coalesces, but a refresh may reflect a new submission since the
+			// in-flight read began. Queue one fresh read without interleaving transfers.
+			if (older) return flight.promise;
+			flight.refreshPromise ??= flight.promise.then(async () => {
+				if (this.isCurrentHistoryScope(conversationId, generation, historyGeneration)) await this.loadHistory(conversationId);
+			});
+			await flight.refreshPromise;
+			return;
+		}
 		const conversation = this.state.conversations[conversationId];
 		if (!conversation) return;
 		const pageSize = this.deps.historyPageSize ?? DEFAULT_HISTORY_PAGE_SIZE;
 		const cursor = older ? conversation.historyCursor ?? undefined : undefined;
-		try {
-			const receipt = await this.deps.gateway.getConversationHistory(
-				conversationId,
-				cursor,
-				pageSize,
-			);
-			this.historyUnavailable = receipt.status === "rejected";
-		} catch {
-			// 历史不可用：保留明确缺失提示，不伪造。
-			this.historyUnavailable = true;
-		}
+		const request: HistoryRequest = {
+			conversationId, generation, historyGeneration, requestId: null,
+			promise: Promise.resolve(), refreshPromise: null,
+		};
+		this.historyFlight = request;
+		this.historyResponse = request;
+		this.historyLoading = true;
+		this.historyUnavailable = false;
+		this.state = { ...this.state, conversations: {
+			...this.state.conversations, [conversationId]: { ...conversation, historyTransfer: null },
+		} };
+		this.emit();
+		request.promise = (async () => {
+			try {
+				const receipt = await this.deps.gateway.getConversationHistory(
+					conversationId, cursor, pageSize, requestId => { request.requestId = requestId; },
+				);
+				if (this.isCurrentHistoryScope(conversationId, generation, historyGeneration)) {
+					this.historyUnavailable = receipt.status === "rejected";
+					if (receipt.status === "rejected" && this.historyResponse === request) this.historyResponse = null;
+				}
+			} catch {
+				if (this.isCurrentHistoryScope(conversationId, generation, historyGeneration)) {
+					this.historyUnavailable = true;
+					if (this.historyResponse === request) this.historyResponse = null;
+				}
+			} finally {
+				if (this.historyFlight === request) this.historyFlight = null;
+				if (this.isCurrentHistoryScope(conversationId, generation, historyGeneration)) {
+					this.historyLoading = false;
+					this.emit();
+				}
+			}
+		})();
+		await request.promise;
+	}
+
+	private isCurrentHistoryScope(conversationId: string, generation: number, historyGeneration?: number): boolean {
+		return !this.disposed && this.state.selectedConversationId === conversationId
+			&& this.state.navigationGeneration === generation
+			&& (historyGeneration === undefined || historyGeneration === this.historyGeneration);
 	}
 
 	/** 选择 Turn（F7/F8）。到新进展时不会隐式改变选中项。 */
@@ -855,6 +1004,28 @@ export class MetaWorkTuiController {
 
 	private handleEvent(event: GatewayEventEnvelope): void {
 		if (this.disposed) return;
+		if (event.kind === "conversation_history_page") {
+			const request = this.historyResponse;
+			if (!request || !request.requestId || request.requestId !== event.requestId
+				|| request.conversationId !== event.conversationId
+				|| !this.isCurrentHistoryScope(request.conversationId, request.generation, request.historyGeneration)) return;
+		}
+		if (event.kind === "workspace_directory_snapshot") {
+			const payload = asRecord(event.payload);
+			if (payload && "requestedCursor" in payload) {
+				const request = this.directoryResponse;
+				if (!request || !request.requestId || request.requestId !== event.requestId
+					|| !this.isCurrentDirectoryRequest(request)
+					|| payload.workspaceId !== request.workspaceId
+					|| (payload.query ?? "") !== request.query
+					|| payload.requestedCursor !== request.cursor) return;
+				this.directoryResponse = null;
+			} else {
+				this.directoryRequest += 1;
+				this.directoryResponse = null;
+				this.directoryLoading = false;
+			}
+		}
 		if (event.kind === "command_completion") {
 			const payload = asRecord(event.payload);
 			const completion = payload ? normalizeCompletion(payload) : null;
@@ -878,6 +1049,10 @@ export class MetaWorkTuiController {
 			return;
 		}
 		this.state = reduceGatewayEvent(this.state, event);
+		if (event.kind === "conversation_history_page"
+			&& !this.state.conversations[event.conversationId]?.historyTransfer) {
+			this.historyResponse = null;
+		}
 		if (event.kind === "task_view_snapshot") {
 			for (const listener of this.taskResponseListeners) listener(event);
 			const payload = asRecord(event.payload);
@@ -934,46 +1109,91 @@ export class MetaWorkTuiController {
 		void this.recover();
 	}
 
+	private handleReplayReset(reset: GatewayReplayReset): void {
+		if (this.disposed) return;
+		this.state = resetConversationProjection(this.state, reset.conversationId);
+		if (this.state.selectedConversationId === reset.conversationId) {
+			this.historyGeneration += 1;
+			this.historyResponse = null;
+			this.historyFlight = null;
+			this.historyLoading = false;
+			this.historyUnavailable = false;
+			this.cancelPendingCompletion(null);
+			this.permissionPanelOpen = false;
+			this.permissionRequestId = null;
+			if (this.taskRefreshTimer) clearTimeout(this.taskRefreshTimer);
+			this.taskRefreshTimer = null;
+			this.clearBillingRetry();
+		}
+		this.emit();
+	}
+
 	private async recover(): Promise<void> {
 		if (this.disposed) return;
+		const recoveryGeneration = ++this.recoveryGeneration;
 		try {
 			await this.deps.gateway.connect?.();
 		} catch (error) {
+			if (!this.isCurrentRecovery(recoveryGeneration)) return;
 			this.state = setConnectionState(this.state, "closed");
 			this.state = pushClientNotice(
 				this.state,
 				"error",
 				`重连失败：${formatClientError(error)}。请确认 Server 正在运行。`,
 			);
+			const notice = this.state.notices.at(-1);
+			if (notice) this.reconnectNotices.add(notice);
 			this.emit();
 			return;
 		}
-		if (this.disposed) return;
+		if (!this.isCurrentRecovery(recoveryGeneration)) return;
+		const conversationId = this.state.selectedConversationId;
+		const generation = this.state.navigationGeneration;
+		if (conversationId) {
+			try {
+				const replay = await this.deps.gateway.resume(conversationId);
+				if (!this.isCurrentRecovery(recoveryGeneration)
+					|| !this.isCurrentHistoryScope(conversationId, generation)) return;
+				this.state = applyGatewayReplay(this.state, conversationId, replay);
+			} catch {
+				if (this.isCurrentRecovery(recoveryGeneration)) this.emit();
+				return;
+			}
+		}
 		const uncertain = Object.values(this.state.pendingSubmissions)
 			.filter(submission => submission.state === "uncertain")
 			.sort((left, right) => left.queuedAt - right.queuedAt);
 		for (const submission of uncertain) {
+			if (!this.isCurrentRecovery(recoveryGeneration)) return;
 			try {
 				const receipt = await this.deps.gateway.resubmitEnvelope(submission.envelope);
 				this.state = reduceReceipt(this.state, receipt);
 			} catch {
 				// 仍不确定：保留待确认状态，不谎称发送失败，不自动新建消息。
-				this.emit();
+				if (this.isCurrentRecovery(recoveryGeneration)) this.emit();
 				return;
 			}
 		}
-		const conversationId = this.state.selectedConversationId;
-		if (conversationId) {
-			try {
-				const replay = await this.deps.gateway.resume(conversationId);
-				this.state = applyGatewayReplay(this.state, conversationId, replay);
-			} catch {
-				this.emit();
-				return;
-			}
+		if (!this.isCurrentRecovery(recoveryGeneration)) return;
+		if (conversationId && this.isCurrentHistoryScope(conversationId, generation)) {
+			await this.loadHistory(conversationId);
 		}
-		this.state = setConnectionState(this.state, "ready");
+		if (!this.isCurrentRecovery(recoveryGeneration) || this.state.navigationGeneration !== generation) return;
+		this.finishRecovery();
 		this.emit();
+	}
+
+	private isCurrentRecovery(generation: number): boolean {
+		return !this.disposed && this.recoveryGeneration === generation;
+	}
+
+	private finishRecovery(): void {
+		this.recoveryGeneration += 1;
+		// Clear only our transient transport notices, never newer query/business errors.
+		this.state = {
+			...setConnectionState(this.state, "ready"),
+			notices: this.state.notices.filter(notice => !this.reconnectNotices.has(notice)),
+		};
 	}
 
 	// -----------------------------------------------------------------------

@@ -17,7 +17,19 @@ import type { WorkspaceSummary } from '../workspace/workspace-directory-service.
 import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
 import type { BillQueryService } from '../billing/bill-query-service.js';
 
+export interface WebDirectoryPage<T = WebSessionDirectoryMetadataProjection> {
+  items: T[];
+  nextCursor: string | null;
+  projectionVersion?: number;
+}
+
 export interface WebSessionRuntimeCatalog {
+  readMetadata?(sessionId: string): Promise<(WebSessionRecord['session'] & { workspaceId: string | null }) | null>;
+  readVersion?(sessionId: string): Promise<string | null>;
+  listPage?(input: {
+    workspaceId: string; principalId: string; activeConversationId?: string | null;
+    query?: string; cursor?: string;
+  }): Promise<WebDirectoryPage<WebSessionDirectoryMetadata>>;
   initialize(): Promise<void>;
   create(input: { workspaceId: string; principalId: string }): Promise<WebSessionRecord>;
   list(input: {
@@ -33,6 +45,10 @@ export interface WebSessionRuntimeCatalog {
     query?: string;
   }): Promise<WebSessionDirectoryMetadata[]>;
   read(sessionId: string, activeConversationId?: string | null): Promise<WebSessionRecord | null>;
+  readPage?(
+    sessionId: string, activeConversationId?: string | null,
+    request?: import('../session/conversation-history-store.js').ConversationHistoryRequest,
+  ): Promise<WebSessionRecord | null>;
   workspaceIdForConversation(sessionId: string): Promise<string | null>;
   listWorkspaces(principalId: string): Promise<WorkspaceSummary[]>;
   archive(sessionId: string, workspaceId: string, principalId: string): Promise<boolean>;
@@ -41,17 +57,26 @@ export interface WebSessionRuntimeCatalog {
 }
 
 export type WebSessionRuntimeEvent =
+  | {
+    type: 'workspace_conversation_changed';
+    workspaceId: string;
+    conversationId: string;
+    removed?: boolean;
+    changes?: Partial<WebSessionDirectoryMetadataProjection>;
+  }
   | { type: 'active_session_changed'; sessionId: string }
   | {
     type: 'session_catalog';
     activeSessionId: string;
     sessions: WebSessionDirectoryMetadataProjection[];
+    nextCursor?: string | null;
   }
   | {
     type: 'workspace_directory';
     activeWorkspaceId: string;
     activeSessionId: string | null;
     sessions: WebSessionDirectoryMetadataProjection[];
+    nextCursor?: string | null;
   }
   | { type: 'output'; from: number; lines: string[] }
   | {
@@ -159,9 +184,10 @@ export interface ManagementWebSessionRuntime {
   /** Cancels the Client's current turn (Planner run and/or its Task). */
   cancelTurn(clientId: string, turnId: string): Promise<void>;
   listSessions(clientId: string, query?: string): Promise<WebSessionDirectoryMetadataProjection[]>;
-  readSession(clientId: string, sessionId: string): Promise<WebSessionRecordProjection | null>;
+  listSessionPage?(clientId: string, input?: { query?: string; cursor?: string }): Promise<WebDirectoryPage>;
+  readSession(clientId: string, sessionId: string, cursor?: string): Promise<WebSessionRecordProjection | null>;
   createSession(clientId: string): Promise<WebSessionCreationResult>;
-  activateSession(clientId: string, sessionId: string): Promise<WebSessionActivationResult>;
+  activateSession(clientId: string, sessionId: string, expectedWorkspaceId?: string): Promise<WebSessionActivationResult>;
   /** 硬删除历史会话；活跃会话拒绝删除。 */
   deleteSession(clientId: string, sessionId: string): Promise<'deleted' | 'not_found' | 'active'>;
   /** 清空除活跃外的全部会话，返回删除数量。 */

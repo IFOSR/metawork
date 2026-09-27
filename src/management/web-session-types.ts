@@ -125,6 +125,8 @@ export interface WebSessionRecord {
   version: typeof WEB_SESSION_FORMAT_VERSION;
   session: WebSessionMetadata;
   turns: ConversationTurn[];
+  /** Opaque cursor for the next older history page, not an array offset. */
+  historyCursor?: string | null;
 }
 
 export interface WebSessionRecordProjection
@@ -149,7 +151,13 @@ export interface WebSessionCreationResult {
 
 export type WorkspaceInitializationResult =
   | { status: 'not_requested' }
-  | { status: 'accepted' }
+  | {
+    status: 'accepted';
+    workspace?: import('../workspace/workspace-types.js').WorkspaceRecord;
+    conversations?: WebSessionDirectoryMetadataProjection[];
+    nextCursor?: string | null;
+    projectionVersion?: number;
+  }
   | { status: 'failed'; reason: string };
 
 export function boundWebSessionTurns(turns: ConversationTurn[]): ConversationTurn[] {

@@ -40,6 +40,35 @@ function createRecord() {
 }
 
 describe('KernelDecisionRepo', () => {
+  it('reads only the latest plan identities for a set of visible Tasks', () => {
+    const db = createV31RepositoryDb();
+    try {
+      const repo = new KernelDecisionRepo(db);
+      const base = createRecord();
+      for (let n = 0; n < 3; n += 1) {
+        repo.insertIfAbsent({
+          ...base, id: `decision_${n}`, eventId: `event_${n}`,
+          taskId: n === 2 ? 'unrelated' : 'task_1',
+          createdAt: `2026-07-20T00:00:0${n}.000Z`,
+        });
+        db.prepare(`UPDATE kernel_decisions SET action = 'authorize_task_plan',
+          event_json = 'not-read', snapshot_json = 'not-read', decision_json = ?
+          WHERE id = ?`).run(JSON.stringify({
+          schemaVersion: 5,
+          action: {
+            type: 'authorize_task_plan', taskId: n === 2 ? 'unrelated' : 'task_1',
+            graphRevision: n + 1,
+            workGraph: { subtasks: [{ id: `proposal_${n}`, context: 'large ignored payload' }] },
+          },
+        }), `decision_${n}`);
+      }
+      expect(repo.listPresentationIdentitiesByTasks(['task_1', 'missing'])).toEqual([
+        { taskId: 'task_1', graphRevision: 2, subtaskIds: ['proposal_1'] },
+      ]);
+      expect(repo.listPresentationIdentitiesByTasks([])).toEqual([]);
+    } finally { db.close(); }
+  });
+
   it('issues at most one decision for an event', () => {
     const db = createV31RepositoryDb();
     const repo = new KernelDecisionRepo(db);

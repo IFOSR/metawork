@@ -188,13 +188,14 @@ export class MetaWorkTuiApp {
 						create: () => void this.controller.createConversation().catch(error => this.showOperationError(error)),
 						refresh: query => void this.controller.refreshConversationDirectory(query).catch(error => this.showOperationError(error)),
 						cancel: () => this.controller.closeConversationSelector(),
+						loadMore: () => void this.controller.loadMoreConversations().catch(error => this.showOperationError(error)),
 					},
 				);
 				this.conversationOverlay = this.ui.showOverlay(this.conversationSelector,
 					{ width: "90%", maxHeight: "80%", anchor: "center" });
-			} else {
-				this.conversationSelector.update(view.client.activeWorkspace, view.client.conversationSummaries);
 			}
+			this.conversationSelector.update(view.client.activeWorkspace, view.client.conversationSummaries,
+				Boolean(view.client.conversationDirectoryCursor));
 		} else if (this.conversationOverlay) {
 			this.conversationOverlay.hide();
 			this.conversationOverlay = null;

@@ -185,3 +185,48 @@ cannot project reliable running state.
 
 Rejected because it silently changes historical execution context and makes
 cross-Client replay ambiguous.
+
+## Navigation Read-Model Amendment (2026-09-26)
+
+The approved [navigation remediation plan](../plans/2026-09-26-navigation-performance-architecture-remediation.md)
+materializes the existing read contracts; it does not transfer lifecycle
+ownership. Delivery and installed-runtime acceptance remain open.
+
+- Workspace owns the directory projection port; Storage supplies its SQLite
+  adapter. AccountRuntime supplies canonical activity. SQL invalidation triggers
+  record identities, never interpret Task or Kernel states.
+- Directory reads use an account/Workspace-scoped indexed page. A cursor carries
+  the directory revision; concurrent changes reject it explicitly instead of
+  silently skipping or duplicating rows. An incomplete rebuild is unavailable,
+  not permission to execute the former full-catalog scan.
+- Conversation/Application Shell owns metadata and history read ports.
+  Indexed terminal turns and rich presentation use stable per-stream insertion
+  sequences. Updating a Turn does not move it between older-history pages.
+  Web must include canonical terminal turns even if no Web client observed them.
+- Client navigation is observational. Workspace selection sends a current page
+  to that connection; it does not append another durable selection snapshot.
+  HTTP responses must reconcile newer row events and respect navigation request
+  generations, including selecting the previously active Conversation again.
+- Web history remains active-attachment scoped. Restoring a remembered
+  Conversation outside the first directory page must not read its history
+  before attachment. The attach request can carry an expected Workspace;
+  the Application Shell compares it with the canonical binding before any
+  selection change, then serves one bounded history page. The expectation is
+  a fail-closed navigation guard, never Workspace or Account authority.
+- Legacy files remain migration/recovery inputs. There is one production
+  composition, not a parallel deployment. Source composition selects a single
+  segmented Gateway writer and bounded background maintenance. Installed
+  deployment remains gated by real-account migration/restart and Web/TUI
+  acceptance; unchanged legacy files alone do not constitute a lossless rollback
+  after new-format writes.
+- Gateway owns the bounded reconnect/reset contract (`bounded_replay_v1`).
+  Expired, future and over-budget cursors reset explicitly to a versioned
+  snapshot and indexed history; unsupported clients fail explicitly. Clients
+  cannot request unbounded audit replay as a navigation fallback.
+- History-page billing/timeline/artifact enrichment uses read-only set
+  projections of existing facts, not a new billing or Task lifecycle owner.
+- Gateway owns the historical Turn/Task trace-observation projection, committed
+  atomically with the journal watermark. Exact indexed lookup retains ambiguous
+  evidence across Turn changes and compaction; it does not authorize lifecycle
+  actions. Workspace activity publication reads binding metadata without
+  hydrating the Conversation's historical record.

@@ -20,6 +20,9 @@ export function SessionSidebar({
   onDeleteSession,
   onClearSessions,
   onSettings,
+  hasMoreConversations,
+  directoryLoading,
+  onLoadMoreConversations,
 }: {
   sessions: WebSessionMetadata[];
   workspaces: WorkspaceSummary[];
@@ -38,6 +41,9 @@ export function SessionSidebar({
   onDeleteSession: (sessionId: string) => void;
   onClearSessions: () => void;
   onSettings: () => void;
+  hasMoreConversations?: boolean;
+  directoryLoading?: boolean;
+  onLoadMoreConversations?: () => void;
 }) {
   return (
     <aside className="workspace-sidebar">
@@ -139,6 +145,12 @@ export function SessionSidebar({
               ? '当前 Workspace 暂无会话'
               : '点击 Workspace 添加按钮选择本机目录'}
           </div>
+        )}
+        {hasMoreConversations && (
+          <button className="sidebar-settings" onClick={onLoadMoreConversations}
+            disabled={directoryLoading || workspaceSwitching}>
+            {directoryLoading ? '正在加载...' : '加载更多会话'}
+          </button>
         )}
       </div>
       <button className="sidebar-settings" onClick={onSettings}>

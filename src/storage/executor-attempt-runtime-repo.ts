@@ -15,6 +15,15 @@ export interface ExecutorAttemptRuntimeRecord {
   updatedAt: string;
 }
 
+export type TimelineRuntimeRecord = Pick<ExecutorAttemptRuntimeRecord, 'attemptId' | 'updatedAt'> & {
+  progress: {
+    kind?: unknown;
+    text?: unknown;
+    occurredAt?: unknown;
+    history?: unknown;
+  };
+};
+
 interface RuntimeRow {
   attempt_id: string;
   source_attempt_id: string | null;
@@ -117,6 +126,40 @@ export class ExecutorAttemptRuntimeRepo {
       SELECT * FROM executor_attempt_runtime WHERE attempt_id = ?
     `).get(attemptId) as RuntimeRow | undefined;
     return row ? rowToRecord(row) : null;
+  }
+
+  listByTasks(taskIds: readonly string[]): ExecutorAttemptRuntimeRecord[] {
+    if (!taskIds.length) return [];
+    if (taskIds.length > 100) throw new Error('timeline_task_limit');
+    const placeholders = taskIds.map(() => '?').join(',');
+    return (this.db.prepare(`SELECT * FROM executor_attempt_runtime WHERE attempt_id IN (
+      SELECT attempt_id FROM kernel_dispatch_items WHERE task_id IN (${placeholders})
+      UNION SELECT attempt_id FROM executor_attempt_receipts WHERE task_id IN (${placeholders})
+    )`).all(...taskIds, ...taskIds) as RuntimeRow[]).map(rowToRecord);
+  }
+
+  listTimelineByTasks(taskIds: readonly string[]): TimelineRuntimeRecord[] {
+    if (!taskIds.length) return [];
+    if (taskIds.length > 100) throw new Error('timeline_task_limit');
+    const placeholders = taskIds.map(() => '?').join(',');
+    const rows = this.db.prepare(`
+      SELECT attempt_id, updated_at, json_object(
+        'kind', json_extract(progress_json, '$.kind'),
+        'text', json_extract(progress_json, '$.text'),
+        'occurredAt', json_extract(progress_json, '$.occurredAt'),
+        'history', json_extract(progress_json, '$.history')
+      ) AS progress_json
+      FROM executor_attempt_runtime
+      WHERE attempt_id IN (
+        SELECT attempt_id FROM kernel_dispatch_items WHERE task_id IN (${placeholders})
+        UNION SELECT attempt_id FROM executor_attempt_receipts WHERE task_id IN (${placeholders})
+      )
+    `).all(...taskIds, ...taskIds) as Array<Pick<RuntimeRow, 'attempt_id' | 'updated_at' | 'progress_json'>>;
+    return rows.map(row => ({
+      attemptId: row.attempt_id,
+      updatedAt: row.updated_at,
+      progress: JSON.parse(row.progress_json) as TimelineRuntimeRecord['progress'],
+    }));
   }
 }
 

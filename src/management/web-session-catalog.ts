@@ -24,8 +24,10 @@ import type {
 } from '../storage/file-conversation-presentation-store.js';
 import { CONVERSATION_PRESENTATION_VERSION } from '../storage/file-conversation-presentation-store.js';
 import type { ConversationStore } from '../session/conversation-store.js';
+import { updateConversationCatalog } from '../session/conversation-catalog-mutation.js';
 import { MAX_CONVERSATION_TURNS } from '../session/conversation-store.js';
 import type { WorkspaceDirectoryService } from '../workspace/workspace-directory-service.js';
+import type { ConversationHistoryRequest } from '../session/conversation-history-store.js';
 
 const MAX_SESSION_TITLE_LENGTH = 80;
 const DEFAULT_SESSION_TITLE = 'New session';
@@ -36,6 +38,7 @@ export interface WebSessionCatalogDeps {
   readonly presentationStore: ConversationPresentationStore;
   now?: () => string;
   normalizeTurnPresentation?: (turn: ConversationTurn) => ConversationTurn;
+  normalizeHistoryPage?: (turns: readonly ConversationTurn[]) => ConversationTurn[];
 }
 
 export interface CreateWebSessionInput {
@@ -118,6 +121,22 @@ export class WebSessionCatalog {
     return sessions;
   }
 
+  async listPage(input: ListWebSessionsInput & { cursor?: string }) {
+    await this.ensureInitialized();
+    const page = await this.deps.directory.listConversations(input.workspaceId, input.principalId, {
+      limit: 50, cursor: input.cursor, query: input.query,
+    });
+    return {
+      ...page,
+      items: page.items.map(item => ({
+        id: item.conversationId, workspaceId: item.workspaceId,
+        title: item.title, createdAt: item.createdAt, updatedAt: item.updatedAt,
+        archived: item.archived, preview: item.preview, activity: item.activity,
+        active: item.conversationId === input.activeConversationId,
+      })),
+    };
+  }
+
   async search(input: ListWebSessionsInput): Promise<WebSessionDirectoryMetadata[]> {
     return this.list(input);
   }
@@ -141,8 +160,83 @@ export class WebSessionCatalog {
   }
 
   async workspaceIdForConversation(sessionId: string): Promise<string | null> {
+    if (this.deps.conversationStore.readMetadata) {
+      return (await this.deps.conversationStore.readMetadata(sessionId))?.workspaceBinding?.workspaceId ?? null;
+    }
     const record = await this.deps.conversationStore.readConversation(sessionId);
     return record?.conversation.workspaceBinding?.workspaceId ?? null;
+  }
+
+  async readTurn(sessionId: string, turnId: string): Promise<ConversationTurn | null> {
+    await this.ensureInitialized();
+    const turn = this.deps.presentationStore.findMany
+      ? (await this.deps.presentationStore.findMany(sessionId, [turnId])).get(turnId)
+      : (await this.deps.presentationStore.read(sessionId))?.turns.find(item => item.id === turnId);
+    return turn ? this.normalizeTurn(turn) : null;
+  }
+
+  async readMetadata(sessionId: string) {
+    const metadata = this.deps.conversationStore.readMetadata
+      ? await this.deps.conversationStore.readMetadata(sessionId)
+      : (await this.deps.conversationStore.readConversation(sessionId))?.conversation;
+    return metadata ? {
+      ...metadataProjection(metadata, false), workspaceId: metadata.workspaceBinding?.workspaceId ?? null,
+    } : null;
+  }
+
+  async readVersion(sessionId: string): Promise<string | null> {
+    const [metadata, history, presentation] = await Promise.all([
+      this.readMetadata(sessionId),
+      this.deps.conversationStore.readHistoryVersion?.(sessionId),
+      this.deps.presentationStore.readVersion?.(sessionId),
+    ]);
+    // A legacy adapter has no durable invalidation token: never cache its page.
+    if (!metadata || history == null || presentation == null) return null;
+    return JSON.stringify([metadata, history, presentation]);
+  }
+
+  async readPage(
+    sessionId: string,
+    activeConversationId: string | null = null,
+    request: ConversationHistoryRequest = {},
+  ): Promise<WebSessionRecord | null> {
+    await this.ensureInitialized();
+    const metadata = this.deps.conversationStore.readMetadata
+      ? await this.deps.conversationStore.readMetadata(sessionId)
+      : (await this.deps.conversationStore.readConversation(sessionId))?.conversation;
+    if (!metadata) return null;
+    if (!this.deps.presentationStore.readPage) return this.read(sessionId, activeConversationId);
+    const source = request.cursor?.startsWith('conversation.') ? 'conversation'
+      : request.cursor?.startsWith('presentation.') ? 'presentation' : null;
+    if (request.cursor && !source) throw new Error('invalid_history_cursor');
+    const innerRequest = { ...request, cursor: source ? request.cursor!.slice(source.length + 1) : undefined };
+    // Canonical terminal Turns exist without any Web attachment. Use that order
+    // and overlay rich presentation only for the requested visible IDs.
+    const canonical = source !== 'presentation' && this.deps.conversationStore.readHistoryPage
+      ? await this.deps.conversationStore.readHistoryPage(sessionId, innerRequest) : null;
+    const useCanonical = source === 'conversation' || Boolean(canonical?.turns.length);
+    const rich = useCanonical && this.deps.presentationStore.findMany
+      ? await this.deps.presentationStore.findMany(sessionId, canonical!.turns.map(turn => turn.id)) : new Map<string, ConversationTurn>();
+    const page = useCanonical ? {
+      turns: canonical!.turns.map(turn => ({
+        taskId: null, startedAt: metadata.createdAt, completedAt: null,
+        traceEvents: [], executionTimeline: null, artifactRefs: [], artifacts: [],
+        ...rich.get(turn.id),
+        // Rich records add presentation details; terminal content belongs to
+        // the canonical Turn, including completions observed only by another client.
+        id: turn.id, sessionId, userInput: turn.userInput, finalAnswer: turn.finalAnswer,
+        status: turn.status === 'cancelled' ? 'failed' as const : turn.status,
+      })),
+      nextCursor: canonical!.nextCursor,
+    } : await this.deps.presentationStore.readPage(sessionId, innerRequest);
+    return {
+      version: WEB_SESSION_FORMAT_VERSION,
+      session: metadataProjection(metadata, sessionId === activeConversationId),
+      turns: this.deps.normalizeHistoryPage
+        ? this.deps.normalizeHistoryPage(page.turns)
+        : page.turns.map(turn => this.normalizeTurn(turn)),
+      historyCursor: page.nextCursor ? `${useCanonical ? 'conversation' : 'presentation'}.${page.nextCursor}` : null,
+    };
   }
 
   listWorkspaces(principalId: string) {
@@ -156,7 +250,9 @@ export class WebSessionCatalog {
     await this.ensureInitialized();
     const conversation = await this.deps.conversationStore.readConversation(sessionId);
     if (!conversation) return null;
-    const presentation = await this.deps.presentationStore.read(sessionId);
+    const presentation = this.deps.presentationStore.upsert && this.deps.presentationStore.readPage
+      ? await this.deps.presentationStore.readPage(sessionId, { limit: 50 })
+      : await this.deps.presentationStore.read(sessionId);
     const currentTurns = presentation?.turns ?? [];
 
     const safeTurn = this.normalizeTurn(sanitizeConversationTurn(turn, sessionId));
@@ -168,17 +264,23 @@ export class WebSessionCatalog {
       ...currentTurns.filter(existing => existing.id !== safeTurn.id),
       safeTurn,
     ]);
-    const firstQueryTitle = firstUserQueryTitle(turns);
+    const firstQueryTitle = firstUserQueryTitle(conversation.turns.map(item => ({
+      userInput: item.userInput,
+    }))) ?? firstUserQueryTitle(turns);
     const metadata = {
       ...conversation.conversation,
       title: firstQueryTitle ?? conversation.conversation.title,
       updatedAt: timestamp,
     };
-    await this.deps.presentationStore.write({
-      version: CONVERSATION_PRESENTATION_VERSION,
-      conversationId: sessionId,
-      turns,
-    });
+    if (this.deps.presentationStore.upsert) {
+      await this.deps.presentationStore.upsert(sessionId, safeTurn);
+    } else {
+      await this.deps.presentationStore.write({
+        version: CONVERSATION_PRESENTATION_VERSION,
+        conversationId: sessionId,
+        turns,
+      });
+    }
     await this.deps.conversationStore.writeConversation({
       ...conversation,
       conversation: metadata,
@@ -193,11 +295,10 @@ export class WebSessionCatalog {
         },
       ].slice(-MAX_CONVERSATION_TURNS),
     });
-    const catalog = await this.deps.conversationStore.readCatalog();
-    await this.deps.conversationStore.writeCatalog({
+    await updateConversationCatalog(this.deps.conversationStore, catalog => ({
       ...catalog,
       conversations: catalog.conversations.map(item => item.id === sessionId ? metadata : item),
-    });
+    }));
     const updated: WebSessionRecord = {
       version: WEB_SESSION_FORMAT_VERSION,
       session: metadataProjection(metadata, false),
@@ -249,7 +350,7 @@ function normalizeSessionTitle(value?: string): string {
   return normalized.slice(0, MAX_SESSION_TITLE_LENGTH).trimEnd();
 }
 
-function firstUserQueryTitle(turns: ConversationTurn[]): string | null {
+function firstUserQueryTitle(turns: readonly { userInput: string }[]): string | null {
   const query = turns.find(turn => isOrdinaryUserQuery(turn.userInput))?.userInput;
   return query ? normalizeSessionTitle(query) : null;
 }

@@ -182,6 +182,17 @@ export class WorkspacePublicationRepo {
     `).all(...uniqueTaskIds) as PublicationRow[]).map(rowToPublication);
   }
 
+  timelineByTaskIds(taskIds: readonly string[]): ReadonlyMap<string, { integrated: boolean; blocking: boolean }> {
+    if (!taskIds.length) return new Map();
+    if (taskIds.length > 100) throw new Error('timeline_task_limit');
+    const rows = this.db.prepare(`
+      SELECT task_id, max(status = 'integrated') AS integrated,
+        max(status IN ('pending', 'applying', 'conflicted', 'cancelling', 'uncertain')) AS blocking
+      FROM workspace_publications WHERE task_id IN (${taskIds.map(() => '?').join(',')}) GROUP BY task_id
+    `).all(...taskIds) as { task_id: string; integrated: number; blocking: number }[];
+    return new Map(rows.map(row => [row.task_id, { integrated: Boolean(row.integrated), blocking: Boolean(row.blocking) }]));
+  }
+
   findNextBlocking(taskId: string, generationId: string): WorkspacePublicationRecord | null {
     const row = this.db.prepare(`
       SELECT * FROM workspace_publications

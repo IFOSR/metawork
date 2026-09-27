@@ -83,7 +83,7 @@ export class AgentRuntimeRenderer {
     const agent = join(root, 'pi-home', '.pi', 'agent');
     await mkdir(agent, { recursive: true });
     await writeFile(join(agent, 'models.json'), `${JSON.stringify(buildModelsJson(config), null, 2)}\n`, 'utf8');
-    const { defaultProvider, defaultModel, ...sharedSettings } = buildSettingsJson(config, '');
+    const { defaultProvider, defaultModel, enabledModels, ...sharedSettings } = buildSettingsJson(config, '');
     await writeFile(join(agent, 'settings.json'), `${JSON.stringify(sharedSettings, null, 2)}\n`, 'utf8');
   }
 

@@ -10,6 +10,7 @@
  */
 
 import type { Task } from '../core/types.js';
+import { measureNavigationStageSync } from '../utils/navigation-diagnostics.js';
 import type { AccountKernelCoordinator } from './account-kernel-coordinator.js';
 import type { AccountKernelServices } from './account-kernel-services.js';
 import type { AccountRepositories } from './account-repositories.js';
@@ -204,8 +205,26 @@ export class AccountRuntime implements AccountRuntimeHandle {
     conversationId: string,
     fallbackUpdatedAt: string,
   ): ConversationActivityProjection {
+    return this.getConversationActivities([{ conversationId, updatedAt: fallbackUpdatedAt }])
+      .get(conversationId)!;
+  }
+
+  getConversationActivities(
+    conversations: readonly { conversationId: string; updatedAt: string }[],
+  ): ReadonlyMap<string, ConversationActivityProjection> {
+    return measureNavigationStageSync(
+      'activity_projection', () => this.buildConversationActivities(conversations), conversations.length,
+    );
+  }
+
+  private buildConversationActivities(
+    conversations: readonly { conversationId: string; updatedAt: string }[],
+  ): ReadonlyMap<string, ConversationActivityProjection> {
+    if (conversations.length === 0) return new Map();
     const taskRuntimeService = this.deps.taskServices?.taskRuntimeService;
-    const tasks = taskRuntimeService?.listTasks() ?? [];
+    const tasks = taskRuntimeService?.listTasksByConversation
+      ? conversations.flatMap(item => taskRuntimeService.listTasksByConversation(item.conversationId))
+      : taskRuntimeService?.listTasks() ?? [];
     const activeAttemptTaskIds = taskRuntimeService
       ? [
           ...(this.deps.runtimeExecutionServices?.dispatchItemRepo.listBlocking() ?? [])
@@ -221,7 +240,7 @@ export class AccountRuntime implements AccountRuntimeHandle {
       })),
       tasks: tasks.map(task => ({
         id: task.id,
-        originConversationId: this.originConversationId(task.id),
+        originConversationId: task.conversationId ?? this.originConversationId(task.id),
         status: task.status,
         dependencies: task.dependencies,
         updatedAt: task.updatedAt,
@@ -230,9 +249,11 @@ export class AccountRuntime implements AccountRuntimeHandle {
       // Same durable facts TaskView consumes, so both surfaces agree on the
       // phase instead of the card assuming "no Replan Job".
       openReplanJobTaskIds: this.collectOpenReplanJobTaskIds(tasks),
-      pendingRetryWakeTaskIds: this.collectPendingRetryWakeTaskIds(),
+      pendingRetryWakeTaskIds: this.collectPendingRetryWakeTaskIds(tasks),
     });
-    return projector.project(conversationId, fallbackUpdatedAt);
+    return new Map(conversations.map(({ conversationId, updatedAt }) => [
+      conversationId, projector.project(conversationId, updatedAt),
+    ]));
   }
 
   /**
@@ -255,9 +276,13 @@ export class AccountRuntime implements AccountRuntimeHandle {
     }
   }
 
-  private collectPendingRetryWakeTaskIds(): string[] {
+  private collectPendingRetryWakeTaskIds(tasks: readonly Task[]): string[] {
     try {
-      return this.deps.kernelServices.kernelDecisionRepo
+      const repo = this.deps.kernelServices.kernelDecisionRepo;
+      if (repo.listCurrentTaskIdsByAction) {
+        return repo.listCurrentTaskIdsByAction('wait_for_retry', tasks.map(task => task.id));
+      }
+      return repo
         .listCurrentByAction('wait_for_retry')
         .map(record => record.taskId)
         .filter((taskId): taskId is string => Boolean(taskId));
@@ -447,11 +472,14 @@ export class AccountRuntime implements AccountRuntimeHandle {
             ).map(item => ({
               attemptId: item.attemptId,
               decisionId: item.decisionId,
+              causationId: this.deps.kernelServices.kernelDecisionRepo.findById(item.decisionId)
+                ?.causationId ?? null,
               subtaskId: item.subtaskId,
               generationId: item.generationId,
               attemptKind: item.attemptKind,
               bindingFingerprint: item.bindingFingerprint,
               configurationRevision: item.configurationRevision,
+              sourceAttemptId: item.sourceAttemptId,
               status: item.status,
             })),
             findWorkGraphRevision: (taskId, revision) => {

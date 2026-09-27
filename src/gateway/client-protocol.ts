@@ -3,6 +3,7 @@ import type { ConversationSelection } from '../session/conversation-types.js';
 
 export const GATEWAY_PROTOCOL_VERSION = 2;
 export const MAX_GATEWAY_ID_BYTES = 256;
+export const MAX_GATEWAY_CURSOR_BYTES = 4096;
 export const MAX_GATEWAY_COMMAND_TEXT_BYTES = 128 * 1024;
 export const MAX_GATEWAY_ATTACHMENTS = 32;
 export const MAX_GATEWAY_CAPABILITIES = 32;
@@ -23,6 +24,8 @@ export const GATEWAY_SERVER_CAPABILITIES: readonly string[] = [
   GATEWAY_CAPABILITY_COMMAND_COMPLETION,
   GATEWAY_CAPABILITY_TASK_VIEW,
   GATEWAY_CAPABILITY_USAGE_BILLING,
+  'history_page_fragments_v1',
+  'bounded_replay_v1',
 ];
 
 export interface GatewayAttachmentRef {
@@ -40,7 +43,7 @@ export type GatewayCommand =
   | { readonly kind: 'create_conversation'; readonly workspaceId: string }
   | { readonly kind: 'archive_conversation'; readonly conversationId: string }
   | { readonly kind: 'attach_conversation'; readonly conversationId: string }
-  | { readonly kind: 'get_conversation_history'; readonly conversationId: string; readonly cursor?: string; readonly limit?: number }
+  | { readonly kind: 'get_conversation_history'; readonly conversationId: string; readonly cursor?: string; readonly limit?: number; readonly acceptFragments?: boolean }
   | { readonly kind: 'user_message'; readonly text: string; readonly attachments: GatewayAttachmentRef[] }
   | { readonly kind: 'slash_command'; readonly text: string }
   | { readonly kind: 'permission_resolution'; readonly requestId: string; readonly resolution: 'approve' | 'deny' }
@@ -164,7 +167,7 @@ function parseCommand(value: unknown): GatewayCommand | null {
   if (value.kind === 'list_workspace_conversations') {
     if (!hasOnlyKeys(value, ['kind', 'workspaceId', 'cursor', 'query'])
       || !isGatewayIdentifier(value.workspaceId)
-      || (value.cursor !== undefined && !isGatewayIdentifier(value.cursor))
+      || (value.cursor !== undefined && !isGatewayOpaqueCursor(value.cursor))
       || (value.query !== undefined && !isGatewayCommandText(value.query))) return null;
     return {
       kind: value.kind,
@@ -182,9 +185,10 @@ function parseCommand(value: unknown): GatewayCommand | null {
       ? { kind: value.kind, conversationId: value.conversationId } : null;
   }
   if (value.kind === 'get_conversation_history') {
-    if (!hasOnlyKeys(value, ['kind', 'conversationId', 'cursor', 'limit'])
+    if (!hasOnlyKeys(value, ['kind', 'conversationId', 'cursor', 'limit', 'acceptFragments'])
       || !isGatewayIdentifier(value.conversationId)
-      || (value.cursor !== undefined && !isGatewayIdentifier(value.cursor))
+      || (value.acceptFragments !== undefined && typeof value.acceptFragments !== 'boolean')
+      || (value.cursor !== undefined && !isGatewayOpaqueCursor(value.cursor))
       || (value.limit !== undefined && (
         typeof value.limit !== 'number' || !Number.isSafeInteger(value.limit)
       ))) return null;
@@ -193,6 +197,7 @@ function parseCommand(value: unknown): GatewayCommand | null {
       conversationId: value.conversationId,
       ...(value.cursor !== undefined ? { cursor: value.cursor as string } : {}),
       ...(value.limit !== undefined ? { limit: value.limit as number } : {}),
+      ...(value.acceptFragments !== undefined ? { acceptFragments: value.acceptFragments as boolean } : {}),
     };
   }
   if (value.kind === 'user_message') {
@@ -320,6 +325,10 @@ function isAttachment(value: unknown): boolean {
 
 export function isGatewayIdentifier(value: unknown): value is string {
   return isBoundedString(value, MAX_GATEWAY_ID_BYTES);
+}
+
+export function isGatewayOpaqueCursor(value: unknown): value is string {
+  return isBoundedString(value, MAX_GATEWAY_CURSOR_BYTES);
 }
 
 export function isGatewayCommandText(value: unknown): value is string {

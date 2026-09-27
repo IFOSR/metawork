@@ -245,6 +245,22 @@ Command idempotency and event resume cursors are durable enough to prevent
 duplicate user turns and to replay the bounded terminal/current state after
 reconnect. Transport retry is not a new Planner turn or Kernel retry.
 
+### Indexed command admission amendment (2026-09-27)
+
+Gateway remains the sole owner of admission fingerprints, first Conversation
+assignment, terminal receipts and pending/submitted/terminal/uncertain
+transitions. Storage implements the existing port with account/idempotency-key
+point operations and a partial recoverable-state index. Navigation commands
+retain the same durable admission path, rather than a transient fast path.
+
+Schema 44 imports all retained legacy admissions, including terminal receipts,
+in one transaction with the account import marker. Invalid or conflicting
+records abort import; the marker cannot commit ahead of its records. After
+import the JSON is read-only, and composition selects exactly one SQLite
+writer. Restart does not rescan legacy JSON or hydrate unrelated terminal
+command bodies. Native release/database checkpoints retain their point-in-time
+rollback semantics; they do not merge commands written after the checkpoint.
+
 ### Execution trace and Conversation retention amendment (2026-08-24)
 
 The existing Gateway `trace_delta` plane is the public execution stream; no
@@ -260,6 +276,23 @@ stream retention are separate: every retained result keeps delivery/completion
 metadata, while only the active result needs full chunks. Web's inline execution
 cards and per-Subtask detail drawer, native Planner/TUI, and Feishu all consume
 these passive projections and cannot trigger a semantic Planner turn.
+
+### Historical Task association projection amendment (2026-09-27)
+
+Historical Task views use a Gateway-owned pure trace-observation fold and an
+exact Account/Conversation/Turn lookup on the EventJournal port. The bounded
+current-Turn snapshot is not historical association evidence; ordinary
+navigation must not fall back to full audit replay.
+
+The projection preserves the resolver's envelope-or-payload Turn identity
+rule, at most two distinct nonempty Task IDs (permanent fail-closed ambiguity),
+first/latest trace times, and the latest trace's completion/progress fields.
+Storage persists the opaque Gateway value in the same transaction as segment
+identities and the stream watermark; it does not interpret trace or lifecycle
+semantics. Legacy retained import builds the same projection. Restart and
+segment compaction preserve it. Existing Task ownership checks and lifecycle
+projectors remain authoritative; this read model authorizes no work or state
+transition.
 
 ### 9. Account Data Isolation
 

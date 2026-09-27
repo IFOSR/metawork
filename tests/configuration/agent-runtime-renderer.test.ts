@@ -148,6 +148,7 @@ describe('AgentRuntimeRenderer', () => {
       const pi = JSON.parse(await readFile(join(root, 'rev-shared', 'pi-home', '.pi', 'agent', 'settings.json'), 'utf8'));
       expect(codex).not.toMatch(/^model =/mu);
       expect(pi.defaultModel).toBeUndefined();
+      expect(pi.enabledModels).toBeUndefined();
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

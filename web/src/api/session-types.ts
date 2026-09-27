@@ -255,6 +255,7 @@ export interface ConversationTurnProjection
 }
 
 export interface WebSessionRecord {
+  historyCursor?: string | null;
   version: typeof WEB_SESSION_FORMAT_VERSION;
   session: WebSessionMetadata;
   turns: ConversationTurn[];

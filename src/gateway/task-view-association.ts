@@ -1,4 +1,7 @@
 import type { GatewayEventEnvelope } from './client-events.js';
+import {
+  matchesTurnTaskObservation, observeTurnTaskTrace, type TurnTaskObservation,
+} from './turn-task-observation.js';
 
 export type TaskViewTurnAssociation =
   | {
@@ -14,21 +17,16 @@ export function resolveTaskViewTurnAssociation(input: {
   readonly conversationId: string;
   readonly turnId: string;
   readonly taskId: string;
-  readonly replayEvents: readonly GatewayEventEnvelope[];
+  readonly replayEvents?: readonly GatewayEventEnvelope[];
+  readonly traceObservation?: TurnTaskObservation | null;
   readonly queryTaskId?: string | null;
   readonly liveTaskId?: string | null;
   readonly presentationTaskId?: string | null;
 }): TaskViewTurnAssociation {
-  const traceEvents = input.replayEvents.filter(event => (
-    event.accountId === input.accountId
-    && event.conversationId === input.conversationId
-    && event.kind === 'trace_delta'
-    && (event.turnId === input.turnId || record(event.payload).turnId === input.turnId)
-  ));
-  const traceTaskIds = new Set(traceEvents
-    .map(event => record(event.payload).taskId)
-    .filter((taskId): taskId is string => typeof taskId === 'string' && taskId.length > 0));
-  const authoritativeTaskIds = new Set(traceTaskIds);
+  let observation = input.traceObservation && matchesTurnTaskObservation(input, input.traceObservation)
+    ? input.traceObservation : null;
+  for (const event of input.replayEvents ?? []) observation = observeTurnTaskTrace(input, observation, event);
+  const authoritativeTaskIds = new Set(observation?.taskIds ?? []);
   if (input.queryTaskId) authoritativeTaskIds.add(input.queryTaskId);
   if (input.liveTaskId) authoritativeTaskIds.add(input.liveTaskId);
   if (input.presentationTaskId) authoritativeTaskIds.add(input.presentationTaskId);
@@ -37,27 +35,10 @@ export function resolveTaskViewTurnAssociation(input: {
   if (authoritativeTaskIds.size === 0) return { status: 'not_found' };
   if (!authoritativeTaskIds.has(input.taskId)) return { status: 'mismatch' };
 
-  const latest = traceEvents.at(-1);
-  const payload = record(latest?.payload);
-  const traceItems = Array.isArray(payload.events) ? payload.events : [];
-  const progressSummary = traceItems
-    .map(record)
-    .reverse()
-    .map(item => item.summary)
-    .find((summary): summary is string => typeof summary === 'string' && summary.length > 0)
-    ?? null;
-  const startedAt = traceEvents[0]?.occurredAt ?? null;
-  const completedAt = typeof payload.completedAt === 'string'
-    ? payload.completedAt
-    : ['completed', 'failed', 'blocked', 'cancelled'].includes(String(payload.status))
-      ? latest?.occurredAt ?? null
-      : null;
-
-  return { status: 'matched', startedAt, completedAt, progressSummary };
-}
-
-function record(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
+  return {
+    status: 'matched',
+    startedAt: observation?.firstTraceAt ?? null,
+    completedAt: observation?.completedAt ?? null,
+    progressSummary: observation?.progressSummary ?? null,
+  };
 }

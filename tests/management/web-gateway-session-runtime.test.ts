@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { GatewayAttachmentStore } from '../../src/gateway/attachment-store-port.js';
 import type { GatewayEventEnvelope, GatewayReplay } from '../../src/gateway/client-events.js';
 import type { WebGatewayAdapter } from '../../src/management/web-gateway-adapter.js';
@@ -16,6 +16,227 @@ import type { WebSessionRecord } from '../../src/management/web-session-types.js
 import type { ExecutionTimeline } from '../../src/management/execution-projector.js';
 
 describe('WebGatewaySessionRuntime', () => {
+  it('uses one scoped billing snapshot for the visible history page', async () => {
+    const store = createRuntimeBillingService();
+    const turns = Array.from({ length: 10 }, (_, n) => ({
+      ...persistedTurnFixture({ id: `turn_${n}` }), taskId: `task_${n}`,
+    }));
+    const scoped = {
+      ...store.billing,
+      getQueryBillForTurn: vi.fn(() => null),
+      getTurnBillUserView: vi.fn(() => null),
+      getTaskUsageSummaryForAccount: vi.fn(() => null),
+    } as unknown as BillQueryService;
+    const forHistoryPage = vi.fn(() => scoped);
+    const single = vi.fn(() => { throw new Error('unbatched_billing_read'); });
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default', catalog: billingCatalogFixture(turns), gateway: gatewayFixture(),
+      billing: {
+        ...store.billing, forHistoryPage,
+        getQueryBillForTurn: single, getTurnBillUserView: single, getTaskUsageSummaryForAccount: single,
+      },
+    });
+    try {
+      await runtime.activateSession('browser-a', 'conv_1');
+      const record = await runtime.readSession('browser-a', 'conv_1');
+      expect(record?.turns).toHaveLength(10);
+      expect(forHistoryPage).toHaveBeenCalledTimes(1);
+      expect(forHistoryPage).toHaveBeenCalledWith(
+        'local-default', turns.map(turn => turn.id), turns.map(turn => turn.taskId),
+      );
+      expect(scoped.getQueryBillForTurn).toHaveBeenCalledTimes(10);
+      expect(single).not.toHaveBeenCalled();
+    } finally {
+      await runtime.dispose();
+      store.close();
+    }
+  });
+
+  it('enriches a visible history page through one set query per fact family', async () => {
+    const turns = Array.from({ length: 10 }, (_, n) => ({
+      ...persistedTurnFixture({ id: `turn_${n}` }), taskId: null,
+    }));
+    const resolveTaskIdsForTurns = vi.fn((ids: readonly string[]) => new Map(ids.map((id, n) => [id, `task_${n}`])));
+    const projectExecutionTimelines = vi.fn(() => new Map());
+    const projectTasksArtifacts = vi.fn(() => new Map());
+    const single = vi.fn(() => { throw new Error('per_turn_read'); });
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default', catalog: billingCatalogFixture(turns), gateway: gatewayFixture(),
+      resolveTaskIdsForTurns, projectExecutionTimelines, projectTasksArtifacts,
+      resolveTaskIdForTurn: single, projectExecutionTimeline: single, projectTaskArtifacts: single,
+    });
+    try {
+      await runtime.activateSession('browser-a', 'conv_1');
+      const record = await runtime.readSession('browser-a', 'conv_1');
+      expect(record?.turns.map(turn => turn.taskId)).toEqual(turns.map((_, n) => `task_${n}`));
+      expect(resolveTaskIdsForTurns).toHaveBeenCalledTimes(1);
+      expect(projectExecutionTimelines).toHaveBeenCalledTimes(1);
+      expect(projectTasksArtifacts).toHaveBeenCalledTimes(1);
+      expect(single).not.toHaveBeenCalled();
+    } finally { await runtime.dispose(); }
+  });
+
+  it('reads one bounded history page across activation and the first visible GET', async () => {
+    const catalog = catalogFixture();
+    const read = vi.spyOn(catalog, 'read');
+    const readPage = vi.fn(async (id: string) => sessionRecord(id, true));
+    const readMetadata = vi.fn(async (id: string) => ({
+      ...sessionRecord(id, false).session, workspaceId: 'workspace_repo',
+    }));
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default', catalog: { ...catalog, readPage, readMetadata, readVersion: async () => 'v1' }, gateway: gatewayFixture(),
+    });
+    try {
+      await runtime.activateSession('browser-a', 'conv_1');
+      expect(await runtime.readSession('browser-a', 'conv_1')).not.toBeNull();
+      expect(readMetadata).toHaveBeenCalledTimes(1);
+      expect(readPage).toHaveBeenCalledTimes(1);
+      expect(read).not.toHaveBeenCalled();
+      await runtime.readSession('browser-a', 'conv_1');
+      expect(readPage).toHaveBeenCalledTimes(2); // Handoff is consumed, not an unversioned cache.
+    } finally { await runtime.dispose(); }
+  });
+
+  it('invalidates the attach handoff when another client changes the history revision', async () => {
+    let version = 'v1';
+    const readPage = vi.fn(async (id: string) => ({
+      ...sessionRecord(id, true), session: { ...sessionRecord(id, true).session, title: version },
+    }));
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: {
+        ...catalogFixture(), readPage, readVersion: async () => version,
+        readMetadata: async id => ({ ...sessionRecord(id, true).session, workspaceId: 'workspace_repo' }),
+      },
+      gateway: gatewayFixture(),
+    });
+    try {
+      await runtime.activateSession('browser-a', 'conv_1');
+      version = 'v2';
+      expect((await runtime.readSession('browser-a', 'conv_1'))?.session.title).toBe('v2');
+      expect(readPage).toHaveBeenCalledTimes(2);
+    } finally { await runtime.dispose(); }
+  });
+
+  it('consumes the empty create handoff in the creation response', async () => {
+    const readPage = vi.fn(async (id: string) => ({
+      ...sessionRecord(id, true), session: { ...sessionRecord(id, true).session, title: 'External completion' },
+    }));
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default', gateway: gatewayFixture(),
+      catalog: {
+        ...catalogFixture(), readPage, readVersion: async () => 'v1',
+        readMetadata: async id => ({ ...sessionRecord(id, true).session, workspaceId: 'workspace_repo' }),
+      },
+    });
+    try {
+      await runtime.selectWorkspace('browser-a', '/repo');
+      const created = await runtime.createSession('browser-a');
+      expect((await runtime.readSession('browser-a', created.session.session.id))?.session.title)
+        .toBe('External completion');
+      expect(readPage).toHaveBeenCalledTimes(1);
+    } finally { await runtime.dispose(); }
+  });
+
+  it('publishes a row removal instead of replacing a paged directory on archive', async () => {
+    const catalog = catalogFixture();
+    const list = vi.spyOn(catalog, 'list');
+    const events: WebSessionRuntimeEvent[] = [];
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default', catalog, gateway: gatewayFixture(),
+    });
+    runtime.subscribe('browser-a', event => events.push(event));
+    try {
+      await runtime.selectWorkspace('browser-a', '/repo');
+      await runtime.activateSession('browser-a', 'conv_1');
+      list.mockClear();
+      events.length = 0;
+      expect(await runtime.deleteSession('browser-a', 'conv_2')).toBe('deleted');
+      expect(list).not.toHaveBeenCalled();
+      expect(events).toContainEqual({
+        type: 'workspace_conversation_changed', workspaceId: 'workspace_repo', conversationId: 'conv_2', removed: true,
+      });
+    } finally { await runtime.dispose(); }
+  });
+
+  it('does not refresh the full directory when activating an existing Conversation', async () => {
+    const catalog = catalogFixture();
+    const list = vi.spyOn(catalog, 'list');
+    const events: WebSessionRuntimeEvent[] = [];
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default', catalog, gateway: gatewayFixture(),
+    });
+    runtime.subscribe('browser-a', event => events.push(event));
+    try {
+      await runtime.selectWorkspace('browser-a', '/repo');
+      list.mockClear();
+      events.length = 0;
+      await runtime.activateSession('browser-a', 'conv_1');
+      expect(list).not.toHaveBeenCalled();
+      expect(events.some(event => event.type === 'session_catalog')).toBe(false);
+    } finally { await runtime.dispose(); }
+  });
+  it('serves one visible directory page and preserves its cursor without draining later pages', async () => {
+    const catalog = catalogFixture();
+    const listPage = vi.fn(async () => ({ items: [], nextCursor: 'page_two', projectionVersion: 1 }));
+    const list = vi.spyOn(catalog, 'list');
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default', catalog: { ...catalog, listPage }, gateway: gatewayFixture(),
+    });
+    try {
+      await runtime.selectWorkspace('browser-a', '/repo');
+      listPage.mockClear();
+      list.mockClear();
+      expect(await runtime.listSessionPage('browser-a', { cursor: 'page_one', query: 'hello' }))
+        .toEqual({ items: [], nextCursor: 'page_two', projectionVersion: 1 });
+      expect(listPage).toHaveBeenCalledTimes(1);
+      expect(listPage).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'page_one', query: 'hello' }));
+      expect(list).not.toHaveBeenCalled();
+    } finally { await runtime.dispose(); }
+  });
+  it('consumes the authoritative selection page without querying the directory again', async () => {
+    const catalog = catalogFixture();
+    const list = vi.spyOn(catalog, 'list');
+    const workspace = { id: 'workspace_repo', displayName: 'repo', canonicalPath: '/repo' };
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default', catalog,
+      gateway: gatewayFixture({
+        submit: async envelope => ({
+          requestId: envelope.requestId, idempotencyKey: envelope.idempotencyKey,
+          status: 'accepted', conversationId: null, workspaceId: 'workspace_repo',
+          directory: { workspace, page: { items: [], nextCursor: null, projectionVersion: 1 } },
+        } as never),
+      }),
+    });
+    try {
+      const result = await runtime.selectWorkspace('browser-a', '/repo');
+      expect(result).toMatchObject({
+        status: 'accepted', workspace, conversations: [], nextCursor: null, projectionVersion: 1,
+      });
+      expect(list).not.toHaveBeenCalled();
+    } finally { await runtime.dispose(); }
+  });
+  it('lists directory metadata without replaying unattached Conversations', async () => {
+    const replay = vi.fn(async () => ({ lastSequence: 0, snapshot: [], deltas: [] }));
+    const catalog = catalogFixture();
+    catalog.list = async () => Array.from({ length: 100 }, (_, index) => ({
+      ...sessionRecord(`conv_${index}`, false).session,
+      workspaceId: 'workspace_repo', preview: '',
+      activity: { state: 'idle' as const, taskId: null, updatedAt: '2026-09-26T00:00:00.000Z' },
+    }));
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default', catalog, gateway: gatewayFixture({ replay }),
+    });
+    try {
+      await runtime.selectWorkspace('browser-a', '/repo');
+      expect(replay).not.toHaveBeenCalled();
+      const sessions = await runtime.listSessions('browser-a');
+      expect(sessions).toHaveLength(100);
+      expect(sessions.every(item => item.workspaceId === 'workspace_repo')).toBe(true);
+      expect(replay).not.toHaveBeenCalled();
+    } finally { await runtime.dispose(); }
+  });
+
   it.each(['trace_delta', 'task_projection', 'turn_started'] as const)(
     'does not announce an empty running Turn from a retained %s fragment',
     async kind => {
@@ -334,6 +555,26 @@ describe('WebGatewaySessionRuntime', () => {
     });
   });
 
+  it('fences remembered attachments to the expected Workspace before activating or exposing history', async () => {
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default', catalog: catalogFixture(), gateway: gatewayFixture(),
+    });
+    try {
+      await runtime.selectWorkspace('browser-a', '/repo-other');
+      const before = runtime.getClientState('browser-a');
+      expect(await runtime.readSession('browser-a', 'conv_1')).toBeNull();
+      expect(await runtime.activateSession('browser-a', 'conv_1', 'workspace_other')).toEqual({
+        state: 'activation_blocked', sessionId: 'conv_1', reason: 'session_unavailable',
+      });
+      expect(runtime.getClientState('browser-a')).toEqual(before);
+      expect(await runtime.readSession('browser-a', 'conv_1')).toBeNull();
+      expect(await runtime.activateSession('browser-a', 'conv_1', 'workspace_repo')).toEqual({
+        state: 'active', sessionId: 'conv_1',
+      });
+      expect(await runtime.readSession('browser-a', 'conv_1')).not.toBeNull();
+    } finally { await runtime.dispose(); }
+  });
+
   it('isolates active Workspace and Conversation between browser clients', async () => {
     const runtime = new WebGatewaySessionRuntime({
       accountId: 'local-default',
@@ -369,11 +610,12 @@ describe('WebGatewaySessionRuntime', () => {
         updatedAt: '2026-08-27T09:00:00.000Z',
       },
     };
+    const list = vi.fn(async () => [directoryRecord]);
     const runtime = new WebGatewaySessionRuntime({
       accountId: 'local-default',
       catalog: {
         ...catalogForRecord(record),
-        list: async () => [directoryRecord],
+        list,
         search: async () => [directoryRecord],
       },
       gateway: gatewayFixture({
@@ -391,10 +633,12 @@ describe('WebGatewaySessionRuntime', () => {
     runtime.subscribe('browser-a', event => events.push(event));
 
     await runtime.selectWorkspace('browser-a', '/repo');
-    expect(listeners.has('workspace:workspace_repo')).toBe(true);
-    listeners.get('workspace:workspace_repo')?.({
+    events.length = 0;
+    list.mockClear();
+    expect(listeners.has('workspace_directory_workspace_repo')).toBe(true);
+    listeners.get('workspace_directory_workspace_repo')?.({
       ...outputEvent('workspace_activity_1', 1, []),
-      conversationId: 'workspace:workspace_repo',
+      conversationId: 'workspace_directory_workspace_repo',
       kind: 'workspace_activity_changed',
       payload: {
         workspaceId: 'workspace_repo',
@@ -403,16 +647,14 @@ describe('WebGatewaySessionRuntime', () => {
       },
     });
 
-    await waitFor(() => events.some(event => event.type === 'workspace_directory'));
+    await waitFor(() => events.some(event => event.type === 'workspace_conversation_changed'));
     expect(events).toContainEqual({
-      type: 'workspace_directory',
-      activeWorkspaceId: 'workspace_repo',
-      activeSessionId: null,
-      sessions: [expect.objectContaining({
-        id: 'conv_1',
-        activity: directoryRecord.activity,
-      })],
+      type: 'workspace_conversation_changed',
+      workspaceId: 'workspace_repo',
+      conversationId: 'conv_1',
+      changes: { activity: directoryRecord.activity },
     });
+    expect(list).not.toHaveBeenCalled();
     expect(events.some(event => event.type === 'trace_delta')).toBe(false);
     expect(events.some(event => event.type === 'final_answer')).toBe(false);
     await expect(runtime.readSession('browser-a', 'conv_1')).resolves.toBeNull();
@@ -994,6 +1236,7 @@ describe('WebGatewaySessionRuntime', () => {
     let appended: WebSessionRecord['turns'][number] | null = null;
     const projected: WebSessionRuntimeEvent[] = [];
     const record = sessionRecord('conv_1', true);
+    const events: WebSessionRuntimeEvent[] = [];
     const catalog = {
       ...catalogForRecord(record),
       appendTurn: async (_sessionId, turn) => {
@@ -1600,15 +1843,12 @@ describe('WebGatewaySessionRuntime', () => {
       payload: { lines: ['分析完成'] },
     });
 
-    await waitFor(() => events.some(event => event.type === 'session_catalog'));
-    expect(events).toContainEqual({
-      type: 'session_catalog',
-      activeSessionId: 'conv_1',
-      sessions: [expect.objectContaining({
-        id: 'conv_1',
-        title: '分析这个项目的模块边界',
-      })],
-    });
+    await waitFor(() => events.some(event => event.type === 'workspace_conversation_changed'));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'workspace_conversation_changed',
+      conversationId: 'conv_1',
+      changes: expect.objectContaining({ title: '分析这个项目的模块边界' }),
+    }));
   });
 
   it('rebuilds an explicit resume turn from durable task timeline and artifacts', async () => {
@@ -1736,6 +1976,55 @@ describe('WebGatewaySessionRuntime', () => {
     });
     expect(timelineProjectionCount).toBe(1);
     expect(artifactProjectionCount).toBe(1);
+  });
+
+  it('rehydrates artifacts for a historical Turn whose legacy record missed taskId', async () => {
+    const artifact = {
+      artifactId: 'artifact_legacy_turn',
+      taskId: 'task_legacy_turn',
+      publicationId: 'publication_legacy_turn',
+      displayName: '天气报告.md',
+      relativePath: '天气报告.md',
+      mediaType: 'text/markdown; charset=utf-8',
+      previewKind: 'markdown' as const,
+      previewable: true,
+      byteLength: 128,
+      contentHash: 'sha256:legacy-turn',
+      publishedAt: '2026-09-26T06:00:00.000Z',
+    };
+    const record = sessionRecord('conv_1', true);
+    record.turns = [{
+      id: 'turn_legacy_task_binding',
+      sessionId: 'conv_1',
+      userInput: '查询天气并生成报告',
+      status: 'completed',
+      finalAnswer: '报告已生成：天气报告.md',
+      taskId: null,
+      startedAt: '2026-09-26T05:00:00.000Z',
+      completedAt: '2026-09-26T05:05:00.000Z',
+      traceEvents: [],
+      executionTimeline: null,
+      artifactRefs: [],
+      artifacts: [],
+    }];
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogForRecord(record),
+      gateway: gatewayFixture(),
+      resolveTaskIdForTurn: turnId => (
+        turnId === 'turn_legacy_task_binding' ? artifact.taskId : null
+      ),
+      projectTaskArtifacts: taskId => taskId === artifact.taskId ? [artifact] : [],
+    });
+
+    await attachBrowser(runtime);
+    const rebuilt = await runtime.readSession('browser-a', 'conv_1');
+
+    expect(rebuilt?.turns[0]).toMatchObject({
+      taskId: artifact.taskId,
+      artifactRefs: [artifact.relativePath],
+      artifacts: [artifact],
+    });
   });
 
   it('rehydrates a historical retrying Task as a non-terminal turn', async () => {
@@ -1937,6 +2226,104 @@ describe('WebGatewaySessionRuntime', () => {
       type: 'artifacts',
       turnId: 'turn_live',
       taskId: artifact.taskId,
+      artifacts: [artifact],
+    });
+  });
+
+  it('binds a task projection to its Turn and persists published artifacts', async () => {
+    let listener: ((event: GatewayEventEnvelope) => void) | null = null;
+    let appended: WebSessionRecord['turns'][number] | null = null;
+    const artifact = {
+      artifactId: 'artifact_projection',
+      taskId: 'task_projection',
+      publicationId: 'publication_projection',
+      displayName: '天气报告.md',
+      relativePath: 'reports/weather.md',
+      mediaType: 'text/markdown; charset=utf-8',
+      previewKind: 'markdown' as const,
+      previewable: true,
+      byteLength: 64,
+      contentHash: 'sha256:projection',
+      publishedAt: '2026-09-26T06:00:00.000Z',
+    };
+    const record = sessionRecord('conv_1', true);
+    const events: WebSessionRuntimeEvent[] = [];
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: {
+        ...catalogForRecord(record),
+        appendTurn: async (_sessionId, turn) => {
+          appended = structuredClone(turn);
+          return record;
+        },
+      },
+      gateway: gatewayFixture({
+        subscribe: (
+          _accountId: string,
+          _conversationId: string,
+          next: (event: GatewayEventEnvelope) => void,
+        ) => {
+          listener = next;
+          return () => undefined;
+        },
+      }),
+      projectTaskArtifacts: taskId => taskId === artifact.taskId ? [artifact] : [],
+    });
+    runtime.subscribe('browser-a', event => events.push(event));
+
+    await attachBrowser(runtime);
+    await runtime.submit('browser-a', 'weather report', [], 'req_projection');
+    listener!(turnStartedEvent('event_started', 1, 'req_projection', 'turn_projection'));
+    listener!({
+      ...traceDeltaEvent('event_query', 2, 'turn_projection'),
+      requestId: 'req_projection',
+      payload: {
+        turnId: 'turn_projection',
+        status: 'running',
+        events: [{
+          id: 'query_projection',
+          sequence: 1,
+          occurredAt: '2026-08-19T00:00:00.000Z',
+          phase: 'intake',
+          actor: 'user',
+          kind: 'query_received',
+          status: 'completed',
+          title: 'User query received',
+          summary: 'weather report',
+          details: {},
+        }],
+      },
+    });
+    listener!({
+      ...outputEvent('event_task', 3, []),
+      requestId: 'req_projection',
+      turnId: 'turn_projection',
+      kind: 'task_projection',
+      payload: {
+        currentTaskId: artifact.taskId,
+        runtimeState: { runningTaskId: artifact.taskId },
+        plannerState: { status: 'idle' },
+      },
+    });
+    listener!({
+      ...outputEvent('event_final', 4, []),
+      requestId: 'req_projection',
+      turnId: 'turn_projection',
+      kind: 'final_answer',
+      payload: { lines: ['天气报告已完成'] },
+    });
+
+    await waitFor(() => appended !== null || events.some(event => event.type === 'artifacts'));
+    expect(events).toContainEqual({
+      type: 'artifacts',
+      turnId: 'turn_projection',
+      taskId: artifact.taskId,
+      artifacts: [artifact],
+    });
+    await waitFor(() => appended !== null);
+    expect(appended).toMatchObject({
+      taskId: artifact.taskId,
+      artifactRefs: [artifact.relativePath],
       artifacts: [artifact],
     });
   });
@@ -2836,6 +3223,62 @@ describe('WebGatewaySessionRuntime 可见账单', () => {
       await attachBrowser(runtime);
       const record = await runtime.readSession('browser-a', 'conv_1');
       expect(record!.turns[0]!.turnBilling).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it('durable Query overrides a stale system-command classification for a business Turn', async () => {
+    const store = createRuntimeBillingService();
+    try {
+      seedTurnQuery(store.contexts, { queryId: 'query_misclassified', turnId: 'turn_misclassified' });
+      store.metering.insertObservations([{
+        observationId: 'obs_misclassified',
+        spanId: null,
+        sourceId: 'planner',
+        sourceEventKey: 'evt_misclassified',
+        sourceScope: 'model_request',
+        callId: 'call_misclassified',
+        queryId: 'query_misclassified',
+        executionSegmentId: null,
+        taskId: 'task_misclassified',
+        stage: 'planning',
+        reason: 'primary',
+        resource: 'model_tokens',
+        metric: 'input',
+        unit: 'token',
+        quantityNumerator: '1000',
+        quantityDenominator: '1',
+        quality: 'reported',
+        countsTowardTotal: true,
+        payer: 'platform',
+        capturedAt: '2026-09-22T00:01:00.000Z',
+        providerBindingVersion: null,
+        evidenceRef: null,
+        normalizationRuleVersion: 'usage-normalizer-v1',
+      }]);
+      store.billService.finalizeQueryBill({
+        queryId: 'query_misclassified',
+        finalizedAt: '2026-09-22T00:02:00.000Z',
+      });
+      const turn = persistedTurnFixture({
+        id: 'turn_misclassified',
+        userInput: '中美领导人最近的会议都聊了点啥？',
+      });
+      turn.interactionKind = 'system_command';
+      const runtime = new WebGatewaySessionRuntime({
+        accountId: 'local-default',
+        catalog: billingCatalogFixture([turn]),
+        gateway: gatewayFixture(),
+        billing: store.billing,
+      });
+      runtime.subscribe('browser-a', () => undefined);
+      await attachBrowser(runtime);
+      const record = await runtime.readSession('browser-a', 'conv_1');
+      expect(record!.turns[0]!.turnBilling).toMatchObject({
+        queryId: 'query_misclassified',
+        userStatus: 'unconfirmed',
+      });
     } finally {
       store.close();
     }

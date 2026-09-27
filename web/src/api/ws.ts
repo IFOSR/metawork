@@ -18,11 +18,15 @@ import type {
 export interface WsHandlers {
   onHello?: (sessionId: string | null) => void;
   onAgentReadinessState?: (agents: AgentReadiness[]) => void;
-  onSessionCatalog?: (activeSessionId: string, sessions: WebSessionMetadata[]) => void;
+  onSessionCatalog?: (activeSessionId: string, sessions: WebSessionMetadata[], nextCursor?: string | null) => void;
+  onWorkspaceConversationChanged?: (
+    event: Extract<ServerMessage, { type: 'workspace_conversation_changed' }>,
+  ) => void;
   onWorkspaceDirectory?: (
     activeWorkspaceId: string,
     activeSessionId: string | null,
     sessions: WebSessionMetadata[],
+    nextCursor?: string | null,
   ) => void;
   onActiveSessionChanged?: (sessionId: string) => void;
   onWorkspaceChanged?: (
@@ -131,14 +135,18 @@ export class WsClient {
           this.handlers.onAgentReadinessState?.(message.agents);
           break;
         case 'session_catalog':
-          this.handlers.onSessionCatalog?.(message.activeSessionId, message.sessions);
+          this.handlers.onSessionCatalog?.(message.activeSessionId, message.sessions, message.nextCursor);
           break;
         case 'workspace_directory':
           this.handlers.onWorkspaceDirectory?.(
             message.activeWorkspaceId,
             message.activeSessionId,
             message.sessions,
+            message.nextCursor,
           );
+          break;
+        case 'workspace_conversation_changed':
+          this.handlers.onWorkspaceConversationChanged?.(message);
           break;
         case 'active_session_changed':
           this.handlers.onActiveSessionChanged?.(message.sessionId);

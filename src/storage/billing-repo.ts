@@ -70,6 +70,14 @@ interface AdjustmentRow {
   created_at: string;
 }
 
+interface BillLineRow {
+  bill_id: string;
+  line_id: string;
+  stage: string | null;
+  amount_micro_coin: string;
+  rationale: string;
+}
+
 interface CostEntryRow {
   cost_entry_id: string;
   observation_id: string;
@@ -140,6 +148,13 @@ export class SqlitePriceStore implements PriceStorePort {
     ).all() as PriceRow[];
     return rows.map(rowToPriceBook);
   }
+
+  findVersions(versions: readonly string[]): PriceBookVersion[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM billing_price_versions WHERE price_book_version IN (SELECT value FROM json_each(?))
+    `).all(JSON.stringify(versions)) as PriceRow[];
+    return rows.map(rowToPriceBook);
+  }
 }
 
 export class SqliteCostEntryStore implements CostEntryPort {
@@ -196,6 +211,14 @@ export class SqliteCostEntryStore implements CostEntryPort {
       SELECT * FROM cost_entries WHERE query_id = ?
       ORDER BY recorded_at, cost_entry_id
     `).all(queryId) as CostEntryRow[];
+    return rows.map(rowToCostEntry);
+  }
+
+  listForQueries(queryIds: readonly string[]): CostEntryRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM cost_entries WHERE query_id IN (SELECT value FROM json_each(?))
+      ORDER BY recorded_at, cost_entry_id
+    `).all(JSON.stringify(queryIds)) as CostEntryRow[];
     return rows.map(rowToCostEntry);
   }
 
@@ -337,20 +360,26 @@ export class SqliteBillStore implements BillStorePort {
   listLines(billId: string): QueryBillLineRecord[] {
     const rows = this.db.prepare(`
       SELECT * FROM query_bill_lines WHERE bill_id = ? ORDER BY line_id
-    `).all(billId) as Array<{
-      bill_id: string;
-      line_id: string;
-      stage: string | null;
-      amount_micro_coin: string;
-      rationale: string;
-    }>;
-    return rows.map(row => ({
-      billId: row.bill_id,
-      lineId: row.line_id,
-      stage: row.stage,
-      amountMicroCoin: row.amount_micro_coin,
-      rationale: row.rationale,
-    }));
+    `).all(billId) as BillLineRow[];
+    return rows.map(rowToBillLine);
+  }
+
+  listLinesForBills(billIds: readonly string[]): QueryBillLineRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM query_bill_lines WHERE bill_id IN (SELECT value FROM json_each(?))
+      ORDER BY line_id
+    `).all(JSON.stringify(billIds)) as BillLineRow[];
+    return rows.map(rowToBillLine);
+  }
+
+  findForHistory(queryIds: readonly string[], taskIds: readonly string[]): QueryBillRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM query_bills
+      WHERE query_id IN (SELECT value FROM json_each(?))
+         OR task_id IN (SELECT value FROM json_each(?))
+      ORDER BY created_at, bill_id
+    `).all(JSON.stringify(queryIds), JSON.stringify(taskIds)) as BillRow[];
+    return rows.map(rowToBill);
   }
 
   listBillsForAccount(accountId: string, limit?: number): QueryBillRecord[] {
@@ -462,17 +491,15 @@ export class SqliteBillAdjustmentStore implements BillAdjustmentPort {
       SELECT * FROM bill_adjustments WHERE bill_id = ?
       ORDER BY created_at, adjustment_id
     `).all(billId) as AdjustmentRow[];
-    return rows.map(row => ({
-      adjustmentId: row.adjustment_id,
-      billId: row.bill_id,
-      reason: row.reason,
-      amountMicroCoin: row.amount_micro_coin,
-      authorizedBy: row.authorized_by,
-      notes: row.notes,
-      externalState: row.external_state,
-      externalReference: row.external_reference,
-      createdAt: row.created_at,
-    }));
+    return rows.map(rowToAdjustment);
+  }
+
+  listForBills(billIds: readonly string[]): BillAdjustmentRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM bill_adjustments WHERE bill_id IN (SELECT value FROM json_each(?))
+      ORDER BY created_at, adjustment_id
+    `).all(JSON.stringify(billIds)) as AdjustmentRow[];
+    return rows.map(rowToAdjustment);
   }
 
   updateExternalState(
@@ -486,6 +513,30 @@ export class SqliteBillAdjustmentStore implements BillAdjustmentPort {
       WHERE adjustment_id = ?
     `).run(state, externalReference, adjustmentId);
   }
+}
+
+function rowToBillLine(row: BillLineRow): QueryBillLineRecord {
+  return {
+    billId: row.bill_id,
+    lineId: row.line_id,
+    stage: row.stage,
+    amountMicroCoin: row.amount_micro_coin,
+    rationale: row.rationale,
+  };
+}
+
+function rowToAdjustment(row: AdjustmentRow): BillAdjustmentRecord {
+  return {
+    adjustmentId: row.adjustment_id,
+    billId: row.bill_id,
+    reason: row.reason,
+    amountMicroCoin: row.amount_micro_coin,
+    authorizedBy: row.authorized_by,
+    notes: row.notes,
+    externalState: row.external_state,
+    externalReference: row.external_reference,
+    createdAt: row.created_at,
+  };
 }
 
 function rowToPriceBook(row: PriceRow): PriceBookVersion {

@@ -13,6 +13,9 @@ import { AgentReadinessBanner } from './AgentReadinessBanner';
 
 export function WorkspaceShell({
   sessions,
+  hasMoreConversations,
+  directoryLoading,
+  onLoadMoreConversations,
   workspaces,
   activeWorkspaceId,
   activeSessionId,
@@ -55,6 +58,9 @@ export function WorkspaceShell({
   onRemoveAttachment,
 }: {
   sessions: WebSessionMetadata[];
+  hasMoreConversations?: boolean;
+  directoryLoading?: boolean;
+  onLoadMoreConversations?: () => void;
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string | null;
   activeSessionId: string | null;
@@ -106,6 +112,9 @@ export function WorkspaceShell({
     >
       <SessionSidebar
         sessions={sessions}
+        hasMoreConversations={hasMoreConversations}
+        directoryLoading={directoryLoading}
+        onLoadMoreConversations={onLoadMoreConversations}
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
         activeSessionId={activeSessionId}

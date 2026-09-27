@@ -155,12 +155,13 @@ Idempotency rules:
   (reuse it, never re-plan) and a held claim with no proposal (retry after the
   lease expires).
 - The claim is **fenced**. `claimForPlanner()` records a
-  `planner_claim_token`, and `submitPlannerProposal()` /
-  `completePlannerTurn()` write the proposal and the `submitted` transition in
-  one transaction that re-checks the token. Two workers may both re-claim after
-  a lease expiry, but only the current claim holder can land a proposal, so the
-  Planner turn is at-most-once in effect even though a lease-expired re-claim may
-  repeat the model call.
+  `planner_claim_token`. Proposal submission, completion of a recovered
+  proposal, retryable claim release and claim failure all re-check that token;
+  proposal submission and completion write under a transaction. Two workers may
+  both re-claim after a lease expiry, but only the current claim holder can
+  change the Job, so a stale Worker cannot clear or fail a newer claim. A
+  lease-expired re-claim may still repeat the model call, but only one result can
+  land durably.
 - The Job is pinned to the configuration revision that authorized its
   generation. If the current Planner revision differs, the Worker fails the Job
   closed with `configuration_revision_changed` instead of carrying a proposal
@@ -199,7 +200,7 @@ apply or a *downstream* effect that only this Decision could have caused.
 | `park_for_replan` | Task is `parked` (or already terminal) |
 | `defer_task_plan_for_availability` | The Replan Job is `waiting_for_availability` **and** the Task is `blocked`. The deferral is persisted before the block, so a persisted deferral with a running Task must be re-applied (`retry_safe`) |
 | `wait_for_capacity` | The Task block is durable; the periodic capacity recheck owns the wake |
-| `resume_task` | No named Subtask is still `blocked` **and** a dispatch item for that Subtask in the same generation is durable. The downstream `dispatch_batch` carries its own Decision id, so requiring equality with the resume Decision would never succeed. The apply is replay-idempotent and must never short-circuit before emitting its observation |
+| `resume_task` | Every named Subtask is present and no longer `blocked`, and each has a causally descended dispatch item in the same generation. Recovery resumes use `recovery.subtaskId` and also match attempt kind, source attempt, binding fingerprint and configuration revision. A downstream `dispatch_batch` carries its own Decision id, so the inspector follows the dispatch Decision's causation back to the resume Decision. The apply is replay-idempotent and must never short-circuit before emitting its observation |
 | `wait_for_retry`, `wait_for_partition` | `retry_safe` only. The apply blocks the Task and emits the wake observation that is the real continuation trigger, so it must be re-emitted rather than assumed |
 | `no_op`, `probe_capacity` | No durable state write; `applied` |
 | `cancel_task`, `cancel_subtasks` | `reconcileUncertainCancellations` (dedicated) |
@@ -329,3 +330,12 @@ container coverage. `npm run smoke:metawork` remains the live native
 Planner-to-Executor gate; a live `planner_unavailable` scenario is not
 reproducible there without an external Planner fault, so it is covered by the
 account-runtime integration tests instead.
+
+## Navigation Read Models (2026-09-26)
+
+Navigation read models consume canonical lifecycle/activity projections; they
+do not own a Task, Subtask, Attempt, retry or Replan Job state machine.
+The Workspace directory materializes account/Conversation-scoped activity and
+uses durable invalidation plus a resumable rebuild. Conversation history and
+Gateway snapshots are presentation records, never scheduling or slot-release
+evidence. See ADR-0035's navigation amendment and the active September 26 plan.

@@ -50,11 +50,13 @@ export interface ApplicationPostconditionInspection {
 export interface DispatchItemFact {
   readonly attemptId: string;
   readonly decisionId: string;
+  readonly causationId: string | null;
   readonly subtaskId: string;
   readonly generationId: string;
   readonly attemptKind: string;
   readonly bindingFingerprint: string;
   readonly configurationRevision: string;
+  readonly sourceAttemptId: string | null;
   readonly status: KernelDispatchItemStatus;
 }
 
@@ -120,7 +122,13 @@ export function inspectApplicationAgainstSources(
       : null,
     replanRequest: action.type === 'schedule_replan' || action.type === 'request_replan'
       ? sources.findReplanRequest(action.taskId, action.generationId, action.sourceRevision)
-      : null,
+      : action.type === 'defer_task_plan_for_availability'
+        ? sources.findReplanRequest(
+            action.taskId,
+            action.proposalEvent.generationId,
+            action.proposalEvent.targetGraphRevision - 1,
+          )
+        : null,
     queuedReplanRequest: action.type === 'queue_generation_replan'
       ? sources.findReplanRequestById(action.requestId)
       : null,
@@ -201,7 +209,7 @@ export function inspectApplicationPostcondition(
       // outcome proves the wake was never emitted; re-applying the same
       // Decision re-blocks (a no-op) and re-emits it.
       return {
-        family: 'observation_only',
+        family: 'task_transition',
         verdict: 'retry_safe',
         reason: `${action.type} must re-emit its wake observation; re-application is idempotent`,
       };
@@ -235,23 +243,52 @@ function inspectResume(
   if (action.type !== 'resume_task') {
     return { family: 'not_managed', verdict: 'unresolved', reason: 'unexpected action' };
   }
-  const stillBlocked = action.subtaskIds.filter(subtaskId => (
+  const targetSubtaskIds = action.subtaskIds.length > 0
+    ? action.subtaskIds
+    : action.recovery
+      ? [action.recovery.subtaskId]
+      : [];
+  if (targetSubtaskIds.length === 0) {
+    return {
+      family: 'task_transition',
+      verdict: 'unresolved',
+      reason: 'resume does not name a Subtask or recovery target',
+    };
+  }
+  const missingSubtasks = targetSubtaskIds.filter(subtaskId => (
+    !facts.subtasks.some(item => item.id === subtaskId)
+  ));
+  if (missingSubtasks.length > 0) {
+    return {
+      family: 'task_transition',
+      verdict: 'unresolved',
+      reason: `resume targets missing Subtask(s): ${missingSubtasks.join(', ')}`,
+    };
+  }
+  const stillBlocked = targetSubtaskIds.filter(subtaskId => (
     facts.subtasks.find(item => item.id === subtaskId)?.status === 'blocked'
   ));
-  const dispatchLanded = action.subtaskIds.some(subtaskId => facts.dispatchItems.some(item => (
+  const dispatchLanded = targetSubtaskIds.every(subtaskId => facts.dispatchItems.some(item => (
     item.subtaskId === subtaskId
     && item.generationId === action.generationId
+    && item.causationId === facts.application.decisionId
     && item.status !== 'cancelled'
+    && (!action.recovery || (
+      item.attemptKind === action.recovery.attemptKind
+      && item.bindingFingerprint === action.recovery.bindingFingerprint
+      && item.configurationRevision === action.recovery.authorizedBinding.configurationRevision
+      && item.sourceAttemptId === action.recovery.sourceAttemptId
+    ))
   )));
   if (stillBlocked.length === 0 && dispatchLanded) {
     return {
-      family: 'observation_only',
+      family: 'task_transition',
       verdict: 'applied',
       reason: 'the resumed Subtask is unblocked and its downstream dispatch is durable',
     };
   }
   return {
-    family: 'observation_only',
+    family: 'task_transition',
     verdict: 'retry_safe',
     reason: stillBlocked.length > 0
       ? `resume is incomplete: Subtask ${stillBlocked.join(', ')} is still blocked`
@@ -390,19 +427,18 @@ function inspectTaskTransition(
     const namedSubtask = action.subtaskId === null
       ? null
       : facts.subtasks.find(item => item.id === action.subtaskId) ?? null;
-    const subtaskIncomplete = action.subtaskId !== null
-      && action.preserveSubtaskState !== true
-      && (namedSubtask === null
-        || !['blocked', 'done', 'cancelled'].includes(namedSubtask.status));
-    if (taskStatus === 'blocked' && subtaskIncomplete && namedSubtask === null) {
-      // The Decision named a Subtask that does not exist: the operation cannot
-      // be verified and must not be optimistically closed.
+    if (action.subtaskId !== null && namedSubtask === null) {
+      // A missing named target is not evidence that the Subtask was already
+      // resolved. The durable effect cannot be verified in either Task state.
       return {
         family: 'task_transition',
         verdict: 'unresolved',
         reason: `the named Subtask ${action.subtaskId} does not exist`,
       };
     }
+    const subtaskIncomplete = action.subtaskId !== null
+      && action.preserveSubtaskState !== true
+      && !['blocked', 'done', 'cancelled'].includes(namedSubtask!.status);
     if (taskStatus === 'blocked' && !subtaskIncomplete) {
       return { family: 'task_transition', verdict: 'applied', reason: 'the Task block is durable' };
     }

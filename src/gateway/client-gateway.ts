@@ -64,6 +64,7 @@ export interface ClientGatewayDeps {
   ): Promise<{
     status: 'accepted' | 'rejected';
     workspaceId?: string;
+    directory?: CommandReceipt['directory'];
     conversationId?: string;
     reason?: string;
   }>;
@@ -433,6 +434,7 @@ export class ClientGateway {
           status: result.status,
           conversationId: result.conversationId ?? null,
           workspaceId: result.workspaceId ?? null,
+          ...(result.directory ? { directory: result.directory } : {}),
           ...(result.reason ? { reason: result.reason } : {}),
         });
       }

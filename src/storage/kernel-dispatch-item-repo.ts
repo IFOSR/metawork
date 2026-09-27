@@ -37,6 +37,11 @@ export interface KernelDispatchItemRecord {
   updatedAt: string;
 }
 
+export type TimelineDispatchItemRecord = Pick<KernelDispatchItemRecord,
+  'attemptId' | 'taskId' | 'subtaskId' | 'attemptKind' | 'status'
+  | 'launchStartedAt' | 'createdAt' | 'updatedAt' | 'errorSummary'
+> & { authorizedBinding: Pick<AuthorizedExecutorBinding, 'agentClassRef'> };
+
 interface DispatchItemRow {
   attempt_id: string;
   decision_id: string;
@@ -243,6 +248,48 @@ export class KernelDispatchItemRepo {
       WHERE task_id = ?
       ORDER BY batch_order ASC, created_at ASC, attempt_id ASC
     `).all(taskId) as DispatchItemRow[]).map(rowToDispatchItem);
+  }
+
+  listByTasks(taskIds: readonly string[]): KernelDispatchItemRecord[] {
+    if (!taskIds.length) return [];
+    if (taskIds.length > 100) throw new Error('timeline_task_limit');
+    return (this.db.prepare(`SELECT * FROM kernel_dispatch_items
+      WHERE task_id IN (${taskIds.map(() => '?').join(',')})
+      ORDER BY batch_order ASC, created_at ASC, attempt_id ASC`)
+      .all(...taskIds) as DispatchItemRow[]).map(rowToDispatchItem);
+  }
+
+  listTimelineByTasks(taskIds: readonly string[]): TimelineDispatchItemRecord[] {
+    if (!taskIds.length) return [];
+    if (taskIds.length > 100) throw new Error('timeline_task_limit');
+    const rows = this.db.prepare(`
+      SELECT attempt_id, task_id, subtask_id, attempt_kind, status,
+        launch_started_at, created_at, updated_at, error_summary, agent_class_name,
+        json_extract(authorized_binding_json, '$.agentClassRef') AS agent_class_ref
+      FROM kernel_dispatch_items
+      WHERE task_id IN (${taskIds.map(() => '?').join(',')})
+      ORDER BY batch_order ASC, created_at ASC, attempt_id ASC
+    `).all(...taskIds) as Array<Pick<DispatchItemRow,
+      'attempt_id' | 'task_id' | 'subtask_id' | 'attempt_kind' | 'status'
+      | 'launch_started_at' | 'created_at' | 'updated_at' | 'error_summary' | 'agent_class_name'
+    > & { agent_class_ref: string | null }>;
+    return rows.map(row => {
+      if (row.agent_class_name !== row.agent_class_ref) {
+        throw new Error(`persisted dispatch AgentClass projection mismatch: ${row.attempt_id}`);
+      }
+      return {
+        attemptId: row.attempt_id,
+        taskId: row.task_id,
+        subtaskId: row.subtask_id,
+        attemptKind: row.attempt_kind,
+        status: row.status,
+        launchStartedAt: row.launch_started_at,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        errorSummary: row.error_summary,
+        authorizedBinding: { agentClassRef: row.agent_class_ref },
+      };
+    });
   }
 
   listPending(taskId?: string): KernelDispatchItemRecord[] {

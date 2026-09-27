@@ -2485,11 +2485,13 @@ export class MetaclawSession {
         listDispatchItems: id => this.dispatchItemRepo.listByTask(id).map(dispatch => ({
           attemptId: dispatch.attemptId,
           decisionId: dispatch.decisionId,
+          causationId: this.kernelDecisionRepo.findById(dispatch.decisionId)?.causationId ?? null,
           subtaskId: dispatch.subtaskId,
           generationId: dispatch.generationId,
           attemptKind: dispatch.attemptKind,
           bindingFingerprint: dispatch.bindingFingerprint,
           configurationRevision: dispatch.configurationRevision,
+          sourceAttemptId: dispatch.sourceAttemptId,
           status: dispatch.status,
         })),
         findWorkGraphRevision: (id, revision) => {

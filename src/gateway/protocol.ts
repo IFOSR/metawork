@@ -20,6 +20,7 @@ export type GatewayClientMessage =
       connectionId: string;
       conversationId: string;
       resumeFromSequence?: number;
+      acceptCursorReset?: boolean;
     }
   | {
       type: 'command';
@@ -41,6 +42,14 @@ export type GatewayServerMessage =
       attached: boolean;
       /** Gateway v2 显式能力清单（ADR-0031 / 统一 TUI 设计 §9.4）。 */
       capabilities: string[];
+      lastSequence?: number;
+    }
+  | {
+      type: 'replay_reset';
+      conversationId: string;
+      lastSequence: number;
+      reason: 'cursor_ahead' | 'cursor_expired' | 'replay_budget_exceeded';
+      snapshotVersion: 1;
     }
   | {
       type: 'output';
@@ -102,6 +111,7 @@ export function parseGatewayClientMessage(input: unknown): GatewayClientMessage 
       !isGatewayIdentifier(candidate.connectionId)
       || !isGatewayIdentifier(candidate.conversationId)
     ) return null;
+    if (candidate.acceptCursorReset !== undefined && typeof candidate.acceptCursorReset !== 'boolean') return null;
     if (
       candidate.resumeFromSequence !== undefined
       && (
@@ -116,6 +126,7 @@ export function parseGatewayClientMessage(input: unknown): GatewayClientMessage 
       type: 'attach',
       connectionId: candidate.connectionId,
       conversationId: candidate.conversationId,
+      ...(candidate.acceptCursorReset !== undefined ? { acceptCursorReset: candidate.acceptCursorReset as boolean } : {}),
       ...(candidate.resumeFromSequence !== undefined
         ? { resumeFromSequence: candidate.resumeFromSequence as number }
         : {}),

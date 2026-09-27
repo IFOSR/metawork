@@ -229,15 +229,6 @@ export class ConversationGatewayRuntime {
     principalId: string,
     origin?: GatewayTurnOrigin,
   ): Promise<ConversationCommandReceipt> {
-    const completionKey = this.completionKey(conversationId, idempotencyKey);
-    const recovered = await this.recoverDurableSubmission(
-      conversationId,
-      requestId,
-      idempotencyKey,
-      origin,
-    );
-    if (recovered) return recovered;
-
     if (command.kind === 'attach_conversation') {
       return {
         requestId,
@@ -257,19 +248,16 @@ export class ConversationGatewayRuntime {
           completion: Promise.resolve({ status: 'failed', reason }),
         };
       }
-      const page = await this.deps.readHistory(
-        conversationId,
-        command.cursor,
-        command.limit,
-      );
-      await this.publish(
-        conversationId,
-        requestId,
-        null,
-        'conversation_history_page',
-        page,
-        origin,
-      );
+      try {
+        const page = await this.deps.readHistory(conversationId, command.cursor, command.limit);
+        await this.publishHistoryPage(conversationId, requestId, page, command.acceptFragments === true, origin);
+      } catch (error) {
+        const reason = redactSensitiveText((error as Error).message);
+        return {
+          requestId, idempotencyKey, status: 'rejected', reason,
+          completion: Promise.resolve({ status: 'failed', reason }),
+        };
+      }
       return {
         requestId,
         idempotencyKey,
@@ -277,6 +265,12 @@ export class ConversationGatewayRuntime {
         completion: Promise.resolve({ status: 'completed' }),
       };
     }
+
+    const completionKey = this.completionKey(conversationId, idempotencyKey);
+    const recovered = await this.recoverDurableSubmission(
+      conversationId, requestId, idempotencyKey, origin,
+    );
+    if (recovered) return recovered;
 
     const conversation = await this.open(conversationId);
     const completion = deferredCompletion();
@@ -393,11 +387,25 @@ export class ConversationGatewayRuntime {
       const from = Math.min(outputLength, snapshot.output.length);
       const lines = snapshot.output.slice(from);
       outputLength = snapshot.output.length;
-      enqueueProjection(() => this.publish(conversation.conversationId, null, null, 'task_projection', {
+      const trace = conversation.getInteractionTrace();
+      const taskProjectionTurnId = trace?.taskId === snapshot.currentTaskId
+        ? trace.turnId
+        : null;
+      const taskProjectionRequestId = taskProjectionTurnId
+        ? this.turnRequestIds.get(taskProjectionTurnId) ?? null
+        : null;
+      enqueueProjection(() => this.publish(
+        conversation.conversationId,
+        taskProjectionRequestId,
+        taskProjectionTurnId,
+        'task_projection',
+        {
         currentTaskId: snapshot.currentTaskId,
         runtimeState: snapshot.runtimeState,
         plannerState: snapshot.plannerState,
-      }, activeOrigin()));
+        },
+        activeOrigin(),
+      ));
       if (lines.length > 0) {
         enqueueProjection(() => this.publish(conversation.conversationId, null, null, 'conversation_snapshot', {
           from,
@@ -653,6 +661,44 @@ export class ConversationGatewayRuntime {
     });
     this.deps.subscriptions.publish(appended, target);
     return appended;
+  }
+
+  private async publishHistoryPage(
+    conversationId: string, requestId: string, page: unknown, acceptFragments: boolean, target?: GatewayTurnOrigin,
+  ): Promise<void> {
+    const reserve = this.deps.journal.reserveSequence?.bind(this.deps.journal);
+    if (!reserve) throw new Error('conversation_history_transport_unavailable');
+    const safe = sanitizeGatewayEventPayload(page);
+    const body = Buffer.from(JSON.stringify(safe));
+    if (body.byteLength > 4 * 1024 * 1024) throw new Error('conversation_history_page_too_large');
+    const payloads: unknown[] = [];
+    if (body.byteLength <= MAX_GATEWAY_EVENT_PAYLOAD_BYTES) {
+      payloads.push(safe);
+    } else {
+      if (!acceptFragments) throw new Error('history_page_fragmentation_required');
+      // Additive Gateway v2 framing: clients apply a page only after hash-checked
+      // assembly. A long Unicode Turn is never truncated to fit one message.
+      const encoded = body.toString('base64');
+      const frameSize = 48 * 1024;
+      const count = Math.ceil(encoded.length / frameSize);
+      const id = this.id('history');
+      const hash = createHash('sha256').update(body).digest('hex');
+      for (let index = 0; index < count; index += 1) {
+        payloads.push({ transfer: {
+          id, index, count, byteLength: body.byteLength, hash,
+          data: encoded.slice(index * frameSize, (index + 1) * frameSize),
+        } });
+      }
+    }
+    for (const payload of payloads) {
+      if (gatewayEventPayloadBytes(payload) > MAX_GATEWAY_EVENT_PAYLOAD_BYTES) throw new Error('history_frame_too_large');
+      this.deps.subscriptions.publish({
+        protocolVersion: 2, eventId: this.id('event'),
+        sequence: await reserve(this.deps.accountId, conversationId),
+        accountId: this.deps.accountId, conversationId, requestId, turnId: null,
+        kind: 'conversation_history_page', payload, occurredAt: this.now(),
+      }, target);
+    }
   }
 
   private async publishResultDelivery(

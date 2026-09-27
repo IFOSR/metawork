@@ -208,6 +208,52 @@ describe('GenerationReplanWorker', () => {
     expect(fixture.repo.find(jobId)?.status).toBe('submitted');
   });
 
+  it('does not let a stale worker fail or release the current Planner claim', () => {
+    const fixture = createFixture();
+    const jobId = fixture.seedScheduledJob();
+
+    expect(fixture.repo.claimForPlanner(
+      jobId,
+      '2026-09-25T00:00:00.000Z',
+      fixture.cutoff(),
+      'claim-token-A',
+    )).toBe(true);
+    expect(fixture.repo.claimForPlanner(
+      jobId,
+      '2026-09-25T00:00:01.000Z',
+      fixture.cutoff(),
+      'claim-token-B',
+    )).toBe(true);
+
+    expect(fixture.repo.releasePlannerClaim(
+      jobId,
+      'claim-token-A',
+      'stale planner failure',
+      '2026-09-25T00:00:02.000Z',
+    )).toBe(false);
+    expect(fixture.repo.failPlannerClaim(
+      jobId,
+      'claim-token-A',
+      'stale planner failure',
+      '2026-09-25T00:00:03.000Z',
+    )).toBe(false);
+    expect(fixture.repo.find(jobId)).toMatchObject({
+      status: 'planning',
+      plannerClaimToken: 'claim-token-B',
+    });
+
+    expect(fixture.repo.releasePlannerClaim(
+      jobId,
+      'claim-token-B',
+      'current planner failure',
+      '2026-09-25T00:00:04.000Z',
+    )).toBe(true);
+    expect(fixture.repo.find(jobId)).toMatchObject({
+      status: 'planning',
+      plannerClaimToken: null,
+    });
+  });
+
   it('fails a Job pinned to a configuration revision that is no longer current', async () => {
     const fixture = createFixture();
     const jobId = fixture.seedScheduledJob();

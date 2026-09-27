@@ -6,8 +6,20 @@
  */
 
 import type { GatewayEventEnvelope, GatewayReplay } from './client-events.js';
+import type { TurnTaskObservation } from './turn-task-observation.js';
 
 export interface EventJournal {
+  /** Exact indexed historical evidence plus the watermark from the same serialized read. */
+  readTurnTaskObservation?(accountId: string, conversationId: string, turnId: string): Promise<{
+    lastSequence: number; observation: TurnTaskObservation | null;
+  }>;
+  /** Migration must preserve retained event identity, not synthesize replay summaries. */
+  exportRetained?(accountId: string, conversationId: string): Promise<{
+    lastSequence: number; events: GatewayEventEnvelope[];
+  }>;
+  snapshot?(accountId: string, conversationId: string): Promise<import('./event-journal-segment-index.js').ConversationSnapshot>;
+  /** Client reconnect is bounded; replay remains the explicit audit/recovery path. */
+  resume?(accountId: string, conversationId: string, afterSequence: number): Promise<GatewayReplay>;
   append(event: GatewayEventEnvelope): Promise<GatewayEventEnvelope>;
   appendBatch?(events: GatewayEventEnvelope[]): Promise<GatewayEventEnvelope[]>;
   replay(accountId: string, conversationId: string, afterSequence?: number): Promise<GatewayReplay>;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  inspectApplicationAgainstSources,
   inspectApplicationPostcondition,
   isRetrySafeUncertainReplanScheduling,
   isSatisfiedReplanScheduling,
@@ -180,6 +181,7 @@ function replanRequest(
     deferredPlan: null,
     deferredBindings: [],
     availabilityExplanation: null,
+    plannerClaimToken: null,
     createdAt: '2026-09-25T00:00:00.000Z',
     updatedAt: '2026-09-25T00:00:01.000Z',
     ...overrides,
@@ -325,9 +327,11 @@ describe('application postcondition inspection', () => {
       decisionId: 'decision-1',
       subtaskId: item.subtaskId,
       generationId: 'generation-1',
+      causationId: null,
       attemptKind: item.attemptKind,
       bindingFingerprint: item.bindingFingerprint,
       configurationRevision: 'revision-a',
+      sourceAttemptId: null,
       status: 'running',
       ...overrides,
     };
@@ -411,6 +415,11 @@ describe('application postcondition inspection', () => {
     expect(inspectApplicationPostcondition(facts({
       application: block,
       task: { id: taskId, status: 'blocked' },
+      subtasks: [],
+    }))).toMatchObject({ family: 'task_transition', verdict: 'unresolved' });
+    expect(inspectApplicationPostcondition(facts({
+      application: block,
+      task: { id: taskId, status: 'running' },
       subtasks: [],
     }))).toMatchObject({ family: 'task_transition', verdict: 'unresolved' });
   });
@@ -533,7 +542,7 @@ describe('application postcondition inspection', () => {
     }))).toMatchObject({ verdict: 'retry_safe' });
   });
 
-  it('bases the resume postcondition on the downstream dispatch, not on Decision id equality', () => {
+  it('bases the resume postcondition on the causal downstream dispatch', () => {
     const application = app({
       type: 'resume_task',
       taskId,
@@ -545,25 +554,120 @@ describe('application postcondition inspection', () => {
     expect(inspectApplicationPostcondition(facts({
       application,
       subtasks: [{ id: 'subtask-a', status: 'ready' }],
-    }))).toMatchObject({ family: 'observation_only', verdict: 'retry_safe' });
+    }))).toMatchObject({ family: 'task_transition', verdict: 'retry_safe' });
     // The dispatch that follows a resume carries the dispatch_batch Decision id,
     // so requiring equality with the resume Decision would never succeed.
     expect(inspectApplicationPostcondition(facts({
       application,
       subtasks: [{ id: 'subtask-a', status: 'ready' }],
-      dispatchItems: [dispatched('attempt-1', { decisionId: 'dispatch-decision' })],
-    }))).toMatchObject({ family: 'observation_only', verdict: 'applied' });
+      dispatchItems: [dispatched('attempt-1', {
+        decisionId: 'dispatch-decision',
+        causationId: 'decision-1',
+      })],
+    }))).toMatchObject({ family: 'task_transition', verdict: 'applied' });
     expect(inspectApplicationPostcondition(facts({
       application,
       subtasks: [{ id: 'subtask-a', status: 'blocked' }],
-      dispatchItems: [dispatched('attempt-1', { decisionId: 'dispatch-decision' })],
-    }))).toMatchObject({ family: 'observation_only', verdict: 'retry_safe' });
+      dispatchItems: [dispatched('attempt-1', {
+        decisionId: 'dispatch-decision',
+        causationId: 'decision-1',
+      })],
+    }))).toMatchObject({ family: 'task_transition', verdict: 'retry_safe' });
     // A dispatch item from a different generation is not this resume's effect.
     expect(inspectApplicationPostcondition(facts({
       application,
       subtasks: [{ id: 'subtask-a', status: 'ready' }],
       dispatchItems: [dispatched('attempt-1', { generationId: 'generation-2' })],
-    }))).toMatchObject({ family: 'observation_only', verdict: 'retry_safe' });
+    }))).toMatchObject({ family: 'task_transition', verdict: 'retry_safe' });
+    // A prior terminal dispatch from this generation is not evidence that this
+    // resume emitted its continuation.
+    expect(inspectApplicationPostcondition(facts({
+      application,
+      subtasks: [{ id: 'subtask-a', status: 'ready' }],
+      dispatchItems: [dispatched('old-attempt', {
+        decisionId: 'old-dispatch-decision',
+        causationId: 'old-resume-decision',
+        status: 'terminal',
+      })],
+    }))).toMatchObject({ family: 'task_transition', verdict: 'retry_safe' });
+  });
+
+  it('requires every resumed Subtask and supports the recovery resume variant', () => {
+    const multiSubtask = app({
+      type: 'resume_task',
+      taskId,
+      generationId: 'generation-1',
+      graphRevision: 1,
+      subtaskIds: ['subtask-a', 'subtask-b'],
+      blockerCategory: 'manual',
+    });
+    expect(inspectApplicationPostcondition(facts({
+      application: multiSubtask,
+      subtasks: [
+        { id: 'subtask-a', status: 'ready' },
+        { id: 'subtask-b', status: 'ready' },
+      ],
+      dispatchItems: [dispatched('attempt-a', {
+        subtaskId: 'subtask-a',
+        causationId: 'decision-1',
+      })],
+    }))).toMatchObject({ family: 'task_transition', verdict: 'retry_safe' });
+
+    const recovery = app({
+      type: 'resume_task',
+      taskId,
+      generationId: 'generation-1',
+      graphRevision: 1,
+      subtaskIds: [],
+      blockerCategory: 'unknown',
+      recovery: {
+        subtaskId: 'subtask-a',
+        sourceAttemptId: 'attempt-source',
+        authorizedBinding: binding(),
+        bindingFingerprint: 'fp',
+        attemptKind: 'continuation',
+        recoveryMode: 'recovery_packet',
+        defaultResourceGrant: [],
+      },
+    });
+    expect(inspectApplicationPostcondition(facts({
+      application: recovery,
+      subtasks: [{ id: 'subtask-a', status: 'ready' }],
+      dispatchItems: [dispatched('attempt-recovery', {
+        subtaskId: 'subtask-a',
+        causationId: 'decision-1',
+        attemptKind: 'continuation',
+        bindingFingerprint: 'fp',
+        sourceAttemptId: 'attempt-source',
+      })],
+    }))).toMatchObject({ family: 'task_transition', verdict: 'applied' });
+  });
+
+  it('loads the Replan Job when inspecting availability deferral through sources', () => {
+    const application = app({
+      type: 'defer_task_plan_for_availability',
+      taskId,
+      proposalEvent: {
+        generationId: 'generation-1',
+        targetGraphRevision: 2,
+      } as never,
+      authorizedBindingsBySubtask: {},
+      unavailableAgentClassNames: [],
+      explanation: 'no eligible Executor',
+    });
+    const request = replanRequest('waiting_for_availability');
+    const inspection = inspectApplicationAgainstSources(application, {
+      findTask: id => ({ id, status: 'blocked', dependencies: [] }),
+      listSubtasks: () => [],
+      listDispatchItems: () => [],
+      findWorkGraphRevision: () => null,
+      findReplanRequest: () => request,
+      findReplanRequestById: () => null,
+    });
+    expect(inspection).toMatchObject({
+      family: 'task_transition',
+      verdict: 'applied',
+    });
   });
 
   it('accepts a durable graph revision as plan activation', () => {
@@ -597,10 +701,24 @@ describe('application postcondition inspection', () => {
     }
   });
 
-  it('declares observation-only actions retry-safe and unknown actions unresolved', () => {
+  it('declares state-changing wake actions as Task transitions', () => {
     expect(inspectApplicationPostcondition(facts({
       application: app({ type: 'wait_for_retry', taskId, subtaskId: 'subtask-a', resumeAt: '2026-09-25T00:10:00.000Z', authorizedBinding: binding(), bindingFingerprint: 'fp' }),
-    }))).toMatchObject({ family: 'observation_only', verdict: 'retry_safe' });
+    }))).toMatchObject({ family: 'task_transition', verdict: 'retry_safe' });
+    expect(inspectApplicationPostcondition(facts({
+      application: app({ type: 'wait_for_partition', taskId, subtaskId: 'subtask-a', conflictingLeaseIds: ['lease-1'] }),
+    }))).toMatchObject({ family: 'task_transition', verdict: 'retry_safe' });
+    expect(inspectApplicationPostcondition(facts({
+      application: app({
+        type: 'resume_task',
+        taskId,
+        generationId: 'generation-1',
+        graphRevision: 1,
+        subtaskIds: ['subtask-a'],
+        blockerCategory: 'manual',
+      }),
+      subtasks: [{ id: 'subtask-a', status: 'ready' }],
+    }))).toMatchObject({ family: 'task_transition', verdict: 'retry_safe' });
     expect(inspectApplicationPostcondition(facts({
       application: app({ type: 'recover_workspace_attempt', taskId, subtaskId: 'subtask-a', workspaceId: 'ws', checkpointId: null, lostAttemptId: 'attempt-1', attemptKind: 'primary', recoveryMode: 'fresh', defaultResourceGrant: [] }),
     }))).toMatchObject({ verdict: 'not_managed' });

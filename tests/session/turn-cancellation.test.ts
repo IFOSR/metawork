@@ -171,4 +171,35 @@ describe('turn cancellation', () => {
     expect(cancelPlannerTurn).not.toHaveBeenCalled();
     expect(cancelTask).toHaveBeenCalledWith('task_x', '用户取消了当前轮');
   });
+
+  it('closes the active Turn as soon as Task cancellation is accepted', async () => {
+    const plannerRun = deferred<void>();
+    const { session, trace } = sessionWith({
+      planning: {
+        submit: async () => {
+          await plannerRun.promise;
+          return { status: 'accepted' } as never;
+        },
+      } as never,
+    });
+
+    const planning = session.executeGatewayCommand(
+      { kind: 'user_message', text: '继续执行当前任务' },
+      { interactionTurnId: 'turn_cancel_3' },
+    ).catch(() => undefined);
+    await vi.waitFor(() => {
+      expect(trace.getSnapshot()?.events.some(event => event.kind === 'planner_started')).toBe(true);
+    });
+
+    await session.executeGatewayCommand({ kind: 'cancel_turn', turnId: 'turn_cancel_3' });
+
+    expect(trace.getSnapshot()).toMatchObject({
+      turnId: 'turn_cancel_3',
+      status: 'cancelled',
+      completedAt: expect.any(String),
+    });
+
+    plannerRun.resolve();
+    await planning;
+  });
 });

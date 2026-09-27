@@ -103,13 +103,15 @@ function createFakeGateway(
 			counter += 1;
 			return { requestId: `req_attach_${counter}`, status: "accepted", conversationId };
 		},
-		listWorkspaceConversations: async (): Promise<GatewayCommandReceipt> => {
+		listWorkspaceConversations: async (_workspaceId, _query, _cursor, onRequest): Promise<GatewayCommandReceipt> => {
 			calls.push("list_conversations");
 			counter += 1;
+			onRequest?.(`req_list_${counter}`);
 			return { requestId: `req_list_${counter}`, status: "accepted", conversationId: null };
 		},
-		getConversationHistory: async (): Promise<GatewayCommandReceipt> => {
+		getConversationHistory: async (_conversationId, _cursor, _limit, onRequest): Promise<GatewayCommandReceipt> => {
 			counter += 1;
+			onRequest?.(`req_history_${counter}`);
 			return { requestId: `req_history_${counter}`, status: "accepted", conversationId: "conv_1" };
 		},
 		completeCommand: async (text, _cursor, conversationId): Promise<GatewayCommandReceipt> => {
@@ -188,6 +190,32 @@ function stateWithConversation(controller: MetaWorkTuiController): void {
 }
 
 describe("metawork-tui controller", () => {
+	it("loads older directory pages explicitly and resets a stale cursor with the same query", async () => {
+		const gateway = createFakeGateway();
+		const controller = new MetaWorkTuiController({ gateway });
+		await controller.start();
+		stateWithConversation(controller);
+		const list = vi.spyOn(gateway, "listWorkspaceConversations")
+			.mockImplementationOnce(async (_workspaceId, _query, _cursor, onRequest) => {
+				onRequest?.("first");
+				gateway.emit(event("directory", 1, "workspace_directory_snapshot", {
+					workspaceId: "ws_1", query: "", requestedCursor: null,
+					page: { items: [], nextCursor: "page_two" },
+				}, { requestId: "first" }));
+				return { requestId: "first", status: "accepted", conversationId: null };
+			})
+			.mockResolvedValueOnce({ requestId: "old", status: "rejected", reason: "stale_directory_cursor", conversationId: null })
+			.mockResolvedValueOnce({ requestId: "new", status: "accepted", conversationId: null });
+		await controller.refreshConversationDirectory();
+		await controller.loadMoreConversations();
+		expect(list.mock.calls).toEqual([
+			["ws_1", undefined, undefined, expect.any(Function)],
+			["ws_1", undefined, "page_two", expect.any(Function)],
+			["ws_1", undefined, undefined, expect.any(Function)],
+		]);
+		controller.stop();
+	});
+
 	it("applies completion published before the admission receipt", async () => {
 		const gateway = createFakeGateway();
 		gateway.completeCommand = async () => {
@@ -225,13 +253,14 @@ describe("metawork-tui controller", () => {
 		const controller = new MetaWorkTuiController({ gateway });
 		await controller.start();
 		await controller.attachConversation("conv_1", false);
+		const receipt = await history.mock.results.at(-1)!.value;
 		gateway.emit(event("conv_1", 1, "conversation_history_page", {
 			turns: [{ id: "old", status: "completed" }], nextCursor: "older",
-		}));
+		}, { requestId: receipt.requestId }));
 		await controller.attachConversation("conv_1", false);
-		expect(history).toHaveBeenLastCalledWith("conv_1", undefined, 50);
+		expect(history).toHaveBeenLastCalledWith("conv_1", undefined, 50, expect.any(Function));
 		await controller.loadOlderHistory();
-		expect(history).toHaveBeenLastCalledWith("conv_1", "older", 50);
+		expect(history).toHaveBeenLastCalledWith("conv_1", "older", 50, expect.any(Function));
 		controller.stop();
 	});
 
@@ -542,6 +571,150 @@ describe("metawork-tui controller", () => {
 		expect(turn.status).toBe("completed");
 		expect(turn.answer).toBe("完成");
 		expect(controller.getView().client.connection).toBe("ready");
+	});
+
+	it("clears transient reconnect notices after recovery without changing the selected completed Turn or draft", async () => {
+		const gateway = createFakeGateway({
+			replay: {
+				lastSequence: 2,
+				snapshot: [event("conv_1", 1, "turn_started", {}, { turnId: "turn_1" })],
+				deltas: [event("conv_1", 2, "final_answer", { lines: ["done"] }, { turnId: "turn_1" })],
+			},
+		});
+		const controller = new MetaWorkTuiController({ gateway, conversationId: "conv_1" });
+		try {
+			await controller.start();
+			controller.setDraft("keep draft");
+			vi.spyOn(gateway, "connect")
+				.mockRejectedValueOnce(new Error("connect ENOENT /tmp/restarting.sock"))
+				.mockRejectedValueOnce(new Error("connect ECONNREFUSED /tmp/restarting.sock"));
+			for (let failures = 1; failures <= 2; failures += 1) {
+				gateway.disconnect();
+				await vi.waitFor(() => expect(controller.getView().client.notices).toHaveLength(failures));
+				expect(controller.getView().client.connection).toBe("closed");
+			}
+			gateway.disconnect();
+			await vi.waitFor(() => expect(controller.getView().client.connection).toBe("ready"));
+			expect(controller.getView().client.notices).toEqual([]);
+			expect(controller.getView().selectedTurn).toMatchObject({ id: "turn_1", status: "completed", answer: "done" });
+			expect(controller.getView().client.ui.drafts.conv_1).toBe("keep draft");
+		} finally { controller.stop(); }
+	});
+
+	it("preserves unrelated notices and newer history errors when clearing a recovered connection error", async () => {
+		const gateway = createFakeGateway();
+		const controller = new MetaWorkTuiController({ gateway, conversationId: "conv_1" });
+		try {
+			await controller.start();
+			gateway.emit(event("conv_1", 1, "future_event", {}));
+			const prior = controller.getView().client.notices[0];
+			vi.spyOn(gateway, "connect").mockRejectedValueOnce(new Error("connect ENOENT /tmp/restarting.sock"));
+			gateway.disconnect();
+			await vi.waitFor(() => expect(controller.getView().client.connection).toBe("closed"));
+			vi.spyOn(gateway, "getConversationHistory").mockImplementationOnce(async (_id, _cursor, _limit, onRequest) => {
+				onRequest?.("new_history");
+				gateway.emit(event("conv_1", 2, "conversation_history_page", { transfer: null }, { requestId: "new_history" }));
+				return { requestId: "new_history", status: "accepted", conversationId: "conv_1" };
+			});
+			gateway.disconnect();
+			await vi.waitFor(() => expect(controller.getView().client.connection).toBe("ready"));
+			expect(controller.getView().client.notices).toEqual([
+				prior, { kind: "error", text: "History transfer incomplete or invalid; reload this page." },
+			]);
+		} finally { controller.stop(); }
+	});
+
+	it("ignores an old connection failure after a newer reconnect succeeds", async () => {
+		const gateway = createFakeGateway();
+		const controller = new MetaWorkTuiController({ gateway });
+		let rejectOld!: (error: Error) => void;
+		try {
+			await controller.start();
+			vi.spyOn(gateway, "connect").mockImplementationOnce(() => new Promise<void>((_resolve, reject) => {
+				rejectOld = reject;
+			}));
+			gateway.disconnect();
+			gateway.disconnect();
+			await vi.waitFor(() => expect(controller.getView().client.connection).toBe("ready"));
+			rejectOld(new Error("old ENOENT"));
+			await new Promise<void>(resolve => setImmediate(resolve));
+			expect(controller.getView().client.connection).toBe("ready");
+			expect(controller.getView().client.notices).toEqual([]);
+		} finally { controller.stop(); }
+	});
+
+	it.each(["connect", "resume", "history"] as const)(
+		"does not let stale %s success clear a newer reconnect failure",
+		async phase => {
+			const gateway = createFakeGateway();
+			const controller = new MetaWorkTuiController({ gateway, conversationId: "conv_1" });
+			let release!: () => void;
+			const held = new Promise<void>(resolve => { release = resolve; });
+			let entered = false;
+			try {
+				await controller.start();
+				const connect = vi.spyOn(gateway, "connect");
+				if (phase === "connect") connect.mockImplementationOnce(async () => { entered = true; await held; });
+				if (phase === "resume") vi.spyOn(gateway, "resume").mockImplementationOnce(async () => {
+					entered = true;
+					await held;
+					return { lastSequence: 0, snapshot: [], deltas: [] };
+				});
+				if (phase === "history") vi.spyOn(gateway, "getConversationHistory").mockImplementationOnce(async () => {
+					entered = true;
+					await held;
+					return { requestId: "old_history", status: "accepted", conversationId: "conv_1" };
+				});
+				gateway.disconnect();
+				await vi.waitFor(() => expect(entered).toBe(true));
+				connect.mockRejectedValueOnce(new Error("new ENOENT"));
+				gateway.disconnect();
+				await vi.waitFor(() => expect(controller.getView().client.connection).toBe("closed"));
+				const newerNotice = controller.getView().client.notices.at(-1);
+				release();
+				await new Promise<void>(resolve => setImmediate(resolve));
+				expect(controller.getView().client.connection).toBe("closed");
+				expect(controller.getView().client.notices.at(-1)).toBe(newerNotice);
+			} finally { release(); controller.stop(); }
+		},
+	);
+
+	it("clears reconnect notices when successful navigation supersedes recovery", async () => {
+		const gateway = createFakeGateway();
+		const controller = new MetaWorkTuiController({ gateway, conversationId: "conv_1" });
+		let rejectOld!: (error: Error) => void;
+		try {
+			await controller.start();
+			const connect = vi.spyOn(gateway, "connect").mockRejectedValueOnce(new Error("connect ENOENT"));
+			gateway.disconnect();
+			await vi.waitFor(() => expect(controller.getView().client.connection).toBe("closed"));
+			connect.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectOld = reject; }));
+			gateway.disconnect();
+			await controller.attachConversation("conv_2", false);
+			expect(controller.getView().client.connection).toBe("ready");
+			expect(controller.getView().client.notices).toEqual([]);
+			rejectOld(new Error("superseded connection failure"));
+			await new Promise<void>(resolve => setImmediate(resolve));
+			expect(controller.getView().conversationId).toBe("conv_2");
+			expect(controller.getView().client.connection).toBe("ready");
+			expect(controller.getView().client.notices).toEqual([]);
+		} finally { controller.stop(); }
+	});
+
+	it("ignores reconnect failure after the controller is stopped", async () => {
+		const gateway = createFakeGateway();
+		const controller = new MetaWorkTuiController({ gateway });
+		let rejectOld!: (error: Error) => void;
+		await controller.start();
+		vi.spyOn(gateway, "connect").mockImplementationOnce(() => new Promise<void>((_resolve, reject) => {
+			rejectOld = reject;
+		}));
+		gateway.disconnect();
+		controller.stop();
+		const stopped = controller.getView().client;
+		rejectOld(new Error("late ENOENT"));
+		await new Promise<void>(resolve => setImmediate(resolve));
+		expect(controller.getView().client).toBe(stopped);
 	});
 
 	it("projects the workspace directory snapshot that uses canonicalPath", async () => {

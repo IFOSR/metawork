@@ -2,7 +2,7 @@ import { createConnection, type Socket } from 'node:net';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ClientGateway } from '../../src/gateway/client-gateway.js';
 import type { GatewayCommandEnvelope } from '../../src/gateway/client-protocol.js';
 import type { GatewayEventEnvelope, GatewayReplay } from '../../src/gateway/client-events.js';
@@ -21,6 +21,44 @@ afterEach(async () => {
 });
 
 describe('MetaclawGatewayServer lifecycle', () => {
+  it.each([true, false])('bounds reconnect and negotiates cursor reset support (%s)', async acceptCursorReset => {
+    const journal = {
+      ...replayJournal(async () => { throw new Error('audit_replay_forbidden'); }),
+      resume: vi.fn(async () => ({
+        ...replayWith(outputEvent('latest', 'conv_reset', ['bounded snapshot'])),
+        cursorReset: { reason: 'cursor_ahead' as const, sequence: 1 },
+      })),
+    };
+    const fixture = await createFixture({ journal });
+    await fixture.server.start();
+    const client = await connect(fixture.socketPath);
+    try {
+      await client.next(message => message.type === 'hello');
+      client.socket.write(encodeJsonLine({
+        type: 'attach', connectionId: 'native_tui', conversationId: 'conv_reset',
+        resumeFromSequence: 999, acceptCursorReset,
+      }));
+      await client.next(message => message.type === 'error'
+        || (message.type === 'hello' && message.attached));
+      expect(journal.resume).toHaveBeenCalledWith('local-default', 'conv_reset', 999);
+      if (acceptCursorReset) {
+        const messages = client.messages();
+        const resetIndex = messages.findIndex(message => message.type === 'replay_reset');
+        const eventIndex = messages.findIndex(message => message.type === 'event');
+        expect(resetIndex).toBeGreaterThan(0);
+        expect(eventIndex).toBeGreaterThan(resetIndex);
+        expect(messages[resetIndex]).toEqual({
+          type: 'replay_reset', conversationId: 'conv_reset', lastSequence: 1,
+          reason: 'cursor_ahead', snapshotVersion: 1,
+        });
+        expect(messages.at(-1)).toMatchObject({ type: 'hello', attached: true, lastSequence: 1 });
+      } else {
+        expect(client.messages()).toContainEqual({ type: 'error', message: 'gateway_cursor_reset_required' });
+        expect(client.messages().some(message => message.type === 'event')).toBe(false);
+      }
+    } finally { client.socket.destroy(); await fixture.server.stop(); }
+  });
+
   it('closes connection admission synchronously when stop begins', async () => {
     const fixture = await createFixture();
     await fixture.server.start();

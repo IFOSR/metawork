@@ -1,7 +1,134 @@
 import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 42;
+export const CURRENT_SCHEMA_VERSION = 44;
+
+const GATEWAY_COMMAND_ADMISSION_SQL = `
+  CREATE TABLE IF NOT EXISTS gateway_command_admissions (
+    account_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    state TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    PRIMARY KEY (account_id, idempotency_key)
+  );
+  CREATE INDEX IF NOT EXISTS gateway_command_admissions_recoverable
+    ON gateway_command_admissions (account_id, idempotency_key)
+    WHERE state != 'terminal';
+  CREATE TABLE IF NOT EXISTS gateway_command_admission_imports (
+    account_id TEXT PRIMARY KEY
+  );
+`;
+
+const NAVIGATION_PROJECTION_SQL = `
+  CREATE TABLE IF NOT EXISTS conversation_metadata_projection (
+    account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, metadata_json TEXT NOT NULL,
+    PRIMARY KEY (account_id, conversation_id)
+  );
+  CREATE TABLE IF NOT EXISTS gateway_journal_streams (
+    account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, last_sequence INTEGER NOT NULL,
+    snapshot_json TEXT NOT NULL, replay_floor INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (account_id, conversation_id)
+  );
+  CREATE TABLE IF NOT EXISTS gateway_journal_segments (
+    account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, segment_id TEXT NOT NULL,
+    first_sequence INTEGER NOT NULL, last_sequence INTEGER NOT NULL, byte_length INTEGER NOT NULL,
+    PRIMARY KEY (account_id, conversation_id, segment_id)
+  );
+  CREATE INDEX IF NOT EXISTS gateway_journal_segment_range ON gateway_journal_segments
+    (account_id, conversation_id, last_sequence);
+  CREATE TABLE IF NOT EXISTS gateway_journal_event_index (
+    account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, event_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL, segment_id TEXT NOT NULL,
+    PRIMARY KEY (account_id, conversation_id, event_id)
+  );
+  CREATE INDEX IF NOT EXISTS gateway_journal_event_segment ON gateway_journal_event_index
+    (account_id, conversation_id, segment_id);
+  CREATE TABLE IF NOT EXISTS gateway_turn_task_observations (
+    account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, turn_id TEXT NOT NULL,
+    observation_json TEXT NOT NULL,
+    PRIMARY KEY (account_id, conversation_id, turn_id)
+  );
+  CREATE TABLE IF NOT EXISTS conversation_history_streams (
+    account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, kind TEXT NOT NULL,
+    last_sequence INTEGER NOT NULL, revision TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account_id, conversation_id, kind)
+  );
+  CREATE TABLE IF NOT EXISTS conversation_history_turns (
+    account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, kind TEXT NOT NULL,
+    sequence INTEGER NOT NULL, turn_id TEXT NOT NULL, body_json TEXT NOT NULL, byte_length INTEGER NOT NULL,
+    PRIMARY KEY (account_id, conversation_id, kind, sequence),
+    UNIQUE (account_id, conversation_id, kind, turn_id)
+  );
+  CREATE TRIGGER IF NOT EXISTS conversation_history_insert_revision
+  AFTER INSERT ON conversation_history_turns BEGIN
+    UPDATE conversation_history_streams SET revision = lower(hex(randomblob(16)))
+    WHERE account_id = NEW.account_id AND conversation_id = NEW.conversation_id AND kind = NEW.kind;
+  END;
+  CREATE TRIGGER IF NOT EXISTS conversation_history_update_revision
+  AFTER UPDATE ON conversation_history_turns BEGIN
+    UPDATE conversation_history_streams SET revision = lower(hex(randomblob(16)))
+    WHERE account_id = NEW.account_id AND conversation_id = NEW.conversation_id AND kind = NEW.kind;
+  END;
+  CREATE TRIGGER IF NOT EXISTS conversation_history_delete_revision
+  AFTER DELETE ON conversation_history_turns BEGIN
+    UPDATE conversation_history_streams SET revision = lower(hex(randomblob(16)))
+    WHERE account_id = OLD.account_id AND conversation_id = OLD.conversation_id AND kind = OLD.kind;
+  END;
+  CREATE TABLE IF NOT EXISTS workspace_directory_projection (
+    account_id TEXT NOT NULL, workspace_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
+    archived INTEGER NOT NULL, activity_rank INTEGER NOT NULL, updated_at TEXT NOT NULL,
+    title_search TEXT NOT NULL, summary_json TEXT NOT NULL, projection_version INTEGER NOT NULL,
+    PRIMARY KEY (account_id, conversation_id)
+  );
+  CREATE INDEX IF NOT EXISTS workspace_directory_page ON workspace_directory_projection
+    (account_id, workspace_id, archived, activity_rank DESC, updated_at DESC, conversation_id ASC);
+  CREATE INDEX IF NOT EXISTS workspace_directory_all_page ON workspace_directory_projection
+    (account_id, workspace_id, activity_rank DESC, updated_at DESC, conversation_id ASC);
+  CREATE TABLE IF NOT EXISTS workspace_directory_revisions (
+    account_id TEXT NOT NULL, workspace_id TEXT NOT NULL, revision INTEGER NOT NULL,
+    PRIMARY KEY (account_id, workspace_id)
+  );
+  CREATE TABLE IF NOT EXISTS workspace_directory_rebuilds (
+    account_id TEXT PRIMARY KEY, projection_version INTEGER NOT NULL, status TEXT NOT NULL,
+    source_fingerprint TEXT NOT NULL, checkpoint TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS workspace_directory_rebuild_candidates (
+    account_id TEXT NOT NULL, rebuild_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
+    PRIMARY KEY (account_id, rebuild_id, conversation_id)
+  );
+  CREATE TABLE IF NOT EXISTS workspace_directory_observations (
+    account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, rebuild_id TEXT NOT NULL,
+    removed INTEGER NOT NULL CHECK (removed IN (0, 1)),
+    PRIMARY KEY (account_id, conversation_id)
+  );
+  CREATE TABLE IF NOT EXISTS workspace_directory_dirty (
+    account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, revision INTEGER NOT NULL,
+    PRIMARY KEY (account_id, conversation_id)
+  );
+`;
+
+function installDirectoryInvalidationTriggers(db: Database.Database): void {
+  // These triggers record changed identities only. Canonical application
+  // projectors, not SQL, interpret the Task lifecycle and activity.
+  if (!tableExists(db, 'tasks')) return;
+  for (const table of ['tasks', 'kernel_dispatch_items', 'generation_replan_requests', 'attempt_sandboxes', 'kernel_decisions']) {
+    if (!tableExists(db, table)) continue;
+    for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+      const reference = operation === 'DELETE' ? 'OLD' : 'NEW';
+      const select = table === 'tasks'
+        ? `SELECT ${reference}.account_id, ${reference}.conversation_id, 1 WHERE ${reference}.conversation_id IS NOT NULL`
+        : `SELECT account_id, conversation_id, 1 FROM tasks WHERE id = ${reference}.task_id`;
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS directory_dirty_${table}_${operation.toLowerCase()}
+        AFTER ${operation} ON ${table}
+        BEGIN
+          INSERT INTO workspace_directory_dirty (account_id, conversation_id, revision)
+          ${select}
+          ON CONFLICT(account_id, conversation_id) DO UPDATE SET revision = revision + 1;
+        END;
+      `);
+    }
+  }
+}
 
 const CURRENT_SCHEMA_SQL = `
 CREATE TABLE tasks (
@@ -1309,13 +1436,30 @@ export function createSchema30MigrationContext(
 }
 
 /**
- * Creates schema 34 or applies the supported pre-release upgrades.
+ * Creates the current schema or applies the supported pre-release upgrades.
  */
 export function runMigrations(
   db: Database.Database,
   migrationContext?: Schema30MigrationContext,
 ): void {
   runBaseMigrations(db, migrationContext);
+  let version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
+  if (version === 42) {
+    db.transaction(() => {
+      db.exec(NAVIGATION_PROJECTION_SQL);
+      installDirectoryInvalidationTriggers(db);
+      const changed = db.prepare('UPDATE schema_version SET version = 43 WHERE version = 42').run();
+      if (changed.changes !== 1) throw new Error('schema version changed during 42 to 43 migration');
+    })();
+    version = 43;
+  }
+  if (version === 43) {
+    db.transaction(() => {
+      db.exec(GATEWAY_COMMAND_ADMISSION_SQL);
+      const changed = db.prepare('UPDATE schema_version SET version = 44 WHERE version = 43').run();
+      if (changed.changes !== 1) throw new Error('schema version changed during 43 to 44 migration');
+    })();
+  }
 }
 
 function runBaseMigrations(
@@ -1326,7 +1470,11 @@ function runBaseMigrations(
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
     ).all() as Array<{ version: number }>;
-    if (versions.length === 1 && versions[0]!.version === CURRENT_SCHEMA_VERSION) {
+    if (versions.length === 1 && [42, 43, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
+      return;
+    }
+    if (versions.length === 1 && versions[0]?.version === 41) {
+      migrateSchema41To42(db);
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 40) {
@@ -1466,6 +1614,9 @@ function runBaseMigrations(
   db.transaction(() => {
     db.exec('CREATE TABLE schema_version (version INTEGER PRIMARY KEY)');
     db.exec(CURRENT_SCHEMA_SQL);
+    db.exec(NAVIGATION_PROJECTION_SQL);
+    db.exec(GATEWAY_COMMAND_ADMISSION_SQL);
+    installDirectoryInvalidationTriggers(db);
     createBillingSchema(db);
     db.prepare('INSERT INTO schema_version (version) VALUES (?)')
       .run(CURRENT_SCHEMA_VERSION);

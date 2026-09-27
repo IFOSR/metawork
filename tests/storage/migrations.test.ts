@@ -1,11 +1,32 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import {
+  CURRENT_SCHEMA_VERSION,
   createSchema30MigrationContext,
   runMigrations,
 } from '../../src/storage/migrations.js';
 
 describe('current SQLite baseline', () => {
+  it('upgrades schema 42 navigation indexes transactionally and preserves existing facts', () => {
+    const db = new Database(':memory:');
+    try {
+      runMigrations(db);
+      db.exec(`
+        DROP TABLE workspace_directory_projection;
+        DROP TABLE workspace_directory_rebuilds;
+        DROP TABLE workspace_directory_revisions;
+        UPDATE schema_version SET version = 42;
+      `);
+      const before = db.prepare('SELECT COUNT(*) AS count FROM kernel_decisions').get();
+      runMigrations(db);
+      runMigrations(db);
+      expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: CURRENT_SCHEMA_VERSION });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM kernel_decisions').get()).toEqual(before);
+      expect(db.prepare('SELECT * FROM workspace_directory_projection').all()).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
   it('creates the current schema with durable Conversation slots and image artifacts', () => {
     const db = new Database(':memory:');
 
@@ -13,7 +34,7 @@ describe('current SQLite baseline', () => {
     expect(() => runMigrations(db)).not.toThrow();
 
     expect(db.prepare('SELECT version FROM schema_version').all())
-      .toEqual([{ version: 42 }]);
+      .toEqual([{ version: CURRENT_SCHEMA_VERSION }]);
     for (const table of [
       'tasks',
       'subtasks',
@@ -56,6 +77,8 @@ describe('current SQLite baseline', () => {
       'consumption_receipts',
       'bill_adjustments',
       'billing_source_instance',
+      'gateway_command_admissions',
+      'gateway_command_admission_imports',
     ]) {
       expect(db.prepare(`PRAGMA table_info(${table})`).all(), table).not.toEqual([]);
     }
@@ -193,6 +216,83 @@ describe('current SQLite baseline', () => {
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 
+  it('migrates an existing schema 41 database to 42 without losing replan data', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    db.pragma('foreign_keys = OFF');
+    db.prepare(`
+      INSERT INTO generation_replan_requests (
+        id, task_id, generation_id, source_revision, status, trigger_decision_id,
+        deferred_plan_json, availability_explanation, configuration_revision,
+        deferred_bindings_json, created_at, updated_at
+      ) VALUES (
+        'replan-41', 'task-41', 'generation-41', 7, 'failed', 'decision-41',
+        '{"steps":["preserve-me"]}', 'waiting for planner', 'configuration-41',
+        '[{"agentClassRef":"codex-cli"}]', ?, ?
+      )
+    `).run(NOW, NOW);
+
+    db.exec(`
+      ALTER TABLE generation_replan_requests RENAME TO generation_replan_requests_v42;
+      CREATE TABLE generation_replan_requests (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        generation_id TEXT NOT NULL,
+        source_revision INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK(status IN (
+          'pending_quiescence', 'planning', 'submitted', 'waiting_for_availability',
+          'resolved', 'cancelled', 'failed'
+        )),
+        trigger_decision_id TEXT NOT NULL,
+        quiescence_token TEXT,
+        error_summary TEXT,
+        deferred_plan_json TEXT,
+        availability_explanation TEXT,
+        configuration_revision TEXT NOT NULL,
+        deferred_bindings_json TEXT NOT NULL DEFAULT '[]',
+        planning_started_at TEXT,
+        submitted_at TEXT,
+        resolved_at TEXT,
+        cancelled_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(task_id, generation_id, source_revision),
+        FOREIGN KEY (task_id) REFERENCES tasks(id),
+        FOREIGN KEY (configuration_revision) REFERENCES configuration_revisions(revision_id)
+      );
+      INSERT INTO generation_replan_requests (
+        id, task_id, generation_id, source_revision, status, trigger_decision_id,
+        quiescence_token, error_summary, deferred_plan_json, availability_explanation,
+        configuration_revision, deferred_bindings_json, planning_started_at,
+        submitted_at, resolved_at, cancelled_at, created_at, updated_at
+      )
+      SELECT
+        id, task_id, generation_id, source_revision, status, trigger_decision_id,
+        quiescence_token, error_summary, deferred_plan_json, availability_explanation,
+        configuration_revision, deferred_bindings_json, planning_started_at,
+        submitted_at, resolved_at, cancelled_at, created_at, updated_at
+      FROM generation_replan_requests_v42;
+      DROP TABLE generation_replan_requests_v42;
+      CREATE INDEX idx_generation_replan_requests_revision
+        ON generation_replan_requests(configuration_revision);
+      UPDATE schema_version SET version = 41;
+    `);
+
+    expect(() => runMigrations(db)).not.toThrow();
+    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: CURRENT_SCHEMA_VERSION });
+    expect(columns(db, 'generation_replan_requests')).toContain('planner_claim_token');
+    expect(db.prepare(`
+      SELECT id, deferred_plan_json, availability_explanation, deferred_bindings_json
+      FROM generation_replan_requests
+      WHERE id = 'replan-41'
+    `).get()).toEqual({
+      id: 'replan-41',
+      deferred_plan_json: '{"steps":["preserve-me"]}',
+      availability_explanation: 'waiting for planner',
+      deferred_bindings_json: '[{"agentClassRef":"codex-cli"}]',
+    });
+  });
+
   it('adds the durable Planner Turn input table when upgrading schema 37', () => {
     const db = new Database(':memory:');
     db.exec(`
@@ -202,7 +302,7 @@ describe('current SQLite baseline', () => {
 
     runMigrations(db);
 
-    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 42 });
+    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: CURRENT_SCHEMA_VERSION });
     expect(db.prepare('PRAGMA table_info(planner_turn_inputs)').all())
       .toEqual(expect.arrayContaining([
         expect.objectContaining({ name: 'conversation_id' }),
@@ -253,7 +353,7 @@ describe('current SQLite baseline', () => {
 
     runMigrations(db);
 
-    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 42 });
+    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: CURRENT_SCHEMA_VERSION });
     expect(() => db.prepare(`
       INSERT INTO task_artifacts (
         artifact_id, account_id, task_id, display_name, relative_path,
@@ -354,7 +454,7 @@ describe('current SQLite baseline', () => {
     runMigrations(db, migrationContext());
     expect(() => runMigrations(db)).not.toThrow();
 
-    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 42 });
+    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: CURRENT_SCHEMA_VERSION });
     expect(readJson(db, 'SELECT executor_bindings_json FROM subtasks WHERE id = ?', 'subtask'))
       .toEqual([{
         agentClassRef: 'codex-engineering',
@@ -532,7 +632,7 @@ describe('current SQLite baseline', () => {
     `);
 
     expect(() => runMigrations(db)).toThrow(
-      'unsupported pre-release SQLite schema (26); create a fresh database for schema 42',
+      `unsupported pre-release SQLite schema (26); create a fresh database for schema ${CURRENT_SCHEMA_VERSION}`,
     );
     expect(db.prepare('SELECT version FROM schema_version').all())
       .toEqual([{ version: 26 }]);

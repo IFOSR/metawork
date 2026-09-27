@@ -15,13 +15,18 @@ function directory() {
         displayName: 'repo',
         canonicalPath: '/repo',
       }],
+      getWorkspace: async () => ({ id: 'workspace_repo', displayName: 'repo', canonicalPath: '/repo' }),
       listConversations: async (workspaceId: string) => {
         calls.push(`list:${workspaceId}`);
         return { items: [], nextCursor: null };
       },
       createConversation: async (workspaceId: string) => {
         calls.push(`create:${workspaceId}`);
-        return { id: 'conv_new' };
+        return {
+          id: 'conv_new', title: 'New conversation', archived: false,
+          createdAt: '2026-09-26T00:00:00.000Z', updatedAt: '2026-09-26T00:00:00.000Z',
+          workspaceBinding: { workspaceId },
+        };
       },
       archiveConversation: async (conversationId: string, workspaceId: string) => {
         calls.push(`archive:${workspaceId}:${conversationId}`);
@@ -31,6 +36,22 @@ function directory() {
 }
 
 describe('WorkspaceGatewayRuntime', () => {
+  it('returns the first page on selection without publishing a durable shared snapshot', async () => {
+    const fixture = directory();
+    const publish = vi.fn();
+    const publishConnection = vi.fn();
+    const runtime = new WorkspaceGatewayRuntime(fixture.value as never, { publish, publishConnection });
+    const result = await runtime.handle({ kind: 'select_workspace', path: '/repo' }, {
+      principalId: 'local', connectionId: 'conn_a', requestId: 'req_select',
+    });
+    expect(result).toMatchObject({
+      status: 'accepted',
+      directory: { workspace: { id: 'workspace_repo' }, page: { items: [], nextCursor: null } },
+    });
+    expect(publish).not.toHaveBeenCalled();
+    expect(publishConnection).toHaveBeenCalledTimes(1);
+    expect(fixture.calls).toEqual(['select:/repo', 'list:workspace_repo']);
+  });
   it('requires selection before directory commands', async () => {
     const fixture = directory();
     const runtime = new WorkspaceGatewayRuntime(fixture.value as never);
@@ -68,7 +89,6 @@ describe('WorkspaceGatewayRuntime', () => {
       'select:/repo',
       'list:workspace_repo',
       'create:workspace_repo',
-      'list:workspace_repo',
     ]);
   });
 

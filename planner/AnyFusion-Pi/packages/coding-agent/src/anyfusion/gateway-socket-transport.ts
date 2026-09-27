@@ -6,6 +6,7 @@ import type {
 	GatewayCommandReceipt,
 	GatewayEventEnvelope,
 	GatewayReplay,
+	GatewayReplayReset,
 	GatewayWireClientMessage,
 	GatewayWireServerMessage,
 } from "./gateway-protocol.ts";
@@ -39,8 +40,10 @@ interface PendingAttach {
 	connectionId: string;
 	conversationId: string;
 	afterSequence: number;
-	promise: Promise<void>;
-	resolve(): void;
+	replaySequence: number;
+	acceptCursorReset: boolean;
+	promise: Promise<number>;
+	resolve(lastSequence: number): void;
 	reject(error: Error): void;
 }
 
@@ -49,6 +52,7 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 	private connecting: Promise<void> | null = null;
 	private buffer = "";
 	private currentConversationId: string | null = null;
+	private currentConversationSequence = 0;
 	private connectionReady = false;
 	private desiredConversationId: string | null = null;
 	private desiredConnectionId = "tui";
@@ -63,7 +67,8 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 	private pendingAttach: PendingAttach | null = null;
 	private readonly eventListeners = new Set<(event: GatewayEventEnvelope) => void>();
 	private readonly disconnectListeners = new Set<() => void>();
-	private readonly deliveredEventIds = new Set<string>();
+	private readonly resetListeners = new Set<(reset: GatewayReplayReset) => void>();
+	private readonly deliveredEventIds = new Map<string, string>();
 	private readonly helloWaiters = new Set<{
 		resolve(): void;
 		reject(error: Error): void;
@@ -115,10 +120,9 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 		this.desiredConversationId = conversationId;
 		this.desiredConnectionId = connectionId;
 		this.desiredAfterSequence = afterSequence;
-		await this.ensureConnected();
-		await this.ensureAttached(connectionId, conversationId, afterSequence);
+		const lastSequence = await this.ensureAttached(connectionId, conversationId, afterSequence);
 		return {
-			lastSequence: afterSequence,
+			lastSequence,
 			snapshot: [],
 			deltas: [],
 		};
@@ -132,6 +136,11 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 	onDisconnect(listener: () => void): () => void {
 		this.disconnectListeners.add(listener);
 		return () => this.disconnectListeners.delete(listener);
+	}
+
+	onReplayReset(listener: (reset: GatewayReplayReset) => void): () => void {
+		this.resetListeners.add(listener);
+		return () => this.resetListeners.delete(listener);
 	}
 
 	close(): void {
@@ -206,19 +215,34 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 	private handleMessage(message: GatewayWireServerMessage): void {
 		if (message.type === "hello") {
 			this.connectionReady = true;
-			this.serverCapabilities = Array.isArray(message.capabilities)
-				? [...message.capabilities]
-				: [];
+			if (message.capabilities !== undefined) this.serverCapabilities = [...message.capabilities];
 			if (message.attached) this.currentConversationId = message.sessionId;
 			for (const waiter of this.helloWaiters) waiter.resolve();
 			this.helloWaiters.clear();
 			if (message.attached && this.pendingAttach?.conversationId === message.sessionId) {
+				this.currentConversationSequence = message.lastSequence ?? this.pendingAttach.replaySequence;
 				if (this.desiredConversationId === message.sessionId) {
 					this.desiredAfterSequence = 0;
 				}
-				this.pendingAttach.resolve();
+				this.pendingAttach.resolve(this.currentConversationSequence);
 				this.pendingAttach = null;
 			}
+			return;
+		}
+		if (message.type === "replay_reset") {
+			const pending = this.pendingAttach;
+			if (!pending || pending.conversationId !== message.conversationId) return;
+			if (!pending.acceptCursorReset) {
+				pending.reject(new Error("gateway_cursor_reset_required"));
+				this.pendingAttach = null;
+				return;
+			}
+			pending.replaySequence = message.lastSequence;
+			this.currentConversationSequence = message.lastSequence;
+			for (const [eventId, conversationId] of this.deliveredEventIds) {
+				if (conversationId === message.conversationId) this.deliveredEventIds.delete(eventId);
+			}
+			for (const listener of this.resetListeners) listener(message);
 			return;
 		}
 		if (message.type === "receipt") {
@@ -254,7 +278,16 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 
 	private publish(event: GatewayEventEnvelope): void {
 		if (this.deliveredEventIds.has(event.eventId)) return;
-		this.deliveredEventIds.add(event.eventId);
+		this.deliveredEventIds.set(event.eventId, event.conversationId);
+		while (this.deliveredEventIds.size > 2_000) {
+			this.deliveredEventIds.delete(this.deliveredEventIds.keys().next().value!);
+		}
+		if (this.pendingAttach?.conversationId === event.conversationId) {
+			this.pendingAttach.replaySequence = Math.max(this.pendingAttach.replaySequence, event.sequence);
+		}
+		if (this.currentConversationId === event.conversationId) {
+			this.currentConversationSequence = Math.max(this.currentConversationSequence, event.sequence);
+		}
 		for (const listener of this.eventListeners) listener(event);
 	}
 
@@ -263,20 +296,21 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 		this.socket.write(`${JSON.stringify(message)}\n`);
 	}
 
-	private ensureDesiredAttachment(): Promise<void> {
+	private async ensureDesiredAttachment(): Promise<void> {
 		if (!this.desiredConversationId) return Promise.resolve();
-		return this.ensureAttached(
+		await this.ensureAttached(
 			this.desiredConnectionId,
 			this.desiredConversationId,
 			this.desiredAfterSequence,
 		);
 	}
 
-	private ensureAttached(
+	private async ensureAttached(
 		connectionId: string,
 		conversationId: string,
 		afterSequence: number,
-	): Promise<void> {
+	): Promise<number> {
+		await this.connect();
 		if (this.pendingAttach) {
 			if (
 				this.pendingAttach.conversationId === conversationId
@@ -288,12 +322,12 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 			this.pendingAttach = null;
 		}
 		if (this.currentConversationId === conversationId && afterSequence === 0) {
-			return Promise.resolve();
+			return this.currentConversationSequence;
 		}
 
-		let resolve!: () => void;
+		let resolve!: (lastSequence: number) => void;
 		let reject!: (error: Error) => void;
-		const promise = new Promise<void>((done, fail) => {
+		const promise = new Promise<number>((done, fail) => {
 			resolve = done;
 			reject = fail;
 		});
@@ -301,6 +335,8 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 			connectionId,
 			conversationId,
 			afterSequence,
+			replaySequence: afterSequence,
+			acceptCursorReset: this.serverCapabilities.includes("bounded_replay_v1") && this.resetListeners.size > 0,
 			promise,
 			resolve,
 			reject,
@@ -311,6 +347,7 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 				connectionId,
 				conversationId,
 				resumeFromSequence: afterSequence,
+				...(this.pendingAttach.acceptCursorReset ? { acceptCursorReset: true } : {}),
 			});
 		} catch (error) {
 			this.pendingAttach = null;
@@ -336,6 +373,7 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 		this.buffer = "";
 		this.currentConversationId = null;
 		this.connectionReady = false;
+		this.serverCapabilities = [];
 		const error = new Error("Gateway connection closed");
 		for (const waiter of this.helloWaiters) waiter.reject(error);
 		this.helloWaiters.clear();
@@ -382,9 +420,16 @@ function isGatewayWireServerMessage(value: unknown): value is GatewayWireServerM
 	if (!isRecord(value) || typeof value.type !== "string") return false;
 	if (value.type === "hello") {
 		return isNonEmptyString(value.sessionId) && typeof value.attached === "boolean"
+			&& (value.lastSequence === undefined || isSequence(value.lastSequence))
 			&& (value.capabilities === undefined
 				|| (Array.isArray(value.capabilities)
 					&& value.capabilities.every((item) => typeof item === "string")));
+	}
+	if (value.type === "replay_reset") {
+		return isNonEmptyString(value.conversationId) && Buffer.byteLength(value.conversationId, "utf8") <= 256
+			&& isSequence(value.lastSequence) && value.snapshotVersion === 1
+			&& (value.reason === "cursor_ahead" || value.reason === "cursor_expired"
+				|| value.reason === "replay_budget_exceeded");
 	}
 	if (value.type === "receipt") return isGatewayReceipt(value.receipt);
 	if (value.type === "event") return isGatewayEvent(value.event);
@@ -439,4 +484,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0;
+}
+
+function isSequence(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
