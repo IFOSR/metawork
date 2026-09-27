@@ -340,6 +340,11 @@ docker run --rm metawork-span-test
 
 补充的回归测试：`tests/session/span-routing-session-integration.test.ts`（4）、`tests/routing/span-routing-smoke-script.test.ts`（4），以及 `credentials-file-secret-store`、`span-routing-config`、`span-routing` 中的命名空间隔离、跨提案并发、限时凭据、模型身份与取消用例。
 
+修正后重跑全量（本机 macOS，`npm test`）：`Test Files 10 failed | 424 passed | 5 skipped (439)`，`Tests 11 failed | 2684 passed | 12 skipped (2707)`。
+失败的 11 个与基线 `55184d8` 完全相同（同一批 Planner CLI 未构建 / Docker 不可用 / 既有测试与实现差异），无新增回归。
+
+额外发现并修复：并发限制器在“让位”时先递减计数再授权，导致让位后新到达的请求会在两个槽位仍被占用时被准入。现已改为由等待者直接继承槽位，并新增“让位后不得过准入”回归测试（修复前 peak=3，修复后 peak≤2）。
+
 仍未完成（已知缺口，不影响上述修复）：system/recovery 绑定不注入 advisor（该绑定的 replan 回调本就直接拒绝，Span 路径不可达）；真实 OpenRouter smoke 与 Docker 持久化验证仍待运维执行。
 - 文档 closing commit：`181a65a docs: plan Span routing integration`。
 - 产品实现 closing commit：本计划最后一批提交（含文档与验收）。
