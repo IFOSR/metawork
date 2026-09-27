@@ -37,6 +37,7 @@ import {
   type PlanProposedEvent,
 } from './span-plan-preparation.js';
 import type { SpanRoutingEvaluator } from '../routing/span-routing-types.js';
+import { SpanEvaluationAbortedError } from '../routing/span-routing-types.js';
 import type { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
 import { buildExecutorDisplayFacts } from '../execution/execution-transparency.js';
 import type { PlanningContextBuilder } from '../planning/planning-context-builder.js';
@@ -243,6 +244,12 @@ export class ConversationSession {
   private resultDeliveries: ConversationResultDelivery[] = [];
   private readonly submissionScope = new AsyncLocalStorage<{ turnId: string; detached: boolean }>();
   private readonly backgroundDeliveryScope = new AsyncLocalStorage<ConversationResultDelivery[]>();
+  /**
+   * Aborts in-flight external routing work for the current Turn. Replaced when a
+   * new Turn starts and aborted by the Client stop control, so a Span request
+   * cannot outlive the Turn that asked for it.
+   */
+  private turnCancellation = new AbortController();
   private attachedClients = 0;
   private disposePromise: Promise<void> | null = null;
   private readonly allowLegacyDirectReply: boolean;
@@ -626,15 +633,59 @@ export class ConversationSession {
     // Only touch the admission queries when Span is actually enabled, so a
     // disabled advisor cannot change when plan admission errors surface.
     if (!runtimeConfiguration?.routing?.span?.enabled) return event;
+    // A live Turn must always have an un-aborted signal, even when the proposal
+    // arrives through the host-bridge path that never reset it.
+    if (this.turnCancellation.signal.aborted && !this.isCancelledTurn()) {
+      this.turnCancellation = new AbortController();
+    }
+    // Reuse the durable fact when this exact event already reached the inbox.
+    // Resubmission after `transport_uncertain` must not pay for a second
+    // external request, and the first stored observation stays authoritative.
+    const persisted = this.deps.runtimePort.queries.findKernelEvent(event.id);
+    if (persisted?.type === 'plan_proposed') return persisted;
     const snapshot = this.buildPlanAdmissionSnapshot(event);
     if (!snapshot) return event;
-    return attachSpanRoutingObservation({
-      event,
-      configuration,
-      executorStatuses: snapshot.executorStatuses,
-      runtimeConfiguration,
-      evaluator,
-    });
+    try {
+      return await attachSpanRoutingObservation({
+        event,
+        configuration,
+        executorStatuses: snapshot.executorStatuses,
+        runtimeConfiguration,
+        evaluator,
+        signal: this.turnCancellation.signal,
+      });
+    } catch (error) {
+      // Cancellation only skips the optional ranking signal. The caller decides
+      // the Turn outcome, so a replan apply is never turned into a failure by
+      // the advisor going away. A raw `AbortError` is treated the same as the
+      // typed cancellation so a leaking adapter cannot turn an abort into an
+      // uncertain transport result.
+      if (error instanceof SpanEvaluationAbortedError
+        || (error instanceof Error && error.name === 'AbortError')) {
+        return event;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * The user cancelled this Turn; a proposal that raced the abort must not create
+   * or modify a Task, and must not be admitted on the strength of a late Span
+   * observation that arrived after the cancellation.
+   */
+  private cancelledProposalResult(
+    eventId: string,
+    planId: string | null,
+  ): PlannerProposalResult {
+    return {
+      status: 'rejected',
+      turnId: eventId,
+      submissionId: eventId,
+      planId,
+      rejectionType: 'validation',
+      issues: ['turn cancelled by user'],
+      kernel: null,
+    };
   }
 
   /** Releases stale admission state for this Conversation before planning. */
@@ -869,17 +920,7 @@ export class ConversationSession {
     eventId = `plan_event_${plan.id}_${generateInteractionId()}`,
   ): Promise<PlannerProposalResult> {
     if (this.isCancelledTurn()) {
-      // The user cancelled this turn; a proposal that raced the abort must not
-      // create or modify a Task.
-      return {
-        status: 'rejected',
-        turnId: eventId,
-        submissionId: eventId,
-        planId: plan.id,
-        rejectionType: 'validation',
-        issues: ['turn cancelled by user'],
-        kernel: null,
-      };
+      return this.cancelledProposalResult(eventId, plan.id);
     }
     if (!this.allowLegacyDirectReply && plan.action === 'direct_reply') {
       return {
@@ -904,22 +945,35 @@ export class ConversationSession {
       return { status: 'accepted' } as PlannerProposalResult;
     }
 
-    const event = await this.preparePlanProposedEvent(this.buildPlanProposedEvent({
-      plan,
-      configurationRevision: this.deps.planningContextBuilder
-        ?.getPlannerConfiguration().revisionId ?? null,
-      attachmentIds: (this.turnFactsFor(userInput)?.attachments ?? [])
-        .map(attachment => attachment.attachmentId),
-      proposalSource: 'initial',
-      eventId,
-      correlationId: plan.id,
-      causationId: null,
-      workspaceId: (await this.getWorkspace())?.workspaceId,
-      taskId: plan.task.taskId ?? undefined,
-      requestText: userInput,
-      generationId: `generation_${eventId}`,
-      targetGraphRevision: 1,
-    }));
+    let event: PlanProposedEvent;
+    try {
+      event = await this.preparePlanProposedEvent(this.buildPlanProposedEvent({
+        plan,
+        configurationRevision: this.deps.planningContextBuilder
+          ?.getPlannerConfiguration().revisionId ?? null,
+        attachmentIds: (this.turnFactsFor(userInput)?.attachments ?? [])
+          .map(attachment => attachment.attachmentId),
+        proposalSource: 'initial',
+        eventId,
+        correlationId: plan.id,
+        causationId: null,
+        workspaceId: (await this.getWorkspace())?.workspaceId,
+        taskId: plan.task.taskId ?? undefined,
+        requestText: userInput,
+        generationId: `generation_${eventId}`,
+        targetGraphRevision: 1,
+      }));
+    } catch (error) {
+      // External preparation is abortable; a cancelled Turn must fail closed
+      // instead of surfacing as an uncertain transport failure.
+      if (this.isCancelledTurn()) return this.cancelledProposalResult(eventId, plan.id);
+      throw error;
+    }
+    if (this.isCancelledTurn()) {
+      // Cancellation can arrive while the external advisor is still running and
+      // does not always abort it; never admit the proposal in that window.
+      return this.cancelledProposalResult(eventId, plan.id);
+    }
     const result = await port.commands.submitKernel(event, {
       buildSnapshot: claimed => this.buildPlanAdmissionSnapshot(
         claimed as Extract<KernelEvent, { type: 'plan_proposed' }>,
@@ -1220,6 +1274,8 @@ export class ConversationSession {
       return;
     }
     this.cancelledTurnIds.add(targetTurnId);
+    // Abort external routing work still in flight for this Turn.
+    this.turnCancellation.abort();
     this.appendTrace({
       phase: 'planning',
       actor: 'runtime',
@@ -1611,6 +1667,7 @@ export class ConversationSession {
     const interactionTurnId = options.interactionTurnId ?? `turn_${generateInteractionId()}`;
     // A new turn supersedes any cancellation latch from the previous one.
     this.cancelledTurnIds.clear();
+    this.turnCancellation = new AbortController();
     this.activeInteractionTurnId = interactionTurnId;
     if (startsTrace) {
       this.deps.interactionTraceStream?.beginTurn({
