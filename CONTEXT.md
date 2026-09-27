@@ -104,7 +104,9 @@ and the Server re-checks it before reading, so no revision can point the advisor
 at a Provider credential; Provider references into the internal namespace are
 also rejected. After the
 shared hard filter and before the `plan_proposed` event is durably enqueued, the
-Server may attach a bounded `spanRouting` observation to that event. Replay
+Server may attach a bounded `spanRouting` observation to that event. At the SDK
+boundary, structured state is sent as a JSON string (Respan's required wire
+format), with escaping included in the size budget. Replay
 reuses the persisted observation and never re-calls the advisor. `ControlKernel`
 re-validates the observation and then uses its probabilities only to order
 eligible candidates; it never widens the candidate set, and any absent, stale,

@@ -273,7 +273,9 @@ It never widens the candidate set and never produces a binding decision.
   scored fallback.
 - The advisor scores the real Provider model identity plus the pinned revision's
   existing capability, reasoning, cost, latency, quality and context facts, not
-  opaque internal aliases alone. The question/state contract carries its own
+  opaque internal aliases alone. The SDK boundary serializes structured state
+  into a JSON string, as required by Respan, and includes escaping in the request
+  size bound. The question/state contract carries its own
   `questionVersion`; a version change discards older observations in the Kernel
   rather than ranking on data produced under a different contract.
 - Span usage is retained as internal routing observation only. It does not

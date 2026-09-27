@@ -1100,7 +1100,9 @@ abort retains its physical slot until it settles.
 `npm run smoke:span-routing -- --integration` exercises four representative
 workloads through the real advisor, Kernel and SQLite replay, reports ordering,
 latency and usage, and requires zero extra calls on replay. It requires a valid
-replacement key and local development dependencies. The default smoke mode
+OpenRouter key and local development dependencies. The SDK boundary sends the
+structured state as a JSON string because Respan rejects object state; the
+request budget includes escaping. The default smoke mode
 only checks the Decisions API transport.
 
 Export the Feishu app secret before starting the runtime:

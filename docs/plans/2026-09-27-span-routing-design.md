@@ -1,7 +1,7 @@
 # Span 路由增强设计
 
 - 日期：2026-09-27
-- 状态：代码与本地验收已收尾（2026-09-27）；真实替换 Key 验收待执行。当前交付范围和证据见[设计收尾记录](2026-09-27-span-design-closure.md)。
+- 状态：代码、本地与真实 API 验收已完成（2026-09-27）；精确 Dockerfile 镜像构建仍受网络阻断。当前证据见[设计收尾记录](2026-09-27-span-design-closure.md)和[真实验收记录](2026-09-27-span-live-acceptance.md)。
 - 基线：`main@55184d84f848af4909508717199c8c3dd43f7739`
 - 工作分支：`feat/span-routing`
 - 实施计划：[Span routing implementation](2026-09-27-span-routing-implementation-plan.md)
@@ -163,11 +163,13 @@ Span usage 保存为内部路由观测，不冒充 Planner/Executor 用量或自
 
 ## 10. 完成记录
 
-设计与代码收尾日期：2026-09-27，closing implementation commit：`4190eea`。
+设计与代码收尾日期：2026-09-27，closing implementation commit：`9a4f455`。
 无客户端恢复、配置固定、并发与取消边界的最新结论见[收尾记录](2026-09-27-span-design-closure.md)。
 集中测试、Chrome 与缓存 Node 22.23.2 镜像中的 Docker 验证通过；精确 Dockerfile 镜像拉取
-被 Docker Hub 超时阻断。真实 OpenRouter 验收仍需替换 Key 后执行
-`npm run smoke:span-routing -- --integration`；尚未推送、合并或部署。
+被 Docker Hub 超时阻断。用户随后授权当前 Key，真实 API 验收已通过，并修复了
+对象 state 导致 HTTP 400 的问题（SDK 边界 JSON 字符串序列化）；默认 3 秒超时回退、
+单候选跳过和重放零请求均已验证。详见[真实验收记录](2026-09-27-span-live-acceptance.md)。
+尚未推送、合并或部署。
 以下前两轮评审记录保留历史进展，其关闭语义和未完成项以收尾记录为准。
 
 ### 评审修正（2026-09-27）

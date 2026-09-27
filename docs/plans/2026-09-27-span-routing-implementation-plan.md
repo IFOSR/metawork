@@ -11,13 +11,13 @@
 ---
 
 - 日期：2026-09-27
-- 状态：代码与本地验收已收尾；真实替换 Key 验收待执行。当前结论见[设计收尾记录](2026-09-27-span-design-closure.md)。
+- 状态：代码、本地验收与真实 API 验收已完成；精确 Dockerfile 镜像构建仍受网络阻断。见[设计收尾记录](2026-09-27-span-design-closure.md)和[真实验收记录](2026-09-27-span-live-acceptance.md)。
 - 设计：[Span 路由增强设计](2026-09-27-span-routing-design.md)
 - 起点：`55184d84f848af4909508717199c8c3dd43f7739`
 - 分支：`feat/span-routing`
 - Worktree：`/Users/ylfego/Program/agents_test/collection/metawork-span-routing`
 - 原工作树：`../metawork`，保留所有用户改动，不 checkout/reset/stash，不复制其未提交文件。
-- 计划与产品代码收尾日期：2026-09-27；closing implementation commit：`4190eea`（恢复与固定配置提交：`0af3345`）。
+- 计划与产品代码收尾日期：2026-09-27；closing implementation commit：`9a4f455`（真实接口字符串 state 修正；之前收尾提交 `4190eea`）。
 
 ## 实施前固定约束
 
@@ -376,5 +376,8 @@ docker run --rm metawork-span-test
 9 文件/82 项及 Planner 并发 1 项通过。宽范围回归 930 项通过、1 个已知基线失败；
 Planner seam 另有 40 项通过、1 个已知 CLI 构建基线失败。完整构建、根/Web 类型检查通过。
 本轮没有重跑全量 `npm test`。精确 Dockerfile 基础镜像拉取被 Docker Hub 超时阻断；
-真实 API 验收仍需替换 Key，使用 `npm run smoke:span-routing -- --integration`。
+真实 API 后续验收已完成，见[验收记录](2026-09-27-span-live-acceptance.md)。用户授权了当前
+Key，真实测试发现并修复了 Respan 要求字符串 `state` 的协议差异；三个评分场景、
+单候选跳过、默认 3 秒超时回退和重放零追加调用均通过。相关回归 71 项通过，构建与类型
+检查通过。精确 Dockerfile 再次尝试仍阻断于 Docker Hub token 请求超时。
 没有推送、合并或部署。

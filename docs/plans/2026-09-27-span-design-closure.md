@@ -2,9 +2,10 @@
 
 - Plan date: 2026-09-27
 - Completion date: 2026-09-27
-- Status: implementation and local acceptance complete; replacement-key live acceptance pending
+- Status: implementation, local acceptance and live API acceptance complete; exact Dockerfile image build network-blocked
+- Latest evidence: [live acceptance](2026-09-27-span-live-acceptance.md); the user authorized the current key and the replacement-key gate is closed.
 - Base: `feat/span-routing@3ef3986`
-- Implementation commits: `0af3345`, `4190eea` (closing implementation commit)
+- Implementation commits: `0af3345`, `4190eea`; live protocol correction / closing implementation commit: `9a4f455`
 - Scope: finish the approved Span-only design, including recovery without an attached client.
 
 ## Review findings and delivered behavior
@@ -74,11 +75,12 @@ Local logs: `/tmp/span-closure-final-focused.log`,
 
 ## Outstanding acceptance and release work
 
-- Provide a replacement OpenRouter key through advanced settings or the smoke's
-  credential input, then run `npm run smoke:span-routing -- --integration`.
-  The previously exposed key was not reused. Three scored samples call Span;
-  the single-candidate sample and durable replay do not. Live service behavior,
-  latency/cost and routing usefulness have not been re-established in this round.
+- Live API acceptance is now complete using the current key, explicitly
+  authorized by the user. Live testing exposed and fixed the string-state
+  protocol mismatch in `9a4f455`. Four scenarios passed; the default 3000 ms
+  deadline also demonstrated real timeout fallback and replay without another
+  call. See [live acceptance](2026-09-27-span-live-acceptance.md) for measurements.
+  Routing usefulness beyond these functional checks has not been established.
 - Re-run the exact pinned `Dockerfile.test` build when Docker Hub is reachable.
 - Existing unrelated baseline failures remain. No push, merge or deployment was
   performed by this closure.

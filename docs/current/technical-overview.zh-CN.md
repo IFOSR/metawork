@@ -918,8 +918,9 @@ Application Shell。相同事件并发准备合并结果，身份冲突直接拒
 服务端最多两个物理请求、128 个排队请求，移除到期等待者、拒绝迟到结果；忽略 abort 的
 传输在结束前继续占用物理槽位。Span 用量只作为内部路由观测，不新增用户计费阶段。
 
-`npm run smoke:span-routing -- --integration` 可用替换后的 Key 对四类任务运行真实
+`npm run smoke:span-routing -- --integration` 可用有效的 OpenRouter Key 对四类任务运行真实
 advisor → Kernel → SQLite 重放验收，记录排序、延迟、usage 和重放零追加调用。
+SDK 边界把结构化 state 序列化为 JSON 字符串（Respan 拒绝对象 state），并将转义计入请求预算。
 该模式需要本地开发依赖；默认 smoke 仅验证 Decisions API 传输。
 
 启动前导出飞书密钥：
