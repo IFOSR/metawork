@@ -1074,9 +1074,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   // revision's SecretStore reference; Planner, Executor, and clients never see
   // the key or the raw provider payload.
   const spanRoutingAdvisor = new SpanRoutingAdvisor({
-    resolveApiKey: async () => {
-      const active = await configurationService.getActiveSnapshot();
-      const span = active.config.routing?.span;
+    resolveApiKey: async configurationRevision => {
+      // Resolve the exact pinned revision, not the currently active one: a
+      // retried or replanned event must not be re-scored with newer policy.
+      const snapshot = await configurationService.getSnapshot(configurationRevision);
+      const span = snapshot.config.routing?.span;
       if (!span?.enabled || !span.apiKeyRef) return null;
       try {
         assertSecretReference(span.apiKeyRef);
