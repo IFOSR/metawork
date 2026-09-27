@@ -88,7 +88,10 @@ const ProviderDefinitionSchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional(),
   protocol: z.enum(['openai-compatible', 'anthropic']),
   baseUrl: credentialFreeHttpUrlSchema('Provider baseUrl'),
-  apiKeyRef: z.string().regex(SECRET_REFERENCE),
+  apiKeyRef: z.string().regex(SECRET_REFERENCE).refine(
+    reference => !/^(?:file-secret|keychain):anyfusion\/internal\//u.test(reference),
+    'Provider credentials cannot reference Server internal secrets',
+  ),
   region: ReferenceIdSchema,
   enabled: z.boolean(),
 }).strict();

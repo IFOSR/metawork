@@ -15,7 +15,7 @@ const scriptPath = join(projectRoot, 'scripts/smoke-span-routing.mjs');
 
 function runSmoke(
   stubSource: string,
-  options: { args?: string[]; env?: Record<string, string | undefined> } = {},
+  options: { args?: string[]; env?: Record<string, string | undefined>; preloadChild?: boolean } = {},
 ): { status: number | null; stdout: string; stderr: string } {
   const root = mkdtempSync(join(tmpdir(), 'span-smoke-'));
   try {
@@ -28,7 +28,8 @@ function runSmoke(
         cwd: projectRoot,
         encoding: 'utf8',
         timeout: 30_000,
-        env: { ...process.env, OPENROUTER_API_KEY: 'smoke-fake-credential', ...options.env },
+        env: { ...process.env, OPENROUTER_API_KEY: 'smoke-fake-credential', ...options.env,
+          ...(options.preloadChild ? { NODE_OPTIONS: `--import=${stubPath}` } : {}) },
       },
     );
     return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
@@ -57,6 +58,31 @@ function responseStub(body: string, status = 200): string {
 }
 
 describe('Span routing smoke script', () => {
+  it('runs the integration mode through Kernel and durable replay with intercepted HTTP', () => {
+    const result = runSmoke(`globalThis.fetch = async request => {
+      const body = await request.json();
+      return new Response(JSON.stringify({ model: 'respan/span-01-lite',
+        answers: Object.fromEntries(Object.keys(body.questions).map(id => [id, { type: 'noul', noul: 0.75 }])),
+        usage: { input_tokens: 10, output_tokens: 0, cost: 0 },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };`, { args: ['--integration'], preloadChild: true });
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output.samples).toHaveLength(4);
+    expect(output.samples.every((sample: any) => sample.replayCalls === 0)).toBe(true);
+    expect(result.stdout).not.toContain('smoke-fake-credential');
+  });
+
+  it('redacts unexpected model text and unknown usage fields', () => {
+    const result = runSmoke(responseStub(JSON.stringify({ model: 'RAW_SECRET_MODEL',
+      answers: { c000: { type: 'noul', noul: 0.5 }, c001: { type: 'noul', noul: 0.5 } },
+      usage: { input_tokens: 1, output_tokens: 0, raw: 'RAW_SECRET_USAGE' },
+    })));
+    expect(result.status).toBe(1);
+    expect(result.stdout + result.stderr).not.toContain('RAW_SECRET');
+    expect(JSON.parse(result.stdout)).toMatchObject({ errorCode: 'span_unexpected_model', model: null });
+  });
+
   it('fails when the provider returns no answers', () => {
     const result = runSmoke(responseStub(JSON.stringify({
       model: 'respan/span-01-lite-20260925',

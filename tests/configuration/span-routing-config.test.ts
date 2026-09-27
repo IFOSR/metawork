@@ -126,6 +126,12 @@ function snapshot(revisionId: string, config: Record<string, unknown>): Configur
 }
 
 describe('Span routing configuration schema', () => {
+  it('rejects Provider references into the Server internal namespace', () => {
+    const config = baseConfiguration() as any;
+    config.providers.openai.apiKeyRef = SPAN_ROUTING_SECRET_REFERENCE;
+    expect(AnyFusionConfigurationV2Schema.safeParse(config).success).toBe(false);
+  });
+
   it('parses revisions created before the routing section existed without materializing it', () => {
     const config = parseAnyFusionConfigurationV2(baseConfiguration());
     expect(config.routing).toBeUndefined();

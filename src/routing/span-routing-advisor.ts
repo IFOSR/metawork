@@ -2,6 +2,7 @@ import { OpenRouter } from '@openrouter/sdk';
 import { validateSpanDecisionsResponse } from './span-response-validator.js';
 import {
   SPAN_MAX_CONCURRENT_REQUESTS,
+  SPAN_MAX_QUEUED_REQUESTS,
   SpanEvaluationAbortedError,
   type SpanRoutingEvaluator,
   type SpanSubtaskEvaluationRequest,
@@ -151,7 +152,7 @@ export class SpanRoutingAdvisor implements SpanRoutingEvaluator {
     const startedAt = Date.now();
     if (input.signal?.aborted) throw new SpanEvaluationAbortedError();
     const fallback = (
-      reason: 'span_timeout' | 'span_http_error' | 'span_invalid_response' | 'span_candidate_mismatch',
+      reason: 'span_timeout' | 'span_http_error' | 'span_invalid_response' | 'span_candidate_mismatch' | 'span_proposal_budget_exhausted',
     ): SpanSubtaskObservation => ({
       subtaskId: request.subtaskId,
       candidateSetFingerprint: request.candidateSetFingerprint,
@@ -161,6 +162,7 @@ export class SpanRoutingAdvisor implements SpanRoutingEvaluator {
     });
 
     const release = await this.limiter.acquire(input.deadlineMs, input.signal);
+    if (release === 'full') return fallback('span_proposal_budget_exhausted');
     if (!release) {
       if (input.signal?.aborted) throw new SpanEvaluationAbortedError();
       return fallback('span_timeout');
@@ -178,16 +180,26 @@ export class SpanRoutingAdvisor implements SpanRoutingEvaluator {
     const onAbort = () => controller.abort();
     input.signal?.addEventListener('abort', onAbort, { once: true });
     const timeout = setTimeout(() => controller.abort(), remaining);
+    let rejectAborted: (() => void) | undefined;
     try {
-      const response = await input.client.create(
+      const operation = Promise.resolve().then(() => input.client.create(
         {
           model: request.request.model,
           state: request.request.state,
           questions: request.request.questions,
         },
         { signal: controller.signal, timeoutMs: remaining },
-      );
+      ));
+      // Keep the physical slot until the transport actually settles, even if a
+      // faulty transport ignores abort. The caller still meets its deadline.
+      void operation.finally(release).catch(() => undefined);
+      const response = await Promise.race([operation, new Promise<never>((_resolve, reject) => {
+        rejectAborted = () => reject(new Error('span request aborted'));
+        if (controller.signal.aborted) rejectAborted();
+        else controller.signal.addEventListener('abort', rejectAborted, { once: true });
+      })]);
       if (input.signal?.aborted) throw new SpanEvaluationAbortedError();
+      if (controller.signal.aborted || Date.now() >= input.deadlineMs) return fallback('span_timeout');
       const validated = validateSpanDecisionsResponse({ request: request.request, response });
       if (!validated.ok) return fallback(validated.reason);
       return {
@@ -213,7 +225,7 @@ export class SpanRoutingAdvisor implements SpanRoutingEvaluator {
     } finally {
       clearTimeout(timeout);
       input.signal?.removeEventListener('abort', onAbort);
-      release();
+      if (rejectAborted) controller.signal.removeEventListener('abort', rejectAborted);
     }
   }
 }
@@ -252,17 +264,21 @@ class ConcurrencyLimiter {
 
   constructor(private readonly limit: number) {}
 
-  acquire(deadlineMs: number, signal?: AbortSignal): Promise<(() => void) | null> {
+  acquire(deadlineMs: number, signal?: AbortSignal): Promise<(() => void) | null | 'full'> {
     if (signal?.aborted) return Promise.resolve(null);
     if (this.active < this.limit) {
       this.active += 1;
       return Promise.resolve(this.makeRelease());
     }
+    if (this.waiters.length >= SPAN_MAX_QUEUED_REQUESTS) return Promise.resolve('full');
     return new Promise(resolve => {
       let settled = false;
+      const accept = () => settle(true);
       const settle = (accepted: boolean): boolean => {
         if (settled) return false;
         settled = true;
+        const index = this.waiters.indexOf(accept);
+        if (index >= 0) this.waiters.splice(index, 1);
         clearTimeout(timer);
         signal?.removeEventListener('abort', onAbort);
         resolve(accepted ? this.makeRelease() : null);
@@ -272,7 +288,7 @@ class ConcurrencyLimiter {
       const remaining = deadlineMs - Date.now();
       const timer = setTimeout(() => { settle(false); }, Math.max(0, remaining));
       signal?.addEventListener('abort', onAbort, { once: true });
-      this.waiters.push(() => settle(true));
+      this.waiters.push(accept);
     });
   }
 

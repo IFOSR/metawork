@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Real Span routing-advisor smoke test.
 //
-// Performs ONE live Decisions API call against `respan/span-01-lite` using the
-// MetaWork-provided credential, then prints a safe summary. It never prints the
-// key, the raw request, or the raw provider payload.
+// By default performs ONE live Decisions API call against `respan/span-01-lite`.
+// --integration runs four sample workloads through the production advisor,
+// ControlKernel and SQLite replay (three calls; single-candidate makes none).
+// Both modes use the MetaWork credential and print finite safe summaries.
+// Neither mode prints the key, the raw request, or the raw provider payload.
 //
 // Credential resolution order:
 //   1. --api-key-env <NAME> (reads that environment variable)
@@ -18,6 +20,8 @@
 // explicit, credentialed operator action.
 
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { OpenRouter } from '@openrouter/sdk';
@@ -29,7 +33,8 @@ function parseArgs(argv) {
   const options = { credentials: process.env.METAWORK_CREDENTIALS ?? '' };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === '--credentials') options.credentials = argv[++index] ?? '';
+    if (arg === '--integration') options.integration = true;
+    else if (arg === '--credentials') options.credentials = argv[++index] ?? '';
     else if (arg.startsWith('--credentials=')) options.credentials = arg.slice('--credentials='.length);
     else if (arg === '--api-key-env') options.apiKeyEnv = argv[++index] ?? '';
     else if (arg.startsWith('--api-key-env=')) options.apiKeyEnv = arg.slice('--api-key-env='.length);
@@ -113,6 +118,22 @@ async function main() {
     process.exitCode = 2;
     return;
   }
+  if (options.integration) {
+    const root = fileURLToPath(new URL('../', import.meta.url));
+    const result = spawnSync(process.execPath, [join(root, 'node_modules/vitest/vitest.mjs'), 'run',
+      'tests/e2e/span-routing.test.ts', '-t', 'compares representative workload'], {
+      cwd: root, encoding: 'utf8', timeout: 60_000, maxBuffer: 1024 * 1024,
+      env: { ...process.env, SPAN_LIVE_INTEGRATION: '1', SPAN_INTEGRATION_API_KEY: resolved.apiKey },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const samples = (result.stdout ?? '').split('\n').filter(line => line.startsWith('{"scenario":'))
+      .flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+    const ok = result.status === 0 && samples.length === 4;
+    console.log(JSON.stringify({ ok, credentialSource: resolved.source, samples,
+      ...(ok ? {} : { errorCode: 'span_integration_failed' }) }, null, 2));
+    if (!ok) process.exitCode = 1;
+    return;
+  }
   const client = new OpenRouter({ apiKey: resolved.apiKey, retryConfig: { strategy: 'none' } });
   const startedAt = Date.now();
   const controller = new AbortController();
@@ -146,9 +167,12 @@ async function main() {
     console.log(JSON.stringify({
       ok: valid,
       credentialSource: resolved.source,
-      model,
+      model: SPAN_MODEL_VERSION.test(model) ? model : null,
       probabilities,
-      usage: response?.usage ?? null,
+      usage: Object.fromEntries(['cost', 'inputTokens', 'outputTokens'].flatMap(field => {
+        const value = response?.usage?.[field];
+        return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? [[field, value]] : [];
+      })),
       durationMs: Date.now() - startedAt,
       ...(valid ? {} : { errorCode: SPAN_MODEL_VERSION.test(model) ? 'span_invalid_response' : 'span_unexpected_model' }),
     }, null, 2));
@@ -157,7 +181,7 @@ async function main() {
     // Only a finite code plus an optional HTTP status: the raw SDK/provider
     // message can contain request or credential material.
     const status = [error?.status, error?.statusCode, error?.response?.status]
-      .find(value => typeof value === 'number');
+      .find(value => typeof value === 'number' && Number.isInteger(value) && value >= 100 && value <= 599);
     const timedOut = error?.name === 'AbortError' || error?.name === 'TimeoutError';
     console.error(JSON.stringify({
       ok: false,

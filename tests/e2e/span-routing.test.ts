@@ -12,6 +12,7 @@ import type { KernelConfigurationView } from '../../src/configuration/index.js';
 import type { PlanningAgentPlan } from '../../src/planning/planning-types.js';
 import type { WorkGraphProposal } from '../../src/work-graph/types.js';
 import { attachSpanRoutingObservation } from '../../src/session/span-plan-preparation.js';
+import { SpanRoutingAdvisor } from '../../src/routing/span-routing-advisor.js';
 import type {
   SpanRoutingEvaluator,
   SpanSubtaskEvaluationRequest,
@@ -153,6 +154,64 @@ function seedConfigurationRevision(db: Database.Database): void {
 }
 
 describe('Span routing end-to-end (mock advisor + real SQLite)', () => {
+  it.each([
+    ['simple', 'Fix a spelling mistake in a comment', false],
+    ['complex', 'Design and implement a concurrent parser with recovery and property tests', false],
+    ['research', 'Compare parser algorithms and document evidence and tradeoffs', false],
+    ['single', 'Fix one comment using the only eligible binding', true],
+  ] as const)('compares representative workload %s and replays durable observations', async (name, goal, single) => {
+    const db = new Database(':memory:'); runMigrations(db); seedConfigurationRevision(db);
+    try {
+      const configuration = structuredClone(kernelConfiguration);
+      configuration.models['model-fast']!.modelId = 'gpt-5-mini';
+      configuration.models['model-deep']!.modelId = 'gpt-5';
+      if (single) configuration.agentClasses['codex-fast']!.modelPolicy = {
+        mode: 'auto', allowedModelRefs: ['model-fast'], defaultModelRef: 'model-fast',
+      };
+      const baseEvent = structuredClone(planEvent(`event-comparison-${name}`));
+      baseEvent.requestText = goal;
+      baseEvent.proposal.task.goal = goal;
+      baseEvent.proposal.workGraph!.subtasks[0]!.goal = goal;
+      if (single) baseEvent.proposal.workGraph!.subtasks[0]!.executorBindings =
+        baseEvent.proposal.workGraph!.subtasks[0]!.executorBindings.slice(0, 1);
+      const admission = { ...snapshot, kernelConfiguration: configuration };
+      const deterministic = new ControlKernel().decide(baseEvent, admission);
+      const live = process.env.SPAN_LIVE_INTEGRATION === '1';
+      const adapter = live ? new SpanRoutingAdvisor({ resolveApiKey: async () => process.env.SPAN_INTEGRATION_API_KEY ?? null })
+        : advisingEvaluator('pi-general');
+      const evaluate = vi.fn(adapter.evaluate.bind(adapter));
+      const start = Date.now();
+      const enriched = await attachSpanRoutingObservation({ event: baseEvent, configuration,
+        executorStatuses: [], runtimeConfiguration: { ...runtimeConfiguration,
+          routing: { span: { ...runtimeConfiguration.routing.span, timeoutMs: 10_000 } } },
+        evaluator: { evaluate },
+      });
+      const latencyMs = Date.now() - start;
+      expect(enriched.spanRouting?.subtasks[0]?.status).toBe(single ? 'skipped' : 'advised');
+      const store = new KernelWorkflowRepo(db);
+      const workflow = new DurableKernelWorkflow({ kernel: new ControlKernel(), buildSnapshot: () => admission,
+        store, runtime: { apply: async () => null }, clock: { now: () => baseEvent.occurredAt } });
+      const result = await workflow.submit(enriched);
+      const advised = result.decisions[0]!;
+      expect(deterministic.action.type).toBe('authorize_task_plan');
+      expect(advised.action.type).toBe('authorize_task_plan');
+      if (advised.action.type !== 'authorize_task_plan' || deterministic.action.type !== 'authorize_task_plan') return;
+      const bindings = advised.action.authorizedBindingsBySubtask.subtask_execute!;
+      expect(bindings).toHaveLength(single ? 1 : 2);
+      expect(new Set(bindings.map(b => b.agentClassRef)).size).toBe(bindings.length);
+      const callCount = evaluate.mock.calls.length;
+      expect(callCount).toBe(single ? 0 : 1);
+      const restarted = new DurableKernelWorkflow({ kernel: new ControlKernel(), buildSnapshot: () => admission,
+        store: new KernelWorkflowRepo(db), runtime: { apply: async () => null }, clock: { now: () => baseEvent.occurredAt } });
+      await restarted.submit(store.findEvent(enriched.id)!);
+      expect(evaluate).toHaveBeenCalledTimes(callCount);
+      if (live) console.log(JSON.stringify({ scenario: name, latencyMs,
+        deterministic: deterministic.action.authorizedBindingsBySubtask.subtask_execute!.map(b => [b.agentClassRef, b.modelRef]),
+        advised: bindings.map(b => [b.agentClassRef, b.modelRef]),
+        usage: enriched.spanRouting?.subtasks[0]?.usage ?? null, replayCalls: 0 }));
+    } finally { db.close(); }
+  }, 15_000);
+
   it('persists the observation, authorizes the advised order, and replays without a second API call', async () => {
     const db = new Database(':memory:');
     runMigrations(db);

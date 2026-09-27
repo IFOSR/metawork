@@ -23,6 +23,7 @@ export const SPAN_MAX_CANDIDATES_PER_PROPOSAL = 128;
 export const SPAN_MAX_REQUEST_BYTES = 32 * 1024;
 export const SPAN_MAX_OBSERVATION_BYTES = 128 * 1024;
 export const SPAN_MAX_CONCURRENT_REQUESTS = 2;
+export const SPAN_MAX_QUEUED_REQUESTS = 128;
 
 /**
  * Finite, persistable failure vocabulary. Raw SDK error bodies are never

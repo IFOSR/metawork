@@ -318,6 +318,26 @@ describe('Span routing advisor', () => {
     };
   }
 
+  it('discards a response that arrives after the proposal deadline', async () => {
+    const result = await advisor({ create: async () => {
+      await new Promise(resolve => setTimeout(resolve, 35));
+      return { model: 'respan/span-01-lite', answers: { c000: { type: 'noul', noul: 0.9 }, c001: { type: 'noul', noul: 0.2 } } };
+    } }).evaluate({ configurationRevision: 'revision-1', deadlineMs: Date.now() + 10, requests: [request()] });
+    expect(result.subtasks[0]).toMatchObject({ status: 'fallback', reason: 'span_timeout' });
+  });
+
+  it('bounds the Server queue and removes expired waiters', async () => {
+    const instance = advisor({ create: (_request, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(new Error('abort')), { once: true });
+    }) });
+    const result = await instance.evaluate({ configurationRevision: 'revision-1', deadlineMs: Date.now() + 50,
+      requests: Array.from({ length: 131 }, (_, i) => ({ ...request(), subtaskId: `s-${i}` })),
+    });
+    expect(result.subtasks.at(-1)).toMatchObject({ status: 'fallback', reason: 'span_proposal_budget_exhausted' });
+    expect((instance as any).limiter.waiters).toHaveLength(0);
+    expect((instance as any).limiter.active).toBe(0);
+  });
+
   it('maps validated probabilities back to candidate identities', async () => {
     const client: SpanDecisionClient = {
       create: async () => ({
