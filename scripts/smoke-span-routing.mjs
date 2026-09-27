@@ -9,7 +9,10 @@
 //   1. --api-key-env <NAME> (reads that environment variable)
 //   2. OPENROUTER_API_KEY
 //   3. --credentials <path> (or METAWORK_CREDENTIALS), a credentials.json that
-//      contains the fixed `routing-span` SecretStore entry.
+//      contains the fixed `file-secret:anyfusion/internal/routing-span` entry.
+//
+// The Provider namespace is deliberately NOT consulted: a Provider that happens
+// to be named `routing-span` must never supply the advisor credential.
 //
 // Intentionally NOT wired into `npm test`: a live third-party call must stay an
 // explicit, credentialed operator action.
@@ -20,7 +23,7 @@ import { join } from 'node:path';
 import { OpenRouter } from '@openrouter/sdk';
 
 const SPAN_MODEL = 'respan/span-01-lite';
-const SPAN_SECRET_PROVIDER_REF = 'routing-span';
+const SPAN_SECRET_KEY = 'routing-span';
 const SPAN_MODEL_VERSION = /^respan\/span-01-lite(?:-\d{8})?$/u;
 function parseArgs(argv) {
   const options = { credentials: process.env.METAWORK_CREDENTIALS ?? '' };
@@ -58,8 +61,7 @@ function resolveApiKey(options) {
     } catch {
       continue;
     }
-    const value = document?.internal?.[SPAN_SECRET_PROVIDER_REF]
-      ?? document?.providers?.[SPAN_SECRET_PROVIDER_REF];
+    const value = document?.internal?.[SPAN_SECRET_KEY];
     if (typeof value === 'string' && value.trim()) {
       return { apiKey: value.trim(), source: 'secret-store:internal/routing-span' };
     }

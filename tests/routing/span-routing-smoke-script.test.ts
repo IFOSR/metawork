@@ -13,22 +13,39 @@ import { describe, expect, it } from 'vitest';
 const projectRoot = resolve(__dirname, '../..');
 const scriptPath = join(projectRoot, 'scripts/smoke-span-routing.mjs');
 
-function runSmoke(stubSource: string): { status: number | null; stdout: string; stderr: string } {
+function runSmoke(
+  stubSource: string,
+  options: { args?: string[]; env?: Record<string, string | undefined> } = {},
+): { status: number | null; stdout: string; stderr: string } {
   const root = mkdtempSync(join(tmpdir(), 'span-smoke-'));
   try {
     const stubPath = join(root, 'stub-fetch.mjs');
     writeFileSync(stubPath, stubSource, 'utf8');
     const result = spawnSync(
       process.execPath,
-      ['--import', stubPath, scriptPath],
+      ['--import', stubPath, scriptPath, ...(options.args ?? [])],
       {
         cwd: projectRoot,
         encoding: 'utf8',
         timeout: 30_000,
-        env: { ...process.env, OPENROUTER_API_KEY: 'smoke-fake-credential' },
+        env: { ...process.env, OPENROUTER_API_KEY: 'smoke-fake-credential', ...options.env },
       },
     );
     return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function withCredentialsFile(
+  credentials: Record<string, unknown>,
+  run: (path: string) => { status: number | null; stdout: string; stderr: string },
+): { status: number | null; stdout: string; stderr: string } {
+  const root = mkdtempSync(join(tmpdir(), 'span-smoke-credentials-'));
+  try {
+    const credentialsPath = join(root, 'credentials.json');
+    writeFileSync(credentialsPath, JSON.stringify(credentials), 'utf8');
+    return run(credentialsPath);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -95,5 +112,38 @@ describe('Span routing smoke script', () => {
       errorCode: 'span_http_error',
       httpStatus: 401,
     });
+  });
+
+  it('reads the credential from the internal namespace of credentials.json', () => {
+    const result = withCredentialsFile(
+      { version: 1, providers: {}, internal: { 'routing-span': 'internal-span-key' } },
+      path => runSmoke(responseStub(JSON.stringify({
+        model: 'respan/span-01-lite-20260925',
+        answers: {
+          c000: { type: 'noul', noul: 0.61 },
+          c001: { type: 'noul', noul: 0.7 },
+        },
+        usage: { input_tokens: 476, output_tokens: 70 },
+      })), { args: ['--credentials', path], env: { OPENROUTER_API_KEY: undefined } }),
+    );
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      credentialSource: 'secret-store:internal/routing-span',
+    });
+  });
+
+  it('never falls back to a Provider credential named routing-span', () => {
+    const result = withCredentialsFile(
+      { version: 1, providers: { 'routing-span': 'provider-only-key' } },
+      path => runSmoke('', { args: ['--credentials', path], env: { OPENROUTER_API_KEY: undefined } }),
+    );
+
+    // The Provider namespace is not a Span credential source, so the script
+    // must refuse to run instead of sending that key to OpenRouter.
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('No Span credential');
+    expect(result.stdout).not.toContain('provider-only-key');
   });
 });
