@@ -81,6 +81,16 @@ export interface RoutingResolutionAudit {
   rejectedCandidates: RejectedModelCandidate[];
   scoreBreakdown: ModelScoreBreakdown | null;
   policyVersion: string;
+  /**
+   * Span adoption facts. Present only when a Span observation existed for the
+   * proposal; it records whether this Subtask's scores were accepted, why not,
+   * and the adopted per-Model probabilities.
+   */
+  spanRouting?: {
+    applied: boolean;
+    reason: string | null;
+    probabilities?: Record<string, number>;
+  };
 }
 
 export interface AutoModelResolverInput {
