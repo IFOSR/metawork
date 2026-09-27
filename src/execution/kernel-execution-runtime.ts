@@ -33,7 +33,7 @@ import {
   type KernelEvent,
   type KernelSnapshot,
 } from '../kernel/control-kernel.js';
-import { DurableKernelWorkflow, type KernelWorkflow, type KernelWorkflowStore } from '../kernel/kernel-workflow.js';
+import { DurableKernelWorkflow, KernelApplicationInterruptedError, type KernelWorkflow, type KernelWorkflowStore } from '../kernel/kernel-workflow.js';
 import type { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import { deriveRecoverySafety } from '../routing/types.js';
 import type { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
@@ -1705,6 +1705,7 @@ export class KernelExecutionRuntime {
         }
         return event;
       } catch (error) {
+        if (error instanceof KernelApplicationInterruptedError) throw error;
         this.deps.generationReplanRepo.fail(
           request.id,
           error instanceof Error ? error.message : String(error),
@@ -1714,14 +1715,16 @@ export class KernelExecutionRuntime {
       }
     }
     if (action.type === 'request_merge_replan') {
-      const now = new Date().toISOString();
-      this.deps.publicationRepo.incrementConflictReplan(action.publicationId, now);
-      this.deps.publicationRepo.markParkedForConflictReplan(action.publicationId, now);
-      return this.deps.callbacks.requestMergeReplan(
+      const event = await this.deps.callbacks.requestMergeReplan(
         decision as KernelDecision & {
           action: Extract<KernelDecision['action'], { type: 'request_merge_replan' }>;
         },
       );
+      if (!event) return null;
+      const now = new Date().toISOString();
+      this.deps.publicationRepo.incrementConflictReplan(action.publicationId, now);
+      this.deps.publicationRepo.markParkedForConflictReplan(action.publicationId, now);
+      return event;
     }
     if (action.type === 'defer_task_plan_for_availability') {
       const request = this.deps.generationReplanRepo.findByGeneration(

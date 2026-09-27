@@ -113,6 +113,13 @@ const MAX_DECISIONS_PER_DRAIN = 100;
  * Durable Application module. It owns sequencing and crash recovery, while the
  * pure ControlKernel owns policy and Runtime owns idempotent side effects.
  */
+export class KernelApplicationInterruptedError extends Error {
+  constructor() {
+    super('kernel application interrupted before producing an observation');
+    this.name = 'KernelApplicationInterruptedError';
+  }
+}
+
 export class DurableKernelWorkflow implements KernelWorkflow {
   private draining: Promise<KernelWorkflowResult> | null = null;
 
@@ -184,6 +191,9 @@ export class DurableKernelWorkflow implements KernelWorkflow {
       this.deps.store.markApplied(applying.decisionId, observation, this.deps.clock.now());
       return true;
     } catch (error) {
+      // No observation or effect was committed. Keep `applying` for the
+      // existing startup reconciliation to retry; shutdown is not cancellation.
+      if (error instanceof KernelApplicationInterruptedError) return false;
       this.deps.store.markApplicationFailed(
         applying.decisionId,
         'uncertain',

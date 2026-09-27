@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { KernelApplicationInterruptedError } from '../../src/kernel/kernel-workflow.js';
 import { KernelExecutionRuntime } from '../../src/execution/kernel-execution-runtime.js';
 
 /**
@@ -42,7 +43,10 @@ function runtimeWith(replanResult: unknown) {
   const fail = vi.fn();
   const submitPlan = vi.fn(() => true);
   const runtime = new KernelExecutionRuntime({
-    callbacks: { requestReplan: async () => replanResult },
+    callbacks: { requestReplan: async () => {
+      if (replanResult instanceof Error) throw replanResult;
+      return replanResult;
+    } },
     generationReplanRepo: {
       findByGeneration: () => ({ id: 'request-1' }),
       markPlanning: () => true,
@@ -56,6 +60,13 @@ function runtimeWith(replanResult: unknown) {
 }
 
 describe('KernelExecutionRuntime replan cancellation', () => {
+  it('does not cancel or fail a generation request interrupted by shutdown', async () => {
+    const { runtime, cancel, fail, submitPlan } = runtimeWith(new KernelApplicationInterruptedError());
+    await expect(applyReplan(runtime)).rejects.toBeInstanceOf(KernelApplicationInterruptedError);
+    expect(cancel).not.toHaveBeenCalled(); expect(fail).not.toHaveBeenCalled();
+    expect(submitPlan).not.toHaveBeenCalled();
+  });
+
   it('cancels the durable request instead of failing it when no plan is produced', async () => {
     const { runtime, cancel, fail, submitPlan } = runtimeWith(null);
 

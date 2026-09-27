@@ -1198,10 +1198,10 @@ describe('ConversationSession', () => {
             eventId: 'event_original_admission',
             eventType: 'plan_proposed',
           }]) as never,
-          findKernelEvent: () => ({
+          findKernelEvent: (id: string) => id === 'event_original_admission' ? ({
             type: 'plan_proposed',
             attachmentIds: ['att_original'],
-          }) as never,
+          }) as never : null,
           listAttemptReceipts: () => ([{
             attemptId: 'attempt_failed',
             agentClassName: 'codex-engineering',

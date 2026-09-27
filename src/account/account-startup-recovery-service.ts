@@ -30,14 +30,20 @@ import { reconcileUncertainCancellations } from '../execution/cancellation-recon
 import type { QueuedTaskPayload } from '../storage/conversation-task-scheduler-repo.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { QueryUsageLifecycle } from '../metering/query-lifecycle.js';
+import type { RecoveryReplan } from '../session/recovery-replanner.js';
+import type { ConfigurationSnapshot } from '../configuration/types.js';
+import { buildKernelConfigurationView, buildPlannerConfigurationView } from '../configuration/projections.js';
 import type { ConversationResultDelivery } from '../session/conversation-session.js';
 
 export class AccountStartupRecoveryService {
   private lastBlockedRecheckAt: number | null = null;
   private readonly promotionInFlight = new Map<string, Promise<void>>();
+  private readonly configurations = new Map<string, ConfigurationSnapshot>();
 
   constructor(private readonly deps: {
     readonly db: Database.Database;
+    readonly recoveryReplan?: RecoveryReplan;
+    readonly resolveConfigurationSnapshot?: (revisionId: string) => Promise<ConfigurationSnapshot>;
     readonly kernelServices: AccountKernelServices;
     readonly repositories: AccountRepositories;
     readonly workspaceServices: AccountWorkspaceServices;
@@ -129,7 +135,22 @@ export class AccountStartupRecoveryService {
     });
   }
 
+  private async loadRecoveryConfigurations(): Promise<void> {
+    if (!this.deps.resolveConfigurationSnapshot) return;
+    const revisions = this.deps.db.prepare(`
+      SELECT DISTINCT configuration_revision AS revision FROM kernel_events WHERE status IN ('pending', 'processing')
+      UNION SELECT configuration_revision AS revision FROM work_graph_revisions WHERE status = 'active'
+    `).all() as Array<{ revision: string }>;
+    for (const { revision } of revisions) {
+      if (!revision || this.configurations.has(revision)) continue;
+      const snapshot = await this.deps.resolveConfigurationSnapshot(revision);
+      if (snapshot.revisionId !== revision) throw new Error('recovery configuration revision mismatch');
+      this.configurations.set(revision, snapshot);
+    }
+  }
+
   async recover(): Promise<void> {
+    await this.loadRecoveryConfigurations();
     const now = new Date().toISOString();
     const backendLossAttemptIds = new Set<string>();
     const claimedOrphans = this.deps.coordinatorServices.workUnitClaimService.listOrphanedClaims();
@@ -349,6 +370,7 @@ export class AccountStartupRecoveryService {
   }
 
   async recoverPeriodic(nowMs = Date.now()): Promise<boolean> {
+    await this.loadRecoveryConfigurations();
     for (const task of this.deps.taskServices.taskRuntimeService.listTasksByStatus('blocked')) {
       const sessionId = this.originForTask(task.id);
       if (!sessionId) continue;
@@ -451,6 +473,13 @@ export class AccountStartupRecoveryService {
 
   private buildCoordinatorSnapshot(event: KernelEvent): KernelSnapshot {
     if (event.type === 'plan_proposed') {
+      const pinned = this.configurations.get(event.configurationRevision);
+      const plannerConfiguration = pinned ? buildPlannerConfigurationView(pinned) : this.deps.plannerConfiguration;
+      const kernelConfiguration = pinned ? buildKernelConfigurationView(pinned) : this.deps.kernelConfiguration;
+      if (plannerConfiguration.revisionId !== event.configurationRevision
+        || kernelConfiguration.revisionId !== event.configurationRevision) {
+        throw new Error('recovery configuration revision unavailable');
+      }
       return {
         schemaVersion: 5,
         type: 'plan_admission',
@@ -481,8 +510,8 @@ export class AccountStartupRecoveryService {
           .listSlots()
           .filter(slot => slot.state === 'occupied' || slot.state === 'releasing').length,
         runningTaskId: null,
-        plannerConfiguration: this.deps.plannerConfiguration,
-        kernelConfiguration: this.deps.kernelConfiguration,
+        plannerConfiguration,
+        kernelConfiguration,
         executorStatuses: this.deps.repositories.kernelExecutorStatusRepo
           .list(event.configurationRevision),
         v5WorkGraphTaskIds: this.deps.repositories.subtaskRepo.listTaskIds(),
@@ -614,11 +643,13 @@ export class AccountStartupRecoveryService {
         persistSessionState: () => undefined,
         setLatestGuidance: () => ({ scene: '', taskId: '', taskTitle: '', recommendedAction: '', reasons: [] }),
         queueProposal: () => undefined,
-        requestReplan: async () => {
-          throw new Error('startup recovery requires the originating Conversation Planner for replan');
+        requestReplan: decision => {
+          if (!this.deps.recoveryReplan) throw new Error('recovery replan adapter unavailable');
+          return this.deps.recoveryReplan(sessionId, decision);
         },
-        requestMergeReplan: async () => {
-          throw new Error('startup recovery requires the originating Conversation Planner for merge replan');
+        requestMergeReplan: decision => {
+          if (!this.deps.recoveryReplan) throw new Error('recovery replan adapter unavailable');
+          return this.deps.recoveryReplan(sessionId, decision);
         },
         buildPlanAdmissionSnapshot: event => this.buildCoordinatorSnapshot(event),
       },

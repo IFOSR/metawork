@@ -235,6 +235,34 @@ function completeConfigurationRpcTurnWithStructuredOutput(
 }
 
 describe('PlannerProcessSupervisor', () => {
+  it('keeps concurrently pinned Planner runs isolated across revisions', async () => {
+    const first = fakeProcess(); const second = fakeProcess();
+    completeRpcTurn(second, { provider: 'provider', modelId: 'model-new' });
+    const spawn = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second);
+    const supervisor = new PlannerProcessSupervisor({
+      plannerHome: join(tmpdir(), `planner-pinned-${process.pid}`),
+      ensureSessionDir: async () => undefined, spawn: spawn as never,
+      resolvePlannerBinding: async context => {
+        const revision = context.configuration.revisionId;
+        return { configurationRevision: revision, bindingFingerprint: revision,
+          provider: 'provider', modelId: `model-${revision}`, runtimeEnvironment: {
+            OPENAI_BASE_URL: 'https://test.invalid', OPENAI_API_KEY: 'fake-test',
+            OPENAI_API_KEY__PROVIDER: 'fake-test', OPENAI_MODEL: `model-${revision}`,
+          } };
+      },
+    });
+    const context = (revisionId: string) => ({ timeoutMs: 2000,
+      request: { sessionId: revisionId, source: 'recovery' }, configuration: { revisionId } }) as never;
+    const old = supervisor.run('old work', context('old'), 'validation').catch(error => error);
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(1));
+    await supervisor.run('new work', context('new'), 'validation');
+    expect(first.kill).not.toHaveBeenCalled();
+    completeRpcTurn(first, { provider: 'provider', modelId: 'model-old' });
+    expect((await old).proposalResult.status).toBe('accepted');
+    expect(spawn.mock.calls.map(call => call[2].env.OPENAI_MODEL)).toEqual(['model-old', 'model-new']);
+    expect(supervisor.runtimeBinding).toBeUndefined();
+  });
+
   it('rejects a Planner RPC when its explicit Conversation owner disagrees with the context', async () => {
     const supervisor = new PlannerProcessSupervisor();
 

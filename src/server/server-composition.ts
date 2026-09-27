@@ -69,6 +69,8 @@ import { ConversationGatewayRuntime } from '../gateway/conversation-gateway-runt
 import { FileCommandAdmissionStore } from '../gateway/command-admission-store.js';
 import { WebGatewayAdapter } from '../management/web-gateway-adapter.js';
 import { formatGatewayDoctorChecks, runGatewayDoctor } from '../gateway/doctor.js';
+import { createRecoveryReplanner } from '../session/recovery-replanner.js';
+import { planWithoutClient } from '../session/detached-recovery-planner.js';
 import { ConversationSession } from '../session/conversation-session.js';
 import { FileConversationStore } from '../session/file-conversation-store.js';
 import { FileWorkspaceCatalogStore } from '../storage/file-workspace-catalog-store.js';
@@ -104,7 +106,7 @@ import { PlannerHostBridge } from '../tui-bridge/planner-host-bridge.js';
 import { PlannerProcessSupervisor } from '../planning/planner-process-supervisor.js';
 import { buildStagedLegacyConfiguration } from '../configuration/staged-legacy-configuration.js';
 import { buildPlannerInputProfile } from '../planning/planner-input-profile.js';
-import { buildPlannerConfigurationView, buildExecutorManualPreview } from '../configuration/projections.js';
+import { buildPlannerConfigurationView, buildRuntimeConfigurationView, buildExecutorManualPreview } from '../configuration/projections.js';
 import { projectExecutorManagement } from '../configuration/executor-configuration.js';
 import { AutoModelResolver } from '../routing/auto-model-resolver.js';
 import { authorizedExecutorBindingFingerprint } from '../core/authorized-executor-binding.js';
@@ -776,7 +778,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
     resolvePlannerBinding: async context => {
       const inputProfile = buildPlannerInputProfile(context);
-      const activeSnapshot = await configurationRepository.getActiveSnapshot();
+      const activeSnapshot = await configurationService.getSnapshot(context.configuration.revisionId);
       const activePlanner = buildPlannerConfigurationView(activeSnapshot);
       const plannerRouting = activePlanner.planner;
       if (!plannerRouting) throw new Error('Planner routing policy is unavailable');
@@ -834,8 +836,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         provider: resolution.binding.providerRef,
         modelId: model.modelId,
         runtimeEnvironment: await resolvePlannerRuntimeEnvironment({
-          configuration: runtimeBindings.getRuntimeConfiguration(activeSnapshot.revisionId)
-            ?? runtimeBindings.getActiveRuntimeConfiguration(),
+          configuration: buildRuntimeConfigurationView(activeSnapshot),
           plannerBinding,
           secretStore,
         }),
@@ -865,7 +866,32 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   await webAttachmentStore.initialize();
   const pendingSystemDeliveries: Array<{ sessionId: string; delivery: ConversationResultDelivery }> = [];
   let deliverSystemResult: ((sessionId: string, delivery: ConversationResultDelivery, originTurnId?: string) => Promise<void>) | null = null;
+  const spanRoutingShutdown = new AbortController();
+  const spanRoutingAdvisor = new SpanRoutingAdvisor({
+    resolveApiKey: async revisionId => {
+      const snapshot = await configurationService.getSnapshot(revisionId);
+      const span = snapshot.config.routing?.span;
+      if (!span?.enabled || span.apiKeyRef !== SPAN_ROUTING_SECRET_REFERENCE) return null;
+      try {
+        return (await secretStore.get(SPAN_ROUTING_SECRET_REFERENCE as SecretReference)).trim() || null;
+      } catch { return null; }
+    },
+    lifetimeSignal: spanRoutingShutdown.signal,
+  });
+  const recoveryReplan = createRecoveryReplanner({
+    db,
+    getPort: () => accountRuntimeComposition!.runtimePort,
+    getSnapshot: revisionId => configurationService.getSnapshot(revisionId),
+    evaluator: spanRoutingAdvisor,
+    signal: spanRoutingShutdown.signal,
+    plan: context => planWithoutClient({
+      context, runner: plannerSupervisor, signal: spanRoutingShutdown.signal,
+      registerSession: (id, session) => plannerHost.registerSession(id, session),
+    }),
+  });
   accountRuntimeComposition = buildAccountRuntimeComposition({
+    recoveryReplan,
+    resolveConfigurationSnapshot: revisionId => configurationService.getSnapshot(revisionId),
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     db,
     taskEngine,
@@ -1070,29 +1096,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   const runtimePort = activatedAccountRuntime.getConversationPort();
   const conversationRegistry = new ConversationRegistry();
 
-  // Server-only Span advisor. It resolves the credential from the pinned
-  // revision's SecretStore reference; Planner, Executor, and clients never see
-  // the key or the raw provider payload.
-  const spanRoutingShutdown = new AbortController();
-  const spanRoutingAdvisor = new SpanRoutingAdvisor({
-    resolveApiKey: async configurationRevision => {
-      // Resolve the exact pinned revision, not the currently active one: a
-      // retried or replanned event must not be re-scored with newer policy.
-      const snapshot = await configurationService.getSnapshot(configurationRevision);
-      const span = snapshot.config.routing?.span;
-      // Only the Server-owned internal reference is ever readable here, even if
-      // an unvalidated snapshot carries something else.
-      if (!span?.enabled || span.apiKeyRef !== SPAN_ROUTING_SECRET_REFERENCE) return null;
-      try {
-        assertSecretReference(span.apiKeyRef);
-        const apiKey = (await secretStore.get(span.apiKeyRef as SecretReference)).trim();
-        return apiKey.length > 0 ? apiKey : null;
-      } catch {
-        return null;
-      }
-    },
-    lifetimeSignal: spanRoutingShutdown.signal,
-  });
 
   // ADR-0031: 直接构造 ConversationSession（不经过 MetaclawSession 桥接），
   // 会话级 callbacks + 账户级 Kernel 执行服务后置绑定。
@@ -1175,7 +1178,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       db,
       getKernelConfiguration: () => stagedConfiguration.kernel,
       getRuntimeConfiguration: runtimeBindings.getRuntimeConfiguration,
+      resolveConfigurationSnapshot: revisionId => configurationService.getSnapshot(revisionId),
       spanRoutingEvaluator: spanRoutingAdvisor,
+      lifetimeSignal: spanRoutingShutdown.signal,
       commandCatalog,
       commandReadServices,
       taskEngine,

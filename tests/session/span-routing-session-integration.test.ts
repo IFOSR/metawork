@@ -154,6 +154,72 @@ function withReplanTask(port: { queries: Record<string, unknown> }): void {
 }
 
 describe('ConversationSession Span integration', () => {
+  it.each(['request_replan', 'request_merge_replan'] as const)('skips Planner and Span when %s is already cancelled', async type => {
+    const evaluate = vi.fn(async () => ({ subtasks: [] }));
+    const { session, internal, port } = fixture(evaluate); withReplanTask(port);
+    const planning = vi.spyOn(internal, 'runPlanningAgent');
+    await session.executeGatewayCommand({ kind: 'cancel_turn', turnId: 'turn' });
+    const result = type === 'request_replan'
+      ? await internal.requestKernelReplan(replanDecision(type))
+      : await internal.requestKernelMergeReplan(replanDecision(type));
+    expect(result).toBeNull(); expect(planning).not.toHaveBeenCalled(); expect(evaluate).not.toHaveBeenCalled();
+  });
+
+  it('retains the prepared result while durable enqueue is still waiting', async () => {
+    const evaluate = vi.fn(async () => ({ subtasks: [] }));
+    const { internal, submitKernel } = fixture(evaluate);
+    const original = submitKernel.getMockImplementation()!;
+    const release = deferred<void>();
+    submitKernel.mockImplementation(async event => { await release.promise; return original(event); });
+    const first = internal.submitValidatedPlannerProposal('Implement parser', plan, 'event');
+    await vi.waitFor(() => expect(submitKernel).toHaveBeenCalledTimes(1));
+    const second = internal.submitValidatedPlannerProposal('Implement parser', plan, 'event');
+    await vi.waitFor(() => expect(submitKernel).toHaveBeenCalledTimes(2));
+    release.resolve(); await Promise.all([first, second]);
+    expect(evaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it('coalesces concurrent submissions before the first event is durable', async () => {
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const evaluate = vi.fn(async () => { entered.resolve(); await release.promise; return { subtasks: [] }; });
+    const { internal } = fixture(evaluate);
+    const first = internal.submitValidatedPlannerProposal('Implement parser', plan, 'event');
+    await entered.promise;
+    const second = internal.submitValidatedPlannerProposal('Implement parser', plan, 'event');
+    await new Promise(resolve => setImmediate(resolve));
+    release.resolve();
+    await Promise.all([first, second]);
+    expect(evaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects changed proposals reusing the same durable event id', async () => {
+    const { internal } = fixture(async () => ({ subtasks: [] }));
+    await internal.submitValidatedPlannerProposal('Implement parser', plan, 'event');
+    const changed = structuredClone(plan) as any;
+    changed.workGraph.subtasks[0].goal = 'Different work';
+    await expect(internal.submitValidatedPlannerProposal('Implement parser', changed, 'event'))
+      .rejects.toThrow(/identity|conflict/i);
+  });
+
+  it('cannot revive a cancelled evaluation when the next Turn replaces its controller', async () => {
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const { session, internal, submitKernel } = fixture(async () => {
+      entered.resolve(); await release.promise; return { subtasks: [] };
+    });
+    const submission = internal.submitValidatedPlannerProposal('Implement parser', plan, 'event');
+    await entered.promise;
+    await session.executeGatewayCommand({ kind: 'cancel_turn', turnId: 'turn' });
+    const access = session as any;
+    access.cancelledTurnIds.clear();
+    access.activeInteractionTurnId = 'next-turn';
+    access.turnCancellation = new AbortController();
+    release.resolve();
+    expect((await submission).status).toBe('rejected');
+    expect(submitKernel).not.toHaveBeenCalled();
+  });
+
   it('does not admit the proposal when the Turn is cancelled during Span evaluation', async () => {
     const entered = deferred<void>();
     const release = deferred<void>();
