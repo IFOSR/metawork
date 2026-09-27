@@ -623,6 +623,9 @@ export class ConversationSession {
     const runtimeConfiguration = this.deps.getRuntimeConfiguration?.(
       event.configurationRevision,
     ) ?? null;
+    // Only touch the admission queries when Span is actually enabled, so a
+    // disabled advisor cannot change when plan admission errors surface.
+    if (!runtimeConfiguration?.routing?.span?.enabled) return event;
     const snapshot = this.buildPlanAdmissionSnapshot(event);
     if (!snapshot) return event;
     return attachSpanRoutingObservation({
