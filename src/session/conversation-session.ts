@@ -32,6 +32,11 @@ import type { SessionStateRepo } from '../storage/session-state-repo.js';
 import type { SessionPersistenceService } from './session-persistence-service.js';
 import type { InteractionTraceStream } from './interaction-trace-stream.js';
 import type { KernelDecision, KernelEvent, KernelSnapshot } from '../kernel/control-kernel.js';
+import {
+  attachSpanRoutingObservation,
+  type PlanProposedEvent,
+} from './span-plan-preparation.js';
+import type { SpanRoutingEvaluator } from '../routing/span-routing-types.js';
 import type { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
 import { buildExecutorDisplayFacts } from '../execution/execution-transparency.js';
 import type { PlanningContextBuilder } from '../planning/planning-context-builder.js';
@@ -152,6 +157,11 @@ export interface ConversationSessionDeps {
   readonly kernelConfiguration?: KernelConfigurationView;
   readonly getKernelConfiguration?: () => KernelConfigurationView | undefined;
   readonly getRuntimeConfiguration?: (revisionId: string) => RuntimeConfigurationView | null;
+  /**
+   * Server-injected Span advisor. Absent in recovery/system bindings, where the
+   * plan path keeps the deterministic resolver.
+   */
+  readonly spanRoutingEvaluator?: SpanRoutingEvaluator | null;
   readonly sessionKernelRuntime?: SessionKernelRuntime;
   readonly executeUserInput?: (text: string) => Promise<{ exitRequested: boolean }>;
   readonly handleCommand?: (input: string) => Promise<boolean>;
@@ -595,6 +605,35 @@ export class ConversationSession {
     };
   }
 
+  /**
+   * Attaches the bounded Span observation to a `plan_proposed` event before it
+   * enters the durable Kernel inbox. Absent advisor, disabled Span policy, or
+   * any failure leaves the event untouched so the deterministic resolver runs.
+   */
+  private async preparePlanProposedEvent(
+    event: PlanProposedEvent,
+  ): Promise<PlanProposedEvent> {
+    const evaluator = this.deps.spanRoutingEvaluator;
+    if (!evaluator) return event;
+    const configuration = this.deps.getKernelConfiguration?.()
+      ?? this.deps.kernelConfiguration;
+    if (!configuration || configuration.revisionId !== event.configurationRevision) {
+      return event;
+    }
+    const runtimeConfiguration = this.deps.getRuntimeConfiguration?.(
+      event.configurationRevision,
+    ) ?? null;
+    const snapshot = this.buildPlanAdmissionSnapshot(event);
+    if (!snapshot) return event;
+    return attachSpanRoutingObservation({
+      event,
+      configuration,
+      executorStatuses: snapshot.executorStatuses,
+      runtimeConfiguration,
+      evaluator,
+    });
+  }
+
   /** Releases stale admission state for this Conversation before planning. */
   private async reconcileAdmissionBeforePlanning(): Promise<void> {
     const conversationId = this.deps.conversationId;
@@ -862,7 +901,7 @@ export class ConversationSession {
       return { status: 'accepted' } as PlannerProposalResult;
     }
 
-    const event = this.buildPlanProposedEvent({
+    const event = await this.preparePlanProposedEvent(this.buildPlanProposedEvent({
       plan,
       configurationRevision: this.deps.planningContextBuilder
         ?.getPlannerConfiguration().revisionId ?? null,
@@ -877,7 +916,7 @@ export class ConversationSession {
       requestText: userInput,
       generationId: `generation_${eventId}`,
       targetGraphRevision: 1,
-    });
+    }));
     const result = await port.commands.submitKernel(event, {
       buildSnapshot: claimed => this.buildPlanAdmissionSnapshot(
         claimed as Extract<KernelEvent, { type: 'plan_proposed' }>,
@@ -2165,7 +2204,7 @@ export class ConversationSession {
     ].join('\n\n').slice(0, 24_000);
     const context = this.deps.planningContextBuilder!.build({ userInput: request });
     const plan = await this.runPlanningAgent(context);
-    return this.buildPlanProposedEvent({
+    return this.preparePlanProposedEvent(this.buildPlanProposedEvent({
       plan,
       configurationRevision: context.configuration.revisionId,
       // A replan may only reference attachments the originating Turn was
@@ -2180,7 +2219,7 @@ export class ConversationSession {
       generationId: decision.action.generationId,
       targetGraphRevision: decision.action.sourceRevision + 1,
       availabilityExplanation: null,
-    });
+    }));
   }
 
   private async requestKernelMergeReplan(
@@ -2205,7 +2244,7 @@ export class ConversationSession {
     ].join('\n\n').slice(0, 24_000);
     const context = this.deps.planningContextBuilder!.build({ userInput: request });
     const plan = await this.runPlanningAgent(context);
-    return this.buildPlanProposedEvent({
+    return this.preparePlanProposedEvent(this.buildPlanProposedEvent({
       plan,
       configurationRevision: context.configuration.revisionId,
       attachmentIds: this.resolveTaskTurnAttachmentIds(task.id),
@@ -2218,7 +2257,7 @@ export class ConversationSession {
       generationId: revision.generationId,
       targetGraphRevision: revision.revision + 1,
       availabilityExplanation: null,
-    });
+    }));
   }
 
   private appendTaskQueueSnapshot(trigger: string): void {

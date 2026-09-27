@@ -37,6 +37,7 @@ import {
 } from '../configuration/index.js';
 import { prepareProductionSecretStore } from '../configuration/production-secret-store.js';
 import { SPAN_ROUTING_SECRET_REFERENCE, SPAN_ROUTING_MODEL } from '../configuration/schema.js';
+import { SpanRoutingAdvisor } from '../routing/span-routing-advisor.js';
 import {
   assertSecretReference,
   type SecretReference,
@@ -1069,6 +1070,24 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   const runtimePort = activatedAccountRuntime.getConversationPort();
   const conversationRegistry = new ConversationRegistry();
 
+  // Server-only Span advisor. It resolves the credential from the pinned
+  // revision's SecretStore reference; Planner, Executor, and clients never see
+  // the key or the raw provider payload.
+  const spanRoutingAdvisor = new SpanRoutingAdvisor({
+    resolveApiKey: async () => {
+      const active = await configurationService.getActiveSnapshot();
+      const span = active.config.routing?.span;
+      if (!span?.enabled || !span.apiKeyRef) return null;
+      try {
+        assertSecretReference(span.apiKeyRef);
+        const apiKey = (await secretStore.get(span.apiKeyRef as SecretReference)).trim();
+        return apiKey.length > 0 ? apiKey : null;
+      } catch {
+        return null;
+      }
+    },
+  });
+
   // ADR-0031: 直接构造 ConversationSession（不经过 MetaclawSession 桥接），
   // 会话级 callbacks + 账户级 Kernel 执行服务后置绑定。
   const buildConversationSession = async (conversationId: string): Promise<ConversationSession> => {
@@ -1150,6 +1169,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       db,
       getKernelConfiguration: () => stagedConfiguration.kernel,
       getRuntimeConfiguration: runtimeBindings.getRuntimeConfiguration,
+      spanRoutingEvaluator: spanRoutingAdvisor,
       commandCatalog,
       commandReadServices,
       taskEngine,

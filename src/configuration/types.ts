@@ -397,6 +397,8 @@ export type RuntimeConfigurationView = Readonly<{
   permissionProfiles: Record<string, PermissionProfile>;
   runtimePolicy: RuntimePolicy;
   gateway: GatewayConfig;
+  /** Server-only: carries the Span credential reference for the adapter. */
+  routing?: RoutingConfiguration;
 }>;
 
 export type RuntimePrivateConfigurationBinding = Readonly<{

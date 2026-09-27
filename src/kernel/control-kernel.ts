@@ -19,6 +19,7 @@ import { contextRefKey } from '../work-graph/index.js';
 import type { KernelExecutorStatusProjection } from './executor-status-projection.js';
 import { unavailableAgentClasses } from './plan-routing-eligibility.js';
 import { resolvePreferredModelRef } from '../routing/plan-routing-candidates.js';
+import type { SpanRoutingObservation } from '../routing/span-routing-types.js';
 export { resolvePreferredModelRef } from '../routing/plan-routing-candidates.js';
 import {
   AutoModelResolver,
@@ -101,6 +102,13 @@ export type KernelEvent =
       targetGraphRevision: number;
       attachmentIds?: string[];
       availabilityExplanation?: string | null;
+      /**
+       * Bounded, server-produced Span routing observation (ADR-0033
+       * amendment). Absent for every revision created before this field
+       * existed and whenever the advisor is disabled or fails closed; the
+       * Kernel then keeps the deterministic resolver unchanged.
+       */
+      spanRouting?: SpanRoutingObservation;
     })
   | (KernelEventEnvelope & {
       type: 'executor_recovered';
