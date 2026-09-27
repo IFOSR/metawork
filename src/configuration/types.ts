@@ -239,6 +239,24 @@ export interface GatewayConfig {
   };
 }
 
+/**
+ * Optional Span routing advisor configuration (ADR-0033 amendment).
+ *
+ * `apiKeyRef` is a SecretStore reference written by the activation transaction;
+ * the plaintext OpenRouter credential never enters the configuration revision,
+ * Planner/Executor projections, generated runtimes, or logs.
+ */
+export interface SpanRoutingConfiguration {
+  enabled: boolean;
+  model: 'respan/span-01-lite';
+  apiKeyRef?: string;
+  timeoutMs: number;
+}
+
+export interface RoutingConfiguration {
+  span?: SpanRoutingConfiguration;
+}
+
 export interface AnyFusionConfigurationV2 {
   schemaVersion: 2;
   providers: Record<string, ProviderDefinition>;
@@ -248,6 +266,11 @@ export interface AnyFusionConfigurationV2 {
   permissionProfiles: Record<string, PermissionProfile>;
   runtimePolicy: RuntimePolicy;
   gateway: GatewayConfig;
+  /**
+   * Optional additive routing section. Revisions created before this field
+   * existed parse unchanged and keep their original content hash.
+   */
+  routing?: RoutingConfiguration;
 }
 
 export type ConfigurationSnapshot = Readonly<{
@@ -352,6 +375,15 @@ export type KernelConfigurationView = Readonly<{
   }>;
   permissionProfiles: Record<string, PermissionProfile>;
   runtimePolicy: RuntimePolicy;
+  /**
+   * Kernel-safe Span policy. Deliberately excludes `apiKeyRef`: only the
+   * Server-side Span adapter may resolve the credential for a revision.
+   */
+  spanRouting?: Readonly<{
+    enabled: boolean;
+    model: string;
+    timeoutMs: number;
+  }>;
 }>;
 
 export type RuntimeConfigurationView = Readonly<{

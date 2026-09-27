@@ -108,6 +108,11 @@ function boundedExecutorChanges(before: unknown, after: unknown): Set<string> {
 function isHotPath(path: string): boolean {
   return path.startsWith('providers.')
     || path.startsWith('models.')
+    // The optional Span advisor section is resolved from the current active
+    // revision before each Planner turn (ADR-0033), so it is hot-safe for the
+    // same reason as Provider/Model catalog changes.
+    || path === 'routing'
+    || path.startsWith('routing.')
     || /^agentClasses\.[^.]+\.modelPolicy(?:\.|$)/u.test(path)
     || /^agentClasses\.[^.]+\.enabled$/u.test(path)
     // Routing use-case hints guide AgentClass choice and are resolved from the

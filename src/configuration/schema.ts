@@ -15,6 +15,14 @@ import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 const REFERENCE_ID = /^[a-z][a-z0-9-]{0,63}$/;
 const SECRET_REFERENCE =
   /^(?:file-secret|keychain):[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/;
+
+/** Fixed Span advisor model; the UI never offers a model/provider picker. */
+export const SPAN_ROUTING_MODEL = 'respan/span-01-lite' as const;
+/** Server-owned SecretStore reference for the OpenRouter credential. */
+export const SPAN_ROUTING_SECRET_REFERENCE = 'file-secret:anyfusion/routing/span' as const;
+export const SPAN_ROUTING_DEFAULT_TIMEOUT_MS = 3_000;
+export const SPAN_ROUTING_MIN_TIMEOUT_MS = 500;
+export const SPAN_ROUTING_MAX_TIMEOUT_MS = 10_000;
 const RELEASE_REFERENCE = /^release:[a-z][a-z0-9-]{0,63}$/;
 const BARE_COMMAND = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const DOMAIN_NAME =
@@ -420,6 +428,18 @@ const GatewayConfigSchema = z.object({
   }).strict().optional(),
 }).strict();
 
+const RoutingConfigurationSchema = z.object({
+  span: z.object({
+    enabled: z.boolean(),
+    model: z.literal(SPAN_ROUTING_MODEL),
+    apiKeyRef: z.string().regex(SECRET_REFERENCE).optional(),
+    timeoutMs: z.number().int()
+      .min(SPAN_ROUTING_MIN_TIMEOUT_MS)
+      .max(SPAN_ROUTING_MAX_TIMEOUT_MS)
+      .default(SPAN_ROUTING_DEFAULT_TIMEOUT_MS),
+  }).strict().optional(),
+}).strict();
+
 export const AnyFusionConfigurationV2Schema = z.object({
   schemaVersion: z.literal(2),
   providers: z.record(ReferenceIdSchema, ProviderDefinitionSchema),
@@ -429,6 +449,7 @@ export const AnyFusionConfigurationV2Schema = z.object({
   permissionProfiles: z.record(ReferenceIdSchema, PermissionProfileSchema),
   runtimePolicy: RuntimePolicySchema,
   gateway: GatewayConfigSchema,
+  routing: RoutingConfigurationSchema.optional(),
 }).strict().superRefine((configuration, context) => {
   for (const [modelRef, model] of Object.entries(configuration.models)) {
     const provider = configuration.providers[model.providerRef];

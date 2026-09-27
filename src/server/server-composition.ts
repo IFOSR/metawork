@@ -36,6 +36,7 @@ import {
   importLegacyProviderCredentials,
 } from '../configuration/index.js';
 import { prepareProductionSecretStore } from '../configuration/production-secret-store.js';
+import { SPAN_ROUTING_SECRET_REFERENCE, SPAN_ROUTING_MODEL } from '../configuration/schema.js';
 import {
   assertSecretReference,
   type SecretReference,
@@ -209,6 +210,57 @@ async function preheatLocalAgentCredentials(secretStore: SecretStore): Promise<v
     providers,
     secretStore,
   });
+}
+
+/**
+ * Applies SecretStore writes for one activation attempt and returns the
+ * compensating action. Provider and Span credentials share this transaction so
+ * any activation failure restores every touched reference together.
+ */
+async function stageSecretWrites(input: {
+  secretStore: SecretStore;
+  requireRecovery: () => void;
+  writes: ReadonlyArray<{ reference: SecretReference; value: string }>;
+}): Promise<() => Promise<void>> {
+  const previous: Array<{ reference: SecretReference; value: string | null }> = [];
+  const seen = new Set<string>();
+  for (const write of input.writes) {
+    if (seen.has(write.reference)) continue;
+    seen.add(write.reference);
+    let value: string | null = null;
+    try {
+      value = await input.secretStore.get(write.reference);
+    } catch {
+      value = null;
+    }
+    previous.push({ reference: write.reference, value });
+  }
+  try {
+    for (const write of input.writes) {
+      await input.secretStore.put(write.reference, write.value);
+    }
+  } catch (error) {
+    try {
+      await restoreSecretWrites(input.secretStore, previous);
+    } catch (rollbackError) {
+      input.requireRecovery();
+      throw rollbackError;
+    }
+    throw error;
+  }
+  return async () => {
+    await restoreSecretWrites(input.secretStore, previous);
+  };
+}
+
+async function restoreSecretWrites(
+  secretStore: SecretStore,
+  previous: ReadonlyArray<{ reference: SecretReference; value: string | null }>,
+): Promise<void> {
+  for (const entry of previous) {
+    if (entry.value === null) await secretStore.delete(entry.reference);
+    else await secretStore.put(entry.reference, entry.value);
+  }
 }
 
 async function activateConfiguration(
@@ -885,51 +937,47 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     service: configurationService,
     gate: configurationActivationGate,
     initialSnapshot: migratedSnapshot,
-    prepareConfig: async ({ config, secrets, baseRevisionId }) => {
-      let prepared = structuredClone(config) as AnyFusionConfigurationV2;
+    prepareConfig: async ({ config, secrets, spanApiKey, baseRevisionId }) => {
+      const prepared = structuredClone(config) as AnyFusionConfigurationV2;
       for (const [providerRef, apiKey] of Object.entries(secrets)) {
         const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
         const provider = prepared.providers[providerRef];
         if (provider) provider.apiKeyRef = reference;
       }
+      if (spanApiKey !== undefined) {
+        // Only the credential reference is persisted. A later enable/disable
+        // toggle reuses the same reference without re-entering the key.
+        prepared.routing = {
+          ...prepared.routing,
+          span: {
+            enabled: prepared.routing?.span?.enabled ?? false,
+            model: SPAN_ROUTING_MODEL,
+            timeoutMs: prepared.routing?.span?.timeoutMs ?? 3_000,
+            apiKeyRef: SPAN_ROUTING_SECRET_REFERENCE,
+          },
+        };
+      }
       return (await executorManualPlanner.compileAll({ baseRevisionId, config: prepared })).config;
     },
-    stageSecrets: async secrets => {
-      const previous = new Map<string, string | null>();
-      const references = new Map<string, SecretReference>();
+    stageSecrets: async ({ secrets, spanApiKey }) => {
+      const writes: Array<{ reference: SecretReference; value: string }> = [];
       for (const [providerRef, apiKey] of Object.entries(secrets)) {
-        const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
-        references.set(providerRef, reference);
-        try {
-          previous.set(providerRef, await secretStore.get(reference));
-        } catch {
-          previous.set(providerRef, null);
-        }
+        writes.push({
+          reference: `file-secret:anyfusion/providers/${providerRef}` as SecretReference,
+          value: apiKey.trim(),
+        });
       }
-      try {
-        for (const [providerRef, apiKey] of Object.entries(secrets)) {
-          await secretStore.put(references.get(providerRef)!, apiKey.trim());
-        }
-      } catch (error) {
-        try {
-          for (const [providerRef, value] of previous) {
-            const reference = references.get(providerRef)!;
-            if (value === null) await secretStore.delete(reference);
-            else await secretStore.put(reference, value);
-          }
-        } catch (rollbackError) {
-          configurationActivationGate.requireRecovery();
-          throw rollbackError;
-        }
-        throw error;
+      if (spanApiKey !== undefined) {
+        writes.push({
+          reference: SPAN_ROUTING_SECRET_REFERENCE as SecretReference,
+          value: spanApiKey.trim(),
+        });
       }
-      return async () => {
-        for (const [providerRef, value] of previous) {
-          const reference = references.get(providerRef)!;
-          if (value === null) await secretStore.delete(reference);
-          else await secretStore.put(reference, value);
-        }
-      };
+      return stageSecretWrites({
+        secretStore,
+        requireRecovery: () => configurationActivationGate.requireRecovery(),
+        writes,
+      });
     },
     registerRevision: (snapshot, reason) => {
       const existing = configurationRevisionRepo.find(snapshot.revisionId);
@@ -1939,11 +1987,12 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             ])),
           };
         },
-        activate: async (baseRevisionId, nextConfig, secrets) => {
+        activate: async (baseRevisionId, nextConfig, secrets, spanApiKey) => {
           const result = await configurationRuntimeCoordinator.activate({
             expectedRevisionId: baseRevisionId,
             config: nextConfig,
             secrets,
+            ...(spanApiKey !== undefined ? { spanApiKey } : {}),
           });
           if (result.ok) {
             return {
@@ -1996,6 +2045,19 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             configured: true,
             maskedApiKey: maskApiKey(normalized),
           };
+        }),
+        getSpanCredentialStatus: async () => {
+          try {
+            const apiKey = (await secretStore.get(SPAN_ROUTING_SECRET_REFERENCE as SecretReference)).trim();
+            return { configured: apiKey.length > 0 };
+          } catch {
+            return { configured: false };
+          }
+        },
+        writeSpanSecret: apiKey => configurationActivationGate.withActivation(async () => {
+          const normalized = apiKey.trim();
+          await secretStore.put(SPAN_ROUTING_SECRET_REFERENCE as SecretReference, normalized);
+          return { configured: true, maskedApiKey: maskApiKey(normalized) };
         }),
         getSecretStatus: async providerRefs => {
           const status: Record<string, {
