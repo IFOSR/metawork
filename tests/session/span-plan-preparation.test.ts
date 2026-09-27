@@ -6,6 +6,7 @@ import type {
   SpanRoutingEvaluator,
   SpanSubtaskEvaluationRequest,
 } from '../../src/routing/span-routing-types.js';
+import { SPAN_MAX_EVALUATED_SUBTASKS } from '../../src/routing/span-routing-types.js';
 
 function agentClasses(): KernelConfigurationView['agentClasses'] {
   return {
@@ -56,7 +57,7 @@ function runtimeConfiguration(enabled = true, timeoutMs = 3_000): RuntimeConfigu
         span: {
           enabled: true,
           model: 'respan/span-01-lite',
-          apiKeyRef: 'file-secret:anyfusion/routing/span',
+          apiKeyRef: 'file-secret:anyfusion/internal/routing-span',
           timeoutMs,
         },
       },
@@ -210,6 +211,58 @@ describe('attachSpanRoutingObservation', () => {
     });
     expect(evaluate).not.toHaveBeenCalled();
     expect(result.spanRouting?.subtasks[0]).toMatchObject({ status: 'skipped', reason: 'single_candidate' });
+  });
+
+  it('does not spend evaluation budget on skipped single-candidate Subtasks', async () => {
+    const evaluate = vi.fn(async () => ({ subtasks: [] }));
+    const singleBinding = [{ agentClassRef: 'codex-fast', modelSelection: { mode: 'fixed-by-agent-class' as const } }];
+    const subtasks = [
+      ...Array.from(
+        { length: SPAN_MAX_EVALUATED_SUBTASKS },
+        (_, index) => subtask(`single-${index}`, { executorBindings: singleBinding }),
+      ),
+      subtask('multi'),
+    ];
+
+    await attachSpanRoutingObservation({
+      event: planEvent(subtasks),
+      configuration: kernelConfiguration(),
+      executorStatuses: [],
+      runtimeConfiguration: runtimeConfiguration(),
+      evaluator: { evaluate },
+    });
+
+    // The multi-candidate Subtask must still be scored: skipped Subtasks never
+    // consumed the cap.
+    expect(evaluate).toHaveBeenCalledOnce();
+    expect(evaluate.mock.calls[0]?.[0].requests.map(request => request.subtaskId)).toEqual(['multi']);
+  });
+
+  it('marks only the overflow Subtasks as budget-exhausted', async () => {
+    const subtasks = [
+      ...Array.from(
+        { length: SPAN_MAX_EVALUATED_SUBTASKS },
+        (_, index) => subtask(`multi-${index}`),
+      ),
+      subtask('overflow'),
+    ];
+    const result = await attachSpanRoutingObservation({
+      event: planEvent(subtasks),
+      configuration: kernelConfiguration(),
+      executorStatuses: [],
+      runtimeConfiguration: runtimeConfiguration(),
+      evaluator: adviseAll(),
+    });
+
+    const observed = result.spanRouting?.subtasks ?? [];
+    expect(observed).toHaveLength(subtasks.length);
+    expect(observed.at(-1)).toMatchObject({
+      subtaskId: 'overflow',
+      status: 'fallback',
+      reason: 'span_proposal_budget_exhausted',
+    });
+    // The scored Subtasks keep real probabilities rather than the skip reason.
+    expect(observed[0]).toMatchObject({ status: 'advised' });
   });
 
   it('skips a Subtask with no eligible candidate', async () => {

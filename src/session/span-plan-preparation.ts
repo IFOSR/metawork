@@ -65,10 +65,6 @@ export async function attachSpanRoutingObservation(
   let candidateBudget = 0;
 
   for (const subtask of proposal.workGraph.subtasks) {
-    if (requests.length + skippedOrFailed.length >= SPAN_MAX_EVALUATED_SUBTASKS) {
-      skippedOrFailed.push({ subtaskId: subtask.id, status: 'skipped', reason: 'single_candidate' });
-      continue;
-    }
     const groups = planSubtaskCandidateGroups({
       configuration: input.configuration,
       subtask,
@@ -88,6 +84,18 @@ export async function attachSpanRoutingObservation(
     }
     if (eligibleCount === 1) {
       skippedOrFailed.push({ subtaskId: subtask.id, status: 'skipped', reason: 'single_candidate' });
+      continue;
+    }
+    // Only Subtasks that will actually be scored consume the evaluation cap.
+    // Counting skipped ones here used to let single-candidate Subtasks starve
+    // later multi-candidate Subtasks out of any evaluation at all.
+    if (requests.length >= SPAN_MAX_EVALUATED_SUBTASKS) {
+      skippedOrFailed.push({
+        subtaskId: subtask.id,
+        candidateSetFingerprint,
+        status: 'fallback',
+        reason: 'span_proposal_budget_exhausted' satisfies SpanFallbackReason,
+      });
       continue;
     }
     if (candidateBudget + eligibleCount > SPAN_MAX_CANDIDATES_PER_PROPOSAL) {
