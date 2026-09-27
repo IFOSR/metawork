@@ -232,6 +232,23 @@ describe('Span routing credential storage', () => {
     }
   });
 
+  it('does not let a Provider named routing-span share the Span credential slot', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'metawork-span-collision-'));
+    try {
+      const store = new CredentialsFileSecretStore(join(root, 'credentials.json'));
+      // A user is allowed to create a Provider whose ref is `routing-span`.
+      const providerReference = 'file-secret:anyfusion/providers/routing-span' as SecretReference;
+      await store.put(providerReference, 'provider-key-value');
+      await store.put(SPAN_ROUTING_SECRET_REFERENCE as SecretReference, 'span-key-value');
+
+      await expect(store.get(providerReference)).resolves.toBe('provider-key-value');
+      await expect(store.get(SPAN_ROUTING_SECRET_REFERENCE as SecretReference))
+        .resolves.toBe('span-key-value');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('accepts the Span reference in the configuration schema', () => {
     const result = AnyFusionConfigurationV2Schema.safeParse({
       ...baseConfiguration(),

@@ -18,8 +18,14 @@ const SECRET_REFERENCE =
 
 /** Fixed Span advisor model; the UI never offers a model/provider picker. */
 export const SPAN_ROUTING_MODEL = 'respan/span-01-lite' as const;
-/** Server-owned SecretStore reference for the OpenRouter credential. */
-export const SPAN_ROUTING_SECRET_REFERENCE = 'file-secret:anyfusion/routing-span' as const;
+/**
+ * Fixed, Server-owned SecretStore reference for the OpenRouter credential.
+ *
+ * It lives in the non-Provider `internal` namespace: `CredentialsFileSecretStore`
+ * keeps internal secrets in a separate map, so a Provider that happens to be
+ * named `routing-span` can never share, read, or overwrite this slot.
+ */
+export const SPAN_ROUTING_SECRET_REFERENCE = 'file-secret:anyfusion/internal/routing-span' as const;
 export const SPAN_ROUTING_DEFAULT_TIMEOUT_MS = 3_000;
 export const SPAN_ROUTING_MIN_TIMEOUT_MS = 500;
 export const SPAN_ROUTING_MAX_TIMEOUT_MS = 10_000;

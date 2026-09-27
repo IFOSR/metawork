@@ -14,10 +14,34 @@ import { assertSecretReference } from './secret-store.js';
 interface CredentialsDocument {
   version: 1;
   providers: Record<string, string>;
+  /**
+   * Non-Provider MetaWork secrets (for example the optional Span routing
+   * advisor credential). Kept in a separate namespace so a Provider named
+   * `routing-span` can never share, overwrite or read this slot.
+   */
+  internal?: Record<string, string>;
 }
 
 const PROVIDER_REFERENCE =
   /^(?:file-secret|keychain):anyfusion\/(?:providers\/)?([a-z][a-z0-9-]{0,63})$/u;
+const INTERNAL_REFERENCE =
+  /^(?:file-secret|keychain):anyfusion\/internal\/([a-z][a-z0-9-]{0,63})$/u;
+
+type CredentialLocation =
+  | { kind: 'provider'; key: string }
+  | { kind: 'internal'; key: string };
+
+/** Resolves a supported reference to exactly one credential namespace slot. */
+function locateCredential(reference: SecretReference): CredentialLocation {
+  assertSecretReference(reference);
+  const internal = INTERNAL_REFERENCE.exec(reference);
+  if (internal) return { kind: 'internal', key: internal[1]! };
+  const provider = PROVIDER_REFERENCE.exec(reference);
+  if (provider) return { kind: 'provider', key: provider[1]! };
+  throw new Error(
+    'credentials file store only supports Provider or internal secret references',
+  );
+}
 
 export class CredentialsFileSecretStore implements SecretStore {
   constructor(readonly filePath: string) {}
@@ -36,31 +60,49 @@ export class CredentialsFileSecretStore implements SecretStore {
   }
 
   async get(reference: SecretReference): Promise<string> {
-    const providerRef = providerRefFromSecretReference(reference);
+    const location = locateCredential(reference);
     const document = await this.read();
-    const value = document.providers[providerRef];
-    if (!value) throw new Error(`provider credential is missing: ${providerRef}`);
+    const value = location.kind === 'provider'
+      ? document.providers[location.key]
+      : document.internal?.[location.key];
+    if (!value) {
+      throw new Error(`credential is missing: ${location.kind}/${location.key}`);
+    }
     return value;
   }
 
   async put(reference: SecretReference, value: string): Promise<void> {
-    const providerRef = providerRefFromSecretReference(reference);
+    const location = locateCredential(reference);
     const current = await this.readOrEmpty();
-    await this.writeProviders({ ...current.providers, [providerRef]: value });
+    await this.write(
+      location.kind === 'provider'
+        ? { ...current, providers: { ...current.providers, [location.key]: value } }
+        : {
+            ...current,
+            internal: { ...current.internal, [location.key]: value },
+          },
+    );
   }
 
   async delete(reference: SecretReference): Promise<void> {
-    const providerRef = providerRefFromSecretReference(reference);
+    const location = locateCredential(reference);
     const current = await this.readOrEmpty();
-    if (!(providerRef in current.providers)) return;
-    const providers = { ...current.providers };
-    delete providers[providerRef];
-    await this.writeProviders(providers);
+    if (location.kind === 'provider') {
+      if (!(location.key in current.providers)) return;
+      const providers = { ...current.providers };
+      delete providers[location.key];
+      await this.write({ ...current, providers });
+      return;
+    }
+    if (!current.internal || !(location.key in current.internal)) return;
+    const internal = { ...current.internal };
+    delete internal[location.key];
+    await this.write({ ...current, internal });
   }
 
   async putProviders(values: Record<string, string>): Promise<void> {
     const current = await this.readOrEmpty();
-    await this.writeProviders({ ...current.providers, ...values });
+    await this.write({ ...current, providers: { ...current.providers, ...values } });
   }
 
   private async readOrEmpty(): Promise<CredentialsDocument> {
@@ -73,7 +115,6 @@ export class CredentialsFileSecretStore implements SecretStore {
       throw error;
     }
   }
-
   private async read(): Promise<CredentialsDocument> {
     let text: string;
     try {
@@ -100,13 +141,19 @@ export class CredentialsFileSecretStore implements SecretStore {
     return value;
   }
 
-  private async writeProviders(providers: Record<string, string>): Promise<void> {
+  private async write(document: CredentialsDocument): Promise<void> {
     await this.initialize();
     const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`;
     try {
       await writeFile(
         temporaryPath,
-        `${JSON.stringify({ version: 1, providers }, null, 2)}\n`,
+        `${JSON.stringify({
+          version: 1,
+          providers: document.providers,
+          ...(document.internal && Object.keys(document.internal).length > 0
+            ? { internal: document.internal }
+            : {}),
+        }, null, 2)}\n`,
         { encoding: 'utf8', mode: 0o600 },
       );
       await chmod(temporaryPath, 0o600);
@@ -119,12 +166,11 @@ export class CredentialsFileSecretStore implements SecretStore {
 }
 
 export function providerRefFromSecretReference(reference: SecretReference): string {
-  assertSecretReference(reference);
-  const match = PROVIDER_REFERENCE.exec(reference);
-  if (!match) {
+  const location = locateCredential(reference);
+  if (location.kind !== 'provider') {
     throw new Error('credentials file store only supports Provider secret references');
   }
-  return match[1]!;
+  return location.key;
 }
 
 function isCredentialsDocument(value: unknown): value is CredentialsDocument {
@@ -134,7 +180,15 @@ function isCredentialsDocument(value: unknown): value is CredentialsDocument {
     || Array.isArray(record.providers)) {
     return false;
   }
-  return Object.values(record.providers).every(item => typeof item === 'string');
+  if (!Object.values(record.providers).every(item => typeof item === 'string')) {
+    return false;
+  }
+  if (record.internal === undefined) return true;
+  if (!record.internal || typeof record.internal !== 'object' || Array.isArray(record.internal)) {
+    return false;
+  }
+  return Object.values(record.internal as Record<string, unknown>)
+    .every(item => typeof item === 'string');
 }
 
 function isMissingFileError(error: unknown): boolean {
