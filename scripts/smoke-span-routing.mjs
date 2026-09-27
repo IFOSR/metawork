@@ -139,8 +139,9 @@ async function main() {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5_000);
   try {
+    const request = buildRequest();
     const response = await client.alpha.decisions.create(
-      { decisionsRequest: buildRequest() },
+      { decisionsRequest: { ...request, state: JSON.stringify(request.state) } },
       { signal: controller.signal, timeoutMs: 5_000, retries: { strategy: 'none' } },
     );
     const model = typeof response?.model === 'string' ? response.model : '';

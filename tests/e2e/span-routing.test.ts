@@ -177,17 +177,23 @@ describe('Span routing end-to-end (mock advisor + real SQLite)', () => {
       const admission = { ...snapshot, kernelConfiguration: configuration };
       const deterministic = new ControlKernel().decide(baseEvent, admission);
       const live = process.env.SPAN_LIVE_INTEGRATION === '1';
+      const defaultTimeout = live && process.env.SPAN_LIVE_DEFAULT_TIMEOUT === '1';
+      const timeoutMs = defaultTimeout ? 3_000 : 10_000;
       const adapter = live ? new SpanRoutingAdvisor({ resolveApiKey: async () => process.env.SPAN_INTEGRATION_API_KEY ?? null })
         : advisingEvaluator('pi-general');
       const evaluate = vi.fn(adapter.evaluate.bind(adapter));
       const start = Date.now();
       const enriched = await attachSpanRoutingObservation({ event: baseEvent, configuration,
         executorStatuses: [], runtimeConfiguration: { ...runtimeConfiguration,
-          routing: { span: { ...runtimeConfiguration.routing.span, timeoutMs: 10_000 } } },
+          routing: { span: { ...runtimeConfiguration.routing.span, timeoutMs } } },
         evaluator: { evaluate },
       });
       const latencyMs = Date.now() - start;
-      expect(enriched.spanRouting?.subtasks[0]?.status).toBe(single ? 'skipped' : 'advised');
+      const observation = enriched.spanRouting?.subtasks[0];
+      if (defaultTimeout && !single && observation?.status === 'fallback') {
+        expect(observation.reason).toBe('span_timeout');
+        expect(latencyMs).toBeLessThan(timeoutMs + 500);
+      } else expect(observation?.status).toBe(single ? 'skipped' : 'advised');
       const store = new KernelWorkflowRepo(db);
       const workflow = new DurableKernelWorkflow({ kernel: new ControlKernel(), buildSnapshot: () => admission,
         store, runtime: { apply: async () => null }, clock: { now: () => baseEvent.occurredAt } });
@@ -197,6 +203,9 @@ describe('Span routing end-to-end (mock advisor + real SQLite)', () => {
       expect(advised.action.type).toBe('authorize_task_plan');
       if (advised.action.type !== 'authorize_task_plan' || deterministic.action.type !== 'authorize_task_plan') return;
       const bindings = advised.action.authorizedBindingsBySubtask.subtask_execute!;
+      if (observation?.status === 'fallback') {
+        expect(bindings).toEqual(deterministic.action.authorizedBindingsBySubtask.subtask_execute);
+      }
       expect(bindings).toHaveLength(single ? 1 : 2);
       expect(new Set(bindings.map(b => b.agentClassRef)).size).toBe(bindings.length);
       const callCount = evaluate.mock.calls.length;
@@ -205,7 +214,9 @@ describe('Span routing end-to-end (mock advisor + real SQLite)', () => {
         store: new KernelWorkflowRepo(db), runtime: { apply: async () => null }, clock: { now: () => baseEvent.occurredAt } });
       await restarted.submit(store.findEvent(enriched.id)!);
       expect(evaluate).toHaveBeenCalledTimes(callCount);
-      if (live) console.log(JSON.stringify({ scenario: name, latencyMs,
+      if (live) console.log(JSON.stringify({ scenario: name, latencyMs, timeoutMs,
+        status: observation?.status, reason: observation?.reason ?? null,
+        resolvedModel: observation?.resolvedModel ?? null,
         deterministic: deterministic.action.authorizedBindingsBySubtask.subtask_execute!.map(b => [b.agentClassRef, b.modelRef]),
         advised: bindings.map(b => [b.agentClassRef, b.modelRef]),
         usage: enriched.spanRouting?.subtasks[0]?.usage ?? null, replayCalls: 0 }));

@@ -128,7 +128,9 @@ export function buildSpanSubtaskEvaluationRequest(input: {
     questions,
     candidates,
   };
-  if (Buffer.byteLength(JSON.stringify(request), 'utf8') > SPAN_MAX_REQUEST_BYTES) {
+  // Include JSON-string escaping in the wire budget. Keeping local candidate
+  // metadata in this count makes the bound conservative.
+  if (Buffer.byteLength(JSON.stringify({ ...request, state: JSON.stringify(request.state) }), 'utf8') > SPAN_MAX_REQUEST_BYTES) {
     return { ok: false, reason: 'span_input_too_large' };
   }
   return { ok: true, request };

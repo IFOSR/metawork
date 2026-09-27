@@ -58,18 +58,25 @@ function responseStub(body: string, status = 200): string {
 }
 
 describe('Span routing smoke script', () => {
-  it('runs the integration mode through Kernel and durable replay with intercepted HTTP', () => {
+  it.each([false, true])('sends string state through the SDK (integration=%s)', integration => {
     const result = runSmoke(`globalThis.fetch = async request => {
       const body = await request.json();
+      if (typeof body.state !== 'string') return new Response(JSON.stringify({
+        error: { message: 'state must be a string', code: 400 },
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      const state = JSON.parse(body.state);
+      if (!state.subtask?.goal) throw new Error('serialized task state is missing');
       return new Response(JSON.stringify({ model: 'respan/span-01-lite',
         answers: Object.fromEntries(Object.keys(body.questions).map(id => [id, { type: 'noul', noul: 0.75 }])),
         usage: { input_tokens: 10, output_tokens: 0, cost: 0 },
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    };`, { args: ['--integration'], preloadChild: true });
+    };`, { args: integration ? ['--integration'] : [], preloadChild: integration });
     expect(result.status, result.stdout + result.stderr).toBe(0);
     const output = JSON.parse(result.stdout);
-    expect(output.samples).toHaveLength(4);
-    expect(output.samples.every((sample: any) => sample.replayCalls === 0)).toBe(true);
+    if (integration) {
+      expect(output.samples).toHaveLength(4);
+      expect(output.samples.every((sample: any) => sample.replayCalls === 0)).toBe(true);
+    }
     expect(result.stdout).not.toContain('smoke-fake-credential');
   });
 

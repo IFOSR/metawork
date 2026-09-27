@@ -242,7 +242,9 @@ export function defaultSpanDecisionClient(apiKey: string): SpanDecisionClient {
         {
           decisionsRequest: {
             model: request.model,
-            state: request.state,
+            // Respan accepts textual state only; the SDK also permits objects
+            // for other decision providers, which Respan rejects with HTTP 400.
+            state: JSON.stringify(request.state),
             questions: request.questions as never,
           },
         },
