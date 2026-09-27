@@ -17,7 +17,9 @@ import {
 import type { WorkGraphProposal } from '../work-graph/types.js';
 import { contextRefKey } from '../work-graph/index.js';
 import type { KernelExecutorStatusProjection } from './executor-status-projection.js';
-import { deriveAgentAvailability } from './agent-availability.js';
+import { unavailableAgentClasses } from './plan-routing-eligibility.js';
+import { resolvePreferredModelRef } from '../routing/plan-routing-candidates.js';
+export { resolvePreferredModelRef } from '../routing/plan-routing-candidates.js';
 import {
   AutoModelResolver,
   type RoutingResolutionAudit,
@@ -1756,14 +1758,6 @@ function isStateChanging(proposal: KernelPlanProposal): boolean {
   return proposal.action === 'plan_work_graph' || (proposal.action === 'task_control' && proposal.task.control !== 'status_query');
 }
 
-function unavailableAgentClasses(statuses: KernelExecutorStatusProjection[], occurredAt: string): Set<string> {
-  return new Set(statuses
-    .filter(status => ['permanently_unavailable', 'temporarily_unavailable'].includes(
-      deriveAgentAvailability(status, occurredAt),
-    ))
-    .map(status => status.agentClassName));
-}
-
 function resolveAuthorizedBindings(
   workGraph: WorkGraphProposal,
   configuration: KernelConfigurationView,
@@ -1867,17 +1861,6 @@ function resolveModelRef(
     return policy.defaultModelRef ?? null;
   }
   return null;
-}
-
-export function resolvePreferredModelRef(
-  modelSelection: WorkGraphProposal['subtasks'][number]['executorBindings'][number]['modelSelection'],
-  policy: KernelConfigurationView['agentClasses'][string]['modelPolicy'],
-): string | undefined {
-  if (modelSelection.mode === 'proposed') return modelSelection.modelRef;
-  if (modelSelection.mode === 'agent-class-default' && policy.mode === 'auto') {
-    return policy.defaultModelRef;
-  }
-  return undefined;
 }
 
 function bindingsForProposalSubtask(

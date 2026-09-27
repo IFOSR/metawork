@@ -6,6 +6,12 @@ import type {
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 
 export const AUTO_MODEL_ROUTING_POLICY_VERSION = 'auto-model-routing-v1';
+/**
+ * Policy version recorded when a validated Span observation participated in
+ * ranking. Span is a soft ordering signal only; the deterministic comparator
+ * still decides every tie and remains the only path when no observation exists.
+ */
+export const SPAN_ROUTING_POLICY_VERSION = 'span-routing-v1';
 
 export type ModelHealth = 'healthy' | 'degraded' | 'unavailable';
 
@@ -53,6 +59,12 @@ export interface ModelScoreBreakdown {
   estimatedLatencyMs: number;
   qualityScore: number;
   totalScore: number;
+  /**
+   * Validated Span noul probability for this candidate, when one applied.
+   * Kept separate from `totalScore`: it is a different scale and must never be
+   * folded into the deterministic cost/latency/quality arithmetic.
+   */
+  spanProbability?: number;
 }
 
 export interface AutoModelResolution {
@@ -80,42 +92,89 @@ export interface AutoModelResolverInput {
   candidates: readonly AutoModelCandidate[];
   requirements: AutoModelRequirements;
   preferredModelRef?: string;
+  /**
+   * Optional validated Span noul probabilities keyed by Model ref. Only the
+   * Kernel supplies this, and only after confirming the observation matches
+   * the current event, revision, graph, Subtask and candidate set.
+   */
+  spanProbabilities?: Readonly<Record<string, number>>;
+}
+
+/** Narrows `candidates` to the Model refs the policy allows. */
+export function autoModelPolicyConstraints(policy: ModelPolicy): {
+  allowed: ReadonlySet<string>;
+  order: ReadonlyMap<string, number>;
+  objective: AutoModelObjective['priority'];
+  objectiveConfig: AutoModelObjective | undefined;
+} {
+  const allowed = policy.mode === 'fixed'
+    ? new Set([policy.modelRef])
+    : new Set(policy.allowedModelRefs);
+  const order = policy.mode === 'auto'
+    ? new Map(policy.fallback?.order.map((ref, index) => [ref, index]) ?? [])
+    : new Map<string, number>();
+  const objective = policy.mode === 'auto'
+    ? policy.objective?.priority ?? 'balanced'
+    : 'balanced';
+  const objectiveConfig = policy.mode === 'auto' ? policy.objective : undefined;
+  return { allowed, order, objective, objectiveConfig };
+}
+
+/**
+ * Single shared hard-eligibility filter used before Span evaluation and again
+ * inside the Kernel. Callers must not maintain a second, looser candidate set.
+ */
+export function filterEligibleModelCandidates(input: {
+  policy: ModelPolicy;
+  candidates: readonly AutoModelCandidate[];
+  requirements: AutoModelRequirements;
+}): {
+  eligible: AutoModelCandidate[];
+  rejected: RejectedModelCandidate[];
+} {
+  const { allowed, objectiveConfig } = autoModelPolicyConstraints(input.policy);
+  const eligible: AutoModelCandidate[] = [];
+  const rejected: RejectedModelCandidate[] = [];
+  for (const candidate of input.candidates) {
+    if (!allowed.has(candidate.modelRef)) continue;
+    const rejection = rejectCandidate(candidate, input.requirements, objectiveConfig);
+    if (rejection) {
+      rejected.push({
+        modelRef: candidate.modelRef,
+        providerRef: candidate.providerRef,
+        reason: rejection,
+      });
+      continue;
+    }
+    eligible.push(candidate);
+  }
+  return { eligible, rejected };
 }
 
 export class AutoModelResolver {
   static resolve(input: AutoModelResolverInput): AutoModelResolution {
-    const rejectedCandidates: RejectedModelCandidate[] = [];
-    const allowed = input.policy.mode === 'fixed'
-      ? new Set([input.policy.modelRef])
-      : new Set(input.policy.allowedModelRefs);
-    const order = input.policy.mode === 'auto'
-      ? new Map(input.policy.fallback?.order.map((ref, index) => [ref, index]) ?? [])
-      : new Map<string, number>();
-    const objective = input.policy.mode === 'auto'
-      ? input.policy.objective?.priority ?? 'balanced'
-      : 'balanced';
-    const objectiveConfig = input.policy.mode === 'auto' ? input.policy.objective : undefined;
+    const { order, objective, objectiveConfig } = autoModelPolicyConstraints(input.policy);
+    const { eligible: eligibleCandidates, rejected: rejectedCandidates } =
+      filterEligibleModelCandidates({
+        policy: input.policy,
+        candidates: input.candidates,
+        requirements: input.requirements,
+      });
+    const spanApplied = Boolean(
+      input.spanProbabilities && Object.keys(input.spanProbabilities).length > 0,
+    );
     const eligible: Array<{
       candidate: AutoModelCandidate;
       score: ModelScoreBreakdown;
-    }> = [];
-
-    for (const candidate of input.candidates) {
-      if (!allowed.has(candidate.modelRef)) continue;
-      const rejection = rejectCandidate(candidate, input.requirements, objectiveConfig);
-      if (rejection) {
-        rejectedCandidates.push({
-          modelRef: candidate.modelRef,
-          providerRef: candidate.providerRef,
-          reason: rejection,
-        });
-        continue;
-      }
-      eligible.push({
+    }> = eligibleCandidates.map(candidate => ({
+      candidate,
+      score: scoreCandidate(
         candidate,
-        score: scoreCandidate(candidate, input.requirements, objective),
-      });
-    }
+        input.requirements,
+        objective,
+        spanApplied ? input.spanProbabilities?.[candidate.modelRef] : undefined,
+      ),
+    }));
 
     if (eligible.length === 0) {
       const rejected = rejectedCandidates.length > 0
@@ -131,6 +190,8 @@ export class AutoModelResolver {
     eligible.sort((left, right) => (
       left.score.preferredCapabilityMissCount - right.score.preferredCapabilityMissCount
       || right.score.preferredCapabilityMatchCount - left.score.preferredCapabilityMatchCount
+      || spanProbabilityRank(input.spanProbabilities, right.candidate.modelRef)
+        - spanProbabilityRank(input.spanProbabilities, left.candidate.modelRef)
       || left.score.totalScore - right.score.totalScore
       || Number(right.candidate.modelRef === input.preferredModelRef)
         - Number(left.candidate.modelRef === input.preferredModelRef)
@@ -152,7 +213,9 @@ export class AutoModelResolver {
       fallbackCandidates,
       rejectedCandidates: rejectedCandidates.sort(compareRejected),
       scoreBreakdown: selected.score,
-      policyVersion: AUTO_MODEL_ROUTING_POLICY_VERSION,
+      policyVersion: spanApplied
+        ? SPAN_ROUTING_POLICY_VERSION
+        : AUTO_MODEL_ROUTING_POLICY_VERSION,
     };
   }
 }
@@ -193,6 +256,7 @@ function scoreCandidate(
   candidate: AutoModelCandidate,
   requirements: AutoModelRequirements,
   objective: AutoModelObjective['priority'],
+  spanProbability?: number,
 ): ModelScoreBreakdown {
   const estimatedOutputTokens = requirements.estimatedOutputTokens ?? 4_000;
   const estimatedCost = (
@@ -225,7 +289,16 @@ function scoreCandidate(
     estimatedLatencyMs,
     qualityScore,
     totalScore,
+    ...(spanProbability !== undefined ? { spanProbability } : {}),
   };
+}
+
+function spanProbabilityRank(
+  probabilities: Readonly<Record<string, number>> | undefined,
+  modelRef: string,
+): number {
+  const value = probabilities?.[modelRef];
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
 function latencyMs(tier: AutoModelCandidate['latencyTier']): number {
