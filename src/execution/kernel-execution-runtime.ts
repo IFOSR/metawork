@@ -444,7 +444,7 @@ export interface KernelExecutionRuntimeDeps {
     queueProposal(scene: string, proposal: GuidanceProposal): void;
     requestReplan(decision: KernelDecision & {
       action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
-    }): Promise<KernelEvent>;
+    }): Promise<KernelEvent | null>;
     requestMergeReplan(decision: KernelDecision & {
       action: Extract<KernelDecision['action'], { type: 'request_merge_replan' }>;
     }): Promise<KernelEvent | null>;
@@ -1684,6 +1684,17 @@ export class KernelExecutionRuntime {
             action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
           },
         );
+        if (!event) {
+          // The Turn that asked for this replan was cancelled while the
+          // Planner/advisor ran. Cancellation is terminal, not a failure: no
+          // plan is admitted and the request does not stay stuck in planning.
+          this.deps.generationReplanRepo.cancel(
+            request.id,
+            'cancelled while planning',
+            new Date().toISOString(),
+          );
+          return null;
+        }
         if (!this.deps.generationReplanRepo.submitPlan(
           request.id,
           token,

@@ -255,6 +255,19 @@ export class GenerationReplanRequestRepo {
       WHERE id = ? AND status IN ('pending_quiescence', 'planning')
     `).run(errorSummary, now, id);
   }
+
+  /**
+   * Marks one request cancelled when the Turn that asked for the replan went
+   * away. Distinct from `fail`: cancellation is an intended terminal state, not
+   * a planning error the Runtime should surface as uncertain.
+   */
+  cancel(id: string, reason: string, now: string): void {
+    this.db.prepare(`
+      UPDATE generation_replan_requests
+      SET status = 'cancelled', cancelled_at = ?, updated_at = ?, error_summary = ?
+      WHERE id = ? AND status IN ('pending_quiescence', 'planning')
+    `).run(now, now, reason, id);
+  }
 }
 
 function rowToRecord(row: ReplanRow): GenerationReplanRequestRecord {

@@ -250,6 +250,12 @@ export class ConversationSession {
    * cannot outlive the Turn that asked for it.
    */
   private turnCancellation = new AbortController();
+  /**
+   * Set once the Session is disposed. A disposed Session must never reset its
+   * cancellation controller and never admit another proposal, even though the
+   * abort above is also used as the live-Turn stop signal.
+   */
+  private disposed = false;
   private attachedClients = 0;
   private disposePromise: Promise<void> | null = null;
   private readonly allowLegacyDirectReply: boolean;
@@ -614,12 +620,17 @@ export class ConversationSession {
 
   /**
    * Attaches the bounded Span observation to a `plan_proposed` event before it
-   * enters the durable Kernel inbox. Absent advisor, disabled Span policy, or
-   * any failure leaves the event untouched so the deterministic resolver runs.
+   * enters the durable Kernel inbox. Absent advisor or disabled Span policy
+   * leaves the event untouched so the deterministic resolver runs.
+   *
+   * Returns `null` when the Turn is gone (cancelled or the Session is disposed)
+   * while the external advisor was running: a late observation must never admit
+   * a proposal, and an aborted request must not be mistaken for a value. An
+   * adapter abort with no cancellation still degrades to deterministic routing.
    */
   private async preparePlanProposedEvent(
     event: PlanProposedEvent,
-  ): Promise<PlanProposedEvent> {
+  ): Promise<PlanProposedEvent | null> {
     const evaluator = this.deps.spanRoutingEvaluator;
     if (!evaluator) return event;
     const configuration = this.deps.getKernelConfiguration?.()
@@ -634,8 +645,11 @@ export class ConversationSession {
     // disabled advisor cannot change when plan admission errors surface.
     if (!runtimeConfiguration?.routing?.span?.enabled) return event;
     // A live Turn must always have an un-aborted signal, even when the proposal
-    // arrives through the host-bridge path that never reset it.
-    if (this.turnCancellation.signal.aborted && !this.isCancelledTurn()) {
+    // arrives through the host-bridge path that never reset it. A disposed
+    // Session is never revived.
+    if (!this.disposed
+      && this.turnCancellation.signal.aborted
+      && !this.isCancelledTurn()) {
       this.turnCancellation = new AbortController();
     }
     // Reuse the durable fact when this exact event already reached the inbox.
@@ -646,7 +660,7 @@ export class ConversationSession {
     const snapshot = this.buildPlanAdmissionSnapshot(event);
     if (!snapshot) return event;
     try {
-      return await attachSpanRoutingObservation({
+      const prepared = await attachSpanRoutingObservation({
         event,
         configuration,
         executorStatuses: snapshot.executorStatuses,
@@ -654,18 +668,25 @@ export class ConversationSession {
         evaluator,
         signal: this.turnCancellation.signal,
       });
+      return this.isCancellationRequested() ? null : prepared;
     } catch (error) {
-      // Cancellation only skips the optional ranking signal. The caller decides
-      // the Turn outcome, so a replan apply is never turned into a failure by
-      // the advisor going away. A raw `AbortError` is treated the same as the
-      // typed cancellation so a leaking adapter cannot turn an abort into an
-      // uncertain transport result.
-      if (error instanceof SpanEvaluationAbortedError
-        || (error instanceof Error && error.name === 'AbortError')) {
-        return event;
-      }
+      // An advisor-contract abort means the request was cancelled by the Turn
+      // or by the Server lifetime: never admit the proposal on that basis. A
+      // raw `AbortError` with no cancellation is an adapter-side abort and
+      // keeps the deterministic path.
+      if (error instanceof SpanEvaluationAbortedError) return null;
+      if (this.isCancellationRequested()) return null;
+      if (error instanceof Error && error.name === 'AbortError') return event;
       throw error;
     }
+  }
+
+  /**
+   * True when this Turn can no longer admit work: the client asked to stop it,
+   * or the Session was disposed while external preparation was in flight.
+   */
+  private isCancellationRequested(): boolean {
+    return this.disposed || this.turnCancellation.signal.aborted || this.isCancelledTurn();
   }
 
   /**
@@ -945,7 +966,7 @@ export class ConversationSession {
       return { status: 'accepted' } as PlannerProposalResult;
     }
 
-    let event: PlanProposedEvent;
+    let event: PlanProposedEvent | null;
     try {
       event = await this.preparePlanProposedEvent(this.buildPlanProposedEvent({
         plan,
@@ -966,10 +987,10 @@ export class ConversationSession {
     } catch (error) {
       // External preparation is abortable; a cancelled Turn must fail closed
       // instead of surfacing as an uncertain transport failure.
-      if (this.isCancelledTurn()) return this.cancelledProposalResult(eventId, plan.id);
+      if (this.isCancellationRequested()) return this.cancelledProposalResult(eventId, plan.id);
       throw error;
     }
-    if (this.isCancelledTurn()) {
+    if (!event || this.isCancellationRequested()) {
       // Cancellation can arrive while the external advisor is still running and
       // does not always abort it; never admit the proposal in that window.
       return this.cancelledProposalResult(eventId, plan.id);
@@ -2220,7 +2241,7 @@ export class ConversationSession {
     decision: KernelDecision & {
       action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
     },
-  ): Promise<Extract<KernelEvent, { type: 'plan_proposed' }>> {
+  ): Promise<Extract<KernelEvent, { type: 'plan_proposed' }> | null> {
     const port = this.deps.runtimePort;
     const task = port.queries.findTask(decision.action.taskId);
     if (!task) throw new Error(`replan Task not found: ${decision.action.taskId}`);
@@ -2264,6 +2285,8 @@ export class ConversationSession {
     ].join('\n\n').slice(0, 24_000);
     const context = this.deps.planningContextBuilder!.build({ userInput: request });
     const plan = await this.runPlanningAgent(context);
+    // `null` means the Turn was cancelled while the advisor ran: the replan is
+    // abandoned rather than admitted on a late observation.
     return this.preparePlanProposedEvent(this.buildPlanProposedEvent({
       plan,
       configurationRevision: context.configuration.revisionId,
@@ -2519,6 +2542,11 @@ export class ConversationSession {
 
   async dispose(): Promise<void> {
     this.disposePromise ??= (async () => {
+      // Stop external routing work before waiting: a disposed Session must not
+      // leave a Span request running, and a late observation must not admit a
+      // proposal.
+      this.disposed = true;
+      this.turnCancellation.abort();
       this.deps.mailbox.closeAdmission();
       await this.deps.mailbox.waitForIdle();
       await this.waitForBackgroundWork();
