@@ -1072,7 +1072,8 @@ flow as a Provider Key — the Server writes it to the account SecretStore under
 fixed reference in the non-Provider `internal` namespace and the revision stores
 only that reference, so a Provider named `routing-span` can never share the slot.
 Configuration validation accepts only that exact reference and the Server
-re-checks it before reading the secret. The section has no Provider or Model
+re-checks it before reading the secret. Provider references into that internal
+namespace are rejected as well. The section has no Provider or Model
 picker, and a blank Key field keeps the
 stored value.
 
@@ -1085,13 +1086,22 @@ that read is bounded by the proposal deadline. `ControlKernel` re-validates the
 observation and uses the probabilities solely to order already-authorized
 AgentClass and Model candidates. Disabled, missing-key, timeout, HTTP error,
 invalid response, candidate mismatch, or over-budget input all fall back to the
-deterministic resolver; an aborted request never becomes a fallback. Turn
-cancellation, Session disposal, and Server shutdown abort in-flight requests and
-fail closed: a cancelled initial submission is rejected and a cancelled replan
-returns no event, so no late observation is admitted. Span usage is internal
-routing observation only and adds no
-separate user billing stage. Total concurrent Span requests are capped
-Server-wide.
+deterministic resolver. Captured Turn cancellation prevents late admission even
+when a new Turn replaces the controller. Shutdown interruption leaves replan
+applications recoverable instead of cancelling user work. Planning, scoring,
+admission and Runtime use the pinned configuration snapshot; system replan and
+merge replan use an isolated validation-only Planner host without a client.
+Concurrent preparation coalesces identical event IDs and rejects changed
+identities. Span usage is internal routing observation only and adds no separate
+user billing stage. The Server caps physical requests at two and queued requests
+at 128, removes expired waiters and rejects late responses. A transport ignoring
+abort retains its physical slot until it settles.
+
+`npm run smoke:span-routing -- --integration` exercises four representative
+workloads through the real advisor, Kernel and SQLite replay, reports ordering,
+latency and usage, and requires zero extra calls on replay. It requires a valid
+replacement key and local development dependencies. The default smoke mode
+only checks the Decisions API transport.
 
 Export the Feishu app secret before starting the runtime:
 

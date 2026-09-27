@@ -11,13 +11,13 @@
 ---
 
 - 日期：2026-09-27
-- 状态：已实现（代码、自动化验证与文档已完成；真实 OpenRouter smoke 与 Docker 验证待运维执行）
+- 状态：代码与本地验收已收尾；真实替换 Key 验收待执行。当前结论见[设计收尾记录](2026-09-27-span-design-closure.md)。
 - 设计：[Span 路由增强设计](2026-09-27-span-routing-design.md)
 - 起点：`55184d84f848af4909508717199c8c3dd43f7739`
 - 分支：`feat/span-routing`
 - Worktree：`/Users/ylfego/Program/agents_test/collection/metawork-span-routing`
 - 原工作树：`../metawork`，保留所有用户改动，不 checkout/reset/stash，不复制其未提交文件。
-- 计划产出完成日期：2026-09-27；产品实现完成日期/closing commit：待实施后填写。
+- 计划与产品代码收尾日期：2026-09-27；closing implementation commit：`4190eea`（恢复与固定配置提交：`0af3345`）。
 
 ## 实施前固定约束
 
@@ -345,7 +345,7 @@ docker run --rm metawork-span-test
 
 额外发现并修复：并发限制器在“让位”时先递减计数再授权，导致让位后新到达的请求会在两个槽位仍被占用时被准入。现已改为由等待者直接继承槽位，并新增“让位后不得过准入”回归测试（修复前 peak=3，修复后 peak≤2）。
 
-未完成（已知缺口，不影响上述修复）：system/recovery 绑定不注入 advisor（该绑定的 replan 回调本就直接拒绝，Span 路径不可达）；真实 OpenRouter smoke 与 Docker 持久化验证仍待运维执行。
+该轮结束时仍未完成：system/recovery 绑定未注入 advisor；真实 OpenRouter smoke 与 Docker 验证未执行。此处为历史记录，后续设计收尾已补齐恢复入口并完成缓存 Node 22 镜像中的 Docker 验收。
 
 ### 评审修正（第二轮，2026-09-27）
 
@@ -363,4 +363,18 @@ docker run --rm metawork-span-test
 
 验证（本机 macOS，Node 22）：`npx tsc --noEmit` 通过；`tests/configuration`+`tests/routing`+`tests/kernel`+`tests/architecture`+`tests/management`+`tests/web` → `1 failed | 782 passed`（仅基线 `configuration-module-boundary`）；`tests/execution`+`tests/storage`+`tests/account`+`tests/e2e` → `403 passed | 6 skipped`；`tests/session` → `7 failed | 240 passed | 3 skipped`，7 个失败与基线 `55184d8` 完全相同（无新增回归）。全量 `npm test` 未在本轮重跑；真实 OpenRouter smoke、Docker 持久化、浏览器 E2E 仍未执行。
 - 文档 closing commit：`181a65a docs: plan Span routing integration`。
-- 产品实现 closing commit：本计划最后一批提交（含文档与验收）。
+- 产品实现 closing commit：`4190eea`。
+
+### 设计收尾复核（2026-09-27）
+
+[收尾记录](2026-09-27-span-design-closure.md)取代前两轮的完成范围判断。新增无客户端
+恢复入口、完整配置固定、并发去重与身份冲突检查、不可变取消信号、可恢复关闭中断、
+排队上限、双向凭据隔离及四类任务的集成 smoke。Planner 按每次运行固定模型和环境，
+避免旧 revision 的请求终止其他会话。
+
+最终集中测试 16 文件/175 项、Chrome 4 项通过；Docker 缓存 Node 22.23.2 镜像中
+9 文件/82 项及 Planner 并发 1 项通过。宽范围回归 930 项通过、1 个已知基线失败；
+Planner seam 另有 40 项通过、1 个已知 CLI 构建基线失败。完整构建、根/Web 类型检查通过。
+本轮没有重跑全量 `npm test`。精确 Dockerfile 基础镜像拉取被 Docker Hub 超时阻断；
+真实 API 验收仍需替换 Key，使用 `npm run smoke:span-routing -- --integration`。
+没有推送、合并或部署。

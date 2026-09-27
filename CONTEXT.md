@@ -101,17 +101,26 @@ store its OpenRouter credential through the same SecretStore path as a Provider
 key, but under the non-Provider `internal` namespace, and the revision keeps
 only that fixed reference. Configuration validation accepts no other reference,
 and the Server re-checks it before reading, so no revision can point the advisor
-at a Provider credential. After the
+at a Provider credential; Provider references into the internal namespace are
+also rejected. After the
 shared hard filter and before the `plan_proposed` event is durably enqueued, the
 Server may attach a bounded `spanRouting` observation to that event. Replay
 reuses the persisted observation and never re-calls the advisor. `ControlKernel`
 re-validates the observation and then uses its probabilities only to order
 eligible candidates; it never widens the candidate set, and any absent, stale,
 invalid, or failed observation leaves the deterministic resolver unchanged.
-Turn cancellation, Session disposal, and Server shutdown abort in-flight
-requests and fail closed: the initial submission is rejected and a replan
-returns no event, so the Runtime records an intended `cancelled` generation
-request rather than admitting a late observation.
+Preparation captures its cancellation signal, coalesces identical event IDs,
+and rejects changed identities. Planning, scoring, admission and recovery use
+the event's pinned configuration snapshot. System replan and merge replan use a
+temporary validation-only Planner host through the existing Application Shell,
+without requiring an attached client. Each Planner run captures its own model
+and runtime environment; resolving a historical revision does not refresh the
+shared supervisor or terminate another run. Explicit Turn cancellation returns no
+replan and cancels its request. Session disposal or Server shutdown leaves an
+interrupted replan application recoverable (`applying`), without admitting a
+late response or treating shutdown as user cancellation. Span has two physical
+request slots and at most 128 queued requests per Server; expired waiters are
+removed and a transport ignoring abort retains its slot until it settles.
 
 Public attempt timelines retain the internal `attemptId` only as a non-visible
 correlation key. Visible execution narrative uses attempt kind/ordinal labels

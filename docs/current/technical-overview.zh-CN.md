@@ -901,7 +901,8 @@ SecretStore 接口解析，但默认由 `~/.metawork/credentials.json` 提供；
 `respan/span-01-lite`。它的 OpenRouter Key 与 Provider Key 走同一套密钥流程：
 服务端写入账户 SecretStore 中**非 Provider 的 internal 命名空间**固定引用，
 revision 只保存该引用，同名 Provider（例如名为 `routing-span` 的 Provider）
-不会与之共享或互相覆盖；配置校验只接受该固定引用，服务端读取前还会再次核对。
+不会与之共享或互相覆盖；配置校验只接受该固定引用，服务端读取前还会再次核对，
+也拒绝 Provider 反向引用 internal 命名空间。
 界面不提供 Provider/Model 选择器，Key 留空表示保留已存值。
 
 启用后，服务端只对已通过共用硬过滤的候选进行评估，并在 `plan_proposed` 事件
@@ -909,10 +910,17 @@ revision 只保存该引用，同名 Provider（例如名为 `routing-span` 的 
 复用存储事件，不再发起第二次请求。凭据按提案锁定的 configuration revision 解析，
 并受提案总截止时间约束。`ControlKernel` 会重新校验该 observation，仅用概率对已授权
 的 AgentClass/Model 候选排序。未启用、缺少 Key、超时、HTTP 错误、响应非法、
-候选不匹配或超出预算时，一律回退到确定性 resolver；被 abort 的请求不会变成评分回退。
-Turn 取消、Session 释放与 Server 关闭都会中断进行中的请求并 fail-closed：首次提交被拒绝，
-重规划不返回事件，迟到的评分不会被准入。服务端总并发请求数受限。Span 用量只作为内部路由观测，
-不新增用户计费阶段。
+候选不匹配或超出预算时，一律回退到确定性 resolver。每次准备捕获独立的取消信号，
+下一轮替换 controller 不能恢复已取消的旧提案。用户取消会取消重规划请求；关闭中断则
+保留 `applying` application 供重启恢复。Planning、评分、准入和 Runtime 使用固定 revision
+的快照；无客户端的 system replan/merge replan 通过临时、仅验证的 Planner host 复用现有
+Application Shell。相同事件并发准备合并结果，身份冲突直接拒绝。
+服务端最多两个物理请求、128 个排队请求，移除到期等待者、拒绝迟到结果；忽略 abort 的
+传输在结束前继续占用物理槽位。Span 用量只作为内部路由观测，不新增用户计费阶段。
+
+`npm run smoke:span-routing -- --integration` 可用替换后的 Key 对四类任务运行真实
+advisor → Kernel → SQLite 重放验收，记录排序、延迟、usage 和重放零追加调用。
+该模式需要本地开发依赖；默认 smoke 仅验证 Decisions API 传输。
 
 启动前导出飞书密钥：
 

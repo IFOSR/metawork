@@ -146,9 +146,16 @@ produced by the Server-side Span advisor before the event was enqueued.
 - The observation is part of the event body, so the existing `kernel_events`
   JSON and decision-ledger JSON persist, replay, and recover it without a new
   table or a second write authority.
-- Recovery and application retry reuse the stored observation. They never invoke
-  the external advisor, so replay stays deterministic and free of new side
-  effects.
+- Recovery of a stored event and application retry reuse its observation and
+  never invoke the external advisor. A recovery decision requiring a *new*
+  replan uses the existing Planner and Span preparation paths with the pinned
+  revision, through a temporary validation-only host without a connected
+  client. A durable replan event skips both services.
+- Explicit user cancellation cancels the generation request. Shutdown during
+  external replan preparation raises `KernelApplicationInterruptedError` and
+  leaves the application `applying` for restart recovery. It does not record
+  user cancellation or an uncertain external execution effect. Merge-replan
+  publication counters change only after preparation succeeds.
 - `ControlKernel` treats the observation as untrusted input: it re-derives the
   eligible candidate set and ignores the scores unless event id, configuration
   revision, generation, graph revision, proposal fingerprint, Subtask, and

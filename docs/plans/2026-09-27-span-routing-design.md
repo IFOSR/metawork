@@ -1,7 +1,7 @@
 # Span 路由增强设计
 
 - 日期：2026-09-27
-- 状态：已实现（2026-09-27）。范围、架构、事件持久化与凭据方式已由用户确认。
+- 状态：代码与本地验收已收尾（2026-09-27）；真实替换 Key 验收待执行。当前交付范围和证据见[设计收尾记录](2026-09-27-span-design-closure.md)。
 - 基线：`main@55184d84f848af4909508717199c8c3dd43f7739`
 - 工作分支：`feat/span-routing`
 - 实施计划：[Span routing implementation](2026-09-27-span-routing-implementation-plan.md)
@@ -163,7 +163,12 @@ Span usage 保存为内部路由观测，不冒充 Planner/Executor 用量或自
 
 ## 10. 完成记录
 
-设计与计划产出日期：2026-09-27。产品实现在同一日期完成于分支 `feat/span-routing`（起点 `main@55184d84`），关闭提交见实施计划的交付记录。真实 OpenRouter 集成 smoke 需要运维提供已轮换的密钥并显式执行 `npm run smoke:span-routing`，未在本次自动化验证中运行；Docker 持久化验证同样未执行。部署尚未进行。
+设计与代码收尾日期：2026-09-27，closing implementation commit：`4190eea`。
+无客户端恢复、配置固定、并发与取消边界的最新结论见[收尾记录](2026-09-27-span-design-closure.md)。
+集中测试、Chrome 与缓存 Node 22.23.2 镜像中的 Docker 验证通过；精确 Dockerfile 镜像拉取
+被 Docker Hub 超时阻断。真实 OpenRouter 验收仍需替换 Key 后执行
+`npm run smoke:span-routing -- --integration`；尚未推送、合并或部署。
+以下前两轮评审记录保留历史进展，其关闭语义和未完成项以收尾记录为准。
 
 ### 评审修正（2026-09-27）
 

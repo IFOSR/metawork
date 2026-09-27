@@ -218,6 +218,7 @@ It never widens the candidate set and never produces a binding decision.
   `routing-span` can never share or overwrite the slot. The configuration schema
   accepts only that exact reference, and the Server re-checks it before reading,
   so no revision or snapshot can point the advisor at a Provider credential.
+  Provider references into the internal namespace are also rejected.
   Planner and Executor
   projections, generated runtimes, diffs, logs, and client responses never carry
   the plaintext key.
@@ -238,16 +239,31 @@ It never widens the candidate set and never produces a binding decision.
   then uses the probability only as an ordering signal inside the same
   AgentClass and across AgentClasses; ties and every other decision stay with the
   deterministic resolver.
+- Planning context, Span candidate construction, Kernel admission and Runtime
+  configuration use the proposal's pinned snapshot. System replan and conflict
+  replan run through a temporary validation-only Planner host and the existing
+  ConversationSession paths, without opening a client or creating a second
+  semantic router. Each RPC run captures its own model and runtime environment;
+  pinned resolution does not refresh the shared supervisor or terminate another
+  run. Durable replan events bypass both Planner and Span.
+- Concurrent preparation of the same event ID shares one result until durable
+  enqueue; a different identity for that ID is rejected. The Shell retains at
+  most 64 outstanding prepared events. Each preparation captures its Turn
+  signal so replacing the current controller cannot revive cancelled work.
 - Turn cancellation aborts the in-flight request, and the Shell rechecks the
-  cancellation latch before admitting the proposal, so a late observation can
+  captured cancellation signal before admitting the proposal, so a late observation can
   never authorize work for a cancelled Turn. Cancellation is fail-closed on
   every proposal source: the initial submission is rejected, and a replan
   returns no event so the Runtime records an intended `cancelled` generation
   request instead of a failure or a persisted plan.
 - Session disposal and Server shutdown abort in-flight Span requests: the
   admission shell aborts its Turn controller before draining, and the Server
-  lifetime signal is merged into every advisor call and released by the
-  concurrency limiter. An aborted advisor call never admits a proposal.
+  lifetime signal is merged into every advisor call. Interrupted replan
+  applications stay `applying` for durable recovery rather than becoming user
+  cancellation. No interrupted preparation admits a proposal.
+- The advisor has two physical slots and at most 128 queued requests Server-wide.
+  Aborted or expired waiters are removed; a transport that ignores abort keeps
+  its physical slot until it settles while the caller meets the deadline.
 - Replay of a stored `plan_proposed` event makes no external call. A crash
   before the event is durably stored may repeat the request; Span is not
   idempotent and must not be described as exactly-once.
