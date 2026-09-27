@@ -315,7 +315,11 @@ docker run --rm metawork-span-test
   6. `feat(web): configure Span credentials in advanced settings` — 高级设置新增 Span 面板与草稿/密钥流程。
   7. 本任务：系统验收、真实 smoke 脚本与权威文档修订。
 - 已验证（本机 macOS，Node 22.23.2）：`npx tsc --noEmit`（根工程）、`web` 的 `tsc --noEmit` 与 `vite build`、`tests/routing`、`tests/kernel`、`tests/configuration/span-routing-config.test.ts`、`tests/session/span-plan-preparation.test.ts`、`tests/session/conversation-session.test.ts`、`tests/session/planning-kernel-path.test.ts`、`tests/e2e/span-routing.test.ts`、`tests/web/config-edit.test.ts`、`tests/web/settings-workbench.test.ts`、`tests/management/server.test.ts`。
-- 未执行（环境/凭据门）：真实 `npm run smoke:span-routing`（需要已轮换的 OpenRouter Key）、Docker `Dockerfile.test` 持久化回归、Chrome 浏览器 E2E `tests/e2e/settings-workbench-browser.test.ts`。
+- 未执行（环境/凭据门）：真实 `npm run smoke:span-routing`（需要已轮换的 OpenRouter Key）、Docker `Dockerfile.test` 持久化回归、Chrome 浏览器 E2E `tests/e2e/settings-workbench-browser.test.ts`（整体被跳过）。
+- 全量测试证据（本机 macOS，`npm test`，2026-09-27）：`Test Files 10 failed | 422 passed | 5 skipped (437)`，`Tests 11 failed | 2665 passed | 12 skipped (2688)`。
+- 上述 11 个失败均已在基线 `55184d8` 的独立 worktree 中相同复现（vendored Planner CLI 未构建、Docker 不可用、以及既有测试/实现差异），与本次 Span 变更无关：
+  `tests/planning/planner-process-supervisor.test.ts`、`tests/session/task-boundary-round3-acceptance.test.ts`（2）、`tests/session/scripted-session.test.ts`、`tests/docker/shell-schema-isolation.test.ts`、`tests/billing/bill-finality.test.ts`、`tests/session/executor-router-command-acceptance.test.ts`、`tests/configuration/configuration-module-boundary.test.ts`、`tests/session/inline-materials-round7-acceptance.test.ts`、`tests/session/input-controller.test.ts`、`tests/session/inline-web-links-round8-acceptance.test.ts`。
+- 新增/相关测试均通过：`tests/configuration/span-routing-config.test.ts`（12）、`tests/routing/plan-routing-candidates.test.ts`（12）、`tests/routing/span-routing.test.ts`（23）、`tests/kernel/span-routing-kernel.test.ts`（10）、`tests/session/span-plan-preparation.test.ts`（9）、`tests/e2e/span-routing.test.ts`（3）、`tests/web/config-edit.test.ts`（10）。
 - 已知偏差：高级设置在 Span 关闭且从未配置时不写入 `routing` 节点，避免无关节省。
 - 文档 closing commit：`181a65a docs: plan Span routing integration`。
 - 产品实现 closing commit：本计划最后一批提交（含文档与验收）。
