@@ -15,6 +15,20 @@ import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 const REFERENCE_ID = /^[a-z][a-z0-9-]{0,63}$/;
 const SECRET_REFERENCE =
   /^(?:file-secret|keychain):[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/;
+
+/** Fixed Span advisor model; the UI never offers a model/provider picker. */
+export const SPAN_ROUTING_MODEL = 'respan/span-01-lite' as const;
+/**
+ * Fixed, Server-owned SecretStore reference for the OpenRouter credential.
+ *
+ * It lives in the non-Provider `internal` namespace: `CredentialsFileSecretStore`
+ * keeps internal secrets in a separate map, so a Provider that happens to be
+ * named `routing-span` can never share, read, or overwrite this slot.
+ */
+export const SPAN_ROUTING_SECRET_REFERENCE = 'file-secret:anyfusion/internal/routing-span' as const;
+export const SPAN_ROUTING_DEFAULT_TIMEOUT_MS = 3_000;
+export const SPAN_ROUTING_MIN_TIMEOUT_MS = 500;
+export const SPAN_ROUTING_MAX_TIMEOUT_MS = 10_000;
 const RELEASE_REFERENCE = /^release:[a-z][a-z0-9-]{0,63}$/;
 const BARE_COMMAND = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const DOMAIN_NAME =
@@ -74,7 +88,10 @@ const ProviderDefinitionSchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional(),
   protocol: z.enum(['openai-compatible', 'anthropic']),
   baseUrl: credentialFreeHttpUrlSchema('Provider baseUrl'),
-  apiKeyRef: z.string().regex(SECRET_REFERENCE),
+  apiKeyRef: z.string().regex(SECRET_REFERENCE).refine(
+    reference => !/^(?:file-secret|keychain):anyfusion\/internal\//u.test(reference),
+    'Provider credentials cannot reference Server internal secrets',
+  ),
   region: ReferenceIdSchema,
   enabled: z.boolean(),
 }).strict();
@@ -420,6 +437,21 @@ const GatewayConfigSchema = z.object({
   }).strict().optional(),
 }).strict();
 
+const RoutingConfigurationSchema = z.object({
+  span: z.object({
+    enabled: z.boolean(),
+    model: z.literal(SPAN_ROUTING_MODEL),
+    // Server-owned, non-Provider reference. Pinning the literal here stops a
+    // hand-edited revision from pointing the advisor at another Provider's
+    // credential; only Span activation writes this exact reference.
+    apiKeyRef: z.literal(SPAN_ROUTING_SECRET_REFERENCE).optional(),
+    timeoutMs: z.number().int()
+      .min(SPAN_ROUTING_MIN_TIMEOUT_MS)
+      .max(SPAN_ROUTING_MAX_TIMEOUT_MS)
+      .default(SPAN_ROUTING_DEFAULT_TIMEOUT_MS),
+  }).strict().optional(),
+}).strict();
+
 export const AnyFusionConfigurationV2Schema = z.object({
   schemaVersion: z.literal(2),
   providers: z.record(ReferenceIdSchema, ProviderDefinitionSchema),
@@ -429,6 +461,7 @@ export const AnyFusionConfigurationV2Schema = z.object({
   permissionProfiles: z.record(ReferenceIdSchema, PermissionProfileSchema),
   runtimePolicy: RuntimePolicySchema,
   gateway: GatewayConfigSchema,
+  routing: RoutingConfigurationSchema.optional(),
 }).strict().superRefine((configuration, context) => {
   for (const [modelRef, model] of Object.entries(configuration.models)) {
     const provider = configuration.providers[model.providerRef];

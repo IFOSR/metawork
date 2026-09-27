@@ -8,6 +8,7 @@ import type { GatewayEventEnvelope } from '../../src/gateway/client-events.js';
 import { resolveTaskViewTurnAssociation } from '../../src/gateway/task-view-association.js';
 import { createAccountEventJournal } from '../../src/server/account-event-journal.js';
 import { runMigrations } from '../../src/storage/migrations.js';
+import { RetryWakeRepo } from '../../src/storage/retry-wake-repo.js';
 
 const source = ts.createSourceFile('server-composition.ts',
   await readFile(new URL('../../src/server/server-composition.ts', import.meta.url), 'utf8'),
@@ -56,6 +57,7 @@ async function fixture() {
   class EmptyRepo { listByTask() { return []; } }
   const scope = {
     LOCAL_DEFAULT_ACCOUNT_ID: input.accountId, GATEWAY_TASK_VIEW_QUERY_VERSION: 1,
+    RetryWakeRepo,
     webSessionCatalog: { readTurn }, eventJournal: journal, resolveTaskViewTurnAssociation,
     conversationRegistry: { getIfOpen: () => null },
     billingServices: { contexts: { findByTurnId: () => null } },

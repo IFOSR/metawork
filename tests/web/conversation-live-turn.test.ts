@@ -7,6 +7,7 @@ import {
   isCurrentConversationRecordRequest,
   mergeFinalAnswer,
   mergeBilling,
+  mergeExecutionTimeline,
   mergeTraceDelta,
   mergeTraceSnapshot,
   retainTerminalLiveTurnInRecord,
@@ -31,6 +32,42 @@ function liveTurn(sessionId: string): ConversationTurnProjection {
 }
 
 describe('Conversation live Turn ownership', () => {
+  it('converges a live Turn from a terminal durable execution timeline', () => {
+    const running = liveTurn('conversation-a');
+    const result = mergeExecutionTimeline(running, running.id, {
+      taskId: running.taskId!,
+      title: 'task-convergence',
+      status: 'done',
+      stages: [],
+    });
+    expect(result).toMatchObject({
+      status: 'completed',
+      taskId: running.taskId,
+      executionTimeline: { status: 'done' },
+    });
+    expect(result?.completedAt).toEqual(expect.any(String));
+  });
+
+  it('does not reopen a terminal Turn from a late running execution timeline', () => {
+    const running = liveTurn('conversation-a');
+    const completed = mergeExecutionTimeline(running, running.id, {
+      taskId: running.taskId!,
+      title: 'task-convergence',
+      status: 'done',
+      stages: [],
+    });
+    const result = mergeExecutionTimeline(completed, running.id, {
+      taskId: running.taskId!,
+      title: 'task-convergence',
+      status: 'running',
+      stages: [],
+    });
+    expect(result).toMatchObject({
+      status: 'completed',
+      executionTimeline: { status: 'running' },
+    });
+  });
+
   it('stays running for a cancellation request and stops on the terminal trace without reloading', () => {
     const running = liveTurn('conversation-a');
     const requested = mergeTraceDelta(running, running.id, [], 'running');

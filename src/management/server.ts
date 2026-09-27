@@ -141,9 +141,14 @@ export interface ConfigQuery {
     baseRevisionId: string,
     config: unknown,
     secrets?: Record<string, string>,
+    spanApiKey?: string,
   ): Promise<ActivateResult>;
   rollback(targetRevisionId: string): Promise<ActivateResult>;
   writeSecret(providerRef: string, apiKey: string): Promise<ProviderCredentialStatus>;
+  /** 查询 Span 决策模型凭据是否已配置；不返回明文或 secret 引用。 */
+  getSpanCredentialStatus?(): Promise<{ configured: boolean }>;
+  /** 写入 Span 决策模型凭据；服务端固定 SecretStore 引用。 */
+  writeSpanSecret?(apiKey: string): Promise<ProviderCredentialStatus>;
   /** 查询各 provider 的 secret 是否已配置。 */
   getSecretStatus(providerRefs: string[]): Promise<Record<string, ProviderCredentialStatus>>;
   /** 用存储的密钥调 Provider API 验证有效性；未配置时 valid 为 null。 */
@@ -1139,8 +1144,13 @@ export class ManagementServer {
           ([providerRef, value]) => isSafeProviderRef(providerRef) && typeof value === 'string',
         ))
         : undefined;
+      // A blank key means "keep the stored credential"; only forward a real
+      // replacement so the activation transaction never clears it.
+      const spanApiKey = typeof body.spanApiKey === 'string' && body.spanApiKey.trim().length > 0
+        ? body.spanApiKey.trim()
+        : undefined;
       const result = this.withRuntimeRevision(
-        await this.deps.configQuery.activate(body.baseRevisionId, body.config, secrets),
+        await this.deps.configQuery.activate(body.baseRevisionId, body.config, secrets, spanApiKey),
       );
       const status = result.code === 'runtime_busy' || result.code === 'restart_required'
         || result.code === 'revision_conflict' ? 409
@@ -1188,6 +1198,33 @@ export class ManagementServer {
         response,
         200,
         await this.deps.configQuery.verifySecret(body.providerRef, body.baseUrl),
+      );
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/config/routing/span/status') {
+      if (!this.deps.configQuery.getSpanCredentialStatus) {
+        this.sendJson(response, 503, { error: 'Span credential status unavailable' });
+        return;
+      }
+      this.sendJson(response, 200, await this.deps.configQuery.getSpanCredentialStatus());
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/config/routing/span/secret') {
+      const body = await readRequestBody(request);
+      if (typeof body.apiKey !== 'string' || body.apiKey.trim().length === 0) {
+        this.sendJson(response, 400, { error: 'apiKey is required' });
+        return;
+      }
+      if (!this.deps.configQuery.writeSpanSecret) {
+        this.sendJson(response, 503, { error: 'Span credential storage unavailable' });
+        return;
+      }
+      this.sendJson(
+        response,
+        200,
+        await this.deps.configQuery.writeSpanSecret(body.apiKey.trim()),
       );
       return;
     }
@@ -1403,6 +1440,8 @@ interface RequestBody {
   providerRef?: string;
   baseUrl?: string;
   apiKey?: string;
+  /** Transient Span OpenRouter credential; never persisted in the config body. */
+  spanApiKey?: string;
   secrets?: Record<string, string>;
   title?: string;
   path?: string;

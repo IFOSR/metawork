@@ -227,7 +227,7 @@ export class AccountRuntime implements AccountRuntimeHandle {
       : taskRuntimeService?.listTasks() ?? [];
     const activeAttemptTaskIds = taskRuntimeService
       ? [
-          ...(this.deps.runtimeExecutionServices?.dispatchItemRepo.listBlocking() ?? [])
+          ...(this.deps.runtimeExecutionServices?.dispatchItemRepo?.listBlocking?.() ?? [])
             .map(item => item.taskId),
           ...this.deps.workspaceServices.attemptExecutionRepository.listActive()
             .map(item => item.taskId),
@@ -278,14 +278,11 @@ export class AccountRuntime implements AccountRuntimeHandle {
 
   private collectPendingRetryWakeTaskIds(tasks: readonly Task[]): string[] {
     try {
-      const repo = this.deps.kernelServices.kernelDecisionRepo;
-      if (repo.listCurrentTaskIdsByAction) {
-        return repo.listCurrentTaskIdsByAction('wait_for_retry', tasks.map(task => task.id));
-      }
-      return repo
-        .listCurrentByAction('wait_for_retry')
-        .map(record => record.taskId)
-        .filter((taskId): taskId is string => Boolean(taskId));
+      const repo = this.deps.runtimeExecutionServices?.retryWakeRepo;
+      if (!repo) return [];
+      return tasks
+        .filter(task => repo.findBlockingByTask(task.id).length > 0)
+        .map(task => task.id);
     } catch {
       return [];
     }

@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import type { HttpClient } from '../api/http';
 import type { WorkGraphPresentationProjection } from '../api/types';
 import { WorkGraphPanel } from './WorkGraphPanel';
+import { ExecutionNarrative } from './ExecutionNarrative';
 import { LiveExecutionPanel } from './LiveExecutionPanel';
 import { ArtifactLink } from './ArtifactLink';
 
@@ -42,6 +43,7 @@ export function TrajectoryView({
         <LiveExecutionPanel turn={turn} onSelectSubtask={onOpenSubtaskDetail} />
       )}
       <TrajectorySummary turn={turn} />
+      <ExecutionNarrative turn={turn} />
       <WorkGraphPanel projection={workGraph} />
       <TrajectoryTimeline turn={turn} />
       <TrajectoryEventTable turn={turn} />

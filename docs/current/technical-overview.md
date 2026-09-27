@@ -13,7 +13,7 @@ It is built for teams who need agents to do more than answer the current turn. M
 
 > Current implementation baseline (2026-09-26): PlanningAgentPlan v8, Work
 > Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
-> and SQLite schema v44 with transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44 upgrade support.
+> and SQLite schema v45 with transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45 upgrade support.
 > Schema v39/v40 adds the Query usage/billing facts (Query attribution contexts,
 > metering spans/observations, immutable price versions, cost entries, per-Query
 > bills and lines, the consumption outbox/receipts and bill adjustments) that
@@ -71,7 +71,7 @@ Conversation history. Native upgrade
 checkpoints include verified segment-body companions; rollback restores missing
 indexed bodies before switching the database pointer, not from legacy JSON or a
 SQLite-only backup. Schema 43 adds the navigation read models without changing Task/Kernel
-facts, and has been installed through the canonical updater. Source schema 44
+facts, and has been installed through the canonical updater. Source schema 45
 adds a separate transactional upgrade for Gateway command admissions: one
 SQLite row per account/idempotency key, indexed recovery candidates, and a
 one-time atomic import of all legacy receipts. Gateway still owns admission
@@ -1001,9 +1001,11 @@ binding fingerprint and configuration revision; the following `dispatch_batch`
 carries its own Decision id, so recovery follows its causation back to the
 resume Decision. `authorize_task_plan` /
 `activate_deferred_task_plan` additionally require the revision to have been
-authorized by this Decision. `wait_for_retry` and `wait_for_partition` are
-retry-safe only: their wake observation is the continuation trigger and
-`markApplied` is atomic, so an uncertain outcome proves it was never emitted.
+authorized by this Decision. `wait_for_retry` requires the Task blocker and
+the exact Decision-derived Retry Wake to be durable; a separate startup/
+periodic Worker owns Timer delivery, so the Decision application never emits
+the Timer directly. `wait_for_partition` remains retry-safe through its
+dedicated recheck path.
 Cancellation, external effects and the merge path keep their dedicated
 reconcilers. An application that cannot converge — declared `unresolved`, or
 `retry_safe` past its bounded `applyAttempts < 3` budget — produces
@@ -1200,6 +1202,47 @@ and account secret files are used only for one-time migration where applicable.
 That migration also runs in the upgrade transaction before the candidate
 configuration probe, because an older installation would otherwise fail every
 update with an unavailable Provider secret.
+
+### Span Routing Advisor
+
+The advanced settings section offers one optional external routing advisor:
+`respan/span-01-lite` on OpenRouter. Its OpenRouter Key uses the same secret
+flow as a Provider Key — the Server writes it to the account SecretStore under a
+fixed reference in the non-Provider `internal` namespace and the revision stores
+only that reference, so a Provider named `routing-span` can never share the slot.
+Configuration validation accepts only that exact reference and the Server
+re-checks it before reading the secret. Provider references into that internal
+namespace are rejected as well. The section has no Provider or Model
+picker, and a blank Key field keeps the
+stored value.
+
+When enabled, the Server evaluates only the candidates that already passed the
+shared hard filter and attaches a bounded `spanRouting` observation to the
+`plan_proposed` event before it is durably enqueued. If that event is already
+stored, the stored event is reused and no second request is made. The Server
+resolves the credential for the proposal's pinned configuration revision, and
+that read is bounded by the proposal deadline. `ControlKernel` re-validates the
+observation and uses the probabilities solely to order already-authorized
+AgentClass and Model candidates. Disabled, missing-key, timeout, HTTP error,
+invalid response, candidate mismatch, or over-budget input all fall back to the
+deterministic resolver. Captured Turn cancellation prevents late admission even
+when a new Turn replaces the controller. Shutdown interruption leaves replan
+applications recoverable instead of cancelling user work. Planning, scoring,
+admission and Runtime use the pinned configuration snapshot; system replan and
+merge replan use an isolated validation-only Planner host without a client.
+Concurrent preparation coalesces identical event IDs and rejects changed
+identities. Span usage is internal routing observation only and adds no separate
+user billing stage. The Server caps physical requests at two and queued requests
+at 128, removes expired waiters and rejects late responses. A transport ignoring
+abort retains its physical slot until it settles.
+
+`npm run smoke:span-routing -- --integration` exercises four representative
+workloads through the real advisor, Kernel and SQLite replay, reports ordering,
+latency and usage, and requires zero extra calls on replay. It requires a valid
+OpenRouter key and local development dependencies. The SDK boundary sends the
+structured state as a JSON string because Respan rejects object state; the
+request budget includes escaping. The default smoke mode
+only checks the Decisions API transport.
 
 Export the Feishu app secret before starting the runtime:
 
@@ -1401,7 +1444,7 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 MetaWork can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The unreleased product uses SQLite schema v44 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44 upgrades; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The source uses SQLite schema v45 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45 upgrades; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers; v45 adds durable Retry Wake continuation facts for timeout recovery. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Historical Artifact refs are validated against Account/Conversation/Workspace ownership, publication status, regular-file safety and content hash, then copied to attempt-local `inputs/` with stable `input-XX-*` names. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; image-capable adapters consume only the materialized input directory.
 

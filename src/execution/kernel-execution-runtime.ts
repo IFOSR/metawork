@@ -31,12 +31,14 @@ import {
   type KernelAttemptFact,
   type KernelDecision,
   type KernelEvent,
+  type KernelRetryWakeFact,
   type KernelSnapshot,
 } from '../kernel/control-kernel.js';
-import { DurableKernelWorkflow, type KernelWorkflow, type KernelWorkflowStore } from '../kernel/kernel-workflow.js';
+import { DurableKernelWorkflow, KernelApplicationInterruptedError, type KernelWorkflow, type KernelWorkflowStore } from '../kernel/kernel-workflow.js';
 import type { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import { deriveRecoverySafety } from '../routing/types.js';
 import type { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
+import type { RetryWakeRepo } from '../storage/retry-wake-repo.js';
 import type {
   ExecutorAttemptReceipt,
   ExecutorAttemptReceiptRepo,
@@ -367,6 +369,7 @@ export interface KernelExecutionRuntimeInput {
   taskId: string;
   request: QueuedExecutionRequest;
   recoveryOnly?: boolean;
+  initialEvent?: KernelEvent;
   /** Application-Shell acknowledgement for the first authoritative execution decision. */
   onInitialDecision?(decision: KernelDecision): void;
 }
@@ -400,6 +403,7 @@ export interface KernelExecutionRuntimeDeps {
   attemptRunner: SubtaskAttemptRunner;
   controlKernel: ControlKernel;
   kernelWorkflowStore: KernelWorkflowStore & {
+    findEvent?(eventId: string): KernelEvent | null;
     listCapacitySignals?(
       taskId: string,
       cycleId: string,
@@ -424,6 +428,13 @@ export interface KernelExecutionRuntimeDeps {
   resultObjectRepo: ResultObjectRepo;
   workspaceRepository: WorkspaceRepositoryPort;
   generationReplanRepo: GenerationReplanRequestRepo;
+  retryWakeRepo: RetryWakeRepo;
+  /**
+   * Task blocker and Retry Wake are one durable wait_for_retry postcondition.
+   * The account composition supplies the SQLite transaction; focused legacy
+   * callers may omit it and still exercise the same idempotent ordering.
+   */
+  runInTransaction?<T>(operation: () => T): T;
   cancellationCoordinator: TaskCancellationCoordinator;
   executionProgressService: ExecutionProgressService;
   verificationAndDeliveryService: VerificationAndDeliveryService;
@@ -446,6 +457,9 @@ export interface KernelExecutionRuntimeDeps {
     }): void;
     setLatestGuidance(scene: string, suggestion: Suggestion): GuidanceState;
     queueProposal(scene: string, proposal: GuidanceProposal): void;
+    requestReplan(decision: KernelDecision & {
+      action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
+    }): Promise<KernelEvent | null>;
     requestMergeReplan(decision: KernelDecision & {
       action: Extract<KernelDecision['action'], { type: 'request_merge_replan' }>;
     }): Promise<KernelEvent | null>;
@@ -991,6 +1005,46 @@ export class KernelExecutionRuntime {
       && (after.status !== beforeStatus || after.updatedAt !== beforeUpdatedAt);
   }
 
+  async recoverRetryWake(
+    event: Extract<KernelEvent, { type: 'timer_tick' }>,
+    reason = 'durable Retry Wake recovery',
+  ): Promise<void> {
+    const task = this.deps.taskRuntimeService.findTask(event.taskId ?? '');
+    if (!task) return;
+    await this.execute(this.prepareExecution({
+      taskId: task.id,
+      request: {
+        userPrompt: task.goal,
+        contextTaskId: task.id,
+        executionMode: 'follow-up',
+        origin: 'system',
+        schedulingReason: reason,
+      },
+      recoveryOnly: true,
+      initialEvent: event,
+    }));
+  }
+
+  private retryWakeFact(wakeId: string | null | undefined): KernelRetryWakeFact | null {
+    if (!wakeId) return null;
+    const wake = this.deps.retryWakeRepo.findById(wakeId);
+    return wake
+      ? {
+          wakeId: wake.wakeId,
+          taskId: wake.taskId,
+          subtaskId: wake.subtaskId,
+          generationId: wake.generationId,
+          sourceDecisionId: wake.sourceDecisionId,
+          sourceAttemptId: wake.sourceAttemptId,
+          configurationRevision: wake.configurationRevision,
+          bindingFingerprint: wake.bindingFingerprint,
+          resumeAt: wake.resumeAt,
+          status: wake.status,
+          timerEventId: wake.timerEventId,
+        }
+      : null;
+  }
+
   private buildDispatchSnapshot(
     taskId: string,
     graphState: 'ready' | 'missing' | 'conflict' = 'ready',
@@ -1446,6 +1500,47 @@ export class KernelExecutionRuntime {
     if (action.type === 'dispatch_batch') {
       const generationId = this.deps.workGraphRevisionRepo.findActive(action.taskId)?.generationId
         ?? `generation_${action.taskId}_1`;
+      const sourceEvent = this.deps.kernelWorkflowStore?.findEvent?.(decision.eventId);
+      const retryWake = sourceEvent?.type === 'timer_tick' && sourceEvent.wakeKind === 'retry'
+        ? this.deps.retryWakeRepo?.findById(sourceEvent.retry?.wakeId ?? '')
+        : null;
+      if (retryWake && sourceEvent?.type === 'timer_tick') {
+        // Persist the continuation dispatch before clearing the blocker or
+        // allowing AttemptSupervisor to claim the item. Replaying this call is
+        // safe because insertBatch is idempotent by attempt identity.
+        this.deps.dispatchItemRepo.insertBatch(
+          decision as KernelDecision & {
+            action: Extract<KernelDecision['action'], { type: 'dispatch_batch' }>;
+          },
+          {
+            generationId,
+            configurationRevision: decision.configurationRevision,
+            attempts: Object.fromEntries(action.items.map(item => [
+              item.attemptId,
+              {
+                authorizedBinding: item.authorizedBinding,
+                bindingFingerprint: item.bindingFingerprint,
+              },
+            ])),
+          },
+          new Date().toISOString(),
+        );
+        const task = this.deps.taskRuntimeService.findTask(action.taskId);
+        if (task?.status === 'blocked' && task.dependencies.every(dependency => (
+          dependency.status !== 'waiting' || dependency.type === 'kernel_retry'
+        ))) {
+          this.lifecycle.unblockTask({
+            taskId: action.taskId,
+            actor: 'kernel-execution-runtime',
+            reason: `Retry Wake ${retryWake.wakeId} authorized continuation`,
+          });
+        }
+        this.deps.retryWakeRepo.markConsumed(
+          retryWake.wakeId,
+          decision.id,
+          new Date().toISOString(),
+        );
+      }
       for (const item of action.items) {
         if (item.attemptKind !== 'merge_repair') continue;
         const subtask = this.deps.subtaskRepo.findById(item.subtaskId);
@@ -1524,23 +1619,33 @@ export class KernelExecutionRuntime {
     if (action.type === 'wait_for_retry') {
       await this.waitForRetry(
         action.taskId,
+        action.subtaskId,
         action.resumeAt,
+        decision,
+        action,
         input.finishExecution,
       );
-      return this.eventFromDecision(decision, {
-        type: 'timer_tick',
-        taskId: action.taskId,
-        subtaskId: action.subtaskId,
-        occurredAt: action.resumeAt,
-        wakeKind: 'retry',
-        sourceDecisionId: decision.id,
-        scheduledFor: action.resumeAt,
-        retry: {
-          authorizedBinding: action.authorizedBinding,
-          bindingFingerprint: action.bindingFingerprint,
-          sourceAttemptId: action.sourceAttemptId,
-        },
-      });
+      return null;
+    }
+    if (action.type === 'supersede_retry_wake') {
+      this.deps.retryWakeRepo.markSuperseded(
+        action.wakeId,
+        new Date().toISOString(),
+      );
+      return null;
+    }
+    if (action.type === 'recover_retry_wake') {
+      this.deps.retryWakeRepo.markRecoveryRequired(
+        action.wakeId,
+        new Date().toISOString(),
+      );
+      await this.blockTask(
+        action.taskId,
+        action.reason,
+        input.finishExecution,
+        'manual',
+      );
+      return null;
     }
     if (action.type === 'wait_for_partition') {
       await this.blockTask(
@@ -1772,14 +1877,16 @@ export class KernelExecutionRuntime {
       return null;
     }
     if (action.type === 'request_merge_replan') {
-      const now = new Date().toISOString();
-      this.deps.publicationRepo.incrementConflictReplan(action.publicationId, now);
-      this.deps.publicationRepo.markParkedForConflictReplan(action.publicationId, now);
-      return this.deps.callbacks.requestMergeReplan(
+      const event = await this.deps.callbacks.requestMergeReplan(
         decision as KernelDecision & {
           action: Extract<KernelDecision['action'], { type: 'request_merge_replan' }>;
         },
       );
+      if (!event) return null;
+      const now = new Date().toISOString();
+      this.deps.publicationRepo.incrementConflictReplan(action.publicationId, now);
+      this.deps.publicationRepo.markParkedForConflictReplan(action.publicationId, now);
+      return event;
     }
     if (action.type === 'defer_task_plan_for_availability') {
       const request = this.deps.generationReplanRepo.findByGeneration(
@@ -2546,9 +2653,10 @@ export class KernelExecutionRuntime {
           capacityBlockedAt: null,
           recheckAfterMs: 0,
           capacityBindings: [],
-            nativeContinuationAgentClasses: stableFacts.nativeContinuationAgentClasses,
+          nativeContinuationAgentClasses: stableFacts.nativeContinuationAgentClasses,
           executorStatuses: stableFacts.executorStatuses,
           defaultResourceGrant: defaultResourceGrant(task.id, `generation_${task.id}_1`, event.subtaskId ?? 'pending'),
+          retryWake: this.retryWakeFact(event.retry?.wakeId),
         }
       : event.type === 'recovery_resolution_requested' ? {
           schemaVersion: 5,
@@ -2624,6 +2732,7 @@ export class KernelExecutionRuntime {
       ],
       acceptedActions: [
         'resume_task', 'dispatch_batch', 'probe_capacity', 'wait_for_capacity', 'wait_for_retry',
+        'supersede_retry_wake', 'recover_retry_wake',
         'block_work', 'park_for_replan', 'complete_task', 'request_replan', 'schedule_replan',
         'queue_generation_replan',
         'request_merge_replan',
@@ -2634,7 +2743,9 @@ export class KernelExecutionRuntime {
     });
     this.attemptSupervisor.recover(taskId, supervisorContext);
     await this.recoverExpiredAttempts(workflow, attemptFacts);
-    if (input.recoveryOnly) {
+    if (input.initialEvent) {
+      await workflow.submit(input.initialEvent);
+    } else if (input.recoveryOnly) {
       if (retrySafeRecovery) await workflow.submit(retrySafeRecovery);
       else await workflow.recover();
     } else {
@@ -2982,6 +3093,7 @@ export class KernelExecutionRuntime {
             nativeContinuationAgentClasses: stableFacts.nativeContinuationAgentClasses,
             executorStatuses: stableFacts.executorStatuses,
             defaultResourceGrant: defaultResourceGrant(task.id, subtask.generationId, subtask.id),
+            retryWake: this.retryWakeFact(event.retry?.wakeId),
           }
         : this.buildDispatchSnapshot(task.id, 'ready', stableFacts),
       store: this.deps.kernelWorkflowStore,
@@ -3010,6 +3122,7 @@ export class KernelExecutionRuntime {
       ],
       acceptedActions: [
         'dispatch_batch', 'probe_capacity', 'wait_for_capacity', 'wait_for_retry',
+        'supersede_retry_wake', 'recover_retry_wake',
         'block_work', 'park_for_replan', 'complete_task', 'request_replan', 'schedule_replan',
         'queue_generation_replan',
         'request_merge_replan',
@@ -3102,23 +3215,83 @@ export class KernelExecutionRuntime {
 
   private async waitForRetry(
     taskId: string,
+    subtaskId: string,
     resumeAt: string,
+    decision: KernelDecision,
+    action: Extract<KernelDecision['action'], { type: 'wait_for_retry' }>,
     finishExecution: (lines: string[], scheduleNext?: boolean) => Promise<void>,
   ): Promise<void> {
     const reason = `retry scheduled for ${resumeAt}`;
-    if (this.deps.taskRuntimeService.findTask(taskId)?.status === 'running') {
-      this.lifecycle.blockTask({
-        taskId,
-        dependency: {
-          taskId,
-          type: 'kernel_retry',
-          description: reason,
-          status: 'waiting',
-        },
-        actor: 'kernel-execution-runtime',
-        reason,
-      });
+    const task = this.deps.taskRuntimeService.findTask(taskId);
+    const subtask = this.deps.subtaskRepo.findById(subtaskId);
+    if (!task || !subtask || subtask.taskId !== taskId) {
+      throw new Error(`Retry Wake target no longer exists: ${taskId}/${subtaskId}`);
     }
+    if (['done', 'cancelled'].includes(subtask.status)) {
+      throw new Error(`Retry Wake target Subtask is terminal: ${taskId}/${subtaskId}`);
+    }
+    if (task.status !== 'running' && task.status !== 'blocked') {
+      throw new Error(`Retry Wake target Task is not recoverable: ${taskId}/${task.status}`);
+    }
+    if (
+      task.status === 'blocked'
+      && !task.dependencies.some(dependency =>
+        dependency.type === 'kernel_retry' && dependency.status === 'waiting'
+      )
+    ) {
+      throw new Error(`Retry Wake target Task is blocked by a different dependency: ${taskId}`);
+    }
+    const revision = this.deps.workGraphRevisionRepo.findActive(taskId);
+    const generationId = revision?.generationId ?? subtask.generationId;
+    const wakeId = `retry_wake_${decision.id}`;
+    const createdAt = new Date().toISOString();
+    const persistRetry = () => {
+      if (task.status === 'running') {
+        this.lifecycle.blockTask({
+          taskId,
+          dependency: {
+            taskId,
+            type: 'kernel_retry',
+            description: reason,
+            status: 'waiting',
+          },
+          actor: 'kernel-execution-runtime',
+          reason,
+        });
+      }
+      this.deps.retryWakeRepo.arm({
+        wakeId,
+        taskId,
+        subtaskId,
+        generationId,
+        sourceDecisionId: decision.id,
+        sourceAttemptId: action.sourceAttemptId,
+        configurationRevision: decision.configurationRevision,
+        bindingFingerprint: action.bindingFingerprint,
+        authorizedBindingJson: JSON.stringify(action.authorizedBinding),
+        resumeAt,
+        status: 'armed',
+        timerEventId: null,
+        consumedDecisionId: null,
+        createdAt,
+        updatedAt: createdAt,
+      });
+      const findWake = (this.deps.retryWakeRepo as Partial<RetryWakeRepo>).findById;
+      if (findWake) {
+        const wake = findWake.call(this.deps.retryWakeRepo, wakeId);
+        if (
+          !wake
+          || wake.taskId !== taskId
+          || wake.subtaskId !== subtaskId
+          || wake.sourceDecisionId !== decision.id
+          || wake.status !== 'armed'
+        ) {
+          throw new Error(`Retry Wake ${wakeId} did not reach the armed postcondition`);
+        }
+      }
+    };
+    if (this.deps.runInTransaction) this.deps.runInTransaction(persistRetry);
+    else persistRetry();
     this.recordTaskEvent(taskId, null, 'phase2_execution_waiting_retry', reason, {});
     await finishExecution([`Execution will retry automatically at ${resumeAt}`]);
   }

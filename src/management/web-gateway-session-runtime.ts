@@ -779,10 +779,14 @@ class WebGatewayClientSession {
     const state = this.rememberTurnEvent(event, userInput);
     const billing = state ? this.projectBilling(state) : null;
     const artifacts = state ? this.projectArtifactsFromState(state) : null;
+    const execution = this.projectExecutionFromEvent(event);
     if (artifacts) {
       if (replay) this.replayEvents.push(artifacts);
       else this.emit(artifacts);
     }
+    // The durable Task/Execution projection is the recovery source of truth.
+    // Reconcile it before mapping the trace event so a late or filtered
+    // terminal trace cannot leave the live Turn visibly running until refresh.
     const presentationEvent = event.kind === 'trace_delta' && state
       ? traceEventWithNormalizedPresentation(event, state)
       : event;
@@ -828,7 +832,6 @@ class WebGatewayClientSession {
     )) {
       this.scheduleBillingRefresh(state.id, state.taskId);
     }
-    const execution = this.projectExecutionFromEvent(event);
     if (execution) {
       if (replay) this.replayEvents.push(execution);
       else this.emit(execution);
@@ -1159,6 +1162,15 @@ class WebGatewayClientSession {
     const timeline = timelineForTask(this.deps.projectExecutionTimeline(taskId), taskId);
     if (!timeline) return null;
     state.executionTimeline = structuredClone(timeline);
+    const projectedStatus = turnStatusFromTimeline(timeline);
+    if (
+      state.status === 'running'
+      && projectedStatus
+      && projectedStatus !== 'running'
+    ) {
+      state.status = projectedStatus;
+      state.completedAt ??= event.occurredAt;
+    }
     const eventPayload = {
       type: 'execution',
       turnId: event.turnId,

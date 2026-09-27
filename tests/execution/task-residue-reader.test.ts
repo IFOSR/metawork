@@ -169,4 +169,30 @@ describe('TaskResidueReader', () => {
     `).run(TASK_ID, GENERATION_ID, NOW, NOW);
     expect(reader.blockingReasons(TASK_ID, GENERATION_ID)).toEqual([]);
   });
+
+  it('treats an armed or fired Retry Wake as unfinished residue until consumed', () => {
+    for (const status of ['armed', 'fired', 'recovery_required']) {
+      const { db, reader } = fixture();
+      db.prepare(`
+        INSERT INTO retry_wakes (
+          wake_id, task_id, subtask_id, generation_id, source_decision_id,
+          source_attempt_id, configuration_revision, binding_fingerprint,
+          authorized_binding_json, resume_at, status, timer_event_id,
+          consumed_decision_id, created_at, updated_at
+        ) VALUES (?, ?, 'subtask-a', ?, 'decision-wake', 'attempt-a',
+          'revision-test', 'fp', '{}', ?, ?, NULL, NULL, ?, ?)
+      `).run(
+        `wake-${status}`,
+        TASK_ID,
+        GENERATION_ID,
+        NOW,
+        status,
+        NOW,
+        NOW,
+      );
+      expect(reader.blockingReasons(TASK_ID, GENERATION_ID), status)
+        .toContain('retry_wake');
+      db.prepare('DELETE FROM retry_wakes').run();
+    }
+  });
 });

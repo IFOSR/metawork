@@ -1571,6 +1571,66 @@ describe('ControlKernel', () => {
     }).action).toEqual({ type: 'no_op' });
   });
 
+  it('requires the exact durable Retry Wake before authorizing continuation', () => {
+    const kernel = new ControlKernel();
+    const wake = {
+      wakeId: 'wake-1',
+      taskId: 'task_1',
+      subtaskId: 'subtask_1',
+      generationId: 'generation_task_1_1',
+      sourceDecisionId: 'decision_retry',
+      sourceAttemptId: 'attempt_primary',
+      configurationRevision,
+      bindingFingerprint: codexFingerprint,
+      resumeAt: '2026-07-20T00:00:30.000Z',
+      status: 'fired' as const,
+      timerEventId: 'event_retry_timer',
+    };
+    const timer = runtimeEvent({
+      type: 'timer_tick',
+      id: 'event_retry_timer',
+      occurredAt: '2026-07-20T00:00:31.000Z',
+      wakeKind: 'retry',
+      sourceDecisionId: 'decision_retry',
+      scheduledFor: wake.resumeAt,
+      retry: {
+        wakeId: wake.wakeId,
+        generationId: wake.generationId,
+        configurationRevision,
+        authorizedBinding: codexBinding,
+        bindingFingerprint: codexFingerprint,
+        sourceAttemptId: wake.sourceAttemptId,
+      },
+    });
+    const snapshot: KernelSnapshot = {
+      schemaVersion: 5,
+      type: 'timer',
+      task: { id: 'task_1', status: 'blocked' },
+      wakeAuthorized: true,
+      capacityBlockedAt: null,
+      recheckAfterMs: 0,
+      capacityBindings: [],
+      nativeContinuationAgentClasses: ['codex-cli'],
+      executorStatuses: [],
+      defaultResourceGrant: [],
+      retryWake: wake,
+    };
+    expect(kernel.decide(timer, snapshot).action.type).toBe('dispatch_batch');
+    expect(kernel.decide(timer, { ...snapshot, retryWake: null }).action).toMatchObject({
+      type: 'recover_retry_wake',
+      wakeId: 'wake-1',
+    });
+    expect(kernel.decide(timer, {
+      ...snapshot,
+      task: { id: 'task_1', status: 'done' },
+      wakeAuthorized: false,
+    }).action).toEqual({
+      type: 'supersede_retry_wake',
+      taskId: 'task_1',
+      wakeId: 'wake-1',
+    });
+  });
+
   it('allows dispatch when another Conversation owns the active slot', () => {
     const kernel = new ControlKernel();
     const result = kernel.decide(runtimeEvent({

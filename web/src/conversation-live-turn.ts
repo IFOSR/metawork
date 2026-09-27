@@ -3,7 +3,11 @@ import type {
   ConversationTurnProjection,
   WebSessionRecord,
 } from './api/session-types';
-import type { InteractionTrace, InteractionTraceEvent } from './api/types';
+import type {
+  ExecutionTimeline,
+  InteractionTrace,
+  InteractionTraceEvent,
+} from './api/types';
 import type {
   QueryBillProjection,
   TaskUsageSummary,
@@ -57,6 +61,33 @@ export function mergeTraceDelta(
   };
 }
 
+export function mergeExecutionTimeline(
+  current: ConversationTurnProjection | null,
+  turnId: string,
+  timeline: ExecutionTimeline,
+): ConversationTurnProjection | null {
+  if (
+    !current
+    || current.id !== turnId
+    || (current.taskId !== null && current.taskId !== timeline.taskId)
+  ) {
+    return current;
+  }
+  const projectedStatus = turnStatusFromTimeline(timeline);
+  const status = projectedStatus && current.status === 'running'
+    ? projectedStatus
+    : current.status;
+  return {
+    ...current,
+    taskId: timeline.taskId,
+    executionTimeline: timeline,
+    status,
+    completedAt: status === 'running'
+      ? null
+      : current.completedAt ?? new Date().toISOString(),
+  };
+}
+
 export function mergeFinalAnswer(
   current: ConversationTurnProjection | null,
   turnId: string,
@@ -89,6 +120,24 @@ function mergeTraceStatus(
     status: incoming,
     completedAt: incoming === 'running' ? null : completedAt ?? current.completedAt,
   };
+}
+
+function turnStatusFromTimeline(
+  timeline: ExecutionTimeline,
+): ConversationTurnProjection['status'] | null {
+  if (['created', 'ready', 'running', 'waiting_retry'].includes(timeline.status)) {
+    return 'running';
+  }
+  if (['done', 'archived'].includes(timeline.status)) return 'completed';
+  if (['blocked', 'parked'].includes(timeline.status)) return 'blocked';
+  if (timeline.status === 'cancelled') return 'cancelled';
+  if (timeline.status === 'failed') return 'failed';
+
+  const delivery = timeline.stages.find(stage => stage.phase === 'delivery');
+  if (delivery?.status === 'done') return 'completed';
+  if (delivery?.status === 'blocked') return 'blocked';
+  if (delivery?.status === 'failed') return 'failed';
+  return null;
 }
 
 export function retainLiveTurnForConversation(

@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 44;
+export const CURRENT_SCHEMA_VERSION = 45;
 
 const GATEWAY_COMMAND_ADMISSION_SQL = `
   CREATE TABLE IF NOT EXISTS gateway_command_admissions (
@@ -17,6 +17,32 @@ const GATEWAY_COMMAND_ADMISSION_SQL = `
   CREATE TABLE IF NOT EXISTS gateway_command_admission_imports (
     account_id TEXT PRIMARY KEY
   );
+`;
+
+const RETRY_WAKE_SQL = `
+  CREATE TABLE IF NOT EXISTS retry_wakes (
+    wake_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    subtask_id TEXT NOT NULL,
+    generation_id TEXT NOT NULL,
+    source_decision_id TEXT NOT NULL UNIQUE,
+    source_attempt_id TEXT NOT NULL,
+    configuration_revision TEXT NOT NULL,
+    binding_fingerprint TEXT NOT NULL,
+    authorized_binding_json TEXT NOT NULL,
+    resume_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('armed', 'fired', 'consumed', 'superseded', 'recovery_required')),
+    timer_event_id TEXT UNIQUE,
+    consumed_decision_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS retry_wakes_due
+    ON retry_wakes (status, resume_at, wake_id);
+  CREATE INDEX IF NOT EXISTS retry_wakes_task
+    ON retry_wakes (task_id, generation_id, status);
+  CREATE INDEX IF NOT EXISTS retry_wakes_decision
+    ON retry_wakes (source_decision_id);
 `;
 
 const NAVIGATION_PROJECTION_SQL = `
@@ -1459,6 +1485,14 @@ export function runMigrations(
       const changed = db.prepare('UPDATE schema_version SET version = 44 WHERE version = 43').run();
       if (changed.changes !== 1) throw new Error('schema version changed during 43 to 44 migration');
     })();
+    version = 44;
+  }
+  if (version === 44) {
+    db.transaction(() => {
+      db.exec(RETRY_WAKE_SQL);
+      const changed = db.prepare('UPDATE schema_version SET version = 45 WHERE version = 44').run();
+      if (changed.changes !== 1) throw new Error('schema version changed during 44 to 45 migration');
+    })();
   }
 }
 
@@ -1470,7 +1504,7 @@ function runBaseMigrations(
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
     ).all() as Array<{ version: number }>;
-    if (versions.length === 1 && [42, 43, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
+    if (versions.length === 1 && [42, 43, 44, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 41) {
@@ -1614,6 +1648,7 @@ function runBaseMigrations(
   db.transaction(() => {
     db.exec('CREATE TABLE schema_version (version INTEGER PRIMARY KEY)');
     db.exec(CURRENT_SCHEMA_SQL);
+    db.exec(RETRY_WAKE_SQL);
     db.exec(NAVIGATION_PROJECTION_SQL);
     db.exec(GATEWAY_COMMAND_ADMISSION_SQL);
     installDirectoryInvalidationTriggers(db);

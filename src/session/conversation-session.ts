@@ -32,6 +32,15 @@ import type { SessionStateRepo } from '../storage/session-state-repo.js';
 import type { SessionPersistenceService } from './session-persistence-service.js';
 import type { InteractionTraceStream } from './interaction-trace-stream.js';
 import type { KernelDecision, KernelEvent, KernelSnapshot } from '../kernel/control-kernel.js';
+import {
+  attachSpanRoutingObservation,
+  type PlanProposedEvent,
+} from './span-plan-preparation.js';
+import type { SpanRoutingEvaluator } from '../routing/span-routing-types.js';
+import { buildKernelConfigurationView, buildPlannerConfigurationView, buildRuntimeConfigurationView } from '../configuration/projections.js';
+import type { ConfigurationSnapshot } from '../configuration/types.js';
+import { KernelApplicationInterruptedError } from '../kernel/kernel-workflow.js';
+import { SpanEvaluationAbortedError } from '../routing/span-routing-types.js';
 import type { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
 import { buildExecutorDisplayFacts } from '../execution/execution-transparency.js';
 import type { PlanningContextBuilder } from '../planning/planning-context-builder.js';
@@ -152,6 +161,10 @@ export interface ConversationSessionDeps {
   readonly kernelConfiguration?: KernelConfigurationView;
   readonly getKernelConfiguration?: () => KernelConfigurationView | undefined;
   readonly getRuntimeConfiguration?: (revisionId: string) => RuntimeConfigurationView | null;
+  readonly resolveConfigurationSnapshot?: (revisionId: string) => Promise<ConfigurationSnapshot>;
+  /** Shared Server advisor, also injected into detached recovery sessions. */
+  readonly spanRoutingEvaluator?: SpanRoutingEvaluator | null;
+  readonly lifetimeSignal?: AbortSignal;
   readonly sessionKernelRuntime?: SessionKernelRuntime;
   readonly executeUserInput?: (text: string) => Promise<{ exitRequested: boolean }>;
   readonly handleCommand?: (input: string) => Promise<boolean>;
@@ -233,6 +246,24 @@ export class ConversationSession {
   private resultDeliveries: ConversationResultDelivery[] = [];
   private readonly submissionScope = new AsyncLocalStorage<{ turnId: string; detached: boolean }>();
   private readonly backgroundDeliveryScope = new AsyncLocalStorage<ConversationResultDelivery[]>();
+  /**
+   * Aborts in-flight external routing work for the current Turn. Replaced when a
+   * new Turn starts and aborted by the Client stop control, so a Span request
+   * cannot outlive the Turn that asked for it.
+   */
+  private turnCancellation = new AbortController();
+  /**
+   * Set once the Session is disposed. A disposed Session must never reset its
+   * cancellation controller and never admit another proposal, even though the
+   * abort above is also used as the live-Turn stop signal.
+   */
+  private disposed = false;
+  private readonly configurationSnapshots = new Map<string, ConfigurationSnapshot>();
+  private readonly preparations = new Map<string, {
+    fingerprint: string;
+    signal: AbortSignal;
+    work: Promise<PlanProposedEvent | null>;
+  }>();
   private attachedClients = 0;
   private disposePromise: Promise<void> | null = null;
   private readonly allowLegacyDirectReply: boolean;
@@ -547,9 +578,11 @@ export class ConversationSession {
     event: Extract<KernelEvent, { type: 'plan_proposed' }>,
   ): Extract<KernelSnapshot, { type: 'plan_admission' }> | null {
     const port = this.deps.runtimePort;
-    const plannerConfiguration = this.deps.planningContextBuilder?.getPlannerConfiguration();
-    const kernelConfiguration = this.deps.getKernelConfiguration?.()
-      ?? this.deps.kernelConfiguration;
+    const pinned = this.configurationSnapshots.get(event.configurationRevision);
+    const plannerConfiguration = pinned ? buildPlannerConfigurationView(pinned)
+      : this.deps.planningContextBuilder?.getPlannerConfiguration();
+    const kernelConfiguration = pinned ? buildKernelConfigurationView(pinned)
+      : this.deps.getKernelConfiguration?.() ?? this.deps.kernelConfiguration;
     if (!plannerConfiguration || !kernelConfiguration) return null;
     if (
       event.configurationRevision !== plannerConfiguration.revisionId
@@ -592,6 +625,141 @@ export class ConversationSession {
         const pending = port.queries.findOldestPendingPermission(this.deps.conversationId);
         return pending ? { requestId: pending.request.id, taskId: pending.request.taskId } : null;
       })(),
+    };
+  }
+
+  /**
+   * Attaches the bounded Span observation to a `plan_proposed` event before it
+   * enters the durable Kernel inbox. Absent advisor or disabled Span policy
+   * leaves the event untouched so the deterministic resolver runs.
+   *
+   * Returns null for Turn cancellation. Replan preparation interrupted by
+   * disposal/shutdown remains recoverable; initial submission is rejected.
+   * A raw transport abort without a cancellation signal may fall back.
+   */
+  private async preparePlanProposedEvent(
+    event: PlanProposedEvent,
+    signal = this.turnCancellation.signal,
+  ): Promise<PlanProposedEvent | null> {
+    if (this.preparationCancelled(event, signal)) return null;
+    const fingerprint = planEventIdentity(event);
+    const persisted = this.deps.runtimePort.queries.findKernelEvent?.(event.id);
+    if (persisted) {
+      if (persisted.type !== 'plan_proposed' || planEventIdentity(persisted) !== fingerprint) {
+        throw new Error('plan event identity conflict');
+      }
+      this.preparations.delete(event.id);
+      await this.loadConfigurationSnapshot(event.configurationRevision);
+      return this.preparationCancelled(event, signal) ? null : persisted;
+    }
+    const existing = this.preparations.get(event.id);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) throw new Error('plan event identity conflict');
+      const result = await existing.work;
+      return existing.signal.aborted || this.preparationCancelled(event, signal) ? null : result;
+    }
+    for (const id of this.preparations.keys()) {
+      if (this.deps.runtimePort.queries.findKernelEvent?.(id)) this.preparations.delete(id);
+    }
+    if (this.preparations.size >= 64) throw new Error('plan preparation capacity exceeded');
+    const work = this.prepareNewPlanEvent(event, signal);
+    this.preparations.set(event.id, { fingerprint, signal, work });
+    try {
+      const result = await work;
+      if (!result) this.preparations.delete(event.id);
+      return result;
+    } catch (error) {
+      this.preparations.delete(event.id);
+      throw error;
+    }
+  }
+
+  private async loadConfigurationSnapshot(revisionId: string): Promise<ConfigurationSnapshot | undefined> {
+    const cached = this.configurationSnapshots.get(revisionId);
+    if (cached || !this.deps.resolveConfigurationSnapshot) return cached;
+    const snapshot = await this.deps.resolveConfigurationSnapshot(revisionId);
+    if (snapshot.revisionId !== revisionId) throw new Error('plan configuration revision mismatch');
+    this.configurationSnapshots.set(revisionId, snapshot);
+    return snapshot;
+  }
+
+  private async prepareNewPlanEvent(event: PlanProposedEvent, signal: AbortSignal): Promise<PlanProposedEvent | null> {
+    if (this.preparationCancelled(event, signal)) return null;
+    const pinned = await this.loadConfigurationSnapshot(event.configurationRevision);
+    if (this.preparationCancelled(event, signal)) return null;
+    const evaluator = this.deps.spanRoutingEvaluator;
+    if (!evaluator) return event;
+    const configuration = pinned ? buildKernelConfigurationView(pinned)
+      : this.deps.getKernelConfiguration?.() ?? this.deps.kernelConfiguration;
+    if (!configuration || configuration.revisionId !== event.configurationRevision) {
+      return event;
+    }
+    const runtimeConfiguration = pinned ? buildRuntimeConfigurationView(pinned)
+      : this.deps.getRuntimeConfiguration?.(event.configurationRevision) ?? null;
+    // Only touch the admission queries when Span is actually enabled, so a
+    // disabled advisor cannot change when plan admission errors surface.
+    if (!runtimeConfiguration?.routing?.span?.enabled) return event;
+    const snapshot = this.buildPlanAdmissionSnapshot(event);
+    if (!snapshot) return event;
+    try {
+      const prepared = await attachSpanRoutingObservation({
+        event,
+        configuration,
+        executorStatuses: snapshot.executorStatuses,
+        runtimeConfiguration,
+        evaluator,
+        signal,
+      });
+      return this.preparationCancelled(event, signal) ? null : prepared;
+    } catch (error) {
+      // An advisor-contract abort means the request was cancelled by the Turn
+      // or by the Server lifetime: never admit the proposal on that basis. A
+      // raw `AbortError` with no cancellation is an adapter-side abort and
+      // keeps the deterministic path.
+      if (this.disposed || (error instanceof SpanEvaluationAbortedError && !signal.aborted)) {
+        if (event.proposalSource !== 'initial') throw new KernelApplicationInterruptedError();
+        return null;
+      }
+      if (signal.aborted || error instanceof SpanEvaluationAbortedError) return null;
+      if (error instanceof Error && error.name === 'AbortError') return event;
+      throw error;
+    }
+  }
+
+  /**
+   * True when this Turn can no longer admit work: the client asked to stop it,
+   * or the Session was disposed while external preparation was in flight.
+   */
+  private preparationCancelled(event: Pick<PlanProposedEvent, 'proposalSource'>, signal: AbortSignal): boolean {
+    if (this.disposed || this.deps.lifetimeSignal?.aborted) {
+      if (event.proposalSource !== 'initial') throw new KernelApplicationInterruptedError();
+      return true;
+    }
+    return signal.aborted;
+  }
+
+  private isCancellationRequested(): boolean {
+    return this.disposed || this.deps.lifetimeSignal?.aborted === true
+      || this.turnCancellation.signal.aborted || this.isCancelledTurn();
+  }
+
+  /**
+   * The user cancelled this Turn; a proposal that raced the abort must not create
+   * or modify a Task, and must not be admitted on the strength of a late Span
+   * observation that arrived after the cancellation.
+   */
+  private cancelledProposalResult(
+    eventId: string,
+    planId: string | null,
+  ): PlannerProposalResult {
+    return {
+      status: 'rejected',
+      turnId: eventId,
+      submissionId: eventId,
+      planId,
+      rejectionType: 'validation',
+      issues: ['turn cancelled by user'],
+      kernel: null,
     };
   }
 
@@ -806,18 +974,9 @@ export class ConversationSession {
     plan: PlanningAgentPlan,
     eventId = `plan_event_${plan.id}_${generateInteractionId()}`,
   ): Promise<PlannerProposalResult> {
-    if (this.isCancelledTurn()) {
-      // The user cancelled this turn; a proposal that raced the abort must not
-      // create or modify a Task.
-      return {
-        status: 'rejected',
-        turnId: eventId,
-        submissionId: eventId,
-        planId: plan.id,
-        rejectionType: 'validation',
-        issues: ['turn cancelled by user'],
-        kernel: null,
-      };
+    const signal = this.turnCancellation.signal;
+    if (this.isCancelledTurn() || this.disposed) {
+      return this.cancelledProposalResult(eventId, plan.id);
     }
     if (!this.allowLegacyDirectReply && plan.action === 'direct_reply') {
       return {
@@ -842,22 +1001,35 @@ export class ConversationSession {
       return { status: 'accepted' } as PlannerProposalResult;
     }
 
-    const event = this.buildPlanProposedEvent({
-      plan,
-      configurationRevision: this.deps.planningContextBuilder
-        ?.getPlannerConfiguration().revisionId ?? null,
-      attachmentIds: (this.turnFactsFor(userInput)?.attachments ?? [])
-        .map(attachment => attachment.attachmentId),
-      proposalSource: 'initial',
-      eventId,
-      correlationId: plan.id,
-      causationId: null,
-      workspaceId: (await this.getWorkspace())?.workspaceId,
-      taskId: plan.task.taskId ?? undefined,
-      requestText: userInput,
-      generationId: `generation_${eventId}`,
-      targetGraphRevision: 1,
-    });
+    let event: PlanProposedEvent | null;
+    try {
+      event = await this.preparePlanProposedEvent(this.buildPlanProposedEvent({
+        plan,
+        configurationRevision: this.deps.planningContextBuilder
+          ?.getPlannerConfiguration().revisionId ?? null,
+        attachmentIds: (this.turnFactsFor(userInput)?.attachments ?? [])
+          .map(attachment => attachment.attachmentId),
+        proposalSource: 'initial',
+        eventId,
+        correlationId: plan.id,
+        causationId: null,
+        workspaceId: (await this.getWorkspace())?.workspaceId,
+        taskId: plan.task.taskId ?? undefined,
+        requestText: userInput,
+        generationId: `generation_${eventId}`,
+        targetGraphRevision: 1,
+      }), signal);
+    } catch (error) {
+      // External preparation is abortable; a cancelled Turn must fail closed
+      // instead of surfacing as an uncertain transport failure.
+      if (this.isCancellationRequested()) return this.cancelledProposalResult(eventId, plan.id);
+      throw error;
+    }
+    if (!event || signal.aborted || this.isCancellationRequested()) {
+      // Cancellation can arrive while the external advisor is still running and
+      // does not always abort it; never admit the proposal in that window.
+      return this.cancelledProposalResult(eventId, plan.id);
+    }
     const result = await port.commands.submitKernel(event, {
       buildSnapshot: claimed => this.buildPlanAdmissionSnapshot(
         claimed as Extract<KernelEvent, { type: 'plan_proposed' }>,
@@ -1149,6 +1321,7 @@ export class ConversationSession {
     const active = this.deps.interactionTraceStream?.getSnapshot() ?? null;
     const targetTurnId = active?.status === 'running' ? active.turnId : null;
     if (!targetTurnId) {
+      this.turnCancellation.abort();
       await this.cancelConversationWork('用户取消了当前轮');
       this.appendOutput('当前没有正在规划的轮次；已请求取消该会话进行中的任务。');
       return;
@@ -1158,6 +1331,8 @@ export class ConversationSession {
       return;
     }
     this.cancelledTurnIds.add(targetTurnId);
+    // Abort external routing work still in flight for this Turn.
+    this.turnCancellation.abort();
     this.appendTrace({
       phase: 'planning',
       actor: 'runtime',
@@ -1576,6 +1751,7 @@ export class ConversationSession {
     const interactionTurnId = options.interactionTurnId ?? `turn_${generateInteractionId()}`;
     // A new turn supersedes any cancellation latch from the previous one.
     this.cancelledTurnIds.clear();
+    this.turnCancellation = new AbortController();
     this.activeInteractionTurnId = interactionTurnId;
     if (startsTrace) {
       this.deps.interactionTraceStream?.beginTurn({
@@ -2131,11 +2307,107 @@ export class ConversationSession {
     return event?.type === 'plan_proposed' ? [...(event.attachmentIds ?? [])] : [];
   }
 
+  private async requestKernelReplan(
+    decision: KernelDecision & {
+      action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
+    },
+  ): Promise<Extract<KernelEvent, { type: 'plan_proposed' }> | null> {
+    const signal = this.turnCancellation.signal;
+    if (this.preparationCancelled({ proposalSource: 'replan' }, signal)) return null;
+    const replay = await this.findDurableReplan(`replan_event_${decision.id}`, decision);
+    if (replay) return replay;
+    const pinned = await this.loadConfigurationSnapshot(decision.configurationRevision);
+    if (this.preparationCancelled({ proposalSource: 'replan' }, signal)) return null;
+    const port = this.deps.runtimePort;
+    const task = port.queries.findTask(decision.action.taskId);
+    if (!task) throw new Error(`replan Task not found: ${decision.action.taskId}`);
+    port.commands.materializeCompletedEvidence(task.id, decision.action.sourceRevision);
+    const evidence = port.queries.listTaskEvidence(
+      task.id,
+      decision.action.generationId,
+    );
+    const failures = port.queries.listAttemptReceipts(task.id)
+      .filter(item =>
+        item.generationId === decision.action.generationId
+        && item.graphRevision === decision.action.sourceRevision
+        && item.terminalState !== 'completed'
+      )
+      .sort((left, right) =>
+        left.completedAt.localeCompare(right.completedAt)
+        || left.attemptId.localeCompare(right.attemptId)
+      );
+    const request = [
+      'Produce a replan for the remaining work of the existing Task. Return plan_work_graph only.',
+      `Task id: ${task.id}`,
+      `Task goal: ${task.goal}`,
+      `Generation: ${decision.action.generationId}`,
+      `Superseded revision: ${decision.action.sourceRevision}`,
+      'The new graph must describe only remaining work and may reference the task_evidence IDs below.',
+      'Do not bind the remaining work back to an Executor candidate that already failed in this generation unless you explain why this attempt would behave differently.',
+      `Completed evidence: ${JSON.stringify(evidence.map(item => ({
+        evidenceId: item.id,
+        title: item.title,
+        summary: item.content.slice(0, 2_000),
+      })))}`,
+      `Structured failures and attempted candidates: ${JSON.stringify(failures.map(item => ({
+        attemptId: item.attemptId,
+        agentClassName: item.agentClassName,
+        terminalState: item.terminalState,
+        failure: item.failure,
+        code: item.errorCode,
+        summary: String(item.errorDetail ?? '').slice(0, 1_000),
+      })))}`,
+      'Bind the proposal to the exact existing Task id. Do not include raw Executor responses.',
+    ].join('\n\n').slice(0, 24_000);
+    const context = this.deps.planningContextBuilder!.build({ userInput: request });
+    if (pinned) context.configuration = buildPlannerConfigurationView(pinned);
+    if (context.configuration.revisionId !== decision.configurationRevision) {
+      throw new Error('replan configuration revision mismatch');
+    }
+    const plan = await this.runPlanningAgent(context);
+    return this.preparePlanProposedEvent(this.buildPlanProposedEvent({
+      plan,
+      configurationRevision: context.configuration.revisionId,
+      attachmentIds: this.resolveTaskTurnAttachmentIds(task.id),
+      proposalSource: 'replan',
+      eventId: `replan_event_${decision.id}`,
+      correlationId: decision.eventId,
+      causationId: decision.id,
+      taskId: task.id,
+      requestText: redactSensitiveText(request),
+      generationId: decision.action.generationId,
+      targetGraphRevision: decision.action.sourceRevision + 1,
+      availabilityExplanation: null,
+    }), signal);
+  }
+
+  private async findDurableReplan(
+    eventId: string,
+    decision: KernelDecision,
+  ): Promise<PlanProposedEvent | null> {
+    const persisted = this.deps.runtimePort.queries.findKernelEvent?.(eventId);
+    if (!persisted) return null;
+    if (persisted.type !== 'plan_proposed' || persisted.causationId !== decision.id
+      || persisted.configurationRevision !== decision.configurationRevision
+      || persisted.sessionId !== this.deps.plannerSessionId
+      || !('taskId' in decision.action) || persisted.taskId !== decision.action.taskId) {
+      throw new Error('replan event identity conflict');
+    }
+    await this.loadConfigurationSnapshot(persisted.configurationRevision);
+    return persisted;
+  }
+
   private async requestKernelMergeReplan(
     decision: KernelDecision & {
       action: Extract<KernelDecision['action'], { type: 'request_merge_replan' }>;
     },
   ): Promise<Extract<KernelEvent, { type: 'plan_proposed' }> | null> {
+    const signal = this.turnCancellation.signal;
+    if (this.preparationCancelled({ proposalSource: 'conflict_replan' }, signal)) return null;
+    const replay = await this.findDurableReplan(`merge_replan_event_${decision.id}`, decision);
+    if (replay) return replay;
+    const pinned = await this.loadConfigurationSnapshot(decision.configurationRevision);
+    if (this.preparationCancelled({ proposalSource: 'conflict_replan' }, signal)) return null;
     const port = this.deps.runtimePort;
     const task = port.queries.findTask(decision.action.taskId);
     const revision = port.queries.findActiveWorkGraphRevision(decision.action.taskId);
@@ -2152,8 +2424,12 @@ export class ConversationSession {
       'The revised remaining work must let the original delivery intent publish without choosing or silently overwriting a conflicting version.',
     ].join('\n\n').slice(0, 24_000);
     const context = this.deps.planningContextBuilder!.build({ userInput: request });
+    if (pinned) context.configuration = buildPlannerConfigurationView(pinned);
+    if (context.configuration.revisionId !== decision.configurationRevision) {
+      throw new Error('replan configuration revision mismatch');
+    }
     const plan = await this.runPlanningAgent(context);
-    return this.buildPlanProposedEvent({
+    return this.preparePlanProposedEvent(this.buildPlanProposedEvent({
       plan,
       configurationRevision: context.configuration.revisionId,
       attachmentIds: this.resolveTaskTurnAttachmentIds(task.id),
@@ -2166,7 +2442,7 @@ export class ConversationSession {
       generationId: revision.generationId,
       targetGraphRevision: revision.revision + 1,
       availabilityExplanation: null,
-    });
+    }), signal);
   }
 
   private appendTaskQueueSnapshot(trigger: string): void {
@@ -2298,6 +2574,7 @@ export class ConversationSession {
         persistSessionState: changes => this.persistSessionState(changes),
         setLatestGuidance: (scene, suggestion) => this.setLatestGuidance(scene, suggestion)!,
         queueProposal: (scene, proposal) => this.queueProposal(scene, proposal),
+        requestReplan: decision => this.requestKernelReplan(decision),
         requestMergeReplan: decision => this.requestKernelMergeReplan(decision),
         buildPlanAdmissionSnapshot: event => this.buildPlanAdmissionSnapshot(event)!,
       },
@@ -2367,6 +2644,12 @@ export class ConversationSession {
 
   async dispose(): Promise<void> {
     this.disposePromise ??= (async () => {
+      // Stop external routing work before waiting: a disposed Session must not
+      // leave a Span request running, and a late observation must not admit a
+      // proposal.
+      this.disposed = true;
+      this.turnCancellation.abort();
+      this.preparations.clear();
       this.deps.mailbox.closeAdmission();
       await this.deps.mailbox.waitForIdle();
       await this.waitForBackgroundWork();
@@ -2382,6 +2665,19 @@ export class ConversationSession {
       listener(snapshot);
     }
   }
+}
+
+function planEventIdentity(event: PlanProposedEvent): string {
+  const { occurredAt: _time, spanRouting: _observation, ...identity } = event;
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, nested]) => [key, canonical(nested)]));
+    }
+    return value;
+  };
+  return createHash('sha256').update(JSON.stringify(canonical(identity))).digest('hex');
 }
 
 function workspaceError(code: string, message: string): Error & { code: string } {

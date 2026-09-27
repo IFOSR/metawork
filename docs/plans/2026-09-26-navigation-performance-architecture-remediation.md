@@ -1021,3 +1021,110 @@ This section supersedes earlier source-only and schema-43 deployment notes.
   No production Task facts were edited to manufacture active-work or recovery
   evidence. Documentation and `git diff --check` are aligned; no closing commit
   has been made.
+
+## 18. Realtime Terminal-State Convergence Correction (2026-09-27)
+
+Status: source correction implemented and installed Web/TUI acceptance passed.
+This section records the PDF issue in which a Task
+had already completed and produced its report, but the live Web card stayed
+`running` until a page refresh.
+
+### Root Cause
+
+The live Web runtime had two different inputs:
+
+- `InteractionTrace` events drove the visible Turn status;
+- the durable `ExecutionTimeline` drove execution details and was re-read
+  during history enrichment.
+
+`WebGatewaySessionRuntime` projected the second input only as an `execution`
+event. It did not reconcile `RuntimeTurnState.status` from a terminal
+`ExecutionTimeline`. If the terminal trace event was late, filtered by Task
+attribution, or absent after reconnect, the live status remained `running`;
+a refresh then appeared to fix the problem because historical enrichment
+derived status from the durable timeline.
+
+### Delivered Correction
+
+- The runtime now projects the durable ExecutionTimeline before mapping the
+  incoming trace event.
+- A terminal timeline (`done`, `failed`, `blocked`, `cancelled`, or equivalent
+  delivery stage) monotonically closes a still-running live Turn.
+- Existing terminal Turns are never reopened by a late progress event.
+- The correction uses the existing Task/Execution projection and does not add
+  a second lifecycle owner or mutate durable Task state.
+
+Regression coverage:
+
+- `tests/management/web-gateway-session-runtime.test.ts`: a live Turn remains
+  running while execution is active, then receives a terminal Task timeline
+  and is projected as `completed` without refresh.
+- Existing cancelled-Turn, late-trace, Gateway replay, history enrichment,
+  and execution projection tests remain green.
+
+Validation: `npx tsc --noEmit`, `git diff --check`, 109 Gateway/management/
+trace/projector tests, and the 92 Retry Wake/Span integration tests passed.
+The canonical installed Server was not changed by this source checkpoint.
+
+### 18.1 Durable Progress In The Trajectory Projection (2026-09-27)
+
+The PDF also exposed a second projection mismatch: the live execution card
+continued changing while the Trajectory event table stopped at an older event
+count. Executor progress is durably retained in
+`ExecutionTimeline.progressHistory`, while the table was reading only
+`InteractionTrace.events`. These are intentionally different presentation
+facts, so copying one lifecycle state machine into the other would create a
+second owner and would not be correct.
+
+The correction keeps the existing ownership split and makes the Trajectory
+surface render `ExecutionNarrative` in addition to the event table. The
+narrative combines trace milestones with the durable attempt progress history,
+so progress that arrives through the execution projector remains visible while
+the live Task is running and after reconnect. The Conversation surface remains
+compact and does not render the detailed narrative.
+
+Regression coverage:
+
+- `tests/web/trajectory-view.test.ts` asserts that Trajectory consumes the
+  shared execution narrative.
+- Existing execution-projector, Web runtime, trace-stream and live-card tests
+  remain green.
+- `AccountRuntime` activity projection now safely degrades when an optional
+  dispatch-fact repository is unavailable; its activity state remains governed
+  by the canonical lifecycle projector.
+
+Source validation for this correction: `npx tsc --noEmit`, `npm run build`,
+`git diff --check`, and the focused Web/Gateway/management/account suites
+passed. The isolated native Gateway/Web/TUI smoke passed. The full suite
+completed with 3,123 passed, 9 baseline failures, and 12 skipped; the failure
+set is identical to the recorded baseline. The canonical Server was rebuilt
+and restarted successfully on the new release, with a ready endpoint manifest.
+
+### 18.2 Client-side Execution Timeline Convergence (2026-09-27)
+
+The previous correction still left a client-side race: the Web `execution`
+event updated only `executionTimeline`, while Turn status was updated only by
+`trace_delta`. If a durable terminal timeline arrived without a terminal trace
+delta, the live page could remain `running` until a history reload rebuilt the
+Turn. The same issue existed in the retained `WebConversationProjector`, where
+a late `running` timeline could reopen a terminal projection.
+
+The delivered correction adds one presentation reducer, `mergeExecutionTimeline`,
+which applies the exact Task identity guard and projects terminal timeline
+states into the live Turn. Terminal Turn states are monotonic; the reducer does
+not allow a late `running` timeline to reopen a completed, failed, or cancelled
+Turn. Retry recovery remains explicit: a blocked Turn may return to `running`
+only when the durable timeline represents a valid retry continuation.
+
+Regression coverage:
+
+- `tests/web/conversation-live-turn.test.ts`: terminal timeline convergence and
+  late-running non-reopen behavior.
+- `tests/management/web-conversation-projector.test.ts`: retained projector
+  terminal monotonicity while preserving `waiting_retry` recovery.
+
+Validation after this correction: both focused suites pass (18 tests), the
+canonical TypeScript/build pass, the installed Server is ready, and the
+isolated native Web/TUI/Gateway smoke passes. The full-suite nine-failure set
+is unchanged from baseline. Real Span API smoke remains unexecuted because no
+Span credential is configured in this environment.

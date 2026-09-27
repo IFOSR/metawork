@@ -50,6 +50,7 @@ function makeIdleRuntimeDeps(tasks: Task[] = []) {
       dispatchItemRepo: { listBlocking: () => [] },
       resourceLeaseService: { findActive: () => [] },
       publicationRepo: { hasAnyBlockingResidue: () => false },
+      retryWakeRepo: { findBlockingByTask: () => [] },
     } as never,
     taskServices: {
       taskRuntimeService: {
@@ -68,16 +69,37 @@ describe('AccountRuntime', () => {
     const listTasks = vi.fn(() => { throw new Error('unrelated task scan'); });
     const listTasksByConversation = vi.fn(() => tasks);
     const listCurrentTaskIdsByAction = vi.fn(() => []);
+    const findBlockingByTask = vi.fn(() => []);
     const runtime = new AccountRuntime({
       ...makeIdleRuntimeDeps(tasks),
       taskServices: { taskRuntimeService: { listTasks, listTasksByConversation } } as never,
       kernelServices: { kernelDecisionRepo: { listCurrentTaskIdsByAction } } as never,
+      runtimeExecutionServices: {
+        retryWakeRepo: { findBlockingByTask },
+      } as never,
     });
     expect(runtime.getConversationActivity('conv_a', tasks[0]!.updatedAt).state).toBe('blocked');
     expect(listTasks).not.toHaveBeenCalled();
     expect(listTasksByConversation).toHaveBeenCalledWith('conv_a');
-    expect(listCurrentTaskIdsByAction).toHaveBeenCalledWith('wait_for_retry', ['task_a']);
+    expect(listCurrentTaskIdsByAction).not.toHaveBeenCalled();
+    expect(findBlockingByTask).toHaveBeenCalledWith('task_a');
   });
+
+  it('degrades activity projection when optional dispatch facts are unavailable', () => {
+    const tasks = [makeTask('task_a', 'running', 'conv_a')];
+    const runtime = new AccountRuntime({
+      ...makeIdleRuntimeDeps(tasks),
+      runtimeExecutionServices: {
+        retryWakeRepo: { findBlockingByTask: () => [] },
+      } as never,
+    });
+
+    expect(runtime.getConversationActivity('conv_a', tasks[0]!.updatedAt)).toMatchObject({
+      state: 'waiting',
+      taskId: 'task_a',
+    });
+  });
+
   it('builds activity facts once for a directory batch without per-task reloads', () => {
     const tasks = [
       makeTask('task_a', 'blocked', 'conv_a'),

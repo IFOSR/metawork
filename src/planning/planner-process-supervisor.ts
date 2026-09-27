@@ -395,21 +395,19 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     onUsage?: (event: HarnessUsageEvent) => void,
   ): Promise<PlannerRunResult> {
     const startedAt = Date.now();
-    if (this.deps.resolvePlannerBinding) {
-      const resolved = await this.deps.resolvePlannerBinding(context);
-      if (
-        this.currentConfigurationRevision !== resolved.configurationRevision
-        || this.currentBindingFingerprint !== resolved.bindingFingerprint
-        || this.currentExpectedModel?.provider !== resolved.provider
-        || this.currentExpectedModel?.modelId !== resolved.modelId
-      ) {
-        await this.refreshBinding(resolved);
-      }
+    const resolved = await this.deps.resolvePlannerBinding?.(context);
+    if (resolved && !hasCompleteRuntimeEnvironment(resolved.runtimeEnvironment, resolved)) {
+      throw new Error(`Planner runtime environment is incomplete for revision ${resolved.configurationRevision}`);
     }
-    const runtimeConfigurationRevision = purpose === 'configuration'
+    // A pinned run is independent of the active binding. Resolving an older
+    // revision must not refresh the supervisor or terminate other sessions.
+    const expectedModel = resolved
+      ? { provider: resolved.provider, modelId: resolved.modelId }
+      : this.currentExpectedModel;
+    const runtimeConfigurationRevision = resolved?.configurationRevision ?? (purpose === 'configuration'
       && this.currentConfigurationRevision
       ? this.currentConfigurationRevision
-      : context.configuration?.revisionId ?? this.currentConfigurationRevision;
+      : context.configuration?.revisionId ?? this.currentConfigurationRevision);
     const launch = await this.resolveLaunch(
       context.request.sessionId,
       cwdOverride,
@@ -420,8 +418,9 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       context.timeoutMs,
       context.request.conversationId ?? context.request.sessionId,
       context.attachments,
+      resolved,
     );
-    if (context.configuration?.revisionId && !this.currentExpectedModel) {
+    if (context.configuration?.revisionId && !expectedModel) {
       throw new Error(
         `Planner expected model binding is required for configuration revision `
         + context.configuration.revisionId,
@@ -443,7 +442,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       let stderr = '';
       let settled = false;
       let promptAccepted = false;
-      let modelChecked = this.currentExpectedModel === undefined;
+      let modelChecked = expectedModel === undefined;
       // A resumed Pi session keeps its own selected model, so a configuration
       // change reaches the session through one `set_model` reconciliation
       // instead of failing the turn.
@@ -565,7 +564,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
           return;
         }
         if (onUsage) {
-          const usage = plannerUsageFromEvent(event, turn, this.currentExpectedModel);
+          const usage = plannerUsageFromEvent(event, turn, expectedModel);
           if (usage) {
             try {
               onUsage(usage);
@@ -593,7 +592,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
             : null;
           const actualProvider = typeof model?.provider === 'string' ? model.provider : 'none';
           const actualModelId = typeof model?.id === 'string' ? model.id : 'none';
-          const expected = this.currentExpectedModel;
+          const expected = expectedModel;
           if (
             !expected
             || actualProvider !== expected.provider
@@ -624,7 +623,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
           if (event.success !== true) {
             fail(new Error(
               `Planner model binding mismatch: expected `
-              + `${this.currentExpectedModel?.provider ?? 'unknown'}/${this.currentExpectedModel?.modelId ?? 'unknown'}; `
+              + `${expectedModel?.provider ?? 'unknown'}/${expectedModel?.modelId ?? 'unknown'}; `
               + `the resumed Planner session could not switch to it: `
               + truncateText(redactSensitiveText(String(event.error ?? 'unknown error')), 500),
             ));
@@ -852,7 +851,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       });
 
       proc.stdin?.on('error', error => fail(error));
-      if (this.currentExpectedModel) {
+      if (expectedModel) {
         proc.stdin?.write(`${JSON.stringify({ id: stateRequestId, type: 'get_state' })}\n`);
       } else {
         sendPrompt();
@@ -871,6 +870,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     rpcTimeoutMs?: number,
     conversationId = sessionId,
     attachments: PlanningContext['attachments'] = [],
+    resolvedBinding?: PlannerBindingResolution,
   ): Promise<{
     command: string;
     args: string[];
@@ -878,13 +878,18 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     env: NodeJS.ProcessEnv;
     sessionDir: string;
   }> {
+    const expectedRevision = resolvedBinding?.configurationRevision ?? this.currentConfigurationRevision;
+    const runtimeEnvironment = resolvedBinding?.runtimeEnvironment ?? this.currentRuntimeEnvironment;
+    const expectedModel = resolvedBinding
+      ? { provider: resolvedBinding.provider, modelId: resolvedBinding.modelId }
+      : this.currentExpectedModel;
     if (
-      this.currentConfigurationRevision
+      expectedRevision
       && configurationRevision
-      && configurationRevision !== this.currentConfigurationRevision
+      && configurationRevision !== expectedRevision
     ) {
       throw new Error(
-        `Planner supervisor revision mismatch: expected ${this.currentConfigurationRevision}, `
+        `Planner supervisor revision mismatch: expected ${expectedRevision}, `
         + `received ${configurationRevision}`,
       );
     }
@@ -910,8 +915,8 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
             this.deps.plannerRuntimeRoot,
             configurationRevision,
             {
-              runtimeEnvironment: this.currentRuntimeEnvironment,
-              expectedModel: this.currentExpectedModel,
+              runtimeEnvironment,
+              expectedModel,
             },
           )
           : undefined
@@ -966,7 +971,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       sessionDir,
       env: {
         ...env,
-        ...this.currentRuntimeEnvironment,
+        ...runtimeEnvironment,
         ANYFUSION_PLANNER_MODE: '1',
         ANYFUSION_PLANNER_HOME: plannerHome,
         ANYFUSION_PLANNER_SESSION_DIR: sessionDir,

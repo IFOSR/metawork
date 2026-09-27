@@ -201,7 +201,8 @@ apply or a *downstream* effect that only this Decision could have caused.
 | `defer_task_plan_for_availability` | The Replan Job is `waiting_for_availability` **and** the Task is `blocked`. The deferral is persisted before the block, so a persisted deferral with a running Task must be re-applied (`retry_safe`) |
 | `wait_for_capacity` | The Task block is durable; the periodic capacity recheck owns the wake |
 | `resume_task` | Every named Subtask is present and no longer `blocked`, and each has a causally descended dispatch item in the same generation. Recovery resumes use `recovery.subtaskId` and also match attempt kind, source attempt, binding fingerprint and configuration revision. A downstream `dispatch_batch` carries its own Decision id, so the inspector follows the dispatch Decision's causation back to the resume Decision. The apply is replay-idempotent and must never short-circuit before emitting its observation |
-| `wait_for_retry`, `wait_for_partition` | `retry_safe` only. The apply blocks the Task and emits the wake observation that is the real continuation trigger, so it must be re-emitted rather than assumed |
+| `wait_for_retry` | Task is `blocked`, the exact `kernel_retry` dependency is waiting, and the Decision-derived Retry Wake is `armed` or has advanced to `fired`. The periodic/startup Worker owns Timer delivery; the Decision application never emits a Timer directly |
+| `wait_for_partition` | The Task block is durable; the periodic capacity/partition recheck owns the wake |
 | `no_op`, `probe_capacity` | No durable state write; `applied` |
 | `cancel_task`, `cancel_subtasks` | `reconcileUncertainCancellations` (dedicated) |
 | `request_merge_replan` | Bounded merge/system-binding recovery events (dedicated) |
@@ -240,7 +241,7 @@ answered only by `TaskResidueReader.blockingReasons()` — the single reader sha
 by completion, cancellation, startup recovery, periodic recovery and TaskView. A
 slot is released only when the Task is terminal, or blocked, and the reader
 reports no blocking `dispatch`, `publication`, `execution_backend`, `work_unit`,
-`resource_lease`, `generation_replan`, `kernel_application` or `attempt_receipt`
+`resource_lease`, `generation_replan`, `retry_wake`, `kernel_application` or `attempt_receipt`
 residue. `generation_replan` covers `pending_quiescence`, `planning`, `submitted`
 **and `waiting_for_availability`**, because a deferred proposal is unfinished
 work. `kernel_application` covers `pending`, `applying` and `uncertain`. A path
@@ -270,6 +271,7 @@ acts on (`inspectApplicationAgainstSources`).
 
 ```text
 active authorized Attempt exists    -> executing
+retry wake requires recovery        -> recovery_required (no_authorized_driver)
 retry wake exists                   -> retrying
 active Replan Job exists            -> waiting_for_plan (blocked if the Task is already blocked)
 uncertain Kernel application exists -> recovery_required (uncertain_application)

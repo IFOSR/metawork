@@ -15,6 +15,53 @@ const runBrowserE2e = process.env.RUN_BROWSER_E2E === '1';
 const e2e = runBrowserE2e ? describe : describe.skip;
 
 e2e('Settings workbench browser flow', () => {
+  it('saves the Span key separately, clears it, and retains the stored key when disabled', async () => {
+    const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
+    const server = await startMockServer(join(root, 'web', 'dist'));
+    const profile = await mkdtemp(join(tmpdir(), 'span-settings-chrome-'));
+    const chrome = spawn(chromePath, ['--headless=new', '--disable-gpu', '--no-first-run',
+      '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
+      `http://127.0.0.1:${server.port}/`], { stdio: 'ignore' });
+    try {
+      const target = await waitForPageTarget(await waitForDebuggingPort(profile));
+      const cdp = await CdpClient.connect(target.webSocketDebuggerUrl);
+      try {
+        await waitForExpression(cdp, `Boolean(document.querySelector('.sidebar-settings'))`);
+        await cdp.evaluate(`document.querySelector('.sidebar-settings').click()`);
+        await waitForExpression(cdp, `[...document.querySelectorAll('h3')].some(h => h.textContent === '决策模型（Span）')`);
+        await cdp.evaluate(`window.spanSection = () => [...document.querySelectorAll('h3')].find(h => h.textContent === '决策模型（Span）').closest('section')`);
+        await cdp.evaluate(`(() => {
+          const section = window.spanSection(); section.closest('details').open = true;
+          section.querySelector('input[type=checkbox]').click();
+          const key = section.querySelector('input[type=password]');
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(key, 'browser-span-test-key');
+          key.dispatchEvent(new Event('input', { bubbles: true }));
+        })()`);
+        const save = async () => {
+          await waitForExpression(cdp, `[...document.querySelectorAll('button')].some(b => b.textContent.trim() === '保存并激活' && !b.disabled)`);
+          await cdp.evaluate(`[...document.querySelectorAll('button')].find(b => b.textContent.trim() === '保存并激活').click()`);
+          await waitForExpression(cdp, `window.spanSection().querySelector('input[type=password]').value === '' && window.spanSection().querySelector('input[type=password]').placeholder.includes('已配置')`);
+        };
+        await save();
+        const first = server.getActivationPayload() as any;
+        expect(first.spanApiKey).toBe('browser-span-test-key');
+        expect(first.config.routing.span.enabled).toBe(true);
+        expect(JSON.stringify(first.config)).not.toContain('browser-span-test-key');
+        expect(JSON.stringify(first.secrets)).not.toContain('browser-span-test-key');
+        await cdp.evaluate(`window.spanSection().querySelector('input[type=checkbox]').click()`);
+        await save();
+        await waitForExpression(cdp, `!window.spanSection().querySelector('input[type=checkbox]').checked`);
+        const second = server.getActivationPayload() as any;
+        expect(second.spanApiKey).toBeUndefined();
+        expect(second.config.routing.span).toMatchObject({ enabled: false,
+          apiKeyRef: 'file-secret:anyfusion/internal/routing-span' });
+      } finally { cdp.close(); }
+    } finally {
+      chrome.kill('SIGTERM'); await server.close();
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }, 30_000);
+
   it('creates, renames, disables, enables and deletes an assistant, and blocks busy editing on mobile', async () => {
     const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
     const server = await startMockServer(join(root, 'web', 'dist'), 'executor-management');
@@ -473,6 +520,8 @@ async function startMockServer(
   setBusy(value: boolean): void;
 }> {
   let activationPayload: unknown = null;
+  let spanRouting: any = undefined;
+  let spanConfigured = false;
   let busy = false;
   let executorSnapshot = buildStagedLegacyConfiguration({ testMode: true }).snapshot;
   if (mode === 'executor-management') {
@@ -586,6 +635,9 @@ async function startMockServer(
       });
       return;
     }
+    if (url.pathname === '/api/config/routing/span/status') {
+      json(response, { configured: spanConfigured }); return;
+    }
     if (url.pathname === '/api/config/activation-status') {
       json(response, busy ? busyActivationState() : activationState());
       return;
@@ -642,12 +694,18 @@ async function startMockServer(
     if (url.pathname === '/api/config') {
       json(response, mode === 'provider-recovery'
         ? providerRecoveryConfiguration()
-        : configuration());
+        : { ...configuration(), ...(spanRouting ? { config: { ...configuration().config, routing: spanRouting } } : {}) });
       return;
     }
     if (request.method === 'POST' && url.pathname === '/api/config/activate') {
       void readJsonBody(request).then(body => {
         activationPayload = body;
+        if (body.spanApiKey) spanConfigured = true;
+        spanRouting = (body.config as any)?.routing;
+        if (spanRouting?.span && spanConfigured) {
+          spanRouting = structuredClone(spanRouting);
+          spanRouting.span.apiKeyRef = 'file-secret:anyfusion/internal/routing-span';
+        }
         json(response, {
           ok: true,
           revisionId: 'revision-browser-activated',

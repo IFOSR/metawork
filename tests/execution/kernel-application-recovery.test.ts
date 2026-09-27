@@ -514,11 +514,42 @@ describe('application postcondition inspection', () => {
       bindingFingerprint: 'fp',
       sourceAttemptId: 'attempt-1',
     });
-    // The wake observation is the continuation trigger, so it must be re-emitted.
+    // The Task blocker alone is insufficient; recovery also requires the
+    // Decision-derived Retry Wake to be durable.
     expect(inspectApplicationPostcondition(facts({
       application: retryWait,
       task: { id: taskId, status: 'blocked', dependencies: [{ type: 'kernel_retry', status: 'waiting' }] },
     }))).toMatchObject({ verdict: 'retry_safe' });
+    expect(inspectApplicationPostcondition(facts({
+      application: retryWait,
+      task: { id: taskId, status: 'blocked', dependencies: [{ type: 'kernel_retry', status: 'waiting' }] },
+      retryWake: {
+        wakeId: 'retry_wake_decision-1',
+        taskId,
+        subtaskId: 'subtask-a',
+        sourceDecisionId: 'decision-1',
+        sourceAttemptId: 'attempt-1',
+        configurationRevision: 'revision-a',
+        bindingFingerprint: 'fp',
+        resumeAt: '2026-09-25T00:10:00.000Z',
+        status: 'armed',
+      },
+    }))).toMatchObject({ verdict: 'applied' });
+    expect(inspectApplicationPostcondition(facts({
+      application: retryWait,
+      task: { id: taskId, status: 'blocked', dependencies: [{ type: 'kernel_retry', status: 'waiting' }] },
+      retryWake: {
+        wakeId: 'retry_wake_decision-1',
+        taskId,
+        subtaskId: 'subtask-a',
+        sourceDecisionId: 'decision-1',
+        sourceAttemptId: 'attempt-1',
+        configurationRevision: 'revision-a',
+        bindingFingerprint: 'fp',
+        resumeAt: '2026-09-25T00:10:00.000Z',
+        status: 'fired',
+      },
+    }))).toMatchObject({ verdict: 'applied' });
 
     const queued = app({
       type: 'queue_generation_replan',

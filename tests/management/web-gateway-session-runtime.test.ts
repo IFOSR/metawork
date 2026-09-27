@@ -381,6 +381,113 @@ describe('WebGatewaySessionRuntime', () => {
     });
   });
 
+  it('converges a live Turn to terminal when the durable execution timeline finishes', async () => {
+    let listener!: (event: GatewayEventEnvelope) => void;
+    let taskDone = false;
+    const projected: WebSessionRuntimeEvent[] = [];
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway: gatewayFixture({
+        subscribe: (_accountId, _conversationId, next) => {
+          listener = next;
+          return () => undefined;
+        },
+      }),
+      projectExecutionTimeline: taskId => ({
+        taskId,
+        title: '长任务',
+        status: taskDone ? 'done' : 'running',
+        stages: [
+          { phase: 'planning', status: 'done' },
+          { phase: 'authorization', status: 'done' },
+          { phase: 'execution', status: taskDone ? 'done' : 'running' },
+          { phase: 'verification', status: taskDone ? 'done' : 'pending' },
+          { phase: 'delivery', status: taskDone ? 'done' : 'pending' },
+        ],
+      }),
+    });
+    runtime.subscribe('browser-a', event => projected.push(event));
+    await attachBrowser(runtime);
+
+    const base = {
+      ...outputEvent('live_terminal_base', 1, []),
+      requestId: 'req_live_terminal',
+      turnId: 'turn_live_terminal',
+    };
+    listener({
+      ...base,
+      eventId: 'live_terminal_started',
+      kind: 'turn_started',
+      payload: { commandKind: 'user_message' },
+    });
+    listener({
+      ...base,
+      eventId: 'live_terminal_progress',
+      sequence: 2,
+      kind: 'trace_delta',
+      payload: {
+        turnId: 'turn_live_terminal',
+        taskId: 'task_live_terminal',
+        status: 'running',
+        events: [{
+          id: 'live_terminal_progress_event',
+          sequence: 1,
+          occurredAt: '2026-09-27T00:00:01.000Z',
+          phase: 'execution',
+          actor: 'executor',
+          kind: 'executor_progress',
+          status: 'running',
+          title: 'Executor progress',
+          summary: '正在执行',
+          taskId: 'task_live_terminal',
+          details: {},
+        }],
+      },
+    });
+
+    taskDone = true;
+    listener({
+      ...base,
+      eventId: 'live_terminal_late_progress',
+      sequence: 3,
+      kind: 'trace_delta',
+      payload: {
+        turnId: 'turn_live_terminal',
+        taskId: 'task_live_terminal',
+        status: 'running',
+        events: [{
+          id: 'live_terminal_late_progress_event',
+          sequence: 2,
+          occurredAt: '2026-09-27T00:00:02.000Z',
+          phase: 'execution',
+          actor: 'executor',
+          kind: 'executor_progress',
+          status: 'running',
+          title: 'Executor progress',
+          summary: '收尾',
+          taskId: 'task_live_terminal',
+          details: {},
+        }],
+      },
+    });
+
+    const terminal = projected.filter(event => event.type === 'trace_delta').at(-1);
+    expect(terminal).toMatchObject({
+      type: 'trace_delta',
+      turnId: 'turn_live_terminal',
+      status: 'completed',
+      completedAt: expect.any(String),
+    });
+    expect(projected.at(-1)).toMatchObject({
+      type: 'execution',
+      turnId: 'turn_live_terminal',
+      taskId: 'task_live_terminal',
+      timeline: { status: 'done' },
+    });
+    await runtime.dispose();
+  });
+
   it('serializes Workspace navigation so a later selection cannot be overtaken', async () => {
     const firstSelection = deferred<{
       requestId: string;

@@ -94,10 +94,16 @@ replacing those semantics.
 - [Navigation performance architecture remediation](plans/2026-09-26-navigation-performance-architecture-remediation.md):
   indexed Workspace directory, Conversation history paging, physical enrichment
   batching, request convergence, segmented snapshot/journal maintenance and
-  indexed command admission. Schema 44 is canonically installed; real Web/TUI
+  indexed command admission. Source schema 45 adds durable Retry Wake facts;
+  schema 44 remains canonically installed until the next native upgrade. Real Web/TUI
   navigation/reconnect and process-level recovery checks are recorded.
   Final acceptance remains open, including the provisional creation budget
   and production background-work/crash gates; fixture results are not rollout proof.
+- [Retry Wake state-machine remediation](plans/2026-09-27-retry-wake-state-machine-remediation.md):
+  source schema 45 durable timeout continuation, atomic `wait_for_retry`
+  postconditions, account-scoped Timer delivery, exact wake identity, and
+  explicit stale/recovery convergence. Canonical installation remains schema 44
+  until the native upgrade gate and live restart/TUI/Web acceptance close.
 - [Task lifecycle state convergence](plans/2026-09-25-task-lifecycle-state-convergence-implementation-plan.md): core structure implemented, closure acceptance not completed. Delivered canonical Task/Subtask/Attempt lifecycle ownership with the single Task/Work Graph transition port, the durable `schedule_replan` Job plus account-scoped Planner Worker, per-family uncertain-application postconditions, residue-driven Conversation slot release, and the read-only TaskView projection consumed by TUI/Web/Feishu. Two 2026-09-25 review rounds plus the 2026-09-26 correction fixed real defects in the Planner-failure control chain, the startup/periodic recovery entry, the `block_work`/`resume_task`/deferral postconditions, the duplicated residue check, Planner-turn idempotency and claim fencing, plan-activation and dispatch authorization identity, the activity-card projection, the Subtask lifecycle owner wording, and missing-target handling for `block_work`; see the plan §13, which is a defect list rather than a closure claim. Real Server-restart, TUI-reconnect, Web-attach and live Planner-fault acceptance remain unexecuted. Contracts: [Task lifecycle state contracts](current/task-lifecycle-state-contracts.md).
 - [Incomplete response resume repair](plans/2026-09-24-incomplete-response-resume-fix.md): bounded explicit recovery for incomplete model streams, authoritative control-command results, newest-result projection, and live research-task validation.
 - [统一 Gateway 完整 Pi TUI 详细设计](plans/2026-09-19-unified-gateway-full-pi-tui-design.md)：已实施并由 [ADR-0041](../adr/0041-single-tui-convergence-and-gateway-read-only-queries.md) 治理。唯一 MetaWork TUI（Gateway-only Client）交付多 Turn 展示模型、Pi 编辑器/主题/组件、Task Dashboard、只读 `complete_command`/`get_task_view`；简版客户端、vendored 本地交互 Agent TUI 与 `src/tui/` Ink 面及其依赖/开关已删除；Server Planner RPC 与 Web/Feishu 行为保留。macOS PTY 三尺寸终端验收与 `smoke:gateway`/`smoke:clients` 通过；Docker 因镜像仓库不可达未执行，真实 Planner/飞书依赖外部环境未执行（见计划 §18.3）。
@@ -120,6 +126,8 @@ replacing those semantics.
 - [Worktree Executor backend migration](plans/2026-08-06-worktree-executor-backend-migration.md): keeps the Runtime containerized where needed while moving trusted Executor attempts to per-Subtask Git worktrees and native Runtime processes.
 
 ## Implementation Plans
+
+- [Span 路由增强设计](plans/2026-09-27-span-routing-design.md)、[实施计划](plans/2026-09-27-span-routing-implementation-plan.md)、[设计收尾记录](plans/2026-09-27-span-design-closure.md)与[真实 API 验收](plans/2026-09-27-span-live-acceptance.md)：代码、本地和真实接口验收已完成，包含无客户端恢复、固定 revision、取消/并发边界和双向凭据隔离。真实调用发现并修复字符串 state 协议问题；评分、默认超时回退、单候选跳过和持久重放通过。精确 Dockerfile 镜像构建仍受 Docker Hub 网络阻断。
 
 - [MetaCoin usage and Query billing implementation](plans/2026-09-21-metacoin-query-billing-implementation-plan.md): implementation completed on 2026-09-22 without a commit. The 11-task plan covers single-user multi-task reliability, per-Query usage/stage costs, assessed MetaCoin bills, Task rollups, three-client projections, and idempotent external consumption reporting. Queries need not have Tasks; assessed charges and externally confirmed deductions are separate. Wallets, subscriptions/payment collection, recharge and refunds belong to an independent external system; Provider restrictions, a mandatory model proxy, local balance enforcement and shared-runtime multi-tenancy are excluded.
 

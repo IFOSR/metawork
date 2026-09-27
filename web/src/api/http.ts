@@ -305,10 +305,16 @@ export class HttpClient {
     baseRevisionId: string,
     config: Record<string, unknown>,
     secrets?: Record<string, string>,
+    spanApiKey?: string,
   ): Promise<ActivateResult> {
     return this.requestActivation('/api/config/activate', {
       method: 'POST',
-      body: JSON.stringify({ baseRevisionId, config, ...(secrets ? { secrets } : {}) }),
+      body: JSON.stringify({
+        baseRevisionId,
+        config,
+        ...(secrets ? { secrets } : {}),
+        ...(spanApiKey ? { spanApiKey } : {}),
+      }),
     });
   }
 
@@ -342,6 +348,17 @@ export class HttpClient {
     return this.request<ProviderCredentialStatus>('/api/config/secrets', {
       method: 'POST',
       body: JSON.stringify({ providerRef, apiKey }),
+    });
+  }
+
+  getSpanCredentialStatus(): Promise<{ configured: boolean }> {
+    return this.request<{ configured: boolean }>('/api/config/routing/span/status');
+  }
+
+  writeSpanSecret(apiKey: string): Promise<ProviderCredentialStatus> {
+    return this.request<ProviderCredentialStatus>('/api/config/routing/span/secret', {
+      method: 'POST',
+      body: JSON.stringify({ apiKey }),
     });
   }
 

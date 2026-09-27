@@ -13,7 +13,7 @@ changes, subtask planning, executor instance claims, and fallback behavior.
 ## Current Implementation Notes
 
 Navigation remediation is in active delivery; installed acceptance is not
-complete. The source schema is now **44**. Schema 43 added the Workspace directory
+complete. The source schema is now **45**. Schema 43 added the Workspace directory
 projection/invalidation/rebuild tables and Conversation metadata/history and
 Gateway segment-index read models. This supersedes the schema-42 baseline
 description below; 42-to-43 is transactional and preserves existing facts.
@@ -139,6 +139,33 @@ display names, while internal model/provider refs, configuration revisions and
 binding fingerprints remain server-side. If a historical revision cannot
 recover a public model identity, the projection reports that the historical
 model information is unavailable instead of exposing the internal ref.
+Optional Span routing is the only external routing advisor. Advanced settings
+store its OpenRouter credential through the same SecretStore path as a Provider
+key, but under the non-Provider `internal` namespace, and the revision keeps
+only that fixed reference. Configuration validation accepts no other reference,
+and the Server re-checks it before reading, so no revision can point the advisor
+at a Provider credential; Provider references into the internal namespace are
+also rejected. After the
+shared hard filter and before the `plan_proposed` event is durably enqueued, the
+Server may attach a bounded `spanRouting` observation to that event. At the SDK
+boundary, structured state is sent as a JSON string (Respan's required wire
+format), with escaping included in the size budget. Replay
+reuses the persisted observation and never re-calls the advisor. `ControlKernel`
+re-validates the observation and then uses its probabilities only to order
+eligible candidates; it never widens the candidate set, and any absent, stale,
+invalid, or failed observation leaves the deterministic resolver unchanged.
+Preparation captures its cancellation signal, coalesces identical event IDs,
+and rejects changed identities. Planning, scoring, admission and recovery use
+the event's pinned configuration snapshot. System replan and merge replan use a
+temporary validation-only Planner host through the existing Application Shell,
+without requiring an attached client. Each Planner run captures its own model
+and runtime environment; resolving a historical revision does not refresh the
+shared supervisor or terminate another run. Explicit Turn cancellation returns no
+replan and cancels its request. Session disposal or Server shutdown leaves an
+interrupted replan application recoverable (`applying`), without admitting a
+late response or treating shutdown as user cancellation. Span has two physical
+request slots and at most 128 queued requests per Server; expired waiters are
+removed and a transport ignoring abort retains its slot until it settles.
 
 Public attempt timelines retain the internal `attemptId` only as a non-visible
 correlation key. Visible execution narrative uses attempt kind/ordinal labels
@@ -196,6 +223,18 @@ postcondition family and verdict that recovery acts on. A legacy
 `authorize_task_plan` application made uncertain solely by the former
 system-binding `onDecisionApplying` presentation callback defect keeps its own
 bounded Kernel-authorized retry path.
+
+Timeout retry uses one Kernel-owned durable Retry Wake continuation fact rather
+than a process-local timer. A `wait_for_retry` application transactionally
+persists the `kernel_retry` Task blocker and the Wake (`armed`); the account
+startup/periodic Worker conditionally advances it to `fired` and emits a
+deterministic `timer_tick` only after that durable postcondition exists.
+Timer identity is pinned to the Wake, source Decision and Attempt, generation,
+configuration revision and binding fingerprint. Exact validation authorizes one
+continuation dispatch, whose durable dispatch item, Task transition and Wake
+consumption precede Attempt launch. Wakes converge to `consumed`,
+`superseded` or `recovery_required`; a failed or contradictory Wake is never
+presented as automatic `retrying`.
 
 Task-control command acknowledgement is not execution authority. `/task resume`
 reports authorization and pending dispatch after the first authoritative Kernel

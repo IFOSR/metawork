@@ -1172,7 +1172,6 @@ describe('ConversationSession', () => {
     db.close();
   });
 
-
   it('reconstructs an accepted proposal from an already-applied Kernel decision after a completion crash', async () => {
     const db = new (await import('better-sqlite3')).default(':memory:');
     const { runMigrations } = await import('../../src/storage/migrations.js');

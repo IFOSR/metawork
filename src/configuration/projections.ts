@@ -166,6 +166,14 @@ export function buildKernelConfigurationView(
     providers,
     permissionProfiles,
     runtimePolicy: { ...snapshot.config.runtimePolicy },
+    // Kernel-safe Span policy only: no credential reference, no plaintext key.
+    ...(snapshot.config.routing?.span ? {
+      spanRouting: {
+        enabled: snapshot.config.routing.span.enabled,
+        model: snapshot.config.routing.span.model,
+        timeoutMs: snapshot.config.routing.span.timeoutMs,
+      },
+    } : {}),
   });
 }
 

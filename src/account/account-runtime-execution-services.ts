@@ -31,6 +31,7 @@ import type { ConversationTaskSchedulerRepo } from '../storage/conversation-task
 import type { GatewayAttachmentStore } from '../gateway/attachment-store-port.js';
 import type { RawUsageEvent } from '../metering/usage-normalizer.js';
 import type { Payer } from '../billing/cost-policy.js';
+import { RetryWakeRepo } from '../storage/retry-wake-repo.js';
 
 export interface AccountRuntimeExecutionServices {
   readonly resourceLeaseService: ResourceLeaseService;
@@ -39,6 +40,7 @@ export interface AccountRuntimeExecutionServices {
   readonly generationReplanRepo: GenerationReplanRequestRepo;
   readonly cancellationCoordinator: TaskCancellationCoordinator;
   readonly attemptRunner: SubtaskAttemptRunner;
+  readonly retryWakeRepo: RetryWakeRepo;
 }
 
 export function buildAccountRuntimeExecutionServices(deps: {
@@ -74,6 +76,7 @@ export function buildAccountRuntimeExecutionServices(deps: {
   const dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
   const publicationRepo = new WorkspacePublicationRepo(deps.db);
   const generationReplanRepo = new GenerationReplanRequestRepo(deps.db);
+  const retryWakeRepo = new RetryWakeRepo(deps.db);
 
   const cancellationCoordinator = new TaskCancellationCoordinator({
     db: deps.db,
@@ -127,5 +130,6 @@ export function buildAccountRuntimeExecutionServices(deps: {
     generationReplanRepo,
     cancellationCoordinator,
     attemptRunner,
+    retryWakeRepo,
   };
 }

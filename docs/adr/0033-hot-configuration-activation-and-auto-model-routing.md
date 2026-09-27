@@ -200,3 +200,83 @@ sharing that tool. No enabled Executor rejects new user work with
   qualification in the same revision.
 - Rollback is another revision activation and obeys the same gate and
   optimistic-concurrency rules.
+
+## Amendment: Span Routing Advisor (2026-09-27)
+
+MetaWork may optionally consult one external decision model, `respan/span-01-lite`
+at OpenRouter, as a **soft ordering signal** over already-authorized candidates.
+It never widens the candidate set and never produces a binding decision.
+
+- Configuration owns an optional additive `routing.span` section
+  (`enabled`, fixed `model`, `timeoutMs`, optional `apiKeyRef`). Revisions created
+  before it parse unchanged with the section absent, and adding or editing it is
+  a hot-safe change under the existing activation gate.
+- The credential is entered in advanced settings exactly like a Provider key:
+  the Server writes it to the account SecretStore under a fixed reference in the
+  non-Provider `internal` namespace (`anyfusion/internal/routing-span`) and the
+  revision stores only that reference, so a Provider that happens to be named
+  `routing-span` can never share or overwrite the slot. The configuration schema
+  accepts only that exact reference, and the Server re-checks it before reading,
+  so no revision or snapshot can point the advisor at a Provider credential.
+  Provider references into the internal namespace are also rejected.
+  Planner and Executor
+  projections, generated runtimes, diffs, logs, and client responses never carry
+  the plaintext key.
+- Hard eligibility is unchanged and shared: the same pure filter that authorizes
+  a Model also decides which candidates may be scored. Provider/Model
+  enablement, Harness compatibility, capabilities, permission profiles, context,
+  cost, latency, quality, and Kernel Executor availability all still apply
+  first. A high probability cannot make an ineligible candidate eligible.
+- The Server resolves the credential for the proposal's **pinned configuration
+  revision**, not whatever is currently active, and that resolution is bounded
+  by the same proposal deadline. A missing, failed, or over-deadline credential
+  read is a bounded fallback, never a plan-admission failure.
+- Span is called in the Application Shell after proposal validation and before
+  the `plan_proposed` event enters the durable Kernel inbox. If that event is
+  already durable, the stored event is reused and no second request is made. The
+  bounded, validated observation is persisted on the event. `ControlKernel`
+  re-validates event/revision/generation/graph/Subtask/candidate identity and
+  then uses the probability only as an ordering signal inside the same
+  AgentClass and across AgentClasses; ties and every other decision stay with the
+  deterministic resolver.
+- Planning context, Span candidate construction, Kernel admission and Runtime
+  configuration use the proposal's pinned snapshot. System replan and conflict
+  replan run through a temporary validation-only Planner host and the existing
+  ConversationSession paths, without opening a client or creating a second
+  semantic router. Each RPC run captures its own model and runtime environment;
+  pinned resolution does not refresh the shared supervisor or terminate another
+  run. Durable replan events bypass both Planner and Span.
+- Concurrent preparation of the same event ID shares one result until durable
+  enqueue; a different identity for that ID is rejected. The Shell retains at
+  most 64 outstanding prepared events. Each preparation captures its Turn
+  signal so replacing the current controller cannot revive cancelled work.
+- Turn cancellation aborts the in-flight request, and the Shell rechecks the
+  captured cancellation signal before admitting the proposal, so a late observation can
+  never authorize work for a cancelled Turn. Cancellation is fail-closed on
+  every proposal source: the initial submission is rejected, and a replan
+  returns no event so the Runtime records an intended `cancelled` generation
+  request instead of a failure or a persisted plan.
+- Session disposal and Server shutdown abort in-flight Span requests: the
+  admission shell aborts its Turn controller before draining, and the Server
+  lifetime signal is merged into every advisor call. Interrupted replan
+  applications stay `applying` for durable recovery rather than becoming user
+  cancellation. No interrupted preparation admits a proposal.
+- The advisor has two physical slots and at most 128 queued requests Server-wide.
+  Aborted or expired waiters are removed; a transport that ignores abort keeps
+  its physical slot until it settles while the caller meets the deadline.
+- Replay of a stored `plan_proposed` event makes no external call. A crash
+  before the event is durably stored may repeat the request; Span is not
+  idempotent and must not be described as exactly-once.
+- Any advisor failure — disabled, missing credential, timeout, HTTP error,
+  invalid response, candidate mismatch, or input over budget — falls back to the
+  unchanged deterministic routing. Cancellation propagates instead of becoming a
+  scored fallback.
+- The advisor scores the real Provider model identity plus the pinned revision's
+  existing capability, reasoning, cost, latency, quality and context facts, not
+  opaque internal aliases alone. The SDK boundary serializes structured state
+  into a JSON string, as required by Respan, and includes escaping in the request
+  size bound. The question/state contract carries its own
+  `questionVersion`; a version change discards older observations in the Kernel
+  rather than ranking on data produced under a different contract.
+- Span usage is retained as internal routing observation only. It does not
+  masquerade as Planner/Executor usage or add a separate user billing stage.

@@ -46,6 +46,7 @@ import { HistoricalResultUpgrader } from '../execution/historical-result-upgrade
 import { ResultObjectRepo } from '../storage/result-object-repo.js';
 import type { RuntimeConfigurationView } from '../configuration/index.js';
 import type { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
+import type { RetryWakeRepo } from '../storage/retry-wake-repo.js';
 
 export type KernelExecutionRuntimeCallbacks = ConstructorParameters<typeof KernelExecutionRuntime>[0]['callbacks'];
 export type TaskExecutionApplicationCallbacks = ConstructorParameters<typeof SessionTaskExecutionApplicationService>[0]['callbacks'];
@@ -88,6 +89,7 @@ export function buildAccountKernelExecutionServices(deps: {
   dispatchItemRepo: KernelDispatchItemRepo;
   publicationRepo: WorkspacePublicationRepo;
   generationReplanRepo: GenerationReplanRequestRepo;
+  retryWakeRepo: RetryWakeRepo;
   cancellationCoordinator: TaskCancellationCoordinator;
   executionProgressService: ExecutionProgressService;
   verificationAndDeliveryService: VerificationAndDeliveryService;
@@ -162,6 +164,8 @@ export function buildAccountKernelExecutionServices(deps: {
     resultObjectRepo: new ResultObjectRepo(deps.db, deps.resultRoot),
     workspaceRepository: deps.workspaceRepository,
     generationReplanRepo: deps.generationReplanRepo,
+    retryWakeRepo: deps.retryWakeRepo,
+    runInTransaction: <T>(operation: () => T) => deps.db.transaction(operation)(),
     cancellationCoordinator: deps.cancellationCoordinator,
     executionProgressService: deps.executionProgressService,
     verificationAndDeliveryService: deps.verificationAndDeliveryService,

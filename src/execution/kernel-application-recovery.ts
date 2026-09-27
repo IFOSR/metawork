@@ -83,6 +83,17 @@ export interface ApplicationPostconditionFacts {
   readonly replanRequest: GenerationReplanRequestRecord | null;
   /** Replan Job looked up by its deterministic id, for `queue_generation_replan`. */
   readonly queuedReplanRequest: GenerationReplanRequestRecord | null;
+  readonly retryWake?: {
+    readonly wakeId: string;
+    readonly taskId: string;
+    readonly subtaskId: string;
+    readonly sourceDecisionId: string;
+    readonly sourceAttemptId: string;
+    readonly configurationRevision: string;
+    readonly bindingFingerprint: string;
+    readonly resumeAt: string;
+    readonly status: string;
+  } | null;
 }
 
 /**
@@ -102,6 +113,7 @@ export interface ApplicationPostconditionFactSource {
   ): GenerationReplanRequestRecord | null;
   /** Replan Job by its deterministic id, independent of generation/revision. */
   findReplanRequestById(id: string): GenerationReplanRequestRecord | null;
+  findRetryWake?(taskId: string, sourceDecisionId: string): ApplicationPostconditionFacts['retryWake'];
 }
 
 export function inspectApplicationAgainstSources(
@@ -131,6 +143,9 @@ export function inspectApplicationAgainstSources(
         : null,
     queuedReplanRequest: action.type === 'queue_generation_replan'
       ? sources.findReplanRequestById(action.requestId)
+      : null,
+    retryWake: action.type === 'wait_for_retry'
+      ? sources.findRetryWake?.(action.taskId, application.decisionId) ?? null
       : null,
   });
 }
@@ -203,15 +218,12 @@ export function inspectApplicationPostcondition(
     case 'wait_for_capacity':
       return inspectCapacityWait(facts);
     case 'wait_for_retry':
+      return inspectRetryWait(facts);
     case 'wait_for_partition':
-      // The apply blocks the Task and emits the wake observation that is the
-      // real continuation trigger. `markApplied` is atomic, so an uncertain
-      // outcome proves the wake was never emitted; re-applying the same
-      // Decision re-blocks (a no-op) and re-emits it.
       return {
         family: 'task_transition',
         verdict: 'retry_safe',
-        reason: `${action.type} must re-emit its wake observation; re-application is idempotent`,
+        reason: 'wait_for_partition must re-apply its Task blocker',
       };
     default:
       if (EFFECT_FREE_ACTIONS.has(action.type)) {
@@ -227,6 +239,52 @@ export function inspectApplicationPostcondition(
         reason: `no postcondition is declared for ${action.type}`,
       };
   }
+}
+
+function inspectRetryWait(
+  facts: ApplicationPostconditionFacts,
+): ApplicationPostconditionInspection {
+  const action = facts.application.decision.action;
+  if (action.type !== 'wait_for_retry') {
+    return { family: 'task_transition', verdict: 'unresolved', reason: 'unexpected action' };
+  }
+  const blocked = facts.task?.status === 'blocked'
+    && facts.task.dependencies.some(dependency =>
+      dependency.type === 'kernel_retry' && dependency.status === 'waiting'
+    );
+  const wake = facts.retryWake;
+  if (
+    blocked
+    && wake
+    && wake.taskId === action.taskId
+    && wake.subtaskId === action.subtaskId
+    && wake.sourceDecisionId === facts.application.decisionId
+    && wake.sourceAttemptId === action.sourceAttemptId
+    && wake.configurationRevision === facts.application.decision.configurationRevision
+    && wake.bindingFingerprint === action.bindingFingerprint
+    && wake.resumeAt === action.resumeAt
+    && (wake.status === 'armed' || wake.status === 'fired')
+  ) {
+    return {
+      family: 'task_transition',
+      verdict: 'applied',
+      reason: `Task blocker and the exact Retry Wake are durable (${wake.status})`,
+    };
+  }
+  if (wake?.status === 'consumed' || wake?.status === 'superseded') {
+    return {
+      family: 'task_transition',
+      verdict: 'unresolved',
+      reason: `Retry Wake is already ${wake.status} while wait_for_retry remains uncertain`,
+    };
+  }
+  return {
+    family: 'task_transition',
+    verdict: 'retry_safe',
+    reason: blocked
+      ? 'Task blocker exists but the exact Retry Wake is not armed'
+      : 'wait_for_retry has not durably blocked the Task',
+  };
 }
 
 /**

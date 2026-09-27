@@ -10,6 +10,7 @@ import { CURRENT_SCHEMA_VERSION, runMigrations } from '../../src/storage/migrati
 const databases: Database.Database[] = [];
 const directories: string[] = [];
 const admissionTables = ['gateway_command_admissions', 'gateway_command_admission_imports'];
+const retryWakeTables = ['retry_wakes'];
 const navigationTables = [
   'conversation_metadata_projection', 'gateway_journal_streams', 'gateway_journal_segments',
   'gateway_journal_event_index', 'gateway_turn_task_observations', 'conversation_history_streams',
@@ -29,8 +30,8 @@ describe('schema44 Gateway command admission migration', () => {
   it('creates the agreed account-scoped tables on a fresh database', () => {
     const db = open();
     runMigrations(db);
-    expect(CURRENT_SCHEMA_VERSION).toBe(44);
-    expect(version(db)).toBe(44);
+    expect(CURRENT_SCHEMA_VERSION).toBe(45);
+    expect(version(db)).toBe(45);
     expect(db.prepare('PRAGMA table_info(gateway_command_admissions)').all()).toMatchObject([
       { name: 'account_id', type: 'TEXT', notnull: 1, pk: 1 },
       { name: 'idempotency_key', type: 'TEXT', notnull: 1, pk: 2 },
@@ -56,7 +57,7 @@ describe('schema44 Gateway command admission migration', () => {
 
     db.exec('DROP TRIGGER fail_admission_migration');
     runMigrations(db);
-    expect(version(db)).toBe(44);
+    expect(version(db)).toBe(45);
     expect(facts(db)).toEqual(before);
   });
 
@@ -74,7 +75,7 @@ describe('schema44 Gateway command admission migration', () => {
     expect(facts(db)).toEqual(before);
     db.exec('DROP TRIGGER fail_navigation_migration');
     runMigrations(db);
-    expect(version(db)).toBe(44);
+    expect(version(db)).toBe(45);
     for (const table of [...navigationTables, ...admissionTables]) {
       expect(tableExists(db, table), table).toBe(true);
     }
@@ -92,7 +93,7 @@ describe('schema44 Gateway command admission migration', () => {
     for (const table of admissionTables) expect(tableExists(db, table)).toBe(false);
     db.exec('DROP TRIGGER fail_admission_migration');
     runMigrations(db);
-    expect(version(db)).toBe(44);
+    expect(version(db)).toBe(45);
   });
 
   it('uses point and partial indexes without scanning unrelated terminal history', () => {
@@ -141,7 +142,7 @@ describe('schema44 Gateway command admission migration', () => {
     const root = temporaryDirectory();
     const sourcePath = join(root, 'source43.db');
     const backupPath = join(root, 'backup43.db');
-    const clonePath = join(root, 'candidate44.db');
+    const clonePath = join(root, 'candidate45.db');
     const source = schema43(sourcePath);
     const before = facts(source);
     source.close();
@@ -158,19 +159,21 @@ describe('schema44 Gateway command admission migration', () => {
       },
     });
     const result = upgrade.prepare({
-      sourcePath, backupPath, clonePath, expectedSourceSchema: 43, expectedTargetSchema: 44,
-      sentinelTables: ['tasks', ...navigationTables, ...admissionTables],
+      sourcePath, backupPath, clonePath, expectedSourceSchema: 43, expectedTargetSchema: 45,
+      sentinelTables: ['tasks', ...navigationTables, ...admissionTables, ...retryWakeTables],
     });
     if (fail) {
       await expect(result).rejects.toThrow('injected schema44 failure');
       expect(existsSync(clonePath)).toBe(false);
     } else {
-      await expect(result).resolves.toMatchObject({ sourceSchemaVersion: 43, candidateSchemaVersion: 44 });
+      await expect(result).resolves.toMatchObject({ sourceSchemaVersion: 43, candidateSchemaVersion: 45 });
       const candidate = open(clonePath);
       expect(facts(candidate)).toEqual(before);
       expect(candidate.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
       expect(candidate.pragma('foreign_key_check')).toEqual([]);
-      for (const table of admissionTables) expect(tableExists(candidate, table)).toBe(true);
+      for (const table of [...admissionTables, ...retryWakeTables]) {
+        expect(tableExists(candidate, table)).toBe(true);
+      }
     }
     expect(readFileSync(sourcePath)).toEqual(sourceBytes);
     for (const path of [sourcePath, backupPath]) {
@@ -193,7 +196,9 @@ function open(path = ':memory:'): Database.Database {
 function schema43(path?: string): Database.Database {
   const db = open(path);
   runMigrations(db);
-  for (const table of admissionTables) db.exec(`DROP TABLE IF EXISTS ${table}`);
+  for (const table of [...admissionTables, ...retryWakeTables]) {
+    db.exec(`DROP TABLE IF EXISTS ${table}`);
+  }
   db.exec('UPDATE schema_version SET version = 43');
   expect(schemaHash(db)).toBe(schema43Hash);
   db.exec(`
@@ -233,7 +238,11 @@ function schemaHash(db: Database.Database): string {
 function facts(db: Database.Database, tables?: string[]): Record<string, string[]> {
   const names = tables ?? (db.prepare(`SELECT name FROM sqlite_master
     WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).all() as { name: string }[])
-    .map(row => row.name).filter(name => name !== 'schema_version' && !admissionTables.includes(name));
+    .map(row => row.name).filter(name => (
+      name !== 'schema_version'
+      && !admissionTables.includes(name)
+      && !retryWakeTables.includes(name)
+    ));
   return Object.fromEntries(names.map(name => [
     name, db.prepare(`SELECT * FROM "${name}"`).all().map(row => JSON.stringify(row)).sort(),
   ]));

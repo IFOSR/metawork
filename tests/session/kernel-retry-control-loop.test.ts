@@ -69,8 +69,8 @@ describe('Kernel durable retry control loop', () => {
       .toEqual(expect.arrayContaining([{ action: 'wait_for_retry' }]));
 
     db.prepare(`
-      UPDATE kernel_events SET available_at = '2000-01-01T00:00:00.000Z'
-      WHERE task_id = ? AND event_type = 'timer_tick' AND status = 'pending'
+      UPDATE retry_wakes SET resume_at = '2000-01-01T00:00:00.000Z'
+      WHERE task_id = ? AND status = 'armed'
     `).run(task.id);
     const handled = await session.maybeReviewTaskPoolOnTimer();
 

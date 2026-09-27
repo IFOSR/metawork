@@ -98,6 +98,8 @@ export interface TaskViewFacts {
   readonly pendingPermission: { readonly requestId: string } | null;
   /** Durable retry wake scheduled by a Kernel `wait_for_retry` decision. */
   readonly retryWakeAt: string | null;
+  /** A durable wake exists but cannot safely drive a continuation. */
+  readonly retryWakeRecoveryRequired?: boolean;
   readonly result: TaskViewResultFact | null;
 }
 
@@ -201,6 +203,7 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
     activeAttempt,
     replanJob,
     recovery,
+    retryWakeRecoveryRequired: facts.retryWakeRecoveryRequired === true,
     publishingResidue: publishingResidue.map(publication => `publication:${publication.status}`),
     completionResidue: facts.completionResidue,
     pendingPermission: facts.pendingPermission,
@@ -212,12 +215,15 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
   // (2026-09-25 review fix 6).
   const recoveryDiagnosis: TaskViewRecoveryDiagnosis | null = recovery
     ? 'uncertain_application'
-    : lifecycle === 'coordinating'
+    : facts.retryWakeRecoveryRequired
       ? 'no_authorized_driver'
-      : null;
+      : lifecycle === 'coordinating'
+        ? 'no_authorized_driver'
+        : null;
   const phase = derivePhase({
     lifecycle,
     activeAttempt: activeAttempt !== null,
+    retryWakeRecoveryRequired: facts.retryWakeRecoveryRequired === true,
     retryWakeAt: facts.retryWakeAt,
     replanJob: replanJob !== null,
     recovery: recovery !== null,
@@ -295,6 +301,7 @@ function deriveBlockingResidue(input: {
   activeAttempt: TaskViewAttemptFact | null;
   replanJob: TaskViewReplanJobFact | null;
   recovery: TaskViewRecoveryFact | null;
+  retryWakeRecoveryRequired: boolean;
   publishingResidue: readonly string[];
   completionResidue: readonly string[];
   pendingPermission: { readonly requestId: string } | null;
@@ -303,6 +310,7 @@ function deriveBlockingResidue(input: {
   if (input.activeAttempt) residue.push(`attempt:${input.activeAttempt.attemptId}`);
   if (input.replanJob) residue.push(`replan:${input.replanJob.id}`);
   if (input.recovery) residue.push(`application:${input.recovery.applicationId}`);
+  if (input.retryWakeRecoveryRequired) residue.push('retry_wake:recovery_required');
   residue.push(...input.publishingResidue);
   residue.push(...input.completionResidue.map(reason => `completion:${reason}`));
   if (input.pendingPermission) residue.push(`permission:${input.pendingPermission.requestId}`);
@@ -312,6 +320,7 @@ function deriveBlockingResidue(input: {
 function derivePhase(input: {
   lifecycle: TaskLifecycleState;
   activeAttempt: boolean;
+  retryWakeRecoveryRequired: boolean;
   retryWakeAt: string | null;
   replanJob: boolean;
   recovery: boolean;
@@ -320,6 +329,7 @@ function derivePhase(input: {
   result: TaskViewResultFact | null;
 }): TaskUserFacingPhase {
   if (input.activeAttempt) return 'executing';
+  if (input.retryWakeRecoveryRequired) return 'recovery_required';
   if (input.retryWakeAt) return 'retrying';
   if (input.replanJob) {
     return input.lifecycle === 'blocked' ? 'blocked' : 'waiting_for_plan';

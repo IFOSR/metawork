@@ -63,6 +63,8 @@ export interface AccountRuntimeComposition {
 
 export function buildAccountRuntimeComposition(deps: {
   accountId: string;
+  recoveryReplan?: import('../session/recovery-replanner.js').RecoveryReplan;
+  resolveConfigurationSnapshot?: (revisionId: string) => Promise<import('../configuration/types.js').ConfigurationSnapshot>;
   db: Database.Database;
   taskEngine: TaskEngine;
   memoryEngine: MemoryEngine;
@@ -236,6 +238,7 @@ export function buildAccountRuntimeComposition(deps: {
     dispatchItemRepo: runtimeExecutionServices.dispatchItemRepo,
     publicationRepo: runtimeExecutionServices.publicationRepo,
     generationReplanRepo: runtimeExecutionServices.generationReplanRepo,
+    retryWakeRepo: runtimeExecutionServices.retryWakeRepo,
     cancellationCoordinator: runtimeExecutionServices.cancellationCoordinator,
     executionProgressService: repositories.executionProgressService,
     verificationAndDeliveryService,
@@ -289,6 +292,8 @@ export function buildAccountRuntimeComposition(deps: {
         ],
       });
   startupRecovery = new AccountStartupRecoveryService({
+    recoveryReplan: deps.recoveryReplan,
+    resolveConfigurationSnapshot: deps.resolveConfigurationSnapshot,
     db: deps.db,
     kernelServices,
     repositories,

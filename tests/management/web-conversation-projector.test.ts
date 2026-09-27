@@ -208,6 +208,27 @@ describe('WebConversationProjector', () => {
     expect(persisted).toHaveLength(1);
   });
 
+  it('does not reopen a terminal Turn when a late running timeline is applied', async () => {
+    const { projector, persisted } = makeProjector();
+    projector.beginTurn({ userInput: 'Run the task', outputFrom: 0 });
+    await projector.applyTrace(makeTrace('running', [queryEvent, kernelEvent]));
+    await projector.finishSubmission();
+
+    await projector.applyTimeline({
+      ...timeline,
+      status: 'done',
+      stages: timeline.stages.map(stage => ({ ...stage, status: 'done' })),
+    });
+    await projector.applyTimeline(timeline);
+
+    expect(projector.getSnapshot()).toMatchObject({
+      status: 'completed',
+      completedAt: expect.any(String),
+      executionTimeline: { status: 'running' },
+    });
+    expect(persisted).toHaveLength(1);
+  });
+
   it('keeps a retrying execution non-terminal even after a blocked trace was observed', async () => {
     const { projector, persisted } = makeProjector();
     projector.beginTurn({ userInput: 'Run the task', outputFrom: 0 });

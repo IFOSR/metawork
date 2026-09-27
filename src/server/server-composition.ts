@@ -36,6 +36,8 @@ import {
   importLegacyProviderCredentials,
 } from '../configuration/index.js';
 import { prepareProductionSecretStore } from '../configuration/production-secret-store.js';
+import { SPAN_ROUTING_SECRET_REFERENCE, SPAN_ROUTING_MODEL } from '../configuration/schema.js';
+import { SpanRoutingAdvisor } from '../routing/span-routing-advisor.js';
 import {
   assertSecretReference,
   type SecretReference,
@@ -69,6 +71,8 @@ import { FileCommandAdmissionStore } from '../gateway/command-admission-store.js
 import { SqliteCommandAdmissionStore } from '../storage/command-admission-repo.js';
 import { WebGatewayAdapter } from '../management/web-gateway-adapter.js';
 import { formatGatewayDoctorChecks, runGatewayDoctor } from '../gateway/doctor.js';
+import { createRecoveryReplanner } from '../session/recovery-replanner.js';
+import { planWithoutClient } from '../session/detached-recovery-planner.js';
 import { ConversationSession } from '../session/conversation-session.js';
 import { FileConversationStore } from '../session/file-conversation-store.js';
 import { updateConversationCatalog } from '../session/conversation-catalog-mutation.js';
@@ -107,7 +111,7 @@ import { PlannerHostBridge } from '../tui-bridge/planner-host-bridge.js';
 import { PlannerProcessSupervisor } from '../planning/planner-process-supervisor.js';
 import { buildStagedLegacyConfiguration } from '../configuration/staged-legacy-configuration.js';
 import { buildPlannerInputProfile } from '../planning/planner-input-profile.js';
-import { buildPlannerConfigurationView, buildExecutorManualPreview } from '../configuration/projections.js';
+import { buildPlannerConfigurationView, buildRuntimeConfigurationView, buildExecutorManualPreview } from '../configuration/projections.js';
 import { projectExecutorManagement } from '../configuration/executor-configuration.js';
 import { AutoModelResolver } from '../routing/auto-model-resolver.js';
 import { authorizedExecutorBindingFingerprint } from '../core/authorized-executor-binding.js';
@@ -116,6 +120,7 @@ import { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-
 import { projectTaskViewFacts } from '../gateway/task-view-facts.js';
 import { projectTaskView } from '../task/task-view.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
+import { RetryWakeRepo } from '../storage/retry-wake-repo.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
@@ -218,6 +223,57 @@ async function preheatLocalAgentCredentials(secretStore: SecretStore): Promise<v
     providers,
     secretStore,
   });
+}
+
+/**
+ * Applies SecretStore writes for one activation attempt and returns the
+ * compensating action. Provider and Span credentials share this transaction so
+ * any activation failure restores every touched reference together.
+ */
+async function stageSecretWrites(input: {
+  secretStore: SecretStore;
+  requireRecovery: () => void;
+  writes: ReadonlyArray<{ reference: SecretReference; value: string }>;
+}): Promise<() => Promise<void>> {
+  const previous: Array<{ reference: SecretReference; value: string | null }> = [];
+  const seen = new Set<string>();
+  for (const write of input.writes) {
+    if (seen.has(write.reference)) continue;
+    seen.add(write.reference);
+    let value: string | null = null;
+    try {
+      value = await input.secretStore.get(write.reference);
+    } catch {
+      value = null;
+    }
+    previous.push({ reference: write.reference, value });
+  }
+  try {
+    for (const write of input.writes) {
+      await input.secretStore.put(write.reference, write.value);
+    }
+  } catch (error) {
+    try {
+      await restoreSecretWrites(input.secretStore, previous);
+    } catch (rollbackError) {
+      input.requireRecovery();
+      throw rollbackError;
+    }
+    throw error;
+  }
+  return async () => {
+    await restoreSecretWrites(input.secretStore, previous);
+  };
+}
+
+async function restoreSecretWrites(
+  secretStore: SecretStore,
+  previous: ReadonlyArray<{ reference: SecretReference; value: string | null }>,
+): Promise<void> {
+  for (const entry of previous) {
+    if (entry.value === null) await secretStore.delete(entry.reference);
+    else await secretStore.put(entry.reference, entry.value);
+  }
 }
 
 async function activateConfiguration(
@@ -761,7 +817,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
     resolvePlannerBinding: async context => {
       const inputProfile = buildPlannerInputProfile(context);
-      const activeSnapshot = await configurationRepository.getActiveSnapshot();
+      const activeSnapshot = await configurationService.getSnapshot(context.configuration.revisionId);
       const activePlanner = buildPlannerConfigurationView(activeSnapshot);
       const plannerRouting = activePlanner.planner;
       if (!plannerRouting) throw new Error('Planner routing policy is unavailable');
@@ -819,8 +875,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         provider: resolution.binding.providerRef,
         modelId: model.modelId,
         runtimeEnvironment: await resolvePlannerRuntimeEnvironment({
-          configuration: runtimeBindings.getRuntimeConfiguration(activeSnapshot.revisionId)
-            ?? runtimeBindings.getActiveRuntimeConfiguration(),
+          configuration: buildRuntimeConfigurationView(activeSnapshot),
           plannerBinding,
           secretStore,
         }),
@@ -850,7 +905,32 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   await webAttachmentStore.initialize();
   const pendingSystemDeliveries: Array<{ sessionId: string; delivery: ConversationResultDelivery }> = [];
   let deliverSystemResult: ((sessionId: string, delivery: ConversationResultDelivery, originTurnId?: string) => Promise<void>) | null = null;
+  const spanRoutingShutdown = new AbortController();
+  const spanRoutingAdvisor = new SpanRoutingAdvisor({
+    resolveApiKey: async revisionId => {
+      const snapshot = await configurationService.getSnapshot(revisionId);
+      const span = snapshot.config.routing?.span;
+      if (!span?.enabled || span.apiKeyRef !== SPAN_ROUTING_SECRET_REFERENCE) return null;
+      try {
+        return (await secretStore.get(SPAN_ROUTING_SECRET_REFERENCE as SecretReference)).trim() || null;
+      } catch { return null; }
+    },
+    lifetimeSignal: spanRoutingShutdown.signal,
+  });
+  const recoveryReplan = createRecoveryReplanner({
+    db,
+    getPort: () => accountRuntimeComposition!.runtimePort,
+    getSnapshot: revisionId => configurationService.getSnapshot(revisionId),
+    evaluator: spanRoutingAdvisor,
+    signal: spanRoutingShutdown.signal,
+    plan: context => planWithoutClient({
+      context, runner: plannerSupervisor, signal: spanRoutingShutdown.signal,
+      registerSession: (id, session) => plannerHost.registerSession(id, session),
+    }),
+  });
   accountRuntimeComposition = buildAccountRuntimeComposition({
+    recoveryReplan,
+    resolveConfigurationSnapshot: revisionId => configurationService.getSnapshot(revisionId),
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     db,
     taskEngine,
@@ -922,51 +1002,47 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     service: configurationService,
     gate: configurationActivationGate,
     initialSnapshot: migratedSnapshot,
-    prepareConfig: async ({ config, secrets, baseRevisionId }) => {
-      let prepared = structuredClone(config) as AnyFusionConfigurationV2;
+    prepareConfig: async ({ config, secrets, spanApiKey, baseRevisionId }) => {
+      const prepared = structuredClone(config) as AnyFusionConfigurationV2;
       for (const [providerRef, apiKey] of Object.entries(secrets)) {
         const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
         const provider = prepared.providers[providerRef];
         if (provider) provider.apiKeyRef = reference;
       }
+      if (spanApiKey !== undefined) {
+        // Only the credential reference is persisted. A later enable/disable
+        // toggle reuses the same reference without re-entering the key.
+        prepared.routing = {
+          ...prepared.routing,
+          span: {
+            enabled: prepared.routing?.span?.enabled ?? false,
+            model: SPAN_ROUTING_MODEL,
+            timeoutMs: prepared.routing?.span?.timeoutMs ?? 3_000,
+            apiKeyRef: SPAN_ROUTING_SECRET_REFERENCE,
+          },
+        };
+      }
       return (await executorManualPlanner.compileAll({ baseRevisionId, config: prepared })).config;
     },
-    stageSecrets: async secrets => {
-      const previous = new Map<string, string | null>();
-      const references = new Map<string, SecretReference>();
+    stageSecrets: async ({ secrets, spanApiKey }) => {
+      const writes: Array<{ reference: SecretReference; value: string }> = [];
       for (const [providerRef, apiKey] of Object.entries(secrets)) {
-        const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
-        references.set(providerRef, reference);
-        try {
-          previous.set(providerRef, await secretStore.get(reference));
-        } catch {
-          previous.set(providerRef, null);
-        }
+        writes.push({
+          reference: `file-secret:anyfusion/providers/${providerRef}` as SecretReference,
+          value: apiKey.trim(),
+        });
       }
-      try {
-        for (const [providerRef, apiKey] of Object.entries(secrets)) {
-          await secretStore.put(references.get(providerRef)!, apiKey.trim());
-        }
-      } catch (error) {
-        try {
-          for (const [providerRef, value] of previous) {
-            const reference = references.get(providerRef)!;
-            if (value === null) await secretStore.delete(reference);
-            else await secretStore.put(reference, value);
-          }
-        } catch (rollbackError) {
-          configurationActivationGate.requireRecovery();
-          throw rollbackError;
-        }
-        throw error;
+      if (spanApiKey !== undefined) {
+        writes.push({
+          reference: SPAN_ROUTING_SECRET_REFERENCE as SecretReference,
+          value: spanApiKey.trim(),
+        });
       }
-      return async () => {
-        for (const [providerRef, value] of previous) {
-          const reference = references.get(providerRef)!;
-          if (value === null) await secretStore.delete(reference);
-          else await secretStore.put(reference, value);
-        }
-      };
+      return stageSecretWrites({
+        secretStore,
+        requireRecovery: () => configurationActivationGate.requireRecovery(),
+        writes,
+      });
     },
     registerRevision: (snapshot, reason) => {
       const existing = configurationRevisionRepo.find(snapshot.revisionId);
@@ -1058,6 +1134,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   const runtimePort = activatedAccountRuntime.getConversationPort();
   const conversationRegistry = new ConversationRegistry();
 
+
   // ADR-0031: 直接构造 ConversationSession（不经过 MetaclawSession 桥接），
   // 会话级 callbacks + 账户级 Kernel 执行服务后置绑定。
   const buildConversationSession = async (conversationId: string): Promise<ConversationSession> => {
@@ -1139,6 +1216,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       db,
       getKernelConfiguration: () => stagedConfiguration.kernel,
       getRuntimeConfiguration: runtimeBindings.getRuntimeConfiguration,
+      resolveConfigurationSnapshot: revisionId => configurationService.getSnapshot(revisionId),
+      spanRoutingEvaluator: spanRoutingAdvisor,
+      lifetimeSignal: spanRoutingShutdown.signal,
       commandCatalog,
       commandReadServices,
       taskEngine,
@@ -1487,16 +1567,14 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         completionResidue: accountRuntimeComposition.runtimePort.queries
           .listCompletionResidue(taskId),
         pendingPermission: taskPermission ? { requestId: taskPermission.request.id } : null,
-        retryWakeAt: accountRuntimeComposition.runtimePort.queries
-          .listCurrentKernelDecisions('wait_for_retry')
-          .filter(record => record.taskId === taskId)
-          .map(record => record.decision.action)
-          .filter((action): action is Extract<typeof action, { type: 'wait_for_retry' }> => (
-            action.type === 'wait_for_retry'
-          ))
-          .map(action => action.resumeAt)
+        retryWakeAt: new RetryWakeRepo(db)
+          .findBlockingByTask(taskId)
+          .map(wake => wake.resumeAt)
           .sort()
           .at(-1) ?? null,
+        retryWakeRecoveryRequired: new RetryWakeRepo(db)
+          .findRecoveryRequiredByTask(taskId)
+          .length > 0,
         result: executionFacts.result,
       });
       const timeline = executionProjector.project(task);
@@ -2076,11 +2154,12 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             ])),
           };
         },
-        activate: async (baseRevisionId, nextConfig, secrets) => {
+        activate: async (baseRevisionId, nextConfig, secrets, spanApiKey) => {
           const result = await configurationRuntimeCoordinator.activate({
             expectedRevisionId: baseRevisionId,
             config: nextConfig,
             secrets,
+            ...(spanApiKey !== undefined ? { spanApiKey } : {}),
           });
           if (result.ok) {
             return {
@@ -2133,6 +2212,19 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             configured: true,
             maskedApiKey: maskApiKey(normalized),
           };
+        }),
+        getSpanCredentialStatus: async () => {
+          try {
+            const apiKey = (await secretStore.get(SPAN_ROUTING_SECRET_REFERENCE as SecretReference)).trim();
+            return { configured: apiKey.length > 0 };
+          } catch {
+            return { configured: false };
+          }
+        },
+        writeSpanSecret: apiKey => configurationActivationGate.withActivation(async () => {
+          const normalized = apiKey.trim();
+          await secretStore.put(SPAN_ROUTING_SECRET_REFERENCE as SecretReference, normalized);
+          return { configured: true, maskedApiKey: maskApiKey(normalized) };
         }),
         getSecretStatus: async providerRefs => {
           const status: Record<string, {
@@ -2196,6 +2288,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     const composition = createServerComposition({
       startListeners: async () => ({ unixSocketPath: gatewaySocketPath, webOrigin }),
       stopListeners: async () => {
+        // Stop admitting new Turns first, then interrupt in-flight Span calls
+        // so shutdown never waits on an external request and no late ranking
+        // observation can be admitted afterwards.
+        spanRoutingShutdown.abort();
         clientGateway.closeAdmission();
         conversationGatewayRuntime.closeAdmission();
         await Promise.all([

@@ -124,7 +124,10 @@ export class WebConversationProjector {
     this.normalizeCurrent();
 
     const projectedStatus = turnStatusFromTimeline(timeline);
-    if (projectedStatus) {
+    const mayAdvanceStatus = this.current.status === 'running'
+      || (this.current.status === 'blocked' && projectedStatus !== 'running')
+      || (this.current.status === 'blocked' && timeline.status === 'waiting_retry');
+    if (projectedStatus && mayAdvanceStatus) {
       this.current.status = projectedStatus;
       this.current.completedAt = projectedStatus === 'running'
         ? null

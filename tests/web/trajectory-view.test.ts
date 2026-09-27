@@ -14,6 +14,7 @@ describe('Trajectory view', () => {
     ]);
 
     expect(view).toContain('<TrajectorySummary');
+    expect(view).toContain('<ExecutionNarrative');
     expect(view).toContain('<TrajectoryTimeline');
     expect(view).toContain('<TrajectoryEventTable');
     expect(summary).toContain('工具调用');

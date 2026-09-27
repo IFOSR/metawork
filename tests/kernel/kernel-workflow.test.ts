@@ -3,6 +3,7 @@ import type { AuthorizedExecutorBinding } from '../../src/core/authorized-execut
 import type { KernelDecision, KernelEvent, KernelSnapshot } from '../../src/kernel/control-kernel.js';
 import {
   DurableKernelWorkflow,
+  KernelApplicationInterruptedError,
   type KernelDecisionApplicationRecord,
   type KernelWorkflowStore,
 } from '../../src/kernel/kernel-workflow.js';
@@ -29,6 +30,23 @@ const fallbackBinding: AuthorizedExecutorBinding = {
 const fallbackBindingFingerprint = 'd743e2dac20afaf43b8afa9e85f2c350916301c268d799bbbd850d43135d7ec8';
 
 describe('DurableKernelWorkflow', () => {
+  it('leaves an interrupted application recoverable and resumes it after restart', async () => {
+    const store = new MemoryWorkflowStore();
+    const event = directReplyEvent();
+    const decision = directReplyDecision(event);
+    const interrupted = new DurableKernelWorkflow({
+      store, kernel: { decide: () => decision }, buildSnapshot: () => planSnapshot(),
+      clock: { now: () => event.occurredAt },
+      runtime: { apply: async () => { throw new KernelApplicationInterruptedError(); } },
+    });
+    await interrupted.submit(event);
+    expect(store.application?.status).toBe('applying');
+    expect(store.event).toEqual(event);
+    await createWorkflow(store, [], decision).recover();
+    expect(store.application?.status).toBe('applied');
+    expect(store.issueCount).toBe(1);
+  });
+
   it('persists input, issuance, and application before apply', async () => {
     const store = new MemoryWorkflowStore();
     const order: string[] = [];

@@ -39,6 +39,7 @@ import type { WorkspaceTab } from './components/WorkspaceHeader';
 import {
   isCurrentConversationRecordRequest,
   mergeFinalAnswer,
+  mergeExecutionTimeline,
   mergeTraceDelta,
   mergeTraceSnapshot,
   mergeBilling,
@@ -341,11 +342,7 @@ export function App() {
       onConfigurationRuntimeState: state => setConfigurationRuntime(state),
       onAgentReadinessState: agents => setAgentReadiness(agents),
       onExecution: (turnId, taskId, timeline) => {
-        liveTurnRef.current = liveTurnRef.current
-          && liveTurnRef.current.id === turnId
-          && (!liveTurnRef.current.taskId || liveTurnRef.current.taskId === taskId)
-          ? { ...liveTurnRef.current, taskId, executionTimeline: timeline }
-          : liveTurnRef.current;
+        liveTurnRef.current = mergeExecutionTimeline(liveTurnRef.current, turnId, timeline);
         setLiveTurn(liveTurnRef.current);
       },
       onArtifacts: (turnId, taskId, artifacts) => {

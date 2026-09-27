@@ -17,6 +17,13 @@ import {
   resolveProviderSecretReferenceFromConfiguration,
 } from './provider-secret-state';
 import { buildPlannerScopedConfiguration, keepActivePlanner } from '../planner-update';
+import {
+  SPAN_ROUTING_DEFAULT_TIMEOUT_MS,
+  buildSpanRoutingSection,
+  loadSpanRoutingDraft,
+  type SpanRoutingDraft,
+} from '../config-edit';
+import { SpanRoutingSettings } from './SpanRoutingSettings';
 import { ModelConnectionDialog, type NewModelConnectionDraft } from './ModelConnectionDialog';
 import { ExecutorEditorDialog } from './ExecutorEditorDialog';
 import { applyExecutorSnapshot } from '../executor-management';
@@ -359,6 +366,13 @@ export function SettingsPanel({
   const [facts, setFacts] = useState<RoutingFacts | null>(null);
   const [catalog, setCatalog] = useState<CatalogDraft | null>(null);
   const [runtimePolicy, setRuntimePolicy] = useState<RuntimePolicyDraft | null>(null);
+  const [spanDraft, setSpanDraft] = useState<SpanRoutingDraft>({
+    enabled: false,
+    model: 'respan/span-01-lite',
+    timeoutMs: SPAN_ROUTING_DEFAULT_TIMEOUT_MS,
+    apiKey: '',
+  });
+  const [spanCredentialConfigured, setSpanCredentialConfigured] = useState(false);
   const [newModelIds, setNewModelIds] = useState<Record<string, string>>({});
   const [capabilityCatalog, setCapabilityCatalog] = useState<Record<string, string[]>>({});
   const [modelDiscoveries, setModelDiscoveries] = useState<Record<string, {
@@ -391,6 +405,7 @@ export function SettingsPanel({
     setRevisionId(snapshot.revisionId);
     setCatalog(loadCatalog(config, completion));
     setRuntimePolicy(loadRuntimePolicy(config));
+    setSpanDraft(loadSpanRoutingDraft(config));
     const nextDraft = loadRoutingDraft(config);
     setActiveRoutingDraft(nextDraft);
     setDraft(nextDraft);
@@ -401,6 +416,15 @@ export function SettingsPanel({
   useEffect(() => {
     setActivationState(runtime);
   }, [runtime]);
+
+  useEffect(() => {
+    if (!http || !revisionId) return;
+    let cancelled = false;
+    void http.getSpanCredentialStatus().then(status => {
+      if (!cancelled) setSpanCredentialConfigured(status.configured);
+    }).catch(() => { if (!cancelled) setSpanCredentialConfigured(false); });
+    return () => { cancelled = true; };
+  }, [http, revisionId]);
 
   useEffect(() => {
     if (!http || !revisionId) return;
@@ -627,12 +651,14 @@ export function SettingsPanel({
   const buildCandidateConfiguration = (originalConfig: RawRecord): {
     config: Record<string, unknown>;
     activationSecrets: Record<string, string>;
+    spanApiKey?: string;
   } => {
     if (!draft || !catalog || !runtimePolicy) {
       throw new Error('配置草稿尚未加载完成');
     }
     const originalProviders = asRecord(originalConfig.providers);
     const originalAgentClasses = asRecord(originalConfig.agentClasses);
+    const spanRoutingSection = buildSpanRoutingSection(spanDraft, originalConfig);
     const knownSecretReferences = Object.values(originalProviders)
       .map(provider => asRecord(provider).apiKeyRef)
       .filter((reference): reference is string => typeof reference === 'string');
@@ -761,12 +787,14 @@ export function SettingsPanel({
         providers,
         models,
         agentClasses,
+        ...(spanRoutingSection ? { routing: spanRoutingSection } : {}),
         runtimePolicy: {
           ...asRecord(originalConfig.runtimePolicy),
           ...runtimePolicy,
         },
       },
       activationSecrets,
+      ...(spanDraft.apiKey.trim() ? { spanApiKey: spanDraft.apiKey.trim() } : {}),
     };
   };
 
@@ -775,6 +803,7 @@ export function SettingsPanel({
   const buildPlannerCandidateConfiguration = (originalConfig: RawRecord): {
     config: Record<string, unknown>;
     activationSecrets: Record<string, string>;
+    spanApiKey?: string;
   } => {
     if (!draft) throw new Error('配置草稿尚未加载完成');
     const full = buildCandidateConfiguration(originalConfig);
@@ -821,6 +850,7 @@ export function SettingsPanel({
         revisionId,
         candidate.config,
         candidate.activationSecrets,
+        candidate.spanApiKey,
       );
       setPlannerResult(response);
       if (response.ok && response.revisionId) {
@@ -875,11 +905,13 @@ export function SettingsPanel({
           candidateConfig: full.config,
         }),
         activationSecrets: full.activationSecrets,
+        spanApiKey: full.spanApiKey,
       };
       const response = await http.activate(
         revisionId,
         candidate.config,
         candidate.activationSecrets,
+        candidate.spanApiKey,
       );
       setResult(response);
       const revisionMismatch = response.issues?.some(issue => /revision mismatch|revision has changed/iu.test(issue));
@@ -900,6 +932,10 @@ export function SettingsPanel({
       if (response.ok && response.revisionId) {
         secretStatusVersion.current += 1;
         setRevisionId(response.revisionId);
+        setSpanDraft(current => ({ ...current, apiKey: '' }));
+        void http.getSpanCredentialStatus().then(status => {
+          setSpanCredentialConfigured(status.configured);
+        }).catch(() => undefined);
         await refreshConfigurationCompletion();
       }
     } catch (error) {
@@ -1804,6 +1840,12 @@ export function SettingsPanel({
                       降低上限不会取消当前运行中的任务，只影响下一轮调度。
                     </div>
                   </section>
+                  <SpanRoutingSettings
+                    draft={spanDraft}
+                    credentialConfigured={spanCredentialConfigured}
+                    editingDisabled={editingDisabled}
+                    onChange={setSpanDraft}
+                  />
                   {plannerSection}
                 </div>
               </details>

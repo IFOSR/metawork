@@ -14,10 +14,25 @@ import {
   deriveCancellationClosure,
   validateWorkGraph as validateWorkGraphStructure,
 } from '../work-graph/index.js';
-import type { WorkGraphProposal } from '../work-graph/types.js';
+import type { WorkGraphProposal, WorkGraphSubtask } from '../work-graph/types.js';
 import { contextRefKey } from '../work-graph/index.js';
 import type { KernelExecutorStatusProjection } from './executor-status-projection.js';
-import { deriveAgentAvailability } from './agent-availability.js';
+import { unavailableAgentClasses } from './plan-routing-eligibility.js';
+import { resolvePreferredModelRef } from '../routing/plan-routing-candidates.js';
+import {
+  planProposalFingerprint,
+  planRoutingCandidateId,
+  planRoutingCandidateSetFingerprint,
+  planSubtaskCandidateGroups,
+} from '../routing/plan-routing-candidates.js';
+import {
+  SPAN_MODEL,
+  SPAN_OBSERVATION_POLICY_VERSION,
+  SPAN_OBSERVATION_SCHEMA_VERSION,
+  SPAN_QUESTION_VERSION,
+  type SpanRoutingObservation,
+} from '../routing/span-routing-types.js';
+export { resolvePreferredModelRef } from '../routing/plan-routing-candidates.js';
 import {
   AutoModelResolver,
   type RoutingResolutionAudit,
@@ -99,6 +114,13 @@ export type KernelEvent =
       targetGraphRevision: number;
       attachmentIds?: string[];
       availabilityExplanation?: string | null;
+      /**
+       * Bounded, server-produced Span routing observation (ADR-0033
+       * amendment). Absent for every revision created before this field
+       * existed and whenever the advisor is disabled or fails closed; the
+       * Kernel then keeps the deterministic resolver unchanged.
+       */
+      spanRouting?: SpanRoutingObservation;
     })
   | (KernelEventEnvelope & {
       type: 'executor_recovered';
@@ -173,6 +195,9 @@ export type KernelEvent =
       sourceDecisionId: string;
       scheduledFor: string;
       retry: {
+        wakeId: string;
+        generationId: string;
+        configurationRevision: string;
         authorizedBinding: AuthorizedExecutorBinding;
         bindingFingerprint: string;
         sourceAttemptId: string;
@@ -289,6 +314,20 @@ export interface KernelDispatchItemFact {
   order: number;
 }
 
+export interface KernelRetryWakeFact {
+  wakeId: string;
+  taskId: string;
+  subtaskId: string;
+  generationId: string;
+  sourceDecisionId: string;
+  sourceAttemptId: string;
+  configurationRevision: string;
+  bindingFingerprint: string;
+  resumeAt: string;
+  status: 'armed' | 'fired' | 'consumed' | 'superseded' | 'recovery_required';
+  timerEventId: string | null;
+}
+
 export type KernelDependencyReadinessCode =
   | 'ready'
   | 'pending_publication'
@@ -391,6 +430,7 @@ export type KernelSnapshot =
       nativeContinuationAgentClasses: string[];
       executorStatuses: KernelExecutorStatusProjection[];
       defaultResourceGrant: ResourceClaim[];
+      retryWake?: KernelRetryWakeFact | null;
     }
   | {
       schemaVersion: 5;
@@ -531,6 +571,17 @@ export type KernelDecisionAction =
       authorizedBinding: AuthorizedExecutorBinding;
       bindingFingerprint: string;
       sourceAttemptId: string;
+    }
+  | {
+      type: 'supersede_retry_wake';
+      taskId: string;
+      wakeId: string;
+    }
+  | {
+      type: 'recover_retry_wake';
+      taskId: string;
+      wakeId: string;
+      reason: string;
     }
   | { type: 'request_replan'; taskId: string; generationId: string; sourceRevision: number }
   | {
@@ -854,11 +905,26 @@ export class ControlKernel {
         question: `计划引用了当前任务不可用的上下文（${kindHint}）。请重新说明需求，或明确引用会话中已有的具体内容后再提交。`,
       }, `unqualified context refs: ${invalidRefs.join(', ')}`);
     }
-    const resolved = resolveAuthorizedBindings(proposal.workGraph, snapshot.kernelConfiguration);
+    const proposalFingerprint = planProposalFingerprint({
+      task: proposal.task,
+      workGraph: proposal.workGraph,
+    });
+    const unavailable = unavailableAgentClasses(snapshot.executorStatuses, event.occurredAt);
+    const resolved = resolveAuthorizedBindings(
+      proposal.workGraph,
+      snapshot.kernelConfiguration,
+      event.spanRouting
+        ? {
+            observation: event.spanRouting,
+            event,
+            proposalFingerprint,
+            unavailableAgentClasses: unavailable,
+          }
+        : undefined,
+    );
     if (!resolved.ok) {
       return decision(event, { type: 'reject_request' }, resolved.errors.join('; '));
     }
-    const unavailable = unavailableAgentClasses(snapshot.executorStatuses, event.occurredAt);
     const availableBindings = Object.fromEntries(
       Object.entries(resolved.bindingsBySubtask).map(([subtaskId, bindings]) => [
         subtaskId,
@@ -1532,6 +1598,91 @@ export class ControlKernel {
   }
 
   private decideTimer(event: Extract<KernelEvent, { type: 'timer_tick' }>, snapshot: Extract<KernelSnapshot, { type: 'timer' }>): KernelDecision {
+    if (event.wakeKind === 'retry') {
+      const retry = event.retry;
+      const wake = snapshot.retryWake;
+      if (!retry) {
+        return decision(event, { type: 'no_op' }, 'retry timer has no wake identity');
+      }
+      if (!wake) {
+        return decision(event, {
+          type: 'recover_retry_wake',
+          taskId: event.taskId ?? '',
+          wakeId: retry.wakeId,
+          reason: 'retry timer references a missing durable Retry Wake',
+        }, 'retry wake fact is missing');
+      }
+      const exactIdentity = wake.wakeId === retry.wakeId
+        && wake.taskId === event.taskId
+        && wake.subtaskId === event.subtaskId
+        && wake.generationId === retry.generationId
+        && wake.sourceDecisionId === event.sourceDecisionId
+        && wake.sourceAttemptId === retry.sourceAttemptId
+        && wake.configurationRevision === event.configurationRevision
+        && wake.configurationRevision === retry.configurationRevision
+        && wake.bindingFingerprint === retry.bindingFingerprint
+        && wake.timerEventId === event.id;
+      if (!exactIdentity) {
+        return decision(event, {
+          type: 'recover_retry_wake',
+          taskId: event.taskId ?? wake.taskId,
+          wakeId: wake.wakeId,
+          reason: 'retry timer identity does not match the durable Retry Wake',
+        }, 'retry wake identity is stale or contradictory');
+      }
+      if (wake.status === 'consumed' || wake.status === 'superseded') {
+        return decision(event, { type: 'no_op' }, `retry wake is already ${wake.status}`);
+      }
+      if (wake.status === 'recovery_required') {
+        return decision(event, {
+          type: 'recover_retry_wake',
+          taskId: wake.taskId,
+          wakeId: wake.wakeId,
+          reason: 'retry wake already requires recovery',
+        }, 'retry wake requires explicit recovery');
+      }
+      if (
+        Date.parse(event.occurredAt) < Date.parse(event.scheduledFor)
+      ) {
+        return decision(event, { type: 'no_op' }, 'retry wake arrived before its scheduled time');
+      }
+      if (['done', 'archived', 'cancelled'].includes(snapshot.task?.status ?? '')) {
+        return decision(event, {
+          type: 'supersede_retry_wake',
+          taskId: wake.taskId,
+          wakeId: wake.wakeId,
+        }, 'retry wake is obsolete because the Task is terminal');
+      }
+      if (
+        wake.status !== 'fired'
+        || !event.taskId
+        || !event.subtaskId
+        || !snapshot.task
+        || snapshot.task.id !== event.taskId
+        || snapshot.task.status !== 'blocked'
+        || !snapshot.wakeAuthorized
+      ) {
+        return decision(event, {
+          type: 'recover_retry_wake',
+          taskId: event.taskId ?? wake.taskId,
+          wakeId: wake.wakeId,
+          reason: 'fired Retry Wake no longer has its exact Task blocker',
+        }, 'retry wake lost its authorized Task blocker');
+      }
+      return decision(event, singleDispatchBatch(
+        event,
+        event.taskId,
+        event.subtaskId,
+        retry.authorizedBinding,
+        'continuation',
+        retry.sourceAttemptId,
+        snapshot.nativeContinuationAgentClasses.includes(retry.authorizedBinding.agentClassRef)
+          ? 'native_session'
+          : 'recovery_packet',
+        snapshot.defaultResourceGrant,
+        null,
+      ), 'durable Retry Wake continuation authorized');
+    }
     if (
       !event.taskId
       || !snapshot.task
@@ -1540,24 +1691,6 @@ export class ControlKernel {
       || !snapshot.wakeAuthorized
     ) {
       return decision(event, { type: 'no_op' }, 'timer wake is stale or no longer authorized by Task state');
-    }
-    if (event.wakeKind === 'retry') {
-      if (!event.taskId || !event.subtaskId || !event.retry || Date.parse(event.occurredAt) < Date.parse(event.scheduledFor)) {
-        return decision(event, { type: 'no_op' }, 'retry wake is incomplete or early');
-      }
-      return decision(event, singleDispatchBatch(
-        event,
-        event.taskId,
-        event.subtaskId,
-        event.retry.authorizedBinding,
-        'continuation',
-        event.retry.sourceAttemptId,
-        snapshot.nativeContinuationAgentClasses.includes(event.retry.authorizedBinding.agentClassRef)
-          ? 'native_session'
-          : 'recovery_packet',
-        snapshot.defaultResourceGrant,
-        null,
-      ), 'preferred AgentClass continuation wake authorized');
     }
     if (event.wakeKind !== 'capacity') return decision(event, { type: 'no_op' }, 'availability wake has no eligible work');
     if (!event.taskId || !event.subtaskId || !snapshot.capacityBlockedAt) return decision(event, { type: 'no_op' }, 'no capacity block is eligible');
@@ -1827,17 +1960,15 @@ function isStateChanging(proposal: KernelPlanProposal): boolean {
   return proposal.action === 'plan_work_graph' || (proposal.action === 'task_control' && proposal.task.control !== 'status_query');
 }
 
-function unavailableAgentClasses(statuses: KernelExecutorStatusProjection[], occurredAt: string): Set<string> {
-  return new Set(statuses
-    .filter(status => ['permanently_unavailable', 'temporarily_unavailable'].includes(
-      deriveAgentAvailability(status, occurredAt),
-    ))
-    .map(status => status.agentClassName));
-}
-
 function resolveAuthorizedBindings(
   workGraph: WorkGraphProposal,
   configuration: KernelConfigurationView,
+  span?: {
+    observation: SpanRoutingObservation | undefined;
+    event: Extract<KernelEvent, { type: 'plan_proposed' }>;
+    proposalFingerprint: string;
+    unavailableAgentClasses: ReadonlySet<string>;
+  },
 ): {
   ok: true;
   bindingsBySubtask: Record<string, AuthorizedExecutorBinding[]>;
@@ -1858,9 +1989,17 @@ function resolveAuthorizedBindings(
   const bindingsBySubtask: Record<string, AuthorizedExecutorBinding[]> = {};
   const routing: Record<string, RoutingResolutionAudit[]> = {};
   for (const subtask of workGraph.subtasks) {
-    const bindings: AuthorizedExecutorBinding[] = [];
+    const spanApplication = span
+      ? resolveSubtaskSpanProbabilities({ subtask, configuration, ...span })
+      : null;
+    const entries: Array<{
+      binding: AuthorizedExecutorBinding;
+      order: number;
+      probability: number | null;
+      audit: RoutingResolutionAudit;
+    }> = [];
     routing[subtask.id] = [];
-    for (const proposed of subtask.executorBindings) {
+    for (const [bindingIndex, proposed] of subtask.executorBindings.entries()) {
       const agentClass = configuration.agentClasses[proposed.agentClassRef];
       if (!agentClass || !agentClass.enabled || agentClass.kind !== 'executor') {
         errors.push(`subtask ${subtask.id} AgentClass is unavailable: ${proposed.agentClassRef}`);
@@ -1880,6 +2019,9 @@ function resolveAuthorizedBindings(
         proposed.agentClassRef,
         { mode: agentClass.modelPolicy.mode },
       );
+      const spanProbabilities = spanApplication?.probabilitiesByAgentClass.get(
+        proposed.agentClassRef,
+      );
       try {
         const resolution = AutoModelResolver.resolve({
           configurationRevision: configuration.revisionId,
@@ -1889,6 +2031,7 @@ function resolveAuthorizedBindings(
           policy: agentClass.modelPolicy,
           candidates,
           preferredModelRef,
+          ...(spanProbabilities ? { spanProbabilities } : {}),
           requirements: {
             requiredCapabilities: requiredModelCapabilitiesForRoutingCapabilities(
               subtask.requiredCapabilities,
@@ -1898,22 +2041,43 @@ function resolveAuthorizedBindings(
           },
         });
         if (!resolution.binding) throw new Error('resolver returned no concrete binding');
-        bindings.push(resolution.binding);
-        routing[subtask.id]!.push({
+        const audit: RoutingResolutionAudit = {
           agentClassRef: proposed.agentClassRef,
           binding: resolution.binding,
           rejectedCandidates: resolution.rejectedCandidates,
           scoreBreakdown: resolution.scoreBreakdown,
           policyVersion: resolution.policyVersion,
+          ...(spanApplication
+            ? {
+                spanRouting: {
+                  applied: spanApplication.applied,
+                  reason: spanApplication.reason,
+                  ...(spanProbabilities ? { probabilities: spanProbabilities } : {}),
+                },
+              }
+            : {}),
+        };
+        entries.push({
+          binding: resolution.binding,
+          order: bindingIndex,
+          probability: spanProbabilities?.[resolution.binding.modelRef] ?? null,
+          audit,
         });
       } catch (error) {
         errors.push(`subtask ${subtask.id} model selection is not authorized for AgentClass ${proposed.agentClassRef}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    if (bindings.length === 0) {
+    if (entries.length === 0) {
       errors.push(`subtask ${subtask.id} has no authorized executor binding`);
     }
-    bindingsBySubtask[subtask.id] = bindings;
+    // Span may only reorder already-authorized bindings. Ties keep the Planner
+    // proposal order, and the deterministic resolver still chose each Model.
+    entries.sort((left, right) => (
+      (right.probability ?? -1) - (left.probability ?? -1)
+      || left.order - right.order
+    ));
+    bindingsBySubtask[subtask.id] = entries.map(entry => entry.binding);
+    routing[subtask.id] = entries.map(entry => entry.audit);
   }
   return errors.length > 0
     ? { ok: false, errors: errors.sort() }
@@ -1940,29 +2104,100 @@ function resolveModelRef(
   return null;
 }
 
-export function resolvePreferredModelRef(
-  modelSelection: WorkGraphProposal['subtasks'][number]['executorBindings'][number]['modelSelection'],
-  policy: KernelConfigurationView['agentClasses'][string]['modelPolicy'],
-): string | undefined {
-  if (modelSelection.mode === 'proposed') return modelSelection.modelRef;
-  if (modelSelection.mode === 'agent-class-default' && policy.mode === 'auto') {
-    return policy.defaultModelRef;
-  }
-  return undefined;
-}
-
 function bindingsForProposalSubtask(
   subtask: WorkGraphProposal['subtasks'][number],
   bindings: readonly AuthorizedExecutorBinding[],
 ): AuthorizedExecutorBinding[] {
-  const ordered = new Map(
-    subtask.executorBindings.map((binding, index) => [binding.agentClassRef, index]),
+  // Preserve the authorized order (which may reflect a validated Span
+  // observation). Re-sorting by Planner order here would silently discard it.
+  const allowed = new Set(subtask.executorBindings.map(binding => binding.agentClassRef));
+  return bindings.filter(binding => allowed.has(binding.agentClassRef));
+}
+
+interface SubtaskSpanApplication {
+  applied: boolean;
+  reason: string | null;
+  probabilitiesByAgentClass: Map<string, Record<string, number>>;
+}
+
+/**
+ * Re-validates a Span observation against the exact event, revision, graph,
+ * Subtask and candidate set before any score is allowed to influence order.
+ * Any mismatch discards the scores for this Subtask only; the deterministic
+ * resolver still decides everything else.
+ */
+function resolveSubtaskSpanProbabilities(input: {
+  observation: SpanRoutingObservation | undefined;
+  event: Extract<KernelEvent, { type: 'plan_proposed' }>;
+  proposalFingerprint: string;
+  unavailableAgentClasses: ReadonlySet<string>;
+  subtask: WorkGraphSubtask;
+  configuration: KernelConfigurationView;
+}): SubtaskSpanApplication {
+  const notApplied = (reason: string): SubtaskSpanApplication => ({
+    applied: false,
+    reason,
+    probabilitiesByAgentClass: new Map(),
+  });
+  const { observation, event } = input;
+  if (!observation) return notApplied('no_observation');
+  if (
+    observation.schemaVersion !== SPAN_OBSERVATION_SCHEMA_VERSION
+    || observation.policyVersion !== SPAN_OBSERVATION_POLICY_VERSION
+    || observation.questionVersion !== SPAN_QUESTION_VERSION
+    || observation.model !== SPAN_MODEL
+    || observation.eventId !== event.id
+    || observation.configurationRevision !== event.configurationRevision
+    || observation.generationId !== event.generationId
+    || observation.targetGraphRevision !== event.targetGraphRevision
+    || observation.proposalFingerprint !== input.proposalFingerprint
+  ) {
+    return notApplied('stale_observation');
+  }
+  const subtaskObservation = observation.subtasks.find(
+    item => item.subtaskId === input.subtask.id,
   );
-  return bindings
-    .filter(binding => ordered.has(binding.agentClassRef))
-    .sort((left, right) =>
-      ordered.get(left.agentClassRef)! - ordered.get(right.agentClassRef)!
-    );
+  if (!subtaskObservation) return notApplied('missing_subtask_observation');
+  if (subtaskObservation.status !== 'advised') {
+    return notApplied(subtaskObservation.reason);
+  }
+  const groups = planSubtaskCandidateGroups({
+    configuration: input.configuration,
+    subtask: input.subtask,
+    unavailableAgentClasses: input.unavailableAgentClasses,
+  });
+  const eligible = groups.flatMap(group => group.eligible.map(candidate => ({
+    agentClassRef: group.agentClassRef,
+    providerRef: candidate.providerRef,
+    modelRef: candidate.modelRef,
+  })));
+  if (
+    planRoutingCandidateSetFingerprint(eligible)
+    !== subtaskObservation.candidateSetFingerprint
+  ) {
+    return notApplied('candidate_set_changed');
+  }
+  const eligibleIds = new Set(eligible.map(planRoutingCandidateId));
+  const seen = new Set<string>();
+  const probabilitiesByAgentClass = new Map<string, Record<string, number>>();
+  for (const candidate of subtaskObservation.candidates) {
+    const identity = planRoutingCandidateId(candidate);
+    if (
+      !eligibleIds.has(identity)
+      || seen.has(identity)
+      || !Number.isFinite(candidate.probability)
+      || candidate.probability < 0
+      || candidate.probability > 1
+    ) {
+      return notApplied('candidate_identity_mismatch');
+    }
+    seen.add(identity);
+    const byModelRef = probabilitiesByAgentClass.get(candidate.agentClassRef) ?? {};
+    byModelRef[candidate.modelRef] = candidate.probability;
+    probabilitiesByAgentClass.set(candidate.agentClassRef, byModelRef);
+  }
+  if (seen.size !== eligibleIds.size) return notApplied('incomplete_probabilities');
+  return { applied: true, reason: null, probabilitiesByAgentClass };
 }
 
 function selectDispatchableSubtasks(

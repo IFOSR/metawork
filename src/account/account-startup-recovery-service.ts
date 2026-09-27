@@ -13,6 +13,7 @@ import {
   GenerationReplanWorker,
   type GenerationReplanPlannerPort,
 } from './generation-replan-worker.js';
+import { RetryWakeWorker } from './retry-wake-worker.js';
 import type {
   KernelConfigurationView,
   PlannerConfigurationView,
@@ -43,6 +44,9 @@ import { TaskResidueReader } from '../execution/task-residue-reader.js';
 import type { QueuedTaskPayload } from '../storage/conversation-task-scheduler-repo.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { QueryUsageLifecycle } from '../metering/query-lifecycle.js';
+import type { RecoveryReplan } from '../session/recovery-replanner.js';
+import type { ConfigurationSnapshot } from '../configuration/types.js';
+import { buildKernelConfigurationView, buildPlannerConfigurationView } from '../configuration/projections.js';
 import type { ConversationResultDelivery } from '../session/conversation-session.js';
 
 /**
@@ -55,11 +59,31 @@ export class AccountStartupRecoveryService {
   private lastBlockedRecheckAt: number | null = null;
   private readonly promotionInFlight = new Map<string, Promise<void>>();
   private replanWorker: GenerationReplanWorker | null = null;
+  private retryWakeWorker: RetryWakeWorker | null = null;
   private lifecycle: TaskLifecycleTransitionPort | null = null;
   private residue: TaskResidueReader | null = null;
+  private readonly configurations = new Map<string, ConfigurationSnapshot>();
+
+  private getRetryWakeWorker(): RetryWakeWorker {
+    return this.retryWakeWorker ??= new RetryWakeWorker({
+      retryWakeRepo: this.deps.runtimeExecutionServices.retryWakeRepo,
+      kernelWorkflowStore: this.deps.kernelServices.kernelWorkflowRepo,
+      findSessionId: (decisionId, taskId) => (
+        this.deps.kernelServices.kernelDecisionRepo.findById(decisionId)?.sessionId
+        ?? this.originForTask(taskId)
+        ?? null
+      ),
+      processTimer: (event, reason) => this.withSystemBinding(event.sessionId, () => (
+        this.deps.kernelExecutionServices.kernelExecutionRuntime.recoverRetryWake(event, reason)
+      )),
+      now: () => new Date().toISOString(),
+    });
+  }
 
   constructor(private readonly deps: {
     readonly db: Database.Database;
+    readonly recoveryReplan?: RecoveryReplan;
+    readonly resolveConfigurationSnapshot?: (revisionId: string) => Promise<ConfigurationSnapshot>;
     readonly kernelServices: AccountKernelServices;
     readonly repositories: AccountRepositories;
     readonly workspaceServices: AccountWorkspaceServices;
@@ -177,7 +201,22 @@ export class AccountStartupRecoveryService {
     });
   }
 
+  private async loadRecoveryConfigurations(): Promise<void> {
+    if (!this.deps.resolveConfigurationSnapshot) return;
+    const revisions = this.deps.db.prepare(`
+      SELECT DISTINCT configuration_revision AS revision FROM kernel_events WHERE status IN ('pending', 'processing')
+      UNION SELECT configuration_revision AS revision FROM work_graph_revisions WHERE status = 'active'
+    `).all() as Array<{ revision: string }>;
+    for (const { revision } of revisions) {
+      if (!revision || this.configurations.has(revision)) continue;
+      const snapshot = await this.deps.resolveConfigurationSnapshot(revision);
+      if (snapshot.revisionId !== revision) throw new Error('recovery configuration revision mismatch');
+      this.configurations.set(revision, snapshot);
+    }
+  }
+
   async recover(): Promise<void> {
+    await this.loadRecoveryConfigurations();
     const now = new Date().toISOString();
     const backendLossAttemptIds = new Set<string>();
     const claimedOrphans = this.deps.coordinatorServices.workUnitClaimService.listOrphanedClaims();
@@ -386,10 +425,156 @@ export class AccountStartupRecoveryService {
         // as `recovery_required`; it must not take the recovery pass down.
       }
     }
+    const retryWakeResidue = await this.convergeMissingRetryWakes(now);
+    const retryWakesDelivered = await this.getRetryWakeWorker().run(now);
     const signalled = await this.convergeRecoveryRequired(now);
     await this.convergeConversationSlots(now);
     await this.promoteAvailableQueuedTasks(now);
-    return signalled || retriedTaskIds.length > 0;
+    return signalled
+      || retriedTaskIds.length > 0
+      || retryWakeResidue > 0
+      || retryWakesDelivered > 0;
+  }
+
+  /**
+   * Rebuilds the only safe missing continuation fact from an applied
+   * `wait_for_retry` Decision. This is intentionally a recovery operation:
+   * Task rows are never edited directly and a contradictory residue becomes an
+   * explicit recovery observation instead of an endless blocked Task.
+   */
+  private async convergeMissingRetryWakes(now: string): Promise<number> {
+    let changed = 0;
+    const taskRuntime = this.deps.taskServices.taskRuntimeService;
+    const wakeRepo = this.deps.runtimeExecutionServices.retryWakeRepo;
+    for (const task of taskRuntime.listTasksByStatus('blocked')) {
+      if (!task.dependencies.some(dependency =>
+        dependency.type === 'kernel_retry' && dependency.status === 'waiting'
+      )) continue;
+      if (wakeRepo.findBlockingByTask(task.id).length > 0) continue;
+      const recoveryWake = wakeRepo.findRecoveryRequiredByTask(task.id)[0] ?? null;
+      if (recoveryWake) {
+        const sessionId = this.originForTask(task.id);
+        const configurationRevision = this.deps.repositories.workGraphRevisionRepo
+          .findActive(task.id)?.configurationRevision;
+        if (sessionId && configurationRevision) {
+          changed += this.enqueueRetryWakeRecovery({
+            taskId: task.id,
+            sourceDecisionId: recoveryWake.sourceDecisionId,
+            configurationRevision,
+            sessionId,
+            reason: `Retry Wake ${recoveryWake.wakeId} requires recovery`,
+            now,
+          }) ? 1 : 0;
+        }
+        continue;
+      }
+      const decision = this.deps.kernelServices.kernelDecisionRepo
+        .listByTask(task.id)
+        .slice()
+        .reverse()
+        .find(record => (
+          record.decision.action.type === 'wait_for_retry'
+          && this.deps.kernelServices.kernelWorkflowRepo.isDecisionApplied(record.id)
+        ));
+      const action = decision?.decision.action;
+      if (decision && action?.type === 'wait_for_retry') {
+        const subtask = this.deps.repositories.subtaskRepo.findById(action.subtaskId);
+        if (subtask) {
+          const activeGenerationId = this.activeGenerationId(task.id);
+          if (activeGenerationId && activeGenerationId !== subtask.generationId) {
+            const sessionId = decision.sessionId ?? this.originForTask(task.id);
+            const configurationRevision = decision.configurationRevision;
+            if (sessionId) {
+              const enqueued = this.enqueueRetryWakeRecovery({
+                taskId: task.id,
+                sourceDecisionId: decision.id,
+                sessionId,
+                configurationRevision,
+                reason: 'wait_for_retry targets a stale generation',
+                now,
+              });
+              changed += enqueued ? 1 : 0;
+            }
+            continue;
+          }
+          const generationId = activeGenerationId ?? subtask.generationId;
+          const armed = wakeRepo.arm({
+            wakeId: `retry_wake_${decision.id}`,
+            taskId: task.id,
+            subtaskId: action.subtaskId,
+            generationId,
+            sourceDecisionId: decision.id,
+            sourceAttemptId: action.sourceAttemptId,
+            configurationRevision: decision.configurationRevision,
+            bindingFingerprint: action.bindingFingerprint,
+            authorizedBindingJson: JSON.stringify(action.authorizedBinding),
+            resumeAt: action.resumeAt,
+            status: 'armed',
+            timerEventId: null,
+            consumedDecisionId: null,
+            createdAt: now,
+            updatedAt: now,
+          });
+          const persistedWake = wakeRepo.findByDecision(decision.id);
+          if (persistedWake?.status === 'armed' || persistedWake?.status === 'fired') {
+            changed += armed ? 1 : 0;
+            continue;
+          }
+          if (persistedWake?.status === 'consumed' || persistedWake?.status === 'superseded') {
+            const enqueued = this.enqueueRetryWakeRecovery({
+              taskId: task.id,
+              sourceDecisionId: decision.id,
+              sessionId: decision.sessionId ?? this.originForTask(task.id) ?? '',
+              configurationRevision: decision.configurationRevision,
+              reason: `wait_for_retry Wake is already ${persistedWake.status}`,
+              now,
+            });
+            changed += enqueued ? 1 : 0;
+            continue;
+          }
+        }
+      }
+      const sessionId = decision?.sessionId ?? this.originForTask(task.id);
+      const configurationRevision = decision?.configurationRevision
+        ?? this.deps.repositories.workGraphRevisionRepo.findActive(task.id)?.configurationRevision;
+      if (!sessionId || !configurationRevision) continue;
+      this.enqueueRetryWakeRecovery({
+        taskId: task.id,
+        sourceDecisionId: decision?.id ?? task.id,
+        configurationRevision,
+        sessionId,
+        reason: 'kernel_retry blocker has no durable Retry Wake or reconstructable wait_for_retry Decision',
+        now,
+      });
+      await this.recoverTask(task.id, 'missing Retry Wake recovery observation');
+      changed += 1;
+    }
+    return changed;
+  }
+
+  private enqueueRetryWakeRecovery(input: {
+    taskId: string;
+    sourceDecisionId: string;
+    configurationRevision: string;
+    sessionId: string;
+    reason: string;
+    now: string;
+  }): boolean {
+    if (!input.sessionId) return false;
+    const recoveryId = `retry_wake_recovery_${input.taskId}`;
+    return this.deps.kernelServices.kernelWorkflowRepo.enqueue({
+      schemaVersion: 5,
+      configurationRevision: input.configurationRevision,
+      type: 'recovery_required_observed',
+      id: recoveryId,
+      correlationId: input.taskId,
+      causationId: input.sourceDecisionId,
+      occurredAt: input.now,
+      sessionId: input.sessionId,
+      taskId: input.taskId,
+      recoveryItemId: recoveryId,
+      reason: input.reason,
+    });
   }
 
   /**
@@ -566,7 +751,6 @@ export class AccountStartupRecoveryService {
     // The same convergence entry as startup recovery, selected from durable
     // pending facts rather than a blocked-only Task scan (review fix 2).
     const converged = await this.convergeRecovery(now);
-
     for (const task of this.deps.taskServices.taskRuntimeService.listTasksByStatus('blocked')) {
       const sessionId = this.originForTask(task.id);
       if (!sessionId) continue;
@@ -661,7 +845,10 @@ export class AccountStartupRecoveryService {
     };
   }
 
-  private async recoverTask(taskId: string): Promise<void> {
+  private async recoverTask(
+    taskId: string,
+    reason = 'account startup durable recovery',
+  ): Promise<void> {
     const sessionId = this.originForTask(taskId);
     if (!sessionId) {
       throw new Error(`startup recovery cannot resolve Conversation origin for Task ${taskId}`);
@@ -669,7 +856,7 @@ export class AccountStartupRecoveryService {
     await this.withSystemBinding(sessionId, () => (
       this.deps.kernelExecutionServices.kernelExecutionRuntime.recoverDue(
         taskId,
-        'account startup durable recovery',
+        reason,
       ).then(() => undefined)
     ));
   }
@@ -802,6 +989,24 @@ export class AccountStartupRecoveryService {
       findReplanRequestById: id => (
         this.deps.runtimeExecutionServices.generationReplanRepo.find(id)
       ),
+      findRetryWake: (taskId, sourceDecisionId) => {
+        const wake = this.deps.runtimeExecutionServices.retryWakeRepo.findByDecision(
+          sourceDecisionId,
+        );
+        return wake && wake.taskId === taskId
+          ? {
+              wakeId: wake.wakeId,
+              taskId: wake.taskId,
+              subtaskId: wake.subtaskId,
+              sourceDecisionId: wake.sourceDecisionId,
+              sourceAttemptId: wake.sourceAttemptId,
+              configurationRevision: wake.configurationRevision,
+              bindingFingerprint: wake.bindingFingerprint,
+              resumeAt: wake.resumeAt,
+              status: wake.status,
+            }
+          : null;
+      },
     };
   }
 
@@ -883,6 +1088,13 @@ export class AccountStartupRecoveryService {
 
   private buildCoordinatorSnapshot(event: KernelEvent): KernelSnapshot {
     if (event.type === 'plan_proposed') {
+      const pinned = this.configurations.get(event.configurationRevision);
+      const plannerConfiguration = pinned ? buildPlannerConfigurationView(pinned) : this.deps.plannerConfiguration;
+      const kernelConfiguration = pinned ? buildKernelConfigurationView(pinned) : this.deps.kernelConfiguration;
+      if (plannerConfiguration.revisionId !== event.configurationRevision
+        || kernelConfiguration.revisionId !== event.configurationRevision) {
+        throw new Error('recovery configuration revision unavailable');
+      }
       return {
         schemaVersion: 5,
         type: 'plan_admission',
@@ -913,8 +1125,8 @@ export class AccountStartupRecoveryService {
           .listSlots()
           .filter(slot => slot.state === 'occupied' || slot.state === 'releasing').length,
         runningTaskId: null,
-        plannerConfiguration: this.deps.plannerConfiguration,
-        kernelConfiguration: this.deps.kernelConfiguration,
+        plannerConfiguration,
+        kernelConfiguration,
         executorStatuses: this.deps.repositories.kernelExecutorStatusRepo
           .list(event.configurationRevision),
         v5WorkGraphTaskIds: this.deps.repositories.subtaskRepo.listTaskIds(),
@@ -1046,8 +1258,13 @@ export class AccountStartupRecoveryService {
         persistSessionState: () => undefined,
         setLatestGuidance: () => ({ scene: '', taskId: '', taskTitle: '', recommendedAction: '', reasons: [] }),
         queueProposal: () => undefined,
-        requestMergeReplan: async () => {
-          throw new Error('startup recovery requires the originating Conversation Planner for merge replan');
+        requestReplan: decision => {
+          if (!this.deps.recoveryReplan) throw new Error('recovery replan adapter unavailable');
+          return this.deps.recoveryReplan(sessionId, decision);
+        },
+        requestMergeReplan: decision => {
+          if (!this.deps.recoveryReplan) throw new Error('recovery replan adapter unavailable');
+          return this.deps.recoveryReplan(sessionId, decision);
         },
         buildPlanAdmissionSnapshot: event => this.buildCoordinatorSnapshot(event),
       },

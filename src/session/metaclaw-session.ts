@@ -128,6 +128,8 @@ import {
   GenerationReplanWorker,
   type GenerationReplanWorkerReport,
 } from '../account/generation-replan-worker.js';
+import { RetryWakeWorker } from '../account/retry-wake-worker.js';
+import type { RetryWakeRepo } from '../storage/retry-wake-repo.js';
 import { inspectApplicationAgainstSources } from '../execution/kernel-application-recovery.js';
 import {
   createTaskLifecycleTransitionPort,
@@ -403,6 +405,7 @@ export class MetaclawSession {
   private readonly plannerProposalRepo: PlannerProposalRepo;
   private readonly publicationRepo: WorkspacePublicationRepo;
   private readonly generationReplanRepo: GenerationReplanRequestRepo;
+  private readonly retryWakeRepo: RetryWakeRepo;
   private readonly dispatchItemRepo: KernelDispatchItemRepo;
   private lifecycle: TaskLifecycleTransitionPort | null = null;
   private readonly plannerConfiguration: PlannerConfigurationView;
@@ -413,6 +416,7 @@ export class MetaclawSession {
   private unregisterPlannerHost: (() => void) | null = null;
   private disposePromise: Promise<void> | null = null;
   private readonly allowLegacyDirectReply: boolean;
+  private retryWakeWorker: RetryWakeWorker | null = null;
 
   constructor(private deps: MetaclawSessionDeps) {
     this.allowLegacyDirectReply = deps.allowLegacyDirectReply ?? process.env.NODE_ENV === 'test';
@@ -564,6 +568,7 @@ export class MetaclawSession {
     this.publicationRepo = runtimeExecutionServices.publicationRepo;
     const generationReplanRepo = runtimeExecutionServices.generationReplanRepo;
     this.generationReplanRepo = generationReplanRepo;
+    this.retryWakeRepo = runtimeExecutionServices.retryWakeRepo;
     this.dispatchItemRepo = runtimeExecutionServices.dispatchItemRepo;
     const cancellationCoordinator = runtimeExecutionServices.cancellationCoordinator;
     this.attemptRunner = runtimeExecutionServices.attemptRunner;
@@ -593,6 +598,7 @@ export class MetaclawSession {
       dispatchItemRepo,
       publicationRepo: this.publicationRepo,
       generationReplanRepo,
+      retryWakeRepo: runtimeExecutionServices.retryWakeRepo,
       cancellationCoordinator,
       executionProgressService: this.executionProgressService,
       verificationAndDeliveryService: this.verificationAndDeliveryService,
@@ -618,6 +624,9 @@ export class MetaclawSession {
         persistSessionState: changes => this.persistSessionState(changes),
         setLatestGuidance: (scene, suggestion) => this.setLatestGuidance(scene, suggestion),
         queueProposal: (scene, proposal) => this.queueProposal(scene, proposal),
+        requestReplan: async () => {
+          throw new Error('legacy request_replan requires the ConversationSession Planner boundary');
+        },
         requestMergeReplan: decision => this.requestKernelMergeReplan(decision),
         buildPlanAdmissionSnapshot: event => this.buildPlanAdmissionSnapshot(event),
       },
@@ -1401,6 +1410,10 @@ export class MetaclawSession {
   }
 
   async maybeReviewTaskPoolOnTimer(nowMs = Date.now()): Promise<boolean> {
+    const retryWakesDelivered = await this.getRetryWakeWorker().run(
+      new Date(nowMs).toISOString(),
+    );
+    if (retryWakesDelivered > 0) return true;
     for (const task of this.listLocalTasksByStatus('blocked')) {
       if (await this.kernelExecutionRuntime.recoverDue(task.id, 'timer durable recovery drain')) return true;
     }
@@ -1410,6 +1423,16 @@ export class MetaclawSession {
 
     this.refreshRuntimeState();
     return this.maybeEmitTaskPoolWatchdogReminder(nowMs);
+  }
+
+  private getRetryWakeWorker(): RetryWakeWorker {
+    return this.retryWakeWorker ??= new RetryWakeWorker({
+      retryWakeRepo: this.retryWakeRepo,
+      kernelWorkflowStore: this.kernelWorkflowRepo,
+      findSessionId: decisionId => this.kernelDecisionRepo.findById(decisionId)?.sessionId ?? null,
+      processTimer: (event, reason) => this.kernelExecutionRuntime.recoverRetryWake(event, reason),
+      now: () => new Date().toISOString(),
+    });
   }
 
   private getWaitingBlockReason(task: Task): string {

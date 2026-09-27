@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildAccountRuntimeComposition } from '../../src/account/account-runtime-composition.js';
 import { AccountStartupRecoveryService } from '../../src/account/account-startup-recovery-service.js';
 import { createAccountConversationExecutionBinder } from '../../src/account/account-conversation-execution-binder.js';
@@ -49,6 +49,19 @@ afterEach(() => {
 });
 
 describe('AccountStartupRecoveryService production composition', () => {
+  it('routes both system replan callbacks to the injected adapter with the durable owner', async () => {
+    const binder = createAccountConversationExecutionBinder();
+    const recoveryReplan = vi.fn(async () => null);
+    const service = new AccountStartupRecoveryService({ binder, recoveryReplan } as never);
+    await service['withSystemBinding']('owner', async () => {
+      const callbacks = binder.routedKernelCallbacks();
+      await callbacks.requestReplan({ id: 'replan', action: { type: 'request_replan' } } as never);
+      await callbacks.requestMergeReplan({ id: 'merge', action: { type: 'request_merge_replan' } } as never);
+    });
+    expect(recoveryReplan.mock.calls.map(call => [call[0], call[1].id]))
+      .toEqual([['owner', 'replan'], ['owner', 'merge']]);
+  });
+
   it('flushes system-bound results after background execution using the original session', async () => {
     const binder = createAccountConversationExecutionBinder();
     const delivered: unknown[] = [];

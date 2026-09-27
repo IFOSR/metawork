@@ -152,6 +152,8 @@ export class SessionKernelRuntime {
       }
       case 'wait_for_capacity':
       case 'wait_for_retry':
+      case 'supersede_retry_wake':
+      case 'recover_retry_wake':
       case 'probe_capacity':
       case 'dispatch_batch':
       case 'complete_task':

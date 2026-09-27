@@ -27,6 +27,21 @@ describe('current SQLite baseline', () => {
       db.close();
     }
   });
+  it('upgrades schema 44 with durable retry wakes', () => {
+    const db = new Database(':memory:');
+    try {
+      runMigrations(db);
+      db.prepare('UPDATE schema_version SET version = 44').run();
+      db.exec('DROP TABLE retry_wakes');
+      runMigrations(db);
+      runMigrations(db);
+      expect(db.prepare('SELECT version FROM schema_version').get())
+        .toEqual({ version: CURRENT_SCHEMA_VERSION });
+      expect(db.prepare('PRAGMA table_info(retry_wakes)').all()).not.toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
   it('creates the current schema with durable Conversation slots and image artifacts', () => {
     const db = new Database(':memory:');
 
@@ -79,6 +94,7 @@ describe('current SQLite baseline', () => {
       'billing_source_instance',
       'gateway_command_admissions',
       'gateway_command_admission_imports',
+      'retry_wakes',
     ]) {
       expect(db.prepare(`PRAGMA table_info(${table})`).all(), table).not.toEqual([]);
     }

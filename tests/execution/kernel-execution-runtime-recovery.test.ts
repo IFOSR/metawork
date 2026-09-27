@@ -329,6 +329,19 @@ describe('KernelExecutionRuntime executor recovery', () => {
       },
       callbacks: {},
       taskEventRepo: { insert: vi.fn() },
+      subtaskRepo: {
+        findById: vi.fn().mockReturnValue({
+          id: 'subtask-retry-wait',
+          taskId: 'task-retry-wait',
+          generationId: 'generation-retry-wait',
+        }),
+      },
+      workGraphRevisionRepo: {
+        findActive: vi.fn().mockReturnValue(null),
+      },
+      retryWakeRepo: {
+        arm: vi.fn(),
+      },
       dispatchItemRepo: {},
       maxConcurrentAttempts: 4,
     } as never);
@@ -369,11 +382,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
       expect.stringContaining('retry automatically'),
     ]);
     expect(finishExecution.mock.calls[0]?.[0]?.[0]).not.toContain('Execution blocked');
-    expect(event).toMatchObject({
-      type: 'timer_tick',
-      taskId: 'task-retry-wait',
-      wakeKind: 'retry',
-    });
+    expect(event).toBeNull();
   });
 
   it('delivers an upgraded historical result without re-running the Harness', async () => {

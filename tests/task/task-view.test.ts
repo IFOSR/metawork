@@ -75,6 +75,19 @@ describe('unified TaskView projection', () => {
     expect(view.nextAuthorizedAction).toBe('await_retry_wake');
   });
 
+  it('does not present a recovery-required Wake as automatic retrying', () => {
+    const view = projectTaskView(facts({
+      task: { id: 'task_1', status: 'blocked', updatedAt: NOW },
+      subtasks: [{ id: 'task_1_execute', status: 'awaiting_decision' }],
+      dispatches: [],
+      retryWakeRecoveryRequired: true,
+    }));
+    expect(view.phase).toBe('recovery_required');
+    expect(view.recoveryDiagnosis).toBe('no_authorized_driver');
+    expect(view.blockingResidue).toContain('retry_wake:recovery_required');
+    expect(view.nextAuthorizedAction).toBe('explicit_resume_required');
+  });
+
   it('reports waiting_for_plan for a pending Replan Job without an attached client', () => {
     const view = projectTaskView(facts({
       dispatches: [{

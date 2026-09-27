@@ -33,6 +33,30 @@ describe('GenerationReplanRequestRepo', () => {
     expect(repo.find(first.id)?.status).toBe('cancelled');
   });
 
+  it('cancels only a still-planning request and records the reason', () => {
+    const db = createV31RepositoryDb();
+    const repo = new GenerationReplanRequestRepo(db);
+    const request = repo.enqueue({
+      id: 'replan-cancel',
+      taskId: 'task_1',
+      generationId: 'generation-1',
+      sourceRevision: 1,
+      configurationRevision: REVISION,
+      triggerDecisionId: 'decision-1',
+      now,
+    });
+
+    expect(repo.markPlanning(request.id, 'quiescence-token', now)).toBe(true);
+    repo.cancel(request.id, 'cancelled while planning', now);
+
+    expect(repo.find(request.id)).toMatchObject({
+      status: 'cancelled',
+      errorSummary: 'cancelled while planning',
+    });
+    // A cancelled request can no longer be submitted, even with the right token.
+    expect(repo.markSubmitted(request.id, 'quiescence-token', now)).toBe(false);
+  });
+
   it('submits only with the exact quiescence token', () => {
     const db = createV31RepositoryDb();
     const repo = new GenerationReplanRequestRepo(db);

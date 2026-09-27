@@ -30,6 +30,7 @@ export const TASK_RESIDUE_CATEGORIES = [
   'work_unit',
   'resource_lease',
   'generation_replan',
+  'retry_wake',
   'kernel_application',
   'attempt_receipt',
 ] as const;
@@ -78,6 +79,12 @@ export class TaskResidueReader {
         )
       LIMIT 1
     `).get(...parameters)) reasons.push('generation_replan');
+    if (this.deps.db.prepare(`
+      SELECT 1 FROM retry_wakes
+      WHERE task_id = ?${generation}
+        AND status IN ('armed', 'fired', 'recovery_required')
+      LIMIT 1
+    `).get(...parameters)) reasons.push('retry_wake');
     const applicationParameters: unknown[] = [taskId];
     let decisionFilter = '';
     if (excludedDecisionId) {

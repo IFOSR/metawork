@@ -109,6 +109,8 @@ export interface ConfigurationRuntimeCoordinatorDeps {
   prepareConfig?: (input: {
     config: unknown;
     secrets: Record<string, string>;
+    /** Transient Span OpenRouter credential; never part of the config object. */
+    spanApiKey?: string;
     baseRevisionId: string;
   }) => Promise<unknown> | unknown;
   /**
@@ -116,9 +118,11 @@ export interface ConfigurationRuntimeCoordinatorDeps {
    * a compensating action. This lets the probe validate the exact candidate
    * without leaving credentials behind on validation/probe/cutover failure.
    */
-  stageSecrets?: (
-    secrets: Record<string, string>,
-  ) => Promise<(() => Promise<void>) | undefined> | (() => Promise<void>) | undefined;
+  stageSecrets?: (input: {
+    secrets: Record<string, string>;
+    /** Transient Span OpenRouter credential; never part of the config object. */
+    spanApiKey?: string;
+  }) => Promise<(() => Promise<void>) | undefined> | (() => Promise<void>) | undefined;
 }
 
 export class ConfigurationRuntimeCoordinator {
@@ -177,6 +181,7 @@ export class ConfigurationRuntimeCoordinator {
     expectedRevisionId: string;
     reason?: 'activation' | 'rollback';
     secrets?: Record<string, string>;
+    spanApiKey?: string;
   }): Promise<ConfigurationRuntimeActivationResult> {
     try {
       return await this.deps.gate.withActivation(
@@ -200,6 +205,7 @@ export class ConfigurationRuntimeCoordinator {
     expectedRevisionId: string;
     reason?: 'activation' | 'rollback';
     secrets?: Record<string, string>;
+    spanApiKey?: string;
   }): Promise<ConfigurationRuntimeActivationResult> {
     const current = await this.deps.service.getActiveSnapshot();
     if (current.revisionId !== input.expectedRevisionId) {
@@ -226,6 +232,7 @@ export class ConfigurationRuntimeCoordinator {
       preparedConfig = await this.deps.prepareConfig?.({
         config: input.config,
         secrets: input.secrets ?? {},
+        ...(input.spanApiKey !== undefined ? { spanApiKey: input.spanApiKey } : {}),
         baseRevisionId: current.revisionId,
       }) ?? input.config;
     } catch (error) {
@@ -269,7 +276,10 @@ export class ConfigurationRuntimeCoordinator {
     };
     let compiled: ReturnType<ConfigurationRuntimeCoordinatorDeps['service']['compileDraft']>;
     try {
-      rollbackSecrets = await this.deps.stageSecrets?.(input.secrets ?? {});
+      rollbackSecrets = await this.deps.stageSecrets?.({
+        secrets: input.secrets ?? {},
+        ...(input.spanApiKey !== undefined ? { spanApiKey: input.spanApiKey } : {}),
+      });
       compiled = this.deps.service.compileDraft(draft.revisionId);
       const probe = await this.deps.service.probeDraft(draft.revisionId);
       if (!probe.ok) {

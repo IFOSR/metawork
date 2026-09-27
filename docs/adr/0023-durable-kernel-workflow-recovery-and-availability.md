@@ -188,3 +188,33 @@ The replan postcondition is implemented as
 `isSatisfiedReplanScheduling()` / `isRetrySafeUncertainReplanScheduling()` in
 `src/execution/kernel-application-recovery.ts`. An uncertain application may
 never remain permanently paired with `Task = running` and `Slot = occupied`.
+
+## Amendment: Persisted External Routing Observations (2026-09-27)
+
+A `plan_proposed` event may carry an optional, bounded `spanRouting` observation
+produced by the Server-side Span advisor before the event was enqueued.
+
+- The observation is part of the event body, so the existing `kernel_events`
+  JSON and decision-ledger JSON persist, replay, and recover it without a new
+  table or a second write authority.
+- Recovery of a stored event and application retry reuse its observation and
+  never invoke the external advisor. A recovery decision requiring a *new*
+  replan uses the existing Planner and Span preparation paths with the pinned
+  revision, through a temporary validation-only host without a connected
+  client. A durable replan event skips both services.
+- Explicit user cancellation cancels the generation request. Shutdown during
+  external replan preparation raises `KernelApplicationInterruptedError` and
+  leaves the application `applying` for restart recovery. It does not record
+  user cancellation or an uncertain external execution effect. Merge-replan
+  publication counters change only after preparation succeeds.
+- `ControlKernel` treats the observation as untrusted input: it re-derives the
+  eligible candidate set and ignores the scores unless event id, configuration
+  revision, generation, graph revision, proposal fingerprint, Subtask, and
+  candidate identity all still match. A mismatch degrades only that Subtask to
+  the deterministic resolver.
+- The window between an external request succeeding and the event being durably
+  stored is explicitly not exactly-once. A crash there may repeat the request;
+  this is accepted rather than introducing a background request state machine.
+- Observations carry only internal refs, validated probabilities, a resolved
+  model version, bounded usage, and a finite failure reason. Credentials, raw
+  requests, and raw provider payloads are never persisted.
