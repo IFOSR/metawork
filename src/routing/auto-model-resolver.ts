@@ -163,7 +163,7 @@ export function filterEligibleModelCandidates(input: {
 
 export class AutoModelResolver {
   static resolve(input: AutoModelResolverInput): AutoModelResolution {
-    const { order, objective, objectiveConfig } = autoModelPolicyConstraints(input.policy);
+    const { order, objective } = autoModelPolicyConstraints(input.policy);
     const { eligible: eligibleCandidates, rejected: rejectedCandidates } =
       filterEligibleModelCandidates({
         policy: input.policy,

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   MODEL_CAPABILITIES,
+  buildSpanRoutingSection,
+  clampTimeout,
+  loadSpanRoutingDraft,
   selectModelPolicy,
 } from '../../web/src/config-edit.js';
 
@@ -53,5 +56,63 @@ describe('Web configuration editing', () => {
     };
 
     expect(selectModelPolicy('auto', ['model-a', 'model-b'], current)).toBe(current);
+  });
+});
+
+describe('Span routing advanced settings draft', () => {
+  it('defaults to disabled with the fixed model when the revision predates Span', () => {
+    expect(loadSpanRoutingDraft({})).toEqual({
+      enabled: false,
+      model: 'respan/span-01-lite',
+      timeoutMs: 3_000,
+      apiKey: '',
+    });
+  });
+
+  it('loads an existing Span section without exposing any stored key', () => {
+    const draft = loadSpanRoutingDraft({
+      routing: { span: { enabled: true, model: 'respan/span-01-lite', apiKeyRef: 'file-secret:anyfusion/routing/span', timeoutMs: 4_000 } },
+    });
+    expect(draft).toEqual({
+      enabled: true,
+      model: 'respan/span-01-lite',
+      timeoutMs: 4_000,
+      apiKey: '',
+    });
+  });
+
+  it('writes nothing when Span was never touched and did not exist', () => {
+    const draft = loadSpanRoutingDraft({});
+    expect(buildSpanRoutingSection(draft, {})).toBeUndefined();
+  });
+
+  it('materializes the fixed model, timeout and the existing credential reference', () => {
+    const section = buildSpanRoutingSection(
+      { enabled: true, model: 'respan/span-01-lite', timeoutMs: 2_000, apiKey: '' },
+      { routing: { span: { enabled: false, apiKeyRef: 'file-secret:anyfusion/routing/span' } } },
+    );
+    expect(section).toEqual({
+      span: {
+        enabled: true,
+        model: 'respan/span-01-lite',
+        timeoutMs: 2_000,
+        apiKeyRef: 'file-secret:anyfusion/routing/span',
+      },
+    });
+    expect(JSON.stringify(section)).not.toContain('sk-');
+  });
+
+  it('keeps a disabled Span section so the stored key survives a toggle', () => {
+    const section = buildSpanRoutingSection(
+      { enabled: false, model: 'respan/span-01-lite', timeoutMs: 3_000, apiKey: '' },
+      { routing: { span: { enabled: true, model: 'respan/span-01-lite', apiKeyRef: 'file-secret:anyfusion/routing/span', timeoutMs: 3_000 } } },
+    );
+    expect(section).toMatchObject({ span: { enabled: false, apiKeyRef: 'file-secret:anyfusion/routing/span' } });
+  });
+
+  it('clamps the timeout into the server-accepted range', () => {
+    expect(clampTimeout(10)).toBe(500);
+    expect(clampTimeout(999_999)).toBe(10_000);
+    expect(clampTimeout(Number.NaN)).toBe(3_000);
   });
 });
