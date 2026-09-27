@@ -22,7 +22,6 @@ import { OpenRouter } from '@openrouter/sdk';
 const SPAN_MODEL = 'respan/span-01-lite';
 const SPAN_SECRET_PROVIDER_REF = 'routing-span';
 const SPAN_MODEL_VERSION = /^respan\/span-01-lite(?:-\d{8})?$/u;
-
 function parseArgs(argv) {
   const options = { credentials: process.env.METAWORK_CREDENTIALS ?? '' };
   for (let index = 0; index < argv.length; index += 1) {
@@ -59,9 +58,10 @@ function resolveApiKey(options) {
     } catch {
       continue;
     }
-    const value = document?.providers?.[SPAN_SECRET_PROVIDER_REF];
+    const value = document?.internal?.[SPAN_SECRET_PROVIDER_REF]
+      ?? document?.providers?.[SPAN_SECRET_PROVIDER_REF];
     if (typeof value === 'string' && value.trim()) {
-      return { apiKey: value.trim(), source: 'secret-store:routing-span' };
+      return { apiKey: value.trim(), source: 'secret-store:internal/routing-span' };
     }
   }
   return null;
@@ -122,12 +122,25 @@ async function main() {
     );
     const model = typeof response?.model === 'string' ? response.model : '';
     const answers = response?.answers && typeof response.answers === 'object' ? response.answers : {};
-    const probabilities = Object.fromEntries(Object.entries(answers).map(([questionId, answer]) => [
-      questionId,
-      answer && typeof answer.noul === 'number' ? Number(answer.noul.toFixed(6)) : null,
-    ]));
-    const valid = SPAN_MODEL_VERSION.test(model)
-      && Object.values(probabilities).every(value => typeof value === 'number' && value >= 0 && value <= 1);
+    const expected = Object.keys(buildRequest().questions);
+    // Mirror the product validator: an empty or partial answer set is never a
+    // successful smoke run, and every probability must be a finite [0,1] noul.
+    const received = Object.keys(answers);
+    const answersComplete = received.length === expected.length
+      && expected.every(questionId => Object.hasOwn(answers, questionId));
+    const probabilities = {};
+    let answersValid = answersComplete;
+    for (const questionId of expected) {
+      const answer = answers[questionId];
+      const value = answer && typeof answer === 'object' && answer.type === 'noul'
+        ? answer.noul
+        : undefined;
+      const validAnswer = typeof value === 'number' && Number.isFinite(value)
+        && value >= 0 && value <= 1;
+      probabilities[questionId] = validAnswer ? Number(value.toFixed(6)) : null;
+      if (!validAnswer) answersValid = false;
+    }
+    const valid = SPAN_MODEL_VERSION.test(model) && answersValid;
     console.log(JSON.stringify({
       ok: valid,
       credentialSource: resolved.source,
@@ -135,14 +148,20 @@ async function main() {
       probabilities,
       usage: response?.usage ?? null,
       durationMs: Date.now() - startedAt,
+      ...(valid ? {} : { errorCode: SPAN_MODEL_VERSION.test(model) ? 'span_invalid_response' : 'span_unexpected_model' }),
     }, null, 2));
     if (!valid) process.exitCode = 1;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    // Only a finite code plus an optional HTTP status: the raw SDK/provider
+    // message can contain request or credential material.
+    const status = [error?.status, error?.statusCode, error?.response?.status]
+      .find(value => typeof value === 'number');
+    const timedOut = error?.name === 'AbortError' || error?.name === 'TimeoutError';
     console.error(JSON.stringify({
       ok: false,
       credentialSource: resolved.source,
-      error: message.slice(0, 200),
+      errorCode: timedOut ? 'span_timeout' : 'span_http_error',
+      ...(typeof status === 'number' ? { httpStatus: status } : {}),
       durationMs: Date.now() - startedAt,
     }, null, 2));
     process.exitCode = 1;
