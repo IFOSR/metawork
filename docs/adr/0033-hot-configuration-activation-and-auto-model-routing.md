@@ -215,7 +215,10 @@ It never widens the candidate set and never produces a binding decision.
   the Server writes it to the account SecretStore under a fixed reference in the
   non-Provider `internal` namespace (`anyfusion/internal/routing-span`) and the
   revision stores only that reference, so a Provider that happens to be named
-  `routing-span` can never share or overwrite the slot. Planner and Executor
+  `routing-span` can never share or overwrite the slot. The configuration schema
+  accepts only that exact reference, and the Server re-checks it before reading,
+  so no revision or snapshot can point the advisor at a Provider credential.
+  Planner and Executor
   projections, generated runtimes, diffs, logs, and client responses never carry
   the plaintext key.
 - Hard eligibility is unchanged and shared: the same pure filter that authorizes
@@ -237,7 +240,14 @@ It never widens the candidate set and never produces a binding decision.
   deterministic resolver.
 - Turn cancellation aborts the in-flight request, and the Shell rechecks the
   cancellation latch before admitting the proposal, so a late observation can
-  never authorize work for a cancelled Turn.
+  never authorize work for a cancelled Turn. Cancellation is fail-closed on
+  every proposal source: the initial submission is rejected, and a replan
+  returns no event so the Runtime records an intended `cancelled` generation
+  request instead of a failure or a persisted plan.
+- Session disposal and Server shutdown abort in-flight Span requests: the
+  admission shell aborts its Turn controller before draining, and the Server
+  lifetime signal is merged into every advisor call and released by the
+  concurrency limiter. An aborted advisor call never admits a proposal.
 - Replay of a stored `plan_proposed` event makes no external call. A crash
   before the event is durably stored may repeat the request; Span is not
   idempotent and must not be described as exactly-once.

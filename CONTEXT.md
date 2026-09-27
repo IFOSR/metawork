@@ -99,13 +99,19 @@ model information is unavailable instead of exposing the internal ref.
 Optional Span routing is the only external routing advisor. Advanced settings
 store its OpenRouter credential through the same SecretStore path as a Provider
 key, but under the non-Provider `internal` namespace, and the revision keeps
-only that fixed reference. After the
+only that fixed reference. Configuration validation accepts no other reference,
+and the Server re-checks it before reading, so no revision can point the advisor
+at a Provider credential. After the
 shared hard filter and before the `plan_proposed` event is durably enqueued, the
 Server may attach a bounded `spanRouting` observation to that event. Replay
 reuses the persisted observation and never re-calls the advisor. `ControlKernel`
 re-validates the observation and then uses its probabilities only to order
 eligible candidates; it never widens the candidate set, and any absent, stale,
 invalid, or failed observation leaves the deterministic resolver unchanged.
+Turn cancellation, Session disposal, and Server shutdown abort in-flight
+requests and fail closed: the initial submission is rejected and a replan
+returns no event, so the Runtime records an intended `cancelled` generation
+request rather than admitting a late observation.
 
 Public attempt timelines retain the internal `attemptId` only as a non-visible
 correlation key. Visible execution narrative uses attempt kind/ordinal labels

@@ -901,15 +901,17 @@ SecretStore 接口解析，但默认由 `~/.metawork/credentials.json` 提供；
 `respan/span-01-lite`。它的 OpenRouter Key 与 Provider Key 走同一套密钥流程：
 服务端写入账户 SecretStore 中**非 Provider 的 internal 命名空间**固定引用，
 revision 只保存该引用，同名 Provider（例如名为 `routing-span` 的 Provider）
-不会与之共享或互相覆盖。界面不提供 Provider/Model 选择器，Key 留空表示保留已存值。
+不会与之共享或互相覆盖；配置校验只接受该固定引用，服务端读取前还会再次核对。
+界面不提供 Provider/Model 选择器，Key 留空表示保留已存值。
 
 启用后，服务端只对已通过共用硬过滤的候选进行评估，并在 `plan_proposed` 事件
 持久入队前把有界的 `spanRouting` observation 附着在事件上；该事件已入库时直接
 复用存储事件，不再发起第二次请求。凭据按提案锁定的 configuration revision 解析，
 并受提案总截止时间约束。`ControlKernel` 会重新校验该 observation，仅用概率对已授权
 的 AgentClass/Model 候选排序。未启用、缺少 Key、超时、HTTP 错误、响应非法、
-候选不匹配或超出预算时，一律回退到确定性 resolver；取消会 abort 进行中的请求，
-不会变成评分回退。服务端总并发请求数受限。Span 用量只作为内部路由观测，
+候选不匹配或超出预算时，一律回退到确定性 resolver；被 abort 的请求不会变成评分回退。
+Turn 取消、Session 释放与 Server 关闭都会中断进行中的请求并 fail-closed：首次提交被拒绝，
+重规划不返回事件，迟到的评分不会被准入。服务端总并发请求数受限。Span 用量只作为内部路由观测，
 不新增用户计费阶段。
 
 启动前导出飞书密钥：

@@ -1071,7 +1071,9 @@ The advanced settings section offers one optional external routing advisor:
 flow as a Provider Key — the Server writes it to the account SecretStore under a
 fixed reference in the non-Provider `internal` namespace and the revision stores
 only that reference, so a Provider named `routing-span` can never share the slot.
-The section has no Provider or Model picker, and a blank Key field keeps the
+Configuration validation accepts only that exact reference and the Server
+re-checks it before reading the secret. The section has no Provider or Model
+picker, and a blank Key field keeps the
 stored value.
 
 When enabled, the Server evaluates only the candidates that already passed the
@@ -1083,8 +1085,11 @@ that read is bounded by the proposal deadline. `ControlKernel` re-validates the
 observation and uses the probabilities solely to order already-authorized
 AgentClass and Model candidates. Disabled, missing-key, timeout, HTTP error,
 invalid response, candidate mismatch, or over-budget input all fall back to the
-deterministic resolver; cancellation aborts the in-flight request and never
-becomes a fallback. Span usage is internal routing observation only and adds no
+deterministic resolver; an aborted request never becomes a fallback. Turn
+cancellation, Session disposal, and Server shutdown abort in-flight requests and
+fail closed: a cancelled initial submission is rejected and a cancelled replan
+returns no event, so no late observation is admitted. Span usage is internal
+routing observation only and adds no
 separate user billing stage. Total concurrent Span requests are capped
 Server-wide.
 

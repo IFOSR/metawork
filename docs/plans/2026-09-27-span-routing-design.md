@@ -51,7 +51,7 @@ interface SpanRoutingConfiguration {
 
 默认 model 固定、enabled=false、timeoutMs=3000；timeout 允许 500–10000ms 的服务端校验范围。模型在 UI 中只读展示，无模型/provider 选择器。高级设置提供启用开关、password 类型 OpenRouter API key 输入框、已配置/未配置状态；超时可以保留服务端默认，不要求用户填写。保存空输入表示保留 key，禁用不删除 key，重新输入表示替换，成功后清空输入框。无需新增在线 probe 按钮或将网络探测作为保存成功的条件。
 
-key 仅作为写入请求中的临时字段，不能并入 config 对象。复用 Provider 现有激活事务的 stageSecrets 和 rollback 回调，但当前 `secrets` 映射按 providerRef 解释，不能伪造 Provider 或将 Span key 塞进这个映射。新增一个有类型的 Span 凭据写入字段，服务端固定解析为专用引用（`file-secret:anyfusion/internal/routing-span`）。该引用位于 SecretStore 的**非 Provider internal 命名空间**，因此与任何合法 Provider 名称（包括用户可能创建的 `routing-span` Provider）都不会共享、覆盖或互相读取；客户端不能提交任意 secretRef 读取/写入目标。
+key 仅作为写入请求中的临时字段，不能并入 config 对象。复用 Provider 现有激活事务的 stageSecrets 和 rollback 回调，但当前 `secrets` 映射按 providerRef 解释，不能伪造 Provider 或将 Span key 塞进这个映射。新增一个有类型的 Span 凭据写入字段，服务端固定解析为专用引用（`file-secret:anyfusion/internal/routing-span`）。该引用位于 SecretStore 的**非 Provider internal 命名空间**，因此与任何合法 Provider 名称（包括用户可能创建的 `routing-span` Provider）都不会共享、覆盖或互相读取；客户端不能提交任意 secretRef 读取/写入目标。配置 schema 把 `apiKeyRef` 收紧为该引用的字面量，Server 在解析前再次核对同一常量，因此即使拿到未经校验的 snapshot 也不会读取 Provider 槽位。
 
 revision 只保存 apiKeyRef，读取接口只显示凭据状态。引用格式不合法应拒绝配置；启用但未提供引用、或存储中 key 不可读时允许保留可选功能配置，并显示提示，运行时走 `secret_unavailable` 回退。SecretStore 写失败属于保存失败，不能假装配置已成功。
 
@@ -147,6 +147,8 @@ Kernel 重新计算合法集合并校验 event/proposal/revision/generation/grap
 
 保证边界：**事件成功入库后不再请求 Span**。若请求已到达 OpenRouter、事件入库前进程崩溃，重交可能产生重复外部请求/费用；没有已验证的远端幂等协议，不能承诺恰好一次。超时 abort 也不保证上游尚未计费。接受这个 phase-one 边界，不为此引入独立数据库表或后台请求状态机。
 
+取消与关闭的返回契约：preparation 在 Turn 被取消或 Session 关闭时返回 `null`；首次提交转为 rejected，重规划入口向 Runtime 返回 `null`，Runtime 把对应 generation 请求置为 `cancelled`。Session 关闭与 Server 关闭都会 abort 进行中的请求，迟到的评分不会准入。
+
 replan 保持已有 generation 的配置固定约束；不能因为“新 replan”就读取当前活动 revision 替换历史 revision。deferred availability 恢复不调用 Span；复用已有授权事实，不重新评分。需要检查现有 `bindingsForProposalSubtask` 重排逻辑，避免它丢失已经授权的 Span 顺序。
 
 ## 9. 验证与交付
@@ -174,3 +176,15 @@ Span usage 保存为内部路由观测，不冒充 Planner/Executor 用量或自
 5. 凭据解析受提案总截至时间约束，读取失败或超时均回退为有限枚举，不再向外抛错。
 6. 评分请求补充真实 Provider 模型身份与既有 reasoning/cost/latency/quality/context 事实；`questionVersion` 提升为 `span-fit-v2`，旧 observation 因版本不匹配被 Kernel 废弃。
 7. 真实 smoke 脚本改用与产品一致的严格响应校验（空集/部分答案不算成功），且只输出有限错误码与 HTTP status，不再回显原始 SDK/Provider 文本。
+
+### 第二次评审修正（2026-09-27）
+
+复核第一轮修复后发现 5 处仍未闭合的取消、关闭、凭据与预算边界，已全部修复并补回归：
+
+1. **重规划取消后仍会产出入库事件。** `requestKernelReplan` / `requestKernelMergeReplan` 现在与首次提交共用同一 preparation 的取消语义；`preparePlanProposedEvent` 在取消或 Session 关闭时返回 `null`，Runtime 收到 `null` 后把 generation 请求置为 `cancelled`（区分于 `failed`），不落库任何 `plan_proposed`。
+2. **配置可引用其他 Provider 凭据。** `routing.span.apiKeyRef` 由通用 `SECRET_REFERENCE` 收紧为 `SPAN_ROUTING_SECRET_REFERENCE` 字面量，Server 侧解析前再次核对同一常量，双重保证只读 internal 槽位。
+3. **smoke 回退读取同名 Provider Key。** 删除 `providers["routing-span"]` 回退分支，凭据来源只报告实际读取位置，Provider 命名空间不再作为 Span 凭据来源。
+4. **Session/Server 关闭不中断进行中的 Span 请求。** `ConversationSession.dispose()` 先 abort 再等待排空；Server 组合在关闭入口（`stopListeners`）abort 共享 `lifetimeSignal`，advisor 将其与调用方信号合并后传入 SDK 与 limiter，未完成的 `SpanEvaluationAbortedError` 一律 fail-closed，不再准入。
+5. **跳过的 Subtask 误耗评估名额。** 16 个“被评估 Subtask”上限只统计实际发出的请求；超限的候选丰富 Subtask 记 `span_proposal_budget_exhausted`，单候选/无候选仍记各自跳过原因。
+
+补充回归：`tests/session/span-routing-session-integration.test.ts`（8）、`tests/session/span-plan-preparation.test.ts`（11）、`tests/execution/kernel-execution-runtime-replan.test.ts`（2）、`tests/storage/generation-replan-request-repo.test.ts`（4）、`tests/routing/span-routing-smoke-script.test.ts`（6）、`tests/routing/span-routing.test.ts`（32）、`tests/configuration/span-routing-config.test.ts`（13）。

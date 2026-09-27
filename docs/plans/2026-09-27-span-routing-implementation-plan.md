@@ -345,6 +345,22 @@ docker run --rm metawork-span-test
 
 额外发现并修复：并发限制器在“让位”时先递减计数再授权，导致让位后新到达的请求会在两个槽位仍被占用时被准入。现已改为由等待者直接继承槽位，并新增“让位后不得过准入”回归测试（修复前 peak=3，修复后 peak≤2）。
 
-仍未完成（已知缺口，不影响上述修复）：system/recovery 绑定不注入 advisor（该绑定的 replan 回调本就直接拒绝，Span 路径不可达）；真实 OpenRouter smoke 与 Docker 持久化验证仍待运维执行。
+未完成（已知缺口，不影响上述修复）：system/recovery 绑定不注入 advisor（该绑定的 replan 回调本就直接拒绝，Span 路径不可达）；真实 OpenRouter smoke 与 Docker 持久化验证仍待运维执行。
+
+### 评审修正（第二轮，2026-09-27）
+
+复核第一轮修复后又发现 5 处未闭合边界，均已修复并补回归：
+
+| 问题 | 修复 |
+| --- | --- |
+| replan/conflict_replan 在 Span 等待期间取消后仍返回可入库 `plan_proposed` | preparation 返回 `null`；重规划入口透传 `null`；Runtime 将 generation 请求置 `cancelled` 而非 `failed`，不入库 |
+| `routing.span.apiKeyRef` 可为任意（含其他 Provider 的）secret 引用 | schema 收紧为 `SPAN_ROUTING_SECRET_REFERENCE` 字面量；Server 解析前再次核对常量 |
+| smoke 在 internal 缺失时回退读取同名 Provider Key | 删除 Provider 回退分支，凭据来源与实际读取位置一致 |
+| Session/Server 关闭不 abort 进行中的 Span 请求 | `dispose()` 先 abort；Server 关闭入口 abort 共享 `lifetimeSignal`；advisor 合并信号并在 abort 时 fail-closed |
+| 跳过的 Subtask 误占 16 个评估名额，且超限原因误记为 `single_candidate` | 只按实际请求计数；超限记 `span_proposal_budget_exhausted` |
+
+新增回归：`tests/execution/kernel-execution-runtime-replan.test.ts`（2）、`tests/storage/generation-replan-request-repo.test.ts` 新增 1 条，`tests/session/span-routing-session-integration.test.ts`（8）、`tests/session/span-plan-preparation.test.ts`（11）、`tests/routing/span-routing.test.ts`（32）、`tests/routing/span-routing-smoke-script.test.ts`（6）、`tests/configuration/span-routing-config.test.ts`（13）。
+
+验证（本机 macOS，Node 22）：`npx tsc --noEmit` 通过；`tests/configuration`+`tests/routing`+`tests/kernel`+`tests/architecture`+`tests/management`+`tests/web` → `1 failed | 782 passed`（仅基线 `configuration-module-boundary`）；`tests/execution`+`tests/storage`+`tests/account`+`tests/e2e` → `403 passed | 6 skipped`；`tests/session` → `7 failed | 240 passed | 3 skipped`，7 个失败与基线 `55184d8` 完全相同（无新增回归）。全量 `npm test` 未在本轮重跑；真实 OpenRouter smoke、Docker 持久化、浏览器 E2E 仍未执行。
 - 文档 closing commit：`181a65a docs: plan Span routing integration`。
 - 产品实现 closing commit：本计划最后一批提交（含文档与验收）。
