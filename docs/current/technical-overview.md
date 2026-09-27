@@ -1064,6 +1064,26 @@ That migration also runs in the upgrade transaction before the candidate
 configuration probe, because an older installation would otherwise fail every
 update with an unavailable Provider secret.
 
+### Span Routing Advisor
+
+The advanced settings section offers one optional external routing advisor:
+`respan/span-01-lite` on OpenRouter. Its OpenRouter Key uses the same secret
+flow as a Provider Key — the Server writes it to the account SecretStore under
+the fixed `routing-span` reference and the revision stores only that reference.
+The section has no Provider or Model picker, and a blank Key field keeps the
+stored value.
+
+When enabled, the Server evaluates only the candidates that already passed the
+shared hard filter and attaches a bounded `spanRouting` observation to the
+`plan_proposed` event before it is durably enqueued. `ControlKernel`
+re-validates that observation and uses the probabilities solely to order
+already-authorized AgentClass and Model candidates. Disabled, missing-key,
+timeout, HTTP error, invalid response, candidate mismatch, or over-budget input
+all fall back to the deterministic resolver; cancellation is propagated instead
+of becoming a fallback. Replaying a stored event makes no external call. Span
+usage is internal routing observation only and adds no separate user billing
+stage.
+
 Export the Feishu app secret before starting the runtime:
 
 ```bash

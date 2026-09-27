@@ -96,6 +96,15 @@ display names, while internal model/provider refs, configuration revisions and
 binding fingerprints remain server-side. If a historical revision cannot
 recover a public model identity, the projection reports that the historical
 model information is unavailable instead of exposing the internal ref.
+Optional Span routing is the only external routing advisor. Advanced settings
+store its OpenRouter credential through the same SecretStore path as a Provider
+key, and the revision keeps only the fixed `routing-span` reference. After the
+shared hard filter and before the `plan_proposed` event is durably enqueued, the
+Server may attach a bounded `spanRouting` observation to that event. Replay
+reuses the persisted observation and never re-calls the advisor. `ControlKernel`
+re-validates the observation and then uses its probabilities only to order
+eligible candidates; it never widens the candidate set, and any absent, stale,
+invalid, or failed observation leaves the deterministic resolver unchanged.
 
 Public attempt timelines retain the internal `attemptId` only as a non-visible
 correlation key. Visible execution narrative uses attempt kind/ordinal labels

@@ -3,7 +3,13 @@ import {
   AnyFusionConfigurationV2Schema,
   parseAnyFusionConfigurationV2,
   SPAN_ROUTING_DEFAULT_TIMEOUT_MS,
+  SPAN_ROUTING_SECRET_REFERENCE,
 } from '../../src/configuration/schema.js';
+import { CredentialsFileSecretStore } from '../../src/configuration/credentials-file-secret-store.js';
+import type { SecretReference } from '../../src/configuration/secret-store.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   buildKernelConfigurationView,
   buildPlannerConfigurationView,
@@ -207,6 +213,37 @@ describe('Span routing diff classification', () => {
     });
     const classification = classifyConfigurationDiff(withSpan(3_000), withSpan(5_000));
     expect(classification.classification).toBe('hot');
+  });
+});
+
+describe('Span routing credential storage', () => {
+  it('round-trips the fixed Span reference through the production SecretStore', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'metawork-span-secret-'));
+    try {
+      const store = new CredentialsFileSecretStore(join(root, 'credentials.json'));
+      await store.initialize();
+      const reference = SPAN_ROUTING_SECRET_REFERENCE as SecretReference;
+      await store.put(reference, 'sk-or-span-test');
+      await expect(store.get(reference)).resolves.toBe('sk-or-span-test');
+      await store.delete(reference);
+      await expect(store.get(reference)).rejects.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts the Span reference in the configuration schema', () => {
+    const result = AnyFusionConfigurationV2Schema.safeParse({
+      ...baseConfiguration(),
+      routing: {
+        span: {
+          enabled: true,
+          model: 'respan/span-01-lite',
+          apiKeyRef: SPAN_ROUTING_SECRET_REFERENCE,
+        },
+      },
+    });
+    expect(result.success).toBe(true);
   });
 });
 

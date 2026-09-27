@@ -111,7 +111,7 @@ replacing those semantics.
 
 ## Implementation Plans
 
-- [Span 路由增强设计](plans/2026-09-27-span-routing-design.md)与[实施计划](plans/2026-09-27-span-routing-implementation-plan.md)：已确认 Span 专用方案，高级设置复用 Provider SecretStore；合法候选先硬过滤，Span noul 结果随 Kernel 事件持久化，失败回退现有 resolver。计划已编写，尚未实施。
+- [Span 路由增强设计](plans/2026-09-27-span-routing-design.md)与[实施计划](plans/2026-09-27-span-routing-implementation-plan.md)：已实现。高级设置中的 Span OpenRouter Key 复用 Provider SecretStore 流程；共用硬过滤后由 `respan/span-01-lite` 对合法候选做 noul 软排序，observation 随 `plan_proposed` 持久化，Kernel 重新校验后只用概率排序，失败回退现有 resolver。新增 `npm run smoke:span-routing` 作为需凭据的真实集成冒烟。
 
 - [MetaCoin usage and Query billing implementation](plans/2026-09-21-metacoin-query-billing-implementation-plan.md): implementation completed on 2026-09-22 without a commit. The 11-task plan covers single-user multi-task reliability, per-Query usage/stage costs, assessed MetaCoin bills, Task rollups, three-client projections, and idempotent external consumption reporting. Queries need not have Tasks; assessed charges and externally confirmed deductions are separate. Wallets, subscriptions/payment collection, recharge and refunds belong to an independent external system; Provider restrictions, a mandatory model proxy, local balance enforcement and shared-runtime multi-tenancy are excluded.
 

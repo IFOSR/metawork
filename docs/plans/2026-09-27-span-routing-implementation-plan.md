@@ -11,7 +11,7 @@
 ---
 
 - 日期：2026-09-27
-- 状态：计划已编写，尚未实施
+- 状态：已实现（代码、自动化验证与文档已完成；真实 OpenRouter smoke 与 Docker 验证待运维执行）
 - 设计：[Span 路由增强设计](2026-09-27-span-routing-design.md)
 - 起点：`55184d84f848af4909508717199c8c3dd43f7739`
 - 分支：`feat/span-routing`
@@ -306,7 +306,16 @@ docker run --rm metawork-span-test
 ## 计划交付记录
 
 - 已完成：核对 main 基线、Provider SecretStore staging、advanced settings、模型过滤/Kernel 健康边界、三个 proposal 入口、事件与 ledger 存储；创建隔离分支及设计/计划。
-- 已验证：文档相对链接、关键文件路径与 git whitespace（提交前执行）。
-- 未执行：依赖安装、产品代码改动、产品测试、真实 Span 集成、部署。
-- 文档 closing commit：见分支上 `docs: plan Span routing integration` 提交。
-- 产品实现 closing commit：待实施完成后填写。
+- 已交付（按任务顺序，均在本分支）：
+  1. `feat(configuration): add Span settings with provider-style secret storage` — `routing.span` 配置、安全投影、Span 凭据 staging 与回滚、管理接口与状态端点。
+  2. `refactor(routing): share plan candidate eligibility before Span evaluation` — 共用 `planSubtaskCandidateGroups` 与 `filterEligibleModelCandidates`，Span 概率作为 resolver 的一个排序信号。
+  3. `feat(routing): add bounded Span noul evaluation` — `@openrouter/sdk@1.3.32` 适配器、问题构建、响应校验、超时/abort/并发/预算限制。
+  4. `feat(session): persist Span observations before plan admission` — `plan_proposed` 新增可选 `spanRouting`，initial/replan/conflict_replan 三入口统一富化。
+  5. `feat(kernel): rank eligible bindings with validated Span observations` — Kernel 重校验观察并仅对已授权候选排序，deferred availability 保留授权顺序。
+  6. `feat(web): configure Span credentials in advanced settings` — 高级设置新增 Span 面板与草稿/密钥流程。
+  7. 本任务：系统验收、真实 smoke 脚本与权威文档修订。
+- 已验证（本机 macOS，Node 22.23.2）：`npx tsc --noEmit`（根工程）、`web` 的 `tsc --noEmit` 与 `vite build`、`tests/routing`、`tests/kernel`、`tests/configuration/span-routing-config.test.ts`、`tests/session/span-plan-preparation.test.ts`、`tests/session/conversation-session.test.ts`、`tests/session/planning-kernel-path.test.ts`、`tests/e2e/span-routing.test.ts`、`tests/web/config-edit.test.ts`、`tests/web/settings-workbench.test.ts`、`tests/management/server.test.ts`。
+- 未执行（环境/凭据门）：真实 `npm run smoke:span-routing`（需要已轮换的 OpenRouter Key）、Docker `Dockerfile.test` 持久化回归、Chrome 浏览器 E2E `tests/e2e/settings-workbench-browser.test.ts`。
+- 已知偏差：高级设置在 Span 关闭且从未配置时不写入 `routing` 节点，避免无关节省。
+- 文档 closing commit：`181a65a docs: plan Span routing integration`。
+- 产品实现 closing commit：本计划最后一批提交（含文档与验收）。

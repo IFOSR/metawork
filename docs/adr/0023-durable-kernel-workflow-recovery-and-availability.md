@@ -137,3 +137,26 @@ The Phase 4 gated evaluation closed on 2026-07-21 without adoption. The replacea
 ## Consequences
 
 Crashes no longer create an uninspectable ledger/apply gap, and repeated submission resumes the same application instead of duplicating authorization. Retry, fallback, replan, availability, permission, partition waiting and sandbox recovery are auditable Kernel actions. The hard schema cuts require coordinated migration and replacement of every manual issue/apply path. Phase 5 remains serial; multi-Task and concurrent-frontier scheduling remain Phase 6.
+
+## Amendment: Persisted External Routing Observations (2026-09-27)
+
+A `plan_proposed` event may carry an optional, bounded `spanRouting` observation
+produced by the Server-side Span advisor before the event was enqueued.
+
+- The observation is part of the event body, so the existing `kernel_events`
+  JSON and decision-ledger JSON persist, replay, and recover it without a new
+  table or a second write authority.
+- Recovery and application retry reuse the stored observation. They never invoke
+  the external advisor, so replay stays deterministic and free of new side
+  effects.
+- `ControlKernel` treats the observation as untrusted input: it re-derives the
+  eligible candidate set and ignores the scores unless event id, configuration
+  revision, generation, graph revision, proposal fingerprint, Subtask, and
+  candidate identity all still match. A mismatch degrades only that Subtask to
+  the deterministic resolver.
+- The window between an external request succeeding and the event being durably
+  stored is explicitly not exactly-once. A crash there may repeat the request;
+  this is accepted rather than introducing a background request state machine.
+- Observations carry only internal refs, validated probabilities, a resolved
+  model version, bounded usage, and a finite failure reason. Credentials, raw
+  requests, and raw provider payloads are never persisted.

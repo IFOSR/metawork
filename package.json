@@ -37,6 +37,7 @@
     "smoke:anyfusion": "node scripts/smoke-metaclaw-real-task.mjs",
     "smoke:gateway": "node scripts/smoke-unified-gateway.mjs",
     "smoke:query-billing": "node scripts/smoke-query-billing.mjs",
+    "smoke:span-routing": "node scripts/smoke-span-routing.mjs",
     "smoke:clients": "vitest run tests/integration/independent-client-lifecycle.integration.test.ts",
     "smoke:metaclaw": "node scripts/smoke-metaclaw-real-task.mjs",
     "start": "node dist/index.js"

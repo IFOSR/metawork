@@ -1,7 +1,7 @@
 # Span 路由增强设计
 
 - 日期：2026-09-27
-- 状态：范围、架构、事件持久化与凭据方式已由用户确认；细节在本文件收敛，尚未实施。
+- 状态：已实现（2026-09-27）。范围、架构、事件持久化与凭据方式已由用户确认。
 - 基线：`main@55184d84f848af4909508717199c8c3dd43f7739`
 - 工作分支：`feat/span-routing`
 - 实施计划：[Span routing implementation](2026-09-27-span-routing-implementation-plan.md)
@@ -51,7 +51,7 @@ interface SpanRoutingConfiguration {
 
 默认 model 固定、enabled=false、timeoutMs=3000；timeout 允许 500–10000ms 的服务端校验范围。模型在 UI 中只读展示，无模型/provider 选择器。高级设置提供启用开关、password 类型 OpenRouter API key 输入框、已配置/未配置状态；超时可以保留服务端默认，不要求用户填写。保存空输入表示保留 key，禁用不删除 key，重新输入表示替换，成功后清空输入框。无需新增在线 probe 按钮或将网络探测作为保存成功的条件。
 
-key 仅作为写入请求中的临时字段，不能并入 config 对象。复用 Provider 现有激活事务的 stageSecrets 和 rollback 回调，但当前 `secrets` 映射按 providerRef 解释，不能伪造 Provider 或将 Span key 塞进这个映射。新增一个有类型的 Span 凭据写入字段，服务端固定解析为专用引用（例如 `file-secret:anyfusion/routing/span`），与 Provider 共用 SecretStore staging 工具。客户端不能提交任意 secretRef 读取/写入目标。
+key 仅作为写入请求中的临时字段，不能并入 config 对象。复用 Provider 现有激活事务的 stageSecrets 和 rollback 回调，但当前 `secrets` 映射按 providerRef 解释，不能伪造 Provider 或将 Span key 塞进这个映射。新增一个有类型的 Span 凭据写入字段，服务端固定解析为专用引用（`file-secret:anyfusion/routing-span`，与 Provider 共用 SecretStore staging 工具，且同时兼容 `CredentialsFileSecretStore` 的引用格式）。客户端不能提交任意 secretRef 读取/写入目标。
 
 revision 只保存 apiKeyRef，读取接口只显示凭据状态。引用格式不合法应拒绝配置；启用但未提供引用、或存储中 key 不可读时允许保留可选功能配置，并显示提示，运行时走 `secret_unavailable` 回退。SecretStore 写失败属于保存失败，不能假装配置已成功。
 
@@ -161,4 +161,4 @@ Span usage 保存为内部路由观测，不冒充 Planner/Executor 用量或自
 
 ## 10. 完成记录
 
-设计与计划产出日期：2026-09-27。产品实现、自动化验证、真实集成 smoke 和部署尚未开始。文档提交记录由配套实施计划维护；最终实现关闭时填写实际日期、测试证据和 closing commit。
+设计与计划产出日期：2026-09-27。产品实现在同一日期完成于分支 `feat/span-routing`（起点 `main@55184d84`），关闭提交见实施计划的交付记录。真实 OpenRouter 集成 smoke 需要运维提供已轮换的密钥并显式执行 `npm run smoke:span-routing`，未在本次自动化验证中运行；Docker 持久化验证同样未执行。部署尚未进行。

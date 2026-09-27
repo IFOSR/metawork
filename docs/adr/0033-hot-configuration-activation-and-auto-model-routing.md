@@ -200,3 +200,40 @@ sharing that tool. No enabled Executor rejects new user work with
   qualification in the same revision.
 - Rollback is another revision activation and obeys the same gate and
   optimistic-concurrency rules.
+
+## Amendment: Span Routing Advisor (2026-09-27)
+
+MetaWork may optionally consult one external decision model, `respan/span-01-lite`
+at OpenRouter, as a **soft ordering signal** over already-authorized candidates.
+It never widens the candidate set and never produces a binding decision.
+
+- Configuration owns an optional additive `routing.span` section
+  (`enabled`, fixed `model`, `timeoutMs`, optional `apiKeyRef`). Revisions created
+  before it parse unchanged with the section absent, and adding or editing it is
+  a hot-safe change under the existing activation gate.
+- The credential is entered in advanced settings exactly like a Provider key:
+  the Server writes it to the account SecretStore under a fixed
+  `routing-span` reference and the revision stores only that reference. Planner
+  and Executor projections, generated runtimes, diffs, logs, and client
+  responses never carry the plaintext key.
+- Hard eligibility is unchanged and shared: the same pure filter that authorizes
+  a Model also decides which candidates may be scored. Provider/Model
+  enablement, Harness compatibility, capabilities, permission profiles, context,
+  cost, latency, quality, and Kernel Executor availability all still apply
+  first. A high probability cannot make an ineligible candidate eligible.
+- Span is called in the Application Shell after proposal validation and before
+  the `plan_proposed` event enters the durable Kernel inbox. The bounded,
+  validated observation is persisted on that event. `ControlKernel` re-validates
+  event/revision/generation/graph/Subtask/candidate identity and then uses the
+  probability only as an ordering signal inside the same AgentClass and across
+  AgentClasses; ties and every other decision stay with the deterministic
+  resolver.
+- Replay of a stored `plan_proposed` event makes no external call. A crash
+  before the event is durably stored may repeat the request; Span is not
+  idempotent and must not be described as exactly-once.
+- Any advisor failure — disabled, missing credential, timeout, HTTP error,
+  invalid response, candidate mismatch, or input over budget — falls back to the
+  unchanged deterministic routing. Cancellation propagates instead of becoming a
+  scored fallback.
+- Span usage is retained as internal routing observation only. It does not
+  masquerade as Planner/Executor usage or add a separate user billing stage.
