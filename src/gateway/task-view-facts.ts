@@ -1,20 +1,47 @@
 import type { Subtask, Task } from '../core/types.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import { resolvePublicRoutingIdentity } from '../configuration/public-routing-identity.js';
-import type { KernelDispatchItemRecord } from '../storage/kernel-dispatch-item-repo.js';
-import type { ExecutorAttemptReceipt } from '../storage/executor-attempt-receipt-repo.js';
-import type { ResultObjectRecord } from '../storage/result-object-repo.js';
 import type { GatewayTaskViewSnapshot } from './task-view.js';
 
 type Configuration = Parameters<typeof resolvePublicRoutingIdentity>[0];
+
+interface GatewayDispatchFact {
+  readonly subtaskId: string;
+  readonly createdAt: string;
+  readonly authorizedBinding: AuthorizedExecutorBinding;
+}
+
+interface GatewayAttemptReceiptFact {
+  readonly attemptId: string;
+  readonly taskId: string;
+  readonly subtaskId: string;
+  readonly generationId: string;
+  readonly completedAt: string;
+  readonly terminalState: string;
+  readonly failure: unknown;
+  readonly authorizedBinding: AuthorizedExecutorBinding;
+  readonly parsing: Record<string, unknown>;
+}
+
+interface GatewayResultObjectFact {
+  readonly resultId: string;
+  readonly accountId: string;
+  readonly taskId: string;
+  readonly generationId: string;
+  readonly sourceSubtaskId: string;
+  readonly attemptId: string;
+  readonly kind: string;
+  readonly byteLength: number;
+  readonly completeness: 'complete' | 'partial' | 'incomplete';
+}
 
 /** Task facts come from attempts, never a command Turn's result stream. */
 export async function projectTaskViewFacts(input: {
   task: Pick<Task, 'id' | 'accountId'>;
   subtasks: readonly Subtask[];
-  dispatches: readonly KernelDispatchItemRecord[];
-  receipts: readonly ExecutorAttemptReceipt[];
-  findObject(resultId: string): ResultObjectRecord | null;
+  dispatches: readonly GatewayDispatchFact[];
+  receipts: readonly GatewayAttemptReceiptFact[];
+  findObject(resultId: string): GatewayResultObjectFact | null;
   readConfiguration(revisionId: string): Promise<Configuration>;
 }): Promise<Pick<GatewayTaskViewSnapshot, 'routing' | 'subtasks' | 'result'>> {
   const configurations = new Map<string, Promise<Configuration>>();

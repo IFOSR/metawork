@@ -185,7 +185,7 @@ describe('planner-first executor command acceptance', () => {
     await session.submit('执行带候选回退的任务', { awaitAsyncWork: true });
 
     const output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('【Executor: codex-cli｜派发准备】\n→ Executor: codex-cli 将处理该任务');
+    expect(output).toContain('【Executor: 智能体 2｜派发准备】\n→ Executor: 智能体 2 将处理该任务');
     expect(output).not.toContain('【Executor: pi-agent｜派发准备】');
     expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
     expect(attemptExecutionBackend.create.mock.calls[0]![0].command).toBe('codex');

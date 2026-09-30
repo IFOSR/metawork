@@ -160,7 +160,7 @@ describe('scripted session', () => {
     expect(output).toContain('最新结果摘要');
     expect(output).toContain('Phoenix 周报结论');
     expect(output).toContain('【MetaClaw｜理解用户请求】');
-    expect(output).toContain('【Executor: codex-cli｜派发准备】\n→ Executor: codex-cli 将处理该任务');
+    expect(output).toContain('【Executor: 智能体 2｜派发准备】\n→ Executor: 智能体 2 将处理该任务');
     expect(output).not.toContain('已识别可执行任务');
     expect(output).not.toContain('PlanningAgent:');
     expect(output).not.toContain('ControlKernel:');

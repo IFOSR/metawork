@@ -338,7 +338,7 @@ function isNonChargeableMeasurement(
   observation: Pick<PersistedUsageObservation, 'resource' | 'metric' | 'countsTowardTotal' | 'quality'>,
   quantity: Rational,
 ): boolean {
-  if (isZeroRational(quantity)) return true;
+  if (isZeroRational(quantity) && observation.quality !== 'unavailable') return true;
   if (observation.resource === 'model_tokens'
     && ['cache_read', 'cache_write', 'reasoning'].includes(observation.metric)) {
     return true;

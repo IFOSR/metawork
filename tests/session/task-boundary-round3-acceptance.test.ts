@@ -176,7 +176,7 @@ describe('Round 3 task boundary acceptance', () => {
 
     const snapshot = session.getSnapshot().output.join('\n');
     expect(snapshot).not.toContain(`关联到任务 #${parkedTaskId}`);
-    expect(snapshot).toContain('【Executor: codex-cli｜派发准备】');
+    expect(snapshot).toContain('【Executor: 智能体 2｜派发准备】');
     expect(snapshot).not.toContain('按当前对话创建跟进任务');
   });
 
@@ -448,7 +448,7 @@ describe('Round 3 task boundary acceptance', () => {
     await session.submit('检查这个任务生成的 Markdown 文档内容是否完整', { awaitAsyncWork: true });
 
     const snapshot = session.getSnapshot().output.join('\n');
-    expect(snapshot).toContain('【Executor: codex-cli｜派发准备】');
+    expect(snapshot).toContain('【Executor: 智能体 2｜派发准备】');
     expect(snapshot).toContain('检查完成：文档内容完整。');
     expect(taskRepo.findAll()).toHaveLength(1);
     expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);

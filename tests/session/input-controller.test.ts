@@ -47,7 +47,12 @@ describe('InputController', () => {
     await controller.submit('继续刚才的任务');
 
     expect(port.appendUserInput).toHaveBeenCalledWith('继续刚才的任务');
-    expect(port.handleNaturalLanguageInput).toHaveBeenCalledWith('继续刚才的任务', undefined);
+    expect(port.handleNaturalLanguageInput).toHaveBeenCalledWith(
+      '继续刚才的任务',
+      undefined,
+      undefined,
+      {},
+    );
     expect(port.handleCommand).not.toHaveBeenCalled();
   });
 
