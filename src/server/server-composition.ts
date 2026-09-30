@@ -54,6 +54,7 @@ import { createNotificationService } from '../notifications/feishu.js';
 import { nanoid } from 'nanoid';
 import { MetaclawGatewayServer } from '../gateway/server.js';
 import { resolveGatewaySocketPath } from '../gateway/gateway-paths.js';
+import { resolveLocalEndpointPath } from '../platform/local-endpoint.js';
 import { MarkdownPreviewServer } from '../integrations/markdown-preview.js';
 import { FeishuRuntimeManager } from '../gateway/feishu-runtime.js';
 import { FeishuGatewayAdapter } from '../gateway/feishu-gateway-adapter.js';
@@ -801,7 +802,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   const notifier = createNotificationService(config);
   const plannerHostSocketPath = (process.env.METACLAW_PLANNER_HOST_SOCKET
     ?? process.env.METACLAW_PLANNER_TUI_SOCKET
-    ?? resolve(metaclawDir, 'anyfusion-planner.sock')).trim();
+    ?? resolveLocalEndpointPath(metaclawDir, 'anyfusion-planner.sock')).trim();
   process.env.METACLAW_PLANNER_HOST_SOCKET = plannerHostSocketPath;
   process.env.METACLAW_PLANNER_TUI_SOCKET = plannerHostSocketPath;
   const plannerHost = new PlannerHostBridge({ socketPath: plannerHostSocketPath, logger: console });

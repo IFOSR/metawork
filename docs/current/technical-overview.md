@@ -446,7 +446,9 @@ Required:
 - Node.js `>=22.19.0`.
 - npm.
 - Git.
-- A Unix-like shell environment. macOS and Linux are primary targets; Windows users should use WSL2 for the supported install path.
+- A native macOS, Linux, or Windows x64 environment. macOS and Linux use
+  filesystem Unix sockets; Windows uses named pipes and the PowerShell
+  installer.
 - Native build tooling for `better-sqlite3`.
 
 Recommended native build tools:
@@ -527,7 +529,10 @@ AnyFusion-Pi checkout is preserved and built without being overwritten.
 
 ## Windows Install
 
-The recommended Windows path is WSL2 with Ubuntu. This gives MetaWork the Unix-like shell, native build tooling, sockets, process behavior, and executor compatibility that the runtime expects.
+The native Windows x64 release uses Node named pipes for the local Gateway and
+Planner Host. Windows Developer Mode (or an elevated terminal) is required for
+the transactional NTFS release pointers. WSL2 remains a supported Linux
+compatibility path when native Windows executor tooling is unavailable.
 
 Install WSL2 from PowerShell:
 
@@ -572,7 +577,10 @@ Windows install checklist:
 - Confirm the default executor works in WSL, for example `codex --help`.
 - Confirm `npm run smoke:metawork` completes successfully
 
-Native Windows PowerShell is not the primary supported runtime today. Advanced users can try direct development with Node.js 22.19+, Git, Visual Studio Build Tools, `npm install`, `npm run build`, and `node dist/index.js`, but `setup.sh`, `anyfusion.sh`, Unix socket Gateway behavior, and downstream executor CLIs may not behave the same way. Use WSL2 for direct Linux development; the container runtime remains an optional compatibility path.
+Native Windows development uses Node.js 22.19+, Git, Visual Studio Build
+Tools, `npm install`, `npm run build`, and `node dist/index.js`. The native
+release path uses `scripts/install.ps1`; WSL2 and the container runtime remain
+optional compatibility paths.
 
 ## Install Executors
 

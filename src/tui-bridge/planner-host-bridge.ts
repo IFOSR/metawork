@@ -24,6 +24,7 @@ import {
   type PlannerHostMessage,
   type PlannerHostRequest,
 } from './planner-host-protocol.js';
+import { isNamedPipePath } from '../platform/local-endpoint.js';
 
 export interface PlannerHostBridgeSession {
   subscribe(listener: (snapshot: SessionSnapshot) => void): () => void;
@@ -88,8 +89,11 @@ export class PlannerHostBridge {
 
   async start(): Promise<void> {
     if (this.server) return;
-    await mkdir(dirname(this.deps.socketPath), { recursive: true });
-    await this.reclaimStaleSocket();
+    const namedPipe = isNamedPipePath(this.deps.socketPath);
+    if (!namedPipe) {
+      await mkdir(dirname(this.deps.socketPath), { recursive: true });
+      await this.reclaimStaleSocket();
+    }
     const server = createServer(socket => this.handleConnection(socket));
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error) => {
@@ -105,6 +109,7 @@ export class PlannerHostBridge {
       server.listen(this.deps.socketPath);
     });
     this.server = server;
+    if (namedPipe) return;
     try {
       this.ownedSocketIdentity = await this.readSocketIdentity();
       await chmod(this.deps.socketPath, 0o600);
@@ -442,6 +447,7 @@ export class PlannerHostBridge {
   }
 
   private async reclaimStaleSocket(attempt = 0): Promise<void> {
+    if (isNamedPipePath(this.deps.socketPath)) return;
     try {
       const stat = await lstat(this.deps.socketPath, { bigint: true });
       if (!stat.isSocket()) throw new Error(`refusing to replace non-socket bridge path: ${this.deps.socketPath}`);
@@ -492,6 +498,12 @@ export class PlannerHostBridge {
   }
 
   private async closeOwnedServer(server: Server, owned: SocketIdentity | null): Promise<void> {
+    if (isNamedPipePath(this.deps.socketPath)) {
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve());
+      });
+      return;
+    }
     let replacementGuardPath: string | null = null;
     if (owned) {
       const current = await this.readSocketIdentity().catch(error => {

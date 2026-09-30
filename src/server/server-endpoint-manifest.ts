@@ -1,6 +1,7 @@
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { isNamedPipePath } from '../platform/local-endpoint.js';
 
 export const ENDPOINT_MANIFEST_VERSION = 1 as const;
 
@@ -140,7 +141,11 @@ export function validateEndpointManifest(
       message: `MetaWork Server PID ${manifest.pid} is not running`,
     };
   }
-  if (deps.socketExists && !deps.socketExists(manifest.unixSocketPath)) {
+  if (
+    deps.socketExists
+    && !isNamedPipePath(manifest.unixSocketPath)
+    && !deps.socketExists(manifest.unixSocketPath)
+  ) {
     return {
       ok: false,
       code: 'socket_unavailable',

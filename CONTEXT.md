@@ -533,6 +533,11 @@ configuration/generated/application revisions, revisioned database files and
 durable activation journals. Until an online management transaction can prove
 admission closure and dispatch drain, the native updater fails closed when the
 Server is running and requires it to be stopped before pointer mutation.
+The signed release matrix includes macOS Intel/Apple Silicon, Windows x64, and
+Linux x64/arm64 host builds. Windows native clients use deterministic named
+pipes and `.cmd` launchers; macOS/Linux retain filesystem Unix sockets and
+`install.sh`, while Windows uses `install.ps1`. Linux native dependencies are
+never fabricated on macOS through a cross-platform archive-only build.
 `metawork build` is the directory-independent source build and activation
 entrypoint. It reads one installation-level source checkout record, rebuilds
 Runtime, Planner and Web, generates a unique release identity and activates one

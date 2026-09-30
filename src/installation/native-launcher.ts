@@ -63,6 +63,7 @@ export async function removeManagedLauncher(path: string): Promise<void> {
 }
 
 export function renderNativeLauncher(installRoot: string): string {
+  if (process.platform === 'win32') return renderWindowsLauncher(installRoot);
   const root = shellDoubleQuoted(installRoot);
   return `#!/usr/bin/env bash
 ${MANAGED_MARKER}
@@ -93,8 +94,37 @@ exec node "$METAWORK_INSTALL_ROOT/app/current/dist/index.js" "$@"
 `;
 }
 
+export function renderWindowsLauncher(installRoot: string): string {
+  const root = installRoot.replaceAll('%', '%%').replaceAll('"', '""');
+  return `@echo off
+REM MetaWork managed launcher
+set "METAWORK_INSTALL_ROOT=%METAWORK_INSTALL_ROOT%"
+if not defined METAWORK_INSTALL_ROOT set "METAWORK_INSTALL_ROOT=${root}"
+set "ANYFUSION_INSTALL_ROOT=%METAWORK_INSTALL_ROOT%"
+set "METACLAW_EXECUTOR_BACKEND=worktree"
+set "METAWORK_SECRET_STORE=file"
+set "ANYFUSION_WEB_USERNAME=%ANYFUSION_WEB_USERNAME%"
+if not defined ANYFUSION_WEB_USERNAME set "ANYFUSION_WEB_USERNAME=admin"
+set "ANYFUSION_WEB_PASSWORD=%ANYFUSION_WEB_PASSWORD%"
+if not defined ANYFUSION_WEB_PASSWORD set "ANYFUSION_WEB_PASSWORD=123456"
+set "ANYFUSION_PLANNER_WORKSPACE=%CD%"
+set "METACLAW_PLANNER_WORKDIR=%CD%"
+set "ANYFUSION_PI_SOURCE_ROOT=%METAWORK_INSTALL_ROOT%\\app\\current\\planner"
+set "METACLAW_PLANNER_COMMAND=%ANYFUSION_PI_SOURCE_ROOT%\\packages\\coding-agent\\dist\\cli.js"
+set "METACLAW_PLANNER_TUI_COMMAND=%METACLAW_PLANNER_COMMAND%"
+set "METACLAW_PLANNER_SESSION_DIR=%METAWORK_INSTALL_ROOT%\\data\\planner-sessions"
+set "METACLAW_PLANNER_SCHEMA_PATH=%METAWORK_INSTALL_ROOT%\\app\\current\\dist\\planning-agent-plan-v8.schema.json"
+set "ANYFUSION_PLANNER_SCHEMA_PATH=%METACLAW_PLANNER_SCHEMA_PATH%"
+set "METACLAW_PI_ATTEMPT_EXTENSION=%METAWORK_INSTALL_ROOT%\\app\\current\\dist\\pi-attempt-tools.ts"
+set "PI_SKIP_VERSION_CHECK=1"
+set "PI_TELEMETRY=0"
+node "%METAWORK_INSTALL_ROOT%\\app\\current\\dist\\index.js" %*
+`;
+}
+
 function isManagedLauncher(content: string): boolean {
   return content.includes(MANAGED_MARKER)
+    || content.includes('REM MetaWork managed launcher')
     || content.includes(LEGACY_MANAGED_MARKER)
     || isLegacyMetaWorkLauncher(content);
 }

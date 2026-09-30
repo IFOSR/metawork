@@ -55,9 +55,9 @@ AnyFusion 标识。
 
 ## 安装方式
 
-主要原生安装路径是 macOS。Linux 与 WSL2 使用同一套面向 Unix 的源码安装流程，
-并默认使用文件 SecretStore。原生 Windows PowerShell 不是生产支持路径，请使用
-WSL2 或可选的 Docker 兼容模式。
+主要原生安装路径覆盖 macOS、Linux 和 Windows x64。Linux 与 WSL2 使用面向
+Unix 的安装器并默认使用文件 SecretStore；Windows 使用签名 PowerShell 安装器，
+通过 named pipe 连接本地 Runtime。
 
 ### 环境要求
 
@@ -83,8 +83,21 @@ metawork --help
 一条命令下载并校验已签名的预构建 Runtime 与内嵌 Planner 产物，然后自动进入
 Provider 配置向导。Linux 与 WSL2 上安装器会自动选用文件型 SecretStore
 （`METAWORK_SECRET_STORE=file`），无需手动 export。重复执行同一命令会对已有
-安装原地升级——配置、密钥和任务数据全部保留。Windows 用户请使用 WSL2 或
-Docker 兼容模式。向导完成后，继续阅读[快速开始](#快速开始)。
+安装原地升级——配置、密钥和任务数据全部保留。Windows 用户请使用下面的
+PowerShell 安装器。向导完成后，继续阅读[快速开始](#快速开始)。
+
+### 一条命令安装（Windows x64）
+
+在当前用户的 PowerShell 中执行：
+
+```powershell
+irm https://14.103.216.193/metawork-release/install.ps1 -OutFile metawork-install.ps1
+.\metawork-install.ps1
+```
+
+Windows 版本要求 Node.js `>=22.19.0`、Git，以及 Windows Developer Mode
+（或管理员终端），以便事务性 Release 指针使用 NTFS 链接。安装器会先校验
+签名 manifest 与两个 ZIP 产物，再执行离线安装。
 
 在 IDE 内嵌终端、agent 或 CI 等无法把向导接到键盘的场景，请先下载再用真实
 终端运行（或改用下文的环境变量非交互安装）：
@@ -144,9 +157,9 @@ export METAWORK_PROVIDER_REGION='international'
 <details>
 <summary>发布预构建产物（维护者）</summary>
 
-`node scripts/package-release.mjs` 将构建好的 Runtime、`web/dist`、Runtime 依赖和
-内嵌 Planner 打包为按平台区分的 tarball 和 Ed25519 签名 manifest，供
-`scripts/install.sh` 消费。签名密钥通过 `--signing-key` 或
+`npm run build:release` 会在当前原生主机上构建 Runtime/Web/Planner，再按平台打包为
+归档文件和 Ed25519 签名 manifest。Windows 使用 ZIP 与 `scripts/install.ps1`；
+macOS/Linux 使用 tarball 与 `scripts/install.sh`。签名密钥通过 `--signing-key` 或
 `METAWORK_RELEASE_SIGNING_KEY` 提供；`--generate-dev-key` 仅限本地测试。打包前请
 使用仅含生产依赖的目录（`npm ci --omit=dev`）。Runtime、Web、Planner 或依赖产物
 缺失时，打包命令会直接失败。

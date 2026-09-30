@@ -14,14 +14,14 @@
 //   --out-dir <dir>          Output directory (default: <source>/dist-release)
 //   --channel <name>         Release channel (default: preview)
 //   --release-id <id>        Release ID (default: <version>-build-<rev>-<epoch>)
-//   --key-id <id>            Signing key ID (default: release-2026-preview-01)
+//   --key-id <id>            Signing key ID (default: metawork-release-2026-03)
 //   --signing-key <path>     Ed25519 private key PEM (or env METAWORK_RELEASE_SIGNING_KEY)
 //   --generate-dev-key <prefix>
 //                            Write an Ed25519 dev key pair to <prefix>.{private,public}.pem
 //                            and exit (testing only; never publish releases signed with it)
 //   --validity-days <n>      Manifest validity window (default: 90)
 //   --artifact-base-url <u>  URL prefix for artifact URLs (default: ./ relative)
-//   --platform <name>        Override packaged platform (darwin|linux)
+//   --platform <name>        Override packaged platform (darwin|linux|win32)
 //   --arch <name>            Override packaged arch (x64|arm64); use together
 //                            with --platform to cross-package a tree whose
 //                            native modules were swapped for the target
@@ -48,7 +48,7 @@ function parseArguments(argv) {
     outDir: undefined,
     channel: 'preview',
     releaseId: undefined,
-    keyId: 'release-2026-preview-01',
+    keyId: 'metawork-release-2026-03',
     signingKeyPath: undefined,
     generateDevKeyPrefix: undefined,
     validityDays: 90,
@@ -89,16 +89,30 @@ function parseArguments(argv) {
   return options;
 }
 
-function platformName() {
-  if (process.platform === 'darwin') return 'darwin';
-  if (process.platform === 'linux') return 'linux';
-  throw new Error(`unsupported packaging platform: ${process.platform}`);
+export function platformName(platform = process.platform) {
+  if (platform === 'win32') return 'win32';
+  if (platform === 'darwin') return 'darwin';
+  if (platform === 'linux') return 'linux';
+  throw new Error(`unsupported packaging platform: ${platform}`);
 }
 
-function architectureName() {
-  if (process.arch === 'x64') return 'x64';
-  if (process.arch === 'arm64') return 'arm64';
-  throw new Error(`unsupported packaging architecture: ${process.arch}`);
+export function architectureName(architecture = process.arch) {
+  if (architecture === 'x64') return 'x64';
+  if (architecture === 'arm64') return 'arm64';
+  throw new Error(`unsupported packaging architecture: ${architecture}`);
+}
+
+export function archiveExtension(platform) {
+  if (platform === 'win32') return '.zip';
+  if (platform === 'darwin' || platform === 'linux') return '.tar.gz';
+  throw new Error(`unsupported archive platform: ${platform}`);
+}
+
+export function archiveName(kind, releaseId, platform, arch) {
+  if (kind !== 'metawork' && kind !== 'planner') {
+    throw new Error(`unsupported release artifact: ${kind}`);
+  }
+  return `${kind === 'metawork' ? 'metawork' : 'planner'}-${releaseId}-${platform}-${arch}${archiveExtension(platform)}`;
 }
 
 function run(command, args, options = {}) {
@@ -157,8 +171,33 @@ const waitForExit = promisify((child, callback) => {
 // so the archive carries a single top-level directory (the installer extracts
 // with --strip-components=1), so excludes work on both bsdtar and GNU tar, and
 // so multi-hundred-megabyte dependency trees never buffer in memory.
-async function packageTarball({ sourceRoot, stagingRoot, prefix, entries, exclude, outputPath }) {
+async function packageArchive({ sourceRoot, stagingRoot, prefix, entries, exclude, outputPath, platform }) {
   mkdirSync(join(stagingRoot, prefix), { recursive: true });
+  if (platform === 'win32') {
+    const pack = spawn('tar', [
+      '-C', sourceRoot,
+      '-h',
+      ...(exclude ?? []).flatMap(pattern => ['--exclude', pattern]),
+      '-cf', '-',
+      ...entries,
+    ]);
+    const unpack = spawn('tar', ['-C', join(stagingRoot, prefix), '-xf', '-']);
+    let unpackError = '';
+    unpack.stderr.on('data', chunk => { unpackError += chunk.toString('utf8'); });
+    pack.stdout.pipe(unpack.stdin);
+    const [packResult, unpackResult] = await Promise.allSettled([
+      waitForExit(pack),
+      waitForExit(unpack),
+    ]);
+    if (packResult.status === 'rejected') {
+      throw new Error(`staging tar for ${prefix} failed: ${packResult.reason?.message ?? packResult.reason}`);
+    }
+    if (unpackResult.status === 'rejected') {
+      throw new Error(`staging extract for ${prefix} failed: ${unpackResult.reason?.message ?? unpackResult.reason} ${unpackError}`);
+    }
+    run('tar', ['-a', '-cf', outputPath, '-C', stagingRoot, prefix]);
+    return;
+  }
   const pack = spawn('tar', [
     '-C', sourceRoot,
     // -h dereferences symlinks (npm workspace layouts create many) so the
@@ -260,23 +299,25 @@ async function main() {
   rmSync(stagingRoot, { recursive: true, force: true });
   mkdirSync(stagingRoot, { recursive: true });
 
-  const runtimeArchiveName = `metawork-${releaseId}-${platform}-${arch}.tar.gz`;
-  const plannerArchiveName = `planner-${releaseId}-${platform}-${arch}.tar.gz`;
-  await packageTarball({
+  const runtimeArchiveName = archiveName('metawork', releaseId, platform, arch);
+  const plannerArchiveName = archiveName('planner', releaseId, platform, arch);
+  await packageArchive({
     sourceRoot: options.sourceRoot,
     stagingRoot,
     prefix: 'metawork',
     entries: ['dist', 'web/dist', 'node_modules', 'package.json'],
     exclude: ['.DS_Store'],
     outputPath: join(options.outDir, runtimeArchiveName),
+    platform,
   });
-  await packageTarball({
+  await packageArchive({
     sourceRoot: options.plannerRoot,
     stagingRoot,
     prefix: 'planner',
     entries: ['.'],
     exclude: ['.git', '.DS_Store'],
     outputPath: join(options.outDir, plannerArchiveName),
+    platform,
   });
   rmSync(stagingRoot, { recursive: true, force: true });
 
@@ -348,7 +389,12 @@ function statSize(path) {
   return readFileSync(path).length;
 }
 
-main().catch(error => {
-  process.stderr.write(`package-release failed: ${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
-});
+if (
+  process.argv[1]
+  && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  main().catch(error => {
+    process.stderr.write(`package-release failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}

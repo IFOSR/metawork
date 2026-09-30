@@ -67,9 +67,9 @@ existing names where changing them would break installations.
 
 ## Installation
 
-The primary native path is macOS. Linux and WSL2 use the same Unix-oriented
-source setup with file-backed secrets. Native Windows PowerShell is not a
-supported production path; use WSL2 or the optional Docker compatibility path.
+The primary native paths are macOS, Linux, and Windows x64. Linux and WSL2 use
+the Unix installer with file-backed secrets. Windows uses the signed
+PowerShell installer and named pipes for local Runtime connections.
 
 ### Prerequisites
 
@@ -98,9 +98,23 @@ artifacts, verifies them, and launches the provider setup wizard. On Linux
 and WSL2 the installer automatically selects the file-backed secret store
 (`METAWORK_SECRET_STORE=file`); no manual export is needed. Re-running
 the same command updates an existing installation in place — configuration,
-secrets, and task data are preserved. Windows users: use WSL2 or the Docker
-compatibility path. When the wizard completes, continue with
+secrets, and task data are preserved. Windows users should use the native
+PowerShell installer below. When the wizard completes, continue with
 [Quick Start](#quick-start).
+
+### Quick install (Windows x64)
+
+Run PowerShell as the current user:
+
+```powershell
+irm https://14.103.216.193/metawork-release/install.ps1 -OutFile metawork-install.ps1
+.\metawork-install.ps1
+```
+
+The Windows package requires Node.js `>=22.19.0`, Git, and Windows Developer
+Mode (or an elevated terminal) so the transactional release pointers can use
+NTFS links. The installer verifies the signed manifest and both ZIP artifacts
+before invoking the offline installer.
 
 Running inside an IDE-embedded terminal, an agent, or CI where `curl | bash`
 cannot attach the setup wizard to your keyboard? Download first, then run in
@@ -166,10 +180,12 @@ export METAWORK_PROVIDER_REGION='international'
 <details>
 <summary>Publishing prebuilt releases (maintainers)</summary>
 
-`node scripts/package-release.mjs` packages the built Runtime, `web/dist`,
-Runtime dependencies, and vendored Planner into per-platform tarballs plus an
-Ed25519-signed manifest consumed by `scripts/install.sh`. Sign with a release
-key (`--signing-key` or `METAWORK_RELEASE_SIGNING_KEY`);
+`npm run build:release` builds Runtime/Web/Planner on the current native host
+and packages the built Runtime, `web/dist`, Runtime dependencies, and vendored
+Planner into per-platform archives plus an Ed25519-signed manifest. Windows
+uses ZIP archives and `scripts/install.ps1`; macOS and Linux use tarballs and
+`scripts/install.sh`. Sign with a release key (`--signing-key` or
+`METAWORK_RELEASE_SIGNING_KEY`);
 `--generate-dev-key` exists for local testing only. Package from a
 production-only dependency tree (`npm ci --omit=dev`). The packaging command
 fails if the Runtime, Web, Planner, or dependency outputs are missing.

@@ -24,6 +24,7 @@ This directory contains both current technical documentation and historical plan
 ## Releases
 
 - [AnyFusion v1.2.0 Preview](releases/v1.2.0-preview.0.md): public preview highlights, architecture summary, deployment status, and known limitations.
+- [MetaWork v1.2.0 Preview 6](releases/v1.2.0-preview.6.md): current cross-platform release matrix and build notes.
 - [Changelog](../CHANGELOG.md): public release history.
 
 ## Architecture Decisions

@@ -77,6 +77,10 @@ export function resolveMetaWorkPaths(
   const data = resolve(root, 'data');
   const generated = resolve(root, 'generated');
   const tmp = resolve(root, 'tmp');
+  const launcherBin = process.platform === 'win32'
+    ? resolve(resolvedHome, 'AppData', 'Local', 'MetaWork', 'bin')
+    : resolve(resolvedHome, '.local', 'bin');
+  const launcherSuffix = process.platform === 'win32' ? '.cmd' : '';
 
   return {
     root,
@@ -84,9 +88,9 @@ export function resolveMetaWorkPaths(
     appCurrent: resolve(app, 'current'),
     releases: resolve(app, 'releases'),
     bin: resolve(root, 'bin'),
-    launcher: resolve(resolvedHome, '.local', 'bin', 'metawork'),
-    anyFusionLauncher: resolve(resolvedHome, '.local', 'bin', 'anyfusion'),
-    metaclawLauncher: resolve(resolvedHome, '.local', 'bin', 'metaclaw'),
+    launcher: resolve(launcherBin, `metawork${launcherSuffix}`),
+    anyFusionLauncher: resolve(launcherBin, `anyfusion${launcherSuffix}`),
+    metaclawLauncher: resolve(launcherBin, `metaclaw${launcherSuffix}`),
     data,
     configFile: resolve(config, 'active', 'config.yaml'),
     credentials: resolve(root, 'credentials.json'),

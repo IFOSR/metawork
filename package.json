@@ -1,6 +1,6 @@
 {
   "name": "metawork",
-  "version": "1.2.0-preview.5",
+  "version": "1.2.0-preview.6",
   "description": "A commercial AI Task OS for durable, policy-governed agent workflows.",
   "private": true,
   "type": "module",
@@ -33,6 +33,7 @@
     "server:status": "node scripts/run-installed-cli.mjs server status",
     "server:doctor": "node scripts/run-installed-cli.mjs server doctor",
     "package:release": "node scripts/package-release.mjs",
+    "build:release": "node scripts/build-release.mjs",
     "smoke:metawork": "node scripts/smoke-metaclaw-real-task.mjs",
     "smoke:anyfusion": "node scripts/smoke-metaclaw-real-task.mjs",
     "smoke:gateway": "node scripts/smoke-unified-gateway.mjs",

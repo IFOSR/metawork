@@ -1,5 +1,5 @@
-import { resolve } from 'path';
+import { resolveLocalEndpointPath } from '../platform/local-endpoint.js';
 
 export function resolveGatewaySocketPath(metaclawDir: string): string {
-  return resolve(metaclawDir, 'gateway.sock');
+  return resolveLocalEndpointPath(metaclawDir, 'gateway.sock');
 }

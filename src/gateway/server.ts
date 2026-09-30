@@ -17,6 +17,7 @@ import {
   type GatewayServerMessage,
 } from './protocol.js';
 import { workspaceEventStreamId } from './workspace-event-stream.js';
+import { isNamedPipePath } from '../platform/local-endpoint.js';
 
 interface GatewayServerDeps {
   socketPath: string;
@@ -49,7 +50,9 @@ export class MetaclawGatewayServer {
   async start(): Promise<void> {
     if (this.server) return;
     this.stopping = false;
-    if (existsSync(this.deps.socketPath)) unlinkSync(this.deps.socketPath);
+    if (!isNamedPipePath(this.deps.socketPath) && existsSync(this.deps.socketPath)) {
+      unlinkSync(this.deps.socketPath);
+    }
     this.server = createServer(socket => {
       if (this.stopping) {
         socket.destroy();
@@ -66,7 +69,7 @@ export class MetaclawGatewayServer {
         resolve();
       });
     });
-    chmodSync(this.deps.socketPath, 0o600);
+    if (!isNamedPipePath(this.deps.socketPath)) chmodSync(this.deps.socketPath, 0o600);
   }
 
   async stop(): Promise<void> {
@@ -81,7 +84,9 @@ export class MetaclawGatewayServer {
     this.sockets.clear();
     await closed;
     this.connectionOwners.clear();
-    if (existsSync(this.deps.socketPath)) unlinkSync(this.deps.socketPath);
+    if (!isNamedPipePath(this.deps.socketPath) && existsSync(this.deps.socketPath)) {
+      unlinkSync(this.deps.socketPath);
+    }
   }
 
   private handleConnection(socket: Socket): void {

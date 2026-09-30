@@ -350,6 +350,21 @@ and storage operations exposed by its ports and does not decide release trust.
   failure, revocation, WAL backup verification, cloned migration failure,
   activation crash windows, rollback and no mixed-version startup.
 
+## 2026-09-30 Amendment: Cross-Platform Release Matrix
+
+The release implementation now supports native artifact targets
+`darwin-x64`, `darwin-arm64`, `win32-x64`, `linux-x64`, and `linux-arm64`.
+Runtime and vendored Planner dependencies are built on a host matching the
+target platform and architecture; macOS may package only prebuilt target
+dependencies and must not claim to have built Linux native dependencies.
+
+Windows uses a signed PowerShell installer, `.cmd` launchers, NTFS release
+pointers, and deterministic named pipes for the local Gateway and Planner
+Host. The existing Unix socket and `install.sh` path remains unchanged for
+macOS and Linux. The trust contract, manifest schema, compatibility checks,
+quiescence, activation journal, migration, health check, and rollback rules
+remain the same across platforms.
+
 ## Not Decided Here
 
 - Concrete signature algorithm, key format, transparency log, release hosting

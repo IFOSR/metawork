@@ -1,0 +1,152 @@
+name: Build release artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-x64
+            runner: macos-13
+            platform: darwin
+            arch: x64
+          - target: darwin-arm64
+            runner: macos-14
+            platform: darwin
+            arch: arm64
+          - target: win32-x64
+            runner: windows-latest
+            platform: win32
+            arch: x64
+          - target: linux-x64
+            runner: ubuntu-24.04
+            platform: linux
+            arch: x64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+
+      - name: Set synchronized release identity
+        id: release
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          RELEASE_ID="${VERSION}-build-${GITHUB_SHA:0:7}"
+          echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Write release signing key
+        if: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY != '' }}
+        shell: bash
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY }}
+        run: |
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/metawork-release-key.pem"
+
+      - name: Build and package Unix release
+        if: runner.os != 'Windows'
+        env:
+          METAWORK_RELEASE_SIGNING_KEY: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "$METAWORK_RELEASE_SIGNING_KEY" ]; then
+            echo "::error::METAWORK_RELEASE_SIGNING_KEY is required for published artifacts"
+            exit 1
+          fi
+          npm run build:release -- \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --release-id "${{ steps.release.outputs.release_id }}" \
+            --signing-key "$RUNNER_TEMP/metawork-release-key.pem" \
+            --out-dir "$RUNNER_TEMP/metawork-release"
+
+      - name: Build and package Windows release
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          METAWORK_RELEASE_SIGNING_KEY: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY }}
+        run: |
+          if (-not $env:METAWORK_RELEASE_SIGNING_KEY) {
+            throw 'METAWORK_RELEASE_SIGNING_KEY is required for published artifacts'
+          }
+          npm run build:release -- `
+            --platform ${{ matrix.platform }} `
+            --arch ${{ matrix.arch }} `
+            --release-id ${{ steps.release.outputs.release_id }} `
+            --signing-key "$env:RUNNER_TEMP\metawork-release-key.pem" `
+            --out-dir "$env:RUNNER_TEMP\metawork-release"
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: metawork-${{ matrix.target }}
+          path: ${{ runner.temp }}/metawork-release/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+
+      - name: Download native release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: metawork-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v${VERSION}"
+          TITLE="MetaWork ${VERSION}"
+          NOTES="docs/releases/v${VERSION}.md"
+
+          test -s "$NOTES"
+          test -n "$(find release-assets -maxdepth 1 -type f -print -quit)"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber
+            gh release edit "$TAG" \
+              --title "$TITLE" \
+              --notes-file "$NOTES" \
+              --prerelease
+          else
+            gh release create "$TAG" release-assets/* \
+              --target "$GITHUB_SHA" \
+              --title "$TITLE" \
+              --notes-file "$NOTES" \
+              --prerelease
+          fi

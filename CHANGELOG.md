@@ -88,6 +88,26 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
   fails closed as `configuration_revision_changed` instead of carrying a proposal
   across revisions.
 
+## [1.2.0-preview.6] - 2026-09-30
+
+### Added
+
+- Release preparation now covers macOS Intel, macOS Apple Silicon, Windows,
+  and Linux-host builds through one platform-aware artifact matrix.
+- Windows native packaging has a PowerShell installer and `.cmd` launchers.
+
+### Changed
+
+- The release package and manifest use the synchronized MetaWork preview
+  version and include platform-specific archive metadata.
+- Linux artifacts remain host-built on Linux or CI; macOS does not fabricate
+  Linux native dependencies.
+
+### Fixed
+
+- Native socket and launcher assumptions are isolated by platform so Windows
+  releases can use named pipes without changing the Unix/macOS path.
+
 ## [1.2.0-preview.5] - 2026-09-18
 
 ### Added
@@ -369,7 +389,8 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 - CLI, configuration, and runtime contracts may change during the preview period.
 - Some command and TUI workflows remain under active development.
 
-[Unreleased]: https://github.com/IFOSR/metawork/compare/v1.2.0-preview.5...HEAD
+[Unreleased]: https://github.com/IFOSR/metawork/compare/v1.2.0-preview.6...HEAD
+[1.2.0-preview.6]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.6
 [1.2.0-preview.5]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.5
 [1.2.0-preview.4]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.4
 [1.2.0-preview.3]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.3

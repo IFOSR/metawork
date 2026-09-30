@@ -4,10 +4,20 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   assertLauncherAvailable,
+  renderWindowsLauncher,
   renderNativeLauncher,
 } from '../../src/installation/native-launcher.js';
 
 describe('renderNativeLauncher', () => {
+  it('renders a managed Windows cmd launcher without Unix shell syntax', () => {
+    const launcher = renderWindowsLauncher('C:\\Users\\test\\.metawork');
+
+    expect(launcher).toContain('REM MetaWork managed launcher');
+    expect(launcher).toContain('node "%METAWORK_INSTALL_ROOT%\\app\\current\\dist\\index.js" %*');
+    expect(launcher).not.toContain('export ');
+    expect(launcher).not.toContain('#!/usr/bin/env bash');
+  });
+
   it('does not override revisioned Planner runtime configuration with legacy paths', () => {
     const launcher = renderNativeLauncher('/Users/test/.metawork');
 

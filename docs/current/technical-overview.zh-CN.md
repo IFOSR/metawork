@@ -350,7 +350,8 @@ Pi 的 upstream image mode；用户升级本机 Pi 不会覆盖 MetaWork Image R
 - Node.js `>=22.19.0`。
 - npm。
 - Git。
-- Unix-like shell 环境，优先支持 macOS 和 Linux；Windows 用户推荐使用 WSL2，这是当前支持的可靠安装路径。
+- 原生 macOS、Linux 或 Windows x64 环境。macOS/Linux 使用文件系统 Unix
+  socket；Windows 使用 named pipe 和 PowerShell 安装器。
 - `better-sqlite3` 的原生编译工具链。
 
 推荐安装编译工具：
@@ -426,7 +427,9 @@ anyfusion
 
 ## Windows 安装
 
-Windows 用户推荐使用 WSL2 + Ubuntu。这样可以提供 MetaWork 当前需要的 Unix-like shell、原生编译工具链、socket、进程行为和 executor 兼容性。
+Windows x64 原生版本使用 named pipe 连接本地 Gateway 与 Planner Host。
+事务性 NTFS Release 指针要求开启 Windows Developer Mode（或使用管理员
+终端）。如果下游 Executor 只提供 Linux 工具，仍可使用 WSL2 兼容路径。
 
 先在 Windows PowerShell 中安装 WSL2：
 
@@ -470,7 +473,9 @@ Windows 安装核验清单：
 - 默认 executor 在 WSL 内可用，例如 `codex --help`。
 - `npm run smoke:metawork` 成功完成
 
-Windows 原生 PowerShell 不是当前推荐的主要运行环境。高级用户可以使用 Node.js 22.19+、Git、Visual Studio Build Tools、`npm install`、`npm run build` 和 `node dist/index.js` 直接开发，但 `setup.sh`、`anyfusion.sh`、Unix socket Gateway 行为以及下游 executor CLI 可能和 Linux/macOS 不一致。直接 Linux 开发使用 WSL2；容器 runtime 只保留为可选兼容路径。
+Windows 原生开发使用 Node.js 22.19+、Git、Visual Studio Build Tools、
+`npm install`、`npm run build` 和 `node dist/index.js`。原生 Release 使用
+`scripts/install.ps1`；WSL2 与容器 Runtime 仍保留为可选兼容路径。
 
 ## 安装执行器
 

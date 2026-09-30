@@ -8,6 +8,7 @@ import type {
   ManagementApiResponse,
   ServerHealthResponse,
 } from './management-api-protocol.js';
+import { isNamedPipePath } from '../platform/local-endpoint.js';
 
 export interface ManagementApiServerDeps {
   socketPath: string;
@@ -21,7 +22,7 @@ export class ManagementApiServer {
   constructor(private readonly deps: ManagementApiServerDeps) {}
 
   async start(): Promise<void> {
-    if (existsSync(this.deps.socketPath)) {
+    if (!isNamedPipePath(this.deps.socketPath) && existsSync(this.deps.socketPath)) {
       unlinkSync(this.deps.socketPath);
     }
     this.server = createServer(socket => {
@@ -34,7 +35,7 @@ export class ManagementApiServer {
       this.server!.once('error', reject);
       this.server!.listen(this.deps.socketPath, resolve);
     });
-    chmodSync(this.deps.socketPath, 0o600);
+    if (!isNamedPipePath(this.deps.socketPath)) chmodSync(this.deps.socketPath, 0o600);
   }
 
   async stop(): Promise<void> {
@@ -47,7 +48,7 @@ export class ManagementApiServer {
       await new Promise<void>(resolve => server.close(() => resolve()));
       this.server = null;
     }
-    if (existsSync(this.deps.socketPath)) {
+    if (!isNamedPipePath(this.deps.socketPath) && existsSync(this.deps.socketPath)) {
       unlinkSync(this.deps.socketPath);
     }
   }
