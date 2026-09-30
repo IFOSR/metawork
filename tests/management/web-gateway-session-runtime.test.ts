@@ -767,6 +767,87 @@ describe('WebGatewaySessionRuntime', () => {
     await expect(runtime.readSession('browser-a', 'conv_1')).resolves.toBeNull();
   });
 
+  it('publishes the current Task timeline when Workspace activity enters execution', async () => {
+    const listeners = new Map<string, (event: GatewayEventEnvelope) => void>();
+    const timeline: ExecutionTimeline = {
+      taskId: 'task_live',
+      title: '实时执行任务',
+      status: 'running',
+      stages: [{
+        phase: 'execution',
+        status: 'running',
+        subtasks: [{
+          id: 'subtask_live',
+          title: '实时子任务',
+          status: 'running',
+          attempts: [],
+        }],
+      }],
+    };
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway: gatewayFixture({
+        subscribe: (
+          _accountId: string,
+          conversationId: string | null,
+          listener: (event: GatewayEventEnvelope) => void,
+        ) => {
+          listeners.set(conversationId ?? '*', listener);
+          return () => listeners.delete(conversationId ?? '*');
+        },
+      }),
+      projectExecutionTimeline: taskId => taskId === timeline.taskId ? timeline : null,
+      createId: prefix => `${prefix}_live`,
+    });
+    const projected: WebSessionRuntimeEvent[] = [];
+    runtime.subscribe('browser-a', event => projected.push(event));
+
+    await runtime.initialize();
+    await expect(runtime.activateSession('browser-a', 'conv_1')).resolves.toEqual({
+      state: 'active',
+      sessionId: 'conv_1',
+    });
+    await runtime.submit('browser-a', '实时执行');
+
+    listeners.get('conv_1')?.({
+      ...outputEvent('turn_started_live', 1, []),
+      requestId: 'req_live',
+      turnId: 'turn_live',
+      kind: 'turn_started',
+      payload: { commandKind: 'user_message', text: '实时执行' },
+    });
+    listeners.get('conv_1')?.({
+      ...outputEvent('task_projection_live', 2, []),
+      requestId: 'req_live',
+      turnId: 'turn_live',
+      kind: 'task_projection',
+      payload: { currentTaskId: timeline.taskId },
+    });
+    listeners.get('workspace_directory_workspace_repo')?.({
+      ...outputEvent('workspace_activity_live', 3, []),
+      conversationId: 'workspace_directory_workspace_repo',
+      kind: 'workspace_activity_changed',
+      payload: {
+        workspaceId: 'workspace_repo',
+        conversationId: 'conv_1',
+        activity: {
+          state: 'executing',
+          taskId: timeline.taskId,
+          updatedAt: '2026-09-30T10:00:00.000Z',
+        },
+      },
+    });
+
+    expect(projected).toContainEqual({
+      type: 'execution',
+      turnId: 'turn_live',
+      taskId: timeline.taskId,
+      timeline,
+    });
+    await runtime.dispose();
+  });
+
   it('restores the target Workspace when attaching a Conversation from another Workspace', async () => {
     const restored: Array<{ connectionId: string; workspaceId: string }> = [];
     const runtime = new WebGatewaySessionRuntime({
@@ -1411,14 +1492,8 @@ describe('WebGatewaySessionRuntime', () => {
         backgroundWorkPending: true,
       },
     });
-    await waitFor(() => appended !== null);
-
-    expect(appended).toMatchObject({
-      id: 'turn_1',
-      status: 'completed',
-      completedAt: '2026-08-19T00:00:00.000Z',
-      finalAnswer: '已发起任务恢复',
-    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(appended).toBeNull();
     listener!({
       ...outputEvent('event_trace', 3, []),
       requestId: 'req_1',
@@ -1445,6 +1520,27 @@ describe('WebGatewaySessionRuntime', () => {
       },
     });
 
+    listener!({
+      ...outputEvent('event_done', 4, []),
+      requestId: 'req_1',
+      turnId: 'turn_1',
+      kind: 'trace_delta',
+      payload: {
+        turnId: 'turn_1',
+        taskId: 'task_resume',
+        status: 'completed',
+        completedAt: '2026-08-19T00:00:03.000Z',
+        events: [],
+      },
+    });
+    await waitFor(() => appended !== null);
+    expect(appended).toMatchObject({
+      id: 'turn_1',
+      status: 'completed',
+      completedAt: '2026-08-19T00:00:03.000Z',
+      finalAnswer: '已发起任务恢复',
+    });
+
     expect(projected).toContainEqual(expect.objectContaining({
       type: 'final_answer',
       lines: ['已发起任务恢复'],
@@ -1456,6 +1552,100 @@ describe('WebGatewaySessionRuntime', () => {
       taskId: 'task_resume',
       timeline,
     }));
+  });
+
+  it('reopens a resume Turn when an initial stale blocked timeline becomes running', async () => {
+    let listener: ((event: GatewayEventEnvelope) => void) | null = null;
+    let timelineStatus: ExecutionTimeline['status'] = 'blocked';
+    const projected: WebSessionRuntimeEvent[] = [];
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default',
+      catalog: catalogFixture(),
+      gateway: {
+        attachClient: async () => () => undefined,
+        subscribe: (
+          _accountId: string,
+          _conversationId: string,
+          next: (event: GatewayEventEnvelope) => void,
+        ) => {
+          listener = next;
+          return () => undefined;
+        },
+        replay: async () => ({ lastSequence: 0, snapshot: [], deltas: [] }),
+        submit: async (envelope: { requestId: string }) => ({
+          requestId: envelope.requestId,
+          idempotencyKey: 'idem_1',
+          status: 'accepted' as const,
+          conversationId: 'conv_1',
+        }),
+      } as unknown as WebGatewayAdapter,
+      projectExecutionTimeline: () => ({
+        taskId: 'task_resume',
+        title: '恢复任务',
+        status: timelineStatus,
+        stages: [],
+      }),
+      createId: prefix => `${prefix}_1`,
+    });
+    runtime.subscribe('browser-a', event => projected.push(event));
+
+    await attachBrowser(runtime);
+    await runtime.submit('browser-a', '/task resume task_resume');
+    listener!({
+      ...outputEvent('event_started', 1, []),
+      requestId: 'req_1',
+      turnId: 'turn_resume',
+      kind: 'turn_started',
+      payload: { commandKind: 'slash_command' },
+    });
+    listener!({
+      ...outputEvent('event_final', 2, []),
+      requestId: 'req_1',
+      turnId: 'turn_resume',
+      kind: 'final_answer',
+      payload: {
+        lines: ['已发起任务恢复'],
+        backgroundWorkPending: true,
+      },
+    });
+    listener!({
+      ...outputEvent('event_blocked', 3, []),
+      requestId: 'req_1',
+      turnId: 'turn_resume',
+      kind: 'trace_delta',
+      payload: {
+        turnId: 'turn_resume',
+        taskId: 'task_resume',
+        status: 'blocked',
+        events: [],
+      },
+    });
+
+    timelineStatus = 'running';
+    listener!({
+      ...outputEvent('event_running', 4, []),
+      requestId: 'req_1',
+      turnId: 'turn_resume',
+      kind: 'trace_delta',
+      payload: {
+        turnId: 'turn_resume',
+        taskId: 'task_resume',
+        status: 'running',
+        events: [],
+      },
+    });
+
+    expect(projected.findLast(event => event.type === 'trace_delta')).toMatchObject({
+      type: 'trace_delta',
+      turnId: 'turn_resume',
+      status: 'running',
+    });
+    expect(projected.findLast(event => event.type === 'execution')).toMatchObject({
+      type: 'execution',
+      turnId: 'turn_resume',
+      taskId: 'task_resume',
+      timeline: expect.objectContaining({ status: 'running' }),
+    });
   });
 
   it('keeps a Turn bound to its first Task when a previous Task emits late trace events', async () => {

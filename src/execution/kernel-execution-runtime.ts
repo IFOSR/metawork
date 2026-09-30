@@ -46,6 +46,7 @@ import type {
 import { buildDefaultResourceClaims } from '../resource/index.js';
 import { deriveRunnableFrontier } from '../work-graph/index.js';
 import type { KernelDispatchItemRepo, KernelDispatchItemRecord } from '../storage/kernel-dispatch-item-repo.js';
+import type { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
 import type { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import type { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import type { ResultObjectRepo } from '../storage/result-object-repo.js';
@@ -401,6 +402,7 @@ export interface KernelExecutionRuntimeDeps {
   taskEventRepo: TaskEventRepo;
   workUnitClaimService: WorkUnitClaimService;
   attemptRunner: SubtaskAttemptRunner;
+  attemptRuntimeRepo?: ExecutorAttemptRuntimeRepo;
   controlKernel: ControlKernel;
   kernelWorkflowStore: KernelWorkflowStore & {
     findEvent?(eventId: string): KernelEvent | null;
@@ -2240,6 +2242,7 @@ export class KernelExecutionRuntime {
         eventKey: `${item.attemptId}:progress:${progressSequence}`,
         taskId: item.taskId,
       });
+      this.deps.callbacks.refreshRuntimeState();
     };
     const heartbeatMs = this.deps.executionTraceHeartbeatMs
       ?? DEFAULT_EXECUTION_TRACE_HEARTBEAT_MS;
@@ -2248,6 +2251,9 @@ export class KernelExecutionRuntime {
       ? setInterval(() => {
           const nowMs = Date.now();
           if (nowMs - lastProgressAtMs < heartbeatMs) return;
+          const heartbeatAt = new Date(nowMs).toISOString();
+          this.deps.attemptRuntimeRepo?.touch(item.attemptId, heartbeatAt);
+          this.deps.dispatchItemRepo.touch?.(item.attemptId, heartbeatAt);
           heartbeatSequence += 1;
           this.appendExecutionTrace({
             phase: 'execution',
@@ -2280,6 +2286,7 @@ export class KernelExecutionRuntime {
             eventKey: `${item.attemptId}:heartbeat:${heartbeatSequence}`,
             taskId: item.taskId,
           });
+          this.deps.callbacks.refreshRuntimeState?.();
         }, heartbeatMs)
       : null;
     heartbeat?.unref();

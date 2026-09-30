@@ -14,17 +14,18 @@ MetaWork 是本仓库统一呈现的闭源商业产品。AnyFusion 是独立的�
 > 分页历史，不回退到全量审计回放。历史页的 Task/时间线/产物/账单采用批量读取。
 > 历史 Task 关联从 Account/Conversation/Turn 精确索引读取，与日志事务一起落盘，
 > 保留歧义证据，不将当前轮快照当作全部历史；后台活动更新仅查询 Workspace 绑定元数据。
-> 当前源码 schema 45 另以 43→44→45 事务增加 Gateway 命令准入索引与 durable Retry Wake：
+> 当前源码 schema 46 另以 43→44→45→46 事务增加 Gateway 命令准入索引、durable Retry Wake
+> 与按会话最近 Task 创建时间排序的目录键：
 > 点查，恢复只读取非终态记录；旧 JSON 的全部回执与账户导入标记原子迁移后只读保留，
 > 不增加第二个写入者或绕过持久准入。schema 44 已完成正式安装，Web 重新登录恢复和
 > TUI 真实断线重连检查通过。首页之外的会话恢复先经服务端 Workspace 校验激活，
 > 再读取分页历史，不放开未激活会话的历史访问。最终验收及新建会话暂定预算仍未关闭。
-> 当前源码实现为 schema 45；canonical 安装版本仍为 schema 44，交付门禁见
+> 当前源码实现为 schema 46；canonical 安装版本仍为 schema 44，交付门禁见
 > [导航性能实施方案](../plans/2026-09-26-navigation-performance-architecture-remediation.md)。
 
 > 当前实现基线（2026-09-26）：PlanningAgentPlan v8、Work Graph
 > v7、Kernel event/snapshot/decision contract v5、Completion Protocol v4，
-> 以及支持事务式 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45 升级路径的 SQLite schema v45。
+> 以及支持事务式 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46 升级路径的 SQLite schema v46。
 > v39/v40 新增 ADR-0042 定义的 Query 用量与账单事实（Query 归因上下文、计量
 > span/观测、不可变价格版本、成本记录、每 Query 最终单及明细、消费 outbox/
 > 回执、账单调整和稳定实例标识）；计量、账单与外部消费导出在发布门禁通过前
@@ -1113,7 +1114,7 @@ MetaWork 可以把复杂需求表示成 work graph，而不是把整段需求一
 
 `SubtaskExecutionContext` 是唯一生产 Executor 输入。Task 标题/目标仅作背景，当前 Subtask 目标是唯一操作指令，越界 sibling 只暴露标题。Runtime 不把 Task/Subtask/attempt/WorkUnit 身份及 acceptance/handoff key 交给模型复制。Completion Protocol v4 将正文交付、完成认证和安全处置分轴评估：marker、trailer、evidence 数量/长度和物理传输限制不能丢弃安全正文；普通 Workspace 和用户态文件操作允许 Executor 按任务需要执行，系统控制面、凭据、提权、设备、Docker 控制面和未授权 ResultReference 仍 fail-closed。Runtime 以 Result Object 保存 raw stream、business result 和 safe projection，并以 Gateway 分块事件交付 safe projection。
 
-在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 Work Graph v7 `Subtask` revision。源码使用 SQLite schema v45，支持事务式 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45 升级路径，unsupported older schema 会拒绝启动。v39/v40 保存 ADR-0042 的 Query 用量与账单事实：`query_usage_contexts`（请求作用域幂等键唯一）、`query_task_links`、`execution_usage_contexts`、`metering_spans`、`usage_observations`（`(source_id, source_event_key, metric)` 唯一）、`usage_normalization_issues`、`billing_price_versions`、`cost_entries`、`query_bills`/`query_bill_lines`、`consumption_outbox`/`consumption_receipts`、`bill_adjustments` 与稳定实例标识表 `billing_source_instance`；v41 增加 usage observation 的 resolved routing identity 字段，v42 增加 `generation_replan_requests.planner_claim_token` fencing token。v43 增加导航投影、分页历史和 Gateway 分段日志及 Turn 关联索引；v44 增加 Gateway 命令准入索引与原子旧数据导入标记；v45 增加 timeout retry 的 durable Retry Wake continuation fact。金额以有约束的十进制文本保存，聚合在精确金额层完成，不使用 SQLite 浮点求和。v38 用 `planner_turn_inputs` 保存一个 Planner Turn 的附件事实，使 host-bridge 提交在 Server 重启后仍可通过准入。当前 schema 还包含 immutable Result Objects、direct-edge ResultReferences、revision-pinned `artifact` ContextRefs、Planner proposal configuration-revision pin 和结果分块交付事实；v37 同时允许 `task_artifacts` 记录图片预览类型。下游只有在直接依赖 publication 成功后才进入 frontier，并通过授权引用按需读取上游结果；integration branch 不会隐式成为 sibling 基线。Certified Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts；safe uncertified body 可以先交付给用户，但不会释放下游。
+在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 Work Graph v7 `Subtask` revision。源码使用 SQLite schema v46，支持事务式 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46 升级路径，unsupported older schema 会拒绝启动。v39/v40 保存 ADR-0042 的 Query 用量与账单事实：`query_usage_contexts`（请求作用域幂等键唯一）、`query_task_links`、`execution_usage_contexts`、`metering_spans`、`usage_observations`（`(source_id, source_event_key, metric)` 唯一）、`usage_normalization_issues`、`billing_price_versions`、`cost_entries`、`query_bills`/`query_bill_lines`、`consumption_outbox`/`consumption_receipts`、`bill_adjustments` 与稳定实例标识表 `billing_source_instance`；v41 增加 usage observation 的 resolved routing identity 字段，v42 增加 `generation_replan_requests.planner_claim_token` fencing token。v43 增加导航投影、分页历史和 Gateway 分段日志及 Turn 关联索引；v44 增加 Gateway 命令准入索引与原子旧数据导入标记；v45 增加 timeout retry 的 durable Retry Wake continuation fact；v46 增加按会话最近 Task 创建时间排序的目录索引键。金额以有约束的十进制文本保存，聚合在精确金额层完成，不使用 SQLite 浮点求和。v38 用 `planner_turn_inputs` 保存一个 Planner Turn 的附件事实，使 host-bridge 提交在 Server 重启后仍可通过准入。当前 schema 还包含 immutable Result Objects、direct-edge ResultReferences、revision-pinned `artifact` ContextRefs、Planner proposal configuration-revision pin 和结果分块交付事实；v37 同时允许 `task_artifacts` 记录图片预览类型。下游只有在直接依赖 publication 成功后才进入 frontier，并通过授权引用按需读取上游结果；integration branch 不会隐式成为 sibling 基线。Certified Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts；safe uncertified body 可以先交付给用户，但不会释放下游。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 

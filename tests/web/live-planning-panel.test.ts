@@ -45,6 +45,63 @@ function turn(events: InteractionTraceEvent[], status: ConversationTurnProjectio
 }
 
 describe('planner activity projection', () => {
+  it.each(['running', 'done'])('uses durable %s execution facts even without foreground executor traces', status => {
+    const current = turn([
+      event({ sequence: 1, kind: 'planner_agent_completed', phase: 'planning', occurredAt: '2026-09-18T13:00:03.000Z' }),
+    ]);
+    current.taskId = 'task_background';
+    current.executionTimeline = {
+      taskId: current.taskId,
+      title: 'Background work',
+      status,
+      stages: [{
+        phase: 'execution',
+        status: status === 'done' ? 'done' : 'running',
+        subtasks: [{
+          id: 'subtask_background',
+          title: 'Background subtask',
+          status: status === 'done' ? 'done' : 'running',
+          attempts: [],
+        }],
+      }],
+    };
+    expect(plannerActivity(current)).toBeNull();
+  });
+
+  it('keeps the planning card while execution is initializing without subtask facts', () => {
+    const current = turn([
+      event({ sequence: 1, kind: 'planner_agent_completed', phase: 'planning', occurredAt: '2026-09-18T13:00:03.000Z' }),
+    ]);
+    current.taskId = 'task_initializing';
+    current.executionTimeline = {
+      taskId: current.taskId,
+      title: 'Initializing work',
+      status: 'running',
+      stages: [{
+        phase: 'execution',
+        status: 'running',
+        subtasks: [],
+      }],
+    };
+
+    expect(plannerActivity(current)).toMatchObject({
+      state: 'ready',
+      stepKey: 'planner_agent_completed',
+    });
+  });
+
+  it('keeps the planning card when an execution milestone precedes Subtask facts', () => {
+    const current = turn([
+      event({ sequence: 1, kind: 'planner_agent_completed', phase: 'planning', occurredAt: '2026-09-18T13:00:03.000Z' }),
+      event({ sequence: 2, kind: 'executor_dispatch_started', phase: 'execution', occurredAt: '2026-09-18T13:00:04.000Z' }),
+    ]);
+
+    expect(plannerActivity(current)).toMatchObject({
+      state: 'ready',
+      stepKey: 'planner_agent_completed',
+    });
+  });
+
   it('reports the planning phase while the Planner is still working', () => {
     const activity = plannerActivity(turn([
       event({ sequence: 1, kind: 'query_received', phase: 'intake', occurredAt: '2026-09-18T13:00:00.000Z' }),
@@ -87,7 +144,14 @@ describe('planner activity projection', () => {
     const activity = plannerActivity(turn([
       event({ sequence: 1, kind: 'planner_started', phase: 'planning', occurredAt: '2026-09-18T13:00:00.000Z' }),
       event({ sequence: 2, kind: 'planner_agent_completed', phase: 'planning', occurredAt: '2026-09-18T13:00:03.000Z' }),
-      event({ sequence: 3, kind: 'executor_dispatch_started', phase: 'execution', occurredAt: '2026-09-18T13:00:04.000Z' }),
+      event({
+        sequence: 3,
+        kind: 'executor_dispatch_started',
+        phase: 'execution',
+        occurredAt: '2026-09-18T13:00:04.000Z',
+        subtaskId: 'subtask_1',
+        details: { subtaskId: 'subtask_1' },
+      }),
     ]));
 
     expect(activity).toBeNull();
@@ -128,7 +192,14 @@ describe('LivePlanningPanel', () => {
     const html = renderToStaticMarkup(createElement(LivePlanningPanel, {
       turn: turn([
         event({ sequence: 1, kind: 'planner_started', phase: 'planning', occurredAt: '2026-09-18T13:00:00.000Z' }),
-        event({ sequence: 2, kind: 'executor_dispatch_started', phase: 'execution', occurredAt: '2026-09-18T13:00:04.000Z' }),
+        event({
+          sequence: 2,
+          kind: 'executor_dispatch_started',
+          phase: 'execution',
+          occurredAt: '2026-09-18T13:00:04.000Z',
+          subtaskId: 'subtask_1',
+          details: { subtaskId: 'subtask_1' },
+        }),
       ], 'completed'),
     }));
 

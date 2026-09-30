@@ -124,7 +124,7 @@ function CardBody({ card, completed }: { card: ExecutionCard; completed: boolean
   );
 }
 
-function collectExecutionCards(
+export function collectExecutionCards(
   events: InteractionTraceEvent[],
   timeline: ExecutionTimeline | null,
 ): ExecutionCard[] {
@@ -133,9 +133,10 @@ function collectExecutionCards(
   for (const subtask of executionStage?.subtasks ?? []) {
     const attempt = subtask.attempts.at(-1);
     const latest = attempt?.progressHistory?.at(-1);
+    const subtaskTitle = presentationTitle(subtask.title, timeline?.title);
     bySubtask.set(subtask.id, {
       subtaskId: subtask.id,
-      subtaskTitle: subtask.title,
+      subtaskTitle,
       executorDisplayName: subtask.executor || '',
       harnessDisplayName: '',
       providerDisplayName: '',
@@ -176,7 +177,10 @@ function collectExecutionCards(
     // 事件按 sequence 有序，后到的事实覆盖先到的字段。
     const next: ExecutionCard = {
       ...existing,
-      subtaskTitle: readString(details.subtaskTitle) || existing.subtaskTitle || subtaskId,
+      subtaskTitle: presentationTitle(
+        readString(details.subtaskTitle) || existing.subtaskTitle || subtaskId,
+        timeline?.title,
+      ),
       executorDisplayName: readString(details.executorDisplayName)
         || readString(details.executorName)
         || existing.executorDisplayName,
@@ -191,9 +195,11 @@ function collectExecutionCards(
       startedAt: typeof details.startedAt === 'string'
         ? details.startedAt
         : existing.startedAt ?? event.occurredAt,
-      updatedAt: typeof details.updatedAt === 'string'
-        ? details.updatedAt
-        : event.occurredAt,
+      updatedAt: latestTimestamp(
+        existing.updatedAt,
+        typeof details.updatedAt === 'string' ? details.updatedAt : undefined,
+        event.occurredAt,
+      ),
       activityStatus: activityStatusFor(event),
       activityState: executorActivityState(details.activityState),
     };
@@ -230,8 +236,30 @@ function executorActivityState(value: unknown): ExecutorActivityState | null {
     : null;
 }
 
+function latestTimestamp(...values: Array<string | null | undefined>): string | null {
+  const valid = values.filter((value): value is string => (
+    typeof value === 'string' && Number.isFinite(Date.parse(value))
+  ));
+  return valid.sort((left, right) => Date.parse(right) - Date.parse(left))[0]
+    ?? values.find(value => typeof value === 'string')
+    ?? null;
+}
+
 function readString(value: unknown): string {
   return typeof value === 'string' && value.trim() ? value : '';
+}
+
+function presentationTitle(value: string, taskTitle?: string): string {
+  if (!looksLikeInternalSubtaskId(value)) return value;
+  return taskTitle && !looksLikeInternalTaskId(taskTitle) ? taskTitle : value;
+}
+
+function looksLikeInternalSubtaskId(value: string): boolean {
+  return /^task_[a-z0-9_-]+_r\d+_/iu.test(value);
+}
+
+function looksLikeInternalTaskId(value: string): boolean {
+  return /^task_[a-z0-9_-]+$/iu.test(value);
 }
 
 function formatElapsed(start: string | null, nowMs: number): string {

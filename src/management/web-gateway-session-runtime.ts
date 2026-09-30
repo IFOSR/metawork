@@ -988,7 +988,7 @@ class WebGatewayClientSession {
         if (event.kind === 'workspace_activity_changed') {
           const conversationId = stringValue(payload.conversationId);
           const activity = asRecord(payload.activity);
-          if (!conversationId || !['idle', 'planning', 'executing', 'waiting', 'blocked'].includes(String(activity.state))
+          if (!conversationId || !['idle', 'planning', 'queued', 'executing', 'waiting', 'blocked'].includes(String(activity.state))
             || typeof activity.updatedAt !== 'string') return;
           this.emit({
             type: 'workspace_conversation_changed', workspaceId, conversationId,
@@ -997,6 +997,12 @@ class WebGatewayClientSession {
               taskId: stringValue(activity.taskId), updatedAt: activity.updatedAt,
             } },
           });
+          if (activity.state === 'executing') {
+            this.emitExecutionForWorkspaceActivity(
+              conversationId,
+              stringValue(activity.taskId),
+            );
+          }
           return;
         }
         if (event.kind === 'workspace_conversation_removed') {
@@ -1030,6 +1036,38 @@ class WebGatewayClientSession {
         void this.emitWorkspaceDirectory(workspaceId);
       },
     );
+  }
+
+  private emitExecutionForWorkspaceActivity(
+    conversationId: string,
+    taskId: string | null,
+  ): void {
+    if (!taskId || !this.deps.projectExecutionTimeline) return;
+    const state = [...this.turnStates.values()].reverse().find(candidate => (
+      candidate.sessionId === conversationId
+      && !this.persistedTurnIds.has(candidate.id)
+      && (candidate.status === 'running' || candidate.backgroundWorkPending)
+      && (!candidate.taskId || candidate.taskId === taskId)
+    ));
+    if (!state) return;
+    const timeline = timelineForTask(this.deps.projectExecutionTimeline(taskId), taskId);
+    if (!timeline) return;
+    state.taskId = taskId;
+    state.executionTimeline = structuredClone(timeline);
+    const projectedStatus = turnStatusFromTimeline(timeline);
+    if (state.status === 'blocked' && state.backgroundWorkPending && projectedStatus === 'running') {
+      state.status = 'running';
+      state.completedAt = null;
+    } else if (state.status === 'running' && projectedStatus && projectedStatus !== 'running') {
+      state.status = projectedStatus;
+      state.completedAt ??= new Date().toISOString();
+    }
+    this.emit({
+      type: 'execution',
+      turnId: state.id,
+      taskId,
+      timeline,
+    });
   }
 
   private async emitWorkspaceDirectory(workspaceId: string): Promise<void> {
@@ -1119,10 +1157,15 @@ class WebGatewayClientSession {
       if (
         traceMatchesTask
         && isInteractionTraceStatus(traceStatus)
-        && canAdvanceTurnStatus(state.status, traceStatus)
+        && (
+          canAdvanceTurnStatus(state.status, traceStatus)
+          || (state.backgroundWorkPending && traceStatus === 'running')
+        )
       ) {
         state.status = traceStatus;
-        state.completedAt = traceStatus === 'running' ? null : event.occurredAt;
+        state.completedAt = traceStatus === 'running'
+          ? null
+          : stringValue(payload.completedAt) ?? event.occurredAt;
       }
     }
     if (event.kind === 'task_projection') {
@@ -1163,7 +1206,12 @@ class WebGatewayClientSession {
     if (!timeline) return null;
     state.executionTimeline = structuredClone(timeline);
     const projectedStatus = turnStatusFromTimeline(timeline);
-    if (
+    if (state.status === 'blocked' && state.backgroundWorkPending && projectedStatus === 'running') {
+      // An explicit resume can observe the old blocked projection before the
+      // Kernel-applied resume reaches the durable Task view.
+      state.status = 'running';
+      state.completedAt = null;
+    } else if (
       state.status === 'running'
       && projectedStatus
       && projectedStatus !== 'running'
@@ -1187,6 +1235,10 @@ class WebGatewayClientSession {
     if (!event.turnId) return;
     const state = this.turnStates.get(event.turnId);
     if (!state || !state.userInput) return;
+    // A command response can finish before its Task does. Keep the Turn live
+    // in memory and persist it only after the durable Task reaches a terminal
+    // state, so reconnect does not skip background progress.
+    if (state.backgroundWorkPending && state.status === 'running') return;
     const finalAnswer = finalLines.length > 0
       ? finalLines.join('\n')
       : state.finalAnswer ?? '';

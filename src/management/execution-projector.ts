@@ -240,7 +240,13 @@ export class ExecutionProjector {
                 : dispatch?.status ?? 'running',
               status: dispatch?.status,
               startedAt: dispatch?.launchStartedAt ?? dispatch?.createdAt,
-              updatedAt: receipt?.completedAt ?? dispatch?.updatedAt ?? runtime?.updatedAt,
+              updatedAt: latestTimestamp(
+                receipt?.completedAt,
+                dispatch?.updatedAt,
+                runtime?.updatedAt,
+                currentProgressFrom(runtime?.progress)?.occurredAt as string | undefined,
+                progressHistory.at(-1)?.occurredAt,
+              ),
               error: receipt?.errorDetail
                 ?? receipt?.errorCode
                 ?? dispatch?.errorSummary
@@ -362,4 +368,12 @@ function currentProgressFrom(
   }
   if (typeof progress.occurredAt === 'string') current.occurredAt = progress.occurredAt;
   return current;
+}
+
+function latestTimestamp(...values: Array<string | undefined>): string | undefined {
+  const valid = values.filter((value): value is string => (
+    typeof value === 'string' && Number.isFinite(Date.parse(value))
+  ));
+  return valid.sort((left, right) => Date.parse(right) - Date.parse(left))[0]
+    ?? values.find(value => typeof value === 'string');
 }

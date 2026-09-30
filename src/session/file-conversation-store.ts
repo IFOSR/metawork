@@ -102,6 +102,25 @@ export class FileConversationStore implements ConversationStore {
     });
   }
 
+  async updateMetadata(
+    conversationId: string,
+    update: (metadata: ConversationMetadata) => ConversationMetadata,
+  ): Promise<ConversationMetadata | null> {
+    return this.serialized(conversationId, async () => {
+      await this.recoverPendingHistory(conversationId);
+      const record = await this.readRecord(conversationId);
+      if (!record) return null;
+      const metadata = update(record.conversation);
+      const updated = { ...record, conversation: metadata };
+      assertRecord(updated, conversationId);
+      if (JSON.stringify(metadata) === JSON.stringify(record.conversation)) return metadata;
+      await atomicWriteJson(this.recordPath(conversationId), updated);
+      this.options.metadataIndex?.put(metadata);
+      this.options.onMetadataCommitted?.(metadata);
+      return metadata;
+    });
+  }
+
   private async readRecord(conversationId: string): Promise<ConversationRecord | null> {
     const path = this.recordPath(conversationId);
     let raw: string;

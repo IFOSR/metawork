@@ -54,13 +54,19 @@ export function plannerActivity(turn: ConversationTurnProjection): PlannerActivi
   let lastExecutionAt: string | null = null;
   for (const event of events) {
     if (event.phase === 'execution' || event.kind.startsWith('executor_')) {
-      lastExecutionAt = event.occurredAt;
+      if (event.subtaskId || readSubtaskId(event)) {
+        lastExecutionAt = event.occurredAt;
+      }
       continue;
     }
     if (isPlannerEvent(event)) lastPlanning = event;
   }
   if (!lastPlanning) return null;
   if (lastExecutionAt && lastExecutionAt > lastPlanning.occurredAt) return null;
+  // Task status can advance before the execution projector has a Subtask or
+  // Attempt fact to render. Keep the Planning card during that handoff gap
+  // instead of swapping it for an empty execution panel.
+  if (hasRenderableExecutionFacts(turn)) return null;
 
   const plannerEvents = events.filter(isPlannerEvent);
   const started = plannerEvents.find(event => event.kind === 'planner_started') ?? plannerEvents[0]!;
@@ -130,6 +136,21 @@ function readToolName(event: InteractionTraceEvent): string | undefined {
   const details = event.details as Record<string, unknown> | undefined;
   const toolName = details?.toolName;
   return typeof toolName === 'string' && toolName ? toolName : undefined;
+}
+
+function readSubtaskId(event: InteractionTraceEvent): string | undefined {
+  const details = event.details as Record<string, unknown> | undefined;
+  const subtaskId = details?.subtaskId;
+  return typeof subtaskId === 'string' && subtaskId ? subtaskId : undefined;
+}
+
+function hasRenderableExecutionFacts(turn: ConversationTurnProjection): boolean {
+  const executionStage = turn.executionTimeline?.stages.find(stage => stage.phase === 'execution');
+  if (executionStage?.subtasks && executionStage.subtasks.length > 0) return true;
+  return turn.traceEvents.some(event => (
+    (event.phase === 'execution' || event.kind.startsWith('executor_'))
+      && Boolean(event.subtaskId || readSubtaskId(event))
+  ));
 }
 
 export function LivePlanningPanel({ turn }: { turn: ConversationTurnProjection }) {

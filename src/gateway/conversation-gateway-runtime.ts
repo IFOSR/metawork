@@ -33,6 +33,8 @@ export interface ConversationGatewayRuntimeDeps {
   readonly subscriptions: GatewaySubscriptions;
   /** Conversation-scoped opaque attachment store. */
   readonly attachments?: GatewayAttachmentStore;
+  /** Session-owned metadata update; completes before entering the Planner. */
+  readonly recordInputTitle?: (conversationId: string, input: string) => Promise<void>;
   readonly readHistory?: (
     conversationId: string,
     cursor?: string,
@@ -475,6 +477,9 @@ export class ConversationGatewayRuntime {
       if ((error as { code?: unknown }).code !== 'configuration_updating') throw error;
     }
     try {
+      if (mailboxCommand.command.kind === 'user_message') {
+        await this.deps.recordInputTitle?.(conversation.conversationId, mailboxCommand.command.text);
+      }
       await this.publish(
         conversation.conversationId,
         mailboxCommand.requestId,

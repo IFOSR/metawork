@@ -28,21 +28,24 @@ e2e('Settings workbench browser flow', () => {
       try {
         await waitForExpression(cdp, `Boolean(document.querySelector('.sidebar-settings'))`);
         await cdp.evaluate(`document.querySelector('.sidebar-settings').click()`);
-        await waitForExpression(cdp, `[...document.querySelectorAll('h3')].some(h => h.textContent === '决策模型（Span）')`);
-        await cdp.evaluate(`window.spanSection = () => [...document.querySelectorAll('h3')].find(h => h.textContent === '决策模型（Span）').closest('section')`);
+        await waitForExpression(cdp, `[...document.querySelectorAll('h3')].some(h => h.textContent === '决策模型')`);
+        await cdp.evaluate(`window.spanSection = () => [...document.querySelectorAll('h3')].find(h => h.textContent === '决策模型').closest('section')`);
+        await cdp.evaluate(`window.spanSection().closest('details').open = true`);
+        // The credential field only exists while the advisor is enabled.
+        await waitForExpression(cdp, `!window.spanSection().querySelector('input[type=password]')`);
+        await cdp.evaluate(`window.spanSection().querySelector('input[type=checkbox]').click()`);
+        await waitForExpression(cdp, `Boolean(window.spanSection().querySelector('input[type=password]'))`);
         await cdp.evaluate(`(() => {
-          const section = window.spanSection(); section.closest('details').open = true;
-          section.querySelector('input[type=checkbox]').click();
-          const key = section.querySelector('input[type=password]');
+          const key = window.spanSection().querySelector('input[type=password]');
           Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(key, 'browser-span-test-key');
           key.dispatchEvent(new Event('input', { bubbles: true }));
         })()`);
         const save = async () => {
           await waitForExpression(cdp, `[...document.querySelectorAll('button')].some(b => b.textContent.trim() === '保存并激活' && !b.disabled)`);
           await cdp.evaluate(`[...document.querySelectorAll('button')].find(b => b.textContent.trim() === '保存并激活').click()`);
-          await waitForExpression(cdp, `window.spanSection().querySelector('input[type=password]').value === '' && window.spanSection().querySelector('input[type=password]').placeholder.includes('已配置')`);
         };
         await save();
+        await waitForExpression(cdp, `(() => { const key = window.spanSection().querySelector('input[type=password]'); return Boolean(key) && key.value === '' && key.placeholder.includes('已配置'); })()`);
         const first = server.getActivationPayload() as any;
         expect(first.spanApiKey).toBe('browser-span-test-key');
         expect(first.config.routing.span.enabled).toBe(true);
@@ -50,7 +53,7 @@ e2e('Settings workbench browser flow', () => {
         expect(JSON.stringify(first.secrets)).not.toContain('browser-span-test-key');
         await cdp.evaluate(`window.spanSection().querySelector('input[type=checkbox]').click()`);
         await save();
-        await waitForExpression(cdp, `!window.spanSection().querySelector('input[type=checkbox]').checked`);
+        await waitForExpression(cdp, `!window.spanSection().querySelector('input[type=checkbox]').checked && !window.spanSection().querySelector('input[type=password]')`);
         const second = server.getActivationPayload() as any;
         expect(second.spanApiKey).toBeUndefined();
         expect(second.config.routing.span).toMatchObject({ enabled: false,

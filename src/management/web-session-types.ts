@@ -34,7 +34,7 @@ export interface WebSessionMetadata {
 }
 
 export interface WebSessionActivityProjection {
-  state: 'idle' | 'planning' | 'executing' | 'waiting' | 'blocked';
+  state: import('../workspace/workspace-conversation-projector.js').ConversationActivityState;
   taskId: string | null;
   updatedAt: string;
 }

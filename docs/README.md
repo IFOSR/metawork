@@ -94,13 +94,15 @@ replacing those semantics.
 - [Navigation performance architecture remediation](plans/2026-09-26-navigation-performance-architecture-remediation.md):
   indexed Workspace directory, Conversation history paging, physical enrichment
   batching, request convergence, segmented snapshot/journal maintenance and
-  indexed command admission. Source schema 45 adds durable Retry Wake facts;
+  indexed command admission. Source schema 46 adds the durable Retry Wake facts
+  and latest Task-creation ordering key;
   schema 44 remains canonically installed until the next native upgrade. Real Web/TUI
   navigation/reconnect and process-level recovery checks are recorded.
   Final acceptance remains open, including the provisional creation budget
   and production background-work/crash gates; fixture results are not rollout proof.
 - [Retry Wake state-machine remediation](plans/2026-09-27-retry-wake-state-machine-remediation.md):
-  source schema 45 durable timeout continuation, atomic `wait_for_retry`
+  source schema 45 durable timeout continuation (carried by current schema 46),
+  atomic `wait_for_retry`
   postconditions, account-scoped Timer delivery, exact wake identity, and
   explicit stale/recovery convergence. Canonical installation remains schema 44
   until the native upgrade gate and live restart/TUI/Web acceptance close.

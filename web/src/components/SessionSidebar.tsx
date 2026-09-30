@@ -98,7 +98,7 @@ export function SessionSidebar({
             <button
               className="session-row"
               data-active={active}
-              data-running={running || undefined}
+              data-running={activity === 'executing' || undefined}
               data-activity={activity}
               data-selected={selected}
               key={session.id}
@@ -109,7 +109,7 @@ export function SessionSidebar({
               <span className="session-row-copy">
                 <strong>{session.title}</strong>
                 <small>
-                  {formatRelativeTime(session.updatedAt)}
+                  {formatRelativeTime(session.activity?.updatedAt ?? session.updatedAt)}
                   {' · '}
                   {activityLabel(activity)}
                   {active ? ' · 当前' : ''}
@@ -166,6 +166,7 @@ function activityLabel(
   return {
     idle: '空闲',
     planning: '规划中',
+    queued: '排队中',
     executing: '执行中',
     waiting: '等待中',
     blocked: '已阻塞',

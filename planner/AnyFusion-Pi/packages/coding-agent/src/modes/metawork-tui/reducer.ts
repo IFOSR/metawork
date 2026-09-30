@@ -683,7 +683,7 @@ function normalizeActivity(
 	const state = activity ? asString(activity.state) : null;
 	if (
 		state !== "idle" && state !== "planning" && state !== "executing"
-		&& state !== "waiting" && state !== "blocked"
+		&& state !== "waiting" && state !== "blocked" && state !== "queued"
 	) return null;
 	return {
 		state,
@@ -701,6 +701,7 @@ function sortConversationSummaries<T extends {
 		blocked: 5,
 		executing: 4,
 		waiting: 3,
+		queued: 3,
 		planning: 2,
 		idle: 1,
 	};

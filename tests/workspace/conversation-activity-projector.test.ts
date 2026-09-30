@@ -11,18 +11,33 @@ function projector(facts: Partial<ConversationActivityFacts> = {}) {
     plannerTurns: facts.plannerTurns ?? [],
     tasks: facts.tasks ?? [],
     activeAttemptTaskIds: facts.activeAttemptTaskIds ?? [],
+    activeAttemptUpdatedAt: facts.activeAttemptUpdatedAt ?? [],
     openReplanJobTaskIds: facts.openReplanJobTaskIds ?? [],
     pendingRetryWakeTaskIds: facts.pendingRetryWakeTaskIds ?? [],
   });
 }
 
 describe('ConversationActivityProjector', () => {
+  it.each(['created', 'ready'] as const)('projects %s work without dependency blockers as queued', status => {
+    expect(projector({
+      tasks: [{
+        id: 'queued_task', originConversationId: 'conv_alpha', status,
+        dependencies: [], updatedAt: NOW,
+      }],
+    }).project('conv_alpha', NOW)).toEqual({
+      state: 'queued', taskId: 'queued_task', updatedAt: NOW, latestTaskCreatedAt: NOW,
+    });
+  });
+
   it('projects an active Planner turn as planning', () => {
     const activity = projector({
       plannerTurns: [{ conversationId: 'conv_alpha', updatedAt: NOW }],
     }).project('conv_alpha', '2026-08-27T07:00:00.000Z');
 
-    expect(activity).toEqual({ state: 'planning', taskId: null, updatedAt: NOW });
+    expect(activity).toEqual({
+      state: 'planning', taskId: null, updatedAt: NOW,
+      latestTaskCreatedAt: '2026-08-27T07:00:00.000Z',
+    });
   });
 
   it('projects an active task or attempt as executing', () => {
@@ -37,7 +52,59 @@ describe('ConversationActivityProjector', () => {
       activeAttemptTaskIds: ['task_execute'],
     }).project('conv_alpha', '2026-08-27T07:00:00.000Z');
 
-    expect(activity).toEqual({ state: 'executing', taskId: 'task_execute', updatedAt: NOW });
+    expect(activity).toEqual({
+      state: 'executing', taskId: 'task_execute', updatedAt: NOW,
+      latestTaskCreatedAt: '2026-08-27T07:00:00.000Z',
+    });
+  });
+
+  it('uses the latest active Attempt heartbeat for the activity timestamp', () => {
+    const activity = projector({
+      tasks: [{
+        id: 'task_execute',
+        originConversationId: 'conv_alpha',
+        status: 'running',
+        dependencies: [],
+        updatedAt: '2026-08-27T08:00:00.000Z',
+      }],
+      activeAttemptTaskIds: ['task_execute'],
+      activeAttemptUpdatedAt: [{
+        taskId: 'task_execute',
+        updatedAt: '2026-08-27T08:30:00.000Z',
+      }],
+    }).project('conv_alpha', NOW);
+
+    expect(activity).toMatchObject({
+      state: 'executing',
+      taskId: 'task_execute',
+      updatedAt: '2026-08-27T08:30:00.000Z',
+    });
+  });
+
+  it('keeps the newest Task creation time independent from Task progress updates', () => {
+    const activity = projector({
+      tasks: [
+        {
+          id: 'task_old',
+          originConversationId: 'conv_alpha',
+          status: 'done',
+          dependencies: [],
+          createdAt: '2026-09-29T10:00:00.000Z',
+          updatedAt: '2026-09-30T12:00:00.000Z',
+        },
+        {
+          id: 'task_new',
+          originConversationId: 'conv_alpha',
+          status: 'running',
+          dependencies: [],
+          createdAt: '2026-09-30T11:00:00.000Z',
+          updatedAt: '2026-09-30T11:01:00.000Z',
+        },
+      ],
+      activeAttemptTaskIds: ['task_new'],
+    }).project('conv_alpha', '2026-09-01T00:00:00.000Z');
+
+    expect(activity.latestTaskCreatedAt).toBe('2026-09-30T11:00:00.000Z');
   });
 
   it('projects Kernel retry or capacity waits as waiting', () => {
@@ -51,7 +118,10 @@ describe('ConversationActivityProjector', () => {
       }],
     }).project('conv_alpha', '2026-08-27T07:00:00.000Z');
 
-    expect(activity).toEqual({ state: 'waiting', taskId: 'task_wait', updatedAt: NOW });
+    expect(activity).toEqual({
+      state: 'waiting', taskId: 'task_wait', updatedAt: NOW,
+      latestTaskCreatedAt: '2026-08-27T07:00:00.000Z',
+    });
   });
 
   it('gives blocked precedence over executing, waiting and planning', () => {
@@ -79,6 +149,7 @@ describe('ConversationActivityProjector', () => {
       state: 'blocked',
       taskId: 'task_blocked',
       updatedAt: '2026-08-27T08:02:00.000Z',
+      latestTaskCreatedAt: '2026-08-27T07:00:00.000Z',
     });
   });
 
@@ -97,6 +168,7 @@ describe('ConversationActivityProjector', () => {
       state: 'idle',
       taskId: null,
       updatedAt: '2026-08-27T07:00:00.000Z',
+      latestTaskCreatedAt: '2026-08-27T07:00:00.000Z',
     });
   });
 
@@ -148,6 +220,7 @@ describe('ConversationActivityProjector', () => {
       state: 'waiting',
       taskId: 'task_waiting_plan',
       updatedAt: NOW,
+      latestTaskCreatedAt: NOW,
     });
   });
 

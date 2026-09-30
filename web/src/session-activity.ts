@@ -6,5 +6,5 @@ export function resolveSessionActivity(
   directoryState: SessionActivityState | undefined,
   liveRunning: boolean,
 ): SessionActivityState {
-  return liveRunning ? 'executing' : directoryState ?? 'idle';
+  return directoryState ?? (liveRunning ? 'planning' : 'idle');
 }

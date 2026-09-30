@@ -218,6 +218,44 @@ describe('ExecutionProjector', () => {
     });
   });
 
+  it('uses the newest runtime progress timestamp instead of stale dispatch metadata', () => {
+    const subtasks = [
+      makeSubtask({ id: 'sub_1', title: '研究主力合约', status: 'running' }),
+    ];
+    const timeline = makeProjector({
+      subtaskRepo: { listByTask: () => subtasks },
+      dispatchItemRepo: {
+        listByTask: () => [{
+          attemptId: 'attempt_running',
+          subtaskId: 'sub_1',
+          status: 'running',
+          attemptKind: 'primary',
+          authorizedBinding: { agentClassRef: 'pi-agent' },
+          launchStartedAt: '2026-08-17T08:00:00.000Z',
+          updatedAt: '2026-08-17T08:30:00.000Z',
+        }],
+      },
+      attemptRuntimeRepo: {
+        find: () => ({
+          updatedAt: '2026-08-17T09:00:00.000Z',
+          progress: {
+            kind: 'log',
+            text: '正在整理最新数据',
+            occurredAt: '2026-08-17T09:00:00.000Z',
+            history: [{
+              kind: 'log',
+              text: '正在整理最新数据',
+              occurredAt: '2026-08-17T09:00:00.000Z',
+            }],
+          },
+        }),
+      },
+    }).project(makeTask());
+
+    expect(timeline.stages[2].subtasks?.[0]?.attempts[0]?.updatedAt)
+      .toBe('2026-08-17T09:00:00.000Z');
+  });
+
   it('bounds historical attempts and progress in the public execution timeline', () => {
     const subtasks = [
       makeSubtask({ id: 'sub_1', title: '生成报告', status: 'done' }),

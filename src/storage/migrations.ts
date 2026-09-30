@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 45;
+export const CURRENT_SCHEMA_VERSION = 46;
 
 const GATEWAY_COMMAND_ADMISSION_SQL = `
   CREATE TABLE IF NOT EXISTS gateway_command_admissions (
@@ -102,13 +102,14 @@ const NAVIGATION_PROJECTION_SQL = `
   CREATE TABLE IF NOT EXISTS workspace_directory_projection (
     account_id TEXT NOT NULL, workspace_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
     archived INTEGER NOT NULL, activity_rank INTEGER NOT NULL, updated_at TEXT NOT NULL,
+    latest_task_created_at TEXT NOT NULL,
     title_search TEXT NOT NULL, summary_json TEXT NOT NULL, projection_version INTEGER NOT NULL,
     PRIMARY KEY (account_id, conversation_id)
   );
   CREATE INDEX IF NOT EXISTS workspace_directory_page ON workspace_directory_projection
-    (account_id, workspace_id, archived, activity_rank DESC, updated_at DESC, conversation_id ASC);
+    (account_id, workspace_id, archived, latest_task_created_at DESC, conversation_id ASC);
   CREATE INDEX IF NOT EXISTS workspace_directory_all_page ON workspace_directory_projection
-    (account_id, workspace_id, activity_rank DESC, updated_at DESC, conversation_id ASC);
+    (account_id, workspace_id, latest_task_created_at DESC, conversation_id ASC);
   CREATE TABLE IF NOT EXISTS workspace_directory_revisions (
     account_id TEXT NOT NULL, workspace_id TEXT NOT NULL, revision INTEGER NOT NULL,
     PRIMARY KEY (account_id, workspace_id)
@@ -136,13 +137,23 @@ function installDirectoryInvalidationTriggers(db: Database.Database): void {
   // These triggers record changed identities only. Canonical application
   // projectors, not SQL, interpret the Task lifecycle and activity.
   if (!tableExists(db, 'tasks')) return;
-  for (const table of ['tasks', 'kernel_dispatch_items', 'generation_replan_requests', 'attempt_sandboxes', 'kernel_decisions']) {
+  for (const table of [
+    'tasks',
+    'kernel_dispatch_items',
+    'generation_replan_requests',
+    'attempt_sandboxes',
+    'kernel_decisions',
+    'conversation_task_slots',
+    'task_schedule_entries',
+  ]) {
     if (!tableExists(db, table)) continue;
     for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
       const reference = operation === 'DELETE' ? 'OLD' : 'NEW';
       const select = table === 'tasks'
         ? `SELECT ${reference}.account_id, ${reference}.conversation_id, 1 WHERE ${reference}.conversation_id IS NOT NULL`
-        : `SELECT account_id, conversation_id, 1 FROM tasks WHERE id = ${reference}.task_id`;
+        : `SELECT account_id, conversation_id, 1 FROM tasks WHERE id = ${reference}.${
+          table === 'conversation_task_slots' ? 'active_task_id' : 'task_id'
+        }`;
       db.exec(`
         CREATE TRIGGER IF NOT EXISTS directory_dirty_${table}_${operation.toLowerCase()}
         AFTER ${operation} ON ${table}
@@ -1493,7 +1504,39 @@ export function runMigrations(
       const changed = db.prepare('UPDATE schema_version SET version = 45 WHERE version = 44').run();
       if (changed.changes !== 1) throw new Error('schema version changed during 44 to 45 migration');
     })();
+    version = 45;
   }
+  if (version === 45) {
+    db.transaction(() => {
+      const columns = columnsOf(db, 'workspace_directory_projection');
+      if (!columns.includes('latest_task_created_at')) {
+        db.exec(`
+          ALTER TABLE workspace_directory_projection
+            ADD COLUMN latest_task_created_at TEXT NOT NULL DEFAULT '';
+          UPDATE workspace_directory_projection
+          SET latest_task_created_at = COALESCE(
+            json_extract(summary_json, '$.latestTaskCreatedAt'),
+            json_extract(summary_json, '$.createdAt'),
+            ''
+          );
+          DROP INDEX IF EXISTS workspace_directory_page;
+          DROP INDEX IF EXISTS workspace_directory_all_page;
+          CREATE INDEX workspace_directory_page ON workspace_directory_projection
+            (account_id, workspace_id, archived, latest_task_created_at DESC, conversation_id ASC);
+          CREATE INDEX workspace_directory_all_page ON workspace_directory_projection
+            (account_id, workspace_id, latest_task_created_at DESC, conversation_id ASC);
+        `);
+      }
+      const changed = db.prepare('UPDATE schema_version SET version = 46 WHERE version = 45').run();
+      if (changed.changes !== 1) throw new Error('schema version changed during 45 to 46 migration');
+    })();
+  }
+  // Current-schema databases may have been created before a new projection
+  // invalidation trigger was introduced. Reinstalling the idempotent trigger
+  // set on every open upgrades those databases without requiring a rebuild.
+  db.transaction(() => {
+    installDirectoryInvalidationTriggers(db);
+  })();
 }
 
 function runBaseMigrations(
@@ -1504,7 +1547,7 @@ function runBaseMigrations(
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
     ).all() as Array<{ version: number }>;
-    if (versions.length === 1 && [42, 43, 44, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
+    if (versions.length === 1 && [42, 43, 44, 45, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 41) {

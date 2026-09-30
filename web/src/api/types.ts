@@ -92,6 +92,15 @@ export interface WorkGraphPresentationProjection {
         reasonCode: string;
         reasonDetail?: string;
       }>;
+      spanRouting?: {
+        applied: boolean;
+        reason: string | null;
+        candidates: Array<{
+          providerDisplayName: string;
+          modelDisplayName: string;
+          probability: number;
+        }>;
+      };
     }>;
   }>;
   edges: Array<{ from: string; to: string; kind: 'dependency' | 'handoff' | 'artifact'; label: string }>;

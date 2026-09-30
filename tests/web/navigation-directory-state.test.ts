@@ -3,6 +3,7 @@ import { NavigationDirectoryChanges, shouldActivateConversation } from '../../we
 
 function row(id: string, title = id) {
   return { id, workspaceId: 'workspace_one', title, createdAt: 'now', updatedAt: 'now',
+    latestTaskCreatedAt: '2026-09-30T00:00:00.000Z',
     active: false, archived: false, preview: title,
     activity: { state: 'planning' as const, taskId: null, updatedAt: 'now' }, workspace: null };
 }
@@ -26,6 +27,23 @@ describe('navigation response reconciliation', () => {
     const start = changes.sequence;
     changes.observe({ workspaceId: 'workspace_one', conversationId: 'b', changes: { title: 'renamed' } });
     expect(changes.merge(rows, 'workspace_one', 'needle', start)).toEqual([]);
+  });
+  it('sorts by the latest Task creation time instead of activity state', () => {
+    const changes = new NavigationDirectoryChanges();
+    const rows = changes.merge([
+      {
+        ...row('older-blocked'),
+        latestTaskCreatedAt: '2026-09-29T23:00:00.000Z',
+        activity: { state: 'blocked' as const, taskId: 'task_old', updatedAt: '2026-09-30T01:00:00.000Z' },
+      },
+      {
+        ...row('newer-idle'),
+        latestTaskCreatedAt: '2026-09-30T02:00:00.000Z',
+        activity: { state: 'idle' as const, taskId: null, updatedAt: '2026-09-30T02:00:00.000Z' },
+      },
+    ], 'workspace_one', '', 0);
+
+    expect(rows.map(item => item.id)).toEqual(['newer-idle', 'older-blocked']);
   });
   it('reattaches A when B is pending even if A is still the acknowledged active Conversation', () => {
     expect(shouldActivateConversation('a', 'a', 'b')).toBe(true);

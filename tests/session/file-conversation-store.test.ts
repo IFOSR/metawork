@@ -44,6 +44,21 @@ function makeRecord(
 }
 
 describe('FileConversationStore', () => {
+  it('updates metadata atomically without replacing history and notifies the directory', async () => {
+    const observed: string[] = [];
+    const root = await makeRoot();
+    const store = new FileConversationStore(root, {
+      onMetadataCommitted: metadata => { observed.push(metadata.title); },
+    });
+    await store.initialize();
+    const record = makeRecord('conv_title', 'planner_title');
+    await store.writeConversation(record);
+    await store.updateMetadata('conv_title', metadata => ({ ...metadata, title: 'First request' }));
+    expect((await store.readConversation('conv_title'))?.conversation.title).toBe('First request');
+    expect((await store.readConversation('conv_title'))?.turns).toEqual([]);
+    expect(observed.at(-1)).toBe('First request');
+  });
+
   it('writes, reads and archives a versioned account-scoped record', async () => {
     const root = await makeRoot();
     const store = new FileConversationStore(root);

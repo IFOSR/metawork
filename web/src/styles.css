@@ -1370,9 +1370,229 @@ body {
   font-size: 12px;
 }
 
+/* ─── Decision model (optional routing advisor) ───────────────────────────
+   One switch plus one conditional credential field. The explainer carries the
+   "what does this do" answer, so an operator can decide without knowing the
+   fixed backend model or its provider. Uses semantic surface tokens so both
+   themes stay legible. */
+.decision-model-explainer {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.decision-model-point {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line-subtle);
+  border-radius: 11px;
+  background: var(--surface-raised);
+}
+
+.decision-model-point dt {
+  margin-bottom: 5px;
+  color: var(--accent);
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+}
+
+.decision-model-point dd {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.decision-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-subtle);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+
+.decision-toggle:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line-subtle));
+}
+
+.decision-toggle[data-enabled='true'] {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line-subtle));
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface-raised));
+}
+
+.decision-toggle input[type='checkbox'] {
+  order: 2;
+  position: relative;
+  flex-shrink: 0;
+  width: 40px;
+  height: 23px;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--line-subtle);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-secondary) 24%, transparent);
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.decision-toggle input[type='checkbox']::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  transition: transform 0.18s ease;
+}
+
+.decision-toggle input[type='checkbox']:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.decision-toggle input[type='checkbox']:checked::after {
+  transform: translateX(17px);
+}
+
+.decision-toggle input[type='checkbox']:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.decision-toggle-copy {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+  min-width: 0;
+}
+
+.decision-toggle-copy strong {
+  font-size: 13px;
+}
+
+.decision-toggle-copy small {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.decision-credential {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-subtle);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  background: var(--surface-raised);
+}
+
+.decision-credential-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.decision-credential-head label {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.decision-credential input {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--line-subtle);
+  border-radius: 8px;
+  background: var(--surface-panel);
+  color: var(--text-primary);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.decision-credential input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.decision-credential input:disabled {
+  opacity: 0.6;
+}
+
+.decision-credential-note,
+.decision-credential-warning {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.decision-credential-note {
+  color: var(--text-secondary);
+}
+
+.decision-credential-warning {
+  color: var(--status-warning);
+}
+
+.credential-chip {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--line-subtle);
+  border-radius: 999px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.credential-chip-set {
+  border-color: color-mix(in srgb, var(--status-success) 50%, var(--line-subtle));
+  color: var(--status-success);
+}
+
+.credential-chip-missing {
+  border-color: color-mix(in srgb, var(--status-warning) 50%, var(--line-subtle));
+  color: var(--status-warning);
+}
+
+/* The dark-mode cards sit on a near-black canvas, so `--surface-raised` already
+   reads as elevation. On the white light canvas it does not, so tint the cards
+   onto the subtle surface instead. */
+:root[data-theme='light'] .decision-model-point,
+:root[data-theme='light'] .decision-toggle,
+:root[data-theme='light'] .decision-credential {
+  background: var(--surface-subtle);
+}
+
+:root[data-theme='light'] .decision-toggle[data-enabled='true'] {
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-subtle));
+}
+
 @media (max-width: 900px) {
   .runtime-policy-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .decision-model-explainer {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .decision-toggle,
+  .decision-toggle input[type='checkbox'],
+  .decision-toggle input[type='checkbox']::after {
+    transition: none;
   }
 }
 
@@ -2696,6 +2916,11 @@ select {
   box-shadow: 0 0 0 4px rgba(145, 210, 165, 0.1);
 }
 
+.session-row[data-activity='queued'] .session-row-status {
+  background: var(--yellow);
+  box-shadow: 0 0 0 4px rgba(241, 194, 104, 0.1);
+}
+
 .session-row[data-activity='waiting'] .session-row-status {
   background: var(--yellow);
 }
@@ -3045,6 +3270,26 @@ select {
 .routing-section-label {
   display: block;
   margin-top: 0.55rem;
+}
+
+.routing-span-evidence {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 0.55rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--line-subtle, var(--border));
+}
+
+.routing-span-evidence > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--text);
+}
+
+.routing-span-evidence > div small {
+  margin-top: 0;
+  color: var(--accent, #a24d2f);
 }
 .work-graph-node[data-runnable='true'] { border-color: var(--accent); box-shadow: inset 3px 0 var(--accent); }
 .work-graph-node[data-status='done'] { border-color: color-mix(in srgb, var(--green) 55%, var(--border)); }

@@ -55,6 +55,10 @@ export interface ConversationStore {
   writeCatalog(catalog: ConversationCatalogFile): Promise<void>;
   readConversation(conversationId: string): Promise<ConversationRecord | null>;
   writeConversation(record: ConversationRecord): Promise<void>;
+  updateMetadata(
+    conversationId: string,
+    update: (metadata: ConversationMetadata) => ConversationMetadata,
+  ): Promise<ConversationMetadata | null>;
   readMetadata?(conversationId: string): Promise<ConversationMetadata | null>;
   readHistoryVersion?(conversationId: string): Promise<string | null>;
   readHistoryPage?(

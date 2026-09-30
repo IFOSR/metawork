@@ -92,7 +92,8 @@ export class WorkspaceDirectoryProjector {
       })));
       // No await between observing facts and committing their batch/checkpoint.
       const projector = new WorkspaceConversationProjector({
-        project: (id, updatedAt) => activities.get(id) ?? { state: 'idle', taskId: null, updatedAt },
+        project: (id, updatedAt) => activities.get(id)
+          ?? { state: 'idle', taskId: null, updatedAt, latestTaskCreatedAt: updatedAt },
       });
       this.deps.projection.writeBatch(batch.map(item => projector.project(item)!), batch.at(-1)!.id, token);
       await (this.deps.yieldBatch?.() ?? setImmediate());

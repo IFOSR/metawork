@@ -2,7 +2,7 @@ import type { WorkspaceConversationSummary } from './workspace-conversation-proj
 import type { WorkspaceConversationPage, WorkspaceConversationPageRequest } from './workspace-directory-service.js';
 import type { ConversationActivityProjection } from './conversation-activity-projector.js';
 
-export const WORKSPACE_DIRECTORY_PROJECTION_VERSION = 1;
+export const WORKSPACE_DIRECTORY_PROJECTION_VERSION = 2;
 
 export interface DirectoryProjectionState {
   readonly status: 'building' | 'ready';

@@ -23,6 +23,22 @@ export function RoutingDecisionCard({ routing }: { routing: Routing }) {
           {routing.estimatedLatencyMs !== undefined ? `延迟 ${routing.estimatedLatencyMs}ms` : ''}
         </small>
       )}
+      {routing.spanRouting && (
+        <div className="routing-span-evidence">
+          <strong>Span 决策模型</strong>
+          <small>
+            {routing.spanRouting.applied
+              ? '已参与候选排序'
+              : `未采纳${routing.spanRouting.reason ? `：${routing.spanRouting.reason}` : ''}`}
+          </small>
+          {routing.spanRouting.candidates.map(candidate => (
+            <div key={`${candidate.providerDisplayName}/${candidate.modelDisplayName}`}>
+              <span>{candidate.providerDisplayName} / {candidate.modelDisplayName}</span>
+              <small>{(candidate.probability * 100).toFixed(1)}%</small>
+            </div>
+          ))}
+        </div>
+      )}
       {routing.rejectedCandidates.length > 0 && (
         <div className="routing-rejections">
           <strong>未入选模型候选</strong>

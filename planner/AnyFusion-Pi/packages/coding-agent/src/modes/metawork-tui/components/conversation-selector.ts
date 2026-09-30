@@ -208,6 +208,7 @@ function activityLabel(state: MetaWorkConversationSummary["activity"]["state"]):
 } {
 	switch (state) {
 		case "planning": return { label: "规划中", color: "accent" };
+		case "queued": return { label: "排队中", color: "warning" };
 		case "executing": return { label: "执行中", color: "success" };
 		case "waiting": return { label: "等待中", color: "warning" };
 		case "blocked": return { label: "已阻塞", color: "error" };

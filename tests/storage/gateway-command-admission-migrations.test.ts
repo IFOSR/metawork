@@ -19,7 +19,7 @@ const navigationTables = [
   'workspace_directory_observations', 'workspace_directory_dirty',
 ];
 // Captured from the actual pre-change schema43 migration output, not from a live account.
-const schema43Hash = '05a9135de1bf9d110b2fa76c07d90a0ad222066220c151725c84674ae48af911';
+const schema43Hash = '35c7783b42f946b28cc710c841ec1d10d1f2613122d57282417a92534a6c76c6';
 
 afterEach(() => {
   for (const db of databases.splice(0)) if (db.open) db.close();
@@ -30,8 +30,8 @@ describe('schema44 Gateway command admission migration', () => {
   it('creates the agreed account-scoped tables on a fresh database', () => {
     const db = open();
     runMigrations(db);
-    expect(CURRENT_SCHEMA_VERSION).toBe(45);
-    expect(version(db)).toBe(45);
+    expect(CURRENT_SCHEMA_VERSION).toBe(46);
+    expect(version(db)).toBe(46);
     expect(db.prepare('PRAGMA table_info(gateway_command_admissions)').all()).toMatchObject([
       { name: 'account_id', type: 'TEXT', notnull: 1, pk: 1 },
       { name: 'idempotency_key', type: 'TEXT', notnull: 1, pk: 2 },
@@ -40,6 +40,77 @@ describe('schema44 Gateway command admission migration', () => {
     ]);
     expect(db.prepare('PRAGMA table_info(gateway_command_admission_imports)').all())
       .toMatchObject([{ name: 'account_id', type: 'TEXT', pk: 1 }]);
+  });
+
+  it('invalidates the directory when scheduler-owned activity facts change', () => {
+    const db = open();
+    runMigrations(db);
+    db.exec(`
+      INSERT INTO tasks (
+        id, title, account_id, conversation_id, created_at, updated_at
+      ) VALUES (
+        'task_scheduler_activity', 'Scheduler activity', 'local-default',
+        'conv_scheduler_activity', '2026-09-30', '2026-09-30'
+      );
+      DELETE FROM workspace_directory_dirty;
+      INSERT INTO conversation_task_slots (
+        conversation_id, active_task_id, state, updated_at
+      ) VALUES (
+        'conv_scheduler_activity', 'task_scheduler_activity', 'free', '2026-09-30'
+      );
+      INSERT INTO task_schedule_entries (
+        task_id, conversation_id, state, enqueued_at, eligible_since,
+        scheduling_reason, payload_json
+      ) VALUES (
+        'task_scheduler_activity', 'conv_scheduler_activity', 'queued',
+        '2026-09-30', '2026-09-30', 'test', '{}'
+      );
+      DELETE FROM workspace_directory_dirty;
+    `);
+
+    db.prepare(`
+      UPDATE conversation_task_slots
+      SET state = 'occupied', updated_at = '2026-09-30T00:00:01Z'
+      WHERE conversation_id = 'conv_scheduler_activity'
+    `).run();
+    expect(db.prepare(`
+      SELECT conversation_id FROM workspace_directory_dirty
+      WHERE account_id = 'local-default' AND conversation_id = 'conv_scheduler_activity'
+    `).get()).toEqual({ conversation_id: 'conv_scheduler_activity' });
+
+    db.prepare('DELETE FROM workspace_directory_dirty').run();
+    db.prepare(`
+      UPDATE task_schedule_entries
+      SET state = 'running', last_scheduled_at = '2026-09-30T00:00:02Z'
+      WHERE task_id = 'task_scheduler_activity'
+    `).run();
+    expect(db.prepare(`
+      SELECT conversation_id FROM workspace_directory_dirty
+      WHERE account_id = 'local-default' AND conversation_id = 'conv_scheduler_activity'
+    `).get()).toEqual({ conversation_id: 'conv_scheduler_activity' });
+  });
+
+  it('installs missing scheduler invalidation triggers when opening the current schema', () => {
+    const db = open();
+    runMigrations(db);
+    db.exec(`
+      DROP TRIGGER directory_dirty_conversation_task_slots_update;
+      DROP TRIGGER directory_dirty_task_schedule_entries_update;
+    `);
+
+    runMigrations(db);
+
+    expect(db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'trigger' AND name IN (
+        'directory_dirty_conversation_task_slots_update',
+        'directory_dirty_task_schedule_entries_update'
+      )
+      ORDER BY name
+    `).all()).toEqual([
+      { name: 'directory_dirty_conversation_task_slots_update' },
+      { name: 'directory_dirty_task_schedule_entries_update' },
+    ]);
   });
 
   it('rolls back all admission DDL with a failed 43-to-44 version transition and retries', () => {
@@ -57,7 +128,7 @@ describe('schema44 Gateway command admission migration', () => {
 
     db.exec('DROP TRIGGER fail_admission_migration');
     runMigrations(db);
-    expect(version(db)).toBe(45);
+    expect(version(db)).toBe(46);
     expect(facts(db)).toEqual(before);
   });
 
@@ -75,7 +146,7 @@ describe('schema44 Gateway command admission migration', () => {
     expect(facts(db)).toEqual(before);
     db.exec('DROP TRIGGER fail_navigation_migration');
     runMigrations(db);
-    expect(version(db)).toBe(45);
+    expect(version(db)).toBe(46);
     for (const table of [...navigationTables, ...admissionTables]) {
       expect(tableExists(db, table), table).toBe(true);
     }
@@ -93,7 +164,7 @@ describe('schema44 Gateway command admission migration', () => {
     for (const table of admissionTables) expect(tableExists(db, table)).toBe(false);
     db.exec('DROP TRIGGER fail_admission_migration');
     runMigrations(db);
-    expect(version(db)).toBe(45);
+    expect(version(db)).toBe(46);
   });
 
   it('uses point and partial indexes without scanning unrelated terminal history', () => {
@@ -142,7 +213,7 @@ describe('schema44 Gateway command admission migration', () => {
     const root = temporaryDirectory();
     const sourcePath = join(root, 'source43.db');
     const backupPath = join(root, 'backup43.db');
-    const clonePath = join(root, 'candidate45.db');
+    const clonePath = join(root, 'candidate46.db');
     const source = schema43(sourcePath);
     const before = facts(source);
     source.close();
@@ -159,14 +230,14 @@ describe('schema44 Gateway command admission migration', () => {
       },
     });
     const result = upgrade.prepare({
-      sourcePath, backupPath, clonePath, expectedSourceSchema: 43, expectedTargetSchema: 45,
+      sourcePath, backupPath, clonePath, expectedSourceSchema: 43, expectedTargetSchema: 46,
       sentinelTables: ['tasks', ...navigationTables, ...admissionTables, ...retryWakeTables],
     });
     if (fail) {
       await expect(result).rejects.toThrow('injected schema44 failure');
       expect(existsSync(clonePath)).toBe(false);
     } else {
-      await expect(result).resolves.toMatchObject({ sourceSchemaVersion: 43, candidateSchemaVersion: 45 });
+      await expect(result).resolves.toMatchObject({ sourceSchemaVersion: 43, candidateSchemaVersion: 46 });
       const candidate = open(clonePath);
       expect(facts(candidate)).toEqual(before);
       expect(candidate.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);

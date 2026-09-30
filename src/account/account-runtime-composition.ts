@@ -53,6 +53,7 @@ import type { RawUsageEvent } from '../metering/usage-normalizer.js';
 import type { Payer } from '../billing/cost-policy.js';
 import type { QueryUsageLifecycle } from '../metering/query-lifecycle.js';
 import type { ConversationResultDelivery } from '../session/conversation-session.js';
+import type { ExecutionTraceAppendInput } from '../execution/execution-trace.js';
 
 export interface AccountRuntimeComposition {
   readonly accountRuntime: AccountRuntime;
@@ -116,6 +117,7 @@ export function buildAccountRuntimeComposition(deps: {
   usagePayer?: Payer;
   queryUsageLifecycle?: QueryUsageLifecycle;
   onSystemResultDelivery?: (sessionId: string, delivery: ConversationResultDelivery) => Promise<void>;
+  appendExecutionTrace?: (sessionId: string, input: ExecutionTraceAppendInput) => void;
 }): AccountRuntimeComposition {
   const kernelServices = buildAccountKernelServices(deps.db);
   const repositories = buildAccountRepositories(deps.db);
@@ -313,6 +315,7 @@ export function buildAccountRuntimeComposition(deps: {
     blockedRecheckIntervalMs: deps.blockedRecheckIntervalMs ?? 60_000,
     queryUsageLifecycle: deps.queryUsageLifecycle,
     onSystemResultDelivery: deps.onSystemResultDelivery,
+    appendExecutionTrace: deps.appendExecutionTrace,
   });
 
   const factory = new AccountRuntimeFactory({

@@ -47,6 +47,7 @@ import { ResultObjectRepo } from '../storage/result-object-repo.js';
 import type { RuntimeConfigurationView } from '../configuration/index.js';
 import type { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
 import type { RetryWakeRepo } from '../storage/retry-wake-repo.js';
+import { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
 
 export type KernelExecutionRuntimeCallbacks = ConstructorParameters<typeof KernelExecutionRuntime>[0]['callbacks'];
 export type TaskExecutionApplicationCallbacks = ConstructorParameters<typeof SessionTaskExecutionApplicationService>[0]['callbacks'];
@@ -135,6 +136,7 @@ export function buildAccountKernelExecutionServices(deps: {
     taskEventRepo: deps.taskEventRepo,
     workUnitClaimService: deps.workUnitClaimService,
     attemptRunner: deps.attemptRunner,
+    attemptRuntimeRepo: new ExecutorAttemptRuntimeRepo(deps.db),
     controlKernel: deps.controlKernel,
     kernelWorkflowStore: deps.kernelWorkflowRepo,
     kernelDecisionRepo: deps.kernelDecisionRepo,

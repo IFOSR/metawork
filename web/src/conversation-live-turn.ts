@@ -74,7 +74,10 @@ export function mergeExecutionTimeline(
     return current;
   }
   const projectedStatus = turnStatusFromTimeline(timeline);
-  const status = projectedStatus && current.status === 'running'
+  const canReopenResume = current.status === 'blocked'
+    && projectedStatus === 'running'
+    && isExplicitResumeTurn(current.userInput);
+  const status = projectedStatus && (current.status === 'running' || canReopenResume)
     ? projectedStatus
     : current.status;
   return {
@@ -112,8 +115,11 @@ function mergeTraceStatus(
   completedAt?: string | null,
 ): Pick<ConversationTurnProjection, 'status' | 'completedAt'> {
   // Late progress can enrich a terminal Turn, but cannot restart it.
+  const canReopenResume = current.status === 'blocked'
+    && incoming === 'running'
+    && isExplicitResumeTurn(current.userInput);
   if (current.status === 'cancelled'
-    || (current.status !== 'running' && incoming === 'running')) {
+    || (current.status !== 'running' && !canReopenResume && incoming === 'running')) {
     return { status: current.status, completedAt: current.completedAt };
   }
   return {
@@ -138,6 +144,10 @@ function turnStatusFromTimeline(
   if (delivery?.status === 'blocked') return 'blocked';
   if (delivery?.status === 'failed') return 'failed';
   return null;
+}
+
+function isExplicitResumeTurn(userInput: string): boolean {
+  return /^\/task\s+(?:resume|recover|unblock)\b/iu.test(userInput.trim());
 }
 
 export function retainLiveTurnForConversation(

@@ -12,6 +12,7 @@ export interface ConversationActivityTaskFact {
     readonly type: string;
     readonly status: string;
   }>;
+  readonly createdAt?: string;
   readonly updatedAt: string;
 }
 
@@ -22,6 +23,10 @@ export interface ConversationActivityFacts {
   }>;
   readonly tasks: ReadonlyArray<ConversationActivityTaskFact>;
   readonly activeAttemptTaskIds: ReadonlyArray<string>;
+  readonly activeAttemptUpdatedAt?: ReadonlyArray<{
+    readonly taskId: string;
+    readonly updatedAt: string;
+  }>;
   /**
    * Tasks with an outstanding durable Replan Job. Required so the activity card
    * derives the same canonical lifecycle as TaskView instead of assuming the
@@ -36,6 +41,7 @@ export interface ConversationActivityProjection {
   readonly state: ConversationActivityState;
   readonly taskId: string | null;
   readonly updatedAt: string;
+  readonly latestTaskCreatedAt?: string;
 }
 
 interface Candidate extends ConversationActivityProjection {
@@ -45,6 +51,7 @@ interface Candidate extends ConversationActivityProjection {
 const PRIORITY: Record<ConversationActivityState, number> = {
   idle: 0,
   planning: 1,
+  queued: 2,
   waiting: 2,
   executing: 3,
   blocked: 4,
@@ -55,21 +62,35 @@ export class ConversationActivityProjector {
 
   project(conversationId: string, fallbackUpdatedAt: string): ConversationActivityProjection {
     const fallback = validTimestamp(fallbackUpdatedAt, new Date(0).toISOString());
+    const conversationTasks = this.facts.tasks
+      .filter(task => task.originConversationId === conversationId);
+    const latestTaskCreatedAt = conversationTasks
+      .map(task => validTimestamp(task.createdAt ?? fallback, fallback))
+      .sort((left, right) => right.localeCompare(left))[0] ?? fallback;
     const activeAttempts = new Set(this.facts.activeAttemptTaskIds);
+    const activeAttemptUpdatedAt = new Map(
+      (this.facts.activeAttemptUpdatedAt ?? []).map(item => [item.taskId, item.updatedAt]),
+    );
     const openReplanJobs = new Set(this.facts.openReplanJobTaskIds);
     const pendingRetryWakes = new Set(this.facts.pendingRetryWakeTaskIds);
     const candidates: Candidate[] = this.facts.plannerTurns
       .filter(turn => turn.conversationId === conversationId)
       .map(turn => candidate('planning', null, turn.updatedAt, fallback));
 
-    for (const task of this.facts.tasks) {
-      if (task.originConversationId !== conversationId) continue;
+    for (const task of conversationTasks) {
       const state = taskState(task, {
         hasActiveAttempt: activeAttempts.has(task.id),
         hasOutstandingReplanJob: openReplanJobs.has(task.id),
         hasPendingRetryWake: pendingRetryWakes.has(task.id),
       });
-      if (state) candidates.push(candidate(state, task.id, task.updatedAt, fallback));
+      if (state) {
+        candidates.push(candidate(
+          state,
+          task.id,
+          latestTimestamp(task.updatedAt, activeAttemptUpdatedAt.get(task.id)),
+          fallback,
+        ));
+      }
     }
 
     candidates.sort((left, right) => (
@@ -79,8 +100,13 @@ export class ConversationActivityProjector {
     ));
     const selected = candidates[0];
     return selected
-      ? { state: selected.state, taskId: selected.taskId, updatedAt: selected.updatedAt }
-      : { state: 'idle', taskId: null, updatedAt: fallback };
+      ? {
+          state: selected.state,
+          taskId: selected.taskId,
+          updatedAt: selected.updatedAt,
+          latestTaskCreatedAt,
+        }
+      : { state: 'idle', taskId: null, updatedAt: fallback, latestTaskCreatedAt };
   }
 }
 
@@ -108,13 +134,7 @@ function taskState(
   // Coordinating work (Plan, retry wake, user decision) is reported as waiting;
   // the card must not claim the Conversation is idle.
   if (lifecycle === 'coordinating' || lifecycle === 'waiting_for_user') return 'waiting';
-  if (
-    lifecycle === 'queued'
-    && task.dependencies.some(dependency => (
-      dependency.status === 'waiting'
-      && ['kernel_capacity', 'kernel_retry', 'kernel_availability'].includes(dependency.type)
-    ))
-  ) return 'waiting';
+  if (lifecycle === 'queued') return 'queued';
   return null;
 }
 
@@ -134,4 +154,13 @@ function candidate(
 
 function validTimestamp(value: string, fallback: string): string {
   return Number.isFinite(Date.parse(value)) ? value : fallback;
+}
+
+function latestTimestamp(...values: Array<string | undefined>): string {
+  const valid = values.filter((value): value is string => (
+    typeof value === 'string' && Number.isFinite(Date.parse(value))
+  ));
+  return valid.sort((left, right) => Date.parse(right) - Date.parse(left))[0]
+    ?? values.find(value => typeof value === 'string')
+    ?? new Date(0).toISOString();
 }

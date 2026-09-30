@@ -191,9 +191,10 @@ export interface WorkspaceSummary {
 }
 
 export interface ConversationActivityProjection {
-  state: 'idle' | 'planning' | 'executing' | 'waiting' | 'blocked';
+  state: 'idle' | 'planning' | 'queued' | 'executing' | 'waiting' | 'blocked';
   taskId: string | null;
   updatedAt: string;
+  latestTaskCreatedAt?: string;
 }
 
 export interface WebSessionMetadata {
@@ -202,6 +203,7 @@ export interface WebSessionMetadata {
   title: string;
   createdAt: string;
   updatedAt: string;
+  latestTaskCreatedAt?: string;
   active: boolean;
   archived: boolean;
   preview?: string;

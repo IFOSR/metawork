@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { createElement } from 'react';
 import { describe, expect, it } from 'vitest';
-import { LiveExecutionPanel } from '../../web/src/components/LiveExecutionPanel';
+import { collectExecutionCards, LiveExecutionPanel } from '../../web/src/components/LiveExecutionPanel';
 import type { ConversationTurnProjection } from '../../web/src/api/session-types';
 import { projectTurnForPresentation } from '../../web/src/turn-task-presentation';
 
@@ -11,6 +11,56 @@ const { renderToStaticMarkup } = requireFromWeb('react-dom/server') as {
 };
 
 describe('Turn Task presentation', () => {
+  it('keeps the newest durable progress timestamp when trace events are older', () => {
+    const cards = collectExecutionCards(
+      [{
+        id: 'route_old',
+        sequence: 1,
+        occurredAt: '2026-09-30T09:30:00.000Z',
+        phase: 'execution',
+        actor: 'executor',
+        kind: 'executor_routed',
+        status: 'completed',
+        title: 'Executor routed',
+        summary: '',
+        taskId: 'task_b',
+        subtaskId: 'subtask_b1',
+        details: {},
+      }],
+      {
+        taskId: 'task_b',
+        title: 'Task B',
+        status: 'running',
+        stages: [{
+          phase: 'execution',
+          status: 'running',
+          subtasks: [{
+            id: 'subtask_b1',
+            title: 'Current B1',
+            status: 'running',
+            attempts: [{
+              attemptId: 'attempt_b1',
+              attemptKind: 'primary',
+              attemptOrdinal: 1,
+              attemptLabel: '主执行',
+              displayStatus: '执行中',
+              result: 'running',
+              startedAt: '2026-09-30T09:00:00.000Z',
+              updatedAt: '2026-09-30T10:00:00.000Z',
+              progressHistory: [{
+                kind: 'log',
+                text: '正在执行',
+                occurredAt: '2026-09-30T10:00:00.000Z',
+              }],
+            }],
+          }],
+        }],
+      },
+    );
+
+    expect(cards[0]?.updatedAt).toBe('2026-09-30T10:00:00.000Z');
+  });
+
   it('shows every current-Task Subtask but excludes a foreign Task trace card', () => {
     const turn: ConversationTurnProjection = {
       id: 'turn_b',
@@ -91,6 +141,43 @@ describe('Turn Task presentation', () => {
     expect(html).toContain('Current B1');
     expect(html).toContain('Current B2');
     expect(html).not.toContain('Historical A');
+  });
+
+  it('uses the Task title when a Subtask title is an internal canonical ID', () => {
+    const internalSubtaskId = 'task_plan_event_proposal_abc123_r1_shanghai-national-day';
+    const turn: ConversationTurnProjection = {
+      id: 'turn_title',
+      sessionId: 'conv_1',
+      userInput: '国庆期间我想去上海周边转一转，有什么可推荐的地方吗？',
+      status: 'running',
+      finalAnswer: null,
+      taskId: 'task_plan_event_proposal_abc123',
+      startedAt: '2026-09-30T09:00:00.000Z',
+      completedAt: null,
+      traceEvents: [],
+      executionTimeline: {
+        taskId: 'task_plan_event_proposal_abc123',
+        title: '国庆上海周边旅行建议',
+        status: 'running',
+        stages: [{
+          phase: 'execution',
+          status: 'running',
+          subtasks: [{
+            id: internalSubtaskId,
+            title: internalSubtaskId,
+            status: 'running',
+            attempts: [],
+          }],
+        }],
+      },
+      artifactRefs: [],
+      artifacts: [],
+    };
+
+    const html = renderToStaticMarkup(createElement(LiveExecutionPanel, { turn }));
+
+    expect(html).toContain('国庆上海周边旅行建议');
+    expect(html).not.toContain(internalSubtaskId);
   });
 
   it('drops a mismatched historical Timeline instead of replacing the Turn Task', () => {

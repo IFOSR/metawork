@@ -48,6 +48,7 @@ import type { RecoveryReplan } from '../session/recovery-replanner.js';
 import type { ConfigurationSnapshot } from '../configuration/types.js';
 import { buildKernelConfigurationView, buildPlannerConfigurationView } from '../configuration/projections.js';
 import type { ConversationResultDelivery } from '../session/conversation-session.js';
+import type { ExecutionTraceAppendInput } from '../execution/execution-trace.js';
 
 /**
  * Bounded retry budget for a `retry_safe` uncertain application before it must
@@ -102,6 +103,10 @@ export class AccountStartupRecoveryService {
     readonly blockedRecheckIntervalMs: number;
     readonly queryUsageLifecycle?: QueryUsageLifecycle;
     readonly onSystemResultDelivery?: (sessionId: string, delivery: ConversationResultDelivery) => Promise<void>;
+    readonly appendExecutionTrace?: (
+      sessionId: string,
+      input: ExecutionTraceAppendInput,
+    ) => void;
   }) {}
 
   async onTaskTerminal(taskId: string): Promise<void> {
@@ -1249,7 +1254,9 @@ export class AccountStartupRecoveryService {
       kernelExecutionCallbacks: {
         appendOutput: () => undefined,
         recordResultDelivery: delivery => { deliveries.push(delivery); },
-        appendExecutionTrace: () => undefined,
+        appendExecutionTrace: input => {
+          this.deps.appendExecutionTrace?.(sessionId, input);
+        },
         refreshRuntimeState: () => undefined,
         appendTaskQueueSnapshot: () => undefined,
         setFocusContext: () => undefined,

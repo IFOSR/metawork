@@ -34,10 +34,11 @@ export class NavigationDirectoryChanges {
       }
     }
     const search = query.trim().toLocaleLowerCase();
-    const priority = { blocked: 5, executing: 4, waiting: 3, planning: 2, idle: 1 };
     return [...byId.values()].filter(row => !row.archived && (!search || row.title.toLocaleLowerCase().includes(search)))
-      .sort((a, b) => (priority[b.activity?.state ?? 'idle'] - priority[a.activity?.state ?? 'idle'])
-        || b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+      .sort((a, b) => (b.latestTaskCreatedAt ?? b.createdAt).localeCompare(
+        a.latestTaskCreatedAt ?? a.createdAt,
+      )
+        || a.id.localeCompare(b.id));
   }
 }
 

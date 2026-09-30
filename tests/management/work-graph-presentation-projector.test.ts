@@ -79,6 +79,11 @@ function input(): WorkGraphPresentationInput {
         rejectedCandidates: [{ modelRef: 'slow-model', providerRef: 'openai', reason: 'latency_limit_exceeded' }],
         estimatedCost: 0.02,
         estimatedLatencyMs: 800,
+        spanRouting: {
+          applied: true,
+          reason: null,
+          probabilities: { 'coding-model': 0.9, 'slow-model': 0.2 },
+        },
       }],
     }],
     dispatchItems: [{ subtaskId: 'task-1_r1_implement', status: 'running', authorizedBinding: {
@@ -131,6 +136,14 @@ describe('WorkGraphPresentationProjector', () => {
           modelDisplayName: 'gpt-slow',
           reasonCode: 'latency_limit_exceeded',
         }],
+        spanRouting: {
+          applied: true,
+          reason: null,
+          candidates: [
+            { providerDisplayName: 'OpenAI', modelDisplayName: 'gpt-coding', probability: 0.9 },
+            { providerDisplayName: 'OpenAI', modelDisplayName: 'gpt-slow', probability: 0.2 },
+          ],
+        },
       }],
     });
     expect(JSON.stringify(result)).not.toContain('coding-model');

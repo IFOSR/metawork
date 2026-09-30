@@ -103,6 +103,38 @@ describe('WorkspaceDirectoryService', () => {
     expect(getConversationActivity).not.toHaveBeenCalled();
   });
 
+  it('sorts Conversations by the newest Task creation time, not activity state', async () => {
+    const value = await fixture();
+    const selected = await value.service.selectByPath(value.repo, 'local:local-installation');
+    const older = await value.service.createConversation(selected.workspace.id, 'local:local-installation');
+    const newer = await value.service.createConversation(selected.workspace.id, 'local:local-installation');
+    const getConversationActivities = () => new Map([
+      [older.id, {
+        state: 'blocked' as const,
+        taskId: 'task_old',
+        updatedAt: '2026-09-30T01:00:00.000Z',
+        latestTaskCreatedAt: '2026-09-29T23:00:00.000Z',
+      }],
+      [newer.id, {
+        state: 'idle' as const,
+        taskId: null,
+        updatedAt: '2026-09-30T02:00:00.000Z',
+        latestTaskCreatedAt: '2026-09-30T02:00:00.000Z',
+      }],
+    ]);
+    const service = new WorkspaceDirectoryService({
+      accountId: 'local-default',
+      workspaceCatalog: value.workspaceCatalog,
+      conversationStore: value.conversationStore,
+      authorize: () => true,
+      getConversationActivities,
+    });
+
+    const page = await service.listConversations(selected.workspace.id, 'local:local-installation');
+
+    expect(page.items.map(item => item.conversationId)).toEqual([newer.id, older.id]);
+  });
+
   it('resolves the same realpath to one Workspace', async () => {
     const value = await fixture();
     const first = await value.service.selectByPath(value.repo, 'local:local-installation');

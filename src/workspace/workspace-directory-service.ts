@@ -146,7 +146,7 @@ export class WorkspaceDirectoryService {
     const projector = activities
       ? new WorkspaceConversationProjector({
           project: (id, updatedAt) => activities.get(id)
-            ?? { state: 'idle', taskId: null, updatedAt },
+            ?? { state: 'idle', taskId: null, updatedAt, latestTaskCreatedAt: updatedAt },
         })
       : this.projector;
     const items = metadata
@@ -315,9 +315,7 @@ function compareSummaries(
   left: WorkspaceConversationSummary,
   right: WorkspaceConversationSummary,
 ): number {
-  const priority = { blocked: 5, executing: 4, waiting: 3, planning: 2, idle: 1 };
-  const activity = priority[right.activity.state] - priority[left.activity.state];
-  if (activity !== 0) return activity;
-  const updated = right.updatedAt.localeCompare(left.updatedAt);
-  return updated !== 0 ? updated : left.conversationId.localeCompare(right.conversationId);
+  const taskCreated = (right.latestTaskCreatedAt ?? right.createdAt)
+    .localeCompare(left.latestTaskCreatedAt ?? left.createdAt);
+  return taskCreated !== 0 ? taskCreated : left.conversationId.localeCompare(right.conversationId);
 }

@@ -30,6 +30,8 @@ describe('Web interaction trace panel', () => {
     expect(styles).toContain('@keyframes trace-pulse');
     const routing = await readFile(new URL('components/RoutingDecisionCard.tsx', root), 'utf8');
     expect(routing).toContain('最终选择');
+    expect(routing).toContain('Span 决策模型');
+    expect(routing).toContain('probability');
     expect(routing).toContain('未入选模型候选');
     expect(routing).toContain('providerDisplayName');
     expect(routing).toContain('modelDisplayName');

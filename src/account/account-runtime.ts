@@ -230,7 +230,15 @@ export class AccountRuntime implements AccountRuntimeHandle {
           ...(this.deps.runtimeExecutionServices?.dispatchItemRepo?.listBlocking?.() ?? [])
             .map(item => item.taskId),
           ...this.deps.workspaceServices.attemptExecutionRepository.listActive()
-            .map(item => item.taskId),
+          .map(item => item.taskId),
+        ]
+      : [];
+    const activeAttemptUpdatedAt = taskRuntimeService
+      ? [
+          ...(this.deps.runtimeExecutionServices?.dispatchItemRepo?.listBlocking?.() ?? [])
+            .map(item => ({ taskId: item.taskId, updatedAt: item.updatedAt })),
+          ...this.deps.workspaceServices.attemptExecutionRepository.listActive()
+            .map(item => ({ taskId: item.taskId, updatedAt: item.updatedAt })),
         ]
       : [];
     const projector = new ConversationActivityProjector({
@@ -243,9 +251,11 @@ export class AccountRuntime implements AccountRuntimeHandle {
         originConversationId: task.conversationId ?? this.originConversationId(task.id),
         status: task.status,
         dependencies: task.dependencies,
+        createdAt: task.createdAt,
         updatedAt: task.updatedAt,
       })),
       activeAttemptTaskIds,
+      activeAttemptUpdatedAt,
       // Same durable facts TaskView consumes, so both surfaces agree on the
       // phase instead of the card assuming "no Replan Job".
       openReplanJobTaskIds: this.collectOpenReplanJobTaskIds(tasks),

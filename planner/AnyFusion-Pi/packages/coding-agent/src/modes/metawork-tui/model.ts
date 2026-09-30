@@ -222,7 +222,7 @@ export interface MetaWorkConversationSummary {
 	readonly preview: string;
 	readonly updatedAt: string;
 	readonly activity: {
-		readonly state: "idle" | "planning" | "executing" | "waiting" | "blocked";
+		readonly state: "idle" | "planning" | "queued" | "executing" | "waiting" | "blocked";
 		readonly taskId: string | null;
 		readonly updatedAt: string;
 	};

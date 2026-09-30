@@ -78,4 +78,38 @@ describe('ExecutorAttemptRuntimeRepo', () => {
     });
     db.close();
   });
+
+  it('touches an Attempt heartbeat without adding a fake progress step', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    const repo = new ExecutorAttemptRuntimeRepo(db);
+    repo.start({
+      attemptId: 'attempt_heartbeat',
+      sourceAttemptId: null,
+      workspaceRoot: null,
+      recoverySafety: 'workspace_reconcilable',
+      now: '2026-08-17T08:00:00.000Z',
+    });
+
+    repo.appendProgress(
+      'attempt_heartbeat',
+      { kind: 'status', text: '准备执行' },
+      '2026-08-17T08:00:01.000Z',
+    );
+    repo.touch('attempt_heartbeat', '2026-08-17T08:00:30.000Z');
+
+    expect(repo.find('attempt_heartbeat')).toMatchObject({
+      updatedAt: '2026-08-17T08:00:30.000Z',
+      progress: {
+        kind: 'status',
+        text: '准备执行',
+        history: [{
+          kind: 'status',
+          text: '准备执行',
+          occurredAt: '2026-08-17T08:00:01.000Z',
+        }],
+      },
+    });
+    db.close();
+  });
 });

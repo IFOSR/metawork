@@ -473,6 +473,9 @@ export class ConversationSession {
           subtaskId,
           subtaskTitle: subtaskTitles.get(subtaskId),
         });
+        const routingAudit = action.routing?.[proposalSubtaskId]?.find(item => (
+          item.agentClassRef === binding.agentClassRef
+        ));
         this.deps.interactionTraceStream?.append({
           phase: 'routing',
           actor: 'kernel',
@@ -485,12 +488,74 @@ export class ConversationSession {
             fallbackOrder,
             routingRole: fallbackOrder === 0 ? 'primary' : 'fallback',
             ...routedDisplay,
+            ...(routingAudit?.spanRouting ? {
+              spanRouting: {
+                applied: routingAudit.spanRouting.applied,
+                reason: routingAudit.spanRouting.reason,
+                ...(routingAudit.spanRouting.probabilities?.[binding.modelRef] !== undefined
+                  ? { selectedProbability: routingAudit.spanRouting.probabilities[binding.modelRef] }
+                  : {}),
+              },
+            } : {}),
           },
           eventKey: `${decision.id}:${subtaskId}:${fallbackOrder}`,
           taskId: action.taskId,
         });
       });
     }
+  }
+
+  private recordSpanRoutingTrace(event: PlanProposedEvent): void {
+    const observation = event.spanRouting;
+    if (!observation || !this.deps.interactionTraceStream?.getSnapshot()) return;
+    const configuration = this.deps.getRuntimeConfiguration?.(event.configurationRevision) ?? null;
+    const subtasks = observation.subtasks.map(subtask => ({
+      subtaskId: subtask.subtaskId,
+      status: subtask.status,
+      ...(subtask.status === 'advised'
+        ? {
+            advisorModel: subtask.resolvedModel,
+            candidates: subtask.candidates
+              .map(candidate => {
+                const agentClass = configuration?.agentClasses?.[candidate.agentClassRef];
+                const identity = resolvePublicRoutingIdentity(configuration, {
+                  agentClassRef: candidate.agentClassRef,
+                  harnessRef: agentClass?.harnessRef ?? candidate.agentClassRef,
+                  providerRef: candidate.providerRef,
+                  modelRef: candidate.modelRef,
+                  configurationRevision: event.configurationRevision,
+                });
+                return {
+                  executorDisplayName: identity.executorDisplayName,
+                  providerDisplayName: identity.providerDisplayName,
+                  modelDisplayName: identity.modelDisplayName,
+                  probability: candidate.probability,
+                };
+              })
+              .sort((left, right) => right.probability - left.probability),
+          }
+        : { reason: subtask.reason }),
+      ...('durationMs' in subtask && subtask.durationMs !== undefined
+        ? { durationMs: subtask.durationMs }
+        : {}),
+    }));
+    const advisedCount = subtasks.filter(subtask => subtask.status === 'advised').length;
+    const fallbackCount = subtasks.filter(subtask => subtask.status === 'fallback').length;
+    this.deps.interactionTraceStream.append({
+      phase: 'routing',
+      actor: 'kernel',
+      kind: 'span_routing_evaluated',
+      status: 'completed',
+      title: 'Span 决策模型完成路由评估',
+      summary: `已评估 ${subtasks.length} 个子任务：${advisedCount} 个提供候选评分，${fallbackCount} 个回退到确定性路由；最终授权仍由 Kernel 完成。`,
+      details: {
+        model: observation.model,
+        policyVersion: observation.policyVersion,
+        questionVersion: observation.questionVersion,
+        subtasks,
+      },
+      eventKey: `span-routing:${event.id}`,
+    });
   }
 
   appendExecutionTrace(input: ExecutionTraceAppendInput): void {
@@ -1030,6 +1095,7 @@ export class ConversationSession {
       // does not always abort it; never admit the proposal in that window.
       return this.cancelledProposalResult(eventId, plan.id);
     }
+    this.recordSpanRoutingTrace(event);
     const result = await port.commands.submitKernel(event, {
       buildSnapshot: claimed => this.buildPlanAdmissionSnapshot(
         claimed as Extract<KernelEvent, { type: 'plan_proposed' }>,
@@ -2315,7 +2381,10 @@ export class ConversationSession {
     const signal = this.turnCancellation.signal;
     if (this.preparationCancelled({ proposalSource: 'replan' }, signal)) return null;
     const replay = await this.findDurableReplan(`replan_event_${decision.id}`, decision);
-    if (replay) return replay;
+    if (replay) {
+      this.recordSpanRoutingTrace(replay);
+      return replay;
+    }
     const pinned = await this.loadConfigurationSnapshot(decision.configurationRevision);
     if (this.preparationCancelled({ proposalSource: 'replan' }, signal)) return null;
     const port = this.deps.runtimePort;
@@ -2365,7 +2434,7 @@ export class ConversationSession {
       throw new Error('replan configuration revision mismatch');
     }
     const plan = await this.runPlanningAgent(context);
-    return this.preparePlanProposedEvent(this.buildPlanProposedEvent({
+    const prepared = await this.preparePlanProposedEvent(this.buildPlanProposedEvent({
       plan,
       configurationRevision: context.configuration.revisionId,
       attachmentIds: this.resolveTaskTurnAttachmentIds(task.id),
@@ -2379,6 +2448,8 @@ export class ConversationSession {
       targetGraphRevision: decision.action.sourceRevision + 1,
       availabilityExplanation: null,
     }), signal);
+    if (prepared) this.recordSpanRoutingTrace(prepared);
+    return prepared;
   }
 
   private async findDurableReplan(
@@ -2405,7 +2476,10 @@ export class ConversationSession {
     const signal = this.turnCancellation.signal;
     if (this.preparationCancelled({ proposalSource: 'conflict_replan' }, signal)) return null;
     const replay = await this.findDurableReplan(`merge_replan_event_${decision.id}`, decision);
-    if (replay) return replay;
+    if (replay) {
+      this.recordSpanRoutingTrace(replay);
+      return replay;
+    }
     const pinned = await this.loadConfigurationSnapshot(decision.configurationRevision);
     if (this.preparationCancelled({ proposalSource: 'conflict_replan' }, signal)) return null;
     const port = this.deps.runtimePort;
@@ -2429,7 +2503,7 @@ export class ConversationSession {
       throw new Error('replan configuration revision mismatch');
     }
     const plan = await this.runPlanningAgent(context);
-    return this.preparePlanProposedEvent(this.buildPlanProposedEvent({
+    const prepared = await this.preparePlanProposedEvent(this.buildPlanProposedEvent({
       plan,
       configurationRevision: context.configuration.revisionId,
       attachmentIds: this.resolveTaskTurnAttachmentIds(task.id),
@@ -2443,6 +2517,8 @@ export class ConversationSession {
       targetGraphRevision: revision.revision + 1,
       availabilityExplanation: null,
     }), signal);
+    if (prepared) this.recordSpanRoutingTrace(prepared);
+    return prepared;
   }
 
   private appendTaskQueueSnapshot(trigger: string): void {

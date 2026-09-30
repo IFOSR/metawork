@@ -84,6 +84,12 @@ export class ExecutorAttemptRuntimeRepo {
     `).run(JSON.stringify(progress), now, attemptId);
   }
 
+  touch(attemptId: string, now: string): void {
+    this.db.prepare(`
+      UPDATE executor_attempt_runtime SET updated_at = ? WHERE attempt_id = ?
+    `).run(now, attemptId);
+  }
+
   recordDiagnostics(
     attemptId: string,
     diagnostics: Record<string, unknown>,

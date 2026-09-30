@@ -90,6 +90,10 @@ export class WorkspaceGatewayRuntime {
     await this.options.publish?.('workspace_activity_changed', workspaceId, payload);
   }
 
+  async publishConversation(conversation: import('../workspace/workspace-conversation-projector.js').WorkspaceConversationSummary): Promise<void> {
+    await this.options.publish?.('workspace_conversation_upserted', conversation.workspaceId, { conversation });
+  }
+
   async handle(
     command: WorkspaceGatewayCommand,
     context: { principalId: string; connectionId: string; requestId?: string },

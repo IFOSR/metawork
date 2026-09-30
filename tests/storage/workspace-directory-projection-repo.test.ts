@@ -25,8 +25,12 @@ function row(id: string, workspaceId = 'workspace_one'): WorkspaceConversationSu
   return {
     conversationId: id, workspaceId, title: `Title ${id}`, preview: '',
     createdAt: '2026-09-26T00:00:00.000Z', updatedAt: '2026-09-26T00:00:00.000Z',
+    latestTaskCreatedAt: '2026-09-26T00:00:00.000Z',
     archived: false,
-    activity: { state: 'idle', taskId: null, updatedAt: '2026-09-26T00:00:00.000Z' },
+    activity: {
+      state: 'idle', taskId: null, updatedAt: '2026-09-26T00:00:00.000Z',
+      latestTaskCreatedAt: '2026-09-26T00:00:00.000Z',
+    },
   };
 }
 
@@ -318,7 +322,14 @@ describe('Workspace directory durable projection', () => {
       .toThrow('invalid_cursor');
     expect(() => repo.page('workspace_one', { cursor: first.nextCursor!, query: 'Title' }))
       .toThrow('invalid_cursor');
-    repo.upsert({ ...row('conv_d'), activity: { state: 'blocked', taskId: 'task_one', updatedAt: 'now' } });
+    repo.upsert({
+      ...row('conv_d'),
+      latestTaskCreatedAt: '2026-09-27T00:00:00.000Z',
+      activity: {
+        state: 'blocked', taskId: 'task_one', updatedAt: 'now',
+        latestTaskCreatedAt: '2026-09-27T00:00:00.000Z',
+      },
+    });
     expect(() => repo.page('workspace_one', { cursor: first.nextCursor! }))
       .toThrow('stale_directory_cursor');
     expect(repo.page('workspace_one', {}).items[0]?.conversationId).toBe('conv_d');
@@ -367,7 +378,7 @@ describe('Workspace directory durable projection', () => {
     db.prepare = prepare;
     const explanation = original(`EXPLAIN QUERY PLAN ${queries[0]}`).all({
       accountId: 'local-default', workspaceId: 'workspace_one', archived: 0,
-      limit: 11, query: '', rank: null, updatedAt: '', id: '',
+      limit: 11, query: '', latestTaskCreatedAt: '', id: '',
     }) as { detail: string }[];
     expect(explanation.some(item => item.detail.includes('workspace_directory_page'))).toBe(true);
     expect(explanation.some(item => item.detail.includes('TEMP B-TREE'))).toBe(false);

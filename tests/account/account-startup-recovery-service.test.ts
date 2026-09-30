@@ -81,6 +81,34 @@ describe('AccountStartupRecoveryService production composition', () => {
     expect(delivered).toEqual([{ sessionId: 'conv_original', delivery }]);
   });
 
+  it('forwards system-bound execution trace facts to the owning live Conversation', async () => {
+    const binder = createAccountConversationExecutionBinder();
+    const traces: unknown[] = [];
+    const service = new AccountStartupRecoveryService({
+      binder,
+      appendExecutionTrace: (sessionId: string, input: unknown) => {
+        traces.push({ sessionId, input });
+      },
+    } as never);
+
+    await service['withSystemBinding']('conv_original', async () => {
+      binder.routedKernelCallbacks().appendExecutionTrace({
+        phase: 'execution',
+        actor: 'runtime',
+        kind: 'executor_heartbeat',
+        status: 'running',
+        title: 'Executor still running',
+        summary: 'still running',
+        details: {},
+      } as never);
+    });
+
+    expect(traces).toEqual([{
+      sessionId: 'conv_original',
+      input: expect.objectContaining({ kind: 'executor_heartbeat' }),
+    }]);
+  });
+
   it('recovers the account Kernel coordinator before exposing the Runtime', async () => {
     let recoverCalls = 0;
     const coordinator: AccountKernelCoordinator = {

@@ -33,6 +33,7 @@ describe('Web workspace shell', () => {
     expect(app).not.toContain('历史只读视图');
     expect(sidebar).toContain('runningSessionId');
     expect(sidebar).toContain('activityLabel');
+    expect(sidebar).toContain('session.activity?.updatedAt');
     expect(sidebar).not.toContain("active ? ' · 运行中' : ''");
     expect(header).toContain('对话');
     expect(header).toContain('轨迹');

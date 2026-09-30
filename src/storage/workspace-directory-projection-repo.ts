@@ -10,7 +10,7 @@ import {
 } from '../workspace/workspace-directory-projection.js';
 import type { WorkspaceConversationPage, WorkspaceConversationPageRequest } from '../workspace/workspace-directory-service.js';
 
-const rank = { blocked: 5, executing: 4, waiting: 3, planning: 2, idle: 1 };
+const rank = { blocked: 5, executing: 4, waiting: 3, queued: 3, planning: 2, idle: 1 };
 
 /** Fixed-size progress only. Per-Conversation guards/candidates live in indexed tables. */
 interface RebuildCheckpoint {
@@ -28,8 +28,7 @@ interface DirectoryCursor {
   revision: number;
   query: string;
   archived: boolean;
-  rank: number;
-  updatedAt: string;
+  latestTaskCreatedAt: string;
   id: string;
 }
 
@@ -168,17 +167,21 @@ export class SqliteWorkspaceDirectoryProjectionRepo implements WorkspaceDirector
     this.db.prepare(`
       INSERT INTO workspace_directory_projection (
         account_id, workspace_id, conversation_id, archived, activity_rank,
-        updated_at, title_search, summary_json, projection_version
+        updated_at, latest_task_created_at, title_search, summary_json, projection_version
       ) VALUES (@accountId, @workspaceId, @conversationId, @archived, @rank,
-        @updatedAt, @title, @json, @version)
+        @updatedAt, @latestTaskCreatedAt, @title, @json, @version)
       ON CONFLICT(account_id, conversation_id) DO UPDATE SET
         workspace_id = excluded.workspace_id,
         archived = excluded.archived, activity_rank = excluded.activity_rank,
-        updated_at = excluded.updated_at, title_search = excluded.title_search,
+        updated_at = excluded.updated_at,
+        latest_task_created_at = excluded.latest_task_created_at,
+        title_search = excluded.title_search,
         summary_json = excluded.summary_json, projection_version = excluded.projection_version
     `).run({
       accountId: this.accountId, workspaceId: merged.workspaceId, conversationId: merged.conversationId,
-      archived: Number(merged.archived), rank: rank[merged.activity.state], updatedAt: merged.updatedAt,
+      archived: Number(merged.archived), rank: rank[merged.activity.state],
+      updatedAt: merged.updatedAt,
+      latestTaskCreatedAt: merged.latestTaskCreatedAt ?? merged.createdAt,
       title: merged.title.toLocaleLowerCase(), json: JSON.stringify(merged),
       version: WORKSPACE_DIRECTORY_PROJECTION_VERSION,
     });
@@ -203,9 +206,22 @@ export class SqliteWorkspaceDirectoryProjectionRepo implements WorkspaceDirector
       this.protectObservation(conversationId, false);
       if (JSON.stringify(previous.activity) === JSON.stringify(activity)) return;
       this.db.prepare(`
-        UPDATE workspace_directory_projection SET activity_rank = ?, summary_json = ?
+        UPDATE workspace_directory_projection
+        SET activity_rank = ?, latest_task_created_at = ?, summary_json = ?
         WHERE account_id = ? AND conversation_id = ?
-      `).run(rank[activity.state], JSON.stringify({ ...previous, activity }), this.accountId, conversationId);
+      `).run(
+        rank[activity.state],
+        activity.latestTaskCreatedAt ?? previous.latestTaskCreatedAt ?? previous.createdAt,
+        JSON.stringify({
+          ...previous,
+          latestTaskCreatedAt: activity.latestTaskCreatedAt
+            ?? previous.latestTaskCreatedAt
+            ?? previous.createdAt,
+          activity,
+        }),
+        this.accountId,
+        conversationId,
+      );
       this.db.prepare(`
         UPDATE workspace_directory_revisions SET revision = revision + 1
         WHERE account_id = ? AND workspace_id = ?
@@ -237,21 +253,20 @@ export class SqliteWorkspaceDirectoryProjectionRepo implements WorkspaceDirector
       WHERE account_id = @accountId AND workspace_id = @workspaceId
         ${archived ? '' : 'AND archived = @archived'}
         AND (@query = '' OR instr(title_search, @query) > 0)
-        AND (@rank IS NULL OR activity_rank < @rank
-          OR (activity_rank = @rank AND updated_at < @updatedAt)
-          OR (activity_rank = @rank AND updated_at = @updatedAt AND conversation_id > @id))
-      ORDER BY activity_rank DESC, updated_at DESC, conversation_id ASC LIMIT @limit
+        AND (@latestTaskCreatedAt = '' OR latest_task_created_at < @latestTaskCreatedAt
+          OR (latest_task_created_at = @latestTaskCreatedAt AND conversation_id > @id))
+      ORDER BY latest_task_created_at DESC, conversation_id ASC LIMIT @limit
     `).all({
       accountId: this.accountId, workspaceId, archived: 0, query,
-      rank: cursor?.rank ?? null, updatedAt: cursor?.updatedAt ?? '', id: cursor?.id ?? '',
+      latestTaskCreatedAt: cursor?.latestTaskCreatedAt ?? '', id: cursor?.id ?? '',
       limit: boundedLimit + 1,
     }) as { summary_json: string }[];
     const items = rows.slice(0, boundedLimit).map(row => JSON.parse(row.summary_json) as WorkspaceConversationSummary);
     const last = items.at(-1);
     const next: DirectoryCursor | null = rows.length > boundedLimit && last ? {
       version: WORKSPACE_DIRECTORY_PROJECTION_VERSION, accountId: this.accountId,
-      workspaceId, revision, query, archived, rank: rank[last.activity.state],
-      updatedAt: last.updatedAt, id: last.conversationId,
+      workspaceId, revision, query, archived,
+      latestTaskCreatedAt: last.latestTaskCreatedAt ?? last.createdAt, id: last.conversationId,
     } : null;
     return {
       items, nextCursor: next ? Buffer.from(JSON.stringify(next)).toString('base64url') : null,
@@ -374,8 +389,7 @@ export class SqliteWorkspaceDirectoryProjectionRepo implements WorkspaceDirector
       const cursor = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as DirectoryCursor;
       if (cursor.version !== WORKSPACE_DIRECTORY_PROJECTION_VERSION
         || !Number.isSafeInteger(cursor.revision) || cursor.revision < 0
-        || !Number.isInteger(cursor.rank) || cursor.rank < 1 || cursor.rank > 5
-        || typeof cursor.updatedAt !== 'string' || typeof cursor.id !== 'string'
+        || typeof cursor.latestTaskCreatedAt !== 'string' || typeof cursor.id !== 'string'
         || typeof cursor.query !== 'string' || typeof cursor.archived !== 'boolean') throw new Error();
       return cursor;
     } catch {

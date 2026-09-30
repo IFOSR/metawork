@@ -92,6 +92,7 @@ import {
   AgentInstallationReadinessService,
 } from '../management/agent-installation-readiness-service.js';
 import { WorkspaceGatewayRuntime } from '../gateway/workspace-gateway-runtime.js';
+import { recordConversationInputTitle } from '../session/conversation-title.js';
 import { workspaceEventStreamId } from '../gateway/workspace-event-stream.js';
 import { clientConnectionEventStreamId } from '../gateway/client-connection-event-stream.js';
 import { resolveServerWebPort } from './server-web-port.js';
@@ -789,7 +790,12 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       accountRuntimeComposition?.accountRuntime.getConversationActivity(
         conversationId,
         fallbackUpdatedAt,
-      ) ?? { state: 'idle', taskId: null, updatedAt: fallbackUpdatedAt }
+      ) ?? {
+        state: 'idle',
+        taskId: null,
+        updatedAt: fallbackUpdatedAt,
+        latestTaskCreatedAt: fallbackUpdatedAt,
+      }
     ),
   });
   const notifier = createNotificationService(config);
@@ -928,6 +934,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       registerSession: (id, session) => plannerHost.registerSession(id, session),
     }),
   });
+  let conversationRegistry: ConversationRegistry | null = null;
   accountRuntimeComposition = buildAccountRuntimeComposition({
     recoveryReplan,
     resolveConfigurationSnapshot: revisionId => configurationService.getSnapshot(revisionId),
@@ -972,6 +979,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     onConversationActivityChanged: (conversationId, activity) => (
       publishWorkspaceActivity(conversationId, activity)
     ),
+    appendExecutionTrace: (conversationId, input) => {
+      conversationRegistry?.getIfOpen(conversationId)?.appendExecutionTrace(input);
+    },
     usageObserver: event => usageRecorder.record(event),
     usageSpanOpener: span => usageRecorder.openSpan(span),
     usageSpanCloser: (spanId, state, closedAt) => billingServices.metering.closeSpan(spanId, state, closedAt),
@@ -1132,7 +1142,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   });
   republishAgentReadiness = () => agentReadiness.republish();
   const runtimePort = activatedAccountRuntime.getConversationPort();
-  const conversationRegistry = new ConversationRegistry();
+  conversationRegistry = new ConversationRegistry();
 
 
   // ADR-0031: 直接构造 ConversationSession（不经过 MetaclawSession 桥接），
@@ -1356,6 +1366,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     journal: eventJournal,
     subscriptions: gatewaySubscriptions,
     attachments: webAttachmentStore,
+    recordInputTitle: async (conversationId, input) => {
+      await recordConversationInputTitle(conversationStore, conversationId, input);
+      const summary = directoryProjection.find(conversationId);
+      if (summary) await workspaceGatewayRuntime.publishConversation(summary);
+    },
     readHistory: async (conversationId, cursor, requestedLimit) => {
       const page = await conversationStore.readHistoryPage(conversationId, {
         cursor: cursor === 'newest' ? undefined : cursor, limit: requestedLimit, maxBytes: 256 * 1024,

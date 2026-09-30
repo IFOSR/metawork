@@ -377,6 +377,14 @@ export class KernelDispatchItemRepo {
     `).run(executionId, now, attemptId);
   }
 
+  touch(attemptId: string, now: string): void {
+    this.db.prepare(`
+      UPDATE kernel_dispatch_items
+      SET updated_at = ?
+      WHERE attempt_id = ? AND status IN ('launching', 'running', 'cancelling', 'uncertain')
+    `).run(now, attemptId);
+  }
+
   markTerminal(attemptId: string, errorSummary: string | null, now: string): void {
     const finish = this.db.transaction(() => {
       const current = this.find(attemptId);

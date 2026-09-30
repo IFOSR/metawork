@@ -249,10 +249,23 @@ describe('ConversationSession Span integration', () => {
 
   it('scores a proposal once and reuses the durable event on uncertain resubmission', async () => {
     const evaluate = vi.fn(async () => ({ subtasks: [] }));
-    const { internal } = fixture(evaluate);
+    const { internal, session } = fixture(evaluate);
 
     await internal.submitValidatedPlannerProposal('Implement parser', plan, 'event');
     expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(session.getInteractionTrace()?.events).toContainEqual(expect.objectContaining({
+      kind: 'span_routing_evaluated',
+      phase: 'routing',
+      actor: 'kernel',
+      details: expect.objectContaining({
+        model: 'respan/span-01-lite',
+        subtasks: [expect.objectContaining({
+          subtaskId: 's1',
+          status: 'fallback',
+          reason: 'span_invalid_response',
+        })],
+      }),
+    }));
 
     await internal.submitValidatedPlannerProposal('Implement parser', plan, 'event');
     // Replay must reuse the stored event instead of paying for a second request.

@@ -68,6 +68,32 @@ describe('Conversation live Turn ownership', () => {
     });
   });
 
+  it('reopens an explicit resume Turn when its Task moves from blocked to running', () => {
+    const resume = {
+      ...liveTurn('conversation-a'),
+      userInput: '/task resume task-convergence',
+    };
+    const blocked = mergeExecutionTimeline(resume, resume.id, {
+      taskId: resume.taskId!,
+      title: 'task-convergence',
+      status: 'blocked',
+      stages: [],
+    });
+    expect(blocked?.status).toBe('blocked');
+
+    const running = mergeTraceDelta(blocked, resume.id, [], 'running');
+    expect(running).toMatchObject({
+      status: 'running',
+      completedAt: null,
+    });
+    expect(mergeExecutionTimeline(running, resume.id, {
+      taskId: resume.taskId!,
+      title: 'task-convergence',
+      status: 'running',
+      stages: [],
+    })).toMatchObject({ status: 'running', completedAt: null });
+  });
+
   it('stays running for a cancellation request and stops on the terminal trace without reloading', () => {
     const running = liveTurn('conversation-a');
     const requested = mergeTraceDelta(running, running.id, [], 'running');

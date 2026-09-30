@@ -240,6 +240,37 @@ describe('WebSessionCatalog', () => {
     expect(record?.turns[0]?.traceEvents).toHaveLength(5);
   });
 
+  it('serializes concurrent Turn appends so multiple interactions stay in canonical history', async () => {
+    const fixture = await makeCatalog();
+    const created = await fixture.catalog.create({
+      workspaceId: fixture.workspaceId,
+      principalId: PRINCIPAL,
+    });
+    let releaseFirstWrite!: () => void;
+    let firstWriteEntered!: () => void;
+    const firstWrite = new Promise<void>(resolve => { releaseFirstWrite = resolve; });
+    const writeEntered = new Promise<void>(resolve => { firstWriteEntered = resolve; });
+    const originalWrite = fixture.conversationStore.writeConversation.bind(fixture.conversationStore);
+    let writes = 0;
+    vi.spyOn(fixture.conversationStore, 'writeConversation').mockImplementation(async record => {
+      writes += 1;
+      if (writes === 1) {
+        firstWriteEntered();
+        await firstWrite;
+      }
+      await originalWrite(record);
+    });
+
+    const first = fixture.catalog.appendTurn(created.session.id, makeTurn(created.session.id, 1));
+    await writeEntered;
+    const second = fixture.catalog.appendTurn(created.session.id, makeTurn(created.session.id, 2));
+    releaseFirstWrite();
+    await Promise.all([first, second]);
+
+    const canonical = await fixture.conversationStore.readHistoryPage(created.session.id);
+    expect(canonical.turns.map(turn => turn.id)).toEqual(['turn_1', 'turn_2']);
+  });
+
   it('uses the first ordinary user query as unified Conversation title', async () => {
     const fixture = await makeCatalog(Array.from(
       { length: 6 },

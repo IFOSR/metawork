@@ -28,6 +28,7 @@ import { updateConversationCatalog } from '../session/conversation-catalog-mutat
 import { MAX_CONVERSATION_TURNS } from '../session/conversation-store.js';
 import type { WorkspaceDirectoryService } from '../workspace/workspace-directory-service.js';
 import type { ConversationHistoryRequest } from '../session/conversation-history-store.js';
+import { isDefaultConversationTitle } from '../session/conversation-title.js';
 
 const MAX_SESSION_TITLE_LENGTH = 80;
 const DEFAULT_SESSION_TITLE = 'New session';
@@ -56,6 +57,7 @@ export interface ListWebSessionsInput {
 export class WebSessionCatalog {
   private readonly now: () => string;
   private readonly normalizeTurnPresentation: (turn: ConversationTurn) => ConversationTurn;
+  private readonly appendTurnOperations = new Map<string, Promise<unknown>>();
   private initialized = false;
 
   constructor(private readonly deps: WebSessionCatalogDeps) {
@@ -111,6 +113,7 @@ export class WebSessionCatalog {
         title: item.title,
         createdAt: item.createdAt,
         updatedAt: item.updatedAt,
+        latestTaskCreatedAt: item.latestTaskCreatedAt,
         active: item.conversationId === input.activeConversationId,
         archived: item.archived,
         preview: item.preview,
@@ -131,6 +134,7 @@ export class WebSessionCatalog {
       items: page.items.map(item => ({
         id: item.conversationId, workspaceId: item.workspaceId,
         title: item.title, createdAt: item.createdAt, updatedAt: item.updatedAt,
+        latestTaskCreatedAt: item.latestTaskCreatedAt,
         archived: item.archived, preview: item.preview, activity: item.activity,
         active: item.conversationId === input.activeConversationId,
       })),
@@ -247,6 +251,24 @@ export class WebSessionCatalog {
     sessionId: string,
     turn: ConversationTurn,
   ): Promise<WebSessionRecord | null> {
+    const previous = this.appendTurnOperations.get(sessionId) ?? Promise.resolve();
+    const operation = previous
+      .catch(() => undefined)
+      .then(() => this.appendTurnNow(sessionId, turn));
+    this.appendTurnOperations.set(sessionId, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.appendTurnOperations.get(sessionId) === operation) {
+        this.appendTurnOperations.delete(sessionId);
+      }
+    }
+  }
+
+  private async appendTurnNow(
+    sessionId: string,
+    turn: ConversationTurn,
+  ): Promise<WebSessionRecord | null> {
     await this.ensureInitialized();
     const conversation = await this.deps.conversationStore.readConversation(sessionId);
     if (!conversation) return null;
@@ -269,7 +291,9 @@ export class WebSessionCatalog {
     }))) ?? firstUserQueryTitle(turns);
     const metadata = {
       ...conversation.conversation,
-      title: firstQueryTitle ?? conversation.conversation.title,
+      title: isDefaultConversationTitle(conversation.conversation.title)
+        ? firstQueryTitle ?? conversation.conversation.title
+        : conversation.conversation.title,
       updatedAt: timestamp,
     };
     if (this.deps.presentationStore.upsert) {

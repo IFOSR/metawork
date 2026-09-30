@@ -71,6 +71,15 @@ export interface WorkGraphPresentationRouting {
     reasonCode: string;
     reasonDetail?: string;
   }>;
+  spanRouting?: {
+    applied: boolean;
+    reason: string | null;
+    candidates: Array<{
+      providerDisplayName: string;
+      modelDisplayName: string;
+      probability: number;
+    }>;
+  };
 }
 
 export interface WorkGraphPresentationNode {
@@ -190,6 +199,7 @@ function routingFor(
   receipt: WorkGraphPresentationReceiptFact | undefined,
   configuration: ConfigurationSnapshot | RuntimeConfigurationView,
 ): WorkGraphPresentationRouting[] {
+  const facts = 'config' in configuration ? configuration.config : configuration;
   const finalBindings = new Map<string, AuthorizedExecutorBinding>();
   for (const binding of decision?.authorizedBindings ?? []) finalBindings.set(binding.agentClassRef, binding);
   if (dispatch) finalBindings.set(dispatch.authorizedBinding.agentClassRef, dispatch.authorizedBinding);
@@ -213,6 +223,32 @@ function routingFor(
     const identity = identityBinding
       ? resolvePublicRoutingIdentity(configuration, identityBinding)
       : null;
+    const spanRouting = audit?.spanRouting
+      ? {
+        applied: audit.spanRouting.applied,
+        reason: audit.spanRouting.reason,
+        candidates: Object.entries(audit.spanRouting.probabilities ?? {})
+          .map(([modelRef, probability]) => {
+            const candidateIdentity = resolvePublicRoutingIdentity(configuration, {
+              agentClassRef: proposed.agentClassRef,
+              harnessRef: identityBinding?.harnessRef
+                ?? facts.agentClasses[proposed.agentClassRef]?.harnessRef
+                ?? proposed.agentClassRef,
+              providerRef: identityBinding?.providerRef
+                ?? facts.models[modelRef]?.providerRef
+                ?? '',
+              modelRef,
+              configurationRevision: configuration.revisionId,
+            });
+            return {
+              providerDisplayName: candidateIdentity.providerDisplayName,
+              modelDisplayName: candidateIdentity.modelDisplayName,
+              probability,
+            };
+          })
+          .sort((left, right) => right.probability - left.probability),
+      }
+      : undefined;
     return {
       executorDisplayName: identity?.executorDisplayName ?? proposed.agentClassRef,
       harnessDisplayName: identity?.harnessDisplayName ?? '',
@@ -226,6 +262,7 @@ function routingFor(
       ...(typeof score?.estimatedCost === 'number' ? { estimatedCost: score.estimatedCost } : {}),
       ...(typeof score?.estimatedLatencyMs === 'number' ? { estimatedLatencyMs: score.estimatedLatencyMs } : {}),
       rejectedCandidates,
+      ...(spanRouting ? { spanRouting } : {}),
     };
   });
 }
