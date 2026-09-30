@@ -38,10 +38,13 @@ function run(command, args, cwd = process.cwd()) {
   const result = spawnSync(executable, args, {
     cwd,
     stdio: 'inherit',
-    shell: false,
+    shell: process.platform === 'win32' && executable.endsWith('.cmd'),
   });
-  if (result.status !== 0) {
-    throw new Error(`${executable} ${args.join(' ')} failed with exit code ${result.status}`);
+  if (result.error || result.status !== 0) {
+    throw new Error(
+      `${executable} ${args.join(' ')} failed with exit code ${result.status ?? 'unknown'}`
+      + (result.error ? `: ${result.error.message}` : ''),
+    );
   }
 }
 
