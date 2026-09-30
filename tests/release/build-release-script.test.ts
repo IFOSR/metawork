@@ -36,5 +36,6 @@ describe('release build entry points', () => {
     expect(workflow).toContain('--release-id');
     expect(workflow).toContain('v${VERSION}');
     expect(workflow).toContain('prerelease');
+    expect(workflow).not.toContain("if: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY != '' }}");
   });
 });

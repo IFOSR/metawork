@@ -57,7 +57,6 @@ jobs:
           echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
 
       - name: Write release signing key
-        if: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY != '' }}
         shell: bash
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY }}
