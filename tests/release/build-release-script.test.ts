@@ -38,5 +38,8 @@ describe('release build entry points', () => {
     expect(workflow).toContain('v${VERSION}');
     expect(workflow).toContain('prerelease');
     expect(workflow).not.toContain("if: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY != '' }}");
+    expect(workflow).toContain('runner: macos-15');
+    expect(workflow).toContain('runner: macos-15-arm64');
+    expect(workflow).not.toContain('runner: macos-13');
   });
 });
