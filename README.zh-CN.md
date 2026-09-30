@@ -13,7 +13,8 @@ Planner、ControlKernel 和 Executor 边界完成执行、恢复、验收与交�
 一次聊天回复。
 
 [为什么用 MetaWork](#为什么用-metawork) · [安装方式](#安装方式) ·
-[快速开始](#快速开始) · [使用方式](#使用方式) · [系统架构](#系统架构) ·
+[Release](#release) · [快速开始](#快速开始) · [使用方式](#使用方式) ·
+[系统架构](#系统架构) ·
 [兼容策略](#兼容策略) · [English](README.md)
 
 </div>
@@ -53,11 +54,32 @@ MetaWork 是本仓库统一呈现的产品，是闭源商业软件。
 Planner 组件；为了不破坏已有安装，数据库名、协议 ID 和部分代码类型名继续保留
 AnyFusion 标识。
 
+## Release
+
+当前预览版本是
+[MetaWork `v1.2.0-preview.6`](https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.6)，
+发布日期为 2026 年 9 月 30 日。四个平台统一使用 Release identity
+`1.2.0-preview.6-build-0064851`。
+
+| 目标平台 | 原生发布标识 |
+| --- | --- |
+| macOS Intel | `darwin-x64` |
+| macOS Apple Silicon | `darwin-arm64` |
+| Linux x64 | `linux-x64` |
+| Windows x64 | `win32-x64` |
+
+每个平台都发布 Runtime 归档、内嵌 AnyFusion-Pi Planner 归档和对应的
+Ed25519 签名 manifest。Manifest 使用签名密钥
+`metawork-release-2026-03`，固定 Runtime/Planner revision `0064851`，
+并记录安装器会校验的 SHA-256 哈希。当前 Release 不提供 Linux arm64
+预构建产物；请在原生 Linux arm64 主机上执行 `npm run build:release`。
+
 ## 安装方式
 
-主要原生安装路径覆盖 macOS、Linux 和 Windows x64。Linux 与 WSL2 使用面向
-Unix 的安装器并默认使用文件 SecretStore；Windows 使用签名 PowerShell 安装器，
-通过 named pipe 连接本地 Runtime。
+当前预构建 Release 覆盖 macOS Intel、macOS Apple Silicon、Linux x64 和
+Windows x64。Linux 与 WSL2 使用面向 Unix 的安装器并默认使用文件
+SecretStore；Windows 使用签名 PowerShell 安装器，通过 named pipe 连接本地
+Runtime。Linux arm64 支持原生构建，但不包含在当前预构建 Release 中。
 
 ### 环境要求
 
@@ -157,12 +179,26 @@ export METAWORK_PROVIDER_REGION='international'
 <details>
 <summary>发布预构建产物（维护者）</summary>
 
-`npm run build:release` 会在当前原生主机上构建 Runtime/Web/Planner，再按平台打包为
-归档文件和 Ed25519 签名 manifest。Windows 使用 ZIP 与 `scripts/install.ps1`；
-macOS/Linux 使用 tarball 与 `scripts/install.sh`。签名密钥通过 `--signing-key` 或
-`METAWORK_RELEASE_SIGNING_KEY` 提供；`--generate-dev-key` 仅限本地测试。打包前请
-使用仅含生产依赖的目录（`npm ci --omit=dev`）。Runtime、Web、Planner 或依赖产物
-缺失时，打包命令会直接失败。
+`npm run build:release` 会在当前原生主机上构建 Runtime/Web/Planner，安装生产依赖，
+再按平台打包为归档文件和 Ed25519 签名 manifest。目标平台必须与构建主机一致；
+不能在 macOS 上交叉构建 Linux Release。Linux x64 主机构建 Linux x64 Release
+示例：
+
+```bash
+npm run build:release -- \
+  --platform linux \
+  --arch x64 \
+  --release-id 1.2.0-preview.6-build-0064851 \
+  --signing-key /secure/path/metawork-release-key.pem \
+  --out-dir /tmp/metawork-release
+```
+
+Windows 使用 ZIP 与 `scripts/install.ps1`；macOS/Linux 使用 tarball 与
+`scripts/install.sh`。`--package-only` 只用于打包已经准备好的目标依赖，不会执行构建。
+发布必须使用真实签名密钥（`--signing-key` 或
+`METAWORK_RELEASE_SIGNING_KEY`）；`--generate-dev-key` 仅限本地测试。GitHub Actions
+使用 macOS Intel、macOS Apple Silicon、Windows x64 和 Linux x64 的原生 runner
+构建。Runtime、Web、Planner 或依赖产物缺失时，打包命令会直接失败。
 
 </details>
 
@@ -171,6 +207,8 @@ macOS/Linux 使用 tarball 与 `scripts/install.sh`。签名密钥通过 `--sign
 存放在 `~/.metawork`。
 
 ### 运行目录
+
+macOS 和 Linux 使用以下目录，并通过 Unix socket 连接本地 Client：
 
 ```text
 ~/.local/bin/
@@ -202,6 +240,31 @@ macOS/Linux 使用 tarball 与 `scripts/install.sh`。签名密钥通过 `--sign
 └── upgrade-journals/
 ```
 
+Windows 使用 `%LOCALAPPDATA%\MetaWork\bin\*.cmd` 启动器，并通过 named pipe
+连接本地 Gateway：
+
+```text
+%LOCALAPPDATA%\MetaWork\
+├── bin/
+│   ├── metawork.cmd
+│   ├── anyfusion.cmd
+│   └── metaclaw.cmd
+├── app/
+│   ├── current
+│   └── releases/
+├── data/
+│   ├── runtime.lock
+│   └── planner-sessions/
+└── accounts/local-default/
+    ├── config/
+    ├── secrets/
+    ├── data/
+    ├── conversations/
+    ├── workspace-store/
+    ├── attempts/
+    └── gateway/
+```
+
 如需修改安装根目录，请在安装前设置 `METAWORK_INSTALL_ROOT`。
 
 ## 快速开始
@@ -212,8 +275,11 @@ macOS/Linux 使用 tarball 与 `scripts/install.sh`。签名密钥通过 `--sign
 # 1. 启动 Server（前台运行；长期部署请用上文的 supervision 模板）
 metawork server start
 
-# 2. 另开一个终端，在项目目录下启动 Web Client
+# 2. 另开一个终端，在项目目录下启动单一 MetaWork TUI
 cd /你的/项目目录
+metawork
+
+# 或使用 Web Client
 metawork web            # 在浏览器中打开 http://127.0.0.1:8788
 ```
 
@@ -359,26 +425,34 @@ Planner 与其它设置分开更新：Planner 板块有自己的「**更新 Plan
 ## 系统架构
 
 ```text
-Client
+TUI / Web / Feishu / CLI
   -> ClientGateway
     -> ConversationSession
       -> AccountRuntime
-        -> PlanningAgent（只负责语义规划）
+        -> 隔离的 AnyFusion-Pi Planner
           -> PlanningAgentPlan v8
-            -> ControlKernel（授权与恢复）
-              -> Work Graph / Runtime
-                -> Executor attempt
+            -> 校验 + DurableKernelWorkflow
+              -> ControlKernel
+                -> Execution Runtime
+                  -> Executor attempt
+                    -> 验收 -> Git publication -> 交付
 ```
 
+- 持久化 Server 是 Runtime owner。Client 只是 Gateway-only 客户端，不直接访问
+  Storage、Kernel 或 Executor 进程。
 - `ClientGateway` 负责版本化的多客户端命令/事件协议。
 - `ConversationSession` 负责串行输入 mailbox 与持久化 AnyFusion-Pi Planner session。
   新的语义 Planner 回合不能直接回复工作型请求；除斜杠开头的系统命令外，都必须提交给
   Executor 执行。历史 direct-reply 记录仍可用于审计和回放。
 - `AccountRuntime` 负责账户级共享服务和调度策略。每个 Conversation 拥有一个持久执行槽位，
   不同 Conversation 可以在配置的并发上限内并行执行。
-- `ControlKernel` 是确定性的策略授权方。
-- Execution 负责 claim、lease、原生 worktree 或 Docker 兼容 backend、attempt、Git publication
-  与标准化 observation。
+- AnyFusion-Pi Planner 以隔离进程运行，只负责提出工作方案，不修改 Storage、不调度工作、
+  不授权执行，也不执行 shell 命令。
+- `ControlKernel` 是唯一负责授权、调度、模型 binding、恢复、retry、fallback、
+  continuation、cancel 和 resume 的权威。
+- Execution Runtime 负责应用 Kernel 决策，以及 claim、lease、原生 worktree 或 Docker
+  兼容 backend、attempt、Git publication 与标准化 observation。
+- Storage 通过领域 port 持久化事实，不是业务策略或生命周期决策的 owner。
 
 ### Planner 到 Executor 的路由链路
 
@@ -452,10 +526,11 @@ gateway 转发图片请求，Provider 凭据不会进入容器。
 
 ## 项目状态
 
-MetaWork 正在进行商业化开发。当前支持不同 Conversation 之间有限并行的顶层 Task，
-同时每个 Conversation 自己的 Task 执行槽位保持串行。Planner-first 路由、统一 Executor
-能力画像和 Pi 图片执行链路已经实现，并由仓库测试覆盖。真实 Provider 图片生成与编辑仍
-需要配置 OpenAI-compatible endpoint；生产 smoke 可能产生 Provider 用量费用。
+MetaWork 正在进行商业化开发。当前预览版本为 `v1.2.0-preview.6`，已提供 macOS
+Intel、macOS Apple Silicon、Linux x64 和 Windows x64 的签名原生包。当前 Runtime
+已经包含 Server/Client Gateway 分离、隔离 Planner-first 路由、统一 Executor 能力画像、
+不同 Conversation 之间有限并行的顶层 Task，以及 Pi 图片执行链路。真实 Provider 图片
+生成与编辑仍需要配置 OpenAI-compatible endpoint；生产 smoke 可能产生 Provider 用量费用。
 
 ## 许可
 

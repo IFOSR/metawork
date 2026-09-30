@@ -13,7 +13,8 @@ that survive restarts, execute through controlled Planner and Executor
 boundaries, and deliver verifiable results instead of stopping at a chat reply.
 
 [Why MetaWork](#why-metawork) · [Installation](#installation) ·
-[Quick Start](#quick-start) · [Usage](#usage) · [Architecture](#architecture) ·
+[Release](#release) · [Quick Start](#quick-start) · [Usage](#usage) ·
+[Architecture](#architecture) ·
 [Compatibility](#compatibility) · [中文](README.zh-CN.md)
 
 </div>
@@ -65,11 +66,34 @@ particular, the vendored `planner/AnyFusion-Pi` fork remains the isolated
 Planner component, and durable/protocol compatibility identifiers retain their
 existing names where changing them would break installations.
 
+## Release
+
+The current preview release is
+[MetaWork `v1.2.0-preview.6`](https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.6),
+published on September 30, 2026. Its synchronized release identity is
+`1.2.0-preview.6-build-0064851`.
+
+| Target | Native release |
+| --- | --- |
+| macOS Intel | `darwin-x64` |
+| macOS Apple Silicon | `darwin-arm64` |
+| Linux x64 | `linux-x64` |
+| Windows x64 | `win32-x64` |
+
+Each target publishes a Runtime archive, a vendored AnyFusion-Pi Planner
+archive, and a target-specific Ed25519-signed manifest.
+The manifests use signing key `metawork-release-2026-03`, pin Runtime and
+Planner revision `0064851`, and record SHA-256 hashes that the installers
+verify before installation. Linux arm64 has no prebuilt asset in this release;
+build it on a native Linux arm64 host with `npm run build:release`.
+
 ## Installation
 
-The primary native paths are macOS, Linux, and Windows x64. Linux and WSL2 use
-the Unix installer with file-backed secrets. Windows uses the signed
-PowerShell installer and named pipes for local Runtime connections.
+The published native paths are macOS Intel, macOS Apple Silicon, Linux x64,
+and Windows x64. Linux and WSL2 use the Unix installer with file-backed
+secrets. Windows uses the signed PowerShell installer and named pipes for local
+Runtime connections. Linux arm64 is supported as a native build target, but is
+not included in the current prebuilt release.
 
 ### Prerequisites
 
@@ -180,15 +204,30 @@ export METAWORK_PROVIDER_REGION='international'
 <details>
 <summary>Publishing prebuilt releases (maintainers)</summary>
 
-`npm run build:release` builds Runtime/Web/Planner on the current native host
-and packages the built Runtime, `web/dist`, Runtime dependencies, and vendored
-Planner into per-platform archives plus an Ed25519-signed manifest. Windows
-uses ZIP archives and `scripts/install.ps1`; macOS and Linux use tarballs and
-`scripts/install.sh`. Sign with a release key (`--signing-key` or
-`METAWORK_RELEASE_SIGNING_KEY`);
-`--generate-dev-key` exists for local testing only. Package from a
-production-only dependency tree (`npm ci --omit=dev`). The packaging command
-fails if the Runtime, Web, Planner, or dependency outputs are missing.
+`npm run build:release` builds Runtime/Web/Planner on the current native host,
+installs production dependencies, and packages the built Runtime,
+`web/dist`, Runtime dependencies, and vendored Planner into per-platform
+archives plus an Ed25519-signed manifest. The target must match the build
+host; macOS must not cross-build a Linux release. For example, a Linux x64
+host builds the Linux x64 release with:
+
+```bash
+npm run build:release -- \
+  --platform linux \
+  --arch x64 \
+  --release-id 1.2.0-preview.6-build-0064851 \
+  --signing-key /secure/path/metawork-release-key.pem \
+  --out-dir /tmp/metawork-release
+```
+
+Windows uses ZIP archives and `scripts/install.ps1`; macOS and Linux use
+tarballs and `scripts/install.sh`. `--package-only` is only for packaging
+already-built target dependencies and does not perform the build. The command
+requires a real release key (`--signing-key` or
+`METAWORK_RELEASE_SIGNING_KEY`); `--generate-dev-key` is for local testing
+only. Published GitHub Actions builds use native runners for macOS Intel,
+macOS Apple Silicon, Windows x64, and Linux x64. The packaging command fails
+if the Runtime, Web, Planner, or dependency outputs are missing.
 
 </details>
 
@@ -197,6 +236,8 @@ sources in separate dependency trees. Releases, account state, configuration,
 generated runtime files, and update journals are stored under `~/.metawork`.
 
 ### Runtime layout
+
+macOS and Linux use this layout and connect local Clients to a Unix socket:
 
 ```text
 ~/.local/bin/
@@ -228,6 +269,31 @@ generated runtime files, and update journals are stored under `~/.metawork`.
 └── upgrade-journals/
 ```
 
+Windows uses `%LOCALAPPDATA%\MetaWork\bin\*.cmd` launchers and a named pipe
+for the local Gateway:
+
+```text
+%LOCALAPPDATA%\MetaWork\
+├── bin/
+│   ├── metawork.cmd
+│   ├── anyfusion.cmd
+│   └── metaclaw.cmd
+├── app/
+│   ├── current
+│   └── releases/
+├── data/
+│   ├── runtime.lock
+│   └── planner-sessions/
+└── accounts/local-default/
+    ├── config/
+    ├── secrets/
+    ├── data/
+    ├── conversations/
+    ├── workspace-store/
+    ├── attempts/
+    └── gateway/
+```
+
 Set `METAWORK_INSTALL_ROOT` before installation to use a different root.
 
 ## Quick Start
@@ -239,8 +305,12 @@ Three steps from a fresh install to your first delivered task:
 #    background deployment)
 metawork server start
 
-# 2. In a second terminal, launch the Web Client from your project directory
+# 2. In a second terminal, launch the single MetaWork TUI from your project
+#    directory
 cd /path/to/your/project
+metawork
+
+# Or use the Web Client
 metawork web            # opens http://127.0.0.1:8788 in your browser
 ```
 
@@ -410,17 +480,21 @@ capabilities it was the only evidence for after the profile is refreshed.
 ## Architecture
 
 ```text
-Client
+TUI / Web / Feishu / CLI
   -> ClientGateway
     -> ConversationSession
       -> AccountRuntime
-        -> PlanningAgent (semantic planning only)
+        -> isolated AnyFusion-Pi Planner
           -> PlanningAgentPlan v8
-            -> ControlKernel (authorization and recovery)
-              -> Work Graph / Runtime
-                -> Executor attempt
+            -> validation + DurableKernelWorkflow
+              -> ControlKernel
+                -> Execution Runtime
+                  -> Executor attempt
+                    -> verification -> Git publication -> delivery
 ```
 
+- The persistent Server is the Runtime owner. Clients are Gateway-only and do
+  not access Storage, the Kernel, or Executor processes directly.
 - `ClientGateway` owns the versioned multi-client command/event protocol.
 - `ConversationSession` owns one serialized input mailbox and one persisted
   AnyFusion-Pi Planner session. New semantic Planner turns cannot directly
@@ -430,9 +504,16 @@ Client
 - `AccountRuntime` owns shared account services and the account's scheduling
   policy. Each Conversation has one durable execution slot, while independent
   Conversations may run concurrently within configured limits.
-- `ControlKernel` is the deterministic policy authority.
-- Execution owns claims, leases, native worktree or Docker compatibility
-  backends, attempts, Git publication, and normalized observations.
+- AnyFusion-Pi Planner runs as an isolated process and only proposes work. It
+  does not mutate Storage, schedule work, authorize execution, or execute
+  shell commands.
+- `ControlKernel` is the only authority for authorization, scheduling, model
+  binding, recovery, retry, fallback, continuation, cancellation, and resume.
+- Execution Runtime applies Kernel decisions and owns claims, leases, native
+  worktree or Docker compatibility backends, attempts, Git publication, and
+  normalized observations.
+- Storage persists durable facts through domain ports; it is not the owner of
+  business policy or lifecycle decisions.
 
 ### Planner-to-Executor routing
 
@@ -517,13 +598,14 @@ preserved.
 
 ## Project Status
 
-MetaWork is under active commercial development. The current runtime supports
-bounded parallel top-level Tasks across Conversations, while each Conversation
-serializes its own Task execution slot. The Planner-first routing, unified
-Executor capability profiles, and Pi image execution path are implemented and
-covered by the repository test suite. Provider-specific live image generation
-and editing still require a configured OpenAI-compatible endpoint and may incur
-usage charges before production smoke testing.
+MetaWork is under active commercial development. The current preview release is
+`v1.2.0-preview.6`, with signed native packages for macOS Intel, macOS Apple
+Silicon, Linux x64, and Windows x64. The runtime provides the Server/Client
+Gateway split, isolated Planner-first routing, unified Executor capability
+profiles, bounded parallel top-level Tasks across Conversations, and the Pi
+image execution path. Provider-specific live image generation and editing still
+require a configured OpenAI-compatible endpoint and may incur usage charges
+before production smoke testing.
 
 ## License
 
