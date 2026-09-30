@@ -8,6 +8,16 @@
 
 **Tech Stack:** Node.js 22.19+, TypeScript/ESM, Vitest, npm, PowerShell, GitHub Actions, Ed25519 release manifests.
 
+**Status:** Complete as of 2026-09-30. MetaWork is synchronized at
+`1.2.0-preview.6`; the workflow builds macOS Intel, macOS Apple Silicon,
+Windows x64, and Linux x64 on native runners, while Linux arm64 remains
+available through the same host-native `npm run build:release` entry point.
+Commit: `e50d8b8`.
+
+**Validation:** `npm run lint`, release/platform focused tests, and
+`git diff --check` passed. The preceding full validation reported 483 test
+files passed, 5 skipped, 3164 tests passed, and 12 skipped.
+
 ---
 
 ### Task 1: Lock the release version and synchronization contract
@@ -73,7 +83,7 @@
 1. Add failing tests for Windows manifest selection, signature/hash verification, ZIP extraction, and Linux host target commands.
 2. Run the focused tests and verify they fail because no Windows installer/build matrix exists.
 3. Implement the PowerShell installer and host-native build entry point; do not generate Linux artifacts on macOS.
-4. Add GitHub Actions jobs for macOS x64, macOS arm64, Windows x64, Linux x64, and Linux arm64, with signing performed only when the release secret is present.
+4. Add GitHub Actions jobs for macOS x64, macOS arm64, Windows x64, and Linux x64, with signing performed only when the release secret is present; keep Linux arm64 host-native rather than fabricating a cross-build.
 5. Run focused tests and validate workflow YAML and scripts.
 
 ### Task 5: Update documentation and validate artifacts
