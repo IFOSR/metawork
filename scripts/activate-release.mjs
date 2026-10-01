@@ -83,7 +83,9 @@ export async function activateRelease(root, assets, tag, options = {}) {
         activeReleaseId = active.releaseId;
       }
     }
-    if (activeReleaseId && compareReleaseIds(release.releaseId, activeReleaseId) < 0) {
+    if (activeReleaseId
+      && releaseVersionBase(release.releaseId) !== releaseVersionBase(activeReleaseId)
+      && compareReleaseIds(release.releaseId, activeReleaseId) < 0) {
       throw new Error('refusing to deploy an older release over the active release');
     }
     if (activeReleaseId === release.releaseId) {
@@ -140,6 +142,10 @@ export async function activateRelease(root, assets, tag, options = {}) {
     writeFileSync(recordPath, JSON.stringify(record, null, 2));
     throw error;
   }
+}
+
+function releaseVersionBase(releaseId) {
+  return releaseId.replace(/-build-[a-f0-9]+$/, '');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
