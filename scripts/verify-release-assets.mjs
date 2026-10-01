@@ -1,0 +1,119 @@
+import { createHash, verify } from 'node:crypto';
+import { createReadStream, readFileSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+export const RELEASE_TARGETS = ['darwin-arm64', 'darwin-x64', 'linux-x64', 'win32-x64'];
+const TRUSTED_KEY_ID = 'metawork-release-2026-03';
+const TRUSTED_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAJm/qnGNd9Aeg+41GoIjKOgpasxivfCXJCsZwyMbyIVE=
+-----END PUBLIC KEY-----`;
+
+function stable(value) {
+  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, nested]) => `${JSON.stringify(key)}:${stable(nested)}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+async function digest(stream) {
+  const hash = createHash('sha256');
+  let byteSize = 0;
+  for await (const chunk of stream) {
+    byteSize += chunk.length;
+    hash.update(chunk);
+  }
+  return { byteSize, sha256: hash.digest('hex') };
+}
+
+function assertArtifact(actual, expected, name) {
+  if (actual.byteSize !== expected.byteSize) throw new Error(`${name}: size mismatch`);
+  if (actual.sha256 !== expected.sha256) throw new Error(`${name}: hash mismatch`);
+}
+
+export async function verifyReleaseAssets(directory, tag, options = {}) {
+  if (!/^v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(tag)) throw new Error('invalid release tag');
+  const now = options.now ?? Date.now();
+  const manifests = [];
+  const files = [];
+  let identity;
+  for (const target of RELEASE_TARGETS) {
+    const name = `manifest.${target}.json`;
+    const body = readFileSync(join(directory, name));
+    const manifest = JSON.parse(body);
+    const { signature, ...payload } = manifest;
+    if (signature?.algorithm !== 'ed25519' || signature.keyId !== TRUSTED_KEY_ID
+      || !verify(null, Buffer.from(stable(payload)), options.trustedPublicKey ?? TRUSTED_PUBLIC_KEY,
+        Buffer.from(signature.value, 'base64'))) {
+      throw new Error(`${target}: signature verification failed`);
+    }
+    if (manifest.manifestSchemaVersion !== 1 || manifest.channel !== 'preview'
+      || `${manifest.platform}-${manifest.arch}` !== target
+      || !Number.isFinite(Date.parse(manifest.publishedAt))
+      || !(Date.parse(manifest.expiresAt) > now)) {
+      throw new Error(`${target}: invalid manifest metadata or expired manifest`);
+    }
+    const revision = manifest.metawork?.revision;
+    if (!/^[a-f0-9]{7,40}$/.test(revision)
+      || manifest.releaseId !== `${tag.slice(1)}-build-${revision.slice(0, 7)}`
+      || manifest.planner?.revision !== revision
+      || !['https://github.com/IFOSR/metawork', 'https://github.com/IFOSR/metawork.git']
+        .includes(manifest.metawork.source)
+      || manifest.planner.source !== manifest.metawork.source) {
+      throw new Error(`${target}: release/revision identity mismatch`);
+    }
+    const currentIdentity = stable({
+      releaseId: manifest.releaseId, revision, compatibility: manifest.compatibility,
+      minimumInstallerVersion: manifest.minimumInstallerVersion,
+      minimumNodeVersion: manifest.minimumNodeVersion,
+    });
+    identity ??= currentIdentity;
+    if (identity !== currentIdentity) throw new Error(`${target}: mixed release set`);
+    files.push({ name, byteSize: body.length, sha256: createHash('sha256').update(body).digest('hex') });
+    for (const kind of ['metawork', 'planner']) {
+      const artifact = manifest[kind];
+      const expectedName = `${kind}-${manifest.releaseId}-${target}${target.startsWith('win32') ? '.zip' : '.tar.gz'}`;
+      if (artifact.url !== expectedName || !Number.isSafeInteger(artifact.byteSize)
+        || artifact.byteSize <= 0 || !/^[a-f0-9]{64}$/.test(artifact.sha256)) {
+        throw new Error(`${target}: invalid ${kind} artifact contract`);
+      }
+      if (!statSync(join(directory, expectedName)).isFile()) throw new Error('archive is not a file');
+      assertArtifact(await digest(createReadStream(join(directory, expectedName))), artifact, expectedName);
+      files.push({ name: expectedName, byteSize: artifact.byteSize, sha256: artifact.sha256 });
+    }
+    manifests.push(manifest);
+  }
+  return { releaseId: manifests[0].releaseId, manifests, files };
+}
+
+export async function verifyPublishedRelease(directory, release, baseUrl) {
+  if (!baseUrl.startsWith('https://')) throw new Error('public verification requires HTTPS');
+  const files = [
+    ...release.files.map((file) => ({ ...file, path: `latest/${file.name}` })),
+    ...['install.sh', 'install.ps1'].map((name) => {
+      const body = readFileSync(join(directory, name));
+      return {
+        name, path: name, byteSize: body.length,
+        sha256: createHash('sha256').update(body).digest('hex'),
+      };
+    }),
+  ];
+  for (const file of files) {
+    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/${file.path}`, {
+      signal: AbortSignal.timeout(300_000),
+      headers: { 'Cache-Control': 'no-cache' },
+    });
+    if (!response.ok || !response.body) throw new Error(`${file.path}: HTTP ${response.status}`);
+    assertArtifact(await digest(response.body), file, file.path);
+    console.log(`Verified HTTPS ${file.path}`);
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  const [directory, tag, baseUrl] = process.argv.slice(2);
+  const release = await verifyReleaseAssets(directory, tag);
+  if (baseUrl) await verifyPublishedRelease(directory, release, baseUrl);
+  console.log(`Verified ${release.releaseId}: 4 signed manifests, 8 archives`);
+}

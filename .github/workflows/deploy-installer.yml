@@ -1,19 +1,22 @@
 name: Deploy Release Installer
 
-# Keeps the live one-command installer at
-# https://14.103.216.193/metawork-release/install.sh in sync with
-# scripts/install.sh on main. Releases are packaged manually
-# (scripts/package-release.mjs); run this workflow after publishing a new
-# release, or just push a change to scripts/install.sh and it deploys itself.
-
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - scripts/install.sh
-      - .github/workflows/deploy-installer.yml
+  workflow_call:
+    inputs:
+      release_tag:
+        description: GitHub release tag to publish to the installation server
+        required: true
+        type: string
+    secrets:
+      RELEASE_DEPLOY_SSH_KEY:
+        required: true
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: GitHub release tag to publish to the installation server
+        required: true
+        default: v1.2.0-preview.6
+        type: string
 
 permissions:
   contents: read
@@ -24,55 +27,55 @@ concurrency:
 
 jobs:
   deploy:
-    name: Sync install.sh to release server
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
+    name: Sync release assets and installers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_SSH_KEY }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Sanity-check installer syntax
-        run: bash -n scripts/install.sh
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
 
-      - name: Set up SSH key
+      - name: Download GitHub Release assets
         env:
-          DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_SSH_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          install -m 600 /dev/null /tmp/deploy_key
-          printf '%s\n' "$DEPLOY_KEY" > /tmp/deploy_key
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          rm -rf "$RUNNER_TEMP/metawork-release"
+          mkdir -p "$RUNNER_TEMP/metawork-release"
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir "$RUNNER_TEMP/metawork-release"
+          cp scripts/install.sh scripts/install.ps1 "$RUNNER_TEMP/metawork-release/"
+
+      - name: Prepare SSH credentials
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_DEPLOY_KEY"
+          install -m 600 /dev/null "$RUNNER_TEMP/deploy_key"
+          printf '%s\n' "$RELEASE_DEPLOY_KEY" > "$RUNNER_TEMP/deploy_key"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
           ssh-keyscan -H 14.103.216.193 >> ~/.ssh/known_hosts 2>/dev/null
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Backup previous installer on server
-        run: |
-          ssh -i /tmp/deploy_key -o IdentitiesOnly=yes root@14.103.216.193 \
-            'cp /root/metawork-release/install.sh /root/metawork-release/install.sh.prev'
-
-      - name: Upload installer
-        run: |
-          scp -i /tmp/deploy_key -o IdentitiesOnly=yes \
-            scripts/install.sh root@14.103.216.193:/root/metawork-release/install.sh
-
-      - name: Verify (checksum over SSH + end-to-end fetch)
+      - name: Deploy and verify release
+        env:
+          METAWORK_DEPLOY_KEY: ${{ runner.temp }}/deploy_key
         run: |
           set -euo pipefail
-          local_sum="$(sha256sum scripts/install.sh | awk '{print $1}')"
-          remote_sum="$(ssh -i /tmp/deploy_key -o IdentitiesOnly=yes root@14.103.216.193 \
-            'sha256sum /root/metawork-release/install.sh' | awk '{print $1}')"
-          echo "local=$local_sum remote=$remote_sum"
-          test "$local_sum" = "$remote_sum"
-          if fetched="$(curl -fsSL --retry 3 https://14.103.216.193/metawork-release/install.sh)"; then
-            printf '%s\n' "$fetched" | sha256sum | awk '{print $1}' | grep -qx "$local_sum" || {
-              echo "::error::served installer does not match repository version"; exit 1;
-            }
-            echo "Served installer matches main."
-          else
-            echo "::warning::could not fetch the installer over HTTPS from this runner; SSH checksum verification passed"
-          fi
+          bash -n scripts/install.sh
+          node scripts/deploy-release.mjs \
+            --release-tag "$RELEASE_TAG" \
+            --source-dir "$RUNNER_TEMP/metawork-release" \
+            --remote root@14.103.216.193
 
-      - name: Clean up SSH key
+      - name: Clean up SSH credentials
         if: always()
-        run: rm -f /tmp/deploy_key
+        run: rm -f "$RUNNER_TEMP/deploy_key"
