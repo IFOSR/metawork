@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -106,27 +106,11 @@ function runRemote(host, key, script) {
 }
 
 async function uploadReleaseFiles(host, key, remoteStage, localStage, files) {
-  const workerCount = Math.min(4, files.length);
-  console.log(`Uploading ${files.length} files with ${workerCount} concurrent SCP streams`);
-  await Promise.all(Array.from({ length: workerCount }, async (_, workerIndex) => {
-    for (let index = workerIndex; index < files.length; index += workerCount) {
-      const name = files[index];
-      await runScp(host, key, join(localStage, name), `${remoteStage}/${name}`);
-    }
-  }));
-}
-
-function runScp(host, key, source, destination) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn('scp', [
-      ...sshOptions(key), source, `${host}:${destination}`,
-    ], { stdio: 'inherit' });
-    child.once('error', rejectPromise);
-    child.once('exit', (code, signal) => {
-      if (code === 0) resolvePromise();
-      else rejectPromise(new Error(`scp failed with ${signal ?? `exit code ${code ?? 'unknown'}`}`));
-    });
-  });
+  console.log(`Uploading ${files.length} metadata files over one SCP stream`);
+  execFileSync('scp', [
+    ...sshOptions(key), ...files.map((name) => join(localStage, name)),
+    `${host}:${remoteStage}/`,
+  ], { stdio: 'inherit' });
 }
 
 function shellQuote(value) {
