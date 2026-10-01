@@ -1,8 +1,36 @@
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('release build entry points', () => {
+  it.each([
+    { NODE_ENV: 'production', CI: '' },
+    { NODE_ENV: 'development', CI: 'true' },
+  ])('skips Planner development hooks without husky installed: %j', (environment) => {
+    const fixture = mkdtempSync(resolve(tmpdir(), 'metawork-prepare-'));
+    try {
+      const plannerRoot = resolve('planner', 'AnyFusion-Pi');
+      const plannerPackage = JSON.parse(readFileSync(resolve(plannerRoot, 'package.json'), 'utf8'));
+      writeFileSync(resolve(fixture, 'package.json'), JSON.stringify({
+        private: true,
+        type: 'module',
+        scripts: { prepare: plannerPackage.scripts.prepare },
+      }));
+      cpSync(resolve(plannerRoot, 'scripts'), resolve(fixture, 'scripts'), { recursive: true });
+      const result = spawnSync(plannerPackage.scripts.prepare, {
+        cwd: fixture,
+        shell: true,
+        encoding: 'utf8',
+        env: { ...process.env, ...environment },
+      });
+      expect(result.status, result.stderr).toBe(0);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
   it('builds target-native dependencies before packaging and rejects fake Linux builds', () => {
     const script = readFileSync(resolve('scripts/build-release.mjs'), 'utf8');
 
