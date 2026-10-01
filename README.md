@@ -71,7 +71,8 @@ existing names where changing them would break installations.
 The current preview release is
 [MetaWork `v1.2.0-preview.6`](https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.6),
 published on September 30, 2026. Its synchronized release identity is
-`1.2.0-preview.6-build-aebea7b` (rebuilt and republished on October 1, 2026).
+recorded in the signed per-platform manifests; all targets are built from the
+same tagged commit.
 
 | Target | Native release |
 | --- | --- |
@@ -83,7 +84,7 @@ published on September 30, 2026. Its synchronized release identity is
 Each target publishes a Runtime archive, a vendored AnyFusion-Pi Planner
 archive, and a target-specific Ed25519-signed manifest.
 The manifests use signing key `metawork-release-2026-03`, pin Runtime and
-Planner revision `aebea7b`, and record SHA-256 hashes that the installers
+Planner revision from the tagged commit, and record SHA-256 hashes that the installers
 verify before installation. Linux arm64 has no prebuilt asset in this release;
 build it on a native Linux arm64 host with `npm run build:release`.
 
@@ -215,7 +216,7 @@ host builds the Linux x64 release with:
 npm run build:release -- \
   --platform linux \
   --arch x64 \
-  --release-id 1.2.0-preview.6-build-aebea7b \
+  --release-id 1.2.0-preview.6-build-<tagged-revision> \
   --signing-key /secure/path/metawork-release-key.pem \
   --out-dir /tmp/metawork-release
 ```
