@@ -55,4 +55,4 @@ semantic Release ID ordering, and same-ID archive immutability checks. Workflow
 YAML passed `actionlint` with the repository's intentional custom
 `macos-15-intel` runner label ignored.
 **Implementation commit:** `a6063d4` (`fix(release): synchronize published installer assets`)
-**Closing commit:** `fix(release): harden activation recovery`
+**Closing commit:** `478c76f` (`fix(release): harden activation recovery`)
