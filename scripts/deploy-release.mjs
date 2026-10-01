@@ -43,10 +43,13 @@ mkdir '${remoteStage}'
 
   const source = release.manifests[0].metawork.source.replace(/\.git$/, '');
   const releaseAssetBaseUrl = `${source}/releases/download/${releaseTag}`;
+  const archiveSources = archiveFiles.map((name) => ({
+    name,
+    url: resolveDownloadUrl(`${releaseAssetBaseUrl}/${name}`),
+  }));
   console.log(`Downloading ${archiveFiles.length} release archives on the deployment host`);
   runRemote(remote, sshKey, `set -eu
-base=${shellQuote(releaseAssetBaseUrl)}
-${archiveFiles.map((name) => `curl -4 --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 1800 "$base/${name}" -o ${shellQuote(`${remoteStage}/${name}`)}`).join('\n')}
+${archiveSources.map(({ name, url }) => `curl -4 --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 1800 ${shellQuote(url)} -o ${shellQuote(`${remoteStage}/${name}`)}`).join('\n')}
 `);
 
   console.log('Upload and remote download complete; activating under deployment lock and verifying public HTTPS downloads');
@@ -115,4 +118,11 @@ async function uploadReleaseFiles(host, key, remoteStage, localStage, files) {
 
 function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function resolveDownloadUrl(url) {
+  return execFileSync('curl', [
+    '-4', '--fail', '--silent', '--show-error', '--head', '--location',
+    '--max-time', '60', '--output', '/dev/null', '--write-out', '%{url_effective}', url,
+  ], { encoding: 'utf8' }).trim();
 }
