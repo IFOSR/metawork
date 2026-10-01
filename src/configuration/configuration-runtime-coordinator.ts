@@ -113,6 +113,7 @@ export interface ConfigurationRuntimeCoordinatorDeps {
     spanApiKey?: string;
     baseRevisionId: string;
   }) => Promise<unknown> | unknown;
+  validateActivationConfig?: (config: AnyFusionConfigurationV2) => string[];
   /**
    * Applies candidate secrets only for the duration of activation and returns
    * a compensating action. This lets the probe validate the exact candidate
@@ -253,6 +254,15 @@ export class ConfigurationRuntimeCoordinator {
         code: 'invalid_configuration',
         activeRevisionId: current.revisionId,
         issues: validation.issues.map(issue => `${issue.path || '(root)'}: ${issue.message}`),
+      };
+    }
+    const activationIssues = this.deps.validateActivationConfig?.(validation.config) ?? [];
+    if (activationIssues.length > 0) {
+      return {
+        ok: false,
+        code: 'invalid_configuration',
+        activeRevisionId: current.revisionId,
+        issues: activationIssues,
       };
     }
     const classification = classifyConfigurationDiff(current.config, validation.config);

@@ -12,6 +12,7 @@ import { isValidAccountId } from '../account/account-id.js';
 import { isValidConversationId } from '../session/conversation-types.js';
 import {
   GATEWAY_EVENT_KINDS,
+  boundGatewayEventPayload,
   gatewayEventPayloadBytes,
   isTerminalGatewayEvent,
   MAX_GATEWAY_EVENT_PAYLOAD_BYTES,
@@ -19,7 +20,14 @@ import {
   type GatewayEventEnvelope,
   type GatewayReplay,
 } from './client-events.js';
-import type { EventJournal } from './event-journal.js';
+import type { EventJournal, TracePage } from './event-journal.js';
+import {
+  compareTracePositions,
+  decodeTracePageCursor,
+  encodeTracePageCursor,
+  traceEventsFromDeltaEvents,
+  tracePosition,
+} from './trace-page-cursor.js';
 import { measureNavigationStage } from '../utils/navigation-diagnostics.js';
 
 interface JournalFile {
@@ -120,7 +128,7 @@ export class FileEventJournal implements EventJournal {
         continue;
       }
       assertPayloadSize(event.payload);
-      const payload = sanitizeGatewayEventPayload(event.payload);
+      const payload = boundGatewayEventPayload(sanitizeGatewayEventPayload(event.payload));
       assertPayloadSize(payload);
       const stored = {
         ...event,
@@ -147,6 +155,27 @@ export class FileEventJournal implements EventJournal {
     return measureNavigationStage('journal_replay', () => this.replayFromFile(
       accountId, conversationId, afterSequence,
     ));
+  }
+
+  async readTracePage(accountId: string, conversationId: string, turnId: string, cursor?: string, limit = 100): Promise<TracePage> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new Error('invalid_trace_page_limit');
+    const after = decodeTracePageCursor(cursor);
+    if (cursor && !after) throw new Error('invalid_trace_cursor');
+    const file = await this.read(accountId, conversationId);
+    const ordered = traceEventsFromDeltaEvents(file.events, turnId);
+    const remaining = ordered.filter(event => !after
+      || compareTracePositions(tracePosition(event), after) > 0);
+    const page = remaining.slice(0, limit);
+    const first = page[0] ? tracePosition(page[0]) : null;
+    const last = page.at(-1) ? tracePosition(page.at(-1)!) : null;
+    return {
+      turnId,
+      streamRevision: file.lastSequence,
+      firstSequence: first?.sequence ?? null,
+      lastSequence: last?.sequence ?? null,
+      events: page,
+      nextCursor: page.length < remaining.length ? encodeTracePageCursor(last!) : null,
+    };
   }
 
   exportRetained(accountId: string, conversationId: string) {

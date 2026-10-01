@@ -281,13 +281,14 @@ function loadRoutingDraft(config: RawRecord): RoutingDraft {
         : modelRefs[0] ?? '';
     const fallback = asRecord(policy.objective);
     return [
-       agentClassRef,
-       {
-         displayName: resolveAgentDisplayName(
-           agentClassRef,
-           typeof agentClass.displayName === 'string' ? agentClass.displayName : undefined,
-         ),
-         mode,
+      agentClassRef,
+      {
+        enabled: agentClass.enabled !== false,
+        displayName: resolveAgentDisplayName(
+          agentClassRef,
+          typeof agentClass.displayName === 'string' ? agentClass.displayName : undefined,
+        ),
+        mode,
         modelRef,
         allowedModelRefs: allowedModelRefs.length > 0
           ? allowedModelRefs
@@ -331,8 +332,9 @@ function loadRoutingFacts(config: RawRecord): RoutingFacts {
     const avoidUseCases = stringList(agentClass.avoidUseCases);
     return [
       agentClassRef,
-       {
-         agentClassRef,
+      {
+        agentClassRef,
+        enabled: agentClass.enabled !== false,
         displayName: resolveAgentDisplayName(
           agentClassRef,
           typeof agentClass.displayName === 'string' ? agentClass.displayName : undefined,
@@ -597,6 +599,7 @@ export function SettingsPanel({
     for (const [agentClassRef, entry] of Object.entries(draft)) {
       const agentFacts = facts[agentClassRef];
       if (!agentFacts) continue;
+      if (agentFacts.enabled === false || entry.enabled === false) continue;
       // Planner 在第一步单独预检，不在此重复。
       if (agentClassRef === 'planner') continue;
       const modelRefs = entry.mode === 'fixed'
@@ -822,6 +825,9 @@ export function SettingsPanel({
   const plannerBlocked = activationState?.activationAllowed === false;
   const plannerPrecheckWarnings = (() => {
     if (!plannerDraft || !catalog || !facts?.planner) return [] as string[];
+    if (facts.planner.enabled === false || plannerDraft.enabled === false) {
+      return [] as string[];
+    }
     const modelRef = plannerDraft.mode === 'fixed'
       ? plannerDraft.modelRef
       : plannerDraft.defaultModelRef;

@@ -36,6 +36,13 @@ export interface SubtaskCard {
   title: string;
   status: string;
   executor?: string;
+  harness?: string;
+  provider?: string;
+  model?: string;
+  harnessDisplayName?: string;
+  providerDisplayName?: string;
+  modelDisplayName?: string;
+  configurationRevision?: string;
   attempts: Array<{
     attemptId?: string;
     attemptKind: 'primary' | 'continuation' | 'fallback' | 'contract_correction' | 'merge_repair';

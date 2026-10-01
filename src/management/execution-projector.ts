@@ -8,6 +8,8 @@ import type { ExecutorAttemptRuntimeRepo, TimelineRuntimeRecord } from '../stora
 import type { KernelDispatchItemRepo, TimelineDispatchItemRecord } from '../storage/kernel-dispatch-item-repo.js';
 import { formatExecutorProgress } from '../executor/error-utils.js';
 import type { KernelAttemptKind } from '../kernel/control-kernel.js';
+import type { ConfigurationSnapshot } from '../configuration/types.js';
+import { resolvePublicRoutingIdentity } from '../configuration/public-routing-identity.js';
 
 const MAX_TIMELINE_ATTEMPTS_PER_SUBTASK = 20;
 const MAX_TIMELINE_PROGRESS_EVENTS_PER_ATTEMPT = 50;
@@ -55,6 +57,13 @@ export interface TimelineSubtask {
   title: string;
   status: string;
   executor?: string;
+  harness?: string;
+  provider?: string;
+  model?: string;
+  harnessDisplayName?: string;
+  providerDisplayName?: string;
+  modelDisplayName?: string;
+  configurationRevision?: string;
   attempts: TimelineAttempt[];
 }
 
@@ -80,6 +89,8 @@ export interface ExecutionProjectorDeps {
   publicationRepo: WorkspacePublicationRepo;
   attemptRuntimeRepo: ExecutorAttemptRuntimeRepo;
   dispatchItemRepo: KernelDispatchItemRepo;
+  /** Revision-pinned configuration used to render historical public names. */
+  configurationByRevision?: ReadonlyMap<string, ConfigurationSnapshot>;
 }
 
 /**
@@ -215,6 +226,19 @@ export class ExecutionProjector {
           ...subtaskDispatches.map(item => item.attemptId),
           ...subtaskReceipts.map(item => item.attemptId),
         ])].slice(-MAX_TIMELINE_ATTEMPTS_PER_SUBTASK);
+        const binding = subtaskDispatches[0]?.authorizedBinding
+          ?? subtaskReceipts[0]?.authorizedBinding;
+        const identity = binding
+          ? historicalPublicIdentity(this.deps.configurationByRevision, binding)
+          : null;
+        const capturedIdentity = binding && binding.modelDisplayName
+          ? {
+              executorDisplayName: binding.executorDisplayName,
+              harnessDisplayName: binding.harnessDisplayName,
+              providerDisplayName: binding.providerDisplayName,
+              modelDisplayName: binding.modelDisplayName,
+            }
+          : null;
         return {
           id: subtask.id,
           title: subtask.title,
@@ -222,6 +246,15 @@ export class ExecutionProjector {
           executor: subtaskDispatches[0]?.authorizedBinding.agentClassRef
             ?? subtaskReceipts[0]?.agentClassName
             ?? subtask.executorBindings[0]?.agentClassRef,
+          ...(binding ? {
+            configurationRevision: binding.configurationRevision,
+            harnessDisplayName: capturedIdentity?.harnessDisplayName
+              ?? identity?.harnessDisplayName ?? '历史配置不可用',
+            providerDisplayName: capturedIdentity?.providerDisplayName
+              ?? identity?.providerDisplayName ?? '历史配置不可用',
+            modelDisplayName: capturedIdentity?.modelDisplayName
+              ?? identity?.modelDisplayName ?? '历史模型信息不可用',
+          } : {}),
           attempts: attemptIds.map((attemptId, attemptIndex) => {
             const receipt = subtaskReceipts.find(item => item.attemptId === attemptId);
             const dispatch = subtaskDispatches.find(item => item.attemptId === attemptId);
@@ -311,6 +344,15 @@ function groupByTask<T extends { taskId: string | null }>(items: readonly T[]): 
     grouped.set(item.taskId, group);
   }
   return grouped;
+}
+
+function historicalPublicIdentity(
+  configurations: ReadonlyMap<string, ConfigurationSnapshot> | undefined,
+  binding: NonNullable<TimelineDispatchItemRecord['authorizedBinding']>,
+) {
+  const configuration = configurations?.get(binding.configurationRevision);
+  if (!configuration) return null;
+  return resolvePublicRoutingIdentity(configuration, binding);
 }
 
 function attemptLabel(kind: KernelAttemptKind): string {

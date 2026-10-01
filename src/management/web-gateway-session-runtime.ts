@@ -683,9 +683,11 @@ class WebGatewayClientSession {
 
     let replay: GatewayReplay;
     try {
-      replay = this.deps.gateway.snapshot
-        ? await this.deps.gateway.snapshot(this.deps.accountId, sessionId)
-        : await this.deps.gateway.replay(this.deps.accountId, sessionId);
+      replay = this.deps.gateway.history
+        ? await this.deps.gateway.history(this.deps.accountId, sessionId)
+        : this.deps.gateway.snapshot
+          ? await this.deps.gateway.snapshot(this.deps.accountId, sessionId)
+          : await this.deps.gateway.replay(this.deps.accountId, sessionId);
     } catch (error) {
       if (generation === this.attachGeneration) {
         unsubscribeOnce();

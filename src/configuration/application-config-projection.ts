@@ -77,7 +77,7 @@ function projectFeishuPlatform(
 
 function defaultExecutorCommand(snapshot: ConfigurationSnapshot): string | null {
   for (const [, agentClass] of Object.entries(snapshot.config.agentClasses).sort()) {
-    if (agentClass.kind !== 'executor') continue;
+    if (agentClass.kind !== 'executor' || !agentClass.enabled) continue;
     const harness = snapshot.config.harnesses[agentClass.harnessRef];
     const command = localCliCommand(harness);
     if (command) return command;

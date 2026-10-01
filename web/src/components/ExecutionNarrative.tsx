@@ -68,8 +68,22 @@ export function ExecutionNarrative({ turn }: { turn: ConversationTurnProjection 
           <section className="narrative-group" key={group.title}>
             <div className="narrative-group-title">
               <h3>{group.title}</h3>
-              <span>{events.length + progressSteps} steps</span>
+              <span>{events.length + progressSteps
+                + (stage?.proposal ? 1 : 0)
+                + (stage?.decisions?.length ?? 0)} steps</span>
             </div>
+            {stage?.proposal && (
+              <div className="narrative-stage-fact">
+                <strong>Planner 已形成执行提案</strong>
+                <span>{stage.proposal.subtasks.length} 个子任务，{stage.proposal.dependencies.length} 条依赖</span>
+              </div>
+            )}
+            {stage?.decisions?.map((decision, index) => (
+              <div className="narrative-stage-fact" key={`${decision.type}:${decision.subtask}:${index}`}>
+                <strong>Kernel · {decision.type}</strong>
+                <span>{decision.reason || decision.subtask || '已记录授权决策'}</span>
+              </div>
+            ))}
             {events.map(event => (
               <ExecutionStep event={event} active={event.id === activeEvent?.id} key={event.id} />
             ))}

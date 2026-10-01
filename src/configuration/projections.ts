@@ -74,7 +74,7 @@ export function buildPlannerConfigurationView(
     models,
     // The schema guarantees Planner is fixed-only; executor Auto policies do
     // not leak into the Planner projection.
-    ...(planner?.kind === 'planner' ? {
+    ...(planner?.kind === 'planner' && planner.enabled ? {
       planner: {
         harnessRef: planner.harnessRef,
         modelPolicy: cloneModelPolicy(planner.modelPolicy),
@@ -103,6 +103,11 @@ export function buildKernelConfigurationView(
     ]));
   const agentClasses = Object.fromEntries(
     Object.entries(snapshot.config.agentClasses)
+      // Disabled classes may retain stale references. They are not runtime
+      // authorities, so omit one whose Harness was removed while keeping
+      // well-formed disabled history visible to management projections.
+      .filter(([, agentClass]) => agentClass.enabled
+        || Boolean(snapshot.config.harnesses[agentClass.harnessRef]))
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([id, agentClass]) => {
         const harness = snapshot.config.harnesses[agentClass.harnessRef]!;

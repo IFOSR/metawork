@@ -97,6 +97,40 @@ describe('ExecutorManualPlanner', () => {
     } finally { await makeWritable(root); await rm(root, { recursive: true, force: true }); }
   });
 
+  it('rebases a manual preview when the requested revision manifest is stale', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'executor-manual-stale-revision-'));
+    try {
+      const service = new ConfigurationService({
+        repository: new FileConfigurationRepository(join(root, 'config')),
+        createRevisionId: (() => {
+          const ids = ['revision-1', 'draft-1'];
+          return () => ids.shift()!;
+        })(),
+        probe: async () => ({ ok: true }),
+      });
+      await service.initialize();
+      const initial = service.createDraft(configuration(), null);
+      service.validateDraft(initial.revisionId);
+      service.compileDraft(initial.revisionId);
+      await service.probeDraft(initial.revisionId);
+      await service.activateDraft(initial.revisionId, null);
+
+      const planner = new ExecutorManualPlanner({
+        configuration: service,
+        registerSession: () => () => undefined,
+        runner: { async run() { throw new Error('empty guidance must not invoke Planner'); } },
+      });
+      const result = await planner.compile({
+        baseRevisionId: 'revision-stale',
+        agentClassRef: 'engineering',
+        sourceText: '',
+      });
+
+      expect(result.analysisMode).toBe('semantic');
+      expect(result.userProfile).toMatchObject({ sourceText: '', assertions: [] });
+    } finally { await makeWritable(root); await rm(root, { recursive: true, force: true }); }
+  });
+
   it('reuses saved semantic guidance while recompiling changed model facts', async () => {
     const root = await mkdtemp(join(tmpdir(), 'executor-manual-recompile-'));
     try {
@@ -388,12 +422,14 @@ describe('ExecutorManualPlanner', () => {
       };
 
       let plannerPrompt = '';
+      let plannerConfigurationRevision = '';
       const planner = new ExecutorManualPlanner({
         configuration: service,
         registerSession: () => () => undefined,
         runner: {
-          async run(prompt) {
+          async run(prompt, context) {
             plannerPrompt = prompt;
+            plannerConfigurationRevision = context.configuration?.revisionId ?? '';
             return {
               proposalResult: {
                 status: 'accepted',
@@ -426,6 +462,7 @@ describe('ExecutorManualPlanner', () => {
 
       expect(plannerPrompt).toContain('"modelRef":"image"');
       expect(plannerPrompt).toContain('"image-generation"');
+      expect(plannerConfigurationRevision).toBe(initial.revisionId);
       expect(result.warning).toBeUndefined();
       expect(result.analysisMode).toBe('semantic');
       expect(result.manual.markdown).toContain('路由能力：图片生成');

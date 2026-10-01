@@ -4,10 +4,17 @@ import type { Dir } from 'node:fs';
 import { resolve } from 'node:path';
 import { isValidAccountId } from '../account/account-id.js';
 import { isValidConversationId } from '../session/conversation-types.js';
-import type { EventJournal } from './event-journal.js';
+import type { EventJournal, TracePage } from './event-journal.js';
+import {
+  compareTracePositions,
+  decodeTracePageCursor,
+  encodeTracePageCursor,
+  traceEventsFromDeltaEvents,
+  tracePosition,
+} from './trace-page-cursor.js';
 import type { EventJournalSegmentIndex, JournalSegment, JournalStreamState, ConversationSnapshot, JournalSegmentWrite } from './event-journal-segment-index.js';
 import {
-  gatewayEventPayloadBytes, MAX_GATEWAY_EVENT_PAYLOAD_BYTES, sanitizeGatewayEventPayload,
+  boundGatewayEventPayload, gatewayEventPayloadBytes, MAX_GATEWAY_EVENT_PAYLOAD_BYTES, sanitizeGatewayEventPayload,
   type GatewayEventEnvelope, type GatewayReplay,
 } from './client-events.js';
 import { projectConversationSnapshot } from './conversation-snapshot-store.js';
@@ -57,7 +64,11 @@ export class SegmentedEventJournal implements EventJournal {
           : null);
         if (segmentId && !existing) throw new Error('journal_index_corrupt');
         if (existing) { result.push(existing); continue; }
-        const stored = { ...event, sequence: ++sequence, payload: sanitizeGatewayEventPayload(event.payload) };
+        const stored = {
+          ...event,
+          sequence: ++sequence,
+          payload: boundGatewayEventPayload(sanitizeGatewayEventPayload(event.payload)),
+        };
         if (gatewayEventPayloadBytes(stored.payload) > MAX_GATEWAY_EVENT_PAYLOAD_BYTES) throw new Error('Gateway event payload exceeds limit');
         byId.set(stored.eventId, stored);
         fresh.push(stored);
@@ -101,6 +112,34 @@ export class SegmentedEventJournal implements EventJournal {
           .filter(event => event.sequence > afterSequence));
       }
       return { lastSequence: state.lastSequence, snapshot: state.snapshot, deltas };
+    });
+  }
+
+  readTracePage(accountId: string, conversationId: string, turnId: string, cursor?: string, limit = 100): Promise<TracePage> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) return Promise.reject(new Error('invalid_trace_page_limit'));
+    const after = decodeTracePageCursor(cursor);
+    if (cursor && !after) return Promise.reject(new Error('invalid_trace_cursor'));
+    return this.serialized(accountId, conversationId, async () => {
+      await this.ensureStream(accountId, conversationId);
+      const events: GatewayEventEnvelope[] = [];
+      for (const segment of this.index.segments(accountId, conversationId, 0)) {
+        events.push(...(await this.readSegment(accountId, conversationId, segment.id))
+          .filter(event => event.kind === 'trace_delta' && event.turnId === turnId));
+      }
+      const ordered = traceEventsFromDeltaEvents(events, turnId);
+      const remaining = ordered.filter(event => !after
+        || compareTracePositions(tracePosition(event), after) > 0);
+      const page = remaining.slice(0, limit);
+      const first = page[0] ? tracePosition(page[0]) : null;
+      const last = page.at(-1) ? tracePosition(page.at(-1)!) : null;
+      return {
+        turnId,
+        streamRevision: (await this.ensureStream(accountId, conversationId)).lastSequence,
+        firstSequence: first?.sequence ?? null,
+        lastSequence: last?.sequence ?? null,
+        events: page,
+        nextCursor: page.length < remaining.length ? encodeTracePageCursor(last!) : null,
+      };
     });
   }
 

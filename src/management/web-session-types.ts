@@ -14,7 +14,10 @@ import type {
 
 export const WEB_SESSION_FORMAT_VERSION = 1 as const;
 export const MAX_WEB_SESSION_TURNS = 100;
-export const MAX_WEB_SESSION_EVENTS_PER_TURN = 400;
+// Gateway events are individually bounded at 64 KiB. Keep a generous history
+// ceiling so Planner/Kernel milestones are not discarded merely because a
+// long Executor run produced more than the old 400-event UI suffix.
+export const MAX_WEB_SESSION_EVENTS_PER_TURN = 10_000;
 
 export type WebSessionAvailability = 'active' | 'browsable' | 'activation_blocked';
 export type ConversationTurnStatus = Exclude<InteractionTraceStatus, 'running'>;

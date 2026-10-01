@@ -504,6 +504,21 @@ function sanitizeTimelineStage(stage: TimelineStage): TimelineStage {
         ...(subtask.executor ? {
           executor: sanitizeInteractionTraceText(subtask.executor, 160),
         } : {}),
+        ...(subtask.harness ? { harness: sanitizeInteractionTraceText(subtask.harness, 160) } : {}),
+        ...(subtask.provider ? { provider: sanitizeInteractionTraceText(subtask.provider, 160) } : {}),
+        ...(subtask.model ? { model: sanitizeInteractionTraceText(subtask.model, 160) } : {}),
+        ...(subtask.harnessDisplayName ? {
+          harnessDisplayName: sanitizeInteractionTraceText(subtask.harnessDisplayName, 160),
+        } : {}),
+        ...(subtask.providerDisplayName ? {
+          providerDisplayName: sanitizeInteractionTraceText(subtask.providerDisplayName, 160),
+        } : {}),
+        ...(subtask.modelDisplayName ? {
+          modelDisplayName: sanitizeInteractionTraceText(subtask.modelDisplayName, 160),
+        } : {}),
+        ...(subtask.configurationRevision ? {
+          configurationRevision: sanitizeInteractionTraceText(subtask.configurationRevision, 160),
+        } : {}),
         attempts: subtask.attempts.slice(0, 20).map((attempt, attemptIndex) => ({
           ...(attempt.attemptId === undefined ? {} : {
             attemptId: sanitizeInteractionTraceText(attempt.attemptId, 160),

@@ -152,7 +152,17 @@ export function InteractionTracePanel({
           <h3>Executor 与验证</h3>
           {timeline.stages.flatMap(stage => stage.subtasks ?? []).map(subtask => (
             <div className="executor-card" key={subtask.id}>
-              <div><strong>{subtask.executor ?? 'Executor'}</strong><span>{subtask.status}</span></div>
+              <div>
+                <strong>{subtask.executor ?? 'Executor'}</strong>
+                <span>{subtask.status}</span>
+              </div>
+              {(subtask.harness || subtask.provider || subtask.model) && (
+                <small>
+                  [subtask.harnessDisplayName || subtask.harness,
+                    subtask.providerDisplayName || subtask.provider,
+                    subtask.modelDisplayName || subtask.model].filter(Boolean).join(' · ')}
+                </small>
+              )}
               <p>{subtask.title}</p>
               {subtask.attempts.map((attempt, index) => (
                 <small key={index}>

@@ -38,11 +38,11 @@ export function resolvePublicRoutingIdentity(
     ? configuration.models[binding.modelRef]
     : undefined;
   const provider = model && configuration
-    ? configuration.providers[model.providerRef]
+    ? configuration.providers?.[model.providerRef]
     : undefined;
   const providerRef = model?.providerRef ?? binding.providerRef;
   const configuredProvider = configuration?.revisionId === binding.configurationRevision
-    ? configuration.providers[providerRef]
+    ? configuration.providers?.[providerRef]
     : undefined;
   const agentClass = configuration?.revisionId === binding.configurationRevision
     ? configuration.agentClasses?.[binding.agentClassRef]
@@ -77,7 +77,7 @@ export function resolvePublicRoutingIdentity(
 function configurationFacts(source: PublicRoutingConfiguration | null | undefined): {
   revisionId: string;
   models: KernelConfigurationView['models'] | RuntimeConfigurationView['models'];
-  providers: KernelConfigurationView['providers'] | RuntimeConfigurationView['providers'];
+  providers?: KernelConfigurationView['providers'] | RuntimeConfigurationView['providers'];
   agentClasses?: KernelConfigurationView['agentClasses'] | RuntimeConfigurationView['agentClasses'];
   harnesses?: RuntimeConfigurationView['harnesses'];
 } | null {

@@ -7,6 +7,11 @@ export interface RevisionedAgentBinding {
   modelRef: string;
   permissionProfileRef: string | null;
   configurationRevision: string;
+  /** Public names captured at authorization time for historical presentation. */
+  executorDisplayName?: string;
+  harnessDisplayName?: string;
+  providerDisplayName?: string;
+  modelDisplayName?: string;
 }
 
 export interface AuthorizedExecutorBinding extends RevisionedAgentBinding {

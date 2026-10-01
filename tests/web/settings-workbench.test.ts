@@ -429,6 +429,11 @@ describe('Settings workbench model semantics', () => {
       ref: 'code-gpt-55-mini',
       modelId: 'gpt-5.5-mini',
     }])).toEqual(['planner']);
+
+    expect(invalidRoutingDrafts({
+      ...next,
+      'codex-cli': { ...next['codex-cli'], enabled: false },
+    }, [])).toEqual(['planner']);
   });
 
   it('keeps internal revision identifiers out of the primary Settings UI', async () => {

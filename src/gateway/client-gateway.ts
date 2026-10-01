@@ -116,7 +116,7 @@ export type NewWorkAdmissionResult =
   | { readonly allowed: true }
   | {
       readonly allowed: false;
-      readonly reason: 'required_agent_unavailable' | 'no_enabled_executor';
+      readonly reason: 'required_agent_unavailable' | 'no_enabled_executor' | 'configuration_invalid';
       readonly agentId?: 'pi-agent' | 'codex-cli';
     };
 

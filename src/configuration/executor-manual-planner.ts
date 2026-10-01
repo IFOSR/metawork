@@ -72,7 +72,7 @@ export class ExecutorManualPlanner {
     const sourceText = input.sourceText.trim();
     validateExecutorManualSourceText(sourceText);
 
-    const persistedBase = await this.dependencies.configuration.getSnapshot(input.baseRevisionId);
+    const persistedBase = await this.loadBaseSnapshot(input.baseRevisionId);
     const base = input.candidateConfig
       ? this.buildCandidateSnapshot(
           persistedBase.revisionId,
@@ -235,11 +235,11 @@ export class ExecutorManualPlanner {
     config: AnyFusionConfigurationV2;
     warnings: Array<{ agentClassRef: string; warning: string }>;
   }> {
-    const baseSnapshot = await this.dependencies.configuration.getSnapshot(input.baseRevisionId);
+    const baseSnapshot = await this.loadBaseSnapshot(input.baseRevisionId);
     let config = structuredClone(input.config);
     const warnings: Array<{ agentClassRef: string; warning: string }> = [];
     for (const [agentClassRef, agentClass] of Object.entries(config.agentClasses)) {
-      if (agentClass.kind !== 'executor' || !agentClass.executorManual) continue;
+      if (agentClass.kind !== 'executor' || !agentClass.enabled || !agentClass.executorManual) continue;
       const baseAgentClass = baseSnapshot.config.agentClasses[agentClassRef];
       const sourceChanged = agentClass.executorManual.sourceText.trim()
         !== (baseAgentClass?.executorManual?.sourceText.trim() ?? '');
@@ -280,9 +280,29 @@ export class ExecutorManualPlanner {
         ).join('; '));
       }
       this.dependencies.configuration.compileDraft(draft.revisionId);
-      return this.dependencies.configuration.getDraftSnapshot(draft.revisionId);
+      const candidateSnapshot = this.dependencies.configuration.getDraftSnapshot(draft.revisionId);
+      // The candidate is an in-memory preview. Planner RPCs may resolve the
+      // configuration revision through the durable repository, so keep the
+      // persisted base revision on the projection instead of exposing the
+      // temporary draft ID as if it had a revision manifest.
+      return { ...candidateSnapshot, revisionId: baseRevisionId };
     } finally {
       this.dependencies.configuration.discardDraft(draft.revisionId);
+    }
+  }
+
+  /**
+   * Manual previews are advisory and may arrive with a revision that was just
+   * replaced by another settings save. Rebase the preview on the current
+   * active snapshot instead of surfacing a low-level missing-manifest error;
+   * activation still performs its normal revision-conflict check.
+   */
+  private async loadBaseSnapshot(revisionId: string) {
+    try {
+      return await this.dependencies.configuration.getSnapshot(revisionId);
+    } catch (error) {
+      if (!isMissingRevisionManifest(error)) throw error;
+      return this.dependencies.configuration.getActiveSnapshot();
     }
   }
 
@@ -387,8 +407,11 @@ function buildConfigurationPrompt(
 
 function semanticFailureWarning(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
+  const safeMessage = isMissingRevisionManifest(error)
+    ? '配置版本已更新，已保留用户原始定义；请稍后再次更新能力画像。'
+    : redactSensitiveText(message);
   return `智能语义提炼暂不可用，已保留用户原始定义。${
-    truncateText(redactSensitiveText(message), 300)
+    truncateText(safeMessage, 300)
   }`;
 }
 
@@ -550,4 +573,9 @@ function stableJson(value: unknown): string {
     .sort()
     .map(key => `${JSON.stringify(key)}:${stableJson((value as Record<string, unknown>)[key])}`)
     .join(',')}}`;
+}
+
+function isMissingRevisionManifest(error: unknown): boolean {
+  return error instanceof Error
+    && /(?:ENOENT|revision-manifest\.json)/u.test(error.message);
 }

@@ -115,7 +115,7 @@ describe('SourceNativeInstaller', () => {
     expect(readFileSync(paths.anyFusionLauncher, 'utf8')).toBe(launcher);
     expect(readFileSync(paths.metaclawLauncher, 'utf8')).toBe(launcher);
     expect(launcher).toContain('# MetaWork managed launcher');
-    expect(launcher).toContain('export ANYFUSION_PLANNER_WORKSPACE="$PWD"');
+    expect(launcher).toContain('unset ANYFUSION_PLANNER_WORKSPACE METACLAW_PLANNER_WORKDIR');
     expect(launcher).toContain('$METAWORK_INSTALL_ROOT/app/current/dist/index.js');
     expect(readFileSync(join(paths.appCurrent, 'web', 'dist', 'index.html'), 'utf8'))
       .toBe('web\n');

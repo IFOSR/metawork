@@ -40,7 +40,10 @@ export interface KernelDispatchItemRecord {
 export type TimelineDispatchItemRecord = Pick<KernelDispatchItemRecord,
   'attemptId' | 'taskId' | 'subtaskId' | 'attemptKind' | 'status'
   | 'launchStartedAt' | 'createdAt' | 'updatedAt' | 'errorSummary'
-> & { authorizedBinding: Pick<AuthorizedExecutorBinding, 'agentClassRef'> };
+> & { authorizedBinding: Pick<AuthorizedExecutorBinding,
+  'agentClassRef' | 'harnessRef' | 'providerRef' | 'modelRef' | 'configurationRevision'
+  | 'executorDisplayName' | 'harnessDisplayName' | 'providerDisplayName' | 'modelDisplayName'
+> };
 
 interface DispatchItemRow {
   attempt_id: string;
@@ -265,14 +268,24 @@ export class KernelDispatchItemRepo {
     const rows = this.db.prepare(`
       SELECT attempt_id, task_id, subtask_id, attempt_kind, status,
         launch_started_at, created_at, updated_at, error_summary, agent_class_name,
-        json_extract(authorized_binding_json, '$.agentClassRef') AS agent_class_ref
+        json_extract(authorized_binding_json, '$.agentClassRef') AS agent_class_ref,
+        json_extract(authorized_binding_json, '$.harnessRef') AS harness_ref,
+        json_extract(authorized_binding_json, '$.providerRef') AS provider_ref,
+        json_extract(authorized_binding_json, '$.modelRef') AS model_ref,
+        configuration_revision
       FROM kernel_dispatch_items
       WHERE task_id IN (${taskIds.map(() => '?').join(',')})
       ORDER BY batch_order ASC, created_at ASC, attempt_id ASC
     `).all(...taskIds) as Array<Pick<DispatchItemRow,
       'attempt_id' | 'task_id' | 'subtask_id' | 'attempt_kind' | 'status'
       | 'launch_started_at' | 'created_at' | 'updated_at' | 'error_summary' | 'agent_class_name'
-    > & { agent_class_ref: string | null }>;
+    > & {
+      agent_class_ref: string | null;
+      harness_ref: string | null;
+      provider_ref: string | null;
+      model_ref: string | null;
+      configuration_revision: string;
+    }>;
     return rows.map(row => {
       if (row.agent_class_name !== row.agent_class_ref) {
         throw new Error(`persisted dispatch AgentClass projection mismatch: ${row.attempt_id}`);
@@ -287,7 +300,13 @@ export class KernelDispatchItemRepo {
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         errorSummary: row.error_summary,
-        authorizedBinding: { agentClassRef: row.agent_class_ref },
+        authorizedBinding: {
+          agentClassRef: row.agent_class_ref,
+          harnessRef: row.harness_ref ?? '',
+          providerRef: row.provider_ref ?? '',
+          modelRef: row.model_ref ?? '',
+          configurationRevision: row.configuration_revision,
+        },
       };
     });
   }

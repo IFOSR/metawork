@@ -8,6 +8,7 @@
 
 import type { ClientGateway, ClientGatewayResult } from '../gateway/client-gateway.js';
 import type { GatewayEventEnvelope, GatewayReplay } from '../gateway/client-events.js';
+import type { TracePage } from '../gateway/event-journal.js';
 import type { GatewayCommandEnvelope } from '../gateway/client-protocol.js';
 import type { EventJournal } from '../gateway/event-journal.js';
 import type { GatewaySubscriptions } from '../gateway/gateway-subscriptions.js';
@@ -39,6 +40,25 @@ export class WebGatewayAdapter {
   snapshot(accountId: string, conversationId: string): Promise<GatewayReplay> {
     return this.deps.journal.snapshot?.(accountId, conversationId)
       ?? this.deps.journal.replay(accountId, conversationId);
+  }
+
+  /**
+   * Historical attachment path. Unlike reconnect, this deliberately replays
+   * the retained journal from the beginning so a compact snapshot's bounded
+   * Trace suffix cannot hide Planner or Kernel events from Web history.
+   */
+  history(accountId: string, conversationId: string): Promise<GatewayReplay> {
+    return this.deps.journal.replay(accountId, conversationId, 0);
+  }
+
+  tracePage(accountId: string, conversationId: string, turnId: string, cursor?: string, limit?: number): Promise<TracePage> {
+    if (this.deps.journal.readTracePage) {
+      return this.deps.journal.readTracePage(accountId, conversationId, turnId, cursor, limit);
+    }
+    return Promise.resolve({
+      turnId, streamRevision: 0, firstSequence: null, lastSequence: null,
+      events: [], nextCursor: null,
+    });
   }
 
   subscribe(

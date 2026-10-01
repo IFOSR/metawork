@@ -265,6 +265,11 @@ async function createSessionManager(
 	sessionDir: string | undefined,
 	settingsManager: SettingsManager,
 ): Promise<SessionManager> {
+	// Server RPC sessions are durable across Runtime restarts, but their
+	// historical cwd is not an authority. The Runtime supplies the current
+	// authorized cwd for every RPC launch; otherwise a session created from an
+	// old shell directory could reparent Planner outside that root.
+	const sessionCwdOverride = parsed.mode === "rpc" ? cwd : undefined;
 	if (parsed.noSession || parsed.help || parsed.listModels !== undefined) {
 		return SessionManager.inMemory(cwd);
 	}
@@ -298,7 +303,7 @@ async function createSessionManager(
 		switch (resolved.type) {
 			case "path":
 			case "local":
-				return SessionManager.open(resolved.path, sessionDir);
+				return SessionManager.open(resolved.path, sessionDir, sessionCwdOverride);
 
 			case "global": {
 				console.log(chalk.yellow(`Session found in different project: ${resolved.cwd}`));
@@ -327,7 +332,7 @@ async function createSessionManager(
 				console.log(chalk.dim("No session selected"));
 				process.exit(0);
 			}
-			return SessionManager.open(selectedPath, sessionDir);
+			return SessionManager.open(selectedPath, sessionDir, sessionCwdOverride);
 		} finally {
 			stopThemeWatcher();
 		}
@@ -340,7 +345,7 @@ async function createSessionManager(
 	if (parsed.sessionId) {
 		const existingSession = await findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
 		if (existingSession) {
-			return SessionManager.open(existingSession.path, sessionDir);
+			return SessionManager.open(existingSession.path, sessionDir, sessionCwdOverride);
 		}
 	}
 

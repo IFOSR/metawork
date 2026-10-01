@@ -40,6 +40,7 @@ import {
 import { projectConfigurationCandidates } from '../routing/configuration-candidate-projection.js';
 import { requiredModelCapabilitiesForRoutingCapabilities } from '../routing/types.js';
 import type { KernelFailure } from '../core/kernel-failure.js';
+import { resolvePublicRoutingIdentity } from '../configuration/public-routing-identity.js';
 import {
   evaluateCapabilityRequest,
   type CapabilityGrant,
@@ -2041,9 +2042,17 @@ function resolveAuthorizedBindings(
           },
         });
         if (!resolution.binding) throw new Error('resolver returned no concrete binding');
+        const publicIdentity = resolvePublicRoutingIdentity(configuration, resolution.binding);
+        const authorizedBinding: AuthorizedExecutorBinding = {
+          ...resolution.binding,
+          executorDisplayName: publicIdentity.executorDisplayName,
+          harnessDisplayName: publicIdentity.harnessDisplayName,
+          providerDisplayName: publicIdentity.providerDisplayName,
+          modelDisplayName: publicIdentity.modelDisplayName,
+        };
         const audit: RoutingResolutionAudit = {
           agentClassRef: proposed.agentClassRef,
-          binding: resolution.binding,
+          binding: authorizedBinding,
           rejectedCandidates: resolution.rejectedCandidates,
           scoreBreakdown: resolution.scoreBreakdown,
           policyVersion: resolution.policyVersion,
@@ -2058,7 +2067,7 @@ function resolveAuthorizedBindings(
             : {}),
         };
         entries.push({
-          binding: resolution.binding,
+          binding: authorizedBinding,
           order: bindingIndex,
           probability: spanProbabilities?.[resolution.binding.modelRef] ?? null,
           audit,

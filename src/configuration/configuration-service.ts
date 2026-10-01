@@ -427,7 +427,7 @@ export class ConfigurationService implements ConfigurationServicePort {
       ? await this.dependencies.repository.readSnapshot(draft.baseRevisionId)
       : null;
     for (const [agentClassRef, agentClass] of Object.entries(draft.config.agentClasses)) {
-      if (agentClass.kind !== 'executor') continue;
+      if (agentClass.kind !== 'executor' || !agentClass.enabled) continue;
       const sourceText = agentClass.executorManual?.sourceText.trim() ?? '';
       const manual = agentClass.executorManual;
       const baseManual = base?.config.agentClasses[agentClassRef]?.executorManual;

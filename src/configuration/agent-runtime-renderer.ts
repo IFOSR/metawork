@@ -98,7 +98,7 @@ export class AgentRuntimeRenderer {
     root: string,
   ): Promise<void> {
     await Promise.all(Object.entries(snapshot.config.agentClasses)
-      .filter(([, agentClass]) => agentClass.kind === 'executor')
+      .filter(([, agentClass]) => agentClass.kind === 'executor' && agentClass.enabled)
       .map(async ([agentClassRef, agentClass]) => {
         const executorRoot = join(root, 'executors', agentClassRef);
         await mkdir(executorRoot, { recursive: true });

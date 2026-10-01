@@ -148,6 +148,25 @@ describe('ConfigurationService', () => {
       });
   });
 
+  it('activates unrelated changes while a disabled AgentClass has stale bindings', async () => {
+    const { service } = await serviceFixture();
+    const candidate = completeConfiguration();
+    candidate.agentClasses.engineering = {
+      ...candidate.agentClasses.engineering,
+      enabled: false,
+      harnessRef: 'missing-harness',
+      modelPolicy: { mode: 'fixed', modelRef: 'missing-model' },
+      permissionProfileRef: 'missing-permission',
+      routingCapabilities: [],
+      plannerAffordances: [],
+    };
+    const draft = service.createDraft(candidate, null);
+    expect(service.validateDraft(draft.revisionId)).toMatchObject({ ok: true });
+    service.compileDraft(draft.revisionId);
+    await service.probeDraft(draft.revisionId);
+    await expect(service.activateDraft(draft.revisionId, null)).resolves.toMatchObject({ ok: true });
+  });
+
   it('applies a Planner-normalized Executor manual to a draft without changing authority fields', async () => {
     const { service } = await serviceFixture();
     const draft = service.createDraft(completeConfiguration(), null);

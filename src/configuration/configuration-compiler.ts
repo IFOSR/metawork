@@ -31,6 +31,7 @@ export class ConfigurationCompiler {
     try {
       const agentClassPaths: Record<string, string> = {};
       for (const [agentClassId, agentClass] of Object.entries(snapshot.config.agentClasses).sort()) {
+        if (!agentClass.enabled) continue;
         const relativePath = agentClass.kind === 'planner'
           ? join('planner', agentClassId)
           : join('executors', agentClassId);
@@ -39,7 +40,7 @@ export class ConfigurationCompiler {
         await writeAgentRuntime(agentRoot, agentClassId, agentClass, snapshot);
       }
       const plannerAgentClassId = Object.entries(snapshot.config.agentClasses)
-        .find(([, agentClass]) => agentClass.kind === 'planner')?.[0];
+        .find(([, agentClass]) => agentClass.kind === 'planner' && agentClass.enabled)?.[0];
       if (plannerAgentClassId) {
         await writePlannerHomeConfig(rootPath, snapshot, plannerAgentClassId);
       }

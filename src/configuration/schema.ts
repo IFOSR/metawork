@@ -26,7 +26,7 @@ export const SPAN_ROUTING_MODEL = 'respan/span-01-lite' as const;
  * named `routing-span` can never share, read, or overwrite this slot.
  */
 export const SPAN_ROUTING_SECRET_REFERENCE = 'file-secret:anyfusion/internal/routing-span' as const;
-export const SPAN_ROUTING_DEFAULT_TIMEOUT_MS = 3_000;
+export const SPAN_ROUTING_DEFAULT_TIMEOUT_MS = 8_000;
 export const SPAN_ROUTING_MIN_TIMEOUT_MS = 500;
 export const SPAN_ROUTING_MAX_TIMEOUT_MS = 10_000;
 const RELEASE_REFERENCE = /^release:[a-z][a-z0-9-]{0,63}$/;
@@ -55,6 +55,68 @@ function uniqueArray<T extends z.ZodTypeAny>(
       seen.add(value);
     }
   });
+}
+
+function validateAutoModelPolicy(
+  policy: {
+    allowedModelRefs: string[];
+    defaultModelRef?: string;
+    fallback?: { enabled: boolean; order: string[] };
+  },
+  context: z.RefinementCtx,
+  path: (string | number)[] = [],
+): void {
+  const allowed = new Set(policy.allowedModelRefs);
+  if (policy.allowedModelRefs.length === 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [...path, 'allowedModelRefs'],
+      message: 'Auto Model policy requires at least one Model',
+    });
+  }
+  const duplicateIndex = policy.allowedModelRefs.findIndex(
+    (modelRef, index) => policy.allowedModelRefs.indexOf(modelRef) !== index,
+  );
+  if (duplicateIndex >= 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [...path, 'allowedModelRefs', duplicateIndex],
+      message: 'duplicate Model reference',
+    });
+  }
+  if (policy.defaultModelRef && !allowed.has(policy.defaultModelRef)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [...path, 'defaultModelRef'],
+      message: 'defaultModelRef must be included in allowedModelRefs',
+    });
+  }
+  for (const [index, modelRef] of (policy.fallback?.order ?? []).entries()) {
+    if (!allowed.has(modelRef)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, 'fallback', 'order', index],
+        message: 'fallback Model must be included in allowedModelRefs',
+      });
+    }
+  }
+  const fallbackDuplicateIndex = (policy.fallback?.order ?? []).findIndex(
+    (modelRef, index, order) => order.indexOf(modelRef) !== index,
+  );
+  if (fallbackDuplicateIndex >= 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [...path, 'fallback', 'order', fallbackDuplicateIndex],
+      message: 'duplicate fallback Model reference',
+    });
+  }
+  if (policy.fallback?.enabled && policy.fallback.order.length === 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [...path, 'fallback', 'order'],
+      message: 'enabled fallback requires at least one Model',
+    });
+  }
 }
 
 function credentialFreeHttpUrlSchema(label: string) {
@@ -186,30 +248,7 @@ const AutoModelPolicySchema = z.object({
     minimumQualityTier: z.enum(['low', 'medium', 'high']).optional(),
   }).strict().optional(),
 }).strict().superRefine((policy, context) => {
-  const allowed = new Set(policy.allowedModelRefs);
-  if (policy.defaultModelRef && !allowed.has(policy.defaultModelRef)) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['defaultModelRef'],
-      message: 'defaultModelRef must be included in allowedModelRefs',
-    });
-  }
-  for (const [index, modelRef] of (policy.fallback?.order ?? []).entries()) {
-    if (!allowed.has(modelRef)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['fallback', 'order', index],
-        message: 'fallback Model must be included in allowedModelRefs',
-      });
-    }
-  }
-  if (policy.fallback?.enabled && policy.fallback.order.length === 0) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['fallback', 'order'],
-      message: 'enabled fallback requires at least one Model',
-    });
-  }
+  validateAutoModelPolicy(policy, context);
 });
 
 export const ModelPolicySchema = z.union([
@@ -217,11 +256,35 @@ export const ModelPolicySchema = z.union([
   AutoModelPolicySchema,
 ]);
 
+// AgentClass validation is conditional on enablement. Keep this shape-level
+// policy schema free of cross-field checks so a disabled assistant can retain
+// an incomplete or stale Auto policy until it is enabled and validated.
+const AgentClassAutoModelPolicySchema = z.object({
+  mode: z.literal('auto'),
+  allowedModelRefs: z.array(ReferenceIdSchema),
+  defaultModelRef: ReferenceIdSchema.optional(),
+  fallback: z.object({
+    enabled: z.boolean(),
+    order: z.array(ReferenceIdSchema),
+  }).strict().optional(),
+  objective: z.object({
+    priority: z.enum(['balanced', 'quality', 'cost', 'latency']),
+    maxCostPerTurn: z.number().finite().min(0).max(1_000_000).optional(),
+    maxLatencyMs: z.number().int().min(1).max(86_400_000).optional(),
+    minimumQualityTier: z.enum(['low', 'medium', 'high']).optional(),
+  }).strict().optional(),
+}).strict();
+
+const AgentClassModelPolicySchema = z.union([
+  FixedModelPolicySchema,
+  AgentClassAutoModelPolicySchema,
+]);
+
 const AgentClassDefinitionSchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional(),
   kind: z.enum(['planner', 'executor']),
   harnessRef: ReferenceIdSchema,
-  modelPolicy: ModelPolicySchema,
+  modelPolicy: AgentClassModelPolicySchema,
   permissionProfileRef: ReferenceIdSchema.optional(),
   routingCapabilities: uniqueArray(
     z.enum(ROUTING_CAPABILITY_IDS),
@@ -279,18 +342,18 @@ const AgentClassDefinitionSchema = z.object({
         'disabled',
       ]).optional(),
     }).strict()).max(64),
-  }).strict().superRefine((manual, context) => {
-    if (manual.sourceText.length === 0 && manual.assertions.length > 0) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['assertions'],
-        message: 'Executor manual assertions require non-empty sourceText',
-      });
-    }
-  }).optional(),
+  }).strict().optional(),
   enabled: z.boolean(),
 }).strict().superRefine((agentClass, context) => {
+  // Disabled AgentClasses are retained as editable configuration history. Their
+  // runtime bindings and capability contracts are intentionally checked only
+  // when the class is enabled, so an unused broken assistant cannot block an
+  // otherwise unrelated configuration activation.
+  if (!agentClass.enabled) return;
   if (agentClass.kind === 'executor') {
+    if (agentClass.modelPolicy.mode === 'auto') {
+      validateAutoModelPolicy(agentClass.modelPolicy, context, ['modelPolicy']);
+    }
     if (!agentClass.permissionProfileRef) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -511,6 +574,9 @@ export const AnyFusionConfigurationV2Schema = z.object({
   }
 
   for (const [agentClassRef, agentClass] of Object.entries(configuration.agentClasses)) {
+    // A disabled assistant is inert. Keep its shape parseable, but defer all
+    // cross-reference and capability validation until it is explicitly enabled.
+    if (!agentClass.enabled) continue;
     const harness = configuration.harnesses[agentClass.harnessRef];
     if (!harness) {
       context.addIssue({
@@ -572,6 +638,13 @@ export const AnyFusionConfigurationV2Schema = z.object({
 
     const manual = agentClass.executorManual;
     if (!manual) continue;
+    if (manual.sourceText.length === 0 && manual.assertions.length > 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['agentClasses', agentClassRef, 'executorManual', 'assertions'],
+        message: 'Executor manual assertions require non-empty sourceText',
+      });
+    }
     if (agentClass.kind !== 'executor') {
       context.addIssue({
         code: z.ZodIssueCode.custom,

@@ -336,6 +336,67 @@ describe('AnyFusion configuration schema v2', () => {
     expect(parsed.success).toBe(true);
   });
 
+  it('defers broken bindings and capability contracts for disabled AgentClasses', () => {
+    const config = completeConfiguration();
+    const disabled = {
+      ...config.agentClasses['codex-engineering'],
+      enabled: false,
+      harnessRef: 'missing-harness',
+      modelPolicy: { mode: 'fixed', modelRef: 'missing-model' },
+      permissionProfileRef: 'missing-permission',
+      routingCapabilities: [],
+      plannerAffordances: [],
+    };
+    expect(AnyFusionConfigurationV2Schema.safeParse({
+      ...config,
+      agentClasses: {
+        ...config.agentClasses,
+        'codex-engineering': disabled,
+      },
+    }).success).toBe(true);
+
+    expect(AnyFusionConfigurationV2Schema.safeParse({
+      ...config,
+      agentClasses: {
+        ...config.agentClasses,
+        'codex-engineering': { ...disabled, enabled: true },
+      },
+    }).success).toBe(false);
+  });
+
+  it('defers internal Auto policy and manual semantic checks for disabled AgentClasses', () => {
+    const config = completeConfiguration();
+    const disabled = {
+      ...config.agentClasses['codex-engineering'],
+      enabled: false,
+      modelPolicy: {
+        mode: 'auto' as const,
+        allowedModelRefs: ['engineering', 'engineering'],
+        defaultModelRef: 'planner',
+        fallback: { enabled: true, order: [] },
+      },
+      executorManual: {
+        sourceText: '',
+        assertions: [{ topic: 'preferred-task' as const, text: '保留历史定义' }],
+      },
+    };
+    expect(AnyFusionConfigurationV2Schema.safeParse({
+      ...config,
+      agentClasses: {
+        ...config.agentClasses,
+        'codex-engineering': disabled,
+      },
+    }).success).toBe(true);
+
+    expect(AnyFusionConfigurationV2Schema.safeParse({
+      ...config,
+      agentClasses: {
+        ...config.agentClasses,
+        'codex-engineering': { ...disabled, enabled: true },
+      },
+    }).success).toBe(false);
+  });
+
   it('rejects Auto policy on Planner AgentClasses', () => {
     const config = completeConfiguration();
     const result = AnyFusionConfigurationV2Schema.safeParse({

@@ -64,7 +64,7 @@ describe('Span routing advanced settings draft', () => {
     expect(loadSpanRoutingDraft({})).toEqual({
       enabled: false,
       model: 'respan/span-01-lite',
-      timeoutMs: 3_000,
+      timeoutMs: 8_000,
       apiKey: '',
     });
   });
@@ -113,6 +113,6 @@ describe('Span routing advanced settings draft', () => {
   it('clamps the timeout into the server-accepted range', () => {
     expect(clampTimeout(10)).toBe(500);
     expect(clampTimeout(999_999)).toBe(10_000);
-    expect(clampTimeout(Number.NaN)).toBe(3_000);
+    expect(clampTimeout(Number.NaN)).toBe(8_000);
   });
 });

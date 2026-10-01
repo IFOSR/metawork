@@ -42,7 +42,7 @@ export interface ExecutorAttemptReceipt {
 export type TimelineReceiptRecord = Pick<ExecutorAttemptReceipt,
   'attemptId' | 'taskId' | 'subtaskId' | 'attemptKind' | 'agentClassName'
   | 'terminalState' | 'completedAt' | 'errorCode' | 'errorDetail'
-> & { hasViolations: boolean };
+> & { hasViolations: boolean; authorizedBinding: AuthorizedExecutorBinding };
 
 export type ExecutorAttemptReceiptInsert = Omit<
   ExecutorAttemptReceipt,
@@ -174,12 +174,19 @@ export class ExecutorAttemptReceiptRepo {
         attempt_kind AS attemptKind, agent_class_name AS agentClassName,
         terminal_state AS terminalState, completed_at AS completedAt,
         error_code AS errorCode, error_detail AS errorDetail,
+        authorized_binding_json AS authorizedBindingJson,
         COALESCE(json_array_length(verification_json, '$.violations'), 0) > 0 AS hasViolations
       FROM executor_attempt_receipts
       WHERE task_id IN (${taskIds.map(() => '?').join(',')})
       ORDER BY completed_at DESC, attempt_id ASC
-    `).all(...taskIds) as Array<Omit<TimelineReceiptRecord, 'hasViolations'> & { hasViolations: number }>;
-    return rows.map(row => ({ ...row, hasViolations: Boolean(row.hasViolations) }));
+    `).all(...taskIds) as Array<Omit<TimelineReceiptRecord, 'hasViolations' | 'authorizedBinding'> & {
+      hasViolations: number; authorizedBindingJson: string;
+    }>;
+    return rows.map(row => ({
+      ...row,
+      hasViolations: Boolean(row.hasViolations),
+      authorizedBinding: JSON.parse(row.authorizedBindingJson) as AuthorizedExecutorBinding,
+    }));
   }
 }
 

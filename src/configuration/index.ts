@@ -135,6 +135,7 @@ export {
   resolvePublicRoutingIdentity,
   type PublicRoutingIdentity,
 } from './public-routing-identity.js';
+export { validateEnabledModelPrices } from './enabled-model-price-validation.js';
 export { buildApplicationConfig } from './application-config-projection.js';
 export type {
   PlannerRuntimeEnvironmentResolverInput,

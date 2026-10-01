@@ -92,6 +92,7 @@ replacing those semantics.
 
 ## Active Delivery
 
+- [配置生命周期、执行可观测性与准入可靠性方案](plans/2026-10-01-execution-observability-and-configuration-reliability-design.md)：待 Review。统一记录启用态配置校验、画像草稿与 revision 激活边界、Release Workspace 授权、完整 Trace 分页回放、Timeline 公共路由身份、Planner/Kernel 阶段展示和模型价格准入方案；当前尚未实施。
 - [Navigation performance architecture remediation](plans/2026-09-26-navigation-performance-architecture-remediation.md):
   indexed Workspace directory, Conversation history paging, physical enrichment
   batching, request convergence, segmented snapshot/journal maintenance and

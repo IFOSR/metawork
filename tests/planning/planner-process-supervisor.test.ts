@@ -1534,6 +1534,59 @@ describe('PlannerProcessSupervisor', () => {
     );
   });
 
+  it('aligns an inherited default cwd with the Runtime-authorized workspace', async () => {
+    const child = fakeProcess();
+    completeRpcTurn(child);
+    const spawn = vi.fn((_command: string, _args: string[], options: { cwd?: string }) => {
+      expect(options.cwd).toBe('/runtime-authorized');
+      return child as never;
+    });
+    vi.stubEnv('ANYFUSION_PLANNER_WORKSPACE', '/runtime-authorized');
+    vi.stubEnv('METACLAW_PLANNER_WORKDIR', '/runtime-parent');
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      sessionDir: join(tmpdir(), `planner-supervisor-authorized-${process.pid}`),
+      spawn: spawn as never,
+    });
+
+    try {
+      await supervisor.run('plan this', {
+        timeoutMs: 1_000,
+        request: { sessionId: 'session-authorized-cwd', source: 'gateway' },
+      } as never, 'kernel');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('keeps an explicitly requested cwd inside the Runtime-authorized workspace', async () => {
+    const child = fakeProcess();
+    completeRpcTurn(child);
+    vi.stubEnv('ANYFUSION_PLANNER_WORKSPACE', '/runtime-authorized');
+    const supervisor = new PlannerProcessSupervisor({
+      command: '/release/planner',
+      spawn: vi.fn((_command: string, _args: string[], options: { cwd?: string }) => {
+        expect(options.cwd).toBe('/runtime-authorized');
+        return child as never;
+      }) as never,
+    });
+
+    try {
+      await supervisor.runRpcTurn({
+        sessionId: 'session-invalid-cwd',
+        cwd: '/runtime-parent',
+        prompt: 'plan this',
+        context: {
+          timeoutMs: 1_000,
+          request: { sessionId: 'session-invalid-cwd', source: 'gateway' },
+        } as never,
+        purpose: 'kernel',
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('keeps the same-session RPC lock until a failed child actually exits', async () => {
     const children: FakeProcess[] = [];
     const spawn = vi.fn(() => {

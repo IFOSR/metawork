@@ -26,7 +26,7 @@ export type EditableModelPolicy = FixedModelPolicy | AutoModelPolicy;
 
 /** Fixed Span advisor model; the UI never offers a model/provider picker. */
 export const SPAN_ROUTING_MODEL = 'respan/span-01-lite';
-export const SPAN_ROUTING_DEFAULT_TIMEOUT_MS = 3_000;
+export const SPAN_ROUTING_DEFAULT_TIMEOUT_MS = 8_000;
 export const SPAN_ROUTING_MIN_TIMEOUT_MS = 500;
 export const SPAN_ROUTING_MAX_TIMEOUT_MS = 10_000;
 

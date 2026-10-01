@@ -42,6 +42,7 @@ export type RoutingMode = 'auto' | 'fixed';
 export type RoutingObjective = 'balanced' | 'quality' | 'cost' | 'latency';
 
 export interface AgentClassRoutingDraft {
+  enabled?: boolean;
   displayName?: string;
   mode: RoutingMode;
   modelRef: string;
@@ -105,6 +106,7 @@ export interface AgentClassRoutingFacts {
   routingCapabilities: string[];
   capabilityContracts: string[];
   affordances: string[];
+  enabled?: boolean;
 }
 
 export const DEFAULT_AGENT_DISPLAY_NAMES: Readonly<Record<string, string>> = {
@@ -278,6 +280,7 @@ export function invalidRoutingDrafts(
 ): string[] {
   const available = new Set(models.filter(model => model.enabled !== false).map(model => model.ref));
   return Object.entries(draft)
+    .filter(([, entry]) => entry.enabled !== false)
     .filter(([, entry]) => entry.mode === 'fixed'
       ? !entry.modelRef || !available.has(entry.modelRef)
       : entry.allowedModelRefs.length === 0

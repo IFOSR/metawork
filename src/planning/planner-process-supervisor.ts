@@ -3,7 +3,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { resolveMetaWorkPaths } from '../installation/paths.js';
 import {
   resolveCurrentRuntimeHome,
@@ -138,6 +138,10 @@ export interface PlannerProcessSupervisorDeps {
   spawn?: SpawnFn;
   plannerHome?: string;
   cwd?: string;
+  /** Runtime-owned directory used as the Planner process cwd and safety root. */
+  authorizedWorkspace?: string;
+  /** Conversation-scoped Workspace authority. */
+  resolveAuthorizedWorkspace?: (conversationId: string) => string | Promise<string | null> | null;
   envFile?: string;
   sessionDir?: string;
   args?: string[];
@@ -894,8 +898,33 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       );
     }
     const command = this.resolveCommand();
-    const cwd = cwdOverride ?? this.deps.cwd ?? process.env.METACLAW_PLANNER_WORKDIR ?? process.cwd();
-    const authorizedWorkspace = process.env.ANYFUSION_PLANNER_WORKSPACE ?? realpathOrSelf(cwd);
+    const resolvedConversationWorkspace = this.deps.resolveAuthorizedWorkspace
+      ? await this.deps.resolveAuthorizedWorkspace(conversationId)
+      : null;
+    const configuredWorkspace = (resolvedConversationWorkspace?.trim() || this.deps.authorizedWorkspace?.trim())
+      || process.env.ANYFUSION_PLANNER_WORKSPACE?.trim();
+    // Once the Runtime supplies an authorization root, it is authoritative.
+    // A caller's cwd is a client hint and must never reparent a Server-owned
+    // Planner process outside that root.
+    const requestedCwd = configuredWorkspace
+      ?? cwdOverride
+      ?? this.deps.cwd
+      ?? process.env.METACLAW_PLANNER_WORKDIR
+      ?? process.cwd();
+    const authorizedWorkspace = realpathOrSelf(configuredWorkspace || requestedCwd);
+    const requestedRealpath = realpathOrSelf(requestedCwd);
+    const explicitCwd = !configuredWorkspace
+      && (cwdOverride !== undefined || this.deps.cwd !== undefined);
+    const cwd = isPathWithinWorkspace(authorizedWorkspace, requestedRealpath)
+      ? requestedRealpath
+      : explicitCwd
+        ? (() => {
+            throw new Error(
+              `Planner cwd ${requestedCwd} is outside the Runtime-authorized workspace `
+              + `${authorizedWorkspace}; choose a workspace inside the authorized root`,
+            );
+          })()
+        : authorizedWorkspace;
     const metaWorkPaths = resolveMetaWorkPaths();
     const generatedRuntimeRoot = this.deps.generatedRuntimeRoot
       ?? metaWorkPaths.generatedAgentRuntime;
@@ -1260,6 +1289,16 @@ function realpathOrSelf(path: string): string {
   } catch {
     return path;
   }
+}
+
+function isPathWithinWorkspace(workspace: string, candidate: string): boolean {
+  const workspacePath = resolve(workspace);
+  const candidatePath = resolve(candidate);
+  const pathRelative = relative(workspacePath, candidatePath);
+  return pathRelative === ''
+    || (!pathRelative.startsWith(`..${sep}`)
+      && pathRelative !== '..'
+      && !isAbsolute(pathRelative));
 }
 
 function hasCompleteRuntimeEnvironment(

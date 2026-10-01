@@ -36,7 +36,11 @@ import {
   importLegacyProviderCredentials,
 } from '../configuration/index.js';
 import { prepareProductionSecretStore } from '../configuration/production-secret-store.js';
-import { SPAN_ROUTING_SECRET_REFERENCE, SPAN_ROUTING_MODEL } from '../configuration/schema.js';
+import {
+  SPAN_ROUTING_DEFAULT_TIMEOUT_MS,
+  SPAN_ROUTING_SECRET_REFERENCE,
+  SPAN_ROUTING_MODEL,
+} from '../configuration/schema.js';
 import { SpanRoutingAdvisor } from '../routing/span-routing-advisor.js';
 import {
   assertSecretReference,
@@ -114,6 +118,7 @@ import { PlannerProcessSupervisor } from '../planning/planner-process-supervisor
 import { buildStagedLegacyConfiguration } from '../configuration/staged-legacy-configuration.js';
 import { buildPlannerInputProfile } from '../planning/planner-input-profile.js';
 import { buildPlannerConfigurationView, buildRuntimeConfigurationView, buildExecutorManualPreview } from '../configuration/projections.js';
+import { validateEnabledModelPrices } from '../configuration/enabled-model-price-validation.js';
 import { projectExecutorManagement } from '../configuration/executor-configuration.js';
 import { AutoModelResolver } from '../routing/auto-model-resolver.js';
 import { authorizedExecutorBindingFingerprint } from '../core/authorized-executor-binding.js';
@@ -593,6 +598,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
 
   // ADR-0031: 账户数据根——迁移并激活 local-default 账户，运行时使用账户作用域数据。
   await new AccountLayoutMigrator({ paths }).migrate();
+  // Planner RPC runs from an account-owned directory. This keeps Server
+  // startup independent of the shell directory and guarantees the cwd exists
+  // before the first configuration or recovery turn.
+  mkdirSync(accountPaths.workspaceStore, { recursive: true });
 
   const configurationRepository = new FileConfigurationRepository(accountPaths.config);
   await configurationRepository.initialize();
@@ -809,6 +818,19 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   const plannerSupervisor = new PlannerProcessSupervisor({
     socketPath: plannerHostSocketPath,
     gatewaySocketPath,
+    // Server startup is Workspace-neutral. Planner RPC still needs a cwd
+    // inside its Runtime-authorized root, so use the account-owned runtime
+    // workspace rather than the shell directory used to launch `metawork`.
+    cwd: accountPaths.workspaceStore,
+    authorizedWorkspace: accountPaths.workspaceStore,
+    resolveAuthorizedWorkspace: async conversationId => {
+      const metadata = await conversationStore.readMetadata(conversationId);
+      const workspaceId = metadata?.workspaceBinding?.workspaceId;
+      if (!workspaceId) return accountPaths.workspaceStore;
+      const catalog = await workspaceCatalogStore.readCatalog();
+      return catalog.workspaces.find(item => item.id === workspaceId && !item.archived)?.canonicalPath
+        ?? accountPaths.workspaceStore;
+    },
     configurationRevision: stagedConfiguration.snapshot.revisionId,
     bindingFingerprint: stagedConfiguration.plannerBindingFingerprint,
     generatedRuntimeRoot: resolve(accountPaths.generated, 'agent-runtime'),
@@ -1013,6 +1035,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     service: configurationService,
     gate: configurationActivationGate,
     initialSnapshot: migratedSnapshot,
+    validateActivationConfig: validateEnabledModelPrices,
     prepareConfig: async ({ config, secrets, spanApiKey, baseRevisionId }) => {
       const prepared = structuredClone(config) as AnyFusionConfigurationV2;
       for (const [providerRef, apiKey] of Object.entries(secrets)) {
@@ -1028,7 +1051,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           span: {
             enabled: prepared.routing?.span?.enabled ?? false,
             model: SPAN_ROUTING_MODEL,
-            timeoutMs: prepared.routing?.span?.timeoutMs ?? 3_000,
+            timeoutMs: prepared.routing?.span?.timeoutMs ?? SPAN_ROUTING_DEFAULT_TIMEOUT_MS,
             apiKeyRef: SPAN_ROUTING_SECRET_REFERENCE,
           },
         };
@@ -1351,6 +1374,19 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   // ExecutionProjector / TaskArtifactRepo 同时服务 Web 管理面与 Gateway 只读
   // Task 视图查询（统一 TUI 设计 §9.3）：同一投影 owner，不复制状态计算。
   const taskArtifactRepo = new TaskArtifactRepo(db);
+  const timelineConfigurationByRevision = new Map<string, Awaited<ReturnType<typeof configurationRepository.readSnapshot>>>();
+  for (const revisionId of await configurationRepository.listRevisions()) {
+    try {
+      timelineConfigurationByRevision.set(
+        revisionId,
+        await configurationRepository.readSnapshot(revisionId),
+      );
+    } catch {
+      // A removed/corrupt historical revision must remain visible as
+      // unavailable in the Timeline; it must never be replaced by today's
+      // configuration and thereby rewrite history.
+    }
+  }
   const executionProjector = new ExecutionProjector({
     subtaskRepo: new SubtaskRepo(db),
     receiptRepo: new ExecutorAttemptReceiptRepo(db),
@@ -1358,6 +1394,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     publicationRepo: new WorkspacePublicationRepo(db),
     attemptRuntimeRepo: new ExecutorAttemptRuntimeRepo(db),
     dispatchItemRepo: new KernelDispatchItemRepo(db),
+    configurationByRevision: timelineConfigurationByRevision,
   });
   const conversationGatewayRuntime = new ConversationGatewayRuntime({
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
@@ -1705,8 +1742,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           return { allowed: false, reason: 'no_enabled_executor' };
         }
         const missing = agentReadiness.getState().find(agent => agent.required && agent.status !== 'installed');
-        return missing
-          ? { allowed: false, reason: 'required_agent_unavailable', agentId: missing.agentId }
+        if (missing) return { allowed: false, reason: 'required_agent_unavailable', agentId: missing.agentId };
+        const priceIssues = validateEnabledModelPrices(configurationRuntimeCoordinator.getSnapshot().config);
+        return priceIssues.length > 0
+          ? { allowed: false, reason: 'configuration_invalid' }
           : { allowed: true };
       },
     },
