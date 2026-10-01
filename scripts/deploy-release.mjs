@@ -46,7 +46,7 @@ mkdir '${remoteStage}'
   console.log(`Downloading ${archiveFiles.length} release archives on the deployment host`);
   runRemote(remote, sshKey, `set -eu
 base=${shellQuote(releaseAssetBaseUrl)}
-${archiveFiles.map((name) => `curl --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 1800 "$base/${name}" -o ${shellQuote(`${remoteStage}/${name}`)}`).join('\n')}
+${archiveFiles.map((name) => `curl -4 --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 1800 "$base/${name}" -o ${shellQuote(`${remoteStage}/${name}`)}`).join('\n')}
 `);
 
   console.log('Upload and remote download complete; activating under deployment lock and verifying public HTTPS downloads');
