@@ -133,15 +133,20 @@ export async function verifyPublishedRelease(directory, release, baseUrl) {
       };
     }),
   ];
-  for (const file of files) {
-    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/${file.path}`, {
-      signal: AbortSignal.timeout(300_000),
-      headers: { 'Cache-Control': 'no-cache' },
-    });
-    if (!response.ok || !response.body) throw new Error(`${file.path}: HTTP ${response.status}`);
-    assertArtifact(await digest(response.body), file, file.path);
-    console.log(`Verified HTTPS ${file.path}`);
-  }
+  const queue = [...files];
+  const verifyNext = async () => {
+    while (queue.length > 0) {
+      const file = queue.shift();
+      const response = await fetch(`${baseUrl.replace(/\/$/, '')}/${file.path}`, {
+        signal: AbortSignal.timeout(300_000),
+        headers: { 'Cache-Control': 'no-cache' },
+      });
+      if (!response.ok || !response.body) throw new Error(`${file.path}: HTTP ${response.status}`);
+      assertArtifact(await digest(response.body), file, file.path);
+      console.log(`Verified HTTPS ${file.path}`);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, files.length) }, verifyNext));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
