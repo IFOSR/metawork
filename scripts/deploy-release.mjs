@@ -34,11 +34,13 @@ mkdir '${remoteStage}'
     cpSync(join(root, 'scripts', name), join(localStage, name));
     deployFiles.push(name);
   }
+  console.log(`Uploading verified release assets: ${release.releaseId} (${deployFiles.length} files)`);
   execFileSync('scp', [
     ...sshOptions(sshKey), ...deployFiles.map((name) => join(localStage, name)),
     `${remote}:${remoteStage}/`,
   ], { stdio: 'inherit' });
 
+  console.log('Upload complete; activating under deployment lock and verifying public HTTPS downloads');
   runRemote(remote, sshKey, `set -eu
 flock -w 1200 '${remoteRoot}/deploy.lock' node '${remoteStage}/activate-release.mjs' \\
   '${remoteRoot}' '${remoteStage}' '${releaseTag}' '${publicBaseUrl}'

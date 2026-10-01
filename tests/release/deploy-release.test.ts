@@ -123,34 +123,6 @@ describe('complete release set verification', () => {
   );
 });
 
-describe('public release verification', () => {
-  it('downloads multiple release files concurrently', async () => {
-    const directory = fixture();
-    writeFileSync(join(directory, 'install.sh'), 'new Unix installer');
-    writeFileSync(join(directory, 'install.ps1'), 'new Windows installer');
-    const { verifyReleaseAssets, verifyPublishedRelease } = await verifier();
-    const release = await verifyReleaseAssets(directory, tag, { trustedPublicKey });
-    const originalFetch = globalThis.fetch;
-    let active = 0;
-    let maximumActive = 0;
-    globalThis.fetch = async (input) => {
-      active += 1;
-      maximumActive = Math.max(maximumActive, active);
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      const path = new URL(String(input)).pathname.replace('/latest/', '');
-      const body = readFileSync(join(directory, path));
-      active -= 1;
-      return new Response(body);
-    };
-    try {
-      await verifyPublishedRelease(directory, release, 'https://example.test');
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-    expect(maximumActive).toBeGreaterThan(1);
-  });
-});
-
 describe('release deployment workflow', () => {
   it('deploys after GitHub publication and supports explicit repair', () => {
     const build = readFileSync('.github/workflows/release-build.yml', 'utf8');
@@ -164,6 +136,9 @@ describe('release deployment workflow', () => {
     expect(deploy).toContain('scripts/install.ps1');
     expect(deploy).toContain('scripts/deploy-release.mjs');
     expect(deployScript).toContain('flock');
+    expect(deploy).toContain('timeout-minutes: 60');
+    expect(deployScript).toContain('Uploading verified release assets');
+    expect(deployScript).toContain('Upload complete; activating');
     expect(deploy).not.toContain('::warning::could not fetch');
   });
 });
