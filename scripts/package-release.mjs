@@ -157,6 +157,20 @@ function assertPackagableTree(options) {
       );
     }
   }
+  const nativeSqliteBinary = join(
+    options.sourceRoot,
+    'node_modules',
+    'better-sqlite3',
+    'build',
+    'Release',
+    'better_sqlite3.node',
+  );
+  if (!existsSync(nativeSqliteBinary)) {
+    throw new Error(
+      `missing native runtime dependency: ${nativeSqliteBinary}; `
+      + 'run the target-native production dependency install before packaging',
+    );
+  }
 }
 
 const waitForExit = promisify((child, callback) => {

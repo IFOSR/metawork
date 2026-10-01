@@ -13,7 +13,10 @@ describe('release build entry points', () => {
     expect(script).toContain('--release-id');
     expect(script).toContain("shell: process.platform === 'win32' && executable.endsWith('.cmd')");
     expect(script).toContain('target platform must match the build host');
-    expect(script).toContain("['ci', '--omit=dev', '--ignore-scripts']");
+    expect(script).toContain("['ci', '--omit=dev']");
+    expect(script).toContain("['ci', '--ignore-scripts']");
+    expect(script).toContain('better-sqlite3');
+    expect(script).toContain('better_sqlite3.node');
   });
 
   it('provides a Windows installer with platform and artifact verification', () => {

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { architectureName, platformName } from './package-release.mjs';
 
@@ -48,6 +49,32 @@ function run(command, args, cwd = process.cwd()) {
   }
 }
 
+function assertBetterSqlite3Runtime(sourceRoot) {
+  const nativeBinary = resolve(
+    sourceRoot,
+    'node_modules',
+    'better-sqlite3',
+    'build',
+    'Release',
+    'better_sqlite3.node',
+  );
+  if (!existsSync(nativeBinary)) {
+    throw new Error(
+      `missing better-sqlite3 native binary: ${nativeBinary}; `
+      + 'production dependencies must be installed without --ignore-scripts',
+    );
+  }
+  run(process.execPath, [
+    '-e',
+    [
+      "const Database = require('better-sqlite3');",
+      "const db = new Database(':memory:');",
+      "db.prepare('select 1 as ok').get();",
+      'db.close();',
+    ].join(' '),
+  ], sourceRoot);
+}
+
 function assertNativeTarget(options) {
   const hostPlatform = platformName();
   const hostArch = architectureName();
@@ -83,8 +110,9 @@ function main() {
     run('npm', ['run', 'build']);
     run('npm', ['ci', '--ignore-scripts'], plannerRoot);
     run('npm', ['run', 'build:offline'], plannerRoot);
-    run('npm', ['ci', '--omit=dev', '--ignore-scripts']);
-    run('npm', ['ci', '--omit=dev', '--ignore-scripts'], plannerRoot);
+    run('npm', ['ci', '--omit=dev']);
+    run('npm', ['ci', '--omit=dev'], plannerRoot);
+    assertBetterSqlite3Runtime(process.cwd());
   }
   run(process.execPath, packageArgs);
 }

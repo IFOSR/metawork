@@ -32,4 +32,12 @@ describe('release package matrix', () => {
     expect(script).toContain("keyId: 'metawork-release-2026-03'");
     expect(script).not.toContain("keyId: 'release-2026-preview-01'");
   });
+
+  it('refuses to package a Runtime tree without the better-sqlite3 binary', () => {
+    const script = readFileSync(resolve('scripts/package-release.mjs'), 'utf8');
+
+    expect(script).toContain('better-sqlite3');
+    expect(script).toContain('better_sqlite3.node');
+    expect(script).toContain('missing native runtime dependency');
+  });
 });
