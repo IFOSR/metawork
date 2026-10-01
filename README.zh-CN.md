@@ -58,8 +58,8 @@ AnyFusion 标识。
 
 当前预览版本是
 [MetaWork `v1.2.0-preview.6`](https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.6)，
-发布日期为 2026 年 9 月 30 日。四个平台统一使用 Release identity
-`1.2.0-preview.6-build-0064851`。
+发布日期为 2026 年 9 月 30 日，并于 2026 年 10 月 1 日重新构建发布。四个平台统一使用
+Release identity `1.2.0-preview.6-build-aebea7b`。
 
 | 目标平台 | 原生发布标识 |
 | --- | --- |
@@ -70,7 +70,7 @@ AnyFusion 标识。
 
 每个平台都发布 Runtime 归档、内嵌 AnyFusion-Pi Planner 归档和对应的
 Ed25519 签名 manifest。Manifest 使用签名密钥
-`metawork-release-2026-03`，固定 Runtime/Planner revision `0064851`，
+`metawork-release-2026-03`，固定 Runtime/Planner revision `aebea7b`，
 并记录安装器会校验的 SHA-256 哈希。当前 Release 不提供 Linux arm64
 预构建产物；请在原生 Linux arm64 主机上执行 `npm run build:release`。
 
@@ -188,7 +188,7 @@ export METAWORK_PROVIDER_REGION='international'
 npm run build:release -- \
   --platform linux \
   --arch x64 \
-  --release-id 1.2.0-preview.6-build-0064851 \
+  --release-id 1.2.0-preview.6-build-aebea7b \
   --signing-key /secure/path/metawork-release-key.pem \
   --out-dir /tmp/metawork-release
 ```
