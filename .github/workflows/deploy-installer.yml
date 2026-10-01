@@ -62,7 +62,7 @@ jobs:
           printf '%s\n' "$RELEASE_DEPLOY_KEY" > "$RUNNER_TEMP/deploy_key"
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          ssh-keyscan -H 14.103.216.193 >> ~/.ssh/known_hosts 2>/dev/null
+          printf '%s\n' '14.103.216.193 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHQ30E4JL1NegW2gVxV5q6Wcz05lzn+8E3rDcOQ+giIy' >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
       - name: Deploy and verify release

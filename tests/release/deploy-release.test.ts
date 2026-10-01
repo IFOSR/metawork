@@ -1,6 +1,9 @@
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import {
   mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync, symlinkSync, readlinkSync,
+  realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -184,5 +187,78 @@ describe('release server activation', () => {
     await expect(activateRelease(root, assets, tag, { trustedPublicKey })).rejects.toThrow();
     expect(readlinkSync(join(root, 'latest'))).toBe(previous);
     expect(readFileSync(join(root, 'install.sh'), 'utf8')).toBe('old installer');
+  });
+
+  it('recovers a killed activation before accepting another deployment', async () => {
+    const { root, previous, assets, activateRelease } = await activationFixture();
+    const child = spawn(process.execPath, ['--input-type=module', '-e', `
+      import { activateRelease } from ${JSON.stringify(resolve('scripts/activate-release.mjs'))};
+      setInterval(() => {}, 1000);
+      await activateRelease(${JSON.stringify(root)}, ${JSON.stringify(assets)}, ${JSON.stringify(tag)}, {
+        trustedPublicKey: ${JSON.stringify(trustedPublicKey)},
+        verifyPublic: async () => {
+          console.log('VERIFYING');
+          await new Promise(() => {});
+        },
+      });
+    `], { stdio: ['ignore', 'pipe', 'pipe'] });
+    try {
+      await new Promise<void>((accept, reject) => {
+        child.stdout.on('data', (data: Buffer) => {
+          if (data.toString().includes('VERIFYING')) accept();
+        });
+        child.on('error', reject);
+        child.on('exit', () => reject(new Error('activation exited before verification')));
+      });
+      const exited = once(child, 'exit');
+      child.kill('SIGKILL');
+      await exited;
+      expect(readlinkSync(join(root, 'latest'))).not.toBe(previous);
+      rmSync(join(assets, 'manifest.win32-x64.json'));
+      await expect(activateRelease(root, assets, tag, { trustedPublicKey })).rejects.toThrow();
+      expect(readlinkSync(join(root, 'latest'))).toBe(realpathSync(previous));
+      expect(readFileSync(join(root, 'install.sh'), 'utf8')).toBe('old installer');
+      expect(() => readFileSync(join(root, 'install.ps1'))).toThrow();
+    } finally {
+      child.kill('SIGKILL');
+    }
+  });
+
+  it('rejects downgrade even when an older version is rebuilt later', async () => {
+    const { root, previous, assets, activateRelease } = await activationFixture();
+    writeFileSync(join(previous, 'manifest.linux-x64.json'), JSON.stringify({
+      releaseId: '1.2.0-preview.7-build-abcdef0', publishedAt: '2026-09-01T00:00:00Z',
+    }));
+    await expect(activateRelease(root, assets, tag, {
+      trustedPublicKey, verifyPublic: async () => {},
+    })).rejects.toThrow(/older release/i);
+    expect(readlinkSync(join(root, 'latest'))).toBe(previous);
+  });
+
+  it('allows a newer release despite overlapping platform build timestamps', async () => {
+    const { root, previous, assets, activateRelease } = await activationFixture();
+    writeFileSync(join(previous, 'manifest.linux-x64.json'), JSON.stringify({
+      releaseId: '1.2.0-preview.5-05ef4bb', publishedAt: '2026-09-30T17:00:05Z',
+    }));
+    await expect(activateRelease(root, assets, tag, {
+      trustedPublicKey, verifyPublic: async () => {},
+    })).resolves.toMatchObject({ releaseId });
+  });
+
+  it('rejects a same-ID rebuild that would replace immutable archive bytes', async () => {
+    const { root, assets, activateRelease } = await activationFixture();
+    await activateRelease(root, assets, tag, { trustedPublicKey, verifyPublic: async () => {} });
+    const pointer = readlinkSync(join(root, 'latest'));
+    const path = join(assets, 'manifest.linux-x64.json');
+    const { signature: _, ...payload } = JSON.parse(readFileSync(path, 'utf8'));
+    const artifact = payload.metawork;
+    const body = Buffer.alloc(artifact.byteSize);
+    writeFileSync(join(assets, artifact.url), body);
+    artifact.sha256 = createHash('sha256').update(body).digest('hex');
+    writeManifest(assets, 'linux-x64', payload);
+    await expect(activateRelease(root, assets, tag, {
+      trustedPublicKey, verifyPublic: async () => {},
+    })).rejects.toThrow(/immutable/i);
+    expect(readlinkSync(join(root, 'latest'))).toBe(pointer);
   });
 });

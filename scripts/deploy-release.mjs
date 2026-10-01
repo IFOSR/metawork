@@ -42,6 +42,7 @@ mkdir '${remoteStage}'
   runRemote(remote, sshKey, `set -eu
 flock -w 1200 '${remoteRoot}/deploy.lock' node '${remoteStage}/activate-release.mjs' \\
   '${remoteRoot}' '${remoteStage}' '${releaseTag}' '${publicBaseUrl}'
+rm -r -- '${remoteStage}'
 `);
 
   console.log(`Published ${release.releaseId} to ${publicBaseUrl}/latest`);

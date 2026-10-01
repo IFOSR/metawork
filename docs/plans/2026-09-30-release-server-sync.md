@@ -49,5 +49,10 @@ or a change to ADR-0030's local updater.
 **Completion date:** 2026-09-30
 **Validation:** `npm run lint`, `node --check` for the three release scripts,
 `git diff --check`, 20 focused Release tests passed, and live HTTPS verification
-of four manifests, eight archives, `install.sh`, and `install.ps1`.
-**Closing commit:** `fix(release): synchronize published installer assets`
+of four manifests, eight archives, `install.sh`, and `install.ps1`; 17
+deployment regression tests passed after adding interrupted-activation recovery,
+semantic Release ID ordering, and same-ID archive immutability checks. Workflow
+YAML passed `actionlint` with the repository's intentional custom
+`macos-15-intel` runner label ignored.
+**Implementation commit:** `a6063d4` (`fix(release): synchronize published installer assets`)
+**Closing commit:** `fix(release): harden activation recovery`

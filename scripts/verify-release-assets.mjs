@@ -9,6 +9,39 @@ const TRUSTED_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAJm/qnGNd9Aeg+41GoIjKOgpasxivfCXJCsZwyMbyIVE=
 -----END PUBLIC KEY-----`;
 
+export function compareReleaseIds(left, right) {
+  const leftVersion = parseReleaseId(left);
+  const rightVersion = parseReleaseId(right);
+  for (let index = 0; index < 3; index += 1) {
+    if (leftVersion.core[index] !== rightVersion.core[index]) {
+      return leftVersion.core[index] - rightVersion.core[index];
+    }
+  }
+  for (let index = 0; index < Math.max(leftVersion.prerelease.length, rightVersion.prerelease.length); index += 1) {
+    const leftPart = leftVersion.prerelease[index];
+    const rightPart = rightVersion.prerelease[index];
+    if (leftPart === undefined) return 1;
+    if (rightPart === undefined) return -1;
+    if (leftPart === rightPart) continue;
+    const leftNumeric = /^\d+$/.test(leftPart);
+    const rightNumeric = /^\d+$/.test(rightPart);
+    if (leftNumeric && rightNumeric) return Number(leftPart) - Number(rightPart);
+    if (leftNumeric) return -1;
+    if (rightNumeric) return 1;
+    return leftPart < rightPart ? -1 : 1;
+  }
+  return 0;
+}
+
+function parseReleaseId(value) {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/.exec(value);
+  if (!match) throw new Error(`invalid release id: ${value}`);
+  return {
+    core: match.slice(1, 4).map(Number),
+    prerelease: match[4]?.split('.') ?? [],
+  };
+}
+
 function stable(value) {
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
   if (value && typeof value === 'object') {
