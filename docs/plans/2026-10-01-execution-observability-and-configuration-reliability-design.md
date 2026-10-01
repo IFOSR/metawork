@@ -380,5 +380,6 @@ bindingFingerprint
 - `npm run lint` 通过。
 - `npm run build` 通过，包含 Web Vite 构建。
 - 方案相关 focused tests 通过（本轮新增和受影响测试共 200+ 项）；完整 `npm test` 通过（487 个测试文件、3197 个测试通过，12 个跳过），包括启用态价格准入、超大 Trace payload、跨页完整 journal 回放、Timeline 投影、Planner Workspace 授权和配置激活回归。
+- 收口实现提交：`7908bd109b28f086ec34beb3fedd5b264ac1448d`。
 
 实现边界：本次复用现有 Segmented journal/index 作为 Trace durable projection，没有另建 SQLite `interaction_trace_events` 表；Web attach 仍通过完整历史回放构造当前会话状态，分页端口已提供给需要按页读取的客户端。旧版本已物理丢失的 Trace 事件无法凭空恢复；历史 revision 和授权时固定名称都不可读时显示“历史配置不可用/历史模型信息不可用”，不会重新读取当前配置冒充历史事实。
