@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -35,10 +35,7 @@ mkdir '${remoteStage}'
     deployFiles.push(name);
   }
   console.log(`Uploading verified release assets: ${release.releaseId} (${deployFiles.length} files)`);
-  execFileSync('scp', [
-    ...sshOptions(sshKey), ...deployFiles.map((name) => join(localStage, name)),
-    `${remote}:${remoteStage}/`,
-  ], { stdio: 'inherit' });
+  await uploadReleaseFiles(remote, sshKey, remoteStage, localStage, deployFiles);
 
   console.log('Upload complete; activating under deployment lock and verifying public HTTPS downloads');
   runRemote(remote, sshKey, `set -eu
@@ -94,4 +91,28 @@ function sshOptions(key) {
 
 function runRemote(host, key, script) {
   execFileSync('ssh', [...sshOptions(key), host, script], { stdio: 'inherit' });
+}
+
+async function uploadReleaseFiles(host, key, remoteStage, localStage, files) {
+  const workerCount = Math.min(4, files.length);
+  console.log(`Uploading ${files.length} files with ${workerCount} concurrent SCP streams`);
+  await Promise.all(Array.from({ length: workerCount }, async (_, workerIndex) => {
+    for (let index = workerIndex; index < files.length; index += workerCount) {
+      const name = files[index];
+      await runScp(host, key, join(localStage, name), `${remoteStage}/${name}`);
+    }
+  }));
+}
+
+function runScp(host, key, source, destination) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn('scp', [
+      ...sshOptions(key), source, `${host}:${destination}`,
+    ], { stdio: 'inherit' });
+    child.once('error', rejectPromise);
+    child.once('exit', (code, signal) => {
+      if (code === 0) resolvePromise();
+      else rejectPromise(new Error(`scp failed with ${signal ?? `exit code ${code ?? 'unknown'}`}`));
+    });
+  });
 }
