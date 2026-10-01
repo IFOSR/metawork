@@ -17,11 +17,15 @@ const localStage = mkdtempSync(join(tmpdir(), 'metawork-release-deploy-'));
 
 try {
   const release = await verifyReleaseAssets(sourceDir, releaseTag);
-  const deployFiles = [...release.files.map((file) => file.name), 'install.sh', 'install.ps1'];
+  const releaseFiles = release.files.map((file) => file.name);
+  const archiveFiles = releaseFiles.filter((name) => /\.(?:tar\.gz|zip)$/.test(name));
+  const deployFiles = [
+    ...releaseFiles.filter((name) => name.startsWith('manifest.')),
+    'install.sh',
+    'install.ps1',
+  ];
   for (const name of deployFiles) {
-    const source = release.files.some((file) => file.name === name)
-      ? join(sourceDir, name)
-      : join(installerDir, name);
+    const source = name.startsWith('manifest.') ? join(sourceDir, name) : join(installerDir, name);
     cpSync(source, join(localStage, name));
   }
 
@@ -34,10 +38,18 @@ mkdir '${remoteStage}'
     cpSync(join(root, 'scripts', name), join(localStage, name));
     deployFiles.push(name);
   }
-  console.log(`Uploading verified release assets: ${release.releaseId} (${deployFiles.length} files)`);
+  console.log(`Uploading verified release metadata: ${release.releaseId} (${deployFiles.length} files)`);
   await uploadReleaseFiles(remote, sshKey, remoteStage, localStage, deployFiles);
 
-  console.log('Upload complete; activating under deployment lock and verifying public HTTPS downloads');
+  const source = release.manifests[0].metawork.source.replace(/\.git$/, '');
+  const releaseAssetBaseUrl = `${source}/releases/download/${releaseTag}`;
+  console.log(`Downloading ${archiveFiles.length} release archives on the deployment host`);
+  runRemote(remote, sshKey, `set -eu
+base=${shellQuote(releaseAssetBaseUrl)}
+${archiveFiles.map((name) => `curl --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 1800 "$base/${name}" -o ${shellQuote(`${remoteStage}/${name}`)}`).join('\n')}
+`);
+
+  console.log('Upload and remote download complete; activating under deployment lock and verifying public HTTPS downloads');
   runRemote(remote, sshKey, `set -eu
 flock -w 1200 '${remoteRoot}/deploy.lock' node '${remoteStage}/activate-release.mjs' \\
   '${remoteRoot}' '${remoteStage}' '${releaseTag}' '${publicBaseUrl}'
@@ -115,4 +127,8 @@ function runScp(host, key, source, destination) {
       else rejectPromise(new Error(`scp failed with ${signal ?? `exit code ${code ?? 'unknown'}`}`));
     });
   });
+}
+
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
