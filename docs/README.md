@@ -129,6 +129,10 @@ replacing those semantics.
 - [Pi Executor status and result projection fix](plans/2026-08-04-pi-executor-status-and-result-projection.md): adds a native animated Executor status block and passively persists each integrated Subtask publication into the Pi conversation without triggering a Planner turn or moving Kernel/Execution authority.
 - [Worktree Executor backend migration](plans/2026-08-06-worktree-executor-backend-migration.md): keeps the Runtime containerized where needed while moving trusted Executor attempts to per-Subtask Git worktrees and native Runtime processes.
 
+## Proposed Architecture
+
+- [前端观察架构全盘升级方案](plans/2026-10-02-frontend-observation-architecture-upgrade-design.md)：结合 DeepSeek Harness 源码，设计 Web/TUI/Feishu 同账户同权查看与控制、任意端发送/停止/审批、并发决定仲裁、独立通知路由，以及有界历史、实体仓库、缓存和正文虚拟化。§12 是完整多端设计，§17 包含三端九组合验收。关联 [Proposed ADR-0043](adr/0043-explicit-conversation-observation-and-client-read-models.md)，拟替代 ADR-0036 的来源端独占规则。当前为尚未实施的设计。
+
 ## Implementation Plans
 
 - [Span 路由增强设计](plans/2026-09-27-span-routing-design.md)、[实施计划](plans/2026-09-27-span-routing-implementation-plan.md)、[设计收尾记录](plans/2026-09-27-span-design-closure.md)与[真实 API 验收](plans/2026-09-27-span-live-acceptance.md)：代码、本地和真实接口验收已完成，包含无客户端恢复、固定 revision、取消/并发边界和双向凭据隔离。真实调用发现并修复字符串 state 协议问题；评分、默认超时回退、单候选跳过和持久重放通过。精确 Dockerfile 镜像构建仍受 Docker Hub 网络阻断。

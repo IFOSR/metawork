@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-This directory contains only ADRs that still contribute to the current MetaClaw architecture. Superseded proposals and fully absorbed decisions live under [the ADR archive](../archive/adr/README.md) and are historical context, not implementation authority.
+This directory contains current architecture decisions and explicitly marked proposed decisions under review. Proposed decisions are not implementation authority. Superseded proposals and fully absorbed decisions live under [the ADR archive](../archive/adr/README.md) and are historical context, not implementation authority.
 
 ## Required reading order
 
@@ -151,9 +151,14 @@ gate completes; `observe -> shadow -> export` is the release order.
 
 When two current ADRs appear to overlap, the more specific topic ADR defines its data contract while ADR-0020 defines module ownership and dependency direction. A newer ADR must explicitly amend or supersede an older one; implementation plans cannot silently override ADRs.
 
+## Proposed decisions (not current authority)
+
+- [ADR-0043: Unified Multi-Client Control, Conversation Observation And Read Models](0043-explicit-conversation-observation-and-client-read-models.md), proposed and revised 2026-10-02: Web/TUI/Feishu use equal Account-scoped rights to observe, send, cancel and resolve approvals, with durable conflict handling, independent notification routes and bounded read models. Proposes to supersede ADR-0036's origin-exclusive delivery contract and amend ADR-0031/0035/0040/0041. The user has requested this direction; protocol details remain proposed and unimplemented. Current authority remains unchanged until acceptance is recorded. See the [detailed design](../plans/2026-10-02-frontend-observation-architecture-upgrade-design.md).
+
 ## Status rules
 
 - `Accepted`: current decision authority, including explicit amendments listed in the file.
+- `Proposed`: reviewable future decision, listed separately from current authority; acceptance and delivery must be recorded explicitly.
 - `Superseded` or `Historical`: stored under `docs/archive/adr/` and not valid for new implementation decisions.
 - Avoid long-lived `partially superseded` ADRs. Absorb their remaining valid rules into a current ADR, then archive the old record.
 
