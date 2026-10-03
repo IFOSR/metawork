@@ -248,7 +248,7 @@
   and `chore(release): 1.2.0-preview.5`.
 - Pushed to `origin/main` on 2026-09-18; tag `v1.2.0-preview.5` published.
 - Release `1.2.0-preview.5-05ef4bb` is live at
-  `https://14.103.216.193/metawork-release/latest/` for `darwin-x64` and
+  GitHub Releases `releases/latest/download` for `darwin-x64` and
   `darwin-arm64`, both signed by `metawork-release-2026-03` and verified against
   the trusted key embedded in the published `install.sh`.
 - Known carry-forward: the `linux-x64` manifest in that release directory still

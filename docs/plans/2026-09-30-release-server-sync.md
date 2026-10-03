@@ -1,9 +1,9 @@
 # Release Server Synchronization
 
 **Plan date:** 2026-09-30
-**Status:** Complete as of 2026-09-30
-**Goal:** Complete the approved Preview 6 publication on the one-command
-installation server and prevent GitHub-only publication in future releases.
+**Status:** Superseded on 2026-10-03 by GitHub Release distribution
+**Goal:** Historical record of the retired installation-server publication path.
+GitHub Releases are now the only official distribution service.
 
 **Design:** Reuse the existing signed GitHub assets without rebuilding or
 re-signing. Verify all four platform manifests, signatures, release/revision
