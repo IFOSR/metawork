@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-build-${{ github.ref }}
+  group: release-build-${{ github.ref }}-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:

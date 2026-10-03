@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: deploy-installer-${{ inputs.release_tag }}
+  group: deploy-installer-${{ inputs.release_tag }}-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:
