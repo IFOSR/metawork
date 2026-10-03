@@ -75,16 +75,21 @@ export async function activateRelease(root, assets, tag, options = {}) {
   const previous = before.latest ? realpathSync(join(root, 'latest')) : null;
   if (previous) {
     let activeReleaseId;
+    let activeChannel;
     for (const target of RELEASE_TARGETS) {
       const path = join(previous, `manifest.${target}.json`);
       if (!existsSync(path)) continue;
       const active = JSON.parse(readFileSync(path, 'utf8'));
+      activeChannel ??= active.channel;
       if (!activeReleaseId || compareReleaseIds(active.releaseId, activeReleaseId) > 0) {
         activeReleaseId = active.releaseId;
       }
     }
+    const isPreviewToStableMigration = release.manifests[0].channel === 'stable'
+      && activeChannel === 'preview';
     if (activeReleaseId
       && releaseVersionBase(release.releaseId) !== releaseVersionBase(activeReleaseId)
+      && !isPreviewToStableMigration
       && compareReleaseIds(release.releaseId, activeReleaseId) < 0) {
       throw new Error('refusing to deploy an older release over the active release');
     }

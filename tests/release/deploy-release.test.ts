@@ -249,6 +249,17 @@ describe('release server activation', () => {
     })).resolves.toMatchObject({ releaseId });
   });
 
+  it('allows the first stable release to replace the historical preview channel', async () => {
+    const { root, previous, assets, activateRelease } = await activationFixture();
+    writeFileSync(join(previous, 'manifest.linux-x64.json'), JSON.stringify({
+      releaseId: '1.2.0-preview.6-build-aebea7b', channel: 'preview',
+      publishedAt: '2026-09-30T17:00:00Z',
+    }));
+    await expect(activateRelease(root, assets, tag, {
+      trustedPublicKey, verifyPublic: async () => {},
+    })).resolves.toMatchObject({ releaseId });
+  });
+
   it('allows a newer release despite overlapping platform build timestamps', async () => {
     const { root, previous, assets, activateRelease } = await activationFixture();
     writeFileSync(join(previous, 'manifest.linux-x64.json'), JSON.stringify({
