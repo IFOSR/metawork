@@ -12,8 +12,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 const directories: string[] = [];
 const { privateKey, publicKey } = generateKeyPairSync('ed25519');
 const trustedPublicKey = publicKey.export({ type: 'spki', format: 'pem' });
-const tag = 'v1.2.0-preview.6';
-const releaseId = '1.2.0-preview.6-build-0064851';
+const tag = 'v0.1.2-release';
+const releaseId = '0.1.2-release-build-0064851';
 const targets = ['darwin-arm64', 'darwin-x64', 'linux-x64', 'win32-x64'];
 
 function stable(value: unknown): string {
@@ -42,7 +42,7 @@ function fixture() {
       };
     };
     const payload = {
-      manifestSchemaVersion: 1, releaseId, channel: 'preview',
+      manifestSchemaVersion: 1, releaseId, channel: 'stable',
       publishedAt: '2026-09-30T17:00:00Z', expiresAt: '2099-12-31T00:00:00Z',
       minimumInstallerVersion: '1.2.0', minimumNodeVersion: '22.19.0',
       platform, arch, metawork: artifact('metawork'), planner: artifact('planner'),
@@ -111,7 +111,7 @@ describe('complete release set verification', () => {
       const directory = fixture();
       const path = join(directory, 'manifest.linux-x64.json');
       const { signature: _, ...payload } = JSON.parse(readFileSync(path, 'utf8'));
-      if (problem === 'releaseId') payload.releaseId = '1.2.0-preview.5-old';
+      if (problem === 'releaseId') payload.releaseId = '0.1.2-release-old';
       if (problem === 'revision') payload.planner.revision = 'wrong';
       if (problem === 'expired') payload.expiresAt = '2020-01-01T00:00:00Z';
       if (problem === 'path') payload.metawork.url = '../outside.tar.gz';
@@ -231,7 +231,7 @@ describe('release server activation', () => {
   it('rejects downgrade even when an older version is rebuilt later', async () => {
     const { root, previous, assets, activateRelease } = await activationFixture();
     writeFileSync(join(previous, 'manifest.linux-x64.json'), JSON.stringify({
-      releaseId: '1.2.0-preview.7-build-abcdef0', publishedAt: '2026-09-01T00:00:00Z',
+      releaseId: '0.1.3-release-build-abcdef0', publishedAt: '2026-09-01T00:00:00Z',
     }));
     await expect(activateRelease(root, assets, tag, {
       trustedPublicKey, verifyPublic: async () => {},
@@ -239,10 +239,10 @@ describe('release server activation', () => {
     expect(readlinkSync(join(root, 'latest'))).toBe(previous);
   });
 
-  it('allows rebuilding the active preview version with a new commit', async () => {
+  it('allows rebuilding the active formal version with a new commit', async () => {
     const { root, assets, activateRelease } = await activationFixture();
     writeFileSync(join(root, 'previous', 'manifest.linux-x64.json'), JSON.stringify({
-      releaseId: '1.2.0-preview.6-build-aebea7b', publishedAt: '2026-09-30T17:00:00Z',
+      releaseId: '0.1.2-release-build-aebea7b', publishedAt: '2026-09-30T17:00:00Z',
     }));
     await expect(activateRelease(root, assets, tag, {
       trustedPublicKey, verifyPublic: async () => {},
@@ -252,7 +252,7 @@ describe('release server activation', () => {
   it('allows a newer release despite overlapping platform build timestamps', async () => {
     const { root, previous, assets, activateRelease } = await activationFixture();
     writeFileSync(join(previous, 'manifest.linux-x64.json'), JSON.stringify({
-      releaseId: '1.2.0-preview.5-05ef4bb', publishedAt: '2026-09-30T17:00:05Z',
+      releaseId: '0.1.1-release-05ef4bb', publishedAt: '2026-09-30T17:00:05Z',
     }));
     await expect(activateRelease(root, assets, tag, {
       trustedPublicKey, verifyPublic: async () => {},

@@ -3,10 +3,10 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const root = resolve('.');
-const expectedVersion = '1.2.0-preview.6';
+const expectedVersion = '0.1.2-release';
 
 describe('release version consistency', () => {
-  it('keeps package metadata and release notes on the current preview', () => {
+  it('keeps package metadata and release notes on the current formal release', () => {
     const packageJson = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
       version: string;
     };

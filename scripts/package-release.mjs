@@ -12,7 +12,7 @@
 //                            database schema version (default: script parent)
 //   --planner-root <dir>     Vendored Planner root (default: <source>/planner/AnyFusion-Pi)
 //   --out-dir <dir>          Output directory (default: <source>/dist-release)
-//   --channel <name>         Release channel (default: preview)
+//   --channel <name>         Release channel (default: stable)
 //   --release-id <id>        Release ID (default: <version>-build-<rev>-<epoch>)
 //   --key-id <id>            Signing key ID (default: metawork-release-2026-03)
 //   --signing-key <path>     Ed25519 private key PEM (or env METAWORK_RELEASE_SIGNING_KEY)
@@ -46,7 +46,7 @@ function parseArguments(argv) {
     sourceMetaRoot: undefined,
     plannerRoot: undefined,
     outDir: undefined,
-    channel: 'preview',
+    channel: 'stable',
     releaseId: undefined,
     keyId: 'metawork-release-2026-03',
     signingKeyPath: undefined,

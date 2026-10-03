@@ -109,6 +109,7 @@ fi
           BOOTSTRAP_RUNTIME_FIXTURE: join(fixtureRoot, 'runtime.artifact'),
           BOOTSTRAP_PLANNER_FIXTURE: join(fixtureRoot, 'planner.artifact'),
           BOOTSTRAP_RESULT: resultPath,
+          METAWORK_RELEASE_CHANNEL: 'preview',
         },
         encoding: 'utf8',
       });

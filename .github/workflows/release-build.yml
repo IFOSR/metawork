@@ -75,6 +75,7 @@ jobs:
           npm run build:release -- \
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}" \
+            --channel stable \
             --release-id "${{ steps.release.outputs.release_id }}" \
             --signing-key "$RUNNER_TEMP/metawork-release-key.pem" \
             --out-dir "$RUNNER_TEMP/metawork-release"
@@ -91,6 +92,7 @@ jobs:
           npm run build:release -- `
             --platform ${{ matrix.platform }} `
             --arch ${{ matrix.arch }} `
+            --channel stable `
             --release-id ${{ steps.release.outputs.release_id }} `
             --signing-key "$env:RUNNER_TEMP\metawork-release-key.pem" `
             --out-dir "$env:RUNNER_TEMP\metawork-release"
@@ -145,13 +147,13 @@ jobs:
             gh release edit "$TAG" \
               --title "$TITLE" \
               --notes-file "$NOTES" \
-              --prerelease
+              --latest
           else
             gh release create "$TAG" release-assets/* \
               --target "$GITHUB_SHA" \
               --title "$TITLE" \
               --notes-file "$NOTES" \
-              --prerelease
+              --latest
           fi
 
   deploy-installer:

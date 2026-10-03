@@ -19,7 +19,7 @@ set -euo pipefail
 #   METAWORK_INSTALL_MANIFEST            full manifest URL
 #   METAWORK_INSTALL_TRUSTED_KEY_ID      trusted signing key id (testing/rotation)
 #   METAWORK_INSTALL_TRUSTED_PUBLIC_KEY  trusted signing public key PEM (testing/rotation)
-#   METAWORK_RELEASE_CHANNEL             release channel (default: preview)
+#   METAWORK_RELEASE_CHANNEL             release channel (default: stable)
 #   METAWORK_INSTALL_ROOT                install root (default: ~/.metawork)
 
 INSTALLER_VERSION="1.2.0"
@@ -36,7 +36,7 @@ if [[ -n "${METAWORK_RELEASE_CHANNEL:-}" \
   echo "METAWORK_RELEASE_CHANNEL conflicts with compatibility variable ANYFUSION_RELEASE_CHANNEL" >&2
   exit 1
 fi
-EXPECTED_CHANNEL="${METAWORK_RELEASE_CHANNEL:-${ANYFUSION_RELEASE_CHANNEL:-preview}}"
+EXPECTED_CHANNEL="${METAWORK_RELEASE_CHANNEL:-${ANYFUSION_RELEASE_CHANNEL:-stable}}"
 
 UNINSTALL=false
 PURGE=false

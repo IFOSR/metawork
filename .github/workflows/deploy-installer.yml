@@ -15,7 +15,7 @@ on:
       release_tag:
         description: GitHub release tag to publish to the installation server
         required: true
-        default: v1.2.0-preview.6
+        default: v0.1.2-release
         type: string
 
 permissions:

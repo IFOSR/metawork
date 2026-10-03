@@ -28,6 +28,9 @@ MetaWork 为 Agent 工作提供统一的商业服务系统，覆盖规划、授�
   Executor 只执行明确获批的 attempt。
 - **多端统一：** Web、飞书和 Unix 客户端使用同一套版本化
   Gateway 命令与事件平面；Server 独立常驻，Client 退出不会停止 Runtime。
+- **多端统一观察：** Web、飞书和原生 TUI 可以查看同一批 Task 与会话。
+  会话切换读取有界客户端读模型，不需要重放整段历史；TUI 任务面板可以
+  汇总查看执行中、排队中和阻塞中的任务。
 - **可解释路由：** 每个获批 attempt 都固定到一个配置 revision 以及完整的
   Provider、Model、AgentClass、Harness 和 Permission Profile 绑定。
 - **能力驱动路由：** 每个 Executor 都有独立的中文 Skill-style 能力说明书。
@@ -56,10 +59,10 @@ AnyFusion 标识。
 
 ## Release
 
-当前预览版本是
-[MetaWork `v1.2.0-preview.6`](https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.6)，
-发布日期为 2026 年 9 月 30 日，并于 2026 年 10 月 1 日重新构建发布。四个平台的
-Release identity 记录在签名 manifest 中，所有目标均由同一个 tag 提交构建。
+当前正式版本是
+[MetaWork `v0.1.2-release`](https://github.com/IFOSR/metawork/releases/tag/v0.1.2-release)，
+发布在 stable 安装通道。四个平台的 Release identity 记录在签名 manifest 中，
+所有目标均由同一个 tag 提交构建。
 
 | 目标平台 | 原生发布标识 |
 | --- | --- |
@@ -188,7 +191,7 @@ export METAWORK_PROVIDER_REGION='international'
 npm run build:release -- \
   --platform linux \
   --arch x64 \
-  --release-id 1.2.0-preview.6-build-<tagged-revision> \
+  --release-id 0.1.2-release-build-<tagged-revision> \
   --signing-key /secure/path/metawork-release-key.pem \
   --out-dir /tmp/metawork-release
 ```
@@ -526,11 +529,12 @@ gateway 转发图片请求，Provider 凭据不会进入容器。
 
 ## 项目状态
 
-MetaWork 正在进行商业化开发。当前预览版本为 `v1.2.0-preview.6`，已提供 macOS
+MetaWork 正在进行商业化开发。当前正式版本为 `v0.1.2-release`，已提供 macOS
 Intel、macOS Apple Silicon、Linux x64 和 Windows x64 的签名原生包。当前 Runtime
-已经包含 Server/Client Gateway 分离、隔离 Planner-first 路由、统一 Executor 能力画像、
-不同 Conversation 之间有限并行的顶层 Task，以及 Pi 图片执行链路。真实 Provider 图片
-生成与编辑仍需要配置 OpenAI-compatible endpoint；生产 smoke 可能产生 Provider 用量费用。
+已经包含 Server/Client Gateway 分离、多端统一观察、用于快速切换会话的有界读模型、
+原生 TUI 任务面板、隔离 Planner-first 路由、统一 Executor 能力画像、不同 Conversation
+之间有限并行的顶层 Task，以及 Pi 图片执行链路。真实 Provider 图片生成与编辑仍需要
+配置 OpenAI-compatible endpoint；生产 smoke 可能产生 Provider 用量费用。
 
 ## 许可
 

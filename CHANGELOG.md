@@ -3,7 +3,7 @@
 All notable public changes to MetaWork are documented in this file. Historical
 AnyFusion release entries remain unchanged for auditability.
 
-The project follows [Semantic Versioning](https://semver.org/) for public preview releases.
+The project follows [Semantic Versioning](https://semver.org/) for public releases.
 
 ## [Unreleased]
 
@@ -23,6 +23,32 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
   Web conversation shows the upstream error text, the stable failure code, the
   last executed step and the provider status, and a blocked Task description
   names the failure that caused the block.
+
+## [0.1.2-release] - 2026-10-03
+
+### Added
+
+- Unified multi-client observation for Web, Feishu, and the native TUI, with
+  bounded Conversation read models for fast session switching.
+- A native TUI task dashboard for browsing running, queued, and blocked Tasks
+  across Conversations while preserving the existing execution view.
+- Durable activity and history projections, task-to-Turn location, trace page
+  reads, and signed stable-channel release artifacts for the native platform
+  matrix.
+
+### Changed
+
+- Web and native clients reuse the same Gateway observation protocol and
+  explicit navigation targets. Switching a Conversation no longer requires a
+  full historical replay or a second execution attachment.
+- The current Conversation presentation keeps execution, report, and billing
+  cards while loading complete message content within the configured budgets.
+
+### Fixed
+
+- Historical and parallel Tasks are visible from the correct Workspace and can
+  be located from the account-level Task view without creating duplicate
+  Conversations.
 
 ### Changed
 
@@ -389,7 +415,8 @@ The project follows [Semantic Versioning](https://semver.org/) for public previe
 - CLI, configuration, and runtime contracts may change during the preview period.
 - Some command and TUI workflows remain under active development.
 
-[Unreleased]: https://github.com/IFOSR/metawork/compare/v1.2.0-preview.6...HEAD
+[Unreleased]: https://github.com/IFOSR/metawork/compare/v0.1.2-release...HEAD
+[0.1.2-release]: https://github.com/IFOSR/metawork/releases/tag/v0.1.2-release
 [1.2.0-preview.6]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.6
 [1.2.0-preview.5]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.5
 [1.2.0-preview.4]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.4

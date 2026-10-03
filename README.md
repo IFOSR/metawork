@@ -31,6 +31,10 @@ executing, recovering, and delivering agent work.
 - **Multiple clients, one runtime:** Web, Feishu, and Unix clients
   share the same versioned Gateway command and event plane. Server owns the
   Runtime and remains alive when Clients exit.
+- **Unified multi-client observation:** Web, Feishu, and the native TUI can
+  follow the same Tasks and Conversations. Switching sessions reads a bounded
+  client read model instead of replaying an entire historical session, while
+  the TUI task dashboard shows running, queued, and blocked work together.
 - **Explainable routing:** every authorized attempt is pinned to a configuration
   revision and a complete Provider, Model, AgentClass, Harness, and Permission
   Profile binding.
@@ -68,11 +72,11 @@ existing names where changing them would break installations.
 
 ## Release
 
-The current preview release is
-[MetaWork `v1.2.0-preview.6`](https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.6),
-published on September 30, 2026. Its synchronized release identity is
-recorded in the signed per-platform manifests; all targets are built from the
-same tagged commit.
+The current formal release is
+[MetaWork `v0.1.2-release`](https://github.com/IFOSR/metawork/releases/tag/v0.1.2-release).
+It is published on the stable installation channel. Its synchronized release
+identity is recorded in the signed per-platform manifests; all targets are
+built from the same tagged commit.
 
 | Target | Native release |
 | --- | --- |
@@ -216,7 +220,7 @@ host builds the Linux x64 release with:
 npm run build:release -- \
   --platform linux \
   --arch x64 \
-  --release-id 1.2.0-preview.6-build-<tagged-revision> \
+  --release-id 0.1.2-release-build-<tagged-revision> \
   --signing-key /secure/path/metawork-release-key.pem \
   --out-dir /tmp/metawork-release
 ```
@@ -599,14 +603,16 @@ preserved.
 
 ## Project Status
 
-MetaWork is under active commercial development. The current preview release is
-`v1.2.0-preview.6`, with signed native packages for macOS Intel, macOS Apple
+MetaWork is under active commercial development. The current formal release is
+`v0.1.2-release`, with signed native packages for macOS Intel, macOS Apple
 Silicon, Linux x64, and Windows x64. The runtime provides the Server/Client
-Gateway split, isolated Planner-first routing, unified Executor capability
-profiles, bounded parallel top-level Tasks across Conversations, and the Pi
-image execution path. Provider-specific live image generation and editing still
-require a configured OpenAI-compatible endpoint and may incur usage charges
-before production smoke testing.
+Gateway split, unified multi-client observation, bounded read models for fast
+Conversation switching, the native TUI task dashboard, isolated
+Planner-first routing, unified Executor capability profiles, bounded parallel
+top-level Tasks across Conversations, and the Pi image execution path.
+Provider-specific live image generation and editing still require a configured
+OpenAI-compatible endpoint and may incur usage charges before production smoke
+testing.
 
 ## License
 

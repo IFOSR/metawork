@@ -82,7 +82,7 @@ export async function verifyReleaseAssets(directory, tag, options = {}) {
         Buffer.from(signature.value, 'base64'))) {
       throw new Error(`${target}: signature verification failed`);
     }
-    if (manifest.manifestSchemaVersion !== 1 || manifest.channel !== 'preview'
+    if (manifest.manifestSchemaVersion !== 1 || manifest.channel !== 'stable'
       || `${manifest.platform}-${manifest.arch}` !== target
       || !Number.isFinite(Date.parse(manifest.publishedAt))
       || !(Date.parse(manifest.expiresAt) > now)) {

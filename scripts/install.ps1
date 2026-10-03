@@ -1,7 +1,7 @@
 param(
   [string]$ManifestUrl = $env:METAWORK_INSTALL_MANIFEST,
   [string]$InstallRoot = $env:METAWORK_INSTALL_ROOT,
-  [string]$Channel = $(if ($env:METAWORK_RELEASE_CHANNEL) { $env:METAWORK_RELEASE_CHANNEL } else { 'preview' }),
+  [string]$Channel = $(if ($env:METAWORK_RELEASE_CHANNEL) { $env:METAWORK_RELEASE_CHANNEL } else { 'stable' }),
   [switch]$Uninstall
 )
 
