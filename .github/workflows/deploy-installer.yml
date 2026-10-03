@@ -17,6 +17,9 @@ on:
         required: true
         default: v0.1.3
         type: string
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -28,10 +31,15 @@ concurrency:
 jobs:
   deploy:
     name: Sync release assets and installers
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || github.event_name == 'workflow_call'
+      || (github.event_name == 'push'
+      && github.event.head_commit.message == 'ci: deploy v0.1.3 installer repair')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
-      RELEASE_TAG: ${{ inputs.release_tag }}
+      RELEASE_TAG: ${{ inputs.release_tag || 'v0.1.3' }}
       RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_SSH_KEY }}
     steps:
       - name: Check out repository
