@@ -38,6 +38,7 @@ describe('release build entry points', () => {
     expect(script).toContain("'run', 'build:offline'");
     expect(script).toContain('--platform');
     expect(script).toContain('--arch');
+    expect(script).toContain('--channel');
     expect(script).toContain('--release-id');
     expect(script).toContain("shell: process.platform === 'win32' && executable.endsWith('.cmd')");
     expect(script).toContain('target platform must match the build host');

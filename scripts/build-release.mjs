@@ -9,6 +9,7 @@ function parseArguments(argv) {
     platform: platformName(),
     arch: architectureName(),
     outDir: undefined,
+    channel: 'stable',
     releaseId: undefined,
     signingKey: undefined,
     packageOnly: false,
@@ -25,6 +26,7 @@ function parseArguments(argv) {
       case '--platform': options.platform = requireValue(); break;
       case '--arch': options.arch = requireValue(); break;
       case '--out-dir': options.outDir = resolve(requireValue()); break;
+      case '--channel': options.channel = requireValue(); break;
       case '--release-id': options.releaseId = requireValue(); break;
       case '--signing-key': options.signingKey = resolve(requireValue()); break;
       case '--package-only': options.packageOnly = true; break;
@@ -101,6 +103,8 @@ function main() {
     '--arch',
     options.arch,
     ...(options.outDir ? ['--out-dir', options.outDir] : []),
+    '--channel',
+    options.channel,
     ...(options.releaseId ? ['--release-id', options.releaseId] : []),
     ...(options.signingKey ? ['--signing-key', options.signingKey] : []),
   ];
