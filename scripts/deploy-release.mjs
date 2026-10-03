@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -97,11 +97,36 @@ function runRemote(host, key, script) {
 }
 
 async function uploadReleaseFiles(host, key, remoteStage, localStage, files) {
-  console.log(`Uploading ${files.length} metadata files over one SCP stream`);
-  execFileSync('scp', [
-    ...sshOptions(key), ...files.map((name) => join(localStage, name)),
-    `${host}:${remoteStage}/`,
-  ], { stdio: 'inherit' });
+  const archiveFiles = files.filter((name) => /\.(?:tar\.gz|zip)$/.test(name));
+  const metadataFiles = files.filter((name) => !archiveFiles.includes(name));
+  if (metadataFiles.length > 0) {
+    console.log(`Uploading ${metadataFiles.length} release metadata files over one SCP stream`);
+    execFileSync('scp', [
+      ...sshOptions(key), ...metadataFiles.map((name) => join(localStage, name)),
+      `${host}:${remoteStage}/`,
+    ], { stdio: 'inherit' });
+  }
+  const workerCount = Math.min(4, archiveFiles.length);
+  console.log(`Uploading ${archiveFiles.length} release archives with ${workerCount} concurrent SCP streams`);
+  await Promise.all(Array.from({ length: workerCount }, async (_, workerIndex) => {
+    for (let index = workerIndex; index < archiveFiles.length; index += workerCount) {
+      const name = archiveFiles[index];
+      await runScp(host, key, join(localStage, name), `${remoteStage}/${name}`);
+    }
+  }));
+}
+
+function runScp(host, key, source, destination) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn('scp', [...sshOptions(key), source, `${host}:${destination}`], {
+      stdio: 'inherit',
+    });
+    child.once('error', rejectPromise);
+    child.once('exit', (code, signal) => {
+      if (code === 0) resolvePromise();
+      else rejectPromise(new Error(`scp failed with ${signal ?? `exit code ${code ?? 'unknown'}`}`));
+    });
+  });
 }
 
 function shellQuote(value) {

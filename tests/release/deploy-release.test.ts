@@ -138,6 +138,7 @@ describe('release deployment workflow', () => {
     expect(deployScript).toContain('flock');
     expect(deploy).toContain('timeout-minutes: 90');
     expect(deployScript).toContain('Uploading verified release assets');
+    expect(deployScript).toContain('concurrent SCP streams');
     expect(deployScript).toContain('Upload complete; activating');
     expect(deploy).not.toContain('::warning::could not fetch');
   });
