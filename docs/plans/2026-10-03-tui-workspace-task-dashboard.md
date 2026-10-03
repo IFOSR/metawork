@@ -1,6 +1,6 @@
 # TUI 工作区任务概览与切换
 
-- 日期：2026-10-03；本地实施完成日期：2026-10-03。状态：代码及定向验证完成，待用户本地验收；未提交、未推送。
+- 日期：2026-10-03；实施完成日期：2026-10-03。状态：代码及定向验证完成，已纳入实施提交并按用户授权同步 GitHub。
 - 用户约束：左侧保留现有执行过程；右侧改为跨会话的任务概览与选择入口。
 - Owner：native TUI presentation/controller 负责列表、焦点、导航与草稿；Gateway/Application Shell 提供授权目录、活动任务及 Task 到 Turn 定位；Task Domain 继续拥有状态语义。
 - 复用 Workspace 目录和 Conversation activity 资源，按目录页加载任务，超出范围明确提供加载入口；后台定时刷新与当前观察增量更新，不为每个任务保持完整历史订阅。
@@ -9,7 +9,7 @@
 - 删除旧右侧单 Turn 详情呈现；其账单展示移到左侧所属 Turn。左侧 Task 详情补充查询独立于 Dashboard 是否聚焦。
 - 新增只读 `get_conversation_resource: locate`，将已有 HTTP Task/Turn 定位能力暴露给 native Gateway；仍经相同授权与有界读模型，不改变业务状态，不新增持久化或第二调度器。
 - 验收：两个执行任务、一个排队任务、一个阻塞任务；跨/同会话切换、旧 Turn 定位、后台更新不抢焦点、草稿隔离、分页、断线/撤权/Workspace 切换、窄屏及真实终端按键。
-- 收尾提交：未创建，遵守用户“本地验证后再通知同步”的要求；正式关闭日期待用户验收。
+- 收尾提交：`3e463bb4a1ccea6a6c7179d90794274f52e668df`（`feat: unify multi-client observation and task navigation`）；已推送 `origin/main`。
 
 ## 实际交付
 

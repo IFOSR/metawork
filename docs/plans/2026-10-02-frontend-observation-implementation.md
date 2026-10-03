@@ -1,10 +1,10 @@
 # 前端观察与多端统一控制实施记录
 
 - 计划日期：2026-10-02；本地实施及验证日期：2026-10-03。
-- 状态：**本地代码已实施并通过下列验收，待用户验证；不等同于正式上线完成**。环境与人工验收门见末节。
+- 状态：**代码已实施并通过下列验收，已完成提交并按用户授权同步 GitHub**。环境与人工验收门见末节。
 - 设计提交：`7a6a71c82fc5ed34083b8ec79a9cd8ea7e97503a`，已推送 `origin/main`。
-- 实施代码、修订文档及测试均未提交、未推送。用户验证并明确通知前不得同步 GitHub。
-- 收尾 commit：未创建，按用户要求保留本地工作树；正式关闭日期待用户验收。
+- 实施提交：`3e463bb4a1ccea6a6c7179d90794274f52e668df`（`feat: unify multi-client observation and task navigation`）。
+- 收尾日期：2026-10-03；用户已授权同步，实施代码、修订文档及测试已纳入提交并推送 `origin/main`。
 - 依据：[完整方案](2026-10-02-frontend-observation-architecture-upgrade-design.md)、[ADR-0043](../adr/0043-explicit-conversation-observation-and-client-read-models.md)。
 
 ## 模块与阶段对应
@@ -22,7 +22,7 @@
 - [x] P0–P4 代码落地及本机可执行的自动化验收。
 - [x] P5 源码收敛、当前契约更新与隔离安装验收。
 - [ ] Docker、正常安装、真实飞书目的地、真实多模型并行负载及人工辅助技术验收。
-- [ ] 用户确认后才创建实施同步提交并推送。
+- [x] 用户确认后创建实施同步提交并推送 `origin/main`。
 
 ## 实际交付
 
@@ -67,7 +67,7 @@ Web 主 App 已拆为控制 hook、实体仓库、观察管理和展示组件；
 
 ## 可复现验证
 
-环境：macOS、Node 22.23.3、系统 Chrome headless；独立临时账户/数据库/安装根目录，无外部模型或飞书发送。构建源码保留本地未提交内容；发布身份来自被测试的隔离安装，不是正常用户安装。
+环境：macOS、Node 22.23.3、系统 Chrome headless；独立临时账户/数据库/安装根目录，无外部模型或飞书发送。构建源码来自本次已提交版本；发布身份来自被测试的隔离安装，不是正常用户安装。
 
 | 命令/测试 | 结果与断言 |
 | --- | --- |
@@ -122,7 +122,7 @@ npx --no-install vitest run test/anyfusion-gateway-client.test.ts test/gateway-o
 - 真实 Server + 生产 Web bundle 浏览器验收通过：100 次热切换 p50 33.3 ms、p95 34.9 ms、p99 35.2 ms；100 ms/10 Mbps 配置下冷会话 10 样本 p50 111.5 ms、p95 167.3 ms；整页冷启动单样本 1,155.6 ms。首屏索引返回量仍为 10/20/20 行，37,357/78,231/78,331 bytes；无 attach/history 请求。
 - 复现：`RUN_BROWSER_E2E=1 npx vitest run tests/e2e/conversation-presentation-browser.test.ts tests/e2e/production-observation-browser.test.ts`。日志：`/tmp/metawork-presentation-tests.log`、`/tmp/metawork-presentation-browser-final.log`。
 
-全文阅读优先遵守用户原展示要求：单次传输、实体与热缓存受预算约束；超大单条消息完整挂载时的 DOM/解析成本没有固定上限，不能沿用旧“只挂载一段”的保证。此次修正未替换正常安装，未提交或推送 GitHub。
+全文阅读优先遵守用户原展示要求：单次传输、实体与热缓存受预算约束；超大单条消息完整挂载时的 DOM/解析成本没有固定上限，不能沿用旧“只挂载一段”的保证。此次修正已纳入实施提交并推送 GitHub；正常安装仍需按末节步骤由用户本地重建后验证。
 
 ## 剩余验收、限制及本地验证入口
 
@@ -136,4 +136,4 @@ npx --no-install vitest run test/anyfusion-gateway-client.test.ts test/gateway-o
 6. 极旧文件历史首次导入仍可在 Server maintenance 中解析 aggregate；SQLite 巨型历史已隔离到 worker，但任意大小单行不保证在 worker 内成功。超时/内存失败保留 canonical 数据并显式维持 preparing 状态，没有持久化故障隔离/backoff。后台写事务也可能短时等待同库 writer；这不计入已就绪索引的正常冷读取结果。
 7. Server 内部/audit/旧测试保留 legacy history/attach/replay 辅助入口；正式 Web/native 浏览与恢复已移除对它们的调用。后续不得将它们重新接为客户端回退路径。
 
-用户建议重点验证：飞书发起后 Web/TUI 继续与停止、Web 发起后飞书跟踪/审批、多任务执行时反复切换、长历史阅读位置、草稿/附件隔离、Server 重启后恢复、通知仍到原 chat/thread。发现问题继续本地修复；**用户明确通知之前不提交实施同步、不推送 GitHub**。
+用户建议重点验证：飞书发起后 Web/TUI 继续与停止、Web 发起后飞书跟踪/审批、多任务执行时反复切换、长历史阅读位置、草稿/附件隔离、Server 重启后恢复、通知仍到原 chat/thread。发现问题可在后续提交继续修复；本轮实施已按用户授权提交并推送 GitHub。
