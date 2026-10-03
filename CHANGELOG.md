@@ -24,7 +24,7 @@ The project follows [Semantic Versioning](https://semver.org/) for public releas
   last executed step and the provider status, and a blocked Task description
   names the failure that caused the block.
 
-## [0.1.2-release] - 2026-10-03
+## [0.1.3] - 2026-10-03
 
 ### Added
 
@@ -415,8 +415,8 @@ The project follows [Semantic Versioning](https://semver.org/) for public releas
 - CLI, configuration, and runtime contracts may change during the preview period.
 - Some command and TUI workflows remain under active development.
 
-[Unreleased]: https://github.com/IFOSR/metawork/compare/v0.1.2-release...HEAD
-[0.1.2-release]: https://github.com/IFOSR/metawork/releases/tag/v0.1.2-release
+[Unreleased]: https://github.com/IFOSR/metawork/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/IFOSR/metawork/releases/tag/v0.1.3
 [1.2.0-preview.6]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.6
 [1.2.0-preview.5]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.5
 [1.2.0-preview.4]: https://github.com/IFOSR/metawork/releases/tag/v1.2.0-preview.4

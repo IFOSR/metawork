@@ -12,8 +12,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 const directories: string[] = [];
 const { privateKey, publicKey } = generateKeyPairSync('ed25519');
 const trustedPublicKey = publicKey.export({ type: 'spki', format: 'pem' });
-const tag = 'v0.1.2-release';
-const releaseId = '0.1.2-release-build-0064851';
+const tag = 'v0.1.3';
+const releaseId = '0.1.3-build-0064851';
 const targets = ['darwin-arm64', 'darwin-x64', 'linux-x64', 'win32-x64'];
 
 function stable(value: unknown): string {
@@ -111,7 +111,7 @@ describe('complete release set verification', () => {
       const directory = fixture();
       const path = join(directory, 'manifest.linux-x64.json');
       const { signature: _, ...payload } = JSON.parse(readFileSync(path, 'utf8'));
-      if (problem === 'releaseId') payload.releaseId = '0.1.2-release-old';
+      if (problem === 'releaseId') payload.releaseId = '0.1.3-old';
       if (problem === 'revision') payload.planner.revision = 'wrong';
       if (problem === 'expired') payload.expiresAt = '2020-01-01T00:00:00Z';
       if (problem === 'path') payload.metawork.url = '../outside.tar.gz';
@@ -231,7 +231,7 @@ describe('release server activation', () => {
   it('rejects downgrade even when an older version is rebuilt later', async () => {
     const { root, previous, assets, activateRelease } = await activationFixture();
     writeFileSync(join(previous, 'manifest.linux-x64.json'), JSON.stringify({
-      releaseId: '0.1.3-release-build-abcdef0', publishedAt: '2026-09-01T00:00:00Z',
+      releaseId: '0.1.4-build-abcdef0', publishedAt: '2026-09-01T00:00:00Z',
     }));
     await expect(activateRelease(root, assets, tag, {
       trustedPublicKey, verifyPublic: async () => {},
@@ -242,7 +242,7 @@ describe('release server activation', () => {
   it('allows rebuilding the active formal version with a new commit', async () => {
     const { root, assets, activateRelease } = await activationFixture();
     writeFileSync(join(root, 'previous', 'manifest.linux-x64.json'), JSON.stringify({
-      releaseId: '0.1.2-release-build-aebea7b', publishedAt: '2026-09-30T17:00:00Z',
+      releaseId: '0.1.3-build-aebea7b', publishedAt: '2026-09-30T17:00:00Z',
     }));
     await expect(activateRelease(root, assets, tag, {
       trustedPublicKey, verifyPublic: async () => {},

@@ -60,7 +60,7 @@ AnyFusion 标识。
 ## Release
 
 当前正式版本是
-[MetaWork `v0.1.2-release`](https://github.com/IFOSR/metawork/releases/tag/v0.1.2-release)，
+[MetaWork `v0.1.3`](https://github.com/IFOSR/metawork/releases/tag/v0.1.3)，
 发布在 stable 安装通道。四个平台的 Release identity 记录在签名 manifest 中，
 所有目标均由同一个 tag 提交构建。
 
@@ -191,7 +191,7 @@ export METAWORK_PROVIDER_REGION='international'
 npm run build:release -- \
   --platform linux \
   --arch x64 \
-  --release-id 0.1.2-release-build-<tagged-revision> \
+  --release-id 0.1.3-build-<tagged-revision> \
   --signing-key /secure/path/metawork-release-key.pem \
   --out-dir /tmp/metawork-release
 ```
@@ -529,7 +529,7 @@ gateway 转发图片请求，Provider 凭据不会进入容器。
 
 ## 项目状态
 
-MetaWork 正在进行商业化开发。当前正式版本为 `v0.1.2-release`，已提供 macOS
+MetaWork 正在进行商业化开发。当前正式版本为 `v0.1.3`，已提供 macOS
 Intel、macOS Apple Silicon、Linux x64 和 Windows x64 的签名原生包。当前 Runtime
 已经包含 Server/Client Gateway 分离、多端统一观察、用于快速切换会话的有界读模型、
 原生 TUI 任务面板、隔离 Planner-first 路由、统一 Executor 能力画像、不同 Conversation

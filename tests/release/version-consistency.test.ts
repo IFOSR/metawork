@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const root = resolve('.');
-const expectedVersion = '0.1.2-release';
+const expectedVersion = '0.1.3';
 
 describe('release version consistency', () => {
   it('keeps package metadata and release notes on the current formal release', () => {

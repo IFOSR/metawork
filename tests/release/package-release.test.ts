@@ -21,10 +21,10 @@ describe('release package matrix', () => {
     expect(archiveExtension('win32')).toBe('.zip');
     expect(archiveExtension('darwin')).toBe('.tar.gz');
     expect(archiveExtension('linux')).toBe('.tar.gz');
-    expect(archiveName('metawork', '0.1.2-release-build-test', 'win32', 'x64'))
-      .toBe('metawork-0.1.2-release-build-test-win32-x64.zip');
-    expect(archiveName('planner', '0.1.2-release-build-test', 'darwin', 'arm64'))
-      .toBe('planner-0.1.2-release-build-test-darwin-arm64.tar.gz');
+    expect(archiveName('metawork', '0.1.3-build-test', 'win32', 'x64'))
+      .toBe('metawork-0.1.3-build-test-win32-x64.zip');
+    expect(archiveName('planner', '0.1.3-build-test', 'darwin', 'arm64'))
+      .toBe('planner-0.1.3-build-test-darwin-arm64.tar.gz');
   });
 
   it('does not default to the revoked preview signing key', () => {

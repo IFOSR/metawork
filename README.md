@@ -73,7 +73,7 @@ existing names where changing them would break installations.
 ## Release
 
 The current formal release is
-[MetaWork `v0.1.2-release`](https://github.com/IFOSR/metawork/releases/tag/v0.1.2-release).
+[MetaWork `v0.1.3`](https://github.com/IFOSR/metawork/releases/tag/v0.1.3).
 It is published on the stable installation channel. Its synchronized release
 identity is recorded in the signed per-platform manifests; all targets are
 built from the same tagged commit.
@@ -220,7 +220,7 @@ host builds the Linux x64 release with:
 npm run build:release -- \
   --platform linux \
   --arch x64 \
-  --release-id 0.1.2-release-build-<tagged-revision> \
+  --release-id 0.1.3-build-<tagged-revision> \
   --signing-key /secure/path/metawork-release-key.pem \
   --out-dir /tmp/metawork-release
 ```
@@ -604,7 +604,7 @@ preserved.
 ## Project Status
 
 MetaWork is under active commercial development. The current formal release is
-`v0.1.2-release`, with signed native packages for macOS Intel, macOS Apple
+`v0.1.3`, with signed native packages for macOS Intel, macOS Apple
 Silicon, Linux x64, and Windows x64. The runtime provides the Server/Client
 Gateway split, unified multi-client observation, bounded read models for fast
 Conversation switching, the native TUI task dashboard, isolated
