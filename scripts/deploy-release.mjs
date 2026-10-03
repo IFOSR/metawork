@@ -48,8 +48,18 @@ mkdir '${remoteStage}'
     url: resolveDownloadUrl(`${releaseAssetBaseUrl}/${name}`),
   }));
   console.log(`Downloading ${archiveFiles.length} release archives on the deployment host`);
+  const downloadCommands = archiveSources.map(({ name, url }) => `
+echo "Downloading ${name}"
+curl -4 --http1.1 --fail --silent --show-error --location --retry 4 --retry-all-errors \\
+  --connect-timeout 30 --max-time 1800 ${shellQuote(url)} -o ${shellQuote(`${remoteStage}/${name}`)} &
+pids="$pids $!"
+`).join('');
   runRemote(remote, sshKey, `set -eu
-${archiveSources.map(({ name, url }) => `curl -4 --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 1800 ${shellQuote(url)} -o ${shellQuote(`${remoteStage}/${name}`)}`).join('\n')}
+pids=''
+${downloadCommands}
+for pid in $pids; do
+  wait "$pid"
+done
 `);
 
   console.log('Upload and remote download complete; activating under deployment lock and verifying public HTTPS downloads');
@@ -122,7 +132,7 @@ function shellQuote(value) {
 
 function resolveDownloadUrl(url) {
   return execFileSync('curl', [
-    '-4', '--fail', '--silent', '--show-error', '--head', '--location',
+    '-4', '--http1.1', '--fail', '--silent', '--show-error', '--head', '--location',
     '--max-time', '60', '--output', '/dev/null', '--write-out', '%{url_effective}', url,
   ], { encoding: 'utf8' }).trim();
 }
