@@ -28,6 +28,8 @@ concurrency:
   group: deploy-installer-${{ inputs.release_tag }}-${{ github.run_id }}
   cancel-in-progress: false
 
+# The push trigger is temporary and scoped to the direct-upload repair commit.
+
 jobs:
   deploy:
     name: Sync release assets and installers
