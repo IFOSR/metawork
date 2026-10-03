@@ -138,7 +138,7 @@ export class RetryWakeRepo {
         ? rowToRecord({ ...row, status: 'fired', updated_at: firedAt })
         : null;
     });
-    return claim();
+    return claim.immediate();
   }
 
   claimDueWake(wakeId: string, now: string, firedAt: string): RetryWakeRecord | null {
@@ -157,7 +157,7 @@ export class RetryWakeRepo {
         ? rowToRecord({ ...row, status: 'fired', updated_at: firedAt })
         : null;
     });
-    return claim();
+    return claim.immediate();
   }
 
   markFired(wakeId: string, timerEventId: string, updatedAt: string): boolean {

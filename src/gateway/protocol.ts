@@ -6,8 +6,12 @@ import {
   type GatewayCommandEnvelope,
 } from './client-protocol.js';
 import type { CommandReceipt } from './command-admission.js';
+import type { ConversationObservationFrame } from './conversation-observation.js';
+import type { ConversationViewCursor } from '../session/conversation-read-model.js';
 
 export type GatewayClientMessage =
+  | { type: 'observe'; connectionId: string; observationId: string; conversationId: string; cursor?: ConversationViewCursor }
+  | { type: 'unobserve'; observationId: string }
   | {
       type: 'input';
       text: string;
@@ -36,8 +40,10 @@ export type GatewayClientMessage =
     };
 
 export type GatewayServerMessage =
+  | { type: 'observation'; frame: ConversationObservationFrame }
   | {
       type: 'hello';
+      identity?: { serverId: string; accountId: string };
       sessionId: string;
       attached: boolean;
       /** Gateway v2 显式能力清单（ADR-0031 / 统一 TUI 设计 §9.4）。 */
@@ -84,6 +90,28 @@ export type GatewayServerMessage =
 export function parseGatewayClientMessage(input: unknown): GatewayClientMessage | null {
   if (typeof input !== 'object' || input === null) return null;
   const candidate = input as Record<string, unknown>;
+
+  if (candidate.type === 'unobserve') {
+    return Object.keys(candidate).every(key => ['type', 'observationId'].includes(key))
+      && isGatewayIdentifier(candidate.observationId)
+      ? { type: 'unobserve', observationId: candidate.observationId } : null;
+  }
+  if (candidate.type === 'observe') {
+    if (!Object.keys(candidate).every(key => ['type', 'connectionId', 'observationId', 'conversationId', 'cursor'].includes(key))
+      || !isGatewayIdentifier(candidate.connectionId) || !isGatewayIdentifier(candidate.observationId)
+      || !isGatewayIdentifier(candidate.conversationId)) return null;
+    let cursor: ConversationViewCursor | undefined;
+    if (candidate.cursor !== undefined) {
+      if (!candidate.cursor || typeof candidate.cursor !== 'object' || Array.isArray(candidate.cursor)) return null;
+      const value = candidate.cursor as Record<string, unknown>;
+      if (!Object.keys(value).every(key => ['epoch', 'revision'].includes(key))
+        || !isGatewayIdentifier(value.epoch) || typeof value.revision !== 'number'
+        || !Number.isSafeInteger(value.revision) || value.revision < 0) return null;
+      cursor = { epoch: value.epoch, revision: value.revision };
+    }
+    return { type: 'observe', connectionId: candidate.connectionId,
+      observationId: candidate.observationId, conversationId: candidate.conversationId, ...(cursor ? { cursor } : {}) };
+  }
 
   if (candidate.type === 'close') return { type: 'close' };
   if (candidate.type === 'register_web_launch') {

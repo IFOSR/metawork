@@ -6,6 +6,7 @@ import type {
 import {
   isCurrentConversationRecordRequest,
   mergeFinalAnswer,
+  mergeLiveTurnEvent,
   mergeBilling,
   mergeExecutionTimeline,
   mergeTraceDelta,
@@ -135,6 +136,51 @@ describe('Conversation live Turn ownership', () => {
       status: 'cancelled',
       completedAt: '2026-09-21T00:00:00.000Z',
     });
+  });
+
+  it('keeps execution completion separate from pending result delivery', () => {
+    const running = liveTurn('conversation-a');
+    const streaming = mergeLiveTurnEvent(running, {
+      type: 'result_delivery_available', turnId: running.id,
+      resultId: 'result-a', certification: 'certified',
+    });
+    const completed = mergeLiveTurnEvent(streaming, {
+      type: 'execution', turnId: running.id, taskId: running.taskId!,
+      timeline: { taskId: running.taskId!, title: 'task', status: 'done', stages: [] },
+    });
+    expect(completed).toMatchObject({ status: 'completed', deliveryStatus: 'streaming' });
+    expect(completed?.finalAnswer).toBeNull();
+  });
+
+  it('does not let an empty final answer erase streamed content', () => {
+    const running = { ...liveTurn('conversation-a'), finalAnswer: 'partial answer', deliveryStatus: 'streaming' as const };
+    const merged = mergeLiveTurnEvent(running, {
+      type: 'final_answer', turnId: running.id, lines: [],
+      completedAt: '2026-09-21T00:01:00.000Z', backgroundWorkPending: true,
+    });
+    expect(merged).toMatchObject({ finalAnswer: 'partial answer', deliveryStatus: 'streaming' });
+  });
+
+  it('promotes a verified result to the canonical answer', () => {
+    const running = liveTurn('conversation-a');
+    const merged = mergeLiveTurnEvent(running, {
+      type: 'result_completed', turnId: running.id, resultId: 'result-a',
+      content: '完整结果', certification: 'certified',
+    });
+    expect(merged).toMatchObject({ finalAnswer: '完整结果', deliveryStatus: 'ready' });
+  });
+
+  it('keeps a completed execution visibly failed when result delivery validation fails', () => {
+    const completed = {
+      ...liveTurn('conversation-a'),
+      status: 'completed' as const,
+      completedAt: '2026-09-21T00:01:00.000Z',
+    };
+    const merged = mergeLiveTurnEvent(completed, {
+      type: 'delivery_status', turnId: completed.id, resultId: 'result-a', status: 'failed',
+      message: '结果校验失败',
+    });
+    expect(merged).toMatchObject({ status: 'completed', deliveryStatus: 'failed' });
   });
 
   it('ignores a cancellation for a different Turn', () => {

@@ -23,6 +23,7 @@ export interface FeishuSenderIdentity {
 export interface FeishuChannelBinding {
   readonly chatId: string;
   readonly threadId?: string;
+  readonly chatType?: 'dm' | 'group' | 'unknown';
 }
 
 export interface FeishuGatewayAdapterDeps {

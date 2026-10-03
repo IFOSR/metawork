@@ -137,6 +137,14 @@ export class SqlitePermissionRepository implements PermissionRepositoryPort {
     return row ? requestFromRow(row) : null;
   }
 
+  listEscalatedForTask(taskId: string, afterId = '', limit = 33): PermissionRequestRecord[] {
+    return (this.db.prepare(`SELECT * FROM permission_requests request
+      WHERE task_id = ? AND status = 'escalated' AND id > ?
+        AND NOT EXISTS (SELECT 1 FROM kernel_events accepted
+          WHERE accepted.event_type = 'permission_resolution_received' AND accepted.correlation_id = request.id)
+      ORDER BY id LIMIT ?`).all(taskId, afterId, Math.max(1, Math.min(33, limit))) as PermissionRequestRow[]).map(requestFromRow);
+  }
+
   findOldestPendingForConversation(conversationId: string): PermissionRequestRecord | null {
     const row = this.db.prepare(`
       SELECT permission_requests.*
@@ -163,6 +171,18 @@ export class SqlitePermissionRepository implements PermissionRepositoryPort {
       SELECT * FROM permission_requests WHERE status = 'escalated'
       ORDER BY created_at ASC, id ASC
     `).all() as PermissionRequestRow[]).map(requestFromRow);
+  }
+
+  listEscalatedForSession(sessionId: string, afterId: string, limit: number, createdAfter: string): PermissionRequestRecord[] {
+    return (this.db.prepare(`SELECT request.* FROM permission_requests request
+      JOIN kernel_decisions decision ON decision.id = request.decision_id
+      JOIN kernel_decision_applications application ON application.decision_id = decision.id
+      WHERE decision.session_id = ? AND decision.action = 'escalate_capability'
+        AND application.status = 'applied' AND request.status = 'escalated'
+        AND request.id > ? AND request.created_at >= ?
+        AND NOT EXISTS (SELECT 1 FROM kernel_events accepted
+          WHERE accepted.event_type = 'permission_resolution_received' AND accepted.correlation_id = request.id)
+      ORDER BY request.id LIMIT ?`).all(sessionId, afterId, createdAfter, Math.max(1, Math.min(33, limit))) as PermissionRequestRow[]).map(requestFromRow);
   }
 
   countDistinctForAttempt(attemptId: string): number {

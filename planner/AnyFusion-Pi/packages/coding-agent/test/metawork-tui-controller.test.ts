@@ -14,13 +14,13 @@ import type {
 	GatewayReplay,
 	GatewayScope,
 } from "../src/anyfusion/gateway-protocol.ts";
-import {
-	MetaWorkTuiController,
-	type MetaWorkTuiGatewayPort,
-} from "../src/modes/metawork-tui/controller.ts";
+import { MetaWorkTuiController, type MetaWorkTuiGatewayPort } from "../src/modes/metawork-tui/controller.ts";
 import { emptyMetaWorkClientState } from "../src/modes/metawork-tui/model.ts";
 
+import { ObservationFixture, turn } from "./helpers/observation-fixture.ts";
+
 interface FakeGateway extends MetaWorkTuiGatewayPort {
+	readonly observed: ObservationFixture;
 	readonly submitted: Array<{ command: GatewayCommand; scope: GatewayScope; envelope: GatewayCommandEnvelope }>;
 	emit(event: GatewayEventEnvelope): void;
 	disconnect(): void;
@@ -65,12 +65,23 @@ function createFakeGateway(
 	const calls: string[] = [];
 	let capabilities = overrides.capabilities ?? ["command_completion_v1", "task_view_v1"];
 	let loseReceipt = false;
+	const observed = new ObservationFixture();
+	for (const e of [...(overrides.replay?.snapshot ?? []), ...(overrides.replay?.deltas ?? [])]) observed.scenario(e);
 	const gateway: FakeGateway = {
+		observed,
+		followConversation: async (id, listener) => {
+			calls.push(`follow:${id}`);
+			return observed.follow(id, listener);
+		},
+		applyConversationPage: (id, page) => observed.set(id, page),
+		queryConversationResource: async () => ({ turns: [], nextCursor: null }),
 		submitted,
 		calls,
-		emit: e => eventListener(e),
+		emit: (e) => {
+			if (!observed.scenario(e)) eventListener(e);
+		},
 		disconnect: () => disconnectListener?.(),
-		setCapabilities: value => {
+		setCapabilities: (value) => {
 			capabilities = value;
 		},
 		loseNextReceipt: () => {
@@ -82,37 +93,23 @@ function createFakeGateway(
 		connect: async () => {
 			calls.push("connect");
 		},
-		onEvent: listener => {
+		onEvent: (listener) => {
 			eventListener = listener;
 			return () => undefined;
 		},
-		onDisconnect: listener => {
+		onDisconnect: (listener) => {
 			disconnectListener = listener;
 			return () => undefined;
-		},
-		resume: async (conversationId): Promise<GatewayReplay> => {
-			calls.push(`resume:${conversationId}`);
-			return overrides.replay ?? { lastSequence: 0, snapshot: [], deltas: [] };
 		},
 		createConversation: async (): Promise<GatewayCommandReceipt> => {
 			counter += 1;
 			return { requestId: `req_create_${counter}`, status: "accepted", conversationId: `conv_${counter}` };
-		},
-		attachConversation: async (conversationId): Promise<GatewayCommandReceipt> => {
-			calls.push(`attach:${conversationId}`);
-			counter += 1;
-			return { requestId: `req_attach_${counter}`, status: "accepted", conversationId };
 		},
 		listWorkspaceConversations: async (_workspaceId, _query, _cursor, onRequest): Promise<GatewayCommandReceipt> => {
 			calls.push("list_conversations");
 			counter += 1;
 			onRequest?.(`req_list_${counter}`);
 			return { requestId: `req_list_${counter}`, status: "accepted", conversationId: null };
-		},
-		getConversationHistory: async (_conversationId, _cursor, _limit, onRequest): Promise<GatewayCommandReceipt> => {
-			counter += 1;
-			onRequest?.(`req_history_${counter}`);
-			return { requestId: `req_history_${counter}`, status: "accepted", conversationId: "conv_1" };
 		},
 		completeCommand: async (text, _cursor, conversationId): Promise<GatewayCommandReceipt> => {
 			calls.push(`complete:${text}:${conversationId ?? "workspace"}`);
@@ -138,7 +135,7 @@ function createFakeGateway(
 			submitted.push({ command, scope, envelope });
 			return envelope;
 		},
-		submitEnvelope: async envelope => {
+		submitEnvelope: async (envelope) => {
 			calls.push(`submit:${envelope.requestId}`);
 			if (loseReceipt) {
 				loseReceipt = false;
@@ -147,15 +144,15 @@ function createFakeGateway(
 			const receipt: GatewayCommandReceipt = {
 				requestId: envelope.requestId,
 				status: "accepted",
-				conversationId: envelope.scope.kind === "conversation"
-					&& envelope.scope.selection.mode === "attach"
-					? envelope.scope.selection.conversationId
-					: "conv_1",
+				conversationId:
+					envelope.scope.kind === "conversation" && envelope.scope.selection.mode === "attach"
+						? envelope.scope.selection.conversationId
+						: "conv_1",
 				...overrides.receipt?.(envelope.command),
 			};
 			return receipt;
 		},
-		resubmitEnvelope: async envelope => {
+		resubmitEnvelope: async (envelope) => {
 			calls.push(`resubmit:${envelope.requestId}`);
 			return { requestId: envelope.requestId, status: "duplicate", conversationId: "conv_1" };
 		},
@@ -173,20 +170,24 @@ function createFakeGateway(
 
 function stateWithConversation(controller: MetaWorkTuiController): void {
 	// 通过事件建立 Workspace 与 Conversation 目录。
-	controller['handleEvent'](event("workspace_stream", 1, "workspace_directory_snapshot", {
-		workspaceId: "ws_1",
-		workspace: { id: "ws_1", path: "/repo", displayName: "repo", availability: "available" },
-		page: {
-			items: [{
-				conversationId: "conv_1",
-				workspaceId: "ws_1",
-				title: "会话一",
-				preview: "",
-				updatedAt: "2026-09-19T00:00:00.000Z",
-			}],
-			nextCursor: null,
-		},
-	}));
+	controller["handleEvent"](
+		event("workspace_stream", 1, "workspace_directory_snapshot", {
+			workspaceId: "ws_1",
+			workspace: { id: "ws_1", path: "/repo", displayName: "repo", availability: "available" },
+			page: {
+				items: [
+					{
+						conversationId: "conv_1",
+						workspaceId: "ws_1",
+						title: "会话一",
+						preview: "",
+						updatedAt: "2026-09-19T00:00:00.000Z",
+					},
+				],
+				nextCursor: null,
+			},
+		}),
+	);
 }
 
 describe("metawork-tui controller", () => {
@@ -195,16 +196,32 @@ describe("metawork-tui controller", () => {
 		const controller = new MetaWorkTuiController({ gateway });
 		await controller.start();
 		stateWithConversation(controller);
-		const list = vi.spyOn(gateway, "listWorkspaceConversations")
+		const list = vi
+			.spyOn(gateway, "listWorkspaceConversations")
 			.mockImplementationOnce(async (_workspaceId, _query, _cursor, onRequest) => {
 				onRequest?.("first");
-				gateway.emit(event("directory", 1, "workspace_directory_snapshot", {
-					workspaceId: "ws_1", query: "", requestedCursor: null,
-					page: { items: [], nextCursor: "page_two" },
-				}, { requestId: "first" }));
+				gateway.emit(
+					event(
+						"directory",
+						1,
+						"workspace_directory_snapshot",
+						{
+							workspaceId: "ws_1",
+							query: "",
+							requestedCursor: null,
+							page: { items: [], nextCursor: "page_two" },
+						},
+						{ requestId: "first" },
+					),
+				);
 				return { requestId: "first", status: "accepted", conversationId: null };
 			})
-			.mockResolvedValueOnce({ requestId: "old", status: "rejected", reason: "stale_directory_cursor", conversationId: null })
+			.mockResolvedValueOnce({
+				requestId: "old",
+				status: "rejected",
+				reason: "stale_directory_cursor",
+				conversationId: null,
+			})
 			.mockResolvedValueOnce({ requestId: "new", status: "accepted", conversationId: null });
 		await controller.refreshConversationDirectory();
 		await controller.loadMoreConversations();
@@ -219,10 +236,17 @@ describe("metawork-tui controller", () => {
 	it("applies completion published before the admission receipt", async () => {
 		const gateway = createFakeGateway();
 		gateway.completeCommand = async () => {
-			gateway.emit(event("connection", 1, "command_completion", {
-				queryVersion: "command_completion_v1", requestId: "early", targetConversationId: null,
-				state: "incomplete", suggestions: [], hint: "workspace", error: null,
-			}));
+			gateway.emit(
+				event("connection", 1, "command_completion", {
+					queryVersion: "command_completion_v1",
+					requestId: "early",
+					targetConversationId: null,
+					state: "incomplete",
+					suggestions: [],
+					hint: "workspace",
+					error: null,
+				}),
+			);
 			return { requestId: "early", status: "accepted", conversationId: null };
 		};
 		const controller = new MetaWorkTuiController({ gateway, completionDebounceMs: 0 });
@@ -242,25 +266,29 @@ describe("metawork-tui controller", () => {
 		await controller.submit("/conversations");
 		expect(controller.getView().conversationSelectorOpen).toBe(true);
 		await controller.submit("/conversation conv_1");
-		expect(gateway.calls).toContain("attach:conv_1");
+		expect(gateway.calls).toContain("follow:conv_1");
 		expect(controller.getView().conversationSelectorOpen).toBe(false);
 		controller.stop();
 	});
 
-	it("refreshes the latest history on attach and uses the older cursor only for explicit paging", async () => {
+	it("reads older pages only on demand and retains the observation epoch", async () => {
 		const gateway = createFakeGateway();
-		const history = vi.spyOn(gateway, "getConversationHistory");
+		gateway.observed.set("conv_1", { turns: [turn("conv_1", "recent", 3)], nextCursor: "older" });
+		const history = vi
+			.spyOn(gateway, "queryConversationResource")
+			.mockResolvedValue({ turns: [turn("conv_1", "old")], nextCursor: null });
 		const controller = new MetaWorkTuiController({ gateway });
 		await controller.start();
 		await controller.attachConversation("conv_1", false);
-		const receipt = await history.mock.results.at(-1)!.value;
-		gateway.emit(event("conv_1", 1, "conversation_history_page", {
-			turns: [{ id: "old", status: "completed" }], nextCursor: "older",
-		}, { requestId: receipt.requestId }));
-		await controller.attachConversation("conv_1", false);
-		expect(history).toHaveBeenLastCalledWith("conv_1", undefined, 50, expect.any(Function));
+		expect(history).not.toHaveBeenCalled();
 		await controller.loadOlderHistory();
-		expect(history).toHaveBeenLastCalledWith("conv_1", "older", 50, expect.any(Function));
+		expect(history).toHaveBeenCalledWith({
+			kind: "get_conversation_resource",
+			conversationId: "conv_1",
+			resource: "turns",
+			beforeTurnId: "recent",
+		});
+		expect(controller.getView().visibleTurns.map((item) => item.id)).toEqual(["old"]);
 		controller.stop();
 	});
 
@@ -270,9 +298,20 @@ describe("metawork-tui controller", () => {
 		await controller.start();
 		await controller.attachConversation("conv_1", false);
 		gateway.emit(event("conv_1", 1, "turn_started", { commandKind: "user_message" }, { turnId: "turn_1" }));
-		gateway.emit(event("conv_1", 2, "trace_delta", {
-			turnId: "turn_1", taskId: "task_1", status: "running", events: [],
-		}, { turnId: "turn_1" }));
+		gateway.emit(
+			event(
+				"conv_1",
+				2,
+				"trace_delta",
+				{
+					turnId: "turn_1",
+					taskId: "task_1",
+					status: "running",
+					events: [],
+				},
+				{ turnId: "turn_1" },
+			),
+		);
 		await controller.toggleTaskPanel();
 		expect(gateway.calls).toContain("task_view:conv_1");
 		controller.stop();
@@ -283,26 +322,43 @@ describe("metawork-tui controller", () => {
 		const gateway = createFakeGateway();
 		let release!: (receipt: GatewayCommandReceipt) => void;
 		const query = vi.spyOn(gateway, "getTaskView").mockImplementationOnce(
-			() => new Promise(resolve => { release = resolve; }),
+			() =>
+				new Promise((resolve) => {
+					release = resolve;
+				}),
 		);
 		const controller = new MetaWorkTuiController({ gateway });
 		try {
 			await controller.start();
 			await controller.attachConversation("conv_1", false);
 			gateway.emit(event("conv_1", 1, "turn_started", { commandKind: "user_message" }, { turnId: "turn_1" }));
-			gateway.emit(event("conv_1", 2, "trace_delta", {
-				turnId: "turn_1", taskId: "task_1", events: [],
-			}, { turnId: "turn_1" }));
+			gateway.emit(
+				event(
+					"conv_1",
+					2,
+					"trace_delta",
+					{
+						turnId: "turn_1",
+						taskId: "task_1",
+						events: [],
+					},
+					{ turnId: "turn_1" },
+				),
+			);
+			void controller.openTaskPanel();
 			await vi.advanceTimersByTimeAsync(500);
 			gateway.emit(event("conv_1", 3, "final_answer", { lines: ["done"] }, { turnId: "turn_1" }));
 			await vi.advanceTimersByTimeAsync(500);
 			release({ requestId: "q", status: "accepted", conversationId: "conv_1" });
 			await vi.advanceTimersByTimeAsync(500);
 			expect(query).toHaveBeenCalledTimes(2);
-		} finally { controller.stop(); vi.useRealTimers(); }
+		} finally {
+			controller.stop();
+			vi.useRealTimers();
+		}
 	});
 
-	it("coalesces billing refreshes while replaying Turns without Tasks", async () => {
+	it("coalesces billing refreshes for visible observed Turns without Tasks", async () => {
 		vi.useFakeTimers();
 		const gateway = createFakeGateway();
 		const bill = vi.fn(async () => ({ requestId: "bill", status: "accepted" as const, conversationId: null }));
@@ -312,15 +368,29 @@ describe("metawork-tui controller", () => {
 			await controller.start();
 			await controller.attachConversation("conv_1", false);
 			gateway.emit(event("conv_1", 1, "turn_started", { commandKind: "user_message" }, { turnId: "turn_1" }));
+			await controller.openTaskPanel();
+			bill.mockClear();
 			for (let index = 2; index <= 21; index += 1) {
-				gateway.emit(event("conv_1", index, "trace_delta", {
-					turnId: "turn_1", events: [],
-				}, { turnId: "turn_1" }));
+				gateway.emit(
+					event(
+						"conv_1",
+						index,
+						"trace_delta",
+						{
+							turnId: "turn_1",
+							events: [],
+						},
+						{ turnId: "turn_1" },
+					),
+				);
 			}
 			expect(bill).not.toHaveBeenCalled();
 			await vi.advanceTimersByTimeAsync(500);
 			expect(bill).toHaveBeenCalledTimes(1);
-		} finally { controller.stop(); vi.useRealTimers(); }
+		} finally {
+			controller.stop();
+			vi.useRealTimers();
+		}
 	});
 
 	it("does not enable replayed permissions before an authoritative Task refresh", async () => {
@@ -329,15 +399,36 @@ describe("metawork-tui controller", () => {
 		await controller.start();
 		await controller.attachConversation("conv_1", false);
 		gateway.emit(event("conv_1", 1, "turn_started", { commandKind: "user_message" }, { turnId: "turn_1" }));
-		gateway.emit(event("conv_1", 2, "trace_delta", {
-			turnId: "turn_1", taskId: "task_1", status: "running", events: [],
-		}, { turnId: "turn_1" }));
-		gateway.emit(event("conv_1", 3, "permission_request", { requestId: "perm_1", summary: "write" }, { turnId: "turn_1" }));
+		gateway.emit(
+			event(
+				"conv_1",
+				2,
+				"trace_delta",
+				{
+					turnId: "turn_1",
+					taskId: "task_1",
+					status: "running",
+					events: [],
+				},
+				{ turnId: "turn_1" },
+			),
+		);
+		gateway.emit(
+			event("conv_1", 3, "permission_request", { requestId: "perm_1", summary: "write" }, { turnId: "turn_1" }),
+		);
 		gateway.getTaskView = async () => {
-			gateway.emit(event("connection", 1, "task_view_snapshot", {
-				queryVersion: "task_view_v1", requestId: "view", targetConversationId: "conv_1",
-				turnId: "turn_1", taskId: "task_1", asOfSequence: 3, subtasks: [], pendingPermission: null,
-			}));
+			gateway.emit(
+				event("connection", 1, "task_view_snapshot", {
+					queryVersion: "task_view_v1",
+					requestId: "view",
+					targetConversationId: "conv_1",
+					turnId: "turn_1",
+					taskId: "task_1",
+					asOfSequence: 3,
+					subtasks: [],
+					pendingPermission: null,
+				}),
+			);
 			return { requestId: "view", status: "accepted", conversationId: "conv_1" };
 		};
 		await controller.resolvePermission("perm_1", "approve");
@@ -348,7 +439,7 @@ describe("metawork-tui controller", () => {
 
 	it("turns user input into a versioned command with the target fixed at submit time", async () => {
 		const gateway = createFakeGateway();
-		const controller = new MetaWorkTuiController({ gateway, createId: prefix => `${prefix}_1` });
+		const controller = new MetaWorkTuiController({ gateway, createId: (prefix) => `${prefix}_1` });
 		await controller.start();
 		stateWithConversation(controller);
 		await controller.attachConversation("conv_1", false);
@@ -373,7 +464,7 @@ describe("metawork-tui controller", () => {
 		stateWithConversation(controller);
 		await controller.attachConversation("conv_1", false);
 		// 运行中的 Turn。
-		controller['handleEvent'](event("conv_1", 1, "turn_started", { commandKind: "user_message" }, { turnId: "turn_1" }));
+		gateway.emit(event("conv_1", 1, "turn_started", { commandKind: "user_message" }, { turnId: "turn_1" }));
 
 		await controller.submit("/cancel");
 
@@ -383,7 +474,9 @@ describe("metawork-tui controller", () => {
 		expect(controller.getView().cancelResult).toBeNull();
 
 		// 权威状态到达后才展示结果。
-		controller['handleEvent'](event("conv_1", 2, "terminal_error", { code: "cancelled", message: "已取消" }, { turnId: "turn_1" }));
+		gateway.emit(
+			event("conv_1", 2, "terminal_error", { code: "cancelled", message: "已取消" }, { turnId: "turn_1" }),
+		);
 		expect(controller.getView().cancelling).toBe(false);
 		expect(controller.getView().cancelResult).toBe("取消结果：cancelled");
 	});
@@ -406,7 +499,7 @@ describe("metawork-tui controller", () => {
 		// 重连后只重放同一 requestId / idempotencyKey / 目标与内容。
 		gateway.disconnect();
 		expect(controller.getView().client.pendingSubmissions[envelope.requestId]?.state).toBe("uncertain");
-		await new Promise(resolve => setTimeout(resolve, 5));
+		await new Promise((resolve) => setTimeout(resolve, 5));
 		expect(gateway.calls).toContain(`resubmit:${envelope.requestId}`);
 		expect(controller.getView().client.pendingSubmissions[envelope.requestId]?.state).toBe("duplicate");
 		expect(gateway.submitted).toHaveLength(1);
@@ -419,28 +512,72 @@ describe("metawork-tui controller", () => {
 		stateWithConversation(controller);
 		await controller.attachConversation("conv_1", false);
 		gateway.emit(event("conv_1", 1, "turn_started", { commandKind: "user_message" }, { turnId: "turn_1" }));
-		controller['handleEvent'](event("conv_1", 2, "trace_delta", {
-			turnId: "turn_1", taskId: "task_1", events: [],
-		}, { turnId: "turn_1" }));
-		controller['handleEvent'](event("conv_1", 3, "permission_request", { requestId: "perm_1", summary: "写入" }, { turnId: "turn_1" }));
+		gateway.emit(
+			event(
+				"conv_1",
+				2,
+				"trace_delta",
+				{
+					turnId: "turn_1",
+					taskId: "task_1",
+					events: [],
+				},
+				{ turnId: "turn_1" },
+			),
+		);
+		gateway.emit(
+			event("conv_1", 3, "permission_request", { requestId: "perm_1", summary: "写入" }, { turnId: "turn_1" }),
+		);
 		let snapshotSequence = 0;
 		gateway.getTaskView = async () => {
 			snapshotSequence += 1;
-			gateway.emit(event("connection", snapshotSequence, "task_view_snapshot", {
-				queryVersion: "task_view_v1", requestId: `view_${snapshotSequence}`,
-				targetConversationId: "conv_1", turnId: "turn_1", taskId: "task_1", asOfSequence: 3,
-				subtasks: [], pendingPermission: { requestId: "perm_1", summary: "写入", status: "pending" },
-			}));
+			gateway.emit(
+				event("connection", snapshotSequence, "task_view_snapshot", {
+					queryVersion: "task_view_v1",
+					requestId: `view_${snapshotSequence}`,
+					targetConversationId: "conv_1",
+					turnId: "turn_1",
+					taskId: "task_1",
+					asOfSequence: 3,
+					subtasks: [],
+					pendingPermission: { requestId: "perm_1", summary: "写入", status: "pending" },
+				}),
+			);
 			return { requestId: `view_${snapshotSequence}`, status: "accepted", conversationId: "conv_1" };
 		};
 
+		gateway.observed.set("conv_1", {
+			activity: {
+				tasks: [],
+				nextCursor: null,
+				pendingNextCursor: null,
+				pendingInteractions: [
+					{
+						requestId: "perm_1",
+						requestRevision: "revision",
+						taskId: "task_1",
+						generationId: "generation",
+						subtaskId: "subtask",
+						attemptId: "attempt",
+						operation: "write",
+						resource: "/repo",
+						reason: "requested",
+						capability: "filesystem.write",
+						scope: "task",
+						expiresAt: "2026-10-04T00:00:00Z",
+					},
+				],
+			},
+		});
 		await controller.resolvePermission("perm_unknown", "approve");
 		expect(gateway.submitted).toHaveLength(0);
 		expect(controller.getView().operation).toContain("已失效");
 
 		await controller.resolvePermission("perm_1", "approve");
 		expect(gateway.submitted.at(-1)!.command).toEqual({
-			kind: "permission_resolution",
+			kind: "permission_resolution_v2",
+			requestRevision: "revision",
+			expectedExecutionGeneration: "generation",
 			requestId: "perm_1",
 			resolution: "approve",
 		});
@@ -471,32 +608,40 @@ describe("metawork-tui controller", () => {
 
 		const pending = controller.requestCompletion("/ta", 3);
 		// 等待控制器发出请求并注册 requestId。
-		await new Promise(resolve => setTimeout(resolve, 0));
-		const requestId = gateway.submitted.at(-1)?.envelope.requestId
-			?? controller['getView']().client.completionRequests.conv_1?.requestId;
-		const knownRequestId = controller['getView']().client.completionRequests.conv_1?.requestId
-			?? requestId!;
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const requestId =
+			gateway.submitted.at(-1)?.envelope.requestId ??
+			controller["getView"]().client.completionRequests.conv_1?.requestId;
+		const knownRequestId = controller["getView"]().client.completionRequests.conv_1?.requestId ?? requestId!;
 		// 旧 requestId 的响应必须被丢弃。
-		controller['handleEvent'](event("client_connection_x", 1, "command_completion", {
-			queryVersion: "command_completion_v1",
-			requestId: "req_stale",
-			targetConversationId: "conv_1",
-			state: "incomplete",
-			suggestions: [{ value: "/stale", label: "/stale", description: "", replacement: { start: 0, end: 3, text: "/stale" } }],
-			hint: null,
-			error: null,
-		}));
+		gateway.emit(
+			event("client_connection_x", 1, "command_completion", {
+				queryVersion: "command_completion_v1",
+				requestId: "req_stale",
+				targetConversationId: "conv_1",
+				state: "incomplete",
+				suggestions: [
+					{ value: "/stale", label: "/stale", description: "", replacement: { start: 0, end: 3, text: "/stale" } },
+				],
+				hint: null,
+				error: null,
+			}),
+		);
 		expect(controller.getView().client.completions.conv_1).toBeUndefined();
 
-		controller['handleEvent'](event("client_connection_x", 2, "command_completion", {
-			queryVersion: "command_completion_v1",
-			requestId: knownRequestId,
-			targetConversationId: "conv_1",
-			state: "incomplete",
-			suggestions: [{ value: "/task", label: "/task", description: "", replacement: { start: 0, end: 3, text: "/task" } }],
-			hint: null,
-			error: null,
-		}));
+		gateway.emit(
+			event("client_connection_x", 2, "command_completion", {
+				queryVersion: "command_completion_v1",
+				requestId: knownRequestId,
+				targetConversationId: "conv_1",
+				state: "incomplete",
+				suggestions: [
+					{ value: "/task", label: "/task", description: "", replacement: { start: 0, end: 3, text: "/task" } },
+				],
+				hint: null,
+				error: null,
+			}),
+		);
 		await expect(pending).resolves.toMatchObject({ state: "incomplete" });
 	});
 
@@ -505,8 +650,8 @@ describe("metawork-tui controller", () => {
 		const controller = new MetaWorkTuiController({ gateway, completionDebounceMs: 0, completionTimeoutMs: 50 });
 		await controller.start();
 		await controller.requestCompletion("/wo", 3);
-		await new Promise(resolve => setTimeout(resolve, 0));
-		expect(gateway.calls.some(call => call === "complete:/wo:workspace")).toBe(true);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(gateway.calls.some((call) => call === "complete:/wo:workspace")).toBe(true);
 	});
 
 	it("validates Conversation ownership before attaching", async () => {
@@ -524,12 +669,20 @@ describe("metawork-tui controller", () => {
 		stateWithConversation(controller);
 		await controller.attachConversation("conv_1", false);
 		gateway.emit(event("conv_1", 1, "turn_started", { commandKind: "user_message" }, { turnId: "turn_1" }));
-		controller['handleEvent'](event("conv_1", 2, "trace_delta", {
-			turnId: "turn_1",
-			taskId: "task_1",
-			status: "running",
-			events: [],
-		}, { turnId: "turn_1" }));
+		gateway.emit(
+			event(
+				"conv_1",
+				2,
+				"trace_delta",
+				{
+					turnId: "turn_1",
+					taskId: "task_1",
+					status: "running",
+					events: [],
+				},
+				{ turnId: "turn_1" },
+			),
+		);
 
 		await controller.openTaskPanel();
 		expect(gateway.calls).toContain("task_view:conv_1");
@@ -542,17 +695,19 @@ describe("metawork-tui controller", () => {
 		await controller.start();
 		stateWithConversation(controller);
 		await controller.attachConversation("conv_1", false);
-		controller['handleEvent'](event("conv_1", 1, "turn_started", { commandKind: "user_message" }, { turnId: "turn_1" }));
-		controller['handleEvent'](event("conv_1", 2, "turn_started", { commandKind: "user_message" }, { turnId: "turn_2" }));
+		gateway.emit(event("conv_1", 1, "turn_started", { commandKind: "user_message" }, { turnId: "turn_1" }));
+		gateway.emit(event("conv_1", 2, "turn_started", { commandKind: "user_message" }, { turnId: "turn_2" }));
 
 		controller.selectAdjacentTurn(-1);
 		expect(controller.getView().selectedTurnId).toBe("turn_1");
 		// 新进展不抢占选中项。
-		controller['handleEvent'](event("conv_1", 3, "execution_delta", { subtaskId: "sub_1", status: "running" }, { turnId: "turn_2" }));
+		gateway.emit(
+			event("conv_1", 3, "execution_delta", { subtaskId: "sub_1", status: "running" }, { turnId: "turn_2" }),
+		);
 		expect(controller.getView().selectedTurnId).toBe("turn_1");
 	});
 
-	it("normalizes applyGatewayReplay through the shared pipeline on reconnect", async () => {
+	it("restores authoritative observed Turns on reconnect", async () => {
 		const gateway = createFakeGateway({
 			replay: {
 				lastSequence: 4,
@@ -565,7 +720,7 @@ describe("metawork-tui controller", () => {
 		stateWithConversation(controller);
 		await controller.attachConversation("conv_1", false);
 		gateway.disconnect();
-		await new Promise(resolve => setTimeout(resolve, 5));
+		await new Promise((resolve) => setTimeout(resolve, 5));
 
 		const turn = controller.getView().client.conversations.conv_1!.turns.turn_1!;
 		expect(turn.status).toBe("completed");
@@ -598,7 +753,9 @@ describe("metawork-tui controller", () => {
 			expect(controller.getView().client.notices).toEqual([]);
 			expect(controller.getView().selectedTurn).toMatchObject({ id: "turn_1", status: "completed", answer: "done" });
 			expect(controller.getView().client.ui.drafts.conv_1).toBe("keep draft");
-		} finally { controller.stop(); }
+		} finally {
+			controller.stop();
+		}
 	});
 
 	it("preserves unrelated notices and newer history errors when clearing a recovered connection error", async () => {
@@ -611,17 +768,20 @@ describe("metawork-tui controller", () => {
 			vi.spyOn(gateway, "connect").mockRejectedValueOnce(new Error("connect ENOENT /tmp/restarting.sock"));
 			gateway.disconnect();
 			await vi.waitFor(() => expect(controller.getView().client.connection).toBe("closed"));
-			vi.spyOn(gateway, "getConversationHistory").mockImplementationOnce(async (_id, _cursor, _limit, onRequest) => {
-				onRequest?.("new_history");
-				gateway.emit(event("conv_1", 2, "conversation_history_page", { transfer: null }, { requestId: "new_history" }));
-				return { requestId: "new_history", status: "accepted", conversationId: "conv_1" };
+			const original = gateway.followConversation;
+			vi.spyOn(gateway, "followConversation").mockImplementationOnce(async (id, listener) => {
+				gateway.emit(event("connection", 2, "command_result", { status: "failed", reason: "newer query failure" }));
+				return original(id, listener);
 			});
 			gateway.disconnect();
 			await vi.waitFor(() => expect(controller.getView().client.connection).toBe("ready"));
 			expect(controller.getView().client.notices).toEqual([
-				prior, { kind: "error", text: "History transfer incomplete or invalid; reload this page." },
+				prior,
+				{ kind: "error", text: "操作未完成：newer query failure" },
 			]);
-		} finally { controller.stop(); }
+		} finally {
+			controller.stop();
+		}
 	});
 
 	it("ignores an old connection failure after a newer reconnect succeeds", async () => {
@@ -630,41 +790,48 @@ describe("metawork-tui controller", () => {
 		let rejectOld!: (error: Error) => void;
 		try {
 			await controller.start();
-			vi.spyOn(gateway, "connect").mockImplementationOnce(() => new Promise<void>((_resolve, reject) => {
-				rejectOld = reject;
-			}));
+			vi.spyOn(gateway, "connect").mockImplementationOnce(
+				() =>
+					new Promise<void>((_resolve, reject) => {
+						rejectOld = reject;
+					}),
+			);
 			gateway.disconnect();
 			gateway.disconnect();
 			await vi.waitFor(() => expect(controller.getView().client.connection).toBe("ready"));
 			rejectOld(new Error("old ENOENT"));
-			await new Promise<void>(resolve => setImmediate(resolve));
+			await new Promise<void>((resolve) => setImmediate(resolve));
 			expect(controller.getView().client.connection).toBe("ready");
 			expect(controller.getView().client.notices).toEqual([]);
-		} finally { controller.stop(); }
+		} finally {
+			controller.stop();
+		}
 	});
 
-	it.each(["connect", "resume", "history"] as const)(
+	it.each(["connect", "follow"] as const)(
 		"does not let stale %s success clear a newer reconnect failure",
-		async phase => {
+		async (phase) => {
 			const gateway = createFakeGateway();
 			const controller = new MetaWorkTuiController({ gateway, conversationId: "conv_1" });
 			let release!: () => void;
-			const held = new Promise<void>(resolve => { release = resolve; });
+			const held = new Promise<void>((resolve) => {
+				release = resolve;
+			});
 			let entered = false;
 			try {
 				await controller.start();
 				const connect = vi.spyOn(gateway, "connect");
-				if (phase === "connect") connect.mockImplementationOnce(async () => { entered = true; await held; });
-				if (phase === "resume") vi.spyOn(gateway, "resume").mockImplementationOnce(async () => {
-					entered = true;
-					await held;
-					return { lastSequence: 0, snapshot: [], deltas: [] };
-				});
-				if (phase === "history") vi.spyOn(gateway, "getConversationHistory").mockImplementationOnce(async () => {
-					entered = true;
-					await held;
-					return { requestId: "old_history", status: "accepted", conversationId: "conv_1" };
-				});
+				if (phase === "connect")
+					connect.mockImplementationOnce(async () => {
+						entered = true;
+						await held;
+					});
+				if (phase === "follow")
+					vi.spyOn(gateway, "followConversation").mockImplementationOnce(async () => {
+						entered = true;
+						await held;
+						return () => undefined;
+					});
 				gateway.disconnect();
 				await vi.waitFor(() => expect(entered).toBe(true));
 				connect.mockRejectedValueOnce(new Error("new ENOENT"));
@@ -672,10 +839,13 @@ describe("metawork-tui controller", () => {
 				await vi.waitFor(() => expect(controller.getView().client.connection).toBe("closed"));
 				const newerNotice = controller.getView().client.notices.at(-1);
 				release();
-				await new Promise<void>(resolve => setImmediate(resolve));
+				await new Promise<void>((resolve) => setImmediate(resolve));
 				expect(controller.getView().client.connection).toBe("closed");
 				expect(controller.getView().client.notices.at(-1)).toBe(newerNotice);
-			} finally { release(); controller.stop(); }
+			} finally {
+				release();
+				controller.stop();
+			}
 		},
 	);
 
@@ -688,17 +858,24 @@ describe("metawork-tui controller", () => {
 			const connect = vi.spyOn(gateway, "connect").mockRejectedValueOnce(new Error("connect ENOENT"));
 			gateway.disconnect();
 			await vi.waitFor(() => expect(controller.getView().client.connection).toBe("closed"));
-			connect.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectOld = reject; }));
+			connect.mockImplementationOnce(
+				() =>
+					new Promise<void>((_resolve, reject) => {
+						rejectOld = reject;
+					}),
+			);
 			gateway.disconnect();
 			await controller.attachConversation("conv_2", false);
 			expect(controller.getView().client.connection).toBe("ready");
 			expect(controller.getView().client.notices).toEqual([]);
 			rejectOld(new Error("superseded connection failure"));
-			await new Promise<void>(resolve => setImmediate(resolve));
+			await new Promise<void>((resolve) => setImmediate(resolve));
 			expect(controller.getView().conversationId).toBe("conv_2");
 			expect(controller.getView().client.connection).toBe("ready");
 			expect(controller.getView().client.notices).toEqual([]);
-		} finally { controller.stop(); }
+		} finally {
+			controller.stop();
+		}
 	});
 
 	it("ignores reconnect failure after the controller is stopped", async () => {
@@ -706,14 +883,17 @@ describe("metawork-tui controller", () => {
 		const controller = new MetaWorkTuiController({ gateway });
 		let rejectOld!: (error: Error) => void;
 		await controller.start();
-		vi.spyOn(gateway, "connect").mockImplementationOnce(() => new Promise<void>((_resolve, reject) => {
-			rejectOld = reject;
-		}));
+		vi.spyOn(gateway, "connect").mockImplementationOnce(
+			() =>
+				new Promise<void>((_resolve, reject) => {
+					rejectOld = reject;
+				}),
+		);
 		gateway.disconnect();
 		controller.stop();
 		const stopped = controller.getView().client;
 		rejectOld(new Error("late ENOENT"));
-		await new Promise<void>(resolve => setImmediate(resolve));
+		await new Promise<void>((resolve) => setImmediate(resolve));
 		expect(controller.getView().client).toBe(stopped);
 	});
 
@@ -721,12 +901,19 @@ describe("metawork-tui controller", () => {
 		const gateway = createFakeGateway();
 		const controller = new MetaWorkTuiController({ gateway });
 		await controller.start();
-		controller['handleEvent'](event("workspace_stream", 1, "workspace_directory_snapshot", {
-			workspaceId: "ws_1",
-			// 服务端 WorkspaceRecord 使用 canonicalPath（不是 path）。
-			workspace: { id: "ws_1", canonicalPath: "/repo/workspace-a", displayName: "workspace-a", availability: "available" },
-			page: { items: [], nextCursor: null },
-		}));
+		gateway.emit(
+			event("workspace_stream", 1, "workspace_directory_snapshot", {
+				workspaceId: "ws_1",
+				// 服务端 WorkspaceRecord 使用 canonicalPath（不是 path）。
+				workspace: {
+					id: "ws_1",
+					canonicalPath: "/repo/workspace-a",
+					displayName: "workspace-a",
+					availability: "available",
+				},
+				page: { items: [], nextCursor: null },
+			}),
+		);
 		expect(controller.getView().client.activeWorkspace).toMatchObject({
 			id: "ws_1",
 			path: "/repo/workspace-a",

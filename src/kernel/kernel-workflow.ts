@@ -67,9 +67,14 @@ export interface KernelWorkflow {
 /** Transactional persistence port. Implementations atomically issue a Decision and create its application. */
 export interface KernelWorkflowStore {
   enqueue(event: KernelEvent, availableAt?: string): boolean;
-  claimNext(now: string, eventTypes?: KernelEvent['type'][], taskId?: string): KernelEvent | null;
+  /** Atomic first-decision admission and durable workflow input, before any effect. */
+  admitPermissionResolution(event: PermissionResolutionEvent): {
+    readonly accepted: boolean; readonly event: PermissionResolutionEvent;
+  };
+  findPermissionResolution(requestId: string): PermissionResolutionEvent | null;
+  claimNext(now: string, eventTypes?: KernelEvent['type'][], taskId?: string, correlationId?: string): KernelEvent | null;
   issue(eventId: string, record: KernelDecisionLedgerRecord): KernelDecisionApplicationRecord;
-  listRecoverableApplications(actions?: KernelDecisionAction['type'][], taskId?: string): KernelDecisionApplicationRecord[];
+  listRecoverableApplications(actions?: KernelDecisionAction['type'][], taskId?: string, correlationId?: string): KernelDecisionApplicationRecord[];
   markApplying(decisionId: string, now: string): KernelDecisionApplicationRecord;
   markApplied(decisionId: string, observation: KernelEvent | null, now: string): void;
   isDecisionApplied(decisionId: string): boolean;
@@ -93,6 +98,8 @@ export interface KernelWorkflowStore {
   ): void;
 }
 
+export type PermissionResolutionEvent = Extract<KernelEvent, { type: 'permission_resolution_received' }>;
+
 export interface KernelWorkflowClock {
   now(): string;
 }
@@ -106,6 +113,7 @@ export interface DurableKernelWorkflowDeps {
   acceptedEventTypes?: KernelEvent['type'][];
   acceptedActions?: KernelDecisionAction['type'][];
   taskId?: string;
+  correlationId?: string;
 }
 
 const MAX_DECISIONS_PER_DRAIN = 100;
@@ -156,7 +164,7 @@ export class DurableKernelWorkflow implements KernelWorkflow {
     let handled = 0;
     while (handled < MAX_DECISIONS_PER_DRAIN) {
       const application = this.deps.store.listRecoverableApplications(
-        this.deps.acceptedActions, this.deps.taskId,
+        this.deps.acceptedActions, this.deps.taskId, this.deps.correlationId,
       )[0];
       if (application) {
         decisions.push(application.decision);
@@ -167,7 +175,7 @@ export class DurableKernelWorkflow implements KernelWorkflow {
       }
 
       const event = this.deps.store.claimNext(
-        this.deps.clock.now(), this.deps.acceptedEventTypes, this.deps.taskId,
+        this.deps.clock.now(), this.deps.acceptedEventTypes, this.deps.taskId, this.deps.correlationId,
       );
       if (!event) break;
       const snapshot = this.deps.buildSnapshot(event);

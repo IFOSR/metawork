@@ -155,14 +155,14 @@ export type TaskAction =
   | 'explicit_resume_required'
   | 'none';
 
-const ACTIVE_REPLAN_STATUSES: readonly GenerationReplanRequestStatus[] = [
+export const ACTIVE_REPLAN_STATUSES: readonly GenerationReplanRequestStatus[] = [
   'pending_quiescence',
   'planning',
   'submitted',
   'waiting_for_availability',
 ];
 
-const RESIDUAL_PUBLICATION_STATUSES = new Set([
+export const RESIDUAL_PUBLICATION_STATUSES = new Set([
   'pending',
   'applying',
   'conflicted',

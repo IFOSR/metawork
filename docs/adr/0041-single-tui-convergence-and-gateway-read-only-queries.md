@@ -95,3 +95,17 @@ presentation snapshot without reconstructing business state on the client.
 - Any future read-only Gateway extension follows the same rules: versioned
   capability, read-only admission branch, connection-scoped response, no
   durable draft persistence, and structured errors.
+
+
+## 2026-10-03 多端观察与控制修订（ADR-0043）
+
+[ADR-0043](0043-explicit-conversation-observation-and-client-read-models.md) 接管客户端详细观察与操作契约：同 Server/Account 的 Web、单一 TUI、Feishu 同权，origin 仅记录来源；查询/命令回执定向请求连接，共享事实发给明确订阅者。浏览和恢复使用有界读模型，不经执行 attach。`cancel_turn` 保持精确 Turn 语义；后台任务使用 Task ID + execution generation 的 `cancel_task`。`permission_resolution_v2` 携带请求 revision 和 generation，经既有 Permission/KernelWorkflow 持久仲裁与恢复应用。通知目的地独立持久化，不随浏览或操作端漂移。源码实施及尚未关闭的发布门见[实施记录](../plans/2026-10-02-frontend-observation-implementation.md)。
+
+
+## 2026-10-03：Workspace 任务概览与导航修订
+
+按用户确认，右侧 Task Dashboard 展示当前 Workspace 内已加载会话的活动任务概览，包含执行、排队、阻塞等 TaskView 阶段；不再复制选中 Turn 的执行详情。左侧保留对话与执行过程，费用属于对应 Turn。F6 聚焦任务列表，方向键选择、Enter 按 Conversation/Task 定位原 Turn，Esc 返回输入；宽屏支持点击，窄屏复用同一列表浮层。
+
+目录与 activity 资源有界读取并持续刷新，更多会话/任务显式分页，计数明确为已加载范围。只有选中的 Conversation 保持详细观察；后台任务不因离开视图而停止。新增 Gateway `get_conversation_resource` 的 `locate` 资源复用已有授权定位 port，以 Task 身份定位旧 Turn，不执行 attach 或激活 Planner。导航、草稿与阅读位置仍是客户端本地状态。
+
+实施与验证见 [TUI 任务概览记录](../plans/2026-10-03-tui-workspace-task-dashboard.md)。

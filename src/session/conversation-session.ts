@@ -1365,11 +1365,30 @@ export class ConversationSession {
         await this.submitUserInput(command.text, options);
         return;
       case 'permission_resolution':
-        await this.resolvePermission(command.requestId, command.resolution, 'button');
+        await this.resolvePermission(command.requestId, command.resolution, 'button', null, undefined,
+          { principalId: options.principalId ?? 'unknown', commandRequestId: options.requestId ?? null });
+        return;
+      case 'permission_resolution_v2':
+        await this.resolvePermission(command.requestId, command.resolution, 'button', null,
+          { expectedRevision: command.requestRevision, expectedGenerationId: command.expectedExecutionGeneration },
+          { principalId: options.principalId ?? 'unknown', commandRequestId: options.requestId ?? null });
         return;
       case 'cancel_turn':
         await this.cancelActiveTurn(command.turnId);
         return;
+      case 'cancel_task': {
+        const task = this.deps.runtimePort.queries.findTask(command.taskId);
+        if (!task || task.accountId !== this.deps.runtimePort.accountId || task.conversationId !== this.deps.conversationId) {
+          throw new Error('task_scope_mismatch');
+        }
+        const generation = this.deps.runtimePort.queries.findActiveWorkGraphRevision(task.id)?.generationId
+          ?? `unplanned:${task.id}`;
+        if (generation !== command.expectedExecutionGeneration) throw new Error('task_generation_conflict');
+        if (!this.kernelExecutionRuntime) throw new Error('task_control_unavailable');
+        await this.kernelExecutionRuntime.cancelTask(task.id, '用户请求停止此任务');
+        this.appendOutput(`已请求停止任务 ${task.id}；等待执行清理完成。`);
+        return;
+      }
     }
   }
 
@@ -1387,9 +1406,7 @@ export class ConversationSession {
     const active = this.deps.interactionTraceStream?.getSnapshot() ?? null;
     const targetTurnId = active?.status === 'running' ? active.turnId : null;
     if (!targetTurnId) {
-      this.turnCancellation.abort();
-      await this.cancelConversationWork('用户取消了当前轮');
-      this.appendOutput('当前没有正在规划的轮次；已请求取消该会话进行中的任务。');
+      this.appendOutput('该轮次已不在执行中；后台任务请按任务目标停止。');
       return;
     }
     if (requestedTurnId && requestedTurnId !== targetTurnId) {
@@ -1585,6 +1602,8 @@ export class ConversationSession {
     resolution: 'approve' | 'deny',
     source: 'button' | 'planner',
     plannerPlanId: string | null = null,
+    expected?: { expectedRevision: string; expectedGenerationId: string },
+    actor?: { readonly principalId: string; readonly commandRequestId: string | null },
   ) {
     const permissionService = this.deps.runtimePort.permissions;
     if (!permissionService) throw new Error('Account permission service is unavailable');
@@ -1594,6 +1613,8 @@ export class ConversationSession {
       resolution,
       source,
       plannerPlanId,
+      ...expected,
+      ...(actor ? { actor } : {}),
     });
     if (result.status === 'conflict') throw new Error(result.message);
     if (result.recoveryTaskId) {

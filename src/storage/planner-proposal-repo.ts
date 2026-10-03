@@ -55,7 +55,7 @@ export class PlannerProposalRepo {
         ) VALUES (?, ?, ?, NULL, ?, ?)
       `).run(sessionId, turnId, userInput, now, now);
       return { created: true, conflict: false };
-    })();
+    }).immediate();
   }
 
   reserveSubmission(input: {
@@ -122,7 +122,7 @@ export class PlannerProposalRepo {
         input.planId, input.eventId, input.configurationRevision ?? null, now, now,
       );
       return { kind: 'reserved' } as const;
-    })();
+    }).immediate();
   }
 
   getSubmission(sessionId: string, turnId: string, submissionId: string): PlannerProposalSubmissionRecord | null {
@@ -173,7 +173,7 @@ export class PlannerProposalRepo {
           WHERE session_id = ? AND turn_id = ?
         `).run(now, sessionId, turnId);
       }
-    })();
+    }).immediate();
   }
 
   private findTurn(sessionId: string, turnId: string): TurnRow | null {

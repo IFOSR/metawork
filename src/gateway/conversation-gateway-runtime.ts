@@ -1,3 +1,4 @@
+import { clientConnectionEventStreamId } from './client-connection-event-stream.js';
 import { nanoid } from 'nanoid';
 import { createHash } from 'node:crypto';
 import type { AccountRuntimeHandle } from '../account/account-runtime-ports.js';
@@ -21,6 +22,7 @@ import type { GatewayTurnOrigin } from './gateway-delivery-context.js';
 import type { GatewayAttachmentStore } from './attachment-store-port.js';
 import type { PlannerAttachmentView } from '../planning/planning-types.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
+import { conversationPreview } from '../session/conversation-read-model.js';
 
 export interface ConversationGatewayRuntimeDeps {
   readonly accountId: string;
@@ -45,6 +47,8 @@ export interface ConversationGatewayRuntimeDeps {
     readonly nextCursor: string | null;
   }>;
   readonly now?: () => string;
+  /** Persist safe immutable result content before publishing its reference. */
+  readonly storeResultContent?: (accountId: string, conversationId: string, content: string) => void;
   readonly createId?: (prefix: string) => string;
 }
 
@@ -69,8 +73,8 @@ export class ConversationGatewayRuntime {
   private readonly pendingAttachments = new Set<Promise<() => void>>();
   private readonly activeAttachments = new Set<Promise<void>>();
   private readonly projectionTails = new Set<Promise<void>>();
-  /** 每个 Conversation 最近一次 turn 的来源（ADR-0036），用于投影事件定向；
-   *  命令返回后保留，供后台 Task/Executor 投影继续定向到发起来源，直到下一个 turn 覆盖。 */
+  /** 最近输入的来源元数据，仅用于请求关联、账单归因及默认通知路由。
+   * ADR-0043：共享事实的观察授权不取决于此来源。 */
   private readonly activeOrigins = new Map<string, GatewayTurnOrigin>();
   /** Stable correlation for background trace events after the command returns. */
   private readonly turnRequestIds = new Map<string, string>();
@@ -455,6 +459,25 @@ export class ConversationGatewayRuntime {
     );
     const completion = this.completions.get(completionKey);
     const origin = mailboxCommand.origin;
+    if (['cancel_turn', 'cancel_task', 'permission_resolution', 'permission_resolution_v2'].includes(mailboxCommand.command.kind)) {
+      try {
+        await conversation.executeGatewayCommand(mailboxCommand.command, { rethrowErrors: true, awaitAsyncWork: false,
+          requestId: mailboxCommand.requestId, idempotencyKey: mailboxCommand.idempotencyKey,
+          principalId: mailboxCommand.principalId });
+        if (origin) await this.publish(clientConnectionEventStreamId(origin.connectionId), mailboxCommand.requestId,
+          null, 'command_result', { targetConversationId: conversation.conversationId, status: 'completed' }, origin);
+        completion?.resolve({ status: 'completed' });
+      } catch (error) {
+        const reason = (error as Error).message;
+        if (origin) await this.publish(clientConnectionEventStreamId(origin.connectionId), mailboxCommand.requestId,
+          null, 'command_result', { targetConversationId: conversation.conversationId, status: 'failed', reason }, origin);
+        completion?.resolve({ status: 'failed', reason });
+        throw error;
+      } finally {
+        if (this.completions.get(completionKey) === completion) this.completions.delete(completionKey);
+      }
+      return;
+    }
     if (origin) this.activeOrigins.set(conversation.conversationId, origin);
     const accountRuntime = this.deps.registry.getIfLoaded(this.deps.accountId);
     const turnId = this.id('turn');
@@ -480,12 +503,19 @@ export class ConversationGatewayRuntime {
       if (mailboxCommand.command.kind === 'user_message') {
         await this.deps.recordInputTitle?.(conversation.conversationId, mailboxCommand.command.text);
       }
+      const userInput = 'text' in mailboxCommand.command ? redactSensitiveText(mailboxCommand.command.text) : null;
+      if (userInput !== null) this.deps.storeResultContent?.(this.deps.accountId, conversation.conversationId, userInput);
       await this.publish(
         conversation.conversationId,
         mailboxCommand.requestId,
         turnId,
         'turn_started',
-        { commandKind: mailboxCommand.command.kind },
+        { commandKind: mailboxCommand.command.kind,
+          ...(userInput !== null ? { userInput: conversationPreview(userInput),
+            ...(this.deps.storeResultContent ? { userInputRef: {
+              hash: createHash('sha256').update(userInput).digest('hex'), byteLength: Buffer.byteLength(userInput),
+            } } : {}) } : {}),
+          interactionKind: mailboxCommand.command.kind === 'user_message' ? 'ai_turn' : 'system_command' },
         origin,
       );
       await conversation.executeGatewayCommand(
@@ -719,6 +749,7 @@ export class ConversationGatewayRuntime {
     // The journal applies the same redaction before persistence. Hash the
     // projected content so clients can verify exactly what they receive.
     const deliveryContent = redactSensitiveText(content);
+    this.deps.storeResultContent?.(this.deps.accountId, conversationId, deliveryContent);
     const bytes = Buffer.from(deliveryContent, 'utf8');
     const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
     const resultId = persistedResultId ?? `result_${contentHash.slice('sha256:'.length)}`;

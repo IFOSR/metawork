@@ -99,7 +99,7 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 
 }
 
 describe('account conversation origin delivery', () => {
-  it('isolates detailed live events by origin and replays all origins in order', async () => {
+  it('shares authorized live facts across origins and retains all origins in order', async () => {
     const root = mkdtempSync(join(tmpdir(), 'anyfusion-e2e-origin-'));
     roots.push(root);
 
@@ -172,10 +172,10 @@ describe('account conversation origin delivery', () => {
         return payload.lines ?? [];
       });
 
-    // 每个来源只实时收到自己回合的最终答案。
-    expect(finalLines(webEvents)).toEqual(['answer:from-web']);
-    expect(finalLines(feishuEvents)).toEqual(['answer:from-feishu']);
-    expect(finalLines(tuiEvents)).toEqual(['answer:from-tui']);
+    // 同账户各端共享事实；外部通知目的地由独立路由选择。
+    expect(finalLines(webEvents)).toEqual(['answer:from-web', 'answer:from-feishu', 'answer:from-tui']);
+    expect(finalLines(feishuEvents)).toEqual(['answer:from-web', 'answer:from-feishu', 'answer:from-tui']);
+    expect(finalLines(tuiEvents)).toEqual(['answer:from-web', 'answer:from-feishu', 'answer:from-tui']);
 
     // 持久历史完整保留三个来源，按稳定顺序且无重复。
     const replay = await journal.replay('local-default', 'conv_1');

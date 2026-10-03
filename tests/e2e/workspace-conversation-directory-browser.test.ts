@@ -1,5 +1,13 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import Database from 'better-sqlite3';
+import { WebSocketConnection } from '../../src/management/websocket.js';
+import { ConversationObservationService, type ConversationObservationHandle } from '../../src/gateway/conversation-observation.js';
+import { GatewaySubscriptions } from '../../src/gateway/gateway-subscriptions.js';
+import { createAccountEventJournal } from '../../src/server/account-event-journal.js';
+import { runMigrations } from '../../src/storage/migrations.js';
+import { ConversationReadProjector } from '../../src/session/conversation-read-projector.js';
+import { SqliteConversationHistoryRepo } from '../../src/storage/conversation-history-repo.js';
+import type { ConversationTurn } from '../../src/session/conversation-store.js';
 import {
   createServer,
   type IncomingMessage,
@@ -18,11 +26,11 @@ const runBrowserE2e = process.env.RUN_BROWSER_E2E === '1';
 const e2e = runBrowserE2e ? describe : describe.skip;
 
 e2e('Workspace Conversation directory browser flow', () => {
-  it('shares summaries, attaches directly, and restores in-flight detail after switching', async () => {
+  it('shares summaries and switches cached observations without attaching or replaying execution', async () => {
     const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
     const webDist = join(root, 'web', 'dist');
     await stat(join(webDist, 'index.html'));
-    const server = await startMockServer(webDist);
+    const server = await startObservationFixture(webDist);
     const first = await launchBrowser(server.port, 'workspace-directory-a');
     const second = await launchBrowser(server.port, 'workspace-directory-b');
 
@@ -91,6 +99,8 @@ e2e('Workspace Conversation directory browser flow', () => {
       );
 
       server.activateOtherConversationForSecondBrowser();
+      await waitForExpression(second.cdp, `[...document.querySelectorAll('.session-row')].some(row => row.innerText.includes('Other running task'))`);
+      await second.cdp.evaluate(`[...document.querySelectorAll('.session-row')].find(row => row.innerText.includes('Other running task')).click()`);
       await waitForExpression(
         second.cdp,
         `document.body.innerText.includes('OTHER_RUNNING_TASK')`,
@@ -110,6 +120,23 @@ e2e('Workspace Conversation directory browser flow', () => {
       expect(await second.cdp.evaluate(
         `Boolean(document.querySelector('.workspace-empty'))`,
       )).toBe(false);
+
+      const samples = await second.cdp.evaluate(`(async () => {
+        const samples = [];
+        for (let i = 0; i < 100; i++) {
+          const label = i % 2 ? 'Shared workspace task' : 'Other running task';
+          const expected = i % 2 ? 'DETAIL_RESULT' : 'OTHER_RUNNING_TASK';
+          const started = performance.now();
+          [...document.querySelectorAll('.session-row')].find(row => row.innerText.includes(label)).click();
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          if (!document.body.innerText.includes(expected)) throw new Error('wrong cached conversation: ' + label + ' at ' + i + ': ' + document.body.innerText.slice(-2000));
+          samples.push(performance.now() - started);
+        }
+        return samples.sort((a, b) => a - b);
+      })()`) as number[];
+      console.log('observation warm switch ms', JSON.stringify({ samples: samples.length, p50: samples[49], p95: samples[94], p99: samples[98] }));
+      expect(samples[94]).toBeLessThan(200);
+      expect(server.legacyReads()).toBe(0);
 
       await first.cdp.evaluate(`(() => {
         const select = document.querySelector('#workspace-select');
@@ -144,8 +171,9 @@ e2e('Workspace Conversation directory browser flow', () => {
   }, 45_000);
 });
 
-async function startMockServer(webDist: string): Promise<{
+async function startObservationFixture(webDist: string): Promise<{
   port: number;
+  legacyReads(): number;
   setRunning(): void;
   activateOtherConversationForSecondBrowser(): void;
   close(): Promise<void>;
@@ -159,6 +187,30 @@ async function startMockServer(webDist: string): Promise<{
   let conversationCreated = false;
   let otherConversationCreated = false;
   let running = false;
+  let legacyReads = 0;
+  const dataRoot = await mkdtemp(join(tmpdir(), 'observation-browser-db-'));
+  const db = new Database(join(dataRoot, 'account.db'));
+  runMigrations(db);
+  const journal = createAccountEventJournal({ db, root: join(dataRoot, 'journal'), accountId: 'local-default', onError: error => { throw error; } });
+  const projector = new ConversationReadProjector(journal.readModel);
+  const history = new SqliteConversationHistoryRepo<ConversationTurn>(db, 'local-default', 'conversation',
+    (id, turn, sequence) => projector.applyHistory('local-default', id, turn, sequence));
+  for (const id of ['conv-shared', 'conv-other']) {
+    history.importOnce(id, Array.from({ length: 1000 }, (_, n) => ({ id: `turn-${n}`, conversationId: id,
+      userInput: n === 999 ? id === 'conv-shared' ? 'Shared workspace task' : 'OTHER_RUNNING_TASK' : `question-${n}`,
+      finalAnswer: n === 999 ? id === 'conv-shared' ? 'DETAIL_RESULT' : 'OTHER_RUNNING_TASK' : ('历史内容代码🙂\n').repeat(1000),
+      status: 'completed' as const })));
+    await journal.journal.append({ protocolVersion: 2, accountId: 'local-default', conversationId: id,
+      turnId: 'turn-live', requestId: 'live', eventId: 'started', sequence: 0, kind: 'turn_started',
+      occurredAt: new Date().toISOString(), payload: { userInput: id === 'conv-shared' ? 'ORIGINAL_RUNNING_STEP' : 'OTHER_RUNNING_TASK' } });
+  }
+  const observation = new ConversationObservationService({ model: journal.readModel, subscriptions: new GatewaySubscriptions(),
+    sourceSequence: journal.sourceSequence, authorize: async (_account, id) => ['conv-shared', 'conv-other'].includes(id),
+    onError: error => { throw error; }, activity: async (_account, id) => ({ tasks: running ? [{
+      taskId: `task-${id}`, title: id === 'conv-shared' ? 'ORIGINAL_RUNNING_STEP' : 'OTHER_RUNNING_TASK',
+      executionGeneration: 'generation', phase: 'executing', explanation: '正在执行', canCancel: true,
+    }] : [], nextCursor: null, pendingInteractions: [] }),
+  });
 
   const server = createServer((request, response) => {
     void handle(request, response).catch(error => {
@@ -169,27 +221,27 @@ async function startMockServer(webDist: string): Promise<{
   server.on('upgrade', (request, socket) => {
     const clientId = cookieValue(request.headers.cookie, 'browser_client');
     const key = request.headers['sec-websocket-key'];
-    const headerKey = Array.isArray(key) ? key[0] : key;
-    if (!clientId || !headerKey || !clientState.has(clientId)) {
-      socket.destroy();
-      return;
-    }
-    const accepted = createHash('sha1')
-      .update(`${headerKey}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
-      .digest('base64');
-    socket.write(
-      'HTTP/1.1 101 Switching Protocols\r\n'
-      + 'Upgrade: websocket\r\n'
-      + 'Connection: Upgrade\r\n'
-      + `Sec-WebSocket-Accept: ${accepted}\r\n\r\n`,
-    );
+    if (!clientId || typeof key !== 'string' || !clientState.has(clientId)) { socket.destroy(); return; }
+    WebSocketConnection.accept(socket as Socket, key);
+    const handles = new Map<string, { handle?: ConversationObservationHandle }>();
     sockets.set(socket as Socket, clientId);
-    socket.once('close', () => sockets.delete(socket as Socket));
-    send(socket as Socket, {
-      type: 'hello',
-      sessionId: clientState.get(clientId)?.activeConversationId ?? null,
+    const ws = new WebSocketConnection(socket as Socket, {
+      onClose: () => { for (const entry of handles.values()) entry.handle?.close(); handles.clear(); sockets.delete(socket as Socket); },
+      onMessage: text => {
+        const message = JSON.parse(text);
+        if (message.type === 'unobserve') { handles.get(message.observationId)?.handle?.close(); handles.delete(message.observationId); }
+        if (message.type !== 'observe') return;
+        const entry: { handle?: ConversationObservationHandle } = {};
+        handles.set(message.observationId, entry);
+        void observation.open({ accountId: 'local-default', conversationId: message.conversationId,
+          observationId: message.observationId, cursor: message.cursor,
+          send: frame => { if (handles.get(message.observationId) !== entry) return false; ws.send(JSON.stringify({ type: 'observation', frame })); return true; },
+        }).then(handle => { if (handles.get(message.observationId) === entry) entry.handle = handle; else handle.close(); });
+      },
     });
-    socket.on('error', () => socket.destroy());
+    ws.send(JSON.stringify({ type: 'hello', sessionId: clientState.get(clientId)?.activeConversationId ?? null,
+      capabilities: ['conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1'],
+      identity: { serverId: 'browser-fixture', accountId: 'local-default' } }));
   });
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -291,61 +343,21 @@ async function startMockServer(webDist: string): Promise<{
       }, 201);
       return;
     }
-    if (url.pathname === '/api/conversations/conv-shared/attach' && request.method === 'POST') {
-      state.activeWorkspaceId = 'workspace-a';
-      state.activeConversationId = 'conv-shared';
-      sendClient(clientId, { type: 'active_session_changed', sessionId: 'conv-shared' });
-      sendClient(clientId, {
-        type: 'turn_started',
-        requestId: 'req-original-running',
-        turnId: 'turn-original-running',
-        userInput: 'ORIGINAL_RUNNING_TASK',
-        startedAt: '2026-08-27T08:03:00.000Z',
-      });
-      sendClient(clientId, {
-        type: 'trace_delta',
-        turnId: 'turn-original-running',
-        fromSequence: 1,
-        status: 'running',
-        events: [{
-          id: 'trace-original-running',
-          sequence: 1,
-          occurredAt: '2026-08-27T08:03:01.000Z',
-          phase: 'execution',
-          actor: 'executor',
-          kind: 'executor_progress',
-          status: 'running',
-          title: 'Executor progress',
-          summary: 'ORIGINAL_RUNNING_STEP',
-          details: {
-            subtaskId: 'subtask-original-running',
-            subtaskTitle: 'Original running task',
-            stepKey: 'executor_progress',
-            stepLabel: 'ORIGINAL_RUNNING_STEP',
-          },
-        }],
-      });
-      await delay(50);
-      json(response, { state: 'active', sessionId: 'conv-shared' });
+    const resource = /^\/api\/conversations\/([^/]+)\/view(?:\/(.*))?$/u.exec(url.pathname);
+    if (resource) {
+      const id = resource[1]!;
+      if (resource[2] === 'metadata') json(response, { id, workspaceId: 'workspace-a', title: id === 'conv-shared' ? 'Shared workspace task' : 'Other running task' });
+      else if (resource[2] === 'activity') json(response, await observation.activity('local-default', id));
+      else if (resource[2]?.startsWith('content/')) json(response, await observation.content('local-default', id, resource[2].slice(8), Number(url.searchParams.get('offset')), 32768));
+      else json(response, await observation.page('local-default', id, url.searchParams.get('cursor') ?? undefined, undefined, url.searchParams.get('beforeTurn') ?? undefined));
       return;
     }
-    if (url.pathname === '/api/conversations/conv-other') {
-      if (state.activeConversationId !== 'conv-other') {
-        response.writeHead(404);
-        response.end(JSON.stringify({ error: 'session not found' }));
-        return;
-      }
-      json(response, otherConversationRecord(true));
-      return;
+    if (url.pathname.startsWith('/api/conversations/')) {
+      legacyReads++;
+      response.writeHead(410); response.end(JSON.stringify({ error: 'legacy_read_forbidden' })); return;
     }
-    if (url.pathname === '/api/conversations/conv-shared') {
-      if (state.activeConversationId !== 'conv-shared') {
-        response.writeHead(404);
-        response.end(JSON.stringify({ error: 'session not found' }));
-        return;
-      }
-      json(response, conversationRecord(true));
-      return;
+    if (url.pathname === '/api/agents/readiness') {
+      json(response, { agents: [{ agentId: 'codex', displayName: 'Codex', required: true, status: 'installed' }] }); return;
     }
     if (url.pathname === '/api/config') {
       json(response, {
@@ -391,6 +403,7 @@ async function startMockServer(webDist: string): Promise<{
   if (!address || typeof address === 'string') throw new Error('mock server did not bind');
   return {
     port: address.port,
+    legacyReads: () => legacyReads,
     setRunning() {
       running = true;
       broadcastDirectory();
@@ -402,7 +415,7 @@ async function startMockServer(webDist: string): Promise<{
       if (!state) throw new Error('second browser is not connected');
       state.activeWorkspaceId = 'workspace-a';
       state.activeConversationId = 'conv-other';
-      sendClient(clientId, { type: 'active_session_changed', sessionId: 'conv-other' });
+
       sendClient(clientId, {
         type: 'turn_started',
         requestId: 'req-other-running',
@@ -415,6 +428,7 @@ async function startMockServer(webDist: string): Promise<{
     async close() {
       for (const socket of sockets.keys()) socket.destroy();
       await new Promise<void>(resolvePromise => server.close(() => resolvePromise()));
+      await journal.stop(); db.close(); await rm(dataRoot, { recursive: true, force: true });
     },
   };
 }

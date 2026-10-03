@@ -230,3 +230,8 @@ ownership. Delivery and installed-runtime acceptance remain open.
   evidence across Turn changes and compaction; it does not authorize lifecycle
   actions. Workspace activity publication reads binding metadata without
   hydrating the Conversation's historical record.
+
+
+## 2026-10-03 多端观察与控制修订（ADR-0043）
+
+[ADR-0043](0043-explicit-conversation-observation-and-client-read-models.md) 接管客户端详细观察与操作契约：同 Server/Account 的 Web、单一 TUI、Feishu 同权，origin 仅记录来源；查询/命令回执定向请求连接，共享事实发给明确订阅者。浏览和恢复使用有界读模型，不经执行 attach。`cancel_turn` 保持精确 Turn 语义；后台任务使用 Task ID + execution generation 的 `cancel_task`。`permission_resolution_v2` 携带请求 revision 和 generation，经既有 Permission/KernelWorkflow 持久仲裁与恢复应用。通知目的地独立持久化，不随浏览或操作端漂移。源码实施及尚未关闭的发布门见[实施记录](../plans/2026-10-02-frontend-observation-implementation.md)。

@@ -328,6 +328,7 @@ describe('ManagementServer WebSocket authentication', () => {
       expect(JSON.parse(await client.nextText())).toEqual({
         type: 'hello',
         sessionId: 'session_gateway',
+        capabilities: [],
       });
       client.sendJson({ type: 'input', text: 'Show the flow' });
       await expect(client.nextText()).resolves.toBe(JSON.stringify({

@@ -1,11 +1,11 @@
 # ADR-0043: Unified Multi-Client Control, Conversation Observation And Read Models
 
-- **Status:** Proposed — 用户已明确要求采用同账户多端同权方向；详细协议与实施仍为设计稿，尚未实施，不把目标冒充当前行为。
+- **Status:** Accepted（2026-10-03，依据用户要求严格实施的授权）；已完成本地源码实施、全仓回归、生产浏览器及隔离安装验收；用户正常安装、Docker 与真实平台验收仍待完成。
 - **Date:** 2026-10-02
 - **Revision:** 本次修订确立完整多端查看与控制；原草稿中保留 origin 专属权限、将非来源端作为只读观察者的设计已撤回。
 - **Scope:** Web、单一 TUI、Feishu 的同账户统一身份、会话实时观察、发送/停止/审批、并发操作、通知路由与有界读模型。
-- **Proposes to supersede:** ADR-0036。来源不再限制详细实时可见性或操作资格；其持久历史、安全投影、避免跨会话混写与定向通知目的由本 ADR 吸收。
-- **Proposes to amend:** ADR-0031 的统一多端操作契约；ADR-0035 的浏览/操作目标与执行 attach 解耦；ADR-0040 增加可从任意端调用的确切后台 Task 取消入口，保持原 `cancel_turn` 语义；ADR-0041 的观察及统一操作能力清单。
+- **Supersedes:** ADR-0036。来源不再限制详细实时可见性或操作资格；其持久历史、安全投影、避免跨会话混写与定向通知目的由本 ADR 吸收。
+- **Amends:** ADR-0031 的统一多端操作契约；ADR-0035 的浏览/操作目标与执行 attach 解耦；ADR-0040 增加可从任意端调用的确切后台 Task 取消入口，保持原 `cancel_turn` 语义；ADR-0041 的观察及统一操作能力清单。
 - **Preserves:** ADR-0020、ADR-0032、ADR-0034、ADR-0037、ADR-0042 的领域权威、身份隔离、执行、交付和计费契约；ADR-0040 的精确目标、取消 fence 与旧 Turn 不误伤新 Turn。
 - **Related design:** [前端观察架构升级详细方案](../plans/2026-10-02-frontend-observation-architecture-upgrade-design.md)。
 
@@ -17,7 +17,7 @@ ADR-0037 已允许跨 Conversation 并行执行；ADR-0036 则将详细实时投
 
 DeepSeek Harness 的同 Host 客户端经认证后代表同一个 operator；`session.follow` 按 Session 身份筛选，普通 `prompt/cancel` 也按 Session 调用，无“原发起连接独占任务”的条件。它把共享任务事实和各端本地视图分开。MetaWork 采用该原则，并保留自身账户映射、TaskView、Kernel 权限批准和结果认证。本文的持久审批仲裁、Feishu 通知路由及后台 Task 精确取消是 MetaWork 设计，不声称来自 DeepSeek 的相同实现。
 
-## Proposed decision
+## Decision
 
 ### 1. 同账户多端同权，任务归 Account/Conversation
 
@@ -69,6 +69,8 @@ Application Shell 拥有读投影协议、纯投影规则和查询 port；Storag
 
 历史摘要、正文、轨迹、产物和账单分资源加载，分页同时约束条数和字节。超大单条结果通过正文引用和块读取处理，不能绕过首屏硬预算。当前任务基线覆盖全部非终态 Task，超出预算显式分页，不能只取最后一个 Turn。
 
+2026-10-03 展示澄清：分页和正文块读取是资源传输契约，不要求用户点击阅读全文。Web 对话页保留原执行、报告与费用卡片，已挂载消息自动恢复全文，卡片资源独立自动补齐；不新增默认活动任务条或搜索行。Turn 数量、传输与缓存有界，单条全文 DOM 不承诺固定上限。
+
 ### 6. 客户端生命周期独立
 
 Web 按身份范围、Conversation、Turn、Task、Subtask、Attempt、Result 建立规范化实体仓库，按实体订阅。客户端焦点、阅读位置、草稿、待确认命令、观察连接和后台执行分别管理。
@@ -99,7 +101,7 @@ Web、Server、单一 TUI 和 Feishu adapter 协调发布并做能力对等测�
 
 收益是任意端均可继续管理同账户任务，浏览不受执行激活和全量历史折叠阻塞，历史读取成本和浏览器资源可控。代价是统一跨端身份/目标、持久审批仲裁、通知路由、可重建读模型及预算管理；必须用故障注入验证重复操作、冲突、恢复和撤销。
 
-本 ADR 接受时应将 ADR-0036 的仍有效事实/通知要求吸收到本 ADR 并归档旧记录，明确修订 ADR-0031/0035/0040/0041 与 authority matrix；实施时同步 `CONTEXT.md` 和 current technical overview。当前保留 Proposed 索引和现行行为说明，不要求用户再次确认已明确的同权方向。
+本 ADR 现已接受。ADR-0036 保留在原路径作为已替代的历史记录，便于既有链接追溯；其持久历史、安全投影、定向通知要求由本 ADR 接管。ADR-0031/0035/0040/0041 的修订与 authority matrix、`CONTEXT.md`、current technical overview 一起记录。接受设计不等于宣布所有实施和发布门已通过；逐项证据见[本地实施记录](../plans/2026-10-02-frontend-observation-implementation.md)。
 
 ## Acceptance
 

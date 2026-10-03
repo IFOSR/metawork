@@ -267,6 +267,11 @@ export function buildAccountRuntimeComposition(deps: {
   conversationExecutionBinder.bindSharedServices(kernelExecutionServices);
   coordinatorServices.bindKernelExecutionRuntime(kernelExecutionServices.kernelExecutionRuntime);
   const permissionService = createSqliteAccountPermissionService({
+    onContinuationReady: () => {
+      void accountRuntime.reviewTaskPoolOnTimer().catch(error => {
+        console.error(`Permission continuation remains durable: ${(error as Error).message}`);
+      });
+    },
     kernelServices,
     runtimeExecutionServices,
     taskServices,
@@ -332,8 +337,14 @@ export function buildAccountRuntimeComposition(deps: {
     configurationActivationGate: deps.configurationActivationGate,
     recoverDurableStartup: deps.recoverDurableStartup
       ? () => deps.recoverDurableStartup!(deps.accountId)
-      : () => startupRecovery.recover(),
-    reviewTaskPoolOnTimer: (_accountId, nowMs) => startupRecovery.recoverPeriodic(nowMs),
+      : async () => {
+          await permissionService.recoverPending(true);
+          await startupRecovery.recover();
+        },
+    reviewTaskPoolOnTimer: async (_accountId, nowMs) => {
+      await permissionService.recoverPending();
+      return startupRecovery.recoverPeriodic(nowMs);
+    },
     onConversationActivityChanged: (_accountId, conversationId, activity) => (
       deps.onConversationActivityChanged?.(conversationId, activity)
     ),

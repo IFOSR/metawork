@@ -41,6 +41,20 @@ function begin(repo: SqliteWorkspaceDirectoryProjectionRepo, fingerprint: string
 }
 
 describe('Workspace directory durable projection', () => {
+  it('pages a 10,000 Conversation directory with indexed reads and bounded output', () => {
+    const { db, repo } = fixture();
+    const token = begin(repo, 'large-directory');
+    db.transaction(() => {
+      for (let index = 0; index < 10_000; index++) repo.upsert(row(`conv_${String(index).padStart(5, '0')}`));
+    })();
+    while (!repo.finishRebuild(token)) { /* bounded reconciliation */ }
+    const first = repo.page('workspace_one', { limit: 50 });
+    const second = repo.page('workspace_one', { limit: 50, cursor: first.nextCursor! });
+    expect(first.items).toHaveLength(50);
+    expect(second.items).toHaveLength(50);
+    expect(new Set([...first.items, ...second.items].map(item => item.conversationId)).size).toBe(100);
+    expect(Buffer.byteLength(JSON.stringify(first))).toBeLessThan(64 * 1024);
+  });
   it('keeps the checkpoint fixed-size and untouched by live metadata mutations', () => {
     const { db, repo } = fixture();
     for (let index = 0; index < 1200; index += 1) repo.upsert(row(`conv_${index}`));

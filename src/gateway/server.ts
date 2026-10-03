@@ -18,6 +18,7 @@ import {
 } from './protocol.js';
 import { workspaceEventStreamId } from './workspace-event-stream.js';
 import { isNamedPipePath } from '../platform/local-endpoint.js';
+import { MAX_CONNECTION_OBSERVATIONS, type ConversationObservationService, type ConversationObservationHandle } from './conversation-observation.js';
 
 interface GatewayServerDeps {
   socketPath: string;
@@ -37,6 +38,7 @@ interface GatewayServerDeps {
     input: { workspaceHint: string; conversationId?: string },
   ): Promise<{ token: string; expiresAt: string }>;
   accountId?: string;
+  observation?: ConversationObservationService;
 }
 
 export class MetaclawGatewayServer {
@@ -101,6 +103,7 @@ export class MetaclawGatewayServer {
     let activeAttachment: { readonly token: object; detachClient(): void } | null = null;
     let boundConnectionId: string | null = null;
     let connectionUnsubscribe: (() => void) | null = null;
+    const observations = new Map<string, { token: object; handle?: ConversationObservationHandle }>();
 
     const send = (message: GatewayServerMessage) => {
       if (!socket.destroyed) socket.write(encodeJsonLine(message));
@@ -273,10 +276,13 @@ export class MetaclawGatewayServer {
     send({
       type: 'hello',
       sessionId: socketConnectionId,
+      identity: this.deps.observation?.identity,
       attached: false,
       capabilities: [...GATEWAY_SERVER_CAPABILITIES],
     });
     const cleanup = () => {
+      for (const observation of observations.values()) observation.handle?.close();
+      observations.clear();
       latestAttachRequest += 1;
       activeAttachment?.detachClient();
       activeAttachment = null;
@@ -305,6 +311,42 @@ export class MetaclawGatewayServer {
       }
       if (message.type === 'close') {
         socket.end(encodeJsonLine({ type: 'exit' } satisfies GatewayServerMessage));
+        return;
+      }
+      if (message.type === 'unobserve') {
+        observations.get(message.observationId)?.handle?.close();
+        observations.delete(message.observationId);
+        return;
+      }
+      if (message.type === 'observe') {
+        const connectionError = bindClientConnection(message.connectionId);
+        if (connectionError || !this.deps.observation) {
+          send({ type: 'error', message: connectionError ?? 'observation_unavailable' }); return;
+        }
+        if (!observations.has(message.observationId) && observations.size >= MAX_CONNECTION_OBSERVATIONS) {
+          send({ type: 'error', message: 'observation_limit' }); return;
+        }
+        observations.get(message.observationId)?.handle?.close();
+        const entry: { token: object; handle?: ConversationObservationHandle } = { token: {} };
+        observations.set(message.observationId, entry);
+        void this.deps.observation.open({
+          accountId, conversationId: message.conversationId, observationId: message.observationId, cursor: message.cursor,
+          send: frame => {
+            if (socket.destroyed || observations.get(message.observationId) !== entry) return false;
+            if (socket.writableLength > 512 * 1024) { socket.destroy(); return false; }
+            socket.write(encodeJsonLine({ type: 'observation', frame } satisfies GatewayServerMessage));
+            return true;
+          },
+        }).then(handle => {
+          if (socket.destroyed || observations.get(message.observationId) !== entry) handle.close();
+          else entry.handle = handle;
+        }).catch(error => {
+          if (observations.get(message.observationId) !== entry) return;
+          observations.delete(message.observationId);
+          send({ type: 'observation', frame: { kind: 'closed', observationId: message.observationId,
+            conversationId: message.conversationId, reason: (error as Error).message === 'conversation_denied'
+              ? 'authorization_revoked' : 'read_unavailable' } });
+        });
         return;
       }
       if (message.type === 'attach') {

@@ -106,7 +106,7 @@ export class SqliteQueryContextStore implements QueryContextStore {
         VALUES (?, ?, ?, ?, ?)
       `).run(link.queryId, link.costTaskId, link.decisionId, link.basis, link.linkedAt);
       return 'linked';
-    })();
+    }).immediate();
   }
 
   listQueryIdsForTask(taskId: string): string[] {

@@ -7,22 +7,12 @@
  * - 所有集合必须有界（有界去重窗口、有界历史缓存、有界 trace）。
  */
 
+import type { ConversationContentReference } from "../../anyfusion/conversation-observation-protocol.ts";
 import type { GatewayCommandEnvelope } from "../../anyfusion/gateway-protocol.ts";
 
-export type MetaWorkConnectionState =
-	| "connecting"
-	| "ready"
-	| "reconnecting"
-	| "incompatible"
-	| "draining"
-	| "closed";
+export type MetaWorkConnectionState = "connecting" | "ready" | "reconnecting" | "incompatible" | "draining" | "closed";
 
-export type MetaWorkTurnStatus =
-	| "running"
-	| "completed"
-	| "failed"
-	| "blocked"
-	| "cancelled";
+export type MetaWorkTurnStatus = "running" | "completed" | "failed" | "blocked" | "cancelled";
 
 export type MetaWorkTurnStage =
 	| "understanding"
@@ -70,6 +60,9 @@ export interface MetaWorkRoutingProjection {
 export type MetaWorkPermissionStatus = "pending" | "resolved" | "expired";
 
 export interface MetaWorkPermissionProjection {
+	readonly requestRevision?: string;
+	readonly generationId?: string;
+	readonly detailsRef?: ConversationContentReference;
 	readonly requestId: string;
 	readonly summary: string;
 	readonly status: MetaWorkPermissionStatus;
@@ -135,6 +128,8 @@ export interface MetaWorkArtifactProjection {
 }
 
 export interface MetaWorkTurnProjection {
+	readonly answerRef?: ConversationContentReference | null;
+	readonly userInputRef?: ConversationContentReference | null;
 	readonly id: string;
 	readonly requestId: string | null;
 	readonly interactionKind: "ai_turn" | "system_command";
@@ -289,10 +284,13 @@ export interface MetaWorkClientState {
 	/** 按 scope key（"workspace" 或 conversationId）保存最新补全响应。 */
 	readonly completions: Record<string, MetaWorkCompletionState>;
 	/** 每个 scope 最近一次补全请求；旧响应不得覆盖新草稿。 */
-	readonly completionRequests: Record<string, {
-		readonly requestId: string;
-		readonly inputVersion: number;
-	}>;
+	readonly completionRequests: Record<
+		string,
+		{
+			readonly requestId: string;
+			readonly inputVersion: number;
+		}
+	>;
 	readonly ui: MetaWorkUiState;
 	readonly notices: Array<{
 		readonly kind: "info" | "error" | "unknown_event";

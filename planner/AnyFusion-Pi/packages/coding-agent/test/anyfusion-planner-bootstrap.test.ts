@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createAnyFusionPlannerBootstrap } from "../src/anyfusion/planner-bootstrap.ts";
+import { createAnyFusionPlannerBootstrap, normalizePlannerPath } from "../src/anyfusion/planner-bootstrap.ts";
 import { PLANNER_ACTIVE_TOOL_NAMES } from "../src/anyfusion/planner-policy.ts";
 
 describe("AnyFusion Planner bootstrap", () => {
@@ -30,13 +30,13 @@ describe("AnyFusion Planner bootstrap", () => {
 		expect(tui.customTools.find((tool) => tool.name === "submit_planning_proposal")?.promptSnippet).toContain(
 			"PlanningAgentPlan v8",
 		);
-		expect(
-			tui.customTools.find((tool) => tool.name === "submit_executor_manual_proposal")?.promptGuidelines,
-		).toEqual(expect.arrayContaining([
-			expect.stringContaining("copy that existing tag text verbatim"),
-			expect.stringContaining("Do not add assertions for adjacent capabilities"),
-			expect.stringContaining("capability-policy"),
-		]));
+		expect(tui.customTools.find((tool) => tool.name === "submit_executor_manual_proposal")?.promptGuidelines).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining("copy that existing tag text verbatim"),
+				expect.stringContaining("Do not add assertions for adjacent capabilities"),
+				expect.stringContaining("capability-policy"),
+			]),
+		);
 		expect(tui.customTools.find((tool) => tool.name === "web_fetch")).toBeUndefined();
 		expect(tui.customTools.find((tool) => tool.name === "web_search")).toBeUndefined();
 		expect(tui.extensionFactories).toHaveLength(1);
@@ -73,6 +73,15 @@ describe("AnyFusion Planner bootstrap", () => {
 		}
 	});
 
+	it("normalizes macOS Data volume aliases before enforcing the workspace boundary", () => {
+		expect(normalizePlannerPath("/System/Volumes/Data/Users/yuanjubian/Documents/deepseek-harness", "darwin")).toBe(
+			"/Users/yuanjubian/Documents/deepseek-harness",
+		);
+		expect(normalizePlannerPath("/System/Volumes/Data/Users/yuanjubian/Documents/deepseek-harness", "linux")).toBe(
+			"/System/Volumes/Data/Users/yuanjubian/Documents/deepseek-harness",
+		);
+	});
+
 	it("reports the active PlanningAgentPlan version for an invalid schema artifact", async () => {
 		const schemaPath = join(tmpdir(), `planner-v8-invalid-${process.pid}-${Date.now()}.json`);
 		await writeFile(schemaPath, JSON.stringify([]));
@@ -82,7 +91,7 @@ describe("AnyFusion Planner bootstrap", () => {
 		);
 	});
 
-  it("exposes only the Executor manual proposal tool during configuration turns", async () => {
+	it("exposes only the Executor manual proposal tool during configuration turns", async () => {
 		const previousPurpose = process.env.ANYFUSION_PLANNER_TURN_PURPOSE;
 		process.env.ANYFUSION_PLANNER_TURN_PURPOSE = "configuration";
 		try {
@@ -90,12 +99,12 @@ describe("AnyFusion Planner bootstrap", () => {
 			expect(bootstrap.customTools.map((tool) => tool.name)).toEqual(["submit_executor_manual_proposal"]);
 			expect(bootstrap.customTools.find((tool) => tool.name === "submit_planning_proposal")).toBeUndefined();
 			expect(bootstrap.activeToolNames).toEqual(["submit_executor_manual_proposal"]);
-      expect(bootstrap.thinkingLevelOverride).toBe("low");
-      expect(bootstrap.extensionFactories).toEqual([]);
-      expect(bootstrap.systemPrompt).toContain(
-        "If that tool cannot be called, output only the same JSON object that the tool accepts",
-      );
-    } finally {
+			expect(bootstrap.thinkingLevelOverride).toBe("low");
+			expect(bootstrap.extensionFactories).toEqual([]);
+			expect(bootstrap.systemPrompt).toContain(
+				"If that tool cannot be called, output only the same JSON object that the tool accepts",
+			);
+		} finally {
 			if (previousPurpose === undefined) delete process.env.ANYFUSION_PLANNER_TURN_PURPOSE;
 			else process.env.ANYFUSION_PLANNER_TURN_PURPOSE = previousPurpose;
 		}

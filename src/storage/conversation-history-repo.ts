@@ -10,6 +10,7 @@ implements ConversationHistoryStore<T> {
     private readonly db: Database.Database,
     private readonly accountId: string,
     private readonly kind: string,
+    private readonly onWrite?: (conversationId: string, turn: T, sequence: number) => void,
   ) {}
 
   version(conversationId: string): string | null {
@@ -32,14 +33,14 @@ implements ConversationHistoryStore<T> {
         (account_id, conversation_id, kind, last_sequence) VALUES (?, ?, ?, 0)`)
         .run(this.accountId, conversationId, this.kind);
       for (const turn of turns) this.write(conversationId, turn);
-    })();
+    }).immediate();
   }
 
   upsert(conversationId: string, turn: T): void {
     this.db.transaction(() => {
       if (!this.isImported(conversationId)) throw new Error('history_not_imported');
       this.write(conversationId, turn);
-    })();
+    }).immediate();
   }
 
   replace(conversationId: string, turns: readonly T[]): void {
@@ -55,7 +56,7 @@ implements ConversationHistoryStore<T> {
         remove.run(this.accountId, conversationId, this.kind, row.turn_id);
       }
       for (const turn of turns) this.write(conversationId, turn);
-    })();
+    }).immediate();
   }
 
   delete(conversationId: string): boolean {
@@ -64,7 +65,7 @@ implements ConversationHistoryStore<T> {
         .run(this.accountId, conversationId, this.kind);
       return this.db.prepare(`DELETE FROM conversation_history_streams WHERE account_id = ? AND conversation_id = ? AND kind = ?`)
         .run(this.accountId, conversationId, this.kind).changes > 0;
-    })();
+    }).immediate();
   }
 
   private write(conversationId: string, turn: T): void {
@@ -73,7 +74,13 @@ implements ConversationHistoryStore<T> {
     const existing = this.db.prepare(`UPDATE conversation_history_turns SET body_json = ?, byte_length = ?
       WHERE account_id = ? AND conversation_id = ? AND kind = ? AND turn_id = ?`)
       .run(body, bytes, this.accountId, conversationId, this.kind, turn.id);
-    if (existing.changes) return;
+    if (existing.changes) {
+      const row = this.db.prepare(`SELECT sequence FROM conversation_history_turns
+        WHERE account_id = ? AND conversation_id = ? AND kind = ? AND turn_id = ?`)
+        .get(this.accountId, conversationId, this.kind, turn.id) as { sequence: number };
+      this.onWrite?.(conversationId, turn, row.sequence);
+      return;
+    }
     const { last_sequence: sequence } = this.db.prepare(`UPDATE conversation_history_streams
       SET last_sequence = last_sequence + 1
       WHERE account_id = ? AND conversation_id = ? AND kind = ?
@@ -81,6 +88,7 @@ implements ConversationHistoryStore<T> {
     this.db.prepare(`INSERT INTO conversation_history_turns
       (account_id, conversation_id, kind, sequence, turn_id, body_json, byte_length) VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .run(this.accountId, conversationId, this.kind, sequence, turn.id, body, bytes);
+    this.onWrite?.(conversationId, turn, sequence);
   }
 
   find(conversationId: string, turnId: string): T | null {

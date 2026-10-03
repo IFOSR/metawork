@@ -51,9 +51,9 @@ export class WebGatewayAdapter {
     return this.deps.journal.replay(accountId, conversationId, 0);
   }
 
-  tracePage(accountId: string, conversationId: string, turnId: string, cursor?: string, limit?: number): Promise<TracePage> {
+  tracePage(accountId: string, conversationId: string, turnId: string, cursor?: string, limit?: number, latest = false): Promise<TracePage> {
     if (this.deps.journal.readTracePage) {
-      return this.deps.journal.readTracePage(accountId, conversationId, turnId, cursor, limit);
+      return this.deps.journal.readTracePage(accountId, conversationId, turnId, cursor, limit, latest);
     }
     return Promise.resolve({
       turnId, streamRevision: 0, firstSequence: null, lastSequence: null,

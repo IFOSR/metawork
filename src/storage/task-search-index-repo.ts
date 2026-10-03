@@ -322,7 +322,7 @@ export class TaskSearchIndexRepo {
       }
     });
 
-    transaction();
+    transaction.immediate();
     return this.count();
   }
 

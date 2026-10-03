@@ -10,6 +10,7 @@ import { GatewaySocketTransport } from "../src/anyfusion/gateway-socket-transpor
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { MetaWorkActionBar } from "../src/modes/metawork-tui/components/status-bar.ts";
 import { MetaWorkTuiController } from "../src/modes/metawork-tui/controller.ts";
+import { baselineFrame, turn } from "./helpers/observation-fixture.ts";
 
 const itIfUnix = process.platform === "win32" ? it.skip : it;
 
@@ -46,18 +47,37 @@ itIfUnix("clears the ENOENT footer after a real socket restart", async () => {
 				while (newline >= 0) {
 					const message = JSON.parse(buffer.slice(0, newline)) as GatewayWireClientMessage;
 					buffer = buffer.slice(newline + 1);
-					if (message.type === "attach") {
-						emit(1, "turn_started", { commandKind: "user_message" });
-						emit(2, "final_answer", { lines: ["completed answer"] });
-						send({ type: "hello", sessionId: "conv_reconnect", attached: true, lastSequence: 3 });
+					if (message.type === "observe") {
+						send({
+							type: "observation",
+							frame: baselineFrame("conv_reconnect", message.observationId, {
+								head: { epoch: "epoch", revision: 1, journalSequence: 3 },
+								turns: [
+									{
+										...turn("conv_reconnect", "completed_turn"),
+										status: "completed",
+										answer: "completed answer",
+									},
+								],
+								nextCursor: null,
+							}),
+						});
 					} else if (message.type === "command") {
-						if (message.envelope.command.kind === "get_conversation_history") {
+						if (message.envelope.command.kind === "get_conversation_resource") {
 							emit(
 								3,
-								"conversation_history_page",
+								"conversation_resource",
 								{
-									turns: [{ id: "completed_turn", status: "completed", assistantText: "completed answer" }],
-									nextCursor: null,
+									page: {
+										id: "conv_reconnect",
+										workspaceId: "workspace",
+										workspace: {
+											id: "workspace",
+											path: "/bound/workspace",
+											displayName: "Bound workspace",
+											availability: "available",
+										},
+									},
 								},
 								message.envelope.requestId,
 							);
@@ -109,6 +129,8 @@ itIfUnix("clears the ENOENT footer after a real socket restart", async () => {
 	const footer = () => stripVTControlCharacters(action.render(300).join("\n"));
 	try {
 		await controller.start();
+		await vi.waitFor(() => expect(controller.getView().selectedTurn?.id).toBe("completed_turn"));
+		expect(controller.getView().client.activeWorkspace).toMatchObject({ id: "workspace", path: "/bound/workspace" });
 		controller.setDraft("keep draft");
 		await stopServer();
 		await vi.waitFor(() => expect(footer()).toContain("connect ENOENT"));

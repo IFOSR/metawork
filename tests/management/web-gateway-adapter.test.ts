@@ -121,7 +121,7 @@ describe('WebGatewayAdapter', () => {
     expect(replay.snapshot.map(event => event.eventId)).toEqual(['e2']);
   });
 
-  it('filters subscriptions by account, conversation and live origin', () => {
+  it('shares same-account Conversation facts across origins while isolating other scopes', () => {
     const subscriptions = new GatewaySubscriptions();
     const received: string[] = [];
     const adapter = new WebGatewayAdapter({
@@ -148,6 +148,6 @@ describe('WebGatewayAdapter', () => {
       { connectionId: 'conn_2', surface: 'web' },
     );
 
-    expect(received).toEqual(['e1']);
+    expect(received).toEqual(['e1', 'e4']);
   });
 });

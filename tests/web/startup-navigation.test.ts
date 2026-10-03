@@ -9,7 +9,7 @@ import { mergeNewestHistoryPage } from '../../web/src/navigation-history-state.j
 import type { WebSessionMetadata } from '../../web/src/api/session-types.js';
 
 const app = ts.createSourceFile('App.tsx',
-  await readFile(new URL('../../web/src/App.tsx', import.meta.url), 'utf8'),
+  await readFile(new URL('../../web/src/observation/use-workspace-controller.ts', import.meta.url), 'utf8'),
   ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const effects: ts.ArrowFunction[] = [];
 function collect(node: ts.Node): void {
@@ -75,6 +75,7 @@ function fixture() {
     getConfig: vi.fn(async () => config),
     getAgentReadiness: vi.fn(async () => ({ agents: [] })),
     getConversations: vi.fn((_workspaceId: string, _query?: string) => initial.promise),
+    getConversationMetadata: vi.fn(async (id: string) => ({ id, workspaceId: workspace.id, title: id })),
     attachConversation: vi.fn(async (sessionId: string, _workspaceId?: string) => ({ state: 'active', sessionId })),
     getConversation: vi.fn(async (sessionId: string) => ({
       version: 1, session: row(sessionId), turns: [], historyCursor: null,
@@ -96,6 +97,8 @@ function fixture() {
   };
   const scope = {
     ...requests, NavigationDirectoryChanges, selectInitialSessionId,
+    readConversationRoute: () => null, writeConversationRoute: vi.fn(),
+    draftOwner: ref(null), draftValue: ref({ draft: '', attachments: [] }),
     isCurrentConversationRecordRequest, mergeNewestHistoryPage, retainLiveTurnForConversation,
     authenticated: true, startupLaunchSuggestion: null as { workspaceHint: string } | null,
     activeWorkspaceId: null as string | null, search: '',
@@ -103,6 +106,8 @@ function fixture() {
     activeConversationRef: ref<string | null>(null), activeWorkspaceRef: ref<string | null>(null),
     startupLaunchAppliedRef: ref(false),
     browsedConversationRef: ref<string | null>(null), liveTurnRef: ref(null),
+    recordCacheRef: ref(new Map()), drafts: ref(new Map()), pendingInputsRef: ref(new Map()),
+    viewportMemory: ref({ anchors: new Map(), heights: new Map() }),
     loadRecordRef: ref<unknown>(null), recordRequestRef: ref(0), conversationRequestRef: ref(0),
     workspaceSwitchRef: ref(false), workspaceSwitchRequestRef: ref(0),
     conversationNavigationRef: ref({ generation: 0, target: null }),
@@ -119,7 +124,7 @@ function fixture() {
     'workspaces', 'sessions', 'activeWorkspaceId', 'configurationRuntime', 'directoryCursor',
     'selectedRecord', 'activeSessionId', 'browsedSessionId', 'activationNotice',
     'agentReadiness', 'connected', 'authenticated', 'authError',
-    'liveTurn', 'previewState', 'executionDetail',
+    'liveTurn', 'previewState', 'executionDetail', 'observationClient', 'draft', 'pendingAttachments', 'pendingInputRevision',
   ].map(key => [`set${key[0]!.toUpperCase()}${key.slice(1)}`, (value: unknown) => {
     state[key] = typeof value === 'function' ? value(state[key]) : value;
     if (key === 'activeWorkspaceId') scope.activeWorkspaceId = state[key] as string | null;
@@ -210,10 +215,10 @@ describe('App startup navigation effects', () => {
     expect(f.http.attachConversation).not.toHaveBeenCalled();
     expect(f.state.activeSessionId).toBe('conversation_51');
     expect(f.state.browsedSessionId).toBe('conversation_51');
-    expect(f.state.selectedRecord).toMatchObject({ session: { id: 'conversation_51' } });
+    expect(f.http.getConversation).not.toHaveBeenCalled();
   });
 
-  it.each(['before', 'after'])('coalesces the hello history read %s startup resolution', async timing => {
+  it.each(['before', 'after'])('never replays history on hello %s startup resolution', async timing => {
     const f = fixture();
     f.start();
     if (timing === 'before') f.hello('conversation_1');
@@ -222,7 +227,7 @@ describe('App startup navigation effects', () => {
     await vi.advanceTimersByTimeAsync(0);
     if (timing === 'after') f.hello('conversation_1');
     await vi.advanceTimersByTimeAsync(0);
-    expect(f.http.getConversation.mock.calls).toEqual([['conversation_1']]);
+    expect(f.http.getConversation).not.toHaveBeenCalled();
   });
 
   it('restores the prior authorized Workspace and Conversation after Server restart and reauthentication', async () => {
@@ -239,14 +244,14 @@ describe('App startup navigation effects', () => {
     f.catalog.resolve({ activeWorkspaceId: null, workspaces: [workspace] });
     await vi.advanceTimersByTimeAsync(0);
     expect(f.http.selectWorkspace).toHaveBeenCalledWith('/a');
-    expect(f.http.attachConversation).toHaveBeenCalledWith('conversation_5');
+    expect(f.http.attachConversation).not.toHaveBeenCalled();
     expect(f.state.activeWorkspaceId).toBe(workspace.id);
     expect(f.state.activeSessionId).toBe('conversation_5');
     expect(f.state.browsedSessionId).toBe('conversation_5');
-    expect(f.state.selectedRecord).toMatchObject({ session: { id: 'conversation_5' } });
+    expect(f.http.getConversation).not.toHaveBeenCalled();
   });
 
-  it('restores a previously selected Conversation beyond the first directory page using one bounded record read', async () => {
+  it('restores an off-page selection with metadata only and no execution attachment', async () => {
     const f = fixture();
     f.scope.activeWorkspaceRef.current = workspace.id;
     f.scope.browsedConversationRef.current = 'conversation_51';
@@ -266,10 +271,11 @@ describe('App startup navigation effects', () => {
     f.start();
     f.catalog.resolve({ activeWorkspaceId: null, workspaces: [workspace] });
     await vi.advanceTimersByTimeAsync(0);
-    expect(f.http.attachConversation).toHaveBeenCalledWith('conversation_51', workspace.id);
-    expect(f.http.getConversation.mock.calls).toEqual([['conversation_51']]);
+    expect(f.http.getConversationMetadata).toHaveBeenCalledWith('conversation_51');
+    expect(f.http.attachConversation).not.toHaveBeenCalled();
+    expect(f.http.getConversation).not.toHaveBeenCalled();
     expect(f.state.browsedSessionId).toBe('conversation_51');
-    expect(f.state.selectedRecord).toMatchObject({ session: { id: 'conversation_51' } });
+    expect(f.http.getConversation).not.toHaveBeenCalled();
     expect(f.state.sessions).toHaveLength(firstPage.length);
     expect(f.state.sessions).toEqual(expect.arrayContaining(firstPage));
   });
@@ -278,11 +284,12 @@ describe('App startup navigation effects', () => {
     const f = fixture();
     f.scope.activeWorkspaceRef.current = workspace.id;
     f.scope.browsedConversationRef.current = 'conversation_moved';
-    f.http.attachConversation.mockResolvedValue({ state: 'activation_blocked', sessionId: 'conversation_moved' });
+    f.http.getConversationMetadata.mockResolvedValue({ id: 'conversation_moved', workspaceId: 'workspace_b', title: 'moved' });
     f.start();
     f.catalog.resolve({ activeWorkspaceId: null, workspaces: [workspace] });
     await vi.advanceTimersByTimeAsync(0);
-    expect(f.http.attachConversation).toHaveBeenCalledWith('conversation_moved', workspace.id);
+    expect(f.http.getConversationMetadata).toHaveBeenCalledWith('conversation_moved');
+    expect(f.http.attachConversation).not.toHaveBeenCalled();
     expect(f.http.getConversation).not.toHaveBeenCalled();
     expect(f.state.browsedSessionId).toBeNull();
     expect(f.state.selectedRecord).toBeNull();
@@ -292,14 +299,14 @@ describe('App startup navigation effects', () => {
     const f = fixture();
     f.scope.activeWorkspaceRef.current = workspace.id;
     f.scope.browsedConversationRef.current = 'conversation_51';
-    const pending = deferred<Awaited<ReturnType<typeof f.http.attachConversation>>>();
-    f.http.attachConversation.mockReturnValueOnce(pending.promise);
+    const pending = deferred<Awaited<ReturnType<typeof f.http.getConversationMetadata>>>();
+    f.http.getConversationMetadata.mockReturnValueOnce(pending.promise);
     f.start();
     f.catalog.resolve({ activeWorkspaceId: null, workspaces: [workspace] });
     await vi.advanceTimersByTimeAsync(0);
     f.scope.conversationNavigationRef.current.generation += 1;
     f.scope.browsedConversationRef.current = 'newer_conversation';
-    pending.resolve({ state: 'active', sessionId: 'conversation_51' });
+    pending.resolve({ id: 'conversation_51', workspaceId: workspace.id, title: 'restored' });
     await vi.advanceTimersByTimeAsync(0);
     expect(f.http.getConversation).not.toHaveBeenCalled();
     expect(f.scope.browsedConversationRef.current).toBe('newer_conversation');

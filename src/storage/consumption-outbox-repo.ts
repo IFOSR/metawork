@@ -210,7 +210,7 @@ export class SqliteConsumptionOutboxStore implements ConsumptionOutboxPort {
         VALUES (?, ?)
       `).run(sourceInstanceId, createdAt);
       return sourceInstanceId;
-    })();
+    }).immediate();
   }
 
   createReceiptId(): string {

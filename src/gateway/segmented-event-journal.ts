@@ -1,3 +1,4 @@
+import { recordNavigationRead } from '../utils/navigation-diagnostics.js';
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, opendir, readFile, rename, unlink } from 'node:fs/promises';
 import type { Dir } from 'node:fs';
@@ -6,12 +7,13 @@ import { isValidAccountId } from '../account/account-id.js';
 import { isValidConversationId } from '../session/conversation-types.js';
 import type { EventJournal, TracePage } from './event-journal.js';
 import {
-  compareTracePositions,
   decodeTracePageCursor,
   encodeTracePageCursor,
-  traceEventsFromDeltaEvents,
   tracePosition,
 } from './trace-page-cursor.js';
+import { projectIndexedTraceEvents } from './trace-read-model.js';
+import type { ConversationReadModel } from '../session/conversation-read-model.js';
+import { ConversationReadProjector } from '../session/conversation-read-projector.js';
 import type { EventJournalSegmentIndex, JournalSegment, JournalStreamState, ConversationSnapshot, JournalSegmentWrite } from './event-journal-segment-index.js';
 import {
   boundGatewayEventPayload, gatewayEventPayloadBytes, MAX_GATEWAY_EVENT_PAYLOAD_BYTES, sanitizeGatewayEventPayload,
@@ -37,6 +39,8 @@ export class SegmentedEventJournal implements EventJournal {
     private readonly root: string,
     private readonly index: EventJournalSegmentIndex,
     private readonly legacy: Required<Pick<EventJournal, 'exportRetained'>>,
+    private readonly readModel?: ConversationReadModel,
+    private readonly onProjectionError: (error: unknown) => void = () => undefined,
   ) {}
 
   append(event: GatewayEventEnvelope): Promise<GatewayEventEnvelope> {
@@ -79,6 +83,7 @@ export class SegmentedEventJournal implements EventJournal {
       this.index.commit(first.accountId, first.conversationId, state.lastSequence, writes, {
         lastSequence: sequence, replayFloor: state.replayFloor, snapshot: projectConversationSnapshot(state.snapshot, fresh),
       }, this.projectTurnObservations(first.accountId, first.conversationId, fresh));
+      this.projectFresh(first.accountId, first.conversationId, state.lastSequence, fresh, sequence);
       return result;
     });
   }
@@ -115,30 +120,27 @@ export class SegmentedEventJournal implements EventJournal {
     });
   }
 
-  readTracePage(accountId: string, conversationId: string, turnId: string, cursor?: string, limit = 100): Promise<TracePage> {
+  readTracePage(accountId: string, conversationId: string, turnId: string, cursor?: string, limit = 100, latest = false): Promise<TracePage> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) return Promise.reject(new Error('invalid_trace_page_limit'));
-    const after = decodeTracePageCursor(cursor);
+    const after = decodeTracePageCursor(cursor, [accountId, conversationId, turnId]);
     if (cursor && !after) return Promise.reject(new Error('invalid_trace_cursor'));
     return this.serialized(accountId, conversationId, async () => {
-      await this.ensureStream(accountId, conversationId);
-      const events: GatewayEventEnvelope[] = [];
-      for (const segment of this.index.segments(accountId, conversationId, 0)) {
-        events.push(...(await this.readSegment(accountId, conversationId, segment.id))
-          .filter(event => event.kind === 'trace_delta' && event.turnId === turnId));
-      }
-      const ordered = traceEventsFromDeltaEvents(events, turnId);
-      const remaining = ordered.filter(event => !after
-        || compareTracePositions(tracePosition(event), after) > 0);
-      const page = remaining.slice(0, limit);
+      // Never open audit segment bodies on the interactive detail path.
+      const state = this.index.read(accountId, conversationId);
+      const checkpoint = this.index.traceCheckpoint(accountId, conversationId);
+      const preparing = state !== null && (checkpoint ?? -1) < state.lastSequence;
+      const selected = this.index.tracePage(accountId, conversationId, turnId, after, limit, MAX_JOURNAL_RESUME_BYTES, latest);
+      const page = selected.events;
       const first = page[0] ? tracePosition(page[0]) : null;
       const last = page.at(-1) ? tracePosition(page.at(-1)!) : null;
       return {
         turnId,
-        streamRevision: (await this.ensureStream(accountId, conversationId)).lastSequence,
+        streamRevision: state?.lastSequence ?? 0,
+        ...(preparing ? { preparing: true } : {}),
         firstSequence: first?.sequence ?? null,
         lastSequence: last?.sequence ?? null,
         events: page,
-        nextCursor: page.length < remaining.length ? encodeTracePageCursor(last!) : null,
+        nextCursor: selected.hasMore && last ? encodeTracePageCursor(last, [accountId, conversationId, turnId]) : null,
       };
     });
   }
@@ -177,6 +179,7 @@ export class SegmentedEventJournal implements EventJournal {
       this.index.commit(accountId, conversationId, state.lastSequence, [], {
         ...state, lastSequence: state.lastSequence + 1,
       }, []);
+      this.projectFresh(accountId, conversationId, state.lastSequence, [], state.lastSequence + 1);
       return state.lastSequence + 1;
     });
   }
@@ -192,11 +195,62 @@ export class SegmentedEventJournal implements EventJournal {
   /** One maintenance pass bounds both metadata/body work and directory entries. */
   maintain(accountId: string, conversationId: string): Promise<boolean> {
     return this.serialized(accountId, conversationId, async () => {
-      await this.ensureStream(accountId, conversationId);
+      const state = await this.ensureStream(accountId, conversationId);
+      const indexed = await this.rebuildTraceBatch(accountId, conversationId, state.lastSequence);
+      const projected = await this.rebuildViewBatch(accountId, conversationId, state.lastSequence);
       await this.compactBatch(accountId, conversationId);
       await this.cleanupOrphans(accountId, conversationId);
-      return !this.cleanupDirectories.has(this.directory(accountId, conversationId));
+      return indexed && projected && !this.cleanupDirectories.has(this.directory(accountId, conversationId));
     });
+  }
+
+  private async rebuildTraceBatch(accountId: string, conversationId: string, lastSequence: number): Promise<boolean> {
+    const checkpoint = this.index.traceCheckpoint(accountId, conversationId);
+    if (checkpoint === lastSequence) return true;
+    const segments = this.index.segments(accountId, conversationId, checkpoint ?? 0, 1);
+    const segment = segments[0];
+    if (!segment) {
+      this.index.indexTraceEvents(accountId, conversationId, [], lastSequence);
+      return true;
+    }
+    const events = await this.readSegment(accountId, conversationId, segment.id);
+    this.index.indexTraceEvents(accountId, conversationId, projectIndexedTraceEvents(events), segment.lastSequence);
+    return segment.lastSequence === lastSequence;
+  }
+
+  private projectFresh(accountId: string, conversationId: string, expected: number,
+    events: readonly GatewayEventEnvelope[], through: number): void {
+    if (!this.readModel || (this.readModel.head(accountId, conversationId)?.journalSequence ?? 0) !== expected) return;
+    try {
+      new ConversationReadProjector(this.readModel).apply(accountId, conversationId, events, through);
+    } catch (error) {
+      // The source commit succeeded. Publish it; maintenance retries from the
+      // unchanged view checkpoint instead of making execution retry a durable fact.
+      this.onProjectionError(error);
+    }
+  }
+
+  /** Bounded source read for an invisible staging epoch; serialized with appends. */
+  projectReadBatch(accountId: string, conversationId: string, view: ConversationReadModel): Promise<boolean> {
+    return this.serialized(accountId, conversationId, async () => {
+      const state = await this.ensureStream(accountId, conversationId);
+      return this.rebuildViewBatch(accountId, conversationId, state.lastSequence, view);
+    });
+  }
+
+  private async rebuildViewBatch(accountId: string, conversationId: string, lastSequence: number,
+    view = this.readModel): Promise<boolean> {
+    if (!view) return true;
+    const checkpoint = view.head(accountId, conversationId)?.journalSequence ?? 0;
+    if (checkpoint === lastSequence) {
+      if (!view.head(accountId, conversationId)) view.commit(accountId, conversationId, [], lastSequence);
+      return true;
+    }
+    const segment = this.index.segments(accountId, conversationId, checkpoint, 1)[0];
+    const events = segment ? await this.readSegment(accountId, conversationId, segment.id) : [];
+    const through = segment?.lastSequence ?? lastSequence;
+    new ConversationReadProjector(view).apply(accountId, conversationId, events, through);
+    return through === lastSequence;
   }
 
   async close(): Promise<void> {
@@ -310,7 +364,9 @@ export class SegmentedEventJournal implements EventJournal {
   }
 
   private async readSegment(accountId: string, conversationId: string, id: string): Promise<GatewayEventEnvelope[]> {
-    const events: GatewayEventEnvelope[] = JSON.parse(await readFile(this.segmentPath(accountId, conversationId, id), 'utf8'));
+    const body = await readFile(this.segmentPath(accountId, conversationId, id), 'utf8');
+    recordNavigationRead('journal_segment_read', Buffer.byteLength(body));
+    const events: GatewayEventEnvelope[] = JSON.parse(body);
     if (!Array.isArray(events) || events.some(event => event.accountId !== accountId || event.conversationId !== conversationId)) {
       throw new Error('journal_segment_corrupt');
     }
@@ -343,7 +399,8 @@ export class SegmentedEventJournal implements EventJournal {
     let bytes = 2;
     const flush = async () => {
       if (!batch.length) return;
-      writes.push({ segment: await this.writeSegment(accountId, conversationId, batch), events: batch });
+      writes.push({ segment: await this.writeSegment(accountId, conversationId, batch), events: batch,
+        traceEvents: projectIndexedTraceEvents(batch) });
       batch = [];
       bytes = 2;
     };

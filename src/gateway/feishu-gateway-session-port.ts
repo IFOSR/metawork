@@ -1,3 +1,6 @@
+import { feishuClientConnectionId } from './feishu-conversation-routing.js';
+import { clientConnectionEventStreamId } from './client-connection-event-stream.js';
+import type { CommandReceipt } from './command-admission.js';
 import type { SessionSnapshot } from '../session/session-types.js';
 import type {
   FeishuGatewayActionValue,
@@ -5,23 +8,16 @@ import type {
   FeishuGatewayReply,
   FeishuSessionPort,
 } from '../integrations/feishu-app.js';
-import type { GatewayEventEnvelope, GatewayReplay } from './client-events.js';
-import type { InteractionTraceEvent } from '../management/interaction-trace.js';
-import type { EventJournal } from './event-journal.js';
+import type { GatewayEventEnvelope } from './client-events.js';
 import type { FeishuGatewayAdapter } from './feishu-gateway-adapter.js';
 import type { GatewaySubscriptions } from './gateway-subscriptions.js';
 import type { BillQueryService } from '../billing/bill-query-service.js';
-import { ResultStreamAssembler } from './result-stream-assembler.js';
-import {
-  createTaskActivityTracker,
-  type TaskActivityTracker,
-} from './task-activity-tracker.js';
-import { workspaceEventStreamId } from './workspace-event-stream.js';
-import {
-  formatFeishuWorkspaceConfirmation,
-  formatFeishuWorkspaceRequired,
-} from './feishu-events.js';
+import { formatFeishuWorkspaceRequired } from './feishu-events.js';
 import type { QueryBillProjection } from '../billing/bill-query-service.js';
+import type { NotificationJob } from '../delivery/notification-routing.js';
+import type { ConversationObservationService } from './conversation-observation.js';
+import type { ConversationContentReference } from '../session/conversation-read-types.js';
+import type { ClientActionReferences } from './client-action-reference.js';
 
 function formatFeishuBillingSummary(bill: QueryBillProjection): string {
   const external = bill.confirmedDeductedMicroCoin !== null
@@ -50,12 +46,8 @@ function formatFeishuBillingSummary(bill: QueryBillProjection): string {
 export interface FeishuGatewaySessionPortDeps {
   readonly accountId: string;
   readonly tenantKey: string;
-  readonly adapter: FeishuGatewayAdapter;
-  readonly journal: EventJournal;
+  readonly adapter: Pick<FeishuGatewayAdapter, 'handleMessage' | 'handleCardAction'>;
   readonly subscriptions: GatewaySubscriptions;
-  readonly timeoutMs?: number;
-  /** Min interval between in-place activity card updates (default 5s). */
-  readonly activityCardMinIntervalMs?: number;
   readonly onSystemMessage?: (...lines: string[]) => void;
   /** Registered artifacts for a task (drives Feishu cloud-doc delivery). */
   readonly listTaskArtifacts?: (taskId: string) => Array<{
@@ -67,28 +59,14 @@ export interface FeishuGatewaySessionPortDeps {
   readonly runtimePaths?: FeishuSessionPort['runtimePaths'];
   /** Shared server-side billing projection; Feishu only renders its result. */
   readonly billing?: BillQueryService;
+  readonly observation: Pick<ConversationObservationService, 'content'>;
+  readonly actions?: ClientActionReferences;
 }
 
 export class FeishuGatewaySessionPort implements FeishuSessionPort {
-  private readonly workspaceConfirmationCursors = new Map<
-    string,
-    { sequence: number; eventId: string }
-  >();
-  private readonly deliveryListeners = new Set<(delivery: FeishuGatewayDelivery) => void>();
-  private readonly activeRequestIds = new Set<string>();
-  private readonly activeTurnIds = new Set<string>();
-  private readonly requestTurnIds = new Map<string, string>();
-  private readonly liveAttachments = new Map<string, {
-    conversationId: string;
-    unsubscribe: () => void;
-    activity: FeishuActivityCardState;
-  }>();
+  private readonly deliveryListeners = new Set<(delivery: FeishuGatewayDelivery) => void | Promise<void>>();
 
   constructor(private readonly deps: FeishuGatewaySessionPortDeps) {}
-
-  private get activityCardMinIntervalMs(): number {
-    return this.deps.activityCardMinIntervalMs ?? 5_000;
-  }
 
   get runtimePaths(): FeishuSessionPort['runtimePaths'] {
     return this.deps.runtimePaths;
@@ -134,31 +112,23 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     attachments?: Array<{ path: string; name: string; kind: 'image' | 'file' }>;
     onProgress: (text: string, options?: { cardUpdateKey?: string; collapsedMarkdown?: string; terminal?: boolean }) => void;
   }): Promise<string[] | FeishuGatewayReply> {
-    this.activeRequestIds.add(input.requestId);
+    // Subscribe before admission: even an immediate control result cannot race past the caller.
+    let resolveControl!: (event: GatewayEventEnvelope | null) => void;
+    const controlResult = new Promise<GatewayEventEnvelope | null>(resolve => { resolveControl = resolve; });
+    const isControl = /^\/(?:approve|deny|stop-task|stop-turn)(?:\s|$)/u.test(input.text.trim());
+    const unsubscribeControl = isControl ? this.deps.subscriptions.subscribe({ accountId: this.deps.accountId,
+      conversationId: clientConnectionEventStreamId(feishuClientConnectionId(this.deps.accountId,
+        { chatId: input.chatId, threadId: input.threadId }, { tenantKey: this.deps.tenantKey, userId: input.senderId })), listener: event => {
+        if (event.kind === 'command_result' && event.requestId === input.requestId) resolveControl(event);
+      } }) : () => undefined;
+    const controlTimer = isControl ? setTimeout(() => resolveControl(null), 15_000) : undefined;
+    controlTimer?.unref();
     try {
-      return await this.submitGatewayMessageOpen(input);
-    } finally {
-      this.activeRequestIds.delete(input.requestId);
-      const turnId = this.requestTurnIds.get(input.requestId);
-      if (turnId) this.activeTurnIds.delete(turnId);
-      this.requestTurnIds.delete(input.requestId);
-    }
-  }
-
-  private async submitGatewayMessageOpen(input: {
-    senderId: string;
-    chatId: string;
-    threadId?: string;
-    chatType?: 'dm' | 'group' | 'unknown';
-    text: string;
-    requestId: string;
-    attachments?: Array<{ path: string; name: string; kind: 'image' | 'file' }>;
-    onProgress: (text: string, options?: { cardUpdateKey?: string; collapsedMarkdown?: string; terminal?: boolean }) => void;
-  }): Promise<string[] | FeishuGatewayReply> {
     const receipt = await this.deps.adapter.handleMessage(
       { tenantKey: this.deps.tenantKey, userId: input.senderId },
       {
         chatId: input.chatId,
+        chatType: input.chatType,
         ...(input.threadId !== undefined ? { threadId: input.threadId } : {}),
       },
       input.text,
@@ -167,13 +137,6 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       input.attachments,
     );
     if ('kind' in receipt) throw new Error(receipt.message);
-    const receiptTurnId = 'turnId' in receipt && typeof receipt.turnId === 'string'
-      ? receipt.turnId
-      : null;
-    if (receiptTurnId) {
-      this.activeTurnIds.add(receiptTurnId);
-      this.requestTurnIds.set(input.requestId, receiptTurnId);
-    }
     if (receipt.status === 'rejected') {
       if (receipt.reason === 'workspace_required') {
         return [formatFeishuWorkspaceRequired()];
@@ -186,79 +149,43 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       projectionRequestId?: string;
       projectionStreamId?: string;
       connectionId?: string;
+      replyEvents?: readonly GatewayEventEnvelope[];
+      lines?: readonly string[];
+      resourcePage?: unknown;
     };
-    const connectionId = routed.connectionId
-      ?? `feishu:${input.chatId}:${input.threadId ?? ''}`;
-    if (routed.routeKind === 'workspace_directory' && routed.workspaceId) {
-      if (/^\/workspace(?:\s|$)/u.test(input.text.trim())) {
-        this.clearLiveAttachment(connectionId);
-      }
-      return this.workspaceDirectoryReply(
-        routed.workspaceId,
-        input.threadId,
-        input.chatType,
-        routed.projectionStreamId,
-        routed.projectionRequestId,
-      );
+    if (routed.routeKind === 'notification_route') return [...routed.lines ?? []];
+    if ((routed.routeKind === 'conversation_history' || routed.routeKind === 'conversation_attached') && routed.resourcePage) {
+      return this.resourceHistoryReply(routed.resourcePage, receipt.conversationId!, input.senderId, input.chatId, input.threadId, input.chatType);
     }
-    if (routed.routeKind === 'conversation_attached' && routed.workspaceId) {
-      if (!receipt.conversationId) throw new Error('conversation_required');
-      this.ensureLiveAttachment(connectionId, receipt.conversationId, {
-        senderId: input.senderId,
-        chatId: input.chatId,
-        ...(input.threadId ? { threadId: input.threadId } : {}),
-        ...(input.chatType ? { chatType: input.chatType } : {}),
-      });
-      return this.attachReply(
-        routed.workspaceId,
-        receipt.conversationId,
-        routed.projectionRequestId,
-        input.threadId,
-        input.chatType,
-      );
+    if (routed.routeKind === 'conversation_control') {
+      const event = await controlResult;
+      const result = asRecord(event?.payload);
+      return [result?.status === 'completed' ? '操作已处理；任务停止后仍需等待执行清理完成。'
+        : result?.status === 'failed' ? `操作未完成：${String(result.reason)}`
+          : '操作已受理，正在处理。请查看任务进度或再次查询授权状态。'];
     }
-    if (routed.routeKind === 'conversation_history') {
-      if (!receipt.conversationId) throw new Error('conversation_required');
-      this.ensureLiveAttachment(connectionId, receipt.conversationId, {
-        senderId: input.senderId,
-        chatId: input.chatId,
-        ...(input.threadId ? { threadId: input.threadId } : {}),
-        ...(input.chatType ? { chatType: input.chatType } : {}),
-      });
-      return this.historyReply(
-        receipt.conversationId,
-        historyLimitFromText(input.text),
-        routed.projectionRequestId ?? receipt.requestId,
-        input.threadId,
-        input.chatType,
-      );
+    if (routed.routeKind === 'pending_interactions') {
+      const replies = routed.replyEvents ?? [];
+      if (!replies.some(event => asRecord(event.payload)?.complete === true)) throw new Error('授权列表读取未完成，请重新执行 /pending');
+      const requests = replies.map(event => asRecord(asRecord(event.payload)?.request)).filter(request => request !== null);
+      if (!requests.length) return ['当前会话没有等待处理的授权。'];
+      const nextCursor = asRecord(replies.at(-1)?.payload)?.nextCursor;
+      return [...requests.flatMap(request => [
+        `任务：${String(request.taskTitle)}；操作：${String(request.operation)}`,
+        `资源：${String(request.resource)}；原因：${String(request.reason)}；范围：${String(request.suggestedScope)}`,
+        `/approve ${String(request.permissionRequestId)} ${String(request.requestRevision)} ${String(request.generationId)} ${receipt.conversationId}`,
+        `/deny ${String(request.permissionRequestId)} ${String(request.requestRevision)} ${String(request.generationId)} ${receipt.conversationId}`,
+      ]), ...(typeof nextCursor === 'string' ? [`继续查看：/pending ${nextCursor}`] : [])];
     }
-    if (!receipt.conversationId) {
-      throw new Error(receipt.reason ?? 'Feishu Gateway command did not select a Conversation');
+    if (routed.routeKind === 'workspace_directory') {
+      return this.workspaceDirectoryReply(routed.replyEvents ?? [], input.threadId, input.chatType, receipt.directory);
     }
-    const conversationId = receipt.conversationId;
-    this.ensureLiveAttachment(connectionId, conversationId, {
-      senderId: input.senderId,
-      chatId: input.chatId,
-      ...(input.threadId ? { threadId: input.threadId } : {}),
-      ...(input.chatType ? { chatType: input.chatType } : {}),
-    });
-    const terminal = this.waitForTerminal(
-      conversationId,
-      input.requestId,
-      connectionId,
-      input.onProgress,
-    );
-    const replay = await this.deps.journal.replay(this.deps.accountId, conversationId);
-    const replayEvents = orderedUniqueReplayEvents(replay);
-    const latestWorkspaceEvent = replayEvents.filter(isWorkspaceProjectionEvent).at(-1);
-    if (latestWorkspaceEvent) terminal.consume(latestWorkspaceEvent);
-    for (const event of replayEvents) {
-      if (isWorkspaceProjectionEvent(event)) continue;
-      const result = terminal.consume(event);
-      if (result) return result as string[];
+    if (!receipt.conversationId) throw new Error('conversation_required');
+    if (routed.routeKind === 'conversation_history' || routed.routeKind === 'conversation_attached') {
+      throw new Error('conversation_read_model_unavailable');
     }
-    return terminal.promise;
+    return ['消息已接收，进度和结果会继续发送到这里。'];
+    } finally { unsubscribeControl(); if (controlTimer) clearTimeout(controlTimer); }
   }
 
   async submitGatewayAction(input: {
@@ -268,6 +195,26 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     action: FeishuGatewayActionValue;
     requestId: string;
   }): Promise<FeishuGatewayReply> {
+    if (input.action.kind === 'gateway_action') {
+      let resolve!: (event: GatewayEventEnvelope | null) => void;
+      const result = new Promise<GatewayEventEnvelope | null>(done => { resolve = done; });
+      const stop = this.deps.subscriptions.subscribe({ accountId: this.deps.accountId, conversationId: clientConnectionEventStreamId(feishuClientConnectionId(this.deps.accountId,
+        { chatId: input.chatId, threadId: input.threadId }, { tenantKey: this.deps.tenantKey, userId: input.senderId })), listener: event => {
+        if (event.requestId === input.requestId && (event.kind === 'command_result' || event.kind === 'conversation_resource')) resolve(event);
+      } });
+      const timer = setTimeout(() => resolve(null), 15_000); timer.unref();
+      try {
+        const receipt = await this.deps.adapter.handleCardAction({ tenantKey: this.deps.tenantKey, userId: input.senderId },
+          { chatId: input.chatId, threadId: input.threadId, chatType: input.action.chatType }, input.action, input.requestId, `feishu:${input.requestId}`);
+        if ('kind' in receipt || receipt.status === 'rejected') throw new Error('kind' in receipt ? receipt.message : receipt.reason);
+        const event = await result;
+        const payload = asRecord(event?.payload);
+        if (event?.kind === 'conversation_resource') return this.resourceHistoryReply(payload?.page,
+          String(payload?.targetConversationId), input.senderId, input.chatId, input.threadId, input.action.chatType);
+        return { lines: [payload?.status === 'completed' ? '操作已处理。' : payload?.status === 'failed'
+          ? `操作未完成：${String(payload.reason)}` : '操作已受理，正在处理。'] };
+      } finally { stop(); clearTimeout(timer); }
+    }
     const receipt = await this.deps.adapter.handleCardAction(
       { tenantKey: this.deps.tenantKey, userId: input.senderId },
       {
@@ -288,40 +235,25 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       workspaceId?: string | null;
       projectionRequestId?: string;
       projectionStreamId?: string;
+      replyEvents?: readonly GatewayEventEnvelope[];
+      resourcePage?: unknown;
     };
-    if (routed.routeKind === 'workspace_directory' && routed.workspaceId) {
-      return this.workspaceDirectoryReply(
-        routed.workspaceId,
-        input.threadId,
-        input.action.chatType,
-        routed.projectionStreamId,
-        routed.projectionRequestId,
-      );
+    if (routed.routeKind === 'conversation_history' && routed.resourcePage) {
+      return this.resourceHistoryReply(routed.resourcePage, receipt.conversationId!, input.senderId, input.chatId, input.threadId, input.action.chatType);
     }
-    if (routed.routeKind === 'conversation_history' && receipt.conversationId) {
-      return this.historyReply(
-        receipt.conversationId,
-        input.action.limit,
-        routed.projectionRequestId ?? receipt.requestId,
-        input.threadId,
-        input.action.chatType,
-      );
+    if (routed.routeKind === 'workspace_directory') {
+      return this.workspaceDirectoryReply(routed.replyEvents ?? [], input.threadId, input.action.chatType, receipt.directory);
     }
     throw new Error('Unsupported Feishu Gateway card action response');
   }
 
-  private async workspaceDirectoryReply(
-    workspaceId: string,
+  private workspaceDirectoryReply(
+    events: readonly GatewayEventEnvelope[],
     threadId?: string,
     chatType?: 'dm' | 'group' | 'unknown',
-    projectionStreamId?: string,
-    projectionRequestId?: string,
-  ): Promise<FeishuGatewayReply> {
-    const replay = await this.deps.journal.replay(
-      this.deps.accountId,
-      projectionStreamId ?? workspaceEventStreamId(workspaceId),
-    );
-    const projection = projectWorkspaceDirectory(replay, projectionRequestId);
+    directory?: CommandReceipt['directory'],
+  ): FeishuGatewayReply {
+    const projection = projectWorkspaceDirectory(events) ?? (directory ? { workspace: directory.workspace, ...directory.page } : null);
     if (!projection) throw new Error('workspace_directory_unavailable');
     const lines = [
       `# Workspace: ${projection.workspace.displayName}`,
@@ -349,283 +281,87 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     };
   }
 
-  private async attachReply(
-    workspaceId: string,
-    conversationId: string,
-    projectionRequestId?: string,
-    threadId?: string,
-    chatType?: 'dm' | 'group' | 'unknown',
-  ): Promise<FeishuGatewayReply> {
-    const [workspaceReplay, conversationReplay] = await Promise.all([
-      this.deps.journal.replay(
-        this.deps.accountId,
-        workspaceEventStreamId(workspaceId),
-      ),
-      this.deps.journal.replay(this.deps.accountId, conversationId),
-    ]);
-    const projection = projectWorkspaceDirectory(workspaceReplay);
-    const summary = projection?.items.find(item => item.conversationId === conversationId);
-    if (!summary) throw new Error('conversation_summary_unavailable');
-    const page = latestHistoryPage(conversationReplay, projectionRequestId);
-    return {
-      lines: [
-        `# ${summary.title}`,
-        `状态：${summary.activity.state}`,
-        ...(summary.activity.taskId ? [`当前 Task：${summary.activity.taskId}`] : []),
-        '最近对话：',
-        ...formatHistoryTurns(page?.turns.slice(0, 3) ?? []),
-      ],
-      ...(page?.nextCursor
-        ? {
-            actions: [{
-              label: '更早记录',
-              value: {
-                kind: 'conversation_history' as const,
-                cursor: page.nextCursor,
-                limit: 3,
-                ...(threadId ? { threadId } : {}),
-                ...(chatType ? { chatType } : {}),
-              },
-            }],
-          }
-        : {}),
-    };
-  }
-
-  private async historyReply(
-    conversationId: string,
-    limit = 10,
-    projectionRequestId?: string,
-    threadId?: string,
-    chatType?: 'dm' | 'group' | 'unknown',
-  ): Promise<FeishuGatewayReply> {
-    const replay = await this.deps.journal.replay(this.deps.accountId, conversationId);
-    const page = latestHistoryPage(replay, projectionRequestId);
-    if (!page) throw new Error('conversation_history_unavailable');
-    const actions: NonNullable<FeishuGatewayReply['actions']> = [];
-    if (page.previousCursor) {
-      actions.push({
-        label: '上一页',
-        value: {
-          kind: 'conversation_history',
-          cursor: page.previousCursor,
-          limit,
-          ...(threadId ? { threadId } : {}),
-          ...(chatType ? { chatType } : {}),
-        },
-      });
-    }
-    if (page.nextCursor) {
-      actions.push({
-        label: '下一页',
-        value: {
-          kind: 'conversation_history',
-          cursor: page.nextCursor,
-          limit,
-          ...(threadId ? { threadId } : {}),
-          ...(chatType ? { chatType } : {}),
-        },
-      });
-    }
-    return {
-      lines: ['# Conversation History', ...formatHistoryTurns(page.turns)],
-      ...(actions.length > 0 ? { actions } : {}),
-    };
+  private resourceHistoryReply(value: unknown, conversationId: string, senderId: string, chatId: string,
+    threadId?: string, chatType?: 'dm' | 'group' | 'unknown'): FeishuGatewayReply {
+    const page = asRecord(value);
+    const turns = Array.isArray(page?.turns) ? page.turns : [];
+    return { lines: ['会话历史', ...turns.flatMap(raw => {
+      const turn = asRecord(raw) ?? {};
+      return [String(turn.userInput ?? ''), String(turn.answer ?? ''),
+        ...((turn.answerRef as { byteLength?: number } | undefined)?.byteLength
+          ? [`完整正文：/read ${conversationId} ${String((turn.answerRef as { hash: string }).hash)} 0`] : [])];
+    })], ...(typeof page?.nextCursor === 'string' && this.deps.actions ? { actions: [{ label: '更早的对话',
+      value: { kind: 'gateway_action', cursor: this.deps.actions.issue({ accountId: this.deps.accountId,
+        principalId: `feishu:${this.deps.tenantKey}:${senderId}`, conversationId, chatId, threadId: threadId ?? null,
+        command: { kind: 'get_conversation_resource', conversationId, resource: 'turns', cursor: page.nextCursor } }), threadId, chatType } }] } : {}) };
   }
 
   subscribeGatewayDelivery(
-    listener: (delivery: FeishuGatewayDelivery) => void,
+    listener: (delivery: FeishuGatewayDelivery) => void | Promise<void>,
   ): () => void {
     this.deliveryListeners.add(listener);
     return () => this.deliveryListeners.delete(listener);
   }
 
-  private ensureLiveAttachment(
-    connectionId: string,
-    conversationId: string,
-    target: {
-      senderId: string;
-      chatId: string;
-      threadId?: string;
-      chatType?: 'dm' | 'group' | 'unknown';
-    },
-  ): void {
-    const existing = this.liveAttachments.get(connectionId);
-    if (existing?.conversationId === conversationId) return;
-    existing?.unsubscribe();
-    existing?.activity.dispose();
-    const resultAssembler = new ResultStreamAssembler();
-    let activeTaskId: string | null = null;
-    let activeTurnId: string | null = null;
-    const retiredTaskIds = new Set<string>();
-    // §4.3/§5.1: the card scope is conversation + task (never an unstable
-    // request-only lifetime), so a re-attached or retried delivery reuses the
-    // same activity card instead of leaking a new one.
-    // §4.3/§5.1: bind the live card to the immutable turn identity (fallback
-    // to task, then planning) so a task switch never re-keys the same card
-    // mid-stream into a second state machine.
-    const liveCardUpdateKey = () => `feishu-activity:live:${conversationId}:${activeTurnId ?? activeTaskId ?? 'planning'}`;
-    const activity = createLiveActivityCardState(
-      this.activityCardMinIntervalMs,
-      (card, collapsedMarkdown) => this.emitDelivery({
-        ...target,
-        kind: 'progress',
-        reply: {
-          lines: [card],
-          cardUpdateKey: liveCardUpdateKey(),
-          ...(collapsedMarkdown ? { collapsedMarkdown } : {}),
-        },
-      }),
-    );
-    const unsubscribe = this.deps.subscriptions.subscribe({
-      accountId: this.deps.accountId,
-      conversationId,
-      liveConnectionId: connectionId,
-      listener: event => {
-        if (
-          (event.requestId && this.activeRequestIds.has(event.requestId))
-          || (event.turnId && this.activeTurnIds.has(event.turnId))
-        ) return;
-        if (
-          event.kind === 'result_delivery_available'
-          || event.kind === 'result_chunk'
-          || event.kind === 'result_completed'
-        ) {
-          try {
-            resultAssembler.consume(event);
-          } catch {
-            return;
-          }
-          return;
-        }
-        if (event.kind === 'trace_delta') {
-          const payload = asRecord(event.payload);
-          const items = Array.isArray(payload?.events) ? payload.events : [];
-          const eventTurnId = event.turnId ?? stringValue(payload?.turnId);
-          if (eventTurnId && activeTurnId === null) activeTurnId = eventTurnId;
-          const milestones: string[] = [];
-          for (const rawItem of items) {
-            const normalized = normalizeTraceActivityEvent(asRecord(rawItem) ?? {});
-            if (normalized.taskId) {
-              if (retiredTaskIds.has(normalized.taskId)) continue;
-              if (activeTaskId === null) {
-                activeTaskId = normalized.taskId;
-                activeTurnId = eventTurnId;
-              } else if (normalized.taskId !== activeTaskId) {
-                retiredTaskIds.add(activeTaskId);
-                activeTaskId = normalized.taskId;
-                activeTurnId = eventTurnId;
-                activity.reset();
-              }
-              if (normalized.taskId !== activeTaskId) continue;
-            }
-            const { milestone } = activity.tracker.consume(
-              normalized,
-            );
-            if (milestone && milestone.tier === 'chat') milestones.push(milestone.text);
-            else activity.schedule();
-          }
-          if (milestones.length > 0) {
-            this.emitDelivery({
-              ...target,
-              kind: 'progress',
-              reply: { lines: milestones },
-            });
-          }
-          return;
-        }
-        if (event.kind === 'terminal_error') {
-          const payload = asRecord(event.payload);
-          const message = stringValue(payload?.message) ?? 'Gateway execution failed';
-          // Late terminal from a retired turn must never paint, emit, or
-          // clear the CURRENT task's live attachment (2026-09-06 closure).
-          // Strict match: once a turn is active, a terminal with a missing or
-          // different turnId is stale and ignored.
-          const eventTurnId = event.turnId ?? null;
-          if (activeTurnId && eventTurnId !== activeTurnId) {
-            return;
-          }
-          if (activity.tracker.snapshot().taskId) {
-            // §5.1 terminal paint: the card itself reaches a terminal state;
-            // the failure notice then arrives as its own final message.
-            this.emitDelivery({
-              ...target,
-              kind: 'progress',
-              reply: {
-                lines: [activity.tracker.renderReceipt('failed', message)],
-                cardUpdateKey: liveCardUpdateKey(),
-                terminal: true,
-              },
-            });
-          }
-          this.emitDelivery({
-            ...target,
-            kind: 'final',
-            reply: { lines: [`任务失败：${message}`] },
-          });
-          if (activeTaskId) retiredTaskIds.add(activeTaskId);
-          activity.reset();
-          activeTaskId = null;
-          activeTurnId = null;
-          return;
-        }
-        if (event.kind !== 'final_answer') return;
-        // Late final_answer from a retired turn must not be attributed to the
-        // new task: verify the turn identity before painting the terminal
-        // receipt or clearing the active task state. Strict match: once a turn
-        // is active, a terminal with a missing or different turnId is stale.
-        const finalEventTurnId = event.turnId ?? null;
-        if (activeTurnId && finalEventTurnId !== activeTurnId) {
-          return;
-        }
-        const payload = asRecord(event.payload);
-        const resultId = stringValue(payload?.resultId);
-        const completed = resultId ? resultAssembler.find(resultId) : null;
-        const lines = completed
-          ? completed.content.split('\n')
-          : Array.isArray(payload?.lines)
-            ? payload.lines.filter((line): line is string => typeof line === 'string')
-            : [];
-        const finalTaskId = activity.tracker.snapshot().taskId;
-        if (finalTaskId) {
-          // §5.1 terminal paint: the card closes itself (✔ 完成 receipt) while
-          // the answer travels as its own final message.
-          this.emitDelivery({
-            ...target,
-            kind: 'progress',
-            reply: {
-              lines: [activity.tracker.renderReceipt('completed')],
-              cardUpdateKey: liveCardUpdateKey(),
-              terminal: true,
-            },
-          });
-        }
-        this.emitDelivery({
-          ...target,
-          kind: 'final',
-          reply: (() => {
-            const artifacts = this.taskArtifactsFor(finalTaskId);
-            return artifacts.length > 0 ? { lines, artifacts } : { lines };
-          })(),
-        });
-        if (activeTaskId) retiredTaskIds.add(activeTaskId);
-        activity.reset();
-        activeTaskId = null;
-        activeTurnId = null;
-      },
-    });
-    this.liveAttachments.set(connectionId, { conversationId, unsubscribe, activity });
-  }
-
-  private clearLiveAttachment(connectionId: string): void {
-    const attachment = this.liveAttachments.get(connectionId);
-    attachment?.unsubscribe();
-    attachment?.activity.dispose();
-    this.liveAttachments.delete(connectionId);
-  }
-
-  private emitDelivery(delivery: FeishuGatewayDelivery): void {
-    for (const listener of this.deliveryListeners) listener(delivery);
+  /** A durable outbox only settles after the platform adapter acknowledges delivery. */
+  async deliverNotification(job: NotificationJob): Promise<void> {
+    if (!this.deliveryListeners.size) throw new Error('feishu_transport_unavailable');
+    const payload = asRecord(job.fact.payload) ?? {};
+    const destination = job.route.destination;
+    let body = stringValue(payload.answer) ?? '';
+    const reference = payload.answerRef as ConversationContentReference | null;
+    if (reference && this.deps.observation && reference.byteLength <= 16 * 1024 * 1024) {
+      // Delivery has a separate body budget; the UI never needs this full allocation.
+      const chunks: string[] = []; let offset = 0;
+      while (offset < reference.byteLength) {
+        const part = await this.deps.observation.content(job.route.accountId, job.route.conversationId, reference.hash, offset, 65536);
+        if (!part || part.nextOffset <= offset) throw new Error('notification_result_not_ready');
+        chunks.push(part.text); offset = part.nextOffset;
+      }
+      body = chunks.join('');
+    }
+    const label = payload.status === 'cancelled' ? '任务已停止' : payload.status === 'failed' ? '任务执行失败'
+      : job.fact.category === 'result' ? '任务结果' : '任务进行中';
+    const approval = job.fact.category === 'approval' ? [
+      `等待授权：${String(payload.operation)}\n资源：${String(payload.resource)}\n原因：${String(payload.reason)}\n范围：${String(payload.scope)}`,
+      ...(asRecord(payload.detailsRef)?.hash ? [`请先查看完整申请：/read ${job.route.conversationId} ${String(asRecord(payload.detailsRef)!.hash)} 0`] : []),
+      `/approve ${String(payload.requestId)} ${String(payload.requestRevision)} ${String(payload.generationId)} ${job.route.conversationId}`,
+      `/deny ${String(payload.requestId)} ${String(payload.requestRevision)} ${String(payload.generationId)} ${job.route.conversationId}`,
+    ] : [];
+    const bill = job.fact.category === 'result' && typeof payload.turnId === 'string'
+      ? this.deps.billing?.getQueryBillForTurn(job.route.accountId, payload.turnId) : null;
+    const actions: NonNullable<FeishuGatewayReply['actions']> = [];
+    const issue = (label: string, command: import('./client-protocol.js').GatewayCommand) => {
+      if (!this.deps.actions) return;
+      const cursor = this.deps.actions.issue({ accountId: job.route.accountId, principalId: job.route.principalId,
+        conversationId: job.route.conversationId, chatId: destination.chatId, threadId: destination.threadId ?? null, command });
+      actions.push({ label, value: { kind: 'gateway_action', cursor, threadId: destination.threadId, chatType: destination.chatType } });
+    };
+    if (job.fact.category === 'approval') for (const resolution of ['approve', 'deny'] as const) {
+      if (resolution === 'approve' && payload.detailsRef) continue;
+      issue(resolution === 'approve' ? '同意' : '拒绝', { kind: 'permission_resolution_v2',
+        requestId: String(payload.requestId), requestRevision: String(payload.requestRevision),
+        expectedExecutionGeneration: String(payload.generationId), resolution });
+    }
+    if (payload.canCancel === true && job.fact.taskId && typeof payload.executionGeneration === 'string') {
+      // Stable command text keeps progress cards editable through the shared card machine.
+      approval.push(`/stop-task ${job.fact.taskId} ${payload.executionGeneration} ${job.route.conversationId}`);
+    }
+    const delivery: FeishuGatewayDelivery = {
+      senderId: destination.senderId, chatId: destination.chatId, threadId: destination.threadId, chatType: destination.chatType,
+      kind: job.fact.category === 'result' ? 'final' : 'progress',
+      reply: { lines: [`${stringValue(payload.title) ?? label} · ${job.route.conversationId}`,
+        ...(stringValue(payload.explanation) ? [String(payload.explanation)] : []), ...approval, ...(body ? [body] : []),
+        ...(stringValue(payload.progressSummary) ? [String(payload.progressSummary)] : []),
+        ...(reference && reference.byteLength > 16 * 1024 * 1024
+          ? [`结果较长，可分段读取完整正文：/read ${job.route.conversationId} ${reference.hash} 0`] : []),
+        ...(bill ? [formatFeishuBillingSummary(bill)] : [])],
+        ...(actions.length ? { actions } : {}),
+        ...(job.fact.category === 'progress' ? { cardUpdateKey: `notification:${job.route.accountId}:${job.route.id}:${job.fact.subjectId}`,
+          terminal: payload.canCancel === false } : {}),
+        ...(job.fact.category === 'result' ? { artifacts: this.taskArtifactsFor(job.fact.taskId) } : {}) },
+    };
+    await Promise.all([...this.deliveryListeners].map(listener => listener(delivery)));
   }
 
   private taskArtifactsFor(taskId: string | null): Array<{
@@ -647,318 +383,6 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
     }
   }
 
-  private waitForTerminal(
-    conversationId: string,
-    requestId: string,
-    connectionId: string,
-    onProgress: (
-      text: string,
-      options?: { cardUpdateKey?: string; collapsedMarkdown?: string; terminal?: boolean },
-    ) => void,
-  ): {
-    promise: Promise<string[] | FeishuGatewayReply>;
-    consume(event: GatewayEventEnvelope): unknown;
-  } {
-    let unsubscribe: (() => void) | null = null;
-    let timeout: NodeJS.Timeout | null = null;
-    let settled = false;
-    const seenEventIds = new Set<string>();
-    const resultAssembler = new ResultStreamAssembler();
-    const pendingProgress = new Map<string, string>();
-    let progressFlushTimer: NodeJS.Timeout | null = null;
-    const activity = createTaskActivityTracker();
-    // §4.3: stable delivery scope (conversation + task), not the request id.
-    // §4.3/§5.1: stable delivery scope. The request id is immutable for the
-    // whole turn, so this card never switches identity mid-stream (the old
-    // requestId->taskId switch produced a second machine and a second card).
-    const cardUpdateKey = () => `feishu-activity:turn:${conversationId}:${requestId}`;
-    let cardTimer: NodeJS.Timeout | null = null;
-    let lastCardSentAtMs = 0;
-    let resolvePromise!: (value: string[] | FeishuGatewayReply) => void;
-    let rejectPromise!: (error: Error) => void;
-    const paintActivityCard = () => {
-      lastCardSentAtMs = Date.now();
-      const parts = activity.renderCardParts();
-      onProgress(parts.markdown, {
-        cardUpdateKey: cardUpdateKey(),
-        ...(parts.collapsedMarkdown ? { collapsedMarkdown: parts.collapsedMarkdown } : {}),
-      });
-    };
-    const scheduleActivityCard = () => {
-      if (cardTimer) return;
-      const waitMs = Math.max(
-        0,
-        this.activityCardMinIntervalMs - (Date.now() - lastCardSentAtMs),
-      );
-      if (waitMs === 0) {
-        paintActivityCard();
-        return;
-      }
-      cardTimer = setTimeout(() => {
-        cardTimer = null;
-        paintActivityCard();
-      }, waitMs);
-      cardTimer.unref?.();
-    };
-    const cleanup = () => {
-      unsubscribe?.();
-      unsubscribe = null;
-      if (timeout) clearTimeout(timeout);
-      timeout = null;
-      if (progressFlushTimer) clearTimeout(progressFlushTimer);
-      progressFlushTimer = null;
-      if (cardTimer) clearTimeout(cardTimer);
-      cardTimer = null;
-    };
-    const flushProgress = () => {
-      if (pendingProgress.size === 0) return;
-      const text = [...pendingProgress.values()].join('\n');
-      pendingProgress.clear();
-      onProgress(text);
-    };
-    const queueProgress = (key: string, text: string, immediate: boolean) => {
-      if (!text.trim()) return;
-      pendingProgress.set(key, text.slice(0, 500));
-      if (immediate) {
-        flushProgress();
-        return;
-      }
-      if (progressFlushTimer) return;
-      progressFlushTimer = setTimeout(() => {
-        progressFlushTimer = null;
-        flushProgress();
-      }, 250);
-      progressFlushTimer.unref?.();
-    };
-    const consume = (event: GatewayEventEnvelope): string[] | FeishuGatewayReply | null => {
-      if (settled) return null;
-      if (seenEventIds.has(event.eventId)) return null;
-      seenEventIds.add(event.eventId);
-      if (isWorkspaceProjectionEvent(event)) {
-        this.confirmWorkspace(event, onProgress);
-        return null;
-      }
-      if (event.requestId !== requestId) return null;
-      if (
-        event.kind === 'result_delivery_available'
-        || event.kind === 'result_chunk'
-        || event.kind === 'result_completed'
-      ) {
-        try {
-          resultAssembler.consume(event);
-        } catch (error) {
-          settled = true;
-          cleanup();
-          rejectPromise(error as Error);
-        }
-        return null;
-      }
-      if (event.kind === 'trace_delta') {
-        const payload = event.payload as {
-          events?: Array<Record<string, unknown>>;
-        };
-        for (const item of payload.events ?? []) {
-          const { milestone } = activity.consume(normalizeTraceActivityEvent(item));
-          if (milestone && milestone.tier === 'chat') {
-            // L3 chat tier: only high-value milestones interrupt the user.
-            queueProgress(milestone.key, milestone.text, true);
-          } else {
-            // L1/L2: step detail converges into the self-updating activity
-            // card instead of flooding the chat (replaces traceProgressLines).
-            scheduleActivityCard();
-          }
-        }
-      }
-      if (event.kind === 'terminal_error') {
-        flushProgress();
-        const message = (event.payload as { message?: string }).message
-          ?? 'Gateway execution failed';
-        if (lastCardSentAtMs > 0) {
-          onProgress(activity.renderReceipt('failed', message), {
-            cardUpdateKey: cardUpdateKey(),
-            terminal: true,
-          });
-        }
-        settled = true;
-        cleanup();
-        if (/workspace_required|workspace (?:is )?not (?:selected|set)/iu.test(message)) {
-          const lines = [formatFeishuWorkspaceRequired()];
-          resolvePromise(lines);
-          return lines;
-        }
-        const bill = event.turnId
-          ? this.deps.billing?.getQueryBillForTurn(this.deps.accountId, event.turnId)
-          : null;
-        rejectPromise(new Error(bill
-          ? `${message}\n${formatFeishuBillingSummary(bill)}`
-          : message));
-        return null;
-      }
-      if (event.kind === 'final_answer') {
-        flushProgress();
-        if (lastCardSentAtMs > 0) {
-          onProgress(activity.renderReceipt('completed'), {
-            cardUpdateKey: cardUpdateKey(),
-            terminal: true,
-          });
-        }
-        const payload = event.payload as { lines?: string[]; resultId?: string };
-        const completed = payload.resultId
-          ? resultAssembler.find(payload.resultId)
-          : null;
-        const lines = completed ? completed.content.split('\n') : payload.lines ?? [];
-        const artifacts = this.taskArtifactsFor(activity.snapshot().taskId);
-        const bill = event.turnId
-          ? this.deps.billing?.getQueryBillForTurn(this.deps.accountId, event.turnId)
-          : null;
-        const billedLines = bill ? [...lines, '', formatFeishuBillingSummary(bill)] : lines;
-        const value = artifacts.length > 0 ? { lines: billedLines, artifacts } : billedLines;
-        settled = true;
-        cleanup();
-        resolvePromise(value);
-        return value;
-      }
-      return null;
-    };
-    const promise = new Promise<string[] | FeishuGatewayReply>((resolve, reject) => {
-      resolvePromise = resolve;
-      rejectPromise = reject;
-    });
-    unsubscribe = this.deps.subscriptions.subscribe({
-      accountId: this.deps.accountId,
-      conversationId,
-      liveConnectionId: connectionId,
-      listener: consume,
-    });
-    timeout = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      rejectPromise(new Error('Timed out waiting for Feishu Gateway final event'));
-    }, this.deps.timeoutMs ?? 2 * 60 * 60 * 1000);
-    timeout.unref?.();
-    return { promise, consume };
-  }
-
-  private confirmWorkspace(
-    event: GatewayEventEnvelope,
-    onProgress: (text: string) => void,
-  ): void {
-    const path = workspacePathFromEvent(event);
-    if (!path) return;
-    const cursor = this.workspaceConfirmationCursors.get(event.conversationId);
-    if (
-      cursor
-      && (
-        event.sequence < cursor.sequence
-        || (event.sequence === cursor.sequence && event.eventId <= cursor.eventId)
-      )
-    ) {
-      return;
-    }
-    this.workspaceConfirmationCursors.set(event.conversationId, {
-      sequence: event.sequence,
-      eventId: event.eventId,
-    });
-    onProgress(formatFeishuWorkspaceConfirmation(path));
-  }
-}
-
-function orderedUniqueReplayEvents(replay: GatewayReplay): GatewayEventEnvelope[] {
-  const seen = new Set<string>();
-  return [...replay.snapshot, ...replay.deltas]
-    .sort((left, right) => left.sequence - right.sequence || left.eventId.localeCompare(right.eventId))
-    .filter(event => {
-      if (seen.has(event.eventId)) return false;
-      seen.add(event.eventId);
-      return true;
-    });
-}
-
-function isWorkspaceProjectionEvent(event: GatewayEventEnvelope): boolean {
-  if (event.kind !== 'conversation_snapshot' && event.kind !== 'workspace_changed') {
-    return false;
-  }
-  return typeof event.payload === 'object'
-    && event.payload !== null
-    && 'workspace' in event.payload;
-}
-
-function workspacePathFromEvent(event: GatewayEventEnvelope): string | null {
-  if (!isWorkspaceProjectionEvent(event)) return null;
-  const payload = event.payload as {
-    workspace?: { path?: unknown } | null;
-  };
-  return typeof payload.workspace?.path === 'string' && payload.workspace.path.length > 0
-    ? payload.workspace.path
-    : null;
-}
-
-function normalizeTraceActivityEvent(item: Record<string, unknown>): InteractionTraceEvent {
-  return {
-    id: stringValue(item.id) ?? `trace-${Math.random().toString(36).slice(2)}`,
-    sequence: typeof item.sequence === 'number' ? item.sequence : 0,
-    occurredAt: stringValue(item.occurredAt) ?? new Date().toISOString(),
-    phase: (stringValue(item.phase) ?? 'execution') as InteractionTraceEvent['phase'],
-    actor: (stringValue(item.actor) ?? 'runtime') as InteractionTraceEvent['actor'],
-    kind: stringValue(item.kind) ?? 'unknown',
-    status: (stringValue(item.status) ?? 'running') as InteractionTraceEvent['status'],
-    title: stringValue(item.title) ?? '',
-    summary: stringValue(item.summary) ?? '',
-    details: asRecord(item.details) ?? {},
-    taskId: stringValue(item.taskId),
-    subtaskId: stringValue(item.subtaskId),
-  };
-}
-
-interface FeishuActivityCardState {
-  tracker: TaskActivityTracker;
-  /** Schedule a throttled in-place card repaint for accumulated activity. */
-  schedule(): void;
-  reset(): void;
-  dispose(): void;
-}
-
-function createLiveActivityCardState(
-  minIntervalMs: number,
-  emitCard: (card: string, collapsedMarkdown: string | null) => void,
-): FeishuActivityCardState {
-  let tracker = createTaskActivityTracker();
-  let timer: NodeJS.Timeout | null = null;
-  let lastSentAtMs = 0;
-  const paint = () => {
-    lastSentAtMs = Date.now();
-    const parts = tracker.renderCardParts();
-    emitCard(parts.markdown, parts.collapsedMarkdown);
-  };
-  return {
-    get tracker() {
-      return tracker;
-    },
-    schedule() {
-      if (timer) return;
-      const waitMs = Math.max(0, minIntervalMs - (Date.now() - lastSentAtMs));
-      if (waitMs === 0) {
-        paint();
-        return;
-      }
-      timer = setTimeout(() => {
-        timer = null;
-        paint();
-      }, waitMs);
-      timer.unref?.();
-    },
-    reset() {
-      if (timer) clearTimeout(timer);
-      timer = null;
-      lastSentAtMs = 0;
-      tracker = createTaskActivityTracker();
-    },
-    dispose() {
-      if (timer) clearTimeout(timer);
-      timer = null;
-    },
-  };
 }
 
 interface FeishuWorkspaceConversation {
@@ -979,57 +403,12 @@ interface FeishuWorkspaceDirectoryProjection {
   nextCursor: string | null;
 }
 
-function projectWorkspaceDirectory(
-  replay: GatewayReplay,
-  requestId?: string,
-): FeishuWorkspaceDirectoryProjection | null {
-  let projection: FeishuWorkspaceDirectoryProjection | null = null;
-  for (const event of orderedUniqueReplayEvents(replay)) {
-    if (requestId && event.requestId !== requestId) continue;
-    if (event.kind === 'workspace_directory_snapshot') {
-      const payload = asRecord(event.payload);
-      const page = parseWorkspaceDirectoryPage(payload?.page);
-      const workspace = parseWorkspaceSummary(payload?.workspace);
-      if (workspace && page) {
-        projection = { workspace, ...page };
-      } else if (projection && page) {
-        projection = {
-          workspace: projection.workspace,
-          ...page,
-        };
-      }
-      continue;
-    }
-    if (!projection) continue;
-    const payload = asRecord(event.payload);
-    if (event.kind === 'workspace_conversation_upserted') {
-      const conversation = parseWorkspaceConversation(payload?.conversation);
-      if (!conversation) continue;
-      projection.items = [
-        conversation,
-        ...projection.items.filter(item => item.conversationId !== conversation.conversationId),
-      ];
-      continue;
-    }
-    if (event.kind === 'workspace_conversation_removed') {
-      const conversationId = stringValue(payload?.conversationId);
-      if (conversationId) {
-        projection.items = projection.items.filter(
-          item => item.conversationId !== conversationId,
-        );
-      }
-      continue;
-    }
-    if (event.kind === 'workspace_activity_changed') {
-      const conversationId = stringValue(payload?.conversationId);
-      const activity = parseActivity(payload?.activity);
-      if (!conversationId || !activity) continue;
-      projection.items = projection.items.map(item => (
-        item.conversationId === conversationId ? { ...item, activity } : item
-      ));
-    }
-  }
-  return projection;
+function projectWorkspaceDirectory(events: readonly GatewayEventEnvelope[]): FeishuWorkspaceDirectoryProjection | null {
+  const event = [...events].reverse().find(event => event.kind === 'workspace_directory_snapshot');
+  const payload = asRecord(event?.payload);
+  const page = parseWorkspaceDirectoryPage(payload?.page);
+  const workspace = parseWorkspaceSummary(payload?.workspace);
+  return page && workspace ? { workspace, ...page } : null;
 }
 
 function parseWorkspaceSummary(
@@ -1080,63 +459,6 @@ function parseActivity(value: unknown): FeishuWorkspaceConversation['activity'] 
     state,
     taskId: stringValue(record.taskId),
   };
-}
-
-interface FeishuHistoryPage {
-  turns: Array<{
-    userInput: string;
-    finalAnswer: string | null;
-  }>;
-  previousCursor: string | null;
-  nextCursor: string | null;
-}
-
-function latestHistoryPage(
-  replay: GatewayReplay,
-  requestId?: string,
-): FeishuHistoryPage | null {
-  const events = orderedUniqueReplayEvents(replay).reverse();
-  const selected = requestId
-    ? events.find(event => (
-        event.kind === 'conversation_history_page'
-        && event.requestId === requestId
-      ))
-    : undefined;
-  const candidates = selected
-    ? [selected]
-    : events;
-  for (const event of candidates) {
-    if (event.kind !== 'conversation_history_page') continue;
-    const payload = asRecord(event.payload);
-    if (!payload || !Array.isArray(payload.turns)) continue;
-    return {
-      turns: payload.turns.map(turn => {
-        const record = asRecord(turn);
-        const userInput = stringValue(record?.userInput);
-        if (!userInput) return null;
-        return {
-          userInput,
-          finalAnswer: stringValue(record?.finalAnswer),
-        };
-      }).filter((turn): turn is FeishuHistoryPage['turns'][number] => turn !== null),
-      previousCursor: stringValue(payload.previousCursor),
-      nextCursor: stringValue(payload.nextCursor),
-    };
-  }
-  return null;
-}
-
-function formatHistoryTurns(turns: FeishuHistoryPage['turns']): string[] {
-  return turns.flatMap(turn => [
-    `用户：${turn.userInput}`,
-    ...(turn.finalAnswer ? [`MetaWork：${turn.finalAnswer}`] : []),
-  ]);
-}
-
-function historyLimitFromText(text: string): number {
-  const raw = /^\/history(?:\s+(\S+))?$/u.exec(text.trim())?.[1];
-  const parsed = raw === undefined ? 10 : Number(raw);
-  return Number.isSafeInteger(parsed) ? Math.min(Math.max(parsed, 1), 50) : 10;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

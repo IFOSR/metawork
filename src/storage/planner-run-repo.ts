@@ -88,7 +88,7 @@ export class PlannerRunRepo {
         JSON.stringify(sanitizeSummary(call.resultSummary)),
         completedAt,
       ));
-    })();
+    }).immediate();
   }
 }
 

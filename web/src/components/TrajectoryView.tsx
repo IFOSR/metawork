@@ -15,11 +15,17 @@ export function TrajectoryView({
   http,
   onOpenArtifact,
   onOpenSubtaskDetail,
+  onLoadMore,
+  loading = false,
+  hasMore = false,
 }: {
   turn: ConversationTurnProjection | null;
   http?: HttpClient | null;
   onOpenArtifact?: (artifact: ArtifactProjection) => void;
   onOpenSubtaskDetail?: (subtaskId: string, subtaskTitle: string) => void;
+  onLoadMore?: () => void;
+  loading?: boolean;
+  hasMore?: boolean;
 }) {
   const [workGraph, setWorkGraph] = useState<WorkGraphPresentationProjection | null>(null);
   useEffect(() => {
@@ -46,7 +52,12 @@ export function TrajectoryView({
       <ExecutionNarrative turn={turn} />
       <WorkGraphPanel projection={workGraph} />
       <TrajectoryTimeline turn={turn} />
-      <TrajectoryEventTable turn={turn} />
+      <TrajectoryEventTable
+        turn={turn}
+        onLoadMore={onLoadMore}
+        loading={loading}
+        hasMore={hasMore}
+      />
       {onOpenArtifact && artifacts.length > 0 && (
         <section className="turn-artifacts" aria-label="任务产物">
           <header><span>ARTIFACTS</span></header>

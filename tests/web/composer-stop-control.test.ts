@@ -64,12 +64,13 @@ describe('Composer stop control', () => {
     expect(composer).toContain('停止当前轮');
   });
 
-  it('routes the stop control through the WebSocket cancel frame', async () => {
+  it('routes the stop control through an explicitly targeted Gateway command', async () => {
     const ws = await readFile(new URL('api/ws.ts', root), 'utf8');
-    expect(ws).toContain("type: 'cancel'");
+    expect(ws).toContain("type: 'command'");
+    expect(ws).toContain("selection: { mode: 'attach', conversationId }");
 
-    const app = await readFile(new URL('App.tsx', root), 'utf8');
-    expect(app).toContain('sendCancel(');
+    const app = await Promise.all(['App.tsx', 'observation/use-workspace-controller.ts'].map(path => readFile(new URL(path, root), 'utf8'))).then(parts => parts.join('\n'));
+    expect(app).toContain("sendCommand(target, { kind: 'cancel_turn', turnId })");
     expect(app).toContain('onCancelTurn');
   });
 });

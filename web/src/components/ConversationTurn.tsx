@@ -12,6 +12,16 @@ function executionStatusLabel(status: ConversationTurnProjection['status']): str
   return '已完成';
 }
 
+function deliveryPending(turn: ConversationTurnProjection): boolean {
+  return turn.deliveryStatus === 'streaming'
+    || turn.deliveryStatus === 'verifying'
+    || (!turn.deliveryStatus && turn.status === 'completed' && !turn.finalAnswer && Boolean(turn.taskId));
+}
+
+function deliveryFailed(turn: ConversationTurnProjection): boolean {
+  return turn.deliveryStatus === 'failed';
+}
+
 interface TurnFailureFacts {
   code?: string;
   summary?: string;
@@ -46,12 +56,14 @@ export function ConversationTurnView({
   onOpenArtifact,
   onOpenTrajectory,
   onOpenBilling,
+  onRetryDelivery,
 }: {
   turn: ConversationTurnProjection;
   liveExecutionPanel?: ReactNode;
   onOpenArtifact?: (artifact: ArtifactProjection) => void;
   onOpenTrajectory?: (turnId: string) => void;
   onOpenBilling?: (turnId: string) => void;
+  onRetryDelivery?: (turnId: string) => void;
 }) {
   // 历史会话记录可能没有 artifacts 字段；防御性兜底避免整树卸载。
   const artifacts = Array.isArray(turn.artifacts) ? turn.artifacts : [];
@@ -64,6 +76,8 @@ export function ConversationTurnView({
   );
   const stepCount = turn.traceEvents.length;
   const failure = turn.status === 'completed' ? null : turnFailureFacts(turn);
+  const resultPending = turn.status === 'completed' && deliveryPending(turn);
+  const resultFailed = deliveryFailed(turn);
   return (
     <article className="conversation-turn" data-turn-id={turn.id}>
       <section className="user-message">
@@ -73,7 +87,9 @@ export function ConversationTurnView({
       {liveExecutionPanel}
       {(!isSystemCommand || hasTaskExecution) && hasTaskExecution && (
         <section className="execution-status-line" data-status={turn.status}>
-          <span>{executionStatusLabel(turn.status)}{stepCount > 0 ? ` · ${stepCount} 步` : ''}</span>
+          <span>{resultPending
+            ? '执行已完成，正在整理结果'
+            : resultFailed ? '执行已完成，结果交付失败' : executionStatusLabel(turn.status)}{stepCount > 0 ? ` · ${stepCount} 步` : ''}</span>
           {onOpenTrajectory && (
             <button
               type="button"
@@ -108,13 +124,28 @@ export function ConversationTurnView({
           />
         </section>
       )}
-      {!isSystemCommand && turn.status !== 'running' && turn.finalAnswer && (
+      {!isSystemCommand && turn.finalAnswer && (
         <section className="final-answer">
           <ArtifactAwareMarkdownContent
             value={turn.finalAnswer}
             artifacts={artifacts}
             onOpenArtifact={onOpenArtifact}
           />
+        </section>
+      )}
+      {!isSystemCommand && resultPending && !turn.finalAnswer && (
+        <section className="final-answer result-delivery-pending" aria-live="polite">
+          执行已完成，正在整理最终结果…
+        </section>
+      )}
+      {!isSystemCommand && resultFailed && (
+        <section className="final-answer result-delivery-failed" aria-live="polite">
+          结果交付失败，请重试。
+          {onRetryDelivery && (
+            <button type="button" onClick={() => onRetryDelivery(turn.id)}>
+              重新获取结果
+            </button>
+          )}
         </section>
       )}
       {/* 账单放在任务结果之后；对话中只保留阶段/模型摘要，详情进入账单 Tab。 */}

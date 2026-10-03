@@ -57,8 +57,9 @@ describe('Detailed conversation view', () => {
       readFile(new URL('../styles.css', root), 'utf8'),
     ]);
 
-    // 执行细节可折叠/展开（默认展开）。
+    // 执行细节可折叠/展开，进入新的轨迹时默认折叠。
     expect(narrative).toContain('collapsed');
+    expect(narrative).toContain('useState(true)');
     expect(narrative).toContain('narrative-toggle');
     expect(narrative).toContain('折叠');
     expect(narrative).toContain('展开');
@@ -76,11 +77,11 @@ describe('Detailed conversation view', () => {
   });
 
   it('opens the exact historical Turn instead of always using the latest Turn', async () => {
-    const app = await readFile(new URL('../App.tsx', root), 'utf8');
+    const app = await Promise.all(['../App.tsx', '../observation/use-workspace-controller.ts'].map(path => readFile(new URL(path, root), 'utf8'))).then(parts => parts.join('\n'));
 
     expect(app).toContain('selectedTrajectoryTurnId');
-    expect(app).toContain('turns.find(turn => turn.id === selectedTrajectoryTurnId)');
-    expect(app).toContain('onOpenTrajectory={turnId =>');
+    expect(app).toContain("useConversationTurn(observationClient?.conversations, observedId, selectedTrajectoryTurnId ?? '')");
+    expect(app).toContain('onOpenTrajectory={openTrajectory}');
     expect(app).toContain(
       'useEffect(() => setSelectedTrajectoryTurnId(null), [activeWorkspaceId, browsedSessionId])',
     );

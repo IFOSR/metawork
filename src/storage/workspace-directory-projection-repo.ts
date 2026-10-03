@@ -80,7 +80,7 @@ export class SqliteWorkspaceDirectoryProjectionRepo implements WorkspaceDirector
         ON CONFLICT(account_id, conversation_id) DO UPDATE SET revision = revision + 1
       `).run(this.accountId);
       return progress.token;
-    })();
+    }).immediate();
   }
 
   beginRebuild(sourceFingerprint: string, token: string): void {
@@ -93,7 +93,7 @@ export class SqliteWorkspaceDirectoryProjectionRepo implements WorkspaceDirector
       }
       progress.sourceConfirmed = true;
       this.saveRebuild('building', sourceFingerprint, progress);
-    })();
+    }).immediate();
   }
 
   writeBatch(items: readonly WorkspaceConversationSummary[], checkpoint: string, token: string): void {
@@ -105,7 +105,7 @@ export class SqliteWorkspaceDirectoryProjectionRepo implements WorkspaceDirector
       }
       progress.cursor = checkpoint;
       this.saveRebuild('building', stored.sourceFingerprint, progress);
-    })();
+    }).immediate();
   }
 
   finishRebuild(token: string): boolean {
@@ -128,7 +128,7 @@ export class SqliteWorkspaceDirectoryProjectionRepo implements WorkspaceDirector
       `).get(this.accountId, progress.rebuildId);
       this.saveRebuild(ready ? 'ready' : 'building', stored.sourceFingerprint, progress);
       return ready;
-    })();
+    }).immediate();
   }
 
   find(conversationId: string): WorkspaceConversationSummary | null {
@@ -142,7 +142,7 @@ export class SqliteWorkspaceDirectoryProjectionRepo implements WorkspaceDirector
     this.db.transaction(() => {
       this.protectObservation(item.conversationId, true);
       this.writeSummary(item);
-    })();
+    }).immediate();
   }
 
   remove(conversationId: string): void {
@@ -152,7 +152,7 @@ export class SqliteWorkspaceDirectoryProjectionRepo implements WorkspaceDirector
       this.rememberRemoval(conversationId, progress?.rebuildId ?? '');
       if (progress && stored?.status === 'building') this.discardCandidate(conversationId, progress.rebuildId);
       this.deleteRow(conversationId);
-    })();
+    }).immediate();
   }
 
   private writeSummary(item: WorkspaceConversationSummary, freshActivity = false): void {
@@ -226,7 +226,7 @@ export class SqliteWorkspaceDirectoryProjectionRepo implements WorkspaceDirector
         UPDATE workspace_directory_revisions SET revision = revision + 1
         WHERE account_id = ? AND workspace_id = ?
       `).run(this.accountId, previous.workspaceId);
-    })();
+    }).immediate();
   }
 
   page(workspaceId: string, request: WorkspaceConversationPageRequest): WorkspaceConversationPage {

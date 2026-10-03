@@ -59,6 +59,7 @@ async function fixture() {
     LOCAL_DEFAULT_ACCOUNT_ID: input.accountId, GATEWAY_TASK_VIEW_QUERY_VERSION: 1,
     RetryWakeRepo,
     webSessionCatalog: { readTurn }, eventJournal: journal, resolveTaskViewTurnAssociation,
+    conversationReadModel: runtime.readModel,
     conversationRegistry: { getIfOpen: () => null },
     billingServices: { contexts: { findByTurnId: () => null } },
     taskRepo: { findById: vi.fn(() => task) },
@@ -67,6 +68,7 @@ async function fixture() {
     ExecutorAttemptReceiptRepo: EmptyRepo, GenerationReplanRequestRepo: EmptyRepo, WorkspacePublicationRepo: EmptyRepo,
     projectTaskViewFacts: async () => ({ result: null, routing: [], subtasks: [] }),
     projectTaskView: () => ({ lifecycle: 'terminal', phase: 'completed', timestamps: {} }),
+    projectObservedTask: () => ({ lifecycle: 'terminal', phase: 'completed', timestamps: {} }),
     executionProjector: { project: () => ({ taskId: input.taskId, status: 'completed', stages: [] }) },
     accountRuntimeComposition: { runtimePort: { queries: {
       listRecoveryApplications: () => [], listCompletionResidue: () => [],
@@ -91,10 +93,10 @@ describe('production historical Task view lookup', () => {
     const result = await f.getTaskView(input);
     expect(result).toMatchObject({
       taskId: 'task_old', turnId: 'turn_old', progressSummary: 'Finished old task',
-      startedAt: '2026-09-26T00:00:01.000Z', completedAt: '2026-09-26T00:00:01.000Z',
+      startedAt: '2026-09-26T00:00:00.000Z', completedAt: '2026-09-26T00:00:01.000Z',
       asOfSequence: 3,
     });
-    expect(f.readTurn).toHaveBeenCalledWith(input.conversationId, input.turnId);
+    expect(f.readTurn).not.toHaveBeenCalled();
     expect(f.noReplay).not.toHaveBeenCalled();
   });
 

@@ -674,6 +674,10 @@ const NOW = '2026-08-03T00:00:00.000Z';
 function schema30Fixture(): Database.Database {
   const db = new Database(':memory:');
   runMigrations(db);
+  // Reconstructing a pre-47 database also removes its newer projection triggers.
+  for (const trigger of db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'observation_dirty_%'").all() as Array<{ name: string }>) {
+    db.exec(`DROP TRIGGER "${trigger.name}"`);
+  }
   db.pragma('foreign_keys = OFF');
   const v31Tables = [
     'kernel_binding_status',

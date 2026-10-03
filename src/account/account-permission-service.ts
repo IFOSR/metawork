@@ -6,6 +6,10 @@ export interface AccountPermissionResolutionInput {
   readonly resolution: 'approve' | 'deny';
   readonly source: 'button' | 'planner';
   readonly plannerPlanId: string | null;
+  readonly expectedRevision?: string;
+  readonly expectedGenerationId?: string;
+  /** Authenticated Gateway attribution; never inferred from the notification destination. */
+  readonly actor?: { readonly principalId: string; readonly commandRequestId: string | null };
 }
 
 export interface AccountPermissionResolutionResult {
@@ -16,6 +20,6 @@ export interface AccountPermissionResolutionResult {
 }
 
 export interface AccountPermissionService {
-  listForSession(sessionId: string): PlannerTuiPermissionRequest[];
+  listForSession(sessionId: string, afterId?: string, limit?: number): Array<PlannerTuiPermissionRequest & { readonly requestRevision: string }>;
   resolve(input: AccountPermissionResolutionInput): Promise<AccountPermissionResolutionResult>;
 }

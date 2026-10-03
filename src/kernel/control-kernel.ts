@@ -226,6 +226,7 @@ export type KernelEvent =
     })
   | (KernelEventEnvelope & {
       type: 'permission_resolution_received';
+      actor?: { readonly principalId: string; readonly commandRequestId: string | null };
       requestId: string;
       resolution: 'approve' | 'deny';
       source: 'command' | 'button' | 'planner';

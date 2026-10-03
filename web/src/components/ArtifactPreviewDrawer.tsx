@@ -3,6 +3,7 @@ import type { ArtifactProjection } from '../api/session-types';
 import type { HttpClient } from '../api/http';
 import { formatBytes } from './ArtifactLink';
 import { MarkdownContent } from './MarkdownContent';
+import { BudgetedImage } from './BudgetedImage';
 
 export type PreviewDrawerState =
   | { status: 'closed' }
@@ -204,7 +205,7 @@ function DrawerBody({ state }: { state: PreviewDrawerState }) {
   if (state.artifact.previewKind === 'image') {
     return (
       <div className="artifact-preview-image-wrap">
-        <img
+        <BudgetedImage
           className="artifact-preview-image"
           src={state.content}
           alt={state.artifact.displayName}

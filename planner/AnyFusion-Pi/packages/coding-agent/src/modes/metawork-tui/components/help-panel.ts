@@ -14,10 +14,10 @@ export const METAWORK_TUI_KEY_HELP: ReadonlyArray<{ keys: string; effect: string
 	{ keys: "F1", effect: "本帮助" },
 	{ keys: "F4", effect: "权限面板（a 允许 / x 拒绝）" },
 	{ keys: "F5", effect: "加载更早的历史 Turn" },
-	{ keys: "F6", effect: "Task 面板焦点" },
+	{ keys: "F6", effect: "任务概览：↑/↓ 选择，Enter 查看，Esc 返回" },
 	{ keys: "F7 / F8", effect: "选择上一个 / 下一个 Turn" },
 	{ keys: "F9", effect: "展开 / 收起过程与产物" },
-	{ keys: "PgUp / PgDn", effect: "滚动对话和执行详情（保留编辑器焦点）" },
+	{ keys: "PgUp / PgDn", effect: "滚动对话；概览聚焦时翻页选择任务" },
 	{ keys: "鼠标滚轮 / 触控板", effect: "上下滚动对话和执行结果" },
 	{ keys: "Fn+↑ / Fn+↓", effect: "Mac 键盘翻页；也支持 Shift+PgUp/PgDn" },
 	{ keys: "/workspace <path>", effect: "选择 Workspace" },
@@ -36,10 +36,9 @@ export class MetaWorkHelpPanel implements Component {
 			"",
 		];
 		for (const item of METAWORK_TUI_KEY_HELP) {
-			lines.push(truncateToWidth(
-				`  ${theme.fg("text", item.keys.padEnd(16))} ${theme.fg("dim", item.effect)}`,
-				safeWidth,
-			));
+			lines.push(
+				truncateToWidth(`  ${theme.fg("text", item.keys.padEnd(16))} ${theme.fg("dim", item.effect)}`, safeWidth),
+			);
 		}
 		lines.push("");
 		lines.push(truncateToWidth(theme.fg("dim", "Esc 或 F1 关闭"), safeWidth));

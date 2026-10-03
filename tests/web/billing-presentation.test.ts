@@ -8,7 +8,7 @@ describe('Web billing presentation', () => {
     const [turn, card, app] = await Promise.all([
       readFile(new URL('components/ConversationTurn.tsx', root), 'utf8'),
       readFile(new URL('components/TurnBillCard.tsx', root), 'utf8'),
-      readFile(new URL('App.tsx', root), 'utf8'),
+      Promise.all(['App.tsx', 'observation/use-workspace-controller.ts'].map(path => readFile(new URL(path, root), 'utf8'))).then(parts => parts.join('\n')),
     ]);
 
     expect(turn.indexOf('className="final-answer"')).toBeLessThan(
@@ -25,14 +25,16 @@ describe('Web billing presentation', () => {
   it('binds the billing tab to the selected Query instead of loading historical records', async () => {
     const [billingView, app] = await Promise.all([
       readFile(new URL('components/BillingView.tsx', root), 'utf8'),
-      readFile(new URL('App.tsx', root), 'utf8'),
+      Promise.all(['App.tsx', 'observation/use-workspace-controller.ts'].map(path => readFile(new URL(path, root), 'utf8'))).then(parts => parts.join('\n')),
     ]);
 
     expect(billingView).toContain('bill: QueryBillProjection | null');
     expect(billingView).toContain('<QueryBill');
     expect(billingView).not.toContain('getBillingRecords');
     expect(billingView).not.toContain('getBillingTasks');
-    expect(app).toContain('<BillingView');
-    expect(app).toContain('bill={selectedBillingTurn?.queryBill ?? null}');
+    expect(app).toContain('<ObservedTurnDetails');
+    const details = await readFile(new URL('observation/ObservedTurnDetails.tsx', root), 'utf8');
+    expect(details).toContain("kind: 'get_query_bill_for_turn', turnId");
+    expect(details).toContain('<BillingView bill={turn.queryBill ?? null}');
   });
 });

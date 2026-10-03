@@ -11,6 +11,17 @@ const databases: Database.Database[] = [];
 const directories: string[] = [];
 const admissionTables = ['gateway_command_admissions', 'gateway_command_admission_imports'];
 const retryWakeTables = ['retry_wakes'];
+const observationTables = ['conversation_content_search', 'conversation_content_search_queue', 'conversation_content_search_chunks',
+  'conversation_content_search_data', 'conversation_content_search_idx', 'conversation_content_search_content',
+  'conversation_content_search_docsize', 'conversation_content_search_config', 'client_navigation', 'conversation_activity_views', 'conversation_activity_dirty',
+  'conversation_read_history_dirty', 'conversation_read_tombstones',
+  'conversation_observation_identity',
+  'notification_route_seeds', 'notification_permission_scans',
+  'conversation_read_history_checkpoint', 'conversation_read_heads', 'conversation_read_rebuilds',
+  'conversation_read_turns', 'conversation_read_changes', 'conversation_read_bodies',
+  'conversation_read_content_chunks', 'conversation_read_content_manifests',
+  'gateway_trace_read_heads', 'gateway_trace_read_events', 'notification_routes', 'notification_outbox',
+  'client_action_signing_key', 'client_action_references'];
 const navigationTables = [
   'conversation_metadata_projection', 'gateway_journal_streams', 'gateway_journal_segments',
   'gateway_journal_event_index', 'gateway_turn_task_observations', 'conversation_history_streams',
@@ -30,8 +41,8 @@ describe('schema44 Gateway command admission migration', () => {
   it('creates the agreed account-scoped tables on a fresh database', () => {
     const db = open();
     runMigrations(db);
-    expect(CURRENT_SCHEMA_VERSION).toBe(46);
-    expect(version(db)).toBe(46);
+    expect(CURRENT_SCHEMA_VERSION).toBe(47);
+    expect(version(db)).toBe(47);
     expect(db.prepare('PRAGMA table_info(gateway_command_admissions)').all()).toMatchObject([
       { name: 'account_id', type: 'TEXT', notnull: 1, pk: 1 },
       { name: 'idempotency_key', type: 'TEXT', notnull: 1, pk: 2 },
@@ -128,7 +139,7 @@ describe('schema44 Gateway command admission migration', () => {
 
     db.exec('DROP TRIGGER fail_admission_migration');
     runMigrations(db);
-    expect(version(db)).toBe(46);
+    expect(version(db)).toBe(47);
     expect(facts(db)).toEqual(before);
   });
 
@@ -146,7 +157,7 @@ describe('schema44 Gateway command admission migration', () => {
     expect(facts(db)).toEqual(before);
     db.exec('DROP TRIGGER fail_navigation_migration');
     runMigrations(db);
-    expect(version(db)).toBe(46);
+    expect(version(db)).toBe(47);
     for (const table of [...navigationTables, ...admissionTables]) {
       expect(tableExists(db, table), table).toBe(true);
     }
@@ -164,7 +175,7 @@ describe('schema44 Gateway command admission migration', () => {
     for (const table of admissionTables) expect(tableExists(db, table)).toBe(false);
     db.exec('DROP TRIGGER fail_admission_migration');
     runMigrations(db);
-    expect(version(db)).toBe(46);
+    expect(version(db)).toBe(47);
   });
 
   it('uses point and partial indexes without scanning unrelated terminal history', () => {
@@ -230,19 +241,19 @@ describe('schema44 Gateway command admission migration', () => {
       },
     });
     const result = upgrade.prepare({
-      sourcePath, backupPath, clonePath, expectedSourceSchema: 43, expectedTargetSchema: 46,
+      sourcePath, backupPath, clonePath, expectedSourceSchema: 43, expectedTargetSchema: 47,
       sentinelTables: ['tasks', ...navigationTables, ...admissionTables, ...retryWakeTables],
     });
     if (fail) {
       await expect(result).rejects.toThrow('injected schema44 failure');
       expect(existsSync(clonePath)).toBe(false);
     } else {
-      await expect(result).resolves.toMatchObject({ sourceSchemaVersion: 43, candidateSchemaVersion: 46 });
+      await expect(result).resolves.toMatchObject({ sourceSchemaVersion: 43, candidateSchemaVersion: 47 });
       const candidate = open(clonePath);
       expect(facts(candidate)).toEqual(before);
       expect(candidate.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
       expect(candidate.pragma('foreign_key_check')).toEqual([]);
-      for (const table of [...admissionTables, ...retryWakeTables]) {
+      for (const table of [...admissionTables, ...retryWakeTables, ...observationTables]) {
         expect(tableExists(candidate, table)).toBe(true);
       }
     }
@@ -267,7 +278,12 @@ function open(path = ':memory:'): Database.Database {
 function schema43(path?: string): Database.Database {
   const db = open(path);
   runMigrations(db);
-  for (const table of [...admissionTables, ...retryWakeTables]) {
+  const triggers = db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'observation_%'").all() as { name: string }[];
+  for (const { name } of triggers) db.exec(`DROP TRIGGER "${name}"`);
+  const witnessIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'observation_witness_%'").all() as { name: string }[];
+  for (const { name } of witnessIndexes) db.exec(`DROP INDEX "${name}"`);
+  for (const name of ['kernel_permission_resolution_request', 'permission_pending_page', 'conversation_activity_tasks']) db.exec(`DROP INDEX IF EXISTS "${name}"`);
+  for (const table of [...admissionTables, ...retryWakeTables, ...observationTables]) {
     db.exec(`DROP TABLE IF EXISTS ${table}`);
   }
   db.exec('UPDATE schema_version SET version = 43');
@@ -313,6 +329,7 @@ function facts(db: Database.Database, tables?: string[]): Record<string, string[
       name !== 'schema_version'
       && !admissionTables.includes(name)
       && !retryWakeTables.includes(name)
+      && !observationTables.includes(name)
     ));
   return Object.fromEntries(names.map(name => [
     name, db.prepare(`SELECT * FROM "${name}"`).all().map(row => JSON.stringify(row)).sort(),

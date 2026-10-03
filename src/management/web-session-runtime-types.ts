@@ -24,6 +24,7 @@ export interface WebDirectoryPage<T = WebSessionDirectoryMetadataProjection> {
 }
 
 export interface WebSessionRuntimeCatalog {
+  readTurn?(sessionId: string, turnId: string): Promise<WebSessionRecord['turns'][number] | null>;
   readMetadata?(sessionId: string): Promise<(WebSessionRecord['session'] & { workspaceId: string | null }) | null>;
   readVersion?(sessionId: string): Promise<string | null>;
   listPage?(input: {
@@ -132,6 +133,14 @@ export type WebSessionRuntimeEvent =
     certification: 'certified' | 'uncertified';
   }
   | {
+    type: 'delivery_status';
+    requestId: string;
+    turnId: string;
+    resultId: string;
+    status: import('./web-session-types.js').ResultDeliveryStatus;
+    message?: string;
+  }
+  | {
     type: 'trace_delta';
     turnId: string;
     fromSequence: number;
@@ -159,6 +168,7 @@ export type WebSessionRuntimeEvent =
     turnBilling: import('../billing/bill-query-service.js').TurnBillUserView | null;
   }
   | { type: 'conversation_snapshot'; turn: ConversationTurnProjection }
+  | { type: 'turn_updated'; turn: ConversationTurnProjection }
   | {
     type: 'workspace_changed';
     sessionId: string;
@@ -186,6 +196,7 @@ export interface ManagementWebSessionRuntime {
   listSessions(clientId: string, query?: string): Promise<WebSessionDirectoryMetadataProjection[]>;
   listSessionPage?(clientId: string, input?: { query?: string; cursor?: string }): Promise<WebDirectoryPage>;
   readSession(clientId: string, sessionId: string, cursor?: string): Promise<WebSessionRecordProjection | null>;
+  readBrowsableSession(clientId: string, sessionId: string, cursor?: string): Promise<WebSessionRecordProjection | null>;
   createSession(clientId: string): Promise<WebSessionCreationResult>;
   activateSession(clientId: string, sessionId: string, expectedWorkspaceId?: string): Promise<WebSessionActivationResult>;
   /** 硬删除历史会话；活跃会话拒绝删除。 */

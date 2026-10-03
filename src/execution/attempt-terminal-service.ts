@@ -188,7 +188,7 @@ export class AttemptTerminalService {
         throw new Error(`attempt outcome inbox was not persisted: ${event.id}`);
       }
       return { cancellationWon };
-    })();
+    }).immediate();
   }
 }
 

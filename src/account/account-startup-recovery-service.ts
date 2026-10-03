@@ -417,7 +417,10 @@ export class AccountStartupRecoveryService {
     const workflow = this.deps.kernelServices.kernelWorkflowRepo;
     workflow.reconcileProcessing();
     this.convergeTerminalTaskBilling(now);
-    const retriedTaskIds = this.convergeUncertainApplications(now);
+    const retriedTaskIds = [...new Set([
+      ...this.convergeUncertainApplications(now),
+      ...workflow.listPendingTaskIds('task_resume_requested'),
+    ])];
     this.enqueueRetrySafeSystemBindingRecoveries(now);
     // Re-queuing an application is not convergence on its own: the same pass
     // must drain the Task so the retried Decision is actually re-applied and

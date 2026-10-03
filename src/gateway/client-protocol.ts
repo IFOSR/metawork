@@ -26,6 +26,9 @@ export const GATEWAY_SERVER_CAPABILITIES: readonly string[] = [
   GATEWAY_CAPABILITY_USAGE_BILLING,
   'history_page_fragments_v1',
   'bounded_replay_v1',
+  'conversation_observation_v1',
+  'conversation_resources_v1',
+  'multi_client_control_v1',
 ];
 
 export interface GatewayAttachmentRef {
@@ -38,6 +41,9 @@ export type GatewayScope =
   | { readonly kind: 'conversation'; readonly selection: ConversationSelection };
 
 export type GatewayCommand =
+  | { readonly kind: 'get_conversation_resource'; readonly conversationId: string;
+      readonly resource: 'turns' | 'activity' | 'metadata' | 'content' | 'trace' | 'locate'; readonly cursor?: string;
+      readonly pendingCursor?: string; readonly hash?: string; readonly offset?: number; readonly turnId?: string; readonly beforeTurnId?: string; readonly taskId?: string }
   | { readonly kind: 'select_workspace'; readonly path: string }
   | { readonly kind: 'list_workspace_conversations'; readonly workspaceId: string; readonly cursor?: string; readonly query?: string }
   | { readonly kind: 'create_conversation'; readonly workspaceId: string }
@@ -47,7 +53,11 @@ export type GatewayCommand =
   | { readonly kind: 'user_message'; readonly text: string; readonly attachments: GatewayAttachmentRef[] }
   | { readonly kind: 'slash_command'; readonly text: string }
   | { readonly kind: 'permission_resolution'; readonly requestId: string; readonly resolution: 'approve' | 'deny' }
+  | { readonly kind: 'permission_resolution_v2'; readonly requestId: string; readonly requestRevision: string;
+      readonly expectedExecutionGeneration: string; readonly resolution: 'approve' | 'deny' }
+  | { readonly kind: 'get_pending_interactions'; readonly conversationId: string; readonly cursor?: string }
   | { readonly kind: 'cancel_turn'; readonly turnId: string }
+  | { readonly kind: 'cancel_task'; readonly taskId: string; readonly expectedExecutionGeneration: string }
   | {
       readonly kind: 'complete_command';
       readonly text: string;
@@ -160,6 +170,26 @@ function parseSelection(value: unknown): ConversationSelection | null {
 
 function parseCommand(value: unknown): GatewayCommand | null {
   if (!isRecord(value) || typeof value.kind !== 'string') return null;
+  if (value.kind === 'get_conversation_resource') {
+    if (!isGatewayIdentifier(value.conversationId)) return null;
+    const keys = ['kind', 'conversationId', 'resource'];
+    if (value.resource === 'content') {
+      if (!hasOnlyKeys(value, [...keys, 'hash', 'offset']) || typeof value.hash !== 'string' || !/^[a-f0-9]{64}$/u.test(value.hash)
+        || typeof value.offset !== 'number' || !Number.isSafeInteger(value.offset) || value.offset < 0) return null;
+    } else if (value.resource === 'locate') {
+      if (!hasOnlyKeys(value, [...keys, 'taskId']) || !isGatewayIdentifier(value.taskId)) return null;
+    } else if (value.resource === 'trace') {
+      if (!hasOnlyKeys(value, [...keys, 'turnId', 'cursor']) || !isGatewayIdentifier(value.turnId)) return null;
+    } else if (value.resource === 'activity') {
+      if (!hasOnlyKeys(value, [...keys, 'cursor', 'pendingCursor'])
+        || (value.pendingCursor !== undefined && !isGatewayIdentifier(value.pendingCursor))) return null;
+    } else if (value.resource === 'turns') {
+      if (!hasOnlyKeys(value, [...keys, 'cursor', 'beforeTurnId'])
+        || (value.beforeTurnId !== undefined && (!isGatewayIdentifier(value.beforeTurnId) || value.cursor !== undefined))) return null;
+    } else if (value.resource !== 'metadata' || !hasOnlyKeys(value, keys)) return null;
+    if (value.cursor !== undefined && !isGatewayOpaqueCursor(value.cursor)) return null;
+    return value as unknown as Extract<GatewayCommand, { kind: 'get_conversation_resource' }>;
+  }
   if (value.kind === 'select_workspace') {
     return hasOnlyKeys(value, ['kind', 'path']) && isGatewayCommandText(value.path)
       ? { kind: value.kind, path: value.path } : null;
@@ -181,8 +211,9 @@ function parseCommand(value: unknown): GatewayCommand | null {
       ? { kind: value.kind, workspaceId: value.workspaceId } : null;
   }
   if (value.kind === 'archive_conversation' || value.kind === 'attach_conversation') {
-    return hasOnlyKeys(value, ['kind', 'conversationId']) && isGatewayIdentifier(value.conversationId)
-      ? { kind: value.kind, conversationId: value.conversationId } : null;
+    return hasOnlyKeys(value, ['kind', 'conversationId', 'cursor']) && isGatewayIdentifier(value.conversationId)
+      && (value.cursor === undefined || isGatewayIdentifier(value.cursor))
+      ? { kind: value.kind, conversationId: value.conversationId, ...(value.cursor ? { cursor: value.cursor } : {}) } : null;
   }
   if (value.kind === 'get_conversation_history') {
     if (!hasOnlyKeys(value, ['kind', 'conversationId', 'cursor', 'limit', 'acceptFragments'])
@@ -219,9 +250,25 @@ function parseCommand(value: unknown): GatewayCommand | null {
       ? { kind: value.kind, requestId: value.requestId, resolution: value.resolution }
       : null;
   }
+  if (value.kind === 'permission_resolution_v2') {
+    return hasOnlyKeys(value, ['kind', 'requestId', 'requestRevision', 'expectedExecutionGeneration', 'resolution'])
+      && isGatewayIdentifier(value.requestId) && isGatewayIdentifier(value.requestRevision)
+      && isGatewayIdentifier(value.expectedExecutionGeneration) && (value.resolution === 'approve' || value.resolution === 'deny')
+      ? { kind: value.kind, requestId: value.requestId, requestRevision: value.requestRevision,
+          expectedExecutionGeneration: value.expectedExecutionGeneration, resolution: value.resolution } : null;
+  }
+  if (value.kind === 'get_pending_interactions') {
+    return hasOnlyKeys(value, ['kind', 'conversationId']) && isGatewayIdentifier(value.conversationId)
+      ? { kind: value.kind, conversationId: value.conversationId } : null;
+  }
   if (value.kind === 'cancel_turn') {
     return hasOnlyKeys(value, ['kind', 'turnId']) && isGatewayIdentifier(value.turnId)
       ? { kind: value.kind, turnId: value.turnId } : null;
+  }
+  if (value.kind === 'cancel_task') {
+    return hasOnlyKeys(value, ['kind', 'taskId', 'expectedExecutionGeneration'])
+      && isGatewayIdentifier(value.taskId) && isGatewayIdentifier(value.expectedExecutionGeneration)
+      ? { kind: value.kind, taskId: value.taskId, expectedExecutionGeneration: value.expectedExecutionGeneration } : null;
   }
   if (value.kind === 'complete_command') {
     if (!hasOnlyKeys(value, ['kind', 'text', 'cursor'])
@@ -305,6 +352,9 @@ function matchesScope(scope: GatewayScope, command: GatewayCommand): boolean {
     return scope.kind === 'workspace' || scope.kind === 'conversation';
   }
   if (scope.kind !== 'conversation') return false;
+  if (command.kind === 'cancel_task' || command.kind === 'permission_resolution_v2') return scope.selection.mode === 'attach';
+  if (command.kind === 'get_pending_interactions' || command.kind === 'get_conversation_resource') return scope.selection.mode === 'attach'
+    && scope.selection.conversationId === command.conversationId;
   if (command.kind === 'get_task_view') {
     return scope.selection.mode === 'attach'
       && scope.selection.conversationId === command.conversationId;

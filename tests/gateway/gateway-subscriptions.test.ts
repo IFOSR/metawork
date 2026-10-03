@@ -10,7 +10,7 @@ function makeEvent(
   conversationId = 'conv_1',
 ): GatewayEventEnvelope {
   return {
-    protocolVersion: 1,
+    protocolVersion: 2,
     eventId: id,
     sequence: 1,
     accountId,
@@ -27,7 +27,7 @@ const webOrigin: GatewayTurnOrigin = { connectionId: 'web_a', surface: 'web' };
 const tuiOrigin: GatewayTurnOrigin = { connectionId: 'tui_b', surface: 'tui' };
 
 describe('GatewaySubscriptions', () => {
-  it('delivers a targeted detailed event only to the matching origin connection', () => {
+  it('delivers shared facts to all matching Conversation observers', () => {
     const subscriptions = new GatewaySubscriptions();
     const webEvents: string[] = [];
     const tuiEvents: string[] = [];
@@ -47,11 +47,11 @@ describe('GatewaySubscriptions', () => {
     subscriptions.publish(makeEvent('web-turn', 'turn_started'), webOrigin);
     subscriptions.publish(makeEvent('tui-turn', 'trace_delta'), tuiOrigin);
 
-    expect(webEvents).toEqual(['web-turn']);
-    expect(tuiEvents).toEqual(['tui-turn']);
+    expect(webEvents).toEqual(['web-turn', 'tui-turn']);
+    expect(tuiEvents).toEqual(['web-turn', 'tui-turn']);
   });
 
-  it('does not broadcast an untargeted detailed event to attached clients', () => {
+  it('delivers background facts without an originating connection', () => {
     const subscriptions = new GatewaySubscriptions();
     const received: string[] = [];
     subscriptions.subscribe({
@@ -63,7 +63,7 @@ describe('GatewaySubscriptions', () => {
 
     subscriptions.publish(makeEvent('history-only', 'final_answer'));
 
-    expect(received).toEqual([]);
+    expect(received).toEqual(['history-only']);
   });
 
   it('keeps untargeted Workspace summary events available to their stream subscribers', () => {
@@ -85,7 +85,7 @@ describe('GatewaySubscriptions', () => {
     expect(received).toEqual(['workspace-activity']);
   });
 
-  it('filters targeted events by account and conversation as well as origin', () => {
+  it('filters shared facts by Account and Conversation, independently of origin', () => {
     const subscriptions = new GatewaySubscriptions();
     const received: string[] = [];
     subscriptions.subscribe({
@@ -97,9 +97,9 @@ describe('GatewaySubscriptions', () => {
 
     subscriptions.publish(makeEvent('wrong-account', 'turn_started', 'other'), webOrigin);
     subscriptions.publish(makeEvent('wrong-conversation', 'turn_started', 'local-default', 'conv_2'), webOrigin);
-    subscriptions.publish(makeEvent('wrong-origin', 'turn_started'), tuiOrigin);
+    subscriptions.publish(makeEvent('other-origin', 'turn_started'), tuiOrigin);
 
-    expect(received).toEqual([]);
+    expect(received).toEqual(['other-origin']);
   });
 
   it('unsubscribes', () => {

@@ -42,6 +42,104 @@ afterEach(() => {
 });
 
 describe('Web Cookie authentication', () => {
+  it('restores drafts only for a terminal admission rejection and stops retrying that input', () => {
+    vi.stubGlobal('window', { location: { protocol: 'http:', host: '127.0.0.1:8788' },
+      setTimeout: vi.fn(() => 1), clearTimeout: vi.fn() });
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    const onError = vi.fn(); const client = new WsClient({ onError }); client.connect();
+    const socket = FakeWebSocket.instances[0]!;
+    const hello = JSON.stringify({ type: 'hello', sessionId: null,
+      capabilities: ['conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1'],
+      identity: { serverId: 'server', accountId: 'account' } });
+    socket.onmessage?.({ data: hello });
+    const requestId = client.sendCommand('conversation', { kind: 'user_message', text: 'input', attachments: [] });
+    socket.onmessage?.({ data: JSON.stringify({ type: 'error', requestId, message: 'execution failed' }) });
+    expect(onError).toHaveBeenLastCalledWith('execution failed', { requestId });
+    socket.onmessage?.({ data: JSON.stringify({ type: 'receipt', receipt: { requestId, status: 'rejected', reason: 'admission denied' } }) });
+    expect(onError).toHaveBeenLastCalledWith('admission denied', { requestId, code: undefined, admissionRejected: true });
+    const before = socket.sent.length; socket.onmessage?.({ data: hello });
+    expect(socket.sent).toHaveLength(before); client.close();
+  });
+  it('confirms a lost input receipt on reconnect with the identical request and target', () => {
+    vi.stubGlobal('window', { location: { protocol: 'http:', host: '127.0.0.1:8788' },
+      setTimeout: vi.fn(() => 1), clearTimeout: vi.fn() });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}')));
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    const client = new WsClient({});
+    const hello = JSON.stringify({ type: 'hello', sessionId: 'different-focus',
+      capabilities: ['conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1'],
+      identity: { serverId: 'server', accountId: 'account' } });
+    client.connect();
+    const first = FakeWebSocket.instances[0]!;
+    first.onmessage?.({ data: hello });
+    client.sendCommand('captured-target', { kind: 'user_message', text: 'once', attachments: [] });
+    const original = first.sent[0]!;
+    first.onclose?.(); client.connect();
+    const second = FakeWebSocket.instances[1]!;
+    expect(second.sent).toEqual([]);
+    second.onmessage?.({ data: hello });
+    expect(second.sent).toEqual([original]);
+    second.onmessage?.({ data: JSON.stringify({ type: 'receipt', receipt: {
+      requestId: JSON.parse(original).envelope.requestId, status: 'duplicate',
+    } }) });
+    second.onclose?.(); client.connect();
+    FakeWebSocket.instances[2]!.onmessage?.({ data: hello });
+    expect(FakeWebSocket.instances[2]!.sent).toEqual([]);
+    client.close();
+  });
+  it('distinguishes control admission from the applied result and binds each response to its request', async () => {
+    vi.stubGlobal('window', { location: { protocol: 'http:', host: '127.0.0.1:8788' },
+      setTimeout: vi.fn(() => 1), clearTimeout: vi.fn() });
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    const client = new WsClient({}); client.connect();
+    const socket = FakeWebSocket.instances[0]!; const accepted = vi.fn(); const completed = vi.fn();
+    const pending = client.control('conversation', { kind: 'cancel_task', taskId: 'old-task', expectedExecutionGeneration: 'generation' }, accepted).then(completed);
+    const requestId = JSON.parse(socket.sent[0]!).envelope.requestId;
+    socket.onmessage?.({ data: JSON.stringify({ type: 'receipt', receipt: { requestId, status: 'accepted' } }) });
+    expect(accepted).toHaveBeenCalledOnce(); expect(completed).not.toHaveBeenCalled();
+    socket.onmessage?.({ data: JSON.stringify({ type: 'gateway_reply', event: { requestId: 'other', kind: 'command_result', payload: { status: 'completed' } } }) });
+    expect(completed).not.toHaveBeenCalled();
+    socket.onmessage?.({ data: JSON.stringify({ type: 'gateway_reply', event: { requestId, kind: 'command_result', payload: { status: 'completed' } } }) });
+    await pending; expect(completed).toHaveBeenCalledWith({ status: 'completed' }); client.close();
+  });
+
+  it('purges observations and stops reconnect when Server identity changes', () => {
+    vi.stubGlobal('window', { location: { protocol: 'http:', host: '127.0.0.1:8788' },
+      setTimeout: vi.fn(() => 1), clearTimeout: vi.fn() });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}')));
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    const onUnauthorized = vi.fn();
+    const client = new WsClient({ onUnauthorized });
+    const purge = vi.spyOn(client.conversations, 'purge');
+    const hello = (serverId: string) => JSON.stringify({ type: 'hello', sessionId: null,
+      capabilities: ['conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1'],
+      identity: { serverId, accountId: 'account' } });
+    client.connect();
+    const first = FakeWebSocket.instances[0]!;
+    first.onmessage?.({ data: hello('first') });
+    first.onclose?.();
+    client.connect();
+    FakeWebSocket.instances[1]!.onmessage?.({ data: hello('replacement') });
+    expect(onUnauthorized).toHaveBeenCalledOnce();
+    expect(purge).toHaveBeenCalledOnce();
+    expect(FakeWebSocket.instances[1]!.closeCalls).toBe(1);
+  });
+
+  it('fails explicitly when observation capabilities are missing and ignores late messages', () => {
+    vi.stubGlobal('window', { location: { protocol: 'http:', host: '127.0.0.1:8788' },
+      setTimeout: vi.fn(() => 1), clearTimeout: vi.fn() });
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    const onHello = vi.fn(); const onError = vi.fn();
+    const client = new WsClient({ onHello, onError });
+    const purge = vi.spyOn(client.conversations, 'purge');
+    client.connect();
+    const socket = FakeWebSocket.instances[0]!;
+    socket.onmessage?.({ data: JSON.stringify({ type: 'hello', sessionId: 'old', capabilities: [] }) });
+    socket.onmessage?.({ data: JSON.stringify({ type: 'hello', sessionId: 'late', capabilities: [] }) });
+    expect(onHello).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledOnce();
+    expect(purge).toHaveBeenCalledOnce();
+  });
   it('extracts the launch hint token from the fragment and removes it', () => {
     expect(launchTokenFromHash('#launch=token%20value')).toBe('token value');
     const replaceState = vi.fn();

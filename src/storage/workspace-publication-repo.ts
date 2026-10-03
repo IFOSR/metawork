@@ -360,7 +360,7 @@ export class WorkspacePublicationRepo {
         ORDER BY topology_layer, first_dispatch_order, subtask_id
       `).all(...parameters, input.decisionId) as PublicationRow[]).map(rowToPublication);
     });
-    return request();
+    return request.immediate();
   }
 
   listCancelling(taskId?: string): WorkspacePublicationRecord[] {

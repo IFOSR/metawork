@@ -145,7 +145,7 @@ export class ConversationTaskSchedulerRepo {
       if (released.changes !== 1) return null;
       if (!allowPromotion) return null;
       return this.promoteQueuedInTransaction(conversationId, now);
-    })();
+    }).immediate();
   }
 
   /**
@@ -174,14 +174,14 @@ export class ConversationTaskSchedulerRepo {
         conversationId: slot.conversation_id,
         promotedTaskId: promotion?.taskId ?? null,
       };
-    })();
+    }).immediate();
   }
 
   promoteNextQueued(
     conversationId: string,
     now: string,
   ): { taskId: string; reservationId: string } | null {
-    return this.db.transaction(() => this.promoteQueuedInTransaction(conversationId, now))();
+    return this.db.transaction(() => this.promoteQueuedInTransaction(conversationId, now)).immediate();
   }
 
   /**
@@ -262,7 +262,7 @@ export class ConversationTaskSchedulerRepo {
         });
       }
       return result;
-    })();
+    }).immediate();
   }
 
   markRecoveryBlocked(conversationId: string, taskId: string, now: string): boolean {

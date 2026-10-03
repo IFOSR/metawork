@@ -529,7 +529,7 @@ describe('ConversationSession', () => {
       kind: 'permission_resolution',
       requestId: 'permission_1',
       resolution: 'deny',
-    });
+    }, { principalId: 'web:operator', requestId: 'command-approval' });
 
     expect(resolutions).toEqual([{
       sessionId: 'planner_1',
@@ -537,6 +537,7 @@ describe('ConversationSession', () => {
       resolution: 'deny',
       source: 'button',
       plannerPlanId: null,
+      actor: { principalId: 'web:operator', commandRequestId: 'command-approval' },
     }]);
   });
 

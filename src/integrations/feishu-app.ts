@@ -1,3 +1,4 @@
+import { NotificationDestinationRevoked } from '../delivery/notification-routing.js';
 // Feishu app integration module for tokens, inbound events, message delivery, and file exchange.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
@@ -34,7 +35,7 @@ export interface FeishuSessionPort {
     requestId: string;
   }): Promise<FeishuGatewayReply>;
   subscribeGatewayDelivery?(
-    listener: (delivery: FeishuGatewayDelivery) => void,
+    listener: (delivery: FeishuGatewayDelivery) => void | Promise<void>,
   ): () => void;
   readonly runtimePaths?: {
     pairing: string;
@@ -46,7 +47,7 @@ export interface FeishuSessionPort {
 }
 
 export interface FeishuGatewayActionValue {
-  readonly kind: 'workspace_conversations' | 'conversation_history';
+  readonly kind: 'workspace_conversations' | 'conversation_history' | 'gateway_action';
   readonly cursor: string;
   readonly limit?: number;
   readonly threadId?: string;
@@ -862,7 +863,7 @@ interface FeishuMessageSession {
     requestId: string;
   }): Promise<FeishuGatewayReply>;
   subscribeGatewayDelivery?(
-    listener: (delivery: FeishuGatewayDelivery) => void,
+    listener: (delivery: FeishuGatewayDelivery) => void | Promise<void>,
   ): () => void;
 }
 
@@ -1775,7 +1776,7 @@ export function subscribeFeishuGatewayDeliveries(input: {
     onDiagnostic: line => input.session.appendSystemMessage(line),
   }, input.audit);
   const artifactLedger = input.artifactLedger;
-  return input.session.subscribeGatewayDelivery(delivery => {
+  return input.session.subscribeGatewayDelivery(async delivery => {
     if (input.accessPolicy) {
       const decision = evaluateFeishuGatewayPolicy({
         chatId: delivery.chatId,
@@ -1792,10 +1793,10 @@ export function subscribeFeishuGatewayDeliveries(input: {
         input.session.appendSystemMessage(
           `→ 飞书持续投递已被 Gateway 策略拦截: ${decision.reason}`,
         );
-        return;
+        throw new NotificationDestinationRevoked(`notification_destination_denied:${decision.reason}`);
       }
     }
-    void sendFeishuGatewayReply({
+    await sendFeishuGatewayReply({
       client: input.client,
       session: input.session,
       chatId: delivery.chatId,
@@ -1806,10 +1807,6 @@ export function subscribeFeishuGatewayDeliveries(input: {
       artifactLedger,
       deliveryKind: delivery.kind,
       onSystemMessage: line => input.session.appendSystemMessage(line),
-    }).catch(error => {
-      input.session.appendSystemMessage(
-        `⚠️ 飞书持续投递失败: ${(error as Error).message}`,
-      );
     });
   });
 }
@@ -2290,6 +2287,7 @@ function parseFeishuGatewayActionValue(value: unknown): FeishuGatewayActionValue
   if (
     record.kind !== 'workspace_conversations'
     && record.kind !== 'conversation_history'
+    && record.kind !== 'gateway_action'
   ) {
     return null;
   }
@@ -4811,6 +4809,7 @@ async function defaultPostJson(
   headers: Record<string, string> = {},
 ): Promise<JsonResponse> {
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(30_000),
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -4828,6 +4827,7 @@ async function defaultPutJson(
   headers: Record<string, string> = {},
 ): Promise<JsonResponse> {
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(30_000),
     method: 'PUT',
     headers: {
       'content-type': 'application/json',
@@ -4845,6 +4845,7 @@ async function defaultPatchJson(
   headers: Record<string, string> = {},
 ): Promise<JsonResponse> {
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(30_000),
     method: 'PATCH',
     headers: {
       'content-type': 'application/json',
@@ -4862,6 +4863,7 @@ async function defaultPostForm(
   headers: Record<string, string> = {},
 ): Promise<JsonResponse> {
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(60_000),
     method: 'POST',
     headers,
     body: form,
@@ -4875,6 +4877,7 @@ async function defaultGetBinary(
   headers: Record<string, string> = {},
 ): Promise<BinaryResponse> {
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(60_000),
     method: 'GET',
     headers,
   });
@@ -4887,6 +4890,7 @@ async function defaultDeleteJson(
   headers: Record<string, string> = {},
 ): Promise<JsonResponse> {
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(30_000),
     method: 'DELETE',
     headers,
   });

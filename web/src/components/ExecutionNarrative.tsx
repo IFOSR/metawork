@@ -16,7 +16,7 @@ const GROUPS: Array<{
 
 export function ExecutionNarrative({ turn }: { turn: ConversationTurnProjection }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const activeEvent = turn.status === 'running'
     ? [...turn.traceEvents].reverse().find(event => event.status === 'running')
     : undefined;
@@ -26,6 +26,10 @@ export function ExecutionNarrative({ turn }: { turn: ConversationTurnProjection 
     const timer = window.setInterval(() => setNowMs(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, [turn.id, turn.status]);
+
+  useEffect(() => {
+    setCollapsed(true);
+  }, [turn.id]);
 
   return (
     <section className="execution-narrative" data-collapsed={collapsed || undefined}>

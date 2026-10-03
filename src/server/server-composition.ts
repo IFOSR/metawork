@@ -1,3 +1,9 @@
+import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
+import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
+import { SqliteClientNavigationStore } from '../storage/client-navigation-repo.js';
+import { SqlitePermissionRepository } from '../storage/permission-repo.js';
+import { SqliteConversationActivityProjection } from '../storage/conversation-activity-projection-repo.js';
+import { ConversationActivityProjector } from '../session/conversation-activity-projection.js';
 // Server application entrypoint. Client launchers live in src/client and never
 // construct the Runtime composition below.
 import { dirname, join, resolve } from 'path';
@@ -64,11 +70,22 @@ import { FeishuRuntimeManager } from '../gateway/feishu-runtime.js';
 import { FeishuGatewayAdapter } from '../gateway/feishu-gateway-adapter.js';
 import { FeishuConversationRouting } from '../gateway/feishu-conversation-routing.js';
 import { FeishuGatewaySessionPort } from '../gateway/feishu-gateway-session-port.js';
+import { NotificationRoutingService, notificationFromTurn, type NotificationFact } from '../delivery/notification-routing.js';
+import { SqliteNotificationRoutingStore } from '../storage/notification-routing-repo.js';
+import { createHash } from 'node:crypto';
+import { ClientActionReferences } from '../gateway/client-action-reference.js';
+import { SqliteClientActionReferences } from '../storage/client-action-reference-repo.js';
 import { GatewayAuditLog } from '../gateway/audit.js';
 import { ClientGateway } from '../gateway/client-gateway.js';
 import { BindingConversationResolver } from '../gateway/conversation-resolver.js';
 import { ConversationBindingRepository } from '../session/conversation-binding-repository.js';
 import { createAccountEventJournal } from './account-event-journal.js';
+import { ConversationObservationService } from '../gateway/conversation-observation.js';
+import { createConversationReadModel } from './conversation-read-model-composition.js';
+import { ConversationReadProjector } from '../session/conversation-read-projector.js';
+import { SqliteConversationActivitySource } from '../storage/conversation-activity-source.js';
+import type { ConversationActivityTask } from '../session/conversation-activity-source.js';
+import { isTerminalTaskLifecycle, toTaskLifecycleState } from '../task/task-lifecycle.js';
 import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
 import { GatewaySubscriptions } from '../gateway/gateway-subscriptions.js';
 import { ConversationGatewayRuntime } from '../gateway/conversation-gateway-runtime.js';
@@ -126,6 +143,7 @@ import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
 import { projectTaskViewFacts } from '../gateway/task-view-facts.js';
 import { projectTaskView } from '../task/task-view.js';
+import { SqliteTaskActivityFacts } from '../storage/task-activity-facts-repo.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
 import { RetryWakeRepo } from '../storage/retry-wake-repo.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
@@ -164,6 +182,7 @@ import {
   normalizeExecutionPresentation,
 } from '../management/execution-presentation-normalizer.js';
 import type { ConversationTurn } from '../management/web-session-types.js';
+import type { ConversationTurn as CanonicalConversationTurn } from '../session/conversation-store.js';
 import { buildCanonicalSubtaskIdentityMap } from '../work-graph/index.js';
 import { ensureActiveConfigurationRevision } from '../storage/active-configuration-revision.js';
 import {
@@ -316,6 +335,7 @@ async function startWebMode(options: {
   noOpen: boolean;
   runningRevisionId: string;
   sessionRuntime: ManagementWebSessionRuntime;
+  conversationGateway: { accountId: string; observation: ConversationObservationService; commands: WebGatewayAdapter };
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
   configurationRuntime?: {
@@ -343,6 +363,7 @@ async function startWebMode(options: {
     webDistDir,
     token: options.webAuth.manualAccessToken,
     webAuth: options.webAuth,
+    conversationGateway: options.conversationGateway,
     launchContexts: options.launchContexts,
     workspaceDirectoryBrowser: new WorkspaceDirectoryBrowser(),
     runningRevisionId: options.runningRevisionId,
@@ -748,6 +769,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   const contextRecaller = new ContextRecaller(db);
   const directoryProjection = new SqliteWorkspaceDirectoryProjectionRepo(db, LOCAL_DEFAULT_ACCOUNT_ID);
   let directoryProjector: WorkspaceDirectoryProjector | null = null;
+  const notificationStore = new SqliteNotificationRoutingStore(db);
+  const conversationReadModel = createConversationReadModel(db);
+  const conversationReadProjector = new ConversationReadProjector(conversationReadModel);
+  const canonicalHistory = new SqliteConversationHistoryRepo<CanonicalConversationTurn>(db, LOCAL_DEFAULT_ACCOUNT_ID, 'conversation',
+    (conversationId, turn, sequence) => conversationReadProjector.applyHistory(LOCAL_DEFAULT_ACCOUNT_ID, conversationId, turn, sequence));
   const presentationStore = new FileConversationPresentationStore(
     resolve(accountPaths.conversations, 'web-presentation'),
     new SqliteConversationHistoryRepo(db, LOCAL_DEFAULT_ACCOUNT_ID, 'presentation'),
@@ -756,7 +782,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     resolve(accountPaths.conversations, 'gateway'),
     {
       onMetadataCommitted: metadata => directoryProjector?.observeMetadata(metadata),
-      history: new SqliteConversationHistoryRepo(db, LOCAL_DEFAULT_ACCOUNT_ID, 'conversation'),
+      history: canonicalHistory,
       metadataIndex: new SqliteConversationMetadataIndex(db, LOCAL_DEFAULT_ACCOUNT_ID),
       readLegacyHistory: async conversationId => (await presentationStore.read(conversationId))?.turns.map(turn => ({
         id: turn.id, conversationId, userInput: turn.userInput,
@@ -1028,6 +1054,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     authorized: true,
   });
   let gatewayFeishuManager: FeishuRuntimeManager | null = null;
+  let notificationTimer: ReturnType<typeof setInterval> | undefined;
+  let notificationDrain: Promise<void> | null = null;
+  let stopNotifications: (() => Promise<void>) | undefined;
   // 由稍后构造的 AgentInstallationReadinessService 填充：配置激活会改动
   // AgentClass 展示名，必须立刻重新投影并广播，否则就绪卡片会停在旧名字。
   let republishAgentReadiness: (() => void) | null = null;
@@ -1296,6 +1325,14 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   );
   await conversationBindings.initialize();
   const eventJournalRuntime = createAccountEventJournal({
+    historyWorkerUrl: new URL('./conversation-history-worker.js', import.meta.url),
+    prepareHistory: async conversationId => {
+      if (!canonicalHistory.isImported(conversationId)
+        && new SqliteConversationMetadataIndex(db, LOCAL_DEFAULT_ACCOUNT_ID).find(conversationId)) {
+        await conversationStore.readHistoryPage(conversationId, { limit: 1 });
+      }
+    },
+    readModel: conversationReadModel,
     db, root: resolve(accountPaths.gateway, 'events'), accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     onError: error => console.error(`Gateway journal maintenance failed: ${(error as Error).message}`),
   });
@@ -1371,6 +1408,159 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
   });
   const gatewaySubscriptions = new GatewaySubscriptions();
+  const projectObservedTask = (
+    task: ConversationActivityTask,
+    permissionRequestId: string | null,
+    result: import('../task/task-view.js').TaskViewResultFact | null = null,
+  ) => {
+    const taskId = task.id;
+    return projectTaskView({
+        task: { id: task.id, status: task.status, updatedAt: task.updatedAt },
+        subtasks: new SubtaskRepo(db).listByTask(taskId)
+          .map(subtask => ({ id: subtask.id, status: subtask.status })),
+        dispatches: new KernelDispatchItemRepo(db).listByTask(taskId).map(item => ({
+          attemptId: item.attemptId,
+          subtaskId: item.subtaskId,
+          status: item.status,
+          attemptKind: item.attemptKind,
+          createdAt: item.createdAt,
+          updatedAt: item.updatedAt,
+        })),
+        receipts: new ExecutorAttemptReceiptRepo(db).listByTask(taskId).map(receipt => ({
+          attemptId: receipt.attemptId,
+          terminalState: receipt.terminalState,
+          failure: receipt.failure,
+          completedAt: receipt.completedAt,
+        })),
+        replanJobs: new GenerationReplanRequestRepo(db).listByTask(taskId).map(job => ({
+          id: job.id,
+          status: job.status,
+          generationId: job.generationId,
+          sourceRevision: job.sourceRevision,
+          updatedAt: job.updatedAt,
+        })),
+        uncertainApplications: accountRuntimeComposition.runtimePort.queries
+          .listRecoveryApplications(taskId)
+          .filter(item => item.status === 'uncertain')
+          .map(item => ({
+            applicationId: item.decisionId,
+            action: item.decision.action.type,
+            errorSummary: item.errorSummary,
+            updatedAt: item.updatedAt,
+          })),
+        publications: new WorkspacePublicationRepo(db).listByTask(taskId)
+          .map(publication => ({ id: publication.id, status: publication.status })),
+        completionResidue: accountRuntimeComposition.runtimePort.queries
+          .listCompletionResidue(taskId),
+        pendingPermission: permissionRequestId ? { requestId: permissionRequestId } : null,
+        retryWakeAt: new RetryWakeRepo(db)
+          .findBlockingByTask(taskId)
+          .map(wake => wake.resumeAt)
+          .sort()
+          .at(-1) ?? null,
+        retryWakeRecoveryRequired: new RetryWakeRepo(db)
+          .findRecoveryRequiredByTask(taskId)
+          .length > 0,
+        result,
+      });
+  };
+  const permissionNotificationPage = (taskId: string, afterId = '') => {
+    const task = taskRepo.findById(taskId);
+    if (!task?.accountId || !task.conversationId) return { facts: [], nextId: null };
+    const turn = conversationReadModel.findTaskTurn(task.accountId, task.conversationId, taskId);
+    const requests = new SqlitePermissionRepository(db).listEscalatedForTask(taskId, afterId, 17);
+    const facts: NotificationFact[] = requests.slice(0, 16).filter(record =>
+      Date.parse(record.createdAt) + 24 * 60 * 60 * 1000 > Date.now()).map(record => {
+      const request = record.request;
+      const resource = redactSensitiveText(request.resource);
+      const reason = redactSensitiveText(request.reason);
+      return { accountId: task.accountId!, conversationId: task.conversationId!, taskId, requestId: turn?.requestId ?? null,
+        subjectId: request.id, category: 'approval', version: request.fingerprint,
+        payload: { requestId: request.id, requestRevision: request.fingerprint, taskId, generationId: request.generationId,
+          operation: request.operation.slice(0, 256), resource: resource.slice(0, 512), reason: reason.slice(0, 512), scope: request.suggestedScope,
+          ...(resource.length > 512 || reason.length > 512 || request.operation.length > 256 ? {
+            detailsRef: conversationReadModel.putContent(task.accountId!, task.conversationId!,
+              JSON.stringify({ resource, reason, operation: request.operation, scope: request.suggestedScope })),
+          } : {}),
+        } };
+    });
+    return { facts, nextId: requests.length > 16 ? requests[15]!.request.id : null };
+  };
+  const activityProjection = new SqliteConversationActivityProjection(db, (taskId, summary) => {
+    const task = taskRepo.findById(taskId);
+    if (!task?.accountId || !task.conversationId) return;
+    const turn = conversationReadModel.findTaskTurn(task.accountId, task.conversationId, task.id);
+    const scope = { accountId: task.accountId, conversationId: task.conversationId, taskId,
+      requestId: turn?.requestId ?? null };
+    notificationStore.capture({ ...scope, subjectId: taskId, category: 'progress',
+      version: createHash('sha256').update(JSON.stringify(summary)).digest('hex'), payload: summary }, Date.now());
+    notificationStore.schedulePermissions(taskId);
+  });
+  const activityProjector = new ConversationActivityProjector(activityProjection, task => {
+    const pending = new SqlitePermissionRepository(db).findPendingForTask(task.id);
+    const permissionId = pending && !new KernelWorkflowRepo(db).findPermissionResolution(pending.request.id) ? pending.request.id : null;
+    const view = projectTaskView(new SqliteTaskActivityFacts(db).read(task,
+      permissionId ? { requestId: permissionId } : null));
+    const generation = accountRuntimeComposition.runtimePort.queries.findActiveWorkGraphRevision(task.id)?.generationId ?? `unplanned:${task.id}`;
+    const progress = new SqliteConversationActivitySource(db).latestProgress(task.id, generation);
+    return { taskId: task.id, title: task.title,
+      executionGeneration: generation,
+      ...(progress ? { progressSummary: redactSensitiveText(progress).slice(0, 1024) } : {}),
+      phase: view.phase, explanation: view.explanation, canCancel: !isTerminalTaskLifecycle(view.lifecycle) };
+  });
+  const activityProjectionTimer = setInterval(() => {
+    try {
+      notificationStore.scanPermissions(permissionNotificationPage, Date.now());
+      const started = performance.now();
+      for (let count = 0; count < 4 && performance.now() - started < 20; count++) {
+        if (!activityProjector.maintain()) break;
+      }
+    } catch (error) { console.error(`Task activity projection: ${(error as Error).message}`); }
+  }, 100);
+  activityProjectionTimer.unref();
+  const conversationObservation = new ConversationObservationService({
+    identity: { serverId: conversationReadModel.serverIdentity(), accountId: LOCAL_DEFAULT_ACCOUNT_ID },
+    metadata: async (_accountId, conversationId) => {
+      const metadata = await conversationStore.readMetadata(conversationId);
+      const workspace = metadata?.workspaceBinding?.workspaceId
+        ? await workspaceCatalogStore.findById(metadata.workspaceBinding.workspaceId) : null;
+      return metadata ? { id: metadata.id, workspaceId: metadata.workspaceBinding?.workspaceId ?? null, title: metadata.title,
+        ...(workspace ? { workspace: { id: workspace.id, path: workspace.canonicalPath,
+          displayName: workspace.displayName, availability: workspace.availability } } : {}) } : null;
+    },
+    model: eventJournalRuntime.readModel,
+    search: eventJournalRuntime.search,
+    subscriptions: gatewaySubscriptions,
+    sourceSequence: eventJournalRuntime.sourceSequence,
+    activity: async (accountId, conversationId, cursor, pendingCursor) => {
+      if (accountId !== LOCAL_DEFAULT_ACCOUNT_ID) throw new Error('account_denied');
+      const metadata = await conversationStore.readMetadata(conversationId);
+      if (!metadata || metadata.accountId !== accountId) throw new Error('conversation_denied');
+      const requests = accountRuntimeComposition.runtimePort.permissions?.listForSession(metadata.plannerSessionId, pendingCursor ?? '', 9) ?? [];
+      const page = new SqliteConversationActivitySource(db).page(accountId, conversationId, cursor);
+      return {
+        tasks: page.tasks.map(task => activityProjection.read(task.id) ?? {
+          taskId: task.id, title: task.title, executionGeneration: '',
+          phase: 'preparing', explanation: '正在同步任务进度…', canCancel: false,
+        }),
+        nextCursor: page.nextCursor,
+        pendingNextCursor: requests.length > 8 ? requests[7]!.permissionRequestId : null,
+        pendingInteractions: requests.slice(0, 8).map(request => ({ requestId: request.permissionRequestId, requestRevision: request.requestRevision,
+          taskId: request.taskId, generationId: request.generationId, subtaskId: request.subtaskId, attemptId: request.attemptId,
+          resource: redactSensitiveText(request.resource).slice(0, 512), operation: request.operation.slice(0, 256), reason: redactSensitiveText(request.reason).slice(0, 512),
+          ...(request.resource.length > 512 || request.reason.length > 512 ? { detailsRef: eventJournalRuntime.readModel.putContent(accountId, conversationId,
+            redactSensitiveText(JSON.stringify({ resource: request.resource, operation: request.operation, reason: request.reason, scope: request.suggestedScope }))) } : {}),
+          capability: request.capability, scope: request.suggestedScope, expiresAt: request.expiresAt })),
+      };
+    },
+    authorize: async (accountId, conversationId) => {
+      if (accountId !== LOCAL_DEFAULT_ACCOUNT_ID) return false;
+      const metadata = await conversationStore.readMetadata(conversationId);
+      return metadata?.accountId === accountId && !metadata.archived
+        && Boolean(await workspaceDirectory.resolveConversationWorkspace(conversationId, 'local:local-installation'));
+    },
+    onError: error => console.error(`Conversation observation failed: ${(error as Error).message}`),
+  });
   // ExecutionProjector / TaskArtifactRepo 同时服务 Web 管理面与 Gateway 只读
   // Task 视图查询（统一 TUI 设计 §9.3）：同一投影 owner，不复制状态计算。
   const taskArtifactRepo = new TaskArtifactRepo(db);
@@ -1397,6 +1587,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     configurationByRevision: timelineConfigurationByRevision,
   });
   const conversationGatewayRuntime = new ConversationGatewayRuntime({
+    storeResultContent: (accountId, conversationId, content) => {
+      eventJournalRuntime.readModel.putContent(accountId, conversationId, content);
+    },
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     registry: accountRegistry,
     conversations: conversationRegistry,
@@ -1515,6 +1708,22 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       return Boolean(task && task.accountId === accountId);
     },
     authorizeConversation: authorizeConversationAttach,
+    conversationResource: async (accountId, command) => {
+      const id = command.conversationId;
+      if (command.resource === 'turns') return conversationObservation.page(accountId, id, command.cursor, 60 * 1024, command.beforeTurnId);
+      if (command.resource === 'activity') return conversationObservation.activity(accountId, id, command.cursor, command.pendingCursor);
+      if (command.resource === 'metadata') return conversationObservation.metadata(accountId, id);
+      if (command.resource === 'locate') return conversationObservation.locate(accountId, id, '', command.taskId, 40 * 1024);
+      if (command.resource === 'content') return conversationObservation.content(accountId, id, command.hash!, command.offset!, 8 * 1024);
+      await conversationObservation.metadata(accountId, id);
+      return eventJournal.readTracePage?.(accountId, id, command.turnId!, command.cursor, 10)
+        ?? { events: [], nextCursor: null, preparing: true };
+    },
+    pendingInteractions: async (accountId, conversationId, cursor, limit) => {
+      const metadata = await conversationStore.readMetadata(conversationId);
+      if (!metadata || metadata.accountId !== accountId) throw new Error('conversation_denied');
+      return accountRuntimeComposition.runtimePort.permissions?.listForSession(metadata.plannerSessionId, cursor, limit) ?? [];
+    },
     completeCommand: ({ scope, text, cursor }) => {
       if (scope.kind === 'workspace') {
         return completeWorkspaceNavigationCommand(text, cursor);
@@ -1532,7 +1741,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
     getTaskView: async ({ accountId, conversationId, turnId, taskId, requestId }) => {
       if (accountId !== LOCAL_DEFAULT_ACCOUNT_ID) return { error: 'task_view_unavailable' };
-      const recordedTurn = await webSessionCatalog.readTurn(conversationId, turnId);
+      // Card refreshes use the small indexed Turn, never deserialize its legacy
+      // aggregate transcript just to establish Task identity or timestamps.
+      const observedTurn = conversationReadModel.findTurn(accountId, conversationId, turnId);
+      const recordedTurn = observedTurn ?? await webSessionCatalog.readTurn(conversationId, turnId);
       const liveTrace = conversationRegistry.getIfOpen(conversationId)?.getInteractionTrace() ?? null;
       const liveTurn = liveTrace && liveTrace.turnId === turnId ? liveTrace : null;
       const traceRead = await eventJournal.readTurnTaskObservation(accountId, conversationId, turnId);
@@ -1570,7 +1782,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         ? association.progressSummary
         : null;
       const progressSummary = liveTurn?.events.at(-1)?.summary
-        ?? recordedTurn?.traceEvents.at(-1)?.summary
+        ?? (recordedTurn && 'traceEvents' in recordedTurn ? recordedTurn.traceEvents.at(-1)?.summary : null)
         ?? associationProgressSummary
         ?? null;
       const executionFacts = await projectTaskViewFacts({
@@ -1581,55 +1793,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         findObject: resultId => deliveryResults.findObject(resultId),
         readConfiguration: revisionId => configurationRepository.readSnapshot(revisionId),
       });
-      const lifecycleProjection = projectTaskView({
-        task: { id: task.id, status: task.status, updatedAt: task.updatedAt },
-        subtasks: new SubtaskRepo(db).listByTask(taskId)
-          .map(subtask => ({ id: subtask.id, status: subtask.status })),
-        dispatches: new KernelDispatchItemRepo(db).listByTask(taskId).map(item => ({
-          attemptId: item.attemptId,
-          subtaskId: item.subtaskId,
-          status: item.status,
-          attemptKind: item.attemptKind,
-          createdAt: item.createdAt,
-          updatedAt: item.updatedAt,
-        })),
-        receipts: new ExecutorAttemptReceiptRepo(db).listByTask(taskId).map(receipt => ({
-          attemptId: receipt.attemptId,
-          terminalState: receipt.terminalState,
-          failure: receipt.failure,
-          completedAt: receipt.completedAt,
-        })),
-        replanJobs: new GenerationReplanRequestRepo(db).listByTask(taskId).map(job => ({
-          id: job.id,
-          status: job.status,
-          generationId: job.generationId,
-          sourceRevision: job.sourceRevision,
-          updatedAt: job.updatedAt,
-        })),
-        uncertainApplications: accountRuntimeComposition.runtimePort.queries
-          .listRecoveryApplications(taskId)
-          .filter(item => item.status === 'uncertain')
-          .map(item => ({
-            applicationId: item.decisionId,
-            action: item.decision.action.type,
-            errorSummary: item.errorSummary,
-            updatedAt: item.updatedAt,
-          })),
-        publications: new WorkspacePublicationRepo(db).listByTask(taskId)
-          .map(publication => ({ id: publication.id, status: publication.status })),
-        completionResidue: accountRuntimeComposition.runtimePort.queries
-          .listCompletionResidue(taskId),
-        pendingPermission: taskPermission ? { requestId: taskPermission.request.id } : null,
-        retryWakeAt: new RetryWakeRepo(db)
-          .findBlockingByTask(taskId)
-          .map(wake => wake.resumeAt)
-          .sort()
-          .at(-1) ?? null,
-        retryWakeRecoveryRequired: new RetryWakeRepo(db)
-          .findRecoveryRequiredByTask(taskId)
-          .length > 0,
-        result: executionFacts.result,
-      });
+      const lifecycleProjection = projectObservedTask(task, taskPermission?.request.id ?? null, executionFacts.result);
       const timeline = executionProjector.project(task);
       const publicExecutors = new Map(executionFacts.subtasks.map(subtask => [subtask.id, subtask.executor]));
       for (const stage of timeline.stages) {
@@ -1769,6 +1933,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     gateway: clientGateway,
     journal: eventJournal,
     subscriptions: gatewaySubscriptions,
+    observation: conversationObservation,
     authorizeAttach: authorizeConversationAttach,
     attachClient: (accountId, conversationId) => {
       if (accountId !== LOCAL_DEFAULT_ACCOUNT_ID) {
@@ -1847,7 +2012,58 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   }, 250);
   directoryProjectionTimer.unref();
   if (cliCommand.kind === 'server') {
+    let feishuNotificationPort: FeishuGatewaySessionPort | null = null;
+    const clientActions = new ClientActionReferences(new SqliteClientActionReferences(db));
+    const notificationRouting = new NotificationRoutingService({
+      store: notificationStore,
+      current: (route, cursor) => {
+        const [taskCursor, permissionCursor] = cursor ? JSON.parse(cursor) as [string | null, string | null] : [null, null];
+        const page = new SqliteConversationActivitySource(db).page(route.accountId, route.conversationId, taskCursor ?? undefined, 1);
+        const task = page.tasks[0];
+        if (!task) {
+          const latest = conversationReadModel.page(route.accountId, route.conversationId, { limit: 1 }).turns[0];
+          const fact = latest && notificationFromTurn(route.accountId, latest);
+          return { facts: fact ? [fact] : [], nextCursor: null };
+        }
+        const pending = permissionNotificationPage(task.id, permissionCursor ?? '');
+        const facts = [...pending.facts];
+        const value = activityProjection.read(task.id);
+        const turn = conversationReadModel.findTaskTurn(route.accountId, route.conversationId, task.id);
+        if (value) facts.push({ accountId: route.accountId, conversationId: route.conversationId,
+          taskId: task.id, requestId: turn?.requestId ?? null, subjectId: task.id, category: 'progress',
+          version: createHash('sha256').update(JSON.stringify(value)).digest('hex'), payload: value });
+        return { facts, nextCursor: pending.nextId !== null ? JSON.stringify([taskCursor, pending.nextId])
+          : page.nextCursor !== null ? JSON.stringify([page.nextCursor, null]) : null };
+      },
+      authorize: async route => route.accountId === LOCAL_DEFAULT_ACCOUNT_ID
+        && route.principalId === `feishu:${route.destination.tenantKey}:${route.destination.senderId}`
+        && Boolean((await conversationStore.readMetadata(route.conversationId))?.archived === false)
+        && Boolean(await workspaceDirectory.resolveConversationWorkspace(route.conversationId, route.principalId)),
+      valid: job => {
+        if (job.fact.category !== 'approval') return true;
+        const request = new SqlitePermissionRepository(db).findRequest(job.fact.subjectId);
+        const task = request && taskRepo.findById(request.request.taskId);
+        const revision = request && accountRuntimeComposition.runtimePort.queries.findActiveWorkGraphRevision(request.request.taskId);
+        return Boolean(request?.status === 'escalated'
+          && task && !isTerminalTaskLifecycle(toTaskLifecycleState(task.status))
+          && revision?.generationId === request.request.generationId
+          && request.request.fingerprint === job.fact.version
+          && Date.parse(request.createdAt) + 24 * 60 * 60 * 1000 > Date.now()
+          && !new KernelWorkflowRepo(db).findPermissionResolution(job.fact.subjectId));
+      },
+      deliver: async job => {
+        if (!feishuNotificationPort) throw new Error('feishu_transport_unavailable');
+        await feishuNotificationPort.deliverNotification(job);
+      },
+      onError: error => console.error(`Notification delivery: ${(error as Error).message}`),
+    });
+    stopNotifications = () => notificationRouting.stop();
     const feishuRouting = new FeishuConversationRouting({
+      actions: clientActions,
+      notifications: notificationRouting,
+      observation: conversationObservation,
+      subscriptions: gatewaySubscriptions,
+      navigation: new SqliteClientNavigationStore(db),
       accountId: LOCAL_DEFAULT_ACCOUNT_ID,
       gateway: clientGateway,
       bindings: conversationBindings,
@@ -1888,13 +2104,14 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       },
     });
     const feishuPort = new FeishuGatewaySessionPort({
+      actions: clientActions,
+      observation: conversationObservation,
       accountId: LOCAL_DEFAULT_ACCOUNT_ID,
       tenantKey: config.gateway?.platforms?.feishu?.app_id ?? 'local-feishu-app',
       adapter: new FeishuGatewayAdapter({
         gateway: clientGateway,
         routing: feishuRouting,
       }),
-      journal: eventJournal,
       subscriptions: gatewaySubscriptions,
       onSystemMessage: (...lines) => console.log(lines.join('\n')),
       listTaskArtifacts: (taskId: string) => new TaskArtifactRepo(db)
@@ -1914,6 +2131,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         config: resolve(accountPaths.config, 'config.yaml'),
       },
     });
+    feishuNotificationPort = feishuPort;
+    notificationTimer = setInterval(() => {
+      if (notificationDrain) return;
+      notificationDrain = notificationRouting.drain().catch(error => console.error(`Notification outbox: ${(error as Error).message}`))
+        .finally(() => { notificationDrain = null; });
+    }, 250);
+    notificationTimer.unref();
     gatewayFeishuManager = new FeishuRuntimeManager({ session: feishuPort });
     await gatewayFeishuManager.applyConfiguration(config);
   }
@@ -1921,6 +2145,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   if (cliCommand.kind === 'server') {
     const workGraphPresentationProjector = new WorkGraphPresentationProjector();
     managementServer = await startWebMode({
+      conversationGateway: { accountId: LOCAL_DEFAULT_ACCOUNT_ID, observation: conversationObservation, commands: webGatewayAdapter },
       launchContexts: webLaunchContexts,
       port: resolveServerWebPort(process.env),
       noOpen: true,
@@ -1945,6 +2170,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       sessionRuntime: new WebGatewaySessionRuntime({
         accountId: LOCAL_DEFAULT_ACCOUNT_ID,
         catalog: webSessionCatalog,
+        readBillingTurnFacts: async (conversationId, turnId) => {
+          const turn = conversationReadModel.findTurn(LOCAL_DEFAULT_ACCOUNT_ID, conversationId, turnId);
+          const legacy = await webSessionCatalog.readTurn(conversationId, turnId);
+          return turn ? { userInput: turn.userInput, traceEvents: legacy?.traceEvents } : legacy;
+        },
         gateway: webGatewayAdapter,
         attachments: webAttachmentStore,
         normalizeTurnPresentation,
@@ -2349,6 +2579,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         spanRoutingShutdown.abort();
         clientGateway.closeAdmission();
         conversationGatewayRuntime.closeAdmission();
+        if (notificationTimer) clearInterval(notificationTimer);
+        await notificationDrain;
+        await stopNotifications?.();
         await Promise.all([
           managementServer?.stop() ?? Promise.resolve(),
           gatewayFeishuManager?.stop() ?? Promise.resolve(),
@@ -2358,6 +2591,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       },
       drain: async () => {
         clearInterval(taskPoolReviewTimer);
+        clearInterval(activityProjectionTimer);
+        if (notificationTimer) clearInterval(notificationTimer);
+        await notificationDrain;
         clearInterval(directoryProjectionTimer);
         await directoryRebuild;
         await directoryDrain;

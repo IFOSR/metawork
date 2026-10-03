@@ -2,6 +2,11 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { collectNavigationDiagnostics } from '../utils/navigation-diagnostics.js';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import type { Socket } from 'node:net';
+import { MAX_CONNECTION_OBSERVATIONS, type ConversationObservationService, type ConversationObservationHandle } from '../gateway/conversation-observation.js';
+import { parseGatewayClientMessage } from '../gateway/protocol.js';
+import { GATEWAY_SERVER_CAPABILITIES } from '../gateway/client-protocol.js';
+import { clientConnectionEventStreamId } from '../gateway/client-connection-event-stream.js';
+import type { WebGatewayAdapter } from './web-gateway-adapter.js';
 import { extname, join, normalize, resolve } from 'node:path';
 import { bearerTokenFromHeader, tokenMatches } from './token';
 import { WebSocketConnection } from './websocket';
@@ -194,6 +199,7 @@ export interface ManagementServerDeps {
   runningRevisionId: string;
   webSocketAuthTimeoutMs?: number;
   sessionRuntime: ManagementWebSessionRuntime;
+  conversationGateway?: { accountId: string; observation: ConversationObservationService; commands: WebGatewayAdapter };
   /** 会话附件存储；未提供时上传端点返回 503。 */
   attachmentStore?: GatewayAttachmentStore;
   /** 同源 artifact 预览服务；未提供时 artifact 端点返回 503。 */
@@ -348,6 +354,10 @@ export class ManagementServer {
     WebSocketConnection.accept(socket, key);
 
     let ws: WebSocketConnection;
+    const observations = new Map<string, { handle?: ConversationObservationHandle }>();
+    const gateway = this.deps.conversationGateway;
+    const unsubscribeReplies = gateway?.commands.subscribe(gateway.accountId,
+      clientConnectionEventStreamId(`web:${clientId}`), event => ws.send(JSON.stringify({ type: 'gateway_reply', event })));
 
     const unsubscribeRuntime = this.deps.sessionRuntime.subscribe(
       clientId,
@@ -371,6 +381,54 @@ export class ManagementServer {
 
         if (message.type === 'close') {
           ws.close();
+          return;
+        }
+        if (message.type === 'observe' || message.type === 'unobserve' || message.type === 'command') {
+          const gateway = this.deps.conversationGateway;
+          const parsed = parseGatewayClientMessage(message.type === 'observe'
+            ? { ...message, connectionId: `web:${clientId}` } : message);
+          if (!gateway || !parsed) {
+            ws.send(JSON.stringify({ type: 'error', message: 'invalid_observation_command' })); return;
+          }
+          if (parsed.type === 'command') {
+            void gateway.commands.submit({ ...parsed.envelope, connectionId: `web:${clientId}` })
+              .then(receipt => ws.send(JSON.stringify({ type: 'receipt', receipt })))
+              .catch(error => ws.send(JSON.stringify({ type: 'error', requestId: parsed.envelope.requestId,
+                message: (error as Error).message })));
+            return;
+          }
+          if (parsed.type === 'unobserve') {
+            observations.get(parsed.observationId)?.handle?.close(); observations.delete(parsed.observationId); return;
+          }
+          if (parsed.type !== 'observe') return;
+          if (!observations.has(parsed.observationId) && observations.size >= MAX_CONNECTION_OBSERVATIONS) {
+            ws.send(JSON.stringify({ type: 'error', message: 'observation_limit' })); return;
+          }
+          observations.get(parsed.observationId)?.handle?.close();
+          const entry: { handle?: ConversationObservationHandle } = {};
+          observations.set(parsed.observationId, entry);
+          const open = () => gateway.observation.open({ accountId: gateway.accountId, conversationId: parsed.conversationId,
+            observationId: parsed.observationId, cursor: parsed.cursor,
+            send: frame => {
+              if (observations.get(parsed.observationId) !== entry || socket.destroyed) return false;
+              if (socket.writableLength > 512 * 1024) { ws.close(); socket.destroy(); return false; }
+              ws.send(JSON.stringify({ type: 'observation', frame })); return true;
+            },
+          });
+          const opening = process.env.METAWORK_NAVIGATION_DIAGNOSTICS === '1'
+            ? collectNavigationDiagnostics(open).then(({ result, milliseconds, stages }) => {
+                console.info(JSON.stringify({ event: 'observation_diagnostics', milliseconds, stages })); return result;
+              }) : open();
+          void opening.then(handle => {
+            if (observations.get(parsed.observationId) !== entry || socket.destroyed) handle.close();
+            else entry.handle = handle;
+          }).catch(error => {
+            if (observations.get(parsed.observationId) !== entry) return;
+            observations.delete(parsed.observationId);
+            ws.send(JSON.stringify({ type: 'observation', frame: { kind: 'closed', observationId: parsed.observationId,
+              conversationId: parsed.conversationId, reason: (error as Error).message === 'conversation_denied'
+                ? 'authorization_revoked' : 'read_unavailable' } }));
+          });
           return;
         }
         if (message.type === 'cancel') {
@@ -406,6 +464,9 @@ export class ManagementServer {
         }
       },
       onClose: () => {
+        unsubscribeReplies?.();
+        for (const observation of observations.values()) observation.handle?.close();
+        observations.clear();
         unsubscribeRuntime();
         this.authenticatedWsConnections.delete(ws);
         this.wsConnections.delete(ws);
@@ -423,6 +484,8 @@ export class ManagementServer {
     ws.send(JSON.stringify({
       type: 'hello',
       sessionId: this.deps.sessionRuntime.getClientState(clientId).activeSessionId,
+      identity: gateway?.observation.identity,
+      capabilities: gateway ? [...GATEWAY_SERVER_CAPABILITIES] : [],
     }));
     for (const event of this.deps.sessionRuntime.getReplayEvents(clientId)) {
       ws.send(JSON.stringify(event));
@@ -455,15 +518,19 @@ export class ManagementServer {
     const conversationId = url.searchParams.get('sessionId') ?? '';
     const name = url.searchParams.get('name') ?? '';
     const state = this.deps.sessionRuntime.getClientState(clientId);
-    if (!conversationId || !name || !state.activeWorkspaceId
-      || conversationId !== state.activeSessionId) {
+    if (!conversationId || !name) {
       this.sendJson(response, 400, { error: 'sessionId and name query parameters are required' });
       return;
     }
     try {
+      const gateway = this.deps.conversationGateway;
+      const workspaceId = gateway
+        ? (await gateway.observation.metadata(gateway.accountId, conversationId))?.workspaceId
+        : conversationId === state.activeSessionId ? state.activeWorkspaceId : null;
+      if (!workspaceId) { this.sendJson(response, 403, { error: 'conversation_denied' }); return; }
       const metadata = await store.saveAttachmentStream({
         conversationId,
-        workspaceId: state.activeWorkspaceId,
+        workspaceId,
         name,
         source: request,
       });
@@ -472,7 +539,7 @@ export class ManagementServer {
       const message = error instanceof Error ? error.message : String(error);
       const status = error instanceof AttachmentTypeError
         ? 415
-        : error instanceof AttachmentInputError ? 400 : 500;
+        : message === 'conversation_denied' ? 403 : error instanceof AttachmentInputError ? 400 : 500;
       this.sendJson(response, status, { error: message });
     }
   }
@@ -519,9 +586,11 @@ export class ManagementServer {
       const parsed = new URL(origin);
       const hostname = parsed.hostname.toLowerCase();
       const port = parsed.port || (parsed.protocol === 'http:' ? '80' : '443');
+      const listening = this.server?.address();
+      const listeningPort = listening && typeof listening !== 'string' ? listening.port : this.deps.port;
       return parsed.protocol === 'http:'
         && (hostname === '127.0.0.1' || hostname === 'localhost')
-        && port === String(this.deps.port);
+        && port === String(listeningPort);
     } catch {
       return false;
     }
@@ -721,6 +790,87 @@ export class ManagementServer {
       return;
     }
 
+    const searchResource = /^\/api\/conversations\/([^/]+)\/view\/(search|locate)$/u.exec(url.pathname);
+    if (request.method === 'GET' && searchResource) {
+      const gateway = this.deps.conversationGateway;
+      if (!gateway) { this.sendJson(response, 503, { error: 'observation_unavailable' }); return; }
+      try {
+        const id = decodeURIComponent(searchResource[1]!);
+        const result = searchResource[2] === 'search'
+          ? await gateway.observation.search(gateway.accountId, id, url.searchParams.get('q') ?? '', url.searchParams.get('cursor') ?? undefined)
+          : await gateway.observation.locate(gateway.accountId, id, url.searchParams.get('turnId') ?? '', url.searchParams.get('taskId') ?? undefined);
+        this.sendJson(response, 200, result);
+      } catch (error) {
+        const reason = (error as Error).message;
+        this.sendJson(response, reason === 'conversation_denied' ? 403 : 400, { error: reason });
+      }
+      return;
+    }
+
+    const metadataResource = /^\/api\/conversations\/([^/]+)\/view\/metadata$/u.exec(url.pathname);
+    if (request.method === 'GET' && metadataResource) {
+      const gateway = this.deps.conversationGateway;
+      if (!gateway) { this.sendJson(response, 503, { error: 'observation_unavailable' }); return; }
+      try {
+        const metadata = await gateway.observation.metadata(gateway.accountId, decodeURIComponent(metadataResource[1]!));
+        this.sendJson(response, metadata ? 200 : 404, metadata ?? { error: 'conversation_not_found' });
+      } catch { this.sendJson(response, 403, { error: 'conversation_denied' }); }
+      return;
+    }
+
+    const activityResource = /^\/api\/conversations\/([^/]+)\/view\/activity$/u.exec(url.pathname);
+    if (request.method === 'GET' && activityResource) {
+      const gateway = this.deps.conversationGateway;
+      if (!gateway) { this.sendJson(response, 503, { error: 'observation_unavailable' }); return; }
+      try {
+        const page = await gateway.observation.activity(gateway.accountId, decodeURIComponent(activityResource[1]!),
+          url.searchParams.get('cursor') ?? undefined, url.searchParams.get('pendingCursor') ?? undefined);
+        this.sendJson(response, 200, page);
+      } catch (error) {
+        const reason = (error as Error).message;
+        this.sendJson(response, reason === 'conversation_denied' ? 403 : 400, { error: reason });
+      }
+      return;
+    }
+
+    const traceResource = /^\/api\/conversations\/([^/]+)\/view\/trace\/([^/]+)$/u.exec(url.pathname);
+    if (request.method === 'GET' && traceResource) {
+      const gateway = this.deps.conversationGateway;
+      if (!gateway) { this.sendJson(response, 503, { error: 'observation_unavailable' }); return; }
+      try {
+        const conversationId = decodeURIComponent(traceResource[1]!);
+        // The same account/Conversation authorization as baseline and content.
+        await gateway.observation.page(gateway.accountId, conversationId);
+        const page = await gateway.commands.tracePage(gateway.accountId, conversationId,
+          decodeURIComponent(traceResource[2]!), url.searchParams.get('cursor') ?? undefined, 50, url.searchParams.get('latest') === '1');
+        this.sendJson(response, 200, page);
+      } catch (error) {
+        const reason = (error as Error).message;
+        this.sendJson(response, reason === 'conversation_denied' ? 403 : 400, { error: reason });
+      }
+      return;
+    }
+
+    const observationResource = /^\/api\/conversations\/([^/]+)\/view(?:\/content\/([a-f0-9]{64}))?$/u.exec(url.pathname);
+    if (request.method === 'GET' && observationResource) {
+      const gateway = this.deps.conversationGateway;
+      if (!gateway) { this.sendJson(response, 503, { error: 'observation_unavailable' }); return; }
+      try {
+        const conversationId = decodeURIComponent(observationResource[1]!);
+        const hash = observationResource[2];
+        const result = hash
+          ? await gateway.observation.content(gateway.accountId, conversationId, hash,
+            Number(url.searchParams.get('offset') ?? '0'), Number(url.searchParams.get('maxBytes') ?? '32768'))
+          : await gateway.observation.page(gateway.accountId, conversationId, url.searchParams.get('cursor') ?? undefined,
+            undefined, url.searchParams.get('beforeTurn') ?? undefined);
+        this.sendJson(response, result ? 200 : 404, result ?? { error: 'content_not_found' });
+      } catch (error) {
+        const reason = (error as Error).message;
+        this.sendJson(response, reason === 'conversation_denied' ? 403 : 400, { error: reason });
+      }
+      return;
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/workspaces') {
       const state = this.deps.sessionRuntime.getClientState(clientId);
       this.sendJson(response, 200, {
@@ -894,6 +1044,21 @@ export class ManagementServer {
       const record = await this.deps.sessionRuntime.readSession(
         clientId,
         decodeURIComponent(conversationMatch[1]!),
+        url.searchParams.get('cursor') ?? undefined,
+      );
+      if (!record) {
+        this.sendJson(response, 404, { error: 'session not found' });
+        return;
+      }
+      this.sendJson(response, 200, record);
+      return;
+    }
+
+    const conversationHistoryMatch = /^\/api\/conversations\/([^/]+)\/history$/u.exec(url.pathname);
+    if (request.method === 'GET' && conversationHistoryMatch) {
+      const record = await this.deps.sessionRuntime.readBrowsableSession(
+        clientId,
+        decodeURIComponent(conversationHistoryMatch[1]!),
         url.searchParams.get('cursor') ?? undefined,
       );
       if (!record) {

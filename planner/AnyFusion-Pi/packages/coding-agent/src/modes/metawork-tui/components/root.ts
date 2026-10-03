@@ -5,13 +5,14 @@
  * 按终端尺寸切换布局；尺寸变化不丢草稿、不改变选中 Turn、不触发业务命令。
  */
 
-import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { computeMetaWorkLayout, type MetaWorkLayout } from "../layout.ts";
 import { MetaWorkConversationPanel, type MetaWorkConversationPanelState } from "./conversation-panel.ts";
+import { MetaWorkActionBar, type MetaWorkActionState, MetaWorkHeader, type MetaWorkHeaderState } from "./status-bar.ts";
 import { MetaWorkTaskDashboard, type MetaWorkTaskDashboardState } from "./task-dashboard-panel.ts";
-import { MetaWorkActionBar, MetaWorkHeader, type MetaWorkActionState, type MetaWorkHeaderState } from "./status-bar.ts";
 
 export interface MetaWorkRootState {
+	readonly reader?: { readonly id: number; readonly title: string; readonly text: string } | null;
 	readonly header: MetaWorkHeaderState;
 	readonly action: MetaWorkActionState;
 	readonly conversation: MetaWorkConversationPanelState;
@@ -22,6 +23,7 @@ export interface MetaWorkRootDeps {
 	readonly getState: () => MetaWorkRootState;
 	readonly getRows: () => number;
 	readonly editor: Component;
+	readonly taskPanel?: MetaWorkTaskDashboard;
 	readonly now?: () => number;
 }
 
@@ -35,6 +37,7 @@ export class MetaWorkRoot implements Component {
 	private bodyRows = 0;
 	private viewportRows = 1;
 	private selectionKey = "";
+	private readonly scrollMemory = new Map<string, { offset: number; rows: number }>();
 	private taskScrollTop = 0;
 	private taskRows = 0;
 
@@ -43,14 +46,14 @@ export class MetaWorkRoot implements Component {
 	}
 
 	scrollLines(delta: number): void {
-		this.scrollOffset = Math.max(0, Math.min(
-			Math.max(0, this.bodyRows - this.viewportRows),
-			this.scrollOffset - delta,
-		));
-		this.taskScrollTop = Math.max(0, Math.min(
-			Math.max(0, this.taskRows - this.viewportRows),
-			this.taskScrollTop + delta,
-		));
+		this.scrollOffset = Math.max(
+			0,
+			Math.min(Math.max(0, this.bodyRows - this.viewportRows), this.scrollOffset - delta),
+		);
+		this.taskScrollTop = Math.max(
+			0,
+			Math.min(Math.max(0, this.taskRows - this.viewportRows), this.taskScrollTop + delta),
+		);
 	}
 
 	constructor(deps: MetaWorkRootDeps) {
@@ -58,10 +61,15 @@ export class MetaWorkRoot implements Component {
 		this.header = new MetaWorkHeader(() => this.deps.getState().header);
 		this.actionBar = new MetaWorkActionBar(() => this.deps.getState().action);
 		this.conversation = new MetaWorkConversationPanel(() => this.deps.getState().conversation);
-		this.task = new MetaWorkTaskDashboard(
-			() => this.deps.getState().task,
-			deps.now ?? (() => Date.now()),
-		);
+		this.task = deps.taskPanel ?? new MetaWorkTaskDashboard(() => this.deps.getState().task);
+	}
+
+	clickTask(x: number, y: number, width: number): boolean {
+		const layout = this.layout(width);
+		if (this.deps.getState().reader || layout.taskPanel !== "inline" || layout.taskPanelWidth === null) return false;
+		if (x < width - layout.taskPanelWidth) return false;
+		const headerRows = layout.showHeader ? this.header.render(width).length + 1 : 0;
+		return y >= headerRows && y < headerRows + this.viewportRows && this.task.click(y - headerRows);
 	}
 
 	/** 当前布局（供 app 决定覆盖层）。 */
@@ -88,11 +96,15 @@ export class MetaWorkRoot implements Component {
 
 		const footer = ["", ...this.actionBar.render(width), ...this.deps.editor.render(width)];
 		this.viewportRows = Math.max(1, layout.rows - lines.length - footer.length);
-		const selection = `${state.header.conversationId}:${state.conversation.selectedTurnId}`;
+		const selection = `${state.header.conversationId}:${state.conversation.selectedTurnId}:${state.reader?.id ?? ""}`;
 		if (selection !== this.selectionKey) {
-			this.scrollOffset = 0;
+			this.scrollMemory.delete(this.selectionKey);
+			this.scrollMemory.set(this.selectionKey, { offset: this.scrollOffset, rows: this.bodyRows });
+			while (this.scrollMemory.size > 64) this.scrollMemory.delete(this.scrollMemory.keys().next().value!);
+			const saved = this.scrollMemory.get(selection);
+			this.scrollOffset = saved?.offset ?? 0;
 			this.taskScrollTop = 0;
-			this.bodyRows = 0;
+			this.bodyRows = saved?.rows ?? 0;
 			this.selectionKey = selection;
 		}
 		lines.push(...this.renderBody(width, layout));
@@ -111,10 +123,14 @@ export class MetaWorkRoot implements Component {
 		return body.slice(Math.max(0, end - this.viewportRows), end);
 	}
 
-	private renderBody(
-		width: number,
-		layout: MetaWorkLayout,
-	): string[] {
+	private renderBody(width: number, layout: MetaWorkLayout): string[] {
+		const reader = this.deps.getState().reader;
+		if (reader) {
+			const body = new Text(`${reader.title}\nPgUp/PgDn 滚动 · Esc 返回对话\n\n${reader.text}`, 0, 0).render(width);
+			this.taskRows = body.length;
+			this.taskScrollTop = Math.min(this.taskScrollTop, Math.max(0, body.length - this.viewportRows));
+			return body.slice(this.taskScrollTop, this.taskScrollTop + this.viewportRows);
+		}
 		if (layout.taskPanel !== "inline" || layout.taskPanelWidth === null) {
 			// compact 布局：对话框优先，Task 面板经覆盖层按需打开。
 			return this.visibleConversation(this.conversation.render(width));
@@ -123,11 +139,10 @@ export class MetaWorkRoot implements Component {
 		const taskWidth = Math.max(1, Math.min(layout.taskPanelWidth, width - 1));
 		const conversationWidth = Math.max(1, width - taskWidth - gap);
 		const left = this.visibleConversation(this.conversation.render(conversationWidth));
-		const right = this.task.render(taskWidth);
+		const right = this.task.render(taskWidth, this.viewportRows);
 		this.taskRows = right.length;
 		this.taskScrollTop = Math.min(this.taskScrollTop, Math.max(0, right.length - this.viewportRows));
-		return zipColumns(left, right.slice(this.taskScrollTop, this.taskScrollTop + this.viewportRows),
-			conversationWidth, taskWidth, gap);
+		return zipColumns(left, right.slice(0, this.viewportRows), conversationWidth, taskWidth, gap);
 	}
 }
 

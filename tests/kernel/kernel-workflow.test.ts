@@ -179,6 +179,17 @@ class MemoryWorkflowStore implements KernelWorkflowStore {
     return true;
   }
 
+  findPermissionResolution() {
+    return this.event?.type === 'permission_resolution_received' ? this.event : null;
+  }
+
+  admitPermissionResolution(event: Extract<KernelEvent, { type: 'permission_resolution_received' }>) {
+    const previous = this.findPermissionResolution();
+    if (previous) return { accepted: false, event: previous };
+    this.enqueue(event);
+    return { accepted: true, event };
+  }
+
   claimNext(): KernelEvent | null {
     if (this.eventStatus !== 'pending') return null;
     this.eventStatus = 'processing';

@@ -1,7 +1,8 @@
 import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
+import { installObservationSchema } from './observation-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 46;
+export const CURRENT_SCHEMA_VERSION = 47;
 
 const GATEWAY_COMMAND_ADMISSION_SQL = `
   CREATE TABLE IF NOT EXISTS gateway_command_admissions (
@@ -1530,6 +1531,18 @@ export function runMigrations(
       const changed = db.prepare('UPDATE schema_version SET version = 46 WHERE version = 45').run();
       if (changed.changes !== 1) throw new Error('schema version changed during 45 to 46 migration');
     })();
+    version = 46;
+  }
+  if (version === 46) {
+    db.transaction(() => {
+      installObservationSchema(db);
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kernel_events'").get()) {
+        db.exec(`CREATE INDEX IF NOT EXISTS kernel_permission_resolution_request ON kernel_events
+          (correlation_id) WHERE event_type = 'permission_resolution_received'`);
+      }
+      const changed = db.prepare('UPDATE schema_version SET version = 47 WHERE version = 46').run();
+      if (changed.changes !== 1) throw new Error('schema version changed during 46 to 47 migration');
+    })();
   }
   // Current-schema databases may have been created before a new projection
   // invalidation trigger was introduced. Reinstalling the idempotent trigger
@@ -1547,7 +1560,7 @@ function runBaseMigrations(
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
     ).all() as Array<{ version: number }>;
-    if (versions.length === 1 && [42, 43, 44, 45, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
+    if (versions.length === 1 && [42, 43, 44, 45, 46, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 41) {
@@ -1693,6 +1706,9 @@ function runBaseMigrations(
     db.exec(CURRENT_SCHEMA_SQL);
     db.exec(RETRY_WAKE_SQL);
     db.exec(NAVIGATION_PROJECTION_SQL);
+    installObservationSchema(db);
+    db.exec(`CREATE INDEX IF NOT EXISTS kernel_permission_resolution_request ON kernel_events
+      (correlation_id) WHERE event_type = 'permission_resolution_received'`);
     db.exec(GATEWAY_COMMAND_ADMISSION_SQL);
     installDirectoryInvalidationTriggers(db);
     createBillingSchema(db);

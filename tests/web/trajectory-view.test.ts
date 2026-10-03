@@ -17,6 +17,7 @@ describe('Trajectory view', () => {
     expect(view).toContain('<ExecutionNarrative');
     expect(view).toContain('<TrajectoryTimeline');
     expect(view).toContain('<TrajectoryEventTable');
+    expect(view).toContain('onLoadMore={onLoadMore}');
     expect(summary).toContain('工具调用');
     expect(summary).toContain('Executor 尝试');
     expect(timeline).toContain('occurredAt');
@@ -24,6 +25,8 @@ describe('Trajectory view', () => {
     expect(table).toContain('statusFilter');
     expect(table).toContain('phaseFilter');
     expect(table).toContain('<details');
+    expect(table).toContain('trajectory-pagination');
+    expect(table).toContain('加载更多轨迹');
     expect(styles).toContain('--surface-trajectory-panel');
     expect(styles).toContain('--surface-trajectory-control');
     expect(styles).toContain('--surface-trajectory-header');
@@ -32,5 +35,7 @@ describe('Trajectory view', () => {
     expect(styles).toMatch(/\.trajectory-band\s*\{[^}]*background: var\(--surface-trajectory-panel\);/u);
     expect(styles).toMatch(/\.trajectory-filters input,[^{]+select\s*\{[^}]*background: var\(--surface-trajectory-control\);/u);
     expect(styles).toMatch(/\.trajectory-head\s*\{[^}]*background: var\(--surface-trajectory-header\);/u);
+    expect(styles).toMatch(/\.trajectory-table\s*\{[^}]*max-height: min\(58vh, 680px\);/u);
+    expect(styles).toMatch(/\.trajectory-head\s*\{[^}]*position: sticky;/u);
   });
 });

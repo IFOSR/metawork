@@ -406,7 +406,7 @@ export class WorkspacePublicationWorker {
             reason: summary,
             changes: { error: summary },
           });
-        })();
+        }).immediate();
         if (cancelled) {
           return {
             type: 'cancelled',
@@ -547,7 +547,7 @@ export class WorkspacePublicationWorker {
             updatedAt: now,
           });
         }
-      })();
+      }).immediate();
       if (cancelled) {
         return {
           type: 'cancelled',

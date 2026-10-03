@@ -8,6 +8,7 @@ import type {
   InteractionTrace,
   InteractionTraceEvent,
 } from './api/types';
+import type { ArtifactProjection } from './api/session-types';
 import type {
   QueryBillProjection,
   TaskUsageSummary,
@@ -105,8 +106,108 @@ export function mergeFinalAnswer(
       status: backgroundWorkPending ? 'running' as const : 'completed' as const,
       completedAt: backgroundWorkPending ? null : completedAt,
     } : {}),
-    finalAnswer: lines.join('\n'),
+    ...(lines.length > 0 ? {
+      finalAnswer: lines.join('\n'),
+      deliveryStatus: mergeDeliveryStatus(current.deliveryStatus, 'ready'),
+    } : {}),
+    ...(backgroundWorkPending ? {
+      deliveryStatus: mergeDeliveryStatus(current.deliveryStatus, 'streaming'),
+    } : {}),
   };
+}
+
+export type LiveTurnEvent =
+  | { type: 'snapshot'; turn: ConversationTurnProjection }
+  | { type: 'trace'; turnId: string; events: InteractionTraceEvent[]; status?: InteractionTrace['status']; completedAt?: string | null }
+  | { type: 'execution'; turnId: string; taskId: string; timeline: ExecutionTimeline }
+  | { type: 'artifacts'; turnId: string; taskId: string; artifacts: ArtifactProjection[] }
+  | { type: 'result_delivery_available'; turnId: string; resultId: string; certification: 'certified' | 'uncertified' }
+  | { type: 'result_chunk'; turnId: string; resultId: string; offset: number; chunk: string }
+  | { type: 'result_completed'; turnId: string; resultId: string; content: string; certification: 'certified' | 'uncertified' }
+  | { type: 'delivery_status'; turnId: string; resultId: string; status: ConversationTurnProjection['deliveryStatus']; message?: string }
+  | { type: 'final_answer'; turnId: string; lines: string[]; completedAt: string; backgroundWorkPending?: boolean }
+  | { type: 'terminal_error'; turnId: string; message: string; completedAt: string }
+  | { type: 'billing'; turnId: string; queryBill: QueryBillProjection | null; taskUsageSummary: TaskUsageSummary | null; turnBilling?: TurnBillUserView | null };
+
+/** One reducer for all live Turn facts. Empty streamed final answers never erase content. */
+export function mergeLiveTurnEvent(
+  current: ConversationTurnProjection | null,
+  event: LiveTurnEvent,
+): ConversationTurnProjection | null {
+  if (event.type === 'snapshot') {
+    if (!current || current.id !== event.turn.id) return event.turn;
+    return {
+      ...event.turn,
+      finalAnswer: event.turn.finalAnswer && event.turn.finalAnswer.length > 0
+        ? event.turn.finalAnswer : current.finalAnswer ?? event.turn.finalAnswer,
+      deliveryStatus: mergeDeliveryStatus(current.deliveryStatus, event.turn.deliveryStatus),
+    };
+  }
+  if (event.type === 'trace') return mergeTraceDelta(current, event.turnId, event.events, event.status, event.completedAt);
+  if (event.type === 'execution') return mergeExecutionTimeline(current, event.turnId, event.timeline);
+  if (event.type === 'artifacts') {
+    if (!current || current.id !== event.turnId || (current.taskId !== null && current.taskId !== event.taskId)) return current;
+    return {
+      ...current,
+      taskId: event.taskId,
+      artifactRefs: [...new Set([...current.artifactRefs, ...event.artifacts.map(artifact => artifact.relativePath)])],
+      artifacts: mergeArtifacts(current.artifacts, event.artifacts),
+    };
+  }
+  if (event.type === 'result_delivery_available') {
+    if (!current || current.id !== event.turnId) return current;
+    return { ...current, deliveryStatus: mergeDeliveryStatus(current.deliveryStatus, 'streaming') };
+  }
+  if (event.type === 'result_chunk') {
+    if (!current || current.id !== event.turnId) return current;
+    return {
+      ...current,
+      deliveryStatus: mergeDeliveryStatus(current.deliveryStatus, 'streaming'),
+      finalAnswer: appendUtf8Chunk(current.finalAnswer ?? '', event.offset, event.chunk),
+    };
+  }
+  if (event.type === 'result_completed') {
+    if (!current || current.id !== event.turnId) return current;
+    return { ...current, deliveryStatus: 'ready', finalAnswer: event.content };
+  }
+  if (event.type === 'delivery_status') {
+    if (!current || current.id !== event.turnId || !event.status) return current;
+    return { ...current, deliveryStatus: mergeDeliveryStatus(current.deliveryStatus, event.status) };
+  }
+  if (event.type === 'final_answer') {
+    return mergeFinalAnswer(current, event.turnId, event.lines, event.completedAt, event.backgroundWorkPending);
+  }
+  if (event.type === 'terminal_error') {
+    if (!current || current.id !== event.turnId) return current;
+    return { ...current, status: 'failed', deliveryStatus: 'failed', finalAnswer: event.message, completedAt: event.completedAt };
+  }
+  return mergeBilling(current, event.turnId, event.queryBill, event.taskUsageSummary, event.turnBilling);
+}
+
+function appendUtf8Chunk(current: string, offset: number, chunk: string): string {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const bytes = encoder.encode(current);
+  if (offset === bytes.byteLength) return current + chunk;
+  if (offset > bytes.byteLength) return current;
+  return decoder.decode(bytes.slice(0, offset)) + chunk;
+}
+
+function mergeDeliveryStatus(
+  current: ConversationTurnProjection['deliveryStatus'],
+  incoming: ConversationTurnProjection['deliveryStatus'],
+): ConversationTurnProjection['deliveryStatus'] {
+  if (!incoming || incoming === 'none') return current ?? incoming;
+  if (incoming === 'failed' || incoming === 'ready') return incoming;
+  if (current === 'failed' || current === 'ready') return current;
+  return incoming;
+}
+
+function mergeArtifacts(current: ArtifactProjection[], incoming: ArtifactProjection[]): ArtifactProjection[] {
+  const byId = new Map(current.map(artifact => [artifact.artifactId, artifact]));
+  for (const artifact of incoming) byId.set(artifact.artifactId, artifact);
+  return [...byId.values()].sort((left, right) => left.publishedAt.localeCompare(right.publishedAt)
+    || left.artifactId.localeCompare(right.artifactId));
 }
 
 function mergeTraceStatus(

@@ -1,3 +1,5 @@
+import { GatewaySubscriptions } from '../../src/gateway/gateway-subscriptions.js';
+import { MemoryClientNavigation } from '../helpers/client-navigation.js';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +24,7 @@ async function makeRouting(
 ): Promise<{
   routing: FeishuConversationRouting;
   bindings: ConversationBindingRepository;
+  navigation: MemoryClientNavigation;
   envelopes: GatewayCommandEnvelope[];
   restoreWorkspace: ReturnType<typeof vi.fn>;
 }> {
@@ -58,7 +61,10 @@ async function makeRouting(
     }),
   } as unknown as ClientGateway;
   const restoreWorkspace = vi.fn().mockResolvedValue(undefined);
+  const navigation = new MemoryClientNavigation();
   const deps: FeishuConversationRoutingDeps = {
+    subscriptions: new GatewaySubscriptions(),
+    navigation,
     accountId: 'local-default',
     gateway,
     bindings,
@@ -70,6 +76,7 @@ async function makeRouting(
   };
   return {
     routing: new FeishuConversationRouting(deps),
+    navigation,
     bindings,
     envelopes,
     restoreWorkspace,
@@ -80,8 +87,38 @@ const sender = { tenantKey: 'tenant_1', userId: 'user_1' };
 const channel = { chatId: 'chat_1' };
 
 describe('FeishuConversationRouting', () => {
+  it.each([
+    ['/stop-task old-task generation-old conv_a', { kind: 'cancel_task', taskId: 'old-task', expectedExecutionGeneration: 'generation-old' }],
+    ['/stop-turn old-turn conv_a', { kind: 'cancel_turn', turnId: 'old-turn' }],
+    ['/approve permission revision generation conv_a', { kind: 'permission_resolution_v2', requestId: 'permission', requestRevision: 'revision', expectedExecutionGeneration: 'generation', resolution: 'approve' }],
+  ])('keeps an old notification command targeted after navigation: %s', async (text, command) => {
+    const { routing, envelopes, navigation } = await makeRouting();
+    await routing.routeMessage(sender, channel, '/workspace /repo', 'workspace', 'workspace');
+    await routing.routeMessage(sender, channel, '/conversation conv_b', 'select', 'select');
+    await routing.routeMessage(sender, channel, text as string, 'control', 'control');
+    expect(envelopes.at(-1)).toMatchObject({ command, scope: { kind: 'conversation', selection: { mode: 'attach', conversationId: 'conv_a' } } });
+    expect(navigation.read({ accountId: 'local-default', principalId: 'feishu:tenant_1:user_1', platform: 'feishu', channelId: 'chat_1' })?.conversationId).toBe('conv_b');
+  });
+  it('keeps two operators in the same chat on independent selections', async () => {
+    const { routing, envelopes, bindings } = await makeRouting();
+    const peer = { ...sender, userId: 'peer' };
+    await routing.routeMessage(sender, channel, '/workspace /repo', 'wa', 'wa');
+    await routing.routeMessage(peer, channel, '/workspace /repo', 'wb', 'wb');
+    await routing.routeMessage(sender, channel, '/conversation conv_a', 'a', 'a');
+    await routing.routeMessage(peer, channel, '/conversation conv_b', 'b', 'b');
+    await routing.routeMessage(sender, channel, 'continue a', 'ma', 'ma');
+    await routing.routeMessage(peer, channel, 'continue b', 'mb', 'mb');
+    const messages = envelopes.filter(item => item.command.kind === 'user_message');
+    expect(messages.map(item => item.scope)).toEqual([
+      { kind: 'conversation', selection: { mode: 'attach', conversationId: 'conv_a' } },
+      { kind: 'conversation', selection: { mode: 'attach', conversationId: 'conv_b' } },
+    ]);
+    expect(messages[0]!.connectionId).not.toBe(messages[1]!.connectionId);
+    expect(await bindings.resolveBinding('local-default', 'feishu', 'chat_1')).toBeNull();
+  });
+
   it('selects a Workspace and clears an attached Conversation from another Workspace', async () => {
-    const { routing, bindings, envelopes } = await makeRouting();
+    const { routing, bindings, envelopes, navigation } = await makeRouting();
     await bindings.set({
       accountId: 'local-default',
       platform: 'feishu',
@@ -109,11 +146,7 @@ describe('FeishuConversationRouting', () => {
       scope: { kind: 'workspace' },
       command: { kind: 'select_workspace', path: '/repo' },
     });
-    expect(await bindings.resolveBinding(
-      'local-default',
-      'feishu',
-      'chat_1',
-    )).toMatchObject({
+    expect(navigation.read({ accountId: 'local-default', principalId: 'feishu:tenant_1:user_1', platform: 'feishu', channelId: 'chat_1' })).toMatchObject({
       workspaceId: 'workspace_repo',
       conversationId: null,
     });
@@ -138,9 +171,7 @@ describe('FeishuConversationRouting', () => {
     );
 
     expect(restoreWorkspace).toHaveBeenCalledWith(
-      expect.stringMatching(/^feishu_/),
-      'workspace_repo',
-      'feishu:tenant_1:user_1',
+      expect.stringMatching(/^feishu_/), 'workspace_repo', 'feishu:tenant_1:user_1',
     );
     expect(envelopes[0]).toMatchObject({
       scope: { kind: 'workspace' },
@@ -157,7 +188,7 @@ describe('FeishuConversationRouting', () => {
   });
 
   it('attaches only a Conversation in the selected Account Workspace', async () => {
-    const { routing, bindings, envelopes } = await makeRouting();
+    const { routing, bindings, envelopes, navigation } = await makeRouting();
     await bindings.set({
       accountId: 'local-default',
       platform: 'feishu',
@@ -192,28 +223,21 @@ describe('FeishuConversationRouting', () => {
         kind: 'conversation',
         selection: { mode: 'attach', conversationId: 'conv_1' },
       },
-      command: { kind: 'attach_conversation', conversationId: 'conv_1' },
-    });
-    expect(envelopes[1]).toMatchObject({
-      scope: {
-        kind: 'conversation',
-        selection: { mode: 'attach', conversationId: 'conv_1' },
-      },
       command: {
-        kind: 'get_conversation_history',
+        kind: 'get_conversation_resource',
         conversationId: 'conv_1',
-        limit: 3,
+        resource: 'turns',
       },
     });
     expect(denied).toMatchObject({
       status: 'rejected',
       reason: 'conversation_not_in_workspace',
     });
-    expect(envelopes).toHaveLength(2);
+    expect(envelopes).toHaveLength(1);
   });
 
   it('requests bounded history only for the attached Conversation and forwards opaque cursors', async () => {
-    const { routing, bindings, envelopes } = await makeRouting();
+    const { routing, bindings, envelopes, navigation } = await makeRouting();
     await bindings.set({
       accountId: 'local-default',
       platform: 'feishu',
@@ -237,15 +261,15 @@ describe('FeishuConversationRouting', () => {
 
     expect(envelopes.map(envelope => envelope.command)).toEqual([
       {
-        kind: 'get_conversation_history',
+        kind: 'get_conversation_resource',
         conversationId: 'conv_1',
-        limit: 50,
+        resource: 'turns',
       },
       {
-        kind: 'get_conversation_history',
+        kind: 'get_conversation_resource',
         conversationId: 'conv_1',
         cursor: 'cursor_next',
-        limit: 12,
+        resource: 'turns',
       },
     ]);
     expect(envelopes.every(envelope => (
@@ -256,7 +280,7 @@ describe('FeishuConversationRouting', () => {
   });
 
   it('creates a Conversation on the first ordinary message in a selected Workspace', async () => {
-    const { routing, bindings, envelopes } = await makeRouting();
+    const { routing, bindings, envelopes, navigation } = await makeRouting();
     await bindings.set({
       accountId: 'local-default',
       platform: 'feishu',
@@ -282,7 +306,8 @@ describe('FeishuConversationRouting', () => {
       routeKind: 'conversation_terminal',
       conversationId: 'conv_new',
     });
-    expect(await bindings.resolve('local-default', 'feishu', 'chat_1')).toBe('conv_new');
+    expect(navigation.read({ accountId: 'local-default', principalId: 'feishu:tenant_1:user_1', platform: 'feishu', channelId: 'chat_1' })?.conversationId).toBe('conv_new');
+    expect(await bindings.resolve('local-default', 'feishu', 'chat_1')).toBeNull();
   });
 
   it('fails closed when no Workspace is selected', async () => {
@@ -303,7 +328,7 @@ describe('FeishuConversationRouting', () => {
   });
 
   it('keeps chat and thread Workspace/Conversation selections independent', async () => {
-    const { routing, bindings } = await makeRouting();
+    const { routing, bindings, navigation } = await makeRouting();
 
     await routing.routeMessage(
       sender,
@@ -328,11 +353,7 @@ describe('FeishuConversationRouting', () => {
       conversationId: 'conv_thread',
     });
 
-    expect(await bindings.resolveBinding(
-      'local-default',
-      'feishu',
-      'chat_1',
-    )).toMatchObject({
+    expect(navigation.read({ accountId: 'local-default', principalId: 'feishu:tenant_1:user_1', platform: 'feishu', channelId: 'chat_1' })).toMatchObject({
       workspaceId: 'workspace_repo',
       conversationId: null,
     });
@@ -380,6 +401,8 @@ describe('FeishuConversationRouting', () => {
       }),
     } as unknown as ClientGateway;
     const routing = new FeishuConversationRouting({
+      subscriptions: new GatewaySubscriptions(),
+      navigation: new MemoryClientNavigation(),
       accountId: 'local-default',
       gateway,
       bindings,
@@ -423,6 +446,8 @@ describe('FeishuConversationRouting', () => {
       })),
     } as unknown as ClientGateway;
     const routing = new FeishuConversationRouting({
+      subscriptions: new GatewaySubscriptions(),
+      navigation: new MemoryClientNavigation(),
       accountId: 'local-default',
       gateway,
       bindings,
@@ -438,13 +463,9 @@ describe('FeishuConversationRouting', () => {
       'idem_history',
     );
 
-    expect(restoreWorkspace).toHaveBeenCalledWith(
-      expect.stringMatching(/^feishu_/),
-      'workspace_repo',
-      'feishu:tenant_1:user_1',
-    );
+    expect(restoreWorkspace).not.toHaveBeenCalled();
     expect(JSON.parse(await readFile(path, 'utf8'))[0]).toMatchObject({
-      workspaceId: 'workspace_repo',
+      workspaceId: null,
       conversationId: 'conv_1',
     });
   });
@@ -510,7 +531,7 @@ describe('FeishuConversationRouting message-scoped attachments (2026-09-06 plan 
   });
 
   it('drops attachments for slash commands and passes text-only messages through unchanged', async () => {
-    const { routing, bindings, envelopes } = await makeRouting();
+    const { routing, bindings, envelopes, navigation } = await makeRouting();
     await bindings.set({
       accountId: 'local-default',
       platform: 'feishu',

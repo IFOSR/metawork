@@ -17,7 +17,7 @@ import {
   type KernelEvent,
   type KernelSnapshot,
 } from '../kernel/control-kernel.js';
-import { DurableKernelWorkflow, type KernelWorkflowStore } from '../kernel/kernel-workflow.js';
+import { DurableKernelWorkflow, type KernelWorkflowStore, type PermissionResolutionEvent } from '../kernel/kernel-workflow.js';
 
 export interface PermissionAttemptContext {
   sessionId: string;
@@ -36,7 +36,7 @@ export interface PermissionAttemptContext {
 export interface PermissionWorkflowHooks {
   checkpoint(reason: 'permission_suspended'): Promise<string | null>;
   onEscalation(request: NormalizedCapabilityRequest, reason: string): Promise<void>;
-  onRecoveryAuthorized(input: { request: NormalizedCapabilityRequest | null; workspaceId: string; checkpointId: string | null }): Promise<void>;
+  onRecoveryAuthorized(input: { request: NormalizedCapabilityRequest | null; workspaceId: string; checkpointId: string | null; decision: KernelDecision }): Promise<KernelEvent | void>;
 }
 
 export const PERMISSION_REQUEST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -114,7 +114,7 @@ export class PermissionWorkflowService {
       attemptId: record.request.attemptId,
       request: record.request,
     };
-    const result = await this.workflow().submit(event);
+    const result = await this.workflow(record.request.id).submit(event);
     const latest = this.deps.repository.findRequest(record.request.id);
     if (latest) return this.requestResult(latest);
     return {
@@ -156,19 +156,30 @@ export class PermissionWorkflowService {
     resolution: 'approve' | 'deny';
     source: 'command' | 'button' | 'planner';
     plannerPlanId?: string | null;
-  }): Promise<void> {
+    actor?: { readonly principalId: string; readonly commandRequestId: string | null };
+  }): Promise<{ status: 'accepted' | 'replayed' | 'conflict'; resolution: 'approve' | 'deny' }> {
+    const previous = this.deps.workflowStore.findPermissionResolution(input.requestId);
+    if (previous) {
+      if (previous.sessionId !== this.deps.context.sessionId || previous.taskId !== this.deps.context.taskId) {
+        throw new Error('permission decision belongs to another Conversation or Task');
+      }
+      return { status: previous.resolution === input.resolution ? 'replayed' : 'conflict', resolution: previous.resolution };
+    }
     const record = this.deps.repository.findRequest(input.requestId);
-    if (!record || record.request.taskId !== this.deps.context.taskId || !['pending', 'escalated'].includes(record.status)) {
+    if (!record || record.request.taskId !== this.deps.context.taskId
+      || record.request.generationId !== this.deps.context.generationId
+      || record.request.attemptId !== this.deps.context.attemptId
+      || !['pending', 'escalated'].includes(record.status)) {
       throw new Error('permission request is missing, stale, or belongs to another Task');
     }
     if (!isPermissionRequestActive(record.createdAt, this.now())) {
       throw new Error('permission request has expired and must be reissued precisely');
     }
-    await this.workflow().submit({
+    const event: PermissionResolutionEvent = {
       schemaVersion: 5,
       configurationRevision: this.deps.context.configurationRevision,
       type: 'permission_resolution_received',
-      id: `permission_resolution_${input.requestId}_${input.resolution}`,
+      id: `permission_resolution_${input.requestId}`,
       correlationId: input.requestId,
       causationId: null,
       occurredAt: this.now(),
@@ -180,10 +191,25 @@ export class PermissionWorkflowService {
       resolution: input.resolution,
       source: input.source,
       plannerPlanId: input.plannerPlanId ?? null,
-    });
+      ...(input.actor ? { actor: input.actor } : {}),
+    };
+    const admission = this.deps.workflowStore.admitPermissionResolution(event);
+    if (!admission.accepted) {
+      return { status: admission.event.resolution === input.resolution ? 'replayed' : 'conflict',
+        resolution: admission.event.resolution };
+    }
+    await this.workflow(input.requestId).submit(admission.event);
+    return { status: 'accepted', resolution: input.resolution };
   }
 
-  private workflow(): DurableKernelWorkflow {
+  async recover(event: KernelEvent): Promise<void> {
+    if ((event.type !== 'permission_requested' && event.type !== 'permission_resolution_received')
+      || event.sessionId !== this.deps.context.sessionId || event.taskId !== this.deps.context.taskId
+      || event.attemptId !== this.deps.context.attemptId) throw new Error('permission_recovery_scope_mismatch');
+    await this.workflow(event.correlationId).submit(event);
+  }
+
+  private workflow(requestId: string): DurableKernelWorkflow {
     return new DurableKernelWorkflow({
       kernel: this.deps.kernel ?? new ControlKernel(),
       buildSnapshot: event => this.buildSnapshot(event),
@@ -193,6 +219,7 @@ export class PermissionWorkflowService {
       acceptedEventTypes: ['permission_requested', 'permission_resolution_received'],
       acceptedActions: ['grant_capability', 'deny_capability', 'escalate_capability', 'recover_workspace_attempt'],
       taskId: this.deps.context.taskId,
+      correlationId: requestId,
     });
   }
 
@@ -231,12 +258,13 @@ export class PermissionWorkflowService {
       if (record && action.authorization) {
         this.deps.repository.recordAuthorization(record.request, action.authorization, this.now());
       }
-      await this.deps.hooks.onRecoveryAuthorized({
+      const continuation = await this.deps.hooks.onRecoveryAuthorized({
         request: record?.request ?? null,
         workspaceId: action.workspaceId,
         checkpointId: action.checkpointId,
+        decision,
       });
-      return null;
+      return continuation ?? null;
     }
     const record = this.deps.repository.findRequest(action.requestId);
     if (!record) throw new Error(`permission request not found: ${action.requestId}`);

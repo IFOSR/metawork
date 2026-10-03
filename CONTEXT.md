@@ -12,8 +12,10 @@ changes, subtask planning, executor instance claims, and fallback behavior.
 
 ## Current Implementation Notes
 
-Navigation remediation is in active delivery; installed acceptance is not
-complete. The source schema is now **45**. Schema 43 added the Workspace directory
+The source schema is now **47**. ADR-0043 has been implemented locally and
+validated with the production browser and an isolated installed Server/TUI
+release. User acceptance and deployment to the normal installation remain open;
+see `docs/plans/2026-10-02-frontend-observation-implementation.md`. Schema 43 added the Workspace directory
 projection/invalidation/rebuild tables and Conversation metadata/history and
 Gateway segment-index read models. This supersedes the schema-42 baseline
 description below; 42-to-43 is transactional and preserves existing facts.
@@ -32,10 +34,18 @@ File-to-history updates use a durable write intent, replayed before serving a
 record or page after interruption. Legacy JSON is retained for migration.
 Source production composition now selects one `SegmentedEventJournal` writer
 with bounded background compaction/orphan maintenance. `FileEventJournal` is
-its read-only legacy import source, not a parallel writer. Reconnect negotiates
-`bounded_replay_v1`: expired, future or over-budget cursors receive an explicit
-reset and snapshot; clients reload indexed history rather than replaying the
-audit. Unsupported clients receive an explicit reset-required error.
+its read-only legacy import source, not a parallel writer. ADR-0043 Web/native
+browsing negotiates `conversation_observation_v1`, `conversation_resources_v1`
+and `multi_client_control_v1`: expired, future or over-budget projection cursors
+receive a bounded baseline reset. Browsing never invokes audit replay. Old
+`bounded_replay_v1` journal utilities remain for internal recovery/audit callers,
+not the product clients' reconnect path. Unsupported clients receive an explicit
+version mismatch. Legacy SQLite history parsing runs in one bounded worker per
+account, using the same projector and transactional notification hooks; normal
+navigation reads only the committed small entities. SQLite write transactions
+reserve the writer with `BEGIN IMMEDIATE` before reading mutable facts, including
+outer application transactions; this avoids WAL snapshot-upgrade failures while
+the background worker commits. Read-only projection snapshots remain deferred.
 Historical Task views use an exact Account/Conversation/Turn trace-observation
 index, not the current-Turn snapshot or a full audit replay. Gateway folds safe
 trace evidence; Storage commits its opaque projection with the segment index.
@@ -51,9 +61,7 @@ pointer switch (ADR-0030). A standalone SQLite backup is not a complete Gateway
 checkpoint after segment compaction.
 Schemas 43 and 44 have been canonically installed and tested on the real
 account. Final rollout acceptance remains open in the navigation remediation
-plan; earlier source-only checkpoints are historical. Web restoration
-reattaches an off-page remembered Conversation with an expected-Workspace
-guard before reading history; inactive history access remains unavailable.
+plan; earlier source-only checkpoints are historical. Web restoration reads off-page remembered Conversation metadata with an expected-Workspace guard; detail observation is independent of execution attachment.
 
 Phase 6 established the durable attempt, publication and recovery substrate, and
 ADR-0037 now extends it to parallel top-level Tasks across Conversations. The
@@ -61,7 +69,7 @@ active path remains `event -> durable inbox -> KernelWorkflow -> snapshot -> Con
 
 `src/planning/` owns the PlanningAgent interface (`AnyFusionPlanningAgent`), controlled-lifecycle AnyFusion-Pi JSONL RPC runner, the structured proposal contract, and catalog-aware validation. One Conversation maps to one persisted Pi session file. Semantic turns use `--mode rpc` over stdin/stdout JSONL and serialize writers per Conversation; MetaWork does not replay SQLite interaction history into prompts. Stable instructions and one fixed `metaclaw-planner/SKILL.md` live in the AnyFusion-Pi fork, while dynamic Task, runtime, authorization and routing facts come only from seven allowlisted read-only MetaWork MCP tools. Semantic RPC turns expose only those authoritative MCP tools plus the native proposal tool; Pi-native repository readers, Web reconnaissance, shell, edit and write tools are disabled in this mode. The interactive client-only TUI may retain read-only repository tools for workspace questions, but it does not own Web research or execution. New semantic Planner proposals may not use `direct_reply`: work-like requests must use `plan_work_graph` and a Kernel-authorized Executor, while historical direct-reply records remain readable for audit and replay. Slash-prefixed system commands stay on the Application-Shell path. Real-time/source-dependent facts, supplied URLs and public research requests are routed directly to an AgentClass covering `current-web-research`; the Executor performs final Web retrieval and receives the bounded current user input through `contextRefs`. Shell execution, unavailable Workspace inspection, file/Git/storage mutation, authenticated external actions, other side effects, durable progress, monitoring, artifacts and downstream handoffs require `plan_work_graph` and a Kernel-authorized Executor. This remains semantic Planner policy, not Session/Kernel keyword routing. MetaWork remains the only v8 validator and the only owner of Task, Kernel, Executor and storage mutation. Pi submits `PlanningAgentPlan v8` only through its restricted native `submit_planning_proposal` tool. Runtime injects session, turn, user input and deterministic submission identity; the model supplies only `plan`. A rejection remains ordinary structured tool feedback in the same ReAct turn, with no proposal-specific retry count, repair prompt or outer coordination loop. `src/work-graph/` owns the shared v7 graph types and pure structural rules consumed by Planning, Kernel, and Execution. Transport uncertainty is distinct from validation rejection and is resolved only by idempotently replaying the identical submission. Planner convergence exhaustion is a separate fail-closed terminal result; it creates no fallback proposal, Task, Kernel event or Executor attempt, and asks the user to retry or narrow the request. There is no assistant-text envelope parser, earlier-schema production parser, legacy intent route, semantic default, keyword fallback or Codex Planner fallback.`
 
-The default local Client is the pinned `AnyFusion-Pi` fork vendored under `planner/AnyFusion-Pi` (checked into this repository, not a separate clone). Native macOS installation builds MetaClaw and Planner in separate dependency trees and runs them as isolated Node 22.19+ processes; the optional Linux container runtime preserves the same process boundary while sharing one image-level Node executable. `metawork server start` owns the persistent Runtime process and never launches a Client. Bare `metawork` is `metawork tui`: the interactive Pi process reads the Server endpoint manifest, starts with `--gateway-socket` plus an optional stable Conversation ID, submits versioned commands, renders ordered safe events, and never constructs or calls a local semantic runtime. `metawork web` only validates the same Server and opens its loopback origin together with a one-time, 60-second, non-authenticating startup directory hint; the Browser always completes explicit login, and the hint is applied only after authentication through the ordinary authorized Workspace selection command. The launch token never creates a session. A Client may also create a Workspace from the Web surface by browsing a local directory through the cookie-only read-only Server directory listing; path resolution, authorization and display decomposition remain Server-owned, and the browse endpoint grants no Workspace authority beyond the existing selection contract (ADR-0039). Client exit never stops Server work. Semantic Planning remains server-side. `src/tui-bridge/` exposes AnyFusion Planner Host Protocol v2 over a mode-`0600` Unix JSONL socket only for controlled RPC Planner proposal tools. MetaClaw injects an absolute Node command and compiled `planner-mcp.js` arguments; the Planner artifact carries no private Node runtime and never substitutes an uncontrolled executable. A missing fixed query tool fails before the first turn. A mid-turn MCP transport loss locks proposal submission and aborts that agent loop; the Conversation remains attachable and a later turn reconnects through the controlled process boundary. Permission requests cross the Gateway as transient bounded facts; the client submits only request ID plus approve/deny as a versioned `permission_resolution` command. Permission arrival and resolution do not create a semantic Planner turn. `ConversationSession` reruns the v8 schema and semantic validation before emitting `plan_proposed` into `DurableKernelWorkflow`. The first accepted proposal locks the turn; rejected revisions remain open, identical submissions replay their persisted result, and a different post-acceptance submission conflicts. Neither Gateway clients nor the Planner Host bridge can directly access the database, Kernel, scheduler or Executor. Planner cannot synthesize privileged commands, edit, execute shell, mutate Task state, authorize work or publish Git changes. Executor attempts use trusted existing Codex/Pi CLI binaries with MetaWork-only attempt homes in the worktree backend, or canonical Codex/Pi attempt images in Docker compatibility mode. The only product terminal surface is the MetaWork TUI at `planner/AnyFusion-Pi/packages/coding-agent/src/modes/metawork-tui/`, loaded lazily by the `--gateway-socket` branch: multi-Turn conversation projection, Pi editor/theme/components, Task Dashboard, read-only `complete_command`/`get_task_view` queries (ADR-0041), cursor replay, reconnect, versioned slash/permission/cancel commands, and no local semantic runtime. The former simplified client mode and the Ink implementation under `src/tui/` are no longer selected by any entry point; ADR-0041 retires them and their deletion is the remaining cutover cleanup. Client UI preferences (theme) live in the MetaWork config home, never in Planner home or the SecretStore.
+The default local Client is the pinned `AnyFusion-Pi` fork vendored under `planner/AnyFusion-Pi` (checked into this repository, not a separate clone). Native macOS installation builds MetaClaw and Planner in separate dependency trees and runs them as isolated Node 22.19+ processes; the optional Linux container runtime preserves the same process boundary while sharing one image-level Node executable. `metawork server start` owns the persistent Runtime process and never launches a Client. Bare `metawork` is `metawork tui`: the interactive Pi process reads the Server endpoint manifest, starts with `--gateway-socket` plus an optional stable Conversation ID, submits versioned commands, renders ordered safe events, and never constructs or calls a local semantic runtime. `metawork web` only validates the same Server and opens its loopback origin together with a one-time, 60-second, non-authenticating startup directory hint; the Browser always completes explicit login, and the hint is applied only after authentication through the ordinary authorized Workspace selection command. The launch token never creates a session. A Client may also create a Workspace from the Web surface by browsing a local directory through the cookie-only read-only Server directory listing; path resolution, authorization and display decomposition remain Server-owned, and the browse endpoint grants no Workspace authority beyond the existing selection contract (ADR-0039). Client exit never stops Server work. Semantic Planning remains server-side. `src/tui-bridge/` exposes AnyFusion Planner Host Protocol v2 over a mode-`0600` Unix JSONL socket only for controlled RPC Planner proposal tools. MetaClaw injects an absolute Node command and compiled `planner-mcp.js` arguments; the Planner artifact carries no private Node runtime and never substitutes an uncontrolled executable. A missing fixed query tool fails before the first turn. A mid-turn MCP transport loss locks proposal submission and aborts that agent loop; the Conversation remains attachable and a later turn reconnects through the controlled process boundary. Pending permissions are recovered through bounded activity reads; clients submit request ID, request revision, generation and approve/deny using `permission_resolution_v2`. Permission arrival and resolution do not create a semantic Planner turn. `ConversationSession` reruns the v8 schema and semantic validation before emitting `plan_proposed` into `DurableKernelWorkflow`. The first accepted proposal locks the turn; rejected revisions remain open, identical submissions replay their persisted result, and a different post-acceptance submission conflicts. Neither Gateway clients nor the Planner Host bridge can directly access the database, Kernel, scheduler or Executor. Planner cannot synthesize privileged commands, edit, execute shell, mutate Task state, authorize work or publish Git changes. Executor attempts use trusted existing Codex/Pi CLI binaries with MetaWork-only attempt homes in the worktree backend, or canonical Codex/Pi attempt images in Docker compatibility mode. The only product terminal surface is the MetaWork TUI at `planner/AnyFusion-Pi/packages/coding-agent/src/modes/metawork-tui/`, loaded lazily by the `--gateway-socket` branch: multi-Turn conversation projection, Pi editor/theme/components, Task Dashboard, read-only `complete_command`/`get_task_view` queries (ADR-0041), projection cursor/resource recovery, reconnect, versioned slash/permission/cancel commands, and no local semantic runtime. The former simplified client mode and the Ink implementation under `src/tui/` are deleted under ADR-0041. Client UI preferences (theme) live in the MetaWork config home, never in Planner home or the SecretStore.
 
 The vendored CLI's `main.ts` is a mode dispatcher; only its non-Gateway branch
 loads `main-runtime.ts`. The TUI uses the existing Workspace navigation commands,
@@ -263,25 +271,39 @@ clarification rather than performing an implicit state change.
 
 Web presents those facts through the unified Gateway-backed Conversation
 workspace. Historical Conversations retain stable Planner identity and bounded
-safe projections; attaching a Web client opens or resumes the corresponding
-`ConversationSession` without constructing a Web-owned Runtime. Conversation
+safe projections; opening a Web Conversation does not open its execution session. Conversation
 and Trajectory remain two views of the same trace and execution projection;
 neither owns routing or execution.
 
-Live delivery is origin-scoped under ADR-0036. Detailed turn events
-(`turn_started`, `trace_delta`, `task_projection`, `execution_delta`,
-`permission_request`, `artifact`, result delivery events, `final_answer`,
-`terminal_error`, and turn-scoped `delivery_status`) stream only to the
-authenticated connection that initiated the turn; Conversation snapshots and
-history pages are attach/replay/read projections rather than cross-client live
-notifications. A detailed event without a live origin — a startup recovery
-projection or a background Task fact after the originating client is gone — is
-durable history only and is never broadcast to every Conversation attachment.
-Replay remains Account/Conversation complete and origin-unfiltered, so Web,
-Feishu and TUI all recover every authorized turn after attach, refresh, switch
-or reconnect. Workspace directory activity remains a bounded shared summary,
-not a detailed Conversation stream. Turn origin is internal delivery metadata
-only and never Account/Conversation authorization or Conversation ownership.
+ADR-0043 supersedes origin-only delivery. Same-Account Web, TUI and Feishu
+clients may discover, observe, send, cancel and approve regardless of task origin.
+Observation distributes safe, durable Conversation facts to explicit authorized
+subscribers; command/query replies remain connection-specific. Ordinary browser
+navigation reads metadata and a bounded projection, never activates a Planner
+or replays the audit. Conversation content has one projection writer per client.
+`cancel_turn` retains exact Turn targeting; `cancel_task` includes Task ID and
+execution generation. `permission_resolution_v2` includes request revision and
+generation, persists the first valid decision, and recovers accepted but unapplied
+input through the Permission/KernelWorkflow seam. Admission is not application.
+Feishu navigation is per authenticated principal; durable notification routes
+capture chat/thread independently of navigation, and signed action references
+bind the original principal and target. Delivery rechecks destination policy.
+Schema 47 contains the body-separated Conversation read model, checkpoint/tail,
+activity invalidation, staging rebuild, trace index, safe content search index,
+client navigation, approval input and notification routing facts. Historical
+search indexes content in bounded background ranges; indexed results are scoped
+and matched only to the current Turn references. Baseline/detail reads are bounded
+by bytes as well as rows. Revocation invalidates client state and pending reads.
+The Web Conversation tab preserves its existing execution, report and billing
+cards. Mounted messages automatically recover complete bodies; range transport
+does not introduce manual full-text expansion or segment navigation. Transport,
+Turn count and warm caches are bounded; a single full-body DOM is not size-capped.
+The native TUI's right Dashboard lists Workspace Task summaries and navigates by
+explicit Conversation/Task identity; the left pane retains the selected Turn's
+execution and billing. F6 focuses the list; Enter observes and locates, never
+activates execution. Summary counts describe loaded pages, with explicit paging.
+See the implementation record for remaining acceptance gates; these source
+contracts are not a claim that the user's installation has been upgraded.
 
 ## Account Runtime And Unified Gateway
 

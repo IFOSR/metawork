@@ -53,6 +53,10 @@ is the foundational dependency/handoff/completion contract. ADR-0025/0026
 evolved the active graph to v5 for concurrent dispatch and publication without
 replacing those semantics.
 
+## Local Implementation Pending Validation
+
+- [TUI Workspace task dashboard and switching](plans/2026-10-03-tui-workspace-task-dashboard.md): workspace task overview, task-to-Turn navigation and independent drafts; local only pending user validation.
+
 ## Completed Roadmap
 
 - [Web stop live-state fix](plans/2026-09-21-web-stop-live-state-fix.md): cancellation cleanup publishes a terminal Turn trace; Web preserves terminal state against late answers and progress so the Composer returns to Send without reloading.
@@ -92,6 +96,8 @@ replacing those semantics.
 
 ## Active Delivery
 
+- [前端观察与多端统一控制](plans/2026-10-02-frontend-observation-implementation.md)：按 ADR-0043 实施有界读模型、快速切换、跨端同权与独立通知路由；代码仅在本地，尚未完成全部验收。
+
 - [配置生命周期、执行可观测性与准入可靠性方案](plans/2026-10-01-execution-observability-and-configuration-reliability-design.md)：待 Review。统一记录启用态配置校验、画像草稿与 revision 激活边界、Release Workspace 授权、完整 Trace 分页回放、Timeline 公共路由身份、Planner/Kernel 阶段展示和模型价格准入方案；当前尚未实施。
 - [Navigation performance architecture remediation](plans/2026-09-26-navigation-performance-architecture-remediation.md):
   indexed Workspace directory, Conversation history paging, physical enrichment
@@ -129,9 +135,9 @@ replacing those semantics.
 - [Pi Executor status and result projection fix](plans/2026-08-04-pi-executor-status-and-result-projection.md): adds a native animated Executor status block and passively persists each integrated Subtask publication into the Pi conversation without triggering a Planner turn or moving Kernel/Execution authority.
 - [Worktree Executor backend migration](plans/2026-08-06-worktree-executor-backend-migration.md): keeps the Runtime containerized where needed while moving trusted Executor attempts to per-Subtask Git worktrees and native Runtime processes.
 
-## Proposed Architecture
+## Frontend Observation Upgrade
 
-- [前端观察架构全盘升级方案](plans/2026-10-02-frontend-observation-architecture-upgrade-design.md)：结合 DeepSeek Harness 源码，设计 Web/TUI/Feishu 同账户同权查看与控制、任意端发送/停止/审批、并发决定仲裁、独立通知路由，以及有界历史、实体仓库、缓存和正文虚拟化。§12 是完整多端设计，§17 包含三端九组合验收。关联 [Proposed ADR-0043](adr/0043-explicit-conversation-observation-and-client-read-models.md)，拟替代 ADR-0036 的来源端独占规则。当前为尚未实施的设计。
+- [前端观察架构全盘升级方案](plans/2026-10-02-frontend-observation-architecture-upgrade-design.md)：Web/TUI/Feishu 同账户同权查看与控制、任意端发送/停止/审批、持久仲裁、独立通知路由，以及有界历史、实体仓库和正文虚拟化。[Accepted ADR-0043](adr/0043-explicit-conversation-observation-and-client-read-models.md) 替代 ADR-0036 的来源端独占规则。已完成本地源码与隔离安装验证，运行证据与剩余验收门见[实施记录](plans/2026-10-02-frontend-observation-implementation.md)；用户验收前不推送实施变更。
 
 ## Implementation Plans
 

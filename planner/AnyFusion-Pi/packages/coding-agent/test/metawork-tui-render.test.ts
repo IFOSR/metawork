@@ -5,12 +5,13 @@
 import { stripVTControlCharacters } from "node:util";
 import { beforeAll, describe, expect, it } from "vitest";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { computeMetaWorkLayout, formatSilence, formatTaskDuration } from "../src/modes/metawork-tui/layout.ts";
-import { MetaWorkConversationPanel } from "../src/modes/metawork-tui/components/conversation-panel.ts";
 import type { MetaWorkConversationPanelState } from "../src/modes/metawork-tui/components/conversation-panel.ts";
-import { MetaWorkTaskDashboard } from "../src/modes/metawork-tui/components/task-dashboard-panel.ts";
-import { MetaWorkActionBar, MetaWorkHeader } from "../src/modes/metawork-tui/components/status-bar.ts";
+import { MetaWorkConversationPanel } from "../src/modes/metawork-tui/components/conversation-panel.ts";
 import { zipColumns } from "../src/modes/metawork-tui/components/root.ts";
+import { MetaWorkActionBar, MetaWorkHeader } from "../src/modes/metawork-tui/components/status-bar.ts";
+import { MetaWorkTaskDashboard } from "../src/modes/metawork-tui/components/task-dashboard-panel.ts";
+import { billingLines } from "../src/modes/metawork-tui/components/turn-billing.ts";
+import { computeMetaWorkLayout, formatSilence, formatTaskDuration } from "../src/modes/metawork-tui/layout.ts";
 import type { MetaWorkTurnProjection } from "../src/modes/metawork-tui/model.ts";
 
 beforeAll(() => initTheme("dark"));
@@ -42,7 +43,7 @@ function turn(overrides: Partial<MetaWorkTurnProjection> = {}): MetaWorkTurnProj
 }
 
 function plain(lines: string[]): string[] {
-	return lines.map(line => stripVTControlCharacters(line).replace(/\s+$/u, ""));
+	return lines.map((line) => stripVTControlCharacters(line).replace(/\s+$/u, ""));
 }
 
 describe("metawork-tui layout", () => {
@@ -73,7 +74,13 @@ describe("metawork-tui layout", () => {
 	});
 
 	it("never produces negative widths on degenerate terminals", () => {
-		for (const [columns, rows] of [[0, 0], [1, 1], [20, 5], [39, 9], [-5, -5]] as const) {
+		for (const [columns, rows] of [
+			[0, 0],
+			[1, 1],
+			[20, 5],
+			[39, 9],
+			[-5, -5],
+		] as const) {
 			const layout = computeMetaWorkLayout(columns, rows);
 			expect(layout.conversationWidth).toBeGreaterThanOrEqual(1);
 			expect(layout.columns).toBeGreaterThanOrEqual(1);
@@ -97,9 +104,12 @@ describe("metawork-tui layout", () => {
 describe("metawork-tui conversation panel", () => {
 	it("moves the visible window to the selected historical Turn", () => {
 		const panel = new MetaWorkConversationPanel(() => ({
-			turns: ["old", "middle", "new"].map(id => turn({ id, userInput: `${id} question` })),
-			selectedTurnId: "old", expandedTurnIds: [], historyStatus: "exhausted",
-			connection: "ready", maxVisibleTurns: 1,
+			turns: ["old", "middle", "new"].map((id) => turn({ id, userInput: `${id} question` })),
+			selectedTurnId: "old",
+			expandedTurnIds: [],
+			historyStatus: "exhausted",
+			connection: "ready",
+			maxVisibleTurns: 1,
 		}));
 		const text = plain(panel.render(80)).join("\n");
 		expect(text).toContain("old question");
@@ -119,26 +129,44 @@ describe("metawork-tui conversation panel", () => {
 	}
 
 	it("renders user request, safe process summary and markdown result once", () => {
-		const panel = new MetaWorkConversationPanel(() => panelState({
-			turns: [turn({
-				status: "completed",
-				stage: "delivery",
-				trace: [
-					{ eventKey: "k1", stage: "planning", actor: "planner", title: "规划", summary: "生成计划", occurredAt: null },
-					{ eventKey: "k2", stage: "execution", actor: "kernel", title: "派发", summary: "", occurredAt: null },
+		const panel = new MetaWorkConversationPanel(() =>
+			panelState({
+				turns: [
+					turn({
+						status: "completed",
+						stage: "delivery",
+						trace: [
+							{
+								eventKey: "k1",
+								stage: "planning",
+								actor: "planner",
+								title: "规划",
+								summary: "生成计划",
+								occurredAt: null,
+							},
+							{
+								eventKey: "k2",
+								stage: "execution",
+								actor: "kernel",
+								title: "派发",
+								summary: "",
+								occurredAt: null,
+							},
+						],
+						answer: "## 结果\n最终回答",
+						result: {
+							resultId: "result_1",
+							content: "最终回答",
+							contentHash: "sha256:x",
+							byteLength: 4,
+							certification: "certified",
+							verification: "certified",
+						},
+					}),
 				],
-				answer: "## 结果\n最终回答",
-				result: {
-					resultId: "result_1",
-					content: "最终回答",
-					contentHash: "sha256:x",
-					byteLength: 4,
-					certification: "certified",
-					verification: "certified",
-				},
-			})],
-			selectedTurnId: "turn_1",
-		}));
+				selectedTurnId: "turn_1",
+			}),
+		);
 		const text = plain(panel.render(80)).join("\n");
 		expect(text).toContain("分析一下");
 		expect(text).toContain("规划 · planner · 规划");
@@ -150,62 +178,85 @@ describe("metawork-tui conversation panel", () => {
 	});
 
 	it("marks streaming and failed result transport without faking completeness", () => {
-		const streaming = new MetaWorkConversationPanel(() => panelState({
-			turns: [turn({
-				result: {
-					resultId: "r1",
-					content: "部分",
-					contentHash: "",
-					byteLength: 0,
-					certification: "certified",
-					verification: "streaming",
-				},
-			})],
-		}));
+		const streaming = new MetaWorkConversationPanel(() =>
+			panelState({
+				turns: [
+					turn({
+						result: {
+							resultId: "r1",
+							content: "部分",
+							contentHash: "",
+							byteLength: 0,
+							certification: "certified",
+							verification: "streaming",
+						},
+					}),
+				],
+			}),
+		);
 		expect(plain(streaming.render(80)).join("\n")).toContain("结果传输中");
 
-		const failed = new MetaWorkConversationPanel(() => panelState({
-			turns: [turn({
-				result: {
-					resultId: "r1",
-					content: "部分",
-					contentHash: "sha256:no",
-					byteLength: 99,
-					certification: "certified",
-					verification: "failed",
-				},
-			})],
-		}));
+		const failed = new MetaWorkConversationPanel(() =>
+			panelState({
+				turns: [
+					turn({
+						result: {
+							resultId: "r1",
+							content: "部分",
+							contentHash: "sha256:no",
+							byteLength: 99,
+							certification: "certified",
+							verification: "failed",
+						},
+					}),
+				],
+			}),
+		);
 		const failedText = plain(failed.render(80)).join("\n");
 		expect(failedText).toContain("结果校验失败");
 		expect(failedText).not.toContain("已认证");
 	});
 
 	it("shows explicit missing-history hints instead of pretending all history is loaded", () => {
-		const partial = new MetaWorkConversationPanel(() => panelState({
-			historyStatus: "partial",
-			turns: [turn({})],
-		}));
+		const partial = new MetaWorkConversationPanel(() =>
+			panelState({
+				historyStatus: "partial",
+				turns: [turn({})],
+			}),
+		);
 		expect(plain(partial.render(80)).join("\n")).toContain("更早的历史未加载");
 
-		const unavailable = new MetaWorkConversationPanel(() => panelState({
-			historyStatus: "unavailable",
-		}));
+		const unavailable = new MetaWorkConversationPanel(() =>
+			panelState({
+				historyStatus: "unavailable",
+			}),
+		);
 		expect(plain(unavailable.render(80)).join("\n")).toContain("历史不可用");
 	});
 
 	it("renders system commands as compact blocks separated from task progress", () => {
-		const panel = new MetaWorkConversationPanel(() => panelState({
-			turns: [turn({
-				interactionKind: "system_command",
-				userInput: "/task list",
-				status: "completed",
-				answer: "共 2 个任务",
-				subtasks: {
-					sub_1: { id: "sub_1", title: "子任务", status: "running", progress: "执行中", executor: "codex-cli", heartbeatAt: null },
-				},
-			})],
-		}));
+		const panel = new MetaWorkConversationPanel(() =>
+			panelState({
+				turns: [
+					turn({
+						interactionKind: "system_command",
+						userInput: "/task list",
+						status: "completed",
+						answer: "共 2 个任务",
+						subtasks: {
+							sub_1: {
+								id: "sub_1",
+								title: "子任务",
+								status: "running",
+								progress: "执行中",
+								executor: "codex-cli",
+								heartbeatAt: null,
+							},
+						},
+					}),
+				],
+			}),
+		);
 		const text = plain(panel.render(80)).join("\n");
 		expect(text).toContain("系统命令");
 		expect(text).toContain("共 2 个任务");
@@ -213,9 +264,11 @@ describe("metawork-tui conversation panel", () => {
 	});
 
 	it("strips control characters from untrusted turn text", () => {
-		const panel = new MetaWorkConversationPanel(() => panelState({
-			turns: [turn({ userInput: "危险\u001b[2J输入", error: "失败\u0007了" })],
-		}));
+		const panel = new MetaWorkConversationPanel(() =>
+			panelState({
+				turns: [turn({ userInput: "危险\u001b[2J输入", error: "失败\u0007了" })],
+			}),
+		);
 		const text = plain(panel.render(80)).join("\n");
 		expect(text).toContain("危险输入");
 		expect(text).not.toContain("[2J");
@@ -223,77 +276,72 @@ describe("metawork-tui conversation panel", () => {
 });
 
 describe("metawork-tui task dashboard", () => {
-	it("shows all parallel subtasks with server timing and no fabricated values", () => {
-		const dashboard = new MetaWorkTaskDashboard(
-			() => ({
-				selectedTurn: turn({
-					taskId: "task_1",
-					status: "running",
-					progressSummary: "执行中",
-					taskStartedAt: "2026-09-19T00:00:00.000Z",
-					lastEventAt: "2026-09-19T00:00:30.000Z",
-					subtasks: {
-						sub_a: { id: "sub_a", title: "A", status: "running", progress: "", executor: "codex-cli", heartbeatAt: null },
-						sub_b: { id: "sub_b", title: "B", status: "running", progress: "", executor: "pi-agent", heartbeatAt: null },
-					},
-					permission: { requestId: "perm_1", summary: "写入文件", status: "pending" },
-				}),
-				connectionLabel: "已连接",
-				expanded: true,
-			}),
-			() => Date.parse("2026-09-19T00:01:00.000Z"),
-		);
-		const text = plain(dashboard.render(40)).join("\n");
-		expect(text).toContain("Task: task_1");
-		expect(text).toContain("运行时长 1m0s");
-		expect(text).toContain("A");
-		expect(text).toContain("B");
-		expect(text).toContain("权限 pending: 写入文件");
+	it("shows workspace task states without selected-task execution details", () => {
+		const dashboard = new MetaWorkTaskDashboard(() => ({
+			rows: ["executing", "executing", "queued", "blocked"].map((phase, index) => ({
+				taskId: `task_${index}`,
+				title: `任务${index}`,
+				conversationId: `conv_${index}`,
+				conversationTitle: `会话${index}`,
+				executionGeneration: "g",
+				phase,
+				explanation: "",
+				canCancel: true,
+			})),
+			loading: false,
+			error: null,
+			more: [],
+			previous: [],
+			selectedConversationId: "conv_0",
+			selectedTaskId: "task_0",
+			hasMoreConversations: false,
+		}));
+		const text = plain(dashboard.render(80)).join("\n");
+		expect(text).toContain("执行中 2 · 排队 1 · 阻塞 1");
+		expect(text).toContain("任务3");
+		expect(text).toContain("会话2");
+		expect(text).not.toMatch(/Subtasks|账单|运行时长/);
 	});
 
-	it.each([36, 40, 45, 52, 120])("renders complete bill statistics in a %i-column task panel", (width) => {
-		const dashboard = new MetaWorkTaskDashboard(() => ({
-			selectedTurn: turn({
-				taskId: "task_1",
-				status: "completed",
-				turnBill: {
-					userStatus: "billed",
-					headline: "本次费用：1.416796 MetaCoin",
-					amountMicroCoin: "1.416796",
-					amountIsFinal: true,
-					diagnosticMessage: null,
-					stageBreakdown: [
-						{
-							stage: "execution",
-							agentClassRef: "pi-research",
-							providerRef: "deepseek",
-							modelId: "deepseek-flash",
-							inputTokens: "851879",
-							outputTokens: "25047",
-							totalTokens: "876926",
-							assessedMetaCoin: "1.332894",
-							costStatus: "calculated",
-						},
-						{
-							stage: "planning",
-							agentClassRef: "planner",
-							providerRef: "deepseek",
-							modelId: "deepseek-flash",
-							inputTokens: "50814",
-							outputTokens: "2279",
-							totalTokens: "53093",
-							assessedMetaCoin: "0.083902",
-							costStatus: "calculated",
-						},
-					],
-					billId: "bill_1",
-					finalizedAt: "2026-09-19T00:05:00.000Z",
-				},
-			}),
-			connectionLabel: "已连接",
-			expanded: false,
-		}));
-		const lines = plain(dashboard.render(width));
+	it.each([36, 40, 45, 52, 120])("renders complete bill statistics in a %i-column Turn", (width) => {
+		const selectedTurn = turn({
+			taskId: "task_1",
+			status: "completed",
+			turnBill: {
+				userStatus: "billed",
+				headline: "本次费用：1.416796 MetaCoin",
+				amountMicroCoin: "1.416796",
+				amountIsFinal: true,
+				diagnosticMessage: null,
+				stageBreakdown: [
+					{
+						stage: "execution",
+						agentClassRef: "pi-research",
+						providerRef: "deepseek",
+						modelId: "deepseek-flash",
+						inputTokens: "851879",
+						outputTokens: "25047",
+						totalTokens: "876926",
+						assessedMetaCoin: "1.332894",
+						costStatus: "calculated",
+					},
+					{
+						stage: "planning",
+						agentClassRef: "planner",
+						providerRef: "deepseek",
+						modelId: "deepseek-flash",
+						inputTokens: "50814",
+						outputTokens: "2279",
+						totalTokens: "53093",
+						assessedMetaCoin: "0.083902",
+						costStatus: "calculated",
+					},
+				],
+				billId: "bill_1",
+				finalizedAt: "2026-09-19T00:05:00.000Z",
+			},
+		});
+		const lines = plain(billingLines(selectedTurn, width));
 		const text = lines.join("\n");
 		// 金额是 MetaCoin 十进制展示，不是原始 microCoin。
 		expect(text).toContain("账单 已计费 · 1.416796 MetaCoin");
@@ -311,67 +359,21 @@ describe("metawork-tui task dashboard", () => {
 		expect(text).not.toContain("1416796");
 	});
 
-	it("explains why a task is waiting for execution capacity", () => {
-		const dashboard = new MetaWorkTaskDashboard(() => ({
-			selectedTurn: turn({
-				taskId: "task_queued",
-				status: "running",
-				taskStatus: "ready",
-				schedulingReason: "account_task_capacity",
-			}),
-			connectionLabel: "已连接",
-			expanded: false,
-		}));
-
-		const text = plain(dashboard.render(80)).join("\n");
-		expect(text).toContain("排队原因：账户并发容量已满");
-	});
-
-	it("shows the diagnostic message while metering is settling and a fallback without a view", () => {
-		const pending = new MetaWorkTaskDashboard(() => ({
-			selectedTurn: turn({
-				taskId: "task_1",
-				turnBill: {
-					userStatus: "unconfirmed",
-					headline: "费用暂时无法确认",
-					amountMicroCoin: null,
-					amountIsFinal: false,
-					diagnosticMessage: "请求仍在等待计量收束",
-					stageBreakdown: [],
-					billId: null,
-					finalizedAt: null,
-				},
-			}),
-			connectionLabel: "已连接",
-			expanded: false,
-		}));
-		const text = plain(pending.render(80)).join("\n");
-		expect(text).toContain("账单 待确认 · 请求仍在等待计量收束");
-
-		const noView = new MetaWorkTaskDashboard(() => ({
-			selectedTurn: turn({ taskId: "task_1", turnBill: null }),
-			connectionLabel: "已连接",
-			expanded: false,
-		}));
-		expect(plain(noView.render(80)).join("\n")).toContain("账单 暂不可用");
-	});
-
-	it("shows 暂无信息 when the turn has no task or timing facts", () => {
-		const dashboard = new MetaWorkTaskDashboard(() => ({
-			selectedTurn: turn({ taskId: "task_1" }),
-			connectionLabel: "已连接",
-			expanded: false,
-		}));
-		const text = plain(dashboard.render(40)).join("\n");
-		expect(text).toContain("运行时长 暂无信息");
-		expect(text).toContain("暂无信息");
-
-		const noTask = new MetaWorkTaskDashboard(() => ({
-			selectedTurn: turn({}),
-			connectionLabel: "已连接",
-			expanded: false,
-		}));
-		expect(plain(noTask.render(40)).join("\n")).toContain("该 Turn 暂无关联 Task");
+	it("keeps settling billing diagnostics in the Turn renderer", () => {
+		const current = turn({
+			turnBill: {
+				userStatus: "unconfirmed",
+				headline: "费用暂时无法确认",
+				amountMicroCoin: null,
+				amountIsFinal: false,
+				diagnosticMessage: "请求仍在等待计量收束",
+				stageBreakdown: [],
+				billId: null,
+				finalizedAt: null,
+			},
+		});
+		expect(plain(billingLines(current, 80)).join("\n")).toContain("账单 待确认 · 请求仍在等待计量收束");
+		expect(plain(billingLines(turn(), 80)).join("\n")).toContain("账单 暂不可用");
 	});
 });
 

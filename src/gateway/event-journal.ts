@@ -9,6 +9,8 @@ import type { GatewayEventEnvelope, GatewayReplay } from './client-events.js';
 import type { TurnTaskObservation } from './turn-task-observation.js';
 
 export interface TracePage {
+  /** Historical indexing continues in background; clients retry without full replay. */
+  readonly preparing?: boolean;
   readonly turnId: string;
   readonly streamRevision: number;
   readonly firstSequence: number | null;
@@ -33,7 +35,7 @@ export interface EventJournal {
   appendBatch?(events: GatewayEventEnvelope[]): Promise<GatewayEventEnvelope[]>;
   replay(accountId: string, conversationId: string, afterSequence?: number): Promise<GatewayReplay>;
   /** Bounded historical Trace page; cursor is an opaque sequence watermark. */
-  readTracePage?(accountId: string, conversationId: string, turnId: string, cursor?: string, limit?: number): Promise<TracePage>;
+  readTracePage?(accountId: string, conversationId: string, turnId: string, cursor?: string, limit?: number, latest?: boolean): Promise<TracePage>;
   /**
    * 为不持久的连接流只读响应分配序号（统一 TUI 设计 §9.3）。
    * 与同一流上的持久事件共用序号分配器：返回的序号单调递增且不会被后续

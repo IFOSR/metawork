@@ -157,15 +157,15 @@ export class FileEventJournal implements EventJournal {
     ));
   }
 
-  async readTracePage(accountId: string, conversationId: string, turnId: string, cursor?: string, limit = 100): Promise<TracePage> {
+  async readTracePage(accountId: string, conversationId: string, turnId: string, cursor?: string, limit = 100, latest = false): Promise<TracePage> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new Error('invalid_trace_page_limit');
-    const after = decodeTracePageCursor(cursor);
+    const after = decodeTracePageCursor(cursor, [accountId, conversationId, turnId]);
     if (cursor && !after) throw new Error('invalid_trace_cursor');
     const file = await this.read(accountId, conversationId);
     const ordered = traceEventsFromDeltaEvents(file.events, turnId);
     const remaining = ordered.filter(event => !after
       || compareTracePositions(tracePosition(event), after) > 0);
-    const page = remaining.slice(0, limit);
+    const page = latest ? remaining.slice(-limit) : remaining.slice(0, limit);
     const first = page[0] ? tracePosition(page[0]) : null;
     const last = page.at(-1) ? tracePosition(page.at(-1)!) : null;
     return {
@@ -174,7 +174,7 @@ export class FileEventJournal implements EventJournal {
       firstSequence: first?.sequence ?? null,
       lastSequence: last?.sequence ?? null,
       events: page,
-      nextCursor: page.length < remaining.length ? encodeTracePageCursor(last!) : null,
+      nextCursor: !latest && page.length < remaining.length ? encodeTracePageCursor(last!, [accountId, conversationId, turnId]) : null,
     };
   }
 

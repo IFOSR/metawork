@@ -92,11 +92,11 @@ an immutable `workspaceId`. Clients select a Workspace before discovering or
 creating Conversations; `/workspace` changes that Client selection and never
 reparents a Conversation after its first ordinary Query.
 
-ADR-0036 makes detailed Gateway live delivery origin-scoped: a turn's detailed
-events stream only to the authenticated connection that initiated it, while
-every authorized surface still recovers the complete Account/Conversation
-history through origin-unfiltered replay after attach, refresh, switch or
-reconnect.
+ADR-0043 supersedes ADR-0036: authenticated clients of the same Account share
+Conversation observation and control rights across Web, TUI and Feishu.
+Browsing uses bounded indexed projections independently of execution attach;
+connection-specific query replies and durable notification routes remain separate.
+Implementation and installed acceptance are tracked in the delivery plan.
 
 ADR-0037 supersedes the account-wide single-active-Task restriction with
 durable Conversation execution slots and account-scoped scheduling. It governs
@@ -120,7 +120,7 @@ gate completes; `observe -> shadow -> export` is the release order.
 | Topic | Current authority | What it decides |
 | --- | --- | --- |
 | Task lifecycle state contracts | [ADR-0020](0020-core-module-ownership-and-dependency-direction.md) §2026-09-25 amendment, [ADR-0022](0022-unified-kernel-control-plane-and-decision-ledger.md), [ADR-0023](0023-durable-kernel-workflow-recovery-and-availability.md), [ADR-0037](0037-multi-conversation-task-parallelism.md) | Canonical Task/Subtask/Attempt lifecycle ownership, the single Task/Work Graph transition port, durable Replan Jobs and per-family uncertain-application postconditions, residue-based slot release, and the read-only TaskView projection consumed by TUI/Web/Feishu |
-| Origin-scoped live delivery and replay | [ADR-0036](0036-origin-scoped-live-delivery-and-replay.md) | Detailed live events deliver only to the turn's origin connection; durable history replays every authorized origin on attach/refresh/reconnect |
+| Multi-client observation and control | [ADR-0043](0043-explicit-conversation-observation-and-client-read-models.md) | Equal Account-scoped rights; bounded read models, explicit observers, exact cancellation, durable approval arbitration and independent notification routes; supersedes ADR-0036 |
 | Workspace-scoped Conversation organization | [ADR-0035](0035-workspace-scoped-conversation-organization.md) | Workspace Catalog identity, Account -> Workspace -> Conversations navigation, immutable Conversation binding, Client Workspace selection, bounded directory projection and migration |
 | Independent Server and Client lifecycle | [ADR-0034](0034-independent-server-and-client-process-lifecycle.md) | Persistent Server ownership, independent TUI/Web launch, endpoint manifest, Client-default and durable Conversation Workspace admission, protocol/draining, and Server-owned Feishu lifecycle |
 | Hot configuration activation and Auto model routing | [ADR-0033](0033-hot-configuration-activation-and-auto-model-routing.md) | AccountRuntime activation gate, revision-aware Planner/Executor concrete routing, unified Executor capability profile activation, completion facts, and read-only DAG projection |
@@ -151,9 +151,9 @@ gate completes; `observe -> shadow -> export` is the release order.
 
 When two current ADRs appear to overlap, the more specific topic ADR defines its data contract while ADR-0020 defines module ownership and dependency direction. A newer ADR must explicitly amend or supersede an older one; implementation plans cannot silently override ADRs.
 
-## Proposed decisions (not current authority)
+## Active implementation
 
-- [ADR-0043: Unified Multi-Client Control, Conversation Observation And Read Models](0043-explicit-conversation-observation-and-client-read-models.md), proposed and revised 2026-10-02: Web/TUI/Feishu use equal Account-scoped rights to observe, send, cancel and resolve approvals, with durable conflict handling, independent notification routes and bounded read models. Proposes to supersede ADR-0036's origin-exclusive delivery contract and amend ADR-0031/0035/0040/0041. The user has requested this direction; protocol details remain proposed and unimplemented. Current authority remains unchanged until acceptance is recorded. See the [detailed design](../plans/2026-10-02-frontend-observation-architecture-upgrade-design.md).
+- [ADR-0043](0043-explicit-conversation-observation-and-client-read-models.md), accepted 2026-10-03: implementation remains local pending user validation. See the [design](../plans/2026-10-02-frontend-observation-architecture-upgrade-design.md) and [evidence and remaining gates](../plans/2026-10-02-frontend-observation-implementation.md).
 
 ## Status rules
 

@@ -1,3 +1,4 @@
+import { MemoryClientNavigation } from '../helpers/client-navigation.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -106,6 +107,8 @@ async function makeComposition() {
   const webAdapter = new WebGatewayAdapter({ gateway, journal, subscriptions });
   const selectedWorkspaces = new Map<string, string>();
   const feishuRouting = new FeishuConversationRouting({
+      subscriptions: new GatewaySubscriptions(),
+      navigation: new MemoryClientNavigation(),
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     gateway,
     bindings,

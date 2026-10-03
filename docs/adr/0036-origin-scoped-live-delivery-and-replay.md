@@ -1,6 +1,6 @@
 # ADR-0036: Origin-Scoped Live Delivery And Account-Scoped Replay
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0043](0043-explicit-conversation-observation-and-client-read-models.md), 2026-10-03. 本文保留作历史依据；origin 不再是实时内容或操作资格边界。
 - **Date:** 2026-08-29
 - **Scope:** Gateway detailed-event live delivery, Conversation replay, Web refresh/reconnect behavior, Feishu origin delivery, and native TUI compatibility
 - **Amends:** ADR-0031

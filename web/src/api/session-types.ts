@@ -11,6 +11,7 @@ export type QueryBillCoverage = 'complete' | 'partial' | 'incomplete' | 'unavail
 export type QueryBillPayer = 'platform' | 'user_direct' | 'system' | 'unknown';
 /** 用户可见账单状态：最多三种（账单简化设计 §2）。 */
 export type QueryBillUserStatus = 'billed' | 'unconfirmed' | 'no_charge';
+export type ResultDeliveryStatus = 'none' | 'streaming' | 'verifying' | 'ready' | 'failed';
 export type BillingDiagnosticCode =
   | 'no_usage_observed'
   | 'provider_usage_unavailable'
@@ -236,6 +237,7 @@ export interface ConversationTurn {
   userInput: string;
   interactionKind?: 'system_command' | 'ai_turn';
   status: ConversationTurnStatus;
+  deliveryStatus?: ResultDeliveryStatus;
   finalAnswer: string | null;
   taskId: string | null;
   startedAt: string;

@@ -4,6 +4,7 @@ import type {
   KernelApplicationStatus,
   KernelDecisionApplicationRecord,
   KernelWorkflowStore,
+  PermissionResolutionEvent,
 } from '../kernel/kernel-workflow.js';
 import type { KernelDecisionLedgerRecord } from '../kernel/kernel-workflow.js';
 import { KernelDecisionRepo } from './kernel-decision-repo.js';
@@ -35,6 +36,45 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
     return this.insertEvent(event, availableAt);
   }
 
+  findPermissionResolution(requestId: string): PermissionResolutionEvent | null {
+    const row = this.db.prepare(`SELECT schema_version, event_json FROM kernel_events
+      WHERE event_type = 'permission_resolution_received' AND correlation_id = ?
+      ORDER BY rowid LIMIT 1`).get(requestId) as { schema_version: number; event_json: string } | undefined;
+    const event = row ? parseCurrentEvent(row.event_json, row.schema_version) : null;
+    return event?.type === 'permission_resolution_received' ? event : null;
+  }
+
+  admitPermissionResolution(event: PermissionResolutionEvent) {
+    return this.db.transaction(() => {
+      const previous = this.findPermissionResolution(event.requestId);
+      if (previous) return { accepted: false, event: previous };
+      if (!this.insertEvent(event, event.occurredAt)) throw new Error('permission_decision_identity_conflict');
+      return { accepted: true, event };
+    }).immediate();
+  }
+
+  /** Dedicated permission owner replays admitted inputs and unfinished effects. */
+  listPermissionWork(limit = 32): Array<{ eventId: string; requestId: string; sessionId: string; decisionId: string | null; status: string | null }> {
+    return (this.db.prepare(`
+      SELECT event.id AS eventId, event.correlation_id AS requestId, event.session_id AS sessionId,
+        application.decision_id AS decisionId, application.status
+      FROM kernel_events event
+      LEFT JOIN kernel_decisions decision ON decision.event_id = event.id
+      LEFT JOIN kernel_decision_applications application ON application.decision_id = decision.id
+      WHERE event.event_type IN ('permission_requested', 'permission_resolution_received')
+        AND (event.status = 'pending' OR application.status IN ('pending', 'uncertain'))
+      ORDER BY event.created_at, event.id LIMIT ?
+    `).all(Math.max(1, Math.min(128, limit)))) as Array<{
+      eventId: string; requestId: string; sessionId: string; decisionId: string | null; status: string | null;
+    }>;
+  }
+
+  listPendingTaskIds(eventType: KernelEvent['type'], limit = 32): string[] {
+    return (this.db.prepare(`SELECT DISTINCT task_id FROM kernel_events
+      WHERE event_type = ? AND status IN ('pending', 'processing') AND task_id IS NOT NULL
+      ORDER BY task_id LIMIT ?`).all(eventType, limit) as Array<{ task_id: string }>).map(row => row.task_id);
+  }
+
   findEvent(id: string): KernelEvent | null {
     const row = this.db.prepare('SELECT schema_version, event_json FROM kernel_events WHERE id = ?')
       .get(id) as { schema_version: number; event_json: string } | undefined;
@@ -61,19 +101,19 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       ));
   }
 
-  claimNext(now: string, eventTypes?: KernelEvent['type'][], taskId?: string): KernelEvent | null {
+  claimNext(now: string, eventTypes?: KernelEvent['type'][], taskId?: string, correlationId?: string): KernelEvent | null {
     if (eventTypes?.length === 0) return null;
     const eventFilter = eventTypes?.length
       ? ` AND event_type IN (${eventTypes.map(() => '?').join(', ')})`
       : '';
-    const taskFilter = taskId ? ' AND task_id = ?' : '';
+    const taskFilter = (taskId ? ' AND task_id = ?' : '') + (correlationId ? ' AND correlation_id = ?' : '');
     const claim = this.db.transaction(() => {
       const row = this.db.prepare(`
         SELECT id, schema_version, event_json FROM kernel_events
         WHERE status = 'pending' AND available_at <= ?${eventFilter}${taskFilter}
         ORDER BY available_at ASC, created_at ASC, id ASC
         LIMIT 1
-      `).get(now, ...(eventTypes ?? []), ...(taskId ? [taskId] : [])) as {
+      `).get(now, ...(eventTypes ?? []), ...(taskId ? [taskId] : []), ...(correlationId ? [correlationId] : [])) as {
         id: string;
         schema_version: number;
         event_json: string;
@@ -87,7 +127,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       `).run(now, now, row.id);
       return result.changes === 1 ? event : null;
     });
-    return claim();
+    return claim.immediate();
   }
 
   issue(eventId: string, record: KernelDecisionLedgerRecord): KernelDecisionApplicationRecord {
@@ -117,17 +157,17 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       `).run(record.createdAt, record.createdAt, eventId);
       return this.findApplication(record.id);
     });
-    const application = issueTransaction();
+    const application = issueTransaction.immediate();
     if (!application) throw new Error(`Kernel application was not created: ${record.id}`);
     return application;
   }
 
-  listRecoverableApplications(actions?: KernelDecisionAction['type'][], taskId?: string): KernelDecisionApplicationRecord[] {
+  listRecoverableApplications(actions?: KernelDecisionAction['type'][], taskId?: string, correlationId?: string): KernelDecisionApplicationRecord[] {
     if (actions?.length === 0) return [];
     const actionFilter = actions?.length
       ? ` AND decision.action IN (${actions.map(() => '?').join(', ')})`
       : '';
-    const taskFilter = taskId ? ' AND decision.task_id = ?' : '';
+    const taskFilter = (taskId ? ' AND decision.task_id = ?' : '') + (correlationId ? ' AND decision.correlation_id = ?' : '');
     const rows = this.db.prepare(`
       SELECT application.*, decision.decision_json,
              decision.schema_version AS decision_schema_version
@@ -135,7 +175,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       JOIN kernel_decisions decision ON decision.id = application.decision_id
       WHERE application.status = 'pending'${actionFilter}${taskFilter}
       ORDER BY application.created_at ASC, application.id ASC
-    `).all(...(actions ?? []), ...(taskId ? [taskId] : [])) as ApplicationRow[];
+    `).all(...(actions ?? []), ...(taskId ? [taskId] : []), ...(correlationId ? [correlationId] : [])) as ApplicationRow[];
     return rows.map(rowToApplication);
   }
 
@@ -213,7 +253,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       );
       if (result.changes !== 1) throw new Error(`Kernel application cannot be completed: ${decisionId}`);
     });
-    complete();
+    complete.immediate();
   }
 
   isDecisionApplied(decisionId: string): boolean {
@@ -256,7 +296,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       `).run().changes;
       return processed + pending + applications;
     });
-    return reconcile();
+    return reconcile.immediate();
   }
 
   countByApplicationStatus(): Record<KernelApplicationStatus, number> {

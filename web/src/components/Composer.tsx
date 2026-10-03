@@ -104,6 +104,7 @@ export function Composer({
         }}
       >
         <textarea
+          aria-label="会话消息"
           value={draft}
           disabled={disabled}
           onChange={event => onDraftChange(event.target.value)}
@@ -120,7 +121,7 @@ export function Composer({
             }, 0);
           }}
           onKeyDown={handleKeyDown}
-          placeholder={disabled ? '激活此历史会话后才能继续' : '描述目标，MetaWork 会展示完整执行过程…（可拖入、粘贴或点击 📎 添加附件）'}
+          placeholder={disabled ? '连接就绪并选择会话后即可输入' : '描述目标，MetaWork 会展示完整执行过程…（可拖入、粘贴或点击 📎 添加附件）'}
           rows={2}
         />
         {(attachments.length > 0 || uploadError) && (

@@ -44,6 +44,7 @@ export function createBackgroundResultDelivery(deps: BackgroundResultDeliveryDep
     if (old?.finalAnswer !== delivery.content) await deps.append(sessionId, {
       id: query.turnId, sessionId, userInput, interactionKind: 'ai_turn',
       status: task.status === 'blocked' ? 'blocked' : task.status === 'cancelled' ? 'cancelled' : 'completed',
+      deliveryStatus: 'ready',
       finalAnswer: delivery.content, taskId: task.id,
       startedAt: old?.startedAt ?? query.acceptedAt,
       completedAt: backgroundWorkPending ? null : task.updatedAt,

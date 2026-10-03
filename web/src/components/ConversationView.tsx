@@ -11,6 +11,7 @@ export function ConversationView({
   onOpenSubtaskDetail,
   onOpenTrajectory,
   onOpenBilling,
+  onRetryDelivery,
   hasOlderHistory = false,
   historyLoading = false,
   onLoadOlderHistory,
@@ -21,6 +22,7 @@ export function ConversationView({
   onOpenSubtaskDetail?: (subtaskId: string, subtaskTitle: string) => void;
   onOpenTrajectory?: (turnId: string) => void;
   onOpenBilling?: (turnId: string) => void;
+  onRetryDelivery?: (turnId: string) => void;
   hasOlderHistory?: boolean;
   historyLoading?: boolean;
   onLoadOlderHistory?: () => Promise<void>;
@@ -120,6 +122,7 @@ export function ConversationView({
           onOpenArtifact={onOpenArtifact}
           onOpenTrajectory={onOpenTrajectory}
           onOpenBilling={onOpenBilling}
+          onRetryDelivery={onRetryDelivery}
         />
       ))}
       {locked && (

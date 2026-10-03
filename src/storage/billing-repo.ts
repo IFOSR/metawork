@@ -99,7 +99,7 @@ export class SqliteBillingUnitOfWork implements BillingUnitOfWork {
   constructor(private readonly db: Database.Database) {}
 
   run<T>(work: () => T): T {
-    return this.db.transaction(work)();
+    return this.db.transaction(work).immediate();
   }
 }
 
@@ -203,7 +203,7 @@ export class SqliteCostEntryStore implements CostEntryPort {
         }).changes;
       }
       return inserted;
-    })();
+    }).immediate();
   }
 
   listForQuery(queryId: string): CostEntryRecord[] {
@@ -298,7 +298,7 @@ export class SqliteBillStore implements BillStorePort {
         bill.updatedAt,
       );
       this.insertLines(bill.billId, lines);
-    })();
+    }).immediate();
   }
 
   finalize(input: {
@@ -345,7 +345,7 @@ export class SqliteBillStore implements BillStorePort {
       this.db.prepare('DELETE FROM query_bill_lines WHERE bill_id = ?').run(input.billId);
       this.insertLines(input.billId, input.lines);
       return 'finalized';
-    })();
+    }).immediate();
   }
 
   markPendingReconciliation(billId: string, note: string, updatedAt: string): void {

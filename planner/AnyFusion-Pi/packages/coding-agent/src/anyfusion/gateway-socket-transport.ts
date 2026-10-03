@@ -1,33 +1,25 @@
 import { createConnection, type Socket } from "node:net";
-import { GATEWAY_EVENT_KINDS } from "./gateway-protocol.ts";
+import type { ConversationObservationFrame, ConversationViewCursor } from "./conversation-observation-protocol.ts";
 import type { GatewayClientDeps } from "./gateway-client.ts";
 import type {
 	GatewayCommandEnvelope,
 	GatewayCommandReceipt,
 	GatewayEventEnvelope,
-	GatewayReplay,
-	GatewayReplayReset,
 	GatewayWireClientMessage,
 	GatewayWireServerMessage,
 } from "./gateway-protocol.ts";
+import { GATEWAY_EVENT_KINDS } from "./gateway-protocol.ts";
 
-export const MAX_GATEWAY_JSONL_FRAME_BYTES = 16 * 1024 * 1024;
+export const MAX_GATEWAY_JSONL_FRAME_BYTES = 1024 * 1024;
 
-export type GatewayFrameErrorCode =
-	| "gateway_malformed_frame"
-	| "gateway_frame_too_large";
+export type GatewayFrameErrorCode = "gateway_malformed_frame" | "gateway_frame_too_large";
 
 export class GatewayFrameError extends Error {
 	readonly code: GatewayFrameErrorCode;
 	readonly frameBytes: number;
 	readonly maxFrameBytes: number;
 
-	constructor(
-		code: GatewayFrameErrorCode,
-		message: string,
-		frameBytes: number,
-		maxFrameBytes: number,
-	) {
+	constructor(code: GatewayFrameErrorCode, message: string, frameBytes: number, maxFrameBytes: number) {
 		super(message);
 		this.name = "GatewayFrameError";
 		this.code = code;
@@ -36,27 +28,15 @@ export class GatewayFrameError extends Error {
 	}
 }
 
-interface PendingAttach {
-	connectionId: string;
-	conversationId: string;
-	afterSequence: number;
-	replaySequence: number;
-	acceptCursorReset: boolean;
-	promise: Promise<number>;
-	resolve(lastSequence: number): void;
-	reject(error: Error): void;
-}
-
 export class GatewaySocketTransport implements GatewayClientDeps {
+	private serverIdentity: string | null = null;
+	getServerIdentity(): string | null {
+		return this.serverIdentity;
+	}
 	private socket: Socket | null = null;
 	private connecting: Promise<void> | null = null;
 	private buffer = "";
-	private currentConversationId: string | null = null;
-	private currentConversationSequence = 0;
 	private connectionReady = false;
-	private desiredConversationId: string | null = null;
-	private desiredConnectionId = "tui";
-	private desiredAfterSequence = 0;
 	private readonly pendingReceipts = new Map<
 		string,
 		{
@@ -64,10 +44,9 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 			reject(error: Error): void;
 		}
 	>();
-	private pendingAttach: PendingAttach | null = null;
 	private readonly eventListeners = new Set<(event: GatewayEventEnvelope) => void>();
+	private readonly observationListeners = new Set<(frame: ConversationObservationFrame) => void>();
 	private readonly disconnectListeners = new Set<() => void>();
-	private readonly resetListeners = new Set<(reset: GatewayReplayReset) => void>();
 	private readonly deliveredEventIds = new Map<string, string>();
 	private readonly helloWaiters = new Set<{
 		resolve(): void;
@@ -87,13 +66,29 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 	}
 
 	async submit(envelope: GatewayCommandEnvelope): Promise<GatewayCommandReceipt> {
-		await this.ensureConnected();
-		await this.ensureDesiredAttachment();
+		await this.connect();
+		if (this.pendingReceipts.size >= 64) throw new Error("gateway_pending_command_limit");
+		if (this.pendingReceipts.has(envelope.requestId)) throw new Error("gateway_request_in_flight");
 		return new Promise<GatewayCommandReceipt>((resolve, reject) => {
-			this.pendingReceipts.set(envelope.requestId, { resolve, reject });
+			const timer = setTimeout(() => {
+				this.pendingReceipts.delete(envelope.requestId);
+				reject(new Error("gateway_receipt_timeout"));
+			}, 15_000);
+			timer.unref?.();
+			this.pendingReceipts.set(envelope.requestId, {
+				resolve: (value) => {
+					clearTimeout(timer);
+					resolve(value);
+				},
+				reject: (error) => {
+					clearTimeout(timer);
+					reject(error);
+				},
+			});
 			try {
 				this.write({ type: "command", envelope });
 			} catch (error) {
+				clearTimeout(timer);
 				this.pendingReceipts.delete(envelope.requestId);
 				reject(asError(error));
 			}
@@ -108,24 +103,27 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 		});
 	}
 
-	getServerCapabilities(): string[] {
-		return [...this.serverCapabilities];
+	async observe(
+		connectionId: string,
+		observationId: string,
+		conversationId: string,
+		cursor?: ConversationViewCursor,
+	): Promise<void> {
+		await this.connect();
+		this.write({ type: "observe", connectionId, observationId, conversationId, ...(cursor ? { cursor } : {}) });
 	}
 
-	async replay(
-		conversationId: string,
-		afterSequence = 0,
-		connectionId = "tui",
-	): Promise<GatewayReplay> {
-		this.desiredConversationId = conversationId;
-		this.desiredConnectionId = connectionId;
-		this.desiredAfterSequence = afterSequence;
-		const lastSequence = await this.ensureAttached(connectionId, conversationId, afterSequence);
-		return {
-			lastSequence,
-			snapshot: [],
-			deltas: [],
-		};
+	unobserve(observationId: string): void {
+		if (this.socket && !this.socket.destroyed) this.write({ type: "unobserve", observationId });
+	}
+
+	onObservation(listener: (frame: ConversationObservationFrame) => void): () => void {
+		this.observationListeners.add(listener);
+		return () => this.observationListeners.delete(listener);
+	}
+
+	getServerCapabilities(): string[] {
+		return [...this.serverCapabilities];
 	}
 
 	subscribe(listener: (event: GatewayEventEnvelope) => void): () => void {
@@ -138,18 +136,14 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 		return () => this.disconnectListeners.delete(listener);
 	}
 
-	onReplayReset(listener: (reset: GatewayReplayReset) => void): () => void {
-		this.resetListeners.add(listener);
-		return () => this.resetListeners.delete(listener);
-	}
-
 	close(): void {
 		this.closed = true;
-		if (this.socket && !this.socket.destroyed) {
-			this.socket.end(`${JSON.stringify({ type: "close" })}\n`);
-			this.socket.destroy();
+		const socket = this.socket;
+		if (socket) {
+			if (!socket.destroyed) socket.end(`${JSON.stringify({ type: "close" })}\n`);
+			this.handleDisconnect(socket);
+			socket.destroy();
 		}
-		this.socket = null;
 	}
 
 	private async ensureConnected(): Promise<void> {
@@ -162,6 +156,7 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 			socket.setEncoding("utf8");
 			socket.once("connect", resolve);
 			socket.once("error", reject);
+			socket.once("close", () => reject(new Error("Gateway connection closed")));
 			socket.on("data", (chunk) => this.consume(socket, chunk));
 			socket.on("close", () => this.handleDisconnect(socket));
 		}).finally(() => {
@@ -178,12 +173,15 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 			if (newline < 0) {
 				const bufferedBytes = Buffer.byteLength(this.buffer, "utf8");
 				if (bufferedBytes > this.maxFrameBytes) {
-					this.failFrame(socket, new GatewayFrameError(
-						"gateway_frame_too_large",
-						`Gateway JSONL frame exceeds ${this.maxFrameBytes} bytes`,
-						bufferedBytes,
-						this.maxFrameBytes,
-					));
+					this.failFrame(
+						socket,
+						new GatewayFrameError(
+							"gateway_frame_too_large",
+							`Gateway JSONL frame exceeds ${this.maxFrameBytes} bytes`,
+							bufferedBytes,
+							this.maxFrameBytes,
+						),
+					);
 				}
 				return;
 			}
@@ -192,12 +190,15 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 			this.buffer = this.buffer.slice(newline + 1);
 			const frameBytes = Buffer.byteLength(rawFrame, "utf8");
 			if (frameBytes > this.maxFrameBytes) {
-				this.failFrame(socket, new GatewayFrameError(
-					"gateway_frame_too_large",
-					`Gateway JSONL frame exceeds ${this.maxFrameBytes} bytes`,
-					frameBytes,
-					this.maxFrameBytes,
-				));
+				this.failFrame(
+					socket,
+					new GatewayFrameError(
+						"gateway_frame_too_large",
+						`Gateway JSONL frame exceeds ${this.maxFrameBytes} bytes`,
+						frameBytes,
+						this.maxFrameBytes,
+					),
+				);
 				return;
 			}
 
@@ -213,36 +214,16 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 	}
 
 	private handleMessage(message: GatewayWireServerMessage): void {
-		if (message.type === "hello") {
-			this.connectionReady = true;
-			if (message.capabilities !== undefined) this.serverCapabilities = [...message.capabilities];
-			if (message.attached) this.currentConversationId = message.sessionId;
-			for (const waiter of this.helloWaiters) waiter.resolve();
-			this.helloWaiters.clear();
-			if (message.attached && this.pendingAttach?.conversationId === message.sessionId) {
-				this.currentConversationSequence = message.lastSequence ?? this.pendingAttach.replaySequence;
-				if (this.desiredConversationId === message.sessionId) {
-					this.desiredAfterSequence = 0;
-				}
-				this.pendingAttach.resolve(this.currentConversationSequence);
-				this.pendingAttach = null;
-			}
+		if (message.type === "observation") {
+			for (const listener of this.observationListeners) listener(message.frame);
 			return;
 		}
-		if (message.type === "replay_reset") {
-			const pending = this.pendingAttach;
-			if (!pending || pending.conversationId !== message.conversationId) return;
-			if (!pending.acceptCursorReset) {
-				pending.reject(new Error("gateway_cursor_reset_required"));
-				this.pendingAttach = null;
-				return;
-			}
-			pending.replaySequence = message.lastSequence;
-			this.currentConversationSequence = message.lastSequence;
-			for (const [eventId, conversationId] of this.deliveredEventIds) {
-				if (conversationId === message.conversationId) this.deliveredEventIds.delete(eventId);
-			}
-			for (const listener of this.resetListeners) listener(message);
+		if (message.type === "hello") {
+			if (!message.attached) this.serverIdentity = message.identity ? JSON.stringify(message.identity) : null;
+			this.connectionReady = true;
+			if (message.capabilities !== undefined) this.serverCapabilities = [...message.capabilities];
+			for (const waiter of this.helloWaiters) waiter.resolve();
+			this.helloWaiters.clear();
 			return;
 		}
 		if (message.type === "receipt") {
@@ -269,9 +250,6 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 					this.pendingReceipts.delete(message.requestId);
 					pending.reject(error);
 				}
-			} else if (this.pendingAttach) {
-				this.pendingAttach.reject(error);
-				this.pendingAttach = null;
 			}
 		}
 	}
@@ -282,12 +260,6 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 		while (this.deliveredEventIds.size > 2_000) {
 			this.deliveredEventIds.delete(this.deliveredEventIds.keys().next().value!);
 		}
-		if (this.pendingAttach?.conversationId === event.conversationId) {
-			this.pendingAttach.replaySequence = Math.max(this.pendingAttach.replaySequence, event.sequence);
-		}
-		if (this.currentConversationId === event.conversationId) {
-			this.currentConversationSequence = Math.max(this.currentConversationSequence, event.sequence);
-		}
 		for (const listener of this.eventListeners) listener(event);
 	}
 
@@ -296,72 +268,11 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 		this.socket.write(`${JSON.stringify(message)}\n`);
 	}
 
-	private async ensureDesiredAttachment(): Promise<void> {
-		if (!this.desiredConversationId) return Promise.resolve();
-		await this.ensureAttached(
-			this.desiredConnectionId,
-			this.desiredConversationId,
-			this.desiredAfterSequence,
-		);
-	}
-
-	private async ensureAttached(
-		connectionId: string,
-		conversationId: string,
-		afterSequence: number,
-	): Promise<number> {
-		await this.connect();
-		if (this.pendingAttach) {
-			if (
-				this.pendingAttach.conversationId === conversationId
-				&& this.pendingAttach.afterSequence === afterSequence
-			) {
-				return this.pendingAttach.promise;
-			}
-			this.pendingAttach.reject(new Error("Gateway attach was superseded"));
-			this.pendingAttach = null;
-		}
-		if (this.currentConversationId === conversationId && afterSequence === 0) {
-			return this.currentConversationSequence;
-		}
-
-		let resolve!: (lastSequence: number) => void;
-		let reject!: (error: Error) => void;
-		const promise = new Promise<number>((done, fail) => {
-			resolve = done;
-			reject = fail;
-		});
-		this.pendingAttach = {
-			connectionId,
-			conversationId,
-			afterSequence,
-			replaySequence: afterSequence,
-			acceptCursorReset: this.serverCapabilities.includes("bounded_replay_v1") && this.resetListeners.size > 0,
-			promise,
-			resolve,
-			reject,
-		};
-		try {
-			this.write({
-				type: "attach",
-				connectionId,
-				conversationId,
-				resumeFromSequence: afterSequence,
-				...(this.pendingAttach.acceptCursorReset ? { acceptCursorReset: true } : {}),
-			});
-		} catch (error) {
-			this.pendingAttach = null;
-			reject(asError(error));
-		}
-		return promise;
-	}
-
 	private failFrame(socket: Socket, error: GatewayFrameError): void {
 		if (this.socket !== socket) return;
 		this.buffer = "";
-		this.currentConversationId = null;
-		this.pendingAttach?.reject(error);
-		this.pendingAttach = null;
+		for (const waiter of this.helloWaiters) waiter.reject(error);
+		this.helloWaiters.clear();
 		for (const pending of this.pendingReceipts.values()) pending.reject(error);
 		this.pendingReceipts.clear();
 		socket.destroy();
@@ -371,14 +282,11 @@ export class GatewaySocketTransport implements GatewayClientDeps {
 		if (this.socket !== socket) return;
 		this.socket = null;
 		this.buffer = "";
-		this.currentConversationId = null;
 		this.connectionReady = false;
 		this.serverCapabilities = [];
 		const error = new Error("Gateway connection closed");
 		for (const waiter of this.helloWaiters) waiter.reject(error);
 		this.helloWaiters.clear();
-		this.pendingAttach?.reject(error);
-		this.pendingAttach = null;
 		for (const pending of this.pendingReceipts.values()) pending.reject(error);
 		this.pendingReceipts.clear();
 		if (!this.closed) {
@@ -402,9 +310,7 @@ function parseServerFrame(
 	} catch {
 		return malformedFrame(frameBytes, maxFrameBytes);
 	}
-	return isGatewayWireServerMessage(value)
-		? value
-		: malformedFrame(frameBytes, maxFrameBytes);
+	return isGatewayWireServerMessage(value) ? value : malformedFrame(frameBytes, maxFrameBytes);
 }
 
 function malformedFrame(frameBytes: number, maxFrameBytes: number): GatewayFrameError {
@@ -418,60 +324,71 @@ function malformedFrame(frameBytes: number, maxFrameBytes: number): GatewayFrame
 
 function isGatewayWireServerMessage(value: unknown): value is GatewayWireServerMessage {
 	if (!isRecord(value) || typeof value.type !== "string") return false;
+	if (value.type === "observation")
+		return (
+			isRecord(value.frame) &&
+			isNonEmptyString(value.frame.observationId) &&
+			isNonEmptyString(value.frame.conversationId) &&
+			["baseline", "patch", "activity", "freshness", "reset", "closed"].includes(String(value.frame.kind))
+		);
 	if (value.type === "hello") {
-		return isNonEmptyString(value.sessionId) && typeof value.attached === "boolean"
-			&& (value.lastSequence === undefined || isSequence(value.lastSequence))
-			&& (value.capabilities === undefined
-				|| (Array.isArray(value.capabilities)
-					&& value.capabilities.every((item) => typeof item === "string")));
-	}
-	if (value.type === "replay_reset") {
-		return isNonEmptyString(value.conversationId) && Buffer.byteLength(value.conversationId, "utf8") <= 256
-			&& isSequence(value.lastSequence) && value.snapshotVersion === 1
-			&& (value.reason === "cursor_ahead" || value.reason === "cursor_expired"
-				|| value.reason === "replay_budget_exceeded");
+		return (
+			isNonEmptyString(value.sessionId) &&
+			typeof value.attached === "boolean" &&
+			(value.lastSequence === undefined || isSequence(value.lastSequence)) &&
+			(value.identity === undefined ||
+				(isRecord(value.identity) &&
+					isNonEmptyString(value.identity.serverId) &&
+					isNonEmptyString(value.identity.accountId))) &&
+			(value.capabilities === undefined ||
+				(Array.isArray(value.capabilities) && value.capabilities.every((item) => typeof item === "string")))
+		);
 	}
 	if (value.type === "receipt") return isGatewayReceipt(value.receipt);
 	if (value.type === "event") return isGatewayEvent(value.event);
 	if (value.type === "output") {
-		return Array.isArray(value.lines)
-			&& value.lines.every((line) => typeof line === "string")
-			&& isGatewayEvent(value.event);
+		return (
+			Array.isArray(value.lines) &&
+			value.lines.every((line) => typeof line === "string") &&
+			isGatewayEvent(value.event)
+		);
 	}
 	if (value.type === "error") {
-		return typeof value.message === "string"
-			&& (value.requestId === undefined || typeof value.requestId === "string")
-			&& (value.event === undefined || isGatewayEvent(value.event));
+		return (
+			typeof value.message === "string" &&
+			(value.requestId === undefined || typeof value.requestId === "string") &&
+			(value.event === undefined || isGatewayEvent(value.event))
+		);
 	}
 	return value.type === "exit";
 }
 
 function isGatewayReceipt(value: unknown): value is GatewayCommandReceipt {
 	if (!isRecord(value)) return false;
-	return isNonEmptyString(value.requestId)
-		&& ["accepted", "duplicate", "rejected"].includes(String(value.status))
-		&& (value.conversationId === null || typeof value.conversationId === "string")
-		&& (
-			value.workspaceId === undefined
-			|| value.workspaceId === null
-			|| typeof value.workspaceId === "string"
-		)
-		&& (value.reason === undefined || typeof value.reason === "string");
+	return (
+		isNonEmptyString(value.requestId) &&
+		["accepted", "duplicate", "rejected"].includes(String(value.status)) &&
+		(value.conversationId === null || typeof value.conversationId === "string") &&
+		(value.workspaceId === undefined || value.workspaceId === null || typeof value.workspaceId === "string") &&
+		(value.reason === undefined || typeof value.reason === "string")
+	);
 }
 
 function isGatewayEvent(value: unknown): value is GatewayEventEnvelope {
 	if (!isRecord(value)) return false;
-	return value.protocolVersion === 2
-		&& isNonEmptyString(value.eventId)
-		&& typeof value.sequence === "number"
-		&& Number.isSafeInteger(value.sequence)
-		&& value.sequence >= 0
-		&& isNonEmptyString(value.accountId)
-		&& isNonEmptyString(value.conversationId)
-		&& (value.requestId === null || typeof value.requestId === "string")
-		&& (value.turnId === null || typeof value.turnId === "string")
-		&& isGatewayEventKind(value.kind)
-		&& typeof value.occurredAt === "string";
+	return (
+		value.protocolVersion === 2 &&
+		isNonEmptyString(value.eventId) &&
+		typeof value.sequence === "number" &&
+		Number.isSafeInteger(value.sequence) &&
+		value.sequence >= 0 &&
+		isNonEmptyString(value.accountId) &&
+		isNonEmptyString(value.conversationId) &&
+		(value.requestId === null || typeof value.requestId === "string") &&
+		(value.turnId === null || typeof value.turnId === "string") &&
+		isGatewayEventKind(value.kind) &&
+		typeof value.occurredAt === "string"
+	);
 }
 
 function isGatewayEventKind(value: unknown): boolean {

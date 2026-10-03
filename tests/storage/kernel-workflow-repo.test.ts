@@ -7,6 +7,48 @@ import { runMigrations } from '../../src/storage/migrations.js';
 const CONFIGURATION_REVISION = 'revision_test';
 
 describe('KernelWorkflowRepo', () => {
+  it('arbitrates opposing permission decisions at durable admission and recovers before application', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    seedConfigurationRevision(db);
+    const repo = new KernelWorkflowRepo(db);
+    const event: Extract<KernelEvent, { type: 'permission_resolution_received' }> = {
+      ...directReplyEvent(), type: 'permission_resolution_received', id: 'permission_resolution_request_1',
+      correlationId: 'request_1', requestId: 'request_1', taskId: 'task_1', subtaskId: 'subtask_1',
+      attemptId: 'attempt_1', resolution: 'approve', source: 'button', plannerPlanId: null,
+      actor: { principalId: 'feishu:tenant:operator', commandRequestId: 'original-command' },
+    };
+    expect(repo.admitPermissionResolution(event).accepted).toBe(true);
+    const restarted = new KernelWorkflowRepo(db);
+    expect(restarted.admitPermissionResolution({ ...event, resolution: 'deny', actor: { principalId: 'local:operator', commandRequestId: 'opposing-command' } }))
+      .toEqual({ accepted: false, event });
+    expect(restarted.admitPermissionResolution({ ...event, source: 'command', actor: { principalId: 'local:operator', commandRequestId: 'replayed-command' } }))
+      .toEqual({ accepted: false, event });
+    expect(restarted.claimNext(event.occurredAt, ['permission_resolution_received'])).toEqual(event);
+    expect(restarted.claimNext(event.occurredAt, ['permission_resolution_received'])).toBeNull();
+    expect(db.prepare('SELECT COUNT(*) AS count FROM kernel_events').get()).toEqual({ count: 1 });
+    db.close();
+  });
+
+  it('does not accept a permission decision when its workflow input transaction fails', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    seedConfigurationRevision(db);
+    const repo = new KernelWorkflowRepo(db);
+    const event: Extract<KernelEvent, { type: 'permission_resolution_received' }> = {
+      ...directReplyEvent(), type: 'permission_resolution_received', id: 'permission_resolution_request_1',
+      correlationId: 'request_1', requestId: 'request_1', taskId: 'task_1', subtaskId: 'subtask_1',
+      attemptId: 'attempt_1', resolution: 'deny', source: 'button', plannerPlanId: null,
+    };
+    db.exec(`CREATE TRIGGER fail_admission BEFORE INSERT ON kernel_events
+      BEGIN SELECT RAISE(ABORT, 'injected_crash'); END`);
+    expect(() => repo.admitPermissionResolution(event)).toThrow('injected_crash');
+    expect(repo.findPermissionResolution('request_1')).toBeNull();
+    db.exec('DROP TRIGGER fail_admission');
+    expect(repo.admitPermissionResolution(event).accepted).toBe(true);
+    db.close();
+  });
+
   it('atomically advances an event to an immutable Decision and pending application', () => {
     const db = new Database(':memory:');
     runMigrations(db);

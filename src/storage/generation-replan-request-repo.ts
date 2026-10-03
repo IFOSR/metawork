@@ -191,7 +191,7 @@ export class GenerationReplanRequestRepo {
             error_summary = NULL
         WHERE id = ? AND status = 'planning' AND planner_claim_token = ?
       `).run(input.now, input.now, input.id, input.claimToken).changes === 1;
-    })();
+    }).immediate();
   }
 
   /**
@@ -206,7 +206,7 @@ export class GenerationReplanRequestRepo {
         SET status = 'submitted', submitted_at = ?, updated_at = ?, error_summary = NULL
         WHERE id = ? AND status IN ('planning', 'submitted') AND planner_claim_token = ?
       `).run(input.now, input.now, input.id, input.claimToken).changes === 1;
-    })();
+    }).immediate();
   }
 
   holdsPlannerClaim(id: string, token: string): boolean {
@@ -407,7 +407,7 @@ export class GenerationReplanRequestRepo {
         SET status = 'submitted', submitted_at = ?, updated_at = ?
         WHERE id = ? AND status = 'planning' AND quiescence_token = ?
       `).run(now, now, id, quiescenceToken).changes === 1;
-    })();
+    }).immediate();
   }
 
   resolve(id: string, now: string): void {

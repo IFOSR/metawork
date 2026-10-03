@@ -13,7 +13,7 @@ It is built for teams who need agents to do more than answer the current turn. M
 
 > Current implementation baseline (2026-09-30): PlanningAgentPlan v8, Work
 > Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
-> and SQLite schema v46 with transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46 upgrade support.
+> and SQLite schema v47 with transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47 upgrade support.
 > Schema v39/v40 adds the Query usage/billing facts (Query attribution contexts,
 > metering spans/observations, immutable price versions, cost entries, per-Query
 > bills and lines, the consumption outbox/receipts and bill adjustments) that
@@ -44,43 +44,59 @@ implementation is deferred to a separate roadmap.
 
 ## What MetaWork Does
 
-### Navigation Delivery Status (2026-09-26)
+### Navigation And Observation Status (2026-10-03)
 
-The active navigation remediation adds a Workspace-owned SQLite directory
-projection and Session-owned indexed Conversation metadata/history. Directory
-reads do not replay each Conversation. Web first loads a ten-Turn page and
-requests older pages explicitly; canonical terminal Turns remain visible without
-a prior Web attachment. Older cursors use stable insertion sequences, while
-directory cursors carry the mutable directory revision and reset on conflict.
+The source schema is 47. Web and the single native TUI browse indexed metadata
+and a bounded Conversation read model, independently of execution attachment.
+A baseline contains at most 20 recent Turn summaries within 256 KiB; long
+bodies, history pages, trace, Task details and billing load separately. An
+explicit observation follows the committed projection epoch/revision and resets
+when its bounded tail cannot resume. Ordinary navigation never folds the audit.
+The Conversation tab retains the existing Planning/Execution cards, report links
+and fee cards. Mounted Turns automatically fetch these resources independently;
+body ranges are assembled into complete Markdown without an extra read-more
+button. Recent card progress uses an indexed trace suffix. Running cards refresh
+every second, settled cards every five seconds for late publication/billing, with
+immediate refresh on Turn updates. Turn count and warm resource caches remain
+bounded; a single complete body has no fixed DOM-size bound.
+Workspace directory cursors retain their revision guards; historical Turn pages
+retain stable insertion order. Same-Account Web/TUI/Feishu have equal business
+permissions regardless of which surface originated the Task (ADR-0043).
 
-Source production composition selects the bounded snapshot and immutable-segment
-journal through `createAccountEventJournal`, with a bounded, drainable background
-maintenance worker. The legacy JSON adapter is read-only during import.
-Incremental reconnect has a segment/byte budget and an explicit negotiated
-snapshot reset, including legacy replay gaps; it never falls back to a full
-audit scan. Historical Task association uses a scoped exact lookup in
-`gateway_turn_task_observations`, atomically committed with journal segments.
-The Gateway-owned pure fold retains two distinct Task IDs (enough to preserve
-ambiguity), first/latest trace times and latest completion/progress evidence;
-Storage persists that projection without interpreting lifecycle. Legacy
-retained import uses the same fold, and compaction leaves observations intact.
-Page enrichment uses physical set reads, including a read-only
-billing snapshot that reuses the canonical user projection. Background activity
-and user-Workspace lookup read bindings from indexed metadata, not aggregate
-Conversation history. Native upgrade
-checkpoints include verified segment-body companions; rollback restores missing
-indexed bodies before switching the database pointer, not from legacy JSON or a
-SQLite-only backup. Schema 43 adds the navigation read models without changing Task/Kernel
-facts, and has been installed through the canonical updater. Source schema 46
-adds a separate transactional upgrade for Gateway command admissions: one
-SQLite row per account/idempotency key, indexed recovery candidates, and a
-one-time atomic import of all legacy receipts. Gateway still owns admission
-semantics; the old JSON remains read-only, not a second writer. Schema 44 has
-also been canonically installed; real Web reauthentication and TUI reconnect
-checks pass. Off-page restoration uses a Workspace-fenced attach before its
-history read, preserving active-attachment scoping.
-Final rollout acceptance and the provisional creation budget remain open in the
-[implementation plan](../plans/2026-09-26-navigation-performance-architecture-remediation.md).
+`createAccountEventJournal` selects the immutable-segment journal with bounded
+background maintenance. Legacy SQLite Turn parsing runs in a worker with a
+128 MiB old-generation limit and a ten-second deadline. It reuses the canonical
+projector and notification hooks. Write transactions, including application
+outer transactions, use `BEGIN IMMEDIATE` so concurrent worker commits cannot
+invalidate a read snapshot that a writer later attempts to upgrade. Read-only
+baselines/pages retain deferred snapshot transactions. Legacy file import is
+still maintenance work and can parse an aggregate on the Server; its first
+migration cost is separate from indexed navigation performance.
+
+Historical Task association uses the Account/Conversation/Turn trace index;
+ambiguous association remains fail-closed. Task activity uses indexed witnesses
+and the canonical TaskView projection. Native update checkpoints retain the
+immutable segment bodies required by the database. Schema 43 introduced the
+navigation read models; schema 44 introduced indexed command admissions with
+atomic legacy receipt import. Both were previously installed on the normal
+account; this is historical evidence, not evidence of a schema-47 deployment.
+
+Schema-47 production browser, isolated installed Server/TUI identity, multi-client
+adapter matrix and native tests have passed locally. Implementation is uncommitted
+and unpushed pending user acceptance. The normal installation has not been
+replaced; Docker and external Feishu delivery acceptance remain open. Commands,
+measured budgets, performance and limitations are in the
+[implementation record](../plans/2026-10-02-frontend-observation-implementation.md).
+
+The native TUI Dashboard now shows Workspace task summaries (execution, queue,
+blocking and other canonical TaskView phases). F6 focuses the list, arrows select,
+Enter opens the Task's original Turn, and Esc returns to the editor. Wide terminals
+also support clicking; compact terminals use the same list in an overlay. The left
+pane retains execution details and Turn billing. Activity reads refresh the loaded
+directory at no more than two background requests per second; selected observation
+updates apply immediately. Counts cover loaded pages and further pages have explicit
+entries. The Gateway `locate` resource reuses the authorized Task-to-Turn index.
+See [implementation and validation](../plans/2026-10-03-tui-workspace-task-dashboard.md).
 
 ### Product Capabilities
 
@@ -97,7 +113,7 @@ Final rollout acceptance and the provisional creation budget remain open in the
 - Sends Feishu chat replies, file artifacts, and Markdown preview links through the backend delivery layer.
 - Provides a local Gateway so multiple terminals can connect to one MetaWork runtime.
 - Uses the nested `planner/AnyFusion-Pi` fork as the default local Planner conversation surface, with an isolated process/dependency tree and MetaWork-managed provider/model configuration in both native and optional container runtimes.
-- Runs the single MetaWork TUI (`modes/metawork-tui` in the vendored AnyFusion-Pi fork) as an independent Gateway-only client: multi-Turn conversation projection, Pi editor/theme/components, Task Dashboard, cursor-based replay, reconnect, versioned slash/permission/cancel commands and the read-only `complete_command`/`get_task_view` queries (ADR-0041), with no local semantic runtime. The former simplified client mode and the Ink UI are no longer reachable from `metawork tui`; their deletion is the remaining step of the single-TUI cutover.
+- Runs the single MetaWork TUI (`modes/metawork-tui` in the vendored AnyFusion-Pi fork) as an independent Gateway-only client: multi-Turn conversation projection, Pi editor/theme/components, Task Dashboard, projection-cursor recovery and bounded resource reads, reconnect, versioned slash/permission/cancel commands and the read-only `complete_command`/`get_task_view` queries (ADR-0041), with no local semantic runtime. The former simplified client mode and the Ink UI are deleted under ADR-0041.
 - Ships with `npm run smoke:metawork`, whose default gate verifies two-turn memory in one persisted AnyFusion-Pi Planner session; artifact scenarios remain available explicitly.
 
 ## Core Architecture
@@ -145,7 +161,7 @@ Web origin, and configured Feishu connectivity is owned by Server. Server
 startup is Workspace-neutral. Existing Conversations restore their immutable
 Workspace binding. Local TUI/Web cwd is an untrusted Workspace selection hint.
 `/workspace /absolute/path` selects the Client Workspace and never reparents an
-existing Conversation; attach/replay restores the Conversation binding.
+existing Conversation; metadata selection restores the Conversation binding without execution attachment.
 
 Runtime-wide KernelWorkflow, execution and startup recovery are constructed once
 per AccountRuntime. One account Kernel coordinator owns durable
@@ -154,17 +170,19 @@ execution slot; different Conversations may execute in parallel and later
 same-Conversation Tasks queue. Accounts use separate data roots and SQLite databases; the
 current installation is activated as `local-default`.
 
-Detailed Gateway live delivery is origin-scoped (ADR-0036). A turn's
-`turn_started`, trace, task/execution projection, permission, artifact, result
-and terminal events stream only to the authenticated connection that initiated
-the turn. Conversation snapshots and history pages are attach/replay/read
-projections rather than cross-client live notifications. A detailed event
-without a live origin — a startup recovery projection or a background fact after
-the originating client disconnected — remains durable history only and is not
-broadcast to every attached client. Replay and explicit history reads remain
-Account/Conversation complete and origin-unfiltered, so Web, Feishu and TUI
-recover every authorized turn after attach, refresh, switch or reconnect.
-Workspace directory activity remains a bounded shared summary.
+ADR-0043 supersedes origin-exclusive live delivery. Same-Account Web, native TUI
+and Feishu use shared, explicit Conversation observations and equal command
+rights. Metadata selection, bounded baseline/tail, independent detail ranges,
+Task activity and pending approvals are independent of execution attachment.
+Web stores entities per Conversation and renders a bounded virtual window;
+full-history search uses the safe content index and can locate older Turns.
+Native follows the same read protocol. Feishu uses resource queries and durable
+notification routes with destination-bound signed actions. Notifications retain
+their captured chat/thread when another client browses or controls the Task.
+`cancel_task` adds generation-fenced background control; `cancel_turn` is unchanged.
+Permission acceptance and application are durable, separate facts.
+Schema 47 is implemented locally; validation evidence and remaining deployment
+gates are recorded in the observation implementation plan.
 
 The production composition below is the executable baseline.
 See [ADR-0031](../adr/0031-account-runtime-and-unified-client-gateway.md), the
@@ -317,7 +335,7 @@ semantic Planner ingress rejects new `direct_reply`; MetaWork routes work-like
 requests through an Executor Work Graph instead of delivering Planner text as
 task completion.
 
-The local AnyFusion-Pi TUI and the non-interactive PlanningAgent runner use the same vendored application but have different trusted roles. The TUI is a client-only process connected to the versioned Unix Gateway protocol. It renders replay/live `turn_started`, `trace_delta`, `task_projection`, execution, permission, artifact, final and terminal events; raw input, slash commands, permission decisions and cancellation requests enter `ClientGateway`. The controlled RPC runner alone connects to `PlannerHostBridge` for proposal submission. `ConversationSession` reruns `PlanningAgentPlanSchema` and `validatePlanningAgentPlan()` before the existing `plan_proposed → DurableKernelWorkflow → ControlKernel` path. Persisted proposal submissions provide replay, rejected-revision, accepted-turn-lock and conflict semantics without duplicating Kernel events. Neither client mode nor the bridge can write the database or directly call Kernel, scheduling, Execution or Executor APIs.
+The local AnyFusion-Pi TUI and the non-interactive PlanningAgent runner use the same vendored application but have different trusted roles. The TUI is a client-only process connected to the versioned Unix Gateway protocol. It renders bounded Conversation baselines/changes, activity, pending permissions and explicitly loaded resources; raw input, slash commands, permission decisions and cancellation requests enter `ClientGateway`. The controlled RPC runner alone connects to `PlannerHostBridge` for proposal submission. `ConversationSession` reruns `PlanningAgentPlanSchema` and `validatePlanningAgentPlan()` before the existing `plan_proposed → DurableKernelWorkflow → ControlKernel` path. Persisted proposal submissions provide replay, rejected-revision, accepted-turn-lock and conflict semantics without duplicating Kernel events. Neither client mode nor the bridge can write the database or directly call Kernel, scheduling, Execution or Executor APIs.
 
 Executor health recovery is event-driven. `ExecutorRecoveryRefreshService`
 inspects only enabled AgentClasses whose persisted class health is already
@@ -734,9 +752,9 @@ The default command launches the pinned AnyFusion-Pi Gateway client:
 - The executable is `anyfusion-planner`, launched with a Server-owned Gateway socket and stable Conversation ID.
 - Client mode branches before model, tool, project-resource or semantic session creation.
 - Pi's editor submits raw text, versioned slash commands, permission decisions and cancellation requests to `ClientGateway`.
-- The execution-trace area renders ordered Planner, routing, Kernel and Executor-safe milestones as they arrive; the conversation area renders replayed/live output and the final answer.
-- Reconnect attaches to the same Conversation from the last event cursor and deduplicates event IDs across replay and live delivery.
-- Permission requests remain bounded UI facts; `/approve` and `/deny` submit only the request ID and resolution.
+- The execution-trace area renders ordered Planner, routing, Kernel and Executor-safe milestones as they arrive; the conversation area renders observed Turn entities, bounded body ranges and the final answer.
+- Reconnect negotiates Server/Account identity and the observation/resource/control capabilities, then resumes each Conversation projection cursor or requests a bounded reset. It does not attach execution or replay the journal.
+- Permission requests remain bounded UI facts; decisions submit the exact request ID, revision and generation with approve/deny through `permission_resolution_v2`.
 - The client cannot write Task state, choose policy, schedule attempts, call Kernel, or control Executor processes.
 - The raw v8 plan, prompts, hidden reasoning, credentials and raw process output remain server-side.
 - The former `METACLAW_STANDBY_TUI=1` Ink path and the Ink sources under
@@ -809,7 +827,7 @@ directory through the same Server-owned selection as:
 Server canonicalizes and authorizes the path, finds or creates one Account
 Workspace, and updates the Client's `activeWorkspaceId`. A rejected hint leaves
 no selected Workspace, returns `workspace_required` before Conversation
-creation, and prompts for the explicit command. Attach/replay restores the
+creation, and prompts for the explicit command. Metadata selection restores the
 Conversation Workspace and ignores cwd. `/workspace` never moves an existing
 Conversation.
 
@@ -817,7 +835,7 @@ Conversation.
 Server launch context. The URL contains only an opaque launch-hint fragment and
 never contains a Workspace path. After explicit login, the Browser applies the
 hint through the ordinary authorized Workspace selection path. HTTP snapshots,
-WebSocket replay, and live
+observation baselines, and live
 `workspace_changed` events expose the Server-confirmed canonical Workspace to
 the existing Web interface without narrowing its richer projections.
 
@@ -832,8 +850,9 @@ protocol switches; stale cookies return the browser to the fallback gate
 instead of reconnecting indefinitely.
 
 The Web surface is a persistent Conversation workspace. A fixed history rail
-selects bounded Conversation projections, and `WebGatewaySessionRuntime`
-attaches to the selected stable Conversation through `WebGatewayAdapter`.
+selects bounded Conversation projections. Browser stores keep focus, drafts and
+observation cursors separately; `WebGatewayAdapter` submits commands with an
+explicit Conversation target through the same Account Gateway.
 There is no Web-owned live Runtime or `MetaclawSession`. Sanitized terminal
 turns are stored in the account Conversation root under
 `accounts/local-default/conversations/web/`.
@@ -843,8 +862,8 @@ Trajectory reprojects the same facts into timing bands, metrics, filters, and
 dense event rows. `ConversationSession` emits a
 bounded current-turn trace for query intake, Planner lifecycle, structured
 intent, Kernel decisions, exact authorized AgentClass/Harness/Provider/Model
-bindings and delivery. WebSocket reconnect sends the full snapshot and then
-ordered deltas. The existing durable execution projector supplies Subtask,
+bindings and delivery. WebSocket reconnect resumes bounded projection changes or a framed baseline;
+older trace details use independent resource pages. The existing durable execution projector supplies Subtask,
 attempt, verification and publication state, including the latest normalized
 Executor progress summary. These are auditable events and schema summaries,
 not model chain-of-thought; secret-like fields, raw prompts and raw process
@@ -858,9 +877,8 @@ same panel as `EXECUTION SUMMARY`. Clicking a card opens an `Executor Detail`
 drawer backed by the ordered safe trace plus the durable attempt-runtime
 progress history and ExecutionProjector timeline. Heartbeat, dependency wait,
 capacity wait and blocked states are rendered distinctly from actual Executor
-activity. Stable event cursors and event IDs make replay idempotent across
-reconnects, and the persisted turn keeps the trace/timeline after the current
-turn ends. No progress event is Completion Protocol evidence.
+activity. Projection epoch/revision makes observation changes idempotent across
+reconnects; durable indexed trace/timeline remains readable after the Turn ends. No progress event is Completion Protocol evidence.
 
 Web presentation follows
 `Conversation -> Turn -> one presentation Task -> Subtasks -> Attempts`.
@@ -898,7 +916,7 @@ status and duration non-overlapping on desktop and mobile. Running duration
 uses the current time, while a settled Attempt freezes at its receipt
 `completedAt` projection. Trajectory is
 read-only and does not render the Composer; draft and pending attachments stay
-owned by the App and return with Conversation. The header also provides
+owned by the Conversation-scoped ComposerStore and return with that Conversation. The header also provides
 system/light/dark theme preference, persisted in `metawork.theme` and applied
 before the first application render through semantic color tokens.
 
@@ -1048,7 +1066,7 @@ recorded in
 [Task lifecycle state contracts](task-lifecycle-state-contracts.md).
 
 The native AnyFusion-Pi TUI remains the default Client for bare `metawork`.
-Web and TUI own only connection and presentation state; both attach to the same
+Web and TUI own only connection and presentation state; both observe the same
 persistent Server-owned RuntimeRegistry, AccountRuntime, WorkspaceDirectory,
 ConversationRegistry and ClientGateway. `anyfusion` and `metaclaw` remain
 compatibility CLI aliases,
@@ -1452,7 +1470,7 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 MetaWork can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The source uses SQLite schema v46 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46 upgrades; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers; v45 adds durable Retry Wake continuation facts for timeout recovery; v46 adds the indexed latest Task-creation timestamp used to order Conversation history. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The source uses SQLite schema v47 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47 upgrades; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers; v45 adds durable Retry Wake continuation facts for timeout recovery; v46 adds the indexed latest Task-creation timestamp used to order Conversation history; v47 adds body-separated Conversation entities, projection checkpoints/tail/staging rebuild, activity invalidation and witness indexes, trace/content-search indexes, client navigation, durable approval acceptance/application and notification routes/outbox. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Historical Artifact refs are validated against Account/Conversation/Workspace ownership, publication status, regular-file safety and content hash, then copied to attempt-local `inputs/` with stable `input-XX-*` names. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; image-capable adapters consume only the materialized input directory.
 

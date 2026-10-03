@@ -33,6 +33,21 @@ afterEach(() => {
 });
 
 describe('ConversationGatewayRuntime', () => {
+  it('persists the full redacted prompt before publishing a bounded live preview', async () => {
+    const fixture = createFixture();
+    const input = `api_key=private-value\n${'完整问题🙂'.repeat(5000)}`;
+    const safe = redactSensitiveText(input);
+    const events = fixture.capture('conv_1');
+    const receipt = await fixture.submit('conv_1', 'long-prompt', 'long-prompt', userMessage(input));
+    await receipt.completion;
+    const started = events.find(event => event.kind === 'turn_started')!;
+    const value = started.payload as { userInput: string; userInputRef: { hash: string; byteLength: number } };
+    expect(Buffer.byteLength(value.userInput)).toBeLessThanOrEqual(4096);
+    expect(value.userInputRef.byteLength).toBe(Buffer.byteLength(safe));
+    expect(fixture.bodies.get(value.userInputRef.hash)).toBe(safe);
+    expect(JSON.stringify(events)).not.toContain('private-value');
+    expect(fixture.executions).toHaveLength(1);
+  });
   it('serves attach and history without durable submission replay or journaling read responses', async () => {
     const fixture = createFixture();
     const replay = vi.spyOn(fixture.journal, 'replay');
@@ -78,7 +93,7 @@ describe('ConversationGatewayRuntime', () => {
     expect(events).toEqual([]);
   });
 
-  it('delivers a delayed result to the original Turn and origin after another client submits', async () => {
+  it('delivers a delayed result on its original Turn to every observer after another client submits', async () => {
     const fixture = createFixture();
     const firstEvents = fixture.capture('conv_1');
     const laterEvents: GatewayEventEnvelope[] = [];
@@ -102,7 +117,7 @@ describe('ConversationGatewayRuntime', () => {
       'result_delivery_available', 'result_chunk', 'result_completed', 'final_answer',
     ]);
     expect(firstEvents.every(event => event.turnId === turnId && event.requestId === 'req_original')).toBe(true);
-    expect(laterEvents).toEqual([]);
+    expect(laterEvents).toEqual(firstEvents);
     const replay = await fixture.journal.replay('local-default', 'conv_1');
     expect([...replay.snapshot, ...replay.deltas]).toContainEqual(expect.objectContaining({
       kind: 'result_chunk', turnId, payload: expect.objectContaining({ chunk: 'Actual result' }),
@@ -260,7 +275,7 @@ describe('ConversationGatewayRuntime', () => {
     expect(fixture.sessions[0]?.lastExecuteOptions.at(-1)).toMatchObject({
       awaitAsyncWork: false,
     });
-    expect(events.find(event => event.kind === 'turn_started')?.payload).toEqual({
+    expect(events.find(event => event.kind === 'turn_started')?.payload).toMatchObject({
       commandKind: 'slash_command',
     });
     expect(events.find(event => event.kind === 'result_delivery_available')).toBeDefined();
@@ -271,7 +286,7 @@ describe('ConversationGatewayRuntime', () => {
 
     const replay = await fixture.journal.replay('local-default', 'conv_1', 0);
     const replayed = [...replay.snapshot, ...replay.deltas];
-    expect(replayed.find(event => event.kind === 'turn_started')?.payload).toEqual({
+    expect(replayed.find(event => event.kind === 'turn_started')?.payload).toMatchObject({
       commandKind: 'slash_command',
     });
     expect(replayed.some(event => event.kind === 'final_answer')).toBe(true);
@@ -340,7 +355,7 @@ describe('ConversationGatewayRuntime', () => {
     expect(fixture.sessions[0]?.lastExecuteOptions.at(-1)).toMatchObject({
       awaitAsyncWork: true,
     });
-    expect(events.find(event => event.kind === 'turn_started')?.payload).toEqual({
+    expect(events.find(event => event.kind === 'turn_started')?.payload).toMatchObject({
       commandKind: 'user_message',
     });
     expect(events.some(event => event.kind === 'final_answer')).toBe(true);
@@ -821,6 +836,7 @@ function createFixture(
     return session as unknown as ConversationSession;
   };
   const fixture = {
+    bodies: new Map<string, string>(),
     executions: [] as string[],
     turnIds: [] as Array<string | null>,
     sessions: [] as FakeConversationSession[],
@@ -884,6 +900,9 @@ function createFixture(
     return session as unknown as ConversationSession;
   };
   fixture.runtime = new ConversationGatewayRuntime({
+    storeResultContent: (_accountId, _conversationId, text) => {
+      fixture.bodies.set(createHash('sha256').update(text).digest('hex'), text);
+    },
     accountId: 'local-default',
     registry: fixture.registry,
     conversations,
@@ -1093,8 +1112,8 @@ function commandText(command: GatewayCommand): string {
   return 'text' in command ? command.text : command.kind;
 }
 
-describe('ConversationGatewayRuntime origin delivery (ADR-0036)', () => {
-  it('publishes turn events targeted only to the originating connection', async () => {
+describe('ConversationGatewayRuntime shared observation (ADR-0043)', () => {
+  it('publishes identical Turn facts to same-Conversation observers', async () => {
     const fixture = createFixture(async (conversationId, command, session) => {
       fixture.executions.push(`${conversationId}:${commandText(command)}`);
       session.output.push(`answer:${commandText(command)}`);
@@ -1130,10 +1149,10 @@ describe('ConversationGatewayRuntime origin delivery (ADR-0036)', () => {
       'result_completed',
       'final_answer',
     ]));
-    expect(kinds(tuiEvents)).toEqual([]);
+    expect(tuiEvents).toEqual(webEvents);
   });
 
-  it('keeps untargeted detailed events durable and history-only', async () => {
+  it('publishes durable background facts with no originating connection', async () => {
     const fixture = createFixture(async (conversationId, command, session) => {
       fixture.executions.push(`${conversationId}:${commandText(command)}`);
       session.output.push(`answer:${commandText(command)}`);
@@ -1154,7 +1173,7 @@ describe('ConversationGatewayRuntime origin delivery (ADR-0036)', () => {
     );
     await receipt.completion;
 
-    expect(liveEvents).toEqual([]);
+    expect(liveEvents.map(event => event.kind)).toEqual(expect.arrayContaining(['turn_started', 'final_answer']));
     const replay = await fixture.journal.replay('local-default', 'conv_1');
     const kinds = [...replay.snapshot, ...replay.deltas].map(event => event.kind);
     expect(kinds).toEqual(expect.arrayContaining(['turn_started', 'final_answer']));
@@ -1181,7 +1200,7 @@ describe('ConversationGatewayRuntime origin delivery (ADR-0036)', () => {
     expect(fixture.executions).toEqual(['conv_1:from-web', 'conv_1:from-tui']);
   });
 
-  it('keeps streaming trace and task projection to the origin after the command returns', async () => {
+  it('keeps streaming shared trace and task projection after the command returns', async () => {
     const fixture = createFixture(async (conversationId, command, session) => {
       fixture.executions.push(`${conversationId}:${commandText(command)}`);
       session.output.push(`answer:${commandText(command)}`);
@@ -1249,7 +1268,7 @@ describe('ConversationGatewayRuntime origin delivery (ADR-0036)', () => {
     });
     expect(tuiEvents.filter(event => (
       event.kind === 'trace_delta' || event.kind === 'task_projection'
-    ))).toEqual([]);
+    ))).toEqual(webEvents.filter(event => event.kind === 'trace_delta' || event.kind === 'task_projection'));
   });
 });
 

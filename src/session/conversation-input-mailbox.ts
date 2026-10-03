@@ -16,7 +16,7 @@ export interface MailboxCommand {
   readonly idempotencyKey: string;
   readonly principalId?: string;
   readonly command?: GatewayCommand;
-  /** 内部实时投递上下文（ADR-0036）；绝不进入公开事件载荷。 */
+  /** 内部请求/通知归因（ADR-0043），不决定观察权限；绝不进入公开事件载荷。 */
   readonly origin?: GatewayTurnOrigin;
 }
 
@@ -51,7 +51,8 @@ const CONTROL_COMMAND_PATTERN = /^\/(?:task\s+(?:clear|cancel|stop|list|show)|cl
  * 2026-09-18 on a live Executor attempt).
  */
 export function isControlCommand(command: MailboxCommand): boolean {
-  if (command.command?.kind === 'cancel_turn') return true;
+  if (command.command?.kind === 'cancel_turn' || command.command?.kind === 'cancel_task'
+    || command.command?.kind === 'permission_resolution' || command.command?.kind === 'permission_resolution_v2') return true;
   return isControlSlashCommand(command);
 }
 

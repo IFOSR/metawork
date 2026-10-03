@@ -77,7 +77,7 @@ export class SkillUsageEventRepo {
         record.createdAt,
       );
       this.recordEffectSummary(record);
-    })();
+    }).immediate();
   }
 
   private recordEffectSummary(record: SkillUsageEventInsert): void {

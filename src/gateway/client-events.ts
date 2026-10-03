@@ -13,6 +13,7 @@ import { GATEWAY_PROTOCOL_VERSION } from './client-protocol.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 
 export type GatewayEventKind =
+  | 'conversation_resource'
   | 'conversation_snapshot'
   | 'workspace_changed'
   | 'workspace_directory_snapshot'
@@ -26,6 +27,8 @@ export type GatewayEventKind =
   | 'task_projection'
   | 'execution_delta'
   | 'permission_request'
+  | 'pending_interactions'
+  | 'command_result'
   | 'artifact'
   | 'result_delivery_available'
   | 'result_chunk'
@@ -38,6 +41,7 @@ export type GatewayEventKind =
   | 'usage_billing_projection';
 
 export const GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
+  'conversation_resource',
   'conversation_snapshot',
   'workspace_changed',
   'workspace_directory_snapshot',
@@ -51,6 +55,8 @@ export const GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
   'task_projection',
   'execution_delta',
   'permission_request',
+  'pending_interactions',
+  'command_result',
   'artifact',
   'result_delivery_available',
   'result_chunk',

@@ -9,7 +9,6 @@ import { parseGatewayClientMessage } from '../../src/gateway/protocol.js';
 
 function makeClient() {
   const submitted: GatewayCommandEnvelope[] = [];
-  const replayed: number[] = [];
   let publish: (event: GatewayEventEnvelope) => void = () => undefined;
   let sequenceCounter = 0;
 
@@ -17,10 +16,6 @@ function makeClient() {
     submit: async envelope => {
       submitted.push(envelope);
       return { requestId: envelope.requestId, status: 'accepted', conversationId: 'conv_1' };
-    },
-    replay: async (_conversationId, afterSequence) => {
-      replayed.push(afterSequence ?? 0);
-      return { lastSequence: 5, snapshot: [], deltas: [] };
     },
     subscribe: listener => {
       publish = listener;
@@ -32,7 +27,7 @@ function makeClient() {
     },
   });
 
-  return { client, submitted, replayed, publish: (kind: string, sequence: number) => {
+  return { client, submitted, publish: (kind: string, sequence: number) => {
     publish({
       protocolVersion: 2,
       eventId: `evt_${sequence}`,
@@ -66,7 +61,7 @@ describe('native TUI gateway client', () => {
     expect(submitted[0].command).toEqual({ kind: 'slash_command', text: '/status' });
   });
 
-  it('renders streamed events and tracks the cursor', () => {
+  it('forwards command events without mixing them with observation cursors', () => {
     const { client, publish } = makeClient();
     const received: string[] = [];
     client.onEvent(event => received.push(event.kind));
@@ -76,22 +71,11 @@ describe('native TUI gateway client', () => {
     publish('final_answer', 3);
 
     expect(received).toEqual(['turn_started', 'trace_delta', 'final_answer']);
-    expect(client.currentSequence).toBe(3);
-  });
 
-  it('resumes from the last cursor', async () => {
-    const { client, replayed } = makeClient();
-
-    await client.resume('conv_1');
-    expect(replayed).toEqual([0]);
-    expect(client.currentSequence).toBe(5);
-
-    await client.resume('conv_1');
-    expect(replayed).toEqual([0, 5]);
   });
 
   it('does not invoke a local semantic AgentSession', () => {
-    // GatewayClient 只依赖 submit/replay/subscribe 端口，没有构造或 import
+    // GatewayClient 只依赖 submit/observe/subscribe 端口，没有构造或 import
     // 本地语义 AgentSession。本测试通过类型边界验证：client 无本地语义依赖。
     const { client } = makeClient();
     expect(client).toBeDefined();

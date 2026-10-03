@@ -235,7 +235,7 @@ export class KernelDispatchItemRepo {
         return persisted;
       });
     });
-    return insert();
+    return insert.immediate();
   }
 
   find(attemptId: string): KernelDispatchItemRecord | null {
@@ -377,7 +377,7 @@ export class KernelDispatchItemRepo {
       `).run(now, now, attemptId).changes;
       return changed === 1 ? this.find(attemptId) : null;
     });
-    return claim();
+    return claim.immediate();
   }
 
   markRunning(attemptId: string, workUnitId: string | null, now: string): boolean {
@@ -417,7 +417,7 @@ export class KernelDispatchItemRepo {
         WHERE attempt_id = ? AND status IN ('launching', 'running', 'uncertain')
       `).run(now, errorSummary, now, attemptId);
     });
-    finish();
+    finish.immediate();
   }
 
   markUncertain(attemptId: string, errorSummary: string, now: string): void {
@@ -537,7 +537,7 @@ export class KernelDispatchItemRepo {
         ORDER BY batch_order, attempt_id
       `).all(...parameters, input.decisionId) as DispatchItemRow[]).map(rowToDispatchItem);
     });
-    return request();
+    return request.immediate();
   }
 
   listCancelling(taskId?: string): KernelDispatchItemRecord[] {

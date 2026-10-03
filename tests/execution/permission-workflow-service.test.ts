@@ -275,9 +275,17 @@ function record(
 
 function inMemoryWorkflowStore(): KernelWorkflowStore {
   let event: KernelEvent | null = null;
+  let accepted: Extract<KernelEvent, { type: 'permission_resolution_received' }> | null = null;
   let application: KernelDecisionApplicationRecord | null = null;
   return {
-    enqueue(next) { event ??= next; return true; },
+    findPermissionResolution() { return accepted; },
+    admitPermissionResolution(next) {
+      if (accepted) return { accepted: false, event: accepted };
+      accepted = next;
+      event = next;
+      return { accepted: true, event: next };
+    },
+    enqueue(next) { if (accepted?.id !== next.id) event ??= next; return true; },
     claimNext() { const next = event; event = null; return next; },
     issue(_eventId, decision) {
       application = {

@@ -11,6 +11,7 @@ export default defineConfig({
     'src/image-api-cli.ts',
     'src/emit-pi-attempt-extension.ts',
     'src/prepare-smoke-configuration.ts',
+    'src/conversation-history-worker.ts',
   ],
   format: ['esm'],
   target: 'node22',

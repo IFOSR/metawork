@@ -2,10 +2,20 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { performance } from 'node:perf_hooks';
 
 type NavigationStage = 'catalog_read' | 'activity_projection' | 'journal_replay'
-  | 'record_read' | 'history_enrichment' | 'directory_read';
-interface StageMeasurement { calls: number; items: number; milliseconds: number }
+  | 'record_read' | 'history_enrichment' | 'directory_read'
+  | 'record_browse_read' | 'history_browse_enrichment'
+  | 'conversation_turn_read' | 'conversation_content_read' | 'journal_segment_read';
+interface StageMeasurement { calls: number; items: number; milliseconds: number; bytes?: number }
 type Measurements = Partial<Record<NavigationStage, StageMeasurement>>;
 const context = new AsyncLocalStorage<Measurements>();
+
+/** Bytes returned by Storage/file reads, distinct from compressed wire bytes or OS cache misses. */
+export function recordNavigationRead(stage: NavigationStage, bytes: number, items = 1): void {
+  const stages = context.getStore();
+  if (!stages) return;
+  const entry = stages[stage] ??= { calls: 0, items: 0, milliseconds: 0, bytes: 0 };
+  entry.calls++; entry.items += items; entry.bytes = (entry.bytes ?? 0) + bytes;
+}
 
 export async function collectNavigationDiagnostics<T>(operation: () => Promise<T>) {
   const stages: Measurements = {};

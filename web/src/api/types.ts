@@ -317,7 +317,7 @@ import type {
 } from './session-types';
 
 export type ServerMessage =
-  | { type: 'hello'; sessionId: string | null }
+  | { type: 'hello'; sessionId: string | null; capabilities?: string[]; identity?: { serverId: string; accountId: string } }
   | { type: 'agent_readiness_state'; agents: AgentReadiness[] }
   | {
       type: 'session_catalog';
@@ -346,6 +346,7 @@ export type ServerMessage =
     workspace: ConversationWorkspaceProjection | null;
   }
   | { type: 'conversation_snapshot'; turn: ConversationTurnProjection }
+  | { type: 'turn_updated'; turn: ConversationTurnProjection }
   | {
     type: 'turn_started';
     requestId: string;
@@ -397,6 +398,14 @@ export type ServerMessage =
     byteLength: number;
     completeness: 'complete' | 'partial' | 'incomplete';
     certification: 'certified' | 'uncertified';
+  }
+  | {
+    type: 'delivery_status';
+    requestId: string;
+    turnId: string;
+    resultId: string;
+    status: import('./session-types').ResultDeliveryStatus;
+    message?: string;
   }
   // from 是 lines[0] 在完整输出中的绝对行号；重连回放 from=0，按下标幂等合并去重。
   | { type: 'output'; from: number; lines: string[] }

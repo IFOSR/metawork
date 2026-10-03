@@ -85,6 +85,8 @@ export type GatewayReadOnlyQuery = Extract<GatewayCommand, {
   kind:
     | 'complete_command'
     | 'get_task_view'
+    | 'get_pending_interactions'
+    | 'get_conversation_resource'
     | 'get_query_bill'
     | 'get_query_bill_for_turn'
     | 'get_task_usage_summary'
@@ -577,6 +579,8 @@ function newWorkAdmissionFor(
 
 function isReadOnlyQuery(command: GatewayCommand): command is GatewayReadOnlyQuery {
   return command.kind === 'complete_command'
+    || command.kind === 'get_conversation_resource'
+    || command.kind === 'get_pending_interactions'
     || command.kind === 'get_task_view'
     || command.kind === 'get_query_bill'
     || command.kind === 'get_query_bill_for_turn'

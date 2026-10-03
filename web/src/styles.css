@@ -4137,7 +4137,9 @@ select {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) repeat(3, auto);
   gap: 8px;
-  margin-bottom: 10px;
+  margin: 0;
+  padding: 12px;
+  border-bottom: 1px solid var(--line-trajectory);
 }
 
 .trajectory-filters input,
@@ -4151,11 +4153,17 @@ select {
   background: var(--surface-trajectory-control);
 }
 
-.trajectory-table {
-  overflow-x: auto;
+.trajectory-table-wrap {
+  overflow: hidden;
   border: 1px solid var(--line-trajectory);
-  border-radius: 9px;
+  border-radius: 10px;
   background: var(--surface-trajectory-panel);
+}
+
+.trajectory-table {
+  position: relative;
+  max-height: min(58vh, 680px);
+  overflow: auto;
 }
 
 .trajectory-row {
@@ -4170,6 +4178,9 @@ select {
 }
 
 .trajectory-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   color: var(--text-trajectory-muted);
   font-family: 'SFMono-Regular', Consolas, monospace;
   text-transform: uppercase;
@@ -4207,12 +4218,44 @@ select {
 }
 
 .trajectory-event pre {
+  max-height: 280px;
   margin: 0;
   padding: 13px 20px 13px 148px;
-  overflow-x: auto;
+  overflow: auto;
   color: var(--text-primary);
   background: var(--surface-trajectory-detail);
   font-size: 10px;
+}
+
+.trajectory-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  border-top: 1px solid var(--line-trajectory);
+  color: var(--text-trajectory-muted);
+  font-size: 10px;
+}
+
+.trajectory-pagination button {
+  padding: 6px 11px;
+  border: 1px solid var(--line-trajectory);
+  border-radius: 6px;
+  color: var(--text-primary);
+  background: var(--surface-trajectory-control);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.trajectory-pagination button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.trajectory-pagination button:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 @media (max-width: 1080px) {
@@ -4328,6 +4371,15 @@ select {
 
   .trajectory-filters {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .trajectory-table {
+    max-height: min(56vh, 520px);
+  }
+
+  .trajectory-pagination {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 

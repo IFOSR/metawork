@@ -2,11 +2,13 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 const root = new URL('../../web/src/', import.meta.url);
+const readShell = async () => (await Promise.all(['App.tsx', 'observation/use-workspace-controller.ts']
+  .map(path => readFile(new URL(path, root), 'utf8')))).join('\n');
 
 describe('Web workspace shell', () => {
   it('renders session navigation, dual views, and a conversation-only composer', async () => {
     const [app, shell, sidebar, selector, header, composer, banner, http, styles] = await Promise.all([
-      readFile(new URL('App.tsx', root), 'utf8'),
+      readShell(),
       readFile(new URL('components/WorkspaceShell.tsx', root), 'utf8'),
       readFile(new URL('components/SessionSidebar.tsx', root), 'utf8'),
       readFile(new URL('components/WorkspaceSelector.tsx', root), 'utf8'),
@@ -47,9 +49,9 @@ describe('Web workspace shell', () => {
     expect(app).toContain('browsedSessionId');
     expect(app).toContain('workspaceSwitching');
     expect(app).toContain('conversationRequestRef');
-    expect(app).toContain('onTurnStarted');
-    expect(app).toContain('onFinalAnswer');
-    expect(app).toContain('onTraceDelta');
+    expect(app).toContain('useConversationTurn');
+    expect(app).toContain('observations.follow(observedId)');
+    expect(app).toContain('<ObservedConversationView');
     expect(app).toContain('activeWorkspace');
     expect(app).toContain('onWorkspaceChanged');
     expect(app).toContain('getAgentReadiness');
@@ -57,10 +59,10 @@ describe('Web workspace shell', () => {
     expect(app).toContain('requiredAgentBlock');
     expect(app).toContain('pendingInputsRef');
     expect(app).toContain('required_agent_unavailable');
-    expect(app).toContain('retainLiveTurnForConversation(liveTurnRef.current, sessionId)');
+    expect(app).not.toContain('liveTurnRef');
     expect(app).toContain("composerVisible={tab === 'conversation' && Boolean(selectedId)}");
     expect(app).toContain('workspace-home');
-    expect(app.indexOf("tab === 'billing'")).toBeLessThan(app.indexOf('!selectedId'));
+    expect(app).toContain('<ObservedTurnDetails');
     expect(http).toContain('/api/workspaces');
     expect(http).toContain('/conversations');
     expect(http).not.toContain('/api/sessions');
@@ -76,7 +78,7 @@ describe('Web workspace shell', () => {
 
   it('creates a Workspace by browsing local directories', async () => {
     const [app, sidebar, selector, creator, http, styles] = await Promise.all([
-      readFile(new URL('App.tsx', root), 'utf8'),
+      readShell(),
       readFile(new URL('components/SessionSidebar.tsx', root), 'utf8'),
       readFile(new URL('components/WorkspaceSelector.tsx', root), 'utf8'),
       readFile(new URL('components/WorkspaceCreator.tsx', root), 'utf8'),
@@ -111,7 +113,7 @@ describe('Web workspace shell', () => {
   });
 
   it('keeps Workspace switching separate from Conversation attachment', async () => {
-    const app = await readFile(new URL('App.tsx', root), 'utf8');
+    const app = await readShell();
     const start = app.indexOf('const handleSelectWorkspace');
     const end = app.indexOf('const handleOpenArtifact');
     const workspaceHandler = app.slice(start, end);
@@ -133,7 +135,7 @@ describe('Web workspace shell', () => {
   });
 
   it('refreshes the currently browsed Conversation after its catalog entry changes', async () => {
-    const app = await readFile(new URL('App.tsx', root), 'utf8');
+    const app = await readShell();
     const start = app.indexOf('onSessionCatalog:');
     const end = app.indexOf('onWorkspaceDirectory:', start);
     const catalogHandler = app.slice(start, end);
@@ -145,34 +147,30 @@ describe('Web workspace shell', () => {
     expect(end).toBeGreaterThan(start);
     expect(catalogHandler).toContain('browsedConversationRef.current');
     expect(catalogHandler).toContain('loadRecord');
-    expect(loadRecord).toContain('isCurrentConversationRecordRequest');
+    expect(loadRecord).toContain('browsedConversationRef.current !== sessionId');
   });
 
-  it('uses the synchronous active Conversation ref when deciding whether attach is required', async () => {
-    const app = await readFile(new URL('App.tsx', root), 'utf8');
+  it('captures navigation immediately without requiring execution attachment', async () => {
+    const app = await readShell();
     const start = app.indexOf('const handleSelectSession');
     const end = app.indexOf('const handleNewSession', start);
     const handler = app.slice(start, end);
 
-    expect(handler).toContain('shouldActivateConversation(sessionId, activeConversationRef.current, conversationNavigationRef.current.target)');
+    expect(handler).toContain('browsedConversationRef.current = sessionId');
+    expect(handler).not.toContain('attachConversation');
     expect(handler).not.toContain('sessionId === activeSessionId');
   });
 
-  it('rolls a completed live Turn into Conversation history before starting the next Turn', async () => {
-    const app = await readFile(new URL('App.tsx', root), 'utf8');
-    const start = app.indexOf('onTurnStarted:');
-    const end = app.indexOf('onTraceSnapshot:', start);
-    const turnStartedHandler = app.slice(start, end);
-
-    expect(start).toBeGreaterThanOrEqual(0);
-    expect(end).toBeGreaterThan(start);
-    expect(turnStartedHandler).toContain('liveTurnRef.current');
-    expect(turnStartedHandler).toContain('retainTerminalLiveTurnInRecord');
+  it('uses the shared entity projection for both historical and running Turns', async () => {
+    const app = await readShell();
+    expect(app).toContain('useConversationWindow');
+    expect(app).toContain('latestObservedTurn');
+    expect(app).not.toContain('retainTerminalLiveTurnInRecord');
   });
 
   it('provides a three-state persisted theme control', async () => {
     const [app, header, control, styles, html] = await Promise.all([
-      readFile(new URL('App.tsx', root), 'utf8'),
+      readShell(),
       readFile(new URL('components/WorkspaceHeader.tsx', root), 'utf8'),
       readFile(new URL('components/ThemeControl.tsx', root), 'utf8'),
       readFile(new URL('styles.css', root), 'utf8'),
@@ -194,7 +192,7 @@ describe('Web workspace shell', () => {
 
   it('opens a right-side document preview drawer without global horizontal overflow', async () => {
     const [app, shell, drawer, link, styles] = await Promise.all([
-      readFile(new URL('App.tsx', root), 'utf8'),
+      readShell(),
       readFile(new URL('components/WorkspaceShell.tsx', root), 'utf8'),
       readFile(new URL('components/ArtifactPreviewDrawer.tsx', root), 'utf8'),
       readFile(new URL('components/ArtifactLink.tsx', root), 'utf8'),
@@ -240,7 +238,7 @@ describe('Web workspace shell', () => {
     const [panel, drawer, app, conversationView, trajectoryView, styles] = await Promise.all([
       readFile(new URL('components/LiveExecutionPanel.tsx', root), 'utf8'),
       readFile(new URL('components/ExecutionDetailDrawer.tsx', root), 'utf8'),
-      readFile(new URL('App.tsx', root), 'utf8'),
+      readShell(),
       readFile(new URL('components/ConversationView.tsx', root), 'utf8'),
       readFile(new URL('components/TrajectoryView.tsx', root), 'utf8'),
       readFile(new URL('styles.css', root), 'utf8'),
@@ -258,7 +256,7 @@ describe('Web workspace shell', () => {
     // App 维护 executionDetail 状态，与文档预览抽屉互斥复用右侧槽位。
     expect(app).toContain('setExecutionDetail');
     expect(app).toContain('executionDetailOpen');
-    expect(app).toContain('<ExecutionDetailDrawer');
+    expect(app).toContain('<ObservedExecutionDetail');
     expect(app).toContain("event.key === 'Escape'");
     expect(app).toContain('setExecutionDetail(null)');
     // 对话与轨迹都传入 onOpenSubtaskDetail。

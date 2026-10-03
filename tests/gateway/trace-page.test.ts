@@ -48,7 +48,7 @@ async function fileFixture(): Promise<FileEventJournal> {
   return new FileEventJournal(root);
 }
 
-async function segmentedFixture(): Promise<SegmentedEventJournal> {
+async function segmentedFixture() {
   const root = await mkdtemp(join(tmpdir(), 'trace-page-segmented-'));
   const db = new Database(join(root, 'index.db'));
   runMigrations(db);
@@ -56,7 +56,7 @@ async function segmentedFixture(): Promise<SegmentedEventJournal> {
   const legacy = new FileEventJournal(root);
   const journal = new SegmentedEventJournal(root, index, legacy);
   cleanups.push(async () => { await journal.close(); db.close(); await rm(root, { recursive: true, force: true }); });
-  return journal;
+  return { journal, db, index, root };
 }
 
 async function assertPages(journal: EventJournal): Promise<void> {
@@ -73,6 +73,9 @@ async function assertPages(journal: EventJournal): Promise<void> {
   expect(first.nextCursor).toBeTruthy();
   const repeated = await journal.readTracePage!('local-default', 'conv_trace', 'turn_trace', first.nextCursor!, 2);
   expect(repeated.events.map(event => event.id)).toEqual(['trace_3', 'trace_4']);
+  const recent = await journal.readTracePage!('local-default', 'conv_trace', 'turn_trace', undefined, 2, true);
+  expect(recent.events.map(event => event.id)).toEqual(['trace_8', 'trace_9']);
+  expect(recent.nextCursor).toBeNull();
   await expect(journal.readTracePage!('local-default', 'conv_trace', 'turn_trace', '1', 2))
     .rejects.toThrow('invalid_trace_cursor');
 }
@@ -83,6 +86,68 @@ describe('trace page cursors', () => {
   });
 
   it('replays every SegmentedEventJournal trace exactly once across pages', async () => {
-    await assertPages(await segmentedFixture());
+    await assertPages((await segmentedFixture()).journal);
+  });
+
+  it('reads indexed pages without opening historical segment files, including after compaction', async () => {
+    const { journal, index, root } = await segmentedFixture();
+    for (let n = 1; n <= 12; n++) await journal.append(traceDelta(n));
+    await journal.compact('local-default', 'conv_trace');
+    for (const segment of index.segments('local-default', 'conv_trace', 0)) {
+      await rm(join(root, 'local-default', 'conv_trace.segments', `${segment.id}.json`));
+    }
+    const page = await journal.readTracePage('local-default', 'conv_trace', 'turn_trace', undefined, 3);
+    expect(page.events.map(event => event.id)).toEqual(['trace_1', 'trace_2', 'trace_3']);
+    expect(page.preparing).toBeUndefined();
+    expect(page.nextCursor).toBeTruthy();
+    const recent = await journal.readTracePage('local-default', 'conv_trace', 'turn_trace', undefined, 3, true);
+    expect(recent.events.map(event => event.id)).toEqual(['trace_10', 'trace_11', 'trace_12']);
+  });
+
+  it('rebuilds schema-46 trace history off the read path without overwriting a newer live update', async () => {
+    const { journal, db } = await segmentedFixture();
+    await journal.append(traceDelta(1));
+    db.exec(`DROP TABLE gateway_trace_read_events; DROP TABLE gateway_trace_read_heads;
+      UPDATE schema_version SET version = 46;`);
+    runMigrations(db);
+    const initial = await journal.readTracePage('local-default', 'conv_trace', 'turn_trace');
+    expect(initial.events).toEqual([]);
+    expect(initial.preparing).toBe(true);
+    const newer = traceDelta(1);
+    await journal.append({ ...newer, eventId: 'updated', payload: {
+      events: [{ id: 'trace_1', eventKey: 'source:1', sequence: 1, title: 'Updated' }],
+    } });
+    await journal.maintain('local-default', 'conv_trace');
+    await journal.maintain('local-default', 'conv_trace');
+    const rebuilt = await journal.readTracePage('local-default', 'conv_trace', 'turn_trace');
+    expect(rebuilt.events).toHaveLength(1);
+    expect(rebuilt.events[0]!.title).toBe('Updated');
+    expect(rebuilt.preparing).toBeUndefined();
+  });
+
+  it('commits trace values and source checkpoint atomically with the journal', async () => {
+    const { journal, db, index } = await segmentedFixture();
+    await journal.append(traceDelta(1));
+    db.exec(`CREATE TRIGGER reject_journal_commit BEFORE UPDATE ON gateway_journal_streams
+      WHEN NEW.last_sequence > 1 BEGIN SELECT RAISE(ABORT, 'simulated_crash'); END;`);
+    await expect(journal.append(traceDelta(2))).rejects.toThrow('simulated_crash');
+    const page = await journal.readTracePage('local-default', 'conv_trace', 'turn_trace');
+    expect(page.events.map(event => event.id)).toEqual(['trace_1']);
+    expect(index.traceCheckpoint('local-default', 'conv_trace')).toBe(1);
+  });
+
+  it('keeps tied sequence and event keys pageable using the event identity', async () => {
+    const { journal } = await segmentedFixture();
+    await journal.append({ ...traceDelta(1), payload: {
+      events: ['a', 'b', 'c'].map(id => ({ id, sequence: 1, eventKey: 'same', title: id })),
+    } });
+    let cursor: string | undefined;
+    const ids: unknown[] = [];
+    do {
+      const page = await journal.readTracePage('local-default', 'conv_trace', 'turn_trace', cursor, 1);
+      ids.push(...page.events.map(event => event.id));
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    expect(ids).toEqual(['a', 'b', 'c']);
   });
 });

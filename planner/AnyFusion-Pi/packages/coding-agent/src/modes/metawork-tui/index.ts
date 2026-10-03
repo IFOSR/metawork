@@ -8,18 +8,15 @@
 
 import { ProcessTerminal, TUI } from "@earendil-works/pi-tui";
 import { GatewayClient } from "../../anyfusion/gateway-client.ts";
-import { GatewaySocketTransport } from "../../anyfusion/gateway-socket-transport.ts";
 import {
 	GATEWAY_CAPABILITY_COMMAND_COMPLETION,
 	GATEWAY_CAPABILITY_TASK_VIEW,
 } from "../../anyfusion/gateway-protocol.ts";
+import { GatewaySocketTransport } from "../../anyfusion/gateway-socket-transport.ts";
 import { initTheme, stopThemeWatcher } from "../interactive/theme/theme.ts";
 import { MetaWorkTuiApp } from "./app.ts";
 import { MetaWorkTuiController } from "./controller.ts";
-import {
-	createFilePreferencesStore,
-	resolvePreferencesPath,
-} from "./preferences.ts";
+import { createFilePreferencesStore, resolvePreferencesPath } from "./preferences.ts";
 
 export interface RunMetaWorkTuiInput {
 	readonly socketPath: string;
@@ -34,6 +31,9 @@ export interface RunMetaWorkTuiInput {
 export const METAWORK_TUI_REQUIRED_CAPABILITIES: readonly string[] = [
 	GATEWAY_CAPABILITY_COMMAND_COMPLETION,
 	GATEWAY_CAPABILITY_TASK_VIEW,
+	"conversation_observation_v1",
+	"conversation_resources_v1",
+	"multi_client_control_v1",
 ];
 
 export async function runMetaWorkTui(input: RunMetaWorkTuiInput): Promise<void> {
@@ -49,12 +49,12 @@ export async function runMetaWorkTui(input: RunMetaWorkTuiInput): Promise<void> 
 		conversationId: input.conversationId,
 		workspaceHint: input.workspaceHint,
 		requiredCapabilities: METAWORK_TUI_REQUIRED_CAPABILITIES,
-		onStateChange: view => app?.handleView(view),
+		onStateChange: (view) => app?.handleView(view),
 		onExit: () => stop(),
 	});
 	let stopped = false;
 	let finish!: () => void;
-	const completed = new Promise<void>(resolve => {
+	const completed = new Promise<void>((resolve) => {
 		finish = resolve;
 	});
 	const stop = () => {

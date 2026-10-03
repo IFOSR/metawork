@@ -4,6 +4,9 @@
 // 客户端与服务端事件协议漂移。
 
 export type GatewayEventKind =
+  | 'conversation_resource'
+  | 'pending_interactions'
+  | 'command_result'
   | 'conversation_snapshot'
   | 'workspace_changed'
   | 'workspace_directory_snapshot'
@@ -29,6 +32,9 @@ export type GatewayEventKind =
   | 'usage_billing_projection';
 
 export const GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
+  'conversation_resource',
+  'pending_interactions',
+  'command_result',
   'conversation_snapshot',
   'workspace_changed',
   'workspace_directory_snapshot',

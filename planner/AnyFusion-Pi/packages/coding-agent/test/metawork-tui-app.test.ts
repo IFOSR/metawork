@@ -3,25 +3,23 @@
  */
 
 import { stripVTControlCharacters } from "node:util";
+import { ProcessTerminal, type Terminal, TUI } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { ProcessTerminal, TUI, type Terminal } from "@earendil-works/pi-tui";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { MetaWorkTuiApp } from "../src/modes/metawork-tui/app.ts";
-import { MetaWorkEditor, METAWORK_TUI_KEYS } from "../src/modes/metawork-tui/components/editor.ts";
-import { MetaWorkPermissionPanel } from "../src/modes/metawork-tui/components/permission-panel.ts";
-import {
-	MetaWorkTuiController,
-	type MetaWorkTuiGatewayPort,
-} from "../src/modes/metawork-tui/controller.ts";
 import type {
 	GatewayCommand,
 	GatewayCommandEnvelope,
 	GatewayCommandReceipt,
 	GatewayEventEnvelope,
-	GatewayReplay,
 	GatewayScope,
 } from "../src/anyfusion/gateway-protocol.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { MetaWorkTuiApp } from "../src/modes/metawork-tui/app.ts";
+import { METAWORK_TUI_KEYS, MetaWorkEditor } from "../src/modes/metawork-tui/components/editor.ts";
+import { MetaWorkPermissionPanel } from "../src/modes/metawork-tui/components/permission-panel.ts";
+import { MetaWorkTuiController, type MetaWorkTuiGatewayPort } from "../src/modes/metawork-tui/controller.ts";
 import { createFilePreferencesStore } from "../src/modes/metawork-tui/preferences.ts";
+
+import { ObservationFixture, turn } from "./helpers/observation-fixture.ts";
 
 beforeAll(() => initTheme("dark"));
 
@@ -65,19 +63,36 @@ class FakeTerminal implements Terminal {
 function fakeGateway() {
 	let counter = 0;
 	let listener: (event: GatewayEventEnvelope) => void = () => undefined;
+	const observed = new ObservationFixture();
 	const gateway: MetaWorkTuiGatewayPort = {
+		followConversation: async (id, callback) => observed.follow(id, callback),
+		queryConversationResource: async () => ({ turns: [], nextCursor: null }),
+		applyConversationPage: (id, page) => observed.set(id, page),
 		connect: async () => undefined,
-		onEvent: next => {
+		onEvent: (next) => {
 			listener = next;
 			return () => undefined;
 		},
-		resume: async (): Promise<GatewayReplay> => ({ lastSequence: 0, snapshot: [], deltas: [] }),
-		createConversation: async (): Promise<GatewayCommandReceipt> => ({ requestId: "r", status: "accepted", conversationId: "conv_1" }),
-		attachConversation: async (conversationId): Promise<GatewayCommandReceipt> => ({ requestId: "r", status: "accepted", conversationId }),
-		listWorkspaceConversations: async (): Promise<GatewayCommandReceipt> => ({ requestId: "r", status: "accepted", conversationId: null }),
-		getConversationHistory: async (): Promise<GatewayCommandReceipt> => ({ requestId: "r", status: "accepted", conversationId: "conv_1" }),
-		completeCommand: async (): Promise<GatewayCommandReceipt> => ({ requestId: "r", status: "accepted", conversationId: null }),
-		getTaskView: async (conversationId): Promise<GatewayCommandReceipt> => ({ requestId: "r", status: "accepted", conversationId }),
+		createConversation: async (): Promise<GatewayCommandReceipt> => ({
+			requestId: "r",
+			status: "accepted",
+			conversationId: "conv_1",
+		}),
+		listWorkspaceConversations: async (): Promise<GatewayCommandReceipt> => ({
+			requestId: "r",
+			status: "accepted",
+			conversationId: null,
+		}),
+		completeCommand: async (): Promise<GatewayCommandReceipt> => ({
+			requestId: "r",
+			status: "accepted",
+			conversationId: null,
+		}),
+		getTaskView: async (conversationId): Promise<GatewayCommandReceipt> => ({
+			requestId: "r",
+			status: "accepted",
+			conversationId,
+		}),
 		buildEnvelope: async (command: GatewayCommand, scope: GatewayScope): Promise<GatewayCommandEnvelope> => {
 			counter += 1;
 			return {
@@ -100,13 +115,20 @@ function fakeGateway() {
 			status: "duplicate",
 			conversationId: "conv_1",
 		}),
-		initializeWorkspace: async (): Promise<GatewayCommandReceipt> => ({ requestId: "r", status: "accepted", conversationId: null }),
+		initializeWorkspace: async (): Promise<GatewayCommandReceipt> => ({
+			requestId: "r",
+			status: "accepted",
+			conversationId: null,
+		}),
 		serverCapabilities: ["command_completion_v1", "task_view_v1"],
 		dispose: () => undefined,
 	};
 	return {
 		gateway,
-		emit: (event: GatewayEventEnvelope) => listener(event),
+		observed,
+		emit: (event: GatewayEventEnvelope) => {
+			if (!observed.scenario(event)) listener(event);
+		},
 	};
 }
 
@@ -128,7 +150,7 @@ function event(sequence: number, kind: string, payload: unknown, turnId: string 
 describe("metawork-tui editor key semantics", () => {
 	function createEditor() {
 		const ui = new TUI(new FakeTerminal());
-		const editor = new MetaWorkEditor(ui, { borderColor: text => text, selectList: {} as never });
+		const editor = new MetaWorkEditor(ui, { borderColor: (text) => text, selectList: {} as never });
 		const actions = {
 			onExit: vi.fn(),
 			onEscape: vi.fn(() => true),
@@ -213,8 +235,12 @@ describe("metawork-tui app startup", () => {
 		const ui = new TUI(terminal);
 		const { gateway } = fakeGateway();
 		const controller = new MetaWorkTuiController({ gateway });
-		const app = new MetaWorkTuiApp({ ui, controller,
-			preferences: createFilePreferencesStore("/tmp/unused-prefs.json"), onExit: () => undefined });
+		const app = new MetaWorkTuiApp({
+			ui,
+			controller,
+			preferences: createFilePreferencesStore("/tmp/unused-prefs.json"),
+			onExit: () => undefined,
+		});
 		try {
 			app.start();
 			expect(terminal.chunks.join("")).toContain("\x1b[?1000h\x1b[?1006h");
@@ -223,7 +249,9 @@ describe("metawork-tui app startup", () => {
 			expect(app["editor"].getText()).toBe("");
 			app.stop();
 			expect(terminal.chunks.join("")).toContain("\x1b[?1006l\x1b[?1000l");
-		} finally { ui.stop(); }
+		} finally {
+			ui.stop();
+		}
 	});
 
 	it.each([
@@ -238,9 +266,13 @@ describe("metawork-tui app startup", () => {
 		const { gateway, emit } = fakeGateway();
 		const submit = vi.spyOn(gateway, "submitEnvelope");
 		let app: MetaWorkTuiApp;
-		const controller = new MetaWorkTuiController({ gateway, onStateChange: view => app?.handleView(view) });
-		app = new MetaWorkTuiApp({ ui, controller,
-			preferences: createFilePreferencesStore("/tmp/unused-prefs.json"), onExit: () => undefined });
+		const controller = new MetaWorkTuiController({ gateway, onStateChange: (view) => app?.handleView(view) });
+		app = new MetaWorkTuiApp({
+			ui,
+			controller,
+			preferences: createFilePreferencesStore("/tmp/unused-prefs.json"),
+			onExit: () => undefined,
+		});
 		try {
 			app.start();
 			await controller.start();
@@ -261,60 +293,92 @@ describe("metawork-tui app startup", () => {
 			expect(app["root"].render(120).join("\n")).toContain("ROW_79");
 			expect(controller.getView().client.ui.drafts.conv_1).toBe("draft");
 			expect(submit).not.toHaveBeenCalled();
-		} finally { controller.stop(); ui.stop(); }
+		} finally {
+			controller.stop();
+			ui.stop();
+		}
 	});
 
-	it.each([80, 120])("keeps a bounded viewport at %i columns and pages without losing editor focus", async columns => {
-		const terminal = new FakeTerminal();
-		terminal.columns = columns;
-		terminal.rows = 24;
-		const ui = new TUI(terminal);
-		const { gateway, emit } = fakeGateway();
-		let app: MetaWorkTuiApp;
-		const controller = new MetaWorkTuiController({ gateway, onStateChange: view => app?.handleView(view) });
-		app = new MetaWorkTuiApp({ ui, controller,
-			preferences: createFilePreferencesStore("/tmp/unused-prefs.json"), onExit: () => undefined });
-		try {
-			app.start();
-			await controller.start();
-			await controller.attachConversation("conv_1", false);
-			emit(event(1, "turn_started", { commandKind: "user_message" }, "turn_1"));
-			emit(event(2, "final_answer", { lines: Array.from({ length: 80 }, (_, i) => `ROW_${i}\n`) }, "turn_1"));
-			const bottom = app["root"].render(columns);
-			expect(bottom.length).toBeLessThanOrEqual(24);
-			expect(bottom.join("\n")).toContain("ROW_79");
-			if (columns === 120) expect(bottom.join("\n")).toContain("Task Dashboard");
-			for (let i = 0; i < 20; i += 1) terminal.press("\x1b[5~");
-			const top = app["root"].render(columns);
-			expect(top.join("\n")).toContain("ROW_0");
-			terminal.press("draft");
-			expect(controller.getView().client.ui.drafts.conv_1).toBe("draft");
-		} finally { controller.stop(); ui.stop(); }
-	});
+	it.each([80, 120])(
+		"keeps a bounded viewport at %i columns and pages without losing editor focus",
+		async (columns) => {
+			const terminal = new FakeTerminal();
+			terminal.columns = columns;
+			terminal.rows = 24;
+			const ui = new TUI(terminal);
+			const { gateway, emit } = fakeGateway();
+			let app: MetaWorkTuiApp;
+			const controller = new MetaWorkTuiController({ gateway, onStateChange: (view) => app?.handleView(view) });
+			app = new MetaWorkTuiApp({
+				ui,
+				controller,
+				preferences: createFilePreferencesStore("/tmp/unused-prefs.json"),
+				onExit: () => undefined,
+			});
+			try {
+				app.start();
+				await controller.start();
+				await controller.attachConversation("conv_1", false);
+				emit(event(1, "turn_started", { commandKind: "user_message" }, "turn_1"));
+				emit(event(2, "final_answer", { lines: Array.from({ length: 80 }, (_, i) => `ROW_${i}\n`) }, "turn_1"));
+				const bottom = app["root"].render(columns);
+				expect(bottom.length).toBeLessThanOrEqual(24);
+				expect(bottom.join("\n")).toContain("ROW_79");
+				if (columns === 120) expect(bottom.join("\n")).toContain("Task Dashboard");
+				for (let i = 0; i < 20; i += 1) terminal.press("\x1b[5~");
+				const top = app["root"].render(columns);
+				expect(top.join("\n")).toContain("ROW_0");
+				terminal.press("draft");
+				expect(controller.getView().client.ui.drafts.conv_1).toBe("draft");
+			} finally {
+				controller.stop();
+				ui.stop();
+			}
+		},
+	);
 
 	it("opens the directory from input and attaches the selected Conversation with Enter", async () => {
 		const terminal = new FakeTerminal();
 		const ui = new TUI(terminal);
 		const { gateway, emit } = fakeGateway();
-		const attach = vi.spyOn(gateway, "attachConversation");
+		const attach = vi.spyOn(gateway, "followConversation");
 		let app: MetaWorkTuiApp;
-		const controller = new MetaWorkTuiController({ gateway, onStateChange: view => app?.handleView(view) });
-		app = new MetaWorkTuiApp({ ui, controller,
-			preferences: createFilePreferencesStore("/tmp/unused-prefs.json"), onExit: () => undefined });
+		const controller = new MetaWorkTuiController({ gateway, onStateChange: (view) => app?.handleView(view) });
+		app = new MetaWorkTuiApp({
+			ui,
+			controller,
+			preferences: createFilePreferencesStore("/tmp/unused-prefs.json"),
+			onExit: () => undefined,
+		});
 		try {
 			app.start();
 			await controller.start();
-			emit(event(1, "workspace_directory_snapshot", {
-				workspaceId: "ws_1", workspace: { id: "ws_1", path: "/repo" },
-				page: { items: [{ conversationId: "conv_1", workspaceId: "ws_1",
-					title: "Existing conversation", preview: "", updatedAt: "2026-09-20T00:00:00Z" }] },
-			}));
+			emit(
+				event(1, "workspace_directory_snapshot", {
+					workspaceId: "ws_1",
+					workspace: { id: "ws_1", path: "/repo" },
+					page: {
+						items: [
+							{
+								conversationId: "conv_1",
+								workspaceId: "ws_1",
+								title: "Existing conversation",
+								preview: "",
+								updatedAt: "2026-09-20T00:00:00Z",
+							},
+						],
+					},
+				}),
+			);
 			await controller.submit("/conversations");
 			terminal.press("\r");
-			await new Promise(resolve => setTimeout(resolve, 30));
-			expect(attach).toHaveBeenCalledWith("conv_1");
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			expect(attach).toHaveBeenCalledWith("conv_1", expect.any(Function));
 			expect(controller.getView().conversationSelectorOpen).toBe(false);
-		} finally { controller.stop(); ui.stop(); }
+		} finally {
+			controller.stop();
+			ui.stop();
+		}
 	});
 
 	it("queries Task facts through the real F6 action", async () => {
@@ -324,9 +388,13 @@ describe("metawork-tui app startup", () => {
 		const { gateway, emit } = fakeGateway();
 		const query = vi.spyOn(gateway, "getTaskView");
 		let app: MetaWorkTuiApp;
-		const controller = new MetaWorkTuiController({ gateway, onStateChange: view => app?.handleView(view) });
-		app = new MetaWorkTuiApp({ ui, controller,
-			preferences: createFilePreferencesStore("/tmp/unused-prefs.json"), onExit: () => undefined });
+		const controller = new MetaWorkTuiController({ gateway, onStateChange: (view) => app?.handleView(view) });
+		app = new MetaWorkTuiApp({
+			ui,
+			controller,
+			preferences: createFilePreferencesStore("/tmp/unused-prefs.json"),
+			onExit: () => undefined,
+		});
 		try {
 			app.start();
 			await controller.start();
@@ -334,9 +402,12 @@ describe("metawork-tui app startup", () => {
 			emit(event(1, "turn_started", { commandKind: "user_message" }, "turn_1"));
 			emit(event(2, "trace_delta", { turnId: "turn_1", taskId: "task_1", events: [] }, "turn_1"));
 			terminal.press(METAWORK_TUI_KEYS.taskPanel[0]);
-			await new Promise(resolve => setTimeout(resolve, 20));
+			await new Promise((resolve) => setTimeout(resolve, 20));
 			expect(query).toHaveBeenCalledWith("conv_1", "turn_1", "task_1");
-		} finally { controller.stop(); ui.stop(); }
+		} finally {
+			controller.stop();
+			ui.stop();
+		}
 	});
 
 	it("renders the single TUI tree with header, conversation and editor", async () => {
@@ -347,7 +418,7 @@ describe("metawork-tui app startup", () => {
 		const controller = new MetaWorkTuiController({
 			gateway,
 			requiredCapabilities: ["command_completion_v1", "task_view_v1"],
-			onStateChange: view => app?.handleView(view),
+			onStateChange: (view) => app?.handleView(view),
 			onExit: () => undefined,
 		});
 		app = new MetaWorkTuiApp({
@@ -360,15 +431,28 @@ describe("metawork-tui app startup", () => {
 			app.start();
 			await controller.start();
 			app.handleView(controller.getView());
-			emit(event(1, "workspace_directory_snapshot", {
-				workspaceId: "ws_1",
-				workspace: { id: "ws_1", path: "/repo", displayName: "repo", availability: "available" },
-				page: { items: [{ conversationId: "conv_1", workspaceId: "ws_1", title: "会话一", preview: "", updatedAt: "2026-09-19T00:00:00.000Z" }], nextCursor: null },
-			}));
+			emit(
+				event(1, "workspace_directory_snapshot", {
+					workspaceId: "ws_1",
+					workspace: { id: "ws_1", path: "/repo", displayName: "repo", availability: "available" },
+					page: {
+						items: [
+							{
+								conversationId: "conv_1",
+								workspaceId: "ws_1",
+								title: "会话一",
+								preview: "",
+								updatedAt: "2026-09-19T00:00:00.000Z",
+							},
+						],
+						nextCursor: null,
+					},
+				}),
+			);
 			await controller.attachConversation("conv_1", false);
 			emit(event(2, "turn_started", { commandKind: "user_message" }, "turn_1"));
 			emit(event(3, "final_answer", { lines: ["已完成分析"] }, "turn_1"));
-			await new Promise(resolve => setTimeout(resolve, 60));
+			await new Promise((resolve) => setTimeout(resolve, 60));
 
 			const output = terminal.output();
 			expect(output).toContain("MetaWork");
@@ -384,4 +468,158 @@ describe("metawork-tui app startup", () => {
 	it("keeps ProcessTerminal importable for production wiring", () => {
 		expect(typeof ProcessTerminal).toBe("function");
 	});
+});
+
+describe("workspace task switching through the terminal", () => {
+	it.each([80, 120])(
+		"selects parallel, queued and old-Turn tasks on a %i-column terminal",
+		async (columns) => {
+			const terminal = new FakeTerminal();
+			terminal.columns = columns;
+			const ui = new TUI(terminal);
+			const { gateway, observed, emit } = fakeGateway();
+			const tasks = [
+				{ conversationId: "a", taskId: "a1", phase: "executing" },
+				{ conversationId: "b", taskId: "b1", phase: "executing" },
+				{ conversationId: "b", taskId: "b2", phase: "queued" },
+				{ conversationId: "c", taskId: "c1", phase: "blocked" },
+			];
+			const activity = (id: string) => ({
+				tasks: tasks
+					.filter((task) => task.conversationId === id)
+					.map((task) => ({
+						...task,
+						title: `任务 ${task.taskId}`,
+						executionGeneration: "g",
+						explanation: "",
+						canCancel: true,
+					})),
+				nextCursor: null,
+				pendingInteractions: [],
+			});
+			for (const id of ["a", "b", "c"])
+				observed.set(id, {
+					turns: [
+						{
+							...turn(id, `recent_${id}`),
+							taskId: id === "b" ? "b2" : `${id}1`,
+							userInput: `提问 ${id}`,
+							answer: `当前进展 ${id}`,
+						},
+					],
+					activity: activity(id),
+				});
+			const read = vi.spyOn(gateway, "queryConversationResource").mockImplementation(async (command) => {
+				if (command.resource === "activity") return activity(command.conversationId);
+				if (command.resource === "locate")
+					return {
+						turns: [
+							{
+								...turn(command.conversationId, `original_${command.taskId}`),
+								taskId: command.taskId!,
+								answer: `执行过程 ${command.taskId}`,
+							},
+						],
+						nextCursor: null,
+					};
+				return {};
+			});
+			const submit = vi.spyOn(gateway, "submitEnvelope");
+			let app: MetaWorkTuiApp;
+			const controller = new MetaWorkTuiController({ gateway, onStateChange: (view) => app?.handleView(view) });
+			app = new MetaWorkTuiApp({
+				ui,
+				controller,
+				preferences: createFilePreferencesStore("/tmp/unused-task-prefs"),
+				onExit: () => undefined,
+			});
+			try {
+				app.start();
+				await controller.start();
+				emit(
+					event(1, "workspace_directory_snapshot", {
+						workspaceId: "ws",
+						workspace: { id: "ws", path: "/repo" },
+						page: {
+							items: ["a", "b", "c"].map((id) => ({
+								conversationId: id,
+								workspaceId: "ws",
+								title: `会话 ${id}`,
+								preview: "",
+								updatedAt: "2026-10-03T00:00:00Z",
+								activity: { state: "executing", taskId: `${id}1`, updatedAt: "" },
+							})),
+							nextCursor: null,
+						},
+					}),
+				);
+				await controller.attachConversation("a");
+				terminal.press("保留草稿");
+				await vi.waitFor(() => expect(controller.getView().taskOverview.rows).toHaveLength(4), { timeout: 5_000 });
+				terminal.press(METAWORK_TUI_KEYS.taskPanel[0]);
+				await new Promise((resolve) => setTimeout(resolve, 30));
+				expect(terminal.output()).toContain("执行中 2");
+				terminal.press("\x1b[B");
+				terminal.press("\r");
+				await vi.waitFor(() => expect(controller.getView().selectedTurnId).toBe("original_b1"));
+				expect(controller.getView().conversationId).toBe("b");
+				expect(controller.getView().selectedTurn?.answer).toBe("执行过程 b1");
+				expect(controller.getView().client.ui.drafts.a).toBe("保留草稿");
+				expect(controller.getView().taskPanelOpen).toBe(false);
+				terminal.press("另一个草稿");
+				terminal.press(METAWORK_TUI_KEYS.taskPanel[0]);
+				await new Promise((resolve) => setTimeout(resolve, 30));
+				terminal.press("\x1b[B");
+				terminal.press("\r");
+				await vi.waitFor(() => expect(controller.getView().selectedTurnId).toBe("original_b2"));
+				expect(controller.getView().selectedTurn?.taskId).toBe("b2");
+				// A background status update must not steal the selected Task or draft.
+				tasks[0]!.phase = "blocked";
+				observed.set("b", { activity: activity("b") });
+				await vi.waitFor(() => expect(controller.getView().taskOverview.rows[0]?.phase).toBe("blocked"), {
+					timeout: 5_000,
+				});
+				expect(controller.getView().selectedTurnId).toBe("original_b2");
+				expect(controller.getView().client.ui.drafts.b).toBe("另一个草稿");
+				terminal.press(METAWORK_TUI_KEYS.taskPanel[0]);
+				await new Promise((resolve) => setTimeout(resolve, 30));
+				terminal.press("\x1b[A");
+				terminal.press("\x1b[A");
+				terminal.press("\r");
+				await vi.waitFor(() => expect(controller.getView().selectedTurnId).toBe("original_a1"));
+				expect(controller.getView().client.ui.drafts.a).toBe("保留草稿");
+				expect(read).toHaveBeenCalledWith(
+					expect.objectContaining({ resource: "locate", taskId: "b1", conversationId: "b" }),
+				);
+				if (columns === 120) {
+					await new Promise((resolve) => setTimeout(resolve, 30));
+					terminal.press("\x1b[<0;119;10M");
+					await vi.waitFor(() => expect(controller.getView().selectedTurnId).toBe("original_b1"));
+				}
+				await controller.attachConversation("b");
+				const normalRead = read.getMockImplementation()!;
+				let release!: (value: unknown) => void;
+				read.mockImplementation((command) =>
+					command.resource === "locate" && command.taskId === "b1"
+						? new Promise((resolve) => {
+								release = resolve;
+							})
+						: normalRead(command),
+				);
+				const firstRow = controller.getView().taskOverview.rows.find((row) => row.taskId === "b1")!;
+				const secondRow = controller.getView().taskOverview.rows.find((row) => row.taskId === "b2")!;
+				const stale = controller.openOverviewTask(firstRow);
+				await controller.openOverviewTask(secondRow);
+				release({ turns: [{ ...turn("b", "stale_b1"), taskId: "b1" }], nextCursor: null });
+				await stale;
+				expect(controller.getView().selectedTurnId).toBe("original_b2");
+				expect(submit).not.toHaveBeenCalled();
+			} finally {
+				controller.stop();
+				app.stop();
+				ui.stop();
+			}
+		},
+		15_000,
+	);
 });

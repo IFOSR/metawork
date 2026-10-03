@@ -181,7 +181,7 @@ export class SqliteMeteringStore implements MeteringStore {
         }).changes;
       }
       return inserted;
-    })();
+    }).immediate();
   }
 
   listObservations(queryId: string): PersistedUsageObservation[] {
@@ -257,7 +257,7 @@ export class SqliteMeteringStore implements MeteringStore {
           now,
         );
       }
-    })();
+    }).immediate();
   }
 
   listIssues(queryId: string): Array<NormalizationIssue & { queryId: string }> {

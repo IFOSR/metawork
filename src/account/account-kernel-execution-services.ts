@@ -167,7 +167,7 @@ export function buildAccountKernelExecutionServices(deps: {
     workspaceRepository: deps.workspaceRepository,
     generationReplanRepo: deps.generationReplanRepo,
     retryWakeRepo: deps.retryWakeRepo,
-    runInTransaction: <T>(operation: () => T) => deps.db.transaction(operation)(),
+    runInTransaction: <T>(operation: () => T) => deps.db.transaction(operation).immediate(),
     cancellationCoordinator: deps.cancellationCoordinator,
     executionProgressService: deps.executionProgressService,
     verificationAndDeliveryService: deps.verificationAndDeliveryService,

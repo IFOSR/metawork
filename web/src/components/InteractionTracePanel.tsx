@@ -158,7 +158,7 @@ export function InteractionTracePanel({
               </div>
               {(subtask.harness || subtask.provider || subtask.model) && (
                 <small>
-                  [subtask.harnessDisplayName || subtask.harness,
+                  {[subtask.harnessDisplayName || subtask.harness,
                     subtask.providerDisplayName || subtask.provider,
                     subtask.modelDisplayName || subtask.model].filter(Boolean).join(' · ')}
                 </small>

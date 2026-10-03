@@ -4,30 +4,15 @@
  * 事件中心按已授权账户与可选会话过滤发布。订阅只接收授权范围内的事件。
  */
 
-import type { GatewayEventEnvelope, GatewayEventKind } from './client-events.js';
+import type { GatewayEventEnvelope } from './client-events.js';
 import type { GatewayTurnOrigin } from './gateway-delivery-context.js';
-
-const ORIGIN_SCOPED_EVENT_KINDS = new Set<GatewayEventKind>([
-  'conversation_snapshot',
-  'conversation_history_page',
-  'turn_started',
-  'trace_delta',
-  'task_projection',
-  'execution_delta',
-  'permission_request',
-  'artifact',
-  'result_delivery_available',
-  'result_chunk',
-  'result_completed',
-  'final_answer',
-  'terminal_error',
-  'delivery_status',
-]);
 
 export interface GatewaySubscription {
   readonly accountId: string;
   readonly conversationId: string | null;
   readonly liveConnectionId?: string;
+  /** External notifications select destinations separately from observation rights. */
+  readonly deliveryFilter?: (event: GatewayEventEnvelope, origin?: GatewayTurnOrigin) => boolean;
   readonly listener: (event: GatewayEventEnvelope) => void;
 }
 
@@ -48,10 +33,12 @@ export class GatewaySubscriptions {
         && subscription.conversationId !== event.conversationId) {
         continue;
       }
-      if (ORIGIN_SCOPED_EVENT_KINDS.has(event.kind)) {
+      // A history query is a connection reply, not a shared business fact.
+      if (event.kind === 'conversation_history_page') {
         if (!target || subscription.liveConnectionId !== target.connectionId) continue;
       }
       try {
+        if (subscription.deliveryFilter && !subscription.deliveryFilter(event, target)) continue;
         subscription.listener(event);
       } catch {
         // One slow or faulty client must not change the durable publish result

@@ -38,7 +38,7 @@ export class KernelEffectOutboxRepo {
   constructor(private readonly db: Database.Database) {}
 
   transaction<T>(operation: () => T): T {
-    return this.db.transaction(operation)();
+    return this.db.transaction(operation).immediate();
   }
 
   enqueue(input: {

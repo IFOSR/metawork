@@ -214,9 +214,55 @@ export class HttpClient {
     );
   }
 
+  getConversationMetadata(id: string): Promise<{ id: string; workspaceId: string | null; title: string }> {
+    return this.request(`/api/conversations/${encodeURIComponent(id)}/view/metadata`);
+  }
+
+  getConversationActivity(id: string, cursor?: string, pendingCursor?: string): Promise<import('../../../src/session/conversation-activity-types').ConversationActivityView> {
+    const params = new URLSearchParams();
+    if (cursor) params.set('cursor', cursor);
+    if (pendingCursor) params.set('pendingCursor', pendingCursor);
+    return this.request(`/api/conversations/${encodeURIComponent(id)}/view/activity?${params}`);
+  }
+
+  searchConversation(id: string, query: string, cursor?: string): Promise<import('../../../src/session/conversation-history-search').ConversationSearchPage> {
+    const params = new URLSearchParams({ q: query });
+    if (cursor) params.set('cursor', cursor);
+    return this.request(`/api/conversations/${encodeURIComponent(id)}/view/search?${params}`);
+  }
+
+  locateConversationTurn(id: string, turnId: string, taskId?: string): Promise<import('../../../src/session/conversation-read-types').ConversationTurnPage> {
+    return this.request(`/api/conversations/${encodeURIComponent(id)}/view/locate?${new URLSearchParams(taskId ? { taskId } : { turnId })}`);
+  }
+
+  getConversationView(id: string, cursor?: string, beforeTurn?: string): Promise<import('../../../src/session/conversation-read-types').ConversationTurnPage> {
+    const params = new URLSearchParams();
+    if (cursor) params.set('cursor', cursor);
+    if (beforeTurn) params.set('beforeTurn', beforeTurn);
+    return this.request(`/api/conversations/${encodeURIComponent(id)}/view?${params}`);
+  }
+
+  getConversationContent(id: string, hash: string, offset: number, signal?: AbortSignal): Promise<{ text: string; nextOffset: number; byteLength: number }> {
+    return this.request(`/api/conversations/${encodeURIComponent(id)}/view/content/${hash}?offset=${offset}&maxBytes=32768`, { signal });
+  }
+
+  getConversationTrace(id: string, turnId: string, cursor?: string, latest = false): Promise<{
+    events: import('./types').InteractionTraceEvent[]; nextCursor: string | null; preparing?: boolean;
+  }> {
+    const params = new URLSearchParams();
+    if (cursor) params.set('cursor', cursor);
+    if (latest) params.set('latest', '1');
+    return this.request(`/api/conversations/${encodeURIComponent(id)}/view/trace/${encodeURIComponent(turnId)}?${params}`);
+  }
+
   getConversation(sessionId: string, cursor?: string): Promise<WebSessionRecord> {
     const suffix = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
     return this.request(`/api/conversations/${encodeURIComponent(sessionId)}${suffix}`);
+  }
+
+  getBrowsableConversation(sessionId: string, cursor?: string): Promise<WebSessionRecord> {
+    const suffix = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
+    return this.request(`/api/conversations/${encodeURIComponent(sessionId)}/history${suffix}`);
   }
 
   /** 只读账单页：分页历史账单；金额与状态全部来自 Server 投影。 */

@@ -14,6 +14,7 @@ export class EventJournalMaintenance {
   private running = false;
   private cursor = '';
   private current: string | null = null;
+  private consecutiveBatches = 0;
 
   constructor(private readonly deps: JournalMaintenanceDeps) {}
 
@@ -49,9 +50,10 @@ export class EventJournalMaintenance {
         this.cursor = '';
         return;
       }
-      if (await this.deps.maintain(this.deps.accountId, this.current)) {
+      if (await this.deps.maintain(this.deps.accountId, this.current) || ++this.consecutiveBatches >= 4) {
         this.cursor = this.current;
         this.current = null;
+        this.consecutiveBatches = 0;
       }
     } catch (error) {
       // One damaged stream must not starve every other stream.

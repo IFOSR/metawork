@@ -1,7 +1,17 @@
 import { useDeferredValue, useState } from 'react';
 import type { ConversationTurnProjection } from '../api/session-types';
 
-export function TrajectoryEventTable({ turn }: { turn: ConversationTurnProjection }) {
+export function TrajectoryEventTable({
+  turn,
+  onLoadMore,
+  loading = false,
+  hasMore = false,
+}: {
+  turn: ConversationTurnProjection;
+  onLoadMore?: () => void;
+  loading?: boolean;
+  hasMore?: boolean;
+}) {
   const [query, setQuery] = useState('');
   const [actorFilter, setActorFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -39,6 +49,14 @@ export function TrajectoryEventTable({ turn }: { turn: ConversationTurnProjectio
           </details>
         ))}
       </div>
+      {(hasMore || loading) && (
+        <footer className="trajectory-pagination" aria-label="轨迹分页">
+          <span>{loading ? '正在加载后续轨迹…' : '还有后续轨迹'}</span>
+          <button type="button" onClick={onLoadMore} disabled={loading || !onLoadMore}>
+            {loading ? '加载中…' : '加载更多轨迹'}
+          </button>
+        </footer>
+      )}
     </section>
   );
 }

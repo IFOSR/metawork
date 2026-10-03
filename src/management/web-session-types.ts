@@ -22,6 +22,9 @@ export const MAX_WEB_SESSION_EVENTS_PER_TURN = 10_000;
 export type WebSessionAvailability = 'active' | 'browsable' | 'activation_blocked';
 export type ConversationTurnStatus = Exclude<InteractionTraceStatus, 'running'>;
 
+/** Independent delivery state for answers that arrive after execution facts. */
+export type ResultDeliveryStatus = 'none' | 'streaming' | 'verifying' | 'ready' | 'failed';
+
 export type WebSessionActivationBlockReason =
   | 'planner_turn_active'
   | 'task_runtime_active'
@@ -69,6 +72,8 @@ export interface ConversationTurn {
   userInput: string;
   interactionKind?: 'system_command' | 'ai_turn';
   status: ConversationTurnStatus;
+  /** Optional for legacy records; absent means no result delivery is pending. */
+  deliveryStatus?: ResultDeliveryStatus;
   finalAnswer: string | null;
   taskId: string | null;
   startedAt: string;

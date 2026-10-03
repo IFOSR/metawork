@@ -32,11 +32,6 @@ function makeClient() {
       submitted.push(envelope);
       return { requestId: envelope.requestId, status: 'accepted', conversationId: 'conv_1' };
     },
-    replay: async (_conversationId, afterSequence) => ({
-      lastSequence: afterSequence ?? 0,
-      snapshot: [],
-      deltas: [],
-    }),
     subscribe: () => () => undefined,
     createId: prefix => `${prefix}_${sequence += 1}`,
   });
@@ -50,11 +45,15 @@ describe('gateway protocol mirror contract', () => {
     await client.completeCommand('/task', 5, 'conv_1');
     await client.completeCommand('/wo', 3);
     await client.getTaskView('conv_1', 'turn_1', 'task_1');
-    await client.getConversationHistory('conv_1', 'cursor_1', 50);
+    await client.submitWithEnvelope({ kind: 'get_pending_interactions', conversationId: 'conv_1' },
+      { kind: 'conversation', selection: { mode: 'attach', conversationId: 'conv_1' } });
     await client.getQueryBillForTurn('turn_1');
     await client.getTaskUsageSummary('task_1');
+    await client.submitWithEnvelope({ kind: 'get_conversation_resource', conversationId: 'conv_1',
+      resource: 'locate', taskId: 'task_old' },
+    { kind: 'conversation', selection: { mode: 'attach', conversationId: 'conv_1' } });
 
-    expect(submitted).toHaveLength(6);
+    expect(submitted).toHaveLength(7);
     for (const envelope of submitted) {
       expect(parseGatewayCommandEnvelope(envelope)).toEqual(envelope);
       expect(parseGatewayClientMessage({ type: 'command', envelope })).toEqual({
@@ -65,7 +64,7 @@ describe('gateway protocol mirror contract', () => {
     expect(submitted[0]!.command.kind).toBe('complete_command');
     expect(submitted[1]!.command.kind).toBe('complete_command');
     expect(submitted[2]!.command.kind).toBe('get_task_view');
-    expect(submitted[3]!.command.kind).toBe('get_conversation_history');
+    expect(submitted[3]!.command.kind).toBe('get_pending_interactions');
   });
 
   it('keeps the event kind sets identical on both sides of the mirror', () => {
@@ -74,8 +73,8 @@ describe('gateway protocol mirror contract', () => {
 
   it('publishes the read-only capabilities the vendored client checks', () => {
     const vendored = readFileSync(VENDORED_PROTOCOL, 'utf8');
-    expect(vendored).toContain(`'${GATEWAY_CAPABILITY_COMMAND_COMPLETION}'`);
-    expect(vendored).toContain(`'${GATEWAY_CAPABILITY_TASK_VIEW}'`);
+    expect(vendored).toMatch(new RegExp(`['"]${GATEWAY_CAPABILITY_COMMAND_COMPLETION}['"]`));
+    expect(vendored).toMatch(new RegExp(`['"]${GATEWAY_CAPABILITY_TASK_VIEW}['"]`));
     expect(GATEWAY_SERVER_CAPABILITIES).toEqual(
       expect.arrayContaining([
         GATEWAY_CAPABILITY_COMMAND_COMPLETION,

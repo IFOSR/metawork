@@ -1,5 +1,7 @@
 import type { GatewayEventEnvelope, GatewayReplay } from './client-events.js';
 import type { TurnTaskObservation } from './turn-task-observation.js';
+import type { IndexedTraceEvent } from './trace-read-model.js';
+import type { TracePagePosition } from './trace-page-cursor.js';
 
 export interface JournalSegment {
   readonly id: string;
@@ -11,6 +13,7 @@ export interface JournalSegment {
 export interface JournalSegmentWrite {
   readonly segment: JournalSegment;
   readonly events: readonly GatewayEventEnvelope[];
+  readonly traceEvents?: readonly IndexedTraceEvent[];
 }
 
 export interface JournalStreamState {
@@ -22,6 +25,10 @@ export interface JournalStreamState {
 
 /** Gateway-owned persistence port. Files become visible only at index commit. */
 export interface EventJournalSegmentIndex {
+  traceCheckpoint(accountId: string, conversationId: string): number | null;
+  indexTraceEvents(accountId: string, conversationId: string, events: readonly IndexedTraceEvent[], through: number): void;
+  tracePage(accountId: string, conversationId: string, turnId: string, after: TracePagePosition | null,
+    limit: number, maxBytes: number, latest?: boolean): { events: Record<string, unknown>[]; hasMore: boolean };
   nextStream(accountId: string, afterConversationId: string): string | null;
   read(accountId: string, conversationId: string): JournalStreamState | null;
   readTurnTaskObservation(accountId: string, conversationId: string, turnId: string): TurnTaskObservation | null;

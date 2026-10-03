@@ -7,7 +7,7 @@ describe('Web interaction trace panel', () => {
   it('renders detailed streamed phases, actors, routing details, and responsive state', async () => {
     const [panel, app, chat, styles] = await Promise.all([
       readFile(new URL('components/InteractionTracePanel.tsx', root), 'utf8'),
-      readFile(new URL('App.tsx', root), 'utf8'),
+      Promise.all(['App.tsx', 'observation/use-workspace-controller.ts'].map(path => readFile(new URL(path, root), 'utf8'))).then(parts => parts.join('\n')),
       readFile(new URL('components/ChatPane.tsx', root), 'utf8'),
       readFile(new URL('styles.css', root), 'utf8'),
     ]);
@@ -21,9 +21,9 @@ describe('Web interaction trace panel', () => {
     expect(panel).toContain('data-streaming');
     expect(panel).toContain('event-elapsed');
     expect(panel).toContain('window.setInterval');
-    expect(app).toContain('onConversationSnapshot');
-    expect(app).toContain('<ConversationView');
-    expect(app).toContain('<TrajectoryView');
+    expect(app).toContain('useConversationTurn');
+    expect(app).toContain('<ObservedConversationView');
+    expect(app).toContain('<ObservedTurnDetails');
     expect(app).not.toContain('<InteractionTracePanel');
     expect(chat).not.toContain('ExecutionTrace');
     expect(styles).toContain('@media (max-width: 820px)');

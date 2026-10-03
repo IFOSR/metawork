@@ -32,6 +32,7 @@ import {
   type GatewayTaskViewSnapshot,
 } from './task-view.js';
 import type { BillQueryService } from '../billing/bill-query-service.js';
+import type { AccountPermissionService } from '../account/account-permission-service.js';
 
 /**
  * Workspace scope 下合法的导航/只读候选（统一 TUI 设计 §9.3）。
@@ -100,6 +101,9 @@ export interface GatewayReadOnlyQueryHandlerDeps {
   }) => Promise<GatewayTaskViewSnapshot | { readonly error: GatewayTaskViewError }>;
   readonly authorizeTask?: (accountId: string, taskId: string) => Promise<boolean> | boolean;
   readonly billing?: BillQueryService;
+  readonly pendingInteractions?: (accountId: string, conversationId: string, cursor?: string, limit?: number) =>
+    Promise<ReturnType<AccountPermissionService['listForSession']>>;
+  readonly conversationResource?: (accountId: string, command: Extract<GatewayReadOnlyQuery, { kind: 'get_conversation_resource' }>) => Promise<unknown>;
   readonly now?: () => string;
   readonly createId?: (prefix: string) => string;
 }
@@ -115,7 +119,7 @@ export function createGatewayReadOnlyQueryHandler(
 
   const publishToConnection = async (
     context: GatewayReadOnlyQueryContext,
-    kind: 'command_completion' | 'task_view_snapshot' | 'usage_billing_projection',
+    kind: 'command_completion' | 'task_view_snapshot' | 'usage_billing_projection' | 'pending_interactions' | 'conversation_resource',
     payload: unknown,
   ): Promise<void> => {
     if (!deps.journal.reserveSequence) {
@@ -143,6 +147,29 @@ export function createGatewayReadOnlyQueryHandler(
   };
 
   return async (command, context) => {
+    if (command.kind === 'get_conversation_resource') {
+      if (!await deps.authorizeConversation(context.accountId, command.conversationId)) return { status: 'rejected', reason: 'conversation_denied' };
+      if (!deps.conversationResource) return { status: 'rejected', reason: 'capability_mismatch' };
+      const page = await deps.conversationResource(context.accountId, command);
+      await publishToConnection(context, 'conversation_resource', { targetConversationId: command.conversationId,
+        resource: command.resource, page });
+      return { status: 'accepted', conversationId: command.conversationId };
+    }
+    if (command.kind === 'get_pending_interactions') {
+      if (!await deps.authorizeConversation(context.accountId, command.conversationId)) {
+        return { status: 'rejected', reason: 'conversation_denied' };
+      }
+      if (!deps.pendingInteractions) return { status: 'rejected', reason: 'pending_interactions_unavailable' };
+      const requests = await deps.pendingInteractions(context.accountId, command.conversationId, command.cursor, 9);
+      // Each descriptor is a standalone bounded reply. The terminal frame
+      // certifies completeness, so an interrupted response is never an empty list.
+      for (const request of requests.slice(0, 8)) await publishToConnection(context, 'pending_interactions', {
+        targetConversationId: command.conversationId, request, complete: false,
+      });
+      await publishToConnection(context, 'pending_interactions', { targetConversationId: command.conversationId, complete: true,
+        nextCursor: requests.length > 8 ? requests[7]!.permissionRequestId : null });
+      return { status: 'accepted', conversationId: command.conversationId };
+    }
     if (command.kind === 'complete_command') {
       const targetConversationId = context.scope.kind === 'conversation'
         && context.scope.selection.mode === 'attach'
