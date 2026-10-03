@@ -5,6 +5,11 @@ import { describe, expect, it } from 'vitest';
 const script = readFileSync(resolve('scripts/install.sh'), 'utf8');
 
 describe('user install script contracts', () => {
+  it('uses the official GitHub Release service by default', () => {
+    expect(script).toContain('DEFAULT_MANIFEST_BASE="https://github.com/IFOSR/metawork/releases/latest/download"');
+    expect(script).not.toContain('14.103.216.193');
+  });
+
   it('verifies the signed manifest and artifacts before extraction or execution', () => {
     const manifestDownload = script.indexOf('curl -fsSL "$MANIFEST_URL"');
     const signatureVerification = script.indexOf('verify_manifest "$MANIFEST_PATH"');

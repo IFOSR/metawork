@@ -115,15 +115,20 @@ Codex CLI and Pi Agent are installed independently. Setup detects them on
 
 ### Quick install (macOS, Linux, WSL2)
 
+The official distribution source is GitHub Releases. The installer below
+tracks the latest stable Release; for this repository state it resolves to
+`v0.1.3`. Release archives and signed manifests are downloaded directly from
+GitHub's Release CDN.
+
 ```bash
-curl -fsSL https://14.103.216.193/metawork-release/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh | bash
 
 export PATH="$HOME/.local/bin:$PATH"
 metawork --help
 ```
 
 One command downloads the signed, prebuilt Runtime and vendored Planner
-artifacts, verifies them, and launches the provider setup wizard. On Linux
+artifacts from the official GitHub Release, verifies them, and launches the provider setup wizard. On Linux
 and WSL2 the installer automatically selects the file-backed secret store
 (`METAWORK_SECRET_STORE=file`); no manual export is needed. Re-running
 the same command updates an existing installation in place — configuration,
@@ -136,7 +141,7 @@ PowerShell installer below. When the wizard completes, continue with
 Run PowerShell as the current user:
 
 ```powershell
-irm https://14.103.216.193/metawork-release/install.ps1 -OutFile metawork-install.ps1
+irm https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.ps1 -OutFile metawork-install.ps1
 .\metawork-install.ps1
 ```
 
@@ -151,14 +156,14 @@ a real terminal (or set the environment variables below and stay
 non-interactive):
 
 ```bash
-curl -fsSL https://14.103.216.193/metawork-release/install.sh -o metawork-install.sh
+curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh -o metawork-install.sh
 bash metawork-install.sh
 ```
 
 Uninstall:
 
 ```bash
-curl -fsSL https://14.103.216.193/metawork-release/install.sh | bash -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh | bash -s -- --uninstall
 ```
 
 Stops a running Server, removes the managed launchers (`metawork`, `anyfusion`,

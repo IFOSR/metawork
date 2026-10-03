@@ -3,7 +3,7 @@ set -euo pipefail
 
 # MetaWork one-command installer.
 #
-#   curl -fsSL https://14.103.216.193/metawork-release/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh | bash
 #
 # Downloads the signed release manifest and prebuilt Runtime + vendored
 # Planner artifacts, verifies them, and hands off to the offline installer.
@@ -23,7 +23,10 @@ set -euo pipefail
 #   METAWORK_INSTALL_ROOT                install root (default: ~/.metawork)
 
 INSTALLER_VERSION="1.2.0"
-DEFAULT_MANIFEST_BASE="https://14.103.216.193/metawork-release"
+# GitHub Release is the official distribution service. The `latest` download
+# route resolves to the current stable Release and keeps artifact downloads on
+# GitHub's CDN. Set METAWORK_INSTALL_MANIFEST to pin a specific tag.
+DEFAULT_MANIFEST_BASE="https://github.com/IFOSR/metawork/releases/latest/download"
 TRUSTED_RELEASE_KEY_ID="metawork-release-2026-03"
 TRUSTED_RELEASE_PUBLIC_KEY='-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAJm/qnGNd9Aeg+41GoIjKOgpasxivfCXJCsZwyMbyIVE=

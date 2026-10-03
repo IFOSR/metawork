@@ -17,7 +17,7 @@ if (-not $InstallRoot) {
   $InstallRoot = Join-Path $env:LOCALAPPDATA 'MetaWork'
 }
 if (-not $ManifestUrl) {
-  $ManifestUrl = "https://14.103.216.193/metawork-release/latest/manifest.win32-x64.json"
+  $ManifestUrl = "https://github.com/IFOSR/metawork/releases/latest/download/manifest.win32-x64.json"
 }
 
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {

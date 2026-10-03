@@ -155,11 +155,3 @@ jobs:
               --notes-file "$NOTES" \
               --latest
           fi
-
-  deploy-installer:
-    name: Deploy one-command installer
-    needs: publish
-    uses: ./.github/workflows/deploy-installer.yml
-    with:
-      release_tag: ${{ needs.publish.outputs.release_tag }}
-    secrets: inherit

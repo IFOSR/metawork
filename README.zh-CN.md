@@ -98,14 +98,18 @@ Codex CLI 与 Pi Agent 独立安装。安装程序只检测 `PATH` 中已有的 
 
 ### 一条命令安装（macOS、Linux、WSL2）
 
+官方分发源是 GitHub Releases。下面的安装命令会跟随最新 stable Release；当前仓库
+对应的正式版本是 `v0.1.3`。归档文件和签名 manifest 都直接从 GitHub Release CDN
+下载。
+
 ```bash
-curl -fsSL https://14.103.216.193/metawork-release/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh | bash
 
 export PATH="$HOME/.local/bin:$PATH"
 metawork --help
 ```
 
-一条命令下载并校验已签名的预构建 Runtime 与内嵌 Planner 产物，然后自动进入
+一条命令从官方 GitHub Release 下载并校验已签名的预构建 Runtime 与内嵌 Planner 产物，然后自动进入
 Provider 配置向导。Linux 与 WSL2 上安装器会自动选用文件型 SecretStore
 （`METAWORK_SECRET_STORE=file`），无需手动 export。重复执行同一命令会对已有
 安装原地升级——配置、密钥和任务数据全部保留。Windows 用户请使用下面的
@@ -116,7 +120,7 @@ PowerShell 安装器。向导完成后，继续阅读[快速开始](#快速开�
 在当前用户的 PowerShell 中执行：
 
 ```powershell
-irm https://14.103.216.193/metawork-release/install.ps1 -OutFile metawork-install.ps1
+irm https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.ps1 -OutFile metawork-install.ps1
 .\metawork-install.ps1
 ```
 
@@ -128,14 +132,14 @@ Windows 版本要求 Node.js `>=22.19.0`、Git，以及 Windows Developer Mode
 终端运行（或改用下文的环境变量非交互安装）：
 
 ```bash
-curl -fsSL https://14.103.216.193/metawork-release/install.sh -o metawork-install.sh
+curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh -o metawork-install.sh
 bash metawork-install.sh
 ```
 
 卸载：
 
 ```bash
-curl -fsSL https://14.103.216.193/metawork-release/install.sh | bash -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh | bash -s -- --uninstall
 ```
 
 会先停止运行中的 Server，移除托管的启动器（`metawork`、`anyfusion`、`metaclaw`），
