@@ -137,9 +137,8 @@ describe('release deployment workflow', () => {
     expect(deploy).toContain('scripts/deploy-release.mjs');
     expect(deployScript).toContain('flock');
     expect(deploy).toContain('timeout-minutes: 90');
-    expect(deployScript).toContain('Uploading verified release metadata');
-    expect(deployScript).toContain('Downloading ${archiveFiles.length} release archives');
-    expect(deployScript).toContain('Upload and remote download complete; activating');
+    expect(deployScript).toContain('Uploading verified release assets');
+    expect(deployScript).toContain('Upload complete; activating');
     expect(deploy).not.toContain('::warning::could not fetch');
   });
 });

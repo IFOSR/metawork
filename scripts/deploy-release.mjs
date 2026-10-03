@@ -18,14 +18,13 @@ const localStage = mkdtempSync(join(tmpdir(), 'metawork-release-deploy-'));
 try {
   const release = await verifyReleaseAssets(sourceDir, releaseTag);
   const releaseFiles = release.files.map((file) => file.name);
-  const archiveFiles = releaseFiles.filter((name) => /\.(?:tar\.gz|zip)$/.test(name));
   const deployFiles = [
-    ...releaseFiles.filter((name) => name.startsWith('manifest.')),
+    ...releaseFiles,
     'install.sh',
     'install.ps1',
   ];
   for (const name of deployFiles) {
-    const source = name.startsWith('manifest.') ? join(sourceDir, name) : join(installerDir, name);
+    const source = releaseFiles.includes(name) ? join(sourceDir, name) : join(installerDir, name);
     cpSync(source, join(localStage, name));
   }
 
@@ -38,31 +37,10 @@ mkdir '${remoteStage}'
     cpSync(join(root, 'scripts', name), join(localStage, name));
     deployFiles.push(name);
   }
-  console.log(`Uploading verified release metadata: ${release.releaseId} (${deployFiles.length} files)`);
+  console.log(`Uploading verified release assets: ${release.releaseId} (${deployFiles.length} files)`);
   await uploadReleaseFiles(remote, sshKey, remoteStage, localStage, deployFiles);
 
-  const source = release.manifests[0].metawork.source.replace(/\.git$/, '');
-  const releaseAssetBaseUrl = `${source}/releases/download/${releaseTag}`;
-  const archiveSources = archiveFiles.map((name) => ({
-    name,
-    url: resolveDownloadUrl(`${releaseAssetBaseUrl}/${name}`),
-  }));
-  console.log(`Downloading ${archiveFiles.length} release archives on the deployment host`);
-  const downloadCommands = archiveSources.map(({ name, url }) => `
-echo "Downloading ${name}"
-curl -4 --http1.1 --fail --silent --show-error --location --retry 4 --retry-all-errors \\
-  --connect-timeout 30 --max-time 1800 ${shellQuote(url)} -o ${shellQuote(`${remoteStage}/${name}`)} &
-pids="$pids $!"
-`).join('');
-  runRemote(remote, sshKey, `set -eu
-pids=''
-${downloadCommands}
-for pid in $pids; do
-  wait "$pid"
-done
-`);
-
-  console.log('Upload and remote download complete; activating under deployment lock and verifying public HTTPS downloads');
+  console.log('Upload complete; activating under deployment lock and verifying public HTTPS downloads');
   runRemote(remote, sshKey, `set -eu
 flock -w 1200 '${remoteRoot}/deploy.lock' node '${remoteStage}/activate-release.mjs' \\
   '${remoteRoot}' '${remoteStage}' '${releaseTag}' '${publicBaseUrl}'
@@ -128,11 +106,4 @@ async function uploadReleaseFiles(host, key, remoteStage, localStage, files) {
 
 function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-function resolveDownloadUrl(url) {
-  return execFileSync('curl', [
-    '-4', '--http1.1', '--fail', '--silent', '--show-error', '--head', '--location',
-    '--max-time', '60', '--output', '/dev/null', '--write-out', '%{url_effective}', url,
-  ], { encoding: 'utf8' }).trim();
 }
