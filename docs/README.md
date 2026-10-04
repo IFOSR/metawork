@@ -56,6 +56,7 @@ replacing those semantics.
 
 ## Local Implementation Pending Validation
 
+- [轨迹页执行计划内嵌 DAG](plans/2026-10-03-work-graph-inline-dag.md)：卡片内展示真实依赖箭头、并行分支与汇合，节点选择联动详情，支持移动端滚动；本地实现并验证，未部署。
 - [TUI Workspace task dashboard and switching](plans/2026-10-03-tui-workspace-task-dashboard.md): workspace task overview, task-to-Turn navigation and independent drafts; local only pending user validation.
 
 ## Completed Roadmap

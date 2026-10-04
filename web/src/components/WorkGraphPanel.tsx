@@ -1,18 +1,20 @@
+import { useState } from 'react';
 import type { WorkGraphPresentationProjection } from '../api/types';
+import { workGraphNodeLabel } from '../work-graph-layout';
 import { RoutingDecisionCard } from './RoutingDecisionCard';
+import { WorkGraphDiagram } from './WorkGraphDiagram';
 
 export function WorkGraphPanel({ projection }: { projection: WorkGraphPresentationProjection | null }) {
-  if (!projection) {
-    return <section className="work-graph-panel work-graph-empty">当前任务暂无可展示的 Work Graph。</section>;
+  const [selection, setSelection] = useState<{ generationId: string | null; id: string } | null>(null);
+  if (!projection || projection.nodes.length === 0) {
+    return <section className="work-graph-panel work-graph-empty">当前任务暂无可展示的执行计划。</section>;
   }
-
-  const grouped = new Map<number, WorkGraphPresentationProjection['nodes']>();
-  const titleById = new Map(projection.nodes.map(node => [node.id, node.title]));
-  for (const node of projection.nodes) {
-    const bucket = grouped.get(node.phase) ?? [];
-    bucket.push(node);
-    grouped.set(node.phase, bucket);
-  }
+  const selected = (selection?.generationId === projection.generationId
+    ? projection.nodes.find(node => node.id === selection?.id)
+    : undefined) ?? projection.nodes[0];
+  const titleById = new Map(projection.nodes.map(node => [node.id, workGraphNodeLabel(node)]));
+  const downstream = projection.nodes.filter(node => node.dependencies.includes(selected.id));
+  const handoffs = projection.edges.filter(edge => edge.from === selected.id || edge.to === selected.id);
 
   return (
     <section className="work-graph-panel" aria-label="Work Graph">
@@ -22,46 +24,33 @@ export function WorkGraphPanel({ projection }: { projection: WorkGraphPresentati
           <h2>执行计划</h2>
         </div>
         <div className="work-graph-meta">
-          <span>{projection.nodes.length} subtasks</span>
-          <span>frontier {projection.currentRunnableFrontier.length}</span>
+          <span>{projection.nodes.length} 个子任务</span>
+          <span>{projection.currentRunnableFrontier.length} 个可调度</span>
         </div>
       </header>
-      <div className="work-graph-desktop">
-        {[...grouped.entries()].sort(([a], [b]) => a - b).map(([phase, nodes]) => (
-          <div className="work-graph-phase" key={phase}>
-            <div className="work-graph-phase-label">PHASE {phase + 1}</div>
-            <div className="work-graph-phase-nodes">
-              {nodes.map(node => <WorkGraphNode key={node.id} node={node} titleById={titleById} />)}
-            </div>
-          </div>
-        ))}
-      </div>
-      <div className="work-graph-mobile">
-        {projection.parallelGroups.map((group, index) => (
-          <div className="work-graph-mobile-stage" key={index}>
-            <div className="work-graph-phase-label">并行阶段 {index + 1}</div>
-            {group.map(id => {
-              const node = projection.nodes.find(candidate => candidate.id === id);
-              return node
-                ? <WorkGraphNode key={node.id} node={node} titleById={titleById} />
-                : null;
-            })}
-          </div>
-        ))}
-      </div>
-      {projection.edges.length > 0 && (
-        <div className="work-graph-edges">
-          <span className="eyebrow">HANDOFFS</span>
-          {projection.edges.map(edge => (
-            <div className="work-graph-edge" key={`${edge.from}-${edge.to}-${edge.label}`}>
-              <strong>{titleById.get(edge.from) ?? '上游子任务'}</strong>
-              <span>→</span>
-              <strong>{titleById.get(edge.to) ?? '下游子任务'}</strong>
-              <small>{edge.kind} · {edge.label}</small>
-            </div>
-          ))}
+      <WorkGraphDiagram projection={projection} selectedId={selected.id}
+        onSelect={id => setSelection({ generationId: projection.generationId, id })} />
+      <div className="work-graph-selected-detail" role="region" aria-label="选中子任务详情">
+        <span className="eyebrow">子任务 {projection.nodes.indexOf(selected) + 1} · 详情</span>
+        <WorkGraphNode node={selected} titleById={titleById} />
+        <div className="work-graph-relations">
+          <p><strong>前置依赖：</strong>{selected.dependencies.map(id => titleById.get(id) ?? '信息缺失的上游子任务').join('、') || '无前置子任务'}</p>
+          <p><strong>后续子任务：</strong>{downstream.map(workGraphNodeLabel).join('、') || '无，此分支的末端子任务'}</p>
         </div>
-      )}
+        {handoffs.length > 0 && (
+          <div className="work-graph-edges">
+            <span className="eyebrow">依赖与交接内容</span>
+            {handoffs.map((edge, index) => (
+              <div className="work-graph-edge" key={index}>
+                <strong>{titleById.get(edge.from) ?? '上游子任务'}</strong>
+                <span>→</span>
+                <strong>{titleById.get(edge.to) ?? '下游子任务'}</strong>
+                <small>{edge.kind === 'artifact' ? '产物' : edge.kind === 'handoff' ? '交接' : '依赖'} · {edge.label}</small>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </section>
   );
 }
@@ -76,8 +65,8 @@ function WorkGraphNode({
   return (
     <article className="work-graph-node" data-status={node.status} data-runnable={node.runnable}>
       <div className="work-graph-node-topline">
-        <strong>{node.title}</strong>
-        <span>{node.runnable ? 'RUNNABLE' : node.status}</span>
+        <strong>{workGraphNodeLabel(node)}</strong>
+        <span>{node.runnable ? '可调度' : node.status}</span>
       </div>
       <p>{node.goal}</p>
       <div className="work-graph-tags">
@@ -85,7 +74,7 @@ function WorkGraphNode({
       </div>
       {node.dependencies.length > 0 && (
         <small className="work-graph-dependencies">
-          等待：{node.dependencies.map(id => titleById.get(id) ?? '上游子任务').join('、')}
+          依赖：{node.dependencies.map(id => titleById.get(id) ?? '上游子任务').join('、')}
         </small>
       )}
       {node.routing.length > 0 && (
