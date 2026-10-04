@@ -203,7 +203,7 @@ sharing that tool. No enabled Executor rejects new user work with
 
 ## Amendment: Span Routing Advisor (2026-09-27)
 
-MetaWork may optionally consult one external decision model, `respan/span-01-lite`
+MetaWork may optionally consult one external decision model, `inception/mercury-decide:free`
 at OpenRouter, as a **soft ordering signal** over already-authorized candidates.
 It never widens the candidate set and never produces a binding decision.
 
@@ -211,6 +211,11 @@ It never widens the candidate set and never produces a binding decision.
   (`enabled`, fixed `model`, `timeoutMs`, optional `apiKeyRef`). Revisions created
   before it parse unchanged with the section absent, and adding or editing it is
   a hot-safe change under the existing activation gate.
+- Immutable revisions naming the retired `respan/span-01-lite` advisor are
+  normalized on read to the fixed Mercury advisor. Startup integrity validation
+  accepts only the exact hash with that known model substitution reversed; all
+  other fields remain covered. The revision ID, persisted hash, files and active
+  pointer are unchanged, and new revisions must use the current model literal.
 - The credential is entered in advanced settings exactly like a Provider key:
   the Server writes it to the account SecretStore under a fixed reference in the
   non-Provider `internal` namespace (`anyfusion/internal/routing-span`) and the
@@ -274,8 +279,8 @@ It never widens the candidate set and never produces a binding decision.
 - The advisor scores the real Provider model identity plus the pinned revision's
   existing capability, reasoning, cost, latency, quality and context facts, not
   opaque internal aliases alone. The SDK boundary serializes structured state
-  into a JSON string, as required by Respan, and includes escaping in the request
-  size bound. The question/state contract carries its own
+  into a JSON string, as required by the OpenRouter System One contract, and
+  includes escaping in the request size bound. The question/state contract carries its own
   `questionVersion`; a version change discards older observations in the Kernel
   rather than ranking on data produced under a different contract.
 - Span usage is retained as internal routing observation only. It does not

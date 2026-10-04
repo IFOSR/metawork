@@ -44,7 +44,7 @@ const kernelConfiguration: KernelConfigurationView = {
   providers: { openai: { enabled: true } },
   permissionProfiles: { 'workspace-default': { profileId: 'workspace-engineering', version: 1, parameters: {} } },
   runtimePolicy: {},
-  spanRouting: { enabled: true, model: 'respan/span-01-lite', timeoutMs: 3_000 },
+  spanRouting: { enabled: true, model: 'inception/mercury-decide:free', timeoutMs: 3_000 },
 };
 
 const runtimeConfiguration = {
@@ -53,7 +53,7 @@ const runtimeConfiguration = {
   schemaVersion: 2 as const,
   providers: {}, models: {}, harnesses: {}, agentClasses: {}, permissionProfiles: {},
   runtimePolicy: {}, gateway: {},
-  routing: { span: { enabled: true, model: 'respan/span-01-lite' as const, apiKeyRef: 'file-secret:anyfusion/internal/routing-span', timeoutMs: 3_000 } },
+  routing: { span: { enabled: true, model: 'inception/mercury-decide:free' as const, apiKeyRef: 'file-secret:anyfusion/internal/routing-span', timeoutMs: 3_000 } },
 };
 
 const workGraph: WorkGraphProposal = {
@@ -133,7 +133,7 @@ function advisingEvaluator(preferredAgentClass: 'codex-fast' | 'pi-general') {
       subtaskId: request.subtaskId,
       candidateSetFingerprint: request.candidateSetFingerprint,
       status: 'advised' as const,
-      resolvedModel: 'respan/span-01-lite-20260925',
+      resolvedModel: 'inception/mercury-decide-20260930',
       candidates: request.request.candidates.map(binding => ({
         candidateId: binding.questionId,
         agentClassRef: binding.agentClassRef,
@@ -323,7 +323,7 @@ describe('Span routing end-to-end (mock advisor + real SQLite)', () => {
       executorStatuses: [],
       runtimeConfiguration: {
         ...runtimeConfiguration,
-        routing: { span: { enabled: false, model: 'respan/span-01-lite' as const, timeoutMs: 3_000 } },
+        routing: { span: { enabled: false, model: 'inception/mercury-decide:free' as const, timeoutMs: 3_000 } },
       },
       evaluator,
     });

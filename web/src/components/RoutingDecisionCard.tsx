@@ -25,7 +25,7 @@ export function RoutingDecisionCard({ routing }: { routing: Routing }) {
       )}
       {routing.spanRouting && (
         <div className="routing-span-evidence">
-          <strong>Span 决策模型</strong>
+          <strong>决策模型</strong>
           <small>
             {routing.spanRouting.applied
               ? '已参与候选排序'

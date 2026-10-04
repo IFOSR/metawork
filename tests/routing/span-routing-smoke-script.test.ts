@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 /**
  * The live smoke script is an operator action, but its verification contract
- * must not drift from the product validator: an empty answer set is not a
+ * must not drift from the product validator: an empty choice/probability set is not a
  * success, and no raw SDK/provider text may reach the terminal.
  */
 
@@ -60,14 +60,22 @@ function responseStub(body: string, status = 200): string {
 describe('Span routing smoke script', () => {
   it.each([false, true])('sends string state through the SDK (integration=%s)', integration => {
     const result = runSmoke(`globalThis.fetch = async request => {
+      if (new URL(request.url).pathname !== '/api/v1/systemone') return new Response(JSON.stringify({
+        error: { message: 'wrong System One endpoint', code: 404 },
+      }), { status: 404, headers: { 'Content-Type': 'application/json' } });
       const body = await request.json();
       if (typeof body.state !== 'string') return new Response(JSON.stringify({
         error: { message: 'state must be a string', code: 400 },
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
       const state = JSON.parse(body.state);
       if (!state.subtask?.goal) throw new Error('serialized task state is missing');
-      return new Response(JSON.stringify({ model: 'respan/span-01-lite',
-        answers: Object.fromEntries(Object.keys(body.questions).map(id => [id, { type: 'noul', noul: 0.75 }])),
+      const candidateIds = Object.keys(state.candidates ?? {});
+      const probabilities = Object.fromEntries(candidateIds.map((id, index) => [
+        id,
+        index === 0 ? 0.75 : 0.25 / Math.max(1, candidateIds.length - 1),
+      ]));
+      return new Response(JSON.stringify({ model: 'inception/mercury-decide:free',
+        answers: { candidates: { type: 'choice', choice: candidateIds[0], probabilities } },
         usage: { input_tokens: 10, output_tokens: 0, cost: 0 },
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };`, { args: integration ? ['--integration'] : [], preloadChild: integration });
@@ -82,7 +90,7 @@ describe('Span routing smoke script', () => {
 
   it('redacts unexpected model text and unknown usage fields', () => {
     const result = runSmoke(responseStub(JSON.stringify({ model: 'RAW_SECRET_MODEL',
-      answers: { c000: { type: 'noul', noul: 0.5 }, c001: { type: 'noul', noul: 0.5 } },
+      answers: { candidates: { type: 'choice', choice: 'c000', probabilities: { c000: 0.5, c001: 0.5 } } },
       usage: { input_tokens: 1, output_tokens: 0, raw: 'RAW_SECRET_USAGE' },
     })));
     expect(result.status).toBe(1);
@@ -92,7 +100,7 @@ describe('Span routing smoke script', () => {
 
   it('fails when the provider returns no answers', () => {
     const result = runSmoke(responseStub(JSON.stringify({
-      model: 'respan/span-01-lite-20260925',
+      model: 'inception/mercury-decide-20260930',
       answers: {},
       usage: { input_tokens: 0, output_tokens: 0 },
     })));
@@ -106,8 +114,8 @@ describe('Span routing smoke script', () => {
 
   it('fails on a partial answer set instead of accepting known ids only', () => {
     const result = runSmoke(responseStub(JSON.stringify({
-      model: 'respan/span-01-lite-20260925',
-      answers: { c000: { type: 'noul', noul: 0.5 } },
+      model: 'inception/mercury-decide-20260930',
+      answers: { candidates: { type: 'choice', choice: 'c000', probabilities: { c000: 0.5 } } },
       usage: { input_tokens: 1, output_tokens: 0 },
     })));
 
@@ -115,21 +123,18 @@ describe('Span routing smoke script', () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ ok: false });
   });
 
-  it('passes only for a complete, finite, in-range noul answer set', () => {
+  it('passes only for a complete, finite, in-range choice probability set', () => {
     const result = runSmoke(responseStub(JSON.stringify({
-      model: 'respan/span-01-lite-20260925',
-      answers: {
-        c000: { type: 'noul', noul: 0.61 },
-        c001: { type: 'noul', noul: 0.7 },
-      },
+      model: 'inception/mercury-decide-20260930',
+      answers: { candidates: { type: 'choice', choice: 'c001', probabilities: { c000: 0.3, c001: 0.7 } } },
       usage: { input_tokens: 476, output_tokens: 70 },
     })));
 
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({
       ok: true,
-      model: 'respan/span-01-lite-20260925',
-      probabilities: { c000: 0.61, c001: 0.7 },
+      model: 'inception/mercury-decide-20260930',
+      probabilities: { c000: 0.3, c001: 0.7 },
     });
   });
 
@@ -151,11 +156,8 @@ describe('Span routing smoke script', () => {
     const result = withCredentialsFile(
       { version: 1, providers: {}, internal: { 'routing-span': 'internal-span-key' } },
       path => runSmoke(responseStub(JSON.stringify({
-        model: 'respan/span-01-lite-20260925',
-        answers: {
-          c000: { type: 'noul', noul: 0.61 },
-          c001: { type: 'noul', noul: 0.7 },
-        },
+        model: 'inception/mercury-decide-20260930',
+        answers: { candidates: { type: 'choice', choice: 'c001', probabilities: { c000: 0.3, c001: 0.7 } } },
         usage: { input_tokens: 476, output_tokens: 70 },
       })), { args: ['--credentials', path], env: { OPENROUTER_API_KEY: undefined } }),
     );

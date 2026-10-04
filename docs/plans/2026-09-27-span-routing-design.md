@@ -8,9 +8,9 @@
 
 ## 1. 目标与范围
 
-在 MetaWork 已有合法 AgentClass + Model 候选中，用 `respan/span-01-lite` 的 `noul` 判断辅助排序。Planner 提案、Kernel 授权、Runtime 应用、Executor 执行的权责不变。Span 不生成工作图、不创建授权 binding、不执行任务。
+在 MetaWork 已有合法 AgentClass + Model 候选中，用 `inception/mercury-decide:free` 的联合 `choice` 概率对所有候选统一排序。Planner 提案、Kernel 授权、Runtime 应用、Executor 执行的权责不变。Span 不生成工作图、不创建授权 binding、不执行任务。
 
-本期只做 Span：不引入通用 RoutingAdvisor 接口、模型注册表、Jev 适配、choice/score、多模型切换、shadow 调用、自动学习或 Span 到其他外部模型的失败切换。外部服务失败只恢复现有确定性 AutoModelResolver。
+本期只做 Span：不引入通用 RoutingAdvisor 接口、模型注册表、额外模型适配、score、多模型切换、shadow 调用、自动学习或 Span 到其他外部模型的失败切换。外部服务失败只恢复现有确定性 AutoModelResolver。
 
 用户在现有高级设置中填写 OpenRouter API key，复用 Provider 的 SecretStore、凭据状态和配置激活/回滚机制。无需添加 Provider、Model 或 Executor 来配置 Span。
 
@@ -43,7 +43,7 @@ Kernel 不导入 SDK、SecretStore、网络适配器或具体 Repository。外�
 ```ts
 interface SpanRoutingConfiguration {
   enabled: boolean;
-  model: 'respan/span-01-lite';
+  model: 'inception/mercury-decide:free';
   apiKeyRef?: string;
   timeoutMs: number;
 }
@@ -67,35 +67,35 @@ Planner 配置投影、Executor runtime/environment、生成的 agent home 不�
 2. 使用 Kernel 健康规则排除当前不可用 AgentClass；不将非合格候选发送给 Span。无候选时由原有 reject/defer 路径处理，Span 失败不能将非法请求变成合法请求。
 3. 以稳定排序的候选身份生成 question ID；identity 包含 Subtask、AgentClass、Provider、Model、Harness、permission profile、configuration revision。使用规范化序列化 hash，不拼接可能歧义的分隔字符串。
 4. 有零个或一个合法组合时不请求；记录 skipped 状态并保持原决策。
-5. 对每个合格组合提一个 noul 问题，概率用于软排序。
+5. 对每个 Subtask 的全部合格组合提一个联合 `choice` 问题；Mercury 返回每个候选的 calibrated probability 和 winner，概率用于统一软排序。
 6. 在同一 AgentClass 内，保留既有 preferred-capability 优先比较；随后 probability 降序，然后完整旧 resolver comparator 作为平局规则。没有有效 observation 时逐项维持旧顺序。
 7. 每个 AgentClass 仍输出一个模型 binding，选中的 binding 在合法 AgentClass 之间按 probability 降序排列；平局按 Planner 原提案顺序。不能新增原来未授权的 model fallback binding，也不能放宽固定模型配置。
 8. Kernel 将最终顺序写入现有 `authorizedBindingsBySubtask` 与 routing audit；Runtime 只应用它。已授权后的 retry/fallback 不重算 Span。
 
-Span 的 noul 是独立候选适配判断，不是候选之间归一化分布，更不是已校准的任务成功率。本期不设“低概率即拒绝”、不做概率加权成本公式、不把两个不同比例的分数直接相加。使用固定输入和可审计的字典序规则，后续再根据任务结果评估质量。
+Mercury 的 `choice` 概率是同一候选集合内的联合相对偏好，用于排序，不自动拒绝低概率候选，也不改变硬过滤结果。Kernel 仍使用完整的确定性比较器处理优先能力与平局，外部决策失败时完全回退旧 resolver。
 
 ## 6. 外部调用
 
-通过 `@openrouter/sdk` 的 `openrouter.alpha.decisions.create(...)`，固定 OpenRouter 地址和 model。使用已实测版本 `1.3.32` 的准确类型，安装时锁定版本并检查其请求、timeout、retry 和 abort 配置。
+通过 `@openrouter/sdk` 的 `openrouter.systemOne.create(...)`，固定 OpenRouter 地址和 model。Mercury Decide 与 Jev 共用 `/v1/systemone` schema。使用已实测版本 `1.3.32` 的准确类型，安装时锁定版本并检查其请求、timeout、retry 和 abort 配置。
 
 state 只包含经过脱敏并限长的 Subtask 标题、目标、必需能力、验收摘要，以及合格候选的有效能力、用途提示和现有成本/延迟等级。只纳入与此 Subtask 有关的事实，不读取附件内容、仓库、完整会话或完整用户请求。任务文本视为数据，不允许它指示修改候选或权限。脱敏不等同于完全保密；启用文案应说明会向 OpenRouter 发送必要任务摘要。
 
-每个问题必须明确引用对应候选，不能所有问题只问未指明对象的“此候选是否合适”：
+联合 choice 问题通过 criteria 明确列出每个候选，要求模型在同一候选集合中比较：
 
 ```ts
 {
-  type: 'noul',
-  instructions: 'Evaluate state.candidates.c000 against state.subtask requirements.',
+  type: 'choice',
+  instructions: 'Choose the best candidate from all options using state.subtask requirements.',
   criteria: {
-    true: 'The candidate is well suited to perform the described subtask.',
-    false: 'The candidate is poorly suited to perform the described subtask.',
+    c000: 'Candidate c000 is the AgentClass/model described in state.candidates.c000.',
+    c001: 'Candidate c001 is the AgentClass/model described in state.candidates.c001.',
   },
 }
 ```
 
 每个 Subtask 一个批量请求，最多 32 个候选、32KiB 请求；整个 proposal 最多 128 个候选、16 个被评估 Subtask、128KiB observation。超限的 Subtask 回退，不截掉合法候选制造偏向；整个 observation 超限时整次回退。每个 proposal 的外部请求总截止时间为 timeoutMs，不能让 N 个 Subtask 顺序累积 N 倍超时。Server 限制最多 2 个并发 Span 请求，等待计入截止时间，无无限队列。SDK 自动重试关闭；超时发送 abort，不仅 Promise.race。取消、服务停止中断请求；迟到结果不能复活 Turn 或入库。
 
-只接纳 exact question ID 集合、type=noul、finite 且 [0,1] 的数值。缺失/未知 ID、错误 primitive、无效模型身份均使该 Subtask 全部回退；不部分采用同一 Subtask 的回答。模型字段允许已核实的 Span snapshot 形式，并在 observation 中保存实际返回版本；usage 字段可缺省，但出现时必须有限、非负、有界。错误仅保留枚举和可选 HTTP status，不保存 SDK 原始 error body。
+只接纳 exact question ID 集合、type=choice、合法 winner 以及完整候选 probability map；概率必须 finite 且在 [0,1]。缺失/未知候选、错误 primitive、无效模型身份均使该 Subtask 全部回退；不部分采用同一 Subtask 的回答。模型字段允许已核实的 Mercury snapshot 形式，并在 observation 中保存实际返回版本；usage 字段可缺省，但出现时必须有限、非负、有界。错误仅保留枚举和可选 HTTP status，不保存 SDK 原始 error body。
 
 ## 7. 有界持久 observation
 
@@ -105,8 +105,8 @@ state 只包含经过脱敏并限长的 Subtask 标题、目标、必需能力�
 interface SpanRoutingObservation {
   schemaVersion: 1;
   policyVersion: 'span-routing-v1';
-  questionVersion: 'span-fit-v1';
-  model: 'respan/span-01-lite';
+  questionVersion: 'span-fit-v3';
+  model: 'inception/mercury-decide:free';
   eventId: string;
   proposalFingerprint: string;
   configurationRevision: string;
@@ -155,7 +155,7 @@ replan 保持已有 generation 的配置固定约束；不能因为“新 replan
 
 测试必须覆盖过滤不变性、排序确定性、跨 AgentClass 顺序、固定模型、未知/缺失/非法概率、限时 abort、输入界限、密钥隔离、配置回滚、事件重复提交、三个 proposal 来源、取消、候选变化、重放零请求和 deferred recovery。SQLite JSON 新字段无 DDL migration，仍须验证仓库 round-trip 和 Docker 持久化回归。
 
-先通过 mocked SDK + 真 SQLite 的闭环，再执行真实 Span smoke（凭据从 SecretStore 读取且不输出）。此前手工 API 实测验证 noul 与 batch 可调用，不证明本次集成或排序质量已通过。用固定任务样例对比旧 resolver 与 Span 的选择、延迟、失败率和 usage；测试阈值不能臆测为成功率。
+先通过 mocked SDK + 真 SQLite 的闭环，再执行真实 Span smoke（凭据从 SecretStore 读取且不输出）。真实 API 验收必须验证联合 choice 的 winner、完整 probability map、实际版本、usage、延迟和重放零追加调用。用固定任务样例对比旧 resolver 与 Mercury 的选择、延迟、失败率和 usage；测试阈值不能臆测为成功率。
 
 Span usage 保存为内部路由观测，不冒充 Planner/Executor 用量或自动新增用户账单扣费。本期不扩展 billing stage/外部消费协议；若需要计费，另按 ADR-0042 定义价格与付款方。
 
@@ -181,7 +181,7 @@ Span usage 保存为内部路由观测，不冒充 Planner/Executor 用量或自
 3. 并发限制提升为 Server 共享实例，跨提案总量不超过 2；排队等待计入提案总截至时间。
 4. Span 凭据改用 internal 命名空间，消除与同名 Provider 的存储冲突。
 5. 凭据解析受提案总截至时间约束，读取失败或超时均回退为有限枚举，不再向外抛错。
-6. 评分请求补充真实 Provider 模型身份与既有 reasoning/cost/latency/quality/context 事实；`questionVersion` 提升为 `span-fit-v2`，旧 observation 因版本不匹配被 Kernel 废弃。
+6. 评分请求补充真实 Provider 模型身份与既有 reasoning/cost/latency/quality/context 事实，并改为联合 choice；`questionVersion` 提升为 `span-fit-v3`，旧 observation 因版本不匹配被 Kernel 废弃。
 7. 真实 smoke 脚本改用与产品一致的严格响应校验（空集/部分答案不算成功），且只输出有限错误码与 HTTP status，不再回显原始 SDK/Provider 文本。
 
 ### 第二次评审修正（2026-09-27）

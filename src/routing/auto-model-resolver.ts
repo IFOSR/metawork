@@ -60,7 +60,7 @@ export interface ModelScoreBreakdown {
   qualityScore: number;
   totalScore: number;
   /**
-   * Validated Span noul probability for this candidate, when one applied.
+   * Validated Mercury joint-choice probability for this candidate, when one applied.
    * Kept separate from `totalScore`: it is a different scale and must never be
    * folded into the deterministic cost/latency/quality arithmetic.
    */
@@ -103,7 +103,7 @@ export interface AutoModelResolverInput {
   requirements: AutoModelRequirements;
   preferredModelRef?: string;
   /**
-   * Optional validated Span noul probabilities keyed by Model ref. Only the
+   * Optional validated Mercury choice probabilities keyed by Model ref. Only the
    * Kernel supplies this, and only after confirming the observation matches
    * the current event, revision, graph, Subtask and candidate set.
    */

@@ -27,7 +27,7 @@ function fixture() {
   const evaluate = vi.fn<SpanRoutingEvaluator['evaluate']>(async input => ({
     subtasks: input.requests.map(request => ({ subtaskId: request.subtaskId,
       candidateSetFingerprint: request.candidateSetFingerprint, status: 'advised',
-      resolvedModel: 'respan/span-01-lite-20260925', candidates: request.request.candidates.map(candidate => ({
+      resolvedModel: 'inception/mercury-decide-20260930', candidates: request.request.candidates.map(candidate => ({
         ...candidate, candidateId: candidate.questionId, probability: candidate.modelRef === 'deep' ? 0.9 : 0.2,
       })),
     })),

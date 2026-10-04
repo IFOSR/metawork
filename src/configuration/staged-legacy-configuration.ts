@@ -7,6 +7,8 @@ import {
   type KernelConfigurationView,
   type PlannerConfigurationView,
 } from './index.js';
+import { configurationContentHash } from './configuration-service.js';
+import { RETIRED_SPAN_ROUTING_MODELS } from './schema.js';
 import type { RevisionedAgentBinding } from '../core/authorized-executor-binding.js';
 import { authorizedExecutorBindingFingerprint } from '../core/authorized-executor-binding.js';
 import { AutoModelResolver } from '../routing/auto-model-resolver.js';
@@ -215,12 +217,31 @@ function validateMigratedSnapshot(
   const config = AnyFusionConfigurationV2Schema.parse(snapshot.config);
   const compiled = compileConfigurationRevision(snapshot.revisionId, config);
   if (compiled.contentHash === snapshot.contentHash) return snapshot;
-  if (legacyRuntimePolicyContentHash(snapshot.revisionId, config) !== snapshot.contentHash) {
+  if (
+    legacyRuntimePolicyContentHash(snapshot.revisionId, config) !== snapshot.contentHash
+    && !matchesRetiredSpanContentHash(config, snapshot.contentHash)
+  ) {
     throw new Error(
       `migrated configuration snapshot content hash mismatch: ${snapshot.revisionId}`,
     );
   }
   return { ...snapshot, config };
+}
+
+/** Undo only the known read-time model substitution for integrity checking. */
+function matchesRetiredSpanContentHash(
+  config: ConfigurationSnapshot['config'],
+  contentHash: string,
+): boolean {
+  const span = config.routing?.span;
+  if (!span) return false;
+  return RETIRED_SPAN_ROUTING_MODELS.some(model => configurationContentHash({
+    ...config,
+    routing: {
+      ...config.routing,
+      span: { ...span, model },
+    },
+  }) === contentHash);
 }
 
 function legacyRuntimePolicyContentHash(

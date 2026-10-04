@@ -63,7 +63,7 @@ describe('Span routing advanced settings draft', () => {
   it('defaults to disabled with the fixed model when the revision predates Span', () => {
     expect(loadSpanRoutingDraft({})).toEqual({
       enabled: false,
-      model: 'respan/span-01-lite',
+      model: 'inception/mercury-decide:free',
       timeoutMs: 8_000,
       apiKey: '',
     });
@@ -71,11 +71,11 @@ describe('Span routing advanced settings draft', () => {
 
   it('loads an existing Span section without exposing any stored key', () => {
     const draft = loadSpanRoutingDraft({
-      routing: { span: { enabled: true, model: 'respan/span-01-lite', apiKeyRef: 'file-secret:anyfusion/internal/routing-span', timeoutMs: 4_000 } },
+      routing: { span: { enabled: true, model: 'inception/mercury-decide:free', apiKeyRef: 'file-secret:anyfusion/internal/routing-span', timeoutMs: 4_000 } },
     });
     expect(draft).toEqual({
       enabled: true,
-      model: 'respan/span-01-lite',
+      model: 'inception/mercury-decide:free',
       timeoutMs: 4_000,
       apiKey: '',
     });
@@ -88,13 +88,13 @@ describe('Span routing advanced settings draft', () => {
 
   it('materializes the fixed model, timeout and the existing credential reference', () => {
     const section = buildSpanRoutingSection(
-      { enabled: true, model: 'respan/span-01-lite', timeoutMs: 2_000, apiKey: '' },
+      { enabled: true, model: 'inception/mercury-decide:free', timeoutMs: 2_000, apiKey: '' },
       { routing: { span: { enabled: false, apiKeyRef: 'file-secret:anyfusion/internal/routing-span' } } },
     );
     expect(section).toEqual({
       span: {
         enabled: true,
-        model: 'respan/span-01-lite',
+        model: 'inception/mercury-decide:free',
         timeoutMs: 2_000,
         apiKeyRef: 'file-secret:anyfusion/internal/routing-span',
       },
@@ -104,8 +104,8 @@ describe('Span routing advanced settings draft', () => {
 
   it('keeps a disabled Span section so the stored key survives a toggle', () => {
     const section = buildSpanRoutingSection(
-      { enabled: false, model: 'respan/span-01-lite', timeoutMs: 3_000, apiKey: '' },
-      { routing: { span: { enabled: true, model: 'respan/span-01-lite', apiKeyRef: 'file-secret:anyfusion/internal/routing-span', timeoutMs: 3_000 } } },
+      { enabled: false, model: 'inception/mercury-decide:free', timeoutMs: 3_000, apiKey: '' },
+      { routing: { span: { enabled: true, model: 'inception/mercury-decide:free', apiKeyRef: 'file-secret:anyfusion/internal/routing-span', timeoutMs: 3_000 } } },
     );
     expect(section).toMatchObject({ span: { enabled: false, apiKeyRef: 'file-secret:anyfusion/internal/routing-span' } });
   });

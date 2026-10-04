@@ -646,8 +646,7 @@ export function compileConfigurationRevision(
   revisionId: string,
   config: AnyFusionConfigurationV2,
 ): CompiledConfigurationRevision {
-  const canonical = stableJson(config);
-  const contentHash = createHash('sha256').update(canonical).digest('hex');
+  const contentHash = configurationContentHash(config);
   const snapshot = snapshotFor(revisionId, contentHash, config);
   return {
     contentHash,
@@ -658,6 +657,11 @@ export function compileConfigurationRevision(
       'runtime.json': `${JSON.stringify(buildRuntimeConfigurationView(snapshot), null, 2)}\n`,
     },
   };
+}
+
+/** Hash persisted content without applying current schema normalization. */
+export function configurationContentHash(config: unknown): string {
+  return createHash('sha256').update(stableJson(config)).digest('hex');
 }
 
 function snapshotFor(

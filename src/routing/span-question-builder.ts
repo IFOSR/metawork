@@ -9,7 +9,7 @@ import {
   SPAN_MODEL,
   type SpanCandidateBinding,
   type SpanEvaluationRequest,
-  type SpanNoulQuestion,
+  type SpanChoiceQuestion,
 } from './span-routing-types.js';
 
 const TITLE_LIMIT = 200;
@@ -23,7 +23,7 @@ export type SpanQuestionBuildResult =
   | { ok: false; reason: 'no_eligible_candidate' | 'span_input_too_large' };
 
 /**
- * Builds one bounded `noul` batch for a single Subtask.
+ * Builds one bounded joint `choice` decision for a single Subtask.
  *
  * Only hard-eligible candidates that already passed the shared filter are
  * described. Candidate identity is sorted canonically before question ids are
@@ -64,7 +64,7 @@ export function buildSpanSubtaskEvaluationRequest(input: {
 
   const candidates: SpanCandidateBinding[] = [];
   const stateCandidates: Record<string, unknown> = {};
-  const questions: Record<string, SpanNoulQuestion> = {};
+  const criteria: Record<string, string> = {};
   entries.forEach((entry, index) => {
     const questionId = `c${String(index).padStart(3, '0')}`;
     const candidateId = planRoutingCandidateId({
@@ -96,16 +96,8 @@ export function buildSpanSubtaskEvaluationRequest(input: {
       ...(entry.latencyTier ? { latencyTier: entry.latencyTier } : {}),
       routingCapabilities: [...(agentClass?.routingCapabilities ?? [])].sort(),
     };
-    questions[questionId] = {
-      type: 'noul',
-      instructions:
-        `Evaluate state.candidates.${questionId} against state.subtask requirements. `
-        + 'The candidate is exactly the AgentClass and model named there.',
-      criteria: {
-        true: 'The named candidate is well suited to perform the described subtask.',
-        false: 'The named candidate is poorly suited to perform the described subtask.',
-      },
-    };
+    criteria[questionId] = `The candidate is exactly AgentClass ${entry.agentClassRef} `
+      + `with model ${entry.modelId}; compare it using state.candidates.${questionId}.`;
   });
 
   const request: SpanEvaluationRequest = {
@@ -125,7 +117,16 @@ export function buildSpanSubtaskEvaluationRequest(input: {
       },
       candidates: stateCandidates,
     },
-    questions,
+    questions: {
+      candidates: {
+        type: 'choice',
+        instructions:
+          'Choose the single best candidate for state.subtask from all options. '
+          + 'Evaluate every option jointly and return calibrated probabilities for every option; '
+          + 'the probabilities must represent relative preference among these candidates.',
+        criteria,
+      },
+    },
     candidates,
   };
   // Include JSON-string escaping in the wire budget. Keeping local candidate

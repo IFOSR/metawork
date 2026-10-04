@@ -147,7 +147,11 @@ display names, while internal model/provider refs, configuration revisions and
 binding fingerprints remain server-side. If a historical revision cannot
 recover a public model identity, the projection reports that the historical
 model information is unavailable instead of exposing the internal ref.
-Optional Span routing is the only external routing advisor. Advanced settings
+Optional Span routing is the only external routing advisor. Reads normalize the
+retired `respan/span-01-lite` advisor to `inception/mercury-decide:free`; startup
+accepts the historical content hash only when reversing that exact substitution
+reproduces it. Revision IDs, persisted hashes and immutable files stay unchanged,
+and unrelated content changes still fail validation. Advanced settings
 store its OpenRouter credential through the same SecretStore path as a Provider
 key, but under the non-Provider `internal` namespace, and the revision keeps
 only that fixed reference. Configuration validation accepts no other reference,
@@ -156,8 +160,8 @@ at a Provider credential; Provider references into the internal namespace are
 also rejected. After the
 shared hard filter and before the `plan_proposed` event is durably enqueued, the
 Server may attach a bounded `spanRouting` observation to that event. At the SDK
-boundary, structured state is sent as a JSON string (Respan's required wire
-format), with escaping included in the size budget. Replay
+boundary, structured state is sent as a JSON string for the OpenRouter System
+One contract shared with Jev, with escaping included in the size budget. Replay
 reuses the persisted observation and never re-calls the advisor. `ControlKernel`
 re-validates the observation and then uses its probabilities only to order
 eligible candidates; it never widens the candidate set, and any absent, stale,

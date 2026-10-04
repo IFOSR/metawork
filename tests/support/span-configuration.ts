@@ -26,7 +26,7 @@ export function spanSnapshot(revisionId = 'revision-test'): ConfigurationSnapsho
     permissionProfiles: { workspace: { profileId: 'workspace-engineering', version: 1, parameters: {} } },
     runtimePolicy: { maxConcurrentTasks: 2, maxConcurrentAttempts: 4, maxConcurrentAttemptsPerTask: 2,
       schedulingAgingMs: 300_000, sameConversationQueueLimit: 8 }, gateway: {},
-    routing: { span: { enabled: true, model: 'respan/span-01-lite', timeoutMs: 3000,
+    routing: { span: { enabled: true, model: 'inception/mercury-decide:free', timeoutMs: 3000,
       apiKeyRef: 'file-secret:anyfusion/internal/routing-span' } },
   }) };
 }

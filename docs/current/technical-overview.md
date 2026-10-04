@@ -1232,7 +1232,7 @@ update with an unavailable Provider secret.
 ### Span Routing Advisor
 
 The advanced settings section offers one optional external routing advisor:
-`respan/span-01-lite` on OpenRouter. Its OpenRouter Key uses the same secret
+`inception/mercury-decide:free` on OpenRouter. Its OpenRouter Key uses the same secret
 flow as a Provider Key — the Server writes it to the account SecretStore under a
 fixed reference in the non-Provider `internal` namespace and the revision stores
 only that reference, so a Provider named `routing-span` can never share the slot.
@@ -1240,7 +1240,11 @@ Configuration validation accepts only that exact reference and the Server
 re-checks it before reading the secret. Provider references into that internal
 namespace are rejected as well. The section has no Provider or Model
 picker, and a blank Key field keeps the
-stored value.
+stored value. Existing immutable revisions that still name the retired Span
+model are normalized to this fixed Mercury model when read. Startup verifies
+that historical content hash by reversing only the known model substitution;
+other changed content still fails validation. No immutable revision file, hash,
+revision ID or active pointer is rewritten.
 
 When enabled, the Server evaluates only the candidates that already passed the
 shared hard filter and attaches a bounded `spanRouting` observation to the
@@ -1266,9 +1270,9 @@ abort retains its physical slot until it settles.
 workloads through the real advisor, Kernel and SQLite replay, reports ordering,
 latency and usage, and requires zero extra calls on replay. It requires a valid
 OpenRouter key and local development dependencies. The SDK boundary sends the
-structured state as a JSON string because Respan rejects object state; the
-request budget includes escaping. The default smoke mode
-only checks the Decisions API transport.
+structured state as a JSON string and includes escaping in the request budget.
+Mercury and Jev use the same OpenRouter System One protocol. The default smoke
+mode only checks System One transport.
 
 Export the Feishu app secret before starting the runtime:
 

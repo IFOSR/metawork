@@ -9,7 +9,7 @@
 ## Live defect and correction
 
 The first live integration run failed its three scoring scenarios with HTTP 400.
-A minimal request isolated the provider contract: Respan requires `state` to be
+A minimal request isolated the provider contract: the System One endpoint requires `state` to be
 a string, although the SDK accepts objects for other decision providers. Both
 the production adapter and transport smoke had sent an object. The previous
 HTTP mock accepted that invalid shape, so the earlier local acceptance missed it.
@@ -57,7 +57,7 @@ HTTP/protocol errors cannot pass this acceptance mode.
 | Research comparison | advised | 1817 ms | 0 |
 | Single candidate | `single_candidate`; no API call | 0 ms | 0 |
 
-Successful responses resolved to **`respan/span-01-lite-20260925`**. The timeout
+Successful responses resolved to **`inception/mercury-decide-20260930`**. The timeout
 returned no usage; no zero-cost claim is made for the interrupted request.
 The default transport smoke also passed with the same temporary internal
 credential source: 2244 ms, 317 input tokens, 0 output tokens, reported cost 0,

@@ -13,8 +13,8 @@ export const SPAN_OBSERVATION_POLICY_VERSION = 'span-routing-v1' as const;
  * discards an older observation and keeps the deterministic resolver instead of
  * ranking on data produced under a different contract.
  */
-export const SPAN_QUESTION_VERSION = 'span-fit-v2' as const;
-export const SPAN_MODEL = 'respan/span-01-lite' as const;
+export const SPAN_QUESTION_VERSION = 'span-fit-v3' as const;
+export const SPAN_MODEL = 'inception/mercury-decide:free' as const;
 
 /** Per-request and per-proposal limits (design §6). */
 export const SPAN_MAX_CANDIDATES_PER_SUBTASK = 32;
@@ -52,7 +52,7 @@ export interface SpanUsage {
 }
 
 export interface SpanRoutingCandidate {
-  /** Stable question id used in the Span request (`c000`...). */
+  /** Stable option id used in the joint Span request (`c000`...). */
   candidateId: string;
   agentClassRef: string;
   providerRef: string;
@@ -97,11 +97,11 @@ export interface SpanRoutingObservation {
   usage?: SpanUsage;
 }
 
-/** One `noul` question as accepted by the Decisions API. */
-export interface SpanNoulQuestion {
-  type: 'noul';
+/** One joint candidate-ranking question accepted by the System One API. */
+export interface SpanChoiceQuestion {
+  type: 'choice';
   instructions: string;
-  criteria: { true: string; false: string };
+  criteria: Record<string, string>;
 }
 
 /** Candidate identity bound to a stable question id. */
@@ -113,11 +113,11 @@ export interface SpanCandidateBinding {
   modelRef: string;
 }
 
-/** Fully bounded Span Decisions request plus its question id mapping. */
+/** Fully bounded Span/System One request plus its question id mapping. */
 export interface SpanEvaluationRequest {
   model: typeof SPAN_MODEL;
   state: Record<string, unknown>;
-  questions: Record<string, SpanNoulQuestion>;
+  questions: Record<string, SpanChoiceQuestion>;
   candidates: SpanCandidateBinding[];
 }
 
@@ -132,7 +132,7 @@ export type SpanEvaluationOutcome =
   | {
       ok: true;
       resolvedModel: string;
-      /** Probabilities keyed by `questionId`. */
+      /** Probabilities keyed by candidate option id (`questionId`). */
       probabilities: Record<string, number>;
       usage?: SpanUsage;
       durationMs: number;

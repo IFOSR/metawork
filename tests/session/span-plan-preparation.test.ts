@@ -56,7 +56,7 @@ function runtimeConfiguration(enabled = true, timeoutMs = 3_000): RuntimeConfigu
       routing: {
         span: {
           enabled: true,
-          model: 'respan/span-01-lite',
+          model: 'inception/mercury-decide:free',
           apiKeyRef: 'file-secret:anyfusion/internal/routing-span',
           timeoutMs,
         },
@@ -123,7 +123,7 @@ function adviseAll(): SpanRoutingEvaluator {
       subtaskId: request.subtaskId,
       candidateSetFingerprint: request.candidateSetFingerprint,
       status: 'advised' as const,
-      resolvedModel: 'respan/span-01-lite-20260925',
+      resolvedModel: 'inception/mercury-decide-20260930',
       candidates: request.request.candidates.map(binding => ({
         candidateId: binding.questionId,
         agentClassRef: binding.agentClassRef,
@@ -190,7 +190,7 @@ describe('attachSpanRoutingObservation', () => {
     expect(observation?.subtasks[0]).toMatchObject({
       subtaskId: 's1',
       status: 'advised',
-      resolvedModel: 'respan/span-01-lite-20260925',
+      resolvedModel: 'inception/mercury-decide-20260930',
     });
     expect(observation?.proposalFingerprint).toMatch(/^[a-f0-9]{64}$/u);
     expect(observation?.configurationRevision).toBe('revision-1');

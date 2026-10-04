@@ -546,7 +546,7 @@ export class ConversationSession {
       actor: 'kernel',
       kind: 'span_routing_evaluated',
       status: 'completed',
-      title: 'Span 决策模型完成路由评估',
+      title: '决策模型完成路由评估',
       summary: `已评估 ${subtasks.length} 个子任务：${advisedCount} 个提供候选评分，${fallbackCount} 个回退到确定性路由；最终授权仍由 Kernel 完成。`,
       details: {
         model: observation.model,

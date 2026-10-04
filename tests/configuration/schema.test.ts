@@ -267,6 +267,21 @@ describe('AnyFusion configuration schema v2', () => {
     expect(result.runtimePolicy).not.toHaveProperty('attemptTimeoutMs');
   });
 
+  it('reads an immutable revision that used the retired Span model as Mercury', () => {
+    const result = parseAnyFusionConfigurationV2({
+      ...minimalConfiguration(),
+      routing: {
+        span: {
+          enabled: true,
+          model: 'respan/span-01-lite',
+          timeoutMs: 3_000,
+        },
+      },
+    });
+
+    expect(result.routing?.span?.model).toBe('inception/mercury-decide:free');
+  });
+
   it('rejects configurations that specify both timeout field names', () => {
     expect(() => parseAnyFusionConfigurationV2({
       ...minimalConfiguration(),

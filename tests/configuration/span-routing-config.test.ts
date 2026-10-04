@@ -140,11 +140,11 @@ describe('Span routing configuration schema', () => {
   it('accepts a valid Span section and applies the default timeout', () => {
     const config = parseAnyFusionConfigurationV2({
       ...baseConfiguration(),
-      routing: { span: { enabled: true, model: 'respan/span-01-lite', apiKeyRef: SPAN_ROUTING_SECRET_REFERENCE } },
+      routing: { span: { enabled: true, model: 'inception/mercury-decide:free', apiKeyRef: SPAN_ROUTING_SECRET_REFERENCE } },
     });
     expect(config.routing?.span).toEqual({
       enabled: true,
-      model: 'respan/span-01-lite',
+      model: 'inception/mercury-decide:free',
       apiKeyRef: SPAN_ROUTING_SECRET_REFERENCE,
       timeoutMs: SPAN_ROUTING_DEFAULT_TIMEOUT_MS,
     });
@@ -153,13 +153,13 @@ describe('Span routing configuration schema', () => {
   it('rejects an invalid Span model, timeout, and credential reference', () => {
     for (const span of [
       { enabled: true, model: 'openai/gpt-4o', timeoutMs: 3_000 },
-      { enabled: true, model: 'respan/span-01-lite', timeoutMs: 100 },
-      { enabled: true, model: 'respan/span-01-lite', timeoutMs: 60_000 },
-      { enabled: true, model: 'respan/span-01-lite', apiKeyRef: 'plaintext-key' },
+      { enabled: true, model: 'inception/mercury-decide:free', timeoutMs: 100 },
+      { enabled: true, model: 'inception/mercury-decide:free', timeoutMs: 60_000 },
+      { enabled: true, model: 'inception/mercury-decide:free', apiKeyRef: 'plaintext-key' },
       // A Provider credential must never be reachable as the Span key, even
       // when the reference is otherwise well formed.
-      { enabled: true, model: 'respan/span-01-lite', apiKeyRef: 'file-secret:anyfusion/providers/openai' },
-      { enabled: true, model: 'respan/span-01-lite', apiKeyRef: 'file-secret:anyfusion/routing-span' },
+      { enabled: true, model: 'inception/mercury-decide:free', apiKeyRef: 'file-secret:anyfusion/providers/openai' },
+      { enabled: true, model: 'inception/mercury-decide:free', apiKeyRef: 'file-secret:anyfusion/routing-span' },
     ]) {
       expect(AnyFusionConfigurationV2Schema.safeParse({
         ...baseConfiguration(),
@@ -175,7 +175,7 @@ describe('Span routing projections', () => {
     routing: {
       span: {
         enabled: true,
-        model: 'respan/span-01-lite',
+        model: 'inception/mercury-decide:free',
         apiKeyRef: SPAN_ROUTING_SECRET_REFERENCE,
         timeoutMs: 2_500,
       },
@@ -186,7 +186,7 @@ describe('Span routing projections', () => {
     const kernel = buildKernelConfigurationView(config);
     expect(kernel.spanRouting).toEqual({
       enabled: true,
-      model: 'respan/span-01-lite',
+      model: 'inception/mercury-decide:free',
       timeoutMs: 2_500,
     });
     expect(JSON.stringify(kernel)).not.toContain('internal/routing-span');
@@ -194,7 +194,7 @@ describe('Span routing projections', () => {
 
   it('does not leak Span configuration into the Planner projection', () => {
     const planner = buildPlannerConfigurationView(config);
-    expect(JSON.stringify(planner)).not.toContain('span-01-lite');
+    expect(JSON.stringify(planner)).not.toContain('mercury-decide');
     expect(JSON.stringify(planner)).not.toContain('internal/routing-span');
   });
 
@@ -209,7 +209,7 @@ describe('Span routing diff classification', () => {
     const before = baseConfiguration();
     const after = {
       ...baseConfiguration(),
-      routing: { span: { enabled: true, model: 'respan/span-01-lite', timeoutMs: 3_000 } },
+      routing: { span: { enabled: true, model: 'inception/mercury-decide:free', timeoutMs: 3_000 } },
     };
     const classification = classifyConfigurationDiff(before, after);
     expect(classification.classification).toBe('hot');
@@ -219,7 +219,7 @@ describe('Span routing diff classification', () => {
   it('treats editing the Span section as a hot-safe change', () => {
     const withSpan = (timeoutMs: number) => ({
       ...baseConfiguration(),
-      routing: { span: { enabled: true, model: 'respan/span-01-lite', timeoutMs } },
+      routing: { span: { enabled: true, model: 'inception/mercury-decide:free', timeoutMs } },
     });
     const classification = classifyConfigurationDiff(withSpan(3_000), withSpan(5_000));
     expect(classification.classification).toBe('hot');
@@ -265,7 +265,7 @@ describe('Span routing credential storage', () => {
       routing: {
         span: {
           enabled: true,
-          model: 'respan/span-01-lite',
+          model: 'inception/mercury-decide:free',
           apiKeyRef: SPAN_ROUTING_SECRET_REFERENCE,
         },
       },
@@ -279,7 +279,7 @@ describe('Span routing credential activation', () => {
     const before = snapshot('revision-before', baseConfiguration());
     const after = snapshot('revision-after', {
       ...baseConfiguration(),
-      routing: { span: { enabled: true, model: 'respan/span-01-lite', timeoutMs: 3_000 } },
+      routing: { span: { enabled: true, model: 'inception/mercury-decide:free', timeoutMs: 3_000 } },
     });
     const rollback = vi.fn(async () => undefined);
     const prepareConfig = vi.fn(async ({ config, spanApiKey }: {
@@ -289,7 +289,7 @@ describe('Span routing credential activation', () => {
       const candidate = structuredClone(config) as Record<string, unknown>;
       if (spanApiKey !== undefined) {
         candidate.routing = {
-          span: { enabled: true, model: 'respan/span-01-lite', timeoutMs: 3_000, apiKeyRef: SPAN_ROUTING_SECRET_REFERENCE },
+          span: { enabled: true, model: 'inception/mercury-decide:free', timeoutMs: 3_000, apiKeyRef: SPAN_ROUTING_SECRET_REFERENCE },
         };
       }
       return candidate;

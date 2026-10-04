@@ -12,7 +12,7 @@ import {
 
 export { SpanEvaluationAbortedError } from './span-routing-types.js';
 
-/** Narrow callable seam around the Decisions API so tests never hit the network. */
+/** Narrow callable seam around the OpenRouter System One API. */
 export interface SpanDecisionClient {
   create(
     request: {
@@ -46,8 +46,8 @@ export interface SpanRoutingAdvisorDeps {
 /**
  * Server-only Span advisor.
  *
- * Owns the single external call site: bounded one-batch-per-Subtask `noul`
- * evaluation with a proposal-wide deadline, a small concurrency cap, disabled
+ * Owns the single external call site: bounded one-batch-per-Subtask joint
+ * `choice` evaluation with a proposal-wide deadline, a small concurrency cap, disabled
  * SDK retries, and abort-on-timeout. It never mutates a decision, binding, or
  * candidate set; it returns an observation for the Kernel to validate.
  */
@@ -238,12 +238,12 @@ export function defaultSpanDecisionClient(apiKey: string): SpanDecisionClient {
   const client = new OpenRouter({ apiKey, retryConfig: { strategy: 'none' } });
   return {
     async create(request, options) {
-      return client.alpha.decisions.create(
+      return client.systemOne.create(
         {
           decisionsRequest: {
             model: request.model,
-            // Respan accepts textual state only; the SDK also permits objects
-            // for other decision providers, which Respan rejects with HTTP 400.
+            // System One accepts textual state; keeping this explicit also
+            // preserves the wire contract used by Jev-compatible models.
             state: JSON.stringify(request.state),
             questions: request.questions as never,
           },

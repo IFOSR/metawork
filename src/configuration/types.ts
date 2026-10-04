@@ -248,7 +248,7 @@ export interface GatewayConfig {
  */
 export interface SpanRoutingConfiguration {
   enabled: boolean;
-  model: 'respan/span-01-lite';
+  model: 'inception/mercury-decide:free';
   apiKeyRef?: string;
   timeoutMs: number;
 }

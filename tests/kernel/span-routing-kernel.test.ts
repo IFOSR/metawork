@@ -215,7 +215,7 @@ function observation(
     schemaVersion: 1,
     policyVersion: 'span-routing-v1',
     questionVersion: SPAN_QUESTION_VERSION,
-    model: 'respan/span-01-lite',
+    model: 'inception/mercury-decide:free',
     eventId: event.id,
     proposalFingerprint,
     configurationRevision,
@@ -226,7 +226,7 @@ function observation(
       subtaskId: 'subtask_execute',
       candidateSetFingerprint: planRoutingCandidateSetFingerprint(eligible),
       status: 'advised',
-      resolvedModel: 'respan/span-01-lite-20260925',
+      resolvedModel: 'inception/mercury-decide-20260930',
       candidates: eligible.map((identity, index) => ({
         candidateId: `c${String(index).padStart(3, '0')}`,
         ...identity,
@@ -325,7 +325,7 @@ describe('ControlKernel Span routing consumption', () => {
         subtaskId: 'subtask_execute',
         candidateSetFingerprint: 'stale-fingerprint',
         status: 'advised',
-        resolvedModel: 'respan/span-01-lite-20260925',
+        resolvedModel: 'inception/mercury-decide-20260930',
         candidates: [],
       }] },
     ));

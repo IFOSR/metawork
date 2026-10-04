@@ -17,7 +17,8 @@ const SECRET_REFERENCE =
   /^(?:file-secret|keychain):[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/;
 
 /** Fixed Span advisor model; the UI never offers a model/provider picker. */
-export const SPAN_ROUTING_MODEL = 'respan/span-01-lite' as const;
+export const SPAN_ROUTING_MODEL = 'inception/mercury-decide:free' as const;
+export const RETIRED_SPAN_ROUTING_MODELS: readonly string[] = ['respan/span-01-lite'];
 /**
  * Fixed, Server-owned SecretStore reference for the OpenRouter credential.
  *
@@ -690,7 +691,39 @@ export const AnyFusionConfigurationV2Schema = z.object({
 }) as z.ZodType<AnyFusionConfigurationV2>;
 
 export function parseAnyFusionConfigurationV2(value: unknown): AnyFusionConfigurationV2 {
-  return AnyFusionConfigurationV2Schema.parse(normalizeRetiredRuntimePolicy(value));
+  return AnyFusionConfigurationV2Schema.parse(
+    normalizeRetiredSpanRoutingModel(normalizeRetiredRuntimePolicy(value)),
+  );
+}
+
+/**
+ * Existing immutable revisions may still name the retired Span advisor. Read
+ * them as the current fixed advisor so an upgrade does not strand the active
+ * configuration. Newly written revisions are validated against the Mercury
+ * literal above and therefore cannot reintroduce the retired model.
+ */
+function normalizeRetiredSpanRoutingModel(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const configuration = value as Record<string, unknown>;
+  const routing = configuration.routing;
+  if (!routing || typeof routing !== 'object' || Array.isArray(routing)) return value;
+  const routingRecord = routing as Record<string, unknown>;
+  const span = routingRecord.span;
+  if (!span || typeof span !== 'object' || Array.isArray(span)) return value;
+  const spanRecord = span as Record<string, unknown>;
+  if (typeof spanRecord.model !== 'string' || !RETIRED_SPAN_ROUTING_MODELS.includes(spanRecord.model)) {
+    return value;
+  }
+  return {
+    ...configuration,
+    routing: {
+      ...routingRecord,
+      span: {
+        ...spanRecord,
+        model: SPAN_ROUTING_MODEL,
+      },
+    },
+  };
 }
 
 function normalizeRetiredRuntimePolicy(value: unknown): unknown {

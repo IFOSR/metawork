@@ -131,11 +131,12 @@ describe('Span question builder', () => {
     expect(forward.request.candidates.map(item => item.questionId)).toEqual(['c000', 'c001']);
   });
 
-  it('names the exact candidate in each instruction', () => {
+  it('describes every candidate in one joint choice question', () => {
     const request = buildRequest();
-    expect(request.questions.c000!.instructions).toContain('state.candidates.c000');
-    expect(request.questions.c001!.instructions).toContain('state.candidates.c001');
-    expect(request.questions.c000!.type).toBe('noul');
+    expect(request.questions.candidates!.instructions).toContain('all options');
+    expect(request.questions.candidates!.criteria.c000).toContain('state.candidates.c000');
+    expect(request.questions.candidates!.criteria.c001).toContain('state.candidates.c001');
+    expect(request.questions.candidates!.type).toBe('choice');
   });
 
   it('redacts credential-like text and never includes unrelated task data', () => {
@@ -229,29 +230,31 @@ describe('Span response validator', () => {
       request,
       response: {
         id: 'gen-dec-1',
-        model: 'respan/span-01-lite-20260925',
+        model: 'inception/mercury-decide-20260930',
         provider: 'TypeSafe',
         answers: {
-          c000: { type: 'noul', noul: 0.88062555 },
-          c001: { type: 'noul', noul: 0.629785 },
+          candidates: {
+            type: 'choice', choice: 'c000',
+            probabilities: { c000: 0.88062555, c001: 0.629785 },
+          },
         },
         usage: { inputTokens: 476, outputTokens: 70, cost: 0.000019992 },
       },
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.resolvedModel).toBe('respan/span-01-lite-20260925');
+    expect(result.resolvedModel).toBe('inception/mercury-decide-20260930');
     expect(result.probabilities).toEqual({ c000: 0.88062555, c001: 0.629785 });
     expect(result.usage?.inputTokens).toBe(476);
   });
 
   it.each([
-    ['missing answer', { c000: { type: 'noul', noul: 0.5 } }],
-    ['unknown answer', { c000: { type: 'noul', noul: 0.5 }, c001: { type: 'noul', noul: 0.5 }, c002: { type: 'noul', noul: 0.5 } }],
+    ['missing answer', { candidates: { type: 'choice', choice: 'c000', probabilities: { c000: 0.5 } } }],
+    ['unknown answer', { candidates: { type: 'choice', choice: 'c000', probabilities: { c000: 0.5, c001: 0.5, c002: 0.1 } } }],
   ])('rejects a %s as a candidate mismatch', (_label, answers) => {
     const result = validateSpanDecisionsResponse({
       request,
-      response: { model: 'respan/span-01-lite-20260925', answers, usage: { inputTokens: 1, outputTokens: 0 } },
+      response: { model: 'inception/mercury-decide-20260930', answers, usage: { inputTokens: 1, outputTokens: 0 } },
     });
     expect(result).toEqual({ ok: false, reason: 'span_candidate_mismatch' });
   });
@@ -262,12 +265,12 @@ describe('Span response validator', () => {
     ['out of range', 1.5],
     ['negative', -0.1],
     ['non numeric', 'high'],
-  ])('rejects a %s probability', (_label, noul) => {
+  ])('rejects a %s probability', (_label, probability) => {
     const result = validateSpanDecisionsResponse({
       request,
       response: {
-        model: 'respan/span-01-lite-20260925',
-        answers: { c000: { type: 'noul', noul }, c001: { type: 'noul', noul: 0.5 } },
+        model: 'inception/mercury-decide-20260930',
+        answers: { candidates: { type: 'choice', choice: 'c000', probabilities: { c000: probability, c001: 0.5 } } },
         usage: { inputTokens: 1, outputTokens: 0 },
       },
     });
@@ -278,10 +281,9 @@ describe('Span response validator', () => {
     const result = validateSpanDecisionsResponse({
       request,
       response: {
-        model: 'respan/span-01-lite-20260925',
+        model: 'inception/mercury-decide-20260930',
         answers: {
-          c000: { type: 'choice', choice: 'a', probabilities: {} },
-          c001: { type: 'noul', noul: 0.5 },
+          candidates: { type: 'score', score: 1, probabilities: { c000: 0.5, c001: 0.5 } },
         },
         usage: { inputTokens: 1, outputTokens: 0 },
       },
@@ -294,7 +296,7 @@ describe('Span response validator', () => {
       request,
       response: {
         model: 'openai/gpt-4o',
-        answers: { c000: { type: 'noul', noul: 0.5 }, c001: { type: 'noul', noul: 0.5 } },
+        answers: { candidates: { type: 'choice', choice: 'c000', probabilities: { c000: 0.5, c001: 0.5 } } },
         usage: { inputTokens: 1, outputTokens: 0 },
       },
     });
@@ -321,7 +323,9 @@ describe('Span routing advisor', () => {
   it('discards a response that arrives after the proposal deadline', async () => {
     const result = await advisor({ create: async () => {
       await new Promise(resolve => setTimeout(resolve, 35));
-      return { model: 'respan/span-01-lite', answers: { c000: { type: 'noul', noul: 0.9 }, c001: { type: 'noul', noul: 0.2 } } };
+      return { model: 'inception/mercury-decide:free', answers: {
+        candidates: { type: 'choice', choice: 'c000', probabilities: { c000: 0.9, c001: 0.2 } },
+      } };
     } }).evaluate({ configurationRevision: 'revision-1', deadlineMs: Date.now() + 10, requests: [request()] });
     expect(result.subtasks[0]).toMatchObject({ status: 'fallback', reason: 'span_timeout' });
   });
@@ -341,8 +345,8 @@ describe('Span routing advisor', () => {
   it('maps validated probabilities back to candidate identities', async () => {
     const client: SpanDecisionClient = {
       create: async () => ({
-        model: 'respan/span-01-lite-20260925',
-        answers: { c000: { type: 'noul', noul: 0.9 }, c001: { type: 'noul', noul: 0.2 } },
+        model: 'inception/mercury-decide-20260930',
+        answers: { candidates: { type: 'choice', choice: 'c000', probabilities: { c000: 0.9, c001: 0.2 } } },
         usage: { inputTokens: 10, outputTokens: 0, cost: 0 },
       }),
     };
@@ -358,7 +362,7 @@ describe('Span routing advisor', () => {
       { candidateId: 'c000', agentClassRef: 'codex-fast', providerRef: 'provider-a', modelRef: 'model-fast', probability: 0.9 },
       { candidateId: 'c001', agentClassRef: 'pi-general', providerRef: 'provider-a', modelRef: 'model-deep', probability: 0.2 },
     ]);
-    expect(observation.resolvedModel).toBe('respan/span-01-lite-20260925');
+    expect(observation.resolvedModel).toBe('inception/mercury-decide-20260930');
   });
 
   it('falls back without calling the API when no credential is available', async () => {
@@ -407,7 +411,7 @@ describe('Span routing advisor', () => {
 
   it('reports span_invalid_response for an unparseable payload', async () => {
     const client: SpanDecisionClient = {
-      create: async () => ({ model: 'respan/span-01-lite-20260925', answers: {} }),
+      create: async () => ({ model: 'inception/mercury-decide-20260930', answers: {} }),
     };
     const result = await advisor(client).evaluate({
       configurationRevision: 'revision-1',
@@ -480,8 +484,8 @@ describe('Span routing advisor', () => {
         await new Promise(resolve => setTimeout(resolve, 10));
         active -= 1;
         return {
-          model: 'respan/span-01-lite-20260925',
-          answers: { c000: { type: 'noul', noul: 0.5 }, c001: { type: 'noul', noul: 0.5 } },
+          model: 'inception/mercury-decide-20260930',
+          answers: { candidates: { type: 'choice', choice: 'c000', probabilities: { c000: 0.5, c001: 0.5 } } },
           usage: { inputTokens: 1, outputTokens: 0 },
         };
       },
@@ -514,8 +518,8 @@ describe('Span routing advisor', () => {
         await release.promise;
         active -= 1;
         return {
-          model: 'respan/span-01-lite-20260925',
-          answers: { c000: { type: 'noul', noul: 0.5 }, c001: { type: 'noul', noul: 0.5 } },
+          model: 'inception/mercury-decide-20260930',
+          answers: { candidates: { type: 'choice', choice: 'c000', probabilities: { c000: 0.5, c001: 0.5 } } },
           usage: { inputTokens: 1, outputTokens: 0 },
         };
       },
@@ -546,8 +550,8 @@ describe('Span routing advisor', () => {
           await new Promise<void>(resolve => { gates.push(resolve); });
           active -= 1;
           return {
-            model: 'respan/span-01-lite-20260925',
-            answers: { c000: { type: 'noul', noul: 0.5 }, c001: { type: 'noul', noul: 0.5 } },
+            model: 'inception/mercury-decide-20260930',
+            answers: { candidates: { type: 'choice', choice: 'c000', probabilities: { c000: 0.5, c001: 0.5 } } },
             usage: { inputTokens: 1, outputTokens: 0 },
           };
         },
@@ -587,8 +591,8 @@ describe('Span routing advisor', () => {
     const resolveApiKey = vi.fn(async () => 'sk-or-test');
     const client: SpanDecisionClient = {
       create: async () => ({
-        model: 'respan/span-01-lite-20260925',
-        answers: { c000: { type: 'noul', noul: 0.9 }, c001: { type: 'noul', noul: 0.2 } },
+        model: 'inception/mercury-decide-20260930',
+        answers: { candidates: { type: 'choice', choice: 'c000', probabilities: { c000: 0.9, c001: 0.2 } } },
         usage: { inputTokens: 1, outputTokens: 0 },
       }),
     };

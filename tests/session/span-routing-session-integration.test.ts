@@ -258,7 +258,7 @@ describe('ConversationSession Span integration', () => {
       phase: 'routing',
       actor: 'kernel',
       details: expect.objectContaining({
-        model: 'respan/span-01-lite',
+        model: 'inception/mercury-decide:free',
         subtasks: [expect.objectContaining({
           subtaskId: 's1',
           status: 'fallback',

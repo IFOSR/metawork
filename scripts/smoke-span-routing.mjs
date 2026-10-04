@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Real Span routing-advisor smoke test.
+// Real Span routing-advisor smoke test using OpenRouter System One.
 //
-// By default performs ONE live Decisions API call against `respan/span-01-lite`.
+// By default performs ONE live System One API call against
+// `inception/mercury-decide:free`.
 // --integration runs four sample workloads through the production advisor,
 // ControlKernel and SQLite replay (three calls; single-candidate makes none).
 // Both modes use the MetaWork credential and print finite safe summaries.
@@ -26,9 +27,9 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { OpenRouter } from '@openrouter/sdk';
 
-const SPAN_MODEL = 'respan/span-01-lite';
+const SPAN_MODEL = 'inception/mercury-decide:free';
 const SPAN_SECRET_KEY = 'routing-span';
-const SPAN_MODEL_VERSION = /^respan\/span-01-lite(?:-\d{8})?$/u;
+const SPAN_MODEL_VERSION = /^inception\/mercury-decide(?::free|-\d{8})?$/u;
 function parseArgs(argv) {
   const options = { credentials: process.env.METAWORK_CREDENTIALS ?? '' };
   for (let index = 0; index < argv.length; index += 1) {
@@ -90,20 +91,12 @@ function buildRequest() {
       },
     },
     questions: {
-      c000: {
-        type: 'noul',
-        instructions: 'Evaluate state.candidates.c000 against state.subtask requirements.',
+      candidates: {
+        type: 'choice',
+        instructions: 'Choose the single best candidate from all options and return probabilities for every option.',
         criteria: {
-          true: 'The named candidate is well suited to perform the described subtask.',
-          false: 'The named candidate is poorly suited to perform the described subtask.',
-        },
-      },
-      c001: {
-        type: 'noul',
-        instructions: 'Evaluate state.candidates.c001 against state.subtask requirements.',
-        criteria: {
-          true: 'The named candidate is well suited to perform the described subtask.',
-          false: 'The named candidate is poorly suited to perform the described subtask.',
+          c000: 'Candidate c000 is a valid option described in state.candidates.c000.',
+          c001: 'Candidate c001 is a valid option described in state.candidates.c001.',
         },
       },
     },
@@ -140,28 +133,37 @@ async function main() {
   const timeout = setTimeout(() => controller.abort(), 5_000);
   try {
     const request = buildRequest();
-    const response = await client.alpha.decisions.create(
+    const response = await client.systemOne.create(
       { decisionsRequest: { ...request, state: JSON.stringify(request.state) } },
       { signal: controller.signal, timeoutMs: 5_000, retries: { strategy: 'none' } },
     );
     const model = typeof response?.model === 'string' ? response.model : '';
     const answers = response?.answers && typeof response.answers === 'object' ? response.answers : {};
     const expected = Object.keys(buildRequest().questions);
-    // Mirror the product validator: an empty or partial answer set is never a
-    // successful smoke run, and every probability must be a finite [0,1] noul.
+    // Mirror the product validator: a missing choice or partial probability
+    // map is never a successful smoke run.
     const received = Object.keys(answers);
     const answersComplete = received.length === expected.length
       && expected.every(questionId => Object.hasOwn(answers, questionId));
+    const candidateIds = Object.keys(buildRequest().state.candidates);
+    const answer = answers.candidates && typeof answers.candidates === 'object'
+      ? answers.candidates
+      : null;
+    const rawProbabilities = answer?.probabilities && typeof answer.probabilities === 'object'
+      ? answer.probabilities
+      : {};
     const probabilities = {};
     let answersValid = answersComplete;
-    for (const questionId of expected) {
-      const answer = answers[questionId];
-      const value = answer && typeof answer === 'object' && answer.type === 'noul'
-        ? answer.noul
-        : undefined;
+    if (!answer || answer.type !== 'choice' || !candidateIds.includes(answer.choice)
+      || Object.keys(rawProbabilities).length !== candidateIds.length
+      || candidateIds.some(candidateId => !Object.hasOwn(rawProbabilities, candidateId))) {
+      answersValid = false;
+    }
+    for (const candidateId of candidateIds) {
+      const value = rawProbabilities[candidateId];
       const validAnswer = typeof value === 'number' && Number.isFinite(value)
         && value >= 0 && value <= 1;
-      probabilities[questionId] = validAnswer ? Number(value.toFixed(6)) : null;
+      probabilities[candidateId] = validAnswer ? Number(value.toFixed(6)) : null;
       if (!validAnswer) answersValid = false;
     }
     const valid = SPAN_MODEL_VERSION.test(model) && answersValid;

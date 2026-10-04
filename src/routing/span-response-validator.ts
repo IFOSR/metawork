@@ -4,7 +4,8 @@ import {
   type SpanUsage,
 } from './span-routing-types.js';
 
-const SPAN_MODEL_VERSION = /^respan\/span-01-lite(?:-\d{8})?$/u;
+/** OpenRouter reports either the public free alias or a dated snapshot. */
+const SPAN_MODEL_VERSION = /^inception\/mercury-decide(?::free|-\d{8})?$/u;
 
 export type SpanResponseValidationResult =
   | {
@@ -17,7 +18,7 @@ export type SpanResponseValidationResult =
   | { ok: false; reason: 'span_invalid_response' | 'span_candidate_mismatch' };
 
 /**
- * Validates a Decisions response against the exact question set that was sent.
+ * Validates a joint choice response against the exact candidate set that was sent.
  *
  * A partial answer is never accepted: a missing, unknown, mistyped, or
  * out-of-range probability fails the whole Subtask so the Kernel can fall back
@@ -48,19 +49,34 @@ export function validateSpanDecisionsResponse(input: {
   const probabilities: Record<string, number> = {};
   for (const questionId of expected) {
     const answer = asRecord(answers[questionId]);
-    if (!answer || answer.type !== 'noul') {
+    if (!answer || answer.type !== 'choice') {
       return { ok: false, reason: 'span_invalid_response' };
     }
-    const probability = answer.noul;
+    const candidateIds = input.request.candidates.map(candidate => candidate.questionId);
+    if (typeof answer.choice !== 'string' || !candidateIds.includes(answer.choice)) {
+      return { ok: false, reason: 'span_candidate_mismatch' };
+    }
+    const answerProbabilities = asRecord(answer.probabilities);
+    if (!answerProbabilities) return { ok: false, reason: 'span_invalid_response' };
+    const receivedCandidateIds = Object.keys(answerProbabilities);
     if (
-      typeof probability !== 'number'
-      || !Number.isFinite(probability)
-      || probability < 0
-      || probability > 1
+      receivedCandidateIds.length !== candidateIds.length
+      || candidateIds.some(candidateId => !Object.hasOwn(answerProbabilities, candidateId))
     ) {
-      return { ok: false, reason: 'span_invalid_response' };
+      return { ok: false, reason: 'span_candidate_mismatch' };
     }
-    probabilities[questionId] = probability;
+    for (const candidateId of candidateIds) {
+      const probability = answerProbabilities[candidateId];
+      if (
+        typeof probability !== 'number'
+        || !Number.isFinite(probability)
+        || probability < 0
+        || probability > 1
+      ) {
+        return { ok: false, reason: 'span_invalid_response' };
+      }
+      probabilities[candidateId] = probability;
+    }
   }
 
   let usage: SpanUsage | undefined;

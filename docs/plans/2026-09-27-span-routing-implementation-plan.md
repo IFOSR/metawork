@@ -2,7 +2,7 @@
 
 > 使用本仓库可用的 `executing-plans` 技能按任务执行；下列步骤是实现与验证顺序，不需要反复向用户请求已确认范围的许可。
 
-**Goal:** 在高级设置配置 Span OpenRouter API key，对硬过滤后的 AgentClass + Model 候选进行 noul 软排序，保留确定性回退和 Kernel 授权。
+**Goal:** 在高级设置配置 Mercury OpenRouter API key，对硬过滤后的 AgentClass + Model 候选进行联合 choice 概率排序，保留确定性回退和 Kernel 授权。
 
 **Architecture:** Span 专用适配器在 Application Shell 中、plan_proposed 入库前运行。校验后的 observation 随事件进入现有 durable inbox 和 decision ledger；Kernel 重新校验其适用性后排序，不进行网络请求。凭据复用 Provider SecretStore 和配置激活回滚。
 
@@ -21,14 +21,14 @@
 
 ## 实施前固定约束
 
-1. 只实现 Span，不创建通用 RoutingAdvisor、多 provider 注册表、Jev/choice/score、shadow 或外部模型 fallback。
+1. 只实现 Span，不创建通用 RoutingAdvisor、多 provider 注册表、额外模型适配、score、shadow 或外部模型 fallback。
 2. API key 在高级设置直接输入，保存和替换与 Provider 同样使用 SecretStore；不能创建假的 Provider/Executor。
-3. 固定 model=`respan/span-01-lite`；关闭默认、3 秒默认总截止时间。未启用或无 key 时保留旧路由。
+3. 固定 model=`inception/mercury-decide:free`；关闭默认、3 秒默认总截止时间。未启用或无 key 时保留旧路由。
 4. observation 放在服务端 KernelEvent 中，不放 Planner proposal，不新增 SQLite 表。
 5. 历史事件无字段时保持旧行为。重放已入库事件零 API 请求；入库前崩溃允许重复请求，不能声称恰好一次。
 6. 合法候选限于 Planner 提议的 AgentClass；不扩大 permissions/model policy/Harness/capabilities。Span 的高分不能使非法候选获准。
 7. 固定 policy 不换模型；每个 AgentClass 保持现有一个 binding 的输出数量。Span 可排序合法 AgentClass 的优先顺序，不增加 model fallback 列表。
-8. `noul` 数值是适配信号，不设置未经校准的成功率阈值。
+8. choice probability 是候选集合内的排序信号，不设置未经校准的拒绝阈值。
 9. replan 沿用原有 generation revision 规则；历史任务不能自动换当前活动 revision。
 10. 密钥/原始请求/原始 SDK error 不进入 observation、日志、Planner、Executor 生成环境或客户端响应。
 
@@ -121,7 +121,7 @@ npx vitest run tests/routing/auto-model-resolver.test.ts tests/routing/configura
 npm install --save-exact @openrouter/sdk@1.3.32
 ```
 
-查看安装后的 SDK 类型确定 alpha.decisions.create 的参数、AbortSignal、timeout 和关闭 retry 的准确形式。不得用未经验证的 options，不能仅靠 Promise.race 假装取消。SDK 的测试 seam 使用已有 HTTP client/fetch 注入或窄 callable，不建立多模型接口。
+查看安装后的 SDK 类型确定 systemOne.create 的参数、AbortSignal、timeout 和关闭 retry 的准确形式。不得用未经验证的 options，不能仅靠 Promise.race 假装取消。SDK 的测试 seam 使用已有 HTTP client/fetch 注入或窄 callable，不建立多模型接口。
 
 **Step 2 — 写 builder/validator 测试并运行。**
 
@@ -129,15 +129,15 @@ npm install --save-exact @openrouter/sdk@1.3.32
 npx vitest run tests/routing/span-question-builder.test.ts tests/routing/span-response-validator.test.ts tests/routing/span-routing-advisor.test.ts
 ```
 
-候选顺序输入打乱不改变 canonical question 映射；每个 instructions 精确引用不同候选；剔除无关数据；文本脱敏、UTF-8 bytes 限制；response question exact set 和重复身份校验。分别测缺失、额外、NaN、Infinity、越界、非数值、choice/score、错误 model、缺省/错误 usage。匹配真实实测 fixture，不把文档样例当实际 HTTP 证据。
+候选顺序输入打乱不改变 canonical option 映射；联合 choice criteria 精确引用全部候选；剔除无关数据；文本脱敏、UTF-8 bytes 限制；response question exact set、winner、probability map 和重复身份校验。分别测缺失、额外、NaN、Infinity、越界、非数值、错误 model、缺省/错误 usage。匹配真实实测 fixture，不把文档样例当实际 HTTP 证据。
 
 **Step 3 — 定义 observation union。** 共用 envelope 含 schema/policy/question version、eventId、proposal fingerprint、revision、generation、graph revision；每个 Subtask advised 分支有 candidate-set fingerprint、实际模型版本与完整概率，fallback/skipped 分支无评分。所有错误为枚举；unknown error 不持久化原文。
 
-**Step 4 — 请求边界。** 一个 Subtask 一批 noul；32 候选/32KiB request，proposal 128 候选/16 个评估 Subtask/128KiB observation，Server 2 并发，proposal timeout 包含排队与调用，禁用 SDK 重试。超限回退不静默丢候选。使用固定 endpoint，防止高级配置把凭据发往任意 URL。
+**Step 4 — 请求边界。** 一个 Subtask 一批联合 choice；32 候选/32KiB request，proposal 128 候选/16 个评估 Subtask/128KiB observation，Server 2 并发，proposal timeout 包含排队与调用，禁用 SDK 重试。超限回退不静默丢候选。使用固定 endpoint，防止高级配置把凭据发往任意 URL。
 
 **Step 5 — 适配器测试。** 使用假的 HTTP/SDK 返回，测试认证/限流/服务端异常、hang 后 abort、取消、缺 key、超时后迟到返回、并发和总 deadline。真实时间只用于少量 abort 集成测试，其他用 fake timers。
 
-**Step 6 — 提交。** `feat(routing): add bounded Span noul evaluation`。
+**Step 6 — 提交。** `feat(routing): add bounded Mercury joint-choice evaluation`。
 
 ## Task 4：在三个 proposal 入口持久化 observation
 
@@ -275,7 +275,7 @@ docker run --rm metawork-span-test
 
 无 DDL 变更仍检查 JSON round-trip/replay。Docker 不可用时保留未完成门，不重复重试掩盖原因。若 vendored Planner 源码未改，无需为本功能修改其构建逻辑；确需验证时遵循 build:offline。
 
-**Step 4 — 真实 Span smoke。** 使用新配置的 SecretStore key，单个 Subtask 的多个合法候选，验证 SDK 返回 noul、实际版本、usage、耗时、有效性；再次 replay 应零请求。手工断网/错误测试 key验证 fallback。不自动写入用户正在使用的安装配置，不把真实凭据写入脚本/CLI 参数/git。
+**Step 4 — 真实 Span smoke。** 使用新配置的 SecretStore key，单个 Subtask 的多个合法候选，验证 SDK 返回联合 choice、winner、完整概率、实际版本、usage、耗时、有效性；再次 replay 应零请求。手工断网/错误测试 key验证 fallback。不自动写入用户正在使用的安装配置，不把真实凭据写入脚本/CLI 参数/git。
 
 真实 smoke 未取得环境/key时标注未运行，不影响其他实现和 mocked 验收继续。此前手工调用成功不能替代这一步。
 
@@ -290,7 +290,7 @@ docker run --rm metawork-span-test
 | 场景 | 预期 |
 | --- | --- |
 | 旧配置/禁用/仅一个候选 | 零网络请求，旧 deterministic 结果 |
-| 多候选成功 | noul 影响合法模型/class 顺序，Kernel 产生最终 binding |
+| 多候选成功 | Mercury joint choice 概率影响合法模型/class 顺序，Kernel 产生最终 binding |
 | 非法候选满分 | 不发送给 Span，不授权 |
 | Span 缺 key/认证失败/限流/超时 | 有限错误枚举，旧 resolver 结果 |
 | 某 Subtask 缺少一个答案 | 整个 Subtask 回退，其余独立处理 |
@@ -309,7 +309,7 @@ docker run --rm metawork-span-test
 - 已交付（按任务顺序，均在本分支）：
   1. `feat(configuration): add Span settings with provider-style secret storage` — `routing.span` 配置、安全投影、Span 凭据 staging 与回滚、管理接口与状态端点。
   2. `refactor(routing): share plan candidate eligibility before Span evaluation` — 共用 `planSubtaskCandidateGroups` 与 `filterEligibleModelCandidates`，Span 概率作为 resolver 的一个排序信号。
-  3. `feat(routing): add bounded Span noul evaluation` — `@openrouter/sdk@1.3.32` 适配器、问题构建、响应校验、超时/abort/并发/预算限制。
+  3. `feat(routing): add bounded Mercury joint-choice evaluation` — `@openrouter/sdk@1.3.32` 适配器、问题构建、响应校验、超时/abort/并发/预算限制。
   4. `feat(session): persist Span observations before plan admission` — `plan_proposed` 新增可选 `spanRouting`，initial/replan/conflict_replan 三入口统一富化。
   5. `feat(kernel): rank eligible bindings with validated Span observations` — Kernel 重校验观察并仅对已授权候选排序，deferred availability 保留授权顺序。
   6. `feat(web): configure Span credentials in advanced settings` — 高级设置新增 Span 面板与草稿/密钥流程。
@@ -333,7 +333,7 @@ docker run --rm metawork-span-test
 | 并发上限按提案而非 Server 共享 | `ConcurrencyLimiter` 提升为 advisor 实例级共享，排队计入总截止时间 |
 | Span 凭据与同名 Provider 冲突 | SecretStore 新增非 Provider `internal` 命名空间；引用改为 `file-secret:anyfusion/internal/routing-span` |
 | 凭据解析不受截止时间约束且异常外抛 | advisor 内限时解析，超时/失败归一为 `span_timeout`/`span_secret_unavailable` 回退 |
-| 请求缺少真实模型身份与用途/成本信息 | state 增加 `modelId`、`reasoning`、`contextLimit`、`costTier`；`questionVersion` 提升为 `span-fit-v2` |
+| 请求缺少真实模型身份与用途/成本信息 | state 增加 `modelId`、`reasoning`、`contextLimit`、`costTier`；联合 choice 契约升级为 `span-fit-v3` |
 | smoke 把空答案集当成功 | 改用与产品一致的严格校验（集合完整 + finite + [0,1]） |
 | smoke 回显原始 SDK/Provider 错误 | 只输出有限 `errorCode` 与可选 `httpStatus` |
 | 凭据未按 pinned revision 解析 | Server 改为 `getSnapshot(event.configurationRevision)` |
@@ -377,7 +377,7 @@ docker run --rm metawork-span-test
 Planner seam 另有 40 项通过、1 个已知 CLI 构建基线失败。完整构建、根/Web 类型检查通过。
 本轮没有重跑全量 `npm test`。精确 Dockerfile 基础镜像拉取被 Docker Hub 超时阻断；
 真实 API 后续验收已完成，见[验收记录](2026-09-27-span-live-acceptance.md)。用户授权了当前
-Key，真实测试发现并修复了 Respan 要求字符串 `state` 的协议差异；三个评分场景、
+Key，真实测试发现并修复了 Mercury System One 要求字符串 `state` 的协议差异；三个评分场景、
 单候选跳过、默认 3 秒超时回退和重放零追加调用均通过。相关回归 71 项通过，构建与类型
 检查通过。精确 Dockerfile 再次尝试仍阻断于 Docker Hub token 请求超时。
 没有推送、合并或部署。

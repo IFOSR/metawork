@@ -370,7 +370,7 @@ export function SettingsPanel({
   const [runtimePolicy, setRuntimePolicy] = useState<RuntimePolicyDraft | null>(null);
   const [spanDraft, setSpanDraft] = useState<SpanRoutingDraft>({
     enabled: false,
-    model: 'respan/span-01-lite',
+    model: 'inception/mercury-decide:free',
     timeoutMs: SPAN_ROUTING_DEFAULT_TIMEOUT_MS,
     apiKey: '',
   });

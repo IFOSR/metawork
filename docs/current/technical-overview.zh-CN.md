@@ -927,12 +927,15 @@ SecretStore 接口解析，但默认由 `~/.metawork/credentials.json` 提供；
 ### Span 路由决策模型
 
 高级设置提供唯一一个可选的外部路由决策模型：OpenRouter 上的
-`respan/span-01-lite`。它的 OpenRouter Key 与 Provider Key 走同一套密钥流程：
+`inception/mercury-decide:free`。它的 OpenRouter Key 与 Provider Key 走同一套密钥流程：
 服务端写入账户 SecretStore 中**非 Provider 的 internal 命名空间**固定引用，
 revision 只保存该引用，同名 Provider（例如名为 `routing-span` 的 Provider）
 不会与之共享或互相覆盖；配置校验只接受该固定引用，服务端读取前还会再次核对，
 也拒绝 Provider 反向引用 internal 命名空间。
-界面不提供 Provider/Model 选择器，Key 留空表示保留已存值。
+界面不提供 Provider/Model 选择器，Key 留空表示保留已存值。仍引用已退役 Span
+模型的不可变旧 revision 在读取时会归一化到固定的 Mercury 模型。启动校验仅通过
+逆转这一已知模型替换来验证历史内容哈希，其他内容变化仍会被拒绝；不会改写
+不可变 revision 文件、持久化哈希、revision ID 或 active 指针。
 
 启用后，服务端只对已通过共用硬过滤的候选进行评估，并在 `plan_proposed` 事件
 持久入队前把有界的 `spanRouting` observation 附着在事件上；该事件已入库时直接
@@ -949,8 +952,9 @@ Application Shell。相同事件并发准备合并结果，身份冲突直接拒
 
 `npm run smoke:span-routing -- --integration` 可用有效的 OpenRouter Key 对四类任务运行真实
 advisor → Kernel → SQLite 重放验收，记录排序、延迟、usage 和重放零追加调用。
-SDK 边界把结构化 state 序列化为 JSON 字符串（Respan 拒绝对象 state），并将转义计入请求预算。
-该模式需要本地开发依赖；默认 smoke 仅验证 Decisions API 传输。
+SDK 边界把结构化 state 序列化为 JSON 字符串，并将转义计入请求预算；Mercury
+与 Jev 共用 OpenRouter System One 协议。该模式需要本地开发依赖；默认 smoke
+仅验证 System One 传输。
 
 启动前导出飞书密钥：
 
