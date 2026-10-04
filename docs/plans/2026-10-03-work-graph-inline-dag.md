@@ -39,4 +39,4 @@
 - 现有整页 `web-routing-identity-and-theme.test.ts` 尝试执行，但在进入轨迹页之前
   会话读取超时（OFFLINE / 正在读取会话）；未将此整页验收计为通过，未修改该旧测试。
   独立 Chrome 组件测试不代表完整 Gateway 端到端验收。
-- 正常安装尚未部署，用户截图场景待重新构建后验收。Closing commit：未提交。
+- 正常安装尚未部署，用户截图场景待重新构建后验收。Closing commit：dc20603。
