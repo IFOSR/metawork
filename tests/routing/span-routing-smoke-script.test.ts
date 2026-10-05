@@ -72,7 +72,11 @@ function responseStub(body: string, status = 200): string {
 }
 
 describe('Span routing smoke script', () => {
-  it.each([false, true])('sends string state through the SDK (integration=%s)', integration => {
+  it.each([
+    { integration: false, coloredOutput: false },
+    { integration: true, coloredOutput: false },
+    { integration: true, coloredOutput: true },
+  ])('sends string state through the SDK (%j)', ({ integration, coloredOutput }) => {
     const result = runSmoke(`globalThis.fetch = async request => {
       if (new URL(request.url).pathname !== '/api/v1/systemone') return new Response(JSON.stringify({
         error: { message: 'wrong System One endpoint', code: 404 },
@@ -92,7 +96,20 @@ describe('Span routing smoke script', () => {
         answers: { candidates: { type: 'choice', choice: candidateIds[0], probabilities } },
         usage: { input_tokens: 10, output_tokens: 0, cost: 0 },
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    };`, { args: integration ? ['--integration'] : [], preloadChild: integration });
+    };
+    ${coloredOutput ? `
+      import childProcess from 'node:child_process';
+      import { syncBuiltinESMExports } from 'node:module';
+      const originalSpawn = childProcess.spawnSync;
+      childProcess.spawnSync = (...args) => {
+        const result = originalSpawn(...args);
+        if (typeof result.stdout === 'string') {
+          result.stdout = result.stdout.split('\\n').map(line => '\\x1b[2m  ' + line + '\\x1b[0m').join('\\r\\n');
+        }
+        return result;
+      };
+      syncBuiltinESMExports();
+    ` : ''}`, { args: integration ? ['--integration'] : [], preloadChild: integration });
     expect(result.status, result.stdout + result.stderr).toBe(0);
     const output = JSON.parse(result.stdout);
     if (integration) {

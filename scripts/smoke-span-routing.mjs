@@ -25,6 +25,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
 import { OpenRouter } from '@openrouter/sdk';
 
 const SPAN_MODEL = 'inception/mercury-decide:free';
@@ -119,7 +120,8 @@ async function main() {
       env: { ...process.env, SPAN_LIVE_INTEGRATION: '1', SPAN_INTEGRATION_API_KEY: resolved.apiKey },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    const samples = (result.stdout ?? '').split('\n').filter(line => line.startsWith('{"scenario":'))
+    const samples = stripVTControlCharacters(result.stdout ?? '').split(/\r?\n/u)
+      .map(line => line.trim()).filter(line => line.startsWith('{"scenario":'))
       .flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
     const ok = result.status === 0 && samples.length === 4;
     console.log(JSON.stringify({ ok, credentialSource: resolved.source, samples,
