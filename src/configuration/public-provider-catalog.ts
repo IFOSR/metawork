@@ -26,6 +26,7 @@ export const PUBLIC_PROVIDER_PRESETS: readonly PublicProviderPreset[] = [
       'deepseek-chat',
       'deepseek-reasoner',
       'deepseek-v4-flash',
+      'deepseek-v4.1-flash',
       'deepseek-v4-pro',
       'deepseek-v4-flash-vision-exp',
     ],

@@ -116,6 +116,13 @@ returns configured state plus a mask, and permits replacement. The existing
 implementation resolves Provider references through this file. No separate
 `~/.config/metawork` persistence root is introduced.
 
+Credential precedence clarification (2026-10-05): automatic local Agent import
+may initialize a missing Key only for an unambiguous matching Provider. Startup
+preheating and subsequent imports must preserve every non-empty MetaWork Key.
+URL-only matching is not sufficient to import credentials into another Provider.
+Settings identify duplicate connections by normalized Base URL plus complete Key
+identity, never URL, display name, masked suffix or unknown credentials alone.
+
 Application Shell owns local agent installation readiness. Pi is required only
 for admitting new work; missing Pi does not block login, Workspace access,
 history, settings, or readiness refresh, and does not cancel running Tasks.
@@ -285,3 +292,55 @@ It never widens the candidate set and never produces a binding decision.
   rather than ranking on data produced under a different contract.
 - Span usage is retained as internal routing observation only. It does not
   masquerade as Planner/Executor usage or add a separate user billing stage.
+
+
+## 2026-10-05 amendment: natural-language evidence before generic labels
+
+Approved by the user. Routing owns the shared eligibility filter, decision
+question and deterministic ordering; the Application Shell remains the only
+external advisor caller. Kernel still consumes validated, revision-pinned
+observations. No new semantic router, database schema, permission grant or
+live generation inside Kernel/replay is introduced (ADR-0020).
+
+`coding`, `planning` and `long-context` are descriptive legacy metadata, not
+hard prerequisites or quality scores. New resolutions ignore preferred-label
+counts and remove keyword/phrase overlap scoring. Real input/output/protocol
+conditions (`vision`, image output/editing, tools, structured output), context,
+Provider/Harness, health, authorized pools, delivery contracts and permissions
+remain checked. Planner image input explicitly requires vision instead of
+merely preferring that label. Missing descriptive tags do not become required
+configuration fields.
+
+The existing Mercury choice receives user responsibilities, detailed model
+prose, strengths, limitations, suitable/unsuitable tasks, public facts, available
+Agent tool affordances, configured objective and actual CNY per-million input
+and output prices. It infers the practical abilities of each exact Agent-model
+pair, comparing likely quality and task fit rather than label count. Public
+claims are evidence, not verified benchmarks. Absent price is null, not free;
+explicit zero remains zero. An explicit cost ceiling rejects unknown estimates.
+
+Decision probability leads among eligible candidates. Failure or equal scores
+fall back to the configured quantitative objective and stable ordering; fallback
+does not pretend to perform semantic comparison. Cost/balanced fallback prefers
+known prices to unknown prices; other objectives retain their configured priority.
+The historical audit count/model-fit fields remain readable and are zero in new
+resolutions. New selection policies are `auto-model-routing-v2` and
+`span-routing-v2`; question contract is `span-fit-v5`. The observation envelope
+remains version 1. Old question observations are rejected; already recorded
+Kernel decisions remain immutable. Recovery never calls a new model to replay.
+
+UI shows natural-language capability evidence and retains public parameter
+cards. The read-only Agent explanation is a paraphrase of selected-model/tool
+evidence, not a second authority stored in a browser cache. Runtime consumes
+the underlying evidence from the pinned configuration and interprets it for the
+selected candidate; UI wording may differ without creating a second tag taxonomy.
+
+
+### 2026-10-05 activation correction (ADR-0044)
+
+Saving configuration no longer compiles Executor prose through the Planner.
+Duties are preserved as natural-language evidence and all activation projections
+are deterministic. Optional AI work is explicit and uses InternalLlmService.
+The old manual preview routes use the local ExecutorManualPreviewService;
+unchanged persisted assertions remain compatible and new source does not inherit
+old assertions. The existing semantic-assertion trust guard is retained.

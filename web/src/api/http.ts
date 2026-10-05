@@ -9,6 +9,7 @@ import type {
   ProviderModelDiscoveryResult,
   ProviderCredentialStatus,
   AgentReadiness,
+  ModelPublicFacts,
   ExecutorManagementView,
   ExecutorConfigurationChange,
   PreparedExecutorConfiguration,
@@ -50,8 +51,8 @@ export class HttpClient {
     return response.json() as Promise<T>;
   }
 
-  getConfig(): Promise<ConfigSnapshot> {
-    return this.request<ConfigSnapshot>('/api/config');
+  getConfig(signal?: AbortSignal): Promise<ConfigSnapshot> {
+    return this.request<ConfigSnapshot>('/api/config', { signal });
   }
 
   getExecutorManagement(): Promise<ExecutorManagementView> {
@@ -89,6 +90,53 @@ export class HttpClient {
     return this.request('/api/config/discover-models', {
       method: 'POST',
       body: JSON.stringify(input),
+    });
+  }
+
+  summarizeModelInformation(catalogModelId: string): Promise<{
+    catalogModelId: string;
+    routingNotes: NonNullable<import('../settings-model').SettingsModelEntry['routingNotes']>;
+  }> {
+    return this.request('/api/config/model-routing-profile', {
+      method: 'POST', body: JSON.stringify({ catalogModelId }),
+    });
+  }
+
+  describeAgentCapabilities(input: {
+    kind: 'planner' | 'executor';
+    affordances: string[];
+    models: Array<Pick<import('../settings-model').SettingsModelEntry, 'modelId' | 'capabilities' | 'description' | 'routingNotes' | 'publicFacts' | 'contextLimit'> & { modelRef: string }>;
+    refresh?: boolean;
+  }): Promise<import('./types').AgentCapabilityDescription> {
+    return this.request('/api/config/agent-capabilities', { method: 'POST', body: JSON.stringify(input), signal: AbortSignal.timeout(150_000) });
+  }
+
+  suggestAgentResponsibility(input: {
+    agentClassRef: string;
+    sourceText: string;
+    modelFacts?: Array<{
+      modelRef: string;
+      modelId: string;
+      capabilities: string[];
+      description?: string;
+      routingNotes?: {
+        summary?: string;
+        strengths?: string[];
+        limitations?: string[];
+        preferredTaskTypes?: string[];
+        avoidTaskTypes?: string[];
+      };
+      contextLimit?: number;
+      costInputPerMillion?: number;
+      costOutputPerMillion?: number;
+      publicFacts?: ModelPublicFacts;
+    }>;
+    config?: Record<string, unknown>;
+  }, signal: AbortSignal = AbortSignal.timeout(150_000)): Promise<import('./types').ResponsibilitySuggestion> {
+    return this.request('/api/config/agent-responsibility', {
+      method: 'POST',
+      body: JSON.stringify(input),
+      signal,
     });
   }
 

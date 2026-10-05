@@ -8,7 +8,7 @@ export interface PlannerInputProfile {
   imageBytes: number;
   attachmentCount: number;
   continuation: boolean;
-  preferredCapabilities: ModelCapability[];
+  requiredCapabilities: ModelCapability[];
   contextTokens: number;
   requiresStructuredOutput: true;
 }
@@ -30,9 +30,7 @@ export function buildPlannerInputProfile(context: Pick<PlanningContext, 'userInp
     imageCount,
     context.attachments?.length ?? 0,
   );
-  const preferredCapabilities: ModelCapability[] = ['planning', 'structured-output'];
-  if (imageCount > 0) preferredCapabilities.push('vision');
-  if (textTokens > 16_000) preferredCapabilities.push('long-context');
+  const requiredCapabilities: ModelCapability[] = imageCount > 0 ? ['vision'] : [];
   return {
     textTokens,
     imageCount,
@@ -40,7 +38,7 @@ export function buildPlannerInputProfile(context: Pick<PlanningContext, 'userInp
     imageBytes,
     attachmentCount,
     continuation: context.continuation === true,
-    preferredCapabilities,
+    requiredCapabilities,
     contextTokens: Math.max(1_024, textTokens + imageCount * 2_048),
     requiresStructuredOutput: true,
   };

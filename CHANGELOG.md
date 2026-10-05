@@ -7,6 +7,28 @@ The project follows [Semantic Versioning](https://semver.org/) for public releas
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-05
+
+### Changed
+
+- Model and Agent settings use collapsible sections, editable model parameters,
+  detailed public model evidence, and explicit AI action status.
+- Model selection compares natural-language responsibilities, strengths,
+  limitations, task fit, and CNY prices through the decision advisor. Generic
+  capability labels no longer filter or score model quality.
+- Settings AI uses an independent, developer-configured internal LLM. Saving
+  and activating settings no longer invokes Planner or waits for OpenRouter.
+
+### Fixed
+
+- Provider credentials remain isolated when Providers share a Base URL.
+- Model discovery, public metadata/pricing updates, and Agent AI rewriting
+  preserve user edits and report success, no-change, and failure states.
+- Conversation observation restores subscriptions and history when switching
+  tasks; Work Graph presentation retains readable DAG and progress details.
+- Unix quick installation resolves the actual GitHub Release manifest path.
+  Publication verifies all four signed platform manifests and eight archives.
+
 ### Added
 
 - The Conversation tab shows a live planning card while the Planner is parsing

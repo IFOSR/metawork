@@ -151,7 +151,6 @@ describe('ConfigurationCompletionService', () => {
     });
     expect(result.providers.custom?.displayName).toBe('Custom');
     expect(result.requiredFields).toEqual([
-      'models.customModel.capabilities',
       'providers.custom.credential',
     ]);
   });

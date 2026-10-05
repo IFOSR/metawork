@@ -256,7 +256,7 @@ describe('ControlKernel Span routing consumption', () => {
       .toEqual(['codex-fast', 'pi-general']);
     expect(action.authorizedBindingsBySubtask.subtask_execute!.map(binding => binding.modelRef))
       .toEqual(['model-fast', 'model-fast']);
-    expect(action.routing.subtask_execute!.every(audit => audit.policyVersion === 'auto-model-routing-v1'))
+    expect(action.routing.subtask_execute!.every(audit => audit.policyVersion === 'auto-model-routing-v2'))
       .toBe(true);
     expect(action.routing.subtask_execute![0]!.spanRouting).toBeUndefined();
   });
@@ -272,7 +272,7 @@ describe('ControlKernel Span routing consumption', () => {
       .toEqual(['pi-general', 'codex-fast']);
     expect(action.authorizedBindingsBySubtask.subtask_execute!.map(binding => binding.modelRef))
       .toEqual(['model-fast', 'model-fast']);
-    expect(action.routing.subtask_execute![0]!.policyVersion).toBe('span-routing-v1');
+    expect(action.routing.subtask_execute![0]!.policyVersion).toBe('span-routing-v2');
     expect(action.routing.subtask_execute![0]!.spanRouting).toMatchObject({
       applied: true,
       probabilities: { 'model-fast': 0.9, 'model-deep': 0.8 },
@@ -303,6 +303,16 @@ describe('ControlKernel Span routing consumption', () => {
     const first = kernel.decide({ ...event, spanRouting: withObservation }, snapshot);
     const second = kernel.decide({ ...event, spanRouting: withObservation }, snapshot);
     expect(first).toEqual(second);
+  });
+
+  it('rejects observations made under the former tag-oriented question contract', () => {
+    const old = observation({
+      'codex-fast:model-fast': 0.01, 'codex-fast:model-deep': 0.01,
+      'pi-general:model-fast': 0.01, 'pi-general:model-deep': 0.97,
+    });
+    const action = decide({ ...old, questionVersion: 'span-fit-v4' } as unknown as SpanRoutingObservation);
+    expect(action.routing.subtask_execute![0]!.spanRouting).toMatchObject({ applied: false, reason: 'stale_observation' });
+    expect(action.authorizedBindingsBySubtask.subtask_execute![0]!.agentClassRef).toBe('codex-fast');
   });
 
   it('ignores an observation bound to a different event', () => {

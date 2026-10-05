@@ -59,11 +59,39 @@ export class ConversationEntityStore {
     const ids = new Set<string>();
     for (const turn of value.turns) { this.upsert(conversationId, turn, !sameEpoch); ids.add(turn.id); }
     this.windows.set(conversationId, {
-      ids: this.limitWindow(conversationId, this.order(conversationId, [...ids]), 'latest'), cursor: value.head,
+      ids: this.limitWindow(conversationId, this.order(conversationId, [...ids]), 'latest'), cursor: toCursor(value.head),
       olderCursor: value.nextCursor, atLatest: true,
       status: value.head ? 'ready' : 'preparing', error: null,
     });
     this.notify(conversationId); this.evict();
+  }
+
+  /**
+   * Seeds a conversation from the bounded HTTP read used during navigation.
+   * The WebSocket observation remains the source of live updates; this only
+   * prevents a slow baseline from leaving the conversation area blank.
+   */
+  hydrate(conversationId: string, page: ConversationTurnPage): void {
+    const previous = this.window(conversationId);
+    if (previous.status === 'ready' && previous.cursor) return;
+    if (page.turns.some(turn => turn.conversationId !== conversationId)) {
+      throw new Error('observation_scope_mismatch');
+    }
+    const ids = new Set<string>();
+    for (const turn of page.turns) {
+      this.upsert(conversationId, turn);
+      ids.add(turn.id);
+    }
+    this.windows.set(conversationId, {
+      ids: this.limitWindow(conversationId, this.order(conversationId, [...ids]), 'latest'),
+      cursor: toCursor(page.asOf),
+      olderCursor: page.nextCursor,
+      atLatest: true,
+      status: 'ready',
+      error: null,
+    });
+    this.notify(conversationId);
+    this.evict();
   }
 
   apply(frame: Exclude<ConversationObservationFrame, { kind: 'baseline' }>): 'applied' | 'reset' {
@@ -182,4 +210,9 @@ export class ConversationEntityStore {
       this.remove(candidates.shift()!);
     }
   }
+}
+
+/** The wire cursor deliberately excludes the read model's journal sequence. */
+function toCursor(value: ConversationViewCursor | null | undefined): ConversationViewCursor | null {
+  return value ? { epoch: value.epoch, revision: value.revision } : null;
 }

@@ -1,5 +1,6 @@
 import { publicProviderDisplayName } from './public-provider-catalog.js';
 import { resolveProviderDisplayName } from './user-facing-names.js';
+import { matchOpenRouterModel, type OpenRouterModelMetadata, type OpenRouterCatalogSnapshot } from './openrouter-model-catalog.js';
 
 export type CompletionFieldState =
   | '已自动发现'
@@ -12,6 +13,7 @@ export interface ConfigurationCompletionProviderSource {
   providerRef: string;
   baseUrl?: string;
   credentialAvailable?: boolean;
+  credentialFingerprint?: string;
   modelIds?: string[];
 }
 
@@ -25,11 +27,15 @@ export interface ConfigurationCompletionPreset {
 export interface ConfigurationCompletionModel {
   providerRef: string;
   modelId: string;
+  displayName?: string;
+  description?: string;
   capabilities: string[];
   capabilityState: CompletionFieldState;
   contextLimit?: number;
   costInputPerMillion?: number;
   costOutputPerMillion?: number;
+  publicFacts?: OpenRouterModelMetadata['publicFacts'];
+  pricing?: OpenRouterModelMetadata['pricing'];
   latencyTier?: string;
   qualityTier?: string;
 }
@@ -39,6 +45,7 @@ export interface ConfigurationCompletionResult {
     displayName: string;
     baseUrl: string | null;
     credentialState: CompletionFieldState;
+    credentialFingerprint?: string;
     modelIds: string[];
   }>;
   providerPresets: Array<{
@@ -72,6 +79,7 @@ export class ConfigurationCompletionService {
     presets?: readonly ConfigurationCompletionPreset[];
     providerCatalog?: readonly ConfigurationCompletionProviderSource[];
     modelCapabilities?: Readonly<Record<string, readonly string[]>>;
+    openRouterCatalog?: OpenRouterCatalogSnapshot;
   } = {}) {}
 
   complete(input: ConfigurationCompletionInput): ConfigurationCompletionResult {
@@ -116,6 +124,13 @@ export class ConfigurationCompletionService {
         ),
         baseUrl,
         credentialState,
+        ...(text(configured.credentialFingerprint)
+          ? { credentialFingerprint: text(configured.credentialFingerprint) }
+          : localProvider?.credentialFingerprint
+            ? { credentialFingerprint: localProvider.credentialFingerprint }
+            : providerCatalog?.credentialFingerprint
+              ? { credentialFingerprint: providerCatalog.credentialFingerprint }
+              : {}),
         modelIds: unique([
           ...listOfStrings(configured.modelIds),
           ...(localProvider?.modelIds ?? []),
@@ -137,14 +152,23 @@ export class ConfigurationCompletionService {
         : undefined;
       const catalogCapabilities = (this.deps.modelCapabilities?.[modelId] ?? [])
         .filter((value): value is string => Boolean(value));
+      const openRouterModel = matchOpenRouterModel(this.deps.openRouterCatalog, modelId);
       const capabilities = unique([
         ...explicitCapabilities,
         ...catalogCapabilities,
+        ...(openRouterModel?.capabilities ?? []),
       ]).sort((left, right) => left.localeCompare(right));
       const hasResolvedCapabilities = capabilities.length > 0;
       models[modelRef] = {
         providerRef,
         modelId,
+        ...(openRouterModel?.displayName ? { displayName: openRouterModel.displayName } : {}),
+        ...(text(configured.description)
+          ? { description: text(configured.description) }
+          : openRouterModel?.description ? { description: openRouterModel.description } : {}),
+        ...(configured.publicFacts && typeof configured.publicFacts === 'object'
+          ? { publicFacts: configured.publicFacts as ConfigurationCompletionModel['publicFacts'] }
+          : openRouterModel?.publicFacts ? { publicFacts: openRouterModel.publicFacts } : {}),
         capabilities,
         capabilityState: hasResolvedCapabilities
           ? (inferredModelId ? '已从 Provider 补全' : '已自动发现')
@@ -157,11 +181,21 @@ export class ConfigurationCompletionService {
           : {}),
         ...(numberValue(configured.costOutputPerMillion) !== undefined
           ? { costOutputPerMillion: numberValue(configured.costOutputPerMillion) }
+          : openRouterModel?.costOutputPerMillion !== undefined
+            ? { costOutputPerMillion: openRouterModel.costOutputPerMillion }
           : {}),
+        ...(numberValue(configured.costInputPerMillion) === undefined
+          && openRouterModel?.costInputPerMillion !== undefined
+          ? { costInputPerMillion: openRouterModel.costInputPerMillion }
+          : {}),
+        ...(configured.pricing && typeof configured.pricing === 'object'
+          ? { pricing: configured.pricing as ConfigurationCompletionModel['pricing'] }
+          : openRouterModel?.pricing ? { pricing: openRouterModel.pricing } : {}),
         ...(text(configured.latencyTier) ? { latencyTier: text(configured.latencyTier)! } : {}),
         ...(text(configured.qualityTier) ? { qualityTier: text(configured.qualityTier)! } : {}),
       };
-      if (!hasResolvedCapabilities) requiredFields.push(`models.${modelRef}.capabilities`);
+      // Missing descriptive labels do not make a model unusable. Concrete
+      // protocol/input requirements are checked at the binding seam.
     }
 
     return {

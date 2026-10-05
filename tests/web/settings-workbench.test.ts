@@ -457,7 +457,7 @@ describe('Settings workbench model semantics', () => {
     expect(styles).toContain('overflow-x: hidden');
   });
 
-  it('exposes one user-facing parallel task limit and refreshes discovered models after activation', async () => {
+  it('exposes one user-facing parallel task limit and refreshes local configuration after activation', async () => {
     const panel = await readFile(new URL('components/SettingsPanel.tsx', webRoot), 'utf8');
 
     expect(panel).toContain('同时运行任务数');
@@ -466,7 +466,7 @@ describe('Settings workbench model semantics', () => {
     expect(panel).not.toContain('每 Task 最大 Attempt');
     expect(panel).not.toContain('调度老化时间');
     expect(panel).not.toContain('同会话排队上限');
-    expect(panel).toContain('await refreshConfigurationCompletion()');
+    expect(panel).toContain('await refreshConfigurationCompletion(false)');
   });
 
   it('presents model connections instead of implementation-oriented Provider settings', async () => {

@@ -1,3 +1,4 @@
+import { isModelExecutionConstraint } from './model-execution-constraints.js';
 import type {
   AgentClassDefinition,
   ModelCapability,
@@ -124,7 +125,9 @@ function renderManual(
     `# Executor：${input.agentClassRef}`,
     '',
     '## 核心定位',
-    ...renderMission(routingCapabilities, assertions, userTopics),
+    ...(agentClass.responsibility?.trim()
+      ? [agentClass.responsibility.trim()]
+      : renderMission(routingCapabilities, assertions, userTopics)),
     ...(userProfile?.sourceText.trim() && assertions.length === 0
       ? [`- 用户定义：${userProfile.sourceText.trim()}`]
       : []),
@@ -152,6 +155,8 @@ function renderManual(
     '## 路由说明',
     '- 每个 Subtask 应聚焦于一个边界清晰、可独立验收的交付目标。',
     '- 本说明书是 Planner 的权威语义路由依据，结构化路由投影由同一能力画像生成。',
+    '- 优选时结合用户职责、模型的具体优势、局限与任务要求；不要按泛化标签数量或关键词重合判断质量。',
+    '- 公开能力描述不是实测质量保证；工具与权限仍限定实际执行范围。',
     '- Kernel 仍负责具体模型、权限、健康与执行绑定授权。',
     '- 用户定义与系统生成内容冲突时，以用户定义为准。',
   ];
@@ -183,12 +188,13 @@ function renderReliableCapabilities(
     )),
     ...agentClass.plannerAffordances.map(affordance => `- Planner 可用能力：\`${affordance}\``),
   ];
-  const common = intersectCapabilities(models.map(entry => entry.model.capabilities));
+  const common = intersectCapabilities(models.map(entry => entry.model.capabilities))
+    .filter(isModelExecutionConstraint);
   if (models.length > 1) {
-    lines.push('', '所有候选模型共同具备的能力：');
+    lines.push('', '所有候选模型共同具备的输入与协议条件：');
     lines.push(...common.map(capability => `- ${MODEL_CAPABILITY_LABELS[capability]}`));
   } else if (models.length === 1) {
-    lines.push('', '当前模型具备的能力：');
+    lines.push('', '当前模型具备的输入与协议条件：');
     lines.push(...common.map(capability => `- ${MODEL_CAPABILITY_LABELS[capability]}`));
   } else {
     lines.push('', '- 当前没有可用模型。');
@@ -243,7 +249,10 @@ function renderModelProfile(
     if (model.routingNotes?.avoidTaskTypes?.length) {
       lines.push(`  - 应避免的任务类型：${model.routingNotes.avoidTaskTypes.join('；')}`);
     }
-    for (const capability of model.capabilities) {
+    if (model.description && !model.routingNotes?.summary) {
+      lines.push(`  - 公开能力描述：${model.description}`);
+    }
+    for (const capability of model.capabilities.filter(isModelExecutionConstraint)) {
       const source = capabilitySources[capability] === 'model-user-confirmed'
         ? '，用户确认'
         : '';

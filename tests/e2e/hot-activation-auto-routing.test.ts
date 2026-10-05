@@ -95,7 +95,8 @@ describe('hot activation, auto routing, and Work Graph presentation', () => {
         },
       ],
       requirements: {
-        preferredCapabilities: ['planning', 'structured-output', 'vision'],
+        requiredCapabilities: ['vision'],
+        preferredCapabilities: [],
         contextTokens: 2_000,
         requiresStructuredOutput: true,
       },
@@ -140,7 +141,7 @@ describe('hot activation, auto routing, and Work Graph presentation', () => {
           binding: newBinding,
           rejectedCandidates: [],
           scoreBreakdown: null,
-          policyVersion: 'auto-model-routing-v1',
+          policyVersion: 'auto-model-routing-v2',
         }],
       }],
       dispatchItems: [{ subtaskId: 'inspect', status: 'running', authorizedBinding: newBinding }],

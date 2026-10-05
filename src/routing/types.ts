@@ -131,6 +131,7 @@ export interface PlannerRoutingCapabilityDefinition {
 
 export interface ConfigurationCatalogAgentClass {
   id: string;
+  responsibility?: string;
   routingCapabilities: RoutingCapabilityId[];
   capabilityPreferences: Array<{
     capabilityId: RoutingCapabilityId;

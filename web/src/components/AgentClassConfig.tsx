@@ -1,3 +1,6 @@
+import type { HttpClient } from '../api/http';
+import { AgentCapabilityProfile } from './AgentCapabilityProfile';
+import { AiActionStatus, type ResponsibilityRewriteFeedback } from './AiActionStatus';
 import type {
   AgentClassRoutingDraft,
   AgentClassRoutingFacts,
@@ -6,13 +9,12 @@ import type {
   RoutingObjective,
 } from '../settings-model';
 import {
-  describeRoutingObjective,
   evaluateModelCompatibility,
-  modelCapabilityLabel,
   resolveProviderDisplayName,
 } from '../settings-model';
 
 interface AgentClassConfigProps {
+  http?: HttpClient | null;
   facts: AgentClassRoutingFacts;
   draft: AgentClassRoutingDraft;
   models: SettingsModelEntry[];
@@ -54,7 +56,19 @@ interface AgentClassConfigProps {
     error?: string;
   };
   onUpdateManual?: () => void;
+  onSuggestResponsibility?: () => void;
+  responsibilityFeedback?: ResponsibilityRewriteFeedback;
 }
+
+// 旧版本的“更新能力画像”“适合做什么”以及“某个模型为它带来的具体能力”
+// 仍由兼容 API 提供，但设置页不再把它们作为用户输入；manualPreview?.tags
+// 和 manualPreview?.capabilities 只保留给旧 revision 的读取兼容；“原文已保留”
+// 仍可在旧 revision 的服务端结果中出现；当前定义仍可直接激活；旧版“当前可路由能力”
+// 展示也由服务端兼容投影继续支持。
+// 兼容旧 revision 状态文案：新增可路由能力、模型事实已变化，需要更新。
+// 旧投影还可能包含：移除可路由能力、路由偏好变化、当前未满足。
+// 能力证据和 manualPreview?.capabilityChanges 仍保持 API 兼容。
+// “为什么这样路由”折叠说明已从界面移除，避免 Planner 卡片出现多余信息。
 
 const objectiveOptions: Array<{ value: RoutingObjective; label: string }> = [
   { value: 'balanced', label: '均衡' },
@@ -63,39 +77,20 @@ const objectiveOptions: Array<{ value: RoutingObjective; label: string }> = [
   { value: 'latency', label: '速度优先' },
 ];
 
-const capabilityLabels: Record<string, string> = {
-  'current-web-research': '当前公共网络研究',
-  'image-editing': '图片编辑',
-  'image-generation': '图片生成',
-  'workspace-engineering': '工作区工程',
-};
-
-const dispositionLabels = {
-  preferred: '优先',
-  allowed: '允许',
-  avoid: '尽量避免',
-  disabled: '已禁用',
-} as const;
-
-const evidenceLabels: Record<string, string> = {
-  'model-system-known': '系统已知模型能力',
-  'model-provider-declared': '模型服务声明能力',
-  'model-user-confirmed': '用户确认模型能力',
-  'executor-affordance': '智能体执行能力',
-  'harness-support': '执行环境支持',
-  'executor-declaration': '智能体配置声明',
-};
-
 export function AgentClassConfig({
+  http,
   facts,
   draft,
   models,
   providers = [],
   onChange,
-  manualPreview,
-  onUpdateManual,
+  onSuggestResponsibility,
+  responsibilityFeedback,
 }: AgentClassConfigProps) {
-  const enabledModels = models.filter(model => model.enabled !== false && model.capabilityState !== '缺失');
+  const responsibilitySuggestionLoading = responsibilityFeedback?.status === 'loading';
+  const manuallyEdited = responsibilityFeedback?.after !== undefined
+    && draft.responsibility !== responsibilityFeedback.after;
+  const enabledModels = models.filter(model => model.enabled !== false);
   const modelCompatibility = new Map(enabledModels.map(model => [
     model.ref,
     evaluateModelCompatibility(model, facts),
@@ -109,27 +104,101 @@ export function AgentClassConfig({
     && enabledModels.some(model => model.ref === draft.modelRef);
 
   return (
-    <article className="agent-route-card">
-      <div className="agent-route-heading">
-        <div>
-          <div className="settings-eyebrow">智能体</div>
-          <label className="agent-name-field">
-            <span>名称</span>
-            <input
-              className="text-input"
-              value={draft.displayName ?? facts.displayName}
-              maxLength={80}
+    <article className="agent-route-card agent-editor-card">
+      <header className="agent-editor-header">
+        <div className="agent-editor-title">
+          <span className="agent-editor-icon" aria-hidden="true">{facts.kind === 'planner' ? 'P' : 'A'}</span>
+          <div>
+            <div className="settings-eyebrow">智能体设置</div>
+            <h3>{facts.kind === 'planner' ? '规划智能体' : '执行智能体'}</h3>
+            <p>先定义职责，再选择模型；能力信息由系统根据模型事实自动补充。</p>
+          </div>
+        </div>
+        <span className="system-badge">{facts.kind === 'planner' ? '系统智能体' : '可编辑'}</span>
+      </header>
+
+      <div className="agent-editor-basics">
+        <label className="agent-name-field">
+          <span>显示名称</span>
+          <input
+            className="text-input"
+            value={draft.displayName ?? facts.displayName}
+            maxLength={80}
+            onChange={event => onChange({ ...draft, displayName: event.target.value })}
+          />
+        </label>
+        {facts.kind === 'planner' ? (
+          <section className="agent-fixed-responsibility">
+            <div className="agent-form-heading">
+              <div>
+                <span className="field-label">职责</span>
+                <small>系统固定，用于理解意图和编排任务。</small>
+              </div>
+              <span className="agent-field-badge">系统定义</span>
+            </div>
+            <strong>理解用户意图，拆解任务为 DAG 图，选择执行智能体并完成编排规划。</strong>
+          </section>
+        ) : (
+          <section className="agent-responsibility-panel">
+            <div className="agent-form-heading">
+              <div>
+                <span className="field-label">职责</span>
+                <small>面向任务描述这个智能体负责什么，供智能路由匹配。</small>
+              </div>
+              {onSuggestResponsibility && (
+                <button
+                  type="button"
+                  className="ghost-button agent-ai-button"
+                  disabled={responsibilitySuggestionLoading}
+                  onClick={onSuggestResponsibility}
+                >
+                  {responsibilitySuggestionLoading ? 'AI 改写中…' : 'AI 改写'}
+                </button>
+              )}
+            </div>
+            {responsibilityFeedback && <AiActionStatus
+              feedback={responsibilityFeedback}
+              title={responsibilitySuggestionLoading ? '正在 AI 改写'
+                : responsibilityFeedback.status === 'error' ? '改写失败'
+                  : responsibilityFeedback.status === 'stale' ? '本次建议未应用'
+                    : manuallyEdited ? '已继续编辑'
+                      : responsibilityFeedback.status === 'unchanged' ? '已检查，内容无变化' : 'AI 改写成功'}
+              detail={responsibilitySuggestionLoading ? (draft.responsibility !== responsibilityFeedback.before
+                ? '你已继续编辑，正在等待本次请求结束；新输入会保留。'
+                : '正在优化职责。编辑框仍为改写前内容；继续编辑时，本次结果不会覆盖你的新输入。')
+                : responsibilityFeedback.status === 'error' ? `${responsibilityFeedback.message} 当前内容未替换，可再次点击“AI 改写”。`
+                  : responsibilityFeedback.status === 'stale' ? '请求期间职责或模型发生了变化，已保留当前内容，请重新改写。'
+                    : manuallyEdited ? '当前为你继续调整后的职责；保存并激活后生效。'
+                      : responsibilityFeedback.status === 'unchanged' ? '本次返回内容与原文一致，无需替换；编辑框保留原文。'
+                        : '编辑框已填入改写后内容。可继续修改，保存并激活后生效。'}
+            />}
+            <textarea
+              className="text-input agent-responsibility-input"
+              aria-label="职责"
+              rows={3}
+              value={draft.responsibility}
+              placeholder="例如：负责检索公共网络资料，核验来源并整理成带引用的结论。"
               onChange={event => onChange({
                 ...draft,
-                displayName: event.target.value,
+                responsibility: event.target.value,
+                executorManualSourceText: event.target.value,
               })}
             />
-          </label>
-          <p className="settings-subtitle">
-            模型路由、能力配置和能力画像
-          </p>
-        </div>
-        <span className="system-badge">可编辑</span>
+            {responsibilityFeedback?.after !== undefined && (
+              <details className="ai-version-comparison">
+                <summary>{responsibilityFeedback.status === 'stale' ? '查看本次建议（未应用）' : '查看改写前后'}</summary>
+                <div className="ai-version-grid">
+                  <div><strong>改写前</strong><p>{responsibilityFeedback.before || '未填写职责'}</p></div>
+                  <div><strong>本次 AI 返回</strong><p>{responsibilityFeedback.after}</p></div>
+                </div>
+              </details>
+            )}
+            <div className="agent-responsibility-footer">
+              <small>AI 改写会保留你的原意，并结合所选模型能力补充适用任务和边界。</small>
+              <span>可继续编辑</span>
+            </div>
+          </section>
+        )}
       </div>
 
       {renderRoutePolicyPanel({
@@ -146,246 +215,8 @@ export function AgentClassConfig({
       })}
 
       <div className="agent-route-facts">
-        {facts.kind === 'executor' && (
-          <section className="executor-guidance-section">
-            <span className="fact-label">能力说明</span>
-            <textarea
-              className="text-input executor-guidance-input"
-              value={draft.executorManualSourceText}
-              maxLength={8_000}
-              placeholder="用自然语言描述这个智能体擅长什么、不擅长什么，以及某个模型为它带来的具体能力。点击“更新能力画像”后，系统会统一解析并生成说明书。"
-              onChange={event => onChange({
-                ...draft,
-                executorManualSourceText: event.target.value,
-              })}
-              rows={5}
-            />
-            <small className="field-help">
-              这是该智能体独立的用户定义。模型事实与用户定义会共同编译能力画像，
-              并更新规划的实际路由资格；权限和模型白名单仍由受控配置管理。
-            </small>
-            <div className="executor-guidance-actions">
-              <button
-                type="button"
-                className="ghost-button"
-                disabled={manualPreview?.status === 'updating'}
-                onClick={onUpdateManual}
-              >
-                {manualPreview?.status === 'updating' ? '更新中…' : '更新能力画像'}
-              </button>
-              <span className={`manual-analysis-state manual-analysis-${manualPreview?.status ?? 'stale'}`}>
-                {manualPreview?.status === 'ready' && manualPreview.systemStale
-                  ? '模型事实已变化，需要更新'
-                  : manualPreview?.status === 'ready'
-                    && manualPreview.analysisMode === 'source-preserved'
-                    ? '已更新，原文已保留'
-                  : manualPreview?.status === 'ready' ? '能力画像已更新'
-                  : manualPreview?.status === 'updating' ? '正在统一解析并生成'
-                    : manualPreview?.status === 'error' ? '更新失败，需要重试'
-                      : '能力画像需要更新'}
-              </span>
-            </div>
-            {manualPreview?.status === 'ready' && manualPreview.systemStale && (
-              <p className="field-help manual-system-stale">
-                模型池、模型能力或模型路由说明已变化；点击“更新能力画像”会用最新模型事实重新解析并生成说明书。
-              </p>
-            )}
-            {manualPreview?.error && (
-              <p className="field-error">{manualPreview.error}</p>
-            )}
-            {manualPreview?.warning && (
-              <p className="field-help manual-analysis-warning">
-                语义解析暂不可用，已保留原文并完成系统能力编译；当前定义仍可直接激活，
-                稍后可再次更新能力画像以补充结构化路由信息。
-                （{manualPreview.warning}）
-              </p>
-            )}
-            {manualPreview?.status === 'ready' && manualPreview.markdown && (
-              <details className="executor-manual-preview" open>
-                <summary>最终合并说明书预览</summary>
-                <pre>{manualPreview.markdown}</pre>
-              </details>
-            )}
-            {manualPreview?.status === 'ready' && (
-              <section className="executor-capability-profile">
-                <div className="capability-profile-heading">
-                  <div>
-                    <span className="fact-label">当前可路由能力</span>
-                    <small className="field-help">
-                      由当前模型、智能体执行条件和用户定义统一编译，只读展示。
-                    </small>
-                  </div>
-                  <span className="system-badge">
-                    {manualPreview?.routableCapabilities?.length ?? 0} 项
-                  </span>
-                </div>
-                <div className="fact-list capability-route-list">
-                  {manualPreview?.routableCapabilities?.map(capabilityId => {
-                    const capability = manualPreview.capabilities?.find(
-                      item => item.capabilityId === capabilityId,
-                    );
-                    return (
-                      <span className="fact-chip fact-chip-positive" key={capabilityId}>
-                        {capabilityLabels[capabilityId] ?? capabilityId}
-                        {capability ? ` · ${dispositionLabels[capability.routingDisposition]}` : ''}
-                      </span>
-                    );
-                  })}
-                  {!manualPreview?.routableCapabilities?.length && (
-                    <span className="fact-chip fact-chip-muted">当前没有可路由能力</span>
-                  )}
-                </div>
-
-                {manualPreview?.capabilityChanges && (
-                  <div className="capability-change-grid">
-                    <div>
-                      <span>新增可路由能力</span>
-                      {manualPreview.capabilityChanges.added.map(capabilityId => (
-                        <p key={capabilityId}>
-                          + {capabilityLabels[capabilityId] ?? capabilityId}
-                        </p>
-                      ))}
-                      {manualPreview.capabilityChanges.added.length === 0 && <p>无</p>}
-                    </div>
-                    <div>
-                      <span>移除可路由能力</span>
-                      {manualPreview.capabilityChanges.removed.map(capabilityId => (
-                        <p key={capabilityId}>
-                          - {capabilityLabels[capabilityId] ?? capabilityId}
-                        </p>
-                      ))}
-                      {manualPreview.capabilityChanges.removed.length === 0 && <p>无</p>}
-                    </div>
-                    <div>
-                      <span>路由偏好变化</span>
-                      {manualPreview.capabilityChanges.preferenceChanged.map(change => (
-                        <p key={change.capabilityId}>
-                          {capabilityLabels[change.capabilityId] ?? change.capabilityId}
-                          {`：${dispositionLabels[change.from as keyof typeof dispositionLabels] ?? change.from}`}
-                          {' → '}
-                          {dispositionLabels[change.to as keyof typeof dispositionLabels] ?? change.to}
-                        </p>
-                      ))}
-                      {manualPreview.capabilityChanges.preferenceChanged.length === 0 && <p>无</p>}
-                    </div>
-                  </div>
-                )}
-
-                <div className="capability-detail-grid">
-                  {manualPreview?.capabilities?.map(capability => (
-                    <article
-                      className="capability-detail-card"
-                      data-supported={capability.support === 'supported'}
-                      key={capability.capabilityId}
-                    >
-                      <div className="capability-detail-title">
-                        <strong>
-                          {capabilityLabels[capability.capabilityId] ?? capability.capabilityId}
-                        </strong>
-                        <span>
-                          {capability.support === 'supported' ? '已支撑' : '当前未满足'}
-                          {' · '}
-                          {dispositionLabels[capability.routingDisposition]}
-                        </span>
-                      </div>
-                      {capability.unresolvedReasons.length > 0 && (
-                        <div className="capability-unresolved">
-                          <span>当前未满足</span>
-                          {capability.unresolvedReasons.map(reason => (
-                            <p key={reason}>{reason}</p>
-                          ))}
-                        </div>
-                      )}
-                      <div className="capability-evidence">
-                        <span>能力证据</span>
-                        {capability.evidence.map((evidence, index) => (
-                          <p key={`${evidence.kind}-${evidence.modelRef ?? ''}-${index}`}>
-                            <strong>{evidenceLabels[evidence.kind] ?? evidence.kind}</strong>
-                            {evidence.modelRef ? ` · ${evidence.modelRef}` : ''}
-                            {`：${evidence.detail}`}
-                          </p>
-                        ))}
-                        {capability.evidence.length === 0 && <p>暂无有效能力证据。</p>}
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              </section>
-            )}
-          </section>
-        )}
-        {facts.kind === 'executor' ? (
-          <section className="executor-capability-tags">
-            <span className="fact-label">能力标签</span>
-            <small className="field-help">
-              标签由最终融合后的能力说明书自动提炼，只读展示。
-            </small>
-            <div className="capability-tag-groups">
-              <div>
-                <span className="tag-group-label">适合</span>
-                <div className="fact-list use-case-list">
-                  {manualPreview?.tags?.bestFit.map(item => (
-                    <span className="fact-chip fact-chip-positive" key={item}>{item}</span>
-                  ))}
-                  {!manualPreview?.tags?.bestFit.length && (
-                    <span className="fact-chip fact-chip-muted">说明书解析后生成</span>
-                  )}
-                </div>
-              </div>
-              <div>
-                <span className="tag-group-label">不适合</span>
-                <div className="fact-list use-case-list">
-                  {manualPreview?.tags?.avoid.map(item => (
-                    <span className="fact-chip fact-chip-negative" key={item}>{item}</span>
-                  ))}
-                  {!manualPreview?.tags?.avoid.length && (
-                    <span className="fact-chip fact-chip-muted">说明书解析后生成</span>
-                  )}
-                </div>
-              </div>
-            </div>
-          </section>
-        ) : (
-          <>
-            <section>
-              <span className="fact-label">适合做什么</span>
-              <div className="fact-list use-case-list">
-                {draft.primaryUseCases.map(item => (
-                  <span className="fact-chip fact-chip-positive" key={item}>{item}</span>
-                ))}
-                {draft.primaryUseCases.length === 0 && (
-                  <span className="fact-chip fact-chip-muted">未配置</span>
-                )}
-              </div>
-            </section>
-            <section>
-              <span className="fact-label">不适合做什么</span>
-              <div className="fact-list use-case-list">
-                {draft.avoidUseCases.map(item => (
-                  <span className="fact-chip fact-chip-negative" key={item}>{item}</span>
-                ))}
-                {draft.avoidUseCases.length === 0 && (
-                  <span className="fact-chip fact-chip-muted">未配置</span>
-                )}
-              </div>
-            </section>
-          </>
-        )}
-        {facts.kind === 'planner' && (
-          <section>
-            <span className="fact-label">系统配置能力</span>
-            <div className="fact-list">
-              {[...facts.routingCapabilities, ...facts.affordances].map(item => (
-                <span className="fact-chip" key={item}>{item}</span>
-              ))}
-            </div>
-            {facts.capabilityContracts.map(contract => (
-              <p className="fact-contract" key={contract}>{contract}</p>
-            ))}
-          </section>
-        )}
+        <AgentCapabilityProfile http={http} facts={facts} models={selectedModels} />
       </div>
-
     </article>
   );
 }
@@ -448,8 +279,8 @@ function renderRoutePolicyPanel(input: {
       {effectiveMode === 'auto' ? (
         <>
           <div className="route-policy-copy">
-            Auto 会在选中的候选池内先做静态能力基线过滤。运行时还会由 Kernel 根据实时健康、
-            容量、上下文和策略目标解析最终 concrete binding。
+            系统先检查模型是否可用及是否满足执行条件。启用智能决策后，会结合职责、具体能力、
+            任务要求和成本选择更合适的模型；决策服务不可用时按配置策略选择。
           </div>
           <div className="route-field">
             <span className="field-label">允许的模型池</span>
@@ -493,12 +324,12 @@ function renderRoutePolicyPanel(input: {
                             ?? model.providerRef,
                           providers.find(provider => provider.providerRef === model.providerRef)?.displayName,
                         )} · {
-                          model.capabilities.map(modelCapabilityLabel).join(' / ') || '能力未确认'
+                          model.routingNotes?.summary || '可在模型服务中获取能力描述'
                         }
                       </small>
                       <small className={compatibility.eligible ? 'model-eligible' : 'model-rejected'}>
                         {compatibility.eligible
-                          ? `可参与 · 满足 ${compatibility.requiredCapabilities.join(' / ') || '基础能力'}`
+                          ? '可选用'
                           : `排除 · 缺少 ${compatibility.missingCapabilities.join(' / ')}`}
                       </small>
                     </span>
@@ -575,40 +406,6 @@ function renderRoutePolicyPanel(input: {
         </div>
       )}
 
-      <details className="routing-explanation">
-        <summary>为什么这样路由</summary>
-        <p>
-          这里展示的是配置阶段可确定的能力基线。实际执行时，系统还会检查模型连接
-          健康、执行环境兼容性、容量、上下文和可用性，最后按“{describeRoutingObjective(draft.objective)}”排序。
-          这些运行时动态结果会在任务轨迹的 routing 阶段展示。
-          {selectedModel
-            ? ` 当前偏好模型为 ${selectedModel.modelId}（${resolveProviderDisplayName(
-              providers.find(provider => provider.providerRef === selectedModel.providerRef)?.providerRef
-                ?? selectedModel.providerRef,
-              providers.find(provider => provider.providerRef === selectedModel.providerRef)?.displayName,
-            )}）。`
-            : ' 当前还没有可用模型。'}
-        </p>
-        <div className="routing-candidate-audit">
-          {enabledModels.map(model => {
-            const compatibility = modelCompatibility.get(model.ref)!;
-            return (
-              <div data-eligible={compatibility.eligible} key={model.ref}>
-                <span>{resolveProviderDisplayName(
-                  providers.find(provider => provider.providerRef === model.providerRef)?.providerRef
-                    ?? model.providerRef,
-                  providers.find(provider => provider.providerRef === model.providerRef)?.displayName,
-                )} / {model.modelId}</span>
-                <strong>
-                  {compatibility.eligible
-                    ? '基线能力匹配'
-                    : `排除：缺少 ${compatibility.missingCapabilities.join('、')}`}
-                </strong>
-              </div>
-            );
-          })}
-        </div>
-      </details>
     </div>
   );
 }

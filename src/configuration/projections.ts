@@ -36,6 +36,8 @@ export function buildPlannerConfigurationView(
     .map(([id, model]) => ({
       id,
       providerRef: model.providerRef,
+      ...(model.description ? { description: model.description } : {}),
+      ...(model.publicFacts ? { publicFacts: clonePublicFacts(model.publicFacts) } : {}),
       capabilities: mergeKnownModelCapabilities(model.modelId, model.capabilities),
       reasoning: model.reasoning,
       routingNotes: model.routingNotes
@@ -48,6 +50,7 @@ export function buildPlannerConfigurationView(
       qualityTier: model.qualityTier,
       costInputPerMillion: model.costInputPerMillion,
       costOutputPerMillion: model.costOutputPerMillion,
+      pricing: model.pricing ? { ...model.pricing } : undefined,
     }))
     .sort((left, right) => left.id.localeCompare(right.id));
   const planner = snapshot.config.agentClasses.planner;
@@ -112,7 +115,9 @@ export function buildKernelConfigurationView(
       .map(([id, agentClass]) => {
         const harness = snapshot.config.harnesses[agentClass.harnessRef]!;
         return [id, {
-          displayName: agentClass.displayName,
+        displayName: agentClass.displayName,
+          responsibility: agentClass.responsibility,
+          plannerAffordances: [...agentClass.plannerAffordances],
           kind: agentClass.kind,
           harnessRef: agentClass.harnessRef,
           driverId: harness.driverId,
@@ -138,6 +143,9 @@ export function buildKernelConfigurationView(
       .map(([id, model]) => [id, {
         providerRef: model.providerRef,
         modelId: model.modelId,
+        ...(model.description ? { description: model.description } : {}),
+        ...(model.publicFacts ? { publicFacts: clonePublicFacts(model.publicFacts) } : {}),
+        ...(model.routingNotes ? { routingNotes: cloneModelRoutingNotes(model.routingNotes) } : {}),
         capabilities: mergeKnownModelCapabilities(model.modelId, model.capabilities),
         reasoning: model.reasoning,
         contextLimit: model.contextLimit,
@@ -146,6 +154,7 @@ export function buildKernelConfigurationView(
         qualityTier: model.qualityTier,
         costInputPerMillion: model.costInputPerMillion,
         costOutputPerMillion: model.costOutputPerMillion,
+        pricing: model.pricing ? { ...model.pricing } : undefined,
         enabled: model.enabled,
       }]),
   );
@@ -230,6 +239,27 @@ function cloneModelRoutingNotes(
     limitations: notes.limitations ? [...notes.limitations] : undefined,
     preferredTaskTypes: notes.preferredTaskTypes ? [...notes.preferredTaskTypes] : undefined,
     avoidTaskTypes: notes.avoidTaskTypes ? [...notes.avoidTaskTypes] : undefined,
+  };
+}
+
+function clonePublicFacts(
+  facts: import('./openrouter-model-catalog.js').OpenRouterPublicFacts,
+): import('./openrouter-model-catalog.js').OpenRouterPublicFacts {
+  return {
+    ...facts,
+    inputModalities: [...facts.inputModalities],
+    outputModalities: [...facts.outputModalities],
+    supportedParameters: [...facts.supportedParameters],
+    reasoning: facts.reasoning
+      ? {
+          ...facts.reasoning,
+          supportedEfforts: facts.reasoning.supportedEfforts
+            ? [...facts.reasoning.supportedEfforts]
+            : undefined,
+        }
+      : undefined,
+    benchmarks: facts.benchmarks ? { ...facts.benchmarks } : undefined,
+    highlights: [...facts.highlights],
   };
 }
 

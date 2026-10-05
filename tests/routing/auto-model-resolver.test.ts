@@ -22,6 +22,65 @@ function candidate(overrides: Partial<AutoModelCandidate> = {}): AutoModelCandid
 }
 
 describe('AutoModelResolver', () => {
+  it('follows the decision model even when the preferred candidate has fewer broad labels', () => {
+    const result = AutoModelResolver.resolve({
+      configurationRevision: 'revision-1', agentClassRef: 'executor',
+      harnessRef: 'pi', permissionProfileRef: 'workspace',
+      policy: { mode: 'auto', allowedModelRefs: ['tag-rich', 'specialist'] },
+      candidates: [
+        candidate({ modelRef: 'tag-rich', capabilities: ['coding', 'planning', 'long-context', 'tools'] }),
+        candidate({ modelRef: 'specialist', capabilities: ['tools'], costInputPerMillion: 10 }),
+      ],
+      requirements: {
+        requiredCapabilities: ['coding', 'planning', 'long-context', 'tools'],
+        preferredCapabilities: ['coding', 'planning', 'long-context'], contextTokens: 4_000,
+      },
+      spanProbabilities: { 'tag-rich': 0.1, specialist: 0.9 },
+    });
+    expect(result.binding?.modelRef).toBe('specialist');
+    expect(result.rejectedCandidates).toEqual([]);
+    expect(result.scoreBreakdown?.spanProbability).toBe(0.9);
+  });
+
+  it.each(['vision', 'tools', 'image-generation', 'image-editing'] as const)(
+    'keeps the %s execution constraint even with a favorable decision score', capability => {
+      const result = AutoModelResolver.resolve({
+        configurationRevision: 'revision-1', agentClassRef: 'executor',
+        harnessRef: 'pi', permissionProfileRef: 'workspace',
+        policy: { mode: 'auto', allowedModelRefs: ['unsupported', 'supported'] },
+        candidates: [
+          candidate({ modelRef: 'unsupported', capabilities: [] }),
+          candidate({ modelRef: 'supported', capabilities: [capability] }),
+        ],
+        requirements: { requiredCapabilities: [capability], preferredCapabilities: [], contextTokens: 1_024 },
+        spanProbabilities: { unsupported: 0.99, supported: 0.01 },
+      });
+      expect(result.binding?.modelRef).toBe('supported');
+      expect(result.rejectedCandidates[0]?.reason).toBe(`missing_capability:${capability}`);
+    },
+  );
+
+  it('does not treat missing prices as free and refuses unknown costs with a hard budget', () => {
+    const input = {
+      configurationRevision: 'revision-1', agentClassRef: 'executor',
+      harnessRef: 'pi', permissionProfileRef: 'workspace',
+      policy: { mode: 'auto' as const, allowedModelRefs: ['unknown', 'priced'], objective: { priority: 'cost' as const } },
+      candidates: [
+        candidate({ modelRef: 'unknown', costInputPerMillion: undefined }),
+        candidate({ modelRef: 'priced' }),
+      ],
+      requirements: { preferredCapabilities: [], contextTokens: 1_024 },
+    };
+    expect(AutoModelResolver.resolve(input).binding?.modelRef).toBe('priced');
+    const advised = AutoModelResolver.resolve({ ...input, spanProbabilities: { unknown: 0.9, priced: 0.1 } });
+    expect(advised.binding?.modelRef).toBe('unknown');
+    expect(advised.scoreBreakdown?.estimatedCost).toBeNull();
+    const budgeted = AutoModelResolver.resolve({ ...input, requirements: { ...input.requirements, maxCostPerTurn: 1 } });
+    expect(budgeted.rejectedCandidates).toContainEqual({ modelRef: 'unknown', providerRef: 'provider-a', reason: 'cost_unknown' });
+    const free = AutoModelResolver.resolve({ ...input, candidates: [candidate({ modelRef: 'priced', costInputPerMillion: 0, costOutputPerMillion: 0 })] });
+    expect(free.scoreBreakdown?.estimatedCost).toBe(0);
+  });
+
   it('requires an image-capable model for image routing work', () => {
     const result = AutoModelResolver.resolve({
       configurationRevision: 'revision-1',
@@ -97,12 +156,12 @@ describe('AutoModelResolver', () => {
     ]);
     expect(result.scoreBreakdown).toMatchObject({
       modelRef: 'healthy',
-      preferredCapabilityMatchCount: 1,
+      preferredCapabilityMatchCount: 0,
       preferredCapabilityMissCount: 0,
     });
   });
 
-  it('prefers a model with a matching capability profile before the cost objective', () => {
+  it('uses the cost objective without rewarding generic capability labels', () => {
     const result = AutoModelResolver.resolve({
       configurationRevision: 'revision-1',
       agentClassRef: 'planner',
@@ -126,17 +185,53 @@ describe('AutoModelResolver', () => {
       requirements: { preferredCapabilities: ['coding'], contextTokens: 4_000 },
     });
 
-    expect(result.binding?.modelRef).toBe('fast');
+    expect(result.binding?.modelRef).toBe('cheap');
     expect(result.scoreBreakdown).toMatchObject({
-      modelRef: 'fast',
+      modelRef: 'cheap',
       objective: 'cost',
       estimatedCost: expect.any(Number),
       estimatedLatencyMs: expect.any(Number),
-      preferredCapabilityMatchCount: 1,
+      preferredCapabilityMatchCount: 0,
       preferredCapabilityMissCount: 0,
     });
-    expect(result.fallbackCandidates.map(candidate => candidate.modelRef)).toEqual(['fast', 'cheap']);
-    expect(result.policyVersion).toBe('auto-model-routing-v1');
+    expect(result.fallbackCandidates.map(candidate => candidate.modelRef)).toEqual(['cheap', 'fast']);
+    expect(result.policyVersion).toBe('auto-model-routing-v2');
+  });
+
+  it('does not simulate semantic judgment with keyword overlap when the decision model is absent', () => {
+    const result = AutoModelResolver.resolve({
+      configurationRevision: 'revision-1',
+      agentClassRef: 'executor',
+      harnessRef: 'pi',
+      permissionProfileRef: 'workspace',
+      policy: {
+        mode: 'auto',
+        allowedModelRefs: ['generic', 'refactor-specialist'],
+        objective: { priority: 'quality' },
+      },
+      candidates: [
+        candidate({
+          modelRef: 'generic',
+          description: 'General purpose assistant',
+        }),
+        candidate({
+          modelRef: 'refactor-specialist',
+          description: 'Strong at large codebase refactoring and engineering migration',
+          routingNotes: { preferredTaskTypes: ['大型代码重构'] },
+        }),
+      ],
+      requirements: {
+        preferredCapabilities: ['coding'],
+        contextTokens: 4_000,
+        taskText: '请完成大型代码重构并补充回归测试',
+      },
+    });
+
+    expect(result.binding?.modelRef).toBe('generic');
+    expect(result.scoreBreakdown).toMatchObject({
+      modelRef: 'generic',
+      modelFitScore: 0,
+    });
   });
 
   it('never overrides fixed policy and returns a concrete binding only', () => {

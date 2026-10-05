@@ -167,6 +167,7 @@ export interface ConfigSnapshot {
 export interface ProviderCredentialStatus {
   configured: boolean;
   maskedApiKey: string | null;
+  credentialFingerprint?: string;
 }
 
 export type AgentReadinessStatus = 'checking' | 'installed' | 'missing' | 'broken';
@@ -194,6 +195,7 @@ export interface ConfigurationCompletionResult {
     displayName: string;
     baseUrl: string | null;
     credentialState: ConfigurationCompletionFieldState;
+    credentialFingerprint?: string;
     modelIds: string[];
     maskedApiKey?: string | null;
   }>;
@@ -206,17 +208,45 @@ export interface ConfigurationCompletionResult {
   models: Record<string, {
     providerRef: string;
     modelId: string;
+    displayName?: string;
+    description?: string;
+    publicFacts?: ModelPublicFacts;
     capabilities: string[];
     capabilityState: ConfigurationCompletionFieldState;
     contextLimit?: number;
     costInputPerMillion?: number;
     costOutputPerMillion?: number;
+    pricing?: {
+      source: 'openrouter' | 'catalog' | 'user';
+      usdInputPerToken?: number;
+      usdOutputPerToken?: number;
+      exchangeRate: 7;
+      fetchedAt?: string;
+      catalogModelId?: string;
+      overrideReason?: string;
+    };
     latencyTier?: string;
     qualityTier?: string;
   }>;
-  /** 公开的模型能力目录（modelId → 能力标签），用于加入候选时立即补全。 */
+  /** 公开的模型能力目录（modelId → 能力标签），用于新增模型时立即补全。 */
   modelCapabilityCatalog: Record<string, string[]>;
   requiredFields: string[];
+}
+
+export interface ModelPublicFacts {
+  inputModalities: string[];
+  outputModalities: string[];
+  supportedParameters: string[];
+  maxCompletionTokens?: number;
+  reasoning?: {
+    mandatory?: boolean;
+    defaultEnabled?: boolean;
+    supportedEfforts?: string[];
+    defaultEffort?: string;
+  };
+  benchmarks?: Record<string, number>;
+  knowledgeCutoff?: string;
+  highlights: string[];
 }
 
 /** `POST /api/config/discover-models` 的响应：现场探测 Provider 模型列表。 */
@@ -225,6 +255,48 @@ export interface ProviderModelDiscoveryResult {
   modelIds: string[];
   /** modelId → 内置目录登记的能力标签；目录未收录的模型为空数组。 */
   capabilities: Record<string, string[]>;
+  metadata?: Record<string, {
+    displayName?: string;
+    description?: string;
+    publicFacts?: ModelPublicFacts;
+    contextLimit?: number;
+    costInputPerMillion?: number;
+    costOutputPerMillion?: number;
+    pricing?: {
+      source: 'openrouter' | 'catalog' | 'user';
+      usdInputPerToken?: number;
+      usdOutputPerToken?: number;
+      exchangeRate: 7;
+      fetchedAt?: string;
+      catalogModelId?: string;
+    };
+  }>;
+  prices?: Record<string, {
+    inputCnyPerMillion?: number;
+    outputCnyPerMillion?: number;
+    pricing?: {
+      source: 'openrouter' | 'catalog' | 'user';
+      usdInputPerToken?: number;
+      usdOutputPerToken?: number;
+      exchangeRate: 7;
+      fetchedAt?: string;
+      catalogModelId?: string;
+    };
+  }>;
+}
+
+export interface AgentCapabilityDescription {
+  summary: string;
+  abilities: Array<{ title: string; description: string }>;
+  boundaries: string[];
+}
+
+export interface ResponsibilitySuggestion {
+  sourceText: string;
+  suggestedText: string;
+  selectedModelRefs: string[];
+  evidence: string[];
+  requiresConfirmation: true;
 }
 
 export type ConfigurationRuntimeState = Pick<ConfigSnapshot,

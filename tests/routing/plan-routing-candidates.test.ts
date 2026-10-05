@@ -225,7 +225,7 @@ describe('Span probability ordering in AutoModelResolver', () => {
       requirements: { preferredCapabilities: [], contextTokens: 1_024 },
     };
     const baseline = AutoModelResolver.resolve(input);
-    expect(baseline.policyVersion).toBe('auto-model-routing-v1');
+    expect(baseline.policyVersion).toBe('auto-model-routing-v2');
     expect(baseline.scoreBreakdown?.spanProbability).toBeUndefined();
     expect(AutoModelResolver.resolve({ ...input, spanProbabilities: undefined }).binding)
       .toEqual(baseline.binding);
@@ -251,7 +251,7 @@ describe('Span probability ordering in AutoModelResolver', () => {
       spanProbabilities: { 'model-fast': 0.2, 'model-deep': 0.9 },
     });
     expect(span.binding?.modelRef).toBe('model-deep');
-    expect(span.policyVersion).toBe('span-routing-v1');
+    expect(span.policyVersion).toBe('span-routing-v2');
     expect(span.scoreBreakdown?.spanProbability).toBe(0.9);
     // The base arithmetic is preserved and not blended with the probability.
     expect(span.scoreBreakdown?.totalScore).toBeGreaterThan(0);
@@ -293,6 +293,6 @@ describe('Span probability ordering in AutoModelResolver', () => {
       spanProbabilities: { 'model-fast': 0.1, 'model-deep': 1 },
     });
     expect(result.binding?.modelRef).toBe('model-fast');
-    expect(result.policyVersion).toBe('span-routing-v1');
+    expect(result.policyVersion).toBe('span-routing-v2');
   });
 });

@@ -78,6 +78,43 @@ describe('normalized Conversation observation', () => {
     manager.close(); expect(store.turn('b', 'turn')).toBeUndefined();
   });
 
+  it('includes the Web connection identity when opening an observation', () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const manager = new ObservationManager(new ConversationEntityStore(), message => {
+      sent.push(message as Record<string, unknown>); return true;
+    });
+    manager.follow('conversation');
+    manager.connection(true);
+    expect(sent[0]).toMatchObject({ type: 'observe', connectionId: 'web', conversationId: 'conversation' });
+    manager.close();
+  });
+
+  it('hydrates a selected conversation while the WebSocket baseline is pending', () => {
+    const store = new ConversationEntityStore();
+    const value = baseline('conversation');
+    store.hydrate('conversation', { asOf: value.head!, turns: value.turns, nextCursor: 'older' });
+    expect(store.window('conversation')).toMatchObject({
+      status: 'ready', cursor: { epoch: value.head!.epoch, revision: value.head!.revision }, olderCursor: 'older',
+    });
+    expect(store.turn('conversation', 'turn')).toBeDefined();
+  });
+
+  it('strips the read model journal sequence before resuming an observation', () => {
+    const store = new ConversationEntityStore();
+    store.baseline('conversation', baseline('conversation'));
+    const sent: Array<Record<string, unknown>> = [];
+    const manager = new ObservationManager(store, message => {
+      sent.push(message as Record<string, unknown>); return true;
+    });
+    manager.follow('conversation');
+    manager.connection(true);
+    expect(sent[0]).toMatchObject({
+      type: 'observe', conversationId: 'conversation', cursor: { epoch: 'epoch', revision: 1 },
+    });
+    expect((sent[0]!.cursor as Record<string, unknown>)).not.toHaveProperty('journalSequence');
+    manager.close();
+  });
+
   it('bounds active windows while preserving terminal results and reading older pages independently', () => {
     const store = new ConversationEntityStore(); store.retain('a');
     store.baseline('a', baseline('a'));

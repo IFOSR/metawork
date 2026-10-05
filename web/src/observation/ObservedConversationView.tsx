@@ -36,6 +36,7 @@ export const ObservedConversationView = memo(function ObservedConversationView({
   const [measurement, setMeasurement] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [initialLoadAttempt, setInitialLoadAttempt] = useState(0);
   const [pinned, setPinned] = useState<ReadonlySet<string>>(new Set());
   const initialLocated = useRef<string | null>(null);
   const anchor = useRef<Anchor | null>(memory.anchors.get(conversationId) ?? null);
@@ -138,6 +139,25 @@ export const ObservedConversationView = memo(function ObservedConversationView({
     finally { setLoading(false); }
   };
 
+  useEffect(() => {
+    let active = true;
+    setError(null);
+    const current = store.window(conversationId);
+    if (current.status === 'ready' && current.cursor) return () => { active = false; };
+    void http.getConversationView(conversationId).then(page => {
+      if (!active) return;
+      store.hydrate(conversationId, page);
+    }).catch(reason => {
+      if (!active) return;
+      setError(`历史加载失败：${(reason as Error).message}`);
+    });
+    return () => { active = false; };
+  }, [conversationId, http, initialLoadAttempt, store]);
+
+  useEffect(() => {
+    if (window.status === 'ready') setError(null);
+  }, [window.status]);
+
   const locate = async (turnId: string, taskId?: string) => {
     const generation = store.currentGeneration(); const epoch = window.cursor?.epoch;
     if (!epoch) return;
@@ -154,14 +174,18 @@ export const ObservedConversationView = memo(function ObservedConversationView({
     void locate(initialTurnId ?? '', initialTurnId ? undefined : initialTaskId).catch(error => setError((error as Error).message));
   }, [initialTurnId, initialTaskId, window.cursor?.epoch]);
 
-  return <div className="conversation-view" ref={root} style={{ overflowAnchor: 'none' }}>
-    {(window.status !== 'ready' || error) && <p role="status">{error ?? window.error ?? {
+  const statusMessage = error ?? window.error ?? {
       loading: '正在读取会话…', preparing: '正在整理历史，已有内容可先浏览。', disconnected: '连接已断开，正在重连…', error: '会话暂时不可用。', ready: '',
-    }[window.status]}</p>}
+    }[window.status];
+  return <div className="conversation-view" ref={root} style={{ overflowAnchor: 'none' }}>
+    {(window.status !== 'ready' || error) && <div className="conversation-state" role={error ? 'alert' : 'status'}>
+      <p>{statusMessage}</p>
+      {error && <button type="button" onClick={() => setInitialLoadAttempt(value => value + 1)}>重新加载</button>}
+    </div>}
     <ObservedActivity conversationId={conversationId} view={activity} ws={ws} http={http} showTasks={false} />
     {window.olderCursor && <button disabled={loading} onClick={() => void loadOlder()}>{loading ? '正在加载…' : '加载更早的对话'}</button>}
     {!window.atLatest && <button onClick={() => { anchor.current = null; ws.observations.latest(conversationId); }}>返回最新对话</button>}
-    {!window.ids.length && window.status === 'ready' && <div className="workspace-empty"><h2>从一个明确目标开始</h2></div>}
+    {!window.ids.length && window.status === 'ready' && <div className="workspace-empty"><h2>还没有对话内容</h2><p>在下方输入你的目标，开始这个任务。</p></div>}
     <div ref={list}>
     {visible.map((row, index) => <Fragment key={row.id}>
       <div style={{ height: Math.max(0, row.top - (index ? visible[index - 1]!.top + visible[index - 1]!.height : 0)) }} aria-hidden />

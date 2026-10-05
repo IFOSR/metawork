@@ -9,6 +9,12 @@ This directory contains both current technical documentation and historical plan
 
 ## Current Docs
 
+- [设置激活去除 Planner 依赖](plans/2026-10-05-settings-activation-without-planner.md)：保存不触发 LLM，内部 AI 使用独立服务。
+
+- [自然语言能力优先的任务路由](plans/2026-10-05-description-first-routing.md)：取消泛化标签和关键词打分，保留执行条件校验。
+
+- [内部 LLM 服务](current/internal-llm-service.md)：独立配置、凭证平移、AI 改写及 OpenRouter 路由画像提炼。
+
 - [Repository Agent Guide](../AGENTS.md): fastest onboarding path, current
   contract versions, module ownership, runtime invariants, entry points, and
   validation rules.
@@ -25,7 +31,8 @@ This directory contains both current technical documentation and historical plan
 
 - [AnyFusion v1.2.0 Preview](releases/v1.2.0-preview.0.md): public preview highlights, architecture summary, deployment status, and known limitations.
 - [MetaWork v1.2.0 Preview 6](releases/v1.2.0-preview.6.md): historical preview release matrix and build notes.
-- [MetaWork v0.1.3 Release](releases/v0.1.3.md): current formal stable-channel release and delivered multi-client observation features.
+- [MetaWork v0.1.4 Release](releases/v0.1.4.md): current stable release with redesigned settings, description-first routing, independent settings AI, and corrected GitHub installation downloads.
+- [MetaWork v0.1.3 Release](releases/v0.1.3.md): previous stable release with multi-client observation features.
 - [Changelog](../CHANGELOG.md): public release history.
 
 ## Architecture Decisions

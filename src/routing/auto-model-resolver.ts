@@ -4,14 +4,17 @@ import type {
   ModelPolicy,
 } from '../configuration/types.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
+import type { ModelRoutingNotes } from '../configuration/types.js';
+import { isModelExecutionConstraint } from './model-execution-constraints.js';
+import type { OpenRouterPublicFacts } from '../configuration/openrouter-model-catalog.js';
 
-export const AUTO_MODEL_ROUTING_POLICY_VERSION = 'auto-model-routing-v1';
+export const AUTO_MODEL_ROUTING_POLICY_VERSION = 'auto-model-routing-v2';
 /**
  * Policy version recorded when a validated Span observation participated in
  * ranking. Span is a soft ordering signal only; the deterministic comparator
  * still decides every tie and remains the only path when no observation exists.
  */
-export const SPAN_ROUTING_POLICY_VERSION = 'span-routing-v1';
+export const SPAN_ROUTING_POLICY_VERSION = 'span-routing-v2';
 
 export type ModelHealth = 'healthy' | 'degraded' | 'unavailable';
 
@@ -19,6 +22,9 @@ export interface AutoModelCandidate {
   providerRef: string;
   modelRef: string;
   modelId: string;
+  description?: string;
+  routingNotes?: ModelRoutingNotes;
+  publicFacts?: OpenRouterPublicFacts;
   capabilities: readonly ModelCapability[];
   contextLimit?: number;
   costInputPerMillion?: number;
@@ -33,15 +39,17 @@ export interface AutoModelCandidate {
 }
 
 export interface AutoModelRequirements {
-  /** Model capabilities that are mandatory for this exact binding. */
+  /** Objective model execution requirements; broad quality labels are ignored. */
   requiredCapabilities?: readonly ModelCapability[];
-  /** Model profile strengths used to rank candidates, not an eligibility gate. */
+  /** Legacy caller metadata; never used for eligibility or ranking. */
   preferredCapabilities: readonly ModelCapability[];
   contextTokens: number;
   requiresStructuredOutput?: boolean;
   maxCostPerTurn?: number;
   maxLatencyMs?: number;
   estimatedOutputTokens?: number;
+  /** Legacy metadata; semantic interpretation belongs to the decision model. */
+  taskText?: string;
 }
 
 export interface RejectedModelCandidate {
@@ -55,9 +63,10 @@ export interface ModelScoreBreakdown {
   objective: AutoModelObjective['priority'];
   preferredCapabilityMatchCount: number;
   preferredCapabilityMissCount: number;
-  estimatedCost: number;
+  estimatedCost: number | null;
   estimatedLatencyMs: number;
   qualityScore: number;
+  modelFitScore: number;
   totalScore: number;
   /**
    * Validated Mercury joint-choice probability for this candidate, when one applied.
@@ -198,10 +207,11 @@ export class AutoModelResolver {
     }
 
     eligible.sort((left, right) => (
-      left.score.preferredCapabilityMissCount - right.score.preferredCapabilityMissCount
-      || right.score.preferredCapabilityMatchCount - left.score.preferredCapabilityMatchCount
-      || spanProbabilityRank(input.spanProbabilities, right.candidate.modelRef)
+      spanProbabilityRank(input.spanProbabilities, right.candidate.modelRef)
         - spanProbabilityRank(input.spanProbabilities, left.candidate.modelRef)
+      || ((objective === 'cost' || objective === 'balanced')
+        ? Number(left.score.estimatedCost === null) - Number(right.score.estimatedCost === null)
+        : 0)
       || left.score.totalScore - right.score.totalScore
       || Number(right.candidate.modelRef === input.preferredModelRef)
         - Number(left.candidate.modelRef === input.preferredModelRef)
@@ -241,7 +251,7 @@ function rejectCandidate(
   if (!candidate.available || candidate.health === 'unavailable') return 'unavailable';
   if (candidate.health === 'degraded') return 'health_degraded';
   for (const capability of requirements.requiredCapabilities ?? []) {
-    if (!candidate.capabilities.includes(capability)) {
+    if (isModelExecutionConstraint(capability) && !candidate.capabilities.includes(capability)) {
       return `missing_capability:${capability}`;
     }
   }
@@ -253,7 +263,10 @@ function rejectCandidate(
   }
   const score = scoreCandidate(candidate, requirements, objective?.priority ?? 'balanced');
   const maxCost = requirements.maxCostPerTurn ?? objective?.maxCostPerTurn;
-  if (maxCost !== undefined && score.estimatedCost > maxCost) return 'cost_limit_exceeded';
+  if (maxCost !== undefined) {
+    if (score.estimatedCost === null) return 'cost_unknown';
+    if (score.estimatedCost > maxCost) return 'cost_limit_exceeded';
+  }
   const maxLatency = requirements.maxLatencyMs ?? objective?.maxLatencyMs;
   if (maxLatency !== undefined && score.estimatedLatencyMs > maxLatency) return 'latency_limit_exceeded';
   if (objective?.minimumQualityTier && qualityRank(candidate.qualityTier) < qualityRank(objective.minimumQualityTier)) {
@@ -269,18 +282,19 @@ function scoreCandidate(
   spanProbability?: number,
 ): ModelScoreBreakdown {
   const estimatedOutputTokens = requirements.estimatedOutputTokens ?? 4_000;
-  const estimatedCost = (
-    ((candidate.costInputPerMillion ?? 0) * requirements.contextTokens)
-    + ((candidate.costOutputPerMillion ?? 0) * estimatedOutputTokens)
-  ) / 1_000_000;
+  const estimatedCost = candidate.costInputPerMillion === undefined
+    || candidate.costOutputPerMillion === undefined ? null : (
+      candidate.costInputPerMillion * requirements.contextTokens
+      + candidate.costOutputPerMillion * estimatedOutputTokens
+    ) / 1_000_000;
   const estimatedLatencyMs = latencyMs(candidate.latencyTier);
   const qualityScore = qualityRank(candidate.qualityTier);
-  const preferredCapabilityMatchCount = requirements.preferredCapabilities
-    .filter(capability => candidate.capabilities.includes(capability))
-    .length;
-  const preferredCapabilityMissCount = requirements.preferredCapabilities.length
-    - preferredCapabilityMatchCount;
-  const costScore = estimatedCost * 1_000;
+  // Retained audit fields remain readable for old decisions. New decisions do
+  // not score semantic tags or task wording in the deterministic Kernel.
+  const modelFitScore = 0;
+  const preferredCapabilityMatchCount = 0;
+  const preferredCapabilityMissCount = 0;
+  const costScore = (estimatedCost ?? 0) * 1_000;
   const latencyScore = estimatedLatencyMs / 10;
   const qualityPenalty = (3 - qualityScore) * 100;
   const totalScore = objective === 'quality'
@@ -298,6 +312,7 @@ function scoreCandidate(
     estimatedCost,
     estimatedLatencyMs,
     qualityScore,
+    modelFitScore,
     totalScore,
     ...(spanProbability !== undefined ? { spanProbability } : {}),
   };

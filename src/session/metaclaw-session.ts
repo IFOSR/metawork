@@ -73,7 +73,10 @@ import {
   getDefaultPlannerProcessSupervisor,
   type PlannerProcessController,
 } from '../planning/planner-process-supervisor.js';
-import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
+import {
+  collectWorkGraphQualityWarnings,
+  validatePlanningAgentPlan,
+} from '../planning/planning-agent-plan-validator.js';
 import { PlanningAgentPlanSchema } from '../planning/planning-agent-plan-schema.js';
 import { normalizePlanningAgentPlanInput } from '../planning/planning-agent-plan-normalizer.js';
 import type {
@@ -1885,6 +1888,19 @@ export class MetaclawSession {
       },
       eventKey: submissionId,
     });
+    const qualityWarnings = collectWorkGraphQualityWarnings(plan);
+    if (qualityWarnings.length > 0) {
+      this.interactionTraceStream.append({
+        phase: 'planning',
+        actor: 'planner',
+        kind: 'dag_quality_warning',
+        status: 'completed',
+        title: 'Work Graph 拆解质量提示',
+        summary: qualityWarnings.join('；'),
+        details: { warnings: qualityWarnings, planId: plan.id },
+        eventKey: `${submissionId}:dag-quality`,
+      });
+    }
   }
 
   private recordPlannerProposalTerminalTrace(

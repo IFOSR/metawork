@@ -83,6 +83,11 @@ export function planSubtaskCandidateGroups(input: {
     ) as ModelCapability[],
     preferredCapabilities: [],
     contextTokens: 1_024,
+    taskText: [
+      subtask.title,
+      subtask.goal,
+      ...subtask.acceptance.map(item => item.description),
+    ].join('\n'),
   };
   const groups: PlanSubtaskCandidateGroup[] = [];
   subtask.executorBindings.forEach((proposed, bindingIndex) => {

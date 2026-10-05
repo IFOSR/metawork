@@ -226,8 +226,9 @@ export class ConfigurationRuntimeCoordinator {
         issues: initialValidation.issues.map(issue => `${issue.path || '(root)'}: ${issue.message}`),
       };
     }
-    // Semantic preparation belongs to this transaction. Persist credentials
-    // only after the prepared candidate has passed validation.
+    // Deterministic preparation belongs to this transaction. Persist credentials
+    // only after the prepared candidate has passed validation; never generate
+    // semantic settings content during activation.
     let preparedConfig: unknown;
     try {
       preparedConfig = await this.deps.prepareConfig?.({

@@ -38,12 +38,11 @@ executing, recovering, and delivering agent work.
 - **Explainable routing:** every authorized attempt is pinned to a configuration
   revision and a complete Provider, Model, AgentClass, Harness, and Permission
   Profile binding.
-- **Capability-driven routing:** each Executor has its own Chinese Skill-style
-  capability manual. The manual is compiled from the Executor's selected Models,
-  model capability evidence, runtime affordances, and user natural-language
-  guidance. Planner uses the final manual for semantic matching, while its
-  machine-readable routing projection is used for validation and model
-  selection.
+- **Capability-driven routing:** Planner uses each Executor's duties and
+  capability evidence for task planning. The decision advisor compares detailed
+  model strengths, limitations, task fit, available tools, and prices when
+  selecting an Agent-model pair. Generic capability tags do not score quality;
+  concrete execution and permission requirements remain enforced.
 - **Context continuity:** Planner uses its persisted Pi session to understand
   references such as "this image" or "the report just produced". MetaWork's
   Context Bridge provides bounded Conversation facts, validates selected
@@ -73,7 +72,7 @@ existing names where changing them would break installations.
 ## Release
 
 The current formal release is
-[MetaWork `v0.1.3`](https://github.com/IFOSR/metawork/releases/tag/v0.1.3).
+[MetaWork `v0.1.4`](https://github.com/IFOSR/metawork/releases/tag/v0.1.4).
 It is published on the stable installation channel. Its synchronized release
 identity is recorded in the signed per-platform manifests; all targets are
 built from the same tagged commit.
@@ -117,7 +116,7 @@ Codex CLI and Pi Agent are installed independently. Setup detects them on
 
 The official distribution source is GitHub Releases. The installer below
 tracks the latest stable Release; for this repository state it resolves to
-`v0.1.3`. Release archives and signed manifests are downloaded directly from
+`v0.1.4`. Release archives and signed manifests are downloaded directly from
 GitHub's Release CDN.
 
 ```bash
@@ -225,7 +224,7 @@ host builds the Linux x64 release with:
 npm run build:release -- \
   --platform linux \
   --arch x64 \
-  --release-id 0.1.3-build-<tagged-revision> \
+  --release-id 0.1.4-build-<tagged-revision> \
   --signing-key /secure/path/metawork-release-key.pem \
   --out-dir /tmp/metawork-release
 ```
@@ -609,7 +608,7 @@ preserved.
 ## Project Status
 
 MetaWork is under active commercial development. The current formal release is
-`v0.1.3`, with signed native packages for macOS Intel, macOS Apple
+`v0.1.4`, with signed native packages for macOS Intel, macOS Apple
 Silicon, Linux x64, and Windows x64. The runtime provides the Server/Client
 Gateway split, unified multi-client observation, bounded read models for fast
 Conversation switching, the native TUI task dashboard, isolated

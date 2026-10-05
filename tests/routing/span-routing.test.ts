@@ -197,6 +197,67 @@ describe('Span question builder', () => {
     });
   });
 
+  it('sends model descriptions, routing notes and public facts as soft fit evidence', () => {
+    const built = buildSpanSubtaskEvaluationRequest({
+      subtask: subtask({ title: 'Refactor the TypeScript repository' }),
+      groups: [{
+        ...groups()[0]!,
+        eligible: [{
+          ...groups()[0]!.eligible[0]!,
+          description: 'Strong at large codebase refactoring',
+          routingNotes: { preferredTaskTypes: ['大型代码重构'], limitations: ['需要额外核验安全敏感改动'] },
+          costInputPerMillion: 7,
+          costOutputPerMillion: 28,
+          publicFacts: {
+            inputModalities: ['text'],
+            outputModalities: ['text'],
+            supportedParameters: ['tools'],
+            reasoning: { supportedEfforts: ['high'] },
+            highlights: ['适合复杂工程迁移'],
+          },
+        }],
+      }],
+      agentClasses: {
+        ...agentClasses(),
+        'pi-general': {
+          ...agentClasses()['pi-general']!,
+          responsibility: '负责大型代码库重构与工程迁移',
+          plannerAffordances: ['workspace-read-write', 'workspace-command-validation'],
+        },
+      },
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    const candidateState = Object.values(built.request.state.candidates as Record<string, Record<string, unknown>>)[0]!;
+    expect(candidateState).toMatchObject({
+      description: 'Strong at large codebase refactoring',
+      agentResponsibility: '负责大型代码库重构与工程迁移',
+      routingNotes: { preferredTaskTypes: ['大型代码重构'] },
+      publicFacts: { highlights: ['适合复杂工程迁移'] },
+      pricing: { currency: 'CNY', unit: 'per-million-tokens', input: 7, output: 28 },
+      availableTools: ['workspace-command-validation', 'workspace-read-write'],
+    });
+    expect(candidateState).not.toHaveProperty('capabilities');
+    expect(candidateState.executionFeatures).toEqual([]);
+    expect(candidateState.routingNotes).toMatchObject({ limitations: ['需要额外核验安全敏感改动'] });
+    expect(built.request.questions.candidates!.instructions).toContain('never rank by label count or keyword overlap');
+    expect(built.request.questions.candidates!.instructions).toContain('not verified benchmarks');
+  });
+
+  it('distinguishes unknown from free prices and preserves detailed duties beyond the old label-sized limit', () => {
+    const classes = agentClasses();
+    classes['codex-fast']!.responsibility = '职责说明。'.repeat(180) + '边界：不负责生产部署。';
+    const built = buildSpanSubtaskEvaluationRequest({
+      subtask: subtask(), groups: groups(), agentClasses: classes,
+      models: { 'model-fast': { costInputPerMillion: 0, costOutputPerMillion: 0 } } as never,
+    });
+    if (!built.ok) throw new Error(built.reason);
+    const candidates = built.request.state.candidates as Record<string, Record<string, unknown>>;
+    expect(candidates.c000!.agentResponsibility).toContain('不负责生产部署');
+    expect(candidates.c000!.pricing).toMatchObject({ input: 0, output: 0 });
+    expect(candidates.c001!.pricing).toMatchObject({ input: null, output: null });
+  });
+
   it('changes the request when only the real model identity changes', () => {
     const withModelId = (modelId: string) => {
       const varied = groups().map(group => ({

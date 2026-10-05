@@ -4,6 +4,7 @@ import type {
   ExecutorAffordanceId,
   RoutingCapabilityId,
 } from '../routing/types.js';
+import type { OpenRouterPublicFacts } from './openrouter-model-catalog.js';
 
 export type ConfigurationRevisionId = string;
 
@@ -38,9 +39,25 @@ export interface ModelRoutingNotes {
   avoidTaskTypes?: string[];
 }
 
+export type ModelMetadataSource = 'openrouter' | 'catalog' | 'user';
+
+export interface ModelPricingMetadata {
+  source: ModelMetadataSource;
+  usdInputPerToken?: number;
+  usdOutputPerToken?: number;
+  exchangeRate: 7;
+  fetchedAt?: string;
+  catalogModelId?: string;
+  overrideReason?: string;
+}
+
 export interface ModelProfile {
   providerRef: string;
   modelId: string;
+  /** Public model description fetched from OpenRouter or supplied by the catalog. */
+  description?: string;
+  /** Structured public facts used as routing evidence; never treated as permissions. */
+  publicFacts?: OpenRouterPublicFacts;
   capabilities: ModelCapability[];
   reasoning: ModelReasoningLevel;
   routingNotes?: ModelRoutingNotes;
@@ -50,6 +67,7 @@ export interface ModelProfile {
   qualityTier?: 'low' | 'medium' | 'high';
   costInputPerMillion?: number;
   costOutputPerMillion?: number;
+  pricing?: ModelPricingMetadata;
   enabled: boolean;
 }
 
@@ -165,6 +183,7 @@ export interface ExecutorManualUserProfile {
 
 export interface AgentClassDefinition {
   displayName?: string;
+  responsibility?: string;
   kind: HarnessKind;
   harnessRef: string;
   modelPolicy: ModelPolicy;
@@ -282,6 +301,8 @@ export type ConfigurationSnapshot = Readonly<{
 export interface PlannerModelProfile {
   id: string;
   providerRef: string;
+  description?: string;
+  publicFacts?: OpenRouterPublicFacts;
   capabilities: ModelCapability[];
   reasoning: ModelReasoningLevel;
   routingNotes?: ModelRoutingNotes;
@@ -292,6 +313,7 @@ export interface PlannerModelProfile {
   qualityTier?: 'low' | 'medium' | 'high';
   costInputPerMillion?: number;
   costOutputPerMillion?: number;
+  pricing?: ModelPricingMetadata;
 }
 
 export type PlannerConfigurationView = Readonly<{
@@ -336,7 +358,10 @@ export interface PlannerExecutorCapabilityManual {
 }
 
 export interface KernelAgentClassConfiguration {
+  /** Revision-pinned tool conditions used to interpret natural-language evidence. */
+  plannerAffordances?: ExecutorAffordanceId[];
   displayName?: string;
+  responsibility?: string;
   kind: HarnessKind;
   harnessRef: string;
   /** 受控真实 Driver 标识（来自 Harness 定义），供兼容性判断，不推断实现。 */
@@ -359,6 +384,9 @@ export type KernelConfigurationView = Readonly<{
   models: Record<string, {
     providerRef: string;
     modelId: string;
+    description?: string;
+    publicFacts?: OpenRouterPublicFacts;
+    routingNotes?: ModelRoutingNotes;
     capabilities: ModelCapability[];
     reasoning: ModelReasoningLevel;
     contextLimit?: number;
@@ -367,6 +395,7 @@ export type KernelConfigurationView = Readonly<{
     qualityTier?: 'low' | 'medium' | 'high';
     costInputPerMillion?: number;
     costOutputPerMillion?: number;
+    pricing?: ModelPricingMetadata;
     enabled: boolean;
   }>;
   providers: Record<string, {

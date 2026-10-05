@@ -47,6 +47,35 @@ export function validatePlanningAgentPlan(
   return { valid: errors.length === 0, errors: errors.sort() };
 }
 
+/** Non-authoritative Planner feedback used to improve decomposition quality. */
+export function collectWorkGraphQualityWarnings(plan: PlanningAgentPlan): string[] {
+  if (plan.action !== 'plan_work_graph' || !plan.workGraph) return [];
+  const subtasks = plan.workGraph.subtasks;
+  const text = `${plan.reason} ${plan.task.title ?? ''} ${plan.task.goal ?? ''}`.toLowerCase();
+  const complexitySignal = /(?:研究|分析|实现|开发|验证|测试|报告|并行|分工|拆解|多个|两项|多个交付物|research|implement|analy[sz]|verify|test|parallel|decompose)/u.test(text);
+  const warnings: string[] = [];
+  if (subtasks.length === 1 && complexitySignal) {
+    warnings.push('work_graph_quality: complexity signals are present but the proposal contains one subtask; consider separate research, implementation, or verification handoffs');
+  }
+  if (subtasks.length > 8) {
+    warnings.push('work_graph_quality: proposal contains more than 8 subtasks; keep the graph observable and bounded');
+  }
+  if (subtasks.length >= 3) {
+    const roots = subtasks.filter(subtask => subtask.dependencies.length === 0);
+    const hasParallelRoots = roots.length > 1;
+    const allSingleChain = roots.length === 1
+      && subtasks.every(subtask => subtask === roots[0] || subtask.dependencies.length === 1);
+    if (allSingleChain && !text.includes('依赖') && !text.includes('depend')) {
+      warnings.push('work_graph_quality: all subtasks form a single chain without an explicit dependency rationale');
+    }
+    if (hasParallelRoots && subtasks.some(subtask => subtask.dependencies.length > 0
+      && subtask.contextRefs.length === 0)) {
+      warnings.push('work_graph_quality: dependent subtasks should reference the predecessor handoff in contextRefs');
+    }
+  }
+  return warnings;
+}
+
 function validateConfigurationRevision(
   graphRevision: string,
   configuration: PlannerConfigurationView,

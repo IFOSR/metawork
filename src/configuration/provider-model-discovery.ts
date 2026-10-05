@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 export type ProviderModelDiscoveryResult =
   | { status: 'discovered'; modelIds: string[] }
   | { status: 'unavailable'; modelIds: [] };
@@ -16,6 +18,8 @@ export interface ProviderCompletionCatalogEntry {
   providerRef: string;
   baseUrl: string;
   credentialAvailable: boolean;
+  /** One-way identity used to merge duplicate Provider entries in the UI. */
+  credentialFingerprint?: string;
   modelIds: string[];
 }
 
@@ -92,10 +96,17 @@ export async function buildProviderCompletionCatalog(input: {
       providerRef,
       baseUrl: provider.baseUrl,
       credentialAvailable: apiKey.length > 0,
+      ...(apiKey ? { credentialFingerprint: fingerprintProviderCredential(apiKey) } : {}),
       modelIds: [...new Set([...configuredModelIds, ...discovery.modelIds])]
         .sort((left, right) => left.localeCompare(right)),
     };
   }));
+}
+
+export function fingerprintProviderCredential(apiKey: string): string | undefined {
+  const normalized = apiKey.trim();
+  if (!normalized) return undefined;
+  return `sha256:${createHash('sha256').update(normalized, 'utf8').digest('hex')}`;
 }
 
 function modelRows(value: unknown): unknown[] {

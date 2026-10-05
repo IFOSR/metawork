@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -8,6 +9,19 @@ describe('user install script contracts', () => {
   it('uses the official GitHub Release service by default', () => {
     expect(script).toContain('DEFAULT_MANIFEST_BASE="https://github.com/IFOSR/metawork/releases/latest/download"');
     expect(script).not.toContain('14.103.216.193');
+  });
+
+  it.each(['darwin-arm64', 'darwin-x64', 'linux-x64'])('resolves the published manifest asset for %s', (target) => {
+    const [platform, architecture] = target.split('-');
+    const assignments = script.split('\n').filter((line) =>
+      /^(DEFAULT_MANIFEST_BASE|MANIFEST_URL)=/.test(line));
+    const result = execFileSync('bash', ['-c', [
+      ...assignments, 'printf "%s" "$MANIFEST_URL"',
+    ].join('\n')], {
+      encoding: 'utf8',
+      env: { ...process.env, METAWORK_INSTALL_MANIFEST: '', PLATFORM: platform, ARCHITECTURE: architecture },
+    });
+    expect(result).toBe(`https://github.com/IFOSR/metawork/releases/latest/download/manifest.${target}.json`);
   });
 
   it('verifies the signed manifest and artifacts before extraction or execution', () => {

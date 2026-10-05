@@ -1,3 +1,5 @@
+import { ModelCapabilityDetails } from './ModelCapabilityDetails';
+import { sameAiText, aiActionError, type ResponsibilityRewriteFeedback } from './AiActionStatus';
 import { useEffect, useRef, useState } from 'react';
 import type { HttpClient } from '../api/http';
 import type {
@@ -6,17 +8,21 @@ import type {
   ConfigSnapshot,
   ConfigurationCompletionResult,
   ConfigurationRuntimeState,
+  ResponsibilitySuggestion,
   ExecutorCapabilityManual,
   ExecutorManualAnalysis,
   ProviderCredentialStatus,
   ExecutorManagementView,
   ExecutorConfigurationChange,
+  ModelPublicFacts,
 } from '../api/types';
 import {
+  fingerprintProviderCredential,
   maskApiKey,
+  providerIdentityKey,
+  currentProviderIdentityKey,
   resolveProviderSecretReferenceFromConfiguration,
 } from './provider-secret-state';
-import { buildPlannerScopedConfiguration, keepActivePlanner } from '../planner-update';
 import {
   SPAN_ROUTING_DEFAULT_TIMEOUT_MS,
   buildSpanRoutingSection,
@@ -39,12 +45,10 @@ import {
   ROUTING_CAPABILITY_CONTRACTS,
   executorManualInputKey,
   evaluateModelCompatibility,
-  MODEL_CAPABILITY_IDS,
-  MODEL_CAPABILITY_LABELS,
   resolveAgentDisplayName,
   resolveProviderDisplayName,
   type AgentClassRoutingFacts,
-  type ModelCapabilityId,
+  type AgentClassRoutingDraft,
   type SettingsModelEntry,
   type SettingsProviderEntry,
   type RoutingDraftMap,
@@ -151,8 +155,65 @@ function hasRoutingNotes(
   );
 }
 
-function normalizeProviderUrl(value: string): string {
-  return value.trim().replace(/\/+$/u, '').toLowerCase();
+type OpenRouterCandidate = {
+  modelId: string;
+  displayName?: string;
+  description?: string;
+  score: number;
+  match: 'exact-id' | 'canonical-id' | 'display-name' | 'token-overlap';
+};
+
+function normalizeModelKey(value: string): string {
+  return value.trim().toLowerCase()
+    .replace(/\s+/gu, '-')
+    .replace(/[^a-z0-9]+/gu, '-');
+}
+
+function canonicalModelKey(value: string): string {
+  const last = value.trim().toLowerCase().split('/').at(-1) ?? '';
+  return normalizeModelKey(last.replace(/:(?:free|batch|nitro|exact)$/u, ''));
+}
+
+function modelTokens(value: string): string[] {
+  return normalizeModelKey(value).split('-').filter(token => token.length > 1
+    && !['openai', 'anthropic', 'google', 'meta', 'mistral'].includes(token));
+}
+
+function rankOpenRouterCandidates(
+  modelId: string,
+  discovery: {
+    modelIds?: string[];
+    metadata?: Record<string, { displayName?: string; description?: string }>;
+  } | undefined,
+): OpenRouterCandidate[] {
+  if (!modelId.trim() || !discovery) return [];
+  const normalized = normalizeModelKey(modelId);
+  const canonical = canonicalModelKey(modelId);
+  const localTokens = new Set(modelTokens(modelId));
+  return [...new Set([
+    ...(discovery.modelIds ?? []),
+    ...Object.keys(discovery.metadata ?? {}),
+  ])].flatMap(candidateId => {
+    const metadata = discovery.metadata?.[candidateId];
+    const idKey = normalizeModelKey(candidateId);
+    const candidateCanonical = canonicalModelKey(candidateId);
+    const displayKey = normalizeModelKey(metadata?.displayName ?? '');
+    const candidateTokens = modelTokens(`${candidateId} ${metadata?.displayName ?? ''}`);
+    let score = 0;
+    let match: OpenRouterCandidate['match'] = 'token-overlap';
+    if (idKey === normalized) { score = 100; match = 'exact-id'; }
+    else if (candidateCanonical === canonical) { score = 96; match = 'canonical-id'; }
+    else if (displayKey && displayKey === normalized) { score = 94; match = 'display-name'; }
+    else {
+      const overlap = [...new Set(candidateTokens)].filter(token => localTokens.has(token)).length;
+      if (overlap === 0) return [];
+      const coverage = overlap / Math.max(1, localTokens.size);
+      const precision = overlap / Math.max(1, new Set(candidateTokens).size);
+      score = Math.round(52 + 30 * coverage + 12 * precision);
+      if (score < 58) return [];
+    }
+    return [{ modelId: candidateId, ...(metadata ?? {}), score, match }];
+  }).sort((left, right) => right.score - left.score || left.modelId.localeCompare(right.modelId));
 }
 
 function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResult): CatalogDraft {
@@ -182,21 +243,17 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
         ])],
         apiKey: '',
         maskedApiKey: completed?.maskedApiKey ?? null,
+        ...(completed?.credentialFingerprint ? { credentialFingerprint: completed.credentialFingerprint } : {}),
         credentialState: completed?.credentialState ?? '需要确认',
         enabled: provider.enabled !== false,
       },
     ];
   }));
-  const configuredUrls = new Set(
-    Object.values(providers).map(provider => normalizeProviderUrl(provider.baseUrl)),
-  );
   for (const [providerRef, completed] of Object.entries(completionProviders)) {
     const baseUrl = completed.baseUrl ?? '';
-    const normalizedUrl = normalizeProviderUrl(baseUrl);
     if (
       providers[providerRef]
       || completed.credentialState === '缺失'
-      || (normalizedUrl && configuredUrls.has(normalizedUrl))
     ) {
       continue;
     }
@@ -207,10 +264,28 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
       modelIds: completed.modelIds,
       apiKey: '',
       maskedApiKey: completed.maskedApiKey ?? null,
+      ...(completed.credentialFingerprint ? { credentialFingerprint: completed.credentialFingerprint } : {}),
       credentialState: completed.credentialState,
       enabled: true,
     };
-    if (normalizedUrl) configuredUrls.add(normalizedUrl);
+  }
+  const providerAliases: Record<string, string> = {};
+  const identityOwners = new Map<string, string>();
+  for (const provider of Object.values(providers)) {
+    const identity = providerIdentityKey(provider);
+    if (!identity) continue;
+    const owner = identityOwners.get(identity);
+    if (!owner) {
+      identityOwners.set(identity, provider.providerRef);
+      continue;
+    }
+    providerAliases[provider.providerRef] = owner;
+    const primary = providers[owner];
+    if (primary) {
+      primary.modelIds = [...new Set([...primary.modelIds, ...provider.modelIds])]
+        .sort((left, right) => left.localeCompare(right));
+    }
+    delete providers[provider.providerRef];
   }
   const models = Object.fromEntries(Object.entries(rawModels).map(([ref, raw]) => {
     const model = asRecord(raw);
@@ -232,18 +307,33 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
       ref,
       {
         ref,
-        providerRef: String(model.providerRef ?? ''),
+        providerRef: providerAliases[String(model.providerRef ?? '')]
+          ?? String(model.providerRef ?? ''),
         modelId: String(model.modelId ?? ref),
+        ...(typeof model.displayName === 'string' ? { displayName: model.displayName } : completedModel?.displayName ? { displayName: completedModel.displayName } : {}),
+        ...(typeof model.description === 'string' ? { description: model.description } : completedModel?.description ? { description: completedModel.description } : {}),
+        ...(model.publicFacts && typeof model.publicFacts === 'object'
+          ? { publicFacts: model.publicFacts as ModelPublicFacts }
+          : completedModel?.publicFacts ? { publicFacts: completedModel.publicFacts } : {}),
         capabilities,
         capabilityState: completedModel?.capabilityState
           ?? (capabilities.length > 0 ? '已自动发现' : '需要确认'),
         ...(typeof model.contextLimit === 'number' ? { contextLimit: model.contextLimit } : {}),
         ...(typeof model.costInputPerMillion === 'number'
           ? { costInputPerMillion: model.costInputPerMillion }
-          : {}),
+          : completedModel?.costInputPerMillion !== undefined
+            ? { costInputPerMillion: completedModel.costInputPerMillion }
+            : {}),
         ...(typeof model.costOutputPerMillion === 'number'
           ? { costOutputPerMillion: model.costOutputPerMillion }
-          : {}),
+          : completedModel?.costOutputPerMillion !== undefined
+            ? { costOutputPerMillion: completedModel.costOutputPerMillion }
+            : {}),
+        ...(model.pricing && typeof model.pricing === 'object'
+          ? { pricing: model.pricing as ModelDraft['pricing'] }
+          : completedModel?.pricing && typeof completedModel.pricing === 'object'
+            ? { pricing: completedModel.pricing }
+            : {}),
         ...(typeof model.latencyTier === 'string' ? { latencyTier: model.latencyTier } : {}),
         ...(typeof model.qualityTier === 'string' ? { qualityTier: model.qualityTier } : {}),
         ...(typeof model.reasoning === 'string' ? { reasoning: model.reasoning } : {}),
@@ -288,6 +378,10 @@ function loadRoutingDraft(config: RawRecord): RoutingDraft {
           agentClassRef,
           typeof agentClass.displayName === 'string' ? agentClass.displayName : undefined,
         ),
+        responsibility: isPlanner
+          ? '理解用户意图，拆解任务为 DAG 图，选择执行智能体并完成编排规划。'
+          : typeof agentClass.responsibility === 'string'
+            ? agentClass.responsibility : '',
         mode,
         modelRef,
         allowedModelRefs: allowedModelRefs.length > 0
@@ -339,6 +433,8 @@ function loadRoutingFacts(config: RawRecord): RoutingFacts {
           agentClassRef,
           typeof agentClass.displayName === 'string' ? agentClass.displayName : undefined,
         ),
+        responsibility: typeof agentClass.responsibility === 'string'
+          ? agentClass.responsibility : '',
         kind: baseFacts.kind,
         harnessRef,
         harnessLabel: humanizeProviderRef(harnessRef),
@@ -354,6 +450,12 @@ function loadRoutingFacts(config: RawRecord): RoutingFacts {
       },
     ];
   }));
+}
+
+function responsibilityRequestKey(entry: AgentClassRoutingDraft, catalog: CatalogDraft): string {
+  const refs = entry.mode === 'fixed' ? [entry.modelRef] : [...entry.allowedModelRefs].sort();
+  return JSON.stringify({ responsibility: entry.responsibility, mode: entry.mode,
+    defaultModelRef: entry.defaultModelRef, models: refs.map(ref => catalog.models[ref] ?? { ref }) });
 }
 
 export function SettingsPanel({
@@ -381,23 +483,56 @@ export function SettingsPanel({
     status: 'loading' | 'ready' | 'error';
     modelIds?: string[];
     capabilities?: Record<string, string[]>;
+    metadata?: Record<string, {
+      displayName?: string;
+      description?: string;
+      publicFacts?: ModelPublicFacts;
+      contextLimit?: number;
+      costInputPerMillion?: number;
+      costOutputPerMillion?: number;
+      pricing?: SettingsModelEntry['pricing'];
+    }>;
+    prices?: Record<string, {
+      inputCnyPerMillion?: number;
+      outputCnyPerMillion?: number;
+      pricing?: {
+        source: 'openrouter' | 'catalog' | 'user';
+        usdInputPerToken?: number;
+        usdOutputPerToken?: number;
+        exchangeRate: 7;
+        fetchedAt?: string;
+        catalogModelId?: string;
+      };
+    }>;
     message?: string;
   }>>({});
-  const [capabilityEditorRef, setCapabilityEditorRef] = useState<string | null>(null);
   const [result, setResult] = useState<ActivateResult | null>(null);
-  const [plannerResult, setPlannerResult] = useState<ActivateResult | null>(null);
-  const [plannerUpdating, setPlannerUpdating] = useState(false);
-  const [activeRoutingDraft, setActiveRoutingDraft] = useState<RoutingDraft | null>(null);
   const [manualPreviews, setManualPreviews] = useState<Record<string, ManualPreviewState>>({});
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
+  const [modelEditRef, setModelEditRef] = useState<string | null>(null);
   const [executorView, setExecutorView] = useState<ExecutorManagementView | null>(null);
   const [executorEditor, setExecutorEditor] = useState<{
     operation: ExecutorConfigurationChange['operation']; agentClassRef?: string;
   } | null>(null);
+  const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
+  const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
+  const [responsibilityFeedback, setResponsibilityFeedback] = useState<Record<string, ResponsibilityRewriteFeedback>>({});
+  const responsibilityRequests = useRef(new Map<string, symbol>());
+  const latestResponsibilityContext = useRef({ draft, catalog, revisionId });
+  latestResponsibilityContext.current = { draft, catalog, revisionId };
+  useEffect(() => () => { responsibilityRequests.current.clear(); }, []);
+  const [modelAddLoading, setModelAddLoading] = useState<string | null>(null);
+  const [modelInfoLoading, setModelInfoLoading] = useState<string | null>(null);
+  const [modelInfoStatus, setModelInfoStatus] = useState<Record<string, {
+    status: 'loading' | 'success' | 'error';
+    message: string;
+    candidates?: OpenRouterCandidate[];
+  }>>({});
   const [executorLoading, setExecutorLoading] = useState(false);
   const secretStatusVersion = useRef(0);
+  const completionCache = useRef<ConfigurationCompletionResult>();
 
   const applyConfigSnapshot = (
     snapshot: ConfigSnapshot,
@@ -409,10 +544,13 @@ export function SettingsPanel({
     setRuntimePolicy(loadRuntimePolicy(config));
     setSpanDraft(loadSpanRoutingDraft(config));
     const nextDraft = loadRoutingDraft(config);
-    setActiveRoutingDraft(nextDraft);
     setDraft(nextDraft);
     setFacts(loadRoutingFacts(config));
     setManualPreviews({});
+    responsibilityRequests.current.clear();
+    setResponsibilityFeedback({});
+    setExpandedProviders(new Set());
+    setExpandedAgents(new Set());
   };
 
   useEffect(() => {
@@ -525,6 +663,7 @@ export function SettingsPanel({
             {
               ...provider,
               maskedApiKey: existence[ref]?.maskedApiKey ?? provider.maskedApiKey ?? null,
+              credentialFingerprint: existence[ref]?.credentialFingerprint ?? provider.credentialFingerprint,
               credentialState: provider.apiKey
                 ? provider.credentialState
                 : existence[ref]?.configured ? '已自动发现' : provider.credentialState,
@@ -543,27 +682,35 @@ export function SettingsPanel({
     void refreshConfigurationCompletion().catch(error => setLoadError((error as Error).message));
   }, [http]);
 
-  const refreshConfigurationCompletion = async () => {
+  const refreshConfigurationCompletion = async (refreshPublicCatalog = true) => {
     if (!http) return;
-    const [snapshot, completion] = await Promise.all([
+    const [snapshot, publicCompletion] = await Promise.all([
       http.getConfig(),
-      http.getConfigurationCompletion(),
+      refreshPublicCatalog || !completionCache.current
+        ? http.getConfigurationCompletion()
+        : Promise.resolve(completionCache.current),
     ]);
+    completionCache.current = publicCompletion;
+    // A saved revision is the authority for membership and model facts. Do not
+    // resurrect deleted Providers or old model metadata from the catalog cache.
+    const completion: ConfigurationCompletionResult = refreshPublicCatalog ? publicCompletion : {
+      ...publicCompletion,
+      models: {},
+      requiredFields: [],
+      providers: Object.fromEntries(Object.entries(asRecord((snapshot.config as RawRecord).providers)).map(([ref, raw]) => {
+        const provider = asRecord(raw);
+        const cached = publicCompletion.providers[ref];
+        return [ref, {
+          displayName: typeof provider.displayName === 'string' ? provider.displayName : cached?.displayName ?? resolveProviderDisplayName(ref),
+          baseUrl: String(provider.baseUrl ?? ''),
+          modelIds: cached?.baseUrl === provider.baseUrl ? cached.modelIds : [],
+          credentialState: '需要确认' as const,
+        }];
+      })),
+    };
     setCapabilityCatalog(completion.modelCapabilityCatalog ?? {});
     const existence = await http.getSecretStatus(Object.keys(completion.providers))
       .catch((): Record<string, ProviderCredentialStatus> => ({}));
-    const configuredByUrl = new Map<string, {
-      configured: boolean;
-      maskedApiKey: string | null;
-    }>();
-    for (const [providerRef, provider] of Object.entries(completion.providers)) {
-      const status = existence[providerRef];
-      if (!status?.configured || !provider.baseUrl) continue;
-      configuredByUrl.set(normalizeProviderUrl(provider.baseUrl), {
-        configured: true,
-        maskedApiKey: status.maskedApiKey,
-      });
-    }
     applyConfigSnapshot(snapshot, {
       ...completion,
       providers: Object.fromEntries(
@@ -573,14 +720,9 @@ export function SettingsPanel({
             ? {
               ...provider,
               maskedApiKey: existence[providerRef]?.maskedApiKey ?? null,
+              credentialFingerprint: existence[providerRef]?.credentialFingerprint,
               credentialState: '已自动发现' as const,
             }
-            : configuredByUrl.get(normalizeProviderUrl(provider.baseUrl ?? ''))?.configured
-              ? {
-                ...provider,
-                maskedApiKey: configuredByUrl.get(normalizeProviderUrl(provider.baseUrl ?? ''))!.maskedApiKey,
-                credentialState: '已自动发现' as const,
-              }
             : provider,
         ]),
       ),
@@ -600,8 +742,6 @@ export function SettingsPanel({
       const agentFacts = facts[agentClassRef];
       if (!agentFacts) continue;
       if (agentFacts.enabled === false || entry.enabled === false) continue;
-      // Planner 在第一步单独预检，不在此重复。
-      if (agentClassRef === 'planner') continue;
       const modelRefs = entry.mode === 'fixed'
         ? [entry.modelRef]
         : [...new Set([entry.defaultModelRef, ...entry.allowedModelRefs])];
@@ -613,13 +753,13 @@ export function SettingsPanel({
         if (compatibility.eligible) continue;
         warnings.push(
           `${agentFacts.displayName}：${model.modelId} 缺少 ${compatibility.missingCapabilities.join(' / ')}`
-          + '，激活或任务调度会被拒绝（可在上方模型卡片中补充该模型的能力标签）',
+          + '，激活或任务调度会被拒绝（请刷新 Provider 公开模型目录）',
         );
       }
     }
     return [...new Set(warnings)];
   })();
-  const editingDisabled = loading || plannerUpdating || executorLoading || activationState?.activationAllowed === false;
+  const editingDisabled = loading || executorLoading || activationState?.activationAllowed === false;
 
   const openExecutorEditor = async (
     operation: ExecutorConfigurationChange['operation'], agentClassRef?: string,
@@ -629,7 +769,7 @@ export function SettingsPanel({
     try {
       const view = await http.getExecutorManagement();
       if (view.baseRevisionId !== revisionId) {
-        setLoadError('配置已在其他窗口更新。请先重新打开设置，再管理助手。');
+        setLoadError('配置已在其他窗口更新。请先重新打开设置，再管理智能体。');
         return;
       }
       setExecutorView(view);
@@ -644,7 +784,6 @@ export function SettingsPanel({
     setDraft(current => applyExecutorSnapshot(current ?? {}, nextDraft, agentClassRef, {
       preserveLocal: executorEditor?.operation === 'enable' || executorEditor?.operation === 'disable',
     }));
-    setActiveRoutingDraft(current => applyExecutorSnapshot(current ?? {}, nextDraft, agentClassRef));
     setFacts(current => applyExecutorSnapshot(current ?? {}, nextFacts, agentClassRef));
     setRevisionId(snapshot.revisionId);
     setExecutorEditor(null);
@@ -697,12 +836,15 @@ export function SettingsPanel({
       const {
         costInputPerMillion: _oldInputPrice,
         costOutputPerMillion: _oldOutputPrice,
+        pricing: _oldPricing,
         ...originalModelWithoutPrices
       } = originalModel;
       models[model.ref] = {
         ...(sameIdentity ? originalModelWithoutPrices : {}),
         modelId: model.modelId,
         providerRef: model.providerRef,
+        ...(model.description ? { description: model.description } : {}),
+        ...(model.publicFacts ? { publicFacts: model.publicFacts } : {}),
         capabilities: model.capabilities,
         ...(model.contextLimit !== undefined ? { contextLimit: model.contextLimit } : {}),
         ...(model.costInputPerMillion !== undefined
@@ -711,6 +853,7 @@ export function SettingsPanel({
         ...(model.costOutputPerMillion !== undefined
           ? { costOutputPerMillion: model.costOutputPerMillion }
           : {}),
+        ...(model.pricing ? { pricing: model.pricing } : {}),
         ...(model.latencyTier ? { latencyTier: model.latencyTier } : {}),
         ...(model.qualityTier ? { qualityTier: model.qualityTier } : {}),
         ...(model.costTier ? { costTier: model.costTier } : {}),
@@ -753,6 +896,7 @@ export function SettingsPanel({
       agentClasses[ref] = {
         ...current,
         displayName: (entry.displayName ?? '').trim(),
+        responsibility: entry.responsibility.trim(),
         primaryUseCases: entry.primaryUseCases ?? [],
         avoidUseCases: entry.avoidUseCases ?? [],
         ...(manualSourceText || current.executorManual
@@ -801,88 +945,6 @@ export function SettingsPanel({
     };
   };
 
-  // Planner 更新只提交「Planner 绑定 + 它依赖的 Model/Provider」，其余参数
-  // 保持运行中配置不变（见 web/src/planner-update.ts）。
-  const buildPlannerCandidateConfiguration = (originalConfig: RawRecord): {
-    config: Record<string, unknown>;
-    activationSecrets: Record<string, string>;
-    spanApiKey?: string;
-  } => {
-    if (!draft) throw new Error('配置草稿尚未加载完成');
-    const full = buildCandidateConfiguration(originalConfig);
-    return buildPlannerScopedConfiguration({
-      activeConfig: originalConfig,
-      candidateConfig: full.config,
-      candidateSecrets: full.activationSecrets,
-    });
-  };
-
-  const plannerDraft = draft?.planner;
-  const plannerDirty = Boolean(
-    plannerDraft && activeRoutingDraft?.planner
-    && JSON.stringify(plannerDraft) !== JSON.stringify(activeRoutingDraft.planner),
-  );
-  const plannerBlocked = activationState?.activationAllowed === false;
-  const plannerPrecheckWarnings = (() => {
-    if (!plannerDraft || !catalog || !facts?.planner) return [] as string[];
-    if (facts.planner.enabled === false || plannerDraft.enabled === false) {
-      return [] as string[];
-    }
-    const modelRef = plannerDraft.mode === 'fixed'
-      ? plannerDraft.modelRef
-      : plannerDraft.defaultModelRef;
-    if (!modelRef) return ['Planner 尚未选择模型'];
-    const model = catalog.models[modelRef];
-    if (!model) {
-      return [`规划设置绑定的模型 ${modelRef} 不在模型目录中，请重新选择`];
-    }
-    const compatibility = evaluateModelCompatibility(model, facts.planner);
-    if (compatibility.eligible) return [] as string[];
-    return [
-      `规划设置绑定 ${model.modelId} 缺少 ${compatibility.missingCapabilities.join(' / ')}`
-      + '，更新会被拒绝（可在模型卡片中补充该模型的能力标签）',
-    ];
-  })();
-
-  const updatePlanner = async (): Promise<void> => {
-    if (!http || !revisionId || !draft || !catalog || plannerBlocked) return;
-    setLoadError(null);
-    setPlannerResult(null);
-    setPlannerUpdating(true);
-    try {
-      const original = await http.getConfig();
-      const candidate = buildPlannerCandidateConfiguration(original.config as RawRecord);
-      const response = await http.activate(
-        revisionId,
-        candidate.config,
-        candidate.activationSecrets,
-        candidate.spanApiKey,
-      );
-      setPlannerResult(response);
-      if (response.ok && response.revisionId) {
-        secretStatusVersion.current += 1;
-        setRevisionId(response.revisionId);
-        // 只同步 Planner 基线，保留其它板块的未保存编辑。
-        try {
-          const latest = await http.getConfig();
-          const reloaded = loadRoutingDraft(latest.config as RawRecord);
-          setActiveRoutingDraft(current => (
-            current ? { ...current, planner: reloaded.planner } : reloaded
-          ));
-        } catch {
-          // 基线同步失败不影响已完成的更新结果。
-        }
-        await http.getConfigurationCompletion()
-          .then(completion => setCapabilityCatalog(completion.modelCapabilityCatalog ?? {}))
-          .catch(() => undefined);
-      }
-    } catch (error) {
-      setPlannerResult({ ok: false, code: 'network', issues: [(error as Error).message] });
-    } finally {
-      setPlannerUpdating(false);
-    }
-  };
-
   const activate = async () => {
     if (!http || !revisionId || !draft || !catalog || !runtimePolicy || activationState?.activationAllowed === false) return;
     const missingCredentials = Object.values(catalog.providers)
@@ -905,11 +967,7 @@ export function SettingsPanel({
       const original = await http.getConfig();
       const full = buildCandidateConfiguration(original.config as RawRecord);
       const candidate = {
-        // 常规保存不修改 Planner：用运行中的 Planner 覆盖，而不是删除它。
-        config: keepActivePlanner({
-          activeConfig: original.config as RawRecord,
-          candidateConfig: full.config,
-        }),
+        config: full.config,
         activationSecrets: full.activationSecrets,
         spanApiKey: full.spanApiKey,
       };
@@ -942,7 +1000,13 @@ export function SettingsPanel({
         void http.getSpanCredentialStatus().then(status => {
           setSpanCredentialConfigured(status.configured);
         }).catch(() => undefined);
-        await refreshConfigurationCompletion();
+        try {
+          // Activation is already committed. Refresh local configuration and
+          // credential status without waiting on OpenRouter catalog retrieval.
+          await refreshConfigurationCompletion(false);
+        } catch {
+          setLoadError('配置已激活，但页面刷新失败。请重新打开设置查看最新配置。');
+        }
       }
     } catch (error) {
       setResult({ ok: false, code: 'network', issues: [(error as Error).message] });
@@ -1009,7 +1073,88 @@ export function SettingsPanel({
     }
   };
 
-  const createModelConnection = (connection: NewModelConnectionDraft) => {
+  const suggestResponsibility = async (agentClassRef: string): Promise<void> => {
+    if (!http || !draft?.[agentClassRef] || !catalog) return;
+    if (responsibilityRequests.current.has(agentClassRef)) return;
+    const requestId = Symbol(agentClassRef);
+    responsibilityRequests.current.set(agentClassRef, requestId);
+    const before = draft[agentClassRef].responsibility;
+    const startedAt = Date.now();
+    const inputKey = responsibilityRequestKey(draft[agentClassRef], catalog);
+    const requestRevision = revisionId;
+    setResponsibilityFeedback(current => ({ ...current, [agentClassRef]: { status: 'loading', before, startedAt } }));
+    try {
+      const signal = AbortSignal.timeout(150_000);
+      const suggestion: ResponsibilitySuggestion = await http.suggestAgentResponsibility({
+        agentClassRef,
+        sourceText: draft[agentClassRef].responsibility,
+        modelFacts: (() => {
+          const entry = draft[agentClassRef];
+          const refs = entry.mode === 'fixed'
+            ? [entry.modelRef]
+            : [...new Set([entry.defaultModelRef, ...entry.allowedModelRefs])];
+          return refs.flatMap(ref => {
+            const model = catalog.models[ref];
+            return model ? [{
+              modelRef: model.ref,
+              modelId: model.modelId,
+              capabilities: model.capabilities,
+              ...(model.description ? { description: model.description } : {}),
+              ...(model.routingNotes ? { routingNotes: model.routingNotes } : {}),
+              ...(model.contextLimit !== undefined ? { contextLimit: model.contextLimit } : {}),
+              ...(model.costInputPerMillion !== undefined ? { costInputPerMillion: model.costInputPerMillion } : {}),
+              ...(model.costOutputPerMillion !== undefined ? { costOutputPerMillion: model.costOutputPerMillion } : {}),
+              ...(model.publicFacts ? { publicFacts: model.publicFacts } : {}),
+            }] : [];
+          });
+        })(),
+        config: buildCandidateConfiguration((await http.getConfig(signal)).config as RawRecord).config,
+      }, signal);
+      if (responsibilityRequests.current.get(agentClassRef) !== requestId) return;
+      const latest = latestResponsibilityContext.current;
+      const entry = latest.draft?.[agentClassRef];
+      const stale = !entry || !latest.catalog || requestRevision !== latest.revisionId
+        || inputKey !== responsibilityRequestKey(entry, latest.catalog);
+      const unchanged = sameAiText(before, suggestion.suggestedText);
+      if (!stale && !unchanged) {
+        setDraft(current => current && current[agentClassRef] ? {
+          ...current, [agentClassRef]: {
+            ...current[agentClassRef], responsibility: suggestion.suggestedText,
+            executorManualSourceText: suggestion.suggestedText,
+          },
+        } : current);
+      }
+      setResponsibilityFeedback(current => ({ ...current, [agentClassRef]: {
+        status: stale ? 'stale' : unchanged ? 'unchanged' : 'updated', before,
+        after: unchanged ? before : suggestion.suggestedText, startedAt, completedAt: Date.now(),
+      } }));
+    } catch (error) {
+      if (responsibilityRequests.current.get(agentClassRef) !== requestId) return;
+      setResponsibilityFeedback(current => ({ ...current, [agentClassRef]: {
+        status: 'error', before, startedAt, completedAt: Date.now(), message: aiActionError(error),
+      } }));
+    } finally {
+      if (responsibilityRequests.current.get(agentClassRef) === requestId) responsibilityRequests.current.delete(agentClassRef);
+    }
+  };
+
+  const createModelConnection = async (connection: NewModelConnectionDraft): Promise<void> => {
+    const credentialFingerprint = await fingerprintProviderCredential(connection.apiKey);
+    const identity = await currentProviderIdentityKey({
+      baseUrl: connection.baseUrl,
+      apiKey: connection.apiKey,
+      credentialFingerprint,
+    });
+    const candidates = await Promise.all(Object.values(catalog?.providers ?? {}).map(async provider => ({
+      provider, identity: await currentProviderIdentityKey(provider),
+    })));
+    const duplicate = identity && candidates.find(candidate => candidate.identity === identity)?.provider;
+    if (duplicate) {
+      setExpandedProviders(current => new Set(current).add(duplicate.providerRef));
+      setModelDialogOpen(false);
+      setLoadError(`该 Base URL 和 API Key 已存在于「${duplicate.displayName || duplicate.providerRef}」，已展开现有 Provider。`);
+      return;
+    }
     let index = Object.keys(catalog?.providers ?? {}).length + 1;
     let providerRef = `custom-model-${index}`;
     while (catalog?.providers[providerRef]) {
@@ -1023,6 +1168,7 @@ export function SettingsPanel({
       modelIds: [],
       apiKey: connection.apiKey,
       maskedApiKey: maskApiKey(connection.apiKey),
+      ...(credentialFingerprint ? { credentialFingerprint } : {}),
       credentialState: '已自动发现',
       enabled: true,
     };
@@ -1036,6 +1182,7 @@ export function SettingsPanel({
         },
       };
     });
+    setExpandedProviders(current => new Set(current).add(providerRef));
     setModelDialogOpen(false);
     void discoverModels(provider);
   };
@@ -1055,6 +1202,11 @@ export function SettingsPanel({
       return { providers, models };
     });
     setDraft(current => current ? removeModelRefsFromRoutingDraft(current, modelRefs) : current);
+    setExpandedProviders(current => {
+      const next = new Set(current);
+      next.delete(providerRef);
+      return next;
+    });
   };
 
   const removeProviderModel = (providerRef: string, modelId: string) => {
@@ -1090,7 +1242,82 @@ export function SettingsPanel({
       const nextModel = { ...model };
       if (parsed === undefined) delete nextModel[field];
       else nextModel[field] = parsed;
+      nextModel.pricing = {
+        ...(nextModel.pricing ?? { exchangeRate: 7 }),
+        source: 'user',
+        exchangeRate: 7,
+        overrideReason: '用户在设置中手动修改人民币价格',
+      };
       return { ...current, models: { ...current.models, [modelRef]: nextModel } };
+    });
+  };
+
+  const updateModelId = (modelRef: string, modelId: string): void => {
+    setCatalog(current => {
+      if (!current) return current;
+      const model = current.models[modelRef];
+      if (!model || !modelId.trim()) return current;
+      const nextId = modelId.trim();
+      const discovery = modelDiscoveries[model.providerRef];
+      const metadata = discovery?.metadata?.[nextId];
+      const discoveredPrice = discovery?.prices?.[nextId];
+      const capabilities = [...new Set([
+        ...(discovery?.capabilities?.[nextId] ?? []),
+        ...capabilitiesForModelId(nextId),
+      ])].sort();
+      const nextModel: ModelDraft = {
+        ...model,
+        modelId: nextId,
+        capabilities,
+        capabilityState: capabilities.length > 0 ? '已从 Provider 补全' : '需要确认',
+        ...(metadata?.displayName ? { displayName: metadata.displayName } : {}),
+        ...(metadata?.description ? { description: metadata.description } : {}),
+        ...(metadata?.publicFacts ? { publicFacts: metadata.publicFacts } : {}),
+        ...(metadata?.contextLimit !== undefined ? { contextLimit: metadata.contextLimit } : {}),
+        ...(discoveredPrice?.inputCnyPerMillion !== undefined ? { costInputPerMillion: discoveredPrice.inputCnyPerMillion } : {}),
+        ...(discoveredPrice?.outputCnyPerMillion !== undefined ? { costOutputPerMillion: discoveredPrice.outputCnyPerMillion } : {}),
+        ...(discoveredPrice?.pricing ? { pricing: discoveredPrice.pricing } : {}),
+      };
+      if (!metadata?.displayName) delete nextModel.displayName;
+      if (!metadata?.description) delete nextModel.description;
+      if (nextId !== model.modelId) {
+        delete nextModel.routingNotes;
+        if (!metadata?.publicFacts) delete nextModel.publicFacts;
+      }
+      return {
+        ...current,
+        models: {
+          ...current.models,
+          [modelRef]: nextModel,
+        },
+      };
+    });
+  };
+
+  const updateModelNumber = (
+    modelRef: string,
+    field: 'contextLimit',
+    value: string,
+  ): void => {
+    const parsed = value.trim() === '' ? undefined : Number(value);
+    if (parsed !== undefined && (!Number.isSafeInteger(parsed) || parsed < 1_024)) return;
+    setCatalog(current => {
+      if (!current?.models[modelRef]) return current;
+      const model = { ...current.models[modelRef] };
+      if (parsed === undefined) delete model[field]; else model[field] = parsed;
+      return { ...current, models: { ...current.models, [modelRef]: model } };
+    });
+  };
+
+  const updateModelString = (
+    modelRef: string,
+    field: 'reasoning' | 'latencyTier' | 'qualityTier' | 'costTier',
+    value: string,
+  ): void => {
+    setCatalog(current => {
+      if (!current?.models[modelRef]) return current;
+      const model = { ...current.models[modelRef], [field]: value || undefined };
+      return { ...current, models: { ...current.models, [modelRef]: model } };
     });
   };
 
@@ -1098,11 +1325,248 @@ export function SettingsPanel({
     [...new Set(capabilityCatalog[modelId] ?? [])].sort()
   );
 
-  const addKnownModel = (
+  const summarizeRoutingProfile = async (catalogModelId?: string): Promise<{
+    routingNotes?: ModelDraft['routingNotes']; routingError?: string;
+  }> => {
+    if (!http || !catalogModelId) return {};
+    try {
+      const result = await http.summarizeModelInformation(catalogModelId);
+      return { routingNotes: result.routingNotes };
+    } catch (error) {
+      const routingError = `公开信息已获取，但能力描述整理失败：${(error as Error).message}`;
+      setLoadError(routingError);
+      return { routingError };
+    }
+  };
+
+  const fetchOpenRouterFactsForModel = async (
+    providerRef: string,
+    modelId: string,
+    forceRefresh = false,
+  ): Promise<{
+    matchedId?: string;
+    candidates: OpenRouterCandidate[];
+    capabilities: string[];
+    metadata?: NonNullable<import('../api/types').ProviderModelDiscoveryResult['metadata']>[string];
+    price?: NonNullable<import('../api/types').ProviderModelDiscoveryResult['prices']>[string];
+    routingNotes?: ModelDraft['routingNotes'];
+    routingError?: string;
+  }> => {
+    const cached = modelDiscoveries[providerRef];
+    const cachedCandidates = rankOpenRouterCandidates(modelId, cached);
+    const cachedBest = cachedCandidates[0];
+    const cachedMatchedId = cachedBest && cachedBest.score >= 94
+      ? cachedBest.modelId : undefined;
+    if (!forceRefresh && cachedMatchedId) {
+      return {
+        ...(await summarizeRoutingProfile(cachedMatchedId)),
+        matchedId: cachedMatchedId,
+        candidates: cachedCandidates,
+        capabilities: cached.capabilities?.[cachedMatchedId] ?? [],
+        metadata: cached.metadata?.[cachedMatchedId],
+        price: cached.prices?.[cachedMatchedId],
+      };
+    }
+    if (!http) return {
+      candidates: [] as OpenRouterCandidate[],
+      capabilities: [] as string[],
+      metadata: undefined,
+      price: undefined,
+    };
+    try {
+      const result = await http.discoverProviderModels({ baseUrl: 'https://openrouter.ai/api/v1' });
+      if (result.status !== 'discovered') return {
+        candidates: [] as OpenRouterCandidate[],
+        capabilities: [] as string[],
+        metadata: undefined,
+        price: undefined,
+      };
+      const discovery = {
+        modelIds: result.modelIds,
+        metadata: result.metadata,
+      };
+      const candidates = rankOpenRouterCandidates(modelId, discovery);
+      const best = candidates[0];
+      const matchedId = best && best.score >= 94
+        ? best.modelId : undefined;
+      setModelDiscoveries(current => ({
+        ...current,
+        [providerRef]: {
+          status: 'ready',
+          // OpenRouter 只提供公开元数据，不能把它的全量目录写入当前
+          // Provider 的模型列表，否则 DeepSeek 等 Provider 会出现 AionLabs
+          // 等无关模型。候选匹配直接使用本次 result，不依赖这里的 modelIds。
+          modelIds: current[providerRef]?.modelIds,
+          capabilities: {
+            ...(current[providerRef]?.capabilities ?? {}),
+            ...result.capabilities,
+          },
+          metadata: {
+            ...(current[providerRef]?.metadata ?? {}),
+            ...(result.metadata ?? {}),
+          },
+          prices: {
+            ...(current[providerRef]?.prices ?? {}),
+            ...(result.prices ?? {}),
+          },
+        },
+      }));
+      return {
+        ...(matchedId ? { matchedId } : {}),
+        ...(await summarizeRoutingProfile(matchedId)),
+        candidates,
+        capabilities: result.capabilities[matchedId ?? modelId] ?? [],
+        metadata: result.metadata?.[matchedId ?? modelId],
+        price: result.prices?.[matchedId ?? modelId],
+      };
+    } catch {
+      return {
+        candidates: [] as OpenRouterCandidate[],
+        capabilities: [] as string[],
+        metadata: undefined,
+        price: undefined,
+      };
+    }
+  };
+
+  const refreshModelInfo = async (modelRef: string): Promise<void> => {
+    const model = catalog?.models[modelRef];
+    if (!model) return;
+    setModelInfoLoading(modelRef);
+    setModelInfoStatus(current => ({
+      ...current,
+      [modelRef]: { status: 'error', message: '正在查询 OpenRouter…' },
+    }));
+    setLoadError(null);
+    try {
+      const facts = await fetchOpenRouterFactsForModel(model.providerRef, model.modelId, true);
+      const candidates = facts.candidates ?? [];
+      const metadata = facts.metadata;
+      const price = facts.price;
+      if (!metadata && !price && facts.capabilities.length === 0) {
+        if (candidates.length > 0) {
+          setModelInfoStatus(current => ({
+            ...current,
+            [modelRef]: {
+              status: 'success',
+              candidates: candidates.slice(0, 5),
+              message: `未自动套用模型信息，但找到 ${candidates.length} 个候选，请选择准确的 OpenRouter 模型。`,
+            },
+          }));
+          return;
+        }
+        throw new Error('OpenRouter 暂未找到该 Model ID 的公开信息。');
+      }
+      setCatalog(current => {
+        if (!current?.models[modelRef]) return current;
+        const currentModel = current.models[modelRef];
+        if (currentModel.modelId !== model.modelId || currentModel.providerRef !== model.providerRef) return current;
+        return {
+          ...current,
+          models: {
+            ...current.models,
+            [modelRef]: {
+              ...currentModel,
+              ...(facts.routingNotes ? { routingNotes: facts.routingNotes } : {}),
+              ...(facts.capabilities.length > 0
+                ? { capabilities: facts.capabilities, capabilityState: '已自动发现' as const } : {}),
+              ...(metadata?.displayName ? { displayName: metadata.displayName } : {}),
+              ...(metadata?.description ? { description: metadata.description } : {}),
+              ...(metadata?.publicFacts ? { publicFacts: metadata.publicFacts } : {}),
+              ...(metadata?.contextLimit !== undefined ? { contextLimit: metadata.contextLimit } : {}),
+              ...(price?.inputCnyPerMillion !== undefined
+                ? { costInputPerMillion: price.inputCnyPerMillion }
+                : metadata?.costInputPerMillion !== undefined
+                  ? { costInputPerMillion: metadata.costInputPerMillion } : {}),
+              ...(price?.outputCnyPerMillion !== undefined
+                ? { costOutputPerMillion: price.outputCnyPerMillion }
+                : metadata?.costOutputPerMillion !== undefined
+                  ? { costOutputPerMillion: metadata.costOutputPerMillion } : {}),
+              ...(price?.pricing ? { pricing: price.pricing }
+                : metadata?.pricing ? { pricing: metadata.pricing } : {}),
+            },
+          },
+        };
+      });
+      setModelInfoStatus(current => ({
+        ...current,
+        [modelRef]: {
+          status: facts.routingError ? 'error' : 'success',
+          candidates: candidates.slice(0, 5),
+          message: facts.routingError ?? `模型信息已更新：${[
+            facts.routingNotes ? '能力描述已更新' : '能力描述未更新',
+            facts.capabilities.length > 0 ? `${facts.capabilities.length} 项能力` : '能力描述未提供',
+            metadata?.description ? '已获取模型描述' : '模型描述未提供',
+            metadata?.publicFacts?.highlights?.length ? `${metadata.publicFacts.highlights.length} 条模型特征` : '结构化特征未提供',
+            price?.inputCnyPerMillion !== undefined || price?.outputCnyPerMillion !== undefined
+              ? '价格已获取' : '价格未提供',
+          ].join(' · ')}`,
+        },
+      }));
+    } catch (error) {
+      const message = (error as Error).message;
+      setModelInfoStatus(current => ({
+        ...current,
+        [modelRef]: { status: 'error', message },
+      }));
+      setLoadError(`获取模型信息失败：${message}`);
+    } finally {
+      setModelInfoLoading(null);
+    }
+  };
+
+  const applyOpenRouterCandidate = async (modelRef: string, candidateId: string): Promise<void> => {
+    const model = catalog?.models[modelRef];
+    const discovery = model ? modelDiscoveries[model.providerRef] : undefined;
+    if (!model || !discovery) return;
+    const metadata = discovery.metadata?.[candidateId];
+    const price = discovery.prices?.[candidateId];
+    const capabilities = discovery.capabilities?.[candidateId] ?? [];
+    if (!metadata && !price && capabilities.length === 0) return;
+    setModelInfoLoading(modelRef);
+    const profile = await summarizeRoutingProfile(candidateId);
+    setModelInfoLoading(null);
+    setCatalog(current => {
+      const currentModel = current?.models[modelRef];
+      if (!currentModel || currentModel.modelId !== model.modelId || currentModel.providerRef !== model.providerRef) return current;
+      return {
+        ...current!,
+        models: {
+          ...current!.models,
+          [modelRef]: {
+            ...currentModel,
+            ...(profile.routingNotes ? { routingNotes: profile.routingNotes } : {}),
+            ...(capabilities.length > 0 ? { capabilities, capabilityState: '已自动发现' as const } : {}),
+            ...(metadata?.displayName ? { displayName: metadata.displayName } : {}),
+            ...(metadata?.description ? { description: metadata.description } : {}),
+            ...(metadata?.publicFacts ? { publicFacts: metadata.publicFacts } : {}),
+            ...(metadata?.contextLimit !== undefined ? { contextLimit: metadata.contextLimit } : {}),
+            ...(price?.inputCnyPerMillion !== undefined ? { costInputPerMillion: price.inputCnyPerMillion }
+              : metadata?.costInputPerMillion !== undefined ? { costInputPerMillion: metadata.costInputPerMillion } : {}),
+            ...(price?.outputCnyPerMillion !== undefined ? { costOutputPerMillion: price.outputCnyPerMillion }
+              : metadata?.costOutputPerMillion !== undefined ? { costOutputPerMillion: metadata.costOutputPerMillion } : {}),
+            ...(price?.pricing ? { pricing: price.pricing } : metadata?.pricing ? { pricing: metadata.pricing } : {}),
+          },
+        },
+      };
+    });
+    setModelInfoStatus(current => ({
+      ...current,
+      [modelRef]: {
+        status: profile.routingError ? 'error' : 'success',
+        message: profile.routingError ?? `已选择 OpenRouter 模型：${candidateId}，公开信息与能力描述已填入。`,
+      },
+    }));
+  };
+
+  const addKnownModel = async (
     providerRef: string,
     modelId: string,
     discoveredCapabilities?: string[],
-  ) => {
+  ): Promise<void> => {
+    const loadingKey = `${providerRef}:${modelId}`;
+    setModelAddLoading(loadingKey);
+    const openRouterFacts = await fetchOpenRouterFactsForModel(providerRef, modelId);
     setCatalog(current => {
       if (!current || Object.values(current.models).some(model => (
         model.providerRef === providerRef && model.modelId === modelId
@@ -1115,8 +1579,13 @@ export function SettingsPanel({
       }
       const capabilities = [...new Set([
         ...(discoveredCapabilities ?? []),
+        ...(openRouterFacts.capabilities ?? []),
         ...capabilitiesForModelId(modelId),
       ])].sort();
+      const discoveredMetadata = modelDiscoveries[providerRef]?.metadata?.[modelId];
+      const discoveredPrice = modelDiscoveries[providerRef]?.prices?.[modelId];
+      const metadata = openRouterFacts.metadata ?? discoveredMetadata;
+      const price = openRouterFacts.price ?? discoveredPrice;
       return {
         ...current,
         models: {
@@ -1125,20 +1594,36 @@ export function SettingsPanel({
             ref,
             providerRef,
             modelId,
+            ...(openRouterFacts.routingNotes ? { routingNotes: openRouterFacts.routingNotes } : {}),
+            ...(metadata?.displayName ? { displayName: metadata.displayName } : {}),
+            ...(metadata?.description ? { description: metadata.description } : {}),
+            ...(metadata?.publicFacts ? { publicFacts: metadata.publicFacts } : {}),
             capabilities,
             capabilityState: capabilities.length > 0 ? '已从 Provider 补全' : '需要确认',
+            ...(metadata?.contextLimit !== undefined ? { contextLimit: metadata.contextLimit } : {}),
+            ...(price?.inputCnyPerMillion !== undefined
+              ? { costInputPerMillion: price.inputCnyPerMillion } : metadata?.costInputPerMillion !== undefined
+                ? { costInputPerMillion: metadata.costInputPerMillion } : {}),
+            ...(price?.outputCnyPerMillion !== undefined
+              ? { costOutputPerMillion: price.outputCnyPerMillion } : metadata?.costOutputPerMillion !== undefined
+                ? { costOutputPerMillion: metadata.costOutputPerMillion } : {}),
+            ...(price?.pricing ? { pricing: price.pricing } : metadata?.pricing ? { pricing: metadata.pricing } : {}),
           },
         },
       };
     });
+    setModelAddLoading(null);
   };
 
-  const addCustomModel = (providerRef: string) => {
+  const addCustomModel = async (providerRef: string): Promise<void> => {
     const modelId = (newModelIds[providerRef] ?? '').trim();
     if (!modelId) {
       setLoadError('请输入要加入 Provider 模型目录的 Model ID。');
       return;
     }
+    const loadingKey = `${providerRef}:${modelId}`;
+    setModelAddLoading(loadingKey);
+    const openRouterFacts = await fetchOpenRouterFactsForModel(providerRef, modelId);
     setCatalog(current => {
       if (!current) return current;
       if (Object.values(current.models).some(model => (
@@ -1150,7 +1635,13 @@ export function SettingsPanel({
         index += 1;
         ref = `custom-model-${index}`;
       }
-      const capabilities = capabilitiesForModelId(modelId);
+      const discoveredMetadata = openRouterFacts.metadata ?? modelDiscoveries[providerRef]?.metadata?.[modelId];
+      const discoveredPrice = openRouterFacts.price ?? modelDiscoveries[providerRef]?.prices?.[modelId];
+      const capabilities = [...new Set([
+        ...capabilitiesForModelId(modelId),
+        ...(openRouterFacts.capabilities ?? []),
+        ...(modelDiscoveries[providerRef]?.capabilities?.[modelId] ?? []),
+      ])].sort();
       return {
         ...current,
         models: {
@@ -1159,12 +1650,28 @@ export function SettingsPanel({
             ref,
             providerRef,
             modelId,
+            ...(openRouterFacts.routingNotes ? { routingNotes: openRouterFacts.routingNotes } : {}),
+            ...(discoveredMetadata?.displayName ? { displayName: discoveredMetadata.displayName } : {}),
+            ...(discoveredMetadata?.description ? { description: discoveredMetadata.description } : {}),
+            ...(discoveredMetadata?.publicFacts ? { publicFacts: discoveredMetadata.publicFacts } : {}),
             capabilities,
             capabilityState: capabilities.length > 0 ? '已从 Provider 补全' : '需要确认',
+            ...(discoveredMetadata?.contextLimit !== undefined ? { contextLimit: discoveredMetadata.contextLimit } : {}),
+            ...(discoveredPrice?.inputCnyPerMillion !== undefined
+              ? { costInputPerMillion: discoveredPrice.inputCnyPerMillion }
+              : discoveredMetadata?.costInputPerMillion !== undefined
+                ? { costInputPerMillion: discoveredMetadata.costInputPerMillion } : {}),
+            ...(discoveredPrice?.outputCnyPerMillion !== undefined
+              ? { costOutputPerMillion: discoveredPrice.outputCnyPerMillion }
+              : discoveredMetadata?.costOutputPerMillion !== undefined
+                ? { costOutputPerMillion: discoveredMetadata.costOutputPerMillion } : {}),
+            ...(discoveredPrice?.pricing ? { pricing: discoveredPrice.pricing }
+              : discoveredMetadata?.pricing ? { pricing: discoveredMetadata.pricing } : {}),
           },
         },
       };
     });
+    setModelAddLoading(null);
     setNewModelIds(current => ({ ...current, [providerRef]: '' }));
   };
 
@@ -1196,6 +1703,8 @@ export function SettingsPanel({
           status: 'ready',
           modelIds: result.modelIds,
           capabilities: result.capabilities,
+          metadata: result.metadata,
+          prices: result.prices,
         },
       }));
       setCatalog(current => {
@@ -1222,120 +1731,14 @@ export function SettingsPanel({
     }
   };
 
-  const updateModelCapabilities = (modelRef: string, capabilities: string[]): void => {
-    setCatalog(current => {
-      if (!current) return current;
-      const model = current.models[modelRef];
-      if (!model) return current;
-      const next = [...new Set(capabilities)].sort();
-      return {
-        ...current,
-        models: {
-          ...current.models,
-          [modelRef]: {
-            ...model,
-            capabilities: next,
-            capabilityState: next.length > 0 ? '已从 Provider 补全' : '需要确认',
-          },
-        },
-      };
-    });
-  };
-
-  const toggleModelCapability = (modelRef: string, capabilityId: ModelCapabilityId): void => {
-    const model = catalog?.models[modelRef];
-    if (!model) return;
-    updateModelCapabilities(
-      modelRef,
-      model.capabilities.includes(capabilityId)
-        ? model.capabilities.filter(capability => capability !== capabilityId)
-        : [...model.capabilities, capabilityId],
-    );
-  };
-
-  const plannerSection = (
-    <section className="settings-section planner-section">
-      <div className="section-heading">
-        <div>
-          <div className="settings-eyebrow">PLANNING</div>
-          <h3>规划设置</h3>
-          <p>
-            规划使用的模型来自模型列表。修改后单独更新，其他设置的保存不会覆盖它。
-          </p>
-        </div>
-        <span className={`state-badge ${plannerDirty ? 'state-badge-warning' : ''}`}>
-          {plannerDirty ? '有未更新的修改' : '与运行中一致'}
-        </span>
-      </div>
-
-      {facts?.planner && plannerDraft && catalog && (
-        <AgentClassConfig
-          facts={facts.planner}
-          draft={plannerDraft}
-          models={Object.values(catalog.models)}
-          providers={Object.values(catalog.providers)}
-          onChange={next => {
-            setDraft(current => (current ? { ...current, planner: next } : current));
-          }}
-        />
-      )}
-
-      {plannerPrecheckWarnings.length > 0 && (
-        <div className="result-banner result-error">
-          <ul className="issues">
-            {plannerPrecheckWarnings.map((warning, index) => (
-              <li key={index}>{warning}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      <div className="planner-update-row">
-        <button
-          className="primary-button"
-          onClick={() => { void updatePlanner(); }}
-          disabled={plannerUpdating
-            || plannerBlocked
-            || !plannerDirty
-            || plannerPrecheckWarnings.length > 0}
-        >
-          {plannerUpdating ? '更新规划设置中…' : '更新规划设置'}
-        </button>
-        <span className="planner-update-hint">
-          {plannerBlocked
-            ? `当前不能更新：${activationState?.blockingReasons?.map(reason => reason.message).join('；')
-              || '运行时正在处理任务'}`
-            : plannerPrecheckWarnings.length > 0
-              ? '请先解决上方的问题'
-              : !plannerDirty
-                ? '没有待更新的规划设置修改'
-                : '仅提交规划设置及它依赖的模型连接'}
-        </span>
-      </div>
-
-      {plannerResult && (
-        <div className={`result-banner ${plannerResult.ok ? 'result-ok' : 'result-error'}`}>
-          {plannerResult.ok
-            ? '规划设置已更新。'
-            : `更新失败（${plannerResult.code ?? 'unknown'}）`}
-          {plannerResult.issues && plannerResult.issues.length > 0 && (
-            <ul className="issues">
-              {plannerResult.issues.map((issue, index) => <li key={index}>{issue}</li>)}
-            </ul>
-          )}
-        </div>
-      )}
-    </section>
-  );
-
   return (
     <div className="drawer-backdrop" onClick={onClose}>
       <div className="drawer settings-workbench" onClick={event => event.stopPropagation()}>
         <header className="drawer-header settings-header">
           <div>
-            <div className="settings-eyebrow">CONFIGURATION WORKBENCH</div>
+            <div className="settings-eyebrow">配置工作台</div>
             <h2>设置</h2>
-            <p>管理模型连接、智能体路由和运行策略。模型连接只需要名称、API URL 和 API Key。</p>
+            <p>管理 Provider、模型和智能体路由。新增模型后，公开目录会自动补全能力与价格。</p>
           </div>
           <div className="settings-header-actions">
             <span className={`activation-pill activation-pill-${activationState?.activationStatus ?? 'idle'}`}>
@@ -1343,7 +1746,7 @@ export function SettingsPanel({
                 : activationState?.activationStatus === 'activating' ? '正在激活'
                   : '可热激活'}
             </span>
-            <button className="ghost-button" onClick={onClose}>关闭</button>
+            <button type="button" className="ghost-button" onClick={onClose}>关闭</button>
           </div>
         </header>
 
@@ -1362,14 +1765,14 @@ export function SettingsPanel({
               <section className="settings-section">
                 <div className="section-heading">
                   <div>
-                    <div className="settings-eyebrow">01 / MODEL CONNECTIONS</div>
-                    <h3 id="models-heading">模型列表</h3>
+                    <div className="settings-eyebrow">模型与连接</div>
+                    <h3 id="models-heading">模型</h3>
                     <p>
-                      每个模型连接可以独立命名、更新 API Key，并提供给智能体进行路由。
-                      要生成正式账单，还需要填写该模型的输入/输出价格。
+                      先配置 Provider，再从公开目录中添加模型。Provider 默认收起，展开后可查看连接、模型列表和编辑项。
                     </p>
                   </div>
                   <button
+                    type="button"
                     className="primary-button"
                     disabled={editingDisabled}
                     onClick={() => setModelDialogOpen(true)}
@@ -1384,13 +1787,34 @@ export function SettingsPanel({
                       Object.values(catalog.models),
                       provider.providerRef,
                     );
+                    const providerDiscovery = modelDiscoveries[provider.providerRef];
+                    const discoveredModelIds = providerDiscovery?.modelIds ?? provider.modelIds;
+                    const configuredModels = knownModels.filter(model => model.configured);
+                    const expanded = expandedProviders.has(provider.providerRef);
                     return (
                       <article className="provider-card model-connection-card" key={provider.providerRef}>
                         <div className="provider-card-heading">
                           <div>
-                            <h4>{provider.displayName || '未命名模型'}</h4>
+                            <span className="provider-kicker">模型服务</span>
+                            <h4>{provider.displayName || '未命名 Provider'}</h4>
                             <span className="mono">{provider.baseUrl || '尚未填写 API URL'}</span>
                           </div>
+                          <button
+                            type="button"
+                            className="provider-collapse-toggle"
+                            aria-expanded={expanded}
+                            aria-controls={`provider-details-${provider.providerRef}`}
+                            aria-label={`${expanded ? '收起' : '展开'} ${provider.displayName || '模型服务'}`}
+                            onClick={() => setExpandedProviders(current => {
+                              const next = new Set(current);
+                              if (next.has(provider.providerRef)) next.delete(provider.providerRef);
+                              else next.add(provider.providerRef);
+                              return next;
+                            })}
+                          >
+                            <span>{expanded ? '收起配置' : '展开配置'}</span>
+                            <span aria-hidden="true">{expanded ? '⌃' : '⌄'}</span>
+                          </button>
                           <div className="provider-card-actions">
                             <span className={`state-badge ${
                               !provider.apiKey.trim() && !provider.maskedApiKey
@@ -1404,76 +1828,96 @@ export function SettingsPanel({
                                   : '未配置'}
                             </span>
                             <button
+                              type="button"
                               className="text-button danger-button"
                               disabled={editingDisabled}
                               onClick={() => removeProvider(provider.providerRef)}
                             >
-                              删除模型
+                              删除 Provider
                             </button>
                           </div>
                         </div>
                         <div className="provider-stat">
-                          <strong>{knownModels.length}</strong>
-                          <span>个可用模型</span>
+                          <strong>{configuredModels.length}</strong>
+                          <span>个已添加模型</span>
+                          <span className="provider-stat-divider">·</span>
+                          <span>能力与价格自动补全</span>
+                          {configuredModels.length > 0 && (
+                            <span
+                              className="provider-model-preview"
+                              title={configuredModels.map(model => model.modelId).join('、')}
+                            >
+                              {configuredModels.slice(0, 3).map(model => model.modelId).join('、')}
+                              {configuredModels.length > 3 ? ` 等 ${configuredModels.length} 个` : ''}
+                            </span>
+                          )}
                         </div>
-                        <label className="settings-field">
-                          <span>名称</span>
-                          <input
-                            className="text-input"
-                            value={provider.displayName}
-                            onChange={event => setCatalog(current => current ? {
-                              ...current,
-                              providers: {
-                                ...current.providers,
-                                [provider.providerRef]: {
-                                  ...provider,
-                                  displayName: event.target.value,
-                                },
-                              },
-                            } : current)}
-                            disabled={editingDisabled}
-                          />
-                        </label>
-                        <label className="settings-field">
-                          <span>API URL</span>
-                          <input
-                            className="text-input"
-                            value={provider.baseUrl}
-                            onChange={event => setCatalog(current => current ? {
-                              ...current,
-                              providers: {
-                                ...current.providers,
-                                [provider.providerRef]: { ...provider, baseUrl: event.target.value },
-                              },
-                            } : current)}
-                            disabled={editingDisabled}
-                          />
-                        </label>
-                        <label className="settings-field">
-                          <span>更新 API Key</span>
-                          <input
-                            className="text-input"
-                            type="password"
-                            value={provider.apiKey}
-                            placeholder="留空保持不变"
-                            onChange={event => setCatalog(current => current ? {
-                              ...current,
-                              providers: {
-                                ...current.providers,
-                                [provider.providerRef]: {
-                                  ...provider,
-                                  apiKey: event.target.value,
-                                },
-                              },
-                            } : current)}
-                            autoComplete="new-password"
-                            disabled={editingDisabled}
-                          />
-                          <small>页面只显示掩码；输入新的 Key 后保存即可替换。</small>
-                        </label>
+                        {expanded && <div
+                          id={`provider-details-${provider.providerRef}`}
+                          className="provider-card-expanded-body"
+                        >
+                        <details className="provider-settings-disclosure">
+                          <summary>
+                            <span>连接设置</span>
+                            <small>名称、API 地址和凭证</small>
+                          </summary>
+                          <div className="provider-fields">
+                            <label className="settings-field">
+                              <span>Provider 名称</span>
+                              <input
+                                className="text-input"
+                                value={provider.displayName}
+                                onChange={event => setCatalog(current => current ? {
+                                  ...current,
+                                  providers: {
+                                    ...current.providers,
+                                    [provider.providerRef]: { ...provider, displayName: event.target.value },
+                                  },
+                                } : current)}
+                                disabled={editingDisabled}
+                              />
+                            </label>
+                            <label className="settings-field">
+                              <span>API URL</span>
+                              <input
+                                className="text-input"
+                                value={provider.baseUrl}
+                                onChange={event => setCatalog(current => current ? {
+                                  ...current,
+                                  providers: {
+                                    ...current.providers,
+                                    [provider.providerRef]: { ...provider, baseUrl: event.target.value },
+                                  },
+                                } : current)}
+                                disabled={editingDisabled}
+                              />
+                            </label>
+                            <label className="settings-field">
+                              <span>更新 API Key</span>
+                              <input
+                                className="text-input"
+                                type="password"
+                                value={provider.apiKey}
+                                placeholder="留空保持不变"
+                                onChange={event => setCatalog(current => current ? {
+                                  ...current,
+                                  providers: {
+                                    ...current.providers,
+                                    [provider.providerRef]: { ...provider, apiKey: event.target.value },
+                                  },
+                                } : current)}
+                                autoComplete="new-password"
+                                disabled={editingDisabled}
+                              />
+                              <small>页面只显示掩码；输入新的 Key 后保存即可替换。</small>
+                            </label>
+                          </div>
+                        </details>
                         <div className="provider-discovery">
                           <button
+                            type="button"
                             className="ghost-button"
+                            aria-label="重新发现模型"
                             disabled={editingDisabled
                               || !provider.baseUrl.trim()
                               || modelDiscoveries[provider.providerRef]?.status === 'loading'}
@@ -1481,86 +1925,135 @@ export function SettingsPanel({
                           >
                             {modelDiscoveries[provider.providerRef]?.status === 'loading'
                               ? '正在获取模型列表…'
-                              : '重新发现模型'}
+                              : '刷新模型目录'}
                           </button>
                           {modelDiscoveries[provider.providerRef]?.status === 'error' && (
                             <p className="provider-discovery-message provider-discovery-error">
                               {modelDiscoveries[provider.providerRef]?.message}
                             </p>
                           )}
-                          {modelDiscoveries[provider.providerRef]?.status === 'ready' && (
-                            <div className="provider-discovery-list">
-                                <span className="fact-label">
-                                发现 {modelDiscoveries[provider.providerRef]?.modelIds?.length ?? 0} 个模型（未收录的模型可以手工加入）
-                              </span>
-                              {(modelDiscoveries[provider.providerRef]?.modelIds ?? []).map(modelId => {
-                                const configured = Object.values(catalog.models).some(model => (
-                                  model.providerRef === provider.providerRef && model.modelId === modelId
-                                ));
+                          {discoveredModelIds.length > 0 && (
+                            <div className="provider-discovery-list discovered-models-list">
+                              <div className="model-list-heading">
+                                <span className="fact-label">可添加模型</span>
+                                <span className="model-list-count">
+                                  {discoveredModelIds.filter(modelId => !Object.values(catalog.models).some(model => (
+                                    model.providerRef === provider.providerRef && model.modelId === modelId
+                                  ))).length} 个未配置
+                                </span>
+                              </div>
+                              {discoveredModelIds.every(modelId => Object.values(catalog.models).some(model => (
+                                model.providerRef === provider.providerRef && model.modelId === modelId
+                              ))) && (
+                                <p className="model-empty-hint">目录中的模型已全部添加。</p>
+                              )}
+                              {discoveredModelIds.filter(modelId => !Object.values(catalog.models).some(model => (
+                                model.providerRef === provider.providerRef && model.modelId === modelId
+                              ))).map(modelId => {
                                 const discoveredCapabilities =
                                   modelDiscoveries[provider.providerRef]?.capabilities?.[modelId] ?? [];
-                                const capabilities = [...new Set([
-                                  ...discoveredCapabilities,
-                                  ...capabilitiesForModelId(modelId),
-                                ])];
                                 return (
-                                  <div className="provider-model-line" key={modelId}>
-                                    <span>{modelId}</span>
-                                    <span className="capability-badges">
-                                      {capabilities.length > 0
-                                        ? capabilities.join(' / ')
-                                        : '能力待确认'}
+                                <div className="provider-model-line discovered-model-row" key={modelId}>
+                                    <span className="model-primary-fact">
+                                      <strong>{modelDiscoveries[provider.providerRef]?.metadata?.[modelId]?.displayName ?? modelId}</strong>
+                                      <small className="mono">{modelId}</small>
+                                      <small>{modelDiscoveries[provider.providerRef]?.metadata?.[modelId]?.description ?? '公开目录已发现，可添加后查看模型事实。'}</small>
                                     </span>
-                                    {configured ? (
-                                      <span className="fact-label">已加入</span>
-                                    ) : (
-                                      <button
-                                        className="text-button"
-                                        disabled={editingDisabled}
-                                        onClick={() => addKnownModel(
-                                          provider.providerRef,
-                                          modelId,
-                                          discoveredCapabilities,
-                                        )}
-                                      >
-                                        加入候选
-                                      </button>
-                                    )}
+                                    <span className="model-fact-summary">
+                                      <span className="model-price-inline">
+                                        {modelDiscoveries[provider.providerRef]?.prices?.[modelId]?.inputCnyPerMillion !== undefined
+                                          && modelDiscoveries[provider.providerRef]?.prices?.[modelId]?.outputCnyPerMillion !== undefined
+                                          ? `¥${modelDiscoveries[provider.providerRef]?.prices?.[modelId]?.inputCnyPerMillion} / ¥${modelDiscoveries[provider.providerRef]?.prices?.[modelId]?.outputCnyPerMillion}`
+                                          : '价格待补充'}
+                                      </span>
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className="text-button"
+                                      disabled={editingDisabled || modelAddLoading === `${provider.providerRef}:${modelId}`}
+                                      onClick={() => addKnownModel(
+                                        provider.providerRef,
+                                        modelId,
+                                        discoveredCapabilities,
+                                      )}
+                                    >
+                                      {modelAddLoading === `${provider.providerRef}:${modelId}` ? '获取信息中…' : '新增模型'}
+                                    </button>
                                   </div>
                                 );
                               })}
                             </div>
                           )}
                         </div>
-                        {knownModels.length > 0 && (
-                          <div className="provider-model-list">
-                            <span className="fact-label">模型目录</span>
-                            {knownModels.map(option => (
-                              <div key={option.modelId}>
+                        <div className="provider-model-list configured-models-list">
+                            <div className="model-list-heading">
+                              <span className="fact-label">已配置模型</span>
+                              <span className="model-list-count">{configuredModels.length} 个已添加</span>
+                            </div>
+                            {configuredModels.length === 0 && (
+                              <p className="model-empty-hint">还没有添加模型。请从上面的公开目录选择，或输入自定义 Model ID。</p>
+                            )}
+                            {configuredModels.map(option => (
+                              <div className="model-catalog-item" key={option.modelId}>
                                 <div className="provider-model-line">
-                                  <span>{option.modelId}</span>
+                                  <span className="model-primary-fact">
+                                    <strong>{catalog.models[option.modelRef ?? '']?.displayName ?? option.modelId}</strong>
+                                    <small className="mono">{option.modelId}</small>
+                                    {(catalog.models[option.modelRef ?? '']?.routingNotes?.summary || catalog.models[option.modelRef ?? '']?.description) && (
+                                      <small>{catalog.models[option.modelRef ?? '']?.routingNotes?.summary || catalog.models[option.modelRef ?? '']?.description}</small>
+                                    )}
+                                  </span>
+
                                   {option.configured && option.modelRef && (
-                                    <span className="capability-badges">
-                                      {catalog.models[option.modelRef]?.capabilities.length
-                                        ? catalog.models[option.modelRef]!.capabilities.join(' / ')
-                                        : '能力待确认'}
+                                    <span className="model-price-inline">
+                                      {catalog.models[option.modelRef]?.costInputPerMillion !== undefined
+                                        && catalog.models[option.modelRef]?.costOutputPerMillion !== undefined
+                                        ? `¥${catalog.models[option.modelRef]?.costInputPerMillion} / ¥${catalog.models[option.modelRef]?.costOutputPerMillion}`
+                                        : '价格待补充'}
                                     </span>
                                   )}
                                   {option.configured && option.modelRef && (
+                                    <span className="model-context-inline">
+                                      {catalog.models[option.modelRef]?.contextLimit
+                                        ? `${(catalog.models[option.modelRef]!.contextLimit! / 1000).toLocaleString()}K 上下文`
+                                        : '上下文待确认'}
+                                    </span>
+                                  )}
+                                  {option.configured && option.modelRef && (
+                                    <label className="model-enabled-toggle" title="是否允许智能体使用此模型">
+                                      <input
+                                        type="checkbox"
+                                        checked={catalog.models[option.modelRef]?.enabled !== false}
+                                        disabled={editingDisabled}
+                                        aria-label={`启用模型 ${option.modelId}`}
+                                        onChange={event => setCatalog(current => {
+                                          if (!current) return current;
+                                          const model = current.models[option.modelRef!];
+                                          return model ? {
+                                            ...current,
+                                            models: {
+                                              ...current.models,
+                                              [option.modelRef!]: { ...model, enabled: event.target.checked },
+                                            },
+                                          } : current;
+                                        })}
+                                      />
+                                      <span>{catalog.models[option.modelRef]?.enabled !== false ? '启用' : '停用'}</span>
+                                    </label>
+                                  )}
+                                  {option.configured && option.modelRef && (
                                     <button
-                                      className="text-button"
+                                      type="button"
+                                      className="text-button model-edit-button"
                                       disabled={editingDisabled}
-                                      onClick={() => setCapabilityEditorRef(current => (
-                                        current === option.modelRef ? null : option.modelRef
-                                      ))}
+                                      onClick={() => setModelEditRef(current => current === option.modelRef ? null : option.modelRef)}
                                     >
-                                      {catalog.models[option.modelRef]?.capabilities.length
-                                        ? '调整能力'
-                                        : '补充能力'}
+                                      {modelEditRef === option.modelRef ? '收起' : '编辑'}
                                     </button>
                                   )}
                                   {option.configured ? (
                                     <button
+                                      type="button"
                                       className="text-button danger-button"
                                       disabled={editingDisabled}
                                       onClick={() => removeProviderModel(provider.providerRef, option.modelId)}
@@ -1569,16 +2062,211 @@ export function SettingsPanel({
                                     </button>
                                   ) : (
                                     <button
+                                      type="button"
                                       className="text-button"
                                       disabled={editingDisabled}
                                       onClick={() => addKnownModel(provider.providerRef, option.modelId)}
                                     >
-                                      加入候选
+                                      新增模型
                                     </button>
                                   )}
                                 </div>
-                                {option.configured && option.modelRef && (
-                                  <div className="model-price-editor">
+                                {option.configured && option.modelRef && modelEditRef === option.modelRef && (
+                                  <div className="model-edit-panel">
+                                    <div className="model-edit-header">
+                                      <div>
+                                        <strong>编辑模型</strong>
+                                        <span>获取公开能力资料，或修改模型连接参数和价格。</span>
+                                      </div>
+                                      <div className="model-edit-header-actions">
+                                        <button
+                                          type="button"
+                                          className="ghost-button"
+                                          disabled={loading || executorLoading || modelInfoLoading === option.modelRef}
+                                          onClick={() => { void refreshModelInfo(option.modelRef!); }}
+                                        >
+                                          {modelInfoLoading === option.modelRef ? '获取中…' : '获取模型信息'}
+                                        </button>
+                                        <span className="state-badge">
+                                          {catalog.models[option.modelRef]?.pricing?.source === 'user'
+                                            ? '价格已覆盖'
+                                            : catalog.models[option.modelRef]?.pricing?.source === 'openrouter'
+                                              ? '价格已自动获取'
+                                              : '价格待补充'}
+                                        </span>
+                                      </div>
+                                    </div>
+                                    {modelInfoStatus[option.modelRef] && (
+                                      <>
+                                        <p className={`model-info-status model-info-status-${modelInfoStatus[option.modelRef]!.status}`} role="status">
+                                          {modelInfoStatus[option.modelRef]!.message}
+                                        </p>
+                                        {(modelInfoStatus[option.modelRef]!.candidates?.length ?? 0) > 0 && (
+                                          <div className="openrouter-candidate-list" role="list" aria-label="OpenRouter 候选模型">
+                                            {modelInfoStatus[option.modelRef]!.candidates!.map(candidate => (
+                                              <div className="openrouter-candidate" key={candidate.modelId} role="listitem">
+                                                <div>
+                                                  <strong>{candidate.displayName ?? candidate.modelId}</strong>
+                                                  <span className="mono">{candidate.modelId}</span>
+                                                  <small>{candidate.match === 'token-overlap'
+                                                    ? `按名称相似度匹配 · ${candidate.score} 分`
+                                                    : '高置信度匹配'}</small>
+                                                </div>
+                                                <button
+                                                  type="button"
+                                                  className="text-button"
+                                                  disabled={loading || executorLoading}
+                                                  onClick={() => { void applyOpenRouterCandidate(option.modelRef!, candidate.modelId); }}
+                                                >
+                                                  选择此模型
+                                                </button>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </>
+                                    )}
+                                    {catalog.models[option.modelRef]?.routingNotes && (
+                                      <ModelCapabilityDetails notes={catalog.models[option.modelRef]!.routingNotes!} />
+                                    )}
+                                    <label className="settings-field model-id-editor">
+                                      <span>Model ID</span>
+                                      <input
+                                        className="text-input mono"
+                                        value={catalog.models[option.modelRef]?.modelId ?? option.modelId}
+                                        disabled={loading || executorLoading}
+                                        onChange={event => updateModelId(option.modelRef!, event.target.value)}
+                                      />
+                                    </label>
+                                    {(catalog.models[option.modelRef]?.description
+                                      || catalog.models[option.modelRef]?.displayName
+                                      || catalog.models[option.modelRef]?.publicFacts) && (
+                                      <div className="model-public-facts">
+                                        <div className="model-public-facts-heading">
+                                          <span className="fact-label">模型特点与公开参数</span>
+                                          <span className="model-fact-source">任务匹配的公开依据</span>
+                                        </div>
+                                        {catalog.models[option.modelRef]?.displayName && (
+                                          <strong>{catalog.models[option.modelRef]?.displayName}</strong>
+                                        )}
+                                        {catalog.models[option.modelRef]?.description && (
+                                          <p>{catalog.models[option.modelRef]?.description}</p>
+                                        )}
+                                        {catalog.models[option.modelRef]?.publicFacts?.highlights?.length ? (
+                                          <div className="model-public-highlights">
+                                            {catalog.models[option.modelRef]!.publicFacts!.highlights.map(highlight => (
+                                              <span key={highlight}>{highlight}</span>
+                                            ))}
+                                          </div>
+                                        ) : null}
+                                        {catalog.models[option.modelRef]?.publicFacts && (
+                                          <div className="model-public-facts-grid">
+                                            {catalog.models[option.modelRef]!.publicFacts!.inputModalities.length > 0 && (
+                                              <div>
+                                                <span>输入</span>
+                                                <strong>{catalog.models[option.modelRef]!.publicFacts!.inputModalities.join(' · ')}</strong>
+                                              </div>
+                                            )}
+                                            {catalog.models[option.modelRef]!.publicFacts!.outputModalities.length > 0 && (
+                                              <div>
+                                                <span>输出</span>
+                                                <strong>{catalog.models[option.modelRef]!.publicFacts!.outputModalities.join(' · ')}</strong>
+                                              </div>
+                                            )}
+                                            {catalog.models[option.modelRef]!.publicFacts!.supportedParameters.length > 0 && (
+                                              <div>
+                                                <span>支持参数</span>
+                                                <strong>{catalog.models[option.modelRef]!.publicFacts!.supportedParameters.join(' · ')}</strong>
+                                              </div>
+                                            )}
+                                            {catalog.models[option.modelRef]!.publicFacts!.reasoning && (
+                                              <div>
+                                                <span>推理配置</span>
+                                                <strong>
+                                                  {catalog.models[option.modelRef]!.publicFacts!.reasoning!.mandatory ? '必须推理' : '可选推理'}
+                                                  {catalog.models[option.modelRef]!.publicFacts!.reasoning!.supportedEfforts?.length
+                                                    ? ` · ${catalog.models[option.modelRef]!.publicFacts!.reasoning!.supportedEfforts!.join(' / ')}` : ''}
+                                                </strong>
+                                              </div>
+                                            )}
+                                            {catalog.models[option.modelRef]!.publicFacts!.maxCompletionTokens && (
+                                              <div>
+                                                <span>最大输出</span>
+                                                <strong>{(catalog.models[option.modelRef]!.publicFacts!.maxCompletionTokens! / 1000).toLocaleString()}K tokens</strong>
+                                              </div>
+                                            )}
+                                            {Object.entries(catalog.models[option.modelRef]!.publicFacts!.benchmarks ?? {}).length > 0 && (
+                                              <div>
+                                                <span>公开基准</span>
+                                                <strong>{Object.entries(catalog.models[option.modelRef]!.publicFacts!.benchmarks!).map(([name, value]) => `${name} ${value}`).join(' · ')}</strong>
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                    <div className="model-price-editor">
+                                    <label className="settings-field">
+                                      <span>上下文长度</span>
+                                      <input
+                                        className="text-input"
+                                        type="number"
+                                        min="1024"
+                                        step="1"
+                                        value={catalog.models[option.modelRef]?.contextLimit ?? ''}
+                                        placeholder="自动"
+                                        disabled={loading || executorLoading}
+                                        onChange={event => updateModelNumber(option.modelRef!, 'contextLimit', event.target.value)}
+                                      />
+                                    </label>
+                                    <label className="settings-field">
+                                      <span>推理等级</span>
+                                      <select
+                                        className="text-input"
+                                        value={catalog.models[option.modelRef]?.reasoning ?? ''}
+                                        disabled={loading || executorLoading}
+                                        onChange={event => updateModelString(option.modelRef!, 'reasoning', event.target.value)}
+                                      >
+                                        <option value="">自动</option><option value="disabled">关闭</option>
+                                        <option value="low">低</option><option value="medium">中</option><option value="high">高</option>
+                                      </select>
+                                    </label>
+                                    <label className="settings-field">
+                                      <span>质量等级</span>
+                                      <select
+                                        className="text-input"
+                                        value={catalog.models[option.modelRef]?.qualityTier ?? ''}
+                                        disabled={loading || executorLoading}
+                                        onChange={event => updateModelString(option.modelRef!, 'qualityTier', event.target.value)}
+                                      >
+                                        <option value="">自动</option><option value="low">低</option>
+                                        <option value="medium">中</option><option value="high">高</option>
+                                      </select>
+                                    </label>
+                                    <label className="settings-field">
+                                      <span>速度等级</span>
+                                      <select
+                                        className="text-input"
+                                        value={catalog.models[option.modelRef]?.latencyTier ?? ''}
+                                        disabled={loading || executorLoading}
+                                        onChange={event => updateModelString(option.modelRef!, 'latencyTier', event.target.value)}
+                                      >
+                                        <option value="">自动</option><option value="low">慢</option>
+                                        <option value="medium">中</option><option value="high">快</option>
+                                      </select>
+                                    </label>
+                                    <label className="settings-field">
+                                      <span>成本等级</span>
+                                      <select
+                                        className="text-input"
+                                        value={catalog.models[option.modelRef]?.costTier ?? ''}
+                                        disabled={loading || executorLoading}
+                                        onChange={event => updateModelString(option.modelRef!, 'costTier', event.target.value)}
+                                      >
+                                        <option value="">自动</option><option value="low">低</option>
+                                        <option value="medium">中</option><option value="high">高</option>
+                                      </select>
+                                    </label>
                                     <label className="settings-field">
                                       <span>输入价格（CNY / 1M tokens）</span>
                                       <input
@@ -1589,7 +2277,7 @@ export function SettingsPanel({
                                         inputMode="decimal"
                                         value={catalog.models[option.modelRef]?.costInputPerMillion ?? ''}
                                         placeholder="未配置"
-                                        disabled={editingDisabled}
+                                        disabled={loading || executorLoading}
                                         onChange={event => updateModelPrice(
                                           option.modelRef!,
                                           'costInputPerMillion',
@@ -1607,7 +2295,7 @@ export function SettingsPanel({
                                         inputMode="decimal"
                                         value={catalog.models[option.modelRef]?.costOutputPerMillion ?? ''}
                                         placeholder="未配置"
-                                        disabled={editingDisabled}
+                                        disabled={loading || executorLoading}
                                         onChange={event => updateModelPrice(
                                           option.modelRef!,
                                           'costOutputPerMillion',
@@ -1615,60 +2303,53 @@ export function SettingsPanel({
                                         )}
                                       />
                                     </label>
-                                  </div>
-                                )}
-                                {option.configured
-                                  && option.modelRef
-                                  && capabilityEditorRef === option.modelRef && (
-                                  <div className="capability-editor">
                                     <span className="fact-label">
-                                      能力标签（库内已收录的模型会自动预填，可手工补充/修正）
+                                      价格来源：{catalog.models[option.modelRef]?.pricing?.source === 'user'
+                                        ? '用户覆盖' : catalog.models[option.modelRef]?.pricing?.source === 'openrouter'
+                                          ? 'OpenRouter 自动获取' : '待补充'}
                                     </span>
-                                    <div className="capability-checkboxes">
-                                      {MODEL_CAPABILITY_IDS.map(capabilityId => (
-                                        <label className="capability-checkbox" key={capabilityId}>
-                                          <input
-                                            type="checkbox"
-                                            disabled={editingDisabled}
-                                            checked={catalog.models[option.modelRef!]
-                                              ?.capabilities.includes(capabilityId) ?? false}
-                                            onChange={() => toggleModelCapability(
-                                              option.modelRef!,
-                                              capabilityId,
-                                            )}
-                                          />
-                                          <span>{MODEL_CAPABILITY_LABELS[capabilityId]}</span>
-                                        </label>
-                                      ))}
-                                    </div>
-                                    <div className="capability-editor-actions">
+                                    {catalog.models[option.modelRef]?.pricing?.source === 'user' && (
                                       <button
+                                        type="button"
                                         className="text-button"
-                                        disabled={editingDisabled
-                                          || capabilitiesForModelId(option.modelId).length === 0}
-                                        onClick={() => updateModelCapabilities(
-                                          option.modelRef!,
-                                          capabilitiesForModelId(option.modelId),
-                                        )}
+                                        disabled={loading || executorLoading}
+                                        onClick={() => setCatalog(current => {
+                                          if (!current) return current;
+                                          const model = current.models[option.modelRef!];
+                                          if (!model?.pricing?.catalogModelId) return current;
+                                          const discovered = modelDiscoveries[provider.providerRef]?.prices?.[model.modelId];
+                                          const pricing = discovered?.pricing ?? model.pricing;
+                                          if (pricing.source !== 'openrouter') return current;
+                                          const inputCny = discovered?.inputCnyPerMillion
+                                            ?? (pricing.usdInputPerToken !== undefined
+                                              ? pricing.usdInputPerToken * 1_000_000 * 7 : undefined);
+                                          const outputCny = discovered?.outputCnyPerMillion
+                                            ?? (pricing.usdOutputPerToken !== undefined
+                                              ? pricing.usdOutputPerToken * 1_000_000 * 7 : undefined);
+                                          return {
+                                            ...current,
+                                            models: {
+                                              ...current.models,
+                                              [option.modelRef!]: {
+                                                ...model,
+                                                ...(inputCny !== undefined ? { costInputPerMillion: inputCny } : {}),
+                                                ...(outputCny !== undefined ? { costOutputPerMillion: outputCny } : {}),
+                                                pricing,
+                                              },
+                                            },
+                                          };
+                                        })}
                                       >
-                                        使用目录推荐
+                                        恢复自动价格
                                       </button>
-                                      <button
-                                        className="text-button danger-button"
-                                        disabled={editingDisabled}
-                                        onClick={() => setCapabilityEditorRef(null)}
-                                      >
-                                        收起
-                                      </button>
+                                    )}
                                     </div>
                                   </div>
                                 )}
                               </div>
                             ))}
-                          </div>
-                        )}
-                        {provider.modelIds.length === 0 && (
-                          <div className="provider-custom-model">
+                        </div>
+                        <div className="provider-custom-model">
                             <input
                               className="text-input"
                               value={newModelIds[provider.providerRef] ?? ''}
@@ -1680,14 +2361,15 @@ export function SettingsPanel({
                               disabled={editingDisabled}
                             />
                             <button
+                              type="button"
                               className="ghost-button"
-                              disabled={editingDisabled}
+                              disabled={editingDisabled || modelAddLoading === `${provider.providerRef}:${newModelIds[provider.providerRef] ?? ''}`}
                               onClick={() => addCustomModel(provider.providerRef)}
                             >
-                              加入候选
+                              {modelAddLoading === `${provider.providerRef}:${newModelIds[provider.providerRef] ?? ''}` ? '获取信息中…' : '新增模型'}
                             </button>
-                          </div>
-                        )}
+                        </div>
+                        </div>}
                       </article>
                     );
                   })}
@@ -1697,16 +2379,16 @@ export function SettingsPanel({
               <section className="settings-section agents-section" aria-labelledby="agents-heading">
                 <div className="section-heading">
                   <div>
-                    <div className="settings-eyebrow">02 / AGENTS</div>
+                    <div className="settings-eyebrow">智能体与路由</div>
                     <h3 id="agents-heading">智能体</h3>
                     <p>每个智能体可以单独选择模型、路由方式和能力配置。</p>
                   </div>
                   <button type="button" className="primary-button" disabled={editingDisabled}
-                    onClick={() => { void openExecutorEditor('create'); }}>新增执行助手</button>
+                    onClick={() => { void openExecutorEditor('create'); }}>新增智能体</button>
                 </div>
-                {executorView?.executors.length === 0 && <p role="status">尚无执行助手。新增并启用助手后才能开始新工作。</p>}
+                {executorView?.executors.length === 0 && <p role="status">尚无智能体。新增并启用智能体后才能开始新工作。</p>}
                 {executorView && executorView.executors.length > 0 && executorView.executors.every(agent => !agent.enabled)
-                  && <p role="status">全部执行助手已停用，请先启用至少一名助手。</p>}
+                  && <p role="status">全部智能体已停用，请先启用至少一名智能体。</p>}
                 {agentReadiness.length > 0 && (
                   <div className="agent-readiness-settings">
                     {agentReadiness.filter(agent => agent.required).map(agent => (
@@ -1717,8 +2399,8 @@ export function SettingsPanel({
                           </strong>
                           <p>
                             {agent.status === 'installed'
-                              ? '此执行工具已安装，可供多名助手共用。'
-                              : '当前启用的助手需要此工具。请先安装，或在空闲时停用使用它的助手。'}
+                              ? '此执行工具已安装，可供多个智能体共用。'
+                              : '当前启用的智能体需要此工具。请先安装，或在空闲时停用使用它的智能体。'}
                           </p>
                         </div>
                         {agent.status !== 'installed' && (
@@ -1742,8 +2424,8 @@ export function SettingsPanel({
                           </strong>
                           <p>
                             {agent.status === 'installed'
-                              ? '执行工具已安装，目前没有启用的助手需要它。'
-                              : '当前没有启用的助手需要此工具，不影响其他助手的配置保存。'}
+                              ? '执行工具已安装，目前没有启用的智能体需要它。'
+                              : '当前没有启用的智能体需要此工具，不影响其他智能体的配置保存。'}
                           </p>
                         </div>
                         {agent.status !== 'installed' && (
@@ -1761,35 +2443,87 @@ export function SettingsPanel({
                     ))}
                   </div>
                 )}
-                <p className="routing-section-note">自动路由只会在当前智能体支持且你选中的模型池中进行选择。</p>
+                <p className="routing-section-note">智能体按“职责 → 模型 → 能力画像”组织。默认收起配置详情，先看整体状态，再进入单个智能体编辑。</p>
                 <div className="routing-stack">
-                  {Object.entries(draft).filter(([ref]) => ref !== 'planner').map(([ref, entry]) => {
+                  {Object.entries(draft)
+                    .sort(([left], [right]) => left === 'planner' ? -1 : right === 'planner' ? 1 : left.localeCompare(right))
+                    .map(([ref, entry]) => {
                     const agentFacts = facts[ref];
                     if (!agentFacts) return null;
                     const managed = executorView?.executors.find(agent => agent.agentClassRef === ref);
+                    const expanded = expandedAgents.has(ref);
                     return (
                       <div key={ref}>
-                        <div className="executor-management-actions">
-                          <span>{managed?.enabled === false ? '已停用' : '已启用'}</span>
-                          <button type="button" className="ghost-button" disabled={editingDisabled || !managed?.tool}
-                            onClick={() => { void openExecutorEditor('update', ref); }}>编辑助手</button>
-                          <button type="button" className="ghost-button" disabled={editingDisabled || !managed}
-                            onClick={() => { void openExecutorEditor(managed?.enabled ? 'disable' : 'enable', ref); }}>
-                            {managed?.enabled ? '停用' : '启用'}
+                        <div className={`agent-summary-row ${agentFacts.kind === 'planner' ? 'agent-summary-planner' : ''}`}>
+                          <button
+                            type="button"
+                            className="agent-summary-toggle"
+                            aria-expanded={expanded}
+                            aria-controls={`agent-editor-${ref}`}
+                            onClick={() => setExpandedAgents(current => {
+                              const next = new Set(current);
+                              if (next.has(ref)) next.delete(ref); else next.add(ref);
+                              return next;
+                            })}
+                          >
+                            <span className="agent-summary-icon">{agentFacts.kind === 'planner' ? 'P' : 'A'}</span>
+                            <span className="agent-summary-title">
+                              <strong>{entry.displayName || agentFacts.displayName}</strong>
+                              <small>{agentFacts.kind === 'planner' ? 'Planner · 复杂意图理解与 DAG 编排' : 'Executor · 具体任务执行'}</small>
+                            </span>
+                            <span className="agent-summary-chevron" aria-hidden="true">{expanded ? '⌃' : '⌄'}</span>
                           </button>
-                          <button type="button" className="ghost-button" disabled={editingDisabled || !managed}
-                            onClick={() => { void openExecutorEditor('remove', ref); }}>删除</button>
+                          <div className="agent-summary-meta">
+                            <span className={`state-badge ${entry.enabled === false ? 'state-badge-warning' : ''}`}>
+                              {entry.enabled === false ? '已停用' : '已启用'}
+                            </span>
+                            <span className="agent-summary-model">
+                              {entry.modelRef && catalog.models[entry.modelRef]?.modelId
+                                ? catalog.models[entry.modelRef]?.modelId
+                                : entry.mode === 'auto' ? '自动选择模型' : '未选择模型'}
+                            </span>
+                          </div>
+                          <p className="agent-summary-responsibility">
+                            {entry.responsibility || (agentFacts.kind === 'planner' ? '理解复杂用户意图并拆解可执行 DAG' : '尚未填写职责')}
+                          </p>
                         </div>
-                        <fieldset disabled={editingDisabled} className="executor-editor-fields">
+                        {expanded && <>
+                        {agentFacts.kind === 'planner' ? (
+                          <p className="routing-section-note planner-agent-note">
+                            规划智能体负责理解复杂意图、拆解 DAG、选择执行智能体并编排验收；模型事实来自当前模型目录。
+                          </p>
+                        ) : (
+                          <div className="executor-management-actions">
+                            <span>{managed?.enabled === false ? '已停用' : '已启用'}</span>
+                            <button type="button" className="ghost-button" disabled={editingDisabled || !managed?.tool}
+                              onClick={() => { void openExecutorEditor('update', ref); }}>编辑智能体</button>
+                            <button type="button" className="ghost-button" disabled={editingDisabled || !managed}
+                              onClick={() => { void openExecutorEditor(managed?.enabled ? 'disable' : 'enable', ref); }}>
+                              {managed?.enabled ? '停用' : '启用'}
+                            </button>
+                            <button type="button" className="ghost-button" disabled={editingDisabled || !managed}
+                              onClick={() => { void openExecutorEditor('remove', ref); }}>删除</button>
+                          </div>
+                        )}
+                        <fieldset
+                          id={`agent-editor-${ref}`}
+                          disabled={editingDisabled}
+                          className="executor-editor-fields"
+                        >
                       <AgentClassConfig
                         key={ref}
                         facts={agentFacts}
                         draft={entry}
                         models={Object.values(catalog.models)}
                         providers={Object.values(catalog.providers)}
+                        http={http}
+                        onSuggestResponsibility={() => { void suggestResponsibility(ref); }}
+                        responsibilityFeedback={responsibilityFeedback[ref]}
                         manualPreview={manualPreviews[ref]}
                         onUpdateManual={() => { void updateManual(ref); }}
                         onChange={next => {
+                          const current = latestResponsibilityContext.current;
+                          if (current.draft) latestResponsibilityContext.current = { ...current, draft: { ...current.draft, [ref]: next } };
                           setDraft(current => current ? { ...current, [ref]: next } : current);
                           if (
                             agentFacts.kind === 'executor'
@@ -1808,6 +2542,7 @@ export function SettingsPanel({
                         }}
                       />
                         </fieldset>
+                        </>}
                       </div>
                     );
                   })}
@@ -1852,7 +2587,6 @@ export function SettingsPanel({
                     editingDisabled={editingDisabled}
                     onChange={setSpanDraft}
                   />
-                  {plannerSection}
                 </div>
               </details>
             </div>
@@ -1890,13 +2624,12 @@ export function SettingsPanel({
         {(draft || loadError) && (
           <footer className="drawer-footer settings-footer">
             <div className="settings-footer-note">
-              {plannerDirty
-                ? '注意：规划设置有未更新的修改，本次「保存并激活」不会应用它——请在高级设置中单独更新。'
-                : '「保存并激活」只应用模型列表、智能体路由与运行时策略，不包含规划设置。'}
+              「保存并激活」会一次性应用模型列表、Planner、执行智能体和运行时策略。
             </div>
             <div className="settings-footer-actions">
-              <button className="ghost-button" onClick={onClose}>取消</button>
+              <button type="button" className="ghost-button" onClick={onClose}>取消</button>
               <button
+                type="button"
                 className="primary-button"
                 onClick={activate}
                 disabled={

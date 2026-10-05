@@ -1228,6 +1228,12 @@ and account secret files are used only for one-time migration where applicable.
 That migration also runs in the upgrade transaction before the candidate
 configuration probe, because an older installation would otherwise fail every
 update with an unavailable Provider secret.
+Local Codex/Pi discovery also preserves existing MetaWork credentials: it only
+bootstraps a missing Key for an unambiguous Provider match, with matching URL
+when the local source supplies one. URL-only matches and conflicting local keys
+are ignored. Restarting the Server never refreshes a saved Key from local Agent
+configuration. Web connection deduplication uses URL plus full-key fingerprint;
+unsaved key replacements take precedence over the previous saved fingerprint.
 
 ### Span Routing Advisor
 
@@ -1636,3 +1642,95 @@ separately before external distribution. AnyFusion-derived and other
 third-party open-source components retain their own licenses and notices; the
 root `LICENSE` file remains unchanged for historical and third-party review and
 does not license MetaWork as a whole.
+
+### Internal LLM service (2026-10-05)
+
+The settings AI rewrite action calls the installation-owned SettingsAssistant
+through InternalLlmService. Developer configuration lives in
+`<installRoot>/internal/llm.json`; credentials live in a separate
+`<installRoot>/internal/llm-credentials.json` SecretStore. Both are read on each
+request, independently of Planner and account Provider configuration. The
+installed model uses the existing Provider's actual `deepseek-flash` API ID,
+with a 60-second timeout and 4096-token output budget. The default timeout for
+configurations that omit it is 30 seconds.
+The LLM receives the user's duty text and selected model facts as background,
+and generates structured Chinese mission, task, deliverable, quality and boundary
+content. The server validates the response and renders headings only; it never
+appends model descriptions or canned duties. Failures preserve the user's text
+and report a safe diagnostic. Missing internal credentials require maintenance
+of the installation's internal configuration; public OpenRouter catalog access
+does not supply an LLM credential. Ordinary settings edits and capability
+compilation remain available.
+
+The model editor's public-information action retrieves OpenRouter metadata
+without credentials, then uses the same internal service to summarize the
+selected catalog model into Chinese routingNotes. The server resolves the
+catalog ID; browser input cannot supply replacement public facts to this
+endpoint. Notes flow through the existing configuration and routing projections,
+without granting hard capabilities or permissions. Public facts can still be
+updated if summarization fails, with explicit partial-failure feedback and the
+previous routing notes retained. See ADR-0044 and
+[the developer configuration guide](internal-llm-service.md).
+
+Agent settings separately request `/api/config/agent-capabilities` for a Chinese
+Agent-oriented explanation derived from selected model evidence and tool
+affordances. It is a read-only presentation operation, with bounded input,
+validated generated output and a bounded in-memory cache keyed by the full
+input. Changing selected-model facts regenerates the explanation; the refresh
+button bypasses the cache. The browser rejects late responses from a previous
+selection and never falls back to displaying model marketing copy. No routing,
+permission or responsibility facts are written by this operation.
+
+
+### Natural-language routing evidence (2026-10-05)
+
+Mercury receives the pinned Agent responsibility, model description, detailed
+strengths/limitations and suitable/unsuitable tasks, public facts, available tool
+conditions, policy objective and CNY per-million-token input/output prices. It
+compares practical task fit and likely delivery quality for each Agent-model
+pair. These are claims/evidence, not measured reliability guarantees. Generic
+coding/planning/long-context labels no longer reject or score candidates, and
+Kernel no longer does keyword/phrase matching. Validated decision probability
+precedes deterministic tie-breaking; advisor failure uses configured quantitative
+policy and stable order. Question version is `span-fit-v5`; new resolver policy
+versions end in `v2`. Existing durable decisions stay immutable.
+
+Vision input, image generation/editing, tools and structured-output requirements,
+context, Harness/Provider, permissions, health and explicit policy limits remain
+execution checks. Planner image input requires vision. Unknown price is null,
+never a free model; a hard cost limit requires known pricing. Cost/balanced
+fallback ranks known pricing ahead of unknown pricing. Missing generic tags no
+longer require user completion.
+
+Model settings show capability prose in four sections (strengths, suitable tasks,
+limitations, unsuitable tasks) and retain public fact cards; both prose and facts
+are decision evidence after activation. Agent capability wording remains a
+read-only LLM explanation of the underlying facts. Routing reads the same model
+and tool evidence from its pinned revision and infers abilities for the actual
+candidate; no transient UI explanation is injected into runtime authority.
+
+
+### Settings activation without Planner (2026-10-05 correction)
+
+The activation prepare hook now adjusts credential references only; it no longer
+calls ExecutorManualPlanner.compileAll. That class and its 60-second-per-Agent
+semantic loop have been removed. Saving user duties needs no interpretation:
+they are already natural-language routing input. Existing manual analyze/compile
+endpoints use ExecutorManualPreviewService with no Planner or LLM dependency;
+new source drops stale generated assertions, while unchanged persisted guidance
+remains readable. Exact revision resolution and the activation assertion trust
+check are retained.
+
+Only explicit AI actions call the installation-owned InternalLlmService:
+responsibility rewriting, Agent capability explanation, and OpenRouter model
+information summarization. Activation validates/compiles/persists the revision
+and switches runtime views; Planner binding refresh does not run a prompt.
+This supersedes older descriptions of Planner-backed manual interpretation in
+the settings activation flow. See the settings-activation-without-planner plan
+for regression coverage and measured installation results.
+
+After successful activation, Web refreshes only the committed local configuration
+and credential status. It does not wait for another public catalog retrieval;
+cached public catalog data cannot restore deleted Providers or overwrite the
+saved model facts. A local page refresh error does not relabel a committed
+activation as failed.

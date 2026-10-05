@@ -144,7 +144,7 @@ export class ObservationManager {
 
   private observe(observation: Observation, reset = false): void {
     const cursor = reset ? null : this.store.window(observation.conversationId).cursor;
-    this.send({ type: 'observe', observationId: observation.id, conversationId: observation.conversationId,
+    this.send({ type: 'observe', connectionId: 'web', observationId: observation.id, conversationId: observation.conversationId,
       ...(cursor ? { cursor } : {}) });
     if (!cursor) this.expectBaseline(observation);
   }

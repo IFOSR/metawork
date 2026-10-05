@@ -15,6 +15,192 @@ const runBrowserE2e = process.env.RUN_BROWSER_E2E === '1';
 const e2e = runBrowserE2e ? describe : describe.skip;
 
 e2e('Settings workbench browser flow', () => {
+  it('finishes activation without another public catalog request', async () => {
+    const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
+    const server = await startMockServer(join(root, 'web', 'dist'));
+    const profile = await mkdtemp(join(tmpdir(), 'settings-local-save-'));
+    const chrome = spawn(chromePath, ['--headless=new', '--disable-gpu', '--no-first-run',
+      '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
+      `http://127.0.0.1:${server.port}/`], { stdio: 'ignore' });
+    try {
+      const target = await waitForPageTarget(await waitForDebuggingPort(profile));
+      const cdp = await CdpClient.connect(target.webSocketDebuggerUrl);
+      try {
+        await waitForExpression(cdp, `Boolean(document.querySelector('.sidebar-settings'))`);
+        await cdp.evaluate(`(() => {
+          const original = window.fetch.bind(window);
+          window.completionCalls = 0;
+          window.fetch = (url, options) => {
+            if (String(url).endsWith('/api/config/completion') && ++window.completionCalls > 1) {
+              return new Promise(() => {});
+            }
+            return original(url, options);
+          };
+          document.querySelector('.sidebar-settings').click();
+        })()`);
+        await waitForExpression(cdp, `document.querySelectorAll('.provider-card').length > 0`);
+        await cdp.evaluate(`[...document.querySelectorAll('button')].find(b => b.textContent.trim() === '保存并激活').click()`);
+        await waitForExpression(cdp, `document.body.innerText.includes('配置已热激活') && [...document.querySelectorAll('button')].some(b => b.textContent.trim() === '保存并激活')`);
+        expect(await cdp.evaluate('window.completionCalls')).toBe(1);
+        expect(server.getActivationPayload()).not.toBeNull();
+      } finally { cdp.close(); }
+    } finally {
+      chrome.kill('SIGTERM'); await server.close();
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }, 30_000);
+
+  it('shows complete natural-language model evidence on desktop and mobile without routing tags', async () => {
+    const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
+    const server = await startMockServer(join(root, 'web', 'dist'));
+    const profile = await mkdtemp(join(tmpdir(), 'settings-model-evidence-'));
+    const chrome = spawn(chromePath, ['--headless=new', '--disable-gpu', '--no-first-run',
+      '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
+      `http://127.0.0.1:${server.port}/`], { stdio: 'ignore' });
+    try {
+      const target = await waitForPageTarget(await waitForDebuggingPort(profile));
+      const cdp = await CdpClient.connect(target.webSocketDebuggerUrl);
+      try {
+        await cdp.send('Page.enable');
+        await waitForExpression(cdp, `Boolean(document.querySelector('.sidebar-settings'))`);
+        await cdp.evaluate(`(() => {
+          const original = window.fetch.bind(window);
+          window.fetch = async (url, options) => {
+            const response = await original(url, options);
+            if (!String(url).endsWith('/api/config')) return response;
+            const data = await response.json();
+            const model = data.config.models['code-gpt-56'];
+            model.routingNotes = {
+              summary: '适合跨文件工程修改与测试设计，能够关联改动影响并规划验证步骤。',
+              strengths: ['能够结合调用关系定位修改范围，处理多个文件之间的依赖。'],
+              preferredTaskTypes: ['需要兼顾接口兼容性和回归验证的代码重构。'],
+              limitations: ['安全敏感修改仍需要专项检查，公开资料不能保证测试覆盖完整。'],
+              avoidTaskTypes: ['需要未经授权的生产环境操作的任务。']
+            };
+            model.description = '公开能力说明用于比较任务适配。';
+            model.publicFacts = {inputModalities:['text'], outputModalities:['text'], supportedParameters:['tools'], highlights:[]};
+            return new Response(JSON.stringify(data), {status:200, headers:{'content-type':'application/json'}});
+          };
+          document.querySelector('.sidebar-settings').click();
+        })()`);
+        await waitForExpression(cdp, `Boolean(document.querySelector('.provider-collapse-toggle'))`);
+        await cdp.evaluate(`document.querySelector('.provider-collapse-toggle').click()`);
+        await waitForExpression(cdp, `Boolean(document.querySelector('.model-edit-button'))`);
+        await cdp.evaluate(`document.querySelector('.model-edit-button').click()`);
+        await waitForExpression(cdp, `Boolean(document.querySelector('.model-capability-details'))`);
+        const text = await cdp.evaluate(`document.querySelector('.model-edit-panel').innerText`) as string;
+        for (const label of ['具体优势', '适合的任务', '能力局限', '不适合的任务', '公开能力说明用于比较任务适配', '输入', '输出']) expect(text).toContain(label);
+        expect(text).not.toContain('路由标签');
+        expect(text).not.toContain('路由能力（用于智能路由）');
+        expect(await cdp.evaluate(`document.querySelectorAll('.model-edit-panel .fact-chip').length`)).toBe(0);
+        expect(text).not.toContain('不参与路由');
+        for (const [name, width, height] of [['desktop', 1440, 1000], ['mobile', 390, 844]] as const) {
+          await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: name === 'mobile' });
+          await cdp.evaluate(`document.querySelector('.model-capability-details').scrollIntoView({block:'center'})`);
+          expect(await cdp.evaluate(`(() => {
+            const element = document.querySelector('.model-capability-details');
+            const box = element.getBoundingClientRect();
+            return box.left >= 0 && box.right <= window.innerWidth && element.scrollWidth <= element.clientWidth;
+          })()`)).toBe(true);
+          const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png' }) as { data: string };
+          await writeFile(join(tmpdir(), `metawork-description-routing-${name}.png`), Buffer.from(screenshot.data, 'base64'));
+        }
+        expect(server.getActivationPayload()).toBeNull();
+      } finally { cdp.close(); }
+    } finally {
+      chrome.kill('SIGTERM'); await server.close();
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }, 30_000);
+
+  it('reports AI loading, changed, unchanged and failed outcomes without overwriting concurrent edits', async () => {
+    const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
+    const server = await startMockServer(join(root, 'web', 'dist'));
+    const profile = await mkdtemp(join(tmpdir(), 'settings-ai-feedback-'));
+    const chrome = spawn(chromePath, ['--headless=new', '--disable-gpu', '--no-first-run',
+      '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
+      `http://127.0.0.1:${server.port}/`], { stdio: 'ignore' });
+    try {
+      const target = await waitForPageTarget(await waitForDebuggingPort(profile));
+      const cdp = await CdpClient.connect(target.webSocketDebuggerUrl);
+      try {
+        await waitForExpression(cdp, `Boolean(document.querySelector('.sidebar-settings'))`);
+        await cdp.evaluate(`(() => {
+          const original = window.fetch.bind(window);
+          window.aiPending = {};
+          window.fetch = (url, options) => {
+            const path = String(url);
+            const kind = path.endsWith('/agent-responsibility') ? 'rewrite' : path.endsWith('/agent-capabilities') ? 'capability' : null;
+            if (!kind) return original(url, options);
+            return new Promise(resolve => { window.aiPending[kind] = (body, status = 200) => {
+              delete window.aiPending[kind];
+              resolve(new Response(JSON.stringify(body), {status, headers: {'content-type': 'application/json'}}));
+            }; });
+          };
+          window.setDuty = text => {
+            const field = document.querySelector('.agent-responsibility-input');
+            Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(field, text);
+            field.dispatchEvent(new Event('input', {bubbles:true}));
+          };
+          document.querySelector('.sidebar-settings').click();
+        })()`);
+        await waitForExpression(cdp, `Boolean([...document.querySelectorAll('.agent-summary-toggle')].find(b => b.textContent.includes('Executor')))`);
+        await cdp.evaluate(`[...document.querySelectorAll('.agent-summary-toggle')].find(b => b.textContent.includes('Executor')).click()`);
+        await waitForExpression(cdp, `Boolean(window.aiPending.capability)`);
+        const first = { summary: '该智能体可分析代码。', abilities: [{ title: '代码分析', description: '梳理调用关系。' }], boundaries: [] };
+        const second = { ...first, summary: '该智能体可分析代码与测试结果。' };
+        const capability = `document.querySelector('.agent-capability-profile')`;
+        const duty = `document.querySelector('.agent-responsibility-panel')`;
+        await cdp.evaluate(`window.aiPending.capability(${JSON.stringify(first)})`);
+        await waitForExpression(cdp, `${capability}.innerText.includes('能力说明已就绪')`);
+        await cdp.evaluate(`${capability}.querySelector('button').click()`);
+        await waitForExpression(cdp, `${capability}.innerText.includes('更新前说明') && Boolean(window.aiPending.capability)`);
+        await cdp.evaluate(`window.aiPending.capability(${JSON.stringify(second)})`);
+        await waitForExpression(cdp, `${capability}.innerText.includes('能力更新成功')`);
+        expect(await cdp.evaluate(`${capability}.querySelector('.agent-capability-summary').textContent`)).toBe(second.summary);
+        expect(await cdp.evaluate(`${capability}.querySelector('details').textContent`)).toContain(first.summary);
+        await cdp.evaluate(`${capability}.querySelector('button').click()`);
+        await waitForExpression(cdp, `Boolean(window.aiPending.capability)`);
+        await cdp.evaluate(`window.aiPending.capability(${JSON.stringify(second)})`);
+        await waitForExpression(cdp, `${capability}.innerText.includes('已检查，内容无变化')`);
+        await cdp.evaluate(`${capability}.querySelector('button').click()`);
+        await waitForExpression(cdp, `Boolean(window.aiPending.capability)`);
+        await cdp.evaluate(`window.aiPending.capability({error:'服务暂不可用'}, 503)`);
+        await waitForExpression(cdp, `${capability}.innerText.includes('能力更新失败')`);
+        expect(await cdp.evaluate(`${capability}.querySelector('.agent-capability-summary').textContent`)).toBe(second.summary);
+
+        const rewrite = async () => {
+          await cdp.evaluate(`${duty}.querySelector('button').click()`);
+          await waitForExpression(cdp, `Boolean(window.aiPending.rewrite)`);
+        };
+        await cdp.evaluate(`window.setDuty('代码与项目测试')`);
+        await rewrite();
+        expect(await cdp.evaluate(`${duty}.innerText`)).toContain('改写前内容');
+        const response = { sourceText: '代码与项目测试', suggestedText: '负责代码实现与回归测试，交付代码修改和验证结果。', requiresConfirmation: true, selectedModelRefs: [], evidence: [] };
+        await cdp.evaluate(`window.aiPending.rewrite(${JSON.stringify(response)})`);
+        await waitForExpression(cdp, `${duty}.innerText.includes('AI 改写成功')`);
+        expect(await cdp.evaluate(`${duty}.querySelector('textarea').value`)).toBe(response.suggestedText);
+        expect(await cdp.evaluate(`${duty}.querySelector('details').textContent`)).toContain('代码与项目测试');
+        await rewrite();
+        await cdp.evaluate(`window.aiPending.rewrite(${JSON.stringify(response)})`);
+        await waitForExpression(cdp, `${duty}.innerText.includes('已检查，内容无变化')`);
+        await rewrite();
+        await cdp.evaluate(`window.aiPending.rewrite({error:'AI 改写超时'}, 504)`);
+        await waitForExpression(cdp, `${duty}.innerText.includes('改写失败')`);
+        expect(await cdp.evaluate(`${duty}.querySelector('textarea').value`)).toBe(response.suggestedText);
+        await rewrite();
+        await cdp.evaluate(`window.setDuty('用户正在编辑的新职责')`);
+        await cdp.evaluate(`window.aiPending.rewrite(${JSON.stringify(response)})`);
+        await waitForExpression(cdp, `${duty}.innerText.includes('本次建议未应用')`);
+        expect(await cdp.evaluate(`${duty}.querySelector('textarea').value`)).toBe('用户正在编辑的新职责');
+        expect(server.getActivationPayload()).toBeNull();
+      } finally { cdp.close(); }
+    } finally {
+      chrome.kill('SIGTERM'); await server.close();
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }, 30_000);
+
   it('saves the Span key separately, clears it, and retains the stored key when disabled', async () => {
     const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
     const server = await startMockServer(join(root, 'web', 'dist'));
@@ -53,6 +239,8 @@ e2e('Settings workbench browser flow', () => {
         expect(JSON.stringify(first.secrets)).not.toContain('browser-span-test-key');
         await cdp.evaluate(`window.spanSection().querySelector('input[type=checkbox]').click()`);
         await save();
+        for (let attempt = 0; attempt < 100 && server.getActivationPayload() === first; attempt += 1) await delay(50);
+        expect(server.getActivationPayload()).not.toBe(first);
         await waitForExpression(cdp, `!window.spanSection().querySelector('input[type=checkbox]').checked && !window.spanSection().querySelector('input[type=password]')`);
         const second = server.getActivationPayload() as any;
         expect(second.spanApiKey).toBeUndefined();
@@ -90,7 +278,7 @@ e2e('Settings workbench browser flow', () => {
         };
         await waitForExpression(cdp, `Boolean(document.querySelector('.sidebar-settings'))`);
         await cdp.evaluate(`document.querySelector('.sidebar-settings').click()`);
-        await click('新增执行助手');
+        await click('新增智能体');
         await waitForExpression(cdp, `Boolean(document.querySelector('.executor-editor-dialog'))`);
         await cdp.evaluate(`(() => {
           const form = document.querySelector('.executor-editor-dialog');
@@ -102,19 +290,25 @@ e2e('Settings workbench browser flow', () => {
           model.dispatchEvent(new Event('change', { bubbles: true }));
         })()`);
         await save();
-        await waitForExpression(cdp, `document.querySelectorAll('.executor-management-actions').length === 3`);
+        await waitForExpression(cdp, `document.querySelectorAll('.agent-summary-toggle').length === 4`);
+        await cdp.evaluate(`(() => {
+          const button = [...document.querySelectorAll('.agent-summary-toggle')].find(b => b.textContent.includes('Browser assistant'));
+          window.browserAgentId = button.getAttribute('aria-controls');
+          button.click();
+        })()`);
+        await waitForExpression(cdp, `Boolean(document.getElementById(window.browserAgentId))`);
         const action = async (label: string) => {
           await waitForExpression(cdp, `(() => {
-            const row = [...document.querySelectorAll('.executor-management-actions')].at(-1);
+            const row = document.getElementById(window.browserAgentId).parentElement.querySelector('.executor-management-actions');
             return [...row.querySelectorAll('button')].some(b => b.textContent.trim() === ${JSON.stringify(label)} && !b.disabled);
           })()`);
           await cdp.evaluate(`(() => {
-            const row = [...document.querySelectorAll('.executor-management-actions')].at(-1);
+            const row = document.getElementById(window.browserAgentId).parentElement.querySelector('.executor-management-actions');
             [...row.querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(label)}).click();
           })()`);
           await waitForExpression(cdp, `Boolean(document.querySelector('.executor-editor-dialog'))`);
         };
-        await action('编辑助手');
+        await action('编辑智能体');
         await cdp.evaluate(`(() => {
           const name = document.querySelector('.executor-editor-dialog input');
           Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(name, 'Renamed assistant');
@@ -122,14 +316,14 @@ e2e('Settings workbench browser flow', () => {
         })()`);
         await save();
         await cdp.evaluate(`(() => {
-          const card = [...document.querySelectorAll('.agent-route-card')].at(-1);
+          const card = document.getElementById(window.browserAgentId).querySelector('.agent-route-card');
           const name = card.querySelector('.agent-name-field input');
           Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(name, 'Unsaved local name');
           name.dispatchEvent(new Event('input', { bubbles: true }));
         })()`);
-        await waitForExpression(cdp, `[...document.querySelectorAll('.agent-name-field input')].at(-1).value === 'Unsaved local name'`);
+        await waitForExpression(cdp, `document.getElementById(window.browserAgentId).querySelector('.agent-name-field input').value === 'Unsaved local name'`);
         const unsavedModel = await cdp.evaluate(`(() => {
-          const card = [...document.querySelectorAll('.agent-route-card')].at(-1);
+          const card = document.getElementById(window.browserAgentId).querySelector('.agent-route-card');
           const model = [...card.querySelectorAll('select')].at(-1);
           const alternative = [...model.options].find(option => option.value && !option.disabled && option.value !== model.value);
           if (!alternative) throw new Error('Expected an alternate model');
@@ -139,20 +333,20 @@ e2e('Settings workbench browser flow', () => {
         })()`);
         await action('停用');
         await save();
-        await waitForExpression(cdp, `[...document.querySelectorAll('.executor-management-actions')].at(-1).textContent.includes('已停用')`);
-        expect(await cdp.evaluate(`[...document.querySelectorAll('.agent-name-field input')].at(-1).value`))
+        await waitForExpression(cdp, `document.getElementById(window.browserAgentId).parentElement.querySelector('.executor-management-actions').textContent.includes('已停用')`);
+        expect(await cdp.evaluate(`document.getElementById(window.browserAgentId).querySelector('.agent-name-field input').value`))
           .toBe('Unsaved local name');
-        expect(await cdp.evaluate(`[...[...document.querySelectorAll('.agent-route-card')].at(-1).querySelectorAll('select')].at(-1).value`))
+        expect(await cdp.evaluate(`[...document.getElementById(window.browserAgentId).querySelector('.agent-route-card').querySelectorAll('select')].at(-1).value`))
           .toBe(unsavedModel);
         await action('启用');
         await save();
-        expect(await cdp.evaluate(`[...document.querySelectorAll('.agent-name-field input')].at(-1).value`))
+        expect(await cdp.evaluate(`document.getElementById(window.browserAgentId).querySelector('.agent-name-field input').value`))
           .toBe('Unsaved local name');
         await action('删除');
         await save();
-        await waitForExpression(cdp, `document.querySelectorAll('.executor-management-actions').length === 2`);
+        await waitForExpression(cdp, `document.querySelectorAll('.agent-summary-toggle').length === 3`);
         await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
-        await click('新增执行助手');
+        await click('新增智能体');
         await waitForExpression(cdp, `Boolean(document.querySelector('.executor-editor-dialog'))`);
         expect(await cdp.evaluate(`document.documentElement.scrollWidth <= window.innerWidth`)).toBe(true);
         server.setBusy(true);
@@ -194,7 +388,10 @@ e2e('Settings workbench browser flow', () => {
         await cdp.send('Page.enable');
         await waitForExpression(cdp, `Boolean(document.querySelector('.sidebar-settings'))`);
         await cdp.evaluate(`document.querySelector('.sidebar-settings').click()`);
-        await waitForExpression(cdp, `Boolean(document.querySelector('.settings-workbench'))`);
+        await waitForExpression(cdp, `document.querySelectorAll('.agent-summary-toggle').length === 3`);
+        expect(await cdp.evaluate(`document.querySelectorAll('.agent-route-card').length`)).toBe(0);
+        expect(await cdp.evaluate(`document.querySelectorAll('.provider-card-expanded-body').length`)).toBe(0);
+        await cdp.evaluate(`document.querySelectorAll('.agent-summary-toggle, .provider-collapse-toggle').forEach(b => b.click())`);
         await waitForExpression(
           cdp,
           `document.querySelectorAll('.provider-card').length === 2
@@ -211,7 +408,7 @@ e2e('Settings workbench browser flow', () => {
               && panel.getBoundingClientRect().left >= 0,
             providerCards: document.querySelectorAll('.provider-card').length,
             routeCards: document.querySelectorAll('.agent-route-card').length,
-            hasRoutingExplanation: document.body.innerText.includes('为什么这样路由'),
+            hasRoutingExplanation: document.body.innerText.includes('任务要求和成本选择更合适的模型'),
             hasCandidateRejection: document.body.innerText.includes('排除 · 缺少'),
             hasAgentSection: document.body.innerText.includes('智能体'),
             advancedCollapsed: !document.querySelector('.advanced-settings')?.hasAttribute('open'),
@@ -240,7 +437,7 @@ e2e('Settings workbench browser flow', () => {
         const providerDirectory = await cdp.evaluate(`(() => {
           const providerCard = document.querySelectorAll('.provider-card')[0];
           return {
-            modelIds: [...providerCard.querySelectorAll('.provider-model-line > span:first-child')]
+            modelIds: [...providerCard.querySelectorAll('.configured-models-list .model-primary-fact > small.mono')]
               .map(item => item.textContent),
             hasModelFacts: Boolean(document.querySelector('.provider-card')),
           };
@@ -268,7 +465,7 @@ e2e('Settings workbench browser flow', () => {
         const deletedProvider = await cdp.evaluate(`(() => {
           const card = document.querySelectorAll('.provider-card')[1];
           const button = [...card.querySelectorAll('button')]
-            .find(item => item.textContent.includes('删除模型'));
+            .find(item => item.textContent.includes('删除 Provider'));
           button.click();
           return {
             providerName: Boolean(card),
@@ -297,7 +494,7 @@ e2e('Settings workbench browser flow', () => {
         });
 
         await cdp.evaluate(`(() => {
-          const card = [...document.querySelectorAll('.agents-section .agent-route-card')].at(-1);
+          const card = [...document.querySelectorAll('.agents-section .agent-route-card:not(:has(.agent-fixed-responsibility))')].at(-1);
           const selects = card.querySelectorAll('select');
           const select = selects[selects.length - 1];
           select.value = 'code-gpt-56';
@@ -310,12 +507,12 @@ e2e('Settings workbench browser flow', () => {
         server.setBusy(true);
         await waitForExpression(cdp, `
           document.querySelector('.drawer-footer .primary-button').disabled
-          && [...document.querySelectorAll('.provider-card button')]
+          && [...document.querySelectorAll('.provider-card button:not(.provider-collapse-toggle)')]
             .every(button => button.disabled)
         `);
         const busyControls = await cdp.evaluate(`(() => ({
           saveDisabled: document.querySelector('.drawer-footer .primary-button').disabled,
-          deleteDisabled: [...document.querySelectorAll('.provider-card button')]
+          deleteDisabled: [...document.querySelectorAll('.provider-card button:not(.provider-collapse-toggle)')]
             .every(button => button.disabled),
         }))()`);
         expect(busyControls).toEqual({ saveDisabled: true, deleteDisabled: true });
@@ -447,24 +644,34 @@ e2e('Settings workbench browser flow', () => {
         await cdp.evaluate(`(() => {
           const card = [...document.querySelectorAll('.provider-card')]
             .find(item => item.querySelector('h4')?.textContent === 'DeepSeek');
-          const line = [...card.querySelectorAll('.provider-model-line')]
-            .find(item => item.querySelector('span')?.textContent === 'deepseek-chat');
+          card.querySelector('.provider-collapse-toggle').click();
+        })()`);
+        await waitForExpression(cdp, `Boolean(document.querySelector('.discovered-model-row'))`);
+        await cdp.evaluate(`(() => {
+          const card = [...document.querySelectorAll('.provider-card')]
+            .find(item => item.querySelector('h4')?.textContent === 'DeepSeek');
+          const line = [...card.querySelectorAll('.discovered-model-row')]
+            .find(item => item.querySelector('small.mono')?.textContent === 'deepseek-chat');
           line.querySelector('button').click();
-          for (const routeCard of document.querySelectorAll('.agents-section .agent-route-card')) {
+          document.querySelectorAll('.agent-summary-toggle').forEach(b => b.click());
+        })()`);
+        await waitForExpression(cdp, `document.querySelectorAll('.agent-route-card').length === 3`);
+        await cdp.evaluate(`(() => {
+          for (const routeCard of document.querySelectorAll('.agents-section .agent-route-card:not(:has(.agent-fixed-responsibility))')) {
             const mode = routeCard.querySelector('.route-policy-heading select');
             mode.value = 'auto';
             mode.dispatchEvent(new Event('change', { bubbles: true }));
           }
         })()`);
         await waitForExpression(cdp, `
-          [...document.querySelectorAll('.agents-section .agent-route-card')].every(card => {
+          [...document.querySelectorAll('.agents-section .agent-route-card:not(:has(.agent-fixed-responsibility))')].every(card => {
             return [...card.querySelectorAll('.model-option')].some(
               option => option.textContent.includes('deepseek-chat')
             );
           })
         `);
         const deepseekEligibility = await cdp.evaluate(`(() => {
-          const routeCards = [...document.querySelectorAll('.agents-section .agent-route-card')];
+          const routeCards = [...document.querySelectorAll('.agents-section .agent-route-card:not(:has(.agent-fixed-responsibility))')];
           const eligibilityFor = card => {
             const option = [...card.querySelectorAll('.model-option')]
               .find(item => item.textContent.includes('deepseek-chat'));
@@ -648,10 +855,10 @@ async function startMockServer(
     if (url.pathname === '/api/config/secrets/status') {
       json(response, mode === 'provider-recovery'
         ? {
-          provider: { configured: false, maskedApiKey: null },
+          provider: { configured: true, maskedApiKey: '••••••••kimi', credentialFingerprint: 'sha256:kimi-fixture' },
           'code-cli': { configured: true, maskedApiKey: '••••••••code' },
           deepseek: { configured: true, maskedApiKey: '••••••••seek' },
-          kimi: { configured: true, maskedApiKey: '••••••••kimi' },
+          kimi: { configured: true, maskedApiKey: '••••••••kimi', credentialFingerprint: 'sha256:kimi-fixture' },
         }
         : {
           'code-cli': { configured: true, maskedApiKey: '••••••••code' },

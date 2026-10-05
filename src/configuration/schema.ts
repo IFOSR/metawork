@@ -11,6 +11,10 @@ import {
 } from './types.js';
 import { HARNESS_DRIVER_CATALOG } from './harness-driver-catalog.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
+import {
+  migrateConfigurationV3ToV2,
+  type AnyFusionConfigurationV3,
+} from './configuration-schema-migration.js';
 
 const REFERENCE_ID = /^[a-z][a-z0-9-]{0,63}$/;
 const SECRET_REFERENCE =
@@ -57,6 +61,22 @@ function uniqueArray<T extends z.ZodTypeAny>(
     }
   });
 }
+
+const PublicModelFactsSchema = z.object({
+  inputModalities: uniqueArray(z.string().trim().min(1).max(80), 'input modality', 16),
+  outputModalities: uniqueArray(z.string().trim().min(1).max(80), 'output modality', 16),
+  supportedParameters: uniqueArray(z.string().trim().min(1).max(120), 'supported parameter', 64),
+  maxCompletionTokens: z.number().int().positive().optional(),
+  reasoning: z.object({
+    mandatory: z.boolean().optional(),
+    defaultEnabled: z.boolean().optional(),
+    supportedEfforts: uniqueArray(z.string().trim().min(1).max(40), 'reasoning effort', 16).optional(),
+    defaultEffort: z.string().trim().min(1).max(40).optional(),
+  }).strict().optional(),
+  benchmarks: z.record(z.string().trim().min(1).max(100), z.number().finite()).optional(),
+  knowledgeCutoff: z.string().trim().max(80).optional(),
+  highlights: uniqueArray(z.string().trim().min(1).max(500), 'model highlight', 32),
+}).strict();
 
 function validateAutoModelPolicy(
   policy: {
@@ -162,6 +182,8 @@ const ProviderDefinitionSchema = z.object({
 const ModelProfileSchema = z.object({
   providerRef: ReferenceIdSchema,
   modelId: z.string().trim().min(1).max(200),
+  description: z.string().trim().max(4_000).optional(),
+  publicFacts: PublicModelFactsSchema.optional(),
   capabilities: uniqueArray(
     z.enum([
       'coding',
@@ -190,6 +212,15 @@ const ModelProfileSchema = z.object({
   qualityTier: z.enum(['low', 'medium', 'high']).optional(),
   costInputPerMillion: z.number().finite().min(0).max(1_000_000).optional(),
   costOutputPerMillion: z.number().finite().min(0).max(1_000_000).optional(),
+  pricing: z.object({
+    source: z.enum(['openrouter', 'catalog', 'user']),
+    usdInputPerToken: z.number().finite().min(0).optional(),
+    usdOutputPerToken: z.number().finite().min(0).optional(),
+    exchangeRate: z.literal(7),
+    fetchedAt: z.string().datetime().optional(),
+    catalogModelId: z.string().trim().min(1).max(256).optional(),
+    overrideReason: z.string().trim().max(500).optional(),
+  }).strict().optional(),
   enabled: z.boolean(),
 }).strict();
 
@@ -283,6 +314,7 @@ const AgentClassModelPolicySchema = z.union([
 
 const AgentClassDefinitionSchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional(),
+  responsibility: z.string().trim().max(2_000).optional(),
   kind: z.enum(['planner', 'executor']),
   harnessRef: ReferenceIdSchema,
   modelPolicy: AgentClassModelPolicySchema,
@@ -691,8 +723,12 @@ export const AnyFusionConfigurationV2Schema = z.object({
 }) as z.ZodType<AnyFusionConfigurationV2>;
 
 export function parseAnyFusionConfigurationV2(value: unknown): AnyFusionConfigurationV2 {
+  const normalizedVersion = value && typeof value === 'object' && !Array.isArray(value)
+    && (value as { schemaVersion?: unknown }).schemaVersion === 3
+    ? migrateConfigurationV3ToV2(value as AnyFusionConfigurationV3)
+    : value;
   return AnyFusionConfigurationV2Schema.parse(
-    normalizeRetiredSpanRoutingModel(normalizeRetiredRuntimePolicy(value)),
+    normalizeRetiredSpanRoutingModel(normalizeRetiredRuntimePolicy(normalizedVersion)),
   );
 }
 

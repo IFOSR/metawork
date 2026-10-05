@@ -18,6 +18,9 @@ export interface CandidateProjectionConfiguration {
   models: Record<string, {
     providerRef: string;
     modelId: string;
+    description?: string;
+    routingNotes?: import('../configuration/types.js').ModelRoutingNotes;
+    publicFacts?: import('../configuration/openrouter-model-catalog.js').OpenRouterPublicFacts;
     capabilities: ModelCapability[];
     contextLimit?: number;
     costInputPerMillion?: number;
@@ -65,6 +68,9 @@ export function projectConfigurationCandidates(
       providerRef: model.providerRef,
       modelRef,
       modelId: model.modelId,
+      ...(model.description ? { description: model.description } : {}),
+      ...(model.routingNotes ? { routingNotes: model.routingNotes } : {}),
+      ...(model.publicFacts ? { publicFacts: model.publicFacts } : {}),
       capabilities: mergeKnownModelCapabilities(
         model.modelId,
         configuration.agentClasses[agentClassRef]?.modelCapabilities?.[modelRef]

@@ -13,7 +13,7 @@ export const SPAN_OBSERVATION_POLICY_VERSION = 'span-routing-v1' as const;
  * discards an older observation and keeps the deterministic resolver instead of
  * ranking on data produced under a different contract.
  */
-export const SPAN_QUESTION_VERSION = 'span-fit-v3' as const;
+export const SPAN_QUESTION_VERSION = 'span-fit-v5' as const;
 export const SPAN_MODEL = 'inception/mercury-decide:free' as const;
 
 /** Per-request and per-proposal limits (design §6). */

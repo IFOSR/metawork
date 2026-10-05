@@ -48,8 +48,8 @@ export function ModelConnectionDialog({
       baseUrl: draft.baseUrl.trim(),
       apiKey: draft.apiKey.trim(),
     };
-    if (!next.displayName || !next.baseUrl || !next.apiKey) {
-      setError('请填写模型名称、API URL 和 API Key。');
+    if (!next.displayName || !next.baseUrl) {
+      setError('请填写模型名称、API URL 和 API Key（模型名称即 Provider 名称，OpenRouter 可留空 API Key）。');
       return;
     }
     onConfirm(next);
@@ -72,19 +72,19 @@ export function ModelConnectionDialog({
       >
         <div className="model-connection-dialog-heading">
           <div>
-            <span className="settings-eyebrow">NEW MODEL CONNECTION</span>
+            <span className="settings-eyebrow">新增模型</span>
             <h3 id="model-connection-dialog-title">新增模型</h3>
-            <p>填写连接信息后，MetaWork 会尝试获取可用模型。</p>
+            <p>填写 Provider 连接信息后，MetaWork 会自动获取公开模型、能力和价格。</p>
           </div>
           <button type="button" className="ghost-button" onClick={onCancel}>关闭</button>
         </div>
         <div className="model-connection-dialog-fields">
           <label className="settings-field">
-            <span>模型名称</span>
+            <span>Provider 名称</span>
             <input
               className="text-input"
               value={draft.displayName}
-              placeholder="例如：工作用 GPT"
+              placeholder="例如：OpenRouter 或工作用模型服务"
               onChange={event => update('displayName', event.target.value)}
               autoFocus
             />
@@ -99,12 +99,12 @@ export function ModelConnectionDialog({
             />
           </label>
           <label className="settings-field">
-            <span>API Key</span>
+            <span>API Key（OpenRouter 可留空）</span>
             <input
               className="text-input"
               type="password"
               value={draft.apiKey}
-              placeholder="输入 API Key"
+              placeholder="输入 API Key（可选）"
               autoComplete="new-password"
               onChange={event => update('apiKey', event.target.value)}
             />
@@ -114,7 +114,7 @@ export function ModelConnectionDialog({
         <div className="model-connection-dialog-actions">
           <button type="button" className="ghost-button" onClick={onCancel}>取消</button>
           <button type="button" className="primary-button" disabled={disabled} onClick={confirm}>
-            添加模型
+            新增模型
           </button>
         </div>
       </form>

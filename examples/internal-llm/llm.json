@@ -1,0 +1,11 @@
+{
+  "provider": "deepseek",
+  "displayName": "DeepSeek Flash",
+  "baseUrl": "https://api.deepseek.com/v1",
+  "modelId": "deepseek-flash",
+  "apiKeyRef": "file-secret:anyfusion/internal/llm",
+  "enabled": true,
+  "timeoutMs": 60000,
+  "maxTokens": 4096,
+  "thinking": "disabled"
+}

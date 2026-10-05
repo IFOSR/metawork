@@ -26,6 +26,7 @@ export const MODEL_CAPABILITY_CATALOG: Readonly<Record<string, readonly ModelCap
   'deepseek-chat': ['coding', 'long-context', 'tools'],
   'deepseek-reasoner': ['coding', 'long-context', 'structured-output', 'tools', 'planning'],
   'deepseek-v4-flash': ['coding', 'long-context', 'planning', 'structured-output', 'tools'],
+  'deepseek-v4.1-flash': ['coding', 'long-context', 'planning', 'structured-output', 'tools'],
   'deepseek-v4-pro': ['coding', 'long-context', 'planning', 'structured-output', 'tools'],
   'deepseek-v4-flash-vision-exp': ['coding', 'vision', 'tools'],
 };

@@ -26,9 +26,53 @@ export function maskApiKey(value: string): string {
   return `••••••••${value.slice(-4)}`;
 }
 
+export function normalizeProviderBaseUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  try {
+    const url = new URL(trimmed);
+    url.hash = '';
+    url.search = '';
+    url.pathname = url.pathname.replace(/\/+$/u, '') || '/';
+    return url.toString().replace(/\/$/u, '');
+  } catch {
+    return trimmed.replace(/\/+$/u, '').toLowerCase();
+  }
+}
+
+export function providerIdentityKey(provider: {
+  baseUrl: string;
+  apiKey: string;
+  credentialFingerprint?: string;
+}): string | undefined {
+  const baseUrl = normalizeProviderBaseUrl(provider.baseUrl);
+  // Missing credentials are unknown identities, never a shared "empty key".
+  // Pending edits take precedence over the last saved credential fingerprint.
+  const credential = provider.apiKey.trim()
+    ? `raw:${provider.apiKey.trim()}` : provider.credentialFingerprint;
+  return baseUrl && credential ? `${baseUrl}|${credential}` : undefined;
+}
+
+export async function currentProviderIdentityKey(provider: {
+  baseUrl: string;
+  apiKey: string;
+  credentialFingerprint?: string;
+}): Promise<string | undefined> {
+  if (!provider.apiKey.trim()) return providerIdentityKey(provider);
+  const credentialFingerprint = await fingerprintProviderCredential(provider.apiKey);
+  return providerIdentityKey({ ...provider, apiKey: credentialFingerprint ? '' : provider.apiKey, credentialFingerprint });
+}
+
+export async function fingerprintProviderCredential(value: string): Promise<string | undefined> {
+  const normalized = value.trim();
+  if (!normalized || typeof crypto === 'undefined' || !crypto.subtle) return undefined;
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized));
+  return `sha256:${Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')}`;
+}
+
 export function resolveProviderSecretReference(
   providerRef: string,
-  baseUrl: string,
+  _baseUrl: string,
   existingProviders: Record<string, { baseUrl?: string; apiKeyRef?: string }>,
   writtenReferences: Record<string, string>,
   knownReferences: readonly string[],
@@ -37,13 +81,12 @@ export function resolveProviderSecretReference(
   if (isSecretReference(written)) return written;
 
   const exact = existingProviders[providerRef]?.apiKeyRef;
-  if (isSecretReference(exact)) return exact;
-
-  const sameProvider = Object.values(existingProviders).find(provider => (
-    normalizeUrl(provider.baseUrl ?? '') === normalizeUrl(baseUrl)
-    && isSecretReference(provider.apiKeyRef)
-  ));
-  if (sameProvider?.apiKeyRef) return sameProvider.apiKeyRef;
+  if (isSecretReference(exact)) {
+    const referenceOwner = Object.entries(existingProviders).find(([ref, provider]) => (
+      ref !== providerRef && provider.apiKeyRef === exact
+    ));
+    if (!referenceOwner) return exact;
+  }
 
   const scheme = knownReferences.some(reference => reference.startsWith('keychain:'))
     ? 'keychain'
@@ -80,8 +123,4 @@ export function resolveProviderSecretReferenceFromConfiguration(
 
 function isSecretReference(value: string | undefined): value is string {
   return Boolean(value && /^(?:keychain|file-secret):[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/u.test(value));
-}
-
-function normalizeUrl(value: string): string {
-  return value.trim().replace(/\/+$/u, '').toLowerCase();
 }

@@ -58,11 +58,11 @@ export async function importLocalAgentCredentialsForRefs(input: {
   const imported: string[] = [];
   const skipped: string[] = [];
   for (const [providerRef, reference] of Object.entries(input.providers)) {
-    const candidate = candidates.find(value => matchesProviderRef(providerRef, value));
+    const candidate = uniqueCredential(candidates.filter(value => matchesProviderRef(providerRef, value)));
     if (!candidate) continue;
     try {
       const existing = await input.secretStore.get(reference);
-      if (existing.trim() === candidate.apiKey) {
+      if (existing.trim()) {
         skipped.push(providerRef);
         continue;
       }
@@ -86,12 +86,14 @@ async function importCandidatesForProviders(
   for (const [providerRef, provider] of Object.entries(providers)) {
     if (!provider.enabled) continue;
     assertSecretReference(provider.apiKeyRef);
-    const candidate = candidates.find(value => matchesProvider(providerRef, provider, value));
+    const candidate = uniqueCredential(candidates.filter(value => matchesProvider(providerRef, provider, value)));
     if (!candidate) continue;
 
     try {
       const existing = await secretStore.get(provider.apiKeyRef);
-      if (existing.trim() === candidate.apiKey) {
+      // MetaWork's saved key is authoritative, including a user's replacement.
+      // Local Agent discovery may bootstrap a missing key, never synchronize it.
+      if (existing.trim()) {
         skipped.push(providerRef);
         continue;
       }
@@ -210,13 +212,14 @@ function matchesProvider(
   provider: ProviderDefinition,
   candidate: CredentialCandidate,
 ): boolean {
-  if (matchesProviderRef(providerRef, candidate)) {
-    return true;
-  }
-  return Boolean(
-    candidate.baseUrl
-    && normalizeUrl(candidate.baseUrl) === normalizeUrl(provider.baseUrl),
-  );
+  // A URL alone cannot identify credentials: one endpoint can host many keys.
+  return matchesProviderRef(providerRef, candidate)
+    && (!candidate.baseUrl || normalizeUrl(candidate.baseUrl) === normalizeUrl(provider.baseUrl));
+}
+
+function uniqueCredential(candidates: CredentialCandidate[]): CredentialCandidate | undefined {
+  // Conflicting local installations cannot decide which account the user wants.
+  return new Set(candidates.map(candidate => candidate.apiKey)).size === 1 ? candidates[0] : undefined;
 }
 
 function matchesProviderRef(providerRef: string, candidate: CredentialCandidate): boolean {

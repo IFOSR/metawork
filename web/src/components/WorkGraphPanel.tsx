@@ -15,6 +15,9 @@ export function WorkGraphPanel({ projection }: { projection: WorkGraphPresentati
   const titleById = new Map(projection.nodes.map(node => [node.id, workGraphNodeLabel(node)]));
   const downstream = projection.nodes.filter(node => node.dependencies.includes(selected.id));
   const handoffs = projection.edges.filter(edge => edge.from === selected.id || edge.to === selected.id);
+  const parallelGroups = [...new Set(projection.nodes.map(node => node.phase))]
+    .map(phase => ({ phase, nodes: projection.nodes.filter(node => node.phase === phase) }))
+    .filter(group => group.nodes.length > 1);
 
   return (
     <section className="work-graph-panel" aria-label="Work Graph">
@@ -26,6 +29,7 @@ export function WorkGraphPanel({ projection }: { projection: WorkGraphPresentati
         <div className="work-graph-meta">
           <span>{projection.nodes.length} 个子任务</span>
           <span>{projection.currentRunnableFrontier.length} 个可调度</span>
+          {parallelGroups.map(group => <span key={group.phase}>阶段 {group.phase + 1} 可并行 {group.nodes.length} 项</span>)}
         </div>
       </header>
       <WorkGraphDiagram projection={projection} selectedId={selected.id}

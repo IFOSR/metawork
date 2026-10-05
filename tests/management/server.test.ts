@@ -25,6 +25,52 @@ import { WebGatewayAdmissionError } from '../../src/management/web-gateway-sessi
 import { ConfigurationActivationBlockedError, ConfigurationActivationGate } from '../../src/configuration/configuration-activation-gate.js';
 
 describe('executor management API', () => {
+  it('authenticates and validates the read-only Agent capability description request', async () => {
+    const port = await reservePort();
+    const calls: unknown[] = [];
+    const server = createManagementServer(port, { configQuery: {
+      describeAgentCapabilities: async (input, refresh) => {
+        calls.push({ input, refresh });
+        return { summary: '该智能体可分析代码。', abilities: [{ title: '代码分析', description: '定位修改范围。' }], boundaries: [] };
+      },
+    } });
+    await server.start();
+    try {
+      const url = `http://127.0.0.1:${port}/api/config/agent-capabilities`;
+      expect((await fetch(url, { method: 'POST', body: '{}' })).status).toBe(401);
+      const headers = { authorization: 'Bearer manual-token', 'content-type': 'application/json' };
+      expect((await fetch(url, { method: 'POST', headers, body: '{}' })).status).toBe(400);
+      const input = { kind: 'executor', affordances: [], models: [{ modelRef: 'm1', modelId: 'example', capabilities: ['coding'] }] };
+      const result = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ ...input, refresh: true, apiKey: 'must-not-forward' }) });
+      expect(result.status).toBe(200);
+      expect(calls).toEqual([{ input, refresh: true }]);
+    } finally { await server.stop(); }
+  });
+
+  it('summarizes only the authenticated selected catalog model, ignoring client-supplied facts', async () => {
+    const port = await reservePort();
+    const calls: string[] = [];
+    const server = createManagementServer(port, { configQuery: {
+      summarizeModelInformation: async catalogModelId => {
+        calls.push(catalogModelId);
+        return { catalogModelId, routingNotes: { summary: '代码实现', preferredTaskTypes: ['回归测试'] } };
+      },
+    } });
+    await server.start();
+    try {
+      const url = `http://127.0.0.1:${port}/api/config/model-routing-profile`;
+      expect((await fetch(url, { method: 'POST', body: '{}' })).status).toBe(401);
+      const headers = { authorization: 'Bearer manual-token', 'content-type': 'application/json' };
+      expect((await fetch(url, { method: 'POST', headers, body: '{}' })).status).toBe(400);
+      const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify({
+        catalogModelId: 'openai/gpt-6-sol', description: 'untrusted override', baseUrl: 'https://untrusted.example',
+      }) });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ routingNotes: { preferredTaskTypes: ['回归测试'] } });
+      expect(calls).toEqual(['openai/gpt-6-sol']);
+    } finally { await server.stop(); }
+  });
+
   it('serves read-only billing records and task detail through the session runtime', async () => {
     const port = await reservePort();
     const listCalls: Array<Record<string, unknown>> = [];

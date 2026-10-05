@@ -156,7 +156,7 @@ describe('ConfigurationRuntimeCoordinator', () => {
       .toMatchObject({ ok: true });
   });
 
-  it('prepares configuration semantics inside the gate even without secrets', async () => {
+  it('prepares configuration references inside the gate even without secrets', async () => {
     const before = snapshot('revision-1', {});
     const after = snapshot('revision-2', {});
     const gate = new ConfigurationActivationGate(() => ({

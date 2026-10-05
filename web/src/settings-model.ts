@@ -12,6 +12,7 @@ export interface SettingsProviderEntry {
   modelIds: string[];
   credentialState: ConfigurationFieldState;
   maskedApiKey?: string | null;
+  credentialFingerprint?: string;
   enabled?: boolean;
 }
 
@@ -19,11 +20,23 @@ export interface SettingsModelEntry {
   ref: string;
   providerRef: string;
   modelId: string;
+  displayName?: string;
+  description?: string;
+  publicFacts?: ModelPublicFacts;
   capabilities: string[];
   capabilityState: ConfigurationFieldState;
   contextLimit?: number;
   costInputPerMillion?: number;
   costOutputPerMillion?: number;
+  pricing?: {
+    source: 'openrouter' | 'catalog' | 'user';
+    usdInputPerToken?: number;
+    usdOutputPerToken?: number;
+    exchangeRate: 7;
+    fetchedAt?: string;
+    catalogModelId?: string;
+    overrideReason?: string;
+  };
   latencyTier?: string;
   qualityTier?: string;
   reasoning?: string;
@@ -44,6 +57,7 @@ export type RoutingObjective = 'balanced' | 'quality' | 'cost' | 'latency';
 export interface AgentClassRoutingDraft {
   enabled?: boolean;
   displayName?: string;
+  responsibility: string;
   mode: RoutingMode;
   modelRef: string;
   allowedModelRefs: string[];
@@ -96,6 +110,7 @@ export type RoutingDraftMap = Record<string, AgentClassRoutingDraft>;
 export interface AgentClassRoutingFacts {
   agentClassRef: string;
   displayName: string;
+  responsibility: string;
   kind: 'planner' | 'executor';
   harnessRef: string;
   harnessLabel: string;
@@ -315,7 +330,6 @@ export function evaluateModelCompatibility(
 ): ModelCompatibility {
   const required = new Set<string>();
   if (facts.kind === 'planner') {
-    required.add('planning');
     required.add('structured-output');
   }
   // Executor 兼容性由服务端投影的真实 driverId 决定，不按名字猜测；
@@ -398,3 +412,4 @@ export function describeRoutingObjective(objective: RoutingObjective): string {
     latency: '优先响应速度',
   }[objective];
 }
+import type { ModelPublicFacts } from './api/types';

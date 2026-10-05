@@ -122,6 +122,7 @@ function isHotPath(path: string): boolean {
     // active revision at projection time and never enters compiled artifacts or
     // routing decisions, so it is hot-safe for the same reason as use-case hints.
     || /^agentClasses\.[^.]+\.displayName$/u.test(path)
+    || /^agentClasses\.[^.]+\.responsibility$/u.test(path)
     || /^agentClasses\.[^.]+\.primaryUseCases$/u.test(path)
     || /^agentClasses\.[^.]+\.avoidUseCases$/u.test(path)
     || /^agentClasses\.[^.]+\.executorManual(?:\.|$)/u.test(path);

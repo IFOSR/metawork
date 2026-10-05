@@ -51,6 +51,7 @@ export function buildConfigurationCatalog(
         });
       return {
         id,
+        ...(agentClass.responsibility ? { responsibility: agentClass.responsibility } : {}),
         routingCapabilities: profile.routableCapabilities,
         capabilityPreferences: profile.capabilities
           .filter(capability => (

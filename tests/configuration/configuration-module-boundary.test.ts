@@ -81,6 +81,9 @@ describe('configuration module architecture boundaries', () => {
 
     expect(configurationImportsKernel).toBe(false);
     expect(configurationImportsRuntime).toBe(false);
+    // Internal settings work must never depend on the user-facing Planner.
+    expect(configurationImports.some(specifier => importsModule(specifier, 'planning'))).toBe(false);
+    expect(configurationImports.some(specifier => importsModule(specifier, 'tui-bridge'))).toBe(false);
     expect(planningImportsRuntimePrivateBinding).toBe(false);
     expect(kernelImportsConcreteConfigurationRepository).toBe(false);
     expect(gatewayImportsStorageAdapter).toBe(false);

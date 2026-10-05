@@ -19,6 +19,8 @@ import {
 } from '../gateway/attachment-store-port.js';
 import type { ConfigurationRuntimeState } from '../configuration/configuration-runtime-coordinator.js';
 import type { ConfigurationCompletionResult } from '../configuration/configuration-completion-service.js';
+import type { OpenRouterPublicFacts } from '../configuration/openrouter-model-catalog.js';
+import { AgentCapabilityDescriptionInputSchema, type AgentCapabilityDescriptionInput, type AgentCapabilityDescription } from '../configuration/agent-capability-description.js';
 import type { AgentReadiness } from './agent-installation-readiness-service.js';
 import { verifyLogin } from './login-credentials.js';
 import { LoginThrottle } from './web-auth.js';
@@ -73,6 +75,7 @@ export interface ActivateResult {
 export interface ProviderCredentialStatus {
   configured: boolean;
   maskedApiKey: string | null;
+  credentialFingerprint?: string;
 }
 
 export interface ExecutorCapabilityManualResponse {
@@ -129,9 +132,51 @@ export interface ProviderModelDiscoveryResponse {
   modelIds: string[];
   /** modelId → 内置目录登记的能力标签；目录未收录的模型为空数组。 */
   capabilities: Record<string, string[]>;
+  metadata?: Record<string, {
+    displayName?: string;
+    description?: string;
+    publicFacts?: OpenRouterPublicFacts;
+    contextLimit?: number;
+    costInputPerMillion?: number;
+    costOutputPerMillion?: number;
+    pricing?: {
+      source: 'openrouter' | 'catalog' | 'user';
+      usdInputPerToken?: number;
+      usdOutputPerToken?: number;
+      exchangeRate: 7;
+      fetchedAt?: string;
+      catalogModelId?: string;
+      overrideReason?: string;
+    };
+  }>;
+  prices?: Record<string, {
+    inputCnyPerMillion?: number;
+    outputCnyPerMillion?: number;
+    pricing?: {
+      source: 'openrouter' | 'catalog' | 'user';
+      usdInputPerToken?: number;
+      usdOutputPerToken?: number;
+      exchangeRate: 7;
+      fetchedAt?: string;
+      catalogModelId?: string;
+    };
+  }>;
+}
+
+export interface ResponsibilitySuggestionResponse {
+  sourceText: string;
+  suggestedText: string;
+  selectedModelRefs: string[];
+  evidence: string[];
+  requiresConfirmation: true;
 }
 
 export interface ConfigQuery {
+  describeAgentCapabilities?(input: AgentCapabilityDescriptionInput, refresh: boolean): Promise<AgentCapabilityDescription>;
+  summarizeModelInformation?(catalogModelId: string): Promise<{
+    catalogModelId: string;
+    routingNotes: import('../configuration/types.js').ModelRoutingNotes;
+  }>;
   getExecutorManagement?(): Promise<import('../configuration/executor-configuration.js').ExecutorManagementView>;
   prepareExecutor?(input: { baseRevisionId: string; change: unknown }): Promise<{
     baseRevisionId: string;
@@ -182,6 +227,28 @@ export interface ConfigQuery {
     agentClassRef: string,
     input: ExecutorManualPreviewRequest,
   ): Promise<ExecutorCapabilityManualResponse>;
+  suggestAgentResponsibility?(input: {
+    agentClassRef: string;
+    sourceText: string;
+    modelFacts?: Array<{
+      modelRef: string;
+      modelId: string;
+      capabilities: string[];
+      description?: string;
+      routingNotes?: {
+        summary?: string;
+        strengths?: string[];
+        limitations?: string[];
+        preferredTaskTypes?: string[];
+        avoidTaskTypes?: string[];
+      };
+      contextLimit?: number;
+      costInputPerMillion?: number;
+      costOutputPerMillion?: number;
+      publicFacts?: OpenRouterPublicFacts;
+    }>;
+    config?: unknown;
+  }): Promise<ResponsibilitySuggestionResponse>;
 }
 
 export interface ConfigurationRuntimeStatusSource {
@@ -1130,7 +1197,8 @@ export class ManagementServer {
       const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '';
       const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
       const providerRef = typeof body.providerRef === 'string' ? body.providerRef.trim() : '';
-      if (!baseUrl || (!apiKey && !providerRef)) {
+      const isPublicOpenRouter = /openrouter\.ai/iu.test(baseUrl);
+      if (!baseUrl || (!apiKey && !providerRef && !isPublicOpenRouter)) {
         this.sendJson(response, 400, {
           error: 'baseUrl and one of apiKey/providerRef are required',
         });
@@ -1145,6 +1213,81 @@ export class ManagementServer {
           ...(providerRef ? { providerRef } : {}),
         }),
       );
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/config/agent-capabilities') {
+      if (!this.deps.configQuery.describeAgentCapabilities) {
+        this.sendJson(response, 503, { error: '智能体能力整理服务不可用' });
+        return;
+      }
+      const body = await readRequestBody(request);
+      const input = AgentCapabilityDescriptionInputSchema.safeParse(body);
+      if (!input.success) {
+        this.sendJson(response, 400, { error: '请选择智能体使用的模型后再更新能力说明。' });
+        return;
+      }
+      this.sendJson(response, 200, await this.deps.configQuery.describeAgentCapabilities(input.data, (body as Record<string, unknown>).refresh === true));
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/config/model-routing-profile') {
+      if (!this.deps.configQuery.summarizeModelInformation) {
+        this.sendJson(response, 503, { error: '模型信息提炼服务不可用' });
+        return;
+      }
+      const body = await readRequestBody(request);
+      const payload = body as Record<string, unknown>;
+      const catalogModelId = typeof payload.catalogModelId === 'string' ? payload.catalogModelId.trim() : '';
+      if (!catalogModelId || catalogModelId.length > 256) {
+        this.sendJson(response, 400, { error: 'catalogModelId is required' });
+        return;
+      }
+      this.sendJson(response, 200, await this.deps.configQuery.summarizeModelInformation(catalogModelId));
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/config/agent-responsibility') {
+      if (!this.deps.configQuery.suggestAgentResponsibility) {
+        this.sendJson(response, 503, { error: 'settings assistant unavailable' });
+        return;
+      }
+      const body = await readRequestBody(request);
+      const payload = isRecord(body) ? body : {};
+      const agentClassRef = typeof payload.agentClassRef === 'string' ? payload.agentClassRef.trim() : '';
+      const sourceText = typeof payload.sourceText === 'string' ? payload.sourceText : '';
+      const modelFacts = Array.isArray(payload.modelFacts)
+        ? payload.modelFacts.filter((fact): fact is Record<string, unknown> => isRecord(fact)).flatMap(fact => {
+          const modelRef = typeof fact.modelRef === 'string' ? fact.modelRef.trim() : '';
+          const modelId = typeof fact.modelId === 'string' ? fact.modelId.trim() : '';
+          const capabilities = Array.isArray(fact.capabilities)
+            ? fact.capabilities.filter((value): value is string => typeof value === 'string')
+            : [];
+          const publicFacts = parsePublicFacts(fact.publicFacts);
+          const routingNotes = parseRoutingNotes(fact.routingNotes);
+          return modelRef && modelId ? [{
+            modelRef,
+            modelId,
+            capabilities,
+            ...(typeof fact.description === 'string' ? { description: fact.description } : {}),
+            ...(routingNotes ? { routingNotes } : {}),
+            ...(typeof fact.contextLimit === 'number' ? { contextLimit: fact.contextLimit } : {}),
+            ...(typeof fact.costInputPerMillion === 'number' ? { costInputPerMillion: fact.costInputPerMillion } : {}),
+            ...(typeof fact.costOutputPerMillion === 'number' ? { costOutputPerMillion: fact.costOutputPerMillion } : {}),
+            ...(publicFacts ? { publicFacts } : {}),
+          }] : [];
+        })
+        : [];
+      if (!agentClassRef) {
+        this.sendJson(response, 400, { error: 'agentClassRef is required' });
+        return;
+      }
+      this.sendJson(response, 200, await this.deps.configQuery.suggestAgentResponsibility({
+        agentClassRef,
+        sourceText,
+        ...(modelFacts.length > 0 ? { modelFacts } : {}),
+        ...(payload.config !== undefined ? { config: payload.config } : {}),
+      }));
       return;
     }
 
@@ -1614,6 +1757,85 @@ interface RequestBody {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parsePublicFacts(value: unknown): OpenRouterPublicFacts | undefined {
+  if (!isRecord(value)) return undefined;
+  const inputModalities = boundedStringList(value.inputModalities);
+  const outputModalities = boundedStringList(value.outputModalities);
+  const supportedParameters = boundedStringList(value.supportedParameters);
+  const highlights = boundedStringList(value.highlights, 12, 500);
+  const reasoningValue = isRecord(value.reasoning) ? value.reasoning : undefined;
+  const supportedEfforts = reasoningValue ? boundedStringList(reasoningValue.supportedEfforts, 8, 64) : [];
+  const reasoning = reasoningValue && (
+    typeof reasoningValue.mandatory === 'boolean'
+    || typeof reasoningValue.defaultEnabled === 'boolean'
+    || supportedEfforts.length > 0
+    || typeof reasoningValue.defaultEffort === 'string'
+  ) ? {
+    ...(typeof reasoningValue.mandatory === 'boolean' ? { mandatory: reasoningValue.mandatory } : {}),
+    ...(typeof reasoningValue.defaultEnabled === 'boolean' ? { defaultEnabled: reasoningValue.defaultEnabled } : {}),
+    ...(supportedEfforts.length > 0 ? { supportedEfforts } : {}),
+    ...(typeof reasoningValue.defaultEffort === 'string' && reasoningValue.defaultEffort.trim()
+      ? { defaultEffort: reasoningValue.defaultEffort.trim().slice(0, 64) }
+      : {}),
+  } : undefined;
+  const benchmarks = isRecord(value.benchmarks)
+    ? Object.fromEntries(Object.entries(value.benchmarks)
+      .filter(([key, item]) => /^[a-z0-9._-]{1,64}$/iu.test(key) && typeof item === 'number' && Number.isFinite(item))
+      .slice(0, 32)
+      .map(([key, item]) => [key, item as number]))
+    : {};
+  const maxCompletionTokens = typeof value.maxCompletionTokens === 'number'
+    && Number.isInteger(value.maxCompletionTokens)
+    && value.maxCompletionTokens > 0
+    ? value.maxCompletionTokens : undefined;
+  const knowledgeCutoff = typeof value.knowledgeCutoff === 'string' && value.knowledgeCutoff.trim()
+    ? value.knowledgeCutoff.trim().slice(0, 64) : undefined;
+  if (inputModalities.length === 0 && outputModalities.length === 0 && supportedParameters.length === 0
+    && highlights.length === 0 && !reasoning && Object.keys(benchmarks).length === 0
+    && maxCompletionTokens === undefined && !knowledgeCutoff) return undefined;
+  return {
+    inputModalities,
+    outputModalities,
+    supportedParameters,
+    ...(maxCompletionTokens !== undefined ? { maxCompletionTokens } : {}),
+    ...(reasoning ? { reasoning } : {}),
+    ...(Object.keys(benchmarks).length > 0 ? { benchmarks } : {}),
+    ...(knowledgeCutoff ? { knowledgeCutoff } : {}),
+    highlights,
+  };
+}
+
+function parseRoutingNotes(value: unknown): {
+  summary?: string;
+  strengths?: string[];
+  limitations?: string[];
+  preferredTaskTypes?: string[];
+  avoidTaskTypes?: string[];
+} | undefined {
+  if (!isRecord(value)) return undefined;
+  const notes = {
+    ...(typeof value.summary === 'string' && value.summary.trim()
+      ? { summary: value.summary.trim().slice(0, 500) } : {}),
+    ...(boundedStringList(value.strengths, 8, 300).length > 0
+      ? { strengths: boundedStringList(value.strengths, 8, 300) } : {}),
+    ...(boundedStringList(value.limitations, 8, 300).length > 0
+      ? { limitations: boundedStringList(value.limitations, 8, 300) } : {}),
+    ...(boundedStringList(value.preferredTaskTypes, 8, 300).length > 0
+      ? { preferredTaskTypes: boundedStringList(value.preferredTaskTypes, 8, 300) } : {}),
+    ...(boundedStringList(value.avoidTaskTypes, 8, 300).length > 0
+      ? { avoidTaskTypes: boundedStringList(value.avoidTaskTypes, 8, 300) } : {}),
+  };
+  return Object.keys(notes).length > 0 ? notes : undefined;
+}
+
+function boundedStringList(value: unknown, maxItems = 64, maxLength = 160): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .map(item => item.trim().slice(0, maxLength)))]
+    .slice(0, maxItems);
 }
 
 function isSafeProviderRef(value: string): boolean {

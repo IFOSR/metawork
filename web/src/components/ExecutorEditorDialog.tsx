@@ -88,8 +88,8 @@ export function ExecutorEditorDialog({ http, view, agentClassRef, operation, dis
       <form className="model-connection-dialog executor-editor-dialog" role="dialog" aria-modal="true"
         aria-labelledby="executor-editor-title" onSubmit={event => { event.preventDefault(); void prepare(); }}>
         <div className="model-connection-dialog-heading">
-          <div><h3 id="executor-editor-title">{labels[operation]}执行助手</h3>
-            <p>只保存当前助手，不影响其他未保存的编辑。工具固定为 Pi 或 Codex CLI。</p></div>
+          <div><h3 id="executor-editor-title">{labels[operation]}智能体</h3>
+            <p>只保存当前智能体，不影响其他未保存的编辑。工具固定为 Pi 或 Codex CLI。</p></div>
           <button type="button" className="ghost-button" disabled={saving} onClick={onClose}>关闭</button>
         </div>
         <div className="executor-editor-body">
@@ -159,19 +159,19 @@ export function ExecutorEditorDialog({ http, view, agentClassRef, operation, dis
               onChange={event => update({ permissionProfileRef: event.target.value })}>
               {view.permissions.map(profile => <option key={profile.ref} value={profile.ref}>{profile.label}</option>)}
             </select></label>
-          <label className="settings-field"><span>职责说明</span>
+          <label className="settings-field"><span>职责</span>
             <textarea className="text-input" rows={4} maxLength={8000} value={fields.manualSourceText}
               onChange={event => update({ manualSourceText: event.target.value })} /></label>
           <label className="executor-enable-row">
             <input type="checkbox" checked={fields.enabled} onChange={event => update({ enabled: event.target.checked })} />
-            <span>启用此助手</span></label>
+            <span>启用此智能体</span></label>
         </fieldset> : <p className="executor-confirm-text">确认{labels[operation]}“{existing?.displayName}”？{operation === 'remove' && '历史工作和文件会保留；删除后不能再分配新工作给它。'}</p>}
         {disabled && <p role="status" className="executor-dialog-notice">系统当前不空闲，暂时不能修改配置。输入已保留。</p>}
         {error && <p role="alert" className="executor-dialog-error">{error}</p>}
         {prepared && <section className="executor-preview">
           <h4>确认变更</h4>{prepared.summary.map(line => <p key={line}>{line}</p>)}
           {warning && <p className="executor-preview-warning">{warning}</p>}
-          {markdown && <details><summary>查看助手能力说明</summary><pre>{markdown}</pre></details>}
+          {markdown && <details><summary>查看 AI 改写预览</summary><pre>{markdown}</pre></details>}
         </section>}
         </div>
         <div className="model-connection-dialog-actions">

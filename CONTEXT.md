@@ -12,6 +12,38 @@ changes, subtask planning, executor instance claims, and fallback behavior.
 
 ## Current Implementation Notes
 
+Settings save/activation and legacy manual preview are deterministic and do not
+call Planner or any LLM. ExecutorManualPreviewService preserves natural-language
+duties, reuses only unchanged persisted assertions and never generates capability
+grants. AI editing/explanation/public-model summarization remain explicit calls
+to InternalLlmService. Planner hot rebinding only manages process/configuration
+lifecycle; it must never become a settings semantic turn (ADR-0044 correction).
+
+Routing now compares natural-language duties and detailed model evidence through
+the existing Mercury advisor (`span-fit-v5`). Generic coding/planning/long-context
+labels and keyword overlap do not gate or score candidates. Concrete input,
+protocol, delivery, permission and availability conditions still apply. The
+advisor receives revision-pinned tool affordances and CNY token prices as well
+as strengths, limitations and task descriptions. Unknown price is not free and
+cannot satisfy an explicit cost ceiling. Deterministic fallback uses configured
+numeric policies and stable ordering, not semantic guesses. See ADR-0033's
+2026-10-05 amendment and the description-first routing implementation plan.
+
+Settings responsibility rewriting uses the installation-owned SettingsAssistant
+LLM independently of Planner. Model catalog descriptions are background data,
+not duty text. Only a validated LLM-generated draft may replace the editor
+text; unavailable credentials, failed requests and invalid/truncated output
+preserve the source and report a controlled failure (ADR-0044). Deterministic
+capability compilation remains separate from this semantic editing operation.
+SettingsAssistant and selected-model OpenRouter profile summarization share
+InternalLlmService, with per-request developer configuration from
+`internal/llm.json` and a separate `internal/llm-credentials.json` SecretStore.
+Summaries become model routingNotes; they never grant hard capabilities.
+The Agent settings capability section uses a separate read-only internal-LLM
+explanation of selected-model evidence and available tool affordances. It speaks
+in terms of Agent tasks and boundaries, never pastes model catalog prose, and
+does not replace user responsibilities or authoritative routing capabilities.
+
 The source schema is now **47**. ADR-0043 has been implemented locally and
 validated with the production browser and an isolated installed Server/TUI
 release. User acceptance and deployment to the normal installation remain open;
@@ -523,6 +555,11 @@ Production Provider credentials are stored in the single MetaWork-root file
 resolves Provider references through that file; Web returns only configured
 state and a masked Key, and an update replaces the stored value. This feature
 does not add a `~/.config/metawork` persistence root.
+Local Agent credential discovery only initializes missing credentials for an
+unambiguous matching Provider; it never overwrites a saved MetaWork Key, including
+during startup preheating. Matching a Base URL alone cannot authorize credential
+reuse. Settings deduplication requires both normalized Base URL and complete Key
+identity; unknown credentials cannot be merged (2026-10-05 correction).
 
 Application-Shell agent readiness is separate from Kernel Executor health.
 Pi is required for new-work admission, while login, Workspace access, history,

@@ -33,9 +33,9 @@ MetaWork 为 Agent 工作提供统一的商业服务系统，覆盖规划、授�
   汇总查看执行中、排队中和阻塞中的任务。
 - **可解释路由：** 每个获批 attempt 都固定到一个配置 revision 以及完整的
   Provider、Model、AgentClass、Harness 和 Permission Profile 绑定。
-- **能力驱动路由：** 每个 Executor 都有独立的中文 Skill-style 能力说明书。
-  说明书由当前选择的模型、模型能力证据、Executor 运行支撑条件和用户自然语言定义
-  统一编译；Planner 使用最终说明书做语义匹配，机器可读的路由投影用于校验和模型选择。
+- **能力驱动路由：** Planner 根据智能体职责和能力证据规划任务；决策模型结合
+  模型的具体优势、局限、适用任务、可用工具和价格，选择合适的智能体与模型组合。
+  通用能力标签不用于质量评分，执行兼容性和权限条件仍严格校验。
 - **上下文连续：** Planner 通过持久化的 Pi session 理解“这张图片”“刚才生成的报告”
   等自然表达；MetaWork 的 Context Bridge 提供有界的 Conversation 事实，验证选中的历史
   Artifact，并只向 Executor 物化已授权的输入。
@@ -60,7 +60,7 @@ AnyFusion 标识。
 ## Release
 
 当前正式版本是
-[MetaWork `v0.1.3`](https://github.com/IFOSR/metawork/releases/tag/v0.1.3)，
+[MetaWork `v0.1.4`](https://github.com/IFOSR/metawork/releases/tag/v0.1.4)，
 发布在 stable 安装通道。四个平台的 Release identity 记录在签名 manifest 中，
 所有目标均由同一个 tag 提交构建。
 
@@ -99,7 +99,7 @@ Codex CLI 与 Pi Agent 独立安装。安装程序只检测 `PATH` 中已有的 
 ### 一条命令安装（macOS、Linux、WSL2）
 
 官方分发源是 GitHub Releases。下面的安装命令会跟随最新 stable Release；当前仓库
-对应的正式版本是 `v0.1.3`。归档文件和签名 manifest 都直接从 GitHub Release CDN
+对应的正式版本是 `v0.1.4`。归档文件和签名 manifest 都直接从 GitHub Release CDN
 下载。
 
 ```bash
@@ -195,7 +195,7 @@ export METAWORK_PROVIDER_REGION='international'
 npm run build:release -- \
   --platform linux \
   --arch x64 \
-  --release-id 0.1.3-build-<tagged-revision> \
+  --release-id 0.1.4-build-<tagged-revision> \
   --signing-key /secure/path/metawork-release-key.pem \
   --out-dir /tmp/metawork-release
 ```
@@ -533,7 +533,7 @@ gateway 转发图片请求，Provider 凭据不会进入容器。
 
 ## 项目状态
 
-MetaWork 正在进行商业化开发。当前正式版本为 `v0.1.3`，已提供 macOS
+MetaWork 正在进行商业化开发。当前正式版本为 `v0.1.4`，已提供 macOS
 Intel、macOS Apple Silicon、Linux x64 和 Windows x64 的签名原生包。当前 Runtime
 已经包含 Server/Client Gateway 分离、多端统一观察、用于快速切换会话的有界读模型、
 原生 TUI 任务面板、隔离 Planner-first 路由、统一 Executor 能力画像、不同 Conversation

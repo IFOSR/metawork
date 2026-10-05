@@ -64,11 +64,10 @@ export {
   compileConfigurationRevision,
 } from './configuration-service.js';
 export {
-  ExecutorManualPlanner,
+  ExecutorManualPreviewService,
   type ExecutorManualAnalysisInput,
   type ExecutorManualAnalysisResult,
-  type ExecutorManualPlannerDependencies,
-} from './executor-manual-planner.js';
+} from './executor-manual-preview-service.js';
 export {
   FileConfigurationRepository,
   RecoveryBlockedError,
@@ -136,6 +135,26 @@ export {
   type PublicRoutingIdentity,
 } from './public-routing-identity.js';
 export { validateEnabledModelPrices } from './enabled-model-price-validation.js';
+export { matchOpenRouterModel } from './openrouter-model-catalog.js';
+export {
+  migrateConfigurationV2ToV3,
+  migrateConfigurationV3ToV2,
+  type AnyFusionConfigurationV3,
+} from './configuration-schema-migration.js';
+export {
+  DEFAULT_INTERNAL_SETTINGS_ASSISTANT_CONFIG,
+  SETTINGS_ASSISTANT_DEFAULT_DISPLAY_NAME,
+  SETTINGS_ASSISTANT_DEFAULT_MODEL_ID,
+  loadInternalSettingsAssistantConfig,
+  parseInternalSettingsAssistantConfig,
+  type InternalSettingsAssistantConfig,
+} from './internal-settings-assistant-config.js';
+export {
+  SettingsAssistant,
+  type CapabilityCompilation,
+  type ResponsibilitySuggestion,
+  type SafeModelFact,
+} from './settings-assistant.js';
 export { buildApplicationConfig } from './application-config-projection.js';
 export type {
   PlannerRuntimeEnvironmentResolverInput,

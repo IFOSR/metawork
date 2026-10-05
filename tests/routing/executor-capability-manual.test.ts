@@ -212,7 +212,8 @@ describe('Executor capability manuals', () => {
     expect(result.agentClassRef).toBe('codex-engineering');
     expect(result.markdown).toContain('# Executor：codex-engineering');
     expect(result.markdown).toContain('gpt-5.6-sol');
-    expect(result.markdown).toContain('代码理解与实现');
+    expect(result.markdown).not.toContain('代码理解与实现');
+    expect(result.markdown).toContain('不要按泛化标签数量或关键词重合判断质量');
     expect(result.markdown).toContain('此能力由模型 `engineering` 提供');
     expect(result.markdown).toContain('代码仓库实现');
     expect(result.sourceFingerprint).toMatch(/^sha256:/u);
@@ -239,10 +240,11 @@ describe('Executor capability manuals', () => {
       configurationRevision: 'revision-1',
     });
 
-    expect(result.markdown).toContain('所有候选模型共同具备的能力');
+    expect(result.markdown).toContain('所有候选模型共同具备的输入与协议条件');
     expect(result.markdown).toContain('工具调用');
-    expect(result.markdown).not.toContain('所有候选模型共同具备的能力：\n- 代码理解与实现');
-    expect(result.markdown).toContain('代码理解与实现');
+    expect(result.markdown).not.toContain('所有候选模型共同具备的输入与协议条件：\n- 代码理解与实现');
+    expect(result.markdown).not.toContain('代码理解与实现');
+    expect(result.markdown).toContain('不要按泛化标签数量或关键词重合判断质量');
     expect(result.markdown).toContain('模型 `coding-model`');
     expect(result.markdown).toContain('视觉理解');
     expect(result.markdown).toContain('模型 `vision-model`');
