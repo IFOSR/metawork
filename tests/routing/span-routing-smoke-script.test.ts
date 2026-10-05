@@ -32,6 +32,20 @@ function runSmoke(
           ...(options.preloadChild ? { NODE_OPTIONS: `--import=${stubPath}` } : {}) },
       },
     );
+    // Reproduce a failed nested integration with the same mocked transport so
+    // CI reports the owning assertion, rather than only a sanitized smoke code.
+    if (result.status !== 0 && options.preloadChild) {
+      const diagnostic = spawnSync(process.execPath, [
+        join(projectRoot, 'node_modules/vitest/vitest.mjs'), 'run',
+        'tests/e2e/span-routing.test.ts', '-t', 'compares representative workload',
+      ], {
+        cwd: projectRoot, encoding: 'utf8', timeout: 30_000,
+        env: { ...process.env, NODE_OPTIONS: `--import=${stubPath}`,
+          SPAN_LIVE_INTEGRATION: '1', SPAN_INTEGRATION_API_KEY: 'smoke-fake-credential' },
+      });
+      return { status: result.status, stdout: result.stdout ?? '',
+        stderr: `${result.stderr ?? ''}\nMocked integration diagnostic:\n${diagnostic.stdout ?? ''}\n${diagnostic.stderr ?? ''}` };
+    }
     return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
   } finally {
     rmSync(root, { recursive: true, force: true });
