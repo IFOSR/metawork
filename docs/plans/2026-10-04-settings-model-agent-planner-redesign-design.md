@@ -13,7 +13,7 @@
 - 失败保留现有内容，可重新点击重试；错误信息就近展示并移除 HTTP JSON 包装。浏览器为两个 AI 调用设置 150 秒兜底超时。反馈支持屏幕阅读器，等待秒数不逐秒播报；窄屏下时间与版本对照自动换行，尊重减少动画偏好。
 - 验证：46 项相关测试、根项目和 Web 类型检查、生产构建及 `git diff --check` 通过。新增并运行 Chrome 回归，覆盖两种操作的等待、成功、无变化、失败、前后对照及请求中继续编辑不被覆盖（1 项通过，另外 4 项不相关浏览器用例未运行）。实际安装服务上两项真实 LLM 调用均出现成功状态；检查桌面和 390px 窄屏截图，无状态区域横向溢出。验证未保存职责草稿。
 - 本机版本：`0.1.3-settings-ai-feedback-20261005-1791171651469`，服务已启动，升级前后 Provider 凭证保持一致。
-- Closing commit：未提交；保留当前工作区已有改动。
+- Closing commit：`15197ec`（随 v0.1.4 同步至 GitHub）。
 
 ### 2026-10-05 智能体能力说明纠错
 
@@ -23,7 +23,7 @@
 - 说明只读，使用同一内部 LLM 服务，不写入职责、路由权限或模型资料。接口鉴权与输入输出校验、最多 64 项缓存、失败反馈、旧选择请求隔离均已实现。正文桌面两列、窄屏单列，移除模型产品介绍段落。
 - 验证：97 项相关测试、根项目与 Web 类型检查、生产构建、`git diff --check` 通过。使用 GLM/Sonnet 真实资料完成真实生成；Chrome 桌面 1440px 与窄屏 390px 检查无能力区域横向溢出，实际 Executor/Planner 请求均通过；浏览器延迟响应测试确认旧选择结果不会覆盖新选择。浏览器验收未保存或激活测试中的模型选择。
 - 本机版本：`0.1.3-agent-capability-description-20261005-1791170637423`，服务已启动；升级前后 Provider 凭证文件保持一致。
-- Closing commit：未提交；保留当前工作区已有改动。
+- Closing commit：`15197ec`（随 v0.1.4 同步至 GitHub）。
 
 ### 2026-10-05 Provider 凭证覆盖修复
 
@@ -33,7 +33,7 @@
 - 本机恢复检查：在现存 MetaWork 凭证和生成的模型/认证文件中未找到 `custom-model-4` 被覆盖前的独立 Key；不会猜测、清空或用其他凭证替代，需要用户在修复部署后重新填写。
 - 状态：源码修复与本机部署完成，完成日期 2026-10-05；被覆盖的原 Key 待用户重新填写。
 - 验证：5 个相关测试文件共 52 项通过，根项目与 Web 类型检查、生产构建及 `git diff --check` 通过。已安装 `0.1.3-provider-key-isolation-20261005-1791169924179`，Server ready；升级启动前后凭证文件逐字节一致，未再次改写已保存 Key。
-- Closing commit：未提交；保留当前工作区已有改动。
+- Closing commit：`15197ec`（随 v0.1.4 同步至 GitHub）。
 
 **完成日期：2026-10-04。** Configuration schema 的职责与价格元数据、OpenRouter 公开目录及 7 倍汇率换算、持久化元数据缓存、Provider → Model 设置界面、已有模型编辑与价格手动覆盖、连接设置渐进展开、Planner/Executor 统一折叠卡片与一次热激活、内置 SettingsAssistant、DAG 质量告警和离线 fixture 均已交付。
 
@@ -364,7 +364,7 @@ Planner Skill 增加三类示例：研究与实现并行、研究完成后实现
 - 默认生成超时由 8 秒调整为 30 秒，输出预算由 720 调整为 2048 tokens；模型和凭证继续由研发内部配置管理。
 - 验证：`npm run lint`、`npm run build` 通过；`tests/configuration/settings-assistant.test.ts` 18 项与 `tests/web/settings-workbench.test.ts` 22 项通过。生成测试使用模拟响应，只验证调用、校验、排版和失败行为，不代表真实模型生成质量验收。
 - 本机默认安装目录中缺少 `internal/llm.json` 和默认内部凭证，未进行真实模型调用；没有自动借用账户 Provider 的 Key。
-- Closing commit：未提交；保留当前工作区已有改动。
+- Closing commit：`15197ec`（随 v0.1.4 同步至 GitHub）。
 
 ### 2026-10-05 独立内部 LLM 服务交付
 
@@ -376,7 +376,7 @@ Planner Skill 增加三类示例：研究与实现并行、研究完成后实现
 - 验证：`npm run lint`、Web `tsc --noEmit`、`npm run build`、vendored Planner `npm run build:offline` 通过；Configuration、Routing、Management API、Settings Workbench 与 Provider Secret 测试共 49 个文件、469 项通过；`git diff --check` 通过。
 - 真实验证：用户原文“擅长代码撰写、项目测试”生成中文任务职责，不复制英文广告、无重复核心职责标题；`gpt-6-sol` 匹配 `openai/gpt-6-sol` 并生成公开资料支撑的中文模型画像和任务标签。原生升级后，又通过已登录的生产设置 API 完成这两项真实调用；验证未保存职责草稿或激活模型配置。
 - 本机安装版本：`0.1.3-internal-llm-20261005-1791167981084`，Server 已启动且 ready。首次安装器因并存历史目录拒绝自动根目录迁移；显式指定现有 MetaWork 根目录后升级成功。
-- Closing commit：未提交；保留当前工作区已有改动。
+- Closing commit：`15197ec`（随 v0.1.4 同步至 GitHub）。
 
 
 ## 2026-10-05：自然语言能力优先的路由修订
