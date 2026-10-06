@@ -311,3 +311,12 @@ the final benchmark, this session stopped that test Server through the formal
 installed Server command; a subsequent development run can start it again.
 The normal installation and original worktree remain separate. No remote CI,
 publishing, merge, push or closing commit was performed.
+
+
+## 2026-10-06 source integration record
+
+Closing implementation commit: `15e3333b39f4084f4be8ef4affe0f16cd6f11509`
+(`feat: add MetaWork desktop and reliable PDF execution`). The user accepted
+the native implementation and authorized integration into `main` and GitHub
+push. Existing signed-release and optional platform acceptance limits remain
+as documented above.

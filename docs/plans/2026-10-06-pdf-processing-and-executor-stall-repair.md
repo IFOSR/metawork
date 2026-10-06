@@ -173,3 +173,12 @@ MetaWork 负责正确调用和准备 Pi 的执行环境，不另造 `read_docume
 Kernel 取消，其专属临时 worktree 已清理；随后使用仓库外独立临时 Workspace
 完整通过合成验收。该 Workspace 导入边界问题另行跟踪，不将失败误报为 PDF
 解析错误，也不以宿主命令替代后续业务链验收。
+
+
+## 2026-10-06 source integration record
+
+Closing implementation commit: `15e3333b39f4084f4be8ef4affe0f16cd6f11509`
+(`feat: add MetaWork desktop and reliable PDF execution`). The user accepted
+the native implementation and authorized integration into `main` and GitHub
+push. Existing signed-release and optional platform acceptance limits remain
+as documented above.

@@ -124,3 +124,12 @@
 验收只修改隔离开发安装 `.tmp/desktop-development`；最终保留已授权的普通智能体基础方案迁移，删除临时智能体并还原其他测试设置。正式用户安装未修改。
 
 剩余验收：当前主机未安装 Docker，无法运行真实容器的网络/文件/命令与受限目标组合用例。Docker 适配器与命令单元测试已通过，但不代替容器实跑，因此第 8 节 Native/Docker 联合项保留未勾选。Native smoke 直接驱动真实后端和命令，不声称完成 Planner/LLM 端到端业务任务或全宿主细粒度沙箱验证。
+
+
+## 2026-10-06 source integration record
+
+Closing implementation commit: `15e3333b39f4084f4be8ef4affe0f16cd6f11509`
+(`feat: add MetaWork desktop and reliable PDF execution`). The user accepted
+the native implementation and authorized integration into `main` and GitHub
+push. Existing signed-release and optional platform acceptance limits remain
+as documented above.
