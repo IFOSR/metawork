@@ -20,6 +20,9 @@ interface ExecutionCard {
   progress: number | null;
   startedAt: string | null;
   updatedAt: string | null;
+  lastProgressAt: string | null;
+  lastActivityAt: string | null;
+  healthText: string | null;
   activityStatus: string;
   activityState: ExecutorActivityState | null;
 }
@@ -85,7 +88,7 @@ export function LiveExecutionPanel({
 
 function CardBody({ card, completed }: { card: ExecutionCard; completed: boolean }) {
   const healthBadge = executorHealthBadge({
-    updatedAt: card.updatedAt,
+    updatedAt: card.lastActivityAt ?? card.lastProgressAt,
     nowMs: Date.now(),
     running: !completed && isActiveActivity(card.activityStatus),
     activityState: card.activityState,
@@ -100,7 +103,7 @@ function CardBody({ card, completed }: { card: ExecutionCard; completed: boolean
         <dt>Model</dt><dd>{card.modelDisplayName || '—'}</dd>
       </dl>
       <p className="execution-card-step" data-activity={card.activityStatus}>
-        {activityLabel(card.activityStatus, card.stepLabel)}
+        {card.healthText ?? activityLabel(card.activityStatus, card.stepLabel)}
       </p>
       {healthBadge && (
         <p className="execution-card-health" data-health={healthBadge.level}>
@@ -130,10 +133,14 @@ export function collectExecutionCards(
 ): ExecutionCard[] {
   const bySubtask = new Map<string, ExecutionCard>();
   const executionStage = timeline?.stages.find(stage => stage.phase === 'execution');
+  const dependencies = timeline?.stages.find(stage => stage.phase === 'planning')?.proposal?.dependencies ?? [];
   for (const subtask of executionStage?.subtasks ?? []) {
     const attempt = subtask.attempts.at(-1);
     const latest = attempt?.progressHistory?.at(-1);
     const subtaskTitle = presentationTitle(subtask.title, timeline?.title);
+    const waitingFor = dependencies.filter(([, target]) => target === subtask.id)
+      .map(([source]) => executionStage?.subtasks?.find(candidate => candidate.id === source)?.title)
+      .filter(Boolean);
     bySubtask.set(subtask.id, {
       subtaskId: subtask.id,
       subtaskTitle,
@@ -141,11 +148,15 @@ export function collectExecutionCards(
       harnessDisplayName: subtask.harnessDisplayName || subtask.harness || '',
       providerDisplayName: subtask.providerDisplayName || subtask.provider || '',
       modelDisplayName: subtask.modelDisplayName || subtask.model || '',
-      stepLabel: latest?.text || 'Executor 已启动，等待公开进度…',
+      stepLabel: latest?.text || (attempt ? '执行器已启动，等待实际进度…'
+        : waitingFor.length ? `尚未启动，等待：${waitingFor.join('、')}` : '尚未启动，等待前置结果或调度'),
       stepKey: latest?.kind || 'executor_waiting',
       progress: null,
       startedAt: attempt?.startedAt ?? null,
       updatedAt: attempt?.updatedAt ?? null,
+      lastProgressAt: latest?.occurredAt ?? attempt?.startedAt ?? null,
+      lastActivityAt: null,
+      healthText: null,
       activityStatus: attempt?.status ?? attempt?.result ?? subtask.status,
       activityState: null,
     });
@@ -171,6 +182,9 @@ export function collectExecutionCards(
       progress: null as number | null,
       startedAt: null as string | null,
       updatedAt: null as string | null,
+      lastProgressAt: null as string | null,
+      lastActivityAt: null as string | null,
+      healthText: null as string | null,
       activityStatus: event.kind,
       activityState: null as ExecutorActivityState | null,
     };
@@ -200,12 +214,26 @@ export function collectExecutionCards(
         typeof details.updatedAt === 'string' ? details.updatedAt : undefined,
         event.occurredAt,
       ),
+      lastProgressAt: latestTimestamp(existing.lastProgressAt,
+        typeof details.lastProgressAt === 'string' ? details.lastProgressAt
+          : event.kind === 'executor_progress' && !details.operationObservation && !details.operationHealth ? event.occurredAt : undefined),
+      lastActivityAt: latestTimestamp(existing.lastActivityAt,
+        operationLastActivity(details.operationHealth),
+        typeof details.lastActivityAt === 'string' ? details.lastActivityAt : undefined,
+        event.kind === 'executor_progress' && !details.operationObservation && !details.operationHealth ? event.occurredAt : undefined),
+      healthText: ['completed', 'failed', 'cancelled'].includes(event.status) ? null
+        : 'operationHealth' in details ? operationHealthText(details.operationHealth) : existing.healthText,
       activityStatus: activityStatusFor(event),
       activityState: executorActivityState(details.activityState),
     };
     bySubtask.set(subtaskId, next);
   }
   return [...bySubtask.values()];
+}
+
+function operationLastActivity(value: unknown): string | null {
+  return value && typeof value === 'object' && typeof (value as { lastActivityAt?: unknown }).lastActivityAt === 'string'
+    ? (value as { lastActivityAt: string }).lastActivityAt : null;
 }
 
 function activityStatusFor(event: InteractionTraceEvent): string {
@@ -221,11 +249,22 @@ function isActiveActivity(status: string): boolean {
 }
 
 function activityLabel(status: string, step: string): string {
-  if (status === 'heartbeat') return `执行进程仍在运行，等待公开事件：${step}`;
+  if (status === 'heartbeat') return '执行尚未结束，暂无新的实际进度';
   if (status === 'dependency_wait') return `等待依赖：${step}`;
   if (status === 'capacity_wait') return `等待容量：${step}`;
   if (status === 'blocked') return `已阻塞：${step}`;
   return step;
+}
+
+function operationHealthText(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const state = (value as { state?: string }).state;
+  if (state === 'waiting') return '暂无新进展，等待执行活动';
+  if (state === 'checking') return '持续无活动，正在检查执行状态';
+  if (state === 'unknown') return '执行状态待确认：暂无可验证的工作状态；可继续等待或取消任务';
+  if (state === 'unresponsive') return '操作检查未响应，状态待处理';
+  if (state === 'exited') return '执行进程已退出，正在收集结果';
+  return null;
 }
 
 function executorActivityState(value: unknown): ExecutorActivityState | null {

@@ -1,4 +1,4 @@
-import type { ModelCapability } from './types.js';
+import type { AnyFusionConfigurationV2, ModelCapability } from './types.js';
 
 /**
  * Known Model capability facts keyed by Model ID.
@@ -24,6 +24,7 @@ export const MODEL_CAPABILITY_CATALOG: Readonly<Record<string, readonly ModelCap
 
   // DeepSeek
   'deepseek-chat': ['coding', 'long-context', 'tools'],
+  'deepseek-flash': ['coding', 'long-context', 'planning', 'structured-output', 'tools'],
   'deepseek-reasoner': ['coding', 'long-context', 'structured-output', 'tools', 'planning'],
   'deepseek-v4-flash': ['coding', 'long-context', 'planning', 'structured-output', 'tools'],
   'deepseek-v4.1-flash': ['coding', 'long-context', 'planning', 'structured-output', 'tools'],
@@ -43,4 +44,26 @@ export function mergeKnownModelCapabilities(
     ...capabilities,
     ...(MODEL_CAPABILITY_CATALOG[modelId] ?? []),
   ])].sort((left, right) => left.localeCompare(right));
+}
+
+/** Official endpoint facts are applied to a new draft, never to pinned revisions. */
+export function prepareVerifiedModelCapabilities(input: AnyFusionConfigurationV2): AnyFusionConfigurationV2 {
+  const config = structuredClone(input);
+  for (const model of Object.values(config.models)) {
+    const provider = config.providers[model.providerRef];
+    if (!provider || !isOfficialDeepSeekVisionModel(model.modelId, provider.baseUrl)) continue;
+    if (!model.capabilities.includes('vision')) model.capabilities.push('vision');
+  }
+  return config;
+}
+
+export function isOfficialDeepSeekVisionModel(modelId: string, baseUrl: string): boolean {
+  // https://api-docs.deepseek.com/guides/vision (verified 2026-10-06).
+  if (!['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp', 'deepseek-v4.1-flash'].includes(modelId)) return false;
+  try {
+    const url = new URL(baseUrl);
+    return url.protocol === 'https:' && url.hostname === 'api.deepseek.com'
+      && !url.username && !url.password && (!url.port || url.port === '443')
+      && ['', '/', '/v1', '/v1/'].includes(url.pathname);
+  } catch { return false; }
 }

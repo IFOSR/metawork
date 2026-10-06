@@ -20,7 +20,7 @@
   },
   "scripts": {
     "dev": "tsup --watch",
-    "build": "tsup && node dist/generate-planner-schema.js dist/planning-agent-plan-v8.schema.json && node dist/emit-pi-attempt-extension.js dist/pi-attempt-tools.ts && npm run build:web",
+    "build": "tsup && node dist/generate-planner-schema.js dist/planning-agent-plan-v8.schema.json && node dist/emit-pi-attempt-extension.js dist/pi-attempt-tools.ts && node scripts/prepare-pi-pdf.mjs && npm run build:web",
     "build:web": "npm ci --prefix web --ignore-scripts && npm run build --prefix web",
     "test": "vitest run",
     "test:task8-contract": "vitest run tests/acceptance/task8-cross-repository-contract.test.ts",
@@ -41,7 +41,15 @@
     "smoke:span-routing": "node scripts/smoke-span-routing.mjs",
     "smoke:clients": "vitest run tests/integration/independent-client-lifecycle.integration.test.ts",
     "smoke:metaclaw": "node scripts/smoke-metaclaw-real-task.mjs",
-    "start": "node scripts/run-installed-cli.mjs"
+    "start": "node scripts/run-installed-cli.mjs",
+    "build:desktop": "npm run build --prefix apps/desktop",
+    "lint:desktop": "npm run lint --prefix apps/desktop",
+    "test:desktop": "npm run test --prefix apps/desktop",
+    "dev:desktop": "node scripts/dev-desktop.mjs",
+    "smoke:desktop": "node apps/desktop/tests/electron-smoke.mjs",
+    "smoke:pi-pdf": "node scripts/smoke-pi-pdf.mjs",
+    "benchmark:desktop": "node apps/desktop/tests/startup-benchmark.mjs",
+    "package:desktop": "npm run package:mac --prefix apps/desktop"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.71.1",
@@ -68,5 +76,5 @@
   "engines": {
     "node": ">=22.19.0"
   },
-  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+  "packageManager": "npm@10.9.9"
 }

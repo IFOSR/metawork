@@ -70,6 +70,22 @@ function dispatchDecision(taskId = 'task-1') {
 
 
 describe('runtime progress activity projection', () => {
+  it('summarizes canonical active work and unsettled projections within the account', () => {
+    const { db } = setup();
+    try {
+      const projection = new SqliteConversationActivityProjection(db);
+      expect(projection.serviceSummary('other')).toEqual({ activeTasks: 0, tasks: [], truncated: false });
+      db.prepare('DELETE FROM conversation_activity_dirty').run();
+      projection.commit('task-1', 0, { taskId: 'task-1', title: 'T', executionGeneration: 'g',
+        phase: 'cleaning_up', explanation: 'finishing work', canCancel: true });
+      expect(projection.serviceSummary('account').activeTasks).toBe(1);
+      projection.commit('task-1', 0, { taskId: 'task-1', title: 'T', executionGeneration: 'g',
+        phase: 'completed', explanation: 'done', canCancel: false });
+      expect(projection.serviceSummary('account').activeTasks).toBe(0);
+      db.prepare('INSERT INTO conversation_activity_dirty(task_id, version) VALUES (?, 1)').run('task-1');
+      expect(projection.serviceSummary('account').activeTasks).toBe(1);
+    } finally { db.close(); }
+  });
   it('reads bounded phase witnesses despite a large settled attempt history', () => {
     const { db, repo } = setup();
     try {

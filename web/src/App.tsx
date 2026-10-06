@@ -25,6 +25,7 @@ export function App() {
     handleDraftChange, handleSend, handleCancelTurn, executionDetailTurn, executionDetailOpen,
     failedInput, handleRestoreFailedInput,
   } = useWorkspaceController();
+  useEffect(() => { document.title = activeWorkspace ? `MetaWork · ${activeWorkspace.displayName}` : 'MetaWork'; }, [activeWorkspace]);
   if (authenticated === null) {
     return <div className="token-gate"><div className="token-gate-card">正在连接 MetaWork…</div></div>;
   }
@@ -177,3 +178,4 @@ function clampPreviewWidth(width: number): number {
   const max = Math.max(360, Math.min(viewport - 360, 1_200));
   return Math.round(Math.max(320, Math.min(width, max)));
 }
+import { useEffect } from 'react';

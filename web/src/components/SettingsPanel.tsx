@@ -9,11 +9,11 @@ import type {
   ConfigurationCompletionResult,
   ConfigurationRuntimeState,
   ResponsibilitySuggestion,
-  ExecutorCapabilityManual,
-  ExecutorManualAnalysis,
   ProviderCredentialStatus,
   ExecutorManagementView,
   ExecutorConfigurationChange,
+  ExecutorEditableFields,
+  PreparedExecutorConfiguration,
   ModelPublicFacts,
 } from '../api/types';
 import {
@@ -43,10 +43,10 @@ import {
   refsForModelIdentity,
   removeModelRefsFromRoutingDraft,
   ROUTING_CAPABILITY_CONTRACTS,
-  executorManualInputKey,
   evaluateModelCompatibility,
   resolveAgentDisplayName,
   resolveProviderDisplayName,
+  resolveConfiguredModelRef,
   type AgentClassRoutingFacts,
   type AgentClassRoutingDraft,
   type SettingsModelEntry,
@@ -74,34 +74,6 @@ type RuntimePolicyDraft = {
 };
 
 type RawRecord = Record<string, unknown>;
-type ManualCapabilityChanges = {
-  added: string[];
-  removed: string[];
-  preferenceChanged: Array<{
-    capabilityId: string;
-    from: string;
-    to: string;
-  }>;
-};
-type ManualPreviewState = {
-  status: 'ready' | 'stale' | 'updating' | 'error';
-  sourceText: string;
-  inputKey?: string;
-  persistedSourceText?: string;
-  systemStale?: boolean;
-  analysisMode?: ExecutorManualAnalysis['analysisMode'];
-  warning?: string;
-  markdown?: string;
-  tags?: ExecutorCapabilityManual['tags'];
-  routableCapabilities?: ExecutorCapabilityManual['routableCapabilities'];
-  capabilities?: ExecutorCapabilityManual['capabilities'];
-  capabilityChanges?: ManualCapabilityChanges;
-  assertionsSourceFingerprint?: string;
-  semanticReceipt?: string;
-  assertions?: ExecutorManualAnalysis['userProfile']['assertions'];
-  error?: string;
-};
-
 function asRecord(value: unknown): RawRecord {
   return value && typeof value === 'object' ? value as RawRecord : {};
 }
@@ -114,33 +86,6 @@ function stringList(value: unknown): string[] {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value : undefined;
-}
-
-function compareManualCapabilities(
-  previous: ManualPreviewState | undefined,
-  next: ExecutorCapabilityManual,
-): ManualCapabilityChanges | undefined {
-  if (!previous?.capabilities || !previous.routableCapabilities) return undefined;
-  const previousRoutable = new Set(previous.routableCapabilities);
-  const nextRoutable = new Set(next.routableCapabilities);
-  const previousById = new Map(previous.capabilities.map(capability => [
-    capability.capabilityId,
-    capability,
-  ]));
-  return {
-    added: next.routableCapabilities.filter(capability => !previousRoutable.has(capability)),
-    removed: previous.routableCapabilities.filter(capability => !nextRoutable.has(capability)),
-    preferenceChanged: next.capabilities.flatMap(capability => {
-      const prior = previousById.get(capability.capabilityId);
-      return prior && prior.routingDisposition !== capability.routingDisposition
-        ? [{
-            capabilityId: capability.capabilityId,
-            from: prior.routingDisposition,
-            to: capability.routingDisposition,
-          }]
-        : [];
-    }),
-  };
 }
 
 function hasRoutingNotes(
@@ -246,6 +191,7 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
         ...(completed?.credentialFingerprint ? { credentialFingerprint: completed.credentialFingerprint } : {}),
         credentialState: completed?.credentialState ?? '需要确认',
         enabled: provider.enabled !== false,
+        ...(provider.systemManaged === true ? { systemManaged: true } : {}),
       },
     ];
   }));
@@ -265,8 +211,8 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
       apiKey: '',
       maskedApiKey: completed.maskedApiKey ?? null,
       ...(completed.credentialFingerprint ? { credentialFingerprint: completed.credentialFingerprint } : {}),
-      credentialState: completed.credentialState,
-      enabled: true,
+        credentialState: completed.credentialState,
+        enabled: true,
     };
   }
   const providerAliases: Record<string, string> = {};
@@ -310,6 +256,7 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
         providerRef: providerAliases[String(model.providerRef ?? '')]
           ?? String(model.providerRef ?? ''),
         modelId: String(model.modelId ?? ref),
+        ...(model.systemManaged === true ? { systemManaged: true } : {}),
         ...(typeof model.displayName === 'string' ? { displayName: model.displayName } : completedModel?.displayName ? { displayName: completedModel.displayName } : {}),
         ...(typeof model.description === 'string' ? { description: model.description } : completedModel?.description ? { description: completedModel.description } : {}),
         ...(model.publicFacts && typeof model.publicFacts === 'object'
@@ -355,20 +302,35 @@ function loadRuntimePolicy(config: RawRecord): RuntimePolicyDraft {
 
 function loadRoutingDraft(config: RawRecord): RoutingDraft {
   const rawAgentClasses = asRecord(config.agentClasses);
-  const modelRefs = Object.keys(asRecord(config.models));
+  const modelEntries = Object.entries(asRecord(config.models)).map(([ref, raw]) => {
+    const model = asRecord(raw);
+    return {
+      ref,
+      providerRef: String(model.providerRef ?? ''),
+      modelId: String(model.modelId ?? ref),
+    };
+  });
+  const modelRefs = modelEntries
+    .filter(model => /^[a-z][a-z0-9-]{0,63}$/u.test(model.ref))
+    .map(model => model.ref);
   return Object.fromEntries(Object.entries(rawAgentClasses).map(([agentClassRef, raw]) => {
     const agentClass = asRecord(raw);
     const policy = asRecord(agentClass.modelPolicy);
     const isPlanner = agentClass.kind === 'planner' || agentClassRef === 'planner';
     const mode = isPlanner || policy.mode !== 'auto' ? 'fixed' : 'auto';
     const allowedModelRefs = mode === 'auto'
-      ? stringList(policy.allowedModelRefs).filter(ref => modelRefs.includes(ref))
+      ? [...new Set(stringList(policy.allowedModelRefs)
+        .map(ref => resolveConfiguredModelRef(ref, modelEntries))
+        .filter(ref => modelRefs.includes(ref)))]
       : [];
-    const modelRef = typeof policy.modelRef === 'string'
-      ? policy.modelRef
-      : typeof policy.defaultModelRef === 'string'
-        ? policy.defaultModelRef
-        : modelRefs[0] ?? '';
+    const modelRef = resolveConfiguredModelRef(
+      typeof policy.modelRef === 'string'
+        ? policy.modelRef
+        : typeof policy.defaultModelRef === 'string'
+          ? policy.defaultModelRef
+          : modelRefs[0] ?? '',
+      modelEntries,
+    );
     const fallback = asRecord(policy.objective);
     return [
       agentClassRef,
@@ -387,11 +349,15 @@ function loadRoutingDraft(config: RawRecord): RoutingDraft {
         allowedModelRefs: allowedModelRefs.length > 0
           ? allowedModelRefs
           : modelRef ? [modelRef] : modelRefs.slice(0, 1),
-        defaultModelRef: typeof policy.defaultModelRef === 'string'
-          ? policy.defaultModelRef
-          : allowedModelRefs[0] ?? modelRefs[0] ?? '',
-        fallbackModelRefs: stringList(asRecord(policy.fallback).order)
-          .filter(ref => modelRefs.includes(ref)),
+        defaultModelRef: resolveConfiguredModelRef(
+          typeof policy.defaultModelRef === 'string'
+            ? policy.defaultModelRef
+            : allowedModelRefs[0] ?? modelRefs[0] ?? '',
+          modelEntries,
+        ),
+        fallbackModelRefs: [...new Set(stringList(asRecord(policy.fallback).order)
+          .map(ref => resolveConfiguredModelRef(ref, modelEntries))
+          .filter(ref => modelRefs.includes(ref)))],
         objective: fallback.priority === 'quality'
           || fallback.priority === 'cost'
           || fallback.priority === 'latency'
@@ -507,12 +473,14 @@ export function SettingsPanel({
     message?: string;
   }>>({});
   const [result, setResult] = useState<ActivateResult | null>(null);
-  const [manualPreviews, setManualPreviews] = useState<Record<string, ManualPreviewState>>({});
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
   const [modelEditRef, setModelEditRef] = useState<string | null>(null);
   const [executorView, setExecutorView] = useState<ExecutorManagementView | null>(null);
+  const [executorDefinitions, setExecutorDefinitions] = useState<Record<string, RawRecord>>({});
+  const [executorPermissionProfiles, setExecutorPermissionProfiles] = useState<RawRecord>({});
+  const [executorEditorConfig, setExecutorEditorConfig] = useState<RawRecord>({});
   const [executorEditor, setExecutorEditor] = useState<{
     operation: ExecutorConfigurationChange['operation']; agentClassRef?: string;
   } | null>(null);
@@ -540,13 +508,14 @@ export function SettingsPanel({
   ) => {
     const config = snapshot.config as RawRecord;
     setRevisionId(snapshot.revisionId);
+    setExecutorDefinitions({});
+    setExecutorPermissionProfiles({});
     setCatalog(loadCatalog(config, completion));
     setRuntimePolicy(loadRuntimePolicy(config));
     setSpanDraft(loadSpanRoutingDraft(config));
     const nextDraft = loadRoutingDraft(config);
     setDraft(nextDraft);
     setFacts(loadRoutingFacts(config));
-    setManualPreviews({});
     responsibilityRequests.current.clear();
     setResponsibilityFeedback({});
     setExpandedProviders(new Set());
@@ -590,62 +559,6 @@ export function SettingsPanel({
       window.clearInterval(timer);
     };
   }, [http]);
-
-  useEffect(() => {
-    if (!http || !facts || !revisionId) return;
-    const executorRefs = Object.entries(facts)
-      .filter(([, entry]) => entry.kind === 'executor')
-      .map(([ref]) => ref);
-    if (executorRefs.length === 0) return;
-    let cancelled = false;
-    void Promise.all(executorRefs.map(async ref => {
-      try {
-        const manual: ExecutorCapabilityManual = await http.getExecutorCapabilityManual(ref, revisionId);
-        return [ref, {
-          status: 'ready' as const,
-          sourceText: draft?.[ref]?.executorManualSourceText ?? '',
-          persistedSourceText: draft?.[ref]?.executorManualSourceText.trim() ?? '',
-          inputKey: draft?.[ref]
-            ? executorManualInputKey(draft[ref], Object.values(catalog?.models ?? {}))
-            : undefined,
-          markdown: manual.markdown,
-          tags: manual.tags,
-          routableCapabilities: manual.routableCapabilities,
-          capabilities: manual.capabilities,
-        }] as const;
-      } catch (error) {
-        return [ref, {
-          status: 'error' as const,
-          sourceText: draft?.[ref]?.executorManualSourceText ?? '',
-          error: (error as Error).message,
-        }] as const;
-      }
-    })).then(entries => {
-      if (!cancelled) setManualPreviews(Object.fromEntries(entries));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [http, revisionId, facts, draft ? Object.keys(draft).join(',') : '']);
-
-  useEffect(() => {
-    if (!draft || !catalog || !facts) return;
-    setManualPreviews(current => {
-      let changed = false;
-      const next = { ...current };
-      for (const [ref, entry] of Object.entries(draft)) {
-        if (facts[ref]?.kind !== 'executor') continue;
-        const preview = current[ref];
-        if (!preview?.inputKey) continue;
-        const systemStale = preview.inputKey
-          !== executorManualInputKey(entry, Object.values(catalog.models));
-        if (preview.systemStale === systemStale) continue;
-        next[ref] = { ...preview, systemStale };
-        changed = true;
-      }
-      return changed ? next : current;
-    });
-  }, [catalog, draft, facts]);
 
   useEffect(() => {
     if (!http || !catalog) return;
@@ -759,35 +672,95 @@ export function SettingsPanel({
     }
     return [...new Set(warnings)];
   })();
-  const editingDisabled = loading || executorLoading || activationState?.activationAllowed === false;
+  const editingDisabled = loading || executorLoading;
 
   const openExecutorEditor = async (
     operation: ExecutorConfigurationChange['operation'], agentClassRef?: string,
   ) => {
     if (!http || editingDisabled) return;
+    if (executorView && (operation === 'enable' || operation === 'disable' || operation === 'remove')) {
+      setExecutorEditor({ operation, agentClassRef });
+      return;
+    }
     setExecutorLoading(true);
     try {
-      const view = await http.getExecutorManagement();
-      if (view.baseRevisionId !== revisionId) {
+      const snapshot = await http.getConfig();
+      if (snapshot.revisionId !== revisionId) {
         setLoadError('配置已在其他窗口更新。请先重新打开设置，再管理智能体。');
         return;
       }
+      const config = buildCandidateConfiguration(snapshot.config as RawRecord).config;
+      const view = await http.getExecutorManagement(config);
+      if (view.baseRevisionId !== revisionId) {
+        setLoadError('配置已在其他窗口更新。当前草稿已保留，请检查后重试。');
+        return;
+      }
+      setExecutorEditorConfig(config);
       setExecutorView(view);
       setExecutorEditor({ operation, agentClassRef });
     } catch (error) { setLoadError((error as Error).message); }
     finally { setExecutorLoading(false); }
   };
 
-  const executorSaved = (snapshot: ConfigSnapshot, agentClassRef: string) => {
-    const nextDraft = loadRoutingDraft(snapshot.config as RawRecord);
-    const nextFacts = loadRoutingFacts(snapshot.config as RawRecord);
-    setDraft(current => applyExecutorSnapshot(current ?? {}, nextDraft, agentClassRef, {
-      preserveLocal: executorEditor?.operation === 'enable' || executorEditor?.operation === 'disable',
-    }));
+  const executorSaved = (candidate: PreparedExecutorConfiguration, agentClassRef: string) => {
+    setExecutorPermissionProfiles(asRecord(candidate.config.permissionProfiles));
+    const nextDraft = loadRoutingDraft(candidate.config);
+    const nextFacts = loadRoutingFacts(candidate.config);
+    const definition = asRecord(asRecord(candidate.config.agentClasses)[agentClassRef]);
+    setExecutorDefinitions(current => ({ ...current, [agentClassRef]: definition }));
+    setDraft(current => applyExecutorSnapshot(current ?? {}, nextDraft, agentClassRef));
     setFacts(current => applyExecutorSnapshot(current ?? {}, nextFacts, agentClassRef));
-    setRevisionId(snapshot.revisionId);
+    setExecutorView(current => current ? { ...current, executors: [
+      ...current.executors.filter(agent => agent.agentClassRef !== agentClassRef),
+      {
+        agentClassRef, tool: nextFacts[agentClassRef].driverId === 'codex-cli' ? 'codex' : 'pi',
+        displayName: String(definition.displayName ?? agentClassRef),
+        enabled: definition.enabled !== false,
+        operations: current.executors.find(agent => agent.agentClassRef === agentClassRef)?.operations ?? 'standard',
+        manualSourceText: String(asRecord(definition.executorManual).sourceText ?? ''),
+        modelPolicy: definition.modelPolicy as ExecutorEditableFields['modelPolicy'],
+      },
+    ] } : current);
     setExecutorEditor(null);
-    setResult({ ok: true, revisionId: snapshot.revisionId });
+    setResult(null);
+    setLoadError(null);
+  };
+
+  const executorRemoved = (agentClassRef: string) => {
+    setDraft(current => {
+      if (!current?.[agentClassRef]) return current;
+      const next = { ...current };
+      delete next[agentClassRef];
+      return next;
+    });
+    setFacts(current => {
+      if (!current?.[agentClassRef]) return current;
+      const next = { ...current };
+      delete next[agentClassRef];
+      return next;
+    });
+    setExecutorView(current => current
+      ? { ...current, executors: current.executors.filter(agent => agent.agentClassRef !== agentClassRef) }
+      : current);
+    setExpandedAgents(current => {
+      const next = new Set(current);
+      next.delete(agentClassRef);
+      return next;
+    });
+    setExecutorEditor(null);
+    setResult(null);
+    setLoadError(null);
+  };
+
+  const executorEnabled = (agentClassRef: string, enabled: boolean) => {
+    setDraft(current => current?.[agentClassRef]
+      ? { ...current, [agentClassRef]: { ...current[agentClassRef], enabled } } : current);
+    setFacts(current => current?.[agentClassRef]
+      ? { ...current, [agentClassRef]: { ...current[agentClassRef], enabled } } : current);
+    setExecutorView(current => current ? { ...current, executors: current.executors.map(agent =>
+      agent.agentClassRef === agentClassRef ? { ...agent, enabled } : agent) } : current);
+    setExecutorEditor(null);
+    setResult(null);
   };
 
   const buildCandidateConfiguration = (originalConfig: RawRecord): {
@@ -799,7 +772,8 @@ export function SettingsPanel({
       throw new Error('配置草稿尚未加载完成');
     }
     const originalProviders = asRecord(originalConfig.providers);
-    const originalAgentClasses = asRecord(originalConfig.agentClasses);
+    const originalAgentClasses = { ...asRecord(originalConfig.agentClasses), ...executorDefinitions };
+    const harnesses = { ...asRecord(originalConfig.harnesses) };
     const spanRoutingSection = buildSpanRoutingSection(spanDraft, originalConfig);
     const knownSecretReferences = Object.values(originalProviders)
       .map(provider => asRecord(provider).apiKeyRef)
@@ -863,38 +837,31 @@ export function SettingsPanel({
       };
     }
 
+    const configuredModels = Object.values(catalog.models);
     for (const [ref, entry] of Object.entries(draft)) {
       const current = asRecord(originalAgentClasses[ref]);
-      const preview = manualPreviews[ref];
       const currentManual = asRecord(current.executorManual);
       const manualSourceText = entry.executorManualSourceText.trim();
       const currentSourceText = typeof currentManual.sourceText === 'string'
         ? currentManual.sourceText.trim()
         : '';
-      const normalizedAssertions = preview?.status === 'ready'
-        && preview.sourceText.trim() === manualSourceText
-        ? preview.assertions ?? (
-          Array.isArray(currentManual.assertions) ? currentManual.assertions : []
-        )
-        : currentSourceText === manualSourceText && Array.isArray(currentManual.assertions)
-          ? currentManual.assertions
-          : [];
-      const assertionsSourceFingerprint = preview?.status === 'ready'
-        && preview.analysisMode === 'semantic'
-        && preview.sourceText.trim() === manualSourceText
-        ? preview.assertionsSourceFingerprint
-        : currentSourceText === manualSourceText
-          ? optionalString(currentManual.assertionsSourceFingerprint)
-          : undefined;
-      const semanticReceipt = preview?.status === 'ready'
-        && preview.analysisMode === 'semantic'
-        && preview.sourceText.trim() === manualSourceText
-        ? preview.semanticReceipt
-        : currentSourceText === manualSourceText
-          ? optionalString(currentManual.semanticReceipt)
-          : undefined;
+      const unchangedSource = currentSourceText === manualSourceText;
+      const normalizedAssertions = unchangedSource && Array.isArray(currentManual.assertions)
+        ? currentManual.assertions : [];
+      const assertionsSourceFingerprint = unchangedSource
+        ? optionalString(currentManual.assertionsSourceFingerprint) : undefined;
+      const semanticReceipt = unchangedSource ? optionalString(currentManual.semanticReceipt) : undefined;
+      const fixedModelRef = resolveConfiguredModelRef(entry.modelRef, configuredModels);
+      const allowedModelRefs = [...new Set(entry.allowedModelRefs
+        .map(modelRef => resolveConfiguredModelRef(modelRef, configuredModels))
+        .filter(Boolean))];
+      const defaultModelRef = resolveConfiguredModelRef(entry.defaultModelRef, configuredModels);
+      const fallbackModelRefs = [...new Set((entry.fallbackModelRefs ?? [])
+        .map(modelRef => resolveConfiguredModelRef(modelRef, configuredModels))
+        .filter(Boolean))];
       agentClasses[ref] = {
         ...current,
+        enabled: entry.enabled ?? current.enabled,
         displayName: (entry.displayName ?? '').trim(),
         responsibility: entry.responsibility.trim(),
         primaryUseCases: entry.primaryUseCases ?? [],
@@ -913,19 +880,22 @@ export function SettingsPanel({
         modelPolicy: entry.mode === 'auto'
           ? {
             mode: 'auto',
-            allowedModelRefs: entry.allowedModelRefs,
-            defaultModelRef: entry.defaultModelRef || undefined,
+            allowedModelRefs,
+            defaultModelRef: defaultModelRef || undefined,
             fallback: {
-              enabled: (entry.fallbackModelRefs?.length ?? 0) > 0,
-              order: entry.fallbackModelRefs ?? [],
+              enabled: fallbackModelRefs.length > 0,
+              order: fallbackModelRefs,
             },
             objective: {
               priority: entry.objective,
               minimumQualityTier: entry.minimumQualityTier,
             },
           }
-          : { mode: 'fixed', modelRef: entry.modelRef },
+          : { mode: 'fixed', modelRef: fixedModelRef },
       };
+      if (entry.enabled === true && typeof current.harnessRef === 'string' && harnesses[current.harnessRef]) {
+        harnesses[current.harnessRef] = { ...asRecord(harnesses[current.harnessRef]), enabled: true };
+      }
     }
 
     return {
@@ -933,7 +903,9 @@ export function SettingsPanel({
         ...originalConfig,
         providers,
         models,
+        permissionProfiles: { ...asRecord(originalConfig.permissionProfiles), ...executorPermissionProfiles },
         agentClasses,
+        harnesses,
         ...(spanRoutingSection ? { routing: spanRoutingSection } : {}),
         runtimePolicy: {
           ...asRecord(originalConfig.runtimePolicy),
@@ -1012,64 +984,6 @@ export function SettingsPanel({
       setResult({ ok: false, code: 'network', issues: [(error as Error).message] });
     } finally {
       setLoading(false);
-    }
-  };
-
-  const updateManual = async (agentClassRef: string) => {
-    if (!http || !revisionId || !draft || !catalog || !runtimePolicy) return;
-    const sourceText = draft[agentClassRef]?.executorManualSourceText.trim() ?? '';
-    const previousPreview = manualPreviews[agentClassRef];
-    setManualPreviews(current => ({
-      ...current,
-      [agentClassRef]: {
-        ...current[agentClassRef],
-        status: 'updating',
-        sourceText,
-      },
-    }));
-    try {
-      const original = await http.getConfig();
-      const candidate = buildCandidateConfiguration(original.config as RawRecord);
-      const analysis = await http.compileExecutorCapabilityManual(
-        agentClassRef,
-        revisionId,
-        sourceText,
-        candidate.config,
-      );
-      setManualPreviews(current => ({
-        ...current,
-        [agentClassRef]: {
-          status: 'ready',
-          sourceText: analysis.sourceText,
-          persistedSourceText: previousPreview?.persistedSourceText ?? '',
-          inputKey: executorManualInputKey(
-            draft[agentClassRef],
-            Object.values(catalog?.models ?? {}),
-          ),
-          systemStale: false,
-          analysisMode: analysis.analysisMode,
-          warning: analysis.warning,
-          markdown: analysis.manual.markdown,
-          tags: analysis.manual.tags,
-          routableCapabilities: analysis.manual.routableCapabilities,
-          capabilities: analysis.manual.capabilities,
-          capabilityChanges: compareManualCapabilities(previousPreview, analysis.manual),
-          assertionsSourceFingerprint: analysis.userProfile.assertionsSourceFingerprint,
-          semanticReceipt: analysis.userProfile.semanticReceipt,
-          assertions: analysis.userProfile.assertions,
-        },
-      }));
-      setLoadError(null);
-    } catch (error) {
-      setManualPreviews(current => ({
-        ...current,
-        [agentClassRef]: {
-          ...current[agentClassRef],
-          status: 'error',
-          sourceText,
-          error: (error as Error).message,
-        },
-      }));
     }
   };
 
@@ -1781,7 +1695,7 @@ export function SettingsPanel({
                   </button>
                 </div>
                 <div className="provider-grid">
-                  {Object.values(catalog.providers).map(provider => {
+                  {Object.values(catalog.providers).filter(provider => !provider.systemManaged).map(provider => {
                     const knownModels = buildProviderModelOptions(
                       Object.values(catalog.providers),
                       Object.values(catalog.models),
@@ -1909,7 +1823,7 @@ export function SettingsPanel({
                                 autoComplete="new-password"
                                 disabled={editingDisabled}
                               />
-                              <small>页面只显示掩码；输入新的 Key 后保存即可替换。</small>
+                              <small>新的 Key 先保留在草稿中，点击“保存并激活”后统一替换。</small>
                             </label>
                           </div>
                         </details>
@@ -2374,6 +2288,9 @@ export function SettingsPanel({
                     );
                   })}
                 </div>
+                {Object.values(catalog.providers).some(provider => provider.systemManaged) && (
+                  <p className="settings-help-text">系统内置模型由 MetaWork 管理，无需在此配置。</p>
+                )}
               </section>
 
               <section className="settings-section agents-section" aria-labelledby="agents-heading">
@@ -2519,26 +2436,11 @@ export function SettingsPanel({
                         http={http}
                         onSuggestResponsibility={() => { void suggestResponsibility(ref); }}
                         responsibilityFeedback={responsibilityFeedback[ref]}
-                        manualPreview={manualPreviews[ref]}
-                        onUpdateManual={() => { void updateManual(ref); }}
                         onChange={next => {
                           const current = latestResponsibilityContext.current;
                           if (current.draft) latestResponsibilityContext.current = { ...current, draft: { ...current.draft, [ref]: next } };
                           setDraft(current => current ? { ...current, [ref]: next } : current);
-                          if (
-                            agentFacts.kind === 'executor'
-                            && next.executorManualSourceText.trim()
-                              !== entry.executorManualSourceText.trim()
-                          ) {
-                            setManualPreviews(current => ({
-                              ...current,
-                              [ref]: {
-                                ...current[ref],
-                                status: 'stale',
-                                sourceText: next.executorManualSourceText,
-                              },
-                            }));
-                          }
+
                         }}
                       />
                         </fieldset>
@@ -2624,7 +2526,7 @@ export function SettingsPanel({
         {(draft || loadError) && (
           <footer className="drawer-footer settings-footer">
             <div className="settings-footer-note">
-              「保存并激活」会一次性应用模型列表、Planner、执行智能体和运行时策略。
+              所有修改先保留在草稿中。「保存并激活」会统一应用连接与 Key、模型、智能体、决策模型和运行时策略。
             </div>
             <div className="settings-footer-actions">
               <button type="button" className="ghost-button" onClick={onClose}>取消</button>
@@ -2652,9 +2554,12 @@ export function SettingsPanel({
         {executorEditor && executorView && http && <ExecutorEditorDialog
           key={`${executorEditor.operation}:${executorEditor.agentClassRef ?? 'new'}`}
           http={http} view={executorView} {...executorEditor}
+          config={executorEditorConfig}
           disabled={editingDisabled}
           onClose={() => setExecutorEditor(null)}
           onSaved={executorSaved}
+          onRemoved={executorRemoved}
+          onEnabled={executorEnabled}
         />}
       </div>
     </div>

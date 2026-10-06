@@ -108,3 +108,8 @@ Web、Server、单一 TUI 和 Feishu adapter 协调发布并做能力对等测�
 详细方案中的正确性、性能、隔离、真实生产装配和安装版本验收全部完成，才可声明架构升级交付。仅文档、mock 基准或源码构建通过都不足以证明用户安装环境已经升级。
 
 必须覆盖 Web/TUI/Feishu 之间全部九种“发起端 × 操作端”组合：历史、实时、发送、停止、审批的规则一致。两个端相反审批只产生一个决定；一个端离线不妨碍另一端继续操作；第三方消息重试不重复命令，通知目的地不因跨端浏览或控制漂移。
+
+
+## Desktop amendment (2026-10-06)
+
+Desktop uses the shared Web observation/resource clients. A bounded authenticated account notification feed carries only stable navigation identities and generic completion/failure/approval kinds while Desktop is running. It does not observe every Conversation or authorize approval. First connection and expired feed cursors start from the head, without historical notification replay. See [ADR-0045](0045-desktop-thin-shell-and-local-session.md) and its implementation record for outstanding release gates.

@@ -48,8 +48,9 @@ export interface HarnessUsageEvent {
 }
 
 export interface HarnessActivitySignal {
-  type: 'operation_started' | 'operation_finished';
+  type: 'operation_started' | 'operation_finished' | 'operation_progress';
   operationId: string;
+  checkpoint?: string;
 }
 
 export interface HarnessResultStreamSnapshot {

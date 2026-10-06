@@ -134,7 +134,7 @@ describe('AgentRuntimeRenderer', () => {
     };
     const glm = models.providers['glm-provider'].models.find(model => model.id === 'glm-5.3-flash');
 
-    expect(glm).toEqual({ id: 'glm-5.3-flash', reasoning: true });
+    expect(glm).toEqual({ id: 'glm-5.3-flash', reasoning: true, input: ['text'] });
   });
 
   it('does not bake one built-in Executor model into a shared tool home', async () => {

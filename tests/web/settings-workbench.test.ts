@@ -10,6 +10,7 @@ import {
   isGptRelatedModel,
   mergeCompletedModelFacts,
   removeModelRefsFromRoutingDraft,
+  resolveConfiguredModelRef,
   refsForModelIdentity,
   replaceModelIdentity,
   toggleModelRef,
@@ -22,6 +23,17 @@ import type { ProviderCredentialStatus } from '../../web/src/api/types.js';
 const webRoot = new URL('../../web/src/', import.meta.url);
 
 describe('Settings workbench model semantics', () => {
+  it('keeps provider/model identities out of AgentClass modelRef fields', () => {
+    const configured = [{
+      ref: 'default-model',
+      providerRef: 'provider',
+      modelId: 'configure-in-settings',
+    }];
+    expect(resolveConfiguredModelRef('provider/configure-in-settings', configured))
+      .toBe('default-model');
+    expect(resolveConfiguredModelRef('default-model', configured)).toBe('default-model');
+  });
+
   it('accepts masked credential summaries without exposing the API Key', () => {
     const status: ProviderCredentialStatus = {
       configured: true,
@@ -329,51 +341,21 @@ describe('Settings workbench model semantics', () => {
     expect(compositionSource).toContain('republishAgentReadiness?.();');
   });
 
-  it('exposes a capability profile refresh action backed by the unsaved candidate preview API', async () => {
-    const agentSource = await readFile(new URL(
-      '../../web/src/components/AgentClassConfig.tsx',
-      import.meta.url,
-    ), 'utf8');
-    const settingsSource = await readFile(new URL(
-      '../../web/src/components/SettingsPanel.tsx',
-      import.meta.url,
-    ), 'utf8');
-    const httpSource = await readFile(new URL(
-      '../../web/src/api/http.ts',
-      import.meta.url,
-    ), 'utf8');
-
-    expect(agentSource).toContain('更新能力画像');
-    expect(agentSource).toContain('当前可路由能力');
-    expect(agentSource).toContain('新增可路由能力');
-    expect(agentSource).toContain('移除可路由能力');
-    expect(agentSource).toContain('路由偏好变化');
-    expect(agentSource).toContain('当前未满足');
-    expect(agentSource).toContain('能力证据');
-    expect(agentSource).toContain('manualPreview?.capabilityChanges');
-    expect(agentSource).toContain('onUpdateManual');
-    expect(agentSource).not.toContain('onAnalyzeManual');
-    expect(agentSource).not.toContain('onRefreshManual');
-    expect(settingsSource).toContain('compileExecutorCapabilityManual');
-    expect(httpSource).toContain('/capability-manual/compile');
-  });
-
-  it('uses one capability-profile update action for cleared Executor guidance', async () => {
-    const agentSource = await readFile(new URL(
-      '../../web/src/components/AgentClassConfig.tsx',
-      import.meta.url,
-    ), 'utf8');
-    const settingsSource = await readFile(new URL(
-      '../../web/src/components/SettingsPanel.tsx',
-      import.meta.url,
-    ), 'utf8');
-
-    expect(agentSource).toContain('onUpdateManual');
-    expect(agentSource).not.toContain('清空定义并预览');
-    expect(settingsSource).not.toContain('if (!sourceText) return;');
-    expect(settingsSource).not.toContain(
-      "sourceText !== (preview?.persistedSourceText ?? '')",
-    );
+  it('keeps draft editing free of manual compilation and standalone credential writes', async () => {
+    const [agent, settings, http] = await Promise.all([
+      readFile(new URL('components/AgentClassConfig.tsx', webRoot), 'utf8'),
+      readFile(new URL('components/SettingsPanel.tsx', webRoot), 'utf8'),
+      readFile(new URL('api/http.ts', webRoot), 'utf8'),
+    ]);
+    expect(agent).not.toContain('onUpdateManual');
+    expect(settings).not.toContain('compileExecutorCapabilityManual');
+    expect(settings).not.toContain('getExecutorCapabilityManual');
+    expect(http).not.toContain('writeSecret(');
+    expect(http).not.toContain('writeSpanSecret(');
+    expect(http).not.toContain('/capability-manual/compile');
+    expect(settings.match(/http\.activate\(/gu)).toHaveLength(1);
+    expect(settings).toContain('currentSourceText === manualSourceText');
+    expect(settings).toContain('currentManual.assertions');
   });
 
   it('treats Provider models as the candidate source without duplicating shared identities', () => {
@@ -449,8 +431,8 @@ describe('Settings workbench model semantics', () => {
     expect(panel).toContain('providerPresets.find');
     expect(panel).toContain('draftValidationIssues.length > 0');
     expect(routing).toContain('当前没有可用模型，请重新选择');
-    expect(routing).toContain('适合做什么');
-    expect(routing).toContain('为什么这样路由');
+    expect(routing).toContain('职责');
+    expect(routing).not.toContain('为什么这样路由');
     expect(panel).not.toContain('运行 {runningRevisionId');
     expect(header).not.toContain('rev ${revisionId}');
     expect(styles).toContain('settings-workbench');
@@ -516,7 +498,7 @@ describe('Settings workbench model semantics', () => {
     expect(routing).not.toContain('Codex Engineering');
   });
 
-  it('keeps model capability facts inside Executor guidance and derives read-only tags from the manual', async () => {
+  it('shows model capability facts as a read-only profile without a manual compilation step', async () => {
     const [panel, routing] = await Promise.all([
       readFile(new URL('components/SettingsPanel.tsx', webRoot), 'utf8'),
       readFile(new URL('components/AgentClassConfig.tsx', webRoot), 'utf8'),
@@ -526,30 +508,23 @@ describe('Settings workbench model semantics', () => {
     expect(panel).not.toContain('模型能力');
     expect(panel).not.toContain('模型路由说明');
     expect(panel).toContain('primaryUseCases: entry.primaryUseCases');
-    expect(panel).toContain('executorManualInputKey');
-    expect(routing).toContain('某个模型为它带来的具体能力');
-    expect(routing).toContain('manualPreview?.tags');
-    expect(routing).toContain('manualPreview?.capabilities');
+    expect(routing).toContain('<AgentCapabilityProfile');
+    expect(routing).not.toContain('manualPreview');
     expect(routing.indexOf('renderRoutePolicyPanel')).toBeLessThan(
       routing.indexOf('<div className="agent-route-facts">'),
     );
     expect(routing).not.toContain('不会改变 Routing Capability');
     expect(panel).not.toContain('manualAnalysisIssues.length > 0');
     expect(panel).not.toContain('需要先交给 Planner 解析');
-    expect(panel).toContain("analysisMode: analysis.analysisMode");
     expect(panel).toContain('assertionsSourceFingerprint');
-    expect(panel).toContain("preview.sourceText.trim() === manualSourceText");
     expect(panel).toContain('currentSourceText === manualSourceText');
-    expect(routing).toContain('更新能力画像');
-    expect(routing).toContain('原文已保留');
     expect(routing).not.toContain('智能提炼并预览');
-    expect(routing).toContain('当前定义仍可直接激活');
     expect(routing).not.toContain('可直接保存');
     expect(routing).not.toContain('路由所需能力');
     expect(routing).not.toContain('SUGGESTED_USE_CASES');
     expect(routing).not.toContain('addUseCase');
     expect(routing).not.toContain('removeUseCase');
     expect(routing).not.toContain('use-case-editor');
-    expect(routing).toContain('模型事实已变化，需要更新');
+    expect(routing).not.toContain('模型事实已变化，需要更新');
   });
 });

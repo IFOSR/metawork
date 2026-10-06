@@ -1,12 +1,13 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   isInstanceRunning,
-  removeInstanceLockOnExit,
+  acquireInstanceLock,
   stopInstanceForRestart,
 } from '../../src/management/lock.js';
+import { acquireRuntimeUpdateLock } from '../../src/installation/runtime-update-lock.js';
 
 describe('isInstanceRunning', () => {
   it('recognizes a live runtime lock record', async () => {
@@ -21,15 +22,41 @@ describe('isInstanceRunning', () => {
   });
 });
 
-describe('removeInstanceLockOnExit', () => {
+describe('instance lock ownership', () => {
   it('is idempotent after normal shutdown already released the lock', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'anyfusion-lock-'));
     const lockPath = resolve(directory, 'runtime.lock');
-    await writeFile(lockPath, '{"pid":"4242","startedAt":"2026-08-27T00:00:00.000Z"}\n');
+    const lock = await acquireInstanceLock(lockPath);
+    lock.releaseOnExit();
+    await expect(readFile(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await lock.release();
+    expect(() => lock.releaseOnExit()).not.toThrow();
+  });
 
-    removeInstanceLockOnExit(lockPath);
+  it('does not delete an update lock when the old Server exits after releasing', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'anyfusion-lock-'));
+    await mkdir(resolve(root, 'data'));
+    const lockPath = resolve(root, 'data/runtime.lock');
+    const server = await acquireInstanceLock(lockPath);
+    await server.release();
+    const update = await acquireRuntimeUpdateLock(root, 'update');
+    const expected = await readFile(lockPath, 'utf8');
+    server.releaseOnExit();
+    await server.release();
+    expect(await readFile(lockPath, 'utf8')).toBe(expected);
+    await update.release();
+  });
 
-    expect(() => removeInstanceLockOnExit(lockPath)).not.toThrow();
+  it.each(['release', 'releaseOnExit'] as const)('preserves a replacement lock during %s even with the same PID', async method => {
+    const root = await mkdtemp(resolve(tmpdir(), 'anyfusion-lock-'));
+    const lockPath = resolve(root, 'runtime.lock');
+    const old = await acquireInstanceLock(lockPath);
+    await unlink(lockPath);
+    const replacement = await acquireInstanceLock(lockPath);
+    const expected = await readFile(lockPath, 'utf8');
+    await old[method]();
+    expect(await readFile(lockPath, 'utf8')).toBe(expected);
+    await replacement.release();
   });
 });
 

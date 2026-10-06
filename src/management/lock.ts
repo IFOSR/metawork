@@ -1,8 +1,10 @@
 import { open, readFile, unlink } from 'node:fs/promises';
-import { unlinkSync } from 'node:fs';
+import { readFileSync, unlinkSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 
 export interface InstanceLock {
   release(): Promise<void>;
+  releaseOnExit(): void;
 }
 
 export interface StopInstanceForRestartResult {
@@ -50,12 +52,12 @@ export async function acquireInstanceLock(lockPath: string): Promise<InstanceLoc
   const content = lockContent();
 
   if (await tryAcquire(lockPath, content)) {
-    return makeLock(lockPath);
+    return makeLock(lockPath, content);
   }
 
   if (await tryReclaimStale(lockPath)) {
     if (await tryAcquire(lockPath, content)) {
-      return makeLock(lockPath);
+      return makeLock(lockPath, content);
     }
   }
 
@@ -106,9 +108,9 @@ export async function stopInstanceForRestart(
   throw new Error(`MetaWork 进程 PID ${pid} 未在 ${timeoutMs}ms 内退出`);
 }
 
-export function removeInstanceLockOnExit(lockPath: string): void {
+function removeInstanceLockOnExit(lockPath: string, expectedContent: string): void {
   try {
-    unlinkSync(lockPath);
+    if (readFileSync(lockPath, 'utf8') === expectedContent) unlinkSync(lockPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
@@ -180,13 +182,23 @@ function isProcessAlive(
 }
 
 function lockContent(): string {
-  return `${JSON.stringify({ pid: String(process.pid), startedAt: new Date().toISOString() })}\n`;
+  return `${JSON.stringify({ pid: String(process.pid), startedAt: new Date().toISOString(), token: randomUUID() })}\n`;
 }
 
-function makeLock(lockPath: string): InstanceLock {
+function makeLock(lockPath: string, content: string): InstanceLock {
+  let released = false;
+  const release = () => {
+    if (released) return;
+    // Synchronous compare/unlink also prevents two releases from interleaving
+    // with a new acquisition in this process. A previous Server never owns a
+    // replacement Server/update lock, including a new lock with the same PID.
+    removeInstanceLockOnExit(lockPath, content);
+    released = true;
+  };
   return {
     async release() {
-      await unlink(lockPath).catch(() => undefined);
+      release();
     },
+    releaseOnExit: release,
   };
 }

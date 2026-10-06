@@ -194,6 +194,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
   });
 
   it('streams presentation-only heartbeats while an Executor is silent', async () => {
+    let reportProgress!: (event: import('../../src/executor/adapter.js').ExecutorProgressEvent, executor: { name: string }) => void;
     let releaseAttempt!: () => void;
     const attemptReleased = new Promise<void>(resolve => {
       releaseAttempt = resolve;
@@ -227,7 +228,8 @@ describe('KernelExecutionRuntime executor recovery', () => {
         attachResource: vi.fn(),
       },
       attemptRunner: {
-        run: vi.fn(async () => {
+        run: vi.fn(async (input) => {
+          reportProgress = input.onProgress;
           await attemptReleased;
           return {
             outcome: 'capacity_unavailable',
@@ -244,6 +246,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
         appendOutput: vi.fn(),
         setRunningExecutorName: vi.fn(),
         clearRunningExecutorName: vi.fn(),
+        refreshRuntimeState: vi.fn(),
       },
       kernelExecutorStatusProjector: { recordExecutionOutcome: vi.fn() },
       taskEventRepo: {},
@@ -281,6 +284,15 @@ describe('KernelExecutionRuntime executor recovery', () => {
       }));
     });
 
+    const observation = { operationId: 'quiet-tool', state: 'unknown' as const,
+      lastActivityAt: '2026-10-06T09:00:00Z', observedAt: '2026-10-06T09:05:30Z', evidence: 'Process exists only' };
+    reportProgress({ kind: 'status', text: 'Checking quiet tool', operationHealth: observation }, { name: AGENT_CLASS });
+    reportProgress({ kind: 'status', text: 'Another tool is progressing', operationHealth: { ...observation, operationId: 'busy-tool', state: 'active' } }, { name: AGENT_CLASS });
+    expect(appendExecutionTrace.mock.calls.at(-1)?.[0].details.operationHealth).toEqual(observation);
+    reportProgress({ kind: 'log', text: 'Another tool completed page 2' }, { name: AGENT_CLASS });
+    expect(appendExecutionTrace.mock.calls.at(-1)?.[0].details.operationHealth).toEqual(observation);
+    reportProgress({ kind: 'status', text: 'Quiet tool responded', operationHealth: { ...observation, state: 'active' } }, { name: AGENT_CLASS });
+    expect(appendExecutionTrace.mock.calls.at(-1)?.[0].details.operationHealth).toBeNull();
     releaseAttempt();
     await running;
     const heartbeatCount = appendExecutionTrace.mock.calls.filter(

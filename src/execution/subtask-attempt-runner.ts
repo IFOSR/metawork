@@ -750,7 +750,7 @@ export class SubtaskAttemptRunner {
         },
         onProgress: (event, executor) => {
           const safeText = formatExecutorProgress(event.text);
-          if (safeText) {
+          if (safeText && !event.operationHealth) {
             this.attemptRuntimeRepo.appendProgress(attemptId, {
               kind: event.kind,
               text: safeText,

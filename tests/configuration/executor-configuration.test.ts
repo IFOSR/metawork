@@ -168,7 +168,6 @@ function editableFields(overrides: Record<string, unknown> = {}) {
   return {
     displayName: '开发助手',
     modelPolicy: { mode: 'fixed', modelRef: 'executor-model' },
-    permissionProfileRef: 'workspace-engineering',
     manualSourceText: '优先负责代码修改和测试。',
     enabled: true,
     ...overrides,
@@ -251,27 +250,25 @@ describe('resolveExecutorToolHarness', () => {
 });
 
 describe('buildExecutorConfigurationCandidate', () => {
-  it('preserves routing facts on a name-only edit with an aliased permission profile', () => {
+  it('prepares a baseline migration on a name-only edit with an aliased standard profile', () => {
     const base = baseSnapshot();
     base.config.permissionProfiles.research = base.config.permissionProfiles['public-web-research']!;
     const existing = base.config.agentClasses['pi-agent']!;
     existing.permissionProfileRef = 'research';
     const candidate = buildExecutorConfigurationCandidate(base, {
       operation: 'update', agentClassRef: 'pi-agent',
-      fields: editableFields({ permissionProfileRef: 'research', displayName: 'New name' }),
+      fields: editableFields({ displayName: 'New name' }),
     });
-    expect(candidate.config.agentClasses['pi-agent']!.routingCapabilities).toEqual(existing.routingCapabilities);
-    expect(candidate.config.agentClasses['pi-agent']!.plannerAffordances).toEqual(existing.plannerAffordances);
+    expect(candidate.config.agentClasses['pi-agent']!.permissionProfileRef).toBe('standard-agent');
+    expect(candidate.config.agentClasses['pi-agent']!.routingCapabilities).toEqual([]);
+    expect(candidate.config.agentClasses['pi-agent']!.plannerAffordances).toEqual(expect.arrayContaining(['workspace-read-write', 'public-web-fetch']));
+    expect(existing.permissionProfileRef).toBe('research');
   });
 
-  it('derives creation and permission changes from the actual profile, not its ref', () => {
-    const base = baseSnapshot();
-    base.config.permissionProfiles.research = base.config.permissionProfiles['public-web-research']!;
-    const candidate = buildExecutorConfigurationCandidate(base, {
+  it('rejects editable permission injection instead of accepting a caller-selected profile', () => {
+    expect(() => parseExecutorConfigurationChange({
       operation: 'create', tool: 'pi', fields: editableFields({ permissionProfileRef: 'research' }),
-    });
-    expect(candidate.config.agentClasses[candidate.createdAgentClassRef!]!.routingCapabilities)
-      .toEqual(['current-web-research']);
+    })).toThrow(ExecutorConfigurationError);
   });
 
   it('creates an executor with server-filled controlled fields', () => {
@@ -288,9 +285,9 @@ describe('buildExecutorConfigurationCandidate', () => {
       displayName: '开发助手',
       kind: 'executor',
       harnessRef: 'my-codex-tool',
-      permissionProfileRef: 'workspace-engineering',
-      routingCapabilities: ['workspace-engineering', 'document-processing'],
-      plannerAffordances: ['workspace-read-write', 'workspace-command-validation'],
+      permissionProfileRef: 'standard-agent',
+      routingCapabilities: [],
+      plannerAffordances: ['workspace-read-write', 'workspace-command-validation', 'public-web-search', 'public-web-fetch', 'source-citation'],
       skills: [],
       mcpServers: [],
       plugins: [],
@@ -338,20 +335,15 @@ describe('buildExecutorConfigurationCandidate', () => {
     expect(recreated.createdAgentClassRef).not.toBe(first.createdAgentClassRef);
   });
 
-  it('rejects model and permission references that do not exist', () => {
+  it('rejects missing model references and user-supplied permission fields', () => {
     expect(() => buildExecutorConfigurationCandidate(baseSnapshot(), {
       operation: 'create',
       tool: 'pi',
       fields: editableFields({ modelPolicy: { mode: 'fixed', modelRef: 'missing-model' } }),
     })).toThrow(expect.objectContaining({ code: 'invalid_configuration', field: 'modelPolicy' }));
-    expect(() => buildExecutorConfigurationCandidate(baseSnapshot(), {
-      operation: 'create',
-      tool: 'pi',
-      fields: editableFields({ permissionProfileRef: 'missing-profile' }),
-    })).toThrow(expect.objectContaining({
-      code: 'invalid_configuration',
-      field: 'permissionProfileRef',
-    }));
+    expect(() => parseExecutorConfigurationChange({
+      operation: 'create', tool: 'pi', fields: editableFields({ permissionProfileRef: 'missing-profile' }),
+    })).toThrow(ExecutorConfigurationError);
   });
 
   it('rejects credential-like manual source text', () => {
@@ -456,6 +448,23 @@ describe('buildExecutorConfigurationCandidate', () => {
     expect(removed.config.agentClasses.planner).toBeDefined();
     expect(() => parseAnyFusionConfigurationV2(removed.config)).not.toThrow();
   });
+
+  it('enables the referenced tool with its executor without enabling siblings or mutating the base', () => {
+    const base = baseSnapshot();
+    base.config.agentClasses['pi-agent']!.enabled = false;
+    base.config.harnesses['pi-cli']!.enabled = false;
+    base.config.agentClasses['pi-sibling'] = { ...base.config.agentClasses['pi-agent']!, generatedRuntimeRef: 'pi-sibling' };
+    const candidate = buildExecutorConfigurationCandidate(base, { operation: 'enable', agentClassRef: 'pi-agent' });
+    expect(candidate.config.harnesses['pi-cli']!.enabled).toBe(true);
+    expect(candidate.config.agentClasses['pi-agent']!.enabled).toBe(true);
+    expect(candidate.config.agentClasses['pi-sibling']!.enabled).toBe(false);
+    expect(base.config.harnesses['pi-cli']!.enabled).toBe(false);
+    expect(() => parseAnyFusionConfigurationV2(candidate.config)).not.toThrow();
+    const disabled = buildExecutorConfigurationCandidate({ ...base, config: candidate.config }, {
+      operation: 'disable', agentClassRef: 'pi-agent',
+    });
+    expect(disabled.config.harnesses['pi-cli']!.enabled).toBe(true);
+  });
 });
 
 describe('ConfigurationService.prepareExecutorDraft', () => {
@@ -481,7 +490,7 @@ describe('ConfigurationService.prepareExecutorDraft', () => {
     return { service, probe };
   }
 
-  it('prepares a validated draft that activates through the existing flow', async () => {
+  it('prepares without activation, then validates and activates through the page flow', async () => {
     const { service, probe } = await serviceFixture();
 
     const prepared = await service.prepareExecutorDraft({
@@ -493,9 +502,13 @@ describe('ConfigurationService.prepareExecutorDraft', () => {
     expect(prepared.createdAgentClassRef).toMatch(/^executor-/u);
     expect(prepared.summary[0]).toContain('新增执行助手');
 
-    service.compileDraft(prepared.revisionId);
-    await service.probeDraft(prepared.revisionId);
-    const activated = await service.activateDraft(prepared.revisionId, 'revision-base');
+    expect((await service.getActiveSnapshot()).revisionId).toBe('revision-base');
+    expect(probe).toHaveBeenCalledTimes(1);
+    const draft = service.createDraft(prepared.config, prepared.baseRevisionId);
+    expect(service.validateDraft(draft.revisionId).ok).toBe(true);
+    service.compileDraft(draft.revisionId);
+    await service.probeDraft(draft.revisionId);
+    const activated = await service.activateDraft(draft.revisionId, 'revision-base');
     expect(activated).toMatchObject({ ok: true });
     if (activated.ok) {
       expect(activated.snapshot.config.agentClasses[prepared.createdAgentClassRef!])
@@ -513,7 +526,31 @@ describe('ConfigurationService.prepareExecutorDraft', () => {
     })).rejects.toThrow(expect.objectContaining({ code: 'invalid_configuration' }));
   });
 
-  it('refuses to prepare while the account is not idle', async () => {
+  it('uses unactivated models and agents without compiling prices or changing active state', async () => {
+    const { service, probe } = await serviceFixture();
+    const active = await service.getActiveSnapshot();
+    const config = structuredClone(active.config);
+    config.models['draft-model'] = { ...Object.values(config.models)[0]!, modelId: 'deepseek-flash' };
+    delete config.models['draft-model'].costInputPerMillion;
+    delete config.models['draft-model'].costOutputPerMillion;
+    config.agentClasses.planner!.displayName = '未提交的 Planner 修改';
+    const created = await service.prepareExecutorDraft({
+      operation: 'create', tool: 'pi', fields: editableFields({ modelPolicy: { mode: 'fixed', modelRef: 'draft-model' } }),
+    }, active.revisionId, config);
+    const edited = await service.prepareExecutorDraft({
+      operation: 'update', agentClassRef: created.createdAgentClassRef!,
+      fields: editableFields({ displayName: '日常秘书', modelPolicy: { mode: 'fixed', modelRef: 'draft-model' } }),
+    }, active.revisionId, created.config);
+    expect(edited.config.agentClasses[created.createdAgentClassRef!]!.displayName).toBe('日常秘书');
+    expect(edited.config.agentClasses.planner!.displayName).toBe('未提交的 Planner 修改');
+    expect(edited.config.models['draft-model']!.costInputPerMillion).toBeUndefined();
+    expect(await service.getActiveSnapshot()).toEqual(active);
+    expect(probe).toHaveBeenCalledTimes(1);
+    await expect(service.prepareExecutorDraft({ operation: 'remove', agentClassRef: 'pi-agent' }, 'stale', edited.config))
+      .rejects.toMatchObject({ code: 'revision_conflict' });
+  });
+
+  it('allows draft editing while busy without changing the active configuration', async () => {
     const facts = {
       activeTaskId: null as string | null,
       plannerTurnActive: false,
@@ -528,6 +565,7 @@ describe('ConfigurationService.prepareExecutorDraft', () => {
     await expect(service.prepareExecutorDraft({
       operation: 'remove',
       agentClassRef: 'pi-agent',
-    })).rejects.toThrow(expect.objectContaining({ code: 'runtime_busy' }));
+    })).resolves.toMatchObject({ baseRevisionId: 'revision-base' });
+    expect((await service.getActiveSnapshot()).config.agentClasses['pi-agent']).toBeDefined();
   });
 });

@@ -12,6 +12,8 @@ export function WorkspaceHeader({
   themePreference,
   onTabChange,
   onThemeChange,
+  onToggleSidebar,
+  sidebarHidden,
 }: {
   title: string;
   workspace: WorkspaceSummary | null;
@@ -20,11 +22,15 @@ export function WorkspaceHeader({
   themePreference: ThemePreference;
   onTabChange: (tab: WorkspaceTab) => void;
   onThemeChange: (preference: ThemePreference) => void;
+  onToggleSidebar?: () => void;
+  sidebarHidden?: boolean;
 }) {
   const workspacePath = workspace?.canonicalPath ?? null;
   return (
     <header className="workspace-header">
       <div className="workspace-title-block">
+        {onToggleSidebar && <button className="sidebar-toggle" onClick={onToggleSidebar} aria-expanded={!sidebarHidden}
+          aria-label={sidebarHidden ? '显示侧栏' : '隐藏侧栏'}>☰</button>}
         <span className="workspace-kicker">AGENT WORKSPACE</span>
         <h1>{title}</h1>
         <div className="workspace-path" title={workspacePath ?? undefined}>

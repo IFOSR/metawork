@@ -1,3 +1,5 @@
+import { prepareStandardAgentConfiguration } from '../configuration/standard-agent-configuration.js';
+import { prepareVerifiedModelCapabilities } from '../configuration/model-capability-catalog.js';
 import { randomUUID } from 'node:crypto';
 import {
   chmod,
@@ -37,12 +39,15 @@ export interface SourceNativeInstallInput {
   releaseId: string;
   sourceRoot: string;
   plannerRoot: string;
+  executorPreset?: 'desktop-pi';
   provider: {
     baseUrl: string;
     apiKey: string;
     modelId: string;
     region: string;
     secretReference: string;
+    displayName?: string;
+    systemManaged?: boolean;
   };
 }
 
@@ -56,6 +61,8 @@ export class SourceNativeInstaller {
     paths: AnyFusionPaths;
     secretStore: SecretStore;
     detectCommand(command: string): Promise<boolean>;
+    /** Desktop terminal integration is explicit; never replace a user's CLI on first launch. */
+    installLaunchers?: boolean;
   }) {}
 
   async install(input: SourceNativeInstallInput): Promise<SourceNativeInstallResult> {
@@ -63,7 +70,7 @@ export class SourceNativeInstaller {
     assertSecretReference(input.provider.secretReference);
     const secretReference = input.provider.secretReference;
     const paths = this.dependencies.paths;
-    const launcherPaths = [
+    const launcherPaths = this.dependencies.installLaunchers === false ? [] : [
       paths.launcher,
       paths.anyFusionLauncher,
       paths.metaclawLauncher,
@@ -250,10 +257,12 @@ function buildConfiguration(
   piEnabled: boolean,
 ): AnyFusionConfigurationV2 {
   const modelRef = 'default-model';
-  return {
+  const configuration: AnyFusionConfigurationV2 = {
     schemaVersion: 2,
     providers: {
       provider: {
+        ...(input.provider.displayName ? { displayName: input.provider.displayName } : {}),
+        ...(input.provider.systemManaged ? { systemManaged: true } : {}),
         protocol: 'openai-compatible',
         baseUrl: input.provider.baseUrl,
         apiKeyRef: input.provider.secretReference,
@@ -265,9 +274,13 @@ function buildConfiguration(
       [modelRef]: {
         providerRef: 'provider',
         modelId: input.provider.modelId,
+        ...(input.provider.systemManaged ? { systemManaged: true } : {}),
         capabilities: ['coding', 'long-context', 'planning', 'structured-output', 'tools'],
         reasoning: 'high',
         enabled: true,
+        ...(input.provider.modelId === 'deepseek-flash'
+          ? { costInputPerMillion: 0.021, costOutputPerMillion: 16.8 }
+          : {}),
       },
     },
     harnesses: {
@@ -366,6 +379,14 @@ function buildConfiguration(
     runtimePolicy: {},
     gateway: {},
   };
+  if (input.executorPreset === 'desktop-pi') {
+    if (!piEnabled) throw new Error('Desktop Pi Executor is unavailable');
+    configuration.agentClasses['pi-engineering'] = {
+      ...configuration.agentClasses['codex-engineering']!, harnessRef: 'pi-cli',
+      generatedRuntimeRef: 'pi-engineering', enabled: true,
+    };
+  }
+  return prepareVerifiedModelCapabilities(prepareStandardAgentConfiguration(configuration));
 }
 
 export async function stageSourceRelease(
@@ -390,6 +411,10 @@ export async function stageSourceRelease(
       }),
       writeReleaseIdentity(stageRoot, releaseId),
     ]);
+    const desktopTools = join(sourceRoot, 'desktop-tools');
+    if (await lstat(desktopTools).then(entry => entry.isDirectory(), () => false)) {
+      await cp(desktopTools, join(stageRoot, 'desktop-tools'), { recursive: true });
+    }
     await mkdir(dirname(releaseRoot), { recursive: true, mode: 0o700 });
     await rename(stageRoot, releaseRoot);
     await makeImmutable(releaseRoot);

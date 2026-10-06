@@ -219,8 +219,6 @@ export async function createNavigationPerformanceFixture(webDistDir = resolve('w
       getActive: async () => ({ revisionId: 'fixture-only', contentHash: 'fixture', config: {} }),
       listRevisions: async () => [], getSnapshot: async () => null,
       activate: async () => { throw new Error('fixture_configuration_disabled'); },
-      rollback: async () => { throw new Error('fixture_configuration_disabled'); },
-      writeSecret: async () => { throw new Error('fixture_configuration_disabled'); },
     },
   });
   await server.start();

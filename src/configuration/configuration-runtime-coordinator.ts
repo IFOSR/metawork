@@ -1,3 +1,5 @@
+import { prepareStandardAgentConfiguration } from './standard-agent-configuration.js';
+import { prepareVerifiedModelCapabilities } from './model-capability-catalog.js';
 import {
   buildKernelConfigurationView,
   buildPlannerConfigurationView,
@@ -113,7 +115,10 @@ export interface ConfigurationRuntimeCoordinatorDeps {
     spanApiKey?: string;
     baseRevisionId: string;
   }) => Promise<unknown> | unknown;
-  validateActivationConfig?: (config: AnyFusionConfigurationV2) => string[];
+  validateActivationConfig?: (
+    config: AnyFusionConfigurationV2,
+    baseline?: AnyFusionConfigurationV2,
+  ) => string[];
   /**
    * Applies candidate secrets only for the duration of activation and returns
    * a compensating action. This lets the probe validate the exact candidate
@@ -237,6 +242,9 @@ export class ConfigurationRuntimeCoordinator {
         ...(input.spanApiKey !== undefined ? { spanApiKey: input.spanApiKey } : {}),
         baseRevisionId: current.revisionId,
       }) ?? input.config;
+      if (input.reason !== 'rollback') {
+        preparedConfig = prepareVerifiedModelCapabilities(prepareStandardAgentConfiguration(preparedConfig as AnyFusionConfigurationV2));
+      }
     } catch (error) {
       return {
         ok: false, code: 'invalid_configuration', activeRevisionId: current.revisionId,
@@ -257,7 +265,7 @@ export class ConfigurationRuntimeCoordinator {
         issues: validation.issues.map(issue => `${issue.path || '(root)'}: ${issue.message}`),
       };
     }
-    const activationIssues = this.deps.validateActivationConfig?.(validation.config) ?? [];
+    const activationIssues = this.deps.validateActivationConfig?.(validation.config, current.config) ?? [];
     if (activationIssues.length > 0) {
       return {
         ok: false,

@@ -12,6 +12,8 @@ export type ProviderProtocol = 'openai-compatible' | 'anthropic';
 
 export interface ProviderDefinition {
   displayName?: string;
+  /** System-owned connections are preserved by Settings but never user-editable. */
+  systemManaged?: boolean;
   protocol: ProviderProtocol;
   baseUrl: string;
   apiKeyRef: string;
@@ -54,6 +56,8 @@ export interface ModelPricingMetadata {
 export interface ModelProfile {
   providerRef: string;
   modelId: string;
+  /** System-owned models are hidden from the user model catalog. */
+  systemManaged?: boolean;
   /** Public model description fetched from OpenRouter or supplied by the catalog. */
   description?: string;
   /** Structured public facts used as routing evidence; never treated as permissions. */

@@ -5,6 +5,8 @@ dist-release/
 *.db
 .DS_Store
 coverage/
+apps/desktop/release/
+apps/desktop/runtime-resources/
 projects/
 .tmp/
 .tmp-*/

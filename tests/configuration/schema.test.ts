@@ -118,6 +118,23 @@ function completeConfiguration() {
 }
 
 describe('AnyFusion configuration schema v2', () => {
+  it('accepts system-managed Provider and Model metadata', () => {
+    const config = completeConfiguration();
+    const parsed = AnyFusionConfigurationV2Schema.parse({
+      ...config,
+      providers: {
+        openai: { ...config.providers.openai, systemManaged: true },
+      },
+      models: {
+        ...config.models,
+        planner: { ...config.models.planner, systemManaged: true },
+      },
+    });
+
+    expect(parsed.providers.openai?.systemManaged).toBe(true);
+    expect(parsed.models.planner?.systemManaged).toBe(true);
+  });
+
   it('accepts user display names for Providers and AgentClasses', () => {
     const config = completeConfiguration();
     const parsed = AnyFusionConfigurationV2Schema.parse({

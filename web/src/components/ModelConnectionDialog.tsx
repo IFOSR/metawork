@@ -74,7 +74,7 @@ export function ModelConnectionDialog({
           <div>
             <span className="settings-eyebrow">新增模型</span>
             <h3 id="model-connection-dialog-title">新增模型</h3>
-            <p>填写 Provider 连接信息后，MetaWork 会自动获取公开模型、能力和价格。</p>
+            <p>保存后加入当前设置草稿，并自动获取公开模型信息；点击页面底部“保存并激活”后统一生效。</p>
           </div>
           <button type="button" className="ghost-button" onClick={onCancel}>关闭</button>
         </div>
@@ -114,7 +114,7 @@ export function ModelConnectionDialog({
         <div className="model-connection-dialog-actions">
           <button type="button" className="ghost-button" onClick={onCancel}>取消</button>
           <button type="button" className="primary-button" disabled={disabled} onClick={confirm}>
-            新增模型
+            保存
           </button>
         </div>
       </form>

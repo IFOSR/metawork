@@ -421,7 +421,7 @@ describe('LocalCliExecutorAdapter', () => {
       });
       return completedChildProcess();
     });
-    const runner = new SpawnLocalCliChildProcessRunner({
+    const runner = new SpawnLocalCliChildProcessRunner({ processGroupExists: () => false,
       spawnProcess,
       hostEnvironment: {
         PATH: '/usr/bin',
@@ -456,7 +456,7 @@ describe('LocalCliExecutorAdapter', () => {
       'x'.repeat(16 * 1024 * 1024),
       finalEvent,
     ]));
-    const runner = new SpawnLocalCliChildProcessRunner({ spawnProcess });
+    const runner = new SpawnLocalCliChildProcessRunner({ processGroupExists: () => false, spawnProcess });
 
     const result = await runner.run({
       attemptId: 'attempt-large-json-stream',
@@ -474,7 +474,7 @@ describe('LocalCliExecutorAdapter', () => {
     const prefix = 'x'.repeat(16 * 1024 * 1024);
     const finalEvent = '{"type":"message_end","message":{"role":"assistant"}}\n';
     const spawnProcess = vi.fn(() => streamingChildProcess([prefix, finalEvent]));
-    const runner = new SpawnLocalCliChildProcessRunner({ spawnProcess });
+    const runner = new SpawnLocalCliChildProcessRunner({ processGroupExists: () => false, spawnProcess });
     const rawChunks: string[] = [];
 
     const result = await runner.run({
@@ -495,7 +495,7 @@ describe('LocalCliExecutorAdapter', () => {
     try {
       const child = controllableChildProcess();
       const signalProcess = vi.fn();
-      const runner = new SpawnLocalCliChildProcessRunner({
+      const runner = new SpawnLocalCliChildProcessRunner({ processGroupExists: () => false,
         spawnProcess: () => child, signalProcess, terminationGraceMs: 100,
       });
       const pending = runner.run({
@@ -522,40 +522,21 @@ describe('LocalCliExecutorAdapter', () => {
     }
   });
 
-  it('terminates a local CLI process after the configured idle timeout', async () => {
+  it('observes prolonged silence without killing a process that may be doing legitimate work', async () => {
     vi.useFakeTimers();
     try {
       const child = controllableChildProcess();
-      const signalProcess = vi.fn((_pid: number, signal: NodeJS.Signals) => {
-        if (signal === 'SIGTERM') queueMicrotask(() => child.emitExit(null));
-      });
-      const runner = new SpawnLocalCliChildProcessRunner({ spawnProcess: () => child, signalProcess });
-
-      const resultPromise = runner.run({
-        attemptId: 'attempt-idle-timeout',
-        command: 'codex',
-        args: [],
-        cwd: '/workspace/attempt-idle-timeout',
-        environment: {},
-        idleTimeoutMs: 300,
-      });
-      await vi.advanceTimersByTimeAsync(300);
-
-      await expect(resultPromise).resolves.toMatchObject({
-        exitCode: null,
-        stderr: expect.stringContaining('executor idle timeout'),
-        diagnostics: {
-          terminationSource: 'idle_watchdog',
-          stdoutBytes: 0,
-          stderrBytes: expect.any(Number),
-          sigtermSentAt: expect.any(String),
-          exitCode: null,
-        },
-      });
-      expect(signalProcess).toHaveBeenCalledWith(-123, 'SIGTERM');
-    } finally {
-      vi.useRealTimers();
-    }
+      const signalProcess = vi.fn();
+      const onHealth = vi.fn();
+      const runner = new SpawnLocalCliChildProcessRunner({ processGroupExists: () => false, spawnProcess: () => child, signalProcess,
+        probeOperation: async () => ({ state: 'unknown', evidence: 'Process exists' }) });
+      const pending = runner.run({ attemptId: 'silent', command: 'pi', args: [], cwd: '/workspace', environment: {}, idleTimeoutMs: 300, onHealth });
+      await vi.advanceTimersByTimeAsync(1800);
+      expect(onHealth).toHaveBeenCalledWith(expect.objectContaining({ state: 'unknown' }));
+      expect(signalProcess).not.toHaveBeenCalled();
+      child.emitExit(0);
+      await expect(pending).resolves.toMatchObject({ exitCode: 0, diagnostics: { terminationSource: 'process_exit' } });
+    } finally { vi.useRealTimers(); }
   });
 
   it('renews the idle timeout when stdout or stderr remains active', async () => {
@@ -565,7 +546,7 @@ describe('LocalCliExecutorAdapter', () => {
       const signalProcess = vi.fn((_pid: number, signal: NodeJS.Signals) => {
         if (signal === 'SIGTERM') queueMicrotask(() => child.emitExit(null));
       });
-      const runner = new SpawnLocalCliChildProcessRunner({ spawnProcess: () => child, signalProcess });
+      const runner = new SpawnLocalCliChildProcessRunner({ processGroupExists: () => false, spawnProcess: () => child, signalProcess });
 
       const resultPromise = runner.run({
         attemptId: 'attempt-active-output',
@@ -581,8 +562,9 @@ describe('LocalCliExecutorAdapter', () => {
       expect(signalProcess).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(50);
+      child.emitExit(0);
       await resultPromise;
-      expect(signalProcess).toHaveBeenCalledWith(-123, 'SIGTERM');
+      expect(signalProcess).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
@@ -595,7 +577,7 @@ describe('LocalCliExecutorAdapter', () => {
       const signalProcess = vi.fn((_pid: number, signal: NodeJS.Signals) => {
         if (signal === 'SIGTERM') queueMicrotask(() => child.emitExit(null));
       });
-      const runner = new SpawnLocalCliChildProcessRunner({ spawnProcess: () => child, signalProcess });
+      const runner = new SpawnLocalCliChildProcessRunner({ processGroupExists: () => false, spawnProcess: () => child, signalProcess });
 
       const resultPromise = runner.run({
         attemptId: 'attempt-active-operation',
@@ -620,8 +602,9 @@ describe('LocalCliExecutorAdapter', () => {
       expect(signalProcess).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(1);
+      child.emitExit(0);
       await resultPromise;
-      expect(signalProcess).toHaveBeenCalledWith(-123, 'SIGTERM');
+      expect(signalProcess).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

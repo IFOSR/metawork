@@ -204,7 +204,7 @@ export class DockerCliAttemptExecutionBackend implements AttemptExecutionBackend
     if (input.egressMode === 'proxy') {
       const proxy = input.environment.HTTPS_PROXY ?? input.environment.HTTP_PROXY;
       if (!proxy || !/^http:\/\/metaclaw-egress(?::\d+)?\/?$/u.test(proxy)) {
-        throw new Error('public-web-research requires the policy egress proxy on the internal control network');
+        throw new Error('public network access requires the policy egress proxy on the internal control network');
       }
     }
   }

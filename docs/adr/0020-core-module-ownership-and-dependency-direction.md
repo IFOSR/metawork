@@ -142,6 +142,13 @@ Kernel Executor Status Projection 的稳定词汇和数据契约属于 Routing C
 
 ## Not Decided Here
 
+Desktop amendment (2026-10-06, ADR-0045): Electron Main imports only pure
+public contracts and client/installation adapters. Its preload exposes typed
+native actions; shared Web owns business presentation. Installer helpers run
+as separate Node processes and use SourceNativeInstaller/SourceNativeUpdater.
+Neither Main nor Renderer imports Storage, AccountRuntime, Planning, Kernel or
+Execution implementations. Desktop tests check the transitive Main bundle.
+
 - 最终目录树、文件搬迁顺序和哪些模块需要专属 README；
 - Task Domain 与 Execution Runtime 的内部类拆分；
 - Repository port 的具体数量和命名；

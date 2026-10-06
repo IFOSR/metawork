@@ -60,7 +60,7 @@ describe('SettingsAssistant', () => {
     expect(body).toContain(input.modelFacts[0]!.description);
     expect(body).toContain(sourceText);
     expect(body).not.toContain('test-key');
-    expect(JSON.parse(body).model).toBe('deepseek-v4.1-flash');
+    expect(JSON.parse(body).model).toBe('deepseek-flash');
   });
 
   it('rewrites already structured input without nesting or accumulating headings', async () => {

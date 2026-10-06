@@ -34,4 +34,28 @@ describe('enabled model price validation', () => {
       '启用模型 provider/bad 缺少输出价格 costOutputPerMillion',
     ]);
   });
+
+  it('does not block an unrelated activation when the broken model was already active', () => {
+    const baseline = configuration(true);
+    const candidate = structuredClone(baseline);
+    delete candidate.agentClasses.broken;
+    expect(validateEnabledModelPrices(candidate, baseline)).toEqual([]);
+  });
+
+  it('still checks a newly enabled model against the active baseline', () => {
+    const baseline = configuration(false);
+    expect(validateEnabledModelPrices(configuration(true), baseline)).toEqual([
+      '启用模型 provider/bad 缺少输入价格 costInputPerMillion',
+      '启用模型 provider/bad 缺少输出价格 costOutputPerMillion',
+    ]);
+  });
+
+  it('checks prices when an existing model is changed during activation', () => {
+    const baseline = configuration(false);
+    const candidate = structuredClone(baseline);
+    delete candidate.models.good.costInputPerMillion;
+    expect(validateEnabledModelPrices(candidate, baseline)).toEqual([
+      '启用模型 provider/good 缺少输入价格 costInputPerMillion',
+    ]);
+  });
 });

@@ -102,7 +102,7 @@ export interface AgentClass {
   runtimeCheckCommand: string | null;
   executionImageRef: string | null;
   resolvedImageId: string | null;
-  permissionProfileId: 'workspace-engineering' | 'public-web-research' | 'restricted-custom' | null;
+  permissionProfileId: import('../resource/types.js').PermissionProfileId | null;
   projectUrl: string | null;
   createdAt?: string;
   updatedAt?: string;

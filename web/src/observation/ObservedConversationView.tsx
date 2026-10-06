@@ -11,6 +11,7 @@ import { useTurnPresentation } from './use-turn-presentation';
 import { LiveExecutionPanel } from '../components/LiveExecutionPanel';
 import { LivePlanningPanel, plannerActivity } from '../components/LivePlanningPanel';
 import type { ArtifactProjection, ConversationTurnProjection } from '../api/session-types';
+import { desktopBridge, reportPersistenceError } from '../platform/services';
 
 interface Anchor { turnId: string; offset: number; bottom: boolean }
 export interface ConversationViewportMemory {
@@ -90,6 +91,7 @@ export const ObservedConversationView = memo(function ObservedConversationView({
     const canvas = root.current?.closest<HTMLElement>('.workspace-canvas');
     if (!canvas) return;
     let frame = 0;
+    let saveTimer: ReturnType<typeof setTimeout> | undefined;
     const update = () => {
       frame = 0;
       if (programmaticScroll.current) return;
@@ -101,6 +103,12 @@ export const ObservedConversationView = memo(function ObservedConversationView({
           bottom: canvas.scrollHeight - canvas.scrollTop - canvas.clientHeight < 48 };
         memory.anchors.delete(conversationId); memory.anchors.set(conversationId, anchor.current);
         while (memory.anchors.size > 64) memory.anchors.delete(memory.anchors.keys().next().value!);
+        if (desktopBridge()) {
+          if (saveTimer) clearTimeout(saveTimer);
+          saveTimer = setTimeout(() => {
+            void desktopBridge()!.setViewport(conversationId, anchor.current).catch(reportPersistenceError);
+          }, 250);
+        }
       }
     };
     const onScroll = () => { if (!frame) frame = requestAnimationFrame(update); };
@@ -109,6 +117,7 @@ export const ObservedConversationView = memo(function ObservedConversationView({
     for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) canvas.addEventListener(type, userScroll, { passive: true });
     const observer = new ResizeObserver(onScroll); observer.observe(canvas);
     return () => {
+      if (saveTimer) clearTimeout(saveTimer);
       canvas.removeEventListener('scroll', onScroll);
       for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) canvas.removeEventListener(type, userScroll);
       observer.disconnect(); cancelAnimationFrame(frame);

@@ -12,6 +12,18 @@ Phase 4 made authorization and recovery durable but still runs Executor adapters
 
 Requiring Planner to predict concrete paths, network targets, secrets and external objects would also move runtime facts into the semantic planning seam. Most such needs appear only while an Executor is working. Phase 5 therefore needs a final resource model and a runtime approval boundary without creating a second strategic interpreter.
 
+## 2026-10-06 baseline amendment
+
+[ADR-0046](0046-agent-baseline-operations-and-responsibility-separation.md)
+adds the system-owned `standard-agent` profile for ordinary Executor file,
+command and public HTTP(S) operations. Historical profiles keep their meaning;
+exact default migration (including the preserved read-partition limit of 8)
+is allowed only through unified configuration activation. Custom constraints,
+Planner and revision-pinned attempts retain their boundaries. The bounded
+hot-update exception does not permit arbitrary profile grammar or parameter
+changes. Source/native/Electron validation is recorded in the linked plan;
+real Docker acceptance remains open.
+
 ## Decision
 
 ### Resource authority
@@ -102,3 +114,20 @@ at the directory where the user starts AnyFusion. The unified Linux Runtime
 remains available for containerized validation, and sibling Executor containers
 are not required. Custom Executor registration remains a Docker compatibility
 concern and is unchanged by this minimal worktree path.
+
+### 2026-10-06: PDF worker lifecycle and evidence-based inactivity
+
+Native Pi PDF workers inherit the Executor attempt process group. The reviewed
+Pi extension handles AbortSignal (SIGTERM, then a 5-second cleanup grace before
+SIGKILL); Runtime group cancellation remains Kernel-authorized. Neither a PDF
+page nor a normal shell operation has a default total-duration deadline.
+
+Per-operation observation continues while Harness tools are active. New page
+checkpoints/model deltas are activity; presentation heartbeats and identical
+keepalives are not. The inactivity threshold initiates a bounded health check,
+not cancellation. Process existence without work evidence produces `unknown`;
+work-loop response, process exit and explicit nonresponse evidence remain
+separate facts. Runtime persists observations without deciding retries or Task
+status. With insufficient evidence the user retains wait/cancel controls; the
+existing cancellation fence and terminal-outcome Kernel recovery paths apply.
+No new database schema or independent recovery policy is introduced.

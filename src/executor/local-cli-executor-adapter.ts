@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { OperationActivityMonitor, type OperationHealth } from './operation-activity-monitor.js';
 import type { RuntimePrivateConfigurationBinding } from '../configuration/types.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { ExecutorResult } from '../core/types.js';
@@ -25,6 +26,7 @@ export interface LocalCliChildProcessInput extends HarnessLaunchSpec {
     line: string,
     stream: 'stdout' | 'stderr',
   ) => HarnessActivitySignal | null | void;
+  onHealth?: (observation: OperationHealth) => void;
   onRawChunk?: (chunk: Buffer | string, stream: 'stdout' | 'stderr') => void;
 }
 
@@ -82,6 +84,8 @@ export interface SpawnLocalCliChildProcessRunnerDependencies {
   hostEnvironment?: NodeJS.ProcessEnv;
   signalProcess?: (pid: number, signal: NodeJS.Signals) => void;
   terminationGraceMs?: number;
+  processGroupExists?: (pid: number) => boolean;
+  probeOperation?: (pid: number, operationId: string) => Promise<{ state: 'active' | 'unknown' | 'unresponsive' | 'exited'; evidence: string }>;
 }
 
 export class LocalCliExecutorAdapter implements ExecutorAdapter {
@@ -148,6 +152,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
       });
       let streamedOutput: string | null = null;
       let lastStep: string | undefined;
+      const operationCheckpoints = new Map<string, string>();
       const streamTracker = this.driver.createResultStreamTracker?.();
       const rawResult = await this.processRunner.run({
         attemptId: executionBinding.attemptId,
@@ -173,7 +178,12 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           if (resultLine !== null && resultLine !== undefined) {
             streamedOutput = resultLine;
           }
-          const progress = this.driver.parseProgressLine?.({ line, stream });
+          const activity = this.driver.parseActivityLine?.({ line, stream });
+          const repeated = activity?.type === 'operation_progress' && activity.checkpoint !== undefined
+            && operationCheckpoints.get(activity.operationId) === activity.checkpoint;
+          if (activity?.type === 'operation_finished') operationCheckpoints.delete(activity.operationId);
+          else if (activity?.checkpoint !== undefined) operationCheckpoints.set(activity.operationId, activity.checkpoint);
+          const progress = repeated ? null : this.driver.parseProgressLine?.({ line, stream });
           if (progress) {
             // Keep the last reported step so a failure can name where it happened.
             const excerpt = progress.text.replace(/\s+/gu, ' ').trim();
@@ -187,8 +197,15 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
             providerRef: this.authorizedBinding.providerRef,
             modelId: this.modelId,
           });
-          return this.driver.parseActivityLine?.({ line, stream });
+          return this.driver.parseActivityLine
+            ? activity
+            : (progress ? { type: 'operation_progress' as const, operationId: 'process',
+              checkpoint: createHash('sha256').update(line).digest('hex') } : null);
         },
+        onHealth: observation => input.onProgress?.({
+          kind: 'status', operationHealth: observation,
+          text: operationHealthText(observation),
+        }),
         onRawChunk: (chunk, stream) => input.onRawOutput?.(Buffer.from(chunk), stream),
       });
       const streamSnapshot = streamTracker?.snapshot();
@@ -386,12 +403,28 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
   private readonly hostEnvironment: NodeJS.ProcessEnv;
   private readonly signalProcess: (pid: number, signal: NodeJS.Signals) => void;
   private readonly terminationGraceMs: number;
+  private readonly probeOperation: NonNullable<SpawnLocalCliChildProcessRunnerDependencies['probeOperation']>;
+  private readonly processGroupExists: (pid: number) => boolean;
 
   constructor(dependencies: SpawnLocalCliChildProcessRunnerDependencies = {}) {
     this.spawnProcess = dependencies.spawnProcess ?? spawn;
     this.hostEnvironment = dependencies.hostEnvironment ?? process.env;
     this.signalProcess = dependencies.signalProcess ?? process.kill;
     this.terminationGraceMs = dependencies.terminationGraceMs ?? DEFAULT_TERMINATION_GRACE_MS;
+    this.processGroupExists = dependencies.processGroupExists ?? (pid => {
+      try { process.kill(-pid, 0); return true; }
+      catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
+    });
+    this.probeOperation = dependencies.probeOperation ?? (async pid => {
+      try {
+        process.kill(pid, 0);
+        return { state: 'unknown', evidence: 'Process exists; no operation response or progress evidence. Silence does not prove death.' };
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code === 'ESRCH'
+          ? { state: 'exited', evidence: 'Operating system reports that the process no longer exists' }
+          : { state: 'unknown', evidence: 'Process status could not be checked' };
+      }
+    });
   }
 
   run(input: LocalCliChildProcessInput): Promise<LocalCliChildProcessResult> {
@@ -420,13 +453,18 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       let stdoutLineBuffer = '';
       let stderrLineBuffer = '';
       let settled = false;
-      let timedOut = false;
       let terminationSource: LocalCliProcessDiagnostics['terminationSource'] = 'process_exit';
       let sigtermSentAt: string | null = null;
       let sigkillSentAt: string | null = null;
       let idleTimer: NodeJS.Timeout | null = null;
       let forceKillTimer: NodeJS.Timeout | null = null;
-      const activeOperations = new Set<string>();
+      let groupCleanupTimer: NodeJS.Timeout | null = null;
+      const monitor = new OperationActivityMonitor({
+        quietMs: input.idleTimeoutMs ?? DEFAULT_EXECUTOR_IDLE_TIMEOUT_MS,
+        probe: operation => child.pid ? this.probeOperation(child.pid, operation)
+          : Promise.resolve({ state: 'unknown', evidence: 'Process identity unavailable' }),
+        onHealth: observation => input.onHealth?.(observation),
+      });
       const signalChild = (signal: NodeJS.Signals) => {
         const pid = child.pid;
         if (!pid) return;
@@ -439,8 +477,11 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       const clearWatchdogs = () => {
         if (idleTimer) clearTimeout(idleTimer);
         if (forceKillTimer) clearTimeout(forceKillTimer);
+        if (groupCleanupTimer) clearInterval(groupCleanupTimer);
         idleTimer = null;
         forceKillTimer = null;
+        groupCleanupTimer = null;
+        monitor.dispose();
       };
       const finish = (exitCode: number | null) => {
         if (settled) return;
@@ -469,51 +510,17 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
           },
         });
       };
-      const expireIdleWatchdog = () => {
-        if (settled || timedOut) return;
-        timedOut = true;
-        terminationSource = 'idle_watchdog';
-        const diagnostic = 'executor idle timeout\n';
-        stderr = appendBoundedTail(stderr, diagnostic);
-        stderrLineBuffer = emitCompleteLines(
-          stderrLineBuffer,
-          diagnostic,
-          line => input.onLine?.(line, 'stderr'),
-        );
-        sigtermSentAt = new Date().toISOString();
-        signalChild('SIGTERM');
-        forceKillTimer = setTimeout(() => {
-          sigkillSentAt = new Date().toISOString();
-          signalChild('SIGKILL');
-          finish(null);
-        }, this.terminationGraceMs);
-        forceKillTimer.unref();
-      };
       const resetIdleWatchdog = () => {
-        const timeoutMs = input.idleTimeoutMs;
-        if (
-          settled
-          || timedOut
-          || terminationSource === 'abort'
-          || timeoutMs === undefined
-          || !Number.isFinite(timeoutMs)
-          || timeoutMs <= 0
-        ) return;
-        if (idleTimer) clearTimeout(idleTimer);
-        idleTimer = null;
-        if (activeOperations.size > 0) return;
-        idleTimer = setTimeout(expireIdleWatchdog, timeoutMs);
+        if (idleTimer || settled || terminationSource === 'abort') return;
+        idleTimer = setInterval(() => monitor.tick(), Math.min(1000, input.idleTimeoutMs ?? 1000));
         idleTimer.unref();
       };
       const emitLine = (line: string, stream: 'stdout' | 'stderr') => {
         const activity = input.onLine?.(line, stream);
-        if (!activity) return;
-        if (activity.type === 'operation_started') {
-          activeOperations.add(activity.operationId);
-        } else {
-          activeOperations.delete(activity.operationId);
+        if (activity) monitor.observe(activity);
+        else if (!input.onLine && line.trim()) {
+          monitor.observe({ type: 'operation_progress', operationId: 'process', checkpoint: line });
         }
-        resetIdleWatchdog();
       };
       const appendStdout = (chunk: Buffer | string) => {
         resetIdleWatchdog();
@@ -547,7 +554,16 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
         appendStderr(error instanceof Error ? error.message : String(error));
         finish(null);
       });
-      child.once('exit', code => finish(code));
+      child.once('exit', code => {
+        if (terminationSource !== 'abort' || process.platform === 'win32' || !child.pid) {
+          finish(code); return;
+        }
+        const processGroupExists = () => this.processGroupExists(child.pid!);
+        if (!processGroupExists()) { finish(code); return; }
+        // A parent can exit on SIGTERM while a worker ignores it. Retain capacity
+        // and the SIGKILL grace timer until the inherited group has really gone.
+        groupCleanupTimer = setInterval(() => { if (!processGroupExists()) finish(code); }, 25);
+      });
       this.activeProcesses.set(input.attemptId, {
         child,
         abort: () => {
@@ -639,4 +655,13 @@ function configurationFailure(
     exitCode: 1,
     durationMs: Date.now() - startedAt,
   };
+}
+
+function operationHealthText(observation: OperationHealth): string {
+  const labels: Record<OperationHealth['state'], string> = {
+    active: '已恢复实际活动', waiting: '暂无新进展', checking: '持续无活动，正在检查执行状态',
+    unknown: '执行状态待确认：暂无可验证的工作状态；可继续等待或取消任务',
+    unresponsive: '操作健康检查未响应，状态待处理', exited: '检测到执行进程退出，正在收集结果',
+  };
+  return `${labels[observation.state]}（${observation.operationId}）`;
 }

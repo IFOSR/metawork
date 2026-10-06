@@ -188,3 +188,8 @@ directory.
 
 Rejected because it would break Windows drive and separator semantics and would
 duplicate Server-owned path interpretation in the Application Shell.
+
+
+## Desktop amendment (2026-10-06)
+
+Desktop exchanges a short-lived single-use local Gateway ticket into a private HttpOnly Web session after matching HTTP instance proof. Browser login and non-authenticating Workspace launch hints are unchanged. Directory selection remains an untrusted hint to the existing authorized Workspace command. See [ADR-0045](0045-desktop-thin-shell-and-local-session.md) and its implementation record for outstanding release gates.

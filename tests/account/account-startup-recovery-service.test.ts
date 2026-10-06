@@ -531,6 +531,21 @@ describe('AccountStartupRecoveryService production composition', () => {
     expect(scheduler.getSlot('conversation-origin')).toMatchObject({ state: 'free', activeTaskId: null });
   });
 
+  it('uses the activated task limit in subsequent queue promotion without rebuilding the account', async () => {
+    const fixture = createFixture('hot-task-limit');
+    await fixture.composition.accountRuntime.initialize();
+    const promote = vi.spyOn(ConversationTaskSchedulerRepo.prototype, 'promoteAvailable');
+    try {
+      for (const limit of [1, 4]) {
+        // Activation replaces the staged Kernel projection object.
+        fixture.staged.kernel = { ...fixture.staged.kernel,
+          runtimePolicy: { ...fixture.staged.kernel.runtimePolicy, maxConcurrentTasks: limit } };
+        await fixture.composition.accountRuntime.reviewTaskPoolOnTimer();
+        expect(promote).toHaveBeenLastCalledWith(limit, expect.any(String));
+      }
+    } finally { promote.mockRestore(); }
+  });
+
   it('promotes the next same-Conversation Task exactly once when a blocked Task releases its slot', async () => {
     const fixture = createFixture('blocked-slot-promotion');
     const blockedTask = createRunningTask(fixture, 'Block on an unavailable Planner');
@@ -942,7 +957,7 @@ function createFixture(
     ...(coordinator ? { buildKernelCoordinator: () => coordinator } : {}),
     ...(queryUsageLifecycle ? { queryUsageLifecycle } : {}),
   });
-  return { root, db, taskEngine, backend, composition };
+  return { root, db, taskEngine, backend, composition, staged };
 }
 
 function createRunningTask(

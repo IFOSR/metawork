@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { desktopBridge } from '../platform/services';
 import type {
   AttachmentMetadata,
   WebSessionMetadata,
@@ -104,9 +105,27 @@ export function WorkspaceShell({
   onFilesSelected: (files: File[]) => void;
   onRemoveAttachment: (attachmentId: string) => void;
 }) {
+  const [sidebarHidden, setSidebarHidden] = useState(() => Boolean(desktopBridge() && window.matchMedia('(max-width: 1000px)').matches));
+  useEffect(() => {
+    if (!desktopBridge()) return;
+    const media = window.matchMedia('(max-width: 1000px)');
+    const update = () => setSidebarHidden(media.matches);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  useEffect(() => desktopBridge()?.onMenu(action => {
+    if (action === 'new-conversation' && !newWorkBlocked && !workspaceSwitching) onNewSession();
+    if (action === 'settings') onSettings();
+    if (action === 'toggle-sidebar') setSidebarHidden(value => !value);
+    if (action === 'search') {
+      setSidebarHidden(false);
+      requestAnimationFrame(() => document.querySelector<HTMLInputElement>('.workspace-sidebar input')?.focus());
+    }
+  }), [onNewSession, onSettings, newWorkBlocked, workspaceSwitching]);
   return (
     <div
       className="workspace-shell"
+      data-sidebar-hidden={sidebarHidden || undefined}
       data-preview-open={previewOpen || undefined}
       data-preview-maximized={previewMaximized || undefined}
     >
@@ -134,6 +153,8 @@ export function WorkspaceShell({
       />
       <main className="workspace-main">
         <WorkspaceHeader
+          onToggleSidebar={desktopBridge() ? () => setSidebarHidden(value => !value) : undefined}
+          sidebarHidden={sidebarHidden}
           title={title}
           workspace={workspace}
           tab={tab}

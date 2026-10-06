@@ -38,6 +38,17 @@ afterEach(() => {
 });
 
 describe('SourceNativeUpdater', () => {
+  it('lets the desktop helper recover a prepared native activation without staging another release', async () => {
+    const fixture = await installedJournalFixture();
+    const before = fixturePointers(fixture);
+    const result = await fixture.updater.update(fixture.next);
+    const activation = JSON.parse(readFileSync(result.journalPath, 'utf8'));
+    activation.phase = 'prepared'; writeFileSync(result.journalPath, JSON.stringify(activation));
+    await fixture.updater.recoverInterruptedActivation();
+    expect(fixturePointers(fixture)).toEqual(before);
+    await fixture.updater.recoverInterruptedActivation();
+    expect(fixturePointers(fixture)).toEqual(before);
+  });
   it.each([
     ['update', 'update'], ['update', 'rollback'],
     ['rollback', 'update'], ['rollback', 'rollback'],

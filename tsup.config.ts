@@ -4,6 +4,8 @@ export default defineConfig({
   entry: [
     'src/index.ts',
     'src/install-cli.ts',
+    'src/desktop-install-cli.ts',
+    'src/desktop-update-cli.ts',
     'src/planner-mcp.ts',
     'src/generate-planner-schema.ts',
     'src/capability-request-cli.ts',

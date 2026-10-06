@@ -62,7 +62,25 @@ export class SourceNativeUpdater {
     detectCommand(command: string): Promise<boolean>;
     isServerRunning(): Promise<boolean>;
     afterSwitch?: (name: ReleasePointerName) => Promise<void>;
+    installLaunchers?: boolean;
   }) {}
+
+  /** Desktop helper crash recovery uses the same native activation and companion guards. */
+  async recoverInterruptedActivation(): Promise<void> {
+    if (await this.dependencies.isServerRunning()) throw new Error('Stop Server before activation recovery');
+    const paths = this.dependencies.paths;
+    const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
+    const lock = await acquireRuntimeUpdateLock(paths.root, 'update');
+    try {
+      const pointers = releasePointerPaths(paths, accountPaths);
+      await recoverPreparedReleaseActivations(paths.upgradeJournals, pointers,
+        (journal, path) => restoreActivationJournal(accountPaths, journal, activationId(path)));
+      const current = await findCurrentActivation(paths.upgradeJournals, pointers);
+      const repository = new FileConfigurationRepository(accountPaths.config);
+      await repository.initialize();
+      await recoverConfiguration(repository, pointers, current);
+    } finally { await lock.release(); }
+  }
 
   async update(input: SourceNativeUpdateInput): Promise<SourceNativeUpdateResult> {
     const paths = this.dependencies.paths;
@@ -168,7 +186,7 @@ export class SourceNativeUpdater {
           verifyActiveDatabase(accountPaths.database);
         },
       });
-      const launcherPaths = [
+      const launcherPaths = this.dependencies.installLaunchers === false ? [] : [
         paths.launcher,
         paths.anyFusionLauncher,
         paths.metaclawLauncher,

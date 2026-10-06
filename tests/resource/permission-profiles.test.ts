@@ -1,6 +1,8 @@
+import { RegisteredCapabilityResourceResolver } from '../../src/execution/capability-resource-resolver.js';
 import { describe, expect, it } from 'vitest';
 import {
   buildPermissionRules,
+  getPermissionProfile,
   evaluateCapabilityRequest,
   capabilityRequestFingerprint,
   type NormalizedCapabilityRequest,
@@ -9,6 +11,28 @@ import {
 } from '../../src/resource/index.js';
 
 describe('permission profile rules', () => {
+  it.each(['http://localhost/x', 'http://127.0.0.1/x', 'http://10.0.0.1/x', 'http://169.254.169.254/x',
+    'http://[::1]/x', 'https://user:pass@example.com/', 'file:///etc/passwd'])(
+    'rejects non-public or credentialed targets before baseline authorization: %s', resource => {
+      const resolver = new RegisteredCapabilityResourceResolver(new Map());
+      expect(() => resolver.resolve({ capability: 'network_target', resource, operation: 'read', reason: 'research', suggestedScope: 'once' })).toThrow();
+    });
+  it('combines workspace writes and public HTTP in the baseline without changing historical engineering rules', () => {
+    expect(getPermissionProfile('standard-agent')).toMatchObject({ workspaceWritable: true,
+      temporaryDirectoryWritable: true, publicNetwork: 'egress_proxy', sourceReadOnly: true, inputsReadOnly: true });
+    expect(getPermissionProfile('workspace-engineering').publicNetwork).toBe('disabled');
+    const rules = buildPermissionRules({ permissionProfileId: 'standard-agent', additionalReadPartitions: [] });
+    const target: PartitionIdentity = { kind: 'external_object', provider: 'https', account: 'public',
+      collection: 'example.com', objectId: '443/report' };
+    expect(decide('standard-agent', 'network_target', target, rules)).toMatchObject({
+      type: 'grant_capability', ruleId: 'permission-profile-v1:standard-agent:public-http' });
+    for (const capability of ['sealed_secret', 'external_object_operation', 'repository_promotion'] as const) {
+      expect(decide('standard-agent', capability, target, rules)).toMatchObject({ type: 'escalate_capability' });
+    }
+    expect(decide('standard-agent', 'additional_read_resource', {
+      kind: 'path', mountId: 'other-task', normalizedRelativePath: 'private' }, rules)).toMatchObject({ type: 'deny_capability' });
+  });
+
   it('allows only exact Task-registered additional read partitions', () => {
     const registered: PartitionIdentity = {
       kind: 'path', mountId: 'inputs-task-1', normalizedRelativePath: 'resource-0',

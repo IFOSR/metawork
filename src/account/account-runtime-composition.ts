@@ -311,7 +311,7 @@ export function buildAccountRuntimeComposition(deps: {
     kernelExecutionServices,
     kernelCoordinator,
     plannerConfiguration: deps.stagedConfiguration.planner,
-    kernelConfiguration: deps.stagedConfiguration.kernel,
+    get kernelConfiguration() { return deps.stagedConfiguration.kernel; },
     planningAgent: plannerServices.planningAgent,
     binder: conversationExecutionBinder,
     notifier: deps.notifier,

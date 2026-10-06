@@ -7,13 +7,52 @@ import { buildStagedLegacyConfiguration } from '../../src/configuration/staged-l
 import { buildExecutorConfigurationCandidate } from '../../src/configuration/executor-configuration.js';
 
 describe('configuration diff classification', () => {
+  it('hot activates the settings task limit without allowing unrelated runtime policy changes', () => {
+    const base = buildStagedLegacyConfiguration({ testMode: true }).snapshot.config;
+    const next = structuredClone(base);
+    next.runtimePolicy.maxConcurrentTasks = 3;
+    expect(classifyConfigurationDiff(base, next).classification).toBe('hot');
+    next.runtimePolicy.maxConcurrentAttempts = 8;
+    expect(classifyConfigurationDiff(base, next).restartPaths).toContain('runtimePolicy.maxConcurrentAttempts');
+  });
+  it('hot activates an agent bound to a model added in the same transaction', () => {
+    const base = buildStagedLegacyConfiguration({ testMode: true }).snapshot;
+    const config = structuredClone(base.config);
+    config.models['new-model'] = { ...Object.values(config.models)[0]!, modelId: 'deepseek-flash' };
+    const created = buildExecutorConfigurationCandidate({ ...base, config }, {
+      operation: 'create', tool: 'pi', fields: {
+        displayName: '日常秘书', modelPolicy: { mode: 'fixed', modelRef: 'new-model' },
+        manualSourceText: '回答日常问题。', enabled: true,
+      },
+    });
+    expect(classifyConfigurationDiff(base.config, created.config).classification).toBe('hot');
+    created.config.agentClasses[created.createdAgentClassRef!]!.skills = ['untrusted-skill'];
+    expect(classifyConfigurationDiff(base.config, created.config).classification).toBe('restart_required');
+  });
+  it('hot enables an existing executor tool while keeping command changes restart-required', () => {
+    const base = buildStagedLegacyConfiguration({ testMode: true }).snapshot;
+    const agent = base.config.agentClasses['pi-agent']!;
+    agent.enabled = false;
+    base.config.harnesses[agent.harnessRef]!.enabled = false;
+    const candidate = buildExecutorConfigurationCandidate(base, { operation: 'enable', agentClassRef: 'pi-agent' });
+    expect(classifyConfigurationDiff(base.config, candidate.config).classification).toBe('hot');
+    candidate.config.agentClasses['pi-agent']!.responsibility = '开展市场和产品调研，整理带来源的分析报告。';
+    expect(classifyConfigurationDiff(base.config, candidate.config).classification).toBe('hot');
+    const changedPermissions = structuredClone(candidate.config);
+    changedPermissions.agentClasses['pi-agent']!.skills = ['untrusted-skill'];
+    expect(classifyConfigurationDiff(base.config, changedPermissions).classification).toBe('restart_required');
+    const harness = candidate.config.harnesses[agent.harnessRef]!;
+    if (harness.transport !== 'local-cli') throw new Error('Expected CLI tool');
+    harness.args = ['--unsafe-change'];
+    expect(classifyConfigurationDiff(base.config, candidate.config).classification).toBe('restart_required');
+  });
   it('hot activates bounded creation, removal and permission changes, not arbitrary tool fields', () => {
     const base = buildStagedLegacyConfiguration({ testMode: true }).snapshot;
     const existing = base.config.agentClasses['pi-agent']!;
     const created = buildExecutorConfigurationCandidate(base, {
       operation: 'create', tool: 'pi', fields: {
         displayName: 'Research', modelPolicy: existing.modelPolicy,
-        permissionProfileRef: existing.permissionProfileRef!, manualSourceText: '', enabled: true,
+        manualSourceText: '', enabled: true,
       },
     });
     expect(classifyConfigurationDiff(base.config, created.config).classification).toBe('hot');
@@ -21,7 +60,7 @@ describe('configuration diff classification', () => {
     const changed = buildExecutorConfigurationCandidate(base, {
       operation: 'update', agentClassRef: 'pi-agent', fields: {
         displayName: 'Engineering', modelPolicy: existing.modelPolicy,
-        permissionProfileRef: 'workspace-engineering', manualSourceText: '', enabled: true,
+        manualSourceText: '', enabled: true,
       },
     });
     expect(classifyConfigurationDiff(base.config, changed.config).classification).toBe('hot');

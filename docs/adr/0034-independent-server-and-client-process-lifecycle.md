@@ -281,3 +281,8 @@ global mutable default creates races and cross-Conversation contamination.
 
 Rejected because it creates another lifecycle command and risks a
 transport-specific path around the unified Gateway.
+
+
+## Desktop amendment (2026-10-06)
+
+The Desktop installation adapter may invoke the formal Server start/status/stop paths. It does not compose Runtime. Window close hides the client and ordinary Desktop exit leaves Server running; a separate explicit global stop explains its effect on every client. See [ADR-0045](0045-desktop-thin-shell-and-local-session.md) and its implementation record for outstanding release gates.

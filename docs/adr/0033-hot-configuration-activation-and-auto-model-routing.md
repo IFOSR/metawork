@@ -6,6 +6,18 @@
   routing, and read-only Work Graph presentation
 - **Affected ADRs:** ADR-0027, ADR-0028, ADR-0031
 
+## 2026-10-06 baseline amendment
+
+[ADR-0046](0046-agent-baseline-operations-and-responsibility-separation.md)
+adds the system-owned `standard-agent` profile for ordinary Executor file,
+command and public HTTP(S) operations. Historical profiles keep their meaning;
+exact default migration (including the preserved read-partition limit of 8)
+is allowed only through unified configuration activation. Custom constraints,
+Planner and revision-pinned attempts retain their boundaries. The bounded
+hot-update exception does not permit arbitrary profile grammar or parameter
+changes. Source/native/Electron validation is recorded in the linked plan;
+real Docker acceptance remains open.
+
 ## Decision
 
 Provider and Model catalog facts, Provider credential references, AgentClass
@@ -164,8 +176,9 @@ configurations are hot-activatable while strictly idle, subject to the field
 bounds in ADR-0028. Changing an Executor's tool, adding or removing a Planner
 AgentClass or changing its type, and Harness command/driver/image/argument or
 Permission Profile grammar changes remain outside ordinary executor
-management. Shared credential writes, Provider/Model mutations, full
-configuration activation, and rollback all pass through the same strict gate;
+management. Provider/Model and credential mutations join full configuration
+activation through the same strict gate; compensation is part of that transaction
+and standalone settings credential-write/rollback routes are retired (2026-10-06);
 read-only credential queries never import or replace keys as a side effect,
 and automatic credential import runs only inside a protected initialization or
 configuration transaction.
@@ -344,3 +357,32 @@ are deterministic. Optional AI work is explicit and uses InternalLlmService.
 The old manual preview routes use the local ExecutorManualPreviewService;
 unchanged persisted assertions remain compatible and new source does not inherit
 old assertions. The existing semantic-assertion trust guard is retained.
+
+### 2026-10-06 single settings activation entry
+
+The settings page's “保存并激活” is the sole activation action for its combined
+draft. Agent create/edit dialogs save to the page draft; confirmed removal and
+enablement changes join the same draft. Preparation reads that candidate,
+including unactivated models and agents, without compiling, probing, acquiring
+the activation gate or writing a revision. Draft editing is allowed while work
+is running. Final validation (including newly reachable model prices), strict
+idle admission, revision comparison and rollback retain the existing
+ConfigurationRuntimeCoordinator transaction. A model and a bounded agent
+referencing it may be added together in one hot activation; structural tool and
+permission bounds still apply.
+
+
+The 2026-10-06 settings audit also retires standalone Management writes at
+`POST /api/config/secrets`, `POST /api/config/routing/span/secret`, and
+`POST /api/config/rollback`. Credential status, verification and revision reads
+remain read-only. Provider/Span credential replacements are staged only within
+`POST /api/config/activate`, with the existing compensating rollback on failure.
+CLI administration and installer recovery are separate operational contracts.
+The Web no longer offers manual capability compilation as a separate settings
+step; changed duties remain draft text until deterministic activation.
+
+The settings task limit, `runtimePolicy.maxConcurrentTasks`, is included in the
+hot field set. Account recovery and queue promotion read the currently activated
+Kernel configuration rather than capturing its startup object. Other attempt
+and backend policy limits remain restart-required; strict idle admission is
+unchanged.

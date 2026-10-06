@@ -1,0 +1,36 @@
+name: Desktop validation
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['apps/desktop/**', 'web/**', 'src/client/**', 'src/gateway/**', 'src/management/**', 'src/installation/**', 'src/server/**', 'src/storage/**', 'src/desktop-*.ts', 'tests/installation/**', 'package*.json', 'tsup.config.ts', 'scripts/dev-desktop.mjs', '.github/workflows/desktop.yml']
+permissions:
+  contents: read
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+      - run: npm ci
+      - run: npm ci --prefix web --ignore-scripts
+      - run: npm ci --prefix apps/desktop
+      - run: npm ci --prefix planner/AnyFusion-Pi --ignore-scripts
+      - run: npm run lint && npm run lint:desktop && npx tsc --noEmit -p web/tsconfig.json
+      - run: npm run test:desktop
+      - run: npx vitest run tests/management/desktop-session.test.ts tests/management/server.test.ts tests/gateway/client-notification-feed.test.ts tests/installation/desktop-activation.test.ts tests/installation/desktop-shell-health.test.ts tests/installation/desktop-release.test.ts tests/installation/source-native-installer.test.ts tests/installation/source-native-updater.test.ts
+      - run: node scripts/dev-desktop.mjs --prepare-only
+      - run: npm run smoke:desktop
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-evidence-${{ matrix.runner }}
+          path: |
+            .tmp/desktop-development/evidence/
+            .tmp/desktop-development/desktop-*.png

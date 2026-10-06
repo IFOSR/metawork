@@ -12,12 +12,38 @@ changes, subtask planning, executor instance claims, and fallback behavior.
 
 ## Current Implementation Notes
 
+Implemented locally (2026-10-06): ADR-0046 removes the ordinary Executor
+research/engineering permission selector. The system-owned `standard-agent`
+profile combines task file/command work and public HTTP(S); duties guide
+allocation without granting authority. New installations seed this baseline.
+Existing default Pi/Codex profiles (including aliases) migrate only through
+unified settings activation. The historical engineering read-partition limit
+of 8 is preserved by `standard-agent-read-8`; custom restrictions are not
+expanded. Planner and pinned historical revisions retain their boundaries.
+New baseline agents declare actual CLI affordances; existing routing owners
+derive compatible delivery contracts from those facts and model evidence,
+without requiring a generic research/engineering label. Native and Electron
+acceptance passed; real Docker acceptance remains open because Docker is not
+installed. See `docs/plans/2026-10-06-agent-baseline-permissions-design.md`.
+
 Settings save/activation and legacy manual preview are deterministic and do not
 call Planner or any LLM. ExecutorManualPreviewService preserves natural-language
 duties, reuses only unchanged persisted assertions and never generates capability
 grants. AI editing/explanation/public-model summarization remain explicit calls
 to InternalLlmService. Planner hot rebinding only manages process/configuration
 lifecycle; it must never become a settings semantic turn (ADR-0044 correction).
+Settings has one activation action: “保存并激活”. Agent create/edit dialogs save
+only to the current page draft, and confirmed enable/disable/removal also update
+that draft. Read-only preparation uses the page's unactivated models/agents and
+does not compile, probe, write a revision or require an idle account. The final
+page action alone validates the combined candidate and enters the existing
+strict-idle activation transaction; missing prices still block that activation.
+Provider connections, Provider/Span Keys, model edits and the task concurrency
+limit join this same draft. Management exposes no standalone credential-write
+or configuration-rollback route; credentials are staged with compensation
+inside activation. `runtimePolicy.maxConcurrentTasks` is hot-activatable, and
+subsequent queue promotion reads the active limit rather than a startup copy.
+Other attempt/backend policy limits remain restart-required.
 
 Routing now compares natural-language duties and detailed model evidence through
 the existing Mercury advisor (`span-fit-v5`). Generic coding/planning/long-context
@@ -112,7 +138,10 @@ not a permission-resolution fact. History pages retain running Turns and
 advance terminal status monotonically; local PgUp/PgDn scrolling never changes
 Server state. See the September 20, 2026 TUI review-fix record.
 
-Only the persistent Server acquires `runtime.lock`. After account recovery and
+Only the persistent Server acquires `runtime.lock` during ordinary operation;
+native update/rollback takes the same lock while Server is stopped. Release and
+exit cleanup are idempotent and verify the acquisition token, so an old Server
+cannot unlink a successor's runtime/update lock. After account recovery and
 transport readiness it atomically publishes a mode-restricted endpoint manifest
 containing safe PID, version, protocol, Unix socket, loopback Web origin and
 ready/draining facts. The manifest never contains a user Workspace. Clients
@@ -426,10 +455,14 @@ operation.
 `src/execution/subtask-attempt-runner.ts` executes one Kernel-authorized deterministic attempt. A successful primary/correction attempt commits an immutable receipt and candidate Git commit, then moves the Subtask to `awaiting_integration`; it does not publish result, artifacts, handoffs or `done`. The publication worker integrates candidates in topology/first-dispatch/Subtask-ID order and atomically publishes all completion facts only after Git succeeds. Every non-success commits a terminal receipt and returns control to Kernel policy. A first completion-contract failure may receive one response-only correction on the same AgentClass; merge conflicts instead use the original AgentClass for up to three isolated `merge_repair` attempts, followed by one conflict-chain Planner replan and then park.
 
 Local CLI attempts have no MetaWork-owned wall-clock, tool-count or processing-cycle
-budget. `runtimePolicy.executorIdleTimeoutMs` is the only Executor time boundary:
-stdout/stderr activity renews it, and Driver-classified Harness operations suspend it
-until the last active operation finishes. Runtime presentation heartbeats are not
-watchdog activity. A Kernel-authorized automatic retry is projected as
+budget. `runtimePolicy.executorIdleTimeoutMs` is the sustained-inactivity check
+threshold (default 5 minutes), never a kill deadline. Operations remain independently
+observed while tools are active; real progress/checkpoints renew activity, duplicate
+keepalives and Runtime presentation heartbeats do not. After 60 seconds the UI
+shows no new activity; a health check has a 30-second response window. PID existence
+alone yields unknown, not healthy/dead. Adapters report evidence; user cancellation
+and existing Kernel decisions retain recovery authority. A busy sibling cannot
+clear another operation’s unresolved health observation. A Kernel-authorized automatic retry is projected as
 `waiting_retry`, keeps the originating turn non-terminal, and may update only that
 Task's durable historical projection after a newer Conversation turn begins.
 
@@ -492,8 +525,9 @@ backed by existing `pi-cli`/`codex-cli` Harnesses may be created, edited
 text, enablement), enabled, disabled, and removed with hot activation; tool
 changes, Planner lifecycle, Harness/driver/command, and permission grammar
 stay outside this surface (ADR-0028 §6). Tool compatibility derives from the
-resolved Harness driver, never from names. Shared credential, Provider/Model,
-full-activation, and rollback writes through the Server use the same gate.
+resolved Harness driver, never from names. Provider/Model and credential changes through the Server join the single
+full-configuration activation transaction and use the same gate. Compensation
+remains inside that transaction; standalone settings rollback is not exposed.
 Shared Key reads never import credentials; manual compilation runs inside the
 activation transaction. AgentClass queries read current configuration rather
 than a startup copy. Execution resolves permission aliases to code-owned
@@ -912,7 +946,7 @@ The sole execution-structure fact for one task generation: a v7 revisioned DAG p
 _Avoid_: raw prompt, route decision, executor plan, issue thread
 
 **Subtask Execution Context**:
-The only Executor input contract: Task background, the current operational Subtask, direct incoming handoffs, outgoing requirements, Planner-selected evidence, Planner-selected historical Artifact inputs, Planner-selected current-Turn Attachment inputs, sibling titles marked out of scope, workspace boundaries, the completion-report contract, and evidence-tool availability. Historical `artifact` and current-Turn `attachment` ContextRefs are selected by Planner semantics, validated by MetaWork against Account/Conversation/Workspace/status/source/hash facts, and materialized into the attempt-local input directory before execution. Runtime retains Task/Subtask/attempt/WorkUnit identities and all acceptance/handoff keys outside model output. MetaWork never parses attachment contents and ships no document parser. Document parsing is owned by the routed Executor's own base model and tools; upload success is not a claim that every Executor supports every format. The eligible attachment set is a Turn fact, not a call-site fact: it is recorded once when the Turn starts (durably in `planner_turn_inputs`) and read by both the in-process and host-bridge submission paths, and a replan inherits the attachments of its Task's originating admission event instead of inventing new ones.
+The only Executor input contract: Task background, the current operational Subtask, direct incoming handoffs, outgoing requirements, Planner-selected evidence, Planner-selected historical Artifact inputs, Planner-selected current-Turn Attachment inputs, sibling titles marked out of scope, workspace boundaries, the completion-report contract, and evidence-tool availability. Historical `artifact` and current-Turn `attachment` ContextRefs are selected by Planner semantics, validated by MetaWork against Account/Conversation/Workspace/status/source/hash facts, and materialized into the attempt-local input directory before execution. Runtime retains Task/Subtask/attempt/WorkUnit identities and all acceptance/handoff keys outside model output. MetaWork core never parses attachment contents. The native release prepares the reviewed system-Pi PDF extension and its isolated dependencies; that extension owns document parsing. Document parsing is owned by the routed Executor's own base model and tools; upload success is not a claim that every Executor supports every format. The eligible attachment set is a Turn fact, not a call-site fact: it is recorded once when the Turn starts (durably in `planner_turn_inputs`) and read by both the in-process and host-bridge submission paths, and a replan inherits the attachments of its Task's originating admission event instead of inventing new ones.
 _Avoid_: Task prompt passthrough, conversation history, task-level memory bundle, sibling goals
 
 **Planner Context Bridge**:
@@ -1030,3 +1064,45 @@ _Avoid_: Planner resource claim, stderr parsing, broad permission prompt
 **Capability Use**:
 One attempt-bound audit-budget consumption of a previously granted capability. The Executor supplies the operation payload; trusted Runtime measures its UTF-8 size and atomically enforces attempt identity, expiry, call and byte budgets. This is not proof of universal operation mediation and does not add fine-grained authority beyond the selected execution backend and permission profile.
 _Avoid_: universal capability broker, syscall enforcement claim, caller-declared byte count
+
+## Desktop implementation boundary (2026-10-05)
+
+[ADR-0045](docs/adr/0045-desktop-thin-shell-and-local-session.md) accepts the isolated Desktop implementation: `apps/desktop`
+loads the shared Web UI and connects to the canonical independent Server. The
+local installation adapter is the only client exception allowed to invoke
+formal Server lifecycle commands. Window close/desktop quit never stop Server.
+Local desktop tickets are separate from browser login and workspace launch
+hints. Implementation and release validation remain in progress; this is not
+a signed desktop release announcement.
+
+
+Desktop source checkpoint (2026-10-06): shared Web now consumes the optional
+native directory/save/menu/preferences adapter. Account-scoped bounded drafts,
+viewports and route hints persist independently of the HTTP port. The local
+session exchange checks Unix ownership, release/instance identity and HTTP
+proof; tickets never enter Renderer. Generic notification hints use a bounded
+account feed, separate from Conversation observation and approval authority.
+The signed-payload preparer consumes formal Runtime/Planner archives plus
+explicit Node/Git/Pi distributions; installation and update helpers call the
+existing native installer/updater. Joint activation waits for the new Server
+identity and a new Desktop authenticated-render receipt before committing;
+interrupted recovery does not depend on executing the staged candidate.
+Desktop Pi provisioning covers engineering
+and research without requiring optional Codex. Actual Electron/production-Web
+smoke passed locally, including Renderer recovery and Server survival on client
+exit. A distributable signed payload, clean-machine task acceptance, signed
+joint-update tests, Intel validation and long-duration acceptance remain open.
+This checkpoint does not declare a production Desktop release.
+
+
+PDF/vision contract (2026-10-06): official DeepSeek Flash vision facts are applied
+to new configuration candidates at the sole “保存并激活” boundary. Historical
+revisions remain immutable. The shared Pi model renderer emits explicit text/image
+input modalities. Executor uses installed system Pi and the reviewed MIT
+`@joemccann/pi-pdf` 1.0.1 read subset; the vendored Planner receives no PDF tool.
+The release bundles checksum-pinned standalone CPython and pinned PDF packages,
+with no task-time package downloads or user-home extension/credential copying.
+Existing pdf_* tools extract text/tables or render bounded pages for Pi’s existing
+image read tool. Input is limited to 50 MiB, batches to 5 pages and images to 2048px;
+there is no PDF wall-clock limit. Workers inherit the attempt process group and
+AbortSignal cleanup; source/page checkpoints remain in the task workspace.

@@ -1,3 +1,5 @@
+import type { DesktopSessionService } from './desktop-session.js';
+import type { ClientNotificationPage } from '../gateway/client-notification-feed.js';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { collectNavigationDiagnostics } from '../utils/navigation-diagnostics.js';
 import { createReadStream, existsSync, statSync } from 'node:fs';
@@ -177,8 +179,8 @@ export interface ConfigQuery {
     catalogModelId: string;
     routingNotes: import('../configuration/types.js').ModelRoutingNotes;
   }>;
-  getExecutorManagement?(): Promise<import('../configuration/executor-configuration.js').ExecutorManagementView>;
-  prepareExecutor?(input: { baseRevisionId: string; change: unknown }): Promise<{
+  getExecutorManagement?(config?: unknown): Promise<import('../configuration/executor-configuration.js').ExecutorManagementView>;
+  prepareExecutor?(input: { baseRevisionId: string; change: unknown; config?: unknown }): Promise<{
     baseRevisionId: string;
     config: unknown;
     summary: string[];
@@ -193,12 +195,8 @@ export interface ConfigQuery {
     secrets?: Record<string, string>,
     spanApiKey?: string,
   ): Promise<ActivateResult>;
-  rollback(targetRevisionId: string): Promise<ActivateResult>;
-  writeSecret(providerRef: string, apiKey: string): Promise<ProviderCredentialStatus>;
   /** 查询 Span 决策模型凭据是否已配置；不返回明文或 secret 引用。 */
   getSpanCredentialStatus?(): Promise<{ configured: boolean }>;
-  /** 写入 Span 决策模型凭据；服务端固定 SecretStore 引用。 */
-  writeSpanSecret?(apiKey: string): Promise<ProviderCredentialStatus>;
   /** 查询各 provider 的 secret 是否已配置。 */
   getSecretStatus(providerRefs: string[]): Promise<Record<string, ProviderCredentialStatus>>;
   /** 用存储的密钥调 Provider API 验证有效性；未配置时 valid 为 null。 */
@@ -263,6 +261,9 @@ export interface ManagementServerDeps {
   webDistDir: string;
   token: string;
   webAuth: WebAuthService;
+  desktopSessions?: DesktopSessionService;
+  clientNotifications?: { read(cursor: string | null): ClientNotificationPage };
+  serviceActivity?: () => { activeTasks: number; tasks: Array<{ id: string; title: string }>; truncated: boolean };
   runningRevisionId: string;
   webSocketAuthTimeoutMs?: number;
   sessionRuntime: ManagementWebSessionRuntime;
@@ -721,6 +722,39 @@ export class ManagementServer {
     response: ServerResponse,
     url: URL,
   ): Promise<void> {
+    if (url.pathname === '/api/auth/desktop-instance' && request.method === 'GET') {
+      response.setHeader('Cache-Control', 'no-store');
+      const proof = this.deps.desktopSessions?.proof(url.searchParams.get('nonce'));
+      this.sendJson(response, proof ? 200 : 503, proof ? { proof } : { error: 'desktop_unavailable' });
+      return;
+    }
+    if (url.pathname === '/api/auth/desktop-session' && request.method === 'POST') {
+      response.setHeader('Cache-Control', 'no-store');
+      // Desktop Main supplies the exact Server origin; absent/dev origins are rejected.
+      if (request.headers.origin !== this.address
+        || !['127.0.0.1', '::ffff:127.0.0.1', '::1'].includes(request.socket.remoteAddress ?? '')) {
+        this.sendJson(response, 403, { error: 'forbidden_origin' });
+        return;
+      }
+      let body: unknown;
+      try { body = await readDesktopSessionBody(request); }
+      catch { this.sendJson(response, 400, { error: 'invalid_request' }); return; }
+      const identity = this.deps.desktopSessions?.consume(body);
+      if (!identity) {
+        this.sendJson(response, 401, { error: 'unauthorized' });
+        return;
+      }
+      const previousSession = this.deps.webAuth.getSession(request.headers.cookie);
+      this.deps.webAuth.revokeSession(request.headers.cookie);
+      const session = this.deps.webAuth.createSession();
+      response.setHeader('Set-Cookie', this.deps.webAuth.sessionCookie(session.sessionToken));
+      this.sendJson(response, 200, { authenticated: true, accountId: identity.accountId, instanceId: identity.instanceId });
+      if (previousSession) {
+        for (const ws of this.wsConnectionsByClient.get(previousSession.clientId) ?? []) ws.close();
+        await this.deps.sessionRuntime.closeClient(previousSession.clientId);
+      }
+      return;
+    }
     if (request.method === 'POST' && url.pathname === '/api/auth/bootstrap') {
       if (!this.isAllowedWebSocketOrigin(request.headers.origin)) {
         this.sendJson(response, 403, { error: 'forbidden_origin' });
@@ -816,6 +850,19 @@ export class ManagementServer {
       return;
     }
     const clientId = authSession?.clientId ?? 'manual-bearer-client';
+
+    if (request.method === 'GET' && url.pathname === '/api/client/notifications') {
+      const cursor = url.searchParams.get('cursor');
+      if (cursor && cursor.length > 128) { this.sendJson(response, 400, { error: 'invalid_cursor' }); return; }
+      this.sendJson(response, this.deps.clientNotifications ? 200 : 503,
+        this.deps.clientNotifications?.read(cursor) ?? { error: 'unavailable' });
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/client/service-activity') {
+      this.sendJson(response, this.deps.serviceActivity ? 200 : 503,
+        this.deps.serviceActivity?.() ?? { error: 'unavailable' });
+      return;
+    }
 
     if (request.method === 'POST' && url.pathname === '/api/attachments') {
       await this.handleAttachmentUpload(request, response, url, clientId);
@@ -1291,12 +1338,13 @@ export class ManagementServer {
       return;
     }
 
-    if (request.method === 'GET' && url.pathname === '/api/config/executors') {
+    if ((request.method === 'GET' || request.method === 'POST') && url.pathname === '/api/config/executors') {
       if (!this.deps.configQuery.getExecutorManagement) {
         this.sendJson(response, 503, { error: 'Executor configuration unavailable' });
         return;
       }
-      this.sendJson(response, 200, await this.deps.configQuery.getExecutorManagement());
+      const body = request.method === 'POST' ? await readRequestBody(request) : {};
+      this.sendJson(response, 200, await this.deps.configQuery.getExecutorManagement(body.config));
       return;
     }
     if (request.method === 'POST' && url.pathname === '/api/config/executors/prepare') {
@@ -1311,6 +1359,7 @@ export class ManagementServer {
       }
       this.sendJson(response, 200, await this.deps.configQuery.prepareExecutor({
         baseRevisionId: body.baseRevisionId, change: body.change,
+        ...(body.config !== undefined ? { config: body.config } : {}),
       }));
       return;
     }
@@ -1468,20 +1517,6 @@ export class ManagementServer {
       return;
     }
 
-    if (request.method === 'POST' && url.pathname === '/api/config/rollback') {
-      const body = await readRequestBody(request);
-      if (!body.targetRevisionId) {
-        this.sendJson(response, 400, { error: 'targetRevisionId is required' });
-        return;
-      }
-      this.sendJson(
-        response,
-        200,
-        this.withRuntimeRevision(await this.deps.configQuery.rollback(body.targetRevisionId)),
-      );
-      return;
-    }
-
     if (request.method === 'GET' && url.pathname === '/api/config/secrets/status') {
       const rawRefs = (url.searchParams.get('providers') ?? '')
         .split(',')
@@ -1516,41 +1551,6 @@ export class ManagementServer {
         return;
       }
       this.sendJson(response, 200, await this.deps.configQuery.getSpanCredentialStatus());
-      return;
-    }
-
-    if (request.method === 'POST' && url.pathname === '/api/config/routing/span/secret') {
-      const body = await readRequestBody(request);
-      if (typeof body.apiKey !== 'string' || body.apiKey.trim().length === 0) {
-        this.sendJson(response, 400, { error: 'apiKey is required' });
-        return;
-      }
-      if (!this.deps.configQuery.writeSpanSecret) {
-        this.sendJson(response, 503, { error: 'Span credential storage unavailable' });
-        return;
-      }
-      this.sendJson(
-        response,
-        200,
-        await this.deps.configQuery.writeSpanSecret(body.apiKey.trim()),
-      );
-      return;
-    }
-
-    if (request.method === 'POST' && url.pathname === '/api/config/secrets') {
-      const body = await readRequestBody(request);
-      if (typeof body.providerRef !== 'string'
-        || !isSafeProviderRef(body.providerRef)
-        || typeof body.apiKey !== 'string'
-        || body.apiKey.trim().length === 0) {
-        this.sendJson(response, 400, { error: 'providerRef and apiKey are required' });
-        return;
-      }
-      this.sendJson(
-        response,
-        200,
-        await this.deps.configQuery.writeSecret(body.providerRef, body.apiKey.trim()),
-      );
       return;
     }
 
@@ -1867,4 +1867,15 @@ function readRequestBody(request: IncomingMessage): Promise<RequestBody> {
     });
     request.on('error', reject);
   });
+}
+
+async function readDesktopSessionBody(request: IncomingMessage): Promise<unknown> {
+  let size = 0;
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > 2048) throw new Error('Desktop session request too large');
+    chunks.push(chunk);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
 }

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-src 'none'">
+  <title>MetaWork</title>
+  <link rel="stylesheet" href="shell.css">
+</head>
+<body>
+  <main>
+    <span class="wordmark">MetaWork</span>
+    <div class="indicator" aria-hidden="true"></div>
+    <h1>让工作继续</h1>
+    <p id="status" role="status" aria-live="polite">正在连接后台服务…</p>
+    <button id="retry" hidden>重新连接</button>
+    <form id="setup" hidden>
+      <label for="provider-url">模型 API 地址</label>
+      <input id="provider-url" type="url" required placeholder="https://api.example.com/v1" autocomplete="url">
+      <label for="model-id">模型 ID</label>
+      <input id="model-id" required maxlength="256" placeholder="填写服务商提供的模型 ID" autocomplete="off">
+      <label for="api-key">API Key</label>
+      <input id="api-key" type="password" required maxlength="8192" autocomplete="off">
+      <p class="setup-note">凭据保存在 MetaWork 的本机凭据库。安装后可在设置中修改模型和 Agent。</p>
+      <button type="submit">安装并开始使用</button>
+    </form>
+    <p class="note">关闭窗口或退出桌面，后台工作仍会继续。</p>
+  </main>
+  <script src="shell.js"></script>
+</body>
+</html>

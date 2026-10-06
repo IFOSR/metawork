@@ -71,9 +71,12 @@ set -euo pipefail
 
 export METAWORK_INSTALL_ROOT="\${METAWORK_INSTALL_ROOT:-\${ANYFUSION_INSTALL_ROOT:-${root}}}"
 export ANYFUSION_INSTALL_ROOT="$METAWORK_INSTALL_ROOT"
+METAWORK_NODE_EXECUTABLE="$METAWORK_INSTALL_ROOT/app/current/desktop-tools/node/bin/node"
+if [[ ! -x "$METAWORK_NODE_EXECUTABLE" ]]; then METAWORK_NODE_EXECUTABLE=node; fi
+export PATH="$METAWORK_INSTALL_ROOT/app/current/desktop-tools/node/bin:$METAWORK_INSTALL_ROOT/app/current/desktop-tools/git/bin:$METAWORK_INSTALL_ROOT/app/current/desktop-tools/executor/bin:$PATH"
 unset METAWORK_RELEASE_ID
 if [[ -f "$METAWORK_INSTALL_ROOT/app/current/release-identity.json" ]]; then
-  export METAWORK_RELEASE_ID="\$(node -p 'require(process.argv[1]).releaseId' "$METAWORK_INSTALL_ROOT/app/current/release-identity.json")"
+  export METAWORK_RELEASE_ID="\$("$METAWORK_NODE_EXECUTABLE" -p 'require(process.argv[1]).releaseId' "$METAWORK_INSTALL_ROOT/app/current/release-identity.json")"
 fi
 export METACLAW_EXECUTOR_BACKEND=worktree
 export ANYFUSION_WEB_USERNAME="\${ANYFUSION_WEB_USERNAME:-admin}"
@@ -92,7 +95,7 @@ export METACLAW_PI_ATTEMPT_EXTENSION="$METAWORK_INSTALL_ROOT/app/current/dist/pi
 export PI_SKIP_VERSION_CHECK=1
 export PI_TELEMETRY=0
 
-exec node "$METAWORK_INSTALL_ROOT/app/current/dist/index.js" "$@"
+exec "$METAWORK_NODE_EXECUTABLE" "$METAWORK_INSTALL_ROOT/app/current/dist/index.js" "$@"
 `;
 }
 

@@ -1,8 +1,11 @@
+import { DesktopSessionService } from '../../src/management/desktop-session.js';
 import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createConnection, createServer, type Socket } from 'node:net';
 import { basename, join } from 'node:path';
+import { Readable } from 'node:stream';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { describe, expect, it } from 'vitest';
 import {
   ManagementServer,
@@ -24,7 +27,86 @@ import type { AgentReadiness } from '../../src/management/agent-installation-rea
 import { WebGatewayAdmissionError } from '../../src/management/web-gateway-session-runtime.js';
 import { ConfigurationActivationBlockedError, ConfigurationActivationGate } from '../../src/configuration/configuration-activation-gate.js';
 
+describe('single settings activation boundary', () => {
+  async function request(server: ManagementServer, path: string, body: unknown, authenticated = true) {
+    const input = Object.assign(Readable.from([Buffer.from(JSON.stringify(body))]), {
+      method: 'POST', url: path,
+      headers: authenticated ? { authorization: 'Bearer manual-token' } : {},
+    }) as IncomingMessage;
+    let status = 0;
+    let result = '';
+    const response = {
+      setHeader() {},
+      writeHead(value: number) { status = value; },
+      end(value: string) { result = value; },
+    } as unknown as ServerResponse;
+    // Exercise the real HTTP dispatcher without a listener or network socket.
+    await server['handleRequest'](input, response);
+    return { status, body: JSON.parse(result) };
+  }
+
+  it.each(['/api/config/secrets', '/api/config/routing/span/secret', '/api/config/rollback'])(
+    'removes standalone mutation through %s', async path => {
+      let activations = 0;
+      const server = createManagementServer(0, { configQuery: {
+        activate: async () => { activations++; return { ok: true, revisionId: 'unexpected' }; },
+      } });
+      const body = { providerRef: 'provider', apiKey: 'candidate-secret', targetRevisionId: 'old-revision' };
+      expect((await request(server, path, body, false)).status).toBe(401);
+      expect(await request(server, path, body)).toMatchObject({ status: 404, body: { error: 'not found' } });
+      expect(activations).toBe(0);
+    },
+  );
+
+  it('submits configuration and both credential kinds together exactly once', async () => {
+    const calls: unknown[] = [];
+    const server = createManagementServer(0, { configQuery: {
+      activate: async (...args) => { calls.push(args); return { ok: true, revisionId: 'next-revision' }; },
+    } });
+    const config = { runtimePolicy: { maxConcurrentTasks: 3 }, agentClasses: { draft: { enabled: true } } };
+    const result = await request(server, '/api/config/activate', {
+      baseRevisionId: 'revision-test', config, secrets: { provider: 'candidate-secret' }, spanApiKey: ' span-secret ',
+    });
+    expect(calls).toEqual([['revision-test', config, { provider: 'candidate-secret' }, 'span-secret']]);
+    expect(result).toMatchObject({ status: 200, body: { ok: true, revisionId: 'next-revision' } });
+    expect(JSON.stringify(result.body)).not.toContain('secret');
+  });
+});
+
 describe('executor management API', () => {
+  it('exchanges local Desktop tickets only once at the exact HTTP origin', async () => {
+    const port = await reservePort();
+    const origin = `http://127.0.0.1:${port}`;
+    const desktopSessions = new DesktopSessionService(() => ({
+      installationId: 'a'.repeat(64), instanceId: 'desktop-instance', accountId: 'local-default',
+      releaseId: 'test', pid: process.pid, webOrigin: origin, gatewayProtocolVersion: 2,
+    }));
+    const server = createManagementServer(port, { desktopSessions });
+    await server.start();
+    try {
+      const grant = desktopSessions.issue('b'.repeat(64), 'local-default');
+      const body = JSON.stringify({ ticket: grant.ticket, nonce: grant.nonce, instanceId: grant.instanceId });
+      const path = `${origin}/api/auth/desktop-session`;
+      expect((await fetch(path, { method: 'POST', body })).status).toBe(403);
+      expect((await fetch(path, { method: 'POST', body, headers: { Origin: 'http://evil.example' } })).status).toBe(403);
+      const response = await fetch(path, { method: 'POST', body, headers: { Origin: origin } });
+      expect(response.status).toBe(200);
+      const cookie = response.headers.get('set-cookie')!;
+      expect(cookie).toContain('HttpOnly');
+      expect(cookie).toContain('SameSite=Strict');
+      expect(await response.json()).toEqual({ authenticated: true, accountId: 'local-default', instanceId: 'desktop-instance' });
+      expect((await fetch(`${origin}/api/auth/session`, { headers: { Cookie: cookie.split(';')[0]! } })).status).toBe(200);
+      expect((await fetch(path, { method: 'POST', body, headers: { Origin: origin } })).status).toBe(401);
+      const hint = await fetch(`${origin}/api/auth/launch-context`, {
+        method: 'POST', body: JSON.stringify({ token: grant.ticket }), headers: { Origin: origin },
+      });
+      expect(hint.status).toBe(404);
+      const proof = await fetch(`${origin}/api/auth/desktop-instance?nonce=${grant.nonce}`);
+      expect(await proof.json()).toEqual({ proof: grant.proof });
+      expect(proof.headers.get('cache-control')).toBe('no-store');
+    } finally { await server.stop(); }
+  });
+
   it('authenticates and validates the read-only Agent capability description request', async () => {
     const port = await reservePort();
     const calls: unknown[] = [];
@@ -185,26 +267,27 @@ describe('executor management API', () => {
       expect((await fetch(url, { method: 'POST', body: '{}' })).status).toBe(401);
       const response = await fetch(url, {
         method: 'POST', headers: { authorization: 'Bearer manual-token', 'content-type': 'application/json' },
-        body: JSON.stringify({ baseRevisionId: 'revision-test', change: { operation: 'remove', agentClassRef: 'x' } }),
+        body: JSON.stringify({ baseRevisionId: 'revision-test', change: { operation: 'remove', agentClassRef: 'x' }, config: { draft: true } }),
       });
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({ createdAgentClassRef: 'executor-new' });
       expect(calls).toHaveLength(1);
+      expect(calls[0]).toEqual({ baseRevisionId: 'revision-test', change: { operation: 'remove', agentClassRef: 'x' }, config: { draft: true } });
     } finally { await server.stop(); }
   });
 
-  it('returns a structured busy response for shared Key writes and manual compilation', async () => {
+  it('returns a structured busy response for activation and legacy manual compilation', async () => {
     const port = await reservePort();
     const gate = new ConfigurationActivationGate(() => ({
       activeTaskId: 'task-1', plannerTurnActive: false, activeAttemptCount: 0,
       activeLeaseCount: 0, publicationPending: false, recoveryInProgress: false,
     }));
     const blocked = async (): Promise<never> => { throw new ConfigurationActivationBlockedError(gate.getStatus()); };
-    const server = createManagementServer(port, { configQuery: { writeSecret: blocked, compileExecutorManual: blocked } });
+    const server = createManagementServer(port, { configQuery: { activate: blocked, compileExecutorManual: blocked } });
     await server.start();
     try {
       for (const [path, body] of [
-        ['/api/config/secrets', { providerRef: 'provider', apiKey: 'test-value' }],
+        ['/api/config/activate', { baseRevisionId: 'revision-test', config: {} }],
         ['/api/config/executors/x/capability-manual/compile', { baseRevisionId: 'revision-test', sourceText: '' }],
       ] as const) {
         const response = await fetch(`http://127.0.0.1:${port}${path}`, {
@@ -1795,84 +1878,6 @@ describe('ManagementServer WebSocket authentication', () => {
     }
   });
 
-  it('writes a provider secret and never echoes the plaintext back', async () => {
-    const port = await reservePort();
-    let storedApiKey = '';
-    const server = createManagementServer(port, {
-      configQuery: {
-        writeSecret: async (_ref, apiKey) => {
-          storedApiKey = apiKey;
-          return { configured: true, maskedApiKey: '••••••••cret' };
-        },
-      },
-    });
-    await server.start();
-
-    try {
-      const unauthorized = await fetch(`http://127.0.0.1:${port}/api/config/secrets`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ providerRef: 'provider-test', apiKey: 'sk-secret' }),
-      });
-      expect(unauthorized.status).toBe(401);
-
-      const response = await fetch(`http://127.0.0.1:${port}/api/config/secrets`, {
-        method: 'POST',
-        headers: {
-          authorization: 'Bearer manual-token',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ providerRef: 'provider-test', apiKey: 'sk-secret' }),
-      });
-      expect(response.status).toBe(200);
-      const body = await response.json();
-      expect(body).toEqual({ configured: true, maskedApiKey: '••••••••cret' });
-      expect(storedApiKey).toBe('sk-secret');
-      expect(JSON.stringify(body)).not.toContain('sk-secret');
-    } finally {
-      await server.stop();
-    }
-  });
-
-  it('rejects unsafe Provider refs and blank API Keys at the HTTP boundary', async () => {
-    const port = await reservePort();
-    let writes = 0;
-    const server = createManagementServer(port, {
-      configQuery: {
-        writeSecret: async () => {
-          writes += 1;
-          return { configured: true, maskedApiKey: '••••••••cret' };
-        },
-      },
-    });
-    await server.start();
-
-    try {
-      const unsafeRef = await fetch(`http://127.0.0.1:${port}/api/config/secrets`, {
-        method: 'POST',
-        headers: {
-          authorization: 'Bearer manual-token',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ providerRef: '../provider', apiKey: 'sk-secret' }),
-      });
-      expect(unsafeRef.status).toBe(400);
-
-      const blankKey = await fetch(`http://127.0.0.1:${port}/api/config/secrets`, {
-        method: 'POST',
-        headers: {
-          authorization: 'Bearer manual-token',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ providerRef: 'provider-test', apiKey: '   ' }),
-      });
-      expect(blankKey.status).toBe(400);
-      expect(writes).toBe(0);
-    } finally {
-      await server.stop();
-    }
-  });
-
   it('returns masked credential summaries for requested Providers', async () => {
     const port = await reservePort();
     const server = createManagementServer(port, {
@@ -2232,6 +2237,7 @@ describe('ManagementServer WebSocket authentication', () => {
 });
 
 interface ManagementServerTestOverrides {
+  desktopSessions?: DesktopSessionService;
   readonly webSocketAuthTimeoutMs?: number;
   readonly sessionRuntime?: ManagementWebSessionRuntime;
   readonly executionQuery?: { listTasks(): unknown[]; projectTimeline(taskId: string): unknown };
@@ -2262,6 +2268,7 @@ function createManagementServer(
     webDistDir: '/tmp/anyfusion-missing-web-dist',
     token: webAuth.manualAccessToken,
     webAuth,
+    desktopSessions: overrides.desktopSessions,
     launchContexts: overrides.launchContexts ?? new WebLaunchContextService(),
     workspaceDirectoryBrowser: overrides.workspaceDirectoryBrowser
       ?? new WorkspaceDirectoryBrowser(),
@@ -2285,8 +2292,6 @@ function createManagementServer(
       listRevisions: async () => [],
       getSnapshot: async () => null,
       activate: async () => ({ ok: true, revisionId: 'revision-next' }),
-      rollback: async () => ({ ok: true, revisionId: 'revision-test' }),
-      writeSecret: async () => ({ configured: true, maskedApiKey: '••••••••test' }),
       ...overrides.configQuery,
     },
     agentReadiness: overrides.agentReadiness,

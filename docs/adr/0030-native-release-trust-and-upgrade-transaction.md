@@ -365,6 +365,21 @@ macOS and Linux. The trust contract, manifest schema, compatibility checks,
 quiescence, activation journal, migration, health check, and rollback rules
 remain the same across platforms.
 
+Desktop amendment (2026-10-06, ADR-0045): a signed Desktop descriptor binds the
+Shell/Electron version, source commit, Runtime/Planner manifest, Node ABI and
+complete dependency inventory. Production rejects development descriptors.
+DesktopActivation journals the Shell replacement around the existing native
+updater; its independent installed Node helper survives Electron exit.
+Commit requires a receipt from the replacement Desktop after it authenticates
+to the candidate Server and renders shared Web assets. The receipt is bound to
+the activation challenge, candidate release, Server instance and Desktop PID.
+Interrupted activation must recover through native database/journal companion
+checks before restoring the Shell. Compatible manual updates are selected in a
+native dialog, verify the same signing team and release keys, and retain a
+previous application copy. Incompatible schema combinations are rejected by the
+Desktop adapter. Cross-schema coordinated desktop upgrades and signed-bundle
+fault injection are not yet accepted; the implementation plan tracks them.
+
 ## Not Decided Here
 
 - Concrete signature algorithm, key format, transparency log, release hosting

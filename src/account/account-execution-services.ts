@@ -22,6 +22,7 @@ import { LocalCliExecutorAdapter } from '../executor/local-cli-executor-adapter.
 import { ContainerCompatibilityAdapter } from '../executor/container-compatibility-adapter.js';
 import { ImageApiExecutorAdapter } from '../executor/image-api-executor-adapter.js';
 import { PiCompositeExecutorAdapter } from '../executor/pi-composite-executor-adapter.js';
+import { getPermissionProfile } from '../resource/permission-profiles.js';
 import { ImageContainerExecutorAdapter } from '../executor/image-container-executor-adapter.js';
 
 export type RuntimeBindingResolver = (
@@ -91,7 +92,7 @@ export function buildAccountExecutionServices(deps: {
         imageRef: containerCompatibilityImage(input.driver.id),
         backend: deps.attemptExecutionBackend,
         repository: deps.attemptExecutionRepository,
-        egressMode: input.authorizedBinding.permissionProfileRef === 'public-web-research'
+        egressMode: getPermissionProfile(input.configuration.permissionProfiles[input.authorizedBinding.permissionProfileRef]!.profileId).publicNetwork === 'egress_proxy'
           ? 'proxy'
           : 'disabled',
         nestedSandbox: input.driver.id === 'codex-cli'

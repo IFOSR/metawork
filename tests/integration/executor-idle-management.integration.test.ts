@@ -13,8 +13,60 @@ import { AgentClassService } from '../../src/executor/agent-class-service.js';
 import { CodexCliDriver } from '../../src/executor/codex-cli-driver.js';
 import { PiCliDriver } from '../../src/executor/pi-cli-driver.js';
 import type { ExecutorConfigurationChange } from '../../src/configuration/executor-configuration.js';
+import { validateEnabledModelPrices } from '../../src/configuration/enabled-model-price-validation.js';
 
 describe('idle executor lifecycle across configuration consumers', () => {
+  it('saves an unpriced model and a new agent as one draft, validating only at final activation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'metawork-batch-activation-'));
+    try {
+      const gate = new ConfigurationActivationGate(() => ({
+        activeTaskId: null, plannerTurnActive: false, activeAttemptCount: 0,
+        activeLeaseCount: 0, publicationPending: false, recoveryInProgress: false,
+      }));
+      const service = new ConfigurationService({
+        repository: new FileConfigurationRepository(join(root, 'config')), activationGate: gate,
+        probe: async () => ({ ok: true }),
+      });
+      await service.initialize();
+      const initial = service.createDraft(buildStagedLegacyConfiguration({ testMode: true }).snapshot.config, null);
+      expect(service.validateDraft(initial.revisionId).ok).toBe(true);
+      service.compileDraft(initial.revisionId);
+      await service.probeDraft(initial.revisionId);
+      await service.activateDraft(initial.revisionId, null);
+      const active = await service.getActiveSnapshot();
+      let activations = 0;
+      const coordinator = new ConfigurationRuntimeCoordinator({
+        service, gate, initialSnapshot: active, validateActivationConfig: validateEnabledModelPrices,
+        onActivated: () => { activations++; },
+      });
+      const config = structuredClone(active.config);
+      config.models['new-model'] = { ...Object.values(config.models)[0]!, modelId: 'deepseek-flash' };
+      delete config.models['new-model'].costInputPerMillion;
+      delete config.models['new-model'].costOutputPerMillion;
+      const fields = { displayName: '日常秘书', modelPolicy: { mode: 'fixed' as const, modelRef: 'new-model' },
+        manualSourceText: '回答日常问题。', enabled: true };
+      const created = await service.prepareExecutorDraft({ operation: 'create', tool: 'pi', fields }, active.revisionId, config);
+      const edited = await service.prepareExecutorDraft({ operation: 'update', agentClassRef: created.createdAgentClassRef!,
+        fields: { ...fields, displayName: '日常助手' } }, active.revisionId, created.config);
+      expect((await service.getActiveSnapshot()).revisionId).toBe(active.revisionId);
+      expect(activations).toBe(0);
+      expect(await coordinator.activate({ config: edited.config, expectedRevisionId: active.revisionId }))
+        .toMatchObject({ ok: false, code: 'invalid_configuration', issues: expect.arrayContaining([
+          expect.stringContaining('costInputPerMillion'), expect.stringContaining('costOutputPerMillion'),
+        ]) });
+      expect((await service.getActiveSnapshot()).config.agentClasses[created.createdAgentClassRef!]).toBeUndefined();
+      edited.config.models['new-model']!.costInputPerMillion = 1;
+      edited.config.models['new-model']!.costOutputPerMillion = 2;
+      expect(await coordinator.activate({ config: edited.config, expectedRevisionId: active.revisionId }))
+        .toMatchObject({ ok: true, classification: 'hot' });
+      expect(activations).toBe(1);
+      expect((await service.getActiveSnapshot()).config.agentClasses[created.createdAgentClassRef!])
+        .toMatchObject({ displayName: '日常助手', harnessRef: 'pi-cli', modelPolicy: fields.modelPolicy });
+    } finally {
+      await writable(root);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   it('activates CRUD and same-tool bindings without recreating consumers, and preserves deletion on reload', async () => {
     const root = await mkdtemp(join(tmpdir(), 'metawork-idle-lifecycle-'));
     try {
@@ -49,8 +101,7 @@ describe('idle executor lifecycle across configuration consumers', () => {
       });
       const mutate = async (change: ExecutorConfigurationChange) => {
         const prepared = await service.prepareExecutorDraft(change, active.revisionId);
-        const config = service.getDraftSnapshot(prepared.revisionId).config;
-        service.discardDraft(prepared.revisionId);
+        const config = prepared.config;
         const result = await coordinator.activate({ config, expectedRevisionId: prepared.baseRevisionId });
         expect(result).toMatchObject({ ok: true });
         expect(await renderer.currentRevisionId()).toBe(active.revisionId);
@@ -63,7 +114,7 @@ describe('idle executor lifecycle across configuration consumers', () => {
           refs.push(await mutate({
             operation: 'create', tool, fields: {
               displayName: `${tool} ${modelRef}`, modelPolicy: { mode: 'fixed', modelRef },
-              permissionProfileRef: 'workspace-engineering', manualSourceText: '', enabled: true,
+              manualSourceText: '', enabled: true,
             },
           }));
         }
@@ -92,7 +143,7 @@ describe('idle executor lifecycle across configuration consumers', () => {
       expect(classes.hasExecutorAgentClass(refs[0]!)).toBe(true);
       planning = true;
       await expect(service.prepareExecutorDraft({ operation: 'remove', agentClassRef: refs[0] }))
-        .rejects.toMatchObject({ code: 'runtime_busy' });
+        .resolves.toMatchObject({ baseRevisionId: active.revisionId });
       expect(await coordinator.activate({ config: active.config, expectedRevisionId: active.revisionId }))
         .toMatchObject({ ok: false, code: 'runtime_busy' });
       planning = false;

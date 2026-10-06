@@ -32,4 +32,6 @@ export function writeConversationRoute(route: ConversationRoute, replace = false
   if (location.hash === hash) return;
   if (replace) history.replaceState(null, '', hash);
   else history.pushState(null, '', hash);
+  void desktopBridge()?.setRoute(hash).catch(reportPersistenceError);
 }
+import { desktopBridge, reportPersistenceError } from '../platform/services';

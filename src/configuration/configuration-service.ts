@@ -40,10 +40,9 @@ export { validateExecutorManualSourceText } from './executor-manual-source.js';
 import {
   buildExecutorConfigurationCandidate,
   parseExecutorConfigurationChange,
-  ExecutorConfigurationError,
+  executorDraftSnapshot,
   type ExecutorConfigurationCandidate,
 } from './executor-configuration.js';
-import { ConfigurationActivationBlockedError } from './configuration-activation-gate.js';
 
 export interface CompiledConfigurationRevision {
   contentHash: string;
@@ -140,14 +139,6 @@ function normalizeExecutorManualProfile(
     ...structuredClone(profile),
     assertions,
   };
-}
-
-export interface PreparedExecutorDraft {
-  /** 待确认候选草稿 ID，交由既有 validate/compile/probe/activate 流程。 */
-  revisionId: string;
-  baseRevisionId: string;
-  createdAgentClassRef?: string;
-  summary: string[];
 }
 
 export class ConfigurationService implements ConfigurationServicePort {
@@ -533,52 +524,17 @@ export class ConfigurationService implements ConfigurationServicePort {
     }
   }
 
-  /**
-   * 受控执行助手变更入口（ADR-0028 §6）：用户字段经 Schema 校验后由服务端
-   * 补齐底层字段构造候选配置，创建普通草稿并完成校验；不激活、不占锁。
-   * prepare 时核对一次门禁；activate 仍由既有门禁与版本检查兜底。
-   */
-  async prepareExecutorDraft(rawChange: unknown, expectedRevisionId?: string): Promise<PreparedExecutorDraft> {
+  /** Build an editor candidate only. Validation, compilation, probing and
+   * runtime admission belong to the single page-level activation transaction. */
+  async prepareExecutorDraft(
+    rawChange: unknown, expectedRevisionId?: string, input?: unknown,
+  ): Promise<ExecutorConfigurationCandidate> {
     const change = parseExecutorConfigurationChange(rawChange);
-    this.assertActivationIdle();
     const base = await this.getActiveSnapshot();
-    this.assertActivationIdle();
     if (expectedRevisionId !== undefined && expectedRevisionId !== base.revisionId) {
       throw Object.assign(new Error('配置已更新，请刷新后重试。'), { code: 'revision_conflict' });
     }
-    let candidate: ExecutorConfigurationCandidate;
-    try {
-      candidate = buildExecutorConfigurationCandidate(base, change);
-    } catch (error) {
-      if (error instanceof ExecutorConfigurationError) throw error;
-      throw error;
-    }
-    const draft = this.createDraft(candidate.config, base.revisionId);
-    const validation = this.validateDraft(draft.revisionId);
-    if (!validation.ok) {
-      this.discardDraft(draft.revisionId);
-      throw new ExecutorConfigurationError(
-        'invalid_configuration',
-        validation.issues.map(issue => `${issue.path}: ${issue.message}`).join('；'),
-      );
-    }
-    return {
-      revisionId: draft.revisionId,
-      baseRevisionId: draft.baseRevisionId ?? base.revisionId,
-      ...(candidate.createdAgentClassRef
-        ? { createdAgentClassRef: candidate.createdAgentClassRef }
-        : {}),
-      summary: candidate.summary,
-    };
-  }
-
-  private assertActivationIdle(): void {
-    const gate = this.dependencies.activationGate;
-    if (!gate) return;
-    const status = gate.getStatus();
-    if (!status.activationAllowed) {
-      throw new ConfigurationActivationBlockedError(status);
-    }
+    return buildExecutorConfigurationCandidate(executorDraftSnapshot(base, input), change);
   }
 
   async getPlannerView(revisionId: string): Promise<PlannerConfigurationView> {

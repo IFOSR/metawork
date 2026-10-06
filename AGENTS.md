@@ -54,6 +54,7 @@ the composition root. Detailed ownership and dependency rules live in
 | CLI, commands, native TUI bridge, and retired Ink UI | [`src/cli/`](src/cli/), [`src/commands/`](src/commands/), [`src/tui-bridge/`](src/tui-bridge/), [`src/tui/`](src/tui/) |
 | Single MetaWork TUI (Gateway-only client) | [`planner/AnyFusion-Pi/packages/coding-agent/src/modes/metawork-tui/`](planner/AnyFusion-Pi/packages/coding-agent/src/modes/metawork-tui/) |
 | Gateway, Feishu, notifications, delivery | [`src/gateway/`](src/gateway/), [`src/integrations/`](src/integrations/), [`src/notifications/`](src/notifications/), [`src/delivery/`](src/delivery/) |
+| Electron Desktop, shared Web platform adapter, signed payload tooling | [`apps/desktop/`](apps/desktop/), [`web/src/platform/`](web/src/platform/), [ADR-0045](docs/adr/0045-desktop-thin-shell-and-local-session.md) |
 | Supporting domains | [`src/guidance/`](src/guidance/), [`src/learning/`](src/learning/), [`src/intent/`](src/intent/), [`src/core/`](src/core/) |
 
 Main entry points:

@@ -1,3 +1,4 @@
+import { prepareStandardAgentConfiguration } from '../../src/configuration/standard-agent-configuration.js';
 import { describe, expect, it } from 'vitest';
 import {
   createProductionRuntimeBindings,
@@ -108,17 +109,20 @@ describe('production runtime configuration bindings', () => {
       getSnapshot: async revisionId => revisionId === next.revisionId ? next : active,
     });
 
+    next.config = prepareStandardAgentConfiguration(next.config);
     bindings.updateSnapshot(next);
 
     expect(bindings.getActiveRuntimeConfiguration().revisionId).toBe('revision-next');
     expect(bindings.getRuntimeConfiguration(active.revisionId)?.revisionId).toBe(active.revisionId);
     expect(bindings.getRuntimeConfiguration(next.revisionId)?.revisionId).toBe(next.revisionId);
+    expect(bindings.getRuntimeConfiguration(active.revisionId)?.agentClasses['codex-engineering']?.permissionProfileRef).toBe('workspace-engineering');
+    expect(bindings.getRuntimeConfiguration(next.revisionId)?.agentClasses['codex-engineering']?.permissionProfileRef).toBe('standard-agent');
     await expect(bindings.getRuntimeBinding({
       agentClassRef: 'codex-engineering',
       harnessRef: 'codex-cli',
       providerRef: 'provider',
       modelRef: 'model',
-      permissionProfileRef: 'workspace-engineering',
+      permissionProfileRef: 'standard-agent',
       configurationRevision: next.revisionId,
     })).resolves.toMatchObject({
       revisionId: 'revision-next',

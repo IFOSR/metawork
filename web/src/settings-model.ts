@@ -14,6 +14,7 @@ export interface SettingsProviderEntry {
   maskedApiKey?: string | null;
   credentialFingerprint?: string;
   enabled?: boolean;
+  systemManaged?: boolean;
 }
 
 export interface SettingsModelEntry {
@@ -49,6 +50,7 @@ export interface SettingsModelEntry {
     avoidTaskTypes?: string[];
   };
   enabled?: boolean;
+  systemManaged?: boolean;
 }
 
 export type RoutingMode = 'auto' | 'fixed';
@@ -200,6 +202,36 @@ export interface ProviderModelOption {
   modelId: string;
   configured: boolean;
   modelRef: string | null;
+}
+
+const MODEL_REF_PATTERN = /^[a-z][a-z0-9-]{0,63}$/u;
+
+/**
+ * Converts legacy/provider model identities back to the configuration-owned
+ * Model reference. A provider/model identity is useful for display and API
+ * calls, but it is never a valid `modelRef` in an AgentClass policy.
+ */
+export function resolveConfiguredModelRef(
+  candidate: unknown,
+  models: readonly Pick<SettingsModelEntry, 'ref' | 'providerRef' | 'modelId'>[],
+): string {
+  const value = typeof candidate === 'string' ? candidate.trim() : '';
+  const safeModels = models.filter(model => MODEL_REF_PATTERN.test(model.ref));
+  const exact = safeModels.find(model => model.ref === value);
+  if (exact) return exact.ref;
+
+  const slash = value.indexOf('/');
+  if (slash > 0) {
+    const providerRef = value.slice(0, slash);
+    const modelId = value.slice(slash + 1);
+    const identity = safeModels.find(model => (
+      model.providerRef === providerRef && model.modelId === modelId
+    ));
+    return identity?.ref ?? '';
+  }
+
+  const byModelId = safeModels.find(model => model.modelId === value);
+  return byModelId?.ref ?? '';
 }
 
 export interface ModelCompatibility {

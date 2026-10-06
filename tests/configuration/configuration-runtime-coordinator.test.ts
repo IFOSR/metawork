@@ -1,3 +1,4 @@
+import { load } from 'js-yaml';
 import { describe, expect, it, vi } from 'vitest';
 import {
   ConfigurationRuntimeCoordinator,
@@ -62,6 +63,23 @@ function fakeService(initial: ReturnType<typeof snapshot>, next: ReturnType<type
 }
 
 describe('ConfigurationRuntimeCoordinator', () => {
+  it('publishes a settings task-limit change through the same hot activation transaction', async () => {
+    const before = snapshot('revision-1', {});
+    const after = snapshot('revision-2', {});
+    after.config.runtimePolicy.maxConcurrentTasks = 3;
+    const onActivated = vi.fn();
+    const coordinator = new ConfigurationRuntimeCoordinator({
+      service: fakeService(before, after), initialSnapshot: before, onActivated,
+      gate: new ConfigurationActivationGate(() => ({
+        activeTaskId: null, plannerTurnActive: false, activeAttemptCount: 0,
+        activeLeaseCount: 0, publicationPending: false, recoveryInProgress: false,
+      })),
+    });
+    expect(await coordinator.activate({ config: after.config, expectedRevisionId: before.revisionId }))
+      .toMatchObject({ ok: true, classification: 'hot' });
+    expect(coordinator.getKernelView().runtimePolicy.maxConcurrentTasks).toBe(3);
+    expect(onActivated).toHaveBeenCalledOnce();
+  });
   it.each(['revision-1', 'revision-2'])(
     'restores the observed pointer after activation throws with %s active',
     async observedRevision => {
@@ -237,11 +255,13 @@ describe('ConfigurationRuntimeCoordinator', () => {
 
   it('does not deadlock when ConfigurationService owns the activation mutex', async () => {
     const before = snapshot('revision-1', {});
+    before.config.providers.p.baseUrl = 'https://old.example/v1';
     const after = structuredClone(before) as ReturnType<typeof snapshot>;
     after.revisionId = 'revision-2';
     after.contentHash = 'hash-revision-2';
     after.config.providers.p.baseUrl = 'https://new.example/v1';
     let active = before;
+    const revisions = new Map([[before.revisionId, before]]);
     const gate = new ConfigurationActivationGate(() => ({
       activeTaskId: null,
       plannerTurnActive: false,
@@ -255,13 +275,16 @@ describe('ConfigurationRuntimeCoordinator', () => {
         initialize: async () => undefined,
         recover: async () => ({ status: 'active' as const }),
         getActiveSnapshot: async () => active,
-        readSnapshot: async () => after,
-        writeRevision: async () => undefined,
-        activateRevision: async () => { active = after; },
+        readSnapshot: async (revisionId: string) => revisions.get(revisionId),
+        writeRevision: async (input: { revisionId: string; contentHash: string; files: Record<string, string> }) => {
+          revisions.set(input.revisionId, { revisionId: input.revisionId, contentHash: input.contentHash,
+            config: load(input.files['config.yaml']!) } as never);
+        },
+        activateRevision: async (revisionId: string) => { active = revisions.get(revisionId)!; },
       } as never,
       probe: async () => ({ ok: true }),
       activationGate: gate,
-      createRevisionId: () => 'revision-2',
+      createRevisionId: (() => { let n = 1; return () => `revision-${++n}`; })(),
     });
     const coordinator = new ConfigurationRuntimeCoordinator({
       service: service as never,
@@ -273,7 +296,12 @@ describe('ConfigurationRuntimeCoordinator', () => {
       config: after.config,
       expectedRevisionId: 'revision-1',
     });
-    expect(result).toMatchObject({ ok: true, snapshot: { revisionId: 'revision-2' } });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+    expect(active.config.agentClasses.executor.permissionProfileRef).toBe('standard-agent');
+    expect((await service.getSnapshot(before.revisionId)).config.agentClasses.executor.permissionProfileRef).toBe('workspace');
+    expect(await coordinator.activate({ config: before.config, expectedRevisionId: active.revisionId, reason: 'rollback' }))
+      .toMatchObject({ ok: true });
+    expect(active.config.agentClasses.executor.permissionProfileRef).toBe('workspace');
   });
 
   it('holds the activation gate across validation and probing', async () => {

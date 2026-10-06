@@ -27,6 +27,7 @@ export const PERMISSION_PROFILE_IDS = [
   'workspace-engineering',
   'public-web-research',
   'restricted-custom',
+  'standard-agent',
 ] as const;
 
 export type PermissionProfileId = typeof PERMISSION_PROFILE_IDS[number];

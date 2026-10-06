@@ -2207,13 +2207,22 @@ export class KernelExecutionRuntime {
     const startedAtMs = Date.now();
     let lastProgressAtMs = startedAtMs;
     let lastProgressKind = 'dispatch_started';
+    const operationHealthById = new Map<string, import('../executor/operation-activity-monitor.js').OperationHealth>();
+    let lastActivityAtMs = startedAtMs;
+    const currentOperationHealth = () => [...operationHealthById.values()]
+      .sort((a, b) => Date.parse(a.lastActivityAt) - Date.parse(b.lastActivityAt))[0] ?? null;
     let progressSequence = 0;
     const onProgress = (event: ExecutorProgressEvent, executor: ExecutorAdapter): void => {
       input.progressTracker.onProgress(event, executor);
       const safeText = formatExecutorProgress(event.text);
       if (!safeText) return;
-      lastProgressAtMs = Date.now();
-      lastProgressKind = event.kind;
+      if (event.operationHealth) {
+        const observation = event.operationHealth;
+        if (observation.state === 'active') operationHealthById.delete(observation.operationId);
+        else operationHealthById.set(observation.operationId, observation);
+        lastActivityAtMs = Math.max(lastActivityAtMs, Date.parse(observation.lastActivityAt));
+        if (observation.lastProgressAt) lastProgressAtMs = Math.max(lastProgressAtMs, Date.parse(observation.lastProgressAt));
+      } else { lastProgressAtMs = Date.now(); lastActivityAtMs = lastProgressAtMs; lastProgressKind = event.kind; }
       progressSequence += 1;
       this.appendExecutionTrace({
         phase: 'execution',
@@ -2227,6 +2236,10 @@ export class KernelExecutionRuntime {
           attemptId: item.attemptId,
           progressKind: event.kind,
           progressSequence,
+          operationHealth: currentOperationHealth(),
+          ...(event.operationHealth ? { operationObservation: event.operationHealth } : {}),
+          lastActivityAt: new Date(lastActivityAtMs).toISOString(),
+          lastProgressAt: new Date(lastProgressAtMs).toISOString(),
           ...bindingDetails,
           executorName: executor.name,
           ...executionEventDetails({
@@ -2260,8 +2273,8 @@ export class KernelExecutionRuntime {
             actor: 'runtime',
             kind: 'executor_heartbeat',
             status: 'running',
-            title: `Executor still running: ${subtask.title}`,
-            summary: 'Executor is still running; no new public Harness event has arrived yet.',
+            title: `Execution awaiting new activity: ${subtask.title}`,
+            summary: 'Execution has not ended; this presentation heartbeat is not evidence of work progress.',
             details: {
               taskId: item.taskId,
               attemptId: item.attemptId,
@@ -2272,12 +2285,14 @@ export class KernelExecutionRuntime {
               heartbeatSequence,
               activityState: 'presentation_heartbeat',
               watchdogAuthority: false,
+              operationHealth: currentOperationHealth(),
+              lastActivityAt: new Date(lastActivityAtMs).toISOString(),
               ...bindingDetails,
               ...executionEventDetails({
                 display,
                 step: {
                   stepKey: 'executor_waiting',
-                  stepLabel: `仍在执行：${subtask.title}`,
+                  stepLabel: `尚未结束，等待新进展：${subtask.title}`,
                   progress: null,
                 },
                 startedAt: dispatchStartedAt,

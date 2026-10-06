@@ -115,10 +115,17 @@ deployment boundary. Like the ADR-0027 through ADR-0030 transition, it does not
 describe delivered behavior until the governing implementation plan's release
 gate completes; `observe -> shadow -> export` is the release order.
 
+ADR-0046 accepts the Executor baseline-operations target: remove the ordinary
+research/engineering permission selector, separate responsibilities from
+actual tools and authority, and migrate eligible standard profiles only through
+unified settings activation. Local source, native and Electron validation are
+complete; the linked plan retains the real Docker acceptance gate.
+
 ## Current authority matrix
 
 | Topic | Current authority | What it decides |
 | --- | --- | --- |
+| Executor baseline operations (local implementation; Docker acceptance open) | [ADR-0046](0046-agent-baseline-operations-and-responsibility-separation.md), amending ADR-0024/0028/0033 | System-owned ordinary operations; duties do not grant authority; exact profile migration via unified activation; historical, Planner and custom restrictions preserved |
 | Task lifecycle state contracts | [ADR-0020](0020-core-module-ownership-and-dependency-direction.md) §2026-09-25 amendment, [ADR-0022](0022-unified-kernel-control-plane-and-decision-ledger.md), [ADR-0023](0023-durable-kernel-workflow-recovery-and-availability.md), [ADR-0037](0037-multi-conversation-task-parallelism.md) | Canonical Task/Subtask/Attempt lifecycle ownership, the single Task/Work Graph transition port, durable Replan Jobs and per-family uncertain-application postconditions, residue-based slot release, and the read-only TaskView projection consumed by TUI/Web/Feishu |
 | Multi-client observation and control | [ADR-0043](0043-explicit-conversation-observation-and-client-read-models.md) | Equal Account-scoped rights; bounded read models, explicit observers, exact cancellation, durable approval arbitration and independent notification routes; supersedes ADR-0036 |
 | Workspace-scoped Conversation organization | [ADR-0035](0035-workspace-scoped-conversation-organization.md) | Workspace Catalog identity, Account -> Workspace -> Conversations navigation, immutable Conversation binding, Client Workspace selection, bounded directory projection and migration |
@@ -164,3 +171,13 @@ When two current ADRs appear to overlap, the more specific topic ADR defines its
 - Avoid long-lived `partially superseded` ADRs. Absorb their remaining valid rules into a current ADR, then archive the old record.
 
 New ADRs must state status, date, scope, affected current ADRs and whether they amend or supersede them. Material roadmap phases must also satisfy ADR-0020's design gate.
+
+## Desktop implementation boundary (2026-10-05)
+
+[ADR-0045](0045-desktop-thin-shell-and-local-session.md) accepts the isolated Desktop implementation: `apps/desktop`
+loads the shared Web UI and connects to the canonical independent Server. The
+local installation adapter is the only client exception allowed to invoke
+formal Server lifecycle commands. Window close/desktop quit never stop Server.
+Local desktop tickets are separate from browser login and workspace launch
+hints. Implementation and release validation remain in progress; this is not
+a signed desktop release announcement.

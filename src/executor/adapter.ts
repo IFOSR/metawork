@@ -51,6 +51,8 @@ export interface ExecutorProgressEvent {
   kind: 'status' | 'log' | 'skill';
   text: string;
   skillEvent?: ParsedSkillUsageEvent;
+  /** Health observations never count as business progress or grant recovery authority. */
+  operationHealth?: import('./operation-activity-monitor.js').OperationHealth;
 }
 
 export interface ExecutorProbeResult {

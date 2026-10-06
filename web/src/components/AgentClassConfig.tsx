@@ -20,55 +20,9 @@ interface AgentClassConfigProps {
   models: SettingsModelEntry[];
   providers?: SettingsProviderEntry[];
   onChange: (draft: AgentClassRoutingDraft) => void;
-  manualPreview?: {
-    status: 'ready' | 'stale' | 'updating' | 'error';
-    sourceText: string;
-    persistedSourceText?: string;
-    systemStale?: boolean;
-    analysisMode?: 'semantic' | 'source-preserved';
-    warning?: string;
-    markdown?: string;
-    tags?: {
-      bestFit: string[];
-      avoid: string[];
-    };
-    routableCapabilities?: string[];
-    capabilities?: Array<{
-      capabilityId: string;
-      support: 'supported' | 'unsupported';
-      routingDisposition: 'preferred' | 'allowed' | 'avoid' | 'disabled';
-      evidence: Array<{
-        kind: string;
-        modelRef?: string;
-        detail: string;
-      }>;
-      unresolvedReasons: string[];
-    }>;
-    capabilityChanges?: {
-      added: string[];
-      removed: string[];
-      preferenceChanged: Array<{
-        capabilityId: string;
-        from: string;
-        to: string;
-      }>;
-    };
-    error?: string;
-  };
-  onUpdateManual?: () => void;
   onSuggestResponsibility?: () => void;
   responsibilityFeedback?: ResponsibilityRewriteFeedback;
 }
-
-// 旧版本的“更新能力画像”“适合做什么”以及“某个模型为它带来的具体能力”
-// 仍由兼容 API 提供，但设置页不再把它们作为用户输入；manualPreview?.tags
-// 和 manualPreview?.capabilities 只保留给旧 revision 的读取兼容；“原文已保留”
-// 仍可在旧 revision 的服务端结果中出现；当前定义仍可直接激活；旧版“当前可路由能力”
-// 展示也由服务端兼容投影继续支持。
-// 兼容旧 revision 状态文案：新增可路由能力、模型事实已变化，需要更新。
-// 旧投影还可能包含：移除可路由能力、路由偏好变化、当前未满足。
-// 能力证据和 manualPreview?.capabilityChanges 仍保持 API 兼容。
-// “为什么这样路由”折叠说明已从界面移除，避免 Planner 卡片出现多余信息。
 
 const objectiveOptions: Array<{ value: RoutingObjective; label: string }> = [
   { value: 'balanced', label: '均衡' },
@@ -90,7 +44,11 @@ export function AgentClassConfig({
   const responsibilitySuggestionLoading = responsibilityFeedback?.status === 'loading';
   const manuallyEdited = responsibilityFeedback?.after !== undefined
     && draft.responsibility !== responsibilityFeedback.after;
-  const enabledModels = models.filter(model => model.enabled !== false);
+  const selectedSystemModel = models.find(model => model.systemManaged
+    && (draft.mode === 'fixed'
+      ? model.ref === draft.modelRef
+      : draft.allowedModelRefs.includes(model.ref)));
+  const enabledModels = models.filter(model => model.enabled !== false && !model.systemManaged);
   const modelCompatibility = new Map(enabledModels.map(model => [
     model.ref,
     evaluateModelCompatibility(model, facts),
@@ -209,6 +167,7 @@ export function AgentClassConfig({
         enabledModels,
         modelCompatibility,
         selectedModel,
+        selectedSystemModel,
         effectiveMode,
         fixedModelAvailable,
         onChange,
@@ -229,6 +188,7 @@ function renderRoutePolicyPanel(input: {
   enabledModels: SettingsModelEntry[];
   modelCompatibility: Map<string, ReturnType<typeof evaluateModelCompatibility>>;
   selectedModel: SettingsModelEntry | undefined;
+  selectedSystemModel: SettingsModelEntry | undefined;
   effectiveMode: AgentClassRoutingDraft['mode'];
   fixedModelAvailable: boolean;
   onChange: (draft: AgentClassRoutingDraft) => void;
@@ -241,6 +201,7 @@ function renderRoutePolicyPanel(input: {
     enabledModels,
     modelCompatibility,
     selectedModel,
+    selectedSystemModel,
     effectiveMode,
     fixedModelAvailable,
     onChange,
@@ -284,6 +245,11 @@ function renderRoutePolicyPanel(input: {
           </div>
           <div className="route-field">
             <span className="field-label">允许的模型池</span>
+            {selectedSystemModel && (
+              <div className="route-system-managed" role="status">
+                系统默认模型：<strong>{selectedSystemModel.modelId}</strong>（由 MetaWork 管理）
+              </div>
+            )}
             <div className="model-pool">
               {enabledModels.map(model => {
                 const checked = draft.allowedModelRefs.includes(model.ref);
@@ -371,6 +337,12 @@ function renderRoutePolicyPanel(input: {
       ) : (
         <div className="route-field">
           <span className="field-label">固定模型</span>
+          {selectedSystemModel ? (
+            <div className="route-system-managed" role="status">
+              系统默认模型：<strong>{selectedSystemModel.modelId}</strong>（由 MetaWork 管理）
+            </div>
+          ) : (
+          <>
           {!fixedModelAvailable && (
             <div className="route-invalid">
               当前没有可用模型，请重新选择。
@@ -403,6 +375,8 @@ function renderRoutePolicyPanel(input: {
               );
             })}
           </select>
+          </>
+          )}
         </div>
       )}
 

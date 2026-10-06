@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { HttpClient } from '../api/http';
+import { desktopBridge } from '../platform/services';
 
 interface BrowseState {
   path: string;
@@ -130,6 +131,18 @@ export function WorkspaceCreator({
       });
   };
 
+  const selectNative = async () => {
+    if (busy) return;
+    setSelecting(true); setError(null);
+    try {
+      const path = await desktopBridge()!.selectWorkspaceDirectory();
+      if (!path) return;
+      const selectionError = await onSelect(path);
+      if (selectionError) setError(selectionError); else onClose();
+    } catch { setError('目录选择未完成，请重试。'); }
+    finally { setSelecting(false); }
+  };
+
   const crumbs = state?.crumbs ?? [];
 
   return (
@@ -208,6 +221,7 @@ export function WorkspaceCreator({
         </div>
         <footer>
           <code title={state?.path}>{state?.path ?? ''}</code>
+          {desktopBridge() && <button type="button" disabled={busy} onClick={() => void selectNative()}>在 Finder 中选择…</button>}
           <button
             type="button"
             className="primary-button"

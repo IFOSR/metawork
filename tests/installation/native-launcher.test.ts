@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -41,7 +42,7 @@ describe('renderNativeLauncher', () => {
       'export ANYFUSION_WEB_PASSWORD="${ANYFUSION_WEB_PASSWORD:-123456}"',
     );
     expect(launcher).toContain(
-      'export METAWORK_RELEASE_ID="$(node -p',
+      'export METAWORK_RELEASE_ID="$("$METAWORK_NODE_EXECUTABLE" -p',
     );
     expect(launcher).not.toContain('${METAWORK_RELEASE_ID:-');
     expect(launcher).toContain(
@@ -52,6 +53,20 @@ describe('renderNativeLauncher', () => {
       'if [[ -f "$METAWORK_INSTALL_ROOT/app/current/release-identity.json" ]]; then',
     );
     expect(launcher).not.toContain('require(process.argv[2]).version');
+  });
+
+  it('runs the bundled Node with a minimal PATH and a Unicode installation path', () => {
+    const root = mkdtempSync(join(tmpdir(), 'MetaWork 中文 '));
+    try {
+      const nodeDir = join(root, 'app/current/desktop-tools/node/bin'); mkdirSync(nodeDir, { recursive: true });
+      writeFileSync(join(nodeDir, 'node'), '#!/bin/sh\nprintf "%s\\n" "$@"\n', { mode: 0o755 });
+      const launcher = join(root, 'metawork'); writeFileSync(launcher, renderNativeLauncher(root));
+      const result = spawnSync('/bin/bash', [launcher, 'server', 'status'], {
+        env: { PATH: '/usr/bin:/bin', METAWORK_INSTALL_ROOT: root }, encoding: 'utf8',
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim().split('\n')).toEqual([join(root, 'app/current/dist/index.js'), 'server', 'status']);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('continues to recognize the previous AnyFusion managed marker', async () => {

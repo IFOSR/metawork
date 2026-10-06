@@ -137,6 +137,7 @@ function buildPlannerModelEntry(
   const entry: Record<string, unknown> = {
     id: model.modelId,
     reasoning: model.reasoning !== 'disabled',
+    input: model.capabilities.includes('vision') ? ['text', 'image'] : ['text'],
   };
   // Pi auto-detects Z.ai/GLM's `thinking` protocol from the endpoint. An
   // explicit OpenAI `reasoning_effort` override breaks GLM tool-call turns.

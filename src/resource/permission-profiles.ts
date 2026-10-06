@@ -18,6 +18,11 @@ export interface PermissionProfile {
 }
 
 const PROFILES: Record<PermissionProfileId, PermissionProfile> = {
+  'standard-agent': {
+    id: 'standard-agent', publicNetwork: 'egress_proxy',
+    workspaceWritable: true, temporaryDirectoryWritable: true,
+    sourceReadOnly: true, inputsReadOnly: true, handoffsReadOnly: true, gitMetadataReadOnly: true,
+  },
   'workspace-engineering': {
     id: 'workspace-engineering',
     publicNetwork: 'disabled',
@@ -73,9 +78,9 @@ export function buildPermissionRules(input: {
     partition: item.partition,
     reason: 'the current Task explicitly registered this read-only resource',
   }));
-  if (input.permissionProfileId === 'public-web-research') {
+  if (getPermissionProfile(input.permissionProfileId).publicNetwork === 'egress_proxy') {
     rules.push({
-      id: 'permission-profile-v1:public-web-research:public-http',
+      id: `permission-profile-v1:${input.permissionProfileId}:public-http`,
       effect: 'allow',
       capability: 'network_target',
       operation: '*',

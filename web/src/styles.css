@@ -2208,6 +2208,19 @@ body {
   font-size: 12px;
 }
 
+.route-system-managed {
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.route-system-managed strong {
+  color: var(--text);
+}
+
 .model-pool {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -7840,4 +7853,30 @@ button:active:not(:disabled) {
   .settings-workbench .model-edit-panel { padding-inline: 8px; }
   .model-capability-details { padding: 12px; }
   .model-public-facts-heading { flex-wrap: wrap; }
+}
+/* Native actions use the same layout and theme tokens as the browser. */
+.workspace-shell[data-sidebar-hidden] { grid-template-columns: minmax(0, 1fr); }
+.workspace-shell[data-sidebar-hidden] > .workspace-sidebar { display: none; }
+.sidebar-restore { align-self: flex-start; margin: 8px 16px 0; }
+.native-artifact-save { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.native-artifact-save [role="alert"] { max-width: 180px; font-size: 12px; }
+
+html[data-platform='desktop'] .workspace-main { container-type: inline-size; }
+html[data-platform='desktop'] .workspace-header { column-gap: 16px; }
+.sidebar-toggle { float: left; margin: 4px 12px 0 0; background: transparent; border: 1px solid var(--border); border-radius: 6px; color: inherit; padding: 6px 9px; cursor: pointer; }
+.sidebar-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@container (max-width: 900px) {
+  html[data-platform='desktop'] .workspace-header { grid-template-columns: minmax(0, 1fr) auto; row-gap: 12px; }
+  html[data-platform='desktop'] .workspace-tabs { grid-row: 2; grid-column: 1 / -1; justify-self: start; }
+  html[data-platform='desktop'] .workspace-runtime { grid-column: 2; grid-row: 1; }
+  html[data-platform='desktop'] .workspace-home h2 { font-size: clamp(28px, 5cqw, 42px); overflow-wrap: anywhere; }
+}
+@media (max-width: 1000px) {
+  html[data-platform='desktop'] .workspace-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  html[data-platform='desktop'] .workspace-sidebar { position: absolute; z-index: 30; inset: 0 auto 0 0; width: min(300px, 80vw); max-height: none; box-shadow: 8px 0 40px #0003; }
+  html[data-platform='desktop'] .workspace-main { min-height: 0; }
+}
+@container (max-width: 500px) {
+  html[data-platform='desktop'] .workspace-header { grid-template-columns: minmax(0, 1fr); }
+  html[data-platform='desktop'] .workspace-runtime { grid-column: 1; grid-row: 3; justify-self: start; }
 }

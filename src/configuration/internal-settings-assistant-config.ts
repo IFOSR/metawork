@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 
-export const SETTINGS_ASSISTANT_DEFAULT_MODEL_ID = 'deepseek-v4.1-flash' as const;
+export const SETTINGS_ASSISTANT_DEFAULT_MODEL_ID = 'deepseek-flash' as const;
 export const SETTINGS_ASSISTANT_DEFAULT_DISPLAY_NAME = 'deepseek-flash' as const;
 export const SETTINGS_ASSISTANT_DEFAULT_SECRET_REF = 'file-secret:anyfusion/internal/llm' as const;
 

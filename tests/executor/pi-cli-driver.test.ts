@@ -5,6 +5,37 @@ import { describe, expect, it, vi } from 'vitest';
 import { PiCliDriver } from '../../src/executor/pi-cli-driver.js';
 
 describe('PiCliDriver', () => {
+  it('observes real model and tool activity without renewing on empty model keepalives', () => {
+    const driver = new PiCliDriver();
+    const activity = (event: unknown) => driver.parseActivityLine({ stream: 'stdout', line: JSON.stringify(event) });
+    expect(activity({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '' } })).toBeNull();
+    expect(activity({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'work' } }))
+      .toMatchObject({ type: 'operation_progress', operationId: 'pi-model' });
+    const event = { type: 'tool_execution_update', toolCallId: 'pdf-1', partialResult: { content: [{ type: 'text', text: 'page 1' }] } };
+    expect(activity(event)).toEqual(activity(event));
+    expect(activity(event)?.checkpoint).not.toBe(activity({ ...event, partialResult: { page: 2 } })?.checkpoint);
+  });
+
+  it('loads only the installed PDF extension into an isolated attempt home and probes its bundled Python', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'metawork-pdf-home-'));
+    try {
+      const pdfExtensionRoot = join(root, 'release', 'pi-pdf');
+      await mkdir(pdfExtensionRoot, { recursive: true });
+      await writeFile(join(pdfExtensionRoot, 'index.ts'), 'export default function () {}');
+      const probeCommand = vi.fn().mockResolvedValue({ code: 0, stdout: '1.0.0', stderr: '' });
+      const driver = new PiCliDriver({ pdfExtensionRoot, probeCommand });
+      const home = await driver.materializeHome({ attemptId: 'pdf-attempt', revisionId: 'r', agentClassId: 'pi',
+        bindingFingerprint: 'f', attemptsRoot: join(root, 'attempts'), environment: {} });
+      expect(await readFile(join(home.homePath, '.pi/agent/extensions/pi-pdf.ts'), 'utf8')).toContain(join(pdfExtensionRoot, 'index.ts'));
+      await expect(stat(join(home.homePath, '.pi/agent/auth.json'))).rejects.toThrow();
+      expect((await driver.probe()).available).toBe(true);
+      expect(probeCommand.mock.calls[1][0]).toBe(join(pdfExtensionRoot, 'python/bin/python3'));
+      probeCommand.mockResolvedValueOnce({ code: 0, stdout: '1.0.0', stderr: '' })
+        .mockResolvedValueOnce({ code: 1, stdout: '', stderr: 'missing PDFium' });
+      expect(await driver.probe()).toMatchObject({ available: false, detail: expect.stringContaining('missing PDFium') });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('retains an interrupted assistant text stream as provisional output', () => {
     const driver = new PiCliDriver({ probeCommand: vi.fn() });
     const tracker = driver.createResultStreamTracker?.();

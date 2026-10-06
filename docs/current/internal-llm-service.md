@@ -15,7 +15,7 @@
 | --- | --- |
 | `provider` / `displayName` | 研发维护的标识和名称，不参与用户 Provider 查找 |
 | `baseUrl` | OpenAI 兼容 API 根地址，程序追加 `/chat/completions`；不可包含用户名、密码或查询参数 |
-| `modelId` | Provider 实际接受的请求 ID；当前平移已有配置的 `deepseek-flash` |
+| `modelId` | Provider 实际接受的请求 ID；系统默认固定为 `deepseek-flash` |
 | `apiKeyRef` | 独立凭证文件中的内部引用 |
 | `enabled` | 是否启用 |
 | `timeoutMs` | 500–120000 毫秒；当前安装为 60000 |
@@ -26,7 +26,12 @@
 
 ## 一次性从用户 Provider 复制
 
-用户明确授权后可运行：
+系统安装/桌面安装在启动 Server 前自动准备这两个文件。用户不需要配置
+内部 LLM；系统默认使用 `deepseek-flash`。凭证必须由受保护的系统安装来源
+提供，不能写入 Web 用户配置或发布源码。已有安装迁移到桌面时，安装器会复制
+已有的内部配置和凭证到桌面安装根的独立 `internal/` 目录。
+
+如果研发环境需要从现有账户 Provider 显式准备内部配置，仍可运行：
 
 ```sh
 node scripts/configure-internal-llm.mjs --model-ref default-model

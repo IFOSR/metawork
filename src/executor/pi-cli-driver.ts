@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { chmod, copyFile, mkdir } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { resolveMetaWorkPaths } from '../installation/paths.js';
@@ -51,14 +51,18 @@ export class PiCliDriver implements HarnessDriver {
   private readonly generatedRuntimeRoot?: string;
   private readonly fallbackHomeTemplateDir?: string;
   private readonly webExtensionSourcePath?: string;
+  private readonly pdfExtensionRoot: string;
 
   constructor(dependencies: {
     probeCommand?: ProbeCommandRunner;
     homeTemplateDir?: string;
     generatedRuntimeRoot?: string;
     webExtensionSourcePath?: string;
+    pdfExtensionRoot?: string;
   } = {}) {
     this.runProbe = dependencies.probeCommand ?? defaultProbeCommand;
+    this.pdfExtensionRoot = dependencies.pdfExtensionRoot
+      ?? join(resolveMetaWorkPaths().appCurrent, 'dist', 'pi-pdf');
     this.explicitHomeTemplateDir = emptyToUndefined(dependencies.homeTemplateDir);
     this.generatedRuntimeRoot = emptyToUndefined(dependencies.generatedRuntimeRoot);
     this.webExtensionSourcePath = emptyToUndefined(
@@ -74,6 +78,13 @@ export class PiCliDriver implements HarnessDriver {
 
   async probe(): Promise<HarnessProbeResult> {
     const result = await this.runProbe('pi', ['--version']);
+    if (result.code === 0 && existsSync(this.pdfExtensionRoot)) {
+      const pdf = await this.runProbe(join(this.pdfExtensionRoot, 'python/bin/python3'), [
+        '-I', '-c', 'import sys;sys.path.insert(0,sys.argv[1]);import pypdf,pdfplumber,pypdfium2,PIL',
+        join(this.pdfExtensionRoot, 'site-packages'),
+      ]);
+      if (pdf.code !== 0) return { available: false, detail: 'Pi PDF installation is incomplete: ' + pdf.stderr.trim() };
+    }
     return result.code === 0
       ? { available: true, detail: result.stdout.trim() }
       : { available: false, detail: result.stderr.trim() || `pi exited with ${result.code}` };
@@ -99,6 +110,12 @@ export class PiCliDriver implements HarnessDriver {
     });
     await this.seedProviderConfig(homePath, input.revisionId);
     await this.seedWebExtension(homePath, input.executorAffordances);
+    if (existsSync(join(this.pdfExtensionRoot, 'index.ts'))) {
+      const extensions = join(homePath, '.pi', 'agent', 'extensions');
+      await mkdir(extensions, { recursive: true, mode: 0o700 });
+      await writeFile(join(extensions, 'pi-pdf.ts'),
+        `export { default } from ${JSON.stringify(join(this.pdfExtensionRoot, 'index.ts'))};\n`, { mode: 0o600 });
+    }
     return home;
   }
 
@@ -206,6 +223,10 @@ export class PiCliDriver implements HarnessDriver {
         text: `Executor ${event.isError === true ? 'failed' : 'completed'} tool: ${safeHarnessName(event.toolName)}${detail ? ` — ${detail}` : ''}`,
       };
     }
+    if (event.type === 'tool_execution_update') {
+      const text = assistantMessageText(event.partialResult);
+      return text ? { kind: 'log', text: `Executor tool progress: ${executorActivityExcerpt(text)}` } : null;
+    }
     if (event.type === 'turn_end') {
       return { kind: 'status', text: 'Executor processing cycle completed' };
     }
@@ -252,6 +273,23 @@ export class PiCliDriver implements HarnessDriver {
     if (input.stream !== 'stdout') return null;
     const event = parseJsonLine(input.line);
     if (!event || typeof event.type !== 'string') return null;
+    if (event.type === 'message_start' && messageRole(event.message) === 'assistant') {
+      return { type: 'operation_started', operationId: 'pi-model' };
+    }
+    if (event.type === 'message_end' && messageRole(event.message) === 'assistant') {
+      return { type: 'operation_finished', operationId: 'pi-model' };
+    }
+    if (event.type === 'message_update') {
+      const update = asRecord(event.assistantMessageEvent);
+      if (typeof update?.delta === 'string' && update.delta.length > 0) {
+        return { type: 'operation_progress', operationId: 'pi-model' };
+      }
+    }
+    if (event.type === 'tool_execution_update' && typeof event.toolCallId === 'string') {
+      if (!event.partialResult || typeof event.partialResult !== 'object') return null;
+      return { type: 'operation_progress', operationId: `pi-tool:${safeHarnessName(event.toolCallId)}`,
+        checkpoint: createHash('sha256').update(JSON.stringify(event.partialResult ?? null)).digest('hex') };
+    }
     if (event.type === 'turn_start' || event.type === 'turn_end') {
       if (typeof event.turnIndex !== 'number') return null;
       return {

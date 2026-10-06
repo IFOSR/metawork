@@ -9,6 +9,10 @@ This directory contains both current technical documentation and historical plan
 
 ## Current Docs
 
+- [PDF 处理与执行卡住修复方案](plans/2026-10-06-pdf-processing-and-executor-stall-repair.md)：已完成原生 macOS arm64 实施与验收；补齐 DeepSeek Flash 视觉输入、系统 Pi 的 PDF 能力接入、持续无活动检测与真实进度展示，不限制正常长任务总时长。
+
+- [智能体基础操作与职责分工](plans/2026-10-06-agent-baseline-permissions-design.md)：本地代码、原生与 Electron 验收完成，Docker 实跑待验收；取消研究/工程权限二选一，基础操作默认可用，职责负责分工，敏感操作沿用系统授权。
+
 - [设置激活去除 Planner 依赖](plans/2026-10-05-settings-activation-without-planner.md)：保存不触发 LLM，内部 AI 使用独立服务。
 
 - [自然语言能力优先的任务路由](plans/2026-10-05-description-first-routing.md)：取消泛化标签和关键词打分，保留执行条件校验。
@@ -84,7 +88,7 @@ replacing those semantics.
   history paging, authoritative permissions and client entry dependency isolation.
 
 - [Web workspace creation and login](plans/2026-09-16-web-workspace-creation-and-login.md): delivered explicit Web login with fixed built-in `admin` / `123456` credentials, non-authenticating one-time launch directory hints applied only after authentication, a cookie-only read-only local directory browser for creating a Workspace from the Web surface with Server-owned path resolution and `realpath`-resolved paths and Server-built `crumbs`, removal of the `launchContext` / `initializeClient` / `workspaceInitialization` contracts, and a startup-snapshot race fix in the Web client. Recorded by [ADR-0039](adr/0039-web-workspace-creation-and-login.md), which amends ADR-0034 and ADR-0035. Three browser E2E suites fail identically on the pre-change baseline and are recorded as pre-existing.
-- [Executor idle timeout and retry presentation](plans/2026-09-10-executor-idle-timeout-and-retry-presentation.md): delivered an idle-only Executor watchdog with no overall attempt-duration limit, operation-aware timer pausing, and Web continuity across Kernel-authorized retry.
+- [Executor idle timeout and retry presentation](plans/2026-09-10-executor-idle-timeout-and-retry-presentation.md): delivered an idle-only Executor watchdog with no overall attempt-duration limit, operation-aware timer pausing (superseded by the 2026-10-06 PDF/stall plan’s continuous observation), and Web continuity across Kernel-authorized retry.
 - [Web Turn-Task presentation isolation design](plans/2026-09-10-web-turn-task-presentation-isolation-design.md): defines `Conversation -> Turn -> Task -> Subtask -> Attempt` presentation ownership while preserving complete Conversation history.
 - [Web Turn-Task presentation isolation implementation](plans/2026-09-10-web-turn-task-presentation-isolation.md): delivered monotonic Turn-to-Task binding, exact historical trajectory selection, mixed-history filtering, and current Conversation record refresh.
 - [Web Workspace switch reliability](plans/2026-09-10-web-workspace-switch-reliability.md): delivered navigation-only serialization, request generation guards, and stable message-to-Conversation targeting without reducing execution concurrency.
@@ -104,6 +108,8 @@ replacing those semantics.
 - [附件资源执行实施计划](plans/2026-09-17-attachment-resource-execution-implementation-plan.md): delivered attachment storage, Planner metadata projection, Kernel eligibility, attempt-local materialization, document-processing routing, Web migration, and local validation evidence. The standalone document-reader bundle was reversed on 2026-09-18. Docker image validation remains network-blocked.
 
 ## Active Delivery
+
+- [MetaWork Desktop macOS 首版方案](plans/2026-10-05-metawork-desktop-design-review.md)：已批准、实施中。Electron 壳与正式 Web 产物已通过本地 smoke；签名依赖包、干净机器与联合更新发布验收尚未完成，详见[实施记录](plans/2026-10-05-metawork-desktop-implementation.md)。
 
 - [前端观察与多端统一控制](plans/2026-10-02-frontend-observation-implementation.md)：按 ADR-0043 实施有界读模型、快速切换、跨端同权与独立通知路由；代码仅在本地，尚未完成全部验收。
 
@@ -196,3 +202,5 @@ It is historical review context, not an active issue tracker or architecture map
 Read `AGENTS.md`, then `CONTEXT.md`, then this map. Open
 `current/technical-overview.md` for deep runtime/deployment context and select
 only the applicable accepted ADRs. Avoid loading every dated plan by default.
+
+Desktop implementation: [isolated branch progress](plans/2026-10-05-metawork-desktop-implementation.md).

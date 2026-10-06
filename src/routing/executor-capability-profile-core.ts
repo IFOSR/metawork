@@ -81,6 +81,17 @@ export function compileExecutorCapabilityProfileCore(
     ...input.agentClass.routingCapabilities,
     ...capabilityPolicies.keys(),
   ]);
+  // New baseline agents declare their actual tool operations, not a research /
+  // engineering role. Retain historical explicitly declared delivery contracts.
+  if (input.agentClass.routingCapabilities.length === 0) {
+    for (const [id, definition] of Object.entries(ROUTING_CAPABILITY_REGISTRY)) {
+      if (definition.requiredModelCapabilities.length === 0
+        && definition.requiredAffordances.length > 0
+        && definition.requiredAffordances.every(affordance => input.agentClass.plannerAffordances.includes(affordance))) {
+        candidateCapabilities.add(id as RoutingCapabilityId);
+      }
+    }
+  }
   for (const assertion of input.agentClass.executorManual?.assertions ?? []) {
     if (assertion.topic === 'model-contribution' && assertion.modelCapability) {
       const routingCapability = MODEL_CAPABILITY_TO_ROUTING[assertion.modelCapability];

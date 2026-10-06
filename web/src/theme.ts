@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { desktopBridge, desktopPreferences, reportPersistenceError } from './platform/services';
 
 export type ThemePreference = 'system' | 'light' | 'dark';
 export type ResolvedTheme = 'light' | 'dark';
@@ -47,7 +48,7 @@ export function useThemePreference(): [
   (preference: ThemePreference) => void,
 ] {
   const [preference, setPreference] = useState<ThemePreference>(() => (
-    readStoredThemePreference()
+    desktopPreferences()?.theme ?? readStoredThemePreference()
   ));
 
   useEffect(() => {
@@ -60,6 +61,7 @@ export function useThemePreference(): [
     };
     apply();
     writeThemePreference(preference);
+    void desktopBridge()?.setTheme(preference).catch(reportPersistenceError);
     if (preference !== 'system') return;
     media.addEventListener('change', apply);
     return () => media.removeEventListener('change', apply);

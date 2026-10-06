@@ -1,3 +1,4 @@
+import { DESKTOP_SESSION_CAPABILITY, type DesktopSessionGrant } from './desktop-session-contract.js';
 import { chmodSync, existsSync, unlinkSync } from 'fs';
 import { createServer, type Server, type Socket } from 'net';
 import { nanoid } from 'nanoid';
@@ -37,6 +38,7 @@ interface GatewayServerDeps {
   registerWebLaunch?(
     input: { workspaceHint: string; conversationId?: string },
   ): Promise<{ token: string; expiresAt: string }>;
+  registerDesktopSession?(nonce: string, accountId: string): DesktopSessionGrant;
   accountId?: string;
   observation?: ConversationObservationService;
 }
@@ -268,7 +270,7 @@ export class MetaclawGatewayServer {
         type: 'hello',
         sessionId: nextConversationId,
         attached: true,
-        capabilities: [...GATEWAY_SERVER_CAPABILITIES],
+        capabilities: [...GATEWAY_SERVER_CAPABILITIES, ...(this.deps.registerDesktopSession ? [DESKTOP_SESSION_CAPABILITY] : [])],
         lastSequence: replay.lastSequence,
       });
     };
@@ -278,7 +280,7 @@ export class MetaclawGatewayServer {
       sessionId: socketConnectionId,
       identity: this.deps.observation?.identity,
       attached: false,
-      capabilities: [...GATEWAY_SERVER_CAPABILITIES],
+      capabilities: [...GATEWAY_SERVER_CAPABILITIES, ...(this.deps.registerDesktopSession ? [DESKTOP_SESSION_CAPABILITY] : [])],
     });
     const cleanup = () => {
       for (const observation of observations.values()) observation.handle?.close();
@@ -364,6 +366,16 @@ export class MetaclawGatewayServer {
         ).catch(error => {
           send({ type: 'error', message: (error as Error).message });
         });
+        return;
+      }
+      if (message.type === 'register_desktop_session') {
+        try {
+          const grant = this.deps.registerDesktopSession?.(message.nonce, accountId);
+          if (!grant) throw new Error('Desktop session is unavailable');
+          send({ type: 'desktop_session_registered', grant });
+        } catch {
+          send({ type: 'error', message: 'Desktop session is unavailable' });
+        }
         return;
       }
       if (message.type === 'register_web_launch') {

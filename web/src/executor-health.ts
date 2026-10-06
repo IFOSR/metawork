@@ -1,11 +1,4 @@
-/**
- * L2 — Web heartbeat health badge.
- *
- * Derived from the age of the latest executor activity on a live execution
- * card. Quiet while fresh; warns after 30s of silence; flags a likely-lost
- * executor (Kernel recovery in progress) after 120s. Mirrors the Feishu
- * activity card thresholds in src/gateway/task-activity-tracker.ts.
- */
+/** UI reports evidence age; it never declares process death or Kernel recovery. */
 export interface ExecutorHealthBadge {
   level: 'stale' | 'lost';
   label: string;
@@ -16,8 +9,8 @@ export type ExecutorActivityState =
   | 'presentation_heartbeat'
   | 'idle';
 
-const STALE_AFTER_MS = 30_000;
-const LOST_AFTER_MS = 120_000;
+const STALE_AFTER_MS = 60_000;
+const LOST_AFTER_MS = 300_000;
 
 export function executorHealthBadge(input: {
   updatedAt: string | null;
@@ -28,7 +21,6 @@ export function executorHealthBadge(input: {
   if (
     !input.running
     || input.updatedAt === null
-    || input.activityState !== 'idle'
   ) return null;
   const updatedMs = Date.parse(input.updatedAt);
   if (Number.isNaN(updatedMs)) return null;
@@ -38,5 +30,5 @@ export function executorHealthBadge(input: {
   if (ageMs <= LOST_AFTER_MS) {
     return { level: 'stale', label: `⚠️ 执行器 ${seconds} 秒无新活动` };
   }
-  return { level: 'lost', label: `⛔ 执行器疑似失联（${seconds} 秒无活动），Kernel 正在恢复` };
+  return { level: 'lost', label: `执行状态待确认（${seconds} 秒无新进展）；可继续等待或取消任务` };
 }

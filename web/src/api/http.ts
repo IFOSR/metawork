@@ -5,7 +5,6 @@ import type {
   ExecutorSummary,
   ConfigurationCompletionResult,
   ExecutorCapabilityManual,
-  ExecutorManualAnalysis,
   ProviderModelDiscoveryResult,
   ProviderCredentialStatus,
   AgentReadiness,
@@ -55,14 +54,16 @@ export class HttpClient {
     return this.request<ConfigSnapshot>('/api/config', { signal });
   }
 
-  getExecutorManagement(): Promise<ExecutorManagementView> {
-    return this.request('/api/config/executors');
+  getExecutorManagement(config?: Record<string, unknown>): Promise<ExecutorManagementView> {
+    return this.request('/api/config/executors', config ? {
+      method: 'POST', body: JSON.stringify({ config }),
+    } : undefined);
   }
 
-  prepareExecutor(baseRevisionId: string, change: ExecutorConfigurationChange): Promise<PreparedExecutorConfiguration> {
+  prepareExecutor(baseRevisionId: string, change: ExecutorConfigurationChange, config?: Record<string, unknown>): Promise<PreparedExecutorConfiguration> {
     return this.request('/api/config/executors/prepare', {
       method: 'POST',
-      body: JSON.stringify({ baseRevisionId, change }),
+      body: JSON.stringify({ baseRevisionId, change, config }),
     });
   }
 
@@ -147,50 +148,6 @@ export class HttpClient {
     const query = revisionId ? `?revisionId=${encodeURIComponent(revisionId)}` : '';
     return this.request(
       `/api/config/executors/${encodeURIComponent(agentClassRef)}/capability-manual${query}`,
-    );
-  }
-
-  analyzeExecutorManual(
-    agentClassRef: string,
-    baseRevisionId: string,
-    sourceText: string,
-    config?: Record<string, unknown>,
-  ): Promise<ExecutorManualAnalysis> {
-    return this.request(
-      `/api/config/executors/${encodeURIComponent(agentClassRef)}/capability-manual/analyze`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ baseRevisionId, sourceText, ...(config ? { config } : {}) }),
-      },
-    );
-  }
-
-  compileExecutorCapabilityManual(
-    agentClassRef: string,
-    baseRevisionId: string,
-    sourceText: string,
-    config?: Record<string, unknown>,
-  ): Promise<ExecutorManualAnalysis> {
-    return this.request(
-      `/api/config/executors/${encodeURIComponent(agentClassRef)}/capability-manual/compile`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ baseRevisionId, sourceText, ...(config ? { config } : {}) }),
-      },
-    );
-  }
-
-  previewExecutorCapabilityManual(
-    agentClassRef: string,
-    baseRevisionId: string,
-    config: Record<string, unknown>,
-  ): Promise<ExecutorCapabilityManual> {
-    return this.request(
-      `/api/config/executors/${encodeURIComponent(agentClassRef)}/capability-manual/preview`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ baseRevisionId, config }),
-      },
     );
   }
 
@@ -438,22 +395,8 @@ export class HttpClient {
     return body;
   }
 
-  writeSecret(providerRef: string, apiKey: string): Promise<ProviderCredentialStatus> {
-    return this.request<ProviderCredentialStatus>('/api/config/secrets', {
-      method: 'POST',
-      body: JSON.stringify({ providerRef, apiKey }),
-    });
-  }
-
   getSpanCredentialStatus(): Promise<{ configured: boolean }> {
     return this.request<{ configured: boolean }>('/api/config/routing/span/status');
-  }
-
-  writeSpanSecret(apiKey: string): Promise<ProviderCredentialStatus> {
-    return this.request<ProviderCredentialStatus>('/api/config/routing/span/secret', {
-      method: 'POST',
-      body: JSON.stringify({ apiKey }),
-    });
   }
 
   getSecretStatus(providers: string[]): Promise<Record<string, ProviderCredentialStatus>> {

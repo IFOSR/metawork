@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+import { prepareStandardAgentConfiguration, STANDARD_AGENT_PROFILES } from './standard-agent-configuration.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { AnyFusionConfigurationV2Schema } from './schema.js';
 import { buildExecutorConfigurationCandidate } from './executor-configuration.js';
@@ -37,7 +39,9 @@ export function classifyConfigurationDiff(
   const lifecycleRefs = boundedExecutorChanges(before, after);
   const restartPaths = entries
     .filter(entry => !isHotPath(entry.path)
-      && ![...lifecycleRefs].some(ref => (
+      && !lifecycleRefs.harnessPaths.has(entry.path)
+      && !lifecycleRefs.profilePaths.has(entry.path)
+      && ![...lifecycleRefs.agents].some(ref => (
         entry.path === `agentClasses.${ref}` || entry.path.startsWith(`agentClasses.${ref}.`)
       )))
     .map(entry => entry.path);
@@ -54,39 +58,57 @@ export function classifyConfigurationDiff(
   };
 }
 
-function boundedExecutorChanges(before: unknown, after: unknown): Set<string> {
-  const result = new Set<string>();
+function boundedExecutorChanges(before: unknown, after: unknown): { agents: Set<string>; harnessPaths: Set<string>; profilePaths: Set<string> } {
+  const result = { agents: new Set<string>(), harnessPaths: new Set<string>(), profilePaths: new Set<string>() };
   const parse = (value: unknown) => {
     try { return AnyFusionConfigurationV2Schema.safeParse(value); } catch { return null; }
   };
   const oldParsed = parse(before);
   const nextParsed = parse(after);
   if (!oldParsed?.success || !nextParsed?.success) return result;
-  const old = oldParsed.data as AnyFusionConfigurationV2;
+  const original = oldParsed.data as AnyFusionConfigurationV2;
+  let old: AnyFusionConfigurationV2;
+  try { old = prepareStandardAgentConfiguration(original); } catch { return result; }
   const next = nextParsed.data as AnyFusionConfigurationV2;
+  let normalizedNext: AnyFusionConfigurationV2;
+  try { normalizedNext = prepareStandardAgentConfiguration(next); } catch { return result; }
+  for (const [ref, profile] of Object.entries(STANDARD_AGENT_PROFILES)) {
+    if (!original.permissionProfiles[ref] && isDeepStrictEqual(next.permissionProfiles[ref], profile)
+      && Object.values(next.agentClasses).some(agent => agent.kind === 'executor' && agent.permissionProfileRef === ref)) {
+      result.profilePaths.add(`permissionProfiles.${ref}`);
+    }
+    if (isDeepStrictEqual(original.permissionProfiles[ref], profile) && !next.permissionProfiles[ref]
+      && !Object.values(next.agentClasses).some(agent => agent.permissionProfileRef === ref)) {
+      result.profilePaths.add(`permissionProfiles.${ref}`);
+    }
+  }
   for (const ref of new Set([...Object.keys(old.agentClasses), ...Object.keys(next.agentClasses)])) {
     const previous = old.agentClasses[ref];
     const candidate = next.agentClasses[ref];
     const definition = candidate ?? previous;
     if (definition?.kind !== 'executor' || (previous && previous.kind !== 'executor')) continue;
     const harness = old.harnesses[definition.harnessRef];
+    const nextHarness = next.harnesses[definition.harnessRef];
+    const enablingTool = Boolean(candidate?.enabled && harness && !harness.enabled
+      && nextHarness?.enabled && stableJson({ ...harness, enabled: true }) === stableJson(nextHarness));
     if (!harness || harness.kind !== 'executor'
       || !['pi-cli', 'codex-cli'].includes(harness.driverId)
-      || stableJson(harness) !== stableJson(next.harnesses[definition.harnessRef])) continue;
+      || (!enablingTool && stableJson(harness) !== stableJson(nextHarness))) continue;
     if (!candidate) {
-      result.add(ref);
+      result.agents.add(ref);
       continue;
     }
     try {
       const fields = {
         displayName: candidate.displayName ?? ref,
         modelPolicy: candidate.modelPolicy,
-        permissionProfileRef: candidate.permissionProfileRef!,
         manualSourceText: candidate.executorManual?.sourceText ?? '',
         enabled: candidate.enabled,
       };
       const expected = buildExecutorConfigurationCandidate(
-        { revisionId: 'classification', contentHash: '', config: old },
+        // Models and agents can be added in the same settings transaction.
+        // Tool/permission templates still come from the active configuration.
+        { revisionId: 'classification', contentHash: '', config: { ...old, models: next.models } },
         previous
           ? { operation: 'update', agentClassRef: ref, fields }
           : { operation: 'create', tool: harness.driverId === 'pi-cli' ? 'pi' : 'codex', fields },
@@ -94,10 +116,15 @@ function boundedExecutorChanges(before: unknown, after: unknown): Set<string> {
       ).config.agentClasses[ref]!;
       // Manual semantics and routing hints have their own existing validation path.
       const structural = (value: AgentClassDefinition) => {
-        const { displayName, modelPolicy, enabled, executorManual, primaryUseCases, avoidUseCases, ...rest } = value;
+        const { displayName, responsibility, modelPolicy, enabled, executorManual, primaryUseCases, avoidUseCases, ...rest } = value;
         return rest;
       };
-      if (stableJson(structural(expected)) === stableJson(structural(candidate))) result.add(ref);
+      if (stableJson(structural(expected)) === stableJson(structural(candidate))
+        || (original.agentClasses[ref] && (stableJson(structural(original.agentClasses[ref]!)) === stableJson(structural(candidate))
+          || stableJson(structural(original.agentClasses[ref]!)) === stableJson(structural(normalizedNext.agentClasses[ref]!))))) {
+        result.agents.add(ref);
+        if (enablingTool) result.harnessPaths.add(`harnesses.${definition.harnessRef}.enabled`);
+      }
     } catch {
       // Invalid or unbounded additions remain restart-required.
     }
@@ -113,6 +140,9 @@ function isHotPath(path: string): boolean {
     // same reason as Provider/Model catalog changes.
     || path === 'routing'
     || path.startsWith('routing.')
+    // The settings task limit is read from the active policy at admission and
+    // queue promotion; attempt/backend limits still require a process restart.
+    || path === 'runtimePolicy.maxConcurrentTasks'
     || /^agentClasses\.[^.]+\.modelPolicy(?:\.|$)/u.test(path)
     || /^agentClasses\.[^.]+\.enabled$/u.test(path)
     // Routing use-case hints guide AgentClass choice and are resolved from the

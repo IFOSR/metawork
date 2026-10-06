@@ -6,6 +6,16 @@ import type { ConversationTaskSummary } from '../session/conversation-activity-t
 export class SqliteConversationActivityProjection implements ConversationActivityProjectionStore {
   constructor(private readonly db: Database.Database,
     private readonly onCommitted?: (taskId: string, value: ConversationTaskSummary) => void) {}
+  /** Bounded stop-dialog summary from canonical activity projections, including unsettled dirties. */
+  serviceSummary(accountId: string): { activeTasks: number; tasks: Array<{ id: string; title: string }>; truncated: boolean } {
+    const from = `FROM tasks task LEFT JOIN conversation_activity_views view ON view.task_id = task.id
+      WHERE task.account_id = ? AND (json_extract(view.body_json, '$.canCancel') = 1
+        OR EXISTS (SELECT 1 FROM conversation_activity_dirty dirty WHERE dirty.task_id = task.id))`;
+    const count = this.db.prepare(`SELECT count(*) AS n ${from}`).get(accountId) as { n: number };
+    const tasks = this.db.prepare(`SELECT task.id, substr(task.title, 1, 160) AS title ${from} ORDER BY task.updated_at DESC LIMIT 20`)
+      .all(accountId) as Array<{ id: string; title: string }>;
+    return { activeTasks: count.n, tasks, truncated: count.n > 20 };
+  }
   nextDirty() {
     this.db.transaction(() => {
       const removed = this.db.prepare(`SELECT task_id FROM conversation_activity_dirty

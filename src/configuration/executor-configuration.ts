@@ -1,7 +1,7 @@
 /**
  * 受控执行助手候选配置构造器（ADR-0028 §6，ADR-0033 2026-09-19 修正案）。
  *
- * 用户只提供产品字段（名称、Pi/Codex、模型策略、既有权限方案、职责说明、
+ * 用户只提供产品字段（名称、Pi/Codex、模型策略、职责说明、
  * 启用状态）；Harness、Driver、命令、能力声明等底层字段由服务端从受控模板
  * 补齐。该模块是纯函数构造：不写磁盘、不接触运行时 Repository，候选配置
  * 经 ConfigurationService 的既有校验/编译/探测/激活流程生效。
@@ -15,14 +15,14 @@ import type {
   ConfigurationSnapshot,
   ModelPolicy,
 } from './types.js';
-import type { ExecutorAffordanceId, RoutingCapabilityId } from '../routing/types.js';
+import { ensureStandardAgentProfile, prepareStandardAgentConfiguration, standardProfileRef, STANDARD_CLI_AFFORDANCES } from './standard-agent-configuration.js';
 import { validateExecutorManualSourceText } from './executor-manual-source.js';
 import { ModelPolicySchema } from './schema.js';
 import { projectConfigurationCandidates } from '../routing/configuration-candidate-projection.js';
 
 export interface ExecutorManagementView {
   baseRevisionId: string;
-  executors: Array<ExecutorEditableFields & { agentClassRef: string; tool: ExecutorToolId | null }>;
+  executors: Array<ExecutorEditableFields & { agentClassRef: string; tool: ExecutorToolId | null; operations: 'standard' | 'restricted' }>;
   tools: Array<{
     id: ExecutorToolId;
     label: string;
@@ -30,16 +30,22 @@ export interface ExecutorManagementView {
     reason?: string;
     models: Array<{ ref: string; label: string; fixedAllowed: boolean; autoAllowed: boolean }>;
   }>;
-  permissions: Array<{ ref: string; label: string }>;
+}
+
+/** Read-only editor input. This does not certify a configuration for activation. */
+export function executorDraftSnapshot(base: ConfigurationSnapshot, input?: unknown): ConfigurationSnapshot {
+  if (input === undefined) return base;
+  const record = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (!record(input) || !['providers', 'models', 'agentClasses', 'harnesses', 'permissionProfiles']
+    .every(key => record(input[key]) && Object.values(input[key]).every(record))) {
+    throw new ExecutorConfigurationError('invalid_configuration', '配置草稿格式无效，请重新打开设置。');
+  }
+  return { ...base, config: structuredClone(input) as unknown as AnyFusionConfigurationV2 };
 }
 
 export function projectExecutorManagement(snapshot: ConfigurationSnapshot): ExecutorManagementView {
   const config = snapshot.config;
-  const permissionLabels: Record<string, string> = {
-    'workspace-engineering': '工作区开发和文档处理',
-    'public-web-research': '公共网络资料研究',
-    'restricted-custom': '受限操作',
-  };
   return {
     baseRevisionId: snapshot.revisionId,
     executors: Object.entries(config.agentClasses)
@@ -51,7 +57,7 @@ export function projectExecutorManagement(snapshot: ConfigurationSnapshot): Exec
           tool: driver === 'pi-cli' ? 'pi' : driver === 'codex-cli' ? 'codex' : null,
           displayName: agent.displayName ?? agentClassRef,
           modelPolicy: structuredClone(agent.modelPolicy),
-          permissionProfileRef: agent.permissionProfileRef ?? '',
+          operations: standardProfileRef(config.permissionProfiles[agent.permissionProfileRef ?? '']) ? 'standard' : 'restricted',
           manualSourceText: agent.executorManual?.sourceText ?? '',
           enabled: agent.enabled,
         };
@@ -74,9 +80,7 @@ export function projectExecutorManagement(snapshot: ConfigurationSnapshot): Exec
         return { id, label: TOOL_LABELS[id], available: false, reason: (error as Error).message, models: [] };
       }
     }),
-    permissions: Object.entries(config.permissionProfiles).map(([ref, profile]) => ({
-      ref, label: `${permissionLabels[profile.profileId] ?? '受限操作'} (${ref})`,
-    })),
+
   };
 }
 
@@ -85,7 +89,6 @@ export type ExecutorToolId = 'pi' | 'codex';
 export interface ExecutorEditableFields {
   displayName: string;
   modelPolicy: ModelPolicy;
-  permissionProfileRef: string;
   manualSourceText: string;
   enabled: boolean;
 }
@@ -130,7 +133,6 @@ const ReferenceIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/u);
 const ExecutorEditableFieldsSchema = z.object({
   displayName: z.string().trim().min(1).max(80),
   modelPolicy: ModelPolicySchema,
-  permissionProfileRef: ReferenceIdSchema,
   manualSourceText: z.string().trim().max(8_000),
   enabled: z.boolean(),
 }).strict();
@@ -214,42 +216,6 @@ export function resolveExecutorToolHarness(
   );
 }
 
-/** 受控能力模板：按既有权限方案派生，不从用户说明文字中自由发明。 */
-function controlledExecutorTemplate(config: AnyFusionConfigurationV2, permissionProfileRef: string): {
-  routingCapabilities: RoutingCapabilityId[];
-  plannerAffordances: ExecutorAffordanceId[];
-  primaryUseCases: string[];
-  avoidUseCases: string[];
-} {
-  const profileId = config.permissionProfiles[permissionProfileRef]?.profileId;
-  if (profileId === 'public-web-research') {
-    return {
-      routingCapabilities: ['current-web-research'],
-      plannerAffordances: ['public-web-search', 'public-web-fetch', 'source-citation'],
-      primaryUseCases: ['current public-web research', 'source verification'],
-      avoidUseCases: ['repository modification and engineering verification'],
-    };
-  }
-  if (profileId !== 'workspace-engineering') {
-    return {
-      routingCapabilities: [],
-      plannerAffordances: [],
-      primaryUseCases: [],
-      avoidUseCases: [],
-    };
-  }
-  return {
-    routingCapabilities: ['workspace-engineering', 'document-processing'],
-    plannerAffordances: ['workspace-read-write', 'workspace-command-validation'],
-    primaryUseCases: [
-      'repository implementation',
-      'tests',
-      'engineering documentation',
-    ],
-    avoidUseCases: [],
-  };
-}
-
 function assertModelPolicyReferences(
   config: AnyFusionConfigurationV2,
   modelPolicy: ModelPolicy,
@@ -276,13 +242,6 @@ function assertEditableFields(
   config: AnyFusionConfigurationV2,
   fields: ExecutorEditableFields,
 ): void {
-  if (!config.permissionProfiles[fields.permissionProfileRef]) {
-    throw new ExecutorConfigurationError(
-      'invalid_configuration',
-      `权限方案 ${fields.permissionProfileRef} 不存在，请从既有权限方案中选择。`,
-      'permissionProfileRef',
-    );
-  }
   assertModelPolicyReferences(config, fields.modelPolicy);
   try {
     validateExecutorManualSourceText(fields.manualSourceText);
@@ -327,7 +286,9 @@ export function buildExecutorConfigurationCandidate(
   createAgentClassRef: () => string = () => `executor-${randomUUID()}`,
 ): ExecutorConfigurationCandidate {
   const change = rawChange;
-  const config = structuredClone(base.config);
+  const config = change.operation === 'update'
+    ? prepareStandardAgentConfiguration(base.config, [change.agentClassRef])
+    : structuredClone(base.config);
   const summary: string[] = [];
   let createdAgentClassRef: string | undefined;
 
@@ -342,17 +303,17 @@ export function buildExecutorConfigurationCandidate(
           '内部 ID 冲突，请重试。',
         );
       }
-      const template = controlledExecutorTemplate(config, change.fields.permissionProfileRef);
+      const permissionProfileRef = ensureStandardAgentProfile(config);
       const definition: AgentClassDefinition = {
         displayName: change.fields.displayName,
         kind: 'executor',
         harnessRef,
         modelPolicy: structuredClone(change.fields.modelPolicy),
-        permissionProfileRef: change.fields.permissionProfileRef,
-        routingCapabilities: template.routingCapabilities,
-        primaryUseCases: template.primaryUseCases,
-        avoidUseCases: template.avoidUseCases,
-        plannerAffordances: template.plannerAffordances,
+        permissionProfileRef,
+        routingCapabilities: [],
+        primaryUseCases: [],
+        avoidUseCases: [],
+        plannerAffordances: [...STANDARD_CLI_AFFORDANCES],
         skills: [],
         mcpServers: [],
         plugins: [],
@@ -378,10 +339,6 @@ export function buildExecutorConfigurationCandidate(
         ...existing,
         displayName: change.fields.displayName,
         modelPolicy: structuredClone(change.fields.modelPolicy),
-        permissionProfileRef: change.fields.permissionProfileRef,
-        ...(existing.permissionProfileRef !== change.fields.permissionProfileRef
-          ? controlledExecutorTemplate(config, change.fields.permissionProfileRef)
-          : {}),
         executorManual: {
           // 语义断言只能经既有回执流程写入；普通编辑保留已有断言。
           ...(existing.executorManual ?? { assertions: [] }),
@@ -419,6 +376,16 @@ export function buildExecutorConfigurationCandidate(
       );
       break;
     }
+  }
+
+  // Enabling an executor also enables its existing tool definition. Actual
+  // tool availability remains checked by the normal activation probe.
+  const changedRef = createdAgentClassRef
+    ?? ('agentClassRef' in change ? change.agentClassRef : undefined);
+  const changedAgent = changedRef ? config.agentClasses[changedRef] : undefined;
+  if (changedAgent?.enabled) {
+    const harness = config.harnesses[changedAgent.harnessRef];
+    if (harness) harness.enabled = true;
   }
 
   return {

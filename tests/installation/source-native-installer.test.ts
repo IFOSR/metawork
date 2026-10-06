@@ -36,6 +36,26 @@ afterEach(() => {
 });
 
 describe('SourceNativeInstaller', () => {
+  it('provisions desktop engineering and research on bundled Pi without a global Codex or CLI launcher', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'metawork-desktop-install-')); cleanup.push(home);
+    const sourceRoot = join(home, 'source'); const plannerRoot = join(home, 'planner');
+    fixtureRelease(sourceRoot, plannerRoot);
+    const paths = resolveAnyFusionPaths(home);
+    const account = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
+    await new SourceNativeInstaller({ paths, secretStore: new FileSecretStore(account.secrets),
+      detectCommand: async name => name === 'pi', installLaunchers: false,
+    }).install({ releaseId: '1.2.0-desktop', sourceRoot, plannerRoot, executorPreset: 'desktop-pi',
+      provider: { baseUrl: 'https://provider.example/v1', apiKey: 'fixture-key', modelId: 'test',
+        region: 'international', secretReference: 'file-secret:anyfusion/provider' },
+    });
+    const repository = new FileConfigurationRepository(account.config); await repository.initialize();
+    const snapshot = await repository.getActiveSnapshot();
+    expect(snapshot.config.agentClasses['pi-engineering']).toMatchObject({ harnessRef: 'pi-cli', enabled: true,
+      permissionProfileRef: 'standard-agent-read-8' });
+    expect(snapshot.config.agentClasses['pi-research']?.enabled).toBe(true);
+    expect(snapshot.config.agentClasses['codex-engineering']?.enabled).toBe(false);
+    expect(() => lstatSync(paths.launcher)).toThrow();
+  });
   it('installs a complete release into a clean HOME and activates one coherent revision', async () => {
     const home = mkdtempSync(join(tmpdir(), 'anyfusion-source-install-'));
     cleanup.push(home);

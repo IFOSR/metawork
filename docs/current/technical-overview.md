@@ -679,14 +679,19 @@ Runtime behavior requirements:
 - It must accept the full task prompt through `{prompt}` or as the final argument.
 - It should write the final answer to stdout.
 - Failures should return a non-zero exit code or a clear stderr error.
-- Long-running Harness operations may remain silent indefinitely after an authoritative operation-start event; the idle watchdog resumes only after the last operation-end event.
+- Long-running Harness operations stay independently monitored after start; a start without subsequent activity cannot suspend health observation.
 - File artifacts should be written into the task output directory provided in the prompt.
 - Feishu delivery, file upload, and preview link generation should stay in MetaWork's backend; executors should produce local artifacts instead of calling Feishu APIs directly.
 
-`runtimePolicy.executorIdleTimeoutMs` is the only Executor time limit. MetaWork
-does not impose an Attempt wall-clock limit, tool-call budget, processing-cycle
-budget, or global shell timeout. Runtime heartbeats are presentation-only and
-never renew or suspend the watchdog. A Kernel automatic retry is exposed as
+`runtimePolicy.executorIdleTimeoutMs` is the sustained-inactivity health-check
+threshold, not a termination deadline (default 300 seconds). MetaWork imposes no
+Attempt wall-clock limit, tool-call budget, processing-cycle budget, or global
+shell timeout. Waiting is shown after 60 seconds; health checks have a 30-second
+response window. Actual model deltas and new per-tool checkpoints renew activity;
+duplicate keepalives and Runtime presentation heartbeats do not. PID-only checks
+report unknown and retain user wait/cancel controls. Adapter observations never
+authorize Task state changes. Existing Kernel cancellation/recovery remains the
+only control path; no automatic silence-based death or retry is inferred. A Kernel automatic retry is exposed as
 `waiting_retry`; Web keeps the originating turn running and rehydrates its final
 status from the durable execution timeline.
 
@@ -965,7 +970,14 @@ Decision through ControlKernel; all other uncertain applications and effects
 retain ordinary explicit recovery semantics.
 
 Only the persistent Server shares `runtime.lock` with native
-update/rollback. Account migration uses SQLite online backup to include
+update/rollback. Server shutdown and exit cleanup verify the unique acquisition
+token and are idempotent; an old exit hook cannot remove a successor's lock.
+The macOS Desktop development refresh additionally checks old database revision
+holders when recovering installations affected by the earlier lock bug. Its
+explicit directory-journal repair preserves forensic backups and expires only
+missing directory delivery events; production upgrade backups still require
+every indexed body. See `apps/desktop/README.md` for the recovery command.
+Account migration uses SQLite online backup to include
 committed WAL data, verifies a staged tree manifest, and archives the legacy
 layout outside writable authority. Periodic durable recovery is AccountRuntime
 owned and does not depend on open Conversations; expired Gateway cursors reset
@@ -1098,15 +1110,28 @@ Executor AgentClasses backed by existing `pi-cli`/`codex-cli` Harnesses can be
 created, edited (display name, model policy, existing permission-profile
 reference, manual text, enablement), enabled, disabled, and removed with hot
 activation; tool compatibility derives from the resolved Harness driver, never
-from names (ADR-0028 §6). Shared credential, Provider/Model, full-activation,
-and rollback writes through the Server use the same gate. CLI administration
+from names (ADR-0028 §6). Provider/Model and credential changes through the Server join the single
+full-configuration activation transaction and use the same gate. Compensation
+remains inside that transaction; standalone settings rollback is not exposed. CLI administration
 was explicitly deferred to its upcoming redesign; the unchanged CLI direct
 write path must not be used alongside a live Server.
 
-Settings now supports assistant creation/editing and confirmed enable/disable/
-removal using `GET /api/config/executors` and
-`POST /api/config/executors/prepare`, followed by the existing capability-manual
-preview and activation endpoints. Models' Fixed/Auto tool compatibility is
+Settings supports assistant creation/editing and confirmed enable/disable/
+removal in the current page draft. `GET /api/config/executors` projects active
+settings; `POST /api/config/executors` projects a supplied draft, and
+`POST /api/config/executors/prepare` constructs a bounded candidate against that
+draft without compilation, probing or persistence. This allows editing newly
+added agents and selecting newly added models before activation. Dialogs offer
+“保存”; only the page's “保存并激活” action validates and activates the entire
+candidate. Busy accounts can edit drafts, while the final activation retains
+the strict idle gate. Provider/Span Keys are staged with compensation in that
+same transaction; the standalone credential-write and configuration-rollback
+HTTP routes are retired. Model connection dialogs only save drafts and perform
+read-only discovery. The task concurrency setting (`runtimePolicy.maxConcurrentTasks`)
+is hot-activatable; account recovery/queue promotion reads the current active
+Kernel projection. Other attempt/backend policy limits remain restart-required.
+Missing model prices are checked at activation. Models'
+Fixed/Auto tool compatibility is
 projected server-side. Disabled assistants remain editable and previewable;
 no enabled assistants means new work is rejected with `no_enabled_executor`.
 Installation cards describe shared Pi/Codex tools and derive required status
@@ -1734,3 +1759,115 @@ and credential status. It does not wait for another public catalog retrieval;
 cached public catalog data cannot restore deleted Providers or overwrite the
 saved model facts. A local page refresh error does not relabel a committed
 activation as failed.
+
+## Desktop implementation boundary (2026-10-05)
+
+[ADR-0045](../adr/0045-desktop-thin-shell-and-local-session.md) accepts the isolated Desktop implementation: `apps/desktop`
+loads the shared Web UI and connects to the canonical independent Server. The
+local installation adapter is the only client exception allowed to invoke
+formal Server lifecycle commands. Window close/desktop quit never stop Server.
+Local desktop tickets are separate from browser login and workspace launch
+hints. Implementation and release validation remain in progress; this is not
+a signed desktop release announcement.
+
+
+Desktop source checkpoint (2026-10-06): shared Web now consumes the optional
+native directory/save/menu/preferences adapter. Account-scoped bounded drafts,
+viewports and route hints persist independently of the HTTP port. The local
+session exchange checks Unix ownership, release/instance identity and HTTP
+proof; tickets never enter Renderer. Generic notification hints use a bounded
+account feed, separate from Conversation observation and approval authority.
+The signed-payload preparer consumes formal Runtime/Planner archives plus
+explicit Node/Git/Pi distributions; installation and update helpers call the
+existing native installer/updater. Joint activation waits for the new Server
+identity and a new Desktop authenticated-render receipt before committing;
+interrupted recovery does not depend on executing the staged candidate.
+Desktop Pi provisioning covers engineering
+and research without requiring optional Codex. Actual Electron/production-Web
+smoke passed locally, including Renderer recovery and Server survival on client
+exit. A distributable signed payload, clean-machine task acceptance, signed
+joint-update tests, Intel validation and long-duration acceptance remain open.
+This checkpoint does not declare a production Desktop release.
+
+
+On macOS, development launch, smoke and benchmark entry points use a cached
+`MetaWork.app` shell under `.tmp/desktop-shell`. Its `CFBundleName` and
+`CFBundleDisplayName` are `MetaWork`, with bundle ID
+`com.metawork.desktop.development`. The npm Electron bundle is left intact;
+`app.setName` alone does not change macOS menu-bar or Dock identity. The copied
+shell keeps the existing icon and Electron development-mode executable, receives
+an ad-hoc local signature, and runs against the isolated development Server.
+Production packaging retains the separate signed `com.metawork.desktop`
+identity and release requirements. The native smoke verifies AppKit's running
+application name and bundle path, in addition to authenticated Renderer health.
+
+
+### Executor baseline operations (2026-10-06; implemented locally)
+
+[ADR-0046](../adr/0046-agent-baseline-operations-and-responsibility-separation.md)
+and the [baseline operations plan](../plans/2026-10-06-agent-baseline-permissions-design.md)
+replace the ordinary research/engineering permission choice with a system-owned
+baseline supporting task file/command work and public HTTP(S). Responsibility
+text only guides work allocation; actual tools/models supply capabilities and
+Kernel retains authorization authority. Eligible standard profiles migrate in
+the next unified settings activation; software upgrade or viewing settings does
+not widen the active configuration. Planner, custom restrictions and historical
+revision-pinned attempts remain unchanged. New installations seed
+`standard-agent` immediately. Migration recognizes exact default definitions,
+including aliases, and preserves the old engineering read-partition limit of 8
+using `standard-agent-read-8`. Arbitrary constraints, commands and backend
+changes remain outside the bounded hot-update exception. Rollback skips
+normalization and restores the original profile meaning.
+
+The Executor editor no longer accepts a permission-profile field. It shows a
+read-only baseline or custom-restriction notice and stores new profile
+references and definitions in the same page draft. Known legacy template
+specializations are replaced by combined CLI affordances; user duties and
+custom hints are retained. Existing capability compilation derives delivery
+contracts from actual declared affordances when legacy labels are absent;
+image support still requires model/protocol evidence. Docker adapters resolve
+egress from the authorized revision's profile definition, including aliases,
+instead of testing the profile reference's spelling.
+
+Validation: 585 configuration/resource/routing/executor regressions, 30 Web
+unit tests, 7 browser workflows, native backend public fetch/file/analysis/test
+commands and missing-tool/network failures, and live Electron unified
+activation passed. Software refresh preserved existing active permissions;
+activation migrated them without restarting Server. Real Docker execution
+remains unverified on this host because Docker is not installed. Native
+validation does not claim a full Planner/LLM task or whole-host sandbox.
+
+
+### Native PDF and vision preparation (2026-10-06)
+
+`npm run build` runs `scripts/prepare-pi-pdf.mjs`. It verifies a pinned
+python-build-standalone archive (CPython 3.12.12, build 20251014; hashes in
+`scripts/pi-pdf-python.json`), installs pinned binary wheels into an isolated
+cache and ships the interpreter, packages, licenses and reviewed Pi extension
+in `dist/pi-pdf`. The Desktop payload preparer checks relocated Python imports
+alongside Node/Git/Pi. No Xcode/system Python or runtime pip install is required.
+Darwin arm64 is validated; hashes are declared for Darwin x64 and Linux
+x64/arm64 but those platforms and optional Docker execution are not certified
+by this native acceptance.
+
+`PiCliDriver` injects only the extension loader into each independent attempt
+home; model credentials remain revision-bound. It probes release-local Python
+imports when that bundle is installed. The extension is the MIT read/inspect
+subset of `@joemccann/pi-pdf` 1.0.1 (`integrations/pi-pdf/UPSTREAM.md` records
+provenance and local modifications). It keeps pdf_info/pdf_extract_text/
+pdf_extract_tables/pdf_to_images and uses Pi read for rendered PNGs. PDF parsing
+is Executor-owned, not a new MetaWork read_document API or Planner tool.
+Text, scans, mixed pages, encrypted/corrupt input and explicit ranges have
+verified paths; batches are at most 5 pages, input 50 MiB, capture 2 MiB, image
+edge 2048px. Render manifests preserve source hash, completed and remaining pages.
+OFD is not advertised as PDF support.
+
+Official DeepSeek Flash endpoint facts are normalized only into new candidates;
+“保存并激活” creates a revision and explicit models.json input modalities.
+Third-party endpoints do not inherit vision merely from the model name.
+A real system-Pi/DeepSeek smoke checks image requests and expected synthetic
+invoice values: build, run the bundled Python on
+`scripts/generate-pi-pdf-fixtures.py`, then provide DEEPSEEK_API_KEY to
+`npm run smoke:pi-pdf`. API keys are never written into the test home. The real
+Desktop invoice task is also verified through Kernel publication and billing,
+not only by an HTTP success or standalone command. See the PDF repair plan.

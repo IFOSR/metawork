@@ -178,15 +178,25 @@ through the bounded executor-management surface while the account is strictly
 idle (the gate and interlock rules live in ADR-0033). The following bounds
 apply to that surface:
 
+**2026-10-06 settings clarification:** the idle condition applies to committing
+the configuration to the runtime. Create/edit “保存” and confirmed
+enable/disable/removal only update the page draft. Candidate preparation is
+read-only and accepts that draft, including unactivated models and agents.
+It does not compile, probe or activate. The settings page has one combined
+“保存并激活” action, retaining all field bounds and final validation below.
+
 - The user-selectable tool scope is fixed to existing Harness configurations
   whose registered driver is `pi-cli` or `codex-cli`. Model compatibility and
   capability conclusions derive from the resolved Harness's registered
   `driverId`; AgentClass refs, Harness keys, and display names never
   participate in tool-type inference, and an unknown or unsupported driver
   fails closed instead of being guessed as Pi.
-- Editable fields are bounded to `displayName`, `modelPolicy`,
-  `permissionProfileRef` (referencing an existing Permission Profile only),
-  manual source text, and `enabled`. Harness reference, driver, command,
+- Editable fields are bounded to `displayName`, `modelPolicy`, manual source
+  text, and `enabled`. ADR-0046 removes `permissionProfileRef` from ordinary
+  editor input: Configuration assigns the system baseline and preserves custom
+  restrictions. New baseline agents declare actual CLI affordances without
+  mandatory research/engineering labels; the existing capability compiler
+  derives structurally supported delivery contracts from tool/model evidence. Harness reference, driver, command,
   arguments, image, working directory, Skills, MCP, and plugins are not
   editable through executor management, and Permission Profile grammar remains
   code-owned per §5.
@@ -235,3 +245,27 @@ Harnesses, Providers, credentials, history, artifacts, or revision records.
 - Fallback history can distinguish model choice, harness choice, and permission-profile choice under the same AgentClass.
 - Permission profiles remain safe, code-owned contracts instead of a configuration DSL.
 - ADR-0017, ADR-0018, ADR-0023, and ADR-0024 remain the underlying authority for the split between static catalog, health projection, durable recovery, and resource/permission enforcement.
+
+### 2026-10-06: System Pi PDF preparation and model input modalities
+
+Configuration applies reviewed official DeepSeek Flash vision facts to new
+activation candidates only. The fact requires the official HTTPS endpoint;
+arbitrary providers using the same model ID are not inferred capable. The
+shared model renderer emits `input: ['text', 'image']` only for effective vision
+models, otherwise `['text']`. One “保存并激活” transaction produces the new
+revision; historical Task/model bindings stay intact.
+
+PDF belongs to the actual installed Executor Pi. The native installer ships
+the reviewed MIT `@joemccann/pi-pdf` 1.0.1 read subset and checksum-pinned
+standalone Python plus binary dependencies. PiCliDriver places an explicit
+extension loader in the isolated attempt home and checks bundled dependencies.
+It neither imports all user extensions/credentials nor modifies the vendored
+Planner's read tool. Existing pdf_info/pdf_extract_text/pdf_extract_tables/
+pdf_to_images and Pi image read provide text/scanned/mixed-page paths. There is
+no MetaWork `read_document` API, raw-PDF model upload assumption, or Quick Look
+fallback. Tool progress/cancellation is adapted at this Harness boundary.
+
+The source integration and platform/license/upgrade constraints are recorded
+in `integrations/pi-pdf/UPSTREAM.md` and the October 6 PDF repair plan. Native
+macOS arm64 is the acceptance target; other prepared platform assets still
+require platform validation before release claims.

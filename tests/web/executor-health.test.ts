@@ -35,28 +35,28 @@ describe('executorHealthBadge', () => {
     })).toBeNull();
   });
 
-  it('warns when the executor has been silent for 30-120s', () => {
+  it('warns when the executor has been silent for 60-300s', () => {
     const badge = executorHealthBadge({
       updatedAt,
-      nowMs: t0 + 45_000,
+      nowMs: t0 + 90_000,
       running: true,
       activityState: 'idle',
     });
     expect(badge?.level).toBe('stale');
-    expect(badge?.label).toContain('45');
+    expect(badge?.label).toContain('90');
     expect(badge?.label).toContain('无新活动');
   });
 
-  it('flags a likely-lost executor after 120s of silence', () => {
+  it('flags a likely-lost executor after 300s of silence', () => {
     const badge = executorHealthBadge({
       updatedAt,
-      nowMs: t0 + 300_000,
+      nowMs: t0 + 360_000,
       running: true,
       activityState: 'idle',
     });
     expect(badge?.level).toBe('lost');
-    expect(badge?.label).toContain('失联');
-    expect(badge?.label).toContain('Kernel');
+    expect(badge?.label).toContain('待确认');
+    expect(badge?.label).not.toContain('Kernel 正在恢复');
   });
 
   it('tolerates unparsable timestamps', () => {
@@ -68,18 +68,18 @@ describe('executorHealthBadge', () => {
     })).toBeNull();
   });
 
-  it('does not infer lost execution from an active operation or presentation heartbeat', () => {
+  it('shows uncertainty even if presentation heartbeats continue', () => {
     expect(executorHealthBadge({
       updatedAt,
-      nowMs: t0 + 300_000,
+      nowMs: t0 + 360_000,
       running: true,
       activityState: 'active_operation',
-    })).toBeNull();
+    })).toMatchObject({ level: 'lost' });
     expect(executorHealthBadge({
       updatedAt,
-      nowMs: t0 + 300_000,
+      nowMs: t0 + 360_000,
       running: true,
       activityState: 'presentation_heartbeat',
-    })).toBeNull();
+    })).toMatchObject({ level: 'lost' });
   });
 });

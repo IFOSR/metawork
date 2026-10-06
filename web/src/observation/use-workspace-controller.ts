@@ -17,6 +17,7 @@ import { canLoadDirectoryPage, createNavigationGuard, loadStartupWorkspace, load
 import { NavigationDirectoryChanges } from '../navigation-directory-state';
 import { readConversationRoute, writeConversationRoute, type ConversationRoute } from './conversation-route';
 import { ComposerStore } from './composer-store';
+import { desktopBridge, desktopPreferences, reportPersistenceError } from '../platform/services';
 
 let startupAuthentication: ReturnType<typeof establishWebSession> | null = null;
 let startupLaunchSuggestionPromise: Promise<WebLaunchSuggestion | null> | null = null;
@@ -85,8 +86,19 @@ export function useWorkspaceController() {
   const [, setPendingInputRevision] = useState(0);
   const readinessFocusRefreshRef = useRef(false);
   const [observationClient, setObservationClient] = useState<WsClient>();
-  const viewportMemory = useRef<ConversationViewportMemory>({ anchors: new Map(), heights: new Map() });
-  const drafts = useRef(new ComposerStore());
+  const viewportMemory = useRef<ConversationViewportMemory>({
+    anchors: new Map(Object.entries(desktopPreferences()?.viewports ?? {})), heights: new Map(),
+  });
+  const drafts = useRef(new ComposerStore((id, value) => {
+    const next = value ? { text: value.draft, attachments: value.attachments } : null;
+    const prefs = desktopPreferences();
+    if (prefs) { if (next) prefs.drafts[id] = next; else delete prefs.drafts[id]; }
+    void desktopBridge()?.setDraft(id, next).catch(reportPersistenceError);
+  }));
+  if (desktopPreferences()) drafts.current.restore(Object.fromEntries(
+    Object.entries(desktopPreferences()!.drafts).map(([id, value]) =>
+      [id, { draft: value.text, attachments: value.attachments as AttachmentMetadata[] }]),
+  ));
   const draftOwner = useRef<string | null>(null);
   const draftValue = useRef({ draft, attachments: pendingAttachments });
   draftValue.current = { draft, attachments: pendingAttachments };
@@ -103,8 +115,14 @@ export function useWorkspaceController() {
   }, [observedId]);
   const openTrajectory = useCallback((turnId: string) => { setSelectedTrajectoryTurnId(turnId); setTab('trajectory'); }, []);
   const openBilling = useCallback((turnId: string) => { setSelectedBillingTurnId(turnId); setTab('billing'); }, []);
+  useEffect(() => {
+    const failed = () => setActivationNotice('草稿或偏好未能保存到本机，请保留窗口并重试。');
+    window.addEventListener('metawork:persistence-error', failed);
+    return () => window.removeEventListener('metawork:persistence-error', failed);
+  }, []);
   useEffect(() => observationClient?.conversations.onRevoked(id => {
     drafts.current.delete(id); viewportMemory.current.anchors.delete(id);
+    void desktopBridge()?.setViewport(id, null).catch(reportPersistenceError);
     for (const key of viewportMemory.current.heights.keys()) if (key.startsWith(`${id}\0`)) viewportMemory.current.heights.delete(key);
     for (const [key, input] of pendingInputsRef.current) if (input.conversationId === id) pendingInputsRef.current.delete(key);
     if (draftOwner.current === id) {
@@ -148,6 +166,14 @@ export function useWorkspaceController() {
     let socketSelectionGeneration = 0;
     const handleUnauthorized = () => {
       if (!startupLifetime.current()) return;
+      if (desktopBridge()) {
+        setConnected(false);
+        setActivationNotice('桌面会话已失效，正在重新连接…');
+        void desktopBridge()!.reconnect().then(() => window.location.reload()).catch(() => {
+          if (startupLifetime.current()) setActivationNotice('后台尚未恢复，草稿已保留。请从菜单重新连接。');
+        });
+        return;
+      }
       setAuthenticated(false);
       setConnected(false);
       setAuthError('Web 会话已失效。请重新启动 Web 或输入 --no-open 显示的 token。');

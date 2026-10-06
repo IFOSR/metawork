@@ -102,11 +102,11 @@ export function SpanRoutingSettings({
             onChange={event => onChange({ ...draft, apiKey: event.target.value })}
           />
           <small className="decision-credential-note">
-            Key 由服务端保存到 SecretStore，不会写入配置版本或日志，也不会发送给执行器。
+            Key 先保留在草稿中，点击“保存并激活”后由系统安全保存。
           </small>
           {!credentialConfigured && (
             <p className="decision-credential-warning" role="status">
-              还没有可用的 Key：填写并保存后决策模型才会生效。
+              还没有可用的 Key：填写后点击页面底部“保存并激活”，决策模型才会生效。
             </p>
           )}
         </div>

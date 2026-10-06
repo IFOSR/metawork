@@ -1,3 +1,4 @@
+import { isDesktopNonce, type DesktopSessionGrant } from './desktop-session-contract.js';
 import type { GatewayEventEnvelope } from './client-events.js';
 import {
   isGatewayCommandText,
@@ -10,6 +11,7 @@ import type { ConversationObservationFrame } from './conversation-observation.js
 import type { ConversationViewCursor } from '../session/conversation-read-model.js';
 
 export type GatewayClientMessage =
+  | { type: 'register_desktop_session'; nonce: string }
   | { type: 'observe'; connectionId: string; observationId: string; conversationId: string; cursor?: ConversationViewCursor }
   | { type: 'unobserve'; observationId: string }
   | {
@@ -40,6 +42,7 @@ export type GatewayClientMessage =
     };
 
 export type GatewayServerMessage =
+  | { type: 'desktop_session_registered'; grant: DesktopSessionGrant }
   | { type: 'observation'; frame: ConversationObservationFrame }
   | {
       type: 'hello';
@@ -113,6 +116,11 @@ export function parseGatewayClientMessage(input: unknown): GatewayClientMessage 
       observationId: candidate.observationId, conversationId: candidate.conversationId, ...(cursor ? { cursor } : {}) };
   }
 
+  if (candidate.type === 'register_desktop_session') {
+    return Object.keys(candidate).every(key => ['type', 'nonce'].includes(key))
+      && isDesktopNonce(candidate.nonce)
+      ? { type: 'register_desktop_session', nonce: candidate.nonce } : null;
+  }
   if (candidate.type === 'close') return { type: 'close' };
   if (candidate.type === 'register_web_launch') {
     const allowedKeys = new Set(['type', 'workspaceHint', 'conversationId']);

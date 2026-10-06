@@ -201,7 +201,7 @@ e2e('Settings workbench browser flow', () => {
     }
   }, 30_000);
 
-  it('saves the Span key separately, clears it, and retains the stored key when disabled', async () => {
+  it('stages the Span key with unified activation, clears the input, and retains the stored key when disabled', async () => {
     const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
     const server = await startMockServer(join(root, 'web', 'dist'));
     const profile = await mkdtemp(join(tmpdir(), 'span-settings-chrome-'));
@@ -253,7 +253,7 @@ e2e('Settings workbench browser flow', () => {
     }
   }, 30_000);
 
-  it('creates, renames, disables, enables and deletes an assistant, and blocks busy editing on mobile', async () => {
+  it('creates, renames, disables, enables and deletes in a draft with one activation entry, including busy mobile editing', async () => {
     const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
     const server = await startMockServer(join(root, 'web', 'dist'), 'executor-management');
     const profile = await mkdtemp(join(tmpdir(), 'metawork-executor-chrome-'));
@@ -272,8 +272,22 @@ e2e('Settings workbench browser flow', () => {
           await cdp.evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].find(b => b.textContent.trim() === ${JSON.stringify(label)}).click()`);
         };
         const save = async () => {
-          await click('预览变更', '.executor-editor-dialog button');
-          await click('确认并热生效', '.executor-editor-dialog button');
+          const removing = await cdp.evaluate(`document.querySelector('.executor-editor-dialog h3')?.textContent.trim() === '删除智能体'`);
+          if (removing) {
+            await click('确认删除', '.executor-editor-dialog button');
+            await waitForExpression(cdp, `!document.querySelector('.executor-editor-dialog')`);
+            return;
+          }
+          const toggling = await cdp.evaluate(`(() => {
+            const title = document.querySelector('.executor-editor-dialog h3')?.textContent.trim();
+            return title === '启用智能体' ? '启用' : title === '停用智能体' ? '停用' : null;
+          })()`);
+          if (toggling) {
+            await click(`确认${toggling}`, '.executor-editor-dialog button');
+            await waitForExpression(cdp, `!document.querySelector('.executor-editor-dialog')`);
+            return;
+          }
+          await click('保存', '.executor-editor-dialog button');
           await waitForExpression(cdp, `!document.querySelector('.executor-editor-dialog')`);
         };
         await waitForExpression(cdp, `Boolean(document.querySelector('.sidebar-settings'))`);
@@ -290,6 +304,7 @@ e2e('Settings workbench browser flow', () => {
           model.dispatchEvent(new Event('change', { bubbles: true }));
         })()`);
         await save();
+        expect(server.getActivationPayload()).toBeNull();
         await waitForExpression(cdp, `document.querySelectorAll('.agent-summary-toggle').length === 4`);
         await cdp.evaluate(`(() => {
           const button = [...document.querySelectorAll('.agent-summary-toggle')].find(b => b.textContent.includes('Browser assistant'));
@@ -342,16 +357,28 @@ e2e('Settings workbench browser flow', () => {
         await save();
         expect(await cdp.evaluate(`document.getElementById(window.browserAgentId).querySelector('.agent-name-field input').value`))
           .toBe('Unsaved local name');
+        expect(server.getActivationPayload()).toBeNull();
+        await click('保存并激活');
+        await waitForExpression(cdp, `document.body.innerText.includes('配置已热激活')`);
+        const committed = server.getActivationPayload() as { config: { agentClasses: Record<string, any> } };
+        const savedRef = String(await cdp.evaluate('window.browserAgentId')).replace('agent-editor-', '');
+        expect(committed.config.agentClasses[savedRef]).toMatchObject({
+          displayName: 'Unsaved local name', enabled: true, kind: 'executor',
+          harnessRef: 'pi-cli', permissionProfileRef: expect.any(String),
+          modelPolicy: { mode: 'fixed', modelRef: unsavedModel },
+        });
+        await cdp.evaluate(`[...document.querySelectorAll('.agent-summary-toggle')].find(b => b.textContent.includes('Unsaved local name')).click()`);
         await action('删除');
         await save();
+        expect(server.getActivationPayload()).toBe(committed);
         await waitForExpression(cdp, `document.querySelectorAll('.agent-summary-toggle').length === 3`);
         await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
         await click('新增智能体');
         await waitForExpression(cdp, `Boolean(document.querySelector('.executor-editor-dialog'))`);
         expect(await cdp.evaluate(`document.documentElement.scrollWidth <= window.innerWidth`)).toBe(true);
         server.setBusy(true);
-        await waitForExpression(cdp, `document.querySelector('.executor-editor-dialog button[type=submit]').disabled`);
-        expect(await cdp.evaluate(`document.querySelector('.executor-editor-dialog input').closest('fieldset').disabled`)).toBe(true);
+        await waitForExpression(cdp, `[...document.querySelectorAll('.settings-footer-actions button')].some(b => b.textContent.includes('保存并激活') && b.disabled)`);
+        expect(await cdp.evaluate(`document.querySelector('.executor-editor-dialog input').closest('fieldset').disabled`)).toBe(false);
         server.setBusy(false);
         await waitForExpression(cdp, `!document.querySelector('.executor-editor-dialog button[type=submit]').disabled`);
       } finally { cdp.close(); }
@@ -508,14 +535,14 @@ e2e('Settings workbench browser flow', () => {
         await waitForExpression(cdp, `
           document.querySelector('.drawer-footer .primary-button').disabled
           && [...document.querySelectorAll('.provider-card button:not(.provider-collapse-toggle)')]
-            .every(button => button.disabled)
+            .some(button => button.textContent.includes('删除 Provider') && !button.disabled)
         `);
         const busyControls = await cdp.evaluate(`(() => ({
           saveDisabled: document.querySelector('.drawer-footer .primary-button').disabled,
           deleteDisabled: [...document.querySelectorAll('.provider-card button:not(.provider-collapse-toggle)')]
-            .every(button => button.disabled),
+            .find(button => button.textContent.includes('删除 Provider')).disabled,
         }))()`);
-        expect(busyControls).toEqual({ saveDisabled: true, deleteDisabled: true });
+        expect(busyControls).toEqual({ saveDisabled: true, deleteDisabled: false });
         server.setBusy(false);
         await waitForExpression(cdp, `
           !document.querySelector('.drawer-footer .primary-button').disabled
@@ -750,12 +777,14 @@ async function startMockServer(
         return;
       }
       if (url.pathname === '/api/config/executors') {
-        json(response, projectExecutorManagement(executorSnapshot));
+        if (request.method === 'POST') {
+          void readJsonBody(request).then(body => json(response, projectExecutorManagement({ ...executorSnapshot, config: body.config as typeof executorSnapshot.config })));
+        } else json(response, projectExecutorManagement(executorSnapshot));
         return;
       }
       if (url.pathname === '/api/config/executors/prepare') {
         void readJsonBody(request).then(body => {
-          json(response, buildExecutorConfigurationCandidate(executorSnapshot, parseExecutorConfigurationChange(body.change)));
+          json(response, buildExecutorConfigurationCandidate({ ...executorSnapshot, config: (body.config ?? executorSnapshot.config) as typeof executorSnapshot.config }, parseExecutorConfigurationChange(body.change)));
         });
         return;
       }
@@ -928,7 +957,10 @@ async function startMockServer(
     }
     void serveStatic(webDist, url.pathname, response);
   });
-  await new Promise<void>(resolvePromise => server.listen(0, '127.0.0.1', resolvePromise));
+  await new Promise<void>((resolvePromise, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolvePromise);
+  });
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('mock server did not bind TCP');
   return {

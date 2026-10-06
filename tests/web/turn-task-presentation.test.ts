@@ -11,6 +11,31 @@ const { renderToStaticMarkup } = requireFromWeb('react-dom/server') as {
 };
 
 describe('Turn Task presentation', () => {
+  it('does not announce an Executor start before an attempt exists', () => {
+    const cards = collectExecutionCards([], { taskId: 't', title: 'Invoices', status: 'running', stages: [
+      { phase: 'execution', status: 'running', subtasks: [
+        { id: 'summarize', title: '分类统计', status: 'ready', attempts: [] },
+      ] },
+    ] });
+    expect(cards[0].stepLabel).toContain('等待前置结果');
+    expect(cards[0].stepLabel).not.toContain('已启动');
+    expect(cards[0].startedAt).toBeNull();
+  });
+
+  it('does not let presentation heartbeats overwrite the time of actual progress', () => {
+    const cards = collectExecutionCards([{
+      id: 'heartbeat', sequence: 1, occurredAt: '2026-10-06T12:00:00Z', phase: 'execution',
+      actor: 'runtime', kind: 'executor_heartbeat', status: 'running', title: 'heartbeat', summary: '',
+      taskId: 't', subtaskId: 's', details: { lastProgressAt: '2026-10-06T09:00:00Z',
+        activityState: 'presentation_heartbeat', operationHealth: { state: 'unknown', lastActivityAt: '2026-10-06T09:00:00Z' } },
+    }], { taskId: 't', title: 'Invoices', status: 'running', stages: [
+      { phase: 'execution', status: 'running', subtasks: [{ id: 's', title: '读取', status: 'running', attempts: [] }] },
+    ] });
+    expect(cards[0].lastProgressAt).toBe('2026-10-06T09:00:00Z');
+    expect(cards[0].lastActivityAt).toBe('2026-10-06T09:00:00Z');
+    expect(cards[0].healthText).toContain('状态待确认');
+  });
+
   it('keeps the newest durable progress timestamp when trace events are older', () => {
     const cards = collectExecutionCards(
       [{

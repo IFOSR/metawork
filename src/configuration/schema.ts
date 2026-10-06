@@ -169,6 +169,7 @@ const CommandArgumentSchema = z.string().trim().min(1).max(500).refine(
 
 const ProviderDefinitionSchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional(),
+  systemManaged: z.boolean().optional(),
   protocol: z.enum(['openai-compatible', 'anthropic']),
   baseUrl: credentialFreeHttpUrlSchema('Provider baseUrl'),
   apiKeyRef: z.string().regex(SECRET_REFERENCE).refine(
@@ -182,6 +183,7 @@ const ProviderDefinitionSchema = z.object({
 const ModelProfileSchema = z.object({
   providerRef: ReferenceIdSchema,
   modelId: z.string().trim().min(1).max(200),
+  systemManaged: z.boolean().optional(),
   description: z.string().trim().max(4_000).optional(),
   publicFacts: PublicModelFactsSchema.optional(),
   capabilities: uniqueArray(
@@ -394,13 +396,7 @@ const AgentClassDefinitionSchema = z.object({
         message: 'Executor AgentClass requires permissionProfileRef',
       });
     }
-    if (agentClass.routingCapabilities.length === 0) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['routingCapabilities'],
-        message: 'Executor AgentClass requires at least one Routing Capability',
-      });
-    }
+
     const declaredAffordances = new Set(agentClass.plannerAffordances);
     for (const [capabilityIndex, capabilityId] of agentClass.routingCapabilities.entries()) {
       for (const requiredAffordance of ROUTING_CAPABILITY_REGISTRY[capabilityId].requiredAffordances) {
@@ -451,6 +447,10 @@ const BasePermissionParametersSchema = z.object({
 }).strict();
 
 const PermissionProfileSchema = z.discriminatedUnion('profileId', [
+  z.object({
+    profileId: z.literal('standard-agent'), version: z.literal(1),
+    parameters: BasePermissionParametersSchema,
+  }).strict(),
   z.object({
     profileId: z.literal(PERMISSION_PROFILE_IDS[0]),
     version: z.literal(1),

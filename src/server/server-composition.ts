@@ -1,3 +1,7 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { realpath } from 'node:fs/promises';
+import { DesktopSessionService } from '../management/desktop-session.js';
+import { ClientNotificationFeed, type ClientNotificationPage } from '../gateway/client-notification-feed.js';
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { SqliteClientNavigationStore } from '../storage/client-navigation-repo.js';
@@ -72,7 +76,6 @@ import { FeishuConversationRouting } from '../gateway/feishu-conversation-routin
 import { FeishuGatewaySessionPort } from '../gateway/feishu-gateway-session-port.js';
 import { NotificationRoutingService, notificationFromTurn, type NotificationFact } from '../delivery/notification-routing.js';
 import { SqliteNotificationRoutingStore } from '../storage/notification-routing-repo.js';
-import { createHash } from 'node:crypto';
 import { ClientActionReferences } from '../gateway/client-action-reference.js';
 import { SqliteClientActionReferences } from '../storage/client-action-reference-repo.js';
 import { GatewayAuditLog } from '../gateway/audit.js';
@@ -136,7 +139,7 @@ import { buildStagedLegacyConfiguration } from '../configuration/staged-legacy-c
 import { buildPlannerInputProfile } from '../planning/planner-input-profile.js';
 import { buildPlannerConfigurationView, buildRuntimeConfigurationView, buildExecutorManualPreview } from '../configuration/projections.js';
 import { validateEnabledModelPrices } from '../configuration/enabled-model-price-validation.js';
-import { projectExecutorManagement } from '../configuration/executor-configuration.js';
+import { executorDraftSnapshot, projectExecutorManagement } from '../configuration/executor-configuration.js';
 import { AutoModelResolver } from '../routing/auto-model-resolver.js';
 import { authorizedExecutorBindingFingerprint } from '../core/authorized-executor-binding.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
@@ -153,7 +156,6 @@ import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js'
 import {
   acquireInstanceLock,
   isInstanceRunning,
-  removeInstanceLockOnExit,
   stopInstanceForRestart,
   type InstanceLock,
 } from '../management/lock.js';
@@ -354,6 +356,9 @@ async function startWebMode(options: {
   attachmentStore?: FileAttachmentStore;
   artifactQuery: ArtifactPreviewService;
   webAuth: WebAuthService;
+  desktopSessions?: DesktopSessionService;
+  clientNotifications?: { read(cursor: string | null): ClientNotificationPage };
+  serviceActivity?: () => { activeTasks: number; tasks: Array<{ id: string; title: string }>; truncated: boolean };
   launchContexts: WebLaunchContextService;
   agentReadiness: AgentInstallationReadinessService;
 }): Promise<ManagementServer> {
@@ -372,6 +377,9 @@ async function startWebMode(options: {
     webDistDir,
     token: options.webAuth.manualAccessToken,
     webAuth: options.webAuth,
+    desktopSessions: options.desktopSessions,
+    clientNotifications: options.clientNotifications,
+    serviceActivity: options.serviceActivity,
     conversationGateway: options.conversationGateway,
     launchContexts: options.launchContexts,
     workspaceDirectoryBrowser: new WorkspaceDirectoryBrowser(),
@@ -611,15 +619,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   // Only standalone Server startup owns the Runtime instance lock. Client
   // launchers are separated from this composition in the following tasks.
   let instanceLock: InstanceLock | null = null;
-  let instanceLockPath: string | null = null;
   if (cliCommand.kind === 'server') {
     const dataDir = paths.data;
     mkdirSync(dataDir, { recursive: true });
-    instanceLockPath = resolve(dataDir, 'runtime.lock');
-    instanceLock = await acquireInstanceLock(instanceLockPath);
-    process.once('exit', () => {
-      if (instanceLockPath) removeInstanceLockOnExit(instanceLockPath);
-    });
+    instanceLock = await acquireInstanceLock(resolve(dataDir, 'runtime.lock'));
+    process.once('exit', instanceLock.releaseOnExit);
   }
 
   // 2. Load the sole active configuration revision. Legacy *configuration
@@ -792,6 +796,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   const directoryProjection = new SqliteWorkspaceDirectoryProjectionRepo(db, LOCAL_DEFAULT_ACCOUNT_ID);
   let directoryProjector: WorkspaceDirectoryProjector | null = null;
   const notificationStore = new SqliteNotificationRoutingStore(db);
+  const clientNotifications = new ClientNotificationFeed();
   const conversationReadModel = createConversationReadModel(db);
   const conversationReadProjector = new ConversationReadProjector(conversationReadModel);
   const canonicalHistory = new SqliteConversationHistoryRepo<CanonicalConversationTurn>(db, LOCAL_DEFAULT_ACCOUNT_ID, 'conversation',
@@ -1516,6 +1521,18 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     notificationStore.capture({ ...scope, subjectId: taskId, category: 'progress',
       version: createHash('sha256').update(JSON.stringify(summary)).digest('hex'), payload: summary }, Date.now());
     notificationStore.schedulePermissions(taskId);
+    // Run after the projection transaction. Confirm its committed value before issuing a UI hint.
+    queueMicrotask(() => {
+      if (!db.open || JSON.stringify(activityProjection.read(taskId)) !== JSON.stringify(summary)) return;
+      const kind = summary.phase === 'completed' ? 'completed' : summary.phase === 'failed' ? 'failed'
+        : summary.phase === 'waiting_for_user' ? 'approval' : null;
+      if (!kind || !task.workspaceId) return;
+      clientNotifications.publish(task.accountId!, {
+        workspaceId: task.workspaceId, conversationId: task.conversationId!, taskId,
+        ...(turn ? { turnId: turn.id } : {}), kind,
+      }, `${summary.executionGeneration}:${kind === 'approval'
+        ? new SqlitePermissionRepository(db).findPendingForTask(taskId)?.request.fingerprint ?? 'pending' : kind}`);
+    });
   });
   const activityProjector = new ConversationActivityProjector(activityProjection, task => {
     const pending = new SqlitePermissionRepository(db).findPendingForTask(task.id);
@@ -1948,6 +1965,16 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   });
   const webLaunchContexts = new WebLaunchContextService();
   const webAuth = new WebAuthService();
+  const desktopInstanceId = randomUUID();
+  const desktopInstallationId = createHash('sha256').update(await realpath(paths.root)).digest('hex');
+  const desktopRelease = await readReleaseIdentity(join(applicationRoot, 'release-identity.json'));
+  let desktopReady = false;
+  const desktopSessions = new DesktopSessionService(() => desktopReady && managementServer ? {
+    installationId: desktopInstallationId, instanceId: desktopInstanceId,
+    accountId: LOCAL_DEFAULT_ACCOUNT_ID, releaseId: desktopRelease?.releaseId ?? 'development',
+    pid: process.pid, webOrigin: managementServer.address, gatewayProtocolVersion: 2,
+  } : null);
+
 
   const gatewayServer = new MetaclawGatewayServer({
     socketPath: gatewaySocketPath,
@@ -1982,6 +2009,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     closeConnection: connectionId => {
       workspaceGatewayRuntime.closeConnection(connectionId);
     },
+    registerDesktopSession: (nonce, accountId) => desktopSessions.issue(nonce, accountId),
     registerWebLaunch: input => Promise.resolve(webLaunchContexts.issue(input)),
   });
   let managementServer: ManagementServer | null = null;
@@ -2187,6 +2215,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         ),
       }),
       webAuth,
+      desktopSessions,
+      clientNotifications: { read: cursor => clientNotifications.read(LOCAL_DEFAULT_ACCOUNT_ID, cursor) },
+      serviceActivity: () => activityProjection.serviceSummary(LOCAL_DEFAULT_ACCOUNT_ID),
       agentReadiness,
       sessionRuntime: new WebGatewaySessionRuntime({
         accountId: LOCAL_DEFAULT_ACCOUNT_ID,
@@ -2326,20 +2357,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             config: snapshot.config,
           };
         },
-        getExecutorManagement: async () => projectExecutorManagement(configurationRuntimeCoordinator.getSnapshot()),
-        prepareExecutor: async ({ baseRevisionId, change }) => {
-          const prepared = await configurationService.prepareExecutorDraft(change, baseRevisionId);
-          try {
-            return {
-              baseRevisionId: prepared.baseRevisionId,
-              createdAgentClassRef: prepared.createdAgentClassRef,
-              summary: prepared.summary,
-              config: configurationService.getDraftSnapshot(prepared.revisionId).config,
-            };
-          } finally {
-            configurationService.discardDraft(prepared.revisionId);
-          }
-        },
+        getExecutorManagement: async config => projectExecutorManagement(
+          executorDraftSnapshot(configurationRuntimeCoordinator.getSnapshot(), config),
+        ),
+        prepareExecutor: ({ baseRevisionId, change, config }) =>
+          configurationService.prepareExecutorDraft(change, baseRevisionId, config),
         getExecutorCapabilityManual: async (agentClassRef, revisionId) => {
           const snapshot = await configurationService.getSnapshot(
             revisionId ?? (await configurationService.getActiveSnapshot()).revisionId,
@@ -2596,42 +2618,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             restartPaths: result.restartPaths,
           };
         },
-        rollback: async targetRevisionId => {
-          const active = await configurationService.getActiveSnapshot();
-          const target = await configurationService.getSnapshot(targetRevisionId);
-          const result = await configurationRuntimeCoordinator.activate({
-            expectedRevisionId: active.revisionId,
-            config: target.config,
-            reason: 'rollback',
-          });
-          return result.ok
-            ? {
-              ok: true,
-              revisionId: result.snapshot.revisionId,
-              activeRevisionId: result.snapshot.revisionId,
-              runningRevisionId: result.snapshot.revisionId,
-              restartRequired: false,
-            }
-            : {
-              ok: false,
-              code: result.code,
-              activeRevisionId: result.activeRevisionId,
-              issues: result.issues,
-              restartRequired: result.code === 'restart_required',
-              restartPaths: result.restartPaths,
-            };
-        },
-        writeSecret: (providerRef, apiKey) => configurationActivationGate.withActivation(async () => {
-          const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
-          const normalized = apiKey.trim();
-          const credentialFingerprint = fingerprintProviderCredential(normalized);
-          await secretStore.put(reference, normalized);
-          return {
-            configured: true,
-            maskedApiKey: maskApiKey(normalized),
-            ...(credentialFingerprint ? { credentialFingerprint } : {}),
-          };
-        }),
         getSpanCredentialStatus: async () => {
           try {
             const apiKey = (await secretStore.get(SPAN_ROUTING_SECRET_REFERENCE as SecretReference)).trim();
@@ -2640,11 +2626,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             return { configured: false };
           }
         },
-        writeSpanSecret: apiKey => configurationActivationGate.withActivation(async () => {
-          const normalized = apiKey.trim();
-          await secretStore.put(SPAN_ROUTING_SECRET_REFERENCE as SecretReference, normalized);
-          return { configured: true, maskedApiKey: maskApiKey(normalized) };
-        }),
         getSecretStatus: async providerRefs => {
           const status: Record<string, {
             configured: boolean;
@@ -2753,6 +2734,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       },
       recover: async () => undefined,
       markDraining: async () => {
+        desktopReady = false;
         const current = await readEndpointManifest(endpointManifestPath);
         if (current) {
           await writeEndpointManifest(endpointManifestPath, {
@@ -2778,6 +2760,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       removeManifest: () => removeEndpointManifest(endpointManifestPath),
     });
     await serverApplication.start();
+    desktopReady = true;
     console.log(`MetaWork Server ready: ${gatewaySocketPath}`);
     await new Promise(() => undefined);
     return;
