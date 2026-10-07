@@ -75,8 +75,8 @@ bootstrap = Path('scripts/windows11-cloud-bootstrap.ps1').read_text().replace('@
 (media / 'metawork-bootstrap.ps1').write_text(bootstrap, encoding='utf-8-sig')
 answer_iso = root / 'answers.iso'
 subprocess.run(['xorriso', '-as', 'mkisofs', '-quiet', '-J', '-r', '-V', 'MWCI', '-o', str(answer_iso), str(media)], check=True)
-disk = root / 'system.qcow2'
-subprocess.run(['qemu-img', 'create', '-f', 'qcow2', str(disk), '64G'], check=True)
+disk = root / 'system.raw'
+subprocess.run(['qemu-img', 'create', '-f', 'raw', str(disk), '64G'], check=True)
 shutil.copyfile('/usr/share/OVMF/OVMF_VARS_4M.ms.fd', root / 'vars.fd')
 (root / 'tpm').mkdir()
 
@@ -114,13 +114,13 @@ try:
             raise RuntimeError('TPM emulator exited')
         time.sleep(0.1)
     qemu = subprocess.Popen(['qemu-system-x86_64', '-enable-kvm', '-machine', 'q35,smm=on',
-        '-cpu', 'host', '-smp', '4', '-m', '8192',
+        '-cpu', 'host,hv_relaxed,hv_vapic,hv_spinlocks=0x1fff,hv_time,-vmx,-svm', '-smp', '4', '-m', '8192',
         '-global', 'driver=cfi.pflash01,property=secure,value=on',
         '-drive', 'if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.ms.fd',
         '-drive', f'if=pflash,format=raw,unit=1,file={root / "vars.fd"}',
         '-chardev', f'socket,id=chrtpm,path={root / "tpm.sock"}',
         '-tpmdev', 'emulator,id=tpm0,chardev=chrtpm', '-device', 'tpm-tis,tpmdev=tpm0',
-        '-drive', f'file={disk},format=qcow2,if=ide,index=0',
+        '-drive', f'file={disk},format=raw,if=ide,index=0,cache=writeback',
         '-drive', f'file={iso},media=cdrom,if=ide,index=2,readonly=on',
         '-drive', f'file={answer_iso},media=cdrom,if=ide,index=3,readonly=on',
         '-boot', 'order=c,once=d', '-netdev', 'user,id=net0', '-device', 'e1000e,netdev=net0',

@@ -171,9 +171,21 @@ void probe(const std::wstring& root) {
       Sleep(150);
       check(heartbeats(root) == before, "all worker activity remains paused");
       paused.resume(); paused.resume();
-      Sleep(100);
-      const auto after = heartbeats(root);
-      for (const auto& value : before) check(after.at(value.first) > value.second, "all workers resume");
+      bool advanced = false;
+      for (unsigned int wait = 0; wait < 100; wait++) {
+        Sleep(20);
+        const auto after = heartbeats(root);
+        advanced = std::all_of(before.begin(), before.end(), [&](const auto& value) {
+          return after.at(value.first) > value.second;
+        });
+        if (advanced) break;
+      }
+      if (!advanced) {
+        const auto after = heartbeats(root);
+        for (const auto& value : before) std::cerr << "worker=" << std::stoul(value.first)
+          << " before=" << value.second << " after=" << after.at(value.first) << '\n';
+        throw std::runtime_error("Workers did not resume within two seconds");
+      }
     }
     paused.pause();
     check(TerminateJobObject(job.value, 0) != FALSE, "cancel whole job while paused");
