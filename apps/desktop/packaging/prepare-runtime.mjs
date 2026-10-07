@@ -24,7 +24,9 @@ const sourceCommit = required('source-commit');
 const development = args.get('development') === 'true';
 const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 function run(cmd, argv, cwd, env) {
-  const result = spawnSync(cmd, argv, { cwd, env, encoding: 'utf8' });
+  // Runtime/Planner inventories include full dependency trees and exceed Node's
+  // default 1 MiB capture limit when tar lists their entries.
+  const result = spawnSync(cmd, argv, { cwd, env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   if (result.error || result.status !== 0) throw new Error(`Dependency validation failed: ${basename(cmd)}`);
   return result.stdout.trim();
 }

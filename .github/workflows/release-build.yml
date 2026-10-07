@@ -10,11 +10,34 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-build-${{ github.ref }}-${{ github.run_id }}
+  group: release-build-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+      - name: Verify version and release prerequisites
+        env:
+          RELEASE_KEY: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY }}
+          APPLE_CERTIFICATE: ${{ secrets.METAWORK_APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.METAWORK_APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.METAWORK_APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.METAWORK_APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ vars.METAWORK_APPLE_TEAM_ID }}
+          CSC_NAME: ${{ vars.METAWORK_APPLE_SIGNING_IDENTITY }}
+          ARM64_URL: ${{ vars.METAWORK_DESKTOP_TOOLS_DARWIN_ARM64_URL }}
+          ARM64_SHA256: ${{ vars.METAWORK_DESKTOP_TOOLS_DARWIN_ARM64_SHA256 }}
+          X64_URL: ${{ vars.METAWORK_DESKTOP_TOOLS_DARWIN_X64_URL }}
+          X64_SHA256: ${{ vars.METAWORK_DESKTOP_TOOLS_DARWIN_X64_SHA256 }}
+        run: node scripts/release-preflight.mjs
+
   build:
+    needs: preflight
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -45,7 +68,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22.19.0
+          node-version: 22.23.3
           cache: npm
 
       - name: Set synchronized release identity
@@ -77,6 +100,7 @@ jobs:
             --arch "${{ matrix.arch }}" \
             --channel stable \
             --release-id "${{ steps.release.outputs.release_id }}" \
+            --artifact-base-url "https://github.com/IFOSR/metawork/releases/download/v$(node -p "require('./package.json').version")" \
             --signing-key "$RUNNER_TEMP/metawork-release-key.pem" \
             --out-dir "$RUNNER_TEMP/metawork-release"
 
@@ -94,6 +118,7 @@ jobs:
             --arch ${{ matrix.arch }} `
             --channel stable `
             --release-id ${{ steps.release.outputs.release_id }} `
+            --artifact-base-url "https://github.com/IFOSR/metawork/releases/download/v$(node -p "require('./package.json').version")" `
             --signing-key "$env:RUNNER_TEMP\metawork-release-key.pem" `
             --out-dir "$env:RUNNER_TEMP\metawork-release"
 
@@ -104,9 +129,112 @@ jobs:
           path: ${{ runner.temp }}/metawork-release/*
           if-no-files-found: error
 
+  desktop:
+    name: Desktop ${{ matrix.arch }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            tool_prefix: METAWORK_DESKTOP_TOOLS_DARWIN_ARM64
+          - arch: x64
+            runner: macos-15-intel
+            tool_prefix: METAWORK_DESKTOP_TOOLS_DARWIN_X64
+    env:
+      CSC_NAME: ${{ vars.METAWORK_APPLE_SIGNING_IDENTITY }}
+      METAWORK_NOTARY_PROFILE: metawork-release
+      METAWORK_DESKTOP_RESOURCES: ${{ github.workspace }}/.tmp/desktop-resources
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+      - uses: actions/download-artifact@v4
+        with:
+          name: metawork-darwin-${{ matrix.arch }}
+          path: .tmp/formal-release
+      - run: npm ci
+      - run: npm ci --prefix apps/desktop
+      - run: npm run lint:desktop && npm run test:desktop && npm run build:desktop
+      - name: Import signing identity and configure notarization
+        env:
+          CERTIFICATE: ${{ secrets.METAWORK_APPLE_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.METAWORK_APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.METAWORK_APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.METAWORK_APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ vars.METAWORK_APPLE_TEAM_ID }}
+          RELEASE_SIGNING_KEY: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          KEYCHAIN="$RUNNER_TEMP/metawork-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          printf '%s' "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/metawork.p12"
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/metawork-release-key.pem"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/metawork.p12" -k "$KEYCHAIN" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security default-keychain -d user -s "$KEYCHAIN"
+          xcrun notarytool store-credentials "$METAWORK_NOTARY_PROFILE" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_PASSWORD" --keychain "$KEYCHAIN"
+      - name: Prepare reviewed tool distributions
+        env:
+          TOOLS_URL: ${{ vars[format('{0}_URL', matrix.tool_prefix)] }}
+          TOOLS_SHA256: ${{ vars[format('{0}_SHA256', matrix.tool_prefix)] }}
+        run: node scripts/prepare-desktop-tools.mjs "$TOOLS_URL" "$TOOLS_SHA256" .tmp/desktop-tools
+      - name: Prepare signed Runtime payload
+        run: |
+          node --input-type=module -e 'import {writeFileSync} from "node:fs"; import {TRUSTED_KEY_ID,TRUSTED_PUBLIC_KEY} from "./scripts/verify-release-assets.mjs"; writeFileSync(".tmp/trusted-release-keys.json",JSON.stringify({[TRUSTED_KEY_ID]:TRUSTED_PUBLIC_KEY}));'
+          node apps/desktop/packaging/prepare-runtime.mjs \
+            --artifacts .tmp/formal-release \
+            --node-root .tmp/desktop-tools/node \
+            --git-root .tmp/desktop-tools/git \
+            --executor-root .tmp/desktop-tools/executor \
+            --trusted-keys .tmp/trusted-release-keys.json \
+            --signing-key "$RUNNER_TEMP/metawork-release-key.pem" \
+            --key-id metawork-release-2026-03 \
+            --source-commit "$GITHUB_SHA" \
+            --codesign-identity "$CSC_NAME" \
+            --output "$METAWORK_DESKTOP_RESOURCES"
+      - name: Build, sign and notarize Desktop
+        run: npm run package:mac --prefix apps/desktop -- --${{ matrix.arch }}
+      - name: Verify clean packaged installation
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          APP_DIRECTORY=mac
+          if [ "$TARGET_ARCH" = arm64 ]; then APP_DIRECTORY=mac-arm64; fi
+          node apps/desktop/tests/packaged-install-smoke.mjs "apps/desktop/release/$APP_DIRECTORY/MetaWork.app"
+      - name: Sign Desktop download manifest
+        run: node scripts/package-desktop-release.mjs "$METAWORK_DESKTOP_RESOURCES" apps/desktop/release "$RUNNER_TEMP/metawork-release-key.pem"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metawork-desktop-darwin-${{ matrix.arch }}
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/desktop-manifest.*.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-acceptance-${{ matrix.arch }}
+          path: apps/desktop/release/evidence/
+      - name: Remove signing material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/metawork-signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/metawork.p12" "$RUNNER_TEMP/metawork-release-key.pem"
+
   publish:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, desktop]
     runs-on: ubuntu-24.04
     outputs:
       release_tag: ${{ steps.release.outputs.tag }}
@@ -126,7 +254,7 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Create or update GitHub Release
+      - name: Publish complete release and promote latest
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -140,19 +268,23 @@ jobs:
           NOTES="docs/releases/v${VERSION}.md"
 
           test -s "$NOTES"
+          cp scripts/install.sh scripts/install.ps1 release-assets/
           test -n "$(find release-assets -maxdepth 1 -type f -print -quit)"
           node scripts/verify-release-assets.mjs release-assets "$TAG"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
+            test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true || { echo 'Refusing to overwrite an already published release'; exit 1; }
             gh release upload "$TAG" release-assets/* --clobber
-            gh release edit "$TAG" \
-              --title "$TITLE" \
-              --notes-file "$NOTES" \
-              --latest
           else
             gh release create "$TAG" release-assets/* \
               --target "$GITHUB_SHA" \
               --title "$TITLE" \
               --notes-file "$NOTES" \
-              --latest
+              --draft
           fi
+          mkdir downloaded-release
+          gh release download "$TAG" --dir downloaded-release
+          node scripts/verify-release-assets.mjs downloaded-release "$TAG"
+          gh release edit "$TAG" --title "$TITLE" --notes-file "$NOTES" --draft=false --latest
+          test "$(gh api repos/IFOSR/metawork/releases/latest --jq .tag_name)" = "$TAG"
+          node scripts/verify-release-assets.mjs downloaded-release "$TAG" https://github.com/IFOSR/metawork/releases/latest/download

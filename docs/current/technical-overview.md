@@ -1789,6 +1789,14 @@ exit. A distributable signed payload, clean-machine task acceptance, signed
 joint-update tests, Intel validation and long-duration acceptance remain open.
 This checkpoint does not declare a production Desktop release.
 
+The v0.1.5 release preparation adds joint native/Desktop publication: the same
+source revision supplies Runtime/Web/Planner and both macOS DMGs, with draft
+download verification before latest promotion. Production Desktop installation
+does not require developer internal LLM credentials; absent configuration leaves
+optional internal AI unavailable without blocking installation. See the
+[release runbook](releasing.md) and
+[pending publication record](../plans/2026-10-07-v0.1.5-release.md).
+
 
 On macOS, development launch, smoke and benchmark entry points use a cached
 `MetaWork.app` shell under `.tmp/desktop-shell`. Its `CFBundleName` and

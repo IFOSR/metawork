@@ -12,7 +12,7 @@ const pythonRelease = JSON.parse(await readFile(new URL('./pi-pdf-python.json', 
 const asset = pythonRelease.assets[`${process.platform}-${process.arch}`];
 if (!asset) throw new Error(`Pi PDF runtime has no prepared Python distribution for ${process.platform}/${process.arch}`);
 const pythonCache = resolve('.tmp/pi-pdf-python', asset.sha256);
-const python = join(pythonCache, 'python/bin/python3');
+const python = join(pythonCache, process.platform === 'win32' ? 'python/python.exe' : 'python/bin/python3');
 if (!(await readFile(join(pythonCache, 'ready')).catch(() => null))) {
   await mkdir(pythonCache, { recursive: true });
   const archive = join(pythonCache, 'python.tar.gz');

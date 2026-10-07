@@ -26,7 +26,7 @@ MetaWork 为 Agent 工作提供统一的商业服务系统，覆盖规划、授�
 - **持久工作：** Task、Work Graph、结果、恢复事实和审计记录可跨进程重启保留。
 - **受控执行：** Planner 负责提出工作，ControlKernel 负责授权状态变化，
   Executor 只执行明确获批的 attempt。
-- **多端统一：** Web、飞书和 Unix 客户端使用同一套版本化
+- **多端统一：** Desktop、Web、TUI 与飞书客户端使用同一套版本化
   Gateway 命令与事件平面；Server 独立常驻，Client 退出不会停止 Runtime。
 - **多端统一观察：** Web、飞书和原生 TUI 可以查看同一批 Task 与会话。
   会话切换读取有界客户端读模型，不需要重放整段历史；TUI 任务面板可以
@@ -59,159 +59,141 @@ AnyFusion 标识。
 
 ## Release
 
-当前正式版本是
-[MetaWork `v0.1.4`](https://github.com/IFOSR/metawork/releases/tag/v0.1.4)，
-发布在 stable 安装通道。四个平台的 Release identity 记录在签名 manifest 中，
-所有目标均由同一个 tag 提交构建。
+[最新稳定版](https://github.com/IFOSR/metawork/releases/latest)是当前可安装版本的
+统一发布入口。源码版本领先不代表已发布。
 
-| 目标平台 | 原生发布标识 |
-| --- | --- |
-| macOS Intel | `darwin-x64` |
-| macOS Apple Silicon | `darwin-arm64` |
-| Linux x64 | `linux-x64` |
-| Windows x64 | `win32-x64` |
+**发布进度：** 当前源码正在准备包含 Web 与 Desktop 的 v0.1.5，上次核实的线上版本
+仍为 v0.1.4。Desktop 下载和随 Release 附带的安装脚本要在 v0.1.5 发布成功后才可用。
+在此之前，可使用现有原生安装器，或按开发步骤构建 Desktop。
+详见[发布记录](docs/plans/2026-10-07-v0.1.5-release.md)。
 
-每个平台都发布 Runtime 归档、内嵌 AnyFusion-Pi Planner 归档和对应的
-Ed25519 签名 manifest。Manifest 使用签名密钥
-`metawork-release-2026-03`，固定 Runtime/Planner revision 为 tag 提交，
-并记录安装器会校验的 SHA-256 哈希。当前 Release 不提供 Linux arm64
-预构建产物；请在原生 Linux arm64 主机上执行 `npm run build:release`。
+发布矩阵包含 macOS Apple Silicon/Intel、Linux x64、Windows x64 的 Server/Web/TUI，
+以及两种 Mac 架构的签名、公证 Desktop 安装包，均来自同一提交。所有归档、DMG
+和签名清单校验通过后才更新 latest；已发布版本不会被覆盖。目前没有 Linux arm64
+预构建包，也没有 Windows/Linux Desktop 安装包。
 
 ## 安装方式
 
-当前预构建 Release 覆盖 macOS Intel、macOS Apple Silicon、Linux x64 和
-Windows x64。Linux 与 WSL2 使用面向 Unix 的安装器并默认使用文件
-SecretStore；Windows 使用签名 PowerShell 安装器，通过 named pipe 连接本地
-Runtime。Linux arm64 支持原生构建，但不包含在当前预构建 Release 中。
+Desktop、浏览器、TUI 与飞书共享同一套 Server；连接同一安装和账号时共享数据。
+Web 已包含在 Server 安装包中，不需要安装 Desktop。
 
-### 环境要求
+| 希望使用的界面 | 安装内容 | 入口 |
+| --- | --- | --- |
+| macOS 桌面应用 | 对应 Mac 架构的 Desktop DMG | 打开 MetaWork.app |
+| 浏览器 | 原生 Server 安装包 | 启动 Server，再执行 `metawork web` |
+| 终端 TUI | 同一 Server 安装包 | 启动 Server，再执行 `metawork tui` |
+| 飞书 | 同一 Server 安装包，再配置飞书应用 | `metawork server setup-feishu` |
+| 源码开发 | 下文源码步骤 | CLI 或隔离的 Desktop 开发版 |
 
-- Node.js `>=22.19.0`
-- npm
-- Git
-- `better-sqlite3` 所需的原生构建工具
-- 任一 OpenAI 兼容模型服务的 API Key（DeepSeek、Kimi、Code CLI 或自建网关），
-  由安装后的配置向导采集并验证
+### macOS Desktop 桌面应用
 
-Codex CLI 与 Pi Agent 独立安装。安装程序只检测 `PATH` 中已有的 CLI，不会安装、
-升级、降级或修改它们。
+Desktop 发布后，根据 **苹果菜单 → 关于本机** 选择
+[Apple Silicon（M 系列）](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg)
+或 [Intel](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-x64.dmg)。
+打开 DMG，将 **MetaWork.app** 拖入“应用程序”后启动。首次安装填写模型 API 地址、
+模型 ID 和 API Key。
 
-### 一条命令安装（macOS、Linux、WSL2）
+安装包包含 Node、Git、Pi Executor、Server/Web 与 Planner，不需要另装 Node/npm/Git；
+Codex 为可选项。默认安装目录为 `~/.metawork`，兼容的已有安装会被复用，版本不兼容
+时需要联合升级。可通过菜单 **安装终端命令…** 安装 `metawork`，让 Web/TUI 连接同一
+Server。关闭窗口或退出 Desktop 后，后台服务和任务继续运行。
 
-官方分发源是 GitHub Releases。下面的安装命令会跟随最新 stable Release；当前仓库
-对应的正式版本是 `v0.1.4`。归档文件和签名 manifest 都直接从 GitHub Release CDN
-下载。
+升级时下载并挂载最新 DMG，在当前 Desktop 中选择 **安装新版应用…**，选中新包的
+`MetaWork.app`。程序协调 Desktop 与 Server 升级，并提示对运行中工作的影响。
+Desktop 管理的安装应使用这一入口，避免只更新 Server 导致版本不匹配。
+
+### Server + Web / TUI / 飞书
+
+先准备 **Node.js 22.x（至少 22.19.0）**、Git、模型服务的 API 地址/模型 ID/API Key，
+以及至少一种位于 `PATH` 的受支持 Executor CLI（Pi Agent 或 Codex）。安装器检测
+Executor CLI，但不会代为安装。预构建包已包含原生依赖；npm 与原生编译工具用于
+源码构建，普通预构建安装不需要编译。
+
+macOS、Linux x64、WSL2 x64，在可输入的交互终端运行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh | bash
-
+curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh -o metawork-install.sh
+bash metawork-install.sh
 export PATH="$HOME/.local/bin:$PATH"
 metawork --help
 ```
 
-一条命令从官方 GitHub Release 下载并校验已签名的预构建 Runtime 与内嵌 Planner 产物，然后自动进入
-Provider 配置向导。Linux 与 WSL2 上安装器会自动选用文件型 SecretStore
-（`METAWORK_SECRET_STORE=file`），无需手动 export。重复执行同一命令会对已有
-安装原地升级——配置、密钥和任务数据全部保留。Windows 用户请使用下面的
-PowerShell 安装器。向导完成后，继续阅读[快速开始](#快速开始)。
-
-### 一条命令安装（Windows x64）
-
-在当前用户的 PowerShell 中执行：
+Windows x64，在 PowerShell 中执行；需要启用 Developer Mode 或使用管理员终端，
+以支持事务性 NTFS Release 指针：
 
 ```powershell
 irm https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.ps1 -OutFile metawork-install.ps1
 .\metawork-install.ps1
 ```
 
-Windows 版本要求 Node.js `>=22.19.0`、Git，以及 Windows Developer Mode
-（或管理员终端），以便事务性 Release 指针使用 NTFS 链接。安装器会先校验
-签名 manifest 与两个 ZIP 产物，再执行离线安装。
+两个安装器均获取**最新稳定版的签名 manifest**，校验 Runtime/Planner 归档，并通过
+配置向导设置模型服务。Linux/WSL2 默认使用文件 SecretStore。从 v0.1.5 开始，
+Release 还会附带对应的
+[install.sh](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) 和
+[install.ps1](https://github.com/IFOSR/metawork/releases/latest/download/install.ps1)。
 
-在 IDE 内嵌终端、agent 或 CI 等无法把向导接到键盘的场景，请先下载再用真实
-终端运行（或改用下文的环境变量非交互安装）：
+安装后，在一个终端启动 Server 并保持运行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh -o metawork-install.sh
-bash metawork-install.sh
+metawork server start
 ```
 
-卸载：
+在另一个终端按需选择客户端：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh | bash -s -- --uninstall
+metawork web                    # 浏览器；账号 admin，密码 123456
+metawork tui                    # 原生终端界面
+metawork server setup-feishu    # 可选：配置飞书应用
 ```
 
-会先停止运行中的 Server，移除托管的启动器（`metawork`、`anyfusion`、`metaclaw`），
-并删除安装目录。追加 `--purge` 可同时清理旧版启动器备份。
+Web 打开 Server 实际使用的本机地址，默认端口为 8788；飞书接入也由这个 Server
+管理。需要后台常驻时，使用 `scripts/supervision/` 的 launchd/systemd 模板。
 
-### 让 Server 常驻运行
+CLI 管理的安装升级时，先执行 `metawork server stop`，重新运行同一安装命令，
+再执行 `metawork server start`。升级保留配置、密钥和账号数据，重复安装同一版本
+不会重置数据。`metawork server status` 查看运行中的服务，latest 页面显示可下载版本。
 
-`metawork server start` 是前台进程。需要长期运行时，可使用
-`scripts/supervision/` 下的守护模板（macOS 用 launchd plist，Linux 用
-systemd unit），Server 退出后会自动拉起。
+设置 AI 改写、能力解释和模型摘要等可选功能需要单独配置
+[内部 LLM](docs/current/internal-llm-service.md)；缺少它不会阻止安装或手动配置。
 
-### 源码安装
+### 源码安装与 Desktop 开发
+
+源码构建需要 npm、原生编译工具，以及下载固定 Python/PDF 依赖的网络连接。
+要构建**最新已发布源码**，先在 latest 页面取得 tag，替换下文的 `<latest-tag>`：
 
 ```bash
-git clone https://github.com/IFOSR/metawork.git
+git clone --branch <latest-tag> --depth 1 https://github.com/IFOSR/metawork.git
 cd metawork
 ./setup.sh
-
 export PATH="$HOME/.local/bin:$PATH"
-metawork --help
 ```
 
-构建完成后，安装程序会启动一个简短的配置向导：选择预设 Provider（DeepSeek、
-Kimi、Code CLI）或输入任意 OpenAI 兼容地址，确认模型，粘贴 API Key。向导会用
-一次真实请求验证 Key，存入本地 SecretStore，然后完成安装。无需预先 export 任何
-配置。
-
-<details>
-<summary>非交互安装（CI、Docker、脚本）</summary>
-
-跳过向导，在运行 `./setup.sh` 前导出 Provider 环境变量：
+在已有源码目录开发 Desktop：
 
 ```bash
-export METAWORK_PROVIDER_KEY='你的密钥'
-export METAWORK_PROVIDER_URL='https://api.deepseek.com/v1'
-# 可选（Linux/WSL2 会自动选用文件型 SecretStore）
-export METAWORK_SECRET_STORE='file'
-export METAWORK_PROVIDER_MODEL='deepseek-chat'
-export METAWORK_PROVIDER_REGION='international'
+npm ci
+npm ci --prefix web --ignore-scripts
+npm ci --prefix apps/desktop
+npm ci --prefix planner/AnyFusion-Pi --ignore-scripts
+npm run dev:desktop
 ```
 
-</details>
+开发脚本使用独立的 `.tmp/desktop-development`，不共享正式安装的历史。
+当前开发辅助脚本需要按内部 LLM 指南提前配置系统模型，正式 Desktop 安装没有
+这一开发前提。修改后端后执行 `npm run dev:desktop -- --refresh`。
+详见 [Desktop 开发说明](apps/desktop/README.md)。
 
-<details>
-<summary>发布预构建产物（维护者）</summary>
+非交互原生安装可设置 `METAWORK_PROVIDER_KEY`、`METAWORK_PROVIDER_URL`、
+`METAWORK_PROVIDER_MODEL` 与 `METAWORK_PROVIDER_REGION`。密钥不能提交到源码
+或放入发布产物。
 
-`npm run build:release` 会在当前原生主机上构建 Runtime/Web/Planner，安装生产依赖，
-再按平台打包为归档文件和 Ed25519 签名 manifest。目标平台必须与构建主机一致；
-不能在 macOS 上交叉构建 Linux Release。Linux x64 主机构建 Linux x64 Release
-示例：
+### 卸载
 
-```bash
-npm run build:release -- \
-  --platform linux \
-  --arch x64 \
-  --release-id 0.1.4-build-<tagged-revision> \
-  --signing-key /secure/path/metawork-release-key.pem \
-  --out-dir /tmp/metawork-release
-```
+删除 Desktop 应用保留账号数据，也不会停止 Server；如需停止，请先显式操作。
+`bash metawork-install.sh --uninstall` 会删除托管命令和**整个安装目录，包括账号数据**，
+请先备份需要保留的工作。
 
-Windows 使用 ZIP 与 `scripts/install.ps1`；macOS/Linux 使用 tarball 与
-`scripts/install.sh`。`--package-only` 只用于打包已经准备好的目标依赖，不会执行构建。
-发布必须使用真实签名密钥（`--signing-key` 或
-`METAWORK_RELEASE_SIGNING_KEY`）；`--generate-dev-key` 仅限本地测试。GitHub Actions
-使用 macOS Intel、macOS Apple Silicon、Windows x64 和 Linux x64 的原生 runner
-构建。Runtime、Web、Planner 或依赖产物缺失时，打包命令会直接失败。
-
-</details>
-
-安装程序会在独立依赖树中分别构建 MetaWork Runtime 与
-`planner/AnyFusion-Pi`。release、账户状态、配置、生成的运行时文件和更新日志统一
-存放在 `~/.metawork`。
+维护者请参阅[发布操作指南](docs/current/releasing.md)。
 
 ### 运行目录
 

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { stat, realpath, mkdir } from 'node:fs/promises';
-import { dirname, resolve, relative, isAbsolute } from 'node:path';
+import { dirname, resolve, relative, isAbsolute, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -22,7 +22,7 @@ export async function runPdfProcess(args, options = {}) {
     }
     const output = resolve(await realpath(ancestor), ...suffix);
     const local = relative(workspace, output);
-    if (local === '..' || local.startsWith('../') || isAbsolute(local)) {
+    if (local === '..' || local.startsWith(`..${sep}`) || isAbsolute(local)) {
       throw new Error('PDF images must be written inside the task workspace');
     }
     await mkdir(output, { recursive: true });
@@ -31,7 +31,7 @@ export async function runPdfProcess(args, options = {}) {
   const bootstrap = 'import sys,runpy;sys.path.insert(0,sys.argv.pop(1));a=sys.argv.pop(1);'
     + 'exec(compile(sys.argv.pop(1),"<pi-pdf>","exec")) if a=="-c" else runpy.run_path(a,run_name="__main__")';
   return new Promise((resolveResult, reject) => {
-    const child = spawn(resolve(root, 'python/bin/python3'),
+    const child = spawn(resolve(root, process.platform === 'win32' ? 'python/python.exe' : 'python/bin/python3'),
       ['-I', '-u', '-c', bootstrap, resolve(root, 'site-packages'), ...args],
       // Inherit Pi's process group so Kernel-authorized group cleanup includes this worker.
       { cwd: options.cwd, stdio: ['ignore', 'pipe', 'pipe'] });

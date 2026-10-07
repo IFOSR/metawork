@@ -12,6 +12,7 @@ function run(command, args) {
 }
 export default {
   appId: 'com.metawork.desktop', productName: 'MetaWork', asar: true, npmRebuild: false,
+  artifactName: 'MetaWork-darwin-${arch}.${ext}',
   directories: { output: 'release' },
   files: ['dist/main.js', 'dist/preload.cjs', 'shell/**', 'package.json'],
   extraResources: [{ from: resolve(resources), to: '.', filter: ['desktop-release.json', 'trusted-release-keys.json', 'payload/**'] }],

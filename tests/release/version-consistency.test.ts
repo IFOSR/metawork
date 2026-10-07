@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const root = resolve('.');
-const expectedVersion = '0.1.4';
+const expectedVersion = '0.1.5';
 
 describe('release version consistency', () => {
   it('keeps package metadata and release notes on the current formal release', () => {
@@ -23,6 +23,13 @@ describe('release version consistency', () => {
     expect(packageJson.version).toBe(expectedVersion);
     expect(packageLock.version).toBe(expectedVersion);
     expect(packageLock.packages[''].version).toBe(expectedVersion);
+    for (const directory of ['web', 'apps/desktop']) {
+      const pkg = JSON.parse(readFileSync(resolve(root, directory, 'package.json'), 'utf8'));
+      const lock = JSON.parse(readFileSync(resolve(root, directory, 'package-lock.json'), 'utf8'));
+      expect(pkg.version).toBe(expectedVersion);
+      expect(lock.version).toBe(expectedVersion);
+      expect(lock.packages[''].version).toBe(expectedVersion);
+    }
     expect(changelog).toContain(`## [${expectedVersion}]`);
     expect(releaseNotes).toContain(`**Release tag:** \`v${expectedVersion}\``);
   });

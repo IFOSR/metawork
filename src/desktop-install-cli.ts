@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { verifyDesktopRelease } from './installation/desktop-release.js';
 import { SourceNativeInstaller } from './installation/source-native-installer.js';
@@ -9,15 +10,17 @@ import { createProductionSecretStore } from './configuration/production-secret-s
 import { commandExistsOnPath } from './configuration/production-configuration-probe.js';
 import { isInstanceRunning } from './management/lock.js';
 import { acquireRuntimeUpdateLock } from './installation/runtime-update-lock.js';
-import { ensureInternalLlmProvisioned } from './configuration/internal-llm-provisioning.js';
 
 const ProviderSchema = z.object({
   baseUrl: z.url().refine(value => ['https:', 'http:'].includes(new URL(value).protocol)),
   apiKey: z.string().trim().min(1).max(8192), modelId: z.string().trim().min(1).max(256),
 }).strict();
 
-async function main(): Promise<void> {
-  const [command, resourcesArg, rootArg, desktopVersion] = process.argv.slice(2);
+export async function runDesktopInstall(
+  argv: string[],
+  input: AsyncIterable<string | Buffer> = process.stdin,
+): Promise<void> {
+  const [command, resourcesArg, rootArg, desktopVersion] = argv;
   if (!['install', 'update', 'rollback'].includes(command ?? '') || !resourcesArg || !rootArg || !desktopVersion) {
     throw new Error('Invalid desktop installer arguments');
   }
@@ -36,7 +39,7 @@ async function main(): Promise<void> {
   const detectCommand = (name: string) => commandExistsOnPath(name, searchPath);
   if (command === 'install') {
     let body = '';
-    for await (const chunk of process.stdin) {
+    for await (const chunk of input) {
       body += String(chunk);
       if (Buffer.byteLength(body) > 16384) throw new Error('Setup input exceeds limit');
     }
@@ -48,20 +51,20 @@ async function main(): Promise<void> {
         releaseId: release.releaseId, sourceRoot, plannerRoot, executorPreset: 'desktop-pi',
         provider: { ...provider, region: 'international', secretReference: 'file-secret:anyfusion/providers/provider' },
       });
-      await ensureInternalLlmProvisioned({ installRoot: paths.root });
     } finally { await lock.release(); }
   } else {
     const updater = new SourceNativeUpdater({ paths, secretStore, detectCommand, isServerRunning: running, installLaunchers: false });
     if (command === 'update') {
       await updater.update({ releaseId: release.releaseId, sourceRoot, plannerRoot });
-      await ensureInternalLlmProvisioned({ installRoot: paths.root });
     } else await updater.rollback(release.releaseId);
   }
   process.stdout.write(JSON.stringify({ ok: true, releaseId: release.releaseId }) + '\n');
 }
 
-void main().catch(() => {
-  // Installation errors can contain provider configuration; never echo them to Electron or logs.
-  process.stderr.write('Desktop installation did not complete. The previous installation is preserved where recovery prerequisites pass.\n');
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  void runDesktopInstall(process.argv.slice(2)).catch(() => {
+    // Installation errors can contain provider configuration; never echo them to Electron or logs.
+    process.stderr.write('Desktop installation did not complete. The previous installation is preserved where recovery prerequisites pass.\n');
+    process.exitCode = 1;
+  });
+}

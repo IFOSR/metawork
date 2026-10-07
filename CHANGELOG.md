@@ -7,6 +7,25 @@ The project follows [Semantic Versioning](https://semver.org/) for public releas
 
 ## [Unreleased]
 
+## [0.1.5] - Unreleased
+
+### Added
+
+- macOS Desktop release pipeline with signed/notarized Apple Silicon and Intel
+  installers, bundled Runtime/Web/Planner and reviewed Node/Git/Pi distributions.
+- Complete release-set verification and stable download names for choosing
+  Desktop or Server/Web/TUI installation from the README.
+
+### Fixed
+
+- Fresh Desktop installation does not require developer-owned internal LLM
+  configuration; optional AI settings actions retain their separate provisioning.
+- Windows PDF builds pin a native Python archive and use its executable layout.
+- Desktop dependency installation explicitly downloads the pinned Electron
+  binary, which Electron 44 no longer downloads through its own postinstall.
+- Runtime, Web and Desktop version metadata agree. Published releases cannot be
+  overwritten, and latest is promoted only after download verification.
+
 ## [0.1.4] - 2026-10-05
 
 ### Changed

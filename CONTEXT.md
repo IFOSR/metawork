@@ -1094,6 +1094,13 @@ exit. A distributable signed payload, clean-machine task acceptance, signed
 joint-update tests, Intel validation and long-duration acceptance remain open.
 This checkpoint does not declare a production Desktop release.
 
+Release preparation (2026-10-07): v0.1.5 aligns Server/Web/Desktop versions and
+requires the complete native/DMG asset set before latest promotion. Production
+Desktop installation accepts user provider settings without developer internal
+LLM provisioning; missing internal configuration disables only its optional AI
+operations. Development provisioning remains separate. Publication and signed
+acceptance remain pending; see `docs/plans/2026-10-07-v0.1.5-release.md`.
+
 
 PDF/vision contract (2026-10-06): official DeepSeek Flash vision facts are applied
 to new configuration candidates at the sole “保存并激活” boundary. Historical

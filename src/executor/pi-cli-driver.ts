@@ -79,7 +79,8 @@ export class PiCliDriver implements HarnessDriver {
   async probe(): Promise<HarnessProbeResult> {
     const result = await this.runProbe('pi', ['--version']);
     if (result.code === 0 && existsSync(this.pdfExtensionRoot)) {
-      const pdf = await this.runProbe(join(this.pdfExtensionRoot, 'python/bin/python3'), [
+      const pdf = await this.runProbe(join(this.pdfExtensionRoot,
+        process.platform === 'win32' ? 'python/python.exe' : 'python/bin/python3'), [
         '-I', '-c', 'import sys;sys.path.insert(0,sys.argv[1]);import pypdf,pdfplumber,pypdfium2,PIL',
         join(this.pdfExtensionRoot, 'site-packages'),
       ]);

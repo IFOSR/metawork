@@ -28,7 +28,7 @@ executing, recovering, and delivering agent work.
   history persist across process restarts.
 - **Governed execution:** the Planner proposes work, the ControlKernel
   authorizes state changes, and Executors run only concrete approved attempts.
-- **Multiple clients, one runtime:** Web, Feishu, and Unix clients
+- **Multiple clients, one runtime:** Desktop, Web, TUI, and Feishu clients
   share the same versioned Gateway command and event plane. Server owns the
   Runtime and remains alive when Clients exit.
 - **Unified multi-client observation:** Web, Feishu, and the native TUI can
@@ -71,178 +71,156 @@ existing names where changing them would break installations.
 
 ## Release
 
-The current formal release is
-[MetaWork `v0.1.4`](https://github.com/IFOSR/metawork/releases/tag/v0.1.4).
-It is published on the stable installation channel. Its synchronized release
-identity is recorded in the signed per-platform manifests; all targets are
-built from the same tagged commit.
+[Latest stable release](https://github.com/IFOSR/metawork/releases/latest) is the
+source of truth for the current installable version. A newer source checkout
+is not a published release.
 
-| Target | Native release |
-| --- | --- |
-| macOS Intel | `darwin-x64` |
-| macOS Apple Silicon | `darwin-arm64` |
-| Linux x64 | `linux-x64` |
-| Windows x64 | `win32-x64` |
+**Publication checkpoint:** this checkout prepares v0.1.5 with Web and Desktop.
+The last verified public release is v0.1.4. Desktop downloads and release-attached
+installer scripts become available only after v0.1.5 publication succeeds.
+Until then, use the existing native installer or Desktop development instructions.
+See the [release status](docs/plans/2026-10-07-v0.1.5-release.md).
 
-Each target publishes a Runtime archive, a vendored AnyFusion-Pi Planner
-archive, and a target-specific Ed25519-signed manifest.
-The manifests use signing key `metawork-release-2026-03`, pin Runtime and
-Planner revision from the tagged commit, and record SHA-256 hashes that the installers
-verify before installation. Linux arm64 has no prebuilt asset in this release;
-build it on a native Linux arm64 host with `npm run build:release`.
+The release matrix contains Server/Web/TUI for macOS Apple Silicon/Intel,
+Linux x64 and Windows x64, plus signed/notarized Desktop installers for both Mac
+architectures. All come from the same commit. Publication validates all archives,
+Desktop DMGs and signed manifests before advancing latest. Published releases
+are immutable. Linux arm64 has no prebuilt package; Windows/Linux Desktop
+packages are not provided.
 
 ## Installation
 
-The published native paths are macOS Intel, macOS Apple Silicon, Linux x64,
-and Windows x64. Linux and WSL2 use the Unix installer with file-backed
-secrets. Windows uses the signed PowerShell installer and named pipes for local
-Runtime connections. Linux arm64 is supported as a native build target, but is
-not included in the current prebuilt release.
+Desktop, browser, TUI and Feishu share one Server and the selected installation's
+account data. Web is included in the Server package and does not require Desktop.
 
-### Prerequisites
+| Preferred interface | Install | Open |
+| --- | --- | --- |
+| macOS Desktop | Desktop DMG | MetaWork.app |
+| Browser | Native Server package | Start Server, then `metawork web` |
+| Terminal UI | Same Server package | Start Server, then `metawork tui` |
+| Feishu | Same Server package and Feishu app configuration | `metawork server setup-feishu` |
+| Source development | Source instructions below | CLI or isolated Desktop |
 
-- Node.js `>=22.19.0`
-- npm
-- Git
-- Native build tools for `better-sqlite3`
-- An API key for an OpenAI-compatible model provider (DeepSeek, Kimi, Code
-  CLI, or your own endpoint). The setup wizard collects and verifies it after
-  the build.
+### macOS Desktop
 
-Codex CLI and Pi Agent are installed independently. Setup detects them on
-`PATH`; it does not install, upgrade, downgrade, or reconfigure either CLI.
+After Desktop publication, choose your Mac's chip under **Apple menu → About
+This Mac**, then download [Apple Silicon](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg)
+or [Intel](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-x64.dmg).
+Open the DMG, drag **MetaWork.app** to **Applications**, and open it. First launch
+collects your model API URL, model ID and API key.
 
-### Quick install (macOS, Linux, WSL2)
+Desktop bundles Node, Git, Pi Executor, Server/Web and Planner. No separate
+Node/npm/Git installation is required; Codex is optional. The default installation
+is `~/.metawork`. Compatible existing installations are reused; incompatible
+versions require a coordinated update. **Install Terminal Command…** optionally
+adds `metawork`, allowing Web/TUI to connect to the same Server. Quitting Desktop
+leaves Server and background work running.
 
-The official distribution source is GitHub Releases. The installer below
-tracks the latest stable Release; for this repository state it resolves to
-`v0.1.4`. Release archives and signed manifests are downloaded directly from
-GitHub's Release CDN.
+To update, download/mount the latest DMG, then use **Install New Application…**
+in the running Desktop to select its `MetaWork.app`. This updates Desktop and
+Server together and explains the impact on active work. Use this path for a
+Desktop-managed installation instead of updating only its Server.
+
+### Server with Web / TUI / Feishu
+
+Prerequisites: **Node.js 22.x, at least 22.19.0**, Git, your model provider's API
+URL/model ID/API key, and at least one supported Executor CLI (Pi Agent or Codex)
+on `PATH`. The installer detects Executor CLIs but does not install them.
+Prebuilt archives include native dependencies; npm and native build tools are
+required for source builds, not ordinary prebuilt installation.
+
+macOS, Linux x64 or WSL2 x64, in an interactive terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh | bash
-
+curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh -o metawork-install.sh
+bash metawork-install.sh
 export PATH="$HOME/.local/bin:$PATH"
 metawork --help
 ```
 
-One command downloads the signed, prebuilt Runtime and vendored Planner
-artifacts from the official GitHub Release, verifies them, and launches the provider setup wizard. On Linux
-and WSL2 the installer automatically selects the file-backed secret store
-(`METAWORK_SECRET_STORE=file`); no manual export is needed. Re-running
-the same command updates an existing installation in place — configuration,
-secrets, and task data are preserved. Windows users should use the native
-PowerShell installer below. When the wizard completes, continue with
-[Quick Start](#quick-start).
-
-### Quick install (Windows x64)
-
-Run PowerShell as the current user:
+Windows x64, in PowerShell (enable Developer Mode or use an elevated terminal
+for NTFS release pointers):
 
 ```powershell
 irm https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.ps1 -OutFile metawork-install.ps1
 .\metawork-install.ps1
 ```
 
-The Windows package requires Node.js `>=22.19.0`, Git, and Windows Developer
-Mode (or an elevated terminal) so the transactional release pointers can use
-NTFS links. The installer verifies the signed manifest and both ZIP artifacts
-before invoking the offline installer.
+Both scripts resolve the **latest stable release's signed manifest** and verify
+its Runtime/Planner archives. The setup wizard configures the model provider.
+Linux/WSL2 defaults to file-backed secrets. From v0.1.5 onward the matching
+scripts are also attached to the release as
+[install.sh](https://github.com/IFOSR/metawork/releases/latest/download/install.sh)
+and [install.ps1](https://github.com/IFOSR/metawork/releases/latest/download/install.ps1).
 
-Running inside an IDE-embedded terminal, an agent, or CI where `curl | bash`
-cannot attach the setup wizard to your keyboard? Download first, then run in
-a real terminal (or set the environment variables below and stay
-non-interactive):
+Start Server in one terminal and keep it running:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh -o metawork-install.sh
-bash metawork-install.sh
+metawork server start
 ```
 
-Uninstall:
+In another terminal, choose your client:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh | bash -s -- --uninstall
+metawork web                    # browser login: admin / 123456
+metawork tui                    # native terminal UI
+metawork server setup-feishu    # optional Feishu app setup
 ```
 
-Stops a running Server, removes the managed launchers (`metawork`, `anyfusion`,
-`metaclaw`), and deletes the install root. Add `--purge` to also remove legacy
-launcher backups.
+Web opens the Server's actual local URL (default port 8788). Feishu connectivity
+is managed by the same Server. For background service operation use the
+launchd/systemd templates under `scripts/supervision/`.
 
-### Keeping the Server running
+To update a CLI-managed installation: `metawork server stop`, repeat the installer,
+then `metawork server start`. Configuration, credentials and account data are
+preserved. Repeating the same version does not reset the installation.
+`metawork server status` reports the running service; the latest Release page
+reports the available version.
 
-`metawork server start` runs in the foreground. For an always-on deployment use
-the supervision templates under `scripts/supervision/` (launchd plist for
-macOS, systemd unit for Linux) — they restart the Server automatically if it
-exits.
+Optional settings AI rewriting/explanations and model summaries require
+separately provisioned [internal LLM configuration](docs/current/internal-llm-service.md).
+Its absence does not block installation or manual configuration.
 
-### Install from source
+### Source installation and Desktop development
+
+Source builds require npm, native compilation tools and network access for the
+pinned Python/PDF dependencies. To build the latest **released** source, get its
+tag from the latest Release page and replace `<latest-tag>`:
 
 ```bash
-git clone https://github.com/IFOSR/metawork.git
+git clone --branch <latest-tag> --depth 1 https://github.com/IFOSR/metawork.git
 cd metawork
 ./setup.sh
-
 export PATH="$HOME/.local/bin:$PATH"
-metawork --help
 ```
 
-After the build, the installer launches a short setup wizard: pick a provider
-preset (DeepSeek, Kimi, or Code CLI) or enter any OpenAI-compatible endpoint,
-confirm the model, and paste your API key. The wizard verifies the key with a
-live request, stores it in the local secret store, and completes the
-installation. No configuration needs to be exported beforehand.
-
-<details>
-<summary>Non-interactive install (CI, Docker, scripts)</summary>
-
-Skip the wizard by exporting the provider environment before running
-`./setup.sh`:
+For Desktop development from a checkout:
 
 ```bash
-export METAWORK_PROVIDER_KEY='your-key'
-export METAWORK_PROVIDER_URL='https://api.deepseek.com/v1'
-# Optional (Linux/WSL2 defaults to the file-backed secret store automatically)
-export METAWORK_SECRET_STORE='file'
-export METAWORK_PROVIDER_MODEL='deepseek-chat'
-export METAWORK_PROVIDER_REGION='international'
+npm ci
+npm ci --prefix web --ignore-scripts
+npm ci --prefix apps/desktop
+npm ci --prefix planner/AnyFusion-Pi --ignore-scripts
+npm run dev:desktop
 ```
 
-</details>
+This uses `.tmp/desktop-development`, separate from production history. The
+current development helper requires provisioned internal LLM configuration;
+that is not a production Desktop installation requirement. After backend changes,
+run `npm run dev:desktop -- --refresh`. See [Desktop development](apps/desktop/README.md).
 
-<details>
-<summary>Publishing prebuilt releases (maintainers)</summary>
+Non-interactive native setup accepts `METAWORK_PROVIDER_KEY`,
+`METAWORK_PROVIDER_URL`, `METAWORK_PROVIDER_MODEL` and `METAWORK_PROVIDER_REGION`.
+Do not commit credentials or include them in release artifacts.
 
-`npm run build:release` builds Runtime/Web/Planner on the current native host,
-installs production dependencies, and packages the built Runtime,
-`web/dist`, Runtime dependencies, and vendored Planner into per-platform
-archives plus an Ed25519-signed manifest. The target must match the build
-host; macOS must not cross-build a Linux release. For example, a Linux x64
-host builds the Linux x64 release with:
+### Removal
 
-```bash
-npm run build:release -- \
-  --platform linux \
-  --arch x64 \
-  --release-id 0.1.4-build-<tagged-revision> \
-  --signing-key /secure/path/metawork-release-key.pem \
-  --out-dir /tmp/metawork-release
-```
+Removing the Desktop app preserves account data and does not stop Server; stop
+it explicitly first if desired. `bash metawork-install.sh --uninstall` removes
+managed CLI launchers **and the install root, including account data**. Back up
+work you want to keep.
 
-Windows uses ZIP archives and `scripts/install.ps1`; macOS and Linux use
-tarballs and `scripts/install.sh`. `--package-only` is only for packaging
-already-built target dependencies and does not perform the build. The command
-requires a real release key (`--signing-key` or
-`METAWORK_RELEASE_SIGNING_KEY`); `--generate-dev-key` is for local testing
-only. Published GitHub Actions builds use native runners for macOS Intel,
-macOS Apple Silicon, Windows x64, and Linux x64. The packaging command fails
-if the Runtime, Web, Planner, or dependency outputs are missing.
-
-</details>
-
-The installer builds the MetaWork Runtime and vendored `planner/AnyFusion-Pi`
-sources in separate dependency trees. Releases, account state, configuration,
-generated runtime files, and update journals are stored under `~/.metawork`.
+Maintainers: see the [release runbook](docs/current/releasing.md).
 
 ### Runtime layout
 

@@ -29,7 +29,8 @@ describe('PiCliDriver', () => {
       expect(await readFile(join(home.homePath, '.pi/agent/extensions/pi-pdf.ts'), 'utf8')).toContain(join(pdfExtensionRoot, 'index.ts'));
       await expect(stat(join(home.homePath, '.pi/agent/auth.json'))).rejects.toThrow();
       expect((await driver.probe()).available).toBe(true);
-      expect(probeCommand.mock.calls[1][0]).toBe(join(pdfExtensionRoot, 'python/bin/python3'));
+      expect(probeCommand.mock.calls[1][0]).toBe(join(pdfExtensionRoot,
+        process.platform === 'win32' ? 'python/python.exe' : 'python/bin/python3'));
       probeCommand.mockResolvedValueOnce({ code: 0, stdout: '1.0.0', stderr: '' })
         .mockResolvedValueOnce({ code: 1, stdout: '', stderr: 'missing PDFium' });
       expect(await driver.probe()).toMatchObject({ available: false, detail: expect.stringContaining('missing PDFium') });

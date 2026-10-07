@@ -1,6 +1,6 @@
 {
   "name": "@metawork/desktop",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "private": true,
   "license": "UNLICENSED",
   "description": "MetaWork desktop client",
@@ -8,6 +8,7 @@
   "type": "module",
   "main": "dist/main.js",
   "scripts": {
+    "postinstall": "node node_modules/electron/install.js",
     "build": "node packaging/build.mjs",
     "start": "electron .",
     "lint": "tsc --noEmit",

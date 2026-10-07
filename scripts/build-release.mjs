@@ -12,6 +12,7 @@ function parseArguments(argv) {
     channel: 'stable',
     releaseId: undefined,
     signingKey: undefined,
+    artifactBaseUrl: undefined,
     packageOnly: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -29,6 +30,7 @@ function parseArguments(argv) {
       case '--channel': options.channel = requireValue(); break;
       case '--release-id': options.releaseId = requireValue(); break;
       case '--signing-key': options.signingKey = resolve(requireValue()); break;
+      case '--artifact-base-url': options.artifactBaseUrl = requireValue(); break;
       case '--package-only': options.packageOnly = true; break;
       default: throw new Error(`unknown option: ${argument}`);
     }
@@ -107,6 +109,7 @@ function main() {
     options.channel,
     ...(options.releaseId ? ['--release-id', options.releaseId] : []),
     ...(options.signingKey ? ['--signing-key', options.signingKey] : []),
+    ...(options.artifactBaseUrl ? ['--artifact-base-url', options.artifactBaseUrl] : []),
   ];
 
   if (!options.packageOnly) {

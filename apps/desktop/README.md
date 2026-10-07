@@ -7,6 +7,9 @@ the account's active work and invokes the formal Server stop path.
 
 This is an implementation checkpoint, **not a signed distributable release**.
 See the [acceptance record](../../docs/plans/2026-10-05-metawork-desktop-implementation.md).
+The v0.1.5 joint release is being prepared; see the
+[release runbook](../../docs/current/releasing.md) for Actions signing/tool inputs
+and the [publication status](../../docs/plans/2026-10-07-v0.1.5-release.md).
 
 ## Development
 
@@ -124,6 +127,9 @@ worktree belongs in the repository or application resources.
 
 First launch verifies the bundled distribution, accepts model configuration in
 the startup page and invokes the native installer in a separate Node process.
+Production installation does not require developer internal LLM credentials.
+Optional internal AI features remain unavailable until separately provisioned;
+existing internal configuration is preserved during update.
 The canonical installation is `~/.metawork` unless explicitly selected. Finder
 can restore an installation/configuration selection from Desktop preferences.
 An existing incompatible Runtime is rejected rather than opening a second one.

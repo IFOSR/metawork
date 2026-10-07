@@ -4,8 +4,9 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const RELEASE_TARGETS = ['darwin-arm64', 'darwin-x64', 'linux-x64', 'win32-x64'];
-const TRUSTED_KEY_ID = 'metawork-release-2026-03';
-const TRUSTED_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+export const DESKTOP_TARGETS = ['darwin-arm64', 'darwin-x64'];
+export const TRUSTED_KEY_ID = 'metawork-release-2026-03';
+export const TRUSTED_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAJm/qnGNd9Aeg+41GoIjKOgpasxivfCXJCsZwyMbyIVE=
 -----END PUBLIC KEY-----`;
 
@@ -42,7 +43,7 @@ function parseReleaseId(value) {
   };
 }
 
-function stable(value) {
+export function stable(value) {
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
   if (value && typeof value === 'object') {
     return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
@@ -90,6 +91,7 @@ export async function verifyReleaseAssets(directory, tag, options = {}) {
     }
     const revision = manifest.metawork?.revision;
     if (!/^[a-f0-9]{7,40}$/.test(revision)
+      || (options.sourceCommit && !options.sourceCommit.startsWith(revision))
       || manifest.releaseId !== `${tag.slice(1)}-build-${revision.slice(0, 7)}`
       || manifest.planner?.revision !== revision
       || !['https://github.com/IFOSR/metawork', 'https://github.com/IFOSR/metawork.git']
@@ -108,7 +110,8 @@ export async function verifyReleaseAssets(directory, tag, options = {}) {
     for (const kind of ['metawork', 'planner']) {
       const artifact = manifest[kind];
       const expectedName = `${kind}-${manifest.releaseId}-${target}${target.startsWith('win32') ? '.zip' : '.tar.gz'}`;
-      if (artifact.url !== expectedName || !Number.isSafeInteger(artifact.byteSize)
+      const expectedUrl = `https://github.com/IFOSR/metawork/releases/download/${tag}/${expectedName}`;
+      if (![expectedName, expectedUrl].includes(artifact.url) || !Number.isSafeInteger(artifact.byteSize)
         || artifact.byteSize <= 0 || !/^[a-f0-9]{64}$/.test(artifact.sha256)) {
         throw new Error(`${target}: invalid ${kind} artifact contract`);
       }
@@ -118,35 +121,54 @@ export async function verifyReleaseAssets(directory, tag, options = {}) {
     }
     manifests.push(manifest);
   }
+  if (options.requireDesktop !== false) {
+    for (const target of DESKTOP_TARGETS) {
+      const name = `desktop-manifest.${target}.json`;
+      const body = readFileSync(join(directory, name));
+      const { signature, ...desktop } = JSON.parse(body);
+      if (signature?.algorithm !== 'ed25519' || signature.keyId !== TRUSTED_KEY_ID
+        || !verify(null, Buffer.from(stable(desktop)), options.trustedPublicKey ?? TRUSTED_PUBLIC_KEY,
+          Buffer.from(signature.value, 'base64'))) throw new Error(`${target}: Desktop signature verification failed`);
+      const runtime = manifests.find(manifest => `${manifest.platform}-${manifest.arch}` === target);
+      if (desktop.schemaVersion !== 1 || desktop.tag !== tag || desktop.target !== target
+        || desktop.desktopVersion !== tag.slice(1) || desktop.releaseId !== runtime.releaseId
+        || !/^[a-f0-9]{40}$/.test(desktop.sourceCommit)
+        || !desktop.sourceCommit.startsWith(runtime.metawork.revision)
+        || (options.sourceCommit && desktop.sourceCommit !== options.sourceCommit)
+        || desktop.development !== false) throw new Error(`${target}: Desktop release identity mismatch`);
+      const expectedName = `MetaWork-${target}.dmg`;
+      if (desktop.artifact?.name !== expectedName || !Number.isSafeInteger(desktop.artifact.byteSize)
+        || desktop.artifact.byteSize <= 0 || !/^[a-f0-9]{64}$/.test(desktop.artifact.sha256)) {
+        throw new Error(`${target}: invalid Desktop artifact contract`);
+      }
+      assertArtifact(await digest(createReadStream(join(directory, expectedName))), desktop.artifact, expectedName);
+      files.push({ name, byteSize: body.length, sha256: createHash('sha256').update(body).digest('hex') }, desktop.artifact);
+    }
+    for (const name of ['install.sh', 'install.ps1']) {
+      const body = readFileSync(join(directory, name));
+      if (!body.length) throw new Error(`missing installer: ${name}`);
+      files.push({ name, byteSize: body.length, sha256: createHash('sha256').update(body).digest('hex') });
+    }
+  }
   return { releaseId: manifests[0].releaseId, manifests, files };
 }
 
-export async function verifyPublishedRelease(directory, release, baseUrl) {
+export async function verifyPublishedRelease(release, baseUrl) {
   if (!baseUrl.startsWith('https://')) throw new Error('public verification requires HTTPS');
-  const files = [
-    ...release.files.map((file) => ({ ...file, path: `latest/${file.name}` })),
-    ...['install.sh', 'install.ps1'].map((name) => {
-      const body = readFileSync(join(directory, name));
-      return {
-        name, path: name, byteSize: body.length,
-        sha256: createHash('sha256').update(body).digest('hex'),
-      };
-    }),
-  ];
-  for (const file of files) {
-    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/${file.path}`, {
+  for (const file of release.files) {
+    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/${file.name}`, {
       signal: AbortSignal.timeout(300_000),
       headers: { 'Cache-Control': 'no-cache' },
     });
-    if (!response.ok || !response.body) throw new Error(`${file.path}: HTTP ${response.status}`);
-    assertArtifact(await digest(response.body), file, file.path);
-    console.log(`Verified HTTPS ${file.path}`);
+    if (!response.ok || !response.body) throw new Error(`${file.name}: HTTP ${response.status}`);
+    assertArtifact(await digest(response.body), file, file.name);
+    console.log(`Verified HTTPS ${file.name}`);
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [directory, tag, baseUrl] = process.argv.slice(2);
-  const release = await verifyReleaseAssets(directory, tag);
-  if (baseUrl) await verifyPublishedRelease(directory, release, baseUrl);
-  console.log(`Verified ${release.releaseId}: 4 signed manifests, 8 archives`);
+  const release = await verifyReleaseAssets(directory, tag, { sourceCommit: process.env.GITHUB_SHA });
+  if (baseUrl) await verifyPublishedRelease(release, baseUrl);
+  console.log(`Verified ${release.releaseId}: ${release.files.length} assets including both Desktop installers`);
 }

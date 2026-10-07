@@ -5,6 +5,7 @@
     "darwin-arm64": { "target": "aarch64-apple-darwin", "sha256": "84cb7acbf75264982c8bdd818bfa1ff0f1eb76007b48a5f3e01d28633b46afdf" },
     "darwin-x64": { "target": "x86_64-apple-darwin", "sha256": "f76a921e71e9c8954cccd00f176b7083041527b3b4223670d05bbb2f51209d3f" },
     "linux-arm64": { "target": "aarch64-unknown-linux-gnu", "sha256": "d2a6c0d4ceea088f635b309a59d5d700a256656423225f96ddfb71d532adb1aa" },
-    "linux-x64": { "target": "x86_64-unknown-linux-gnu", "sha256": "c74addcd1b033a6e4d60ead3ab47fcc995569027e01d3061c4a934f363c4a0cf" }
+    "linux-x64": { "target": "x86_64-unknown-linux-gnu", "sha256": "c74addcd1b033a6e4d60ead3ab47fcc995569027e01d3061c4a934f363c4a0cf" },
+    "win32-x64": { "target": "x86_64-pc-windows-msvc", "sha256": "3c8b9b10a933909c98b9916297e2093b24a9c2abaa23df1c2622c2bfe052cb94" }
   }
 }

@@ -16,8 +16,9 @@ const repairDirectoryJournal = process.argv.includes('--repair-directory-journal
 if (repairDirectoryJournal && !refresh) throw new Error('--repair-directory-journal requires --refresh');
 const alreadyInstalled = existsSync(join(root, 'app/current'));
 if (alreadyInstalled && !existsSync(join(root, 'desktop-development.json'))) throw new Error('Refusing to attach or refresh an installation without a Desktop development marker');
-const releaseId = refresh ? `0.1.4-desktop-development-${Date.now()}` : alreadyInstalled
-  ? JSON.parse(await readFile(join(root, 'app/current/release-identity.json'), 'utf8')).releaseId : '0.1.4-desktop-development';
+const version = JSON.parse(await readFile(join(source, 'package.json'), 'utf8')).version;
+const releaseId = refresh ? `${version}-desktop-development-${Date.now()}` : alreadyInstalled
+  ? JSON.parse(await readFile(join(root, 'app/current/release-identity.json'), 'utf8')).releaseId : `${version}-desktop-development`;
 const env = { ...process.env, METAWORK_INSTALL_ROOT: root, ANYFUSION_INSTALL_ROOT: root,
   METAWORK_CONFIG_HOME: join(root, 'config-home'), ANYFUSION_CONFIG_HOME: join(root, 'config-home'),
   METAWORK_WEB_PORT: '0', METACLAW_DISABLE_MARKDOWN_PREVIEW: '1',
