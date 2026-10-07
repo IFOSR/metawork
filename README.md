@@ -102,20 +102,23 @@ account data. Web is included in the Server package and does not require Desktop
 ### macOS Desktop (internal, Apple Silicon)
 
 1. Confirm that the Mac uses Apple Silicon under **Apple menu → About This Mac**.
-2. Download [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg)
+2. Install Apple's Command Line Tools once if they are not already present:
+   run `xcode-select --install` in Terminal and finish the macOS prompt. The
+   internal package uses the system Git wrapper for repository operations.
+3. Download [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg)
    from the latest release, open it, and drag **MetaWork.app** to **Applications**.
-3. The first launch may be blocked because this internal DMG is not notarized. In
+4. The first launch may be blocked because this internal DMG is not notarized. In
    Finder, right-click **MetaWork.app** and choose **Open**, then confirm **Open**.
    If macOS still blocks it, open **System Settings → Privacy & Security**, scroll
    to the security message, and choose **Open Anyway**; then repeat step 3.
-4. The MetaWork setup window asks for **模型 API 地址**, **模型 ID** and **API Key**.
+5. The MetaWork setup window asks for **模型 API 地址**, **模型 ID** and **API Key**.
    Enter the provider values used by your company and choose **安装并开始使用**.
    Credentials are stored in the local macOS credential store.
-5. After setup, MetaWork opens the Web workspace. Keep the Desktop running while
+6. After setup, MetaWork opens the Web workspace. Keep the Desktop running while
    you complete the first login and choose a Workspace.
 
-Desktop bundles Node, Git, Pi Executor, Server/Web and Planner. No separate
-Node/npm/Git installation is required; Codex is optional. The default installation
+Desktop bundles Node, Pi Executor, Server/Web and Planner. macOS Command Line Tools
+provide the system Git used for repository operations; Codex is optional. The default installation
 is `~/.metawork`. Compatible existing installations are reused; incompatible
 versions require a coordinated update. **Install Terminal Command…** optionally
 adds `metawork`, allowing Web/TUI to connect to the same Server. Quitting Desktop

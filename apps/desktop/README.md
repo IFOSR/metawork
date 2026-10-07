@@ -7,7 +7,9 @@ the account's active work and invokes the formal Server stop path.
 
 The v0.1.5 internal DMG is an **unsigned, unnotarized** Apple Silicon package for
 company use. macOS may require Finder **Open** or **System Settings → Privacy &
-Security → Open Anyway** on first launch. See the
+Security → Open Anyway** on first launch. Install Command Line Tools with
+`xcode-select --install` before first use because the internal Git wrapper calls
+macOS's system Git. See the
 [acceptance record](../../docs/plans/2026-10-05-metawork-desktop-implementation.md)
 and the [release runbook](../../docs/current/releasing.md) for Actions signing/tool
 inputs for a future signed public release. The [publication status](../../docs/plans/2026-10-07-v0.1.5-release.md)

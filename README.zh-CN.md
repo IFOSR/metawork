@@ -87,17 +87,19 @@ Web 已包含在 Server 安装包中，不需要安装 Desktop。
 ### macOS Desktop 桌面应用（内部版，Apple Silicon）
 
 1. 在 **苹果菜单 → 关于本机** 确认 Mac 使用 Apple Silicon（M 系列）。
-2. 从最新 Release 下载 [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg)，
+2. 如果尚未安装 Apple Command Line Tools，先在终端执行 `xcode-select --install`，
+   按 macOS 提示完成安装。内部包使用系统 Git wrapper 执行仓库操作。
+3. 从最新 Release 下载 [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg)，
    打开 DMG，把 **MetaWork.app** 拖入“应用程序”。
-3. 由于这是未公证内部 DMG，首次启动可能被 macOS 拦截。在 Finder 中右键
+4. 由于这是未公证内部 DMG，首次启动可能被 macOS 拦截。在 Finder 中右键
    **MetaWork.app**，选择“打开”，再确认“打开”。如果仍被拦截，进入
    **系统设置 → 隐私与安全性**，找到安全提示并点击“仍要打开”，然后再次执行本步。
-4. MetaWork 安装窗口会要求填写“模型 API 地址”“模型 ID”“API Key”。填入公司
+5. MetaWork 安装窗口会要求填写“模型 API 地址”“模型 ID”“API Key”。填入公司
    使用的模型服务信息后点击“安装并开始使用”。凭据保存在本机 macOS 凭据库。
-5. 安装完成后会打开 Web 工作区；首次使用时完成登录并选择 Workspace。
+6. 安装完成后会打开 Web 工作区；首次使用时完成登录并选择 Workspace。
 
-安装包包含 Node、Git、Pi Executor、Server/Web 与 Planner，不需要另装 Node/npm/Git；
-Codex 为可选项。默认安装目录为 `~/.metawork`，兼容的已有安装会被复用，版本不兼容
+安装包包含 Node、Pi Executor、Server/Web 与 Planner；macOS Command Line Tools 提供
+仓库操作所需的系统 Git，Codex 为可选项。默认安装目录为 `~/.metawork`，兼容的已有安装会被复用，版本不兼容
 时需要联合升级。可通过菜单 **安装终端命令…** 安装 `metawork`，让 Web/TUI 连接同一
 Server。关闭窗口或退出 Desktop 后，后台服务和任务继续运行。
 
