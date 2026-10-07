@@ -5,6 +5,8 @@ import { createRequire } from 'node:module';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { probePrivateFiles } from './probe-windows-desktop-private-files.mjs';
+import { probeAsyncPipes } from './probe-windows-desktop-async-pipe.mjs';
+import { pathToFileURL } from 'node:url';
 
 if (process.platform !== 'win32' || process.arch !== 'x64') throw Error('Native Windows x64 required');
 const require = createRequire(import.meta.url);
@@ -16,15 +18,18 @@ execFileSync(process.execPath, [resolve('apps/desktop/node_modules/node-gyp/bin/
 const addon = join(root, 'build/Release/metawork_windows_probe.node');
 assert.equal(require(addon).probe(), process.pid);
 await probePrivateFiles(require(addon), evidence);
+await probeAsyncPipes(require(addon), join(evidence, 'node-async.json'));
 const electronEvidence = join(evidence, 'electron.json');
 const entry = join(evidence, 'electron-probe.cjs');
 await writeFile(entry, `
 const { app } = require('electron');
 const { writeFileSync } = require('node:fs');
 app.setPath('userData', ${JSON.stringify(join(evidence, 'electron-user-data'))});
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   const pid = require(${JSON.stringify(addon)}).probe();
   if (pid !== process.pid || process.type !== 'browser') throw Error('Native module host mismatch');
+  const { probeAsyncPipes } = await import(${JSON.stringify(pathToFileURL(resolve('scripts/probe-windows-desktop-async-pipe.mjs')).href)});
+  await probeAsyncPipes(require(${JSON.stringify(addon)}), ${JSON.stringify(join(evidence, 'electron-async.json'))});
   writeFileSync(${JSON.stringify(electronEvidence)}, JSON.stringify({
     passed: true, pid, electron: process.versions.electron, node: process.versions.node,
     napi: process.versions.napi, processType: process.type

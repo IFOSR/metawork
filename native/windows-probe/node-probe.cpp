@@ -14,6 +14,8 @@ std::wstring string_argument(napi_env env, napi_value value) {
   return std::wstring(reinterpret_cast<wchar_t*>(text.data()), length);
 }
 
+#include "async-pipe.h"
+
 napi_value read_private(napi_env env, napi_callback_info info) {
   try {
     napi_value arguments[2];
@@ -69,6 +71,13 @@ napi_value initialize(napi_env env, napi_value exports) {
     || napi_set_named_property(env, exports, "readPrivateFile", function) != napi_ok) {
     napi_throw_error(env, nullptr, "File probe initialization failed");
     return nullptr;
+  }
+  for (const char* mode : { "listen", "connect", "accept", "read", "write", "writeReady", "close" }) {
+    if (napi_create_function(env, mode, NAPI_AUTO_LENGTH, pipe_operation, const_cast<char*>(mode), &function) != napi_ok
+      || napi_set_named_property(env, exports, mode, function) != napi_ok) {
+      napi_throw_error(env, nullptr, "Async pipe initialization failed");
+      return nullptr;
+    }
   }
   return exports;
 }

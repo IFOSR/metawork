@@ -46,6 +46,15 @@ std::wstring final_path(HANDLE handle) {
   return std::wstring(buffer.data(), size);
 }
 
+std::wstring long_path(const std::wstring& path) {
+  // Hosted Windows TEMP may contain an 8.3 username. Expand lexical aliases
+  // before comparison without accepting a different reparse target path.
+  std::vector<wchar_t> buffer(32768);
+  const DWORD size = GetLongPathNameW(path.c_str(), buffer.data(), static_cast<DWORD>(buffer.size()));
+  require(size > 0 && size < buffer.size(), "long file path");
+  return L"\\\\?\\" + std::wstring(buffer.data(), size);
+}
+
 std::vector<BYTE> read_private_file(const std::wstring& root, const std::wstring& relative_path) {
   require(root.size() > 3 && root[1] == L':' && root[2] == L'\\'
     && root.find(L'/') == std::wstring::npos && root.find(L'\0') == std::wstring::npos,
@@ -59,7 +68,7 @@ std::vector<BYTE> read_private_file(const std::wstring& root, const std::wstring
       FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     require(handle->get() != INVALID_HANDLE_VALUE, "open private directory");
     inspect_private_file(handle->get(), true);
-    require(_wcsicmp(final_path(handle->get()).c_str(), (L"\\\\?\\" + path).c_str()) == 0,
+    require(_wcsicmp(final_path(handle->get()).c_str(), long_path(path).c_str()) == 0,
       "directory path redirection refused");
     directories.push_back(std::move(handle));
   };
@@ -80,7 +89,7 @@ std::vector<BYTE> read_private_file(const std::wstring& root, const std::wstring
     nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
   require(file.get() != INVALID_HANDLE_VALUE, "open private file");
   inspect_private_file(file.get(), false);
-  require(_wcsicmp(final_path(file.get()).c_str(), (L"\\\\?\\" + path).c_str()) == 0,
+  require(_wcsicmp(final_path(file.get()).c_str(), long_path(path).c_str()) == 0,
     "file path redirection refused");
   LARGE_INTEGER size{};
   require(GetFileSizeEx(file.get(), &size) != FALSE && size.QuadPart >= 0 && size.QuadPart <= 65536,
