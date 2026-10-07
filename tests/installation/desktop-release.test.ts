@@ -37,7 +37,7 @@ async function fixture(development = false) {
   await writeFile(join(root, 'desktop-release.json'), JSON.stringify(release));
   return root;
 }
-const options = { trustedKeys, arch: 'arm64', desktopVersion: '0.1.0' };
+const options = { trustedKeys, platform: 'darwin', arch: 'arm64', desktopVersion: '0.1.0' };
 describe('Desktop release admission', () => {
   it('rejects even validly signed inventories that cannot install or update', async () => {
     const root = await fixture();
@@ -63,6 +63,7 @@ describe('Desktop release admission', () => {
     await expect(verifyDesktopRelease(dev, options)).rejects.toThrow('compatibility');
     await expect(verifyDesktopRelease(dev, { ...options, allowDevelopment: true })).resolves.toBeDefined();
     const root = await fixture();
+    await expect(verifyDesktopRelease(root, { ...options, platform: 'win32' })).rejects.toThrow('compatibility');
     await expect(verifyDesktopRelease(root, { ...options, arch: 'x64' })).rejects.toThrow('compatibility');
     const descriptor = JSON.parse(await readFile(join(root, 'desktop-release.json'), 'utf8'));
     descriptor.releaseId = '2.0.0'; await writeFile(join(root, 'desktop-release.json'), JSON.stringify(descriptor));

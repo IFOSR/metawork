@@ -28,7 +28,7 @@ export default {
     const arch = context.arch === 3 ? 'arm64' : context.arch === 1 ? 'x64' : 'unsupported';
     if (arch !== process.arch) throw new Error('Each architecture requires its own native validation runner');
     const trustedKeys = JSON.parse(await readFile(resolve(resources, 'trusted-release-keys.json'), 'utf8'));
-    await verifyDesktopRelease(resolve(resources), { trustedKeys, arch, desktopVersion: context.packager.appInfo.version, allowDevelopment: internal });
+    await verifyDesktopRelease(resolve(resources), { trustedKeys, platform: process.platform, arch, desktopVersion: context.packager.appInfo.version, allowDevelopment: internal });
   },
   afterSign: internal ? undefined : async context => {
     const app = resolve(context.appOutDir, 'MetaWork.app');

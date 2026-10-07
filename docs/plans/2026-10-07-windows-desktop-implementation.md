@@ -90,3 +90,9 @@ PDF 构建首次被 GitHub 下载连接阻塞；本次从已有开发缓存读�
 通用 resolver 与 PowerShell bootstrap 对齐：显式根优先，新装默认 LOCALAPPDATA/MetaWork，旧用户目录 .metawork 单独存在时复用，两根同时存在时明确报错并要求设置 METAWORK_INSTALL_ROOT；不自动迁移/合并。自动发现拒绝被普通文件或链接占据的根。Windows launcher 放在选定根的 bin，避免复用旧根时又在新默认位置创建 bin 而制造双根。macOS 默认及 launcher 位置保持不变。目录选择不替代后续原生 ACL/句柄验证。
 
 本地根选择、现有 paths/product-root migration、Root/Desktop 类型检查通过；新增 Windows 原生 PowerShell/Node resolver 对照验证随云端执行，包含重定向 LOCALAPPDATA、中文/空格路径、旧根、双根、显式 override 与兼容变量冲突。尚未作为完整安装验收。
+
+### 分平台 release 校验（2026-10-08）
+
+Desktop descriptor 按 platform 区分：macOS v1 继续使用既有 executable/mode inventory；Windows x64 使用内容 hash/size 与 PE/data 格式，核对 PE32+、AMD64、可执行 image 和有界 header，拒绝跨平台/架构 payload、伪装 native 文件、Windows 路径别名/ADS/设备名和大小写冲突。所有正式 verifier 调用方显式传入期望 platform。Windows 的必要清单包括独立 Node、Git/Bash、Pi JS、Python/PDF、SQLite 及后续生产 Node-API adapter 的固定入口 `metawork/native/windows/metawork-platform.node`，并保留工具 license。
+
+本地 macOS release、Windows signed fixtures、Desktop installer 与 clean-install integration 共 4 文件/10 测试通过；Root 类型检查和 Desktop build/边界测试通过。PE fixture 从不执行，header 校验不代表 DLL 依赖闭包或真实运行验证；Windows 生产 adapter/依赖包尚未生成，当前也未放开 Windows Desktop 会话。云端原生 Windows 对应测试与 macOS 双架构回归继续执行。

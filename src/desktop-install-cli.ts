@@ -26,7 +26,7 @@ export async function runDesktopInstall(
   }
   const resources = resolve(resourcesArg);
   const trustedKeys = JSON.parse(await readFile(join(resources, 'trusted-release-keys.json'), 'utf8')) as Record<string, string>;
-  const release = await verifyDesktopRelease(resources, { trustedKeys, arch: process.arch, desktopVersion,
+  const release = await verifyDesktopRelease(resources, { trustedKeys, platform: process.platform, arch: process.arch, desktopVersion,
     allowDevelopment: process.env.METAWORK_DESKTOP_INTERNAL === '1' });
   const paths = resolveMetaWorkPaths(undefined, resolve(rootArg));
   const running = () => isInstanceRunning(join(paths.data, 'runtime.lock'));

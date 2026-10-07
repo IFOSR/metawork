@@ -124,7 +124,7 @@ try {
   release.signature = { algorithm: 'ed25519', keyId, value: sign(null, Buffer.from(canonical(release)), privateKey).toString('base64') };
   await writeFile(join(output, 'desktop-release.json'), `${JSON.stringify(release, null, 2)}\n`);
   await writeFile(join(output, 'trusted-release-keys.json'), `${JSON.stringify(trustedKeys, null, 2)}\n`);
-  await verifyDesktopRelease(output, { trustedKeys, arch: process.arch, desktopVersion: pkg.version, allowDevelopment: development });
+  await verifyDesktopRelease(output, { trustedKeys, platform: process.platform, arch: process.arch, desktopVersion: pkg.version, allowDevelopment: development });
   process.stdout.write(`Verified Desktop resources: ${output}\n`);
 } catch (error) {
   await rm(output, { recursive: true, force: true });

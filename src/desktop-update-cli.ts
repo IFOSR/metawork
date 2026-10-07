@@ -63,7 +63,7 @@ async function main(): Promise<void> {
     });
     const activation = new DesktopActivation(join(requests, 'desktop-activation.json'), {
       verify: async () => {
-        const release = await verifyDesktopRelease(resources, { trustedKeys: request.trustedKeys, arch: process.arch, desktopVersion: request.desktopVersion });
+        const release = await verifyDesktopRelease(resources, { trustedKeys: request.trustedKeys, platform: process.platform, arch: process.arch, desktopVersion: request.desktopVersion });
         if (release.releaseId !== record.candidateReleaseId || !/^[a-f0-9-]{36}$/u.test(request.shellChallenge)) throw new Error('Candidate release mismatch');
         if ((await currentIdentity())?.releaseId !== record.previousReleaseId) throw new Error('Previous runtime changed');
         if (await access(record.backupApplicationPath).then(() => true, () => false)) throw new Error('Previous application backup must be retained or archived first');

@@ -9,7 +9,7 @@ const [resourcesArg, outputArg, signingKeyPath] = process.argv.slice(2);
 if (!resourcesArg || !outputArg || !signingKeyPath) throw new Error('Usage: package-desktop-release.mjs RESOURCES OUTPUT PRIVATE_KEY');
 const version = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
 const release = await verifyDesktopRelease(resolve(resourcesArg), {
-  trustedKeys: { [TRUSTED_KEY_ID]: TRUSTED_PUBLIC_KEY }, arch: process.arch, desktopVersion: version,
+  trustedKeys: { [TRUSTED_KEY_ID]: TRUSTED_PUBLIC_KEY }, platform: process.platform, arch: process.arch, desktopVersion: version,
 });
 const target = `darwin-${release.arch}`;
 const name = `MetaWork-${target}.dmg`;

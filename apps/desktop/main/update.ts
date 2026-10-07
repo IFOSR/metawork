@@ -38,7 +38,7 @@ export async function prepareDesktopUpdate(input: {
   const keys = JSON.parse(await readFile(join(input.resources, 'trusted-release-keys.json'), 'utf8')) as Record<string, string>;
   const candidateResources = join(candidatePath, 'Contents/Resources');
   const candidateDescriptor = JSON.parse(await readFile(join(candidateResources, 'desktop-release.json'), 'utf8')) as { desktopVersion: string; development?: boolean };
-  const candidate = await verifyDesktopRelease(candidateResources, { trustedKeys: keys, arch: process.arch,
+  const candidate = await verifyDesktopRelease(candidateResources, { trustedKeys: keys, platform: process.platform, arch: process.arch,
     desktopVersion: candidateDescriptor.desktopVersion, allowDevelopment: candidateDescriptor.development === true });
   const previous = await readReleaseIdentity(join(input.root, 'app/current/release-identity.json'));
   if (!previous || previous.releaseId === candidate.releaseId) throw new Error('Select a new compatible release');
