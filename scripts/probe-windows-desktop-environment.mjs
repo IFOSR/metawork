@@ -10,6 +10,9 @@ if (process.platform !== 'win32' || process.arch !== 'x64') {
 const evidence = resolve(process.argv[2] ?? '.tmp/windows-desktop-validation/windows-environment.json');
 const root = await mkdtemp(join(tmpdir(), 'metawork-windows-probe-'));
 const env = { ...process.env, METAWORK_WINDOWS_PROBE_ROOT: root };
+// A pwsh runner exports its own module locations; Windows PowerShell must load
+// the inbox .NET Framework security module instead of the PowerShell 7 one.
+for (const name of Object.keys(env)) if (name.toLowerCase() === 'psmodulepath') delete env[name];
 function powershell(script) {
   return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
     `$ErrorActionPreference = 'Stop'; ${script}`], {

@@ -8,6 +8,9 @@ on:
       - '.github/workflows/windows-desktop-validation.yml'
       - 'scripts/probe-windows-desktop-environment.mjs'
       - 'scripts/smoke-desktop-isolated.mjs'
+      - 'scripts/probe-windows-desktop-pipe.ps1'
+      - 'scripts/smoke-unified-gateway.mjs'
+      - 'native/windows-probe/**'
       - 'apps/desktop/**'
       - 'src/**'
       - 'web/**'
@@ -24,6 +27,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  windows-pipe:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and verify native pipe identity and cross-account denial
+        shell: pwsh
+        run: ./scripts/probe-windows-desktop-pipe.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-pipe-${{ github.sha }}
+          path: .tmp/windows-desktop-validation/
+          if-no-files-found: warn
+
   windows-environment:
     runs-on: windows-2022
     timeout-minutes: 10
