@@ -80,3 +80,7 @@ PDF 构建首次被 GitHub 下载连接阻塞；本次从已有开发缓存读�
 - P5：用户暂无 Windows 实体机/VM；GitHub Windows Server runner 不满足 Windows 11 干净 GUI 人工验收。需另有真实 Windows 11 x64 环境，缺失时不得宣布完成。
 
 架构保持现有 macOS Desktop 基准。安全原语 probe 通过不自动放开 Windows Desktop 认证；生产适配及 owning-seam 验证通过前继续拒绝，不发布“可用 Windows 版本”。
+
+### 共享重启就绪竞态修复（2026-10-08）
+
+`ea81078` 的 Windows 三项 job 通过，但 macOS arm64/Intel 的 Gateway smoke 暴露现有 `server restart` 的就绪竞态：仅检查 `gateway.sock` 就报告成功，此时新 Server 尚未发布 endpoint manifest。该检查也无法用于 Windows Named Pipe。重启现等待实际新 child 的 PID、协议、release 与 ready manifest 匹配，提前退出/启动失败立即报错；不改变停止、恢复或任务策略。新增覆盖旧 PID、draining、错误 release、延迟发布、命名管道和提前退出/超时的测试。本地 3 文件/14 测试、类型检查、完整 build 和隔离 Gateway/TUI/多客户端重启 smoke 通过；双架构云端复验待运行。

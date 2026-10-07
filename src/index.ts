@@ -9,10 +9,11 @@ import { runGatewayPairingCommand } from './gateway/pairing-cli.js';
 import { runTaskStateReconciler } from './execution/task-state-reconciler.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from './account/account-id.js';
 import { resolveAccountPaths } from './account/account-paths.js';
-import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { stopInstanceForRestart } from './management/lock.js';
+import { waitForStartedServer } from './client/server-readiness.js';
+import { readReleaseIdentity } from './installation/release-identity.js';
 
 const command = parseCliArgs(process.argv.slice(2));
 const run = command.kind === 'build'
@@ -72,24 +73,19 @@ async function restartServerWithCurrentRelease(): Promise<void> {
       ? `MetaWork Server 旧实例已停止（PID ${result.pid}），正在重新启动。\n`
       : 'MetaWork Server 未运行，正在启动。\n',
   );
-  // `server start` is a long-running foreground process; waiting for its
-  // exit would hang the restart forever. Spawn it detached and wait for the
-  // gateway socket to come back instead (bounded).
+  const identity = await readReleaseIdentity(join(paths.appCurrent, 'release-identity.json'));
+  // Readiness is the new child's published manifest, not socket creation.
   const child = spawn(process.execPath, [join(paths.appCurrent, 'dist', 'index.js'), 'server', 'start'], {
     stdio: 'ignore',
     env: process.env,
     detached: true,
+    windowsHide: true,
   });
   child.unref();
-  const deadline = Date.now() + 90_000;
-  while (Date.now() < deadline) {
-    if (existsSync(join(paths.data, 'gateway.sock'))) {
-      process.stdout.write('MetaWork Server 已启动。\n');
-      return;
-    }
-    await new Promise(resolve => setTimeout(resolve, 250));
-  }
-  throw new Error('MetaWork Server 未能在 90 秒内就绪');
+  await waitForStartedServer(child, join(paths.root, 'server-endpoint.json'), {
+    ...(identity ? { releaseId: identity.releaseId } : {}),
+  });
+  process.stdout.write('MetaWork Server 已启动。\n');
 }
 
 async function runMaintenanceReconcile(): Promise<void> {

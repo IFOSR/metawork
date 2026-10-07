@@ -109,7 +109,7 @@ replacing those semantics.
 
 ## Active Delivery
 
-- [Windows Desktop 构建与交付方案](plans/2026-10-07-windows-desktop-build-plan.md)：基于 v0.1.5 当前 main 的独立 worktree 方案；待用户 review，尚未实施或构建。
+- [Windows Desktop 构建与交付方案](plans/2026-10-07-windows-desktop-build-plan.md)：独立分支实施中，P0 原生技术前置已验证，P1 平台适配进行中；云端验证记录见[实施记录](plans/2026-10-07-windows-desktop-implementation.md)，尚未交付 Windows Desktop 安装包。
 
 - [v0.1.5 Web 与 Desktop 联合发布](plans/2026-10-07-v0.1.5-release.md)：准备中；统一版本、完整产物发布校验及中英文安装入口。正式签名与线上发布尚未完成。
 
