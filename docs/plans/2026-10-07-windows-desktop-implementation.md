@@ -55,6 +55,9 @@ PDF 构建首次被 GitHub 下载连接阻塞；本次从已有开发缓存读�
 - 私有文件首次云端验证在正向读文件时拒绝了 TEMP 的 8.3 用户名路径；补 Win32 长文件名展开后再与实际句柄路径比较，不把短路径别名当成越界链接。此前的环境/管道检查及 Windows ticket admission 测试通过。
 - 增加 overlapped I/O spike：在 Node 和 Electron Main 中验证 12 个并发连接、双向读写、缓冲界限、背压和取消 pending accept/read/write，保留内核使用的缓冲和 OVERLAPPED 直到取消完成。不使用 Node 私有 handle，不接入生产 Gateway；原生结果待云端执行。
 - 增加 SMB loopback 的远程标志检查：同一台临时 VM 经机器名访问管道，先用同 SID DACL/允许远程的单字节夹具证明路径可达，再检查 `PIPE_REJECT_REMOTE_CLIENTS` 的拒绝。该模式只用于 probe，不签发 ticket，不处理产品请求；即使通过，也单列为 SMB loopback，不冒称另一实体机器的连接证据。
+- `f7cbe6e` 的 macOS arm64 与 Intel 完整 workflow job 均已通过，包括共享回归、PDF 静态依赖构建、Gateway/TUI smoke、真实 Electron smoke。源提交包含 Server ticket transport 拒绝门。Intel 证据保留在 run `37698966249`；仍不替代正式 `.app` 安装/升级和真实模型任务验收。
+- `a48a72b`：[原生扩展验证](https://github.com/IFOSR/metawork/actions/runs/37700531477) 的 Windows 三个 job 全部通过。SMB 正向对照及拒绝、私有文件正/负向检查、跨账号文件访问拒绝、并发 reparse 替换，以及 Node/Electron Main 的 overlapped I/O 生命周期均已执行。PowerShell 5.1 子进程需要预先取得 Process.Handle 后才能可靠读取退出码；保留子进程结构化的真实 OS 拒绝结果双重断言。
+- [Windows 11 云端宿主预检](https://github.com/IFOSR/metawork/actions/runs/37700531578) 确认 Ubuntu runner 有 KVM、4 CPU、16 GB 内存和 86 GB 空闲空间。准备独立临时 VM workflow：微软官方 Windows 11 Enterprise Evaluation 26H2 x64 镜像，QEMU/KVM、UEFI Secure Boot、软件 TPM 2.0；只上传环境报告和桌面截图，不上传虚拟磁盘、无人值守密码或安装应答文件。尚未证明 guest 启动成功，更不代表 Desktop 验收。
 
 ## 待通过的阶段门
 
