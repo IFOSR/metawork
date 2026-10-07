@@ -5,8 +5,9 @@ same `web` build served by the independent MetaWork Server. Closing a window
 hides it; quitting Desktop leaves Server running. The separate stop menu shows
 the account's active work and invokes the formal Server stop path.
 
-The v0.1.5 internal DMG is an **unsigned, unnotarized** Apple Silicon package for
-company use. macOS may require Finder **Open** or **System Settings → Privacy &
+The v0.1.5 internal DMG is an Apple Silicon package **without an Apple Developer ID
+signature and without notarization** for company use. macOS may require Finder
+**Open** or **System Settings → Privacy &
 Security → Open Anyway** on first launch. Install Command Line Tools with
 `xcode-select --install` before first use because the internal Git wrapper calls
 macOS's system Git. See the

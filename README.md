@@ -77,8 +77,8 @@ is not a published release.
 
 The current internal release is **v0.1.5**. It includes the Server/Web/TUI
 runtime and an Apple Silicon Desktop DMG for company use. The Desktop DMG is
-**unsigned and not notarized**; it is intentionally distributed for the internal
-macOS fleet. The [release page](https://github.com/IFOSR/metawork/releases/latest)
+**not signed with an Apple Developer ID and is not notarized**; it is intentionally
+distributed for the internal macOS fleet. The [release page](https://github.com/IFOSR/metawork/releases/latest)
 is the source of truth for the exact assets and checksums.
 
 This internal release currently provides a macOS Apple Silicon (`arm64`) DMG.

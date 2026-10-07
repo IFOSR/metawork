@@ -63,7 +63,7 @@ AnyFusion 标识。
 统一发布入口。源码版本领先不代表已发布。
 
 当前内部发布版本是 **v0.1.5**，包含 Server/Web/TUI 运行时和供公司内部使用的
-Apple Silicon Desktop DMG。该 Desktop DMG **未签名且未公证**，专门用于公司内部
+Apple Silicon Desktop DMG。该 Desktop DMG **未使用 Apple Developer ID 签名且未公证**，专门用于公司内部
 macOS 设备。[Release 页面](https://github.com/IFOSR/metawork/releases/latest)
 是实际下载文件和校验值的唯一来源。
 
