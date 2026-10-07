@@ -54,6 +54,7 @@ PDF 构建首次被 GitHub 下载连接阻塞；本次从已有开发缓存读�
 - 增加基于文件句柄的私有文件 spike：读取前检查 owner、允许 ACE、reparse/hard-link、路径及大小界限；保持目录/文件句柄直到读取结束，验证并发文件/链接替换不会返回链接目标内容；第二标准账号尝试读私有夹具。只读生成的测试内容，不导入真实配置；需等待 Windows 原生执行。
 - 私有文件首次云端验证在正向读文件时拒绝了 TEMP 的 8.3 用户名路径；补 Win32 长文件名展开后再与实际句柄路径比较，不把短路径别名当成越界链接。此前的环境/管道检查及 Windows ticket admission 测试通过。
 - 增加 overlapped I/O spike：在 Node 和 Electron Main 中验证 12 个并发连接、双向读写、缓冲界限、背压和取消 pending accept/read/write，保留内核使用的缓冲和 OVERLAPPED 直到取消完成。不使用 Node 私有 handle，不接入生产 Gateway；原生结果待云端执行。
+- 增加 SMB loopback 的远程标志检查：同一台临时 VM 经机器名访问管道，先用同 SID DACL/允许远程的单字节夹具证明路径可达，再检查 `PIPE_REJECT_REMOTE_CLIENTS` 的拒绝。该模式只用于 probe，不签发 ticket，不处理产品请求；即使通过，也单列为 SMB loopback，不冒称另一实体机器的连接证据。
 
 ## 待通过的阶段门
 
