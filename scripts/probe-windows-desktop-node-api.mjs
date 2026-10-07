@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
+import { probePrivateFiles } from './probe-windows-desktop-private-files.mjs';
 
 if (process.platform !== 'win32' || process.arch !== 'x64') throw Error('Native Windows x64 required');
 const require = createRequire(import.meta.url);
@@ -14,6 +15,7 @@ execFileSync(process.execPath, [resolve('apps/desktop/node_modules/node-gyp/bin/
   'rebuild', '--msvs_version=2022'], { cwd: root, stdio: 'inherit', timeout: 180_000 });
 const addon = join(root, 'build/Release/metawork_windows_probe.node');
 assert.equal(require(addon).probe(), process.pid);
+await probePrivateFiles(require(addon), evidence);
 const electronEvidence = join(evidence, 'electron.json');
 const entry = join(evidence, 'electron-probe.cjs');
 await writeFile(entry, `

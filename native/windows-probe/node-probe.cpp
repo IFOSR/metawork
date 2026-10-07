@@ -2,6 +2,34 @@
 #include <node_api.h>
 #define METAWORK_NODE_PROBE
 #include "pipe-probe.cpp"
+#include "private-file.h"
+
+std::wstring string_argument(napi_env env, napi_value value) {
+  size_t length = 0;
+  if (napi_get_value_string_utf16(env, value, nullptr, 0, &length) != napi_ok || length > 32767)
+    throw std::runtime_error("Bounded path required");
+  std::vector<char16_t> text(length + 1);
+  if (napi_get_value_string_utf16(env, value, text.data(), text.size(), &length) != napi_ok)
+    throw std::runtime_error("Path argument required");
+  return std::wstring(reinterpret_cast<wchar_t*>(text.data()), length);
+}
+
+napi_value read_private(napi_env env, napi_callback_info info) {
+  try {
+    napi_value arguments[2];
+    size_t count = 2;
+    if (napi_get_cb_info(env, info, &count, arguments, nullptr, nullptr) != napi_ok || count != 2)
+      throw std::runtime_error("Root and relative file required");
+    const auto data = read_private_file(string_argument(env, arguments[0]), string_argument(env, arguments[1]));
+    napi_value result;
+    if (napi_create_buffer_copy(env, data.size(), data.data(), nullptr, &result) != napi_ok)
+      throw std::runtime_error("Private file result");
+    return result;
+  } catch (const std::exception& error) {
+    napi_throw_error(env, nullptr, error.what());
+    return nullptr;
+  }
+}
 
 napi_value probe(napi_env env, napi_callback_info) {
   try {
@@ -35,6 +63,11 @@ napi_value initialize(napi_env env, napi_value exports) {
   if (napi_create_function(env, "probe", NAPI_AUTO_LENGTH, probe, nullptr, &function) != napi_ok
     || napi_set_named_property(env, exports, "probe", function) != napi_ok) {
     napi_throw_error(env, nullptr, "Node-API initialization failed");
+    return nullptr;
+  }
+  if (napi_create_function(env, "readPrivateFile", NAPI_AUTO_LENGTH, read_private, nullptr, &function) != napi_ok
+    || napi_set_named_property(env, exports, "readPrivateFile", function) != napi_ok) {
+    napi_throw_error(env, nullptr, "File probe initialization failed");
     return nullptr;
   }
   return exports;

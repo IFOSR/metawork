@@ -1075,6 +1075,13 @@ Local desktop tickets are separate from browser login and workspace launch
 hints. Implementation and release validation remain in progress; this is not
 a signed desktop release announcement.
 
+Windows implementation in progress (2026-10-08): ADR-0045 selects a narrow
+Node-API platform adapter after native Node/Electron Main carrier probes. The
+independent Server owns its pipe; Renderer never loads the native module.
+Production transport integration is not complete. Ordinary Node named pipes
+must neither advertise Desktop sessions nor issue tickets before the native
+identity/ACL gate is implemented and validated. macOS Unix behavior and the
+existing single-use ticket/HTTP proof remain authoritative.
 
 Desktop source checkpoint (2026-10-06): shared Web now consumes the optional
 native directory/save/menu/preferences adapter. Account-scoped bounded drafts,

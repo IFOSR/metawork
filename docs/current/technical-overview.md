@@ -1770,6 +1770,14 @@ Local desktop tickets are separate from browser login and workspace launch
 hints. Implementation and release validation remain in progress; this is not
 a signed desktop release announcement.
 
+Windows work (2026-10-08) selects a small Node-API platform adapter, following
+successful same-binary probes in Windows Node and Electron Main. This preserves
+the Server's own pipe PID and avoids a separate forwarding helper identity.
+The spike lives in `native/windows-probe` and is not shipped. Production Windows
+session admission remains disabled until native transport and private-file
+gates pass; the ordinary Node pipe must not issue Desktop tickets. macOS retains
+its Unix transport. See ADR-0045 and the Windows implementation record for scope
+and actual validation results.
 
 Desktop source checkpoint (2026-10-06): shared Web now consumes the optional
 native directory/save/menu/preferences adapter. Account-scoped bounded drafts,

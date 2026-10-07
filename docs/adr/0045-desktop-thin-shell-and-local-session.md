@@ -52,6 +52,33 @@ the staged candidate to remain executable.
 
 ## Consequences and validation
 
+### Windows native boundary amendment (2026-10-08)
+
+The Windows implementation uses a narrow Node-API adapter owned by the platform
+boundary. A P0 binary has loaded unchanged in Windows Node 22.23.3 and Electron
+44.5.1 Main (embedded Node 24.21.0), and kernel-observed pipe PID matches the
+respective host. The standalone helper spike also passed pipe checks, but it
+would introduce a second transport process identity and private forwarding
+protocol. Node-API keeps the pipe owned directly by the independent Server and
+the Desktop client; it does not move Server into Electron.
+
+Only the platform/client/installation adapters may consume these OS primitives.
+Renderer receives no native module or ticket. Node public APIs and Node-API are
+the integration surface; no private Node/libuv handles are permitted. Windows
+pipe creation must use a restricted current-user DACL, first-instance protection
+and remote-client rejection. Client connection verifies kernel Server PID and
+SID before writing; Server admission verifies the connecting principal. Private
+files are checked through pinned handles, including owner, ACL and reparse
+boundaries, before their contents become identity inputs.
+
+This selects the carrier, not a completed transport: asynchronous connection
+lifecycle, cancellation, bounded buffering, private file writes/replacement,
+remote rejection and packaged dependency closure remain validation gates. The
+spike is not shipped, and the ordinary Node named-pipe ticket gate remains
+closed until the production adapter passes those gates. Existing Unix behavior,
+single-use ticket/HTTP proof and Installer/Updater activation authority remain
+the same. See the Windows implementation log for commit-bound evidence.
+
 The approved plan is larger than an Electron wrapper: independent service
 survival, local authentication, clean-machine dependencies and upgrade recovery
 are release gates. Source implementation, local smoke, signing/notarization and

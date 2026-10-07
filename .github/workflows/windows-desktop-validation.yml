@@ -11,6 +11,7 @@ on:
       - 'scripts/probe-windows-desktop-pipe.ps1'
       - 'scripts/probe-windows-desktop-standard-user.ps1'
       - 'scripts/probe-windows-desktop-node-api.mjs'
+      - 'scripts/probe-windows-desktop-private-files.mjs'
       - 'scripts/smoke-unified-gateway.mjs'
       - 'scripts/prepare-pi-pdf.mjs'
       - 'integrations/pi-pdf/**'
