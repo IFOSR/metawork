@@ -1,12 +1,13 @@
-# Windows Desktop 构建与交付方案（待 Review）
+# Windows Desktop 构建与交付方案
 
 - 计划日期：2026-10-07
-- 状态：Proposed / 等待用户 review；尚未实施、构建或发布
+- 状态：In Progress / 用户已授权按方案实施；P0 环境验证与 macOS 回归基线准备中，Windows 原生门尚未通过，尚未产出 Windows Desktop 安装包或发布
 - 基线：`99442715e802c7ccdf09dd9a4f476a26f906a076`（当前 main，包含 v0.1.5 及后续 README 精简）
 - 分支：`feat/windows-desktop`
 - Worktree：`/Users/yuanjubian/program/metawork-windows-desktop`
-- 目标：基于现有 Desktop，交付可实际安装、启动、执行任务、升级及卸载的 Windows 内部版。
+- 目标：以现有 macOS Desktop 的架构与产品行为为基准，通过 Windows 平台适配交付可实际安装、启动、执行任务、升级及卸载的内部版。
 - 完成日期 / 验收证据 / closing commit：实施完成后填写；本文不是完成报告。
+- 实施记录：[Windows Desktop 实施与验证记录](2026-10-07-windows-desktop-implementation.md)。
 
 ## 1. 推荐交付范围
 
@@ -25,6 +26,36 @@
 现有安装器依赖文件/目录符号链接：首版明确要求允许创建符号链接，推荐预先启用 Windows 开发者模式；若公司策略禁止，需要 IT 配置相应权限。不承诺普通用户在默认 Windows 配置下完全零前置。
 安装前检测实际能力并给出操作说明，不能安装到一半才报 EPERM，也不默认让整个 App 以管理员权限运行。
 
+### 1.1 已确认约束：与 macOS Desktop 保持一致
+
+用户于 2026-10-07 明确要求 Windows Desktop 的架构方式与行为方式和 macOS Desktop 一样。
+本计划以 ADR-0045、现有 `apps/desktop`、正式 Server 和 Installer/Updater 实现为基准；Windows 是同一 Desktop 产品的平台适配，不建立独立的产品流程或后台生命周期。
+DeepSeek Harness 仅用于参考 NSIS、PE/原生依赖打包、文件占用处理和 Windows 原生交互的实现技术，其 Host、profile、认证代理和更新策略不作为 MetaWork 的行为规范。
+
+| 契约 | 两个平台必须保持的架构与行为 | Windows 适配范围 |
+| --- | --- | --- |
+| 进程与依赖 | Electron 是客户端和安装适配器；独立 Node Server 持有 Runtime；Planner 保持隔离 | 可执行入口、路径、进程启动与清理；不改为 Electron RunAsNode Host |
+| 业务界面 | 共用同一 Web 构建、业务流程和受限 DesktopBridge；认证后加载正式 Server 的 loopback origin | 原生菜单、快捷键、文件对话框、通知和窗口集成；不引入独立 Windows UI 或 `dsh-app` 式业务代理 |
+| 首次启动与并存 | 验证分发、按现有启动页完成配置，通过正式安装器初始化；发现兼容安装并复用，同账号不启动第二个 Runtime | Windows 安装目录、NSIS 和已有安装发现 |
+| 认证 | 本地 OS 用户身份验证、一次性 ticket、HTTP proof、Electron 私有会话；普通浏览器仍显式登录 | Named Pipe、SID、DACL 和 NTFS ACL 替代 Unix socket/owner/mode 原语 |
+| 关闭窗口 | 隐藏并保留页面、草稿和会话，任务继续；可恢复同一窗口 | Windows 托盘及再次启动入口对应 macOS Dock/激活入口 |
+| 退出 Desktop | 仅退出客户端，Server 与任务继续；之后可重新连接同一账号 | 托盘和菜单的退出动作调用同一客户端退出路径 |
+| 停止服务 | 独立显式动作，展示全客户端/运行中工作的影响，经确认后调用正式 stop/drain | Windows 菜单入口；不把关闭或退出转换为停止服务 |
+| 安装新版与修复 | 沿用安装新版应用、影响确认、独立 helper、事务升级、健康确认和修复未完成更新的流程 | EXE 选择、NSIS 协调、文件锁及壳层替换；不另建 Windows 自动/强制更新策略 |
+| 数据与卸载 | 壳层与账号数据分离；移除壳层不自动删除账号/凭据，不静默取消工作；永久清理是单独明确操作 | Windows 卸载前的文件占用检查及显式停止提示、快捷方式/注册清理 |
+
+平台差异只改变系统调用、安装包形式和原生入口，不改变上述动作的含义。Windows 独有前置条件及能力缺口必须在 P0 记录，并对照 macOS 产品行为处理；不能仅标注“不支持”就视为行为一致验收通过。
+
+### 1.2 无本地 Windows 环境时的验证路径
+
+2026-10-07 用户确认暂无 Windows 实体机或 VM。已准备独立的 `windows-desktop-validation.yml`：Windows Server 2022 x64 托管 runner 用于环境预检及原生源码/依赖构建，macOS arm64/x64 jobs 用于既有客户端和 Server 回归。此流程只上传验证证据，不读取发布签名密钥、不发布 Release、不更新 main；准备好流程不代表已执行或通过。
+
+- Windows runner 可用于后续受限管道、进程身份、ACL、文件锁、安装器及可自动化 Electron 场景的原生验证。当前环境预检仅覆盖 NTFS、链接、指针替换和 ACL 继承，完整本地认证门仍待实现/验证。
+- 必须记录 runner 的 OS、架构、权限及交互会话事实；管理员账号通过不能证明普通用户可安装，需在临时标准账号下另行验证。Windows Server 的通过记录不能记为 Windows 11 客户端通过。
+- P5 仍要求临时云端 Windows 11 x64 测试机或之后提供的实体机/VM，完成干净系统及真实 GUI 验收。该环境缺失时保持 P5 未完成；付费资源创建和 Windows 11 人工验收另行安排。
+- `cargo-xwin` 可作为 Rust 原生 helper 的交叉编译候选工具，不负责整个 Electron/Node 分发，也不证明真实 Windows 安全与 GUI 行为。native adapter 方案仍由 P0 比较及实测确定；Wine 或交叉编译成功不替代原生门。
+- 2026-10-08 用户已授权推送 `feat/windows-desktop` 并使用云端验证，明确不得合并主干。允许触发专用验证流程；不运行现有带发布步骤的 `release-build.yml`。
+
 ## 2. 代码现状与必须补齐的内容
 
 以下结论来自基线源码；历史计划中的“已完成”不能代替 Windows 原生验收。
@@ -37,6 +68,7 @@
 | `src/client/desktop-session-client.ts` | 明确拒绝没有 getuid 的系统；验证 Unix socket owner/mode | 安全的 Windows Named Pipe 本地身份适配，不能直接删除检查 |
 | `src/platform/local-endpoint.ts`、`src/gateway/server.ts` | 已有命名管道地址和传输入口；没有 Desktop 所要求的 Windows 身份/ACL 验证 | 补齐服务器端访问限制与客户端身份校验 |
 | Desktop installation/service/update helper | PATH 使用冒号；Node 路径、`.app`、codesign、`Contents/Resources`、`/usr/bin/open` 写死 | 收敛到平台适配，并保留现有安装/升级 authority |
+| `apps/desktop/main/main.ts` | 关闭窗口隐藏，提示仍指向 Dock；已有再次启动恢复入口，没有 Windows 托盘 | 增加 Windows 恢复入口及平台文案；关闭、退出、停止服务共用现有行为 |
 | `scripts/install.ps1` 与 `src/installation/paths.ts` | CLI 默认 `%LOCALAPPDATA%\MetaWork`，通用 resolver 默认用户目录 `.metawork` | 统一 Windows 默认根目录，检测已有安装，防止生成第二套账号 |
 | native installer/updater/pointer transaction | 多处直接创建符号链接，包含数据库文件链接；目录 junction 不能替代文件链接 | 实测开发者模式、文件锁、指针切换和 rollback，不用目录复制替代事务 |
 | `src/configuration/production-secret-store.ts` | 当前生产 SecretStore 是 credentials.json；不能按旧文档假定凭据在系统钥匙串 | Windows 使用现有 SecretStore，补 NTFS ACL；不宣称已用 Credential Manager 加密 |
@@ -91,8 +123,9 @@ Windows 正在运行的 EXE/DLL 无法像 macOS `.app` 一样替换。复用 `De
 4. 只有新 Server 身份匹配、Desktop 认证成功且真实 Web 根节点渲染后才提交；失败时按原有数据库 + journal companion 备份恢复。
 5. 重启或中断后沿用持久 activation journal 恢复；测试磁盘满、文件锁/杀毒软件暂占、helper 崩溃和健康回执超时。
 
-关闭窗口/退出 Desktop 后 Server 继续工作；显式“停止服务”才停任务服务。首版不安装 Windows Service、不承诺开机自动启动。
-卸载器先通过正式路径停止相关服务、确认运行中工作影响，再删壳层/快捷方式；默认保留账号和凭据数据，永久清理须单独明确选择。
+关闭窗口隐藏并保留页面，Windows 通过托盘或再次启动恢复同一窗口；首次关闭说明对应 Windows 实际入口。退出 Desktop 只结束客户端，Server 继续工作；显式“停止服务”才停任务服务。托盘只是平台入口，不拥有独立生命周期。首版不安装 Windows Service、不承诺开机自动启动。
+升级入口和“修复未完成的更新”沿用 macOS 的用户动作及事务语义。用户直接运行新版 EXE 时，NSIS 也必须交给同一协调升级路径；Windows 不另外引入后台下载、强制升级或第二套 updater。
+卸载沿用 macOS 的壳层/数据分离语义。需要停止服务以释放文件或完成移除时，先展示运行中工作和全客户端影响，经用户明确确认后才走正式 stop/drain；未确认则退出卸载，不隐式停止任务。默认保留账号和凭据数据，永久清理须单独明确选择。
 不得为适配 Windows 在 Electron 中增加自己的数据库备份、任务调度或恢复策略。
 
 ## 4. 构建和信任链
@@ -113,17 +146,17 @@ Windows 正在运行的 EXE/DLL 无法像 macOS `.app` 一样替换。复用 `De
 按 Windows/内部渠道检查所需输入，不要求 Apple certificate/notary secrets；构建 job 不直接发布 GitHub Latest。
 
 建议后续以 v0.1.6 提供 Windows 与 macOS 同源资产。若要发布新的统一 Latest，需同步构建/验证保留的 macOS DMG 和 CLI 资产，确保既有 README 的 latest 下载链接不失效；不能仅发布 Windows 资产后把 Mac 下载入口变成 404。
-本轮不改版本、不打 tag、不触发 workflow、不上传 Release、不更新 main。
+本轮不改版本、不打 tag、不上传 Release、不更新或合并 main。2026-10-08 用户授权推送实施分支并触发专用构建/测试 workflow；发布流程仍不在本轮范围。
 
 ## 5. 实施顺序及每阶段退出条件
 
 | 阶段 | 内容 | 退出条件 |
 | --- | --- | --- |
-| P0 | Windows 原生环境、受限管道/身份、ACL、符号链接、干净依赖 spike；记录并接受 ADR 修订 | 能证明安全本地连接和普通用户安装前置；确定 native adapter 方案 |
+| P0 | 对照 macOS 行为基线，验证 Windows 原生环境、受限管道/身份、ACL、符号链接、干净依赖；记录 ADR 修订 | 能证明安全本地连接和普通用户安装前置；确定 native adapter 方案，列明并处理行为一致性阻塞 |
 | P1 | 平台路径/工具入口、安装根目录、release schema/清单与安装器 | Windows isolated install 成功，Server 独立启动，依赖不来自开发机 |
-| P2 | Electron 会话、Web 渲染、菜单、任务执行、取消及 Server 生命周期 | EXE 内真实 Web 登录完成，任务产物可打开，关闭 Desktop 后任务可继续观察 |
+| P2 | Electron 会话、Web 渲染、菜单/托盘、窗口恢复、任务执行、取消及 Server 生命周期 | EXE 内真实 Web 登录完成，任务产物可打开；关闭隐藏、恢复、退出、停止服务分别满足 macOS 对应语义 |
 | P3 | NSIS 新装/升级/卸载、activation/rollback Windows 适配 | 新装、覆盖升级、失败回滚、中断恢复和保留数据卸载通过 |
-| P4 | CI、候选分发清单与包、macOS 回归 | Windows 原生门通过；通用变更未破坏现有 macOS 壳层与安装 |
+| P4 | CI、候选分发清单与包、原有系统完整回归（§6.1） | Windows 原生门及 macOS Desktop、Server、Web、TUI、多客户端、安装升级回归全部通过，证据对应最终候选提交 |
 | P5 | 干净 Windows 11 人工验收、README 与发布资料 | 用户能从下载到完成第一个任务；记录证据后再执行已确认的发布范围 |
 
 每阶段记录实际执行的平台/版本/提交、失败及剩余阻塞；不把单元测试、构建成功或后台 HTTP 正常当作 packaged Desktop 启动成功。
@@ -135,13 +168,37 @@ Windows 正在运行的 EXE/DLL 无法像 macOS `.app` 一样替换。复用 `De
 - **干净机新装**：无预装 Node/Git/Python/VS，普通用户、开发者模式启用；安装前置不满足时清晰退出且无半安装；中文/空格用户名及工作目录、路径长度边界。
 - **本地身份**：其他 Windows 普通账号不能读取凭据/注册 Desktop session；恶意占用 pipe、伪造 endpoint PID、重放/过期 ticket、越界链接被拒绝；Renderer 无票据/原始凭据。
 - **真实客户端**：按完整 packaged-install 流程，窗口从安装页转到认证后的 Web，确认根节点渲染/可交互；重启、重连、Renderer 崩溃、下载与外链、通知可用。
+- **跨平台行为一致性**：以同一源提交的 macOS/Windows 候选运行同一组场景，逐项核对 §1.1；覆盖首次启动、复用已有安装、本地自动会话、关闭隐藏后草稿/页面恢复、完全退出后 Server/任务存活、重新启动连接、显式停止、安装新版与修复未完成更新。记录平台入口差异和未通过项，不能用 macOS 通过代替 Windows 证据。
 - **任务链**：使用测试模型配置完成一个 Planner → Pi → 本地文件产物任务，再验证取消及残留子进程；关闭 Desktop 后从 Web/TUI 观察同一账号任务；PDF 样例任务可运行。外部模型连通性单列记录，不能用 mock 代替该门。
 - **并存**：Desktop 管理安装与独立 PowerShell 安装能被正确发现，版本冲突提示升级，不启动第二个同账号 Runtime。
 - **升级/恢复**：旧→新安装，active work 拦截/确认，EXE 文件占用，中途进程终止，新 Server 或 Web 不健康时回滚；日志/数据库/journal 保持一致。
 - **卸载**：后台任务存在时明确提示；默认保留数据；重装可恢复；无关进程/其他安装不受影响。
-- **macOS 回归**：打包校验、已有 Desktop 认证及真实 Web 跳转、退出后 Server 存活与升级路径。此前已发布包的磁盘校验或服务启动证据不作为完整 Electron 新装通过证据。
+- **原有系统回归**：必须完成 §6.1 的 macOS Desktop、Server、Web、TUI、多客户端及安装升级检查。此前已发布包的磁盘校验或服务启动证据不作为本次候选通过证据。
 
-现有 Windows pause/resume 能力缺口须在能力投影/说明中如实反映；不通过模拟 SIGSTOP 宣称支持。任务取消和子进程清理是首版必须通过的门。
+现有 Windows pause/resume 能力缺口须在 P0 核对 macOS Desktop 是否暴露或依赖该行为；若属于对应产品场景，则作为一致性交付阻塞补齐等价实现，不以能力说明豁免。不得通过模拟 SIGSTOP 宣称支持。任务取消和子进程清理是首版必须通过的门。
+
+### 6.1 原有系统回归：Windows 交付的强制门槛
+
+用户明确要求 Windows 适配不能影响原有 macOS Desktop、Server、Web、TUI 的正常运行。共享代码的回归验收与 Windows 验收具有同等交付优先级；不能只验证 Windows，也不能以“未直接修改某客户端”跳过其端到端检查。
+
+| 范围 | 必须验证的原有行为 | 证据要求 |
+| --- | --- | --- |
+| macOS Desktop | 干净安装和首次配置；Server 未运行时自动启动、已运行时复用；本地自动认证及真实 Web 渲染；工作区/会话切换、设置保存激活、文件选择/下载/打开；关闭隐藏与恢复草稿、退出后任务继续、重启重连、Renderer 崩溃恢复；显式停止前确认影响 | 使用同一候选提交的真实 `.app`，保留安装、界面和进程证据；覆盖本轮保留发布的 macOS 架构，不能只跑开发 Electron |
+| Server 与执行链 | 正式 start/status/stop、runtime.lock、endpoint 发布和重复实例拒绝；Planner RPC → Kernel → Pi 执行 → 产物交付；任务取消及子进程清理；受控重启后的持久恢复；账号数据及凭据沿用 | 归属模块测试和隔离安装中的真实进程/真实模型任务；核对 Task、产物及恢复事实，不用仅 HTTP 健康检查替代 |
+| 普通浏览器 Web | `metawork web` 打开已运行的 Server；浏览器显式登录，Desktop 自动会话不绕过浏览器认证；工作区/会话导航、历史分页、实时输出、断线重连、设置保存激活、权限处理、任务取消和产物下载 | 真实浏览器加载候选生产 Web 资源；记录交互与授权结果，不用 Electron 内 Web 通过代替普通浏览器验证 |
+| 原生 TUI | `metawork tui` / 裸 `metawork` 连接同一 Server；工作区/会话选择、历史与实时输出、Task 面板、命令和权限响应、取消、断线重连；退出 TUI 后任务继续；Server 不可用时保留原有明确提示 | 构建 vendored AnyFusion-Pi 的 `build:offline`，运行协议/启动器测试及真实终端交互；不能用模拟 Gateway 客户端代替完整 TUI |
+| 多客户端并存 | Desktop、浏览器、TUI 在同一隔离安装及账号下同时观察同一任务；状态、权限解决和终态一致；一端退出不停止其他客户端或任务；重连不重复提交命令、不创建第二个 Runtime；显式 Server stop 对所有客户端的影响一致 | 自动化协议检查与真实三客户端场景分别记录；核对 Server 实例、账号及 Task 身份 |
+| macOS 安装、升级与回滚 | 现有受支持版本 → 候选版本；复用已有安装/配置/数据；运行中工作确认、安装新版应用、修复未完成更新；模拟新 Server 或 Desktop 健康失败后的壳层及数据库/journal companion 恢复；CLI 入口继续可用 | 在独立安装中使用旧版和候选分发，记录升级前后身份、数据、CLI/Desktop/Web/TUI 可用性；不在日常使用安装上做故障注入 |
+| 其他共享入口与发布 | 飞书 Gateway 的账号/会话路由、权限、取消与结果投影；现有原生 CLI 安装入口及 macOS 下载资产、校验清单和发布版本一致性 | 跑现有飞书/集成契约测试；如改动相关边界，补对应集成验证。外部实发不属于默认回归授权；必要实发未验证时如实记录。正式发布前验证实际下载资产 |
+
+执行与证据规则：
+
+1. 实施前记录 macOS 基线提交、版本、架构、关键场景结果及已存在的问题；候选版本重复同一行为场景并比较。已有失败必须记录原因，不能冒充通过，也不能掩盖本轮引入的退化。
+2. 所有安装、升级、恢复和真实任务测试使用独立安装根、配置目录、账号、工作区及测试模型配置；明确设置测试入口支持的隔离参数，避免 smoke 默认连接日常配置。不得覆盖日常 macOS 安装、停止用户正在使用的 Server、修改真实账号数据或污染凭据。
+3. 自动化基础检查包括 `npm run lint`、`npm run lint:desktop`、`npm run build --prefix web`、`npm run test:desktop`，以及 `tests/client/`、`tests/gateway/`、`tests/tui-bridge/`、`tests/installation/`、`tests/server/`和受影响的 Session/Execution/Storage 归属测试。SQLite/POSIX 测试在可用的原生 macOS 或规定的 Docker 环境执行，不用 Windows 宿主失败替代验证。
+4. 复用 `npm run smoke:clients`、`npm run smoke:gateway`、`npm run smoke:desktop`、`apps/desktop/tests/packaged-install-smoke.mjs` 和真实任务 smoke；先核对各入口的隔离配置及覆盖范围，再补齐上表未覆盖的浏览器、终端和安装升级场景。现有 `smoke:clients` 是协议集成测试，packaged-install smoke 使用模型配置夹具且不执行真实模型任务，均不能单独证明完整验收。
+5. 每项记录候选源提交、分发版本/哈希、OS/架构、执行入口、结果及日志/截图位置；未执行、环境受阻或外部模型不可用均标为未完成。最终候选发生影响行为的修改后，重跑受影响检查；证据必须对应待交付代码和包。
+6. macOS Desktop、Server、Web、TUI 或共享安装升级路径出现本轮回归，必须修复并复验后才能合并或发布 Windows 交付；任何必需验收缺失都不能将 P4/P5 标为完成。Windows 构建成功不构成原有系统正常运行的证明。
 
 ## 7. README 安装说明交付
 
@@ -159,6 +216,8 @@ Windows 正在运行的 EXE/DLL 无法像 macOS `.app` 一样替换。复用 `De
 
 ## 8. 本次 Review 的决定范围
 
+已确认：Windows Desktop 与 macOS Desktop 架构及产品行为一致，具体约束见 §1.1。DeepSeek Harness 的调研不授权改动该基准。
+
 建议接受：Windows 11 x64 + NSIS 当前用户安装；公司内部未 Authenticode 签名分发；内置 Node/Git/Pi/Python；安全本地自动登录；同一 Server 与安装根目录；沿用事务升级；首版明确开发者模式前置；候选通过后进入新版本发布。
 
-Review 后才开始 P0 及代码实现。Windows runner 和干净 Windows 11 GUI 测试环境是执行阶段所需资源，当前尚未验证可用性；如 hosted runner 无法覆盖 GUI、双账号隔离或企业策略，用原生 VM/受控测试机补证据，不能将缺失验证标成通过。
+用户已授权开始 P0 及按阶段实施。Windows 托管验证流程已准备但尚未执行，干净 Windows 11 GUI 环境尚不可用；具体路径见 §1.2。如 hosted runner 无法覆盖 GUI、双账号隔离或企业策略，用原生 VM/受控测试机补证据，不能将缺失验证标成通过。

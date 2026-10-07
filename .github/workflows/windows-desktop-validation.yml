@@ -1,0 +1,98 @@
+name: Windows Desktop implementation validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feat/windows-desktop']
+    paths:
+      - '.github/workflows/windows-desktop-validation.yml'
+      - 'scripts/probe-windows-desktop-environment.mjs'
+      - 'scripts/smoke-desktop-isolated.mjs'
+      - 'apps/desktop/**'
+      - 'src/**'
+      - 'web/**'
+      - 'tests/**'
+      - 'planner/AnyFusion-Pi/**'
+      - 'package*.json'
+
+# Validation artifacts only: no release, signing secrets, deployment or main writes.
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-desktop-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-environment:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+      - name: Collect native Windows prerequisite evidence
+        run: node scripts/probe-windows-desktop-environment.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-environment-${{ github.sha }}
+          path: .tmp/windows-desktop-validation/
+          if-no-files-found: error
+
+  windows-build:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+      - run: npm ci
+      - run: npm ci --prefix web --ignore-scripts
+      - run: npm ci --prefix apps/desktop
+      - run: npm ci --prefix planner/AnyFusion-Pi --ignore-scripts
+      - run: npm run build:offline --prefix planner/AnyFusion-Pi
+      - run: npm run lint
+      - run: npm run lint:desktop
+      - run: npm run build
+      - run: npm run build:desktop
+      - name: Exercise native SQLite binding
+        run: node --input-type=module -e "import Database from 'better-sqlite3'; const db = new Database(':memory:'); db.exec('CREATE TABLE probe (value INTEGER); INSERT INTO probe VALUES (1)'); if (db.prepare('SELECT value FROM probe').get().value !== 1) throw Error('SQLite probe failed'); db.close();"
+      - name: Verify Planner CLI on Windows
+        run: node planner/AnyFusion-Pi/packages/coding-agent/dist/cli.js --version
+      # This job compiles source; it does not claim a functional packaged Desktop.
+
+  macos-regression:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+      - run: npm ci
+      - run: npm ci --prefix web --ignore-scripts
+      - run: npm ci --prefix apps/desktop
+      - run: npm ci --prefix planner/AnyFusion-Pi --ignore-scripts
+      - run: npm run build:offline --prefix planner/AnyFusion-Pi
+      - run: npm run lint
+      - run: npm run lint:desktop
+      - name: Shared Server, client, Web, TUI and installer regressions
+        run: npm test -- tests/platform tests/client tests/gateway tests/tui-bridge tests/installation tests/server tests/web tests/management tests/architecture tests/integration/independent-client-lifecycle.integration.test.ts
+      - run: npm run test:desktop
+      - run: npm run build
+      - run: npm run smoke:gateway
+      - name: Real Electron with isolated fixture configuration
+        run: node scripts/smoke-desktop-isolated.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-regression-${{ matrix.runner }}-${{ github.sha }}
+          path: .tmp/windows-desktop-validation/
+          if-no-files-found: warn

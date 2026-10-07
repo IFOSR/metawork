@@ -19,7 +19,7 @@ describe.skipIf(process.platform === 'win32')('clean Desktop installer transacti
       value: sign(null, Buffer.from(canonicalizeReleaseManifestPayload(value)), keys.privateKey).toString('base64') } });
     try {
       vi.stubEnv('METAWORK_SECRET_STORE', 'file'); vi.stubEnv('ANYFUSION_SECRET_STORE', 'file');
-      vi.stubEnv('METAWORK_DESKTOP_DEVELOPMENT', '1');
+      vi.stubEnv('METAWORK_DESKTOP_INTERNAL', '1');
       vi.stubEnv('METAWORK_INTERNAL_LLM_SOURCE_ROOT', join(root, 'missing-developer-home'));
       const payload = join(resources, 'payload');
       const contents: Record<string, string> = {

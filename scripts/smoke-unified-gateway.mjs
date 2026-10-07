@@ -173,22 +173,27 @@ async function runNativeMultiClientAcceptance() {
         && event.payload?.conversation?.conversationId === created.conversationId
       ));
 
-      await clientA.client.resume(created.conversationId);
+      const viewsA = [];
+      await clientA.client.followConversation(created.conversationId, view => viewsA.push(view));
       const helpReceipt = await clientA.client.submitSlashCommand('/help', {
         mode: 'attach',
         conversationId: created.conversationId,
       });
       assertAccepted(helpReceipt, 'attached Client command');
-      await waitForEvent(clientA.events, event => (
-        event.requestId === helpReceipt.requestId
-        && (event.kind === 'final_answer' || event.kind === 'conversation_snapshot')
-      ));
+      const completedHelp = view => view.turns.find(turn => turn.requestId === helpReceipt.requestId
+        && turn.status === 'completed' && turn.answer.length > 0);
+      const answeredA = await waitForEvent(viewsA, completedHelp);
       if (clientB.events.some(event => event.requestId === helpReceipt.requestId)) {
         throw new Error('Unattached Client B received Conversation detail');
       }
 
-      await clientB.client.resume(created.conversationId);
-      await waitForEvent(clientB.events, event => event.requestId === helpReceipt.requestId);
+      const viewsB = [];
+      await clientB.client.followConversation(created.conversationId, view => viewsB.push(view));
+      const answeredB = await waitForEvent(viewsB, completedHelp);
+      if (completedHelp(answeredA).id !== completedHelp(answeredB).id
+        || completedHelp(answeredA).answer !== completedHelp(answeredB).answer) {
+        throw new Error('Clients observed different completed command results');
+      }
 
       const selectedC = await clientC.client.initializeWorkspace(`/workspace ${workspaceB}`);
       assertAccepted(selectedC, 'TUI Client C Workspace selection');
