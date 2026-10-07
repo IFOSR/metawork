@@ -28,6 +28,9 @@ The HTTP exchange establishes the existing HttpOnly/SameSite session in a
 private Electron session. Renderer receives no ticket or raw credential.
 ADR-0039 browser credentials and non-authenticating launch hints are unchanged.
 This does not isolate malicious programs already running as the same OS user.
+Until the Windows native transport is implemented and validated, a Node `net`
+named pipe must neither advertise the Desktop-session capability nor issue a
+Desktop ticket. The client's Unix-only check is not a Server authorization gate.
 
 Native IPC requires the owned main frame, exact validated origin and bounded
 arguments. No generic filesystem/shell/IPC bridge is permitted. External

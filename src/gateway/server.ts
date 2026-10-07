@@ -95,6 +95,10 @@ export class MetaclawGatewayServer {
 
   private handleConnection(socket: Socket): void {
     const accountId = this.deps.accountId ?? LOCAL_DEFAULT_ACCOUNT_ID;
+    // Node net named pipes do not establish the Desktop OS-user principal.
+    // Keep ticket issuance disabled until the reviewed native transport exists.
+    const registerDesktopSession = isNamedPipePath(this.deps.socketPath)
+      ? undefined : this.deps.registerDesktopSession;
     const socketConnectionId = `connection_${nanoid(10)}`;
     let conversationId: string | null = null;
     let unsubscribe: (() => void) | null = null;
@@ -270,7 +274,7 @@ export class MetaclawGatewayServer {
         type: 'hello',
         sessionId: nextConversationId,
         attached: true,
-        capabilities: [...GATEWAY_SERVER_CAPABILITIES, ...(this.deps.registerDesktopSession ? [DESKTOP_SESSION_CAPABILITY] : [])],
+        capabilities: [...GATEWAY_SERVER_CAPABILITIES, ...(registerDesktopSession ? [DESKTOP_SESSION_CAPABILITY] : [])],
         lastSequence: replay.lastSequence,
       });
     };
@@ -280,7 +284,7 @@ export class MetaclawGatewayServer {
       sessionId: socketConnectionId,
       identity: this.deps.observation?.identity,
       attached: false,
-      capabilities: [...GATEWAY_SERVER_CAPABILITIES, ...(this.deps.registerDesktopSession ? [DESKTOP_SESSION_CAPABILITY] : [])],
+      capabilities: [...GATEWAY_SERVER_CAPABILITIES, ...(registerDesktopSession ? [DESKTOP_SESSION_CAPABILITY] : [])],
     });
     const cleanup = () => {
       for (const observation of observations.values()) observation.handle?.close();
@@ -370,7 +374,7 @@ export class MetaclawGatewayServer {
       }
       if (message.type === 'register_desktop_session') {
         try {
-          const grant = this.deps.registerDesktopSession?.(message.nonce, accountId);
+          const grant = registerDesktopSession?.(message.nonce, accountId);
           if (!grant) throw new Error('Desktop session is unavailable');
           send({ type: 'desktop_session_registered', grant });
         } catch {

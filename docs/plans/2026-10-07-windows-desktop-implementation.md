@@ -47,6 +47,9 @@ PDF 构建首次被 GitHub 下载连接阻塞；本次从已有开发缓存读�
 - 第三次环境探针暴露提升权限进程新文件默认 owner 为 Administrators 的问题；补显式文件 owner 初始化，在私有目录中完成后再替换，并校验备份的权限。新增两普通账号的管道场景和普通用户环境探针；后者仅在临时云端 VM 设置方案要求的开发者模式，运行后恢复策略值并清理测试账号。普通用户报告必须实际确认未提升权限。当前这些扩展尚待云端执行。
 - `8e9809d` 的 macOS arm64 完整 workflow job 已通过，包括修正语言查找后的真实 Electron smoke；Intel job 仍在验证。此处的完整 job 只涵盖 workflow 声明的基线场景，仍不是 §6.1 的 packaged-install/真实模型完整验收。
 - 增加 Node-API 载体比较探针：复用同一组 Win32 管道安全原语，验证由 Node 和 Electron Main 分别创建的管道实际 PID 为宿主进程、owner/SID 一致；同一 `.node` 二进制同时加载，不使用 `ELECTRON_RUN_AS_NODE`，不接入产品或 Renderer。独立 helper 探针已有证据，但正式载体选择仍待此探针及异步生命周期验证。
+- `8b53ec7`：[后续运行](https://github.com/IFOSR/metawork/actions/runs/37698118822)。Windows 环境和管道两个 job 通过：管理员和普通用户均完成检查，普通用户 Server 的原生报告明确 `elevated: false`；开发者模式下中文/空格目录链接、文件指针替换、私有目录 ACL/文件替换通过。标准账号 A 的管道拒绝标准账号 B，实际 Server/Client 身份和首实例限制通过。文件跨账号读取、越界 reparse、远程连接及正式安装仍需覆盖。
+- Intel cryptography 源码编译成功，但现有 `otool -L` 检查也读取模块自身的 `LC_ID_DYLIB`，不能据此直接判断外部依赖。改为解析实际动态库加载指令，并在复制后的内置 Python 中执行 PDF 导入和 AES-GCM 加密/解密；本地 arm64 验证通过，Intel 待云端复验。
+- 复查发现 Server 的 ticket 签发不能仅依赖 Desktop 客户端的 Unix 限制。按 ADR-0045 当前 Unix-only 契约，普通 Node Named Pipe 不再宣告或签发 Desktop ticket；正式安全 transport 接入前保持拒绝。新增真实本地连接测试，同时保留 macOS 签发行为。本地 Gateway 生命周期、ticket 安全与 admission 共 3 文件/21 测试及 Root 类型检查通过；Windows 同一测试加入云端构建 job。
 
 ## 待通过的阶段门
 

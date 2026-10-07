@@ -84,6 +84,8 @@ jobs:
       - run: npm run build:offline --prefix planner/AnyFusion-Pi
       - run: npm run lint
       - run: npm run lint:desktop
+      - name: Verify Desktop tickets stay disabled on unverified Node named pipes
+        run: npm test -- tests/gateway/desktop-local-transport.test.ts tests/management/desktop-session.test.ts
       - run: npm run build
       - run: npm run build:desktop
       - name: Exercise native SQLite binding

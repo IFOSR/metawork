@@ -51,10 +51,15 @@ if (!(await readFile(ready).catch(() => null))) {
     env: buildEnvironment, maxBuffer: 4 * 1024 * 1024,
   });
   if (intelMac) {
-    const { stdout } = await exec('otool', ['-L', join(cache, 'site-packages/cryptography/hazmat/bindings/_rust.abi3.so')]);
-    for (const line of stdout.split('\n').slice(1).filter(line => line.trim())) {
-      if (!/^\s*\/(?:usr\/lib|System\/Library)\//u.test(line)) {
-        throw new Error('Intel PDF cryptography must not depend on build-host dynamic libraries');
+    const module = join(cache, 'site-packages/cryptography/hazmat/bindings/_rust.abi3.so');
+    const { stdout } = await exec('otool', ['-l', module]);
+    // A Rust cdylib has its own LC_ID_DYLIB, which otool -L also prints.
+    // Check dependency load commands, not the module's own install name.
+    for (const command of stdout.split(/Load command \d+\n/u)) {
+      if (!/^\s*cmd LC_(?:LOAD_(?:WEAK_|UPWARD_)?|REEXPORT_)DYLIB\s*$/mu.test(command)) continue;
+      const dependency = /^\s*name (.+) \(offset \d+\)\s*$/mu.exec(command)?.[1];
+      if (!dependency || !/^\/(?:usr\/lib|System\/Library)\//u.test(dependency)) {
+        throw new Error(`Intel PDF cryptography has a non-system dependency: ${dependency ?? command.trim()}`);
       }
     }
   }
@@ -65,5 +70,6 @@ await rm(destination, { recursive: true, force: true });
 await cp(source, destination, { recursive: true });
 await cp(join(pythonCache, 'python'), join(destination, 'python'), { recursive: true, dereference: true });
 await cp(join(cache, 'site-packages'), join(destination, 'site-packages'), { recursive: true });
-await exec(python, ['-I', '-c', 'import sys;sys.path.insert(0,sys.argv[1]);import pypdf,pdfplumber,pypdfium2,PIL;print("Pi PDF dependencies ready")', join(destination, 'site-packages')]);
+const installedPython = join(destination, 'python', process.platform === 'win32' ? 'python.exe' : 'bin/python3');
+await exec(installedPython, ['-I', '-c', 'import sys;sys.path.insert(0,sys.argv[1]);import pypdf,pdfplumber,pypdfium2,PIL;from cryptography.hazmat.primitives.ciphers.aead import AESGCM;a=AESGCM(bytes(32));n=bytes(12);assert a.decrypt(n,a.encrypt(n,b"payload",None),None)==b"payload";print("Pi PDF dependencies ready")', join(destination, 'site-packages')]);
 process.stdout.write(`System Pi PDF extension prepared (${process.platform}/${process.arch}).\n`);
