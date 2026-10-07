@@ -14,8 +14,7 @@ boundaries, and deliver verifiable results instead of stopping at a chat reply.
 
 [Why MetaWork](#why-metawork) · [Installation](#installation) ·
 [Release](#release) · [Quick Start](#quick-start) · [Usage](#usage) ·
-[Architecture](#architecture) ·
-[Compatibility](#compatibility) · [中文](README.zh-CN.md)
+[License](#license) · [中文](README.zh-CN.md)
 
 </div>
 
@@ -478,138 +477,6 @@ selection. User guidance takes precedence over conflicting generated
 positioning, but it cannot authorize an unconfigured Model, widen permissions,
 or bypass Kernel authorization. Removing a Model automatically removes the
 capabilities it was the only evidence for after the profile is refreshed.
-
-## Architecture
-
-```text
-TUI / Web / Feishu / CLI
-  -> ClientGateway
-    -> ConversationSession
-      -> AccountRuntime
-        -> isolated AnyFusion-Pi Planner
-          -> PlanningAgentPlan v8
-            -> validation + DurableKernelWorkflow
-              -> ControlKernel
-                -> Execution Runtime
-                  -> Executor attempt
-                    -> verification -> Git publication -> delivery
-```
-
-- The persistent Server is the Runtime owner. Clients are Gateway-only and do
-  not access Storage, the Kernel, or Executor processes directly.
-- `ClientGateway` owns the versioned multi-client command/event protocol.
-- `ConversationSession` owns one serialized input mailbox and one persisted
-  AnyFusion-Pi Planner session. New semantic Planner turns cannot directly
-  reply to work-like requests; except for slash-prefixed system commands, they
-  must submit work to an Executor. Historical direct-reply records remain
-  readable for audit and replay.
-- `AccountRuntime` owns shared account services and the account's scheduling
-  policy. Each Conversation has one durable execution slot, while independent
-  Conversations may run concurrently within configured limits.
-- AnyFusion-Pi Planner runs as an isolated process and only proposes work. It
-  does not mutate Storage, schedule work, authorize execution, or execute
-  shell commands.
-- `ControlKernel` is the only authority for authorization, scheduling, model
-  binding, recovery, retry, fallback, continuation, cancellation, and resume.
-- Execution Runtime applies Kernel decisions and owns claims, leases, native
-  worktree or Docker compatibility backends, attempts, Git publication, and
-  normalized observations.
-- Storage persists durable facts through domain ports; it is not the owner of
-  business policy or lifecycle decisions.
-
-### Planner-to-Executor routing
-
-```text
-User request
-  -> Planner reads routing projection and capability manuals
-  -> PlanningAgentPlan v8
-  -> Validator checks graph and required capabilities
-  -> ControlKernel authorizes an immutable binding
-  -> Auto Model Resolver selects an allowed, capability-compatible Model
-  -> Executor adapter runs the approved attempt
-```
-
-The Planner owns natural-language interpretation and decomposition. It does not
-mutate Tasks, authorize execution, access storage directly, or execute shell
-commands. The Kernel is the only authority that schedules work, selects an
-authorized Model binding, handles recovery, and admits an Executor attempt.
-
-### Planner, MetaWork, and Executor context continuity
-
-Context continuity follows one directional bridge:
-
-```text
-Pi session history + user input
-  -> Planner understands and selects context
-  -> MetaWork Context Bridge provides and validates Artifact facts
-  -> Runtime materializes authorized inputs
-  -> Executor runs the current Subtask
-```
-
-Historical images, documents, HTML, text, and Executor results use explicit
-Artifact references rather than guessed filenames or private paths. MetaWork
-checks Conversation and Workspace ownership, publication status, regular-file
-safety, and content hashes before an Artifact can enter an attempt. The
-Executor receives only the current Subtask and attempt-local inputs; it does
-not inspect Conversation history or the Artifact store directly. This keeps
-semantic understanding in Planner, deterministic validation in MetaWork, and
-execution in the Executor.
-
-### Pi Agent and image execution
-
-`pi-agent` remains one user-visible Executor with one capability manual. Its
-runtime adapter is composite:
-
-```text
-pi-agent
-  ├─ ordinary research, analysis, coding, and tool work
-  │    -> standard operator-installed `pi --mode json`
-  └─ image-generation / image-editing Subtask
-       -> MetaWork Image API Runner
-```
-
-Image work uses the Model and Provider binding already authorized by the
-Kernel. MetaWork validates input and output image signatures, writes artifacts
-inside the attempt workspace, and certifies them through Completion Protocol
-v4. The image Runner is not a second AgentClass and does not modify the
-vendored AnyFusion-Pi Planner. Upgrading the local Pi installation therefore
-does not overwrite MetaWork's image execution code.
-
-Native macOS/worktree execution does not require Docker. Docker is an explicit
-compatibility backend for constrained deployments; it packages the standard Pi
-CLI and MetaWork Image Runner in a pinned attempt image, and routes image
-requests through an attempt-scoped model gateway so Provider credentials do not
-enter the container.
-
-See [the current technical overview](docs/current/technical-overview.md) and
-[accepted ADRs](docs/adr/README.md) for the complete contracts.
-
-## Compatibility
-
-`anyfusion` and `metaclaw` remain compatibility CLI aliases for `metawork`.
-Existing `ANYFUSION_*` product settings remain accepted as aliases for their
-`METAWORK_*` equivalents and fail closed when both values conflict.
-Component-specific `ANYFUSION_PI_*` and `ANYFUSION_PLANNER_*` variables retain
-their names because they identify the AnyFusion-Pi integration.
-
-An existing `~/.anyfusion` installation is migrated transactionally to
-`~/.metawork`. MetaWork does not keep steady-state dual reads or writes after a
-successful migration. Durable compatibility names such as `anyfusion.db`,
-`AnyFusionConfigurationV2`, and `anyfusion-planner-host-v2` are intentionally
-preserved.
-
-## Project Status
-
-MetaWork is under active commercial development. The current formal release is
-`v0.1.4`, with signed native packages for macOS Intel, macOS Apple
-Silicon, Linux x64, and Windows x64. The runtime provides the Server/Client
-Gateway split, unified multi-client observation, bounded read models for fast
-Conversation switching, the native TUI task dashboard, isolated
-Planner-first routing, unified Executor capability profiles, bounded parallel
-top-level Tasks across Conversations, and the Pi image execution path.
-Provider-specific live image generation and editing still require a configured
-OpenAI-compatible endpoint and may incur usage charges before production smoke
-testing.
 
 ## License
 

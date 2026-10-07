@@ -14,8 +14,7 @@ Planner、ControlKernel 和 Executor 边界完成执行、恢复、验收与交�
 
 [为什么用 MetaWork](#为什么用-metawork) · [安装方式](#安装方式) ·
 [Release](#release) · [快速开始](#快速开始) · [使用方式](#使用方式) ·
-[系统架构](#系统架构) ·
-[兼容策略](#兼容策略) · [English](README.md)
+[许可](#许可) · [English](README.md)
 
 </div>
 
@@ -418,117 +417,6 @@ Planner 与其它设置分开更新：Planner 板块有自己的「**更新 Plan
 供 Planner 校验和 ControlKernel 选择具体模型。用户定义优先于冲突的系统定位，但不能借此
 授权未配置的模型、扩大权限或绕过 Kernel 授权。移除一个模型后，刷新能力画像会自动移除
 仅由该模型提供证据的能力。
-
-## 系统架构
-
-```text
-TUI / Web / Feishu / CLI
-  -> ClientGateway
-    -> ConversationSession
-      -> AccountRuntime
-        -> 隔离的 AnyFusion-Pi Planner
-          -> PlanningAgentPlan v8
-            -> 校验 + DurableKernelWorkflow
-              -> ControlKernel
-                -> Execution Runtime
-                  -> Executor attempt
-                    -> 验收 -> Git publication -> 交付
-```
-
-- 持久化 Server 是 Runtime owner。Client 只是 Gateway-only 客户端，不直接访问
-  Storage、Kernel 或 Executor 进程。
-- `ClientGateway` 负责版本化的多客户端命令/事件协议。
-- `ConversationSession` 负责串行输入 mailbox 与持久化 AnyFusion-Pi Planner session。
-  新的语义 Planner 回合不能直接回复工作型请求；除斜杠开头的系统命令外，都必须提交给
-  Executor 执行。历史 direct-reply 记录仍可用于审计和回放。
-- `AccountRuntime` 负责账户级共享服务和调度策略。每个 Conversation 拥有一个持久执行槽位，
-  不同 Conversation 可以在配置的并发上限内并行执行。
-- AnyFusion-Pi Planner 以隔离进程运行，只负责提出工作方案，不修改 Storage、不调度工作、
-  不授权执行，也不执行 shell 命令。
-- `ControlKernel` 是唯一负责授权、调度、模型 binding、恢复、retry、fallback、
-  continuation、cancel 和 resume 的权威。
-- Execution Runtime 负责应用 Kernel 决策，以及 claim、lease、原生 worktree 或 Docker
-  兼容 backend、attempt、Git publication 与标准化 observation。
-- Storage 通过领域 port 持久化事实，不是业务策略或生命周期决策的 owner。
-
-### Planner 到 Executor 的路由链路
-
-```text
-用户请求
-  -> Planner 读取能力说明书和结构化路由投影
-  -> PlanningAgentPlan v8
-  -> Validator 校验工作图和所需能力
-  -> ControlKernel 授权不可变 binding
-  -> Auto Model Resolver 从允许池选择能力匹配的模型
-  -> Executor 执行获批 attempt
-```
-
-Planner 负责自然语言理解和任务拆解，不直接修改 Task、不授权执行、不直接访问存储，也不
-执行 shell。Kernel 是唯一负责调度、选择获批模型 binding、处理恢复以及启动 Executor attempt
-的权威。
-
-### Planner、MetaWork 与 Executor 的上下文连续性
-
-上下文连续性遵循一条单向桥接链路：
-
-```text
-Pi session 历史 + 用户输入
-  -> Planner 理解并选择上下文
-  -> MetaWork Context Bridge 提供并验证 Artifact 事实
-  -> Runtime 物化已授权输入
-  -> Executor 执行当前 Subtask
-```
-
-历史图片、文档、HTML、文本和 Executor 结果使用明确的 Artifact 引用，不通过猜测文件名
-或私有路径获取。MetaWork 会在 Artifact 进入 attempt 前校验 Conversation 与 Workspace
-归属、发布状态、普通文件安全性和内容哈希。Executor 只接收当前 Subtask 与 attempt-local
-输入，不直接读取 Conversation 历史或 Artifact 存储。这样可以保持 Planner 负责语义理解、
-MetaWork 负责确定性校验、Executor 负责执行。
-
-### Pi Agent 与图片执行
-
-`pi-agent` 仍然是一个用户可见的 Executor，也只有一份能力说明书。它在运行时使用复合
-Executor Adapter：
-
-```text
-pi-agent
-  ├─ 普通研究、分析、编码和工具任务
-  │    -> 用户安装的标准 `pi --mode json`
-  └─ image-generation / image-editing Subtask
-       -> MetaWork Image API Runner
-```
-
-图片任务使用 Kernel 已授权的 Model 和 Provider binding。MetaWork 会校验输入和输出图片签名，
-把图片产物写入 attempt workspace，并通过 Completion Protocol v4 验收。Image Runner 不是
-第二个 AgentClass，也不会修改 vendored AnyFusion-Pi Planner。因此用户升级本机 Pi 不会覆盖
-MetaWork 的图片执行代码。
-
-macOS 原生 worktree 执行不依赖 Docker。Docker 只是受限部署的显式兼容 backend；它在固定的
-attempt 镜像中同时打包标准 Pi CLI 和 MetaWork Image Runner，并通过 attempt-scoped model
-gateway 转发图片请求，Provider 凭据不会进入容器。
-
-完整契约见[当前技术总览](docs/current/technical-overview.zh-CN.md)和
-[已接受 ADR](docs/adr/README.md)。
-
-## 兼容策略
-
-`anyfusion` 与 `metaclaw` 保留为 `metawork` 的兼容 CLI alias。已有
-`ANYFUSION_*` 产品配置继续作为对应 `METAWORK_*` 配置的兼容入口；两者同时设置且
-值冲突时会 fail closed。`ANYFUSION_PI_*` 与 `ANYFUSION_PLANNER_*` 继续保留，因为
-它们明确标识 AnyFusion-Pi 组件。
-
-已有 `~/.anyfusion` 安装会通过事务迁移到 `~/.metawork`。迁移成功后不会维持长期
-双读或双写。`anyfusion.db`、`AnyFusionConfigurationV2` 和
-`anyfusion-planner-host-v2` 等持久化兼容名称会继续保留。
-
-## 项目状态
-
-MetaWork 正在进行商业化开发。当前正式版本为 `v0.1.4`，已提供 macOS
-Intel、macOS Apple Silicon、Linux x64 和 Windows x64 的签名原生包。当前 Runtime
-已经包含 Server/Client Gateway 分离、多端统一观察、用于快速切换会话的有界读模型、
-原生 TUI 任务面板、隔离 Planner-first 路由、统一 Executor 能力画像、不同 Conversation
-之间有限并行的顶层 Task，以及 Pi 图片执行链路。真实 Provider 图片生成与编辑仍需要
-配置 OpenAI-compatible endpoint；生产 smoke 可能产生 Provider 用量费用。
 
 ## 许可
 
