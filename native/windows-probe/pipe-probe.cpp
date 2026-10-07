@@ -68,7 +68,9 @@ class Security {
 HANDLE create_pipe(const wchar_t* name, Security& security) {
   return CreateNamedPipeW(name, PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
     PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-    1, 4096, 4096, 5000, security.get());
+    // Leave capacity for a second instance so FIRST_PIPE_INSTANCE itself is
+    // exercised, rather than failing first with ERROR_PIPE_BUSY at the limit.
+    2, 4096, 4096, 5000, security.get());
 }
 
 void inspect_security(HANDLE pipe) {

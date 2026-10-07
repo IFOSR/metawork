@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
-import { cp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { access, cp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 
 const exec = promisify(execFile);
@@ -25,13 +25,39 @@ if (!(await readFile(join(pythonCache, 'ready')).catch(() => null))) {
   await writeFile(join(pythonCache, 'ready'), asset.sha256);
 }
 const { stdout: identity } = await exec(python, ['-c', 'import sys,platform;assert sys.version_info >= (3,9);print(sys.version,platform.machine())']);
-const fingerprint = createHash('sha256').update(requirements).update(identity).digest('hex').slice(0,16);
+// cryptography 50 retains source support but no longer publishes Intel macOS
+// wheels. Build that pinned dependency with static OpenSSL on the build host;
+// installed users still receive the complete relocatable binary payload.
+const intelMac = process.platform === 'darwin' && process.arch === 'x64';
+const fingerprint = createHash('sha256').update(requirements).update(identity)
+  .update(intelMac ? 'intel-static-cryptography-v1' : '').digest('hex').slice(0,16);
 const cache = resolve('.tmp/pi-pdf-dependencies', fingerprint);
 const ready = join(cache, 'ready');
 if (!(await readFile(ready).catch(() => null))) {
   await mkdir(cache, { recursive: true });
+  const buildEnvironment = { ...process.env };
+  if (intelMac) {
+    await exec('rustc', ['--version']);
+    const { stdout } = await exec('brew', ['--prefix', 'openssl@3']);
+    const openssl = stdout.trim();
+    await access(join(openssl, 'lib/libssl.a'));
+    await access(join(openssl, 'lib/libcrypto.a'));
+    for (const key of Object.keys(buildEnvironment)) if (key.startsWith('OPENSSL_')) delete buildEnvironment[key];
+    Object.assign(buildEnvironment, { OPENSSL_DIR: openssl, OPENSSL_STATIC: '1' });
+  }
   await exec(python, ['-m', 'pip', 'install', '--disable-pip-version-check', '--only-binary=:all:',
-    '--target', join(cache, 'site-packages'), '-r', join(source, 'requirements.txt')], { maxBuffer: 4 * 1024 * 1024 });
+    ...(intelMac ? ['--no-binary=cryptography'] : []),
+    '--target', join(cache, 'site-packages'), '-r', join(source, 'requirements.txt')], {
+    env: buildEnvironment, maxBuffer: 4 * 1024 * 1024,
+  });
+  if (intelMac) {
+    const { stdout } = await exec('otool', ['-L', join(cache, 'site-packages/cryptography/hazmat/bindings/_rust.abi3.so')]);
+    for (const line of stdout.split('\n').slice(1).filter(line => line.trim())) {
+      if (!/^\s*\/(?:usr\/lib|System\/Library)\//u.test(line)) {
+        throw new Error('Intel PDF cryptography must not depend on build-host dynamic libraries');
+      }
+    }
+  }
   await writeFile(ready, identity);
 }
 const destination = resolve('dist/pi-pdf');

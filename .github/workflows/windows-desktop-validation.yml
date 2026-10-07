@@ -10,6 +10,8 @@ on:
       - 'scripts/smoke-desktop-isolated.mjs'
       - 'scripts/probe-windows-desktop-pipe.ps1'
       - 'scripts/smoke-unified-gateway.mjs'
+      - 'scripts/prepare-pi-pdf.mjs'
+      - 'integrations/pi-pdf/**'
       - 'native/windows-probe/**'
       - 'apps/desktop/**'
       - 'src/**'

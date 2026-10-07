@@ -77,7 +77,9 @@ try {
       $pending = Join-Path $path 'pending.json'
       [IO.File]::WriteAllText($current, 'old-fixture')
       [IO.File]::WriteAllText($pending, 'new-fixture')
-      [IO.File]::Replace($pending, $current, $null)
+      # Windows PowerShell coerces $null to an empty string for this overload.
+      # Use an explicit backup in the same private directory.
+      [IO.File]::Replace($pending, $current, (Join-Path $path 'backup.json'))
       $allowed = @($sid.Value, 'S-1-5-18', 'S-1-5-32-544')
       foreach ($file in @($path, $current)) {
         $actual = Get-Acl -LiteralPath $file

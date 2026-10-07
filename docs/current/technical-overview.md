@@ -1854,6 +1854,11 @@ python-build-standalone archive (CPython 3.12.12, build 20251014; hashes in
 cache and ships the interpreter, packages, licenses and reviewed Pi extension
 in `dist/pi-pdf`. The Desktop payload preparer checks relocated Python imports
 alongside Node/Git/Pi. No Xcode/system Python or runtime pip install is required.
+Intel macOS builders additionally need Rust and Homebrew `openssl@3` static
+libraries: pinned cryptography 50.0.2 has no Intel macOS wheel, so preparation
+builds that package from source with static OpenSSL and rejects non-system
+dynamic library references using `otool`. This is a build-host prerequisite;
+installed users receive the binary dependency with the release.
 Darwin arm64 is validated; hashes are declared for Darwin x64 and Linux
 x64/arm64 but those platforms and optional Docker execution are not certified
 by this native acceptance.

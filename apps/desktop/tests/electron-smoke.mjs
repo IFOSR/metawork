@@ -88,9 +88,9 @@ try {
     const win = BrowserWindow.getAllWindows()[0]; win.webContents.setZoomFactor(1); win.setSize(1440, 900);
   });
   await page.waitForFunction(() => !document.querySelector('.workspace-shell[data-sidebar-hidden]'));
-  await app.evaluate(({ Menu }) => Menu.getApplicationMenu().items.find(item => item.label === '显示').submenu.items.find(item => item.label === '显示／隐藏侧栏').click());
+  await app.evaluate(({ Menu }) => Menu.getApplicationMenu().items.find(item => ['显示', 'View'].includes(item.label)).submenu.items.find(item => ['显示／隐藏侧栏', 'Show/Hide Sidebar'].includes(item.label)).click());
   await page.locator('.workspace-shell[data-sidebar-hidden]').waitFor();
-  await app.evaluate(({ Menu }) => Menu.getApplicationMenu().items.find(item => item.label === '显示').submenu.items.find(item => item.label === '搜索对话').click());
+  await app.evaluate(({ Menu }) => Menu.getApplicationMenu().items.find(item => ['显示', 'View'].includes(item.label)).submenu.items.find(item => ['搜索对话', 'Search Conversations'].includes(item.label)).click());
   await page.waitForFunction(() => document.activeElement?.tagName === 'INPUT');
   for (let i = 0; i < 10; i++) await page.evaluate(() => window.metaworkDesktop.reconnect());
   assert.equal(JSON.parse(await readFile(join(root, 'server-endpoint.json'), 'utf8')).pid, pid);

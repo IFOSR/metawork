@@ -20,6 +20,7 @@ try {
   $password = ConvertTo-SecureString (([Guid]::NewGuid().ToString('N')) + 'Aa!7') -AsPlainText -Force
   New-LocalUser -Name $otherName -Password $password -Description 'Disposable MetaWork P0 test' | Out-Null
   $otherCreated = $true
+  Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $otherName
   $credential = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\$otherName", $password)
   # Grant this test user only fixture-folder access, never repository/account data.
   $fixture = Join-Path $env:PUBLIC "metawork-p0-$suffix"
@@ -31,7 +32,11 @@ try {
     -RedirectStandardOutput (Join-Path $evidence 'pipe-server.json') -RedirectStandardError (Join-Path $evidence 'pipe-server-error.txt')
   $deadline = [DateTime]::UtcNow.AddSeconds(15)
   while (-not (Test-Path -LiteralPath $ready)) {
-    if ($server.HasExited -or [DateTime]::UtcNow -gt $deadline) { throw 'P0 pipe did not become ready' }
+    $server.Refresh()
+    if ($server.HasExited -or [DateTime]::UtcNow -gt $deadline) {
+      Get-Content (Join-Path $evidence 'pipe-server-error.txt')
+      throw 'P0 pipe did not become ready'
+    }
     Start-Sleep -Milliseconds 100
   }
   $serverPid = [int](Get-Content -LiteralPath $ready -Raw)
@@ -40,6 +45,7 @@ try {
     -ArgumentList @('denied', $pipe, $serverPid) -WorkingDirectory $fixture -PassThru `
     -RedirectStandardOutput (Join-Path $fixture 'denied.json') -RedirectStandardError (Join-Path $fixture 'denied-error.txt')
   if (-not $denied.WaitForExit(15000)) { $denied.Kill(); throw 'Cross-account denial timed out' }
+  Copy-Item (Join-Path $fixture 'denied-error.txt') $evidence
   if ($denied.ExitCode -ne 0) { throw 'Cross-account denial probe failed' }
   Copy-Item (Join-Path $fixture 'denied.json') $evidence
   & $executable wrong-pid $pipe ($serverPid + 1) | Set-Content (Join-Path $evidence 'pipe-spoof.json')

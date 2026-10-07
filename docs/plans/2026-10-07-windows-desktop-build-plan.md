@@ -220,4 +220,4 @@ Windows 正在运行的 EXE/DLL 无法像 macOS `.app` 一样替换。复用 `De
 
 建议接受：Windows 11 x64 + NSIS 当前用户安装；公司内部未 Authenticode 签名分发；内置 Node/Git/Pi/Python；安全本地自动登录；同一 Server 与安装根目录；沿用事务升级；首版明确开发者模式前置；候选通过后进入新版本发布。
 
-用户已授权开始 P0 及按阶段实施。Windows 托管验证流程已准备但尚未执行，干净 Windows 11 GUI 环境尚不可用；具体路径见 §1.2。如 hosted runner 无法覆盖 GUI、双账号隔离或企业策略，用原生 VM/受控测试机补证据，不能将缺失验证标成通过。
+用户已授权开始 P0 及按阶段实施，并已推送实施分支、运行 Windows/macOS 托管验证。逐次结果见[实施记录](2026-10-07-windows-desktop-implementation.md)。干净 Windows 11 GUI 环境尚不可用；具体路径见 §1.2。如 hosted runner 无法覆盖 GUI、双账号隔离或企业策略，用原生 VM/受控测试机补证据，不能将缺失验证标成通过。
