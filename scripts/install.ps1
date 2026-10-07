@@ -13,9 +13,32 @@ MCowBQYDK2VwAyEAFUfe0iqiIaYSMGiyywur13FpzoXRQBqAZB0gzEi2DE0=
 -----END PUBLIC KEY-----
 '@
 
-if (-not $InstallRoot) {
-  $InstallRoot = Join-Path $env:LOCALAPPDATA 'MetaWork'
+if (-not $PSBoundParameters.ContainsKey('InstallRoot')) {
+  if ($env:METAWORK_INSTALL_ROOT -and $env:ANYFUSION_INSTALL_ROOT -and
+      $env:METAWORK_INSTALL_ROOT.Trim() -cne $env:ANYFUSION_INSTALL_ROOT.Trim()) {
+    throw 'METAWORK_INSTALL_ROOT conflicts with compatibility variable ANYFUSION_INSTALL_ROOT'
+  }
+  if (-not $InstallRoot) { $InstallRoot = $env:ANYFUSION_INSTALL_ROOT }
 }
+if (-not $InstallRoot -or -not $InstallRoot.Trim()) {
+  $localData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA.Trim() } else { Join-Path $env:USERPROFILE 'AppData\Local' }
+  if (-not [System.IO.Path]::IsPathRooted($localData)) { throw 'LOCALAPPDATA must be an absolute path' }
+  $currentRoot = Join-Path $localData 'MetaWork'
+  $legacyRoot = Join-Path $env:USERPROFILE '.metawork'
+  foreach ($candidateRoot in @($currentRoot, $legacyRoot)) {
+    if (Test-Path -LiteralPath $candidateRoot) {
+      $item = Get-Item -LiteralPath $candidateRoot -Force
+      if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "MetaWork installation root must be a directory without a reparse link: $candidateRoot"
+      }
+    }
+  }
+  if ((Test-Path -LiteralPath $currentRoot) -and (Test-Path -LiteralPath $legacyRoot)) {
+    throw 'Both Windows MetaWork installation roots exist. Set METAWORK_INSTALL_ROOT explicitly; automatic migration or merging is not supported.'
+  }
+  $InstallRoot = if (Test-Path -LiteralPath $legacyRoot) { $legacyRoot } else { $currentRoot }
+}
+$InstallRoot = [System.IO.Path]::GetFullPath($InstallRoot.Trim())
 if (-not $ManifestUrl) {
   $ManifestUrl = "https://github.com/IFOSR/metawork/releases/latest/download/manifest.win32-x64.json"
 }

@@ -17,6 +17,7 @@ on:
       - 'scripts/probe-windows-desktop-process.ps1'
       - 'scripts/smoke-unified-gateway.mjs'
       - 'scripts/prepare-pi-pdf.mjs'
+      - 'scripts/install.ps1'
       - 'integrations/pi-pdf/**'
       - 'native/windows-probe/**'
       - 'apps/desktop/**'
@@ -129,7 +130,7 @@ jobs:
       - run: npm run lint
       - run: npm run lint:desktop
       - name: Verify Desktop tickets stay disabled on unverified Node named pipes
-        run: npm test -- tests/gateway/desktop-local-transport.test.ts tests/management/desktop-session.test.ts tests/installation/desktop-platform.test.ts tests/client/server-readiness.test.ts
+        run: npm test -- tests/gateway/desktop-local-transport.test.ts tests/management/desktop-session.test.ts tests/installation/desktop-platform.test.ts tests/installation/windows-installation-root.test.ts tests/client/server-readiness.test.ts
       - run: npm run build
       - run: npm run build:desktop
       - name: Exercise native SQLite binding

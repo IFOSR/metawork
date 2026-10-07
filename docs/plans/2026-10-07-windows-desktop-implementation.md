@@ -84,3 +84,9 @@ PDF 构建首次被 GitHub 下载连接阻塞；本次从已有开发缓存读�
 ### 共享重启就绪竞态修复（2026-10-08）
 
 `ea81078` 的 Windows 三项 job 通过，但 macOS arm64/Intel 的 Gateway smoke 暴露现有 `server restart` 的就绪竞态：仅检查 `gateway.sock` 就报告成功，此时新 Server 尚未发布 endpoint manifest。该检查也无法用于 Windows Named Pipe。重启现等待实际新 child 的 PID、协议、release 与 ready manifest 匹配，提前退出/启动失败立即报错；不改变停止、恢复或任务策略。新增覆盖旧 PID、draining、错误 release、延迟发布、命名管道和提前退出/超时的测试。本地 3 文件/14 测试、类型检查、完整 build 和隔离 Gateway/TUI/多客户端重启 smoke 通过；双架构云端复验待运行。
+
+### Windows 安装根选择（2026-10-08）
+
+通用 resolver 与 PowerShell bootstrap 对齐：显式根优先，新装默认 LOCALAPPDATA/MetaWork，旧用户目录 .metawork 单独存在时复用，两根同时存在时明确报错并要求设置 METAWORK_INSTALL_ROOT；不自动迁移/合并。自动发现拒绝被普通文件或链接占据的根。Windows launcher 放在选定根的 bin，避免复用旧根时又在新默认位置创建 bin 而制造双根。macOS 默认及 launcher 位置保持不变。目录选择不替代后续原生 ACL/句柄验证。
+
+本地根选择、现有 paths/product-root migration、Root/Desktop 类型检查通过；新增 Windows 原生 PowerShell/Node resolver 对照验证随云端执行，包含重定向 LOCALAPPDATA、中文/空格路径、旧根、双根、显式 override 与兼容变量冲突。尚未作为完整安装验收。

@@ -1,5 +1,6 @@
 import { homedir } from 'os';
 import { resolve } from 'path';
+import { resolveWindowsDefaultInstallationRoot } from './windows-installation-root.js';
 import {
   PRODUCT_ENVIRONMENT,
   resolveProductEnvironment,
@@ -60,7 +61,9 @@ export function resolveMetaWorkRoot(
     return resolve(rootOverride);
   }
 
-  return resolve(resolvedHome, '.metawork');
+  return process.platform === 'win32'
+    ? resolveWindowsDefaultInstallationRoot(resolvedHome, env)
+    : resolve(resolvedHome, '.metawork');
 }
 
 export function resolveMetaWorkPaths(
@@ -78,7 +81,7 @@ export function resolveMetaWorkPaths(
   const generated = resolve(root, 'generated');
   const tmp = resolve(root, 'tmp');
   const launcherBin = process.platform === 'win32'
-    ? resolve(resolvedHome, 'AppData', 'Local', 'MetaWork', 'bin')
+    ? resolve(root, 'bin')
     : resolve(resolvedHome, '.local', 'bin');
   const launcherSuffix = process.platform === 'win32' ? '.cmd' : '';
 
