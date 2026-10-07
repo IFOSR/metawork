@@ -45,6 +45,8 @@ PDF 构建首次被 GitHub 下载连接阻塞；本次从已有开发缓存读�
 - 两次运行均不是完整全绿验收。P0、普通用户安装和 Windows 11 GUI 门仍然开放；生产 Windows Desktop 认证没有放开。
 - `8e9809d`：[第三次运行](https://github.com/IFOSR/metawork/actions/runs/37697457472)。原生管道探针通过：owner-only DACL、首实例抢占拒绝、内核 Server/Client PID 与用户 SID、错误 PID 拒绝、另一普通账号拒绝和真实往返；Server 本身仍运行在管理员 runner。远程拒绝仅配置了 Win32 标志，尚无跨机器证据。
 - 第三次环境探针暴露提升权限进程新文件默认 owner 为 Administrators 的问题；补显式文件 owner 初始化，在私有目录中完成后再替换，并校验备份的权限。新增两普通账号的管道场景和普通用户环境探针；后者仅在临时云端 VM 设置方案要求的开发者模式，运行后恢复策略值并清理测试账号。普通用户报告必须实际确认未提升权限。当前这些扩展尚待云端执行。
+- `8e9809d` 的 macOS arm64 完整 workflow job 已通过，包括修正语言查找后的真实 Electron smoke；Intel job 仍在验证。此处的完整 job 只涵盖 workflow 声明的基线场景，仍不是 §6.1 的 packaged-install/真实模型完整验收。
+- 增加 Node-API 载体比较探针：复用同一组 Win32 管道安全原语，验证由 Node 和 Electron Main 分别创建的管道实际 PID 为宿主进程、owner/SID 一致；同一 `.node` 二进制同时加载，不使用 `ELECTRON_RUN_AS_NODE`，不接入产品或 Renderer。独立 helper 探针已有证据，但正式载体选择仍待此探针及异步生命周期验证。
 
 ## 待通过的阶段门
 

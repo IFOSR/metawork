@@ -10,6 +10,7 @@ on:
       - 'scripts/smoke-desktop-isolated.mjs'
       - 'scripts/probe-windows-desktop-pipe.ps1'
       - 'scripts/probe-windows-desktop-standard-user.ps1'
+      - 'scripts/probe-windows-desktop-node-api.mjs'
       - 'scripts/smoke-unified-gateway.mjs'
       - 'scripts/prepare-pi-pdf.mjs'
       - 'integrations/pi-pdf/**'
@@ -89,6 +90,14 @@ jobs:
         run: node --input-type=module -e "import Database from 'better-sqlite3'; const db = new Database(':memory:'); db.exec('CREATE TABLE probe (value INTEGER); INSERT INTO probe VALUES (1)'); if (db.prepare('SELECT value FROM probe').get().value !== 1) throw Error('SQLite probe failed'); db.close();"
       - name: Verify Planner CLI on Windows
         run: node planner/AnyFusion-Pi/packages/coding-agent/dist/cli.js --version
+      - name: Probe Node-API carrier in Node and Electron Main
+        run: node scripts/probe-windows-desktop-node-api.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-node-api-${{ github.sha }}
+          path: .tmp/windows-desktop-validation/node-api/
+          if-no-files-found: warn
       # This job compiles source; it does not claim a functional packaged Desktop.
 
   macos-regression:

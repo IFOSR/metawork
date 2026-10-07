@@ -176,6 +176,7 @@ void client(const wchar_t* name, DWORD expected, bool denied, bool stop, bool wr
   std::cout << "{\"kernelServerIdentity\":true,\"ownerDacl\":true,\"roundTrip\":true}\n";
 }
 
+#ifndef METAWORK_NODE_PROBE
 int wmain(int argc, wchar_t** argv) {
   try {
     if (argc < 4 || std::wstring(argv[2]).find(L"\\\\.\\pipe\\metawork-p0-") != 0)
@@ -191,3 +192,4 @@ int wmain(int argc, wchar_t** argv) {
     return 1;
   }
 }
+#endif
