@@ -14,6 +14,7 @@ on:
       - 'scripts/probe-windows-desktop-private-files.mjs'
       - 'scripts/probe-windows-desktop-async-pipe.mjs'
       - 'scripts/probe-windows-desktop-remote-pipe.ps1'
+      - 'scripts/probe-windows-desktop-process.ps1'
       - 'scripts/smoke-unified-gateway.mjs'
       - 'scripts/prepare-pi-pdf.mjs'
       - 'integrations/pi-pdf/**'
@@ -47,6 +48,9 @@ jobs:
       - name: Verify remote-client flag using SMB loopback and positive control
         shell: pwsh
         run: ./scripts/probe-windows-desktop-remote-pipe.ps1
+      - name: Verify process-tree pause, resume and cancellation
+        shell: pwsh
+        run: ./scripts/probe-windows-desktop-process.ps1
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -58,6 +58,9 @@ PDF 构建首次被 GitHub 下载连接阻塞；本次从已有开发缓存读�
 - `f7cbe6e` 的 macOS arm64 与 Intel 完整 workflow job 均已通过，包括共享回归、PDF 静态依赖构建、Gateway/TUI smoke、真实 Electron smoke。源提交包含 Server ticket transport 拒绝门。Intel 证据保留在 run `37698966249`；仍不替代正式 `.app` 安装/升级和真实模型任务验收。
 - `a48a72b`：[原生扩展验证](https://github.com/IFOSR/metawork/actions/runs/37700531477) 的 Windows 三个 job 全部通过。SMB 正向对照及拒绝、私有文件正/负向检查、跨账号文件访问拒绝、并发 reparse 替换，以及 Node/Electron Main 的 overlapped I/O 生命周期均已执行。PowerShell 5.1 子进程需要预先取得 Process.Handle 后才能可靠读取退出码；保留子进程结构化的真实 OS 拒绝结果双重断言。
 - [Windows 11 云端宿主预检](https://github.com/IFOSR/metawork/actions/runs/37700531578) 确认 Ubuntu runner 有 KVM、4 CPU、16 GB 内存和 86 GB 空闲空间。准备独立临时 VM workflow：微软官方 Windows 11 Enterprise Evaluation 26H2 x64 镜像，QEMU/KVM、UEFI Secure Boot、软件 TPM 2.0；只上传环境报告和桌面截图，不上传虚拟磁盘、无人值守密码或安装应答文件。尚未证明 guest 启动成功，更不代表 Desktop 验收。
+- `859f1b8` 的强化 reparse 竞态通过：500 次读取中 207 次合法读、293 次拒绝、14 次真实替换，未返回链接目标内容。此前测试全拒绝不能证明合法文件恢复路径，因此保留强化证据作为这一项的有效验收。Node/Electron 异步管道检查同时通过。
+- P0 行为核对发现权限工作流 `permission-workflow-service.ts` 实际调用 backend pause/resume；Windows 当前未实现，且 stop 只杀直接 child。新增 Job Object 进程树 spike：执行前绑定 Job，公开 Win32 thread API 多轮枚举到静止后暂停，恢复只撤销本次 suspend count，取消通过 Job 终止全部成员。用三个真实进程、持续创建线程的写入夹具检查 10 次暂停/恢复和暂停中的取消。此项尚待原生结果及正式 backend 接入，不用“无暂停按钮”豁免权限审批语义。
+- Windows Node-API spike 使用静态 CRT，避免把 CI 已安装的 VC runtime 当作干净用户机依赖；Windows 11 guest 仍需验证实际分发闭包。
 
 ## 待通过的阶段门
 

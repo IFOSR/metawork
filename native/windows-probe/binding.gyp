@@ -7,6 +7,7 @@
     "msvs_settings": {
       "VCCLCompilerTool": {
         "ExceptionHandling": 1,
+        "RuntimeLibrary": 0,
         "AdditionalOptions": ["/std:c++17", "/W4", "/WX"]
       }
     }
