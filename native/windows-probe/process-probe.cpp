@@ -154,11 +154,15 @@ void probe(const std::wstring& root) {
   for (unsigned int wait = 0; heartbeats(root).size() < 3 && wait < 100; wait++) Sleep(50);
   const auto initial = heartbeats(root);
   const auto initial_members = members(job.value);
+  std::vector<std::unique_ptr<OwnedHandle>> worker_handles;
   if (initial.size() != 3) throw std::runtime_error("Expected three heartbeat workers, got " + std::to_string(initial.size()));
   for (const auto& item : initial) {
     const DWORD pid = static_cast<DWORD>(std::stoul(item.first));
     if (!initial_members.count(pid)) throw std::runtime_error("Heartbeat worker " + std::to_string(pid)
       + " is not in owned job; members=" + std::to_string(initial_members.size()));
+    auto worker_handle = std::make_unique<OwnedHandle>(OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
+    check(worker_handle->value != nullptr, "retain worker identity");
+    worker_handles.push_back(std::move(worker_handle));
   }
   size_t suspended = 0;
   {
@@ -192,7 +196,11 @@ void probe(const std::wstring& root) {
   }
   for (unsigned int wait = 0; !members(job.value).empty() && wait < 100; wait++) Sleep(20);
   check(members(job.value).empty(), "no residual job process");
-  check(WaitForSingleObject(process.value, 0) == WAIT_OBJECT_0, "root exited");
+  // Job accounting can reach zero before process objects become signaled.
+  // Await actual termination of all three retained process identities.
+  for (const auto& worker_handle : worker_handles)
+    check(WaitForSingleObject(worker_handle->value, 5000) == WAIT_OBJECT_0, "worker exited");
+  check(WaitForSingleObject(process.value, 5000) == WAIT_OBJECT_0, "root exited");
   std::cout << "{\"scope\":\"job-process-spike\",\"passed\":true,\"workers\":3,\"pauseResumeCycles\":10,\"suspendedThreads\":"
     << suspended << ",\"initialJobMembers\":" << initial_members.size()
     << ",\"cancelWhilePaused\":true,\"remainingProcesses\":0,\"p0Accepted\":false}\n";
