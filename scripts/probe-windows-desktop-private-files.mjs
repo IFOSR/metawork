@@ -11,7 +11,7 @@ export async function probePrivateFiles(addon, evidence) {
   const env = { ...process.env, METAWORK_P0_PRIVATE_ROOT: root };
   for (const key of Object.keys(env)) if (key.toLowerCase() === 'psmodulepath') delete env[key];
   const ps = script => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-    `$ErrorActionPreference='Stop'; $root=$env:METAWORK_P0_PRIVATE_ROOT; ${script}`], { env, timeout: 30_000 });
+    `$ErrorActionPreference='Stop'; $root=$env:METAWORK_P0_PRIVATE_ROOT; ${script}`], { env, encoding: 'utf8', timeout: 30_000 });
   const checks = [];
   const check = (name, action) => { action(); checks.push(name); };
   let worker;
@@ -69,17 +69,25 @@ export async function probePrivateFiles(addon, evidence) {
         $script=Join-Path $fixture 'probe.ps1'
         @'
 param([string]$Target)
-try { [IO.File]::ReadAllText($Target) | Out-Null; exit 1 }
+try { [IO.File]::ReadAllText($Target) | Out-Null; '{"denied":false}' ; exit 1 }
 catch {
-  if ($_.Exception.InnerException -is [UnauthorizedAccessException]) { exit 0 }
+  $cause=$_.Exception.GetBaseException()
+  if ($cause -is [UnauthorizedAccessException]) { '{"denied":true}'; exit 0 }
+  @{ denied=$false; exception=$cause.GetType().FullName; hresult=$cause.HResult } | ConvertTo-Json -Compress
   exit 2
 }
 '@ | Set-Content -LiteralPath $script
         $target=Join-Path $root '中文 child\\endpoint.json'
         $arguments=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"'+$script+'"'),'-Target',('"'+$target+'"'))
-        $child=Start-Process powershell.exe -Credential $credential -WorkingDirectory $fixture -ArgumentList $arguments -PassThru
+        $out=Join-Path $fixture 'result.json'; $err=Join-Path $fixture 'error.txt'
+        $child=Start-Process powershell.exe -Credential $credential -WorkingDirectory $fixture -ArgumentList $arguments -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+        $null=$child.Handle
         if(-not $child.WaitForExit(15000)) { $child.Kill(); throw 'Cross-account file read timed out' }
-        if($child.ExitCode -ne 0) { throw 'Cross-account file read was not denied by the OS' }
+        $result=Get-Content -LiteralPath $out -Raw
+        if($child.ExitCode -ne 0 -or ($result | ConvertFrom-Json).denied -ne $true) {
+          $diagnostic=Get-Content -LiteralPath $err -Raw
+          throw "Cross-account file read failed: exit=$($child.ExitCode); result=$result; error=$diagnostic"
+        }
       } finally {
         if($child -and -not $child.HasExited) { $child.Kill(); $child.WaitForExit() }
         if($created) { Remove-LocalUser -Name $name }

@@ -1,0 +1,37 @@
+name: Windows 11 cloud VM prerequisites
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feat/windows-desktop']
+    paths: ['.github/workflows/windows11-host-probe.yml']
+permissions:
+  contents: read
+jobs:
+  virtualization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Inspect disposable cloud host virtualization and capacity
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, shutil, subprocess
+          kvm = os.path.exists('/dev/kvm')
+          disk = shutil.disk_usage(os.environ['RUNNER_TEMP'])
+          report = {
+            'scope': 'vm-host-prerequisites-only',
+            'kvmPresent': kvm,
+            'kvmAccessible': kvm and os.access('/dev/kvm', os.R_OK | os.W_OK),
+            'cpuCount': os.cpu_count(),
+            'diskFreeGiB': round(disk.free / 1024**3, 1),
+            'memory': subprocess.check_output(['free', '-m'], text=True),
+            'windows11Installed': False,
+          }
+          path = os.path.join(os.environ['RUNNER_TEMP'], 'windows11-host.json')
+          with open(path, 'w') as f: json.dump(report, f, indent=2)
+          print(json.dumps(report, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows11-host-${{ github.sha }}
+          path: ${{ runner.temp }}/windows11-host.json
