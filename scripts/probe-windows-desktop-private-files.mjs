@@ -97,22 +97,31 @@ catch {
     checks.push('another standard account cannot read private fixture');
     // A concurrent worker alternates a regular fixture with a reparse point.
     // The main thread may read the validated fixture or fail closed, never the target.
-    control = new Int32Array(new SharedArrayBuffer(12));
+    control = new Int32Array(new SharedArrayBuffer(16));
     worker = new Worker(`
       const { workerData, parentPort } = require('node:worker_threads');
       const fs = require('node:fs'); const path = require('node:path');
       const state = new Int32Array(workerData.control);
       const target = path.join(workerData.root, 'race.json');
       const pending = path.join(workerData.root, 'race-pending.json');
+      const parked = path.join(workerData.root, 'race-regular.json');
       parentPort.postMessage('ready');
       while (!Atomics.load(state, 0)) {
         try {
+          if (fs.existsSync(parked)) {
+            fs.renameSync(parked, target); Atomics.add(state, 1, 1);
+            Atomics.wait(state, 3, 0, 1);
+            continue;
+          }
+          fs.renameSync(target, parked);
           fs.rmSync(pending, { force: true });
           fs.symlinkSync(path.join(workerData.root, 'outside.json'), pending, 'file');
           fs.renameSync(pending, target); Atomics.add(state, 1, 1);
-          fs.rmSync(pending, { force: true });
-          fs.writeFileSync(pending, 'private-fixture');
-          fs.renameSync(pending, target); Atomics.add(state, 1, 1);
+          Atomics.wait(state, 3, 0, 1);
+          // Preserve the original validated owner/ACL when restoring a regular
+          // file; a newly created elevated file could invalidate every read.
+          fs.renameSync(parked, target); Atomics.add(state, 1, 1);
+          Atomics.wait(state, 3, 0, 1);
         } catch { Atomics.add(state, 2, 1); }
       }
     `, { eval: true, workerData: { root, control: control.buffer } });
@@ -123,17 +132,20 @@ catch {
       await new Promise(resolve => setTimeout(resolve, 1));
     }
     let rejected = 0;
+    let successful = 0;
     for (let attempt = 0; attempt < 500; attempt++) {
       let bytes;
       try { bytes = addon.readPrivateFile(root, 'race.json'); } catch { rejected++; continue; }
       assert.equal(bytes.toString(), 'private-fixture');
+      successful++;
     }
     Atomics.store(control, 0, 1);
     await new Promise((resolve, reject) => { worker.once('exit', resolve); worker.once('error', reject); });
     assert.ok(Atomics.load(control, 1) > 0, 'Concurrent replacement must actually run');
+    assert.ok(successful > 0 && rejected > 0, 'Race must exercise both valid reads and refused replacements');
     checks.push('concurrent reparse replacement never returns target bytes');
     await writeFile(join(evidence, 'private-files.json'), JSON.stringify({
-      scope: 'private-file-native-spike', passed: true, checks, rejectedReads: rejected,
+      scope: 'private-file-native-spike', passed: true, checks, rejectedReads: rejected, successfulReads: successful,
       replacements: Atomics.load(control, 1), p0Accepted: false,
       remaining: ['production file creation and replacement adapter'],
     }, null, 2));
