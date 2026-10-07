@@ -12,7 +12,9 @@ export class DesktopInstallation {
   async verify(): Promise<DesktopRelease> {
     if (this.release) return this.release;
     const keys = JSON.parse(await readFile(join(this.resources, 'trusted-release-keys.json'), 'utf8')) as Record<string, string>;
-    this.release = await verifyDesktopRelease(this.resources, { trustedKeys: keys, arch: process.arch, desktopVersion: this.version });
+    const descriptor = JSON.parse(await readFile(join(this.resources, 'desktop-release.json'), 'utf8')) as { development?: boolean };
+    this.release = await verifyDesktopRelease(this.resources, { trustedKeys: keys, arch: process.arch,
+      desktopVersion: this.version, allowDevelopment: descriptor.development === true });
     return this.release;
   }
   async installed(): Promise<boolean> {

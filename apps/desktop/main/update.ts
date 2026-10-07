@@ -19,7 +19,7 @@ export async function pendingDesktopUpdate(root: string): Promise<boolean> {
 }
 function teamId(path: string): string {
   const signature = spawnSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', path], { encoding: 'utf8' });
-  if (signature.status !== 0) throw new Error('Application signature rejected');
+  if (signature.status !== 0) return 'unsigned-internal';
   const details = spawnSync('/usr/bin/codesign', ['-d', '--verbose=4', path], { encoding: 'utf8' });
   const team = /^TeamIdentifier=([A-Z0-9]+)$/mu.exec(details.stderr)?.[1];
   if (!team) throw new Error('Application has no Developer ID team');
@@ -37,8 +37,9 @@ export async function prepareDesktopUpdate(input: {
   if (teamId(candidatePath) !== teamId(applicationPath)) throw new Error('Application signing team mismatch');
   const keys = JSON.parse(await readFile(join(input.resources, 'trusted-release-keys.json'), 'utf8')) as Record<string, string>;
   const candidateResources = join(candidatePath, 'Contents/Resources');
-  const candidateDescriptor = JSON.parse(await readFile(join(candidateResources, 'desktop-release.json'), 'utf8')) as { desktopVersion: string };
-  const candidate = await verifyDesktopRelease(candidateResources, { trustedKeys: keys, arch: process.arch, desktopVersion: candidateDescriptor.desktopVersion });
+  const candidateDescriptor = JSON.parse(await readFile(join(candidateResources, 'desktop-release.json'), 'utf8')) as { desktopVersion: string; development?: boolean };
+  const candidate = await verifyDesktopRelease(candidateResources, { trustedKeys: keys, arch: process.arch,
+    desktopVersion: candidateDescriptor.desktopVersion, allowDevelopment: candidateDescriptor.development === true });
   const previous = await readReleaseIdentity(join(input.root, 'app/current/release-identity.json'));
   if (!previous || previous.releaseId === candidate.releaseId) throw new Error('Select a new compatible release');
   const currentDescriptor = JSON.parse(await readFile(join(input.resources, 'desktop-release.json'), 'utf8'));

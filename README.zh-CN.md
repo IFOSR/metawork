@@ -62,15 +62,14 @@ AnyFusion 标识。
 [最新稳定版](https://github.com/IFOSR/metawork/releases/latest)是当前可安装版本的
 统一发布入口。源码版本领先不代表已发布。
 
-**发布进度：** 当前源码正在准备包含 Web 与 Desktop 的 v0.1.5，上次核实的线上版本
-仍为 v0.1.4。Desktop 下载和随 Release 附带的安装脚本要在 v0.1.5 发布成功后才可用。
-在此之前，可使用现有原生安装器，或按开发步骤构建 Desktop。
-详见[发布记录](docs/plans/2026-10-07-v0.1.5-release.md)。
+当前内部发布版本是 **v0.1.5**，包含 Server/Web/TUI 运行时和供公司内部使用的
+Apple Silicon Desktop DMG。该 Desktop DMG **未签名且未公证**，专门用于公司内部
+macOS 设备。[Release 页面](https://github.com/IFOSR/metawork/releases/latest)
+是实际下载文件和校验值的唯一来源。
 
-发布矩阵包含 macOS Apple Silicon/Intel、Linux x64、Windows x64 的 Server/Web/TUI，
-以及两种 Mac 架构的签名、公证 Desktop 安装包，均来自同一提交。所有归档、DMG
-和签名清单校验通过后才更新 latest；已发布版本不会被覆盖。目前没有 Linux arm64
-预构建包，也没有 Windows/Linux Desktop 安装包。
+当前内部发布只提供 macOS Apple Silicon（`arm64`）DMG，没有 Intel（`x64`）Desktop
+包；Intel 用户请使用 Server/Web/TUI 安装方式，或等待 x64 构建。暂不提供
+Linux/Windows Desktop 安装包。
 
 ## 安装方式
 
@@ -85,13 +84,17 @@ Web 已包含在 Server 安装包中，不需要安装 Desktop。
 | 飞书 | 同一 Server 安装包，再配置飞书应用 | `metawork server setup-feishu` |
 | 源码开发 | 下文源码步骤 | CLI 或隔离的 Desktop 开发版 |
 
-### macOS Desktop 桌面应用
+### macOS Desktop 桌面应用（内部版，Apple Silicon）
 
-Desktop 发布后，根据 **苹果菜单 → 关于本机** 选择
-[Apple Silicon（M 系列）](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg)
-或 [Intel](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-x64.dmg)。
-打开 DMG，将 **MetaWork.app** 拖入“应用程序”后启动。首次安装填写模型 API 地址、
-模型 ID 和 API Key。
+1. 在 **苹果菜单 → 关于本机** 确认 Mac 使用 Apple Silicon（M 系列）。
+2. 从最新 Release 下载 [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg)，
+   打开 DMG，把 **MetaWork.app** 拖入“应用程序”。
+3. 由于这是未公证内部 DMG，首次启动可能被 macOS 拦截。在 Finder 中右键
+   **MetaWork.app**，选择“打开”，再确认“打开”。如果仍被拦截，进入
+   **系统设置 → 隐私与安全性**，找到安全提示并点击“仍要打开”，然后再次执行本步。
+4. MetaWork 安装窗口会要求填写“模型 API 地址”“模型 ID”“API Key”。填入公司
+   使用的模型服务信息后点击“安装并开始使用”。凭据保存在本机 macOS 凭据库。
+5. 安装完成后会打开 Web 工作区；首次使用时完成登录并选择 Workspace。
 
 安装包包含 Node、Git、Pi Executor、Server/Web 与 Planner，不需要另装 Node/npm/Git；
 Codex 为可选项。默认安装目录为 `~/.metawork`，兼容的已有安装会被复用，版本不兼容
@@ -101,6 +104,10 @@ Server。关闭窗口或退出 Desktop 后，后台服务和任务继续运行�
 升级时下载并挂载最新 DMG，在当前 Desktop 中选择 **安装新版应用…**，选中新包的
 `MetaWork.app`。程序协调 Desktop 与 Server 升级，并提示对运行中工作的影响。
 Desktop 管理的安装应使用这一入口，避免只更新 Server 导致版本不匹配。
+
+以后使用浏览器时，启动 Desktop（或已安装的 Server）后执行 `metawork web`；使用
+原生终端界面执行 `metawork tui`。两者都连接 Desktop 创建的同一 Server 和账号数据，
+不要为它们重复安装第二套运行时。
 
 ### Server + Web / TUI / 飞书
 
@@ -127,10 +134,9 @@ irm https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.ps1 -O
 ```
 
 两个安装器均获取**最新稳定版的签名 manifest**，校验 Runtime/Planner 归档，并通过
-配置向导设置模型服务。Linux/WSL2 默认使用文件 SecretStore。从 v0.1.5 开始，
-Release 还会附带对应的
-[install.sh](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) 和
-[install.ps1](https://github.com/IFOSR/metawork/releases/latest/download/install.ps1)。
+配置向导设置模型服务。Linux/WSL2 默认使用文件 SecretStore。Release 页面会在对应
+平台归档可用时附带 `install.sh` 和 `install.ps1`。当前内部版的预构建运行时是
+Apple Silicon；Shell 安装器会对不支持的架构明确报错，不会安装不匹配的归档。
 
 安装后，在一个终端启动 Server 并保持运行：
 

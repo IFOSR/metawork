@@ -75,17 +75,15 @@ existing names where changing them would break installations.
 source of truth for the current installable version. A newer source checkout
 is not a published release.
 
-**Publication checkpoint:** this checkout prepares v0.1.5 with Web and Desktop.
-The last verified public release is v0.1.4. Desktop downloads and release-attached
-installer scripts become available only after v0.1.5 publication succeeds.
-Until then, use the existing native installer or Desktop development instructions.
-See the [release status](docs/plans/2026-10-07-v0.1.5-release.md).
+The current internal release is **v0.1.5**. It includes the Server/Web/TUI
+runtime and an Apple Silicon Desktop DMG for company use. The Desktop DMG is
+**unsigned and not notarized**; it is intentionally distributed for the internal
+macOS fleet. The [release page](https://github.com/IFOSR/metawork/releases/latest)
+is the source of truth for the exact assets and checksums.
 
-The release matrix contains Server/Web/TUI for macOS Apple Silicon/Intel,
-Linux x64 and Windows x64, plus signed/notarized Desktop installers for both Mac
-architectures. All come from the same commit. Publication validates all archives,
-Desktop DMGs and signed manifests before advancing latest. Published releases
-are immutable. Linux arm64 has no prebuilt package; Windows/Linux Desktop
+This internal release currently provides a macOS Apple Silicon (`arm64`) DMG.
+An Intel (`x64`) Desktop build is not included; Intel users should use the
+Server/Web/TUI installation or wait for an x64 build. Linux and Windows Desktop
 packages are not provided.
 
 ## Installation
@@ -101,13 +99,20 @@ account data. Web is included in the Server package and does not require Desktop
 | Feishu | Same Server package and Feishu app configuration | `metawork server setup-feishu` |
 | Source development | Source instructions below | CLI or isolated Desktop |
 
-### macOS Desktop
+### macOS Desktop (internal, Apple Silicon)
 
-After Desktop publication, choose your Mac's chip under **Apple menu → About
-This Mac**, then download [Apple Silicon](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg)
-or [Intel](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-x64.dmg).
-Open the DMG, drag **MetaWork.app** to **Applications**, and open it. First launch
-collects your model API URL, model ID and API key.
+1. Confirm that the Mac uses Apple Silicon under **Apple menu → About This Mac**.
+2. Download [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg)
+   from the latest release, open it, and drag **MetaWork.app** to **Applications**.
+3. The first launch may be blocked because this internal DMG is not notarized. In
+   Finder, right-click **MetaWork.app** and choose **Open**, then confirm **Open**.
+   If macOS still blocks it, open **System Settings → Privacy & Security**, scroll
+   to the security message, and choose **Open Anyway**; then repeat step 3.
+4. The MetaWork setup window asks for **模型 API 地址**, **模型 ID** and **API Key**.
+   Enter the provider values used by your company and choose **安装并开始使用**.
+   Credentials are stored in the local macOS credential store.
+5. After setup, MetaWork opens the Web workspace. Keep the Desktop running while
+   you complete the first login and choose a Workspace.
 
 Desktop bundles Node, Git, Pi Executor, Server/Web and Planner. No separate
 Node/npm/Git installation is required; Codex is optional. The default installation
@@ -116,10 +121,16 @@ versions require a coordinated update. **Install Terminal Command…** optionall
 adds `metawork`, allowing Web/TUI to connect to the same Server. Quitting Desktop
 leaves Server and background work running.
 
+To use the browser later, start Desktop (or start the installed Server), then run
+`metawork web` after installing the terminal command. To use the native TUI, run
+`metawork tui` in the same installation. Both clients use the Server and account
+data created by Desktop; do not create a second installation for them.
+
 To update, download/mount the latest DMG, then use **Install New Application…**
-in the running Desktop to select its `MetaWork.app`. This updates Desktop and
-Server together and explains the impact on active work. Use this path for a
-Desktop-managed installation instead of updating only its Server.
+in the running Desktop to select its `MetaWork.app`. If macOS blocks the new app,
+apply the right-click **Open** / **Open Anyway** steps above first. This updates
+Desktop and Server together and explains the impact on active work. Use this path
+for a Desktop-managed installation instead of updating only its Server.
 
 ### Server with Web / TUI / Feishu
 
@@ -148,10 +159,11 @@ irm https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.ps1 -O
 
 Both scripts resolve the **latest stable release's signed manifest** and verify
 its Runtime/Planner archives. The setup wizard configures the model provider.
-Linux/WSL2 defaults to file-backed secrets. From v0.1.5 onward the matching
-scripts are also attached to the release as
-[install.sh](https://github.com/IFOSR/metawork/releases/latest/download/install.sh)
-and [install.ps1](https://github.com/IFOSR/metawork/releases/latest/download/install.ps1).
+Linux/WSL2 defaults to file-backed secrets. The release page also contains the
+matching `install.sh` and `install.ps1` files when a platform archive is available.
+The current internal release's prebuilt runtime is Apple Silicon; the shell
+installer reports an unsupported architecture instead of installing a mismatched
+archive.
 
 Start Server in one terminal and keep it running:
 

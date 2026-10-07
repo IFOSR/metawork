@@ -20,7 +20,7 @@ try {
   if (entries.some(path => !/^(node|git|executor)\//.test(path) || path.includes('\\')
     || path.split('/').includes('..'))) throw new Error('Invalid Desktop tool archive path');
   const details = execFileSync('/usr/bin/tar', ['-tvzf', archive], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }).trim().split('\n');
-  if (details.some(line => !['-', 'd'].includes(line[0]))) throw new Error('Desktop tools must not contain links or special entries');
+  if (details.some(line => !['-', 'd', 'h'].includes(line[0]))) throw new Error('Desktop tools must not contain links or special entries');
   execFileSync('/usr/bin/tar', ['-xzf', archive, '-C', output]);
   await rm(archive);
 } catch (error) {

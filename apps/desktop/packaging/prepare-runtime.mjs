@@ -61,7 +61,10 @@ try {
     const entries = run('/usr/bin/tar', ['-tzf', archive]);
     if (entries.split('\n').some(path => !path.startsWith(`${name}/`) || path.split('/').includes('..'))) throw new Error('Invalid release archive layout');
     const details = run('/usr/bin/tar', ['-tvzf', archive]);
-    if (details.split('\n').some(line => !['-', 'd'].includes(line[0]))) throw new Error('Release archive contains links or special files');
+    // `tar -h` dereferences source symlinks, but bsdtar may record repeated
+    // inodes as hardlink entries (`h`). They extract as regular files; reject
+    // symbolic links and all other special archive entries.
+    if (details.split('\n').some(line => !['-', 'd', 'h'].includes(line[0]))) throw new Error('Release archive contains links or special files');
     run('/usr/bin/tar', ['-xzf', archive, '-C', payload]);
   }
   const toolRoot = join(payload, 'metawork', 'desktop-tools');

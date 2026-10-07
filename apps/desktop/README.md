@@ -5,11 +5,13 @@ same `web` build served by the independent MetaWork Server. Closing a window
 hides it; quitting Desktop leaves Server running. The separate stop menu shows
 the account's active work and invokes the formal Server stop path.
 
-This is an implementation checkpoint, **not a signed distributable release**.
-See the [acceptance record](../../docs/plans/2026-10-05-metawork-desktop-implementation.md).
-The v0.1.5 joint release is being prepared; see the
-[release runbook](../../docs/current/releasing.md) for Actions signing/tool inputs
-and the [publication status](../../docs/plans/2026-10-07-v0.1.5-release.md).
+The v0.1.5 internal DMG is an **unsigned, unnotarized** Apple Silicon package for
+company use. macOS may require Finder **Open** or **System Settings → Privacy &
+Security → Open Anyway** on first launch. See the
+[acceptance record](../../docs/plans/2026-10-05-metawork-desktop-implementation.md)
+and the [release runbook](../../docs/current/releasing.md) for Actions signing/tool
+inputs for a future signed public release. The [publication status](../../docs/plans/2026-10-07-v0.1.5-release.md)
+records the internal package and its validation.
 
 ## Development
 
