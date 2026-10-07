@@ -7,7 +7,7 @@ export const RELEASE_TARGETS = ['darwin-arm64', 'darwin-x64', 'linux-x64', 'win3
 export const DESKTOP_TARGETS = ['darwin-arm64', 'darwin-x64'];
 export const TRUSTED_KEY_ID = 'metawork-release-2026-03';
 export const TRUSTED_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAJm/qnGNd9Aeg+41GoIjKOgpasxivfCXJCsZwyMbyIVE=
+MCowBQYDK2VwAyEAFUfe0iqiIaYSMGiyywur13FpzoXRQBqAZB0gzEi2DE0=
 -----END PUBLIC KEY-----`;
 
 export function compareReleaseIds(left, right) {

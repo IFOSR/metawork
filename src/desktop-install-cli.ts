@@ -27,7 +27,7 @@ export async function runDesktopInstall(
   const resources = resolve(resourcesArg);
   const trustedKeys = JSON.parse(await readFile(join(resources, 'trusted-release-keys.json'), 'utf8')) as Record<string, string>;
   const release = await verifyDesktopRelease(resources, { trustedKeys, arch: process.arch, desktopVersion,
-    allowDevelopment: process.env.METAWORK_DESKTOP_DEVELOPMENT === '1' });
+    allowDevelopment: process.env.METAWORK_DESKTOP_INTERNAL === '1' });
   const paths = resolveMetaWorkPaths(undefined, resolve(rootArg));
   const running = () => isInstanceRunning(join(paths.data, 'runtime.lock'));
   if (await running()) throw new Error('Server must finish its formal stop before installation');

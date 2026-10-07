@@ -29,7 +29,7 @@ INSTALLER_VERSION="1.2.0"
 DEFAULT_MANIFEST_BASE="https://github.com/IFOSR/metawork/releases/latest/download"
 TRUSTED_RELEASE_KEY_ID="metawork-release-2026-03"
 TRUSTED_RELEASE_PUBLIC_KEY='-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAJm/qnGNd9Aeg+41GoIjKOgpasxivfCXJCsZwyMbyIVE=
+MCowBQYDK2VwAyEAFUfe0iqiIaYSMGiyywur13FpzoXRQBqAZB0gzEi2DE0=
 -----END PUBLIC KEY-----'
 REVOKED_RELEASE_KEY_IDS="metawork-release-2026-01,metawork-release-2026-02"
 

@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 $TrustedKeyId = 'metawork-release-2026-03'
 $TrustedPublicKey = @'
 -----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAJm/qnGNd9Aeg+41GoIjKOgpasxivfCXJCsZwyMbyIVE=
+MCowBQYDK2VwAyEAFUfe0iqiIaYSMGiyywur13FpzoXRQBqAZB0gzEi2DE0=
 -----END PUBLIC KEY-----
 '@
 

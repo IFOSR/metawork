@@ -28,12 +28,12 @@ export class DesktopInstallation {
     this.installing = true;
     try {
       this.release = null;
-      await this.verify();
-      if (!this.release) throw new Error('Missing verified release');
+      const release = await this.verify();
       const source = join(this.resources, 'payload/metawork');
       const node = join(source, 'desktop-tools/node/bin/node');
       const env = { ...process.env };
       for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE', 'METAWORK_DESKTOP_DEVELOPMENT']) delete env[key];
+      if (release.development) env.METAWORK_DESKTOP_INTERNAL = '1';
       env.PATH = [join(source, 'desktop-tools/node/bin'), join(source, 'desktop-tools/git/bin'),
         join(source, 'desktop-tools/executor/bin'), '/usr/bin', '/bin'].join(':');
       await new Promise<void>((resolve, reject) => {

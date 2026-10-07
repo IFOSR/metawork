@@ -1,6 +1,6 @@
 // Consumes the formal Runtime/Planner archives; never assembles a second Server tree.
 import { createHash, sign, verify } from 'node:crypto';
-import { cp, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -51,6 +51,13 @@ if (!development) {
 await mkdir(output, { recursive: false });
 const payload = join(output, 'payload');
 await mkdir(payload);
+async function removeArchiveMarkers(directory) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) await removeArchiveMarkers(path);
+    else if (entry.name === '.gitkeep') await rm(path);
+  }
+}
 try {
   for (const name of ['metawork', 'planner']) {
     const artifact = manifest[name];
@@ -67,6 +74,8 @@ try {
     if (details.split('\n').some(line => !['-', 'd', 'h'].includes(line[0]))) throw new Error('Release archive contains links or special files');
     run('/usr/bin/tar', ['-xzf', archive, '-C', payload]);
   }
+  // Electron Builder omits dot-file placeholders while copying extraResources.
+  await removeArchiveMarkers(payload);
   const toolRoot = join(payload, 'metawork', 'desktop-tools');
   for (const [name, root] of [['node', nodeRoot], ['git', gitRoot], ['executor', executorRoot]]) {
     await cp(root, join(toolRoot, name), { recursive: true, dereference: true });
