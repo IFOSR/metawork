@@ -1,7 +1,7 @@
 # Windows Desktop 实施与验证记录
 
 - 日期：2026-10-07
-- 状态：In Progress，P0 未通过；未交付 Windows Desktop。
+- 状态：In Progress，P0 原生技术前置已验证，开始 P1 平台适配；生产安全 transport / process adapter 尚未接入，未交付 Windows Desktop。
 - 方案：[Windows Desktop 构建与交付](2026-10-07-windows-desktop-build-plan.md)
 - 源码基线：`bc7ad127d0ac9d6df36a03ddacc916e93806ec5d`（包含计划，运行时代码对应 `99442715e802c7ccdf09dd9a4f476a26f906a076`）。
 - 本次验证环境：macOS 27.0.1（26A434），arm64，Node 22.23.3，npm 10.9.9。
@@ -64,12 +64,19 @@ PDF 构建首次被 GitHub 下载连接阻塞；本次从已有开发缓存读�
 - Job spike 的计数不假设恰好只有三个 Job 成员，而是逐一确认三个实际写入进程属于本次 Job。恢复检查使用两秒内的实际进度，取消后等待已固定身份的每个进程对象终止，不能把 Job accounting 归零当作已经退出。新增普通用户与中文/空格目录场景；尚待最终原生结果。
 - Windows 11 首轮为诊断而取消，最后屏幕显示官方系统正在安装（33%），没有完成 guest 验收。新流程在运行中上传阶段截图；另准备 raw 临时磁盘与 Hyper-V enlightenment 参数改善嵌套虚拟化执行，保留 TPM/Secure Boot，不绕过系统安装前置。
 - 仅修改 Windows spike/探针或文档时，后续 push 不重复已通过的 macOS 源码基线；共享源码、构建配置及 Desktop 变化仍触发双架构回归。最终候选使用手动 full workflow，始终执行双架构检查。专用 Windows jobs 与 macOS jobs 分别排队，避免互相阻塞。
+- `4b50dcb`：[普通用户进程树验证](https://github.com/IFOSR/metawork/actions/runs/37703647552) 通过。管理员和普通用户均执行 10 次暂停/恢复、暂停状态下整 Job 取消；保留的三个工作进程对象全部退出，Job 剩余成员为零。实际 Job 包括三个工作进程及其额外成员，共 6 个；普通用户报告 `elevated: false`。结合前述管道、ACL、SMB、文件竞态和符号链接结果，P0 的原生技术前置与载体选择已验证；个别 probe 的 `p0Accepted:false` 表示其单项结果不能独立作为整体/产品验收。
+
+## P1 平台适配（进行中）
+
+- `desktop-platform.ts` 收敛 release-local Node/Git/Pi/Python 路径和子进程环境，DesktopInstallation 与 DesktopServiceManager 消费同一适配。Windows 使用 Node/Git `.exe`、分号 PATH，清除大小写变体的 Node/Electron 控制变量，避免 `Path`/`PATH` 重复；后台子进程隐藏额外控制台窗口。
+- macOS 的既有安装器/服务 PATH 顺序、独立 Node 进程及 Server start/stop 路径不变；本地 3 文件/6 项路径与安装检查、Root/Desktop 类型检查、Desktop 3 文件/6 项边界/安全/偏好测试通过。共享生产代码变化已安排云端双架构回归。
+- release schema、Windows 默认根目录、原生 adapter 生产封装、完整依赖闭包与安装验证尚未完成。本节不是 P1 完成声明。
 
 ## 待通过的阶段门
 
-- P0：原生 Windows 环境执行；标准用户前置；受限 Named Pipe DACL、内核取得的 Server PID/用户身份、跨账号拒绝、远程客户端拒绝、抢占/链接竞态；native adapter 选择及对应 ADR 修订。
-- P1–P3：Windows 安装根/依赖闭包、安全 Desktop 会话、托盘及生命周期、NSIS 和事务升级/回滚；当前尚未实施这些生产适配。
+- P0 技术前置已验证；生产 transport/文件写入与替换/Job process adapter 必须分别在 owning seam 接入并复验。SMB 证据来自 loopback 网络路径，不宣称物理双机或企业域策略验证。
+- P1–P3：完成 Windows 安装根/依赖闭包、安全 Desktop 会话、托盘及生命周期、NSIS 和事务升级/回滚；当前仅开始路径/子进程环境适配。
 - P4：最终 Windows 候选及同源 macOS 候选完整回归；本地开发壳层通过不能替代真实 `.app` 新装/升级/回滚、真实模型任务或 Intel 验收。
 - P5：用户暂无 Windows 实体机/VM；GitHub Windows Server runner 不满足 Windows 11 干净 GUI 人工验收。需另有真实 Windows 11 x64 环境，缺失时不得宣布完成。
 
-架构保持现有 macOS Desktop 基准。P0 没有通过前不放开 Windows Desktop 认证，也不发布“可用 Windows 版本”。
+架构保持现有 macOS Desktop 基准。安全原语 probe 通过不自动放开 Windows Desktop 认证；生产适配及 owning-seam 验证通过前继续拒绝，不发布“可用 Windows 版本”。

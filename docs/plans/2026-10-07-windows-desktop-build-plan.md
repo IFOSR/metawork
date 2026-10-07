@@ -1,7 +1,7 @@
 # Windows Desktop 构建与交付方案
 
 - 计划日期：2026-10-07
-- 状态：In Progress / 用户已授权按方案实施；P0 环境验证与 macOS 回归基线准备中，Windows 原生门尚未通过，尚未产出 Windows Desktop 安装包或发布
+- 状态：In Progress / P0 原生技术前置与 macOS 双架构基线已验证，P1 平台适配进行中；生产安全 adapter 尚未接入，尚未产出 Windows Desktop 安装包或发布
 - 基线：`99442715e802c7ccdf09dd9a4f476a26f906a076`（当前 main，包含 v0.1.5 及后续 README 精简）
 - 分支：`feat/windows-desktop`
 - Worktree：`/Users/yuanjubian/program/metawork-windows-desktop`
@@ -50,9 +50,10 @@ DeepSeek Harness 仅用于参考 NSIS、PE/原生依赖打包、文件占用处�
 
 2026-10-07 用户确认暂无 Windows 实体机或 VM。已准备独立的 `windows-desktop-validation.yml`：Windows Server 2022 x64 托管 runner 用于环境预检及原生源码/依赖构建，macOS arm64/x64 jobs 用于既有客户端和 Server 回归。此流程只上传验证证据，不读取发布签名密钥、不发布 Release、不更新 main；准备好流程不代表已执行或通过。
 
-- Windows runner 可用于后续受限管道、进程身份、ACL、文件锁、安装器及可自动化 Electron 场景的原生验证。当前环境预检仅覆盖 NTFS、链接、指针替换和 ACL 继承，完整本地认证门仍待实现/验证。
+- Windows runner 已验证受限管道、进程身份、ACL、SMB 拒绝、文件链接竞态、普通用户符号链接前置、Node/Electron 同原生模块及 Job 进程树暂停/恢复/取消；提交与限制见实施记录。生产本地认证和安装器集成仍待实现/验证。
 - 必须记录 runner 的 OS、架构、权限及交互会话事实；管理员账号通过不能证明普通用户可安装，需在临时标准账号下另行验证。Windows Server 的通过记录不能记为 Windows 11 客户端通过。
 - P5 仍要求临时云端 Windows 11 x64 测试机或之后提供的实体机/VM，完成干净系统及真实 GUI 验收。该环境缺失时保持 P5 未完成；付费资源创建和 Windows 11 人工验收另行安排。
+- 已在现有 Actions 云端容量上启动官方 Windows 11 Enterprise Evaluation VM 验证，使用 KVM、UEFI Secure Boot、TPM 2.0 和独立临时磁盘；目前仅证明进入系统安装流程，尚未取得 guest 桌面/产品验收。不会把安装画面或宿主 KVM 探测当作 Windows 11 Desktop 通过。
 - `cargo-xwin` 可作为 Rust 原生 helper 的交叉编译候选工具，不负责整个 Electron/Node 分发，也不证明真实 Windows 安全与 GUI 行为。native adapter 方案仍由 P0 比较及实测确定；Wine 或交叉编译成功不替代原生门。
 - 2026-10-08 用户已授权推送 `feat/windows-desktop` 并使用云端验证，明确不得合并主干。允许触发专用验证流程；不运行现有带发布步骤的 `release-build.yml`。
 

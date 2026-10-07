@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
 import { access, mkdir, open, realpath } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { dirname, join, relative, isAbsolute, sep } from 'node:path';
+import { join, relative, isAbsolute, sep } from 'node:path';
 import { isInstanceRunning } from '../management/lock.js';
 import { readReleaseIdentity } from '../installation/release-identity.js';
+import { desktopProcessEnvironment } from '../installation/desktop-platform.js';
 import { discoverDesktopSession } from './desktop-session-client.js';
 import type { DesktopSessionGrant } from '../gateway/desktop-session-contract.js';
 
@@ -37,7 +38,7 @@ export class DesktopServiceManager {
     try {
       const child = spawn(this.runtime.nodePath, [join(root, 'dist', 'index.js'), 'server', 'start'], {
         cwd: this.runtime.installRoot, env: this.environment(root), detached: true,
-        stdio: ['ignore', log.fd, log.fd],
+        stdio: ['ignore', log.fd, log.fd], windowsHide: true,
       });
       await new Promise<void>((resolve, reject) => {
         child.once('spawn', resolve);
@@ -77,7 +78,7 @@ export class DesktopServiceManager {
     const root = await this.releaseRoot();
     await new Promise<void>((resolve, reject) => {
       const child = spawn(this.runtime.nodePath, [join(root, 'dist', 'index.js'), 'server', 'stop'], {
-        cwd: this.runtime.installRoot, env: this.environment(root), stdio: 'ignore',
+        cwd: this.runtime.installRoot, env: this.environment(root), stdio: 'ignore', windowsHide: true,
       });
       child.once('error', reject);
       child.once('exit', code => code === 0 ? resolve() : reject(new Error('后台服务未完成停止，请检查服务状态。')));
@@ -100,16 +101,12 @@ export class DesktopServiceManager {
   }
 
   private environment(root: string): NodeJS.ProcessEnv {
-    const env = { ...(this.runtime.env ?? process.env) };
-    delete env.NODE_OPTIONS;
-    delete env.NODE_PATH;
-    delete env.ELECTRON_RUN_AS_NODE;
+    const env = desktopProcessEnvironment({ releaseRoot: root, nodePath: this.runtime.nodePath,
+      env: this.runtime.env ?? process.env, inheritPath: true, includeReleaseBin: true });
     delete env.ANYFUSION_PLANNER_WORKSPACE;
     delete env.METACLAW_PLANNER_WORKDIR;
     return {
       ...env,
-      PATH: [dirname(this.runtime.nodePath), join(root, 'desktop-tools', 'git', 'bin'),
-        join(root, 'desktop-tools', 'executor', 'bin'), join(root, 'bin'), env.PATH ?? '/usr/bin:/bin'].join(':'),
       METAWORK_INSTALL_ROOT: this.runtime.installRoot,
       ANYFUSION_INSTALL_ROOT: this.runtime.installRoot,
       ...(this.runtime.configHome ? { METAWORK_CONFIG_HOME: this.runtime.configHome, ANYFUSION_CONFIG_HOME: this.runtime.configHome } : {}),
