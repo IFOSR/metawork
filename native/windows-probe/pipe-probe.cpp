@@ -96,7 +96,15 @@ void inspect_security(HANDLE pipe) {
   require(valid_owner && valid_acl, "owner-only pipe DACL");
 }
 
-void serve(const wchar_t* name, const wchar_t* ready_path) {
+void serve(const wchar_t* name, const wchar_t* ready_path, bool standard_user) {
+  HANDLE raw = nullptr;
+  require(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw) != FALSE, "elevation token");
+  Handle token(raw);
+  TOKEN_ELEVATION elevation{};
+  DWORD size = sizeof(elevation);
+  require(GetTokenInformation(token.get(), TokenElevation, &elevation, size, &size) != FALSE,
+    "TokenElevation");
+  if (standard_user) require(!elevation.TokenIsElevated, "non-elevated server required");
   Security security;
   Handle pipe(create_pipe(name, security));
   require(pipe.get() != INVALID_HANDLE_VALUE, "CreateNamedPipe first instance");
@@ -105,7 +113,9 @@ void serve(const wchar_t* name, const wchar_t* ready_path) {
   require(duplicate.get() == INVALID_HANDLE_VALUE && GetLastError() == ERROR_ACCESS_DENIED,
     "first-instance squatting guard");
   {
-    Handle ready(CreateFileW(ready_path, GENERIC_WRITE, 0, security.get(), CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
+    // Fixture coordination only: inherit the fixture directory ACL so the
+    // orchestrator can observe readiness even when Server is a standard user.
+    Handle ready(CreateFileW(ready_path, GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
     require(ready.get() != INVALID_HANDLE_VALUE, "ready file");
     const auto pid = std::to_string(GetCurrentProcessId());
     DWORD written = 0;
@@ -115,13 +125,13 @@ void serve(const wchar_t* name, const wchar_t* ready_path) {
   for (unsigned int attempt = 0; attempt < 8; attempt++) {
     require(ConnectNamedPipe(pipe.get(), nullptr) != FALSE || GetLastError() == ERROR_PIPE_CONNECTED,
       "ConnectNamedPipe");
-    ULONG pid = 0;
-    require(GetNamedPipeClientProcessId(pipe.get(), &pid) != FALSE, "kernel client PID");
-    same_user(pid);
     char command = 0;
     DWORD read = 0;
     const bool received = ReadFile(pipe.get(), &command, 1, &read, nullptr) != FALSE && read == 1;
     if (received) {
+      ULONG pid = 0;
+      require(GetNamedPipeClientProcessId(pipe.get(), &pid) != FALSE, "kernel client PID");
+      same_user(pid);
       require(command == 'P' || command == 'Q', "bounded probe command");
       DWORD written = 0;
       require(WriteFile(pipe.get(), &command, 1, &written, nullptr) != FALSE && written == 1, "response");
@@ -129,7 +139,8 @@ void serve(const wchar_t* name, const wchar_t* ready_path) {
     }
     require(DisconnectNamedPipe(pipe.get()) != FALSE, "disconnect");
     if (received && command == 'Q') {
-      std::cout << "{\"ownerDacl\":true,\"firstInstanceGuard\":true,\"kernelClientIdentity\":true,\"remoteRejectionConfigured\":true}\n";
+      std::cout << "{\"ownerDacl\":true,\"firstInstanceGuard\":true,\"kernelClientIdentity\":true,\"remoteRejectionConfigured\":true,\"elevated\":"
+        << (elevation.TokenIsElevated ? "true" : "false") << "}\n";
       return;
     }
   }
@@ -170,7 +181,7 @@ int wmain(int argc, wchar_t** argv) {
     if (argc < 4 || std::wstring(argv[2]).find(L"\\\\.\\pipe\\metawork-p0-") != 0)
       throw std::runtime_error("Explicit P0 pipe and mode arguments required");
     const std::wstring mode(argv[1]);
-    if (mode == L"serve") serve(argv[2], argv[3]);
+    if (mode == L"serve" || mode == L"serve-standard") serve(argv[2], argv[3], mode == L"serve-standard");
     else if (mode == L"client" || mode == L"stop" || mode == L"denied" || mode == L"wrong-pid")
       client(argv[2], std::stoul(argv[3]), mode == L"denied", mode == L"stop", mode == L"wrong-pid");
     else throw std::runtime_error("Unknown probe mode");

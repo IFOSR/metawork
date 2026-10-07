@@ -77,11 +77,18 @@ try {
       $pending = Join-Path $path 'pending.json'
       [IO.File]::WriteAllText($current, 'old-fixture')
       [IO.File]::WriteAllText($pending, 'new-fixture')
+      # An elevated token may default file ownership to Administrators. Pin the
+      # owner explicitly before promotion, within the already private directory.
+      foreach ($file in @($current, $pending)) {
+        $fileAcl = Get-Acl -LiteralPath $file
+        $fileAcl.SetOwner($sid)
+        Set-Acl -LiteralPath $file -AclObject $fileAcl
+      }
       # Windows PowerShell coerces $null to an empty string for this overload.
       # Use an explicit backup in the same private directory.
       [IO.File]::Replace($pending, $current, (Join-Path $path 'backup.json'))
       $allowed = @($sid.Value, 'S-1-5-18', 'S-1-5-32-544')
-      foreach ($file in @($path, $current)) {
+      foreach ($file in @($path, $current, (Join-Path $path 'backup.json'))) {
         $actual = Get-Acl -LiteralPath $file
         if ($actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw 'Unexpected owner' }
         foreach ($rule in $actual.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
