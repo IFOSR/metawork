@@ -7,6 +7,7 @@ on:
       - '.github/workflows/windows11-cloud-validation.yml'
       - 'scripts/probe-windows11-cloud.py'
       - 'scripts/windows11-cloud-bootstrap.ps1'
+      - 'scripts/monitor-windows11-cloud.py'
 permissions:
   contents: read
 concurrency:
@@ -24,7 +25,23 @@ jobs:
           sudo apt-get install -y -qq qemu-system-x86 ovmf swtpm xorriso python3-pil
           sudo chmod a+rw /dev/kvm
       - name: Boot official Windows 11 evaluation with TPM and Secure Boot
-        run: python3 scripts/probe-windows11-cloud.py
+        run: python3 scripts/monitor-windows11-cloud.py start
+      - name: Collect early installation progress
+        run: python3 scripts/monitor-windows11-cloud.py snapshot 300
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows11-progress-early-${{ github.sha }}
+          path: ${{ runner.temp }}/metawork-windows11/evidence/
+          if-no-files-found: warn
+      - name: Collect desktop setup progress
+        run: python3 scripts/monitor-windows11-cloud.py snapshot 300
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows11-progress-setup-${{ github.sha }}
+          path: ${{ runner.temp }}/metawork-windows11/evidence/
+          if-no-files-found: warn
+      - name: Require completed guest acceptance
+        run: python3 scripts/monitor-windows11-cloud.py finish 3000
       - uses: actions/upload-artifact@v4
         if: always()
         with:

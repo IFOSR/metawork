@@ -25,7 +25,7 @@ try {
     $stream = New-Object IO.MemoryStream
     try {
       $bitmap.Save($stream, [Drawing.Imaging.ImageFormat]::Png)
-      Invoke-WebRequest -UseBasicParsing -Method Post -Uri 'http://10.0.2.2:8765/@TOKEN@/screen' -ContentType 'image/png' -Body $stream.ToArray() | Out-Null
+      Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 -Method Post -Uri 'http://10.0.2.2:8765/@TOKEN@/screen' -ContentType 'image/png' -Body $stream.ToArray() | Out-Null
     } finally { $stream.Dispose() }
   } finally { $graphics.Dispose(); $bitmap.Dispose() }
 } catch {
@@ -35,7 +35,7 @@ try {
 $body = [Text.Encoding]::UTF8.GetBytes(($report | ConvertTo-Json))
 for ($attempt = 0; $attempt -lt 12; $attempt++) {
   try {
-    Invoke-WebRequest -UseBasicParsing -Method Post -Uri 'http://10.0.2.2:8765/@TOKEN@/result' -ContentType 'application/json' -Body $body | Out-Null
+    Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 -Method Post -Uri 'http://10.0.2.2:8765/@TOKEN@/result' -ContentType 'application/json' -Body $body | Out-Null
     break
   } catch { Start-Sleep -Seconds 5 }
 }

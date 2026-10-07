@@ -152,7 +152,14 @@ void probe(const std::wstring& root) {
   }
   check(ResumeThread(thread.value) != static_cast<DWORD>(-1), "start owned root");
   for (unsigned int wait = 0; heartbeats(root).size() < 3 && wait < 100; wait++) Sleep(50);
-  check(heartbeats(root).size() == 3 && members(job.value).size() == 3, "three-process fixture");
+  const auto initial = heartbeats(root);
+  const auto initial_members = members(job.value);
+  if (initial.size() != 3) throw std::runtime_error("Expected three heartbeat workers, got " + std::to_string(initial.size()));
+  for (const auto& item : initial) {
+    const DWORD pid = static_cast<DWORD>(std::stoul(item.first));
+    if (!initial_members.count(pid)) throw std::runtime_error("Heartbeat worker " + std::to_string(pid)
+      + " is not in owned job; members=" + std::to_string(initial_members.size()));
+  }
   size_t suspended = 0;
   {
     SuspendedThreads paused(job.value);
@@ -175,7 +182,8 @@ void probe(const std::wstring& root) {
   check(members(job.value).empty(), "no residual job process");
   check(WaitForSingleObject(process.value, 0) == WAIT_OBJECT_0, "root exited");
   std::cout << "{\"scope\":\"job-process-spike\",\"passed\":true,\"workers\":3,\"pauseResumeCycles\":10,\"suspendedThreads\":"
-    << suspended << ",\"cancelWhilePaused\":true,\"remainingProcesses\":0,\"p0Accepted\":false}\n";
+    << suspended << ",\"initialJobMembers\":" << initial_members.size()
+    << ",\"cancelWhilePaused\":true,\"remainingProcesses\":0,\"p0Accepted\":false}\n";
 }
 
 int wmain(int argc, wchar_t** argv) {
