@@ -132,7 +132,14 @@ std::map<std::wstring, uintmax_t> heartbeats(const std::wstring& root) {
   return values;
 }
 
-void probe(const std::wstring& root) {
+void probe(const std::wstring& root, bool standard_user) {
+  HANDLE raw_token = nullptr;
+  check(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw_token) != FALSE, "process token");
+  OwnedHandle token(raw_token);
+  TOKEN_ELEVATION elevation{};
+  DWORD size = sizeof(elevation);
+  check(GetTokenInformation(token.value, TokenElevation, &elevation, size, &size) != FALSE, "process elevation");
+  if (standard_user) check(!elevation.TokenIsElevated, "standard-user controller required");
   OwnedHandle job(CreateJobObjectW(nullptr, nullptr));
   check(job.value != nullptr, "create job");
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
@@ -203,6 +210,7 @@ void probe(const std::wstring& root) {
   check(WaitForSingleObject(process.value, 5000) == WAIT_OBJECT_0, "root exited");
   std::cout << "{\"scope\":\"job-process-spike\",\"passed\":true,\"workers\":3,\"pauseResumeCycles\":10,\"suspendedThreads\":"
     << suspended << ",\"initialJobMembers\":" << initial_members.size()
+    << ",\"elevated\":" << (elevation.TokenIsElevated ? "true" : "false")
     << ",\"cancelWhilePaused\":true,\"remainingProcesses\":0,\"p0Accepted\":false}\n";
 }
 
@@ -210,7 +218,7 @@ int wmain(int argc, wchar_t** argv) {
   try {
     if (argc != 3) throw std::runtime_error("Mode and explicit fixture directory required");
     const std::wstring mode(argv[1]);
-    if (mode == L"probe") probe(argv[2]);
+    if (mode == L"probe" || mode == L"probe-standard") probe(argv[2], mode == L"probe-standard");
     else if (mode == L"worker" || mode == L"leaf") worker(argv[2], mode == L"worker");
     else throw std::runtime_error("Unknown process probe mode");
     return 0;

@@ -31,6 +31,33 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      macos: ${{ steps.classify.outputs.macos }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: classify
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          event = json.load(open(os.environ['GITHUB_EVENT_PATH']))
+          before = event.get('before', '')
+          macos = True
+          if os.environ['GITHUB_EVENT_NAME'] == 'push' and re.fullmatch(r'[a-f0-9]{40}', before) and before != '0' * 40:
+            if subprocess.run(['git', 'cat-file', '-e', before], capture_output=True).returncode:
+              subprocess.run(['git', 'fetch', '--depth=1', 'origin', before], check=True)
+            paths = subprocess.check_output(['git', 'diff', '--name-only', before, 'HEAD'], text=True).splitlines()
+            windows_only = ('native/windows-probe/', 'scripts/probe-windows-', 'scripts/probe-windows11-',
+                            'scripts/monitor-windows11-', 'scripts/windows11-cloud-', '.github/workflows/windows11-')
+            macos = any(not (p.startswith(windows_only) or p.startswith('docs/') or p == 'CONTEXT.md') for p in paths)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+            out.write('macos=' + str(macos).lower() + '\n')
+          print('Run macOS regressions:', macos, '(manual runs always include both architectures)')
+          PY
   windows-pipe:
     concurrency:
       group: windows-desktop-pipe-${{ github.ref }}
@@ -50,7 +77,9 @@ jobs:
         run: ./scripts/probe-windows-desktop-remote-pipe.ps1
       - name: Verify process-tree pause, resume and cancellation
         shell: pwsh
-        run: ./scripts/probe-windows-desktop-process.ps1
+        run: |
+          ./scripts/probe-windows-desktop-process.ps1
+          ./scripts/probe-windows-desktop-process.ps1 -StandardUser
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -118,6 +147,8 @@ jobs:
       # This job compiles source; it does not claim a functional packaged Desktop.
 
   macos-regression:
+    needs: changes
+    if: needs.changes.outputs.macos == 'true'
     concurrency:
       group: windows-desktop-macos-${{ matrix.runner }}-${{ github.ref }}
       cancel-in-progress: false

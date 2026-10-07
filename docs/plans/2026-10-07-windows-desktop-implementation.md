@@ -61,6 +61,9 @@ PDF 构建首次被 GitHub 下载连接阻塞；本次从已有开发缓存读�
 - `859f1b8` 的强化 reparse 竞态通过：500 次读取中 207 次合法读、293 次拒绝、14 次真实替换，未返回链接目标内容。此前测试全拒绝不能证明合法文件恢复路径，因此保留强化证据作为这一项的有效验收。Node/Electron 异步管道检查同时通过。
 - P0 行为核对发现权限工作流 `permission-workflow-service.ts` 实际调用 backend pause/resume；Windows 当前未实现，且 stop 只杀直接 child。新增 Job Object 进程树 spike：执行前绑定 Job，公开 Win32 thread API 多轮枚举到静止后暂停，恢复只撤销本次 suspend count，取消通过 Job 终止全部成员。用三个真实进程、持续创建线程的写入夹具检查 10 次暂停/恢复和暂停中的取消。此项尚待原生结果及正式 backend 接入，不用“无暂停按钮”豁免权限审批语义。
 - Windows Node-API spike 使用静态 CRT，避免把 CI 已安装的 VC runtime 当作干净用户机依赖；Windows 11 guest 仍需验证实际分发闭包。
+- Job spike 的计数不假设恰好只有三个 Job 成员，而是逐一确认三个实际写入进程属于本次 Job。恢复检查使用两秒内的实际进度，取消后等待已固定身份的每个进程对象终止，不能把 Job accounting 归零当作已经退出。新增普通用户与中文/空格目录场景；尚待最终原生结果。
+- Windows 11 首轮为诊断而取消，最后屏幕显示官方系统正在安装（33%），没有完成 guest 验收。新流程在运行中上传阶段截图；另准备 raw 临时磁盘与 Hyper-V enlightenment 参数改善嵌套虚拟化执行，保留 TPM/Secure Boot，不绕过系统安装前置。
+- 仅修改 Windows spike/探针或文档时，后续 push 不重复已通过的 macOS 源码基线；共享源码、构建配置及 Desktop 变化仍触发双架构回归。最终候选使用手动 full workflow，始终执行双架构检查。专用 Windows jobs 与 macOS jobs 分别排队，避免互相阻塞。
 
 ## 待通过的阶段门
 
