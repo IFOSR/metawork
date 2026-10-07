@@ -53,6 +53,7 @@ export async function probePrivateFiles(addon, evidence) {
     check('file reparse refused', () => assert.throws(() => addon.readPrivateFile(root, 'file-link.json'), /reparse/));
     check('directory reparse refused', () => assert.throws(() => addon.readPrivateFile(root, 'directory-link\\endpoint.json'), /reparse/));
     check('hard link refused', () => assert.throws(() => addon.readPrivateFile(root, 'hard-link.json'), /hard links/));
+    await rm(join(root, 'hard-link.json'));
     check('root redirection refused', () => assert.throws(() => addon.readPrivateFile(join(root, 'directory-link'), 'endpoint.json'), /reparse/));
     ps(`
       $name='mwf'+[Guid]::NewGuid().ToString('N').Substring(0,10)
@@ -108,6 +109,11 @@ catch {
       }
     `, { eval: true, workerData: { root, control: control.buffer } });
     await new Promise((resolve, reject) => { worker.once('message', resolve); worker.once('error', reject); });
+    const raceDeadline = Date.now() + 5000;
+    while (Atomics.load(control, 1) === 0) {
+      if (Date.now() >= raceDeadline) throw Error('Replacement worker did not become active');
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
     let rejected = 0;
     for (let attempt = 0; attempt < 500; attempt++) {
       let bytes;

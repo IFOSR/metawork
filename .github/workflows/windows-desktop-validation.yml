@@ -29,12 +29,11 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: windows-desktop-validation-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   windows-pipe:
+    concurrency:
+      group: windows-desktop-pipe-${{ github.ref }}
+      cancel-in-progress: false
     runs-on: windows-2022
     timeout-minutes: 15
     steps:
@@ -56,6 +55,9 @@ jobs:
           if-no-files-found: warn
 
   windows-environment:
+    concurrency:
+      group: windows-desktop-environment-${{ github.ref }}
+      cancel-in-progress: false
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
@@ -76,6 +78,9 @@ jobs:
           if-no-files-found: error
 
   windows-build:
+    concurrency:
+      group: windows-desktop-build-${{ github.ref }}
+      cancel-in-progress: false
     runs-on: windows-2022
     timeout-minutes: 40
     steps:
@@ -109,6 +114,9 @@ jobs:
       # This job compiles source; it does not claim a functional packaged Desktop.
 
   macos-regression:
+    concurrency:
+      group: windows-desktop-macos-${{ matrix.runner }}-${{ github.ref }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
