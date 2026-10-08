@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
+import { loadWindowsPrivateFiles } from '../platform/windows-private-files.js';
 import { DesktopSessionService } from '../management/desktop-session.js';
 import { ClientNotificationFeed, type ClientNotificationPage } from '../gateway/client-notification-feed.js';
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
@@ -407,6 +408,14 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   const applicationRoot = existsSync(paths.appCurrent)
     ? paths.appCurrent
     : resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const candidateWindowsModule = join(applicationRoot, 'native/windows/metawork-platform.node');
+  const windowsPipeModulePath = process.platform === 'win32' && existsSync(candidateWindowsModule)
+    ? candidateWindowsModule : undefined;
+  const windows = windowsPipeModulePath
+    ? { root: paths.root, files: loadWindowsPrivateFiles(windowsPipeModulePath) } : undefined;
+  // A Desktop release protects its installation before any mutable child is
+  // created. Missing native support never enables Desktop tickets on net pipes.
+  windows?.files.ensurePrivateDirectory(paths.root);
 
   // Surface secrets such as FEISHU_APP_SECRET live next to the install root
   // .env; load them before any gateway/platform wiring runs. Existing process
@@ -582,7 +591,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       references: Object.values(activeSnapshot.config.providers)
         .map(provider => provider.apiKeyRef),
     });
-    const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials });
+    const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials, windows });
     await prepareProductionSecretStore(secretStore);
     await importLegacyProviderCredentials({
       target: secretStore,
@@ -673,7 +682,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     references: Object.values(migratedSnapshot.config.providers)
       .map(provider => provider.apiKeyRef),
   });
-  const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials });
+  const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials, windows });
   await prepareProductionSecretStore(secretStore);
   await importLegacyProviderCredentials({
     target: secretStore,
@@ -688,6 +697,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   });
   const internalLlmSecrets = createProductionSecretStore({
     credentialsFile: resolve(paths.root, 'internal/llm-credentials.json'),
+    windows,
   });
   const internalLlm = new InternalLlmService({
     config: () => loadInternalSettingsAssistantConfig({ installRoot: paths.root }),
@@ -1978,6 +1988,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
 
   const gatewayServer = new MetaclawGatewayServer({
     socketPath: gatewaySocketPath,
+    windowsPipeModulePath,
     gateway: clientGateway,
     journal: eventJournal,
     subscriptions: gatewaySubscriptions,
@@ -2740,7 +2751,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           await writeEndpointManifest(endpointManifestPath, {
             ...current,
             state: 'draining',
-          });
+          }, windows);
         }
       },
       writeManifest: async endpoints => {
@@ -2755,7 +2766,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           state: 'ready',
           unixSocketPath: endpoints.unixSocketPath,
           webOrigin: endpoints.webOrigin,
-        });
+        }, windows);
       },
       removeManifest: () => removeEndpointManifest(endpointManifestPath),
     });

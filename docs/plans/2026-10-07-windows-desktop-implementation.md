@@ -194,3 +194,7 @@ Gateway 新增显式原生模块入口；只有实际 WindowsPipeStream 才能�
 `d6464050` 的 Intel 原有模块检查/Gateway smoke 通过，但真实 Electron 在隐藏侧栏后菜单“搜索对话”聚焦超时（electron-smoke.mjs:94），该候选不能标为 macOS 全通过。原实现 setSidebarHidden 后用 requestAnimationFrame 聚焦，回调可能早于 React 提交可见 DOM，导致 display:none 输入框拒绝焦点。改为受请求状态控制的 useLayoutEffect，在同一组件可见状态提交后聚焦；普通浏览器未增加 native menu。实际 smoke 连续三次验证隐藏→搜索，失败时也保留界面和安全诊断。本地 arm64 构建及真实 Electron 通过，Server 退出存活检查通过，证据 `.tmp/windows-desktop-validation/macos-arm64-1791423608199`；Intel 云端复验待完成。隔离安装检查使用现有打包后的 platform-tools，不能假定 tsup 分发保留 src 目录结构。
 
 `795a9dea` 的 native store 4 项、Gateway/discovery 3 项以及管道/锁检查通过。`e3ff1e1f` 的真实普通 owner Gateway 会话通过；其他普通账号的 Node pipe connect 返回 EPERM，测试只接受 EACCES 导致失败。修正为仅接受 libuv 的两种权限拒绝码 EPERM/EACCES，不接受端点缺失/超时；endpoint 跨账号拒读和 SMB 后续门仍待执行。安装选择恢复从 Unix 字符前缀改为平台 isAbsolute，避免 Windows 重启时忽略 C:\\ 安装根。
+
+`480b601f` 已通过 production Gateway 的普通账号会话、另一普通账号 pipe/endpoint OS 拒绝、同 owner SMB 正对照及原生远程拒绝，并再次通过原生 stream/store/discovery。正式 Server 现选用 installed release 的 native 模块，先保护 root 再初始化子路径，Provider/internal credentials 和 endpoint publication 使用 native private adapter；DesktopServiceManager 从已核验的 immutable release 取得模块并执行 PID 身份验证。缺模块的普通 Node pipe 继续禁用 ticket，不做安全降级。Root/Desktop 类型检查及 macOS client/server/认证 52 项通过，完整原生 Server/安装/GUI 仍待验收。
+
+`e417ae61` 完整 payload 拒绝未获准的 x86 文件，已增加所有具体路径诊断；未扩展白名单。官方固定 Windows Python archive 已单独下载并 SHA256 验证，确认只有 pip/distlib 四个外架构 launcher（已由 preparer 移除），其他路径来源继续定位。第四次 Windows 11 环境 run `37708656202` 超时未回报，下一次 `37713269208` 带只读 setup 诊断继续；这不是 Windows 11 验收成功。

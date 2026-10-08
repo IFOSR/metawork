@@ -1078,10 +1078,12 @@ a signed desktop release announcement.
 Windows implementation in progress (2026-10-08): ADR-0045 selects a narrow
 Node-API platform adapter after native Node/Electron Main carrier probes. The
 independent Server owns its pipe; Renderer never loads the native module.
-Production transport integration is not complete. Ordinary Node named pipes
-must neither advertise Desktop sessions nor issue tickets before the native
-identity/ACL gate is implemented and validated. macOS Unix behavior and the
-existing single-use ticket/HTTP proof remain authoritative.
+Native Gateway/discovery, private credentials/endpoint, standard-account denial
+and SMB rejection checks have passed. Source composition now selects the native
+transport when the installed release contains its module; Desktop requires it
+on Windows. Ordinary Node named pipes never advertise Desktop sessions or issue
+tickets. Packaged installation and end-to-end Windows acceptance remain open.
+macOS Unix behavior and the existing single-use ticket/HTTP proof remain authoritative.
 
 Windows Desktop inventory requires x64 primary executables and native modules.
 Git's pure-IL AnyCPU dependencies use a separate validated format; only the

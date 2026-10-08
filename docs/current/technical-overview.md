@@ -1773,11 +1773,13 @@ a signed desktop release announcement.
 Windows work (2026-10-08) selects a small Node-API platform adapter, following
 successful same-binary probes in Windows Node and Electron Main. This preserves
 the Server's own pipe PID and avoids a separate forwarding helper identity.
-The spike lives in `native/windows-probe` and is not shipped. Production Windows
-session admission remains disabled until native transport and private-file
-gates pass; the ordinary Node pipe must not issue Desktop tickets. macOS retains
-its Unix transport. See ADR-0045 and the Windows implementation record for scope
-and actual validation results.
+The spike lives in `native/windows-probe` and is not shipped. Native
+Gateway/discovery, private files, standard-account denial and SMB rejection
+checks passed; source composition selects the installed native module and
+protects the installation root before mutable child creation. Desktop verifies
+the private endpoint and OS pipe PID. Ordinary Node pipes cannot issue tickets.
+macOS retains its Unix transport. Packaged installation and Windows end-to-end
+acceptance remain open; see the implementation record for commit-bound results.
 
 The Windows payload inventory keeps required executables/addons at x64, checks
 CLR headers and IL-only metadata for Git Credential Manager's AnyCPU assemblies,

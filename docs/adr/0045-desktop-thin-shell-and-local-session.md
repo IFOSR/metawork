@@ -74,8 +74,10 @@ boundaries, before their contents become identity inputs.
 This selects the carrier, not a completed transport: asynchronous connection
 lifecycle, cancellation, bounded buffering, private file writes/replacement,
 remote rejection and packaged dependency closure remain validation gates. The
-spike is not shipped, and the ordinary Node named-pipe ticket gate remains
-closed until the production adapter passes those gates. Existing Unix behavior,
+spike is not shipped, and ordinary Node named pipes always keep tickets closed.
+After the native transport/private-file and cross-account/SMB checks passed,
+source composition selects the installed native adapter; packaging and full
+product acceptance remain separate gates. Existing Unix behavior,
 single-use ticket/HTTP proof and Installer/Updater activation authority remain
 the same. See the Windows implementation log for commit-bound evidence.
 

@@ -50,6 +50,8 @@ export class DesktopServiceManager {
   }
 
   private async waitReady(): Promise<DesktopSessionGrant> {
+    const windowsModulePath = process.platform === 'win32'
+      ? join(await this.releaseRoot(), 'native/windows/metawork-platform.node') : undefined;
     const deadline = Date.now() + 30_000;
     let lastError: unknown;
     do {
@@ -58,6 +60,7 @@ export class DesktopServiceManager {
           installRoot: this.runtime.installRoot,
           manifestPath: join(this.runtime.installRoot, 'server-endpoint.json'),
           releaseId: this.runtime.releaseId,
+          windowsModulePath,
         });
       } catch (error) {
         lastError = error;
@@ -70,12 +73,13 @@ export class DesktopServiceManager {
 
   async stop(): Promise<void> {
     // Verify the running owner and instance before invoking the formal global stop.
+    const root = await this.releaseRoot();
     await discoverDesktopSession({
       installRoot: this.runtime.installRoot,
       manifestPath: join(this.runtime.installRoot, 'server-endpoint.json'),
       releaseId: this.runtime.releaseId,
+      ...(process.platform === 'win32' ? { windowsModulePath: join(root, 'native/windows/metawork-platform.node') } : {}),
     });
-    const root = await this.releaseRoot();
     await new Promise<void>((resolve, reject) => {
       const child = spawn(this.runtime.nodePath, [join(root, 'dist', 'index.js'), 'server', 'stop'], {
         cwd: this.runtime.installRoot, env: this.environment(root), stdio: 'ignore', windowsHide: true,

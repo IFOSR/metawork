@@ -126,6 +126,7 @@ Windows 正在运行的 EXE/DLL 无法像 macOS `.app` 一样替换。复用 `De
 5. 重启或中断后沿用持久 activation journal 恢复；测试磁盘满、文件锁/杀毒软件暂占、helper 崩溃和健康回执超时。
 
 关闭窗口隐藏并保留页面，Windows 通过托盘或再次启动恢复同一窗口；首次关闭说明对应 Windows 实际入口。退出 Desktop 只结束客户端，Server 继续工作；显式“停止服务”才停任务服务。托盘只是平台入口，不拥有独立生命周期。首版不安装 Windows Service、不承诺开机自动启动。
+Windows 的 Node `process.kill(pid, 'SIGTERM')` 是强制终止，不能作为已完成正式 drain 的证据。实施须把 Windows 显式 stop/restart 接到同一 ServerApplication.stop 路径，并验证 endpoint draining、客户端断连、Runtime 清理和锁释放；不能把向共享控制台广播 Ctrl-Break 或仅等待 PID 消失作为等价实现。
 升级入口和“修复未完成的更新”沿用 macOS 的用户动作及事务语义。用户直接运行新版 EXE 时，NSIS 也必须交给同一协调升级路径；Windows 不另外引入后台下载、强制升级或第二套 updater。
 卸载沿用 macOS 的壳层/数据分离语义。需要停止服务以释放文件或完成移除时，先展示运行中工作和全客户端影响，经用户明确确认后才走正式 stop/drain；未确认则退出卸载，不隐式停止任务。默认保留账号和凭据数据，永久清理须单独明确选择。
 不得为适配 Windows 在 Electron 中增加自己的数据库备份、任务调度或恢复策略。
