@@ -50,12 +50,6 @@ try {
   await run(['apps/desktop/tests/electron-smoke.mjs']);
   passed = true;
 } finally {
-  // Preserve the failed stage too; success-only evidence hid Intel focus failures.
-  for (const name of ['evidence', 'desktop-1440.png', 'desktop-1100.png', 'desktop-900.png', 'desktop-200-percent.png', 'desktop-failure.png']) {
-    await cp(join(root, name), join(evidence, name === 'evidence' ? 'electron' : name), { recursive: true }).catch(error => {
-      if (error.code !== 'ENOENT') throw error;
-    });
-  }
   try {
     const manifest = await readFile(join(root, 'server-endpoint.json'), 'utf8').catch(error => {
       if (error.code === 'ENOENT') return null;
@@ -64,6 +58,13 @@ try {
     if (manifest !== null) await run([join(root, 'app/current/dist/index.js'), 'server', 'stop']);
     cleanupPassed = true;
   } finally {
+    // Preserve the failed stage too, after attempting Server cleanup even if
+    // artifact collection itself encounters an I/O error.
+    for (const name of ['evidence', 'desktop-1440.png', 'desktop-1100.png', 'desktop-900.png', 'desktop-200-percent.png', 'desktop-failure.png']) {
+      await cp(join(root, name), join(evidence, name === 'evidence' ? 'electron' : name), { recursive: true }).catch(error => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+    }
     await writeFile(join(evidence, 'result.json'), JSON.stringify({
       passed: passed && cleanupPassed, platform: process.platform, arch: process.arch,
       node: process.version, isolatedRoot: root, cleanupPassed,

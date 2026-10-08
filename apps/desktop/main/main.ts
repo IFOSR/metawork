@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, powerMonitor, screen, session, shell, Tray, type IpcMainInvokeEvent, type Session } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { access, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveMetaWorkPaths } from '../../../src/installation/paths.js';
 import { PRODUCT_ENVIRONMENT, resolveProductEnvironment } from '../../../src/installation/product-environment.js';
@@ -411,8 +411,8 @@ async function start(): Promise<void> {
     const saved = await readFile(join(app.getPath('userData'), 'installation.json'), 'utf8').catch(() => null);
     if (saved) {
       const value = JSON.parse(saved);
-      if (typeof value.root === 'string' && value.root.startsWith('/')
-        && (value.configHome === undefined || typeof value.configHome === 'string' && value.configHome.startsWith('/'))) installationSelection = value;
+      if (typeof value.root === 'string' && isAbsolute(value.root)
+        && (value.configHome === undefined || typeof value.configHome === 'string' && isAbsolute(value.configHome))) installationSelection = value;
     }
   }
   const explicitInstallRoot = resolveProductEnvironment(process.env, ...PRODUCT_ENVIRONMENT.installRoot);
