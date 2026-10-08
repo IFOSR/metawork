@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { access, cp, mkdir, open, readFile, realpath, rename, rm } from 'node:fs/promises';
+import { access, cp, mkdir, open, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { DesktopActivation, type DesktopActivationRecord } from './installation/desktop-activation.js';
 import { verifyDesktopRelease } from './installation/desktop-release.js';
@@ -31,6 +31,7 @@ async function main(): Promise<void> {
     configHome?: string;
     userDataPath?: string;
     recoverOnly?: boolean;
+    launchToken?: string;
   };
   const record = request.record;
   if (!record.applicationPath.endsWith('.app') || !record.stagedApplicationPath.startsWith(`${requests}/`)
@@ -142,6 +143,12 @@ async function main(): Promise<void> {
       startPrevious: async () => { await (await manager()).startForUpdate(); },
     }));
     // The helper is independent of Electron; wait for client exit before replacing its bundle.
+    if (request.launchToken) {
+      if (!/^[a-f0-9-]{36}$/u.test(request.launchToken)) throw new Error('Invalid helper launch token');
+      const ready = join(requests, 'desktop-helper-ready.json');
+      await writeFile(`${ready}.tmp`, JSON.stringify({ token: request.launchToken, pid: process.pid }), { mode: 0o600 });
+      await rename(`${ready}.tmp`, ready);
+    }
     process.stdout.write('READY\n');
     const deadline = Date.now() + 60_000;
     while (request.previousPid !== process.pid) {

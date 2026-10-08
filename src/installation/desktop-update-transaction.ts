@@ -27,7 +27,10 @@ export async function runDesktopUpdateTransaction(input: {
     } else {
       try { await input.activation.apply(input.record); }
       catch (error) {
-        relaunch = (await input.activation.read())?.phase === 'rolled-back';
+        const latest = await input.activation.read();
+        // Verification may fail before a new journal is prepared. There is no
+        // activation to recover, but reopen the client to show the failure.
+        relaunch = !latest || ['committed', 'rolled-back'].includes(latest.phase);
         throw error;
       }
       // Cleanup is deliberately after DesktopActivation writes `committed`.

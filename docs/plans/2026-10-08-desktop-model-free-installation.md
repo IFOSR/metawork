@@ -1,7 +1,7 @@
 # Desktop installation without model credentials
 
 - Date: 2026-10-08
-- Status: Completed locally; user installation acceptance pending. No publication.
+- Status: Model-free installation completed locally; Finder upgrade acceptance failed and is superseded by the lifecycle correction below. No publication.
 - Completion date: 2026-10-08
 - Closing implementation commit: `0f7e73418e29548268fbdd65e09b6057ad01e7b8`.
 
@@ -62,3 +62,10 @@ under `apps/desktop/release/evidence/` and
 `.tmp/onboarding-0f7e734/exact-upgrade/evidence/`. No normal installation was
 replaced, and no release/tag/push/upload was performed. User installs the DMG
 manually to complete personal acceptance.
+
+## Acceptance correction (2026-10-08)
+
+The user's Finder installation reproduced an update loop. The previous direct
+Electron process smoke did not validate LaunchServices process-coalition cleanup,
+so it was insufficient to claim customer upgrade readiness. See
+[Finder lifecycle correction](2026-10-08-desktop-finder-update-lifecycle.md).

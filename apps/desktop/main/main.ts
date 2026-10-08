@@ -43,6 +43,7 @@ let preferences: DesktopPreferenceStore | null = null;
 let state: ShellState = { phase: 'connecting', message: '正在连接后台服务…' };
 let quitting = false;
 let checkingUpdate = false;
+let updatingApplication = false;
 let recoveryRequired = false;
 let backendUnavailable = false;
 let connectPromise: Promise<void> | null = null;
@@ -158,6 +159,7 @@ async function checkForUpdates(): Promise<void> {
   } finally { checkingUpdate = false; refreshMenuState(); }
 }
 function connect(): Promise<void> {
+  if (updatingApplication) return Promise.resolve();
   connectPromise ??= connectOnce().finally(() => { connectPromise = null; });
   return connectPromise;
 }
@@ -181,11 +183,11 @@ async function connectOnce(): Promise<void> {
       }
       if (await installation.needsUpgrade()) {
         const previousUpdate = await readDesktopUpdateDiagnostic(installRoot);
-        const failed = previousUpdate?.outcome === 'rolled-back';
+        const failed = previousUpdate && previousUpdate.outcome !== 'committed';
         const failure = previousUpdate?.failures[0];
         setState({ phase: 'upgrade', message: failed
-          ? `上次升级未完成，已恢复原有运行环境。原有数据仍保留，可重新升级。${failure ? `诊断编号：${failure.stage}/${failure.code}。` : ''}`
-          : '发现已有的 Web／终端运行环境。接入桌面需要升级后台服务；原有模型配置、对话和工作数据会保留，无需重新填写 API Key。升级会暂时断开其他客户端。' });
+          ? `上次后台更新${previousUpdate.outcome === 'rolled-back' ? '未完成，已恢复原有运行环境' : '已中断'}。已有配置和数据仍保留。点击下方按钮可重新完成更新；应用会重启，其他客户端会暂时断开。${failure ? `诊断编号：${failure.stage}/${failure.code}。` : ''}`
+          : '新版 MetaWork 已安装，还需一次性更新本机后台。已有模型配置、对话和工作数据会保留。点击下方按钮后，后台任务将停止，其他客户端会暂时断开，应用将在完成后重新打开。' });
         return;
       }
       stage = 'runtime-tools';
@@ -338,7 +340,8 @@ async function stopService(): Promise<void> {
 }
 
 async function updateApplication(recover = false, adoptExistingRuntime = false): Promise<void> {
-  if (!app.isPackaged || !window || !installation) return;
+  if (!app.isPackaged || !window || !installation || updatingApplication) return;
+  updatingApplication = true;
   try {
     if (!recover) {
       const applicationPath = resolve(process.resourcesPath, '../..');
@@ -349,7 +352,7 @@ async function updateApplication(recover = false, adoptExistingRuntime = false):
         if (selected.canceled || !selected.filePaths[0]) return;
         candidatePath = selected.filePaths[0];
       }
-      setState({ phase: 'connecting', message: '正在验证新版应用和配套运行时…' });
+      setState({ phase: 'connecting', message: '正在准备后台更新，完成后将自动重新打开…' });
       await prepareDesktopUpdate({ root: installRoot, applicationPath,
         candidatePath, resources: process.resourcesPath, adoptExistingRuntime,
         configHome: selectedConfigHome, userDataPath: app.getPath('userData') });
@@ -361,11 +364,13 @@ async function updateApplication(recover = false, adoptExistingRuntime = false):
       const activity = await response.json() as { activeTasks: number };
       taskSummary = `当前有 ${activity.activeTasks} 个未结束任务。升级会执行全局停止流程，所有客户端会暂时断开。`;
     }
-    const answer = await dialog.showMessageBox(window, { type: 'warning',
-      message: recover ? '修复上次未完成的更新？' : adoptExistingRuntime ? '升级已有运行环境并接入桌面？' : '安装已验证的新版应用？',
-      detail: `${taskSummary}\n${adoptExistingRuntime ? '沿用已有账号、模型配置和工作数据；安装器会备份数据库并执行迁移。\n' : ''}桌面将退出，由独立安装器完成切换。回滚可能恢复到升级前的数据时间点。`,
+    // The startup action already explains interruption and obtains consent.
+    // File installation and repair still need their own confirmation.
+    const answer = adoptExistingRuntime ? { response: 1 } : await dialog.showMessageBox(window, { type: 'warning',
+      message: recover ? '修复上次未完成的更新？' : '安装已验证的新版应用？',
+      detail: `${taskSummary}\n桌面将退出，由独立安装器完成切换。回滚可能恢复到升级前的数据时间点。`,
       buttons: ['取消', recover ? '退出并修复' : '退出并更新'], defaultId: 0, cancelId: 0 });
-    if (answer.response !== 1) { await connect(); return; }
+    if (answer.response !== 1) { updatingApplication = false; await connect(); return; }
     if (recover) await prepareDesktopRepair({ root: installRoot, resources: process.resourcesPath,
       desktopVersion: app.getVersion() });
     await preferences?.flush();
@@ -378,8 +383,9 @@ async function updateApplication(recover = false, adoptExistingRuntime = false):
     } else {
       dialog.showErrorBox('更新尚未完成', '请确认新版应用签名、配套版本、磁盘空间和应用目录写入权限。已有数据与更新记录会保留；可使用“修复未完成的更新”重试。');
     }
+    updatingApplication = false;
     await connect();
-  }
+  } finally { updatingApplication = false; }
 }
 
 async function logoutDesktop(): Promise<void> {

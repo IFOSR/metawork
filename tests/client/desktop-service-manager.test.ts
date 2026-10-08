@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { DesktopServiceManager } from '../../src/client/desktop-service-manager.js';
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn(), discover: vi.fn(), endpoint: vi.fn() }));
+vi.mock('../../src/installation/macos-background-process.js', () => ({ startMacOSBackgroundProcess: vi.fn() }));
 vi.mock('node:child_process', () => ({ spawn: mocks.spawn }));
 vi.mock('../../src/management/lock.js', () => ({ isInstanceRunning: async () => true }));
 vi.mock('../../src/client/desktop-session-client.js', () => ({ discoverDesktopSession: mocks.discover }));

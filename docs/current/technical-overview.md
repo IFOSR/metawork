@@ -7,6 +7,12 @@ browsing; Gateway blocks semantic work until configuration activation enables
 Planner and Executors. Internal commit suffixes identify builds, not release
 chronology; numeric product downgrade and compatibility checks remain intact.
 
+macOS Desktop uses ephemeral launchd jobs for its updater and Server so Finder
+application exit cannot terminate them as subordinate processes. Jobs do not
+register login items or automatically restart; the updater's readiness receipt
+must precede Desktop exit. Finder/LaunchServices launch, repeated opening and
+Server survival are required acceptance paths (ADR-0045).
+
 [English Home](../../README.md) | [中文技术总览](technical-overview.zh-CN.md)
 
 MetaWork is the proprietary commercial product represented by this repository.

@@ -9,6 +9,7 @@ import { readReleaseIdentity } from '../../../src/installation/release-identity.
 import { compareReleaseVersions, decideReleaseCompatibility, parseReleaseManifest } from '../../../src/installation/release-manifest.js';
 import { desktopSupportRoot } from '../../../src/installation/desktop-support.js';
 import { DesktopInstallation } from './installation.js';
+import { startMacOSBackgroundProcess } from '../../../src/installation/macos-background-process.js';
 
 export async function pendingDesktopUpdate(root: string): Promise<boolean> {
   const helperPid = await readFile(join(root, 'upgrades/desktop-helper.lock'), 'utf8').catch(() => null);
@@ -101,14 +102,30 @@ export async function launchDesktopUpdate(root: string, recoverOnly = false): Pr
   const request = JSON.parse(await readFile(requestPath, 'utf8'));
   request.previousPid = process.pid;
   request.recoverOnly = recoverOnly;
+  request.launchToken = randomUUID();
   await writeFile(requestPath, JSON.stringify(request), { mode: 0o600 });
   const release = request.bootstrap ?? await realpath(join(root, 'app/current'));
   const helper = join(release, 'dist/desktop-update-cli.js');
   await access(helper);
   const env = { ...process.env };
   for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE']) delete env[key];
+  const node = request.bootstrap ? join(request.bootstrap, 'desktop-tools/node/bin/node') : request.previousNode;
+  if (process.platform === 'darwin') {
+    await startMacOSBackgroundProcess({ root, role: 'update', executable: node,
+      args: [helper, root, requestPath], cwd: root, env,
+      logPath: join(root, 'upgrades/desktop-helper.log') });
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      const ready = await readFile(join(root, 'upgrades/desktop-helper-ready.json'), 'utf8').then(JSON.parse, () => null);
+      if (ready?.token === request.launchToken && Number.isSafeInteger(ready.pid) && ready.pid > 0) {
+        process.kill(ready.pid, 0);
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('Update helper did not become ready');
+  }
   await new Promise<void>((resolve, reject) => {
-    const node = request.bootstrap ? join(request.bootstrap, 'desktop-tools/node/bin/node') : request.previousNode;
     const child = spawn(node, [helper, root, requestPath], { env, detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
     const timer = setTimeout(() => reject(new Error('Update helper did not become ready')), 30_000);
     let buffer = '';

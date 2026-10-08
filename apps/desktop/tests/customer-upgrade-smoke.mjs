@@ -99,29 +99,18 @@ for (const scenario of scenarios) {
     } else {
       await page.locator('#upgrade').waitFor({ state: 'visible', timeout: 120000 });
       await page.screenshot({ path: join(runRoot, 'upgrade-prompt.png') });
-      console.log('Upgrade action visible; checking cancellation');
-      assert.equal(await page.locator('#setup').isVisible(), false);
-      await app.evaluate(({ dialog }) => {
-        globalThis.adoptionDialogCount = 0;
-        dialog.showMessageBox = async () => { ++globalThis.adoptionDialogCount; return { response: 0, checkboxChecked: false }; };
-      });
-      await page.locator('#upgrade').click();
-      await page.locator('#upgrade').waitFor({ state: 'hidden' });
-      await page.locator('#upgrade').waitFor({ state: 'visible', timeout: 240000 });
-      assert.equal(await app.evaluate(() => globalThis.adoptionDialogCount), 1);
-      assert.equal(JSON.parse(await readFile(join(installationRoot, 'server-endpoint.json'), 'utf8')).pid, previous.pid);
-      assert.equal(JSON.parse(await readFile(join(installationRoot, 'app/current/release-identity.json'), 'utf8')).releaseId, releaseId);
+      assert.equal(await page.locator('#upgrade').innerText(), '完成更新并重启');
       await app.evaluate(({ dialog }) => {
         globalThis.upgradeErrors = [];
         dialog.showErrorBox = (title, message) => { globalThis.upgradeErrors.push({ title, message }); };
-        dialog.showMessageBox = async () => { ++globalThis.adoptionDialogCount; return { response: 1, checkboxChecked: false }; };
+        dialog.showMessageBox = async () => { throw new Error('Startup update must not request a second confirmation'); };
       });
       let blocker;
       if (faultMode) {
         blocker=createServer();await new Promise(resolve=>blocker.listen(0,'127.0.0.1',resolve));
         await app.evaluate((_,port)=>{process.env.METAWORK_WEB_PORT=String(port);},blocker.address().port);
       }
-      console.log('Cancellation preserved native Server; accepting upgrade');
+      console.log('Accepting the single startup update action');
       await page.locator('#upgrade').click();
       const deadline = Date.now() + 300000;
       let phase;
@@ -234,7 +223,16 @@ for (const scenario of scenarios) {
     throw error;
   } finally {
     await app?.close().catch(() => undefined);
-    if (candidatePid) { try { process.kill(candidatePid, 'SIGTERM'); } catch {} }
+    // Include detached candidates/recovery clients even if the test failed
+    // before reading their health receipt. Wait before stopping their Server.
+    for (const row of execFileSync('ps', ['-axo', 'pid,command'], { encoding: 'utf8' }).split('\n')) {
+      const match = /^\s*(\d+)\s+(.+)$/.exec(row);
+      if (match && match[2].startsWith(join(application, 'Contents/MacOS/MetaWork') + ' ')
+        && match[2].includes('--user-data-dir=' + join(installationRoot, 'desktop-profile'))) {
+        try { process.kill(Number(match[1]), 'SIGTERM'); } catch {}
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, 2500));
     const identity = JSON.parse(await readFile(join(installationRoot, 'app/current/release-identity.json'), 'utf8'));
     await new DesktopServiceManager({ installRoot: installationRoot, releaseId: identity.releaseId, nodePath: node,
       configHome: env.METAWORK_CONFIG_HOME, env }).stopForUpdate();

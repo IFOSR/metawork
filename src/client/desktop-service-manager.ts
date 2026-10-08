@@ -7,6 +7,7 @@ import { readReleaseIdentity } from '../installation/release-identity.js';
 import { discoverDesktopSession } from './desktop-session-client.js';
 import type { DesktopSessionGrant } from '../gateway/desktop-session-contract.js';
 import { resolveClientEndpoint } from './client-endpoint-resolver.js';
+import { startMacOSBackgroundProcess } from '../installation/macos-background-process.js';
 
 export interface DesktopRuntime {
   installRoot: string;
@@ -39,6 +40,13 @@ export class DesktopServiceManager {
       return;
     }
     await mkdir(join(this.runtime.installRoot, 'logs'), { recursive: true, mode: 0o700 });
+    if (process.platform === 'darwin') {
+      await startMacOSBackgroundProcess({ root: this.runtime.installRoot, role: 'server',
+        executable: this.runtime.nodePath, args: [join(root, 'dist', 'index.js'), 'server', 'start'],
+        cwd: this.runtime.installRoot, env: this.environment(root),
+        logPath: join(this.runtime.installRoot, 'logs', 'desktop-server.log') });
+      return;
+    }
     const log = await open(join(this.runtime.installRoot, 'logs', 'desktop-server.log'), 'a', 0o600);
     try {
       const child = spawn(this.runtime.nodePath, [join(root, 'dist', 'index.js'), 'server', 'start'], {

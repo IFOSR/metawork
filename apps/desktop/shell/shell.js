@@ -17,5 +17,5 @@ retry.addEventListener('click', () => {
 upgrade.addEventListener('click', async () => {
   upgrade.disabled = true;
   try { await window.metaworkShell.upgrade(); }
-  catch { render({ phase: 'upgrade', message: '接入未完成，请重试。已有配置和数据会保留。' }); }
+  catch { render({ phase: 'upgrade', message: '后台更新未完成。已有配置和数据会保留，可重试更新。' }); }
 });

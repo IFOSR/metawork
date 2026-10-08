@@ -78,6 +78,20 @@ it('does not reopen a second Desktop after the candidate commits', async () => {
   expect(input.relaunch).not.toHaveBeenCalled();
 });
 
+it('replaces a historical committed journal only after verifying the next update', async () => {
+  const { input, port, journal } = await fixture();
+  const historical = { ...input.record, candidateReleaseId: input.record.previousReleaseId,
+    previousReleaseId: '0.1.4', schemaVersion: 1, phase: 'committed' };
+  await writeFile(journal, JSON.stringify(historical));
+  port.verify.mockRejectedValueOnce(new Error('verification interrupted'));
+  await expect(runDesktopUpdateTransaction(input)).rejects.toThrow('verification interrupted');
+  expect(await input.activation.read()).toEqual(historical);
+  expect(port.updateRuntime).not.toHaveBeenCalled();
+  await runDesktopUpdateTransaction({ ...input, releaseLock: async () => {} });
+  expect((await input.activation.read())?.candidateReleaseId).toBe(input.record.candidateReleaseId);
+  expect((await input.activation.read())?.phase).toBe('committed');
+});
+
 it('rejects recovery for a different activation before mutating the runtime', async () => {
   const { input, port, journal } = await fixture();
   await writeFile(journal, JSON.stringify({ ...input.record, candidateReleaseId: 'other', schemaVersion: 1, phase: 'prepared' }));

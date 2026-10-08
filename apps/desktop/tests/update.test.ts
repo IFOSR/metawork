@@ -7,7 +7,8 @@ import { DesktopInstallation } from '../main/installation.js';
 import { launchDesktopUpdate, prepareDesktopRepair, prepareDesktopUpdate } from '../main/update.js';
 import { desktopSupportRoot } from '../../../src/installation/desktop-support.js';
 
-const mocks = vi.hoisted(() => ({ spawn: vi.fn() }));
+const mocks = vi.hoisted(() => ({ spawn: vi.fn(), background: vi.fn() }));
+vi.mock('../../../src/installation/macos-background-process.js', () => ({ startMacOSBackgroundProcess: mocks.background }));
 vi.mock('original-fs', async () => ({ promises: await import('node:fs/promises') }));
 vi.mock('node:child_process', () => ({
   spawn: mocks.spawn,
@@ -67,10 +68,20 @@ it('stages the downloaded app for native adoption without requiring a previous D
     queueMicrotask(() => child.stdout.emit('data', 'READY\n'));
     return child;
   });
+  mocks.background.mockImplementation(async () => {
+    const current = JSON.parse(await readFile(join(root, 'upgrades/desktop-request.json'), 'utf8'));
+    await writeFile(join(root, 'upgrades/desktop-helper-ready.json'), JSON.stringify({ token: current.launchToken, pid: process.pid }));
+  });
   await launchDesktopUpdate(root);
   expect(JSON.parse(await readFile(join(root, 'upgrades/desktop-request.json'), 'utf8')).recoverOnly).toBe(false);
-  expect(mocks.spawn).toHaveBeenCalledWith(join(bootstrap, 'desktop-tools/node/bin/node'),
-    [join(bootstrap, 'dist/desktop-update-cli.js'), root, join(root, 'upgrades/desktop-request.json')], expect.anything());
+  if (process.platform === 'darwin') {
+    expect(mocks.background).toHaveBeenCalledWith(expect.objectContaining({ role: 'update',
+      executable: join(bootstrap, 'desktop-tools/node/bin/node'),
+      args: [join(bootstrap, 'dist/desktop-update-cli.js'), root, join(root, 'upgrades/desktop-request.json')] }));
+    expect(mocks.spawn).not.toHaveBeenCalled();
+  } else {
+    expect(mocks.spawn).toHaveBeenCalled();
+  }
   await launchDesktopUpdate(root, true);
   expect(JSON.parse(await readFile(join(root, 'upgrades/desktop-request.json'), 'utf8')).recoverOnly).toBe(true);
   // A new download repairs using its verified helper, even if the old helper

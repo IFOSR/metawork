@@ -99,3 +99,17 @@ explicitly replaced through the normal verified update transaction. Product
 version downgrade and stable/prerelease ordering, actual schema compatibility,
 backup and authenticated health checks remain enforced. This corrects identity
 comparison, rather than adding a compatibility bypass.
+
+## Finder process lifecycle correction (2026-10-08)
+
+On macOS, detached spawn/unref does not remove a child from a Finder application's
+process coalition. Desktop-started Server and updater therefore launch through
+ephemeral one-shot user-session launchd jobs. These jobs have no KeepAlive or
+login registration; they transport the existing formal lifecycle commands and
+do not introduce a service/recovery owner. Temporary private environment-bearing
+job definitions are removed after bootstrap. A token-bound updater readiness
+receipt precedes Desktop exit. A live job must never be booted out by a new launch.
+Customer acceptance must use LaunchServices, repeat upgrades with historical
+journals, and verify Server survival after Desktop exits. Direct Electron spawn
+alone is insufficient. Startup uses one explicit completion action, explains
+task/client interruption, and distinguishes interrupted updates from first use.

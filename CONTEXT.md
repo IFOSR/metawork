@@ -7,6 +7,11 @@ browsing; Gateway blocks semantic work until configuration activation enables
 Planner and Executors. Internal commit suffixes identify builds, not release
 chronology; numeric product downgrade and compatibility checks remain intact.
 
+macOS Desktop starts updater and Server through one-shot user-session launchd
+jobs: detached spawn alone remains inside Finder's application coalition and can
+be killed on Desktop exit. No login registration or automatic restart is added;
+formal installer/service lifecycle ownership remains unchanged (ADR-0045).
+
 MetaWork is the proprietary commercial product represented by this repository.
 AnyFusion is a separate open-source upstream/component family; concrete names
 such as `AnyFusion-Pi`, `AnyFusionPlanningAgent`, protocol IDs, database names,
