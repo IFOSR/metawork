@@ -139,6 +139,7 @@ jobs:
         run: npm test -- tests/gateway/desktop-local-transport.test.ts tests/management/desktop-session.test.ts tests/installation/desktop-platform.test.ts tests/installation/windows-installation-root.test.ts tests/installation/windows-desktop-release.test.ts tests/client/server-readiness.test.ts tests/executor/pi-native-launch.test.ts tests/executor/pi-cli-driver.test.ts tests/executor/runtime-home-materializer.test.ts
       - run: npm run build
       - run: npm run build:desktop
+        id: desktop-build
       - name: Verify native private directory creation and atomic file replacement
         run: node scripts/probe-windows-platform-files.mjs
       - name: Verify native private file writes without administrator rights
@@ -168,6 +169,7 @@ jobs:
           path: .tmp/windows-desktop-validation/platform-pipes/
           if-no-files-found: warn
       - name: Prepare pinned relocatable Node, Git Bash and Pi tools
+        if: ${{ !cancelled() && steps.desktop-build.outcome == 'success' }}
         run: node scripts/prepare-windows-desktop-tools.mjs "${{ runner.temp }}/desktop-tools"
       - uses: actions/upload-artifact@v4
         if: always()

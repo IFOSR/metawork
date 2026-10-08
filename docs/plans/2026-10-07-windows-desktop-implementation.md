@@ -146,3 +146,5 @@ Windows 11 run `37702596665` 45 分钟超时，无 guest report，最终 QMP 截
 并发原生复验 `e11aa801` 暴露 Win32 5：替换后的文件句柄关闭前，原临时文件的零共享模式短暂阻止其他 writer 原子替换。调整为 READ/DELETE sharing，继续拒绝 WRITE sharing；这允许后续原子替换而不允许原地修改。测试仍只重试明确的 sharing violation，未放宽 ACL 或把 ACCESS_DENIED 视为通过。新增云端 VM 串口回传和非点击式唤醒显示诊断，后续运行可区分 guest 未登录与网络回传不可用；当前运行继续等待，不取消安装。
 
 新增 WindowsPipeStream/Server 公共 Duplex/EventEmitter 封装：按原生完成状态轮询，读侧服从 highWaterMark，写侧切分为最多 64 KiB 的有界块；限制每轮工作量和活跃连接数，close 等待连接释放。传输层仅提供 OS 同用户身份与生命周期，不拥有 ticket、账号或任务权限。新增真实 `.node` 的顺序/并发客户端、2 MiB 背压与事件循环可用性、关闭后名称释放测试，Windows 云端执行，macOS 显式跳过此原生专用用例。共享 Gateway 尚未切换，接入前继续维持认证关闭。Root 类型检查通过。
+
+P0 Job 测试扩展为主 worker 持续创建短生命周期子进程（同时保留原线程创建压力），暂停时同时核对固定 worker 与新增子进程 heartbeat，取消前持有当时所有 Job 成员的进程句柄并等待真实退出。此新增压力门待原生通过。工具包验证改为只依赖已成功的 Desktop 工具构建，不再被相互独立的文件/管道测试失败短路，以一次运行收集独立缺陷，整体 workflow 仍保留失败状态。

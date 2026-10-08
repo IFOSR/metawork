@@ -48,7 +48,19 @@ void worker(const std::wstring& root, bool children) {
   OwnedHandle file(CreateFileW(file_path.c_str(), FILE_APPEND_DATA,
     FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
   check(file.value != INVALID_HANDLE_VALUE, "worker heartbeat file");
+  unsigned int cycle = 0;
   for (;;) {
+    if (children && ++cycle % 4 == 0) {
+      // Repeatedly create short-lived descendants while the controller pauses
+      // the job; a fixed process tree alone cannot expose the creation race.
+      auto command = arguments(L"transient", root);
+      STARTUPINFOW startup{}; startup.cb = sizeof(startup);
+      PROCESS_INFORMATION process{};
+      check(CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+        nullptr, root.c_str(), &startup, &process) != FALSE, "transient worker");
+      OwnedHandle child(process.hProcess), thread(process.hThread);
+      WaitForSingleObject(child.value, INFINITE);
+    }
     // Continually create threads to exercise suspension during thread churn.
     std::thread thread([&]() {
       DWORD written = 0;
@@ -57,6 +69,17 @@ void worker(const std::wstring& root, bool children) {
       FlushFileBuffers(file.value);
     });
     thread.join(); Sleep(10);
+  }
+}
+
+void transient_worker(const std::wstring& root) {
+  OwnedHandle file(CreateFileW((root + L"\\creation.spawn").c_str(), FILE_APPEND_DATA,
+    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+  check(file.value != INVALID_HANDLE_VALUE, "descendant creation heartbeat");
+  for (unsigned int index = 0; index < 8; index++) {
+    DWORD written = 0;
+    check(WriteFile(file.value, ".", 1, &written, nullptr) != FALSE && written == 1, "descendant heartbeat");
+    FlushFileBuffers(file.value); Sleep(10);
   }
 }
 
@@ -138,10 +161,10 @@ class SuspendedThreads {
   std::map<DWORD, std::unique_ptr<OwnedHandle>> threads_;
 };
 
-std::map<std::wstring, uintmax_t> heartbeats(const std::wstring& root) {
+std::map<std::wstring, uintmax_t> heartbeats(const std::wstring& root, bool include_creation = false) {
   std::map<std::wstring, uintmax_t> values;
   for (const auto& entry : std::filesystem::directory_iterator(root)) {
-    if (entry.path().extension() != L".tick") continue;
+    if (entry.path().extension() != L".tick" && !(include_creation && entry.path().extension() == L".spawn")) continue;
     // FindFirstFile directory metadata can lag a file that remains open.
     // Read current size through a file handle instead of that cached snapshot.
     OwnedHandle file(CreateFileW(entry.path().c_str(), FILE_READ_ATTRIBUTES,
@@ -200,27 +223,32 @@ void probe(const std::wstring& root, bool standard_user) {
       paused.pause(); paused.pause();
       suspended = (std::max)(suspended, paused.size());
       Sleep(50); // Allow already-issued kernel file writes to settle.
-      const auto before = heartbeats(root);
+      const auto before = heartbeats(root, true);
       Sleep(150);
-      check(heartbeats(root) == before, "all worker activity remains paused");
+      check(heartbeats(root, true) == before, "all worker and newly created descendant activity remains paused");
       paused.resume(); paused.resume();
       bool advanced = false;
       for (unsigned int wait = 0; wait < 100; wait++) {
         Sleep(20);
-        const auto after = heartbeats(root);
+        const auto after = heartbeats(root, true);
         advanced = std::all_of(before.begin(), before.end(), [&](const auto& value) {
           return after.at(value.first) > value.second;
         });
         if (advanced) break;
       }
       if (!advanced) {
-        const auto after = heartbeats(root);
-        for (const auto& value : before) std::cerr << "worker=" << std::stoul(value.first)
+        const auto after = heartbeats(root, true);
+        for (const auto& value : before) std::wcerr << L"worker=" << value.first
           << " before=" << value.second << " after=" << after.at(value.first) << '\n';
         throw std::runtime_error("Workers did not resume within two seconds");
       }
     }
     paused.pause();
+    for (const auto pid : members(job.value)) {
+      auto retained = std::make_unique<OwnedHandle>(OpenProcess(SYNCHRONIZE, FALSE, pid));
+      if (retained->value) worker_handles.push_back(std::move(retained));
+      else check(GetLastError() == ERROR_INVALID_PARAMETER, "retain paused descendant identity");
+    }
     check(TerminateJobObject(job.value, 0) != FALSE, "cancel whole job while paused");
   }
   for (unsigned int wait = 0; !members(job.value).empty() && wait < 100; wait++) Sleep(20);
@@ -233,7 +261,7 @@ void probe(const std::wstring& root, bool standard_user) {
   std::cout << "{\"scope\":\"job-process-spike\",\"passed\":true,\"workers\":3,\"pauseResumeCycles\":10,\"suspendedThreads\":"
     << suspended << ",\"initialJobMembers\":" << initial_members.size()
     << ",\"elevated\":" << (elevation.TokenIsElevated ? "true" : "false")
-    << ",\"cancelWhilePaused\":true,\"remainingProcesses\":0,\"p0Accepted\":false}\n";
+    << ",\"descendantCreationChurn\":true,\"cancelWhilePaused\":true,\"remainingProcesses\":0,\"p0Accepted\":false}\n";
 }
 
 int wmain(int argc, wchar_t** argv) {
@@ -242,6 +270,7 @@ int wmain(int argc, wchar_t** argv) {
     const std::wstring mode(argv[1]);
     if (mode == L"probe" || mode == L"probe-standard") probe(argv[2], mode == L"probe-standard");
     else if (mode == L"worker" || mode == L"leaf") worker(argv[2], mode == L"worker");
+    else if (mode == L"transient") transient_worker(argv[2]);
     else throw std::runtime_error("Unknown process probe mode");
     return 0;
   } catch (const std::exception& error) {
