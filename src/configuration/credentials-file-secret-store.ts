@@ -7,7 +7,8 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, relative } from 'node:path';
+import type { WindowsPrivateFileRoot } from '../platform/windows-private-files.js';
 import type { SecretReference, SecretStore } from './secret-store.js';
 import { assertSecretReference } from './secret-store.js';
 
@@ -44,9 +45,14 @@ function locateCredential(reference: SecretReference): CredentialLocation {
 }
 
 export class CredentialsFileSecretStore implements SecretStore {
-  constructor(readonly filePath: string) {}
+  constructor(readonly filePath: string, private readonly windows?: WindowsPrivateFileRoot) {}
 
   async initialize(): Promise<void> {
+    if (this.windows) {
+      this.windows.files.ensurePrivateDirectory(this.windows.root);
+      this.windows.files.ensurePrivateDirectory(dirname(this.filePath));
+      return;
+    }
     await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 });
   }
 
@@ -118,7 +124,10 @@ export class CredentialsFileSecretStore implements SecretStore {
   private async read(): Promise<CredentialsDocument> {
     let text: string;
     try {
-      text = await readFile(this.filePath, 'utf8');
+      if (this.windows) {
+        await this.initialize();
+        text = this.windows.files.readPrivateFile(this.windows.root, relative(this.windows.root, this.filePath)).toString('utf8');
+      } else text = await readFile(this.filePath, 'utf8');
     } catch (error) {
       if (isMissingFileError(error)) {
         const missing = new Error(`credentials file is missing: ${this.filePath}`);
@@ -143,17 +152,20 @@ export class CredentialsFileSecretStore implements SecretStore {
 
   private async write(document: CredentialsDocument): Promise<void> {
     await this.initialize();
+    const serialized = `${JSON.stringify({
+      version: 1,
+      providers: document.providers,
+      ...(document.internal && Object.keys(document.internal).length > 0 ? { internal: document.internal } : {}),
+    }, null, 2)}\n`;
+    if (this.windows) {
+      this.windows.files.writePrivateFile(this.windows.root, relative(this.windows.root, this.filePath), Buffer.from(serialized));
+      return;
+    }
     const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`;
     try {
       await writeFile(
         temporaryPath,
-        `${JSON.stringify({
-          version: 1,
-          providers: document.providers,
-          ...(document.internal && Object.keys(document.internal).length > 0
-            ? { internal: document.internal }
-            : {}),
-        }, null, 2)}\n`,
+        serialized,
         { encoding: 'utf8', mode: 0o600 },
       );
       await chmod(temporaryPath, 0o600);

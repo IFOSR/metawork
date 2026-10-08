@@ -1,8 +1,9 @@
 import { mkdir, open, readFile, unlink } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, relative } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isNamedPipePath } from '../platform/local-endpoint.js';
 import { replaceFile } from '../platform/atomic-replace.js';
+import type { WindowsPrivateFileRoot } from '../platform/windows-private-files.js';
 
 export const ENDPOINT_MANIFEST_VERSION = 1 as const;
 
@@ -43,8 +44,14 @@ export type ServerReadiness = 'ready' | 'starting_or_failed' | 'not_running';
 export async function writeEndpointManifest(
   path: string,
   manifest: EndpointManifest,
+  windows?: WindowsPrivateFileRoot,
 ): Promise<void> {
   assertManifest(manifest);
+  if (windows) {
+    windows.files.ensurePrivateDirectory(windows.root);
+    windows.files.writePrivateFile(windows.root, relative(windows.root, path), Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`));
+    return;
+  }
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporaryPath = `${path}.tmp-${process.pid}-${randomUUID()}`;
   try {

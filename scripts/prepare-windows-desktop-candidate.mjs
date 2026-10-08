@@ -4,6 +4,7 @@ import { generateKeyPairSync, createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 if (process.platform !== 'win32' || process.arch !== 'x64' || process.env.GITHUB_ACTIONS !== 'true'
   || process.env.GITHUB_REF !== 'refs/heads/feat/windows-desktop') {
@@ -36,6 +37,7 @@ try {
   }
   const artifacts = join(candidate, 'archives');
   run(node, ['scripts/package-release.mjs', '--out-dir', artifacts,
+    '--artifact-base-url', pathToFileURL(artifacts).href,
     '--release-id', `0.1.5-windows-ci-${sourceCommit.slice(0, 12)}`, '--channel', 'preview',
     '--key-id', keyId, '--signing-key', keyPath]);
   const resources = join(candidate, 'resources');

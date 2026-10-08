@@ -50,6 +50,8 @@ napi_value files(napi_env env, napi_callback_info info) {
       write_private_file(string_argument(env, arguments[0]), string_argument(env, arguments[1]), static_cast<BYTE*>(bytes), length, maximum);
     }
     napi_get_undefined(env, &result); return result;
+  } catch (const PrivateFileNotFound& error) {
+    napi_throw_error(env, "ENOENT", error.what()); return nullptr;
   } catch (const std::exception& error) {
     napi_throw_error(env, nullptr, error.what()); return nullptr;
   }

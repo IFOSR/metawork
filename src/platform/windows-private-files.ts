@@ -8,6 +8,11 @@ export interface WindowsPrivateFiles {
   writePrivateFile(root: string, relative: string, data: Buffer, maximum?: number): void;
 }
 
+export interface WindowsPrivateFileRoot {
+  root: string;
+  files: WindowsPrivateFiles;
+}
+
 export function loadWindowsPrivateFiles(modulePath: string): WindowsPrivateFiles {
   if (process.platform !== 'win32' || !isAbsolute(modulePath)) throw new Error('Absolute Windows platform module required');
   const addon: unknown = createRequire(import.meta.url)(modulePath);

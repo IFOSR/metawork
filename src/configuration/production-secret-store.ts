@@ -1,6 +1,7 @@
 import { FileSecretStore } from './file-secret-store.js';
 import { KeychainSecretStore } from './keychain-secret-store.js';
 import { CredentialsFileSecretStore } from './credentials-file-secret-store.js';
+import type { WindowsPrivateFileRoot } from '../platform/windows-private-files.js';
 import {
   assertSecretReference,
   type SecretReference,
@@ -13,8 +14,9 @@ import {
 
 export function createProductionSecretStore(input: {
   credentialsFile: string;
+  windows?: WindowsPrivateFileRoot;
 }): CredentialsFileSecretStore {
-  return new CredentialsFileSecretStore(input.credentialsFile);
+  return new CredentialsFileSecretStore(input.credentialsFile, input.windows);
 }
 
 export function createLegacyProductionSecretStore(input: {

@@ -2,6 +2,11 @@
 #pragma once
 #include <memory>
 
+class PrivateFileNotFound : public std::runtime_error {
+ public:
+  PrivateFileNotFound() : std::runtime_error("Private file does not exist") {}
+};
+
 bool trusted_sid(PSID sid, const std::vector<BYTE>& own) {
   return EqualSid(sid, const_cast<BYTE*>(own.data())) != FALSE
     || IsWellKnownSid(sid, WinLocalSystemSid) != FALSE
@@ -121,6 +126,9 @@ std::vector<BYTE> read_private_file(const std::wstring& root, const std::wstring
   }
   Handle file(CreateFileW(path.c_str(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ | FILE_SHARE_DELETE,
     nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+  // Only a missing final file is an empty-store case. Missing/unsafe ancestors,
+  // ACL denial and malformed paths must never become a new empty credential store.
+  if (file.get() == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND) throw PrivateFileNotFound();
   require(file.get() != INVALID_HANDLE_VALUE, "open private file");
   // Every ancestor is already pinned and non-reparse, and this final open uses
   // OPEN_REPARSE_POINT. Validate the opened inode, not its later pathname:
