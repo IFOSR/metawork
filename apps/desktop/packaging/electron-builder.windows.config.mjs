@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { cp, readFile } from 'node:fs/promises';
 import { verifyDesktopRelease } from '../dist/release-tools.mjs';
 
 const resources = process.env.METAWORK_DESKTOP_RESOURCES;
@@ -15,7 +15,18 @@ export default {
   appId: 'com.metawork.desktop', productName: 'MetaWork', asar: true, npmRebuild: false,
   artifactName: 'MetaWork-win32-${arch}-setup.${ext}', directories: { output: 'release/windows' },
   files: ['dist/main.js', 'dist/preload.cjs', 'shell/**', 'package.json'],
-  extraResources: [{ from: resolve(resources), to: '.', filter: ['desktop-release.json', 'trusted-release-keys.json', 'payload/**'] }],
+  // Copy the sealed tree ourselves: Builder's walker unconditionally drops
+  // .gitkeep/.DS_Store, including files inside bundled third-party tools.
+  // The signed inventory must describe exactly what reaches the installer.
+  afterPack: async context => {
+    const destination = resolve(context.appOutDir, 'resources');
+    for (const name of ['desktop-release.json', 'trusted-release-keys.json', 'payload']) {
+      await cp(resolve(resources, name), resolve(destination, name), { recursive: true });
+    }
+    const trustedKeys = JSON.parse(await readFile(resolve(resources, 'trusted-release-keys.json'), 'utf8'));
+    await verifyDesktopRelease(destination, { trustedKeys, platform: 'win32', arch: 'x64',
+      desktopVersion: context.packager.appInfo.version, allowDevelopment: true });
+  },
   forceCodeSigning: false,
   win: { target: [{ target: 'nsis', arch: ['x64'] }, { target: 'dir', arch: ['x64'] }], signAndEditExecutable: false },
   nsis: {

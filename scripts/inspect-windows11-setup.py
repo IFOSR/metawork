@@ -29,7 +29,9 @@ def inspect_setup(disk, evidence, secrets):
         loop = run(['sudo', 'losetup', '--read-only', '--partscan', '--find', '--show', str(disk)])
         if not re.fullmatch(r'/dev/loop\d+', loop):
             raise RuntimeError('Unexpected loop device identity')
-        run(['sudo', 'mount', '-t', 'ntfs-3g', '-o', 'ro,norecover', loop + 'p3', str(mount)])
+        # A stopped evaluation guest can leave NTFS dirty; a read-only mount
+        # still forbids writes, while norecover refuses even diagnostic reads.
+        run(['sudo', 'mount', '-t', 'ntfs-3g', '-o', 'ro', loop + 'p3', str(mount)])
         mounted = True
         result = mount / 'Windows/Temp/metawork-guest-result.json'
         if result.is_file() and result.stat().st_size <= 32768:

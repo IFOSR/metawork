@@ -35,7 +35,13 @@ let serverPid;
 try {
   assert.equal(await app.evaluate(({ app }) => app.isPackaged), true);
   const page = await app.firstWindow();
-  await page.locator('#setup').waitFor({ state: 'visible', timeout: 120000 });
+  await page.waitForFunction(async () => {
+    const state = await window.metaworkShell.state();
+    return state.phase === 'setup' || state.phase === 'error';
+  }, undefined, { timeout: 120000 });
+  const initialState = await page.evaluate(() => window.metaworkShell.state());
+  assert.equal(initialState.phase, 'setup', initialState.message);
+  await page.locator('#setup').waitFor({ state: 'visible' });
   await page.locator('#provider-url').fill('https://provider.example.invalid/v1');
   await page.locator('#model-id').fill('deepseek-chat');
   await page.locator('#api-key').fill('packaged-install-fixture');
@@ -60,7 +66,8 @@ try {
 } catch (error) {
   const page = await app.firstWindow().catch(() => null);
   await page?.screenshot({ path: join(evidence, 'packaged-install-failure.png') }).catch(() => undefined);
-  await writeFile(join(evidence, 'packaged-install-failure.json'), JSON.stringify({ message: error.message, url: page?.url() }, null, 2));
+  const shellState = await page?.evaluate(() => window.metaworkShell?.state()).catch(() => undefined);
+  await writeFile(join(evidence, 'packaged-install-failure.json'), JSON.stringify({ message: error.message, url: page?.url(), shellState }, null, 2));
   throw error;
 } finally {
   await app.close().catch(() => undefined);

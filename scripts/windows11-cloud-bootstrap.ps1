@@ -1,6 +1,6 @@
 # Runs once inside the disposable Windows 11 evaluation guest. No product secrets.
 $ErrorActionPreference = 'Stop'
-$report = @{ scope = 'windows11-cloud-environment'; desktopAppVerified = $false }
+$report = @{ scope = 'windows11-cloud-environment'; sourceCommit = '@SOURCE_COMMIT@'; desktopAppVerified = $false }
 'first-logon' | Set-Content -LiteralPath 'C:\Windows\Temp\metawork-guest-stage.txt'
 function Write-SerialEvidence($value) {
   # Independent of guest NIC drivers; never write credentials or answer media.

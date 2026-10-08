@@ -51,7 +51,23 @@ with iso.open('rb') as source:
 }, indent=2))
 
 escape = xml.sax.saxutils.escape
-command = r'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Windows\Temp\metawork-bootstrap.ps1'
+logon_script = r"""
+$ErrorActionPreference = 'Stop'
+'locating-answer-media' | Set-Content 'C:\Windows\Temp\metawork-guest-stage.txt'
+for ($attempt = 0; $attempt -lt 30; $attempt++) {
+  foreach ($drive in [IO.DriveInfo]::GetDrives()) {
+    $entry = Join-Path $drive.Name 'metawork-bootstrap.ps1'
+    if (Test-Path -LiteralPath $entry) {
+      Copy-Item -LiteralPath $entry -Destination 'C:\Windows\Temp\metawork-bootstrap.ps1' -Force
+      & 'C:\Windows\Temp\metawork-bootstrap.ps1'
+      exit
+    }
+  }
+  Start-Sleep -Seconds 2
+}
+throw 'Answer media bootstrap not found'
+"""
+command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ' + base64.b64encode(logon_script.encode('utf-16le')).decode()
 copy_bootstrap = r'cmd.exe /c for %d in (D E F G H I J) do @if exist %d:\metawork-bootstrap.ps1 copy /y %d:\metawork-bootstrap.ps1 C:\Windows\Temp\metawork-bootstrap.ps1'
 (media / 'Autounattend.xml').write_text(f'''<?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
@@ -91,7 +107,7 @@ copy_bootstrap = r'cmd.exe /c for %d in (D E F G H I J) do @if exist %d:\metawor
     </component>
   </settings>
 </unattend>''', encoding='utf-8')
-bootstrap = Path('scripts/windows11-cloud-bootstrap.ps1').read_text().replace('@TOKEN@', token)
+bootstrap = Path('scripts/windows11-cloud-bootstrap.ps1').read_text().replace('@TOKEN@', token).replace('@SOURCE_COMMIT@', os.environ['GITHUB_SHA'])
 (media / 'metawork-bootstrap.ps1').write_text(bootstrap, encoding='utf-8-sig')
 answer_iso = root / 'answers.iso'
 subprocess.run(['xorriso', '-as', 'mkisofs', '-quiet', '-J', '-r', '-V', 'MWCI', '-o', str(answer_iso), str(media)], check=True)
