@@ -27,6 +27,7 @@ const PROVIDER_REFERENCE =
   /^(?:file-secret|keychain):anyfusion\/(?:providers\/)?([a-z][a-z0-9-]{0,63})$/u;
 const INTERNAL_REFERENCE =
   /^(?:file-secret|keychain):anyfusion\/internal\/([a-z][a-z0-9-]{0,63})$/u;
+const WINDOWS_CREDENTIAL_LIMIT = 9 * 1024 * 1024;
 
 type CredentialLocation =
   | { kind: 'provider'; key: string }
@@ -126,7 +127,7 @@ export class CredentialsFileSecretStore implements SecretStore {
     try {
       if (this.windows) {
         await this.initialize();
-        text = this.windows.files.readPrivateFile(this.windows.root, relative(this.windows.root, this.filePath)).toString('utf8');
+        text = this.windows.files.readPrivateFile(this.windows.root, relative(this.windows.root, this.filePath), WINDOWS_CREDENTIAL_LIMIT).toString('utf8');
       } else text = await readFile(this.filePath, 'utf8');
     } catch (error) {
       if (isMissingFileError(error)) {
@@ -158,7 +159,7 @@ export class CredentialsFileSecretStore implements SecretStore {
       ...(document.internal && Object.keys(document.internal).length > 0 ? { internal: document.internal } : {}),
     }, null, 2)}\n`;
     if (this.windows) {
-      this.windows.files.writePrivateFile(this.windows.root, relative(this.windows.root, this.filePath), Buffer.from(serialized));
+      this.windows.files.writePrivateFile(this.windows.root, relative(this.windows.root, this.filePath), Buffer.from(serialized), WINDOWS_CREDENTIAL_LIMIT);
       return;
     }
     const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`;

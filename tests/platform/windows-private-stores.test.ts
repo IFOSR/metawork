@@ -30,6 +30,11 @@ describe.skipIf(process.platform !== 'win32')('native Windows credential and end
     expect(await store.get('file-secret:anyfusion/internal/span')).toBe('internal-fixture');
     expect(JSON.parse(windows.files.readPrivateFile(windows.root, 'credentials.json').toString()))
       .toEqual({ version: 1, providers: {}, internal: { span: 'internal-fixture' } });
+    // Multiple valid provider keys may exceed the native primitive's default
+    // 64 KiB. Credential documents request the explicit larger bounded limit.
+    const values = Object.fromEntries(Array.from({ length: 12 }, (_, index) => [`provider-${index}`, 'x'.repeat(8192)]));
+    await store.putProviders(values);
+    expect(await store.get('file-secret:anyfusion/providers/provider-11')).toBe(values['provider-11']);
   });
   it('refuses junction redirection without overwriting the destination secret', async () => {
     const outside = join(temporary, 'outside.json');
