@@ -1285,7 +1285,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       plannerSessionId: conversationId,
       plannerBindingFingerprint: stagedConfiguration.plannerBindingFingerprint,
       plannerProviderRef: stagedConfiguration.plannerBinding?.providerRef,
-      plannerModelId: plannerModel?.modelId,
+      plannerModelId: stagedConfiguration.plannerBinding
+        ? stagedConfiguration.snapshot.config.models[stagedConfiguration.plannerBinding.modelRef]?.modelId
+        : undefined,
       runtimePort: port,
       mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
       presentation,

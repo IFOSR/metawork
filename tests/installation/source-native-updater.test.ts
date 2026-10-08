@@ -38,6 +38,21 @@ afterEach(() => {
 });
 
 describe('SourceNativeUpdater', () => {
+  it('preserves a model-free installation across update and rollback', async () => {
+    const fixture = await installedFixture(false);
+    const repository = new FileConfigurationRepository(fixture.accountPaths.config);
+    const before = await repository.getActiveSnapshot();
+    const sourceRoot = join(fixture.home, 'source-next');
+    const plannerRoot = join(fixture.home, 'planner-next');
+    fixtureRelease(sourceRoot, plannerRoot, 'next-runtime', 'next-planner');
+    const updater = new SourceNativeUpdater({ paths: fixture.paths, secretStore: fixture.secretStore,
+      detectCommand: async () => true, isServerRunning: async () => false });
+    await updater.update({ releaseId: '1.2.1-preview.0', sourceRoot, plannerRoot });
+    expect((await repository.getActiveSnapshot()).config.providers).toEqual({});
+    expect((await repository.getActiveSnapshot()).config.models).toEqual({});
+    await updater.rollback('1.2.0-preview.0');
+    expect((await repository.getActiveSnapshot()).contentHash).toBe(before.contentHash);
+  });
   it('lets the desktop helper recover a prepared native activation without staging another release', async () => {
     const fixture = await installedJournalFixture();
     const before = fixturePointers(fixture);
@@ -735,7 +750,7 @@ async function installedJournalFixture() {
   };
 }
 
-async function installedFixture() {
+async function installedFixture(configured = true) {
   const home = mkdtempSync(join(tmpdir(), 'anyfusion-source-update-'));
   cleanup.push(home);
   const sourceRoot = join(home, 'source-initial');
@@ -752,13 +767,13 @@ async function installedFixture() {
     releaseId: '1.2.0-preview.0',
     sourceRoot,
     plannerRoot,
-    provider: {
+    provider: configured ? {
       baseUrl: 'https://provider.example/v1',
       apiKey: 'secret',
       modelId: 'model',
       region: 'international',
       secretReference: 'file-secret:anyfusion/provider',
-    },
+    } : undefined,
   });
   return { home, paths, accountPaths, secretStore };
 }

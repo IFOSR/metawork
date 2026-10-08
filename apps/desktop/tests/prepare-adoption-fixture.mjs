@@ -14,14 +14,6 @@ const application = join(root, 'MetaWork.app');
 await mkdir(root, { recursive: true });
 await cp(source, application, { recursive: true, force: false, errorOnExist: true, verbatimSymlinks: true });
 const resources = join(application, 'Contents/Resources');
-await cp(resolve('dist'), join(resources, 'payload/metawork/dist'), { recursive: true });
-const shell = join(root, 'shell-package');
-await mkdir(shell);
-for (const name of ['dist', 'shell', 'package.json']) {
-  await cp(resolve('apps/desktop', name), join(shell, name), { recursive: true });
-}
-await createPackage(shell, join(resources, 'app.asar'));
-const keys = generateKeyPairSync('ed25519');
 await build({ stdin: { contents: `
 export { SourceNativeInstaller } from './src/installation/source-native-installer.ts';
 export { resolveMetaWorkPaths } from './src/installation/paths.ts';
@@ -31,6 +23,23 @@ export { commandExistsOnPath } from './src/configuration/production-configuratio
 export { canonicalizeReleaseManifestPayload } from './src/installation/release-manifest.ts';
 `, resolveDir: process.cwd() }, outfile: join(root, 'fixture-tools.mjs'), bundle: true, platform: 'node', format: 'esm',
   external: ['better-sqlite3'], target: 'node22' });
+// Acceptance of a distributable must preserve its signed payload and shell.
+if (process.argv.includes('--exact')) {
+  const descriptor = JSON.parse(await readFile(join(resources, 'desktop-release.json'), 'utf8'));
+  const trustedKeys = JSON.parse(await readFile(join(resources, 'trusted-release-keys.json'), 'utf8'));
+  await verifyDesktopRelease(resources, { trustedKeys, arch: process.arch,
+    desktopVersion: descriptor.desktopVersion, allowDevelopment: true });
+  console.log(`Exact packaged app copied to ${application}`);
+  process.exit(0);
+}
+await cp(resolve('dist'), join(resources, 'payload/metawork/dist'), { recursive: true });
+const shell = join(root, 'shell-package');
+await mkdir(shell);
+for (const name of ['dist', 'shell', 'package.json']) {
+  await cp(resolve('apps/desktop', name), join(shell, name), { recursive: true });
+}
+await createPackage(shell, join(resources, 'app.asar'));
+const keys = generateKeyPairSync('ed25519');
 const { canonicalizeReleaseManifestPayload } = await import(pathToFileURL(join(root, 'fixture-tools.mjs')).href);
 function signed(value) {
   const { signature: _, ...body } = value;

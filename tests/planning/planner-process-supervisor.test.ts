@@ -235,6 +235,25 @@ function completeConfigurationRpcTurnWithStructuredOutput(
 }
 
 describe('PlannerProcessSupervisor', () => {
+  it('clears a configured binding when activation restores an unconfigured account', async () => {
+    const spawn = vi.fn();
+    const supervisor = new PlannerProcessSupervisor({ spawn: spawn as never });
+    await supervisor.refreshBinding({ configurationRevision: 'configured', bindingFingerprint: 'binding',
+      provider: 'provider', modelId: 'model', runtimeEnvironment: {
+        OPENAI_BASE_URL: 'https://test.invalid/v1', OPENAI_API_KEY: 'fixture',
+        OPENAI_API_KEY__PROVIDER: 'fixture', OPENAI_MODEL: 'model',
+      } });
+    expect(supervisor.runtimeBinding?.configurationRevision).toBe('configured');
+    await supervisor.clearBinding();
+    expect(supervisor.runtimeBinding).toBeUndefined();
+    expect(spawn).not.toHaveBeenCalled();
+    await supervisor.refreshBinding({ configurationRevision: 'configured-again', bindingFingerprint: 'new-binding',
+      provider: 'provider', modelId: 'model', runtimeEnvironment: {
+        OPENAI_BASE_URL: 'https://test.invalid/v1', OPENAI_API_KEY: 'fixture-new',
+        OPENAI_API_KEY__PROVIDER: 'fixture-new', OPENAI_MODEL: 'model',
+      } });
+    expect(supervisor.runtimeBinding?.configurationRevision).toBe('configured-again');
+  });
   it('keeps concurrently pinned Planner runs isolated across revisions', async () => {
     const first = fakeProcess(); const second = fakeProcess();
     completeRpcTurn(second, { provider: 'provider', modelId: 'model-new' });

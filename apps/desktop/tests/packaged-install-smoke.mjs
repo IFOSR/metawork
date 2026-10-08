@@ -42,6 +42,7 @@ try {
   const saved = page.waitForResponse(response => response.url().endsWith('/api/config/activate'));
   await page.getByRole('button', { name: '保存并激活', exact: true }).click();
   assert.equal((await saved).status(), 200);
+  assert.equal((await (await saved).json()).ok, true);
   assert.equal((await page.evaluate(async () => (await (await fetch('/api/config/activation-status')).json()))).workConfigurationReady, false);
   await page.getByRole('button', { name: '关闭', exact: true }).click();
   await verifyDesktopMenu(app);
@@ -51,10 +52,45 @@ try {
   await page.locator('.workspace-shell').waitFor({ timeout: 30000 });
   const evidence = resolve('apps/desktop/release/evidence'); await mkdir(evidence, { recursive: true });
   await page.screenshot({ path: join(evidence, 'packaged-install.png') });
+  // Exercise the real shared Settings activation transaction, without an LLM request.
+  const activation = await page.evaluate(async () => {
+    const initial = await (await fetch('/api/config')).json();
+    const config = structuredClone(initial.config);
+    config.providers.fixture = { protocol: 'openai-compatible', baseUrl: 'https://provider.example.invalid/v1',
+      apiKeyRef: 'file-secret:anyfusion/providers/fixture', region: 'international', enabled: true };
+    config.models.fixture = { providerRef: 'fixture', modelId: 'deepseek-chat',
+      capabilities: ['planning', 'structured-output', 'tools', 'coding'], reasoning: 'high',
+      costInputPerMillion: 2, costOutputPerMillion: 3, enabled: true };
+    for (const ref of ['planner', 'pi-engineering']) {
+      config.agentClasses[ref].enabled = true;
+      config.agentClasses[ref].modelPolicy = { mode: 'fixed', modelRef: 'fixture' };
+    }
+    const activate = body => fetch('/api/config/activate', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const failed = await activate({ baseRevisionId: initial.revisionId, config });
+    const failedBody = await failed.json();
+    const afterFailure = await (await fetch('/api/config')).json();
+    const saved = await activate({ baseRevisionId: initial.revisionId, config,
+      secrets: { fixture: 'isolated-activation-test' } });
+    const savedBody = await saved.json();
+    const after = await (await fetch('/api/config')).json();
+    return { failedBody, failurePreservedRevision: afterFailure.revisionId === initial.revisionId,
+      failureReady: afterFailure.workConfigurationReady, savedStatus: saved.status, savedBody,
+      ready: after.workConfigurationReady };
+  });
+  assert.equal(activation.failedBody.ok, false);
+  assert.equal(activation.failedBody.code, 'probe_failed');
+  assert.equal(activation.failurePreservedRevision, true);
+  assert.equal(activation.failureReady, false);
+  assert.equal(activation.savedStatus, 200, JSON.stringify(activation.savedBody));
+  assert.equal(activation.savedBody.ok, true, JSON.stringify(activation.savedBody));
+  assert.equal(activation.ready, true);
+  await page.getByRole('button', { name: '配置模型', exact: true }).waitFor({ state: 'hidden' });
+  assert.equal(JSON.parse(await readFile(join(installRoot, 'server-endpoint.json'), 'utf8')).pid, serverPid);
   await app.close();
   process.kill(serverPid, 0);
   await writeFile(join(evidence, 'packaged-install.json'), JSON.stringify({
-    application, authenticated, cleanInstall: true, modelFreeInstallation: true, settingsAccessible: true, developerCredentialsAbsent: true,
+    application, authenticated, cleanInstall: true, modelFreeInstallation: true, settingsAccessible: true, firstActivationWithoutRestart: true, failedProbePreservedState: true, developerCredentialsAbsent: true,
     restrictedPath: env.PATH, serverSurvivedExit: true, paidTaskExecuted: false,
   }, null, 2));
   console.log('Packaged Desktop clean installation, authenticated Web and Server survival passed.');
