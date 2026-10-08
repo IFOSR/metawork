@@ -224,3 +224,7 @@ Server 账户迁移 manifest、Conversation metadata/pending-history、兼容 pr
 `59a9be55` 的 Pageant x64 源码构建/二进制往返与完整 Windows Runtime/Desktop 资源校验已通过，正式安装随后在旧 FileConfigurationRepository 的只读 fsync 报 EPERM；`8dc2a666` 已接入可写句柄，待云端安装复验。candidate 保存 Pageant 来源/产物哈希证据。`8dc2a666` macOS 回归的唯一失败是架构测试精确匹配旧构造器参数，更新为仍严格核对 accountPaths.config + Windows adapter；35 项模块边界复验通过。此项不代表 Windows 配置或完整安装已通过。
 
 配置/首次安装指针新增原生 Windows 相对 symlink 创建及 FileRenameInfoEx 替换：固定祖先，拒绝 junction/非符号链接目标覆盖，验证最终目标类型与安装根边界，父目录刷新成功后返回。保留原相对链接格式及原激活 journal；Windows 普通用户 probe 显式配置并恢复开发者模式前置。新增目录/文件指针切换、越界目标和普通文件保留负例；macOS 配置/安装/架构 18 项与类型检查通过，原生结果待云端，尚未作为 updater 全量交付证据。
+
+`8dc2a666` 的原生 flush 与普通用户写入已通过，但配置 revision 的 Node mkdir 子目录被 owner/ACL gate 拒绝。Windows 提权 token 的默认 owner 可为 Administrators，目录虽然继承封闭 ACL，仍不满足旧 exact-user owner 条件。按方案允许 SYSTEM/管理员管理权限，private-file owner 与 allow ACE 统一限定 current SID/SYSTEM/Administrators；不接受其他用户、宽泛组、null DACL 或 unsafe links，pipe peer SID 仍严格要求当前用户。新增 Node 创建子目录/文件的管理员与普通用户回归，复用已有跨账号拒绝；该修正待云端确认，未移除安全门。
+
+candidate 后续增加安装后的 DesktopServiceManager 自动启动/复用真实 Server、单次票据 HTTP 会话、普通浏览器未认证检查和正式 stop/drain 凭据/endpoint/runtime.lock 清理；使用无效域名假 provider key，不调用模型，真实 GUI/模型任务仍独立验收。错误证据只保留有界过滤后的 Server 错误栈，不上传登录 token。

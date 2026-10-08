@@ -16,6 +16,11 @@ export async function probePlatformFiles(addon, output, addonPath) {
     addon.ensurePrivateDirectory(root);
     addon.ensurePrivateDirectory(root);
     addon.ensurePrivateDirectory(join(root, 'nested'));
+    await mkdir(join(root, 'node-created'));
+    await writeFile(join(root, 'node-created/value'), 'inherited-private-acl');
+    assert.equal(addon.readPrivateFile(root, 'node-created\\value').toString(), 'inherited-private-acl');
+    addon.ensurePrivateDirectory(join(root, 'node-created'));
+    checks.push('Node-created children retain the closed user/System/Administrators boundary under either token elevation');
     addon.writePrivateFile(root, 'nested\\endpoint.json', Buffer.from('first'));
     assert.equal(addon.readPrivateFile(root, 'nested\\endpoint.json').toString(), 'first');
     checks.push('private initialization and Unicode nested file');

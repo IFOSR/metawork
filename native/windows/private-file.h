@@ -32,7 +32,11 @@ void inspect_private_file(HANDLE file, bool directory, bool allow_unlinked = fal
     OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &owner, nullptr, &acl, nullptr, &descriptor);
   require(result == ERROR_SUCCESS, "file security information");
   auto own = process_user(GetCurrentProcess());
-  bool valid = owner && EqualSid(owner, own.data()) && acl && acl->AceCount > 0;
+  // Elevated Windows tokens may assign Administrators as the default owner
+  // for Node-created children. SYSTEM/Administrators already have explicit
+  // management authority in our DACL; require the same closed principal set
+  // for ownership and every allow ACE. An unrelated user's SID is never valid.
+  bool valid = owner && trusted_sid(owner, own) && acl && acl->AceCount > 0;
   if (valid) {
     for (DWORD index = 0; index < acl->AceCount; index++) {
       void* raw = nullptr;

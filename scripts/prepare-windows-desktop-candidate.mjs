@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
 
 if (process.platform !== 'win32' || process.arch !== 'x64' || process.env.GITHUB_ACTIONS !== 'true'
   || process.env.GITHUB_REF !== 'refs/heads/feat/windows-desktop') {
@@ -54,8 +55,13 @@ try {
     descriptorSha256: createHash('sha256').update(descriptor).digest('hex'),
     fileCount: Object.keys(JSON.parse(descriptor).files).length }, null, 2));
   console.log('Windows candidate resource payload verified; installer and GUI acceptance remain open.');
+  const clientPath = join(candidate, 'validation-client.mjs');
+  const { build } = createRequire(import.meta.url)('../apps/desktop/node_modules/esbuild');
+  await build({ stdin: { contents: "export { DesktopServiceManager } from './src/client/desktop-service-manager.ts'; export { exchangeDesktopSession } from './src/client/desktop-session-client.ts';",
+    resolveDir: source, sourcefile: 'windows-installed-client.ts' }, outfile: clientPath,
+    bundle: true, platform: 'node', format: 'esm', target: 'node22' });
   run(join(tools, 'node/node.exe'), ['scripts/probe-windows-desktop-install.mjs', resources,
-    join(candidate, 'isolated-installation'), join(evidence, 'isolated-install.json')]);
+    join(candidate, 'isolated-installation'), join(evidence, 'isolated-install.json'), clientPath]);
 } finally {
   await rm(keyPath, { force: true });
 }

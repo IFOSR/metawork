@@ -70,6 +70,13 @@ and remote-client rejection. Client connection verifies kernel Server PID and
 SID before writing; Server admission verifies the connecting principal. Private
 files are checked through pinned handles, including owner, ACL and reparse
 boundaries, before their contents become identity inputs.
+The permitted private-file owner and DACL trustee set is the current user,
+SYSTEM and Administrators, matching the plan's explicit management exception.
+Elevated tokens can assign Administrators ownership to Node-created children;
+this is accepted only with the same closed DACL. Other users, broad groups,
+null DACLs and unsafe links remain rejected. Pipe peer authentication continues
+to require the exact current-user SID; file administration grants do not change
+that identity contract.
 
 This selects the carrier, not a completed transport: asynchronous connection
 lifecycle, cancellation, bounded buffering, private file writes/replacement,
