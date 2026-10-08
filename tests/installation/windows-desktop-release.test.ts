@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { DesktopReleaseSchema, desktopInventory, verifyDesktopRelease } from '../../src/installation/desktop-release.js';
+import { DesktopReleaseSchema, desktopInventory, verifyDesktopRelease, validateDesktopArchivePath } from '../../src/installation/desktop-release.js';
 import { canonicalizeReleaseManifestPayload } from '../../src/installation/release-manifest.js';
 
 const roots: string[] = [];
@@ -55,6 +55,15 @@ async function fixture() {
 }
 
 describe('Windows Desktop release admission', () => {
+  it('rejects Windows archive escapes and device aliases before extraction', () => {
+    for (const path of ['metawork/', 'metawork/中文 folder/file.txt', 'planner/packages/tui/']) {
+      expect(() => validateDesktopArchivePath(path, 'win32')).not.toThrow();
+    }
+    for (const path of ['metawork/../outside', 'C:/outside', '//server/share', 'metawork/NUL',
+      'metawork/COM¹.txt', 'metawork/file:stream', 'metawork/trailing. ', 'metawork\\..\\outside', 'metawork/file\0.exe']) {
+      expect(() => validateDesktopArchivePath(path, 'win32')).toThrow();
+    }
+  });
   it('verifies signed x64 PE inventory independently of POSIX executable modes', async () => {
     const value = await fixture();
     await expect(verifyDesktopRelease(value.root, options)).resolves.toMatchObject({ platform: 'win32', arch: 'x64' });

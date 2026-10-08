@@ -19,6 +19,7 @@ on:
       - 'scripts/prepare-pi-pdf.mjs'
       - 'scripts/install.ps1'
       - 'scripts/prepare-windows-desktop-tools.mjs'
+      - 'scripts/prepare-windows-desktop-candidate.mjs'
       - 'integrations/windows-desktop-tools/**'
       - 'integrations/pi-pdf/**'
       - 'native/windows-probe/**'
@@ -190,6 +191,14 @@ jobs:
         with:
           name: windows-node-api-${{ github.sha }}
           path: .tmp/windows-desktop-validation/node-api/
+          if-no-files-found: warn
+      - name: Validate combined candidate Runtime and Desktop resources
+        run: node scripts/prepare-windows-desktop-candidate.mjs "${{ runner.temp }}/desktop-tools" "${{ runner.temp }}/desktop-candidate"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-candidate-${{ github.sha }}
+          path: .tmp/windows-desktop-validation/candidate/
           if-no-files-found: warn
       # This job compiles source; it does not claim a functional packaged Desktop.
 

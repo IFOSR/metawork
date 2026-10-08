@@ -37,6 +37,11 @@ export type DesktopRelease = z.infer<typeof DesktopReleaseSchema>;
 type DarwinInventory = Record<string, z.infer<typeof darwinFileSchema>>;
 type WindowsInventory = Record<string, z.infer<typeof windowsFileSchema>>;
 
+/** Validate archive names before extraction, using the target filesystem rules. */
+export function validateDesktopArchivePath(path: string, platform: 'darwin' | 'win32'): void {
+  (platform === 'win32' ? windowsPathSchema : pathSchema).parse(path.replace(/\/$/u, ''));
+}
+
 export async function hashReleaseFile(path: string): Promise<{ sha256: string; size: number; executable: boolean }> {
   const info = await lstat(path);
   if (!info.isFile()) throw new Error('Desktop payload must contain regular files');
@@ -144,7 +149,7 @@ async function windowsFileFormat(path: string, size: number): Promise<'data' | '
       return 'data';
     }
     const offset = dos.readUInt32LE(0x3c);
-    if (size < 64 || offset < 64 || offset > size - 26) throw new Error('Invalid Windows PE header');
+    if (size < 64 || offset < 64 || offset > size - 26) throw new Error(`Invalid Windows PE header: ${path}`);
     const pe = Buffer.alloc(26);
     await handle.read(pe, 0, pe.length, offset);
     const sections = pe.readUInt16LE(6);
@@ -153,7 +158,7 @@ async function windowsFileFormat(path: string, size: number): Promise<'data' | '
       || pe.readUInt16LE(24) !== 0x20b || !(pe.readUInt16LE(22) & 2)
       || !sections || sections > 96 || optionalSize < 112
       || offset + 24 + optionalSize + sections * 40 > size) {
-      throw new Error('Windows native file is not a valid x64 PE image');
+      throw new Error(`Windows native file is not a valid x64 PE image: ${path}`);
     }
     return 'pe-x64';
   } finally { await handle.close(); }

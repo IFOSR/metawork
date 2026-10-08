@@ -4,7 +4,13 @@ import { cp, mkdir, open, readFile, readdir, rm, writeFile } from 'node:fs/promi
 import { spawnSync } from 'node:child_process';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { desktopInventory, verifyDesktopRelease } from '../dist/release-tools.mjs';
+import { desktopInventory, verifyDesktopRelease, validateDesktopArchivePath } from '../dist/release-tools.mjs';
+import { desktopToolPaths, desktopProcessEnvironment } from '../dist/platform-tools.mjs';
+
+const platform = process.platform;
+if (!['darwin', 'win32'].includes(platform) || (platform === 'win32' && process.arch !== 'x64')) {
+  throw new Error('Native macOS or Windows x64 builder required');
+}
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) {
@@ -30,7 +36,7 @@ function run(cmd, argv, cwd, env) {
   if (result.error || result.status !== 0) throw new Error(`Dependency validation failed: ${basename(cmd)}`);
   return result.stdout.trim();
 }
-const manifest = JSON.parse(await readFile(join(artifacts, `manifest.darwin-${process.arch}.json`), 'utf8'));
+const manifest = JSON.parse(await readFile(join(artifacts, `manifest.${platform}-${process.arch}.json`), 'utf8'));
 const canonical = value => {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (value && typeof value === 'object') return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
@@ -39,13 +45,16 @@ const canonical = value => {
 const { signature: runtimeSignature, ...runtimePayload } = manifest;
 if (!trustedKeys[runtimeSignature.keyId] || !verify(null, Buffer.from(canonical(runtimePayload)),
   trustedKeys[runtimeSignature.keyId], Buffer.from(runtimeSignature.value, 'base64'))) throw new Error('Runtime manifest signature rejected');
-if (manifest.platform !== 'darwin' || manifest.arch !== process.arch || Date.parse(manifest.expiresAt) <= Date.now()
+if (manifest.platform !== platform || manifest.arch !== process.arch || Date.parse(manifest.expiresAt) <= Date.now()
   || !sourceCommit.startsWith(manifest.metawork.revision) || manifest.planner.revision !== manifest.metawork.revision) throw new Error('Runtime compatibility matrix mismatch');
 if (!development) {
   const source = fileURLToPath(new URL('../../../', import.meta.url));
   const dirty = run('git', ['status', '--porcelain'], source);
   if (dirty || run('git', ['rev-parse', 'HEAD'], source) !== sourceCommit) throw new Error('Production release requires the exact clean source commit');
-  if (!args.get('codesign-identity')) throw new Error('Production payload requires a Developer ID signing identity');
+  if (platform === 'darwin' && !args.get('codesign-identity')) throw new Error('Production payload requires a Developer ID signing identity');
+}
+if (platform === 'win32' && (!development || process.env.METAWORK_DESKTOP_INTERNAL !== '1')) {
+  throw new Error('Windows currently requires the explicit internal candidate build policy');
 }
 // Output is an explicitly supplied build directory. Refuse to replace existing data.
 await mkdir(output, { recursive: false });
@@ -59,30 +68,50 @@ async function removeArchiveMarkers(directory) {
   }
 }
 try {
+  const tar = platform === 'win32' ? join(process.env.SystemRoot, 'System32/tar.exe') : '/usr/bin/tar';
   for (const name of ['metawork', 'planner']) {
     const artifact = manifest[name];
     const archive = join(artifacts, basename(artifact.url));
     const bytes = await readFile(archive);
     if (bytes.length !== artifact.byteSize || createHash('sha256').update(bytes).digest('hex') !== artifact.sha256) throw new Error('Formal release artifact hash mismatch');
     // Verify archive paths before extraction. Formal packager dereferences links.
-    const entries = run('/usr/bin/tar', ['-tzf', archive]);
+    const entries = run(tar, ['-tf', archive]);
+    for (const path of entries.split(/\r?\n/u)) validateDesktopArchivePath(path, platform);
     if (entries.split('\n').some(path => !path.startsWith(`${name}/`) || path.split('/').includes('..'))) throw new Error('Invalid release archive layout');
-    const details = run('/usr/bin/tar', ['-tvzf', archive]);
+    const details = run(tar, ['-tvf', archive]);
     // `tar -h` dereferences source symlinks, but bsdtar may record repeated
     // inodes as hardlink entries (`h`). They extract as regular files; reject
     // symbolic links and all other special archive entries.
     if (details.split('\n').some(line => !['-', 'd', 'h'].includes(line[0]))) throw new Error('Release archive contains links or special files');
-    run('/usr/bin/tar', ['-xzf', archive, '-C', payload]);
+    run(tar, ['-xf', archive, '-C', payload]);
   }
   // Electron Builder omits dot-file placeholders while copying extraResources.
   await removeArchiveMarkers(payload);
   const toolRoot = join(payload, 'metawork', 'desktop-tools');
   for (const [name, root] of [['node', nodeRoot], ['git', gitRoot], ['executor', executorRoot]]) {
     await cp(root, join(toolRoot, name), { recursive: true, dereference: true });
-    const inventory = await desktopInventory(join(toolRoot, name));
+    const inventory = await desktopInventory(join(toolRoot, name), platform);
     if (!Object.keys(inventory).some(path => /(?:^|\/)(?:licen[sc]e|copying|notice)[^/]*$/iu.test(path))) throw new Error(`Missing ${name} license notices`);
   }
-  if (!development) {
+  if (platform === 'win32') {
+    // The vendored Planner TUI is also present through npm's dereferenced
+    // workspace path in the formal archive. Prune only its known foreign
+    // prebuilds, in both copies, while preserving source and notices.
+    for (const relative of ['planner/packages/tui', 'planner/node_modules/@earendil-works/pi-tui']) {
+      const root = join(payload, relative);
+      const tui = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+      if (tui.name !== '@earendil-works/pi-tui' || tui.version !== '0.80.2') {
+        throw new Error('Review vendored Planner TUI prebuild layout for the new version');
+      }
+      for (const path of ['native/darwin/prebuilds', 'native/win32/prebuilds/win32-arm64']) {
+        await rm(join(root, path), { recursive: true });
+      }
+    }
+    const native = join(payload, 'metawork/native/windows');
+    await mkdir(native, { recursive: true });
+    await cp(resolve(required('native-module')), join(native, 'metawork-platform.node'));
+  }
+  if (platform === 'darwin' && !development) {
     const magicValues = new Set(['feedface', 'cefaedfe', 'feedfacf', 'cffaedfe', 'cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca']);
     for (const path of Object.keys(await desktopInventory(payload))) {
       const absolute = join(payload, path);
@@ -105,25 +134,31 @@ try {
       }
     }
   }
-  const node = join(toolRoot, 'node/bin/node');
-  const toolEnv = { ...process.env, PATH: [join(toolRoot, 'node/bin'), join(toolRoot, 'git/bin'), join(toolRoot, 'executor/bin'), '/usr/bin', '/bin'].join(':') };
-  for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE']) delete toolEnv[key];
+  const tools = desktopToolPaths(join(payload, 'metawork'), platform);
+  const node = tools.node;
+  const toolEnv = desktopProcessEnvironment({ releaseRoot: join(payload, 'metawork'), nodePath: node, env: process.env });
   const facts = JSON.parse(run(node, ['-p', 'JSON.stringify({version:process.versions.node,abi:process.versions.modules,arch:process.arch,platform:process.platform})'], payload, toolEnv));
-  if (facts.platform !== 'darwin' || facts.arch !== process.arch || facts.abi !== '127') throw new Error('Node platform/ABI mismatch');
+  if (facts.platform !== platform || facts.arch !== process.arch || facts.abi !== '127') throw new Error('Node platform/ABI mismatch');
   run(node, ['-e', "const Database=require('better-sqlite3'); const db=new Database(':memory:'); db.prepare('select 1').get(); db.close();"], join(payload, 'metawork'), toolEnv);
-  run(join(toolRoot, 'git/bin/git'), ['--version'], payload, toolEnv);
-  run(join(toolRoot, 'executor/bin/pi'), ['--version'], payload, toolEnv);
+  run(tools.git, ['--version'], payload, toolEnv);
+  if (platform === 'win32') {
+    run(node, [tools.piScript, '--version'], payload, toolEnv);
+    run(tools.bash, ['--noprofile', '--norc', '-c', 'exit 0'], payload, toolEnv);
+    run(node, ['-e', 'const m=require(process.argv[1]); if(typeof m.pipeListen!=="function" || typeof m.writePrivateFile!=="function") throw Error("Native platform exports missing")',
+      join(payload, 'metawork/native/windows/metawork-platform.node')], payload, toolEnv);
+    run(node, [join(payload, 'planner/packages/coding-agent/dist/cli.js'), '--version'], payload, toolEnv);
+  } else run(join(toolRoot, 'executor/bin/pi'), ['--version'], payload, toolEnv);
   const pdfRoot = join(payload, 'metawork/dist/pi-pdf');
   await readFile(join(pdfRoot, 'index.ts'));
-  run(join(pdfRoot, 'python/bin/python3'), ['-I', '-c',
+  run(tools.python, ['-I', '-c',
     'import sys;sys.path.insert(0,sys.argv[1]);import pypdf,pdfplumber,pypdfium2,PIL',
     join(pdfRoot, 'site-packages')], payload, toolEnv);
   const release = {
     schemaVersion: 1, releaseId: manifest.releaseId, desktopVersion: pkg.version,
-    electronVersion: pkg.devDependencies.electron, platform: 'darwin', arch: process.arch,
+    electronVersion: pkg.devDependencies.electron, platform, arch: process.arch,
     sourceCommit, development, nodeVersion: facts.version, nodeAbi: facts.abi,
     gatewayProtocolVersion: 2, capabilities: ['desktop-session-v1'], runtimeManifest: manifest,
-    files: await desktopInventory(payload),
+    files: await desktopInventory(payload, platform),
   };
   release.signature = { algorithm: 'ed25519', keyId, value: sign(null, Buffer.from(canonical(release)), privateKey).toString('base64') };
   await writeFile(join(output, 'desktop-release.json'), `${JSON.stringify(release, null, 2)}\n`);
