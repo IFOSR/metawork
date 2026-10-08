@@ -12,6 +12,7 @@ import { isInstanceRunning } from './management/lock.js';
 import { acquireRuntimeUpdateLock } from './installation/runtime-update-lock.js';
 import { desktopProcessEnvironment, desktopToolPaths } from './installation/desktop-platform.js';
 import { loadWindowsPrivateFiles } from './platform/windows-private-files.js';
+import type { DesktopInstallPhase } from './installation/desktop-install-progress.js';
 
 const ProviderSchema = z.object({
   baseUrl: z.url().refine(value => ['https:', 'http:'].includes(new URL(value).protocol)),
@@ -27,6 +28,10 @@ export async function runDesktopInstall(
     throw new Error('Invalid desktop installer arguments');
   }
   const resources = resolve(resourcesArg);
+  const onProgress = (phase: DesktopInstallPhase): void => {
+    process.stdout.write(`${JSON.stringify({ phase })}\n`);
+  };
+  onProgress('verifying');
   const trustedKeys = JSON.parse(await readFile(join(resources, 'trusted-release-keys.json'), 'utf8')) as Record<string, string>;
   const release = await verifyDesktopRelease(resources, { trustedKeys, platform: process.platform, arch: process.arch, desktopVersion,
     allowDevelopment: process.env.METAWORK_DESKTOP_INTERNAL === '1' });
@@ -55,7 +60,7 @@ export async function runDesktopInstall(
     body = '';
     const lock = await acquireRuntimeUpdateLock(paths.root, 'update');
     try {
-      await new SourceNativeInstaller({ paths, secretStore, detectCommand, installLaunchers: false, windows }).install({
+      await new SourceNativeInstaller({ paths, secretStore, detectCommand, installLaunchers: false, windows, onProgress }).install({
         releaseId: release.releaseId, sourceRoot, plannerRoot, executorPreset: 'desktop-pi',
         provider: { ...provider, region: 'international', secretReference: 'file-secret:anyfusion/providers/provider' },
       });

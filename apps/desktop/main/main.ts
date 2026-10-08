@@ -197,7 +197,15 @@ ipcMain.handle('shell:setup', async (event, input: DesktopSetupInput) => {
   const providerUrl = new URL(input.baseUrl);
   if (!['http:', 'https:'].includes(providerUrl.protocol) || providerUrl.username || providerUrl.password) throw new Error('Invalid provider URL');
   setState({ phase: 'connecting', message: '正在安装运行时并保存模型配置…' });
-  try { await installation.run('install', input); await connect(); }
+  try {
+    await installation.run('install', input, phase => setState({ phase: 'connecting', message: {
+      verifying: '正在验证安装文件…',
+      'staging-release': '正在复制运行环境，首次安装可能需要几分钟…',
+      configuring: '正在保存模型配置并初始化数据…',
+      activating: '正在启用已安装的运行环境…',
+    }[phase] }));
+    await connect();
+  }
   catch { setState({ phase: 'setup', message: '安装未完成，输入内容已保留。请检查磁盘空间和模型配置后重试。' }); }
 });
 ipcMain.handle('desktop:preferences', event => { owned(event); return preferences!.read(); });

@@ -44,6 +44,8 @@ await mkdir(evidence, { recursive: true });
 const app = await _electron.launch({ executablePath: windows ? application : join(application, 'Contents/MacOS/MetaWork'),
   args: [`--user-data-dir=${join(root, 'desktop-profile')}`], env, timeout: 120000 });
 let serverPid;
+let progressTimer;
+const setupProgress = [];
 try {
   assert.equal(await app.evaluate(({ app }) => app.isPackaged), true);
   const page = await app.firstWindow();
@@ -57,8 +59,19 @@ try {
   await page.locator('#model-id').fill(provider.modelId);
   // Do not place credentials in Playwright's fill-action diagnostic log.
   await page.locator('#api-key').evaluate((input, value) => { input.value = value; }, provider.apiKey);
+  const startedAt = Date.now();
+  progressTimer = setInterval(() => {
+    void page.evaluate(() => window.metaworkShell?.state()).then(state => {
+      if (!state || setupProgress.at(-1)?.message === state.message) return;
+      // Shell status contains fixed product strings, never provider inputs.
+      setupProgress.push({ elapsedMs: Date.now() - startedAt, phase: state.phase, message: state.message });
+      console.log(`Packaged setup: ${state.phase}: ${state.message}`);
+    }).catch(() => undefined);
+  }, 5000);
   await page.locator('#setup button[type=submit]').click();
-  await page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\/$/, { timeout: 180000 });
+  await page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\/$/, { timeout: 600000 });
+  clearInterval(progressTimer);
+  await writeFile(join(evidence, 'packaged-setup-progress.json'), JSON.stringify(setupProgress, null, 2));
   await page.locator('.workspace-shell').waitFor({ timeout: 30000 });
   const authenticated = await page.evaluate(async () => (await (await fetch('/api/auth/session')).json()).authenticated);
   assert.equal(authenticated, true);
@@ -79,12 +92,13 @@ try {
 } catch (error) {
   const safeMessage = String(error.message).replaceAll(provider.apiKey, '[redacted]');
   const page = await app.firstWindow().catch(() => null);
-  if (page?.url().startsWith('file:')) await page.locator('#api-key').fill('').catch(() => undefined);
+  if (page?.url().startsWith('file:')) await page.locator('#api-key').evaluate(input => { input.value = ''; }).catch(() => undefined);
   await page?.screenshot({ path: join(evidence, 'packaged-install-failure.png') }).catch(() => undefined);
   const shellState = await page?.evaluate(() => window.metaworkShell?.state()).catch(() => undefined);
-  await writeFile(join(evidence, 'packaged-install-failure.json'), JSON.stringify({ message: safeMessage, url: page?.url(), shellState }, null, 2));
+  await writeFile(join(evidence, 'packaged-install-failure.json'), JSON.stringify({ message: safeMessage, url: page?.url(), shellState, setupProgress }, null, 2));
   throw new Error(safeMessage);
 } finally {
+  clearInterval(progressTimer);
   await app.close().catch(() => undefined);
   const node = join(installRoot, 'app/current/desktop-tools/node', windows ? 'node.exe' : 'bin/node');
   const cli = join(installRoot, 'app/current/dist/index.js');

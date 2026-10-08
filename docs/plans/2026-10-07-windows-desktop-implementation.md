@@ -1,7 +1,7 @@
 # Windows Desktop 实施与验证记录
 
 - 日期：2026-10-07
-- 状态：In Progress，P0 管道/ACL 已验证，Job 暂停竞态复验中；P1 原生文件/平台适配进行中，安全 transport / process adapter 尚未接入，未交付 Windows Desktop。
+- 状态：In Progress（2026-10-08 更新）。原生安全 transport、私有文件与 Job process adapter 已接入，正式隔离安装/Server/会话/drain 已通过阶段验收；packaged EXE、NSIS、真实模型任务及 Windows 11 验收推进中。协调升级/回滚尚未交付，不能发布。
 - 方案：[Windows Desktop 构建与交付](2026-10-07-windows-desktop-build-plan.md)
 - 源码基线：`bc7ad127d0ac9d6df36a03ddacc916e93806ec5d`（包含计划，运行时代码对应 `99442715e802c7ccdf09dd9a4f476a26f906a076`）。
 - 本次验证环境：macOS 27.0.1（26A434），arm64，Node 22.23.3，npm 10.9.9。
@@ -280,3 +280,23 @@ Windows 11 首次登录先保存本地阶段、截图与结构化回执，串口
 DesktopActivation 与 shell health 读写增加显式 Windows private-files adapter，沿用原状态机、challenge/instance/PID 核验和 companion 恢复先后顺序；Unix 默认路径保留。原生测试覆盖各中断 phase、companion 缺失保持 recoverable journal、重建 helper 后恢复、旧 Server 回执拒绝及 journal reparse 拒绝。本机原有 activation/health 10 项和 Root 类型检查通过；Windows 12 项私有存储检查待云端执行，NSIS 与 helper 的生产接入仍未完成。
 
 `813d5056` / run `37723271152` Windows、macOS arm64/Intel、Docker 全部现有自动门通过。后续检查发现 Planner 正式配置指向 cli.js，Windows CreateProcess 不能直接执行 shebang；Supervisor 三个入口统一通过当前独立 Server 的固定 Node 启动绝对 JS 入口，仍使用 owned Job，不引入 cmd 参数拼接。新增中文/空格脚本路径的原生 probe 回归。本机 Planner 43 项通过（4 个 Windows 项跳过），Root 类型检查通过。真实模型任务继续准备，不能用 probe 代替。
+
+### 发布验收续验（2026-10-08，未完成）
+
+本轮范围仍为 `feat/windows-desktop` 的候选构建和验收，不改版本、不合并 main、不打 tag、不发布 Release。完成日期与 closing commit 暂不填写：必需发布门仍有缺口。
+
+- `1b843760` 增加 NSIS current-user 安装/卸载和数据保留探针，production 依赖改由锁文件重新 `npm ci --omit=dev`；`1b73c3e1` 修复 Windows Planner Host 测试的管道字符串。
+- [`37738473847`](https://github.com/IFOSR/metawork/actions/runs/37738473847) 的 Windows 原生安全门、两个 macOS 回归 job 和 Docker 通过；完整资源与正式隔离安装通过。packaged GUI 停在错误页，截图显示“版本不匹配”，不是模型或网络故障，NSIS 探针未执行。
+- `ad44c096` 把完整 payload 哈希/PE 校验改为最多 24 个并发 worker。早期将 GUI 失败归因于校验过慢的判断被截图推翻；此性能修改不能作为 GUI 修复证据。[`37742309639`](https://github.com/IFOSR/metawork/actions/runs/37742309639) 仍失败；普通用户并发私有文件 probe 也发生一次原生异常文本截断（`Error: m`）。后续严格原生 probe 通过不抹去该记录。
+- `86800f18` 避免 Electron Builder 的文件 walker 丢弃已签名工具树中的 `.gitkeep` / `.DS_Store`：Windows `afterPack` 精确复制 descriptor、trust keys 和 payload，再对实际包内树做完整验证。此验证在 [`37768460630`](https://github.com/IFOSR/metawork/actions/runs/37768460630) 通过；新 GUI probe 的异步 `waitForFunction` 却把 Promise 当作 truthy，过早读取 connecting 状态。`a5b5e7af` 改为等待真实页面 setup/error 元素，保留独立状态断言，不放宽产品验收。
+- `a5b5e7af` 同时修复正式 Desktop install helper 的 update/rollback 分支漏传 Windows private-files adapter，并增加回归测试。这只修复运行时 helper 的接线，不代表 Windows Desktop 协调更新、NSIS 覆盖安装、回滚或中断恢复已完成。
+- 用户确认 `METAWORK_TEST_MODEL` 是 `{baseUrl, modelId, apiKey}` JSON。NSIS 安装后 smoke 使用这个测试连接，从已安装 EXE 的 Web 页面提交实际文件任务及取消任务；核对 Task/Subtask/attempt/publication、文件内容和实际命令进程退出。provider 输入不进入报告、不继承给依赖安装/构建或 Electron 进程环境；任务产物截图只在离开首次配置页后保存。[`37769961441`](https://github.com/IFOSR/metawork/actions/runs/37769961441) 的原生、macOS 双架构和 Docker 回归通过；packaged GUI 已进入首次配置页，但提交配置后仍处于安装 connecting 状态，超过 180 秒测试预算，NSIS/真实任务门未执行。没有证据可将本次失败归因为模型或复制性能。
+- 本机 `npm run lint` 与 Desktop release/Windows release/install helper/activation/shell-health 共 5 文件 24 测试通过。云端仅在全部声明检查成功后上传带 SHA256/source commit 的 NSIS 内部候选；它不是真正 Release。
+
+Windows 11 证据：[`37739922946`](https://github.com/IFOSR/metawork/actions/runs/37739922946) 的最终 QEMU 截图已显示 Windows 11 Enterprise Evaluation 交互桌面，但没有 guest JSON/TPM/Secure Boot 回执，不能判定环境门通过。`86800f18` 改为首次登录时重新定位安装介质上的 bootstrap，并在只读磁盘诊断中允许读取未正常关机的 NTFS；[`37768460803`](https://github.com/IFOSR/metawork/actions/runs/37768460803) 复验中。此 workflow 目前只验证 OS 环境，`desktopAppVerified` 固定为 false，不能代替 Windows 11 上的 NSIS/产品验收。
+
+`468d537f` 修正环境 bootstrap 的确定性配置错误：原 FirstLogonCommands 的编码命令长 1538 字符，超过 [Microsoft 文档](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-shell-setup-firstlogoncommands-synchronouscommand-commandline) 规定的 1024 字符上限；现为 838 字符，并在生成时校验长度。只读磁盘诊断增加固定失败阶段及有界挂载错误。新 run [`37771405476`](https://github.com/IFOSR/metawork/actions/runs/37771405476) 等待环境复验；修正配置不等于已取得 guest 回执。
+
+首次安装续验为独立 helper 增加固定阶段进度（验证、复制、配置、激活），只允许这些枚举进入 Desktop 状态，不转发任意 stdout 或模型配置。packaged smoke 记录阶段变化，将首次安装预算调整为 10 分钟并保留失败断言；NSIS 总预算容纳两个真实任务。payload 并发验证在首个失败后等待所有在途文件句柄关闭才返回，避免 Windows 清理 staging 时竞争。取消验收同时检查命令及其后代 PID。上述补充仍待原生执行证据，不能标记验收通过。
+
+仍必须关闭：Windows 11 普通用户真实 packaged 产品验收；真实任务和取消门的实际结果；Windows 协调升级（目前 UI/helper 仍有 `.app`、`codesign`、`/usr/bin/open` 假设）、失败回滚和中断恢复；运行中任务的卸载确认与重装数据复用；§6.1 同源 macOS packaged/Web/TUI/三客户端和安装升级完整验收。基础 CI 通过只覆盖 workflow 已声明场景，不能据此关闭 P3–P5。

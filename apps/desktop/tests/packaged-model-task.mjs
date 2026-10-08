@@ -80,13 +80,18 @@ export async function runPackagedModelTasks({ page, root, installRoot, evidence 
     assert.equal((await readFile(artifactPath, 'utf8')).trim(), marker);
     report.artifactVerified = true;
     report.artifactTaskId = task.id;
+    assert.ok(db.prepare("SELECT COUNT(*) AS count FROM planner_proposal_submissions WHERE status = 'accepted'").get().count > 0);
     await page.screenshot({ path: join(evidence, 'real-artifact-task.png') });
 
     const cancelMarker = `mw-cancel-${randomUUID()}`;
     await composer.fill(`Cancellation acceptance: run a Bash command that prints ${cancelMarker} once per second for 300 seconds. Include that literal marker in the command text. Start it now, keep the task active until it finishes, and do not create or modify files. I will cancel it from the client.`);
     await page.locator('.composer button[type=submit]').click();
     const processIds = async () => {
-      const script = `$ErrorActionPreference='Stop'; @((Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${cancelMarker}') }).ProcessId) | ConvertTo-Json -Compress`;
+      const script = `$ErrorActionPreference='Stop'; $items=@(Get-CimInstance Win32_Process);
+        $ids=[Collections.Generic.HashSet[int]]::new();
+        foreach($item in $items) { if($item.CommandLine -and $item.CommandLine.Contains('${cancelMarker}')) { [void]$ids.Add([int]$item.ProcessId) } }
+        do { $added=$false; foreach($item in $items) { if($ids.Contains([int]$item.ParentProcessId)) { if($ids.Add([int]$item.ProcessId)) { $added=$true } } } } while($added);
+        @($ids | Sort-Object) | ConvertTo-Json -Compress`;
       const { stdout } = await promisify(execFile)(join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
         ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, timeout: 15000 });
       const value = JSON.parse(stdout.trim() || '[]');

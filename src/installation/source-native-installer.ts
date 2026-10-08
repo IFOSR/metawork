@@ -34,6 +34,7 @@ import {
 import { writeBuildSourceMetadata, buildSourceMetadataPath } from './build-source.js';
 import { writeReleaseIdentity } from './release-identity.js';
 import type { WindowsPrivateFileRoot } from '../platform/windows-private-files.js';
+import type { DesktopInstallPhase } from './desktop-install-progress.js';
 
 const RELEASE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 
@@ -66,6 +67,7 @@ export class SourceNativeInstaller {
     /** Desktop terminal integration is explicit; never replace a user's CLI on first launch. */
     installLaunchers?: boolean;
     windows?: WindowsPrivateFileRoot;
+    onProgress?(phase: DesktopInstallPhase): void;
   }) {}
 
   async install(input: SourceNativeInstallInput): Promise<SourceNativeInstallResult> {
@@ -114,6 +116,7 @@ export class SourceNativeInstaller {
     let secretStored = false;
     let compiledRuntimeRoot: string | null = null;
     try {
+      this.dependencies.onProgress?.('staging-release');
       await stageSourceRelease(
         input.sourceRoot,
         input.plannerRoot,
@@ -121,6 +124,7 @@ export class SourceNativeInstaller {
         input.releaseId,
         paths.appCurrent,
       );
+      this.dependencies.onProgress?.('configuring');
       await this.dependencies.secretStore.put(secretReference, input.provider.apiKey);
       secretStored = true;
       await service.initialize();
@@ -149,6 +153,7 @@ export class SourceNativeInstaller {
       compiledRuntimeRoot = compiledRuntime.rootPath;
       await createFreshDatabase(databaseRevision);
 
+      this.dependencies.onProgress?.('activating');
       for (const launcherPath of launcherPaths) {
         await installNativeLauncher(launcherPath, paths.root);
         installedLaunchers.push(launcherPath);

@@ -80,18 +80,27 @@ export async function desktopInventory(root: string, platform: 'darwin' | 'win32
   // the connecting state. Keep a bounded worker pool so integrity validation
   // remains complete while allowing the filesystem to make progress.
   let cursor = 0;
+  let failed = false;
+  let failure: unknown;
   const worker = async (): Promise<void> => {
-    for (;;) {
+    while (!failed) {
       const index = cursor++;
       const item = pending[index];
       if (!item) return;
-      const file = await hashReleaseFile(item.path);
-      files[item.name] = platform === 'win32'
-        ? { sha256: file.sha256, size: file.size, format: await windowsFileFormat(item.path, file.size) }
-        : file;
+      try {
+        const file = await hashReleaseFile(item.path);
+        files[item.name] = platform === 'win32'
+          ? { sha256: file.sha256, size: file.size, format: await windowsFileFormat(item.path, file.size) }
+          : file;
+      } catch (error) {
+        if (!failed) { failed = true; failure = error; }
+      }
     }
   };
+  // Close every in-flight file before callers can remove a rejected staging
+  // tree; rejecting Promise.all early would race cleanup on Windows.
   await Promise.all(Array.from({ length: Math.min(24, pending.length) }, () => worker()));
+  if (failed) throw failure;
   return files;
 }
 

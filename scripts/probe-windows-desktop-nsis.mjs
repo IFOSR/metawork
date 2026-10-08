@@ -36,7 +36,7 @@ const executable = join(installDir, 'MetaWork.exe');
 const uninstaller = join(installDir, 'Uninstall MetaWork.exe');
 await Promise.all([stat(executable), stat(uninstaller)]);
 await exec(process.execPath, ['apps/desktop/tests/packaged-install-smoke.mjs', executable, evidence], {
-  cwd: process.cwd(), env, windowsHide: true, timeout: 1_500_000,
+  cwd: process.cwd(), env, windowsHide: true, timeout: 2_100_000,
 });
 const installationData = join(dataRoot, 'installation');
 await stat(installationData);

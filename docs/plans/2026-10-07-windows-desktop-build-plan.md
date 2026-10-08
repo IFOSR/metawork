@@ -1,7 +1,7 @@
 # Windows Desktop 构建与交付方案
 
 - 计划日期：2026-10-07
-- 状态：In Progress / P0 管道/ACL、Job 创建压力与 macOS 双架构基线已验证；P1 原生文件/管道 adapter 通过阶段检查，完整资源封装进行中，尚未产出 Windows Desktop 安装包或发布
+- 状态：In Progress（2026-10-08 更新）。生产 Windows transport/files/process 已接入；完整签名资源、正式隔离安装与 Server/会话/drain 通过阶段门。已构建 NSIS 内部候选，packaged GUI/真实模型验收仍在修复复验；Windows 11、协调升级/回滚及完整跨平台产品验收尚未关闭，未发布。
 - 基线：`99442715e802c7ccdf09dd9a4f476a26f906a076`（当前 main，包含 v0.1.5 及后续 README 精简）
 - 分支：`feat/windows-desktop`
 - Worktree：`/Users/yuanjubian/program/metawork-windows-desktop`
