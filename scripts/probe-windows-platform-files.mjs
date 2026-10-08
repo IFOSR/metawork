@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
-import { link, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -82,6 +82,22 @@ export async function probePlatformFiles(addon, output, addonPath) {
     addon.flushPrivateFile(join(root, 'target'));
     addon.flushPrivateDirectory(root);
     checks.push('writable private file and directory handles flush successfully');
+    for (const revision of ['first', 'second']) {
+      addon.ensurePrivateDirectory(join(root, revision));
+      addon.writePrivateFile(root, `${revision}\\value`, Buffer.from(revision));
+    }
+    addon.replacePrivateSymlink(root, 'active', 'first', true);
+    assert.equal(await readFile(join(root, 'active/value'), 'utf8'), 'first');
+    addon.replacePrivateSymlink(root, 'active', 'second', true);
+    assert.equal(await readFile(join(root, 'active/value'), 'utf8'), 'second');
+    assert.equal(await readlink(join(root, 'active')), 'second');
+    addon.replacePrivateSymlink(root, 'active-file', 'first\\value', false);
+    addon.replacePrivateSymlink(root, 'active-file', 'second\\value', false);
+    assert.equal(await readFile(join(root, 'active-file'), 'utf8'), 'second');
+    assert.throws(() => addon.replacePrivateSymlink(root, 'active', '..\\outside', true), /escapes/);
+    assert.throws(() => addon.replacePrivateSymlink(root, 'target', 'second\\value', false), /symbolic link/);
+    assert.equal(addon.readPrivateFile(root, 'target').toString(), 'retained');
+    checks.push('atomic relative directory/file pointers preserve root boundary and refuse ordinary-file replacement');
     await link(join(root, 'target'), join(root, 'hard-link'));
     assert.throws(() => addon.writePrivateFile(root, 'hard-link', Buffer.from('denied')), /hard links/);
     await rm(join(root, 'hard-link'));

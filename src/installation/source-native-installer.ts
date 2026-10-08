@@ -156,16 +156,19 @@ export class SourceNativeInstaller {
       await replaceRelativeSymlink(
         accountPaths.generatedCurrent,
         relative(dirname(accountPaths.generatedCurrent), compiledRuntime.rootPath),
+        this.dependencies.windows,
       );
       switched.push(accountPaths.generatedCurrent);
       await replaceRelativeSymlink(
         accountPaths.database,
         relative(dirname(accountPaths.database), databaseRevision),
+        this.dependencies.windows,
       );
       switched.push(accountPaths.database);
       await replaceRelativeSymlink(
         paths.appCurrent,
         relative(dirname(paths.appCurrent), release.releaseRoot),
+        this.dependencies.windows,
       );
       switched.push(paths.appCurrent);
       const activated = await service.activateDraft(configurationRevision, null);
@@ -447,7 +450,13 @@ async function createFreshDatabase(path: string): Promise<void> {
   await chmod(path, 0o600);
 }
 
-async function replaceRelativeSymlink(path: string, target: string): Promise<void> {
+async function replaceRelativeSymlink(path: string, target: string, windows?: WindowsPrivateFileRoot): Promise<void> {
+  if (windows) {
+    windows.files.ensurePrivateDirectory(dirname(path));
+    windows.files.replacePrivateSymlink(windows.root, relative(windows.root, path), target,
+      (await stat(resolve(dirname(path), target))).isDirectory());
+    return;
+  }
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.next-${randomUUID()}`;
   const kind = process.platform === 'win32'

@@ -13,12 +13,13 @@ bool trusted_sid(PSID sid, const std::vector<BYTE>& own) {
     || IsWellKnownSid(sid, WinBuiltinAdministratorsSid) != FALSE;
 }
 
-void inspect_private_file(HANDLE file, bool directory, bool allow_unlinked = false) {
+void inspect_private_file(HANDLE file, bool directory, bool allow_unlinked = false, bool allow_symlink = false) {
   require(GetFileType(file) == FILE_TYPE_DISK, "ordinary disk file required");
   FILE_ATTRIBUTE_TAG_INFO attributes{};
   require(GetFileInformationByHandleEx(file, FileAttributeTagInfo, &attributes, sizeof(attributes)) != FALSE,
     "file attributes");
-  require(!(attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT), "reparse point refused");
+  require(!(attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
+    || (allow_symlink && attributes.ReparseTag == IO_REPARSE_TAG_SYMLINK), "reparse point refused");
   require(!!(attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == directory, "file kind");
   BY_HANDLE_FILE_INFORMATION information{};
   require(GetFileInformationByHandle(file, &information) != FALSE, "file information");

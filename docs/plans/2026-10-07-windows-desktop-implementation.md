@@ -222,3 +222,5 @@ run `37717090425` 的原生探测确认普通文件及 NTFS 目录在 GENERIC_WR
 Server 账户迁移 manifest、Conversation metadata/pending-history、兼容 presentation JSON 及唯一 segmented journal writer 已显式接入同一 Windows 私有文件根；不新增 writer，不改 SQLite schema、事件索引提交点或恢复政策。Unix 路径保留原实现。本机相关 38 项及 Root/Desktop 类型检查通过，新增 native store 重建后事实读取检查。因涉及持久化，专用 workflow 同时增加既有 Dockerfile.test 的 Linux owning-seam 回归，Windows/macOS/Docker 实测结果分别记录，尚不代表 P1 安装通过。
 
 `59a9be55` 的 Pageant x64 源码构建/二进制往返与完整 Windows Runtime/Desktop 资源校验已通过，正式安装随后在旧 FileConfigurationRepository 的只读 fsync 报 EPERM；`8dc2a666` 已接入可写句柄，待云端安装复验。candidate 保存 Pageant 来源/产物哈希证据。`8dc2a666` macOS 回归的唯一失败是架构测试精确匹配旧构造器参数，更新为仍严格核对 accountPaths.config + Windows adapter；35 项模块边界复验通过。此项不代表 Windows 配置或完整安装已通过。
+
+配置/首次安装指针新增原生 Windows 相对 symlink 创建及 FileRenameInfoEx 替换：固定祖先，拒绝 junction/非符号链接目标覆盖，验证最终目标类型与安装根边界，父目录刷新成功后返回。保留原相对链接格式及原激活 journal；Windows 普通用户 probe 显式配置并恢复开发者模式前置。新增目录/文件指针切换、越界目标和普通文件保留负例；macOS 配置/安装/架构 18 项与类型检查通过，原生结果待云端，尚未作为 updater 全量交付证据。

@@ -6,8 +6,13 @@ $name = 'mwf' + [Guid]::NewGuid().ToString('N').Substring(0, 10)
 $fixture = Join-Path $env:PUBLIC $name
 $created = $false
 $child = $null
+$policy = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
+$old = Get-ItemProperty -Path $policy -Name AllowDevelopmentWithoutDevLicense -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $evidence, $fixture | Out-Null
 try {
+  # Explicit prerequisite, configured only in this disposable test machine.
+  New-Item -Path $policy -Force | Out-Null
+  Set-ItemProperty -Path $policy -Name AllowDevelopmentWithoutDevLicense -Type DWord -Value 1
   $password = ConvertTo-SecureString ([Guid]::NewGuid().ToString('N') + 'Aa!7') -AsPlainText -Force
   New-LocalUser -Name $name -Password $password | Out-Null
   $created = $true
@@ -60,4 +65,9 @@ exit $LASTEXITCODE
   }
   if ($created) { Remove-LocalUser -Name $name }
   Remove-Item -LiteralPath $fixture -Recurse -Force
+  if ($null -ne $old) {
+    Set-ItemProperty -Path $policy -Name AllowDevelopmentWithoutDevLicense -Type DWord -Value $old.AllowDevelopmentWithoutDevLicense
+  } else {
+    Remove-ItemProperty -Path $policy -Name AllowDevelopmentWithoutDevLicense -ErrorAction SilentlyContinue
+  }
 }

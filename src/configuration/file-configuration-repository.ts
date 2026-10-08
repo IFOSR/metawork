@@ -164,6 +164,11 @@ export class FileConfigurationRepository {
 
   async replaceActivePointer(revisionId: string): Promise<void> {
     assertRevisionId(revisionId);
+    if (this.windows) {
+      this.windows.files.replacePrivateSymlink(this.windows.root, relative(this.windows.root, this.activePath),
+        join('revisions', revisionId), true);
+      return;
+    }
     const temporaryPath = join(this.rootPath, `.active-${randomUUID()}`);
     await symlink(join('revisions', revisionId), temporaryPath, 'dir');
     await rename(temporaryPath, this.activePath);

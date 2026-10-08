@@ -3,6 +3,7 @@
 #include "security.h"
 #include "private-file.h"
 #include "private-write.h"
+#include "private-pointer.h"
 
 std::wstring string_argument(napi_env env, napi_value value) {
   size_t length = 0;
@@ -39,6 +40,12 @@ napi_value files(napi_env env, napi_callback_info info) {
     } else if (operation == "flushPrivateFile" || operation == "flushPrivateDirectory") {
       if (count != 1) throw std::runtime_error("Private flush path required");
       flush_private_path(string_argument(env, arguments[0]), operation == "flushPrivateDirectory");
+    } else if (operation == "replacePrivateSymlink") {
+      bool directory = false;
+      if (count != 4 || napi_get_value_bool(env, arguments[3], &directory) != napi_ok)
+        throw std::runtime_error("Root, relative pointer, target and directory flag required");
+      replace_private_symlink(string_argument(env, arguments[0]), string_argument(env, arguments[1]),
+        string_argument(env, arguments[2]), directory);
     } else if (operation == "readPrivateFile") {
       if (count != 2 && count != 3) throw std::runtime_error("Root and relative file required");
       const auto data = read_private_file(string_argument(env, arguments[0]), string_argument(env, arguments[1]), maximum);
@@ -61,7 +68,7 @@ napi_value files(napi_env env, napi_callback_info info) {
 }
 
 napi_value initialize(napi_env env, napi_value exports) {
-  for (const char* name : { "ensurePrivateDirectory", "readPrivateFile", "writePrivateFile", "flushPrivateFile", "flushPrivateDirectory" }) {
+  for (const char* name : { "ensurePrivateDirectory", "readPrivateFile", "writePrivateFile", "flushPrivateFile", "flushPrivateDirectory", "replacePrivateSymlink" }) {
     napi_value function;
     if (napi_create_function(env, name, NAPI_AUTO_LENGTH, files, const_cast<char*>(name), &function) != napi_ok
       || napi_set_named_property(env, exports, name, function) != napi_ok) {
