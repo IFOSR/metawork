@@ -213,3 +213,4 @@ Desktop implementation: [isolated branch progress](plans/2026-10-05-metawork-des
 - [v0.1.6 internal Desktop release](plans/2026-10-08-v0.1.6-release.md) — 2026-10-08 release and artifact acceptance.
 
 - [v0.1.7 Desktop release](plans/2026-10-08-v0.1.7-release.md) — published latest on 2026-10-08; CLI discovery, readiness UI and artifact acceptance.
+- [Desktop update recovery loop](plans/2026-10-08-desktop-update-recovery-loop.md) — laptop recovered; lock-release ordering and repair-only source correction validated, awaiting a new release.

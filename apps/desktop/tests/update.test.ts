@@ -68,6 +68,9 @@ it('stages the downloaded app for native adoption without requiring a previous D
     return child;
   });
   await launchDesktopUpdate(root);
+  expect(JSON.parse(await readFile(join(root, 'upgrades/desktop-request.json'), 'utf8')).recoverOnly).toBe(false);
   expect(mocks.spawn).toHaveBeenCalledWith(join(bootstrap, 'desktop-tools/node/bin/node'),
     [join(bootstrap, 'dist/desktop-update-cli.js'), root, join(root, 'upgrades/desktop-request.json')], expect.anything());
+  await launchDesktopUpdate(root, true);
+  expect(JSON.parse(await readFile(join(root, 'upgrades/desktop-request.json'), 'utf8')).recoverOnly).toBe(true);
 });

@@ -340,7 +340,7 @@ async function updateApplication(recover = false, adoptExistingRuntime = false):
     if (answer.response !== 1) { await connect(); return; }
     await preferences?.flush();
     notifications.stop();
-    await launchDesktopUpdate(installRoot);
+    await launchDesktopUpdate(installRoot, recover);
     app.quit();
   } catch (error) {
     if (error instanceof Error && error.message === 'Installed Runtime is newer; download a newer Desktop') {

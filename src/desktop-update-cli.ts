@@ -12,6 +12,7 @@ import { commandExistsOnPath } from './configuration/production-configuration-pr
 import { DesktopServiceManager } from './client/desktop-service-manager.js';
 import { isInstanceRunning } from './management/lock.js';
 import { waitForDesktopShellHealth } from './installation/desktop-shell-health.js';
+import { runDesktopUpdateTransaction } from './installation/desktop-update-transaction.js';
 
 async function main(): Promise<void> {
   const [rootArg, requestArg] = process.argv.slice(2);
@@ -25,6 +26,7 @@ async function main(): Promise<void> {
     shellChallenge: string;
     configHome?: string;
     userDataPath?: string;
+    recoverOnly?: boolean;
   };
   const record = request.record;
   if (!record.applicationPath.endsWith('.app') || !record.stagedApplicationPath.startsWith(`${requests}/`)
@@ -43,6 +45,12 @@ async function main(): Promise<void> {
     throw new Error('Another desktop update is running');
   });
   await lock.writeFile(String(process.pid)); await lock.close();
+  let lockReleased = false;
+  const releaseLock = async () => {
+    if (lockReleased) return;
+    await rm(lockPath, { force: true });
+    lockReleased = true;
+  };
   try {
     const resources = join(record.stagedApplicationPath, 'Contents/Resources');
     let candidateShell: ChildProcess | undefined;
@@ -137,25 +145,12 @@ async function main(): Promise<void> {
       if (Date.now() > deadline) throw new Error('Desktop did not exit');
       await new Promise(resolve => setTimeout(resolve, 200));
     }
-    const prior = await activation.read();
-    if (prior && !['committed', 'rolled-back'].includes(prior.phase)) {
-      for (const key of ['applicationPath', 'stagedApplicationPath', 'backupApplicationPath', 'previousReleaseId', 'candidateReleaseId'] as const) {
-        if (prior[key] !== record[key]) throw new Error('Recovery request does not match activation journal');
-      }
-      await activation.recover();
-    } else {
-      try { await activation.apply(record); }
-      catch (error) {
-        if ((await activation.read())?.phase === 'rolled-back') {
-          const child = startShell(); child.unref();
-        }
-        throw error;
-      }
-    }
-    if (!candidateShell || candidateShell.exitCode !== null || candidateShell.signalCode !== null) {
-      const child = startShell(); child.unref();
-    }
-  } finally { await rm(lockPath, { force: true }); }
+    await runDesktopUpdateTransaction({ activation, record, recoverOnly: request.recoverOnly === true,
+      candidateRunning: () => Boolean(candidateShell && candidateShell.exitCode === null && candidateShell.signalCode === null),
+      releaseLock,
+      relaunch: () => { const child = startShell(); child.unref(); },
+    });
+  } finally { await releaseLock(); }
 }
 void main().catch(async () => {
   // Preserve the activation record; the UI must not bypass failed recovery.

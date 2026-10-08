@@ -100,10 +100,11 @@ export async function prepareDesktopUpdate(input: {
   return requestPath;
 }
 
-export async function launchDesktopUpdate(root: string): Promise<void> {
+export async function launchDesktopUpdate(root: string, recoverOnly = false): Promise<void> {
   const requestPath = join(root, 'upgrades/desktop-request.json');
   const request = JSON.parse(await readFile(requestPath, 'utf8'));
   request.previousPid = process.pid;
+  request.recoverOnly = recoverOnly;
   await writeFile(requestPath, JSON.stringify(request), { mode: 0o600 });
   const release = request.bootstrap ?? await realpath(join(root, 'app/current'));
   const helper = join(release, 'dist/desktop-update-cli.js');
