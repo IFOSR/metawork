@@ -32,9 +32,14 @@ try {
   await writeFile(keyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
   const trusted = join(candidate, 'ephemeral-trusted-keys.json');
   await writeFile(trusted, JSON.stringify({ [keyId]: publicKey.export({ type: 'spki', format: 'pem' }) }));
-  // This checkout is discarded after CI. Never prune a developer installation.
+  // This checkout is discarded after CI. Reinstall the production trees from
+  // their lockfiles instead of pruning an already-built tree: npm prune on
+  // Windows can leave package files removed after an EPERM cleanup, which
+  // produces a signed archive that fails only after extraction.
   for (const cwd of [source, join(source, 'planner/AnyFusion-Pi')]) {
-    run(node, [npm, 'prune', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], cwd);
+    const args = [npm, 'ci', '--omit=dev', '--no-audit', '--no-fund'];
+    if (cwd.endsWith(join('planner', 'AnyFusion-Pi'))) args.push('--ignore-scripts');
+    run(node, args, cwd);
   }
   const artifacts = join(candidate, 'archives');
   run(node, ['scripts/prepare-windows-pageant.mjs', join(source, 'planner/AnyFusion-Pi/node_modules/ssh2')]);
@@ -67,8 +72,10 @@ try {
   run(node, ['packaging/build.mjs'], desktop, internalEnvironment);
   const shell = join(candidate, 'shell');
   run(node, ['node_modules/electron-builder/out/cli/cli.js', '--config', 'packaging/electron-builder.windows.config.mjs',
-    '--win', '--x64', '--dir', '--publish', 'never', '--config.directories.output', shell], desktop, internalEnvironment);
+    '--win', '--x64', '--publish', 'never', '--config.directories.output', shell], desktop, internalEnvironment);
   run(node, ['tests/packaged-install-smoke.mjs', join(shell, 'win-unpacked/MetaWork.exe'), evidence], desktop, internalEnvironment);
+  const installer = join(shell, 'MetaWork-win32-x64-setup.exe');
+  run(node, ['scripts/probe-windows-desktop-nsis.mjs', installer, evidence], source, internalEnvironment);
 } finally {
   await rm(keyPath, { force: true });
 }

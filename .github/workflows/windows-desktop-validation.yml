@@ -24,6 +24,7 @@ on:
       - 'scripts/prepare-windows-pageant.mjs'
       - 'integrations/ssh2-pageant/**'
       - 'scripts/probe-windows-desktop-install.mjs'
+      - 'scripts/probe-windows-desktop-nsis.mjs'
       - 'integrations/windows-desktop-tools/**'
       - 'integrations/pi-pdf/**'
       - 'native/windows-probe/**'

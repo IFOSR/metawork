@@ -12,7 +12,10 @@ const windows = process.platform === 'win32';
 if (windows ? basename(application) !== 'MetaWork.exe' : !application.endsWith('/MetaWork.app')) {
   throw new Error('Supply the packaged MetaWork application path');
 }
-const root = await mkdtemp(join(tmpdir(), 'metawork-packaged-install-'));
+const root = process.env.METAWORK_PACKAGED_SMOKE_ROOT
+  ? resolve(process.env.METAWORK_PACKAGED_SMOKE_ROOT)
+  : await mkdtemp(join(tmpdir(), 'metawork-packaged-install-'));
+if (process.env.METAWORK_PACKAGED_SMOKE_ROOT) await mkdir(root, { recursive: true });
 const installRoot = join(root, 'installation');
 const env = { ...process.env,
   METAWORK_INSTALL_ROOT: installRoot, ANYFUSION_INSTALL_ROOT: installRoot,

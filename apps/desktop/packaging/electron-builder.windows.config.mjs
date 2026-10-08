@@ -7,15 +7,28 @@ if (!resources || process.env.METAWORK_DESKTOP_INTERNAL !== '1') {
   throw new Error('Windows candidate packaging requires an explicit internal build and verified resources');
 }
 
-// Packaged EXE acceptance precedes NSIS integration. This configuration emits
-// only an unpacked application; it cannot overwrite a user's existing shell.
+// The same candidate configuration emits both an unpacked tree for direct
+// smoke and a current-user NSIS installer. The installer never owns Server
+// lifecycle or account data; those actions remain in the Desktop shell and
+// native updater.
 export default {
   appId: 'com.metawork.desktop', productName: 'MetaWork', asar: true, npmRebuild: false,
-  artifactName: 'MetaWork-win32-${arch}.${ext}', directories: { output: 'release/windows' },
+  artifactName: 'MetaWork-win32-${arch}-setup.${ext}', directories: { output: 'release/windows' },
   files: ['dist/main.js', 'dist/preload.cjs', 'shell/**', 'package.json'],
   extraResources: [{ from: resolve(resources), to: '.', filter: ['desktop-release.json', 'trusted-release-keys.json', 'payload/**'] }],
   forceCodeSigning: false,
-  win: { target: [{ target: 'dir', arch: ['x64'] }], signAndEditExecutable: false },
+  win: { target: [{ target: 'nsis', arch: ['x64'] }, { target: 'dir', arch: ['x64'] }], signAndEditExecutable: false },
+  nsis: {
+    oneClick: false,
+    perMachine: false,
+    allowElevation: false,
+    allowToChangeInstallationDirectory: true,
+    createDesktopShortcut: 'always',
+    createStartMenuShortcut: true,
+    shortcutName: 'MetaWork',
+    deleteAppDataOnUninstall: false,
+    runAfterFinish: false,
+  },
   beforePack: async context => {
     if (process.platform !== 'win32' || process.arch !== 'x64' || context.arch !== 1) {
       throw new Error('Windows Desktop requires a native Windows x64 builder');
