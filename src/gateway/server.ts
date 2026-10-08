@@ -1,6 +1,8 @@
 import { DESKTOP_SESSION_CAPABILITY, type DesktopSessionGrant } from './desktop-session-contract.js';
 import { chmodSync, existsSync, unlinkSync } from 'fs';
-import { createServer, type Server, type Socket } from 'net';
+import { createServer } from 'net';
+import type { Duplex } from 'node:stream';
+import { loadWindowsPipes, WindowsPipeServer, WindowsPipeStream } from '../platform/windows-pipe.js';
 import { nanoid } from 'nanoid';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
 import type { ClientGateway } from './client-gateway.js';
@@ -23,6 +25,7 @@ import { MAX_CONNECTION_OBSERVATIONS, type ConversationObservationService, type 
 
 interface GatewayServerDeps {
   socketPath: string;
+  windowsPipeModulePath?: string;
   gateway: ClientGateway;
   journal: EventJournal;
   subscriptions: GatewaySubscriptions;
@@ -43,10 +46,17 @@ interface GatewayServerDeps {
   observation?: ConversationObservationService;
 }
 
+interface LocalGatewayListener {
+  listen(path: string, callback: () => void): unknown;
+  close(callback: (error?: Error) => void): unknown;
+  once(event: 'error', callback: (error: Error) => void): unknown;
+  off(event: 'error', callback: (error: Error) => void): unknown;
+}
+
 export class MetaclawGatewayServer {
-  private server: Server | null = null;
-  private readonly sockets = new Set<Socket>();
-  private readonly connectionOwners = new Map<string, Socket>();
+  private server: LocalGatewayListener | null = null;
+  private readonly sockets = new Set<Duplex>();
+  private readonly connectionOwners = new Map<string, Duplex>();
   private stopping = false;
 
   constructor(private readonly deps: GatewayServerDeps) {}
@@ -57,7 +67,7 @@ export class MetaclawGatewayServer {
     if (!isNamedPipePath(this.deps.socketPath) && existsSync(this.deps.socketPath)) {
       unlinkSync(this.deps.socketPath);
     }
-    this.server = createServer(socket => {
+    const connected = (socket: Duplex) => {
       if (this.stopping) {
         socket.destroy();
         return;
@@ -65,7 +75,13 @@ export class MetaclawGatewayServer {
       this.sockets.add(socket);
       socket.once('close', () => this.sockets.delete(socket));
       this.handleConnection(socket);
-    });
+    };
+    if (this.deps.windowsPipeModulePath) {
+      if (!isNamedPipePath(this.deps.socketPath)) throw new Error('Windows Gateway requires a named pipe');
+      const server = new WindowsPipeServer(loadWindowsPipes(this.deps.windowsPipeModulePath));
+      server.on('connection', connected);
+      this.server = server;
+    } else this.server = createServer(connected);
     await new Promise<void>((resolve, reject) => {
       this.server!.once('error', reject);
       this.server!.listen(this.deps.socketPath, () => {
@@ -93,11 +109,11 @@ export class MetaclawGatewayServer {
     }
   }
 
-  private handleConnection(socket: Socket): void {
+  private handleConnection(socket: Duplex): void {
     const accountId = this.deps.accountId ?? LOCAL_DEFAULT_ACCOUNT_ID;
     // Node net named pipes do not establish the Desktop OS-user principal.
-    // Keep ticket issuance disabled until the reviewed native transport exists.
-    const registerDesktopSession = isNamedPipePath(this.deps.socketPath)
+    // Only the native adapter supplies OS-verified same-user connections.
+    const registerDesktopSession = isNamedPipePath(this.deps.socketPath) && !(socket instanceof WindowsPipeStream)
       ? undefined : this.deps.registerDesktopSession;
     const socketConnectionId = `connection_${nanoid(10)}`;
     let conversationId: string | null = null;

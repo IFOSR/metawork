@@ -157,7 +157,7 @@ jobs:
         run: node scripts/probe-windows-platform-pipes.mjs
       - name: Verify native Duplex backpressure and client lifecycle
         if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
-        run: npm test -- tests/platform/windows-pipe.test.ts tests/platform/atomic-replace.test.ts
+        run: npm test -- tests/platform/windows-pipe.test.ts tests/platform/atomic-replace.test.ts tests/gateway/windows-desktop-transport.test.ts
       - run: npm run test:desktop
       - name: Exercise native SQLite binding
         run: node --input-type=module -e "import Database from 'better-sqlite3'; const db = new Database(':memory:'); db.exec('CREATE TABLE probe (value INTEGER); INSERT INTO probe VALUES (1)'); if (db.prepare('SELECT value FROM probe').get().value !== 1) throw Error('SQLite probe failed'); db.close();"

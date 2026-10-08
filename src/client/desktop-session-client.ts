@@ -2,9 +2,13 @@ import { createHash, randomBytes } from 'node:crypto';
 import { lstat, realpath } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { isAbsolute, relative, sep } from 'node:path';
+import type { Duplex } from 'node:stream';
+import { connectWindowsPipe, loadWindowsPipes } from '../platform/windows-pipe.js';
+import { loadWindowsPrivateFiles } from '../platform/windows-private-files.js';
+import { isNamedPipePath } from '../platform/local-endpoint.js';
 import { createJsonLineParser, encodeJsonLine } from '../gateway/jsonl.js';
 import { isDesktopNonce, type DesktopSessionGrant } from '../gateway/desktop-session-contract.js';
-import { readEndpointManifest } from '../server/server-endpoint-manifest.js';
+import { readEndpointManifest, validateEndpointManifest } from '../server/server-endpoint-manifest.js';
 import { resolveClientEndpoint } from './client-endpoint-resolver.js';
 
 export function assertLoopbackOrigin(value: string): void {
@@ -13,12 +17,14 @@ export function assertLoopbackOrigin(value: string): void {
     || url.username || url.password || !url.port) throw new Error('Invalid Desktop Server origin');
 }
 
-/** macOS/Unix only: Windows must supply a separately reviewed named-pipe ACL adapter. */
+/** The platform transport verifies the local OS principal before requesting a ticket. */
 export async function discoverDesktopSession(input: {
   installRoot: string;
   manifestPath: string;
   releaseId: string;
+  windowsModulePath?: string;
 }): Promise<DesktopSessionGrant> {
+  if (process.platform === 'win32') return discoverWindowsDesktopSession(input);
   if (typeof process.getuid !== 'function') throw new Error('Desktop local authentication requires Unix');
   const root = await realpath(input.installRoot);
   await assertOwnedPrivateFile(input.manifestPath, root, false);
@@ -38,6 +44,34 @@ export async function discoverDesktopSession(input: {
   return grant;
 }
 
+async function discoverWindowsDesktopSession(input: {
+  installRoot: string; manifestPath: string; releaseId: string; windowsModulePath?: string;
+}): Promise<DesktopSessionGrant> {
+  if (!input.windowsModulePath) throw new Error('Windows Desktop native authentication is unavailable');
+  const files = loadWindowsPrivateFiles(input.windowsModulePath);
+  // Native reads pin ancestors, reject reparse/hard links and validate owner/ACL.
+  // Do not first resolve away an attacker-controlled root junction.
+  files.ensurePrivateDirectory(input.installRoot);
+  const bytes = files.readPrivateFile(input.installRoot, relative(input.installRoot, input.manifestPath));
+  const validation = validateEndpointManifest(JSON.parse(bytes.toString('utf8')), {
+    protocolVersion: 2, releaseId: input.releaseId,
+  });
+  if (!validation.ok) throw new Error(validation.message);
+  const manifest = validation.manifest;
+  if (!isNamedPipePath(manifest.unixSocketPath)) throw new Error('Windows Desktop requires a named pipe');
+  assertLoopbackOrigin(manifest.webOrigin);
+  const nonce = randomBytes(32).toString('hex');
+  const grant = await requestDesktopSession(manifest.unixSocketPath, nonce, {
+    modulePath: input.windowsModulePath, expectedPid: manifest.pid,
+  });
+  const root = await realpath(input.installRoot);
+  if (grant.nonce !== nonce || grant.pid !== manifest.pid || grant.webOrigin !== manifest.webOrigin
+    || grant.releaseId !== input.releaseId || grant.installationId !== createHash('sha256').update(root).digest('hex')) {
+    throw new Error('Desktop Server identity mismatch');
+  }
+  return grant;
+}
+
 async function assertOwnedPrivateFile(path: string, root: string, socket: boolean): Promise<void> {
   if (!isAbsolute(path)) throw new Error('Local endpoint path must be absolute');
   const info = await lstat(path);
@@ -50,10 +84,14 @@ async function assertOwnedPrivateFile(path: string, root: string, socket: boolea
   }
 }
 
-export function requestDesktopSession(socketPath: string, nonce: string): Promise<DesktopSessionGrant> {
-  if (!isDesktopNonce(nonce)) return Promise.reject(new Error('Invalid Desktop nonce'));
+export async function requestDesktopSession(socketPath: string, nonce: string,
+  windows?: { modulePath: string; expectedPid: number },
+): Promise<DesktopSessionGrant> {
+  if (!isDesktopNonce(nonce)) throw new Error('Invalid Desktop nonce');
+  if (isNamedPipePath(socketPath) && !windows) throw new Error('Windows Desktop requires native pipe identity');
+  const native = windows ? await connectWindowsPipe(loadWindowsPipes(windows.modulePath), socketPath, windows.expectedPid) : undefined;
   return new Promise((resolve, reject) => {
-    const socket = createConnection(socketPath);
+    const socket: Duplex = native ?? createConnection(socketPath);
     let settled = false;
     const finish = (error?: Error, grant?: DesktopSessionGrant) => {
       if (settled) return;
@@ -83,7 +121,8 @@ export function requestDesktopSession(socketPath: string, nonce: string): Promis
       catch { finish(new Error('Invalid Desktop session origin')); return; }
       finish(undefined, grant);
     }, { maxFrameBytes: 4096, onError: error => finish(error) });
-    socket.once('connect', () => socket.write(encodeJsonLine({ type: 'register_desktop_session', nonce })));
+    const request = () => socket.write(encodeJsonLine({ type: 'register_desktop_session', nonce }));
+    if (native) request(); else socket.once('connect', request);
     socket.on('data', parse);
     socket.once('error', () => finish(new Error('Desktop Gateway is unavailable')));
     socket.once('close', () => finish(new Error('Desktop Gateway closed before authentication')));
