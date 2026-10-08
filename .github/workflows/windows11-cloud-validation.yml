@@ -8,6 +8,7 @@ on:
       - 'scripts/probe-windows11-cloud.py'
       - 'scripts/windows11-cloud-bootstrap.ps1'
       - 'scripts/monitor-windows11-cloud.py'
+      - 'scripts/inspect-windows11-setup.py'
 permissions:
   contents: read
 concurrency:
@@ -22,7 +23,7 @@ jobs:
       - name: Prepare disposable virtualization host
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-x86 ovmf swtpm xorriso python3-pil
+          sudo apt-get install -y -qq qemu-system-x86 ovmf swtpm xorriso python3-pil ntfs-3g
           sudo chmod a+rw /dev/kvm
       - name: Boot official Windows 11 evaluation with TPM and Secure Boot
         run: python3 scripts/monitor-windows11-cloud.py start

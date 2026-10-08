@@ -182,3 +182,5 @@ macOS payload 依赖检查与已有 Intel PDF 构建检查一致：读取 otool 
 Windows Main 新增托盘恢复、设置、显式停止确认和退出入口，以及 AppUserModelId；关闭隐藏/退出保留独立 Server，复用现有安装和生命周期 owner。macOS Dock 入口保留。本地 Desktop 类型检查、构建、9 项测试和隔离真实 Electron/生产 Web smoke 通过，确认客户端退出后 Server 仍存活，证据 `.tmp/windows-desktop-validation/macos-arm64-1791422373671`。Windows 实际 GUI 行为仍待验证，不将托盘源码完成视为 P2 通过。
 
 Gateway 新增显式原生模块入口；只有实际 WindowsPipeStream 才能在 Windows 注册 Desktop ticket，普通 Node 管道继续禁用。Desktop discovery 新增受 ACL 保护的 manifest 读取及 OS pipe PID 核对，保留 release/installation/origin/nonce 校验；原有 Unix 分支不变。Windows 原生集成测试覆盖连续/并发 ticket、重放、错误 PID、越界 manifest 和缺少 native identity。本地 Root/Desktop 类型检查和相关 Gateway/会话 21 项通过。生产 composition 与 Desktop 尚未选用新入口，须在云端集成和跨账号/远程拒绝通过后再启用；当前不是认证交付完成。
+
+`294cc6bf` 增加真实 production Gateway 的两普通账号与 SMB 检查：同账号 Desktop discovery 正例、另一账号普通 Node 管道连接/直接 endpoint 读取被 OS 拒绝，以及同一 owner 的 SMB 正对照与原生管道远程拒绝，待云端运行。VM 第四次环境准备的 10 分钟截图为安装 77%，尚无登录报告；下一次增加 QMP 状态/磁盘 I/O 证据及停机后的只读 NTFS setup 诊断，只输出有界且过滤敏感行的故障信息，磁盘/应答文件/密码不上传。

@@ -3,6 +3,7 @@ import hashlib
 import base64
 import http.server
 import json
+import importlib.util
 import os
 from pathlib import Path
 import secrets
@@ -173,6 +174,10 @@ try:
             command('human-monitor-command', {'command-line': 'sendkey ret'})
         if elapsed % 60 == 0:
             print(f'Windows 11 guest provisioning: {elapsed}s; waiting for guest evidence', flush=True)
+            (evidence / 'vm-status.json').write_text(json.dumps({
+                'elapsedSeconds': elapsed, 'status': command('query-status'),
+                'blockStats': command('query-blockstats'),
+            }, indent=2))
             ppm = evidence / 'latest-console.ppm'
             # Wake display power saving without clicking or entering commands.
             command('human-monitor-command', {'command-line': 'mouse_move 1 0'})
@@ -198,6 +203,11 @@ finally:
                 child.wait()
     server.shutdown()
     log.close()
+    if report is None:
+        spec = importlib.util.spec_from_file_location('setup_diagnostics', 'scripts/inspect-windows11-setup.py')
+        diagnostics = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(diagnostics)
+        diagnostics.inspect_setup(disk, evidence, [password, token])
     # Answer files contain a disposable guest password; only evidence is uploaded.
     shutil.rmtree(media, ignore_errors=True)
     answer_iso.unlink(missing_ok=True)
