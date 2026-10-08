@@ -192,3 +192,5 @@ Gateway 新增显式原生模块入口；只有实际 WindowsPipeStream 才能�
 ### Intel Desktop 回归发现与修复（2026-10-08）
 
 `d6464050` 的 Intel 原有模块检查/Gateway smoke 通过，但真实 Electron 在隐藏侧栏后菜单“搜索对话”聚焦超时（electron-smoke.mjs:94），该候选不能标为 macOS 全通过。原实现 setSidebarHidden 后用 requestAnimationFrame 聚焦，回调可能早于 React 提交可见 DOM，导致 display:none 输入框拒绝焦点。改为受请求状态控制的 useLayoutEffect，在同一组件可见状态提交后聚焦；普通浏览器未增加 native menu。实际 smoke 连续三次验证隐藏→搜索，失败时也保留界面和安全诊断。本地 arm64 构建及真实 Electron 通过，Server 退出存活检查通过，证据 `.tmp/windows-desktop-validation/macos-arm64-1791423608199`；Intel 云端复验待完成。隔离安装检查使用现有打包后的 platform-tools，不能假定 tsup 分发保留 src 目录结构。
+
+`795a9dea` 的 native store 4 项、Gateway/discovery 3 项以及管道/锁检查通过。`e3ff1e1f` 的真实普通 owner Gateway 会话通过；其他普通账号的 Node pipe connect 返回 EPERM，测试只接受 EACCES 导致失败。修正为仅接受 libuv 的两种权限拒绝码 EPERM/EACCES，不接受端点缺失/超时；endpoint 跨账号拒读和 SMB 后续门仍待执行。安装选择恢复从 Unix 字符前缀改为平台 isAbsolute，避免 Windows 重启时忽略 C:\\ 安装根。

@@ -14,6 +14,9 @@ import { loadWindowsPrivateFiles } from '../src/platform/windows-private-files.j
 const [mode, name, expected] = process.argv.slice(2);
 const root = resolve('private');
 const modulePath = resolve('metawork_platform.node');
+// libuv reports Windows access denial as EPERM for named-pipe connect and
+// EACCES for ordinary file reads. Neither missing endpoints nor timeouts pass.
+const accessDenied = (error: NodeJS.ErrnoException) => error.code === 'EACCES' || error.code === 'EPERM';
 if (mode === 'serve') {
   const files = loadWindowsPrivateFiles(modulePath);
   files.ensurePrivateDirectory(root);
@@ -56,13 +59,13 @@ if (mode === 'serve') {
     });
     client.once('error', (error: NodeJS.ErrnoException) => {
       clearTimeout(timer); client.destroy();
-      if (error.code !== 'EACCES') reject(error); else done();
+      if (!accessDenied(error)) reject(error); else done();
     });
   });
   // The same account must also be unable to read the private endpoint directly.
   let denied = false;
   try { await readFile(join(root, 'endpoint.json')); }
-  catch (error) { denied = (error as NodeJS.ErrnoException).code === 'EACCES'; }
+  catch (error) { denied = accessDenied(error as NodeJS.ErrnoException); }
   if (!denied) throw new Error('Other account read the private endpoint');
   console.log(JSON.stringify({ passed: true, scope: 'native-gateway-cross-account-denial' }));
 } else if (mode === 'remote-denied') {
@@ -73,7 +76,7 @@ if (mode === 'serve') {
     client.once('connect', () => { clearTimeout(timer); client.destroy(); reject(new Error('Remote Gateway connected')); });
     client.once('error', (error: NodeJS.ErrnoException) => {
       clearTimeout(timer); client.destroy();
-      if (error.code !== 'EACCES') reject(error); else done();
+      if (!accessDenied(error)) reject(error); else done();
     });
   });
   console.log(JSON.stringify({ passed: true, scope: 'native-gateway-SMB-denial' }));
