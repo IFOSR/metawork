@@ -36,6 +36,7 @@ try {
     run(node, [npm, 'prune', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], cwd);
   }
   const artifacts = join(candidate, 'archives');
+  run(node, ['scripts/prepare-windows-pageant.mjs', join(source, 'planner/AnyFusion-Pi/node_modules/ssh2')]);
   run(node, ['scripts/package-release.mjs', '--out-dir', artifacts,
     '--artifact-base-url', pathToFileURL(artifacts).href,
     '--release-id', `0.1.5-windows-ci-${sourceCommit.slice(0, 12)}`, '--channel', 'preview',

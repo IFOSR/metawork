@@ -1,0 +1,16 @@
+cmake_minimum_required(VERSION 3.21)
+project(metawork_ssh2_pageant LANGUAGES C CXX)
+if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+  message(FATAL_ERROR "Native Windows x64 MSVC required")
+endif()
+set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreaded)
+add_executable(pagent "${PAGEANT_SOURCE}")
+# Upstream's C source relies on implicit CRT declarations. Explicit headers
+# preserve pointer width when compiling that unchanged source for x64.
+target_compile_options(pagent PRIVATE /FIstdlib.h /FIio.h /FIstring.h)
+target_compile_definitions(pagent PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(pagent PRIVATE User32)
+add_executable(pageant-probe probe.cpp)
+target_compile_features(pageant-probe PRIVATE cxx_std_17)
+target_compile_options(pageant-probe PRIVATE /W4 /WX)
+target_link_libraries(pageant-probe PRIVATE User32)

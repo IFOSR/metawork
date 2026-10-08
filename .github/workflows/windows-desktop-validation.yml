@@ -20,6 +20,8 @@ on:
       - 'scripts/install.ps1'
       - 'scripts/prepare-windows-desktop-tools.mjs'
       - 'scripts/prepare-windows-desktop-candidate.mjs'
+      - 'scripts/prepare-windows-pageant.mjs'
+      - 'integrations/ssh2-pageant/**'
       - 'scripts/probe-windows-desktop-install.mjs'
       - 'integrations/windows-desktop-tools/**'
       - 'integrations/pi-pdf/**'

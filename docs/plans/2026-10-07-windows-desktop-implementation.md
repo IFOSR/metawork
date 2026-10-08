@@ -198,3 +198,9 @@ Gateway 新增显式原生模块入口；只有实际 WindowsPipeStream 才能�
 `480b601f` 已通过 production Gateway 的普通账号会话、另一普通账号 pipe/endpoint OS 拒绝、同 owner SMB 正对照及原生远程拒绝，并再次通过原生 stream/store/discovery。正式 Server 现选用 installed release 的 native 模块，先保护 root 再初始化子路径，Provider/internal credentials 和 endpoint publication 使用 native private adapter；DesktopServiceManager 从已核验的 immutable release 取得模块并执行 PID 身份验证。缺模块的普通 Node pipe 继续禁用 ticket，不做安全降级。Root/Desktop 类型检查及 macOS client/server/认证 52 项通过，完整原生 Server/安装/GUI 仍待验收。
 
 `e417ae61` 完整 payload 拒绝未获准的 x86 文件，已增加所有具体路径诊断；未扩展白名单。官方固定 Windows Python archive 已单独下载并 SHA256 验证，确认只有 pip/distlib 四个外架构 launcher（已由 preparer 移除），其他路径来源继续定位。第四次 Windows 11 环境 run `37708656202` 超时未回报，下一次 `37713269208` 带只读 setup 诊断继续；这不是 Windows 11 验收成功。
+
+### 锁定依赖的 Windows x64 闭包（2026-10-08）
+
+已定位 Planner 的 ssh2@1.17.0 自带 `util/pagent.exe` 为 x86。新增构建步骤核验包版本和原始 C 源码 SHA256，以 MSVC x64/static CRT 重建该辅助程序，强制包含标准头文件避免旧 C 隐式声明截断指针；不改上游源码、不删除 SSH agent 功能、不扩展 x86 白名单。打包前验证 PE 架构、参数拒绝、无 agent 拒绝及临时 Pageant 窗口的 SSH identities 二进制往返，并记录来源/产物哈希。原生构建与完整资源门待云端执行。
+
+第四次 Windows 11 最终截图已确认进入真实桌面（官方 Enterprise Evaluation，MWCI 登录），但 bootstrap 未回报，故仍不是环境或产品验收通过；第五次继续收集 setup/首次登录诊断。macOS `e417ae61` 两架构的模块回归、Gateway smoke 和实际 Electron 均通过，最新提交仍需同提交矩阵验收。
