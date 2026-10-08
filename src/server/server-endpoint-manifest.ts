@@ -1,7 +1,8 @@
-import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { mkdir, open, readFile, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isNamedPipePath } from '../platform/local-endpoint.js';
+import { replaceFile } from '../platform/atomic-replace.js';
 
 export const ENDPOINT_MANIFEST_VERSION = 1 as const;
 
@@ -46,14 +47,18 @@ export async function writeEndpointManifest(
   assertManifest(manifest);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporaryPath = `${path}.tmp-${process.pid}-${randomUUID()}`;
-  const handle = await open(temporaryPath, 'wx', 0o600);
   try {
-    await handle.writeFile(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
-    await handle.sync();
+    const handle = await open(temporaryPath, 'wx', 0o600);
+    try {
+      await handle.writeFile(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+      await handle.sync();
+    } finally { await handle.close(); }
+    await replaceFile(temporaryPath, path);
   } finally {
-    await handle.close();
+    await unlink(temporaryPath).catch(error => {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    });
   }
-  await rename(temporaryPath, path);
 }
 
 export async function readEndpointManifest(path: string): Promise<EndpointManifest | null> {

@@ -42,7 +42,7 @@ describe('Server restart readiness', () => {
     const value = await fixture();
     let settled = false;
     const ready = waitForStartedServer(value.child, value.path, { releaseId: 'candidate', timeoutMs: 3000 });
-    void ready.then(() => { settled = true; });
+    void ready.then(() => { settled = true; }, () => undefined);
     for (const manifest of [null, { ...value.manifest, pid: process.pid },
       { ...value.manifest, state: 'draining' as const }, { ...value.manifest, releaseId: 'old' }]) {
       if (manifest) await writeEndpointManifest(value.path, manifest);

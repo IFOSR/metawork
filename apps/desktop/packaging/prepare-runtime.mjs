@@ -94,11 +94,15 @@ try {
       run('/usr/bin/codesign', ['--force', '--sign', required('codesign-identity'), '--options', 'runtime', '--timestamp',
         '--entitlements', fileURLToPath(new URL('./entitlements.mac.plist', import.meta.url)), absolute]);
       run('/usr/bin/codesign', ['--verify', '--strict', absolute]);
-      const dependencies = run('/usr/bin/otool', ['-L', absolute]);
-      if (dependencies.split('\n').slice(1).some(line => {
-        const library = line.trim().split(' (')[0];
-        return library.startsWith('/') && !library.startsWith('/usr/lib/') && !library.startsWith('/System/Library/');
-      })) throw new Error('Runtime native dependency is not relocatable');
+      const commands = run('/usr/bin/otool', ['-l', absolute]);
+      // LC_ID_DYLIB is the library's own identity, not a linked dependency.
+      // Source-built Intel cryptography can retain its build-time install name.
+      for (const command of commands.split(/Load command \d+\n/u)) {
+        if (!/^\s*cmd LC_(?:LOAD_(?:WEAK_|UPWARD_)?|REEXPORT_)DYLIB\s*$/mu.test(command)) continue;
+        const library = /^\s*name (.+) \(offset \d+\)\s*$/mu.exec(command)?.[1];
+        if (!library || (library.startsWith('/') && !library.startsWith('/usr/lib/')
+          && !library.startsWith('/System/Library/'))) throw new Error('Runtime native dependency is not relocatable');
+      }
     }
   }
   const node = join(toolRoot, 'node/bin/node');
