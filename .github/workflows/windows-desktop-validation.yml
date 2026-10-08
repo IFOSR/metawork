@@ -135,19 +135,27 @@ jobs:
       - run: npm run build:offline --prefix planner/AnyFusion-Pi
       - run: npm run lint
       - run: npm run lint:desktop
+      - name: Build production Windows Node-API module
+        id: native-build
+        working-directory: native/windows
+        run: node ../../apps/desktop/node_modules/node-gyp/bin/node-gyp.js rebuild --msvs_version=2022
       - name: Verify Desktop tickets stay disabled on unverified Node named pipes
         run: npm test -- tests/gateway/desktop-local-transport.test.ts tests/management/desktop-session.test.ts tests/installation/desktop-platform.test.ts tests/installation/windows-installation-root.test.ts tests/installation/windows-desktop-release.test.ts tests/client/server-readiness.test.ts tests/executor/pi-native-launch.test.ts tests/executor/pi-cli-driver.test.ts tests/executor/runtime-home-materializer.test.ts
       - run: npm run build
       - run: npm run build:desktop
         id: desktop-build
       - name: Verify native private directory creation and atomic file replacement
-        run: node scripts/probe-windows-platform-files.mjs
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        run: node scripts/probe-windows-platform-files.mjs --reuse-build
       - name: Verify native private file writes without administrator rights
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
         shell: pwsh
         run: ./scripts/probe-windows-platform-standard-user.ps1
       - name: Verify persistent native pipe listener and concurrent clients
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
         run: node scripts/probe-windows-platform-pipes.mjs
       - name: Verify native Duplex backpressure and client lifecycle
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
         run: npm test -- tests/platform/windows-pipe.test.ts tests/platform/atomic-replace.test.ts
       - run: npm run test:desktop
       - name: Exercise native SQLite binding

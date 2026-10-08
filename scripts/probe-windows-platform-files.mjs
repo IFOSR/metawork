@@ -103,8 +103,10 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   const native = resolve('native/windows');
   const evidence = resolve('.tmp/windows-desktop-validation/platform-files');
   await mkdir(evidence, { recursive: true });
-  execFileSync(process.execPath, [resolve('apps/desktop/node_modules/node-gyp/bin/node-gyp.js'),
-    'rebuild', '--msvs_version=2022'], { cwd: native, stdio: 'inherit', timeout: 180_000 });
+  if (!process.argv.includes('--reuse-build')) {
+    execFileSync(process.execPath, [resolve('apps/desktop/node_modules/node-gyp/bin/node-gyp.js'),
+      'rebuild', '--msvs_version=2022'], { cwd: native, stdio: 'inherit', timeout: 180_000 });
+  }
   const addon = join(native, 'build/Release/metawork_platform.node');
   await probePlatformFiles(require(addon), join(evidence, 'node.json'), addon);
   const electronResult = join(evidence, 'electron.json');
