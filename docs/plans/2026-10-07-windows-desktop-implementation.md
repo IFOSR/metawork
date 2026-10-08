@@ -131,7 +131,7 @@ Windows 11 run `37702596665` 45 分钟超时，无 guest report，最终 QMP 截
 
 ### 原生 Windows 复验反馈（2026-10-08）
 
-`5791c403` 的 Windows 管道与普通用户/管理员 Job 暂停、恢复、取消检查通过；进程创建竞态覆盖仍待补齐。生产文件模块实际 MSVC 编译成功，但首次写入报 Win32 87：公开 SetFileInformationByHandle 的 RootDirectory 必须为空，不能沿用底层 NT 相对目录参数形式。修正为先以禁止 delete-sharing 的句柄固定从盘符下到目标父目录的全部祖先，再使用绝对目标路径原子替换；保留 ACL/owner/链接校验与 flush，待原生重跑。此前记录中的相对父目录 rename 不是已通过实现。
+`5791c403` 的 Windows 管道与普通用户/管理员 Job 暂停、恢复、取消检查通过；进程创建竞态覆盖仍待补齐。生产文件模块实际 MSVC 编译成功，但首次写入报 Win32 87：当前相对 RootDirectory 调用组合在原生 runner 被拒绝。修正为先以禁止 delete-sharing 的句柄固定从盘符下到目标父目录的全部祖先，再使用绝对目标路径原子替换；保留 ACL/owner/链接校验与 flush，待原生重跑。此前记录中的相对父目录 rename 不是已通过实现。
 
 补充生产文件 adapter 原生检查：管理员 Node/Electron Main 与临时普通用户分别验证文件占用失败保留旧内容/清理临时文件、显式 9 MiB 偏好上限、无效数值拒绝和双写双读并发整记录。读取也固定祖先目录，允许原子替换期间的 delete-sharing、仍拒绝原地并发写入；夹具只允许短暂 sharing violation 重试，其他异常仍失败。以上新增用例待 Windows 运行，macOS 路径未修改。
 
@@ -148,3 +148,5 @@ Windows 11 run `37702596665` 45 分钟超时，无 guest report，最终 QMP 截
 新增 WindowsPipeStream/Server 公共 Duplex/EventEmitter 封装：按原生完成状态轮询，读侧服从 highWaterMark，写侧切分为最多 64 KiB 的有界块；限制每轮工作量和活跃连接数，close 等待连接释放。传输层仅提供 OS 同用户身份与生命周期，不拥有 ticket、账号或任务权限。新增真实 `.node` 的顺序/并发客户端、2 MiB 背压与事件循环可用性、关闭后名称释放测试，Windows 云端执行，macOS 显式跳过此原生专用用例。共享 Gateway 尚未切换，接入前继续维持认证关闭。Root 类型检查通过。
 
 P0 Job 测试扩展为主 worker 持续创建短生命周期子进程（同时保留原线程创建压力），暂停时同时核对固定 worker 与新增子进程 heartbeat，取消前持有当时所有 Job 成员的进程句柄并等待真实退出。此新增压力门待原生通过。工具包验证改为只依赖已成功的 Desktop 工具构建，不再被相互独立的文件/管道测试失败短路，以一次运行收集独立缺陷，整体 workflow 仍保留失败状态。
+
+`6e8f049a` 的并发替换仍报 ACCESS_DENIED，证明共享标志修正尚不足以关闭该门。对照 Microsoft FILE_RENAME_INFO / FILE_RENAME_INFORMATION 文档，补用 Windows 11/NTFS 支持的 FileRenameInfoEx + REPLACE_IF_EXISTS/POSIX_SEMANTICS，以允许持有 delete-sharing 的旧读句柄继续读旧内容、新打开读新内容；不使用忽略 ACL/只读限制的标志。SDK target 显式设为 Windows 10 API 级别（产品最低仍 Windows 11），保留不允许 delete-sharing 的锁定目标负例，待原生验证。

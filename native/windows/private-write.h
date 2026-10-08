@@ -46,8 +46,7 @@ void write_private_file(const std::wstring& root, const std::wstring& relative_p
   const auto destination = root + L"\\" + relative_path;
   assert_local_path(destination);
   std::vector<std::unique_ptr<Handle>> parents;
-  // SetFileInformationByHandle requires RootDirectory == nullptr. Pin every
-  // ancestor without delete-sharing before using an absolute rename target,
+  // Pin every ancestor without delete-sharing before using an absolute target,
   // so a concurrent directory rename/reparse swap cannot redirect that path.
   for (size_t end = root.find(L'\\', 3); end != std::wstring::npos; end = root.find(L'\\', end + 1))
     parents.push_back(pin_directory(root.substr(0, end), false));
@@ -84,11 +83,13 @@ void write_private_file(const std::wstring& root, const std::wstring& relative_p
     const auto target = destination;
     std::vector<BYTE> storage(sizeof(FILE_RENAME_INFO) + target.size() * sizeof(wchar_t));
     auto rename = reinterpret_cast<FILE_RENAME_INFO*>(storage.data());
-    rename->ReplaceIfExists = TRUE;
+    // Windows 11/NTFS: retain open readers on the previous inode while new
+    // opens see the replacement. Readers still must allow delete-sharing.
+    rename->Flags = FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
     rename->RootDirectory = nullptr;
     rename->FileNameLength = static_cast<DWORD>(target.size() * sizeof(wchar_t));
     std::memcpy(rename->FileName, target.data(), rename->FileNameLength);
-    require(SetFileInformationByHandle(file->get(), FileRenameInfo, rename, static_cast<DWORD>(storage.size())) != FALSE,
+    require(SetFileInformationByHandle(file->get(), FileRenameInfoEx, rename, static_cast<DWORD>(storage.size())) != FALSE,
       "atomic private file replacement");
   } catch (...) {
     FILE_DISPOSITION_INFO disposition{ TRUE };
