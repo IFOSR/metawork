@@ -11,6 +11,9 @@ macOS Desktop starts updater and Server through one-shot user-session launchd
 jobs: detached spawn alone remains inside Finder's application coalition and can
 be killed on Desktop exit. No login registration or automatic restart is added;
 formal installer/service lifecycle ownership remains unchanged (ADR-0045).
+Internal apps receive a valid local ad-hoc seal with the MetaWork identity;
+skipping Apple signing must not leave Electron's invalid stub signature. Final
+Finder acceptance uses the unchanged package, and respects macOS background policy.
 
 MetaWork is the proprietary commercial product represented by this repository.
 AnyFusion is a separate open-source upstream/component family; concrete names

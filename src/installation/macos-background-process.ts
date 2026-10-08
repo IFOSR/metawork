@@ -30,7 +30,8 @@ export function backgroundProcessPlist(input: {
 
 /** One-shot user-session job, not a login item or another lifecycle owner.
  * setsid/unref do not escape a Finder application's macOS process coalition.
- * launchd must create the process outside that coalition before Desktop exits.
+ * launchd owns the job, but still respects the application's valid code identity
+ * and the user's macOS background policy. It is not a background-policy bypass.
  */
 export async function startMacOSBackgroundProcess(input: {
   root: string; role: 'update' | 'server'; executable: string; args: string[];

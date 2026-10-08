@@ -160,11 +160,16 @@ for (const scenario of scenarios) {
         async function reopen(){
           for(const row of execFileSync('ps',['-axo','pid,command'],{encoding:'utf8'}).split('\n')){
             const match=/^\s*(\d+)\s+(.+)$/.exec(row);
-            if(match && match[2].startsWith(join(application,'Contents/MacOS/MetaWork')+' ') && match[2].includes('--user-data-dir='+join(installationRoot,'desktop-profile'))) {
+            if(match && match[2].startsWith(join(application,'Contents/MacOS/MetaWork')+' ')) {
               try{process.kill(Number(match[1]),'SIGTERM');}catch{}
             }
           }
-          await new Promise(resolve=>setTimeout(resolve,800));
+          const exitDeadline = Date.now() + 20000;
+          while (execFileSync('ps', ['-axo', 'command='], { encoding: 'utf8' }).split('\n')
+            .some(command => command.startsWith(join(application, 'Contents/MacOS/MetaWork') + ' '))) {
+            if (Date.now() > exitDeadline) throw new Error('Fixture Desktop did not exit');
+            await new Promise(resolve => setTimeout(resolve, 200));
+          }
           return _electron.launch({executablePath:join(application,'Contents/MacOS/MetaWork'),args:['--user-data-dir='+join(installationRoot,'desktop-profile')],env:{...env,PATH:'/usr/bin:/bin'},timeout:120000});
         }
         app=await reopen();let recovered=await app.firstWindow();
@@ -227,8 +232,7 @@ for (const scenario of scenarios) {
     // before reading their health receipt. Wait before stopping their Server.
     for (const row of execFileSync('ps', ['-axo', 'pid,command'], { encoding: 'utf8' }).split('\n')) {
       const match = /^\s*(\d+)\s+(.+)$/.exec(row);
-      if (match && match[2].startsWith(join(application, 'Contents/MacOS/MetaWork') + ' ')
-        && match[2].includes('--user-data-dir=' + join(installationRoot, 'desktop-profile'))) {
+      if (match && match[2].startsWith(join(application, 'Contents/MacOS/MetaWork') + ' ')) {
         try { process.kill(Number(match[1]), 'SIGTERM'); } catch {}
       }
     }

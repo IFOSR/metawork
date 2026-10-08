@@ -31,6 +31,15 @@ export default {
     const trustedKeys = JSON.parse(await readFile(resolve(resources, 'trusted-release-keys.json'), 'utf8'));
     await verifyDesktopRelease(resolve(resources), { trustedKeys, arch, desktopVersion: context.packager.appInfo.version, allowDevelopment: internal });
   },
+  afterPack: internal ? async context => {
+    const app = resolve(context.appOutDir, 'MetaWork.app');
+    // No Apple certificate is needed for an internal ad-hoc seal. Leaving the
+    // renamed Electron stub's linker signature gives it identifier "Electron"
+    // with a missing resource seal; Finder/BTM then rejects background jobs.
+    // Preserve independently sealed payload tools: do not use --deep to sign.
+    run('/usr/bin/codesign', ['--force', '--sign', '-', '--identifier', 'com.metawork.desktop', app]);
+    run('/usr/bin/codesign', ['--verify', '--strict', app]);
+  } : undefined,
   afterSign: internal ? undefined : async context => {
     const app = resolve(context.appOutDir, 'MetaWork.app');
     const archive = resolve(context.appOutDir, 'MetaWork-notary.zip');

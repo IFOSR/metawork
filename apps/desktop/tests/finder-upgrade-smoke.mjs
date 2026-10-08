@@ -14,6 +14,7 @@ const root = resolve(process.argv[3]);
 const previousRuntime = resolve(process.argv[4]);
 if (!root.startsWith('/tmp/metawork-')) throw new Error('A disposable short fixture root is required');
 const app = join(fixture, 'MetaWork.app');
+execFileSync('/usr/bin/codesign', ['--verify', '--strict', app], { stdio: 'pipe' });
 const resources = join(app, 'Contents/Resources');
 const descriptor = JSON.parse(await readFile(join(resources, 'desktop-release.json'), 'utf8'));
 const previous = JSON.parse(await readFile(join(previousRuntime, 'release-identity.json'), 'utf8'));

@@ -12,6 +12,10 @@ application exit cannot terminate them as subordinate processes. Jobs do not
 register login items or automatically restart; the updater's readiness receipt
 must precede Desktop exit. Finder/LaunchServices launch, repeated opening and
 Server survival are required acceptance paths (ADR-0045).
+Internal packaging locally seals the app with `codesign --sign -` and verifies
+its resource seal and MetaWork identity. No Apple certificate is needed. An
+invalid inherited Electron stub signature causes BTM to unload background jobs;
+launchd alone cannot correct that packaging defect or bypass user background policy.
 
 [English Home](../../README.md) | [中文技术总览](technical-overview.zh-CN.md)
 

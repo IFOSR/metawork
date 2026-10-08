@@ -113,3 +113,9 @@ Customer acceptance must use LaunchServices, repeat upgrades with historical
 journals, and verify Server survival after Desktop exits. Direct Electron spawn
 alone is insufficient. Startup uses one explicit completion action, explains
 task/client interruption, and distinguishes interrupted updates from first use.
+
+Internal macOS packaging also requires a valid local ad-hoc app seal whose code
+identifier matches `com.metawork.desktop`. An Apple certificate is not required.
+Keeping the renamed Electron stub's invalid linker signature lets BTM reject and
+unload even launchd jobs on app exit. Launchd does not bypass macOS background
+policy. Final smoke must use the unchanged packaged app, never a re-signed copy.

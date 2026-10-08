@@ -25,6 +25,9 @@ export { canonicalizeReleaseManifestPayload } from './src/installation/release-m
   external: ['better-sqlite3'], target: 'node22' });
 // Acceptance of a distributable must preserve its signed payload and shell.
 if (process.argv.includes('--exact')) {
+  execFileSync('/usr/bin/codesign', ['--verify', '--strict', application], { stdio: 'pipe' });
+  const identity = execFileSync('/usr/bin/codesign', ['-d', '-r-', application], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  if (!identity.includes('identifier "com.metawork.desktop"')) throw new Error('Packaged app has the wrong code identity');
   const descriptor = JSON.parse(await readFile(join(resources, 'desktop-release.json'), 'utf8'));
   const trustedKeys = JSON.parse(await readFile(join(resources, 'trusted-release-keys.json'), 'utf8'));
   await verifyDesktopRelease(resources, { trustedKeys, arch: process.arch,

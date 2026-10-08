@@ -16,6 +16,15 @@ Detached spawn/unref only changed POSIX process/session behavior; it did not
 remove the child from the application's macOS coalition. The same launch
 mechanism also threatened Server survival when quitting a Finder-launched app.
 
+Final unmodified DMG acceptance caught a second necessary condition. The internal
+builder skipped Apple signing and retained the renamed Electron stub's invalid
+linker signature (`Identifier=Electron`, missing resource seal). Unlike the
+ad-hoc-sealed test fixture, macOS BTM denied it background execution and explicitly
+unloaded even its launchd job. The internal packager must apply and verify a local
+ad-hoc seal with `Identifier=com.metawork.desktop`; no Apple certificate is needed.
+This is not a bypass of a user's background-execution policy. Re-signing a test
+copy can hide packaging defects, so final acceptance must keep the app unchanged.
+
 ## Correction
 
 Use ephemeral, one-shot user-session launchd jobs for updater and Desktop-started
