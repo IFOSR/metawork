@@ -174,3 +174,9 @@ macOS payload 依赖检查与已有 Intel PDF 构建检查一致：读取 otool 
 `d05e069b` 的标准用户生产管道及其他原生门通过，Credential Manager 实际启动通过，下一处完整性拦截为 PortableGit 的 `usr/libexec/getprocaddr32.exe`。核对 upstream getprocaddr.c：这是 MSYS 的 WOW64 helper，单参数形式只查询本进程导出函数地址，多参数形式才涉及目标 PID。保留完整工具依赖，只允许该固定 payload 路径为 `pe-x86`，增加单参数 ExitProcess 查询探测，不调用目标进程或注入模式；所有其他 x86 文件以及替换核心 x64 工具仍拒绝。格式测试本地 10 项通过，原生执行待云端。
 
 第三次 Windows 11 VM `37703046385` 仍于 45 分钟超时且最终黑屏、没有 guest report，尚不能判断登录/网卡情况。带串口回传和显示唤醒的 `37708656202` 已启动，保持环境验收未完成。
+
+### 工具闭包与托盘入口（2026-10-08）
+
+`d6464050` 的固定 Node/Git/Bash/Pi 工具准备及原生文件/管道/Job 检查通过，完整候选资源首次执行，库存拒绝 Python pip/distlib 携带的 ARM launcher。Windows preparer 只移除 distlib 四个非 x64 launcher，保留 pip、源码/许可及 x64 launcher；完整库存与实际 Python/PDF 导入继续验证，待云端复验。相同提交 macOS arm64 全部 CI 回归通过，Intel 尚在运行。
+
+Windows Main 新增托盘恢复、设置、显式停止确认和退出入口，以及 AppUserModelId；关闭隐藏/退出保留独立 Server，复用现有安装和生命周期 owner。macOS Dock 入口保留。本地 Desktop 类型检查、构建、9 项测试和隔离真实 Electron/生产 Web smoke 通过，确认客户端退出后 Server 仍存活，证据 `.tmp/windows-desktop-validation/macos-arm64-1791422373671`。Windows 实际 GUI 行为仍待验证，不将托盘源码完成视为 P2 通过。

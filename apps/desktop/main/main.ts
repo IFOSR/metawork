@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, powerMonitor, screen, session, shell, type IpcMainInvokeEvent, type Session } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, powerMonitor, screen, session, shell, Tray, type IpcMainInvokeEvent, type Session } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { access, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -20,6 +20,7 @@ import { installNativeLauncher } from '../../../src/installation/native-launcher
 import { authorizeDesktopShellCheck, writeDesktopShellHealth } from '../../../src/installation/desktop-shell-health.js';
 
 app.setName('MetaWork');
+if (process.platform === 'win32') app.setAppUserModelId('com.metawork.desktop');
 
 const here = dirname(fileURLToPath(import.meta.url));
 const shellUrl = pathToFileURL(join(here, '..', 'shell', 'index.html')).href;
@@ -41,6 +42,7 @@ let selectedConfigHome: string | undefined;
 let preferences: DesktopPreferenceStore | null = null;
 let state: ShellState = { phase: 'connecting', message: '正在连接后台服务…' };
 let quitting = false;
+let tray: Tray | undefined;
 let connectPromise: Promise<void> | null = null;
 const downloads = new Map<string, string>();
 let saving = false;
@@ -117,7 +119,10 @@ function ownedShell(event: IpcMainInvokeEvent): void {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame
     || event.senderFrame.url !== shellUrl) throw new Error('Shell capability denied');
 }
-function showWindow(): void { window?.show(); window?.focus(); }
+function showWindow(): void {
+  if (process.platform === 'win32' && window?.isMinimized()) window.restore();
+  window?.show(); window?.focus();
+}
 function setState(next: ShellState): void {
   state = next;
   if (window?.webContents.getURL() === shellUrl) window.webContents.send('shell:state', state);
@@ -434,7 +439,9 @@ async function start(): Promise<void> {
     if (!windowState.closeExplained) {
       windowState.closeExplained = true;
       void dialog.showMessageBox(window!, { message: '关闭窗口后，后台工作会继续。',
-        detail: '点击 Dock 图标可以重新打开。停止后台服务请使用 MetaWork 菜单。', buttons: ['知道了'] }).then(() => window?.hide());
+        detail: process.platform === 'win32'
+          ? '点击系统托盘中的 MetaWork 图标，或再次启动 MetaWork，可以恢复窗口。停止后台服务请使用 MetaWork 菜单。'
+          : '点击 Dock 图标可以重新打开。停止后台服务请使用 MetaWork 菜单。', buttons: ['知道了'] }).then(() => window?.hide());
     } else window?.hide();
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -470,7 +477,9 @@ async function start(): Promise<void> {
       { label: labels.selectInstallation, enabled: app.isPackaged, click: () => { void selectInstallation(); } },
       { label: labels.installCommand, enabled: app.isPackaged, click: () => { void installTerminalCommand(); } },
       { label: labels.logout, click: () => { void logoutDesktop(); } },
-      { type: 'separator' }, { role: 'hide', label: labels.hideWindow },
+      { type: 'separator' }, process.platform === 'win32'
+        ? { label: labels.hideWindow, click: () => window?.hide() }
+        : { role: 'hide', label: labels.hideWindow },
       { label: labels.quit, accelerator: 'CmdOrCtrl+Q', click: () => app.quit() },
     ] },
     { label: labels.file, submenu: [
@@ -492,6 +501,21 @@ async function start(): Promise<void> {
       { role: 'minimize', label: labels.minimize }, { role: 'close', label: labels.close },
     ] },
   ]));
+  if (process.platform === 'win32') {
+    const icon = await app.getFileIcon(process.execPath, { size: 'small' });
+    if (icon.isEmpty()) throw new Error('Windows application icon is unavailable');
+    tray = new Tray(icon);
+    tray.setToolTip('MetaWork');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: app.getLocale().startsWith('zh') ? '打开 MetaWork' : 'Open MetaWork', click: showWindow },
+      { label: labels.settings, click: () => menuAction('settings') },
+      { type: 'separator' },
+      { label: labels.stopService, click: () => { showWindow(); void stopService(); } },
+      { label: labels.quit, click: () => app.quit() },
+    ]));
+    tray.on('click', showWindow);
+    tray.on('double-click', showWindow);
+  }
   powerMonitor.on('resume', () => { void connect(); });
   await window.loadURL(shellUrl);
   await connect();
@@ -510,7 +534,7 @@ else {
     const saveWindow = window && !window.isDestroyed() && windowState
       ? writeWindowState(join(app.getPath('userData'), 'window.json'), { ...windowState,
         bounds: window.getNormalBounds(), maximized: window.isMaximized() }) : Promise.resolve();
-    void Promise.allSettled([preferences?.flush(), saveWindow]).finally(() => { quitting = true; app.quit(); });
+    void Promise.allSettled([preferences?.flush(), saveWindow]).finally(() => { quitting = true; tray?.destroy(); app.quit(); });
   });
   void start().catch(() => { dialog.showErrorBox('MetaWork 无法启动', '桌面安装不完整，请重新安装配套版本。'); app.quit(); });
 }

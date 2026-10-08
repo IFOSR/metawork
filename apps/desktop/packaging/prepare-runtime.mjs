@@ -94,6 +94,14 @@ try {
     if (!Object.keys(inventory).some(path => /(?:^|\/)(?:licen[sc]e|copying|notice)[^/]*$/iu.test(path))) throw new Error(`Missing ${name} license notices`);
   }
   if (platform === 'win32') {
+    // pip's distlib vendors launchers for every Windows architecture. Only the
+    // x64 launchers can be selected by this pinned x64 Python runtime. Keep pip,
+    // its sources/notices and x64 launchers; reject all other foreign binaries
+    // through the complete inventory below.
+    const distlib = join(payload, 'metawork/dist/pi-pdf/python/Lib/site-packages/pip/_vendor/distlib');
+    for (const launcher of ['t32.exe', 'w32.exe', 't64-arm.exe', 'w64-arm.exe']) {
+      await rm(join(distlib, launcher));
+    }
     // The vendored Planner TUI is also present through npm's dereferenced
     // workspace path in the formal archive. Prune only its known foreign
     // prebuilds, in both copies, while preserving source and notices.
