@@ -14,7 +14,11 @@ describe.skipIf(process.platform === 'win32')('Pi PDF worker lifecycle', () => {
       await copyFile('integrations/pi-pdf/process.mjs', join(root, 'process.mjs'));
       // A blocked parser fixture: live process, no further work progress.
       const worker = join(root, 'python/bin/python3');
-      await writeFile(worker, `#!${process.execPath}\nconst {writeFileSync} = require('node:fs');\nprocess.on('SIGTERM',()=>{});\nwriteFileSync(${JSON.stringify(join(root, 'pid'))},String(process.pid));\nprocess.stderr.write('PDF_PROGRESS:page 1 started\\n');\nsetInterval(()=>{},1000);\n`);
+      // Publish readiness after the initial pipe write completes. Otherwise
+      // abort may close the parent pipe between PID publication and stderr.write,
+      // and EPIPE can exit this supposedly SIGTERM-resistant worker before the
+      // escalation under test is needed.
+      await writeFile(worker, `#!${process.execPath}\nconst {writeFileSync} = require('node:fs');\nprocess.on('SIGTERM',()=>{});\nprocess.stderr.write('PDF_PROGRESS:page 1 started\\n',()=>writeFileSync(${JSON.stringify(join(root, 'pid'))},String(process.pid)));\nsetInterval(()=>{},1000);\n`);
       await chmod(worker, 0o700);
       await writeFile(join(root, 'parent.mjs'), `import {runPdfProcess} from './process.mjs';await runPdfProcess(['-c','fixture']);`);
       const pending = runner.run({ attemptId: 'pdf-cancel', command: process.execPath, args: [join(root, 'parent.mjs')],

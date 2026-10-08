@@ -210,3 +210,5 @@ Gateway 新增显式原生模块入口；只有实际 WindowsPipeStream 才能�
 源码新增仅原生身份管道允许的停止请求，绑定 OS PID、endpoint startedAt 和随机 nonce。Gateway 不拥有清理政策，只转交现有 ServerApplication.stop；正常清理或失败都写受 ACL 保护的对应凭据，CLI 同时要求成功凭据和进程退出，不把强杀造成的 PID 消失当作成功。正式 stop/restart 共用此入口，Windows 缺 native adapter 时明确失败，禁止 SIGTERM/共享控制台 Ctrl-Break 降级；Unix 信号路径不变。ADR-0045、CONTEXT 与技术概览已记录边界。
 
 本机 Root/Desktop 类型检查及生命周期、锁、普通管道拒绝、模块边界 50 项通过。新增 Windows 原生测试覆盖完整 drain 顺序、失败清理回报及错误 PID/startedAt 拒绝；云端与实际安装中的活跃任务停止仍待通过，不能据源码补齐关闭 P1/P3。
+
+`cd6ec78c` 云端原生 Server 停止测试 3 项通过（同批 stream/store/锁 22 项通过、Unix 信号专属 1 项跳过）。macOS arm64 完整回归发现 PDF 取消 fixture 偶发未经历 SIGKILL：fixture 先发布 PID 再写 stderr，取消可在两者之间关闭父管道，使 EPIPE 提前结束本应忽略 SIGTERM 的 worker。就绪发布移至首次 stderr 写完成回调，保留真实 group 消失和 SIGKILL 断言；不改变生产取消逻辑。修正后本地 PDF 两项通过，云端复验待完成。
