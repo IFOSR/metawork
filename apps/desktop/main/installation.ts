@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { verifyDesktopRelease, type DesktopRelease } from '../../../src/installation/desktop-release.js';
 import { readReleaseIdentity } from '../../../src/installation/release-identity.js';
 import { desktopSupportRoot } from '../../../src/installation/desktop-support.js';
-import type { DesktopSetupInput } from '../shared/bridge.js';
 
 /** Installation transport only: database/configuration/activation remain in the native helper. */
 export class DesktopInstallation {
@@ -42,7 +41,7 @@ export class DesktopInstallation {
     await this.run('prepare-desktop');
     return realpath(join(desktopSupportRoot(this.root, release.releaseId), 'desktop-tools/node/bin/node'));
   }
-  async run(command: 'install' | 'update' | 'rollback' | 'prepare-desktop', provider?: DesktopSetupInput): Promise<void> {
+  async run(command: 'install' | 'update' | 'rollback' | 'prepare-desktop'): Promise<void> {
     if (this.installing) throw new Error('Installation already in progress');
     this.installing = true;
     try {
@@ -61,7 +60,7 @@ export class DesktopInstallation {
         child.once('error', reject);
         child.once('exit', code => code === 0 ? resolve() : reject(new Error('Installation failed')));
         child.stdin.on('error', () => undefined);
-        child.stdin.end(provider ? JSON.stringify(provider) : '');
+        child.stdin.end();
       });
     } finally { this.installing = false; }
   }

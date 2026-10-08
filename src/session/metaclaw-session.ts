@@ -434,6 +434,7 @@ export class MetaclawSession {
     });
     this.plannerConfiguration = stagedConfiguration.planner;
     this.kernelConfiguration = stagedConfiguration.kernel;
+    if (!stagedConfiguration.plannerBinding) throw new Error('Planner is not configured; open Settings in MetaWork.');
     this.plannerBinding = stagedConfiguration.plannerBinding;
     this.plannerBindingFingerprint = stagedConfiguration.plannerBindingFingerprint;
     this.notifier = deps.notifier ?? new NoopNotificationService();

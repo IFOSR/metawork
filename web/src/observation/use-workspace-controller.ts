@@ -889,11 +889,14 @@ export function useWorkspaceController() {
   const selectedBillingTurn = billingObservedTurn ? turnProjection(billingObservedTurn) : latestTurn;
   const running = observedActivity.tasks.some(task => task.canCancel) || latestTurn?.status === 'running';
   const requiredBlock = requiredAgentBlock(agentReadiness);
-  const composerDisabled = !selectedId || !connected || requiredBlock.blocked;
+  const configurationNeeded = configurationRuntime?.workConfigurationReady === false;
+  const composerDisabled = !selectedId || !connected || requiredBlock.blocked || configurationNeeded;
   const composerBlockedReason = workspaceSwitching
     ? '正在切换 Workspace…'
     : !connected
         ? 'WebSocket 尚未连接，消息不会丢失。连接恢复后再发送。'
+        : configurationNeeded
+          ? '请先在设置中添加模型，为规划和执行智能体选择模型并启用，然后保存并激活。'
         : requiredBlock.blocked
           ? requiredBlock.message
         : activationNotice;

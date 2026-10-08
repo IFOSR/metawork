@@ -891,7 +891,7 @@ export function SettingsPanel({
               minimumQualityTier: entry.minimumQualityTier,
             },
           }
-          : { mode: 'fixed', modelRef: fixedModelRef },
+          : { mode: 'fixed', modelRef: fixedModelRef || (!entry.enabled ? asRecord(current.modelPolicy).modelRef : '') },
       };
       if (entry.enabled === true && typeof current.harnessRef === 'string' && harnesses[current.harnessRef]) {
         harnesses[current.harnessRef] = { ...asRecord(harnesses[current.harnessRef]), enabled: true };
@@ -2406,9 +2406,18 @@ export function SettingsPanel({
                         </div>
                         {expanded && <>
                         {agentFacts.kind === 'planner' ? (
-                          <p className="routing-section-note planner-agent-note">
-                            规划智能体负责理解复杂意图、拆解 DAG、选择执行智能体并编排验收；模型事实来自当前模型目录。
-                          </p>
+                          <div className="executor-management-actions">
+                            <p className="routing-section-note planner-agent-note">
+                              规划智能体负责理解意图并编排工作。选择模型后启用，再保存并激活。
+                            </p>
+                            <label>
+                              <input type="checkbox" checked={entry.enabled !== false} disabled={editingDisabled}
+                                onChange={event => {
+                                  const enabled = event.target.checked;
+                                  setDraft(current => current ? { ...current, [ref]: { ...current[ref], enabled } } : current);
+                                }} /> 启用规划智能体
+                            </label>
+                          </div>
                         ) : (
                           <div className="executor-management-actions">
                             <span>{managed?.enabled === false ? '已停用' : '已启用'}</span>

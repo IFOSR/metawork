@@ -29,11 +29,11 @@ export function buildAccountPlannerServices(deps: {
   db: Database.Database;
   memoryEngine: MemoryEngine;
   contextRecaller: ContextRecaller;
-  plannerBinding: RevisionedAgentBinding;
+  plannerBinding: RevisionedAgentBinding | null;
   plannerBindingFingerprint: string;
-  plannerModelId: string;
+  plannerModelId?: string;
   getPlannerBinding?: () => {
-    plannerBinding: RevisionedAgentBinding;
+    plannerBinding: RevisionedAgentBinding | null;
     plannerBindingFingerprint: string;
   };
   plannerSupervisor?: PlannerProcessController;
@@ -44,7 +44,7 @@ export function buildAccountPlannerServices(deps: {
     contextRecaller: deps.contextRecaller,
   });
 
-  if (!deps.planningAgent && process.env.NODE_ENV !== 'test') {
+  if (deps.plannerBinding && !deps.planningAgent && process.env.NODE_ENV !== 'test') {
     const runtimeBinding = deps.plannerSupervisor?.runtimeBinding;
     if (!runtimeBinding) {
       throw new Error('revision-bound Planner supervisor is required');
@@ -72,6 +72,7 @@ export function buildAccountPlannerServices(deps: {
         plannerBinding: deps.plannerBinding,
         plannerBindingFingerprint: deps.plannerBindingFingerprint,
       };
+      if (!current.plannerBinding) throw new Error('请先在设置中配置模型并启用智能体。');
       if (configurationRevision !== current.plannerBinding.configurationRevision) {
         throw new Error(`Planner audit binding revision is unavailable: ${configurationRevision}`);
       }

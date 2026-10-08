@@ -35,6 +35,7 @@ export function WorkspaceShell({
   running,
   blockedReason,
   agentReadiness,
+  configurationNeeded = false,
   onRefreshAgentReadiness,
   previewOpen = false,
   previewDrawer = null,
@@ -80,6 +81,7 @@ export function WorkspaceShell({
   running: boolean;
   blockedReason?: string | null;
   agentReadiness: AgentReadiness[];
+  configurationNeeded?: boolean;
   /** 右侧文档预览抽屉是否打开；打开时主画布切换为三列桌面布局。 */
   previewOpen?: boolean;
   /** 预览铺满主体时隐藏对话列，避免两列争抢宽度。 */
@@ -165,6 +167,7 @@ export function WorkspaceShell({
         />
         <AgentReadinessBanner
           agents={agentReadiness}
+          configurationNeeded={configurationNeeded}
           onRefresh={onRefreshAgentReadiness}
           onOpenSettings={onSettings}
         />

@@ -18,7 +18,7 @@ export interface StagedLegacyConfiguration {
   snapshot: ConfigurationSnapshot;
   planner: PlannerConfigurationView;
   kernel: KernelConfigurationView;
-  plannerBinding: RevisionedAgentBinding;
+  plannerBinding: RevisionedAgentBinding | null;
   plannerBindingFingerprint: string;
 }
 
@@ -33,6 +33,13 @@ export function buildStagedLegacyConfiguration(input: {
       ? buildTestSnapshot()
       : failMissingMigratedSnapshot();
   const planner = snapshot.config.agentClasses.planner;
+  if (planner?.kind === 'planner' && !planner.enabled) {
+    return {
+      snapshot, planner: buildPlannerConfigurationView(snapshot),
+      kernel: buildKernelConfigurationView(snapshot),
+      plannerBinding: null, plannerBindingFingerprint: '',
+    };
+  }
   if (!planner || planner.kind !== 'planner') {
     throw new Error('staged configuration requires the Planner AgentClass');
   }

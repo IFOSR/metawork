@@ -1,5 +1,12 @@
 # MetaWork
 
+Desktop first launch (2026-10-08, ADR-0045) initializes without model credentials:
+empty Provider/Model catalogs, disabled editable AgentClass presets, and an
+explicitly absent Planner binding. The ordinary Server provides Settings and
+browsing; Gateway blocks semantic work until configuration activation enables
+Planner and Executors. Internal commit suffixes identify builds, not release
+chronology; numeric product downgrade and compatibility checks remain intact.
+
 [English Home](../../README.md) | [中文技术总览](technical-overview.zh-CN.md)
 
 MetaWork is the proprietary commercial product represented by this repository.

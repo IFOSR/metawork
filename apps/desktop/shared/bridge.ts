@@ -22,14 +22,12 @@ export interface DesktopBridge {
   onMenu(listener: (action: DesktopMenuAction) => void): () => void;
 }
 export interface ShellState {
-  phase: 'connecting' | 'ready' | 'error' | 'setup' | 'upgrade';
+  phase: 'connecting' | 'ready' | 'error' | 'upgrade';
   message: string;
 }
-export interface DesktopSetupInput { baseUrl: string; apiKey: string; modelId: string }
 export interface DesktopShellBridge {
   state(): Promise<ShellState>;
   retry(): Promise<void>;
-  setup(input: DesktopSetupInput): Promise<void>;
   upgrade(): Promise<void>;
   onState(listener: (state: ShellState) => void): () => void;
 }

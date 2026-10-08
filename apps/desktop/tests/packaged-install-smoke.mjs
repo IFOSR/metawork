@@ -26,15 +26,24 @@ const app = await _electron.launch({ executablePath: join(application, 'Contents
 let serverPid;
 try {
   const page = await app.firstWindow();
-  await page.locator('#setup').waitFor({ state: 'visible', timeout: 120000 });
-  await page.locator('#provider-url').fill('https://provider.example.invalid/v1');
-  await page.locator('#model-id').fill('deepseek-chat');
-  await page.locator('#api-key').fill('packaged-install-fixture');
-  await page.locator('#setup button[type=submit]').click();
   await page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\/$/, { timeout: 180000 });
   await page.locator('.workspace-shell').waitFor({ timeout: 30000 });
   const authenticated = await page.evaluate(async () => (await (await fetch('/api/auth/session')).json()).authenticated);
   assert.equal(authenticated, true);
+  const initial = await page.evaluate(async () => (await (await fetch('/api/config')).json()));
+  assert.deepEqual(initial.config.providers, {});
+  assert.deepEqual(initial.config.models, {});
+  assert(Object.values(initial.config.agentClasses).every(agent => !agent.enabled));
+  await page.getByRole('button', { name: '配置模型', exact: true }).waitFor();
+  await page.getByRole('button', { name: '配置模型', exact: true }).click();
+  await page.getByRole('button', { name: '保存并激活', exact: true }).waitFor();
+  // Saving the empty configuration must remain possible; disabled presets do not
+  // require invented model references or credentials.
+  const saved = page.waitForResponse(response => response.url().endsWith('/api/config/activate'));
+  await page.getByRole('button', { name: '保存并激活', exact: true }).click();
+  assert.equal((await saved).status(), 200);
+  assert.equal((await page.evaluate(async () => (await (await fetch('/api/config/activation-status')).json()))).workConfigurationReady, false);
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
   await verifyDesktopMenu(app);
   await assert.rejects(access(join(installRoot, 'internal/llm-credentials.json')));
   serverPid = JSON.parse(await readFile(join(installRoot, 'server-endpoint.json'), 'utf8')).pid;
@@ -45,7 +54,7 @@ try {
   await app.close();
   process.kill(serverPid, 0);
   await writeFile(join(evidence, 'packaged-install.json'), JSON.stringify({
-    application, authenticated, cleanInstall: true, developerCredentialsAbsent: true,
+    application, authenticated, cleanInstall: true, modelFreeInstallation: true, settingsAccessible: true, developerCredentialsAbsent: true,
     restrictedPath: env.PATH, serverSurvivedExit: true, paidTaskExecuted: false,
   }, null, 2));
   console.log('Packaged Desktop clean installation, authenticated Web and Server survival passed.');

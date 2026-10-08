@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   canonicalizeReleaseManifestPayload,
   decideReleaseCompatibility,
+  compareReleaseVersions,
   parseReleaseManifest,
   verifyReleaseManifest,
   type ReleaseManifestInput,
@@ -306,5 +307,21 @@ describe('release update and rollback compatibility decisions', () => {
       previouslyVerifiedCompatibleReleaseIds: ['2.0.0-preview.10'],
       requiredCompatibility,
     })).toMatchObject({ ok: false, reason: expect.stringMatching(/older/i) });
+  });
+});
+
+
+describe('internal release identities', () => {
+  it('does not order commit hashes as chronological prereleases', () => {
+    expect(compareReleaseVersions('0.1.8-internal-1e26ed0', '0.1.8-internal-bc0fb75')).toBe(0);
+    expect(compareReleaseVersions('0.1.8-internal-bc0fb75', '0.1.8-internal-1e26ed0')).toBe(0);
+    const candidate = parseReleaseManifest(baseManifest({ releaseId: '0.1.8-internal-1e26ed0' }));
+    expect(decideReleaseCompatibility({ mode: 'update', currentReleaseId: '0.1.8-internal-bc0fb75',
+      candidate, requiredCompatibility: candidate.compatibility })).toEqual({ ok: true });
+  });
+  it('preserves product downgrade, stable/prerelease and numbered preview ordering', () => {
+    expect(compareReleaseVersions('0.1.8-internal-1e26ed0', '0.1.9-internal-aaaaaaa')).toBeLessThan(0);
+    expect(compareReleaseVersions('0.1.8-internal-1e26ed0', '0.1.8')).toBeLessThan(0);
+    expect(compareReleaseVersions('0.1.8-preview.2', '0.1.8-preview.10')).toBeLessThan(0);
   });
 });

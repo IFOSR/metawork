@@ -87,7 +87,7 @@ export function buildAccountRuntimeComposition(deps: {
   sourceRoot: string;
   sessionId: string;
   stagedConfiguration: StagedLegacyConfiguration;
-  plannerBinding: RevisionedAgentBinding;
+  plannerBinding: RevisionedAgentBinding | null;
   plannerBindingFingerprint: string;
   getPlannerBinding?: Parameters<typeof buildAccountPlannerServices>[0]['getPlannerBinding'];
   getRuntimeBinding(
@@ -186,10 +186,9 @@ export function buildAccountRuntimeComposition(deps: {
     usageSpanCloser: deps.usageSpanCloser,
     usagePayer: deps.usagePayer,
   });
-  const plannerModel = deps.stagedConfiguration.snapshot.config.models[
-    deps.plannerBinding.modelRef
-  ];
-  if (!plannerModel) {
+  const plannerModel = deps.plannerBinding
+    ? deps.stagedConfiguration.snapshot.config.models[deps.plannerBinding.modelRef] : undefined;
+  if (deps.plannerBinding && !plannerModel) {
     throw new Error(`Planner Model is unavailable: ${deps.plannerBinding.modelRef}`);
   }
   const plannerServices = buildAccountPlannerServices({
@@ -198,7 +197,7 @@ export function buildAccountRuntimeComposition(deps: {
     contextRecaller: deps.contextRecaller,
     plannerBinding: deps.plannerBinding,
     plannerBindingFingerprint: deps.plannerBindingFingerprint,
-    plannerModelId: plannerModel.modelId,
+    plannerModelId: plannerModel?.modelId,
     getPlannerBinding: deps.getPlannerBinding,
     plannerSupervisor: deps.plannerSupervisor,
     planningAgent: deps.planningAgent,

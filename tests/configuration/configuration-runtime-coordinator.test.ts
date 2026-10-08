@@ -63,6 +63,26 @@ function fakeService(initial: ReturnType<typeof snapshot>, next: ReturnType<type
 }
 
 describe('ConfigurationRuntimeCoordinator', () => {
+  it('activates configured agents from an unconfigured account without restarting', async () => {
+    const after = snapshot('revision-2', {});
+    const before = snapshot('revision-1', {});
+    before.config.providers = {};
+    before.config.models = {};
+    for (const agent of Object.values(before.config.agentClasses)) agent.enabled = false;
+    const onActivated = vi.fn();
+    const coordinator = new ConfigurationRuntimeCoordinator({
+      service: fakeService(before, after), initialSnapshot: before, onActivated,
+      gate: new ConfigurationActivationGate(() => ({
+        activeTaskId: null, plannerTurnActive: false, activeAttemptCount: 0,
+        activeLeaseCount: 0, publicationPending: false, recoveryInProgress: false,
+      })),
+    });
+    expect(coordinator.getState().workConfigurationReady).toBe(false);
+    expect(await coordinator.activate({ config: after.config, expectedRevisionId: before.revisionId }))
+      .toMatchObject({ ok: true, classification: 'hot' });
+    expect(coordinator.getState().workConfigurationReady).toBe(true);
+    expect(onActivated).toHaveBeenCalledOnce();
+  });
   it('publishes a settings task-limit change through the same hot activation transaction', async () => {
     const before = snapshot('revision-1', {});
     const after = snapshot('revision-2', {});

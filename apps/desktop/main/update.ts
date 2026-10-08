@@ -6,7 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { verifyDesktopRelease } from '../../../src/installation/desktop-release.js';
 import { readReleaseIdentity } from '../../../src/installation/release-identity.js';
-import { compareSemanticVersions, decideReleaseCompatibility, parseReleaseManifest } from '../../../src/installation/release-manifest.js';
+import { compareReleaseVersions, decideReleaseCompatibility, parseReleaseManifest } from '../../../src/installation/release-manifest.js';
 import { desktopSupportRoot } from '../../../src/installation/desktop-support.js';
 import { DesktopInstallation } from './installation.js';
 
@@ -59,7 +59,7 @@ export async function prepareDesktopUpdate(input: {
     // ADR-0045 admits the retired preview numbering into the current product
     // line. It does not authorize replacing a newer stable Runtime with an old DMG.
     const retiredPreview = /^1\.2\.0-preview\./u.test(previous.releaseId) && /^0\.1\./u.test(candidate.releaseId);
-    if (!retiredPreview && compareSemanticVersions(candidate.releaseId, previous.releaseId) < 0) {
+    if (!retiredPreview && compareReleaseVersions(candidate.releaseId, previous.releaseId) < 0) {
       throw new Error('Installed Runtime is newer; download a newer Desktop');
     }
   }

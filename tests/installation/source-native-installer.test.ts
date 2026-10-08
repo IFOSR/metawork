@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { buildStagedLegacyConfiguration } from '../../src/configuration/staged-legacy-configuration.js';
 import {
   chmodSync,
   lstatSync,
@@ -36,6 +37,38 @@ afterEach(() => {
 });
 
 describe('SourceNativeInstaller', () => {
+  it('installs without model credentials and leaves editable presets inert', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'metawork-unconfigured-')); cleanup.push(home);
+    const sourceRoot = join(home, 'source'); const plannerRoot = join(home, 'planner');
+    fixtureRelease(sourceRoot, plannerRoot);
+    const paths = resolveAnyFusionPaths(home);
+    const account = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
+    const installer = new SourceNativeInstaller({ paths,
+      secretStore: {
+        get: async () => { throw new Error('must not read a model secret'); },
+        put: async () => { throw new Error('must not write a model secret'); },
+        delete: async () => { throw new Error('must not delete a model secret'); },
+      },
+      detectCommand: async name => name === 'pi', installLaunchers: false,
+    });
+    await installer.install({ releaseId: '0.1.8-internal-abc1234', sourceRoot, plannerRoot,
+      executorPreset: 'desktop-pi' });
+    const repository = new FileConfigurationRepository(account.config);
+    const snapshot = await repository.getActiveSnapshot();
+    expect(snapshot.config.providers).toEqual({});
+    expect(snapshot.config.models).toEqual({});
+    expect(Object.values(snapshot.config.agentClasses).every(agent => !agent.enabled)).toBe(true);
+    expect(snapshot.config.agentClasses['pi-engineering'].harnessRef).toBe('pi-cli');
+    const staged = buildStagedLegacyConfiguration({ migratedSnapshot: snapshot, testMode: false });
+    expect(staged.plannerBinding).toBeNull();
+    expect(staged.planner.planner).toBeUndefined();
+    expect(staged.planner.models).toEqual([]);
+    const db = new Database(account.database, { readonly: true });
+    expect(db.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]); db.close();
+    await expect(installer.install({ releaseId: '0.1.8-internal-abc1234', sourceRoot, plannerRoot,
+      executorPreset: 'desktop-pi' })).rejects.toThrow();
+    expect((await repository.getActiveSnapshot()).revisionId).toBe(snapshot.revisionId);
+  });
   it('provisions desktop engineering and research on bundled Pi without a global Codex or CLI launcher', async () => {
     const home = mkdtempSync(join(tmpdir(), 'metawork-desktop-install-')); cleanup.push(home);
     const sourceRoot = join(home, 'source'); const plannerRoot = join(home, 'planner');

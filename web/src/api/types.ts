@@ -157,6 +157,7 @@ export interface ConfigSnapshot {
   activeAttemptCount?: number;
   plannerTurnActive?: boolean;
   hotActivationSupported?: boolean;
+  workConfigurationReady?: boolean;
   restartRequired?: boolean;
   checkedAt?: string;
   contentHash: string;
@@ -302,7 +303,7 @@ export interface ResponsibilitySuggestion {
 export type ConfigurationRuntimeState = Pick<ConfigSnapshot,
   'activeRevisionId' | 'runtimeRevisionId' | 'activationStatus' | 'activationAllowed'
   | 'blockingReasons' | 'activeTaskId' | 'activeAttemptCount' | 'plannerTurnActive'
-  | 'hotActivationSupported' | 'restartRequired' | 'checkedAt'>;
+  | 'hotActivationSupported' | 'restartRequired' | 'checkedAt' | 'workConfigurationReady'>;
 
 export interface ExecutorCapabilityManual {
   agentClassRef: string;

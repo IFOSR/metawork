@@ -80,3 +80,22 @@ retain their Desktop session checks. Joint commit still requires the candidate
 Server identity and authenticated-render receipt. Native adoption retains a
 verified helper independently of the staged app; repair can run without that
 candidate. Relaunch preserves the installation, config home and Desktop profile.
+
+## Model-free first launch and internal identities (2026-10-08)
+
+Desktop installation initializes the ordinary account configuration with empty
+Provider/Model catalogs and disabled editable AgentClass presets. No placeholder
+provider, model or credential may be generated. Server exposes the same Gateway,
+workspace browsing and Settings while the Planner binding is explicitly absent;
+new semantic work is rejected by the existing Gateway admission gate. Web
+projects configuration readiness and offers a Settings action. The existing
+strict-idle activation transaction binds the Planner after real models/agents
+are configured; compensation can restore the unconfigured state. No separate
+Desktop backend or alternate storage/recovery owner is introduced.
+
+Internal release IDs ending in `-internal-<commit hash>` identify immutable builds.
+Their hashes carry no chronological order: same-product internal builds may be
+explicitly replaced through the normal verified update transaction. Product
+version downgrade and stable/prerelease ordering, actual schema compatibility,
+backup and authenticated health checks remain enforced. This corrects identity
+comparison, rather than adding a compatibility bypass.

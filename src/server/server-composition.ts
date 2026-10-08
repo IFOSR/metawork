@@ -731,19 +731,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     secretStore,
     getSnapshot: revisionId => configurationRepository.readSnapshot(revisionId),
   });
-  const plannerModel = migratedSnapshot.config.models[
-    stagedConfiguration.plannerBinding.modelRef
-  ];
-  if (!plannerModel) {
-    throw new Error(
-      `Planner Model is unavailable: ${stagedConfiguration.plannerBinding.modelRef}`,
-    );
-  }
-  const plannerRuntimeEnvironment = await resolvePlannerRuntimeEnvironment({
-    configuration: runtimeBindings.runtimeConfiguration,
-    plannerBinding: stagedConfiguration.plannerBinding,
-    secretStore,
-  });
+  const plannerModel = stagedConfiguration.plannerBinding
+    ? migratedSnapshot.config.models[stagedConfiguration.plannerBinding.modelRef] : undefined;
+  const plannerRuntimeEnvironment = stagedConfiguration.plannerBinding
+    ? await resolvePlannerRuntimeEnvironment({
+      configuration: runtimeBindings.runtimeConfiguration,
+      plannerBinding: stagedConfiguration.plannerBinding, secretStore,
+    }) : undefined;
   const db = createDatabase(accountPaths.database);
   const billingServices = createServerBillingServices(db, {
     configurationRevision: migratedSnapshot.revisionId,
@@ -896,10 +890,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     schemaPath: resolve(applicationRoot, 'dist', 'planning-agent-plan-v8.schema.json'),
     sessionDir: accountPaths.plannerSessions,
     runtimeEnvironment: plannerRuntimeEnvironment,
-    expectedModel: {
+    expectedModel: stagedConfiguration.plannerBinding && plannerModel ? {
       provider: stagedConfiguration.plannerBinding.providerRef,
       modelId: plannerModel.modelId,
-    },
+    } : undefined,
     resolvePlannerBinding: async context => {
       const inputProfile = buildPlannerInputProfile(context);
       const activeSnapshot = await configurationService.getSnapshot(context.configuration.revisionId);
@@ -1147,22 +1141,19 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
     onActivated: async ({ snapshot, runtime }) => {
       const nextStaged = buildStagedLegacyConfiguration({ migratedSnapshot: snapshot });
-      const nextPlannerModel = snapshot.config.models[nextStaged.plannerBinding.modelRef];
-      if (!nextPlannerModel) {
-        throw new Error(`Planner Model is unavailable: ${nextStaged.plannerBinding.modelRef}`);
+      if (nextStaged.plannerBinding) {
+        const model = snapshot.config.models[nextStaged.plannerBinding.modelRef]!;
+        await plannerSupervisor.refreshBinding({
+          configurationRevision: snapshot.revisionId,
+          bindingFingerprint: nextStaged.plannerBindingFingerprint,
+          provider: nextStaged.plannerBinding.providerRef, modelId: model.modelId,
+          runtimeEnvironment: await resolvePlannerRuntimeEnvironment({
+            configuration: runtime, plannerBinding: nextStaged.plannerBinding, secretStore,
+          }),
+        });
+      } else {
+        await plannerSupervisor.clearBinding();
       }
-      const runtimeEnvironment = await resolvePlannerRuntimeEnvironment({
-        configuration: runtime,
-        plannerBinding: nextStaged.plannerBinding,
-        secretStore,
-      });
-      await plannerSupervisor.refreshBinding({
-        configurationRevision: nextStaged.snapshot.revisionId,
-        bindingFingerprint: nextStaged.plannerBindingFingerprint,
-        provider: nextStaged.plannerBinding.providerRef,
-        modelId: nextPlannerModel.modelId,
-        runtimeEnvironment,
-      });
       runtimeBindings.updateSnapshot(snapshot);
       stagedConfiguration.snapshot = nextStaged.snapshot;
       stagedConfiguration.planner = nextStaged.planner;
@@ -1178,22 +1169,19 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
     onActivationFailed: async ({ snapshot, runtime }) => {
       const restored = buildStagedLegacyConfiguration({ migratedSnapshot: snapshot });
-      const restoredModel = snapshot.config.models[restored.plannerBinding.modelRef];
-      if (!restoredModel) {
-        throw new Error(`Planner Model is unavailable after activation rollback: ${restored.plannerBinding.modelRef}`);
+      if (restored.plannerBinding) {
+        const model = snapshot.config.models[restored.plannerBinding.modelRef]!;
+        await plannerSupervisor.refreshBinding({
+          configurationRevision: snapshot.revisionId,
+          bindingFingerprint: restored.plannerBindingFingerprint,
+          provider: restored.plannerBinding.providerRef, modelId: model.modelId,
+          runtimeEnvironment: await resolvePlannerRuntimeEnvironment({
+            configuration: runtime, plannerBinding: restored.plannerBinding, secretStore,
+          }),
+        });
+      } else {
+        await plannerSupervisor.clearBinding();
       }
-      const runtimeEnvironment = await resolvePlannerRuntimeEnvironment({
-        configuration: runtime,
-        plannerBinding: restored.plannerBinding,
-        secretStore,
-      });
-      await plannerSupervisor.refreshBinding({
-        configurationRevision: restored.snapshot.revisionId,
-        bindingFingerprint: restored.plannerBindingFingerprint,
-        provider: restored.plannerBinding.providerRef,
-        modelId: restoredModel.modelId,
-        runtimeEnvironment,
-      });
       runtimeBindings.updateSnapshot(snapshot);
       stagedConfiguration.snapshot = restored.snapshot;
       stagedConfiguration.planner = restored.planner;
@@ -1296,8 +1284,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       conversationId,
       plannerSessionId: conversationId,
       plannerBindingFingerprint: stagedConfiguration.plannerBindingFingerprint,
-      plannerProviderRef: stagedConfiguration.plannerBinding.providerRef,
-      plannerModelId: plannerModel.modelId,
+      plannerProviderRef: stagedConfiguration.plannerBinding?.providerRef,
+      plannerModelId: plannerModel?.modelId,
       runtimePort: port,
       mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
       presentation,
@@ -1942,6 +1930,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     newWorkAdmission: {
       check: command => {
         if (command.kind === 'create_conversation') return { allowed: true };
+        if (!stagedConfiguration.plannerBinding) return { allowed: false, reason: 'configuration_invalid' };
         if (!Object.values(configurationRuntimeCoordinator.getSnapshot().config.agentClasses)
           .some(agent => agent.kind === 'executor' && agent.enabled)) {
           return { allowed: false, reason: 'no_enabled_executor' };

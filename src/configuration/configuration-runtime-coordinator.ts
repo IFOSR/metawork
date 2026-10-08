@@ -36,6 +36,7 @@ export interface ConfigurationRuntimeState extends ConfigurationActivationStatus
   activeRevisionId: string;
   runtimeRevisionId: string;
   restartRequired: boolean;
+  workConfigurationReady: boolean;
 }
 
 export type ConfigurationRuntimeActivationResult =
@@ -168,6 +169,9 @@ export class ConfigurationRuntimeCoordinator {
       activeRevisionId: this.activeSnapshot.revisionId,
       runtimeRevisionId: this.activeSnapshot.revisionId,
       restartRequired: false,
+      workConfigurationReady: Boolean(this.plannerView.planner)
+        && Object.values(this.activeSnapshot.config.agentClasses)
+          .some(agent => agent.kind === 'executor' && agent.enabled),
     };
   }
 

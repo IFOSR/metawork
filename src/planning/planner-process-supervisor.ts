@@ -218,6 +218,16 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     return this.activeRuntimeBinding;
   }
 
+  /** Configuration activation/compensation may return to an unconfigured account. */
+  async clearBinding(): Promise<void> {
+    await this.terminateProcesses([...this.activeProcesses]);
+    this.currentConfigurationRevision = undefined;
+    this.currentBindingFingerprint = undefined;
+    this.currentExpectedModel = undefined;
+    this.currentRuntimeEnvironment = undefined;
+    this.activeRuntimeBinding = undefined;
+  }
+
   async refreshBinding(input: {
     configurationRevision: string;
     bindingFingerprint: string;

@@ -180,7 +180,7 @@ export function decideReleaseCompatibility(input: ReleaseCompatibilityInput): Re
     return { ok: false, reason: compatibilityProblem };
   }
 
-  const versionOrder = compareSemanticVersions(input.candidate.releaseId, input.currentReleaseId);
+  const versionOrder = compareReleaseVersions(input.candidate.releaseId, input.currentReleaseId);
 
   if (input.mode === 'update' && versionOrder < 0) {
     return { ok: false, reason: 'default update forbids downgrade' };
@@ -254,6 +254,14 @@ function findCompatibilityProblem(
   }
 
   return null;
+}
+
+/** Internal commit hashes identify builds; their lexical order is not release chronology. */
+export function compareReleaseVersions(left: string, right: string): number {
+  const productVersion = (value: string) => value.replace(
+    /^(\d+\.\d+\.\d+)-internal-[a-f0-9]{7,40}$/u, '$1-internal',
+  );
+  return compareSemanticVersions(productVersion(left), productVersion(right));
 }
 
 export function compareSemanticVersions(left: string, right: string): number {

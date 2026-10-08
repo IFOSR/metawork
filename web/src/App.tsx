@@ -52,6 +52,7 @@ export function App() {
         draft={draft}
         composerDisabled={workspaceSwitching || composerDisabled}
         newWorkBlocked={requiredBlock.blocked}
+        configurationNeeded={configurationRuntime?.workConfigurationReady === false}
         agentReadiness={agentReadiness}
         running={running}
         blockedReason={composerBlockedReason}

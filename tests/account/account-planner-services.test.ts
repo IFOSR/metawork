@@ -11,6 +11,22 @@ import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 
 describe('buildAccountPlannerServices', () => {
+  it('composes an unconfigured production account without a model or credentials', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const db = new Database(':memory:'); runMigrations(db);
+    try {
+      const supervisor = new PlannerProcessSupervisor({ resolvePlannerBinding: () => {
+        throw new Error('Planner is not configured');
+      } });
+      const services = buildAccountPlannerServices({
+        db, memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
+        contextRecaller: new ContextRecaller(db), plannerBinding: null,
+        plannerBindingFingerprint: '', plannerSupervisor: supervisor,
+      });
+      expect(services.plannerSupervisor).toBe(supervisor);
+      expect(supervisor.runtimeBinding).toBeUndefined();
+    } finally { db.close(); vi.unstubAllEnvs(); }
+  });
   it('requires a revision-bound Planner supervisor in production composition', () => {
     const previousNodeEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';

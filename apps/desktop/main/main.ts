@@ -13,7 +13,6 @@ import type { DesktopDraft, DesktopMenuAction, ShellState } from '../shared/brid
 import { DesktopNotifications } from './notifications.js';
 import { readWindowState, writeWindowState, type WindowState } from './window-state.js';
 import { DesktopInstallation } from './installation.js';
-import type { DesktopSetupInput } from '../shared/bridge.js';
 import { launchDesktopUpdate, pendingDesktopUpdate, prepareDesktopRepair, prepareDesktopUpdate } from './update.js';
 import { readDesktopUpdateDiagnostic } from '../../../src/installation/desktop-update-diagnostics.js';
 import { installNativeLauncher } from '../../../src/installation/native-launcher.js';
@@ -177,8 +176,8 @@ async function connectOnce(): Promise<void> {
         }));
       if (recoveryRequired) throw new Error('Desktop update requires recovery');
       if (!await installation.installed()) {
-        setState({ phase: 'setup', message: '运行环境已就绪。添加模型连接后即可开始工作。' });
-        return;
+        setState({ phase: 'connecting', message: '正在准备首次使用…' });
+        await installation.run('install');
       }
       if (await installation.needsUpgrade()) {
         const previousUpdate = await readDesktopUpdateDiagnostic(installRoot);
@@ -240,19 +239,6 @@ ipcMain.handle('shell:upgrade', async event => {
   ownedShell(event);
   if (!installation || state.phase !== 'upgrade') throw new Error('Runtime upgrade is unavailable');
   await updateApplication(false, true);
-});
-ipcMain.handle('shell:setup', async (event, input: DesktopSetupInput) => {
-  ownedShell(event);
-  if (!installation || state.phase !== 'setup' || !input || typeof input !== 'object'
-    || Object.keys(input).some(key => !['baseUrl', 'apiKey', 'modelId'].includes(key))
-    || typeof input.baseUrl !== 'string' || input.baseUrl.length > 2048
-    || typeof input.apiKey !== 'string' || !input.apiKey.trim() || input.apiKey.length > 8192
-    || typeof input.modelId !== 'string' || !input.modelId.trim() || input.modelId.length > 256) throw new Error('Invalid setup');
-  const providerUrl = new URL(input.baseUrl);
-  if (!['http:', 'https:'].includes(providerUrl.protocol) || providerUrl.username || providerUrl.password) throw new Error('Invalid provider URL');
-  setState({ phase: 'connecting', message: '正在安装运行时并保存模型配置…' });
-  try { await installation.run('install', input); await connect(); }
-  catch { setState({ phase: 'setup', message: '安装未完成，输入内容已保留。请检查磁盘空间和模型配置后重试。' }); }
 });
 ipcMain.handle('desktop:preferences', event => { owned(event); return preferences!.read(); });
 ipcMain.handle('desktop:theme', (event, theme: unknown) => { owned(event); return preferences!.setTheme(theme); });

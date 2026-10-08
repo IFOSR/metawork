@@ -52,13 +52,13 @@ export async function runDesktopInstall(
       body += String(chunk);
       if (Buffer.byteLength(body) > 16384) throw new Error('Setup input exceeds limit');
     }
-    const provider = ProviderSchema.parse(JSON.parse(body));
+    const provider = body.trim() ? ProviderSchema.parse(JSON.parse(body)) : undefined;
     body = '';
     const lock = await acquireRuntimeUpdateLock(paths.root, 'update');
     try {
       await new SourceNativeInstaller({ paths, secretStore, detectCommand, installLaunchers: false }).install({
         releaseId: release.releaseId, sourceRoot, plannerRoot, executorPreset: 'desktop-pi',
-        provider: { ...provider, region: 'international', secretReference: 'file-secret:anyfusion/providers/provider' },
+        ...(provider ? { provider: { ...provider, region: 'international', secretReference: 'file-secret:anyfusion/providers/provider' } } : {}),
       });
     } finally { await lock.release(); }
   } else {

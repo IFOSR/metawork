@@ -40,7 +40,7 @@ export interface SourceNativeInstallInput {
   sourceRoot: string;
   plannerRoot: string;
   executorPreset?: 'desktop-pi';
-  provider: {
+  provider?: {
     baseUrl: string;
     apiKey: string;
     modelId: string;
@@ -67,8 +67,8 @@ export class SourceNativeInstaller {
 
   async install(input: SourceNativeInstallInput): Promise<SourceNativeInstallResult> {
     assertReleaseId(input.releaseId);
-    assertSecretReference(input.provider.secretReference);
-    const secretReference = input.provider.secretReference;
+    const secretReference = input.provider?.secretReference;
+    if (secretReference) assertSecretReference(secretReference);
     const paths = this.dependencies.paths;
     const launcherPaths = this.dependencies.installLaunchers === false ? [] : [
       paths.launcher,
@@ -118,8 +118,11 @@ export class SourceNativeInstaller {
         input.releaseId,
         paths.appCurrent,
       );
-      await this.dependencies.secretStore.put(secretReference, input.provider.apiKey);
-      secretStored = true;
+      if (secretReference && input.provider) {
+        assertSecretReference(secretReference);
+        await this.dependencies.secretStore.put(secretReference, input.provider.apiKey);
+        secretStored = true;
+      }
       await service.initialize();
       const draft = service.createDraft(config, null);
       const validation = service.validateDraft(draft.revisionId);
@@ -183,7 +186,8 @@ export class SourceNativeInstaller {
         cleanupErrors,
         Promise.all(installedLaunchers.map(path => removeManagedLauncher(path))),
       );
-      if (secretStored) {
+      if (secretStored && secretReference) {
+        assertSecretReference(secretReference);
         await collectCleanupError(
           cleanupErrors,
           this.dependencies.secretStore.delete(secretReference),
@@ -259,7 +263,7 @@ function buildConfiguration(
   const modelRef = 'default-model';
   const configuration: AnyFusionConfigurationV2 = {
     schemaVersion: 2,
-    providers: {
+    providers: input.provider ? {
       provider: {
         ...(input.provider.displayName ? { displayName: input.provider.displayName } : {}),
         ...(input.provider.systemManaged ? { systemManaged: true } : {}),
@@ -269,8 +273,8 @@ function buildConfiguration(
         region: input.provider.region,
         enabled: true,
       },
-    },
-    models: {
+    } : {},
+    models: input.provider ? {
       [modelRef]: {
         providerRef: 'provider',
         modelId: input.provider.modelId,
@@ -282,7 +286,7 @@ function buildConfiguration(
           ? { costInputPerMillion: 0.021, costOutputPerMillion: 16.8 }
           : {}),
       },
-    },
+    } : {},
     harnesses: {
       'anyfusion-planner': {
         kind: 'planner',
@@ -385,6 +389,10 @@ function buildConfiguration(
       ...configuration.agentClasses['codex-engineering']!, harnessRef: 'pi-cli',
       generatedRuntimeRef: 'pi-engineering', enabled: true,
     };
+  }
+  if (!input.provider) {
+    // Editable presets are inert until the user selects real models in Settings.
+    for (const agent of Object.values(configuration.agentClasses)) agent.enabled = false;
   }
   return prepareVerifiedModelCapabilities(prepareStandardAgentConfiguration(configuration));
 }
