@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { verifyDesktopRelease } from '../../../src/installation/desktop-release.js';
 import { readReleaseIdentity } from '../../../src/installation/release-identity.js';
 import { decideReleaseCompatibility, parseReleaseManifest } from '../../../src/installation/release-manifest.js';
+import { allowDevelopmentPayload } from '../shared/build-policy.js';
 
 export async function pendingDesktopUpdate(root: string): Promise<boolean> {
   const helperPid = await readFile(join(root, 'upgrades/desktop-helper.lock'), 'utf8').catch(() => null);
@@ -39,7 +40,7 @@ export async function prepareDesktopUpdate(input: {
   const candidateResources = join(candidatePath, 'Contents/Resources');
   const candidateDescriptor = JSON.parse(await readFile(join(candidateResources, 'desktop-release.json'), 'utf8')) as { desktopVersion: string; development?: boolean };
   const candidate = await verifyDesktopRelease(candidateResources, { trustedKeys: keys, platform: process.platform, arch: process.arch,
-    desktopVersion: candidateDescriptor.desktopVersion, allowDevelopment: candidateDescriptor.development === true });
+    desktopVersion: candidateDescriptor.desktopVersion, allowDevelopment: allowDevelopmentPayload(candidateDescriptor.development === true) });
   const previous = await readReleaseIdentity(join(input.root, 'app/current/release-identity.json'));
   if (!previous || previous.releaseId === candidate.releaseId) throw new Error('Select a new compatible release');
   const currentDescriptor = JSON.parse(await readFile(join(input.resources, 'desktop-release.json'), 'utf8'));

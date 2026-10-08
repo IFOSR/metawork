@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { verifyDesktopRelease, type DesktopRelease } from '../../../src/installation/desktop-release.js';
 import { desktopProcessEnvironment, desktopToolPaths } from '../../../src/installation/desktop-platform.js';
 import type { DesktopSetupInput } from '../shared/bridge.js';
+import { allowDevelopmentPayload } from '../shared/build-policy.js';
 
 /** Installation transport only: database/configuration/activation remain in the native helper. */
 export class DesktopInstallation {
@@ -15,7 +16,7 @@ export class DesktopInstallation {
     const keys = JSON.parse(await readFile(join(this.resources, 'trusted-release-keys.json'), 'utf8')) as Record<string, string>;
     const descriptor = JSON.parse(await readFile(join(this.resources, 'desktop-release.json'), 'utf8')) as { development?: boolean };
     this.release = await verifyDesktopRelease(this.resources, { trustedKeys: keys, platform: process.platform, arch: process.arch,
-      desktopVersion: this.version, allowDevelopment: descriptor.development === true });
+      desktopVersion: this.version, allowDevelopment: allowDevelopmentPayload(descriptor.development === true) });
     return this.release;
   }
   async installed(): Promise<boolean> {

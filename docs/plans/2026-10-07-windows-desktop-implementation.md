@@ -108,3 +108,9 @@ Windows Pi driver 的 probe/launch 使用同一内置 Node + 绝对 Pi JS 入口
 新增独立 Windows 工具 manifest：Node 22.23.3 官方 SHA256、PortableGit 2.56.0.windows.2 官方 release asset digest，以及维护中的 upstream `@earendil-works/pi-coding-agent` 1.1.0/npm integrity 与完整 npm lock。构建器先核对 hash 再用构建机 7-Zip 解压，保留 Git/Bash/模板/许可证，使用内置 Node 安装 locked Pi，再以受控 PATH 实际运行 Node/Git/Bash/Pi 并验证 Windows inventory，输出来源报告。普通用户无 npm/编译工具步骤。Windows Pi 的 JS 入口随正式包名固定；macOS 现有 PATH 启动方式不变。Windows 工具原生执行尚待云端结果，不代表依赖闭包验收。
 
 `5b43cb8` 的 Windows 测试已通过安装根/PowerShell 对照与 PE release 校验，但暴露 RuntimeHomeMaterializer 的 POSIX `/` 前缀判断使合法 Windows HOME 子目录被拒绝。改用平台 relative/sep 检查，保留绝对路径、越界、Windows drive-relative 与 ADS 拒绝；扩展真实目录用例并调整 Planner/Executor 分离测试的 Windows 预期，不跳过行为检查。本地相关 5 文件/31 项通过、2 Windows-only 项待云端，类型检查通过。macOS 云端回归追加完整 Executor 与配置域测试。
+
+### Windows 构建信任策略（2026-10-08）
+
+Windows Main 的 development admission 改为 native builder 编译进去的内部构建标志；payload 自报 development 或运行时设置 METAWORK_DESKTOP_INTERNAL 都不能改变已构建 Main 的策略。macOS 现有处理保持不变，签名、hash、版本/平台矩阵始终需要通过。新增实际 esbuild 产物的正/负策略测试，分别用反向 runtime env 执行，证明只有编译标志生效；Root installer helper 仍需显式内部调用配置和完整签名验证。Windows workflow 加入 Desktop 测试。
+
+另修复 Windows PDF extension 的 ESM 路径：使用 file URL 并由真实 Node 进程加载生成的 extension，保持 macOS 行为。此前 Windows Pi/PDF 用例并非执行失败豁免，现以真正的 import 验证替代只比较路径字符串。
