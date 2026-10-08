@@ -212,6 +212,68 @@ jobs:
           APP_DIRECTORY=mac
           if [ "$TARGET_ARCH" = arm64 ]; then APP_DIRECTORY=mac-arm64; fi
           node apps/desktop/tests/packaged-install-smoke.mjs "apps/desktop/release/$APP_DIRECTORY/MetaWork.app"
+      - name: Download previous Desktop baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          previous_tag="$(gh release view --repo IFOSR/metawork --json tagName --jq .tagName)"
+          mkdir -p "$RUNNER_TEMP/metawork-previous"
+          gh release download "$previous_tag" --repo IFOSR/metawork \
+            --pattern "MetaWork-darwin-${TARGET_ARCH}.dmg" \
+            --dir "$RUNNER_TEMP/metawork-previous"
+          dmg="$(find "$RUNNER_TEMP/metawork-previous" -type f -name '*.dmg' -print -quit)"
+          test -n "$dmg"
+          mountpoint="$RUNNER_TEMP/metawork-previous-mount"
+          mkdir -p "$mountpoint"
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mountpoint"
+          trap 'hdiutil detach "$mountpoint" -quiet || true' EXIT
+          previous_payload="$mountpoint/MetaWork.app/Contents/Resources/payload"
+          test -f "$previous_payload/metawork/release-identity.json"
+          previous_runtime="$RUNNER_TEMP/metawork-previous-runtime"
+          mkdir -p "$previous_runtime"
+          ditto "$previous_payload/metawork/." "$previous_runtime/"
+          mkdir -p "$previous_runtime/planner"
+          ditto "$previous_payload/planner/." "$previous_runtime/planner/"
+          test -x "$previous_runtime/desktop-tools/node/bin/node"
+          cp "$previous_payload/metawork/release-identity.json" "$previous_runtime/release-identity.json"
+          echo "METAWORK_PREVIOUS_RUNTIME=$previous_runtime" >> "$GITHUB_ENV"
+      - name: Verify customer upgrade failure recovery
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          APP_DIRECTORY=mac
+          if [ "$TARGET_ARCH" = arm64 ]; then APP_DIRECTORY=mac-arm64; fi
+          fixture="$RUNNER_TEMP/metawork-customer-upgrade-fixture"
+          node apps/desktop/tests/prepare-adoption-fixture.mjs \
+            "apps/desktop/release/$APP_DIRECTORY/MetaWork.app" "$fixture"
+          node apps/desktop/tests/customer-upgrade-smoke.mjs \
+            "$fixture" "$RUNNER_TEMP/metawork-customer-failure" upgrade \
+            "$METAWORK_PREVIOUS_RUNTIME" failure-repair
+          mkdir -p apps/desktop/release/evidence/customer-upgrade
+          cp "$fixture/evidence/existing-runtime.json" \
+            apps/desktop/release/evidence/customer-upgrade/failure-repair.json
+          cp "$RUNNER_TEMP/metawork-customer-failure/recovered-upgrade.png" \
+            apps/desktop/release/evidence/customer-upgrade/failure-repair.png
+      - name: Verify customer upgrade interruption recovery
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          APP_DIRECTORY=mac
+          if [ "$TARGET_ARCH" = arm64 ]; then APP_DIRECTORY=mac-arm64; fi
+          fixture="$RUNNER_TEMP/metawork-customer-upgrade-interrupt-fixture"
+          node apps/desktop/tests/prepare-adoption-fixture.mjs \
+            "apps/desktop/release/$APP_DIRECTORY/MetaWork.app" "$fixture"
+          node apps/desktop/tests/customer-upgrade-smoke.mjs \
+            "$fixture" "$RUNNER_TEMP/metawork-customer-interrupt" upgrade \
+            "$METAWORK_PREVIOUS_RUNTIME" interrupt-repair
+          cp "$fixture/evidence/existing-runtime.json" \
+            apps/desktop/release/evidence/customer-upgrade/interrupt-repair.json
+          cp "$RUNNER_TEMP/metawork-customer-interrupt/recovered-upgrade.png" \
+            apps/desktop/release/evidence/customer-upgrade/interrupt-repair.png
       - name: Sign Desktop download manifest
         run: node scripts/package-desktop-release.mjs "$METAWORK_DESKTOP_RESOURCES" apps/desktop/release "$RUNNER_TEMP/metawork-release-key.pem"
       - uses: actions/upload-artifact@v4

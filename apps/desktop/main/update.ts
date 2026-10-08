@@ -66,15 +66,11 @@ export async function prepareDesktopUpdate(input: {
   // Native adoption is validated by SourceNativeUpdater's actual schema and
   // configuration gates. Product version numbering changed after the previews.
   // Keep recovery executable outside the staged app and the old active release.
-  let bootstrap: string | undefined;
+  const bootstrap = desktopSupportRoot(input.root, candidate.releaseId);
   const bundledPreviousNode = join(input.root, 'app/current/desktop-tools/node/bin/node');
-  const needsBootstrap = input.adoptExistingRuntime || !await access(bundledPreviousNode).then(() => true, error => {
-    if (error.code === 'ENOENT') return false; throw error;
-  });
-  if (needsBootstrap) {
-    await new DesktopInstallation(input.resources, input.root, currentDescriptor.desktopVersion).run('prepare-desktop');
-    bootstrap = desktopSupportRoot(input.root, currentDescriptor.releaseId);
-  }
+  // Always use the verified candidate helper. Reusing an installed helper would
+  // carry its old recovery bugs into the very update meant to fix them.
+  await new DesktopInstallation(candidateResources, input.root, candidate.desktopVersion).run('prepare-desktop');
   const directory = join(input.root, 'upgrades');
   const stagedApplicationPath = join(directory, `desktop-stage-${randomUUID()}`, 'MetaWork.app');
   await mkdir(dirname(stagedApplicationPath), { recursive: true, mode: 0o700 });
@@ -124,4 +120,21 @@ export async function launchDesktopUpdate(root: string, recoverOnly = false): Pr
       else if (buffer.length > 1024) { clearTimeout(timer); reject(new Error('Invalid helper handshake')); }
     });
   });
+}
+
+/** A newly downloaded app can repair an old transaction with its verified helper. */
+export async function prepareDesktopRepair(input: {
+  root: string; resources: string; desktopVersion: string;
+}): Promise<void> {
+  const installation = new DesktopInstallation(input.resources, input.root, input.desktopVersion);
+  const release = await installation.verify();
+  await installation.run('prepare-desktop');
+  const requestPath = join(input.root, 'upgrades/desktop-request.json');
+  const request = JSON.parse(await readFile(requestPath, 'utf8'));
+  // Keep the original activation identities, shell paths, challenge and trust
+  // anchor. Only select the independently verified recovery helper.
+  request.bootstrap = desktopSupportRoot(input.root, release.releaseId);
+  request.previousNode = await realpath(join(request.bootstrap, 'desktop-tools/node/bin/node'));
+  await writeFile(`${requestPath}.tmp`, JSON.stringify(request), { mode: 0o600 });
+  await rename(`${requestPath}.tmp`, requestPath);
 }

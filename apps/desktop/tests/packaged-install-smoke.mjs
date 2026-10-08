@@ -9,7 +9,8 @@ import { _electron } from 'playwright-core';
 // Clean-install smoke of the signed app; no model requests or paid task execution.
 const application = resolve(process.argv[2] ?? '');
 if (!application.endsWith('/MetaWork.app')) throw new Error('Supply the packaged MetaWork.app path');
-const root = await mkdtemp(join(tmpdir(), 'metawork-packaged-install-'));
+// Darwin's default temporary root can exceed the Unix socket path limit.
+const root = await mkdtemp(join(process.platform === 'darwin' ? '/tmp' : tmpdir(), 'metawork-install-'));
 const installRoot = join(root, 'installation');
 const env = { ...process.env, PATH: '/usr/bin:/bin',
   METAWORK_INSTALL_ROOT: installRoot, ANYFUSION_INSTALL_ROOT: installRoot,

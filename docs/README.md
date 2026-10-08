@@ -5,6 +5,9 @@ AnyFusion references identify the separate open-source upstream, attributed
 components such as `AnyFusion-Pi`, compatibility contracts, or historical
 records.
 
+Current release reliability work is tracked in
+[Customer Desktop upgrade reliability](plans/2026-10-08-customer-upgrade-reliability.md).
+
 This directory contains both current technical documentation and historical planning material. Start with the current docs before opening dated plans.
 
 ## Current Docs

@@ -34,7 +34,11 @@ See [dependency acceptance](../../apps/desktop/packaging/DEPENDENCIES.md).
 
 1. Run type checks, focused release/installer tests and Web/Desktop builds.
 2. Complete signed clean-machine and coordinated-update acceptance on both Mac
-   architectures. Record evidence in the release plan.
+   architectures. The release workflow downloads the previous latest DMG and
+   runs the packaged candidate against its Runtime with an occupied Web port,
+   a killed update helper, missing staging files, rollback, repair and retry.
+   Record the evidence in the release plan. A clean-install pass alone is not
+   sufficient for publication.
 3. Once acceptance/infrastructure are ready, remove publication-pending wording
    from READMEs/release notes and set the release date. Commit the exact source.
 4. Push `vVERSION`, or dispatch the release workflow against the exact commit.
@@ -43,8 +47,8 @@ See [dependency acceptance](../../apps/desktop/packaging/DEPENDENCIES.md).
    Desktop jobs consume those same archives, prepare signed payloads, sign and
    notarize/staple DMGs, exercise a clean installation with fixture provider
    settings and a restricted PATH, and sign their download manifests. This
-   smoke checks installation/authenticated Web/Server survival, not paid tasks
-   or coordinated update recovery; those remain separate acceptance evidence.
+   smoke checks installation/authenticated Web/Server survival and the
+   coordinated update recovery gate. They do not execute paid tasks.
 6. Publication verifies four native manifests/eight archives, two Desktop
    manifests/two DMGs and two installer scripts (18 files). It uploads a draft,
    downloads/verifies it again, then promotes latest. A failed build preserves
@@ -66,6 +70,24 @@ helper's system-model provisioning is separate from production installation.
 Desktop updates coordinate app and Server through **Install New Application…**.
 CLI-managed installations stop Server, run the installer, and restart. Clients
 of the same installation/account share one Server and its data.
+
+### Customer recovery after an interrupted Desktop update
+
+The Desktop update journal and account data are authoritative. If a release
+fails its readiness check, the installer restores the previous Runtime and shows
+the upgrade action again. If the Desktop reports “修复未完成的更新”, close
+other MetaWork windows, download the newest Desktop from the same release, and
+launch that app once. Choose **MetaWork → 修复未完成的更新…** and wait for the
+recovery to finish before retrying the upgrade. The new app supplies its own
+verified recovery helper, so an old helper or missing staging directory does not
+need to be restored manually.
+
+Do not delete `upgrades/desktop-activation.json`, databases, journals, release
+directories or credential files, and do not switch `app/current` by hand. If
+the repair action remains unavailable, preserve the installation directory and
+the safe stage/code shown by Desktop and provide those to support. The release
+workflow exercises this procedure after both a failed readiness check and a
+forced helper interruption.
 
 ## Local production preparation
 

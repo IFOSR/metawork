@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { DesktopInstallation } from '../main/installation.js';
-import { launchDesktopUpdate, prepareDesktopUpdate } from '../main/update.js';
+import { launchDesktopUpdate, prepareDesktopRepair, prepareDesktopUpdate } from '../main/update.js';
 import { desktopSupportRoot } from '../../../src/installation/desktop-support.js';
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn() }));
@@ -73,4 +73,19 @@ it('stages the downloaded app for native adoption without requiring a previous D
     [join(bootstrap, 'dist/desktop-update-cli.js'), root, join(root, 'upgrades/desktop-request.json')], expect.anything());
   await launchDesktopUpdate(root, true);
   expect(JSON.parse(await readFile(join(root, 'upgrades/desktop-request.json'), 'utf8')).recoverOnly).toBe(true);
+  // A new download repairs using its verified helper, even if the old helper
+  // and staging vanished. Transaction identity must not be rewritten.
+  const oldRequest = JSON.parse(await readFile(join(root, 'upgrades/desktop-request.json'), 'utf8'));
+  oldRequest.bootstrap = '/missing/old-helper'; oldRequest.previousNode = '/missing/old-node';
+  await writeFile(join(root, 'upgrades/desktop-request.json'), JSON.stringify(oldRequest));
+  vi.spyOn(DesktopInstallation.prototype, 'verify').mockResolvedValue({
+    releaseId: '0.1.5-build-aaaaaaa', desktopVersion: '0.1.5',
+  } as Awaited<ReturnType<DesktopInstallation['verify']>>);
+  vi.spyOn(DesktopInstallation.prototype, 'run').mockResolvedValue();
+  await prepareDesktopRepair({ root, resources, desktopVersion: '0.1.5' });
+  const repaired = JSON.parse(await readFile(join(root, 'upgrades/desktop-request.json'), 'utf8'));
+  expect(repaired.bootstrap).toBe(bootstrap);
+  expect(repaired.previousNode).toBe(join(bootstrap, 'desktop-tools/node/bin/node'));
+  expect(repaired.record).toEqual(oldRequest.record);
+  expect(repaired.trustedKeys).toEqual(oldRequest.trustedKeys);
 });

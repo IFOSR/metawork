@@ -14,7 +14,8 @@ import { DesktopNotifications } from './notifications.js';
 import { readWindowState, writeWindowState, type WindowState } from './window-state.js';
 import { DesktopInstallation } from './installation.js';
 import type { DesktopSetupInput } from '../shared/bridge.js';
-import { launchDesktopUpdate, pendingDesktopUpdate, prepareDesktopUpdate } from './update.js';
+import { launchDesktopUpdate, pendingDesktopUpdate, prepareDesktopRepair, prepareDesktopUpdate } from './update.js';
+import { readDesktopUpdateDiagnostic } from '../../../src/installation/desktop-update-diagnostics.js';
 import { installNativeLauncher } from '../../../src/installation/native-launcher.js';
 import { authorizeDesktopShellCheck, writeDesktopShellHealth } from '../../../src/installation/desktop-shell-health.js';
 import { startupFailureCode } from './startup-diagnostic.js';
@@ -144,7 +145,12 @@ async function connectOnce(): Promise<void> {
         return;
       }
       if (await installation.needsUpgrade()) {
-        setState({ phase: 'upgrade', message: '发现已有的 Web／终端运行环境。接入桌面需要升级后台服务；原有模型配置、对话和工作数据会保留，无需重新填写 API Key。升级会暂时断开其他客户端。' });
+        const previousUpdate = await readDesktopUpdateDiagnostic(installRoot);
+        const failed = previousUpdate?.outcome === 'rolled-back';
+        const failure = previousUpdate?.failures[0];
+        setState({ phase: 'upgrade', message: failed
+          ? `上次升级未完成，已恢复原有运行环境。原有数据仍保留，可重新升级。${failure ? `诊断编号：${failure.stage}/${failure.code}。` : ''}`
+          : '发现已有的 Web／终端运行环境。接入桌面需要升级后台服务；原有模型配置、对话和工作数据会保留，无需重新填写 API Key。升级会暂时断开其他客户端。' });
         return;
       }
       stage = 'runtime-tools';
@@ -338,6 +344,8 @@ async function updateApplication(recover = false, adoptExistingRuntime = false):
       detail: `${taskSummary}\n${adoptExistingRuntime ? '沿用已有账号、模型配置和工作数据；安装器会备份数据库并执行迁移。\n' : ''}桌面将退出，由独立安装器完成切换。回滚可能恢复到升级前的数据时间点。`,
       buttons: ['取消', recover ? '退出并修复' : '退出并更新'], defaultId: 0, cancelId: 0 });
     if (answer.response !== 1) { await connect(); return; }
+    if (recover) await prepareDesktopRepair({ root: installRoot, resources: process.resourcesPath,
+      desktopVersion: app.getVersion() });
     await preferences?.flush();
     notifications.stop();
     await launchDesktopUpdate(installRoot, recover);

@@ -13,6 +13,7 @@ import { DesktopServiceManager } from './client/desktop-service-manager.js';
 import { isInstanceRunning } from './management/lock.js';
 import { waitForDesktopShellHealth } from './installation/desktop-shell-health.js';
 import { runDesktopUpdateTransaction } from './installation/desktop-update-transaction.js';
+import { DesktopUpdateDiagnostics } from './installation/desktop-update-diagnostics.js';
 
 async function main(): Promise<void> {
   const [rootArg, requestArg] = process.argv.slice(2);
@@ -51,6 +52,8 @@ async function main(): Promise<void> {
     await rm(lockPath, { force: true });
     lockReleased = true;
   };
+  const diagnostics = new DesktopUpdateDiagnostics(root, request.recoverOnly ? 'repair' : 'update');
+  await diagnostics.finish('running');
   try {
     const resources = join(record.stagedApplicationPath, 'Contents/Resources');
     let candidateShell: ChildProcess | undefined;
@@ -81,7 +84,7 @@ async function main(): Promise<void> {
         join(helperTools, 'node/bin'), join(helperTools, 'git/bin'), join(helperTools, 'executor/bin'),
         process.env.PATH ?? '/usr/bin:/bin'].join(':')),
     });
-    const activation = new DesktopActivation(join(requests, 'desktop-activation.json'), {
+    const activation = new DesktopActivation(join(requests, 'desktop-activation.json'), diagnostics.observe({
       verify: async () => {
         const descriptor = JSON.parse(await readFile(join(resources, 'desktop-release.json'), 'utf8'));
         const release = await verifyDesktopRelease(resources, { trustedKeys: request.trustedKeys, arch: process.arch,
@@ -134,7 +137,7 @@ async function main(): Promise<void> {
         await rm(`${record.applicationPath}.metawork-staged`, { recursive: true, force: true });
       },
       startPrevious: async () => { await (await manager()).startForUpdate(); },
-    });
+    }));
     // The helper is independent of Electron; wait for client exit before replacing its bundle.
     process.stdout.write('READY\n');
     const deadline = Date.now() + 60_000;
@@ -150,6 +153,13 @@ async function main(): Promise<void> {
       releaseLock,
       relaunch: () => { const child = startShell(); child.unref(); },
     });
+    const completed = await activation.read();
+    await diagnostics.finish(completed?.phase === 'committed' ? 'committed' : 'rolled-back');
+  } catch (error) {
+    const phase = await readFile(join(requests, 'desktop-activation.json'), 'utf8')
+      .then(raw => JSON.parse(raw).phase, () => null).catch(() => null);
+    await diagnostics.finish(phase === 'rolled-back' ? 'rolled-back' : 'failed', error);
+    throw error;
   } finally { await releaseLock(); }
 }
 void main().catch(async () => {
