@@ -11,6 +11,7 @@ import {
   rename,
   rm,
   symlink,
+  stat,
 } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import Database from 'better-sqlite3';
@@ -414,6 +415,9 @@ export async function stageSourceRelease(
     const desktopTools = join(sourceRoot, 'desktop-tools');
     if (await lstat(desktopTools).then(entry => entry.isDirectory(), () => false)) {
       await cp(desktopTools, join(stageRoot, 'desktop-tools'), { recursive: true });
+      if (process.platform === 'win32') {
+        await cp(join(sourceRoot, 'native/windows'), join(stageRoot, 'native/windows'), { recursive: true });
+      }
     }
     await mkdir(dirname(releaseRoot), { recursive: true, mode: 0o700 });
     await rename(stageRoot, releaseRoot);
@@ -444,7 +448,10 @@ async function createFreshDatabase(path: string): Promise<void> {
 async function replaceRelativeSymlink(path: string, target: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.next-${randomUUID()}`;
-  await symlink(target, temporary);
+  const kind = process.platform === 'win32'
+    ? (await stat(resolve(dirname(path), target))).isDirectory() ? 'dir' : 'file'
+    : undefined;
+  await symlink(target, temporary, kind);
   await rename(temporary, path);
 }
 

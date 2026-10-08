@@ -186,3 +186,5 @@ Gateway 新增显式原生模块入口；只有实际 WindowsPipeStream 才能�
 `294cc6bf` 增加真实 production Gateway 的两普通账号与 SMB 检查：同账号 Desktop discovery 正例、另一账号普通 Node 管道连接/直接 endpoint 读取被 OS 拒绝，以及同一 owner 的 SMB 正对照与原生管道远程拒绝，待云端运行。VM 第四次环境准备的 10 分钟截图为安装 77%，尚无登录报告；下一次增加 QMP 状态/磁盘 I/O 证据及停机后的只读 NTFS setup 诊断，只输出有界且过滤敏感行的故障信息，磁盘/应答文件/密码不上传。
 
 `9d8bad0d` 已通过完整 payload 的本机工具调用及二进制库存，最终 manifest schema 拒绝默认相对 artifact URL。CI candidate 现显式传入本地 file URL，正式发布 packager 默认行为未改；资源包门仍待通过。凭据 store 和 endpoint publisher 新增显式 native private-root 参数，保留原 schema、命名空间及原子替换语义。只有已固定/校验父目录后的最终文件确实不存在，原生 read 才返回 ENOENT；ACL、链接及祖先错误不能被当作空凭据。macOS 19 项凭据/endpoint 测试和 Root/Desktop 类型检查通过；Windows 原生 store 测试与生产装配待完成。
+
+`294cc6bf` 的原生 Gateway/discovery 连续、并发、PID/manifest 负例全部通过；跨账号套件在前置 SMB 正对照超时，尚未执行到 Gateway，未据此启用生产入口。正对照改为有界异步读写并增加阶段诊断，普通账号正例/跨账号负例提前独立执行。Windows Desktop 安装 helper 先用已验证 payload 的模块保护 root，再创建锁和凭据；正式 staging 携带模块，初次指针创建按真实目标明确文件/目录 symlink。macOS 安装相关 8 项测试和类型检查通过。candidate 后续新增正式隔离安装、原生凭据读取及真实 SQLite integrity 检查，使用固定无效域名/假 key，不调用模型；该门待 Windows 实测。

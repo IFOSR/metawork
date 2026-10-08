@@ -11,6 +11,7 @@ import { commandExistsOnPath } from './configuration/production-configuration-pr
 import { isInstanceRunning } from './management/lock.js';
 import { acquireRuntimeUpdateLock } from './installation/runtime-update-lock.js';
 import { desktopProcessEnvironment, desktopToolPaths } from './installation/desktop-platform.js';
+import { loadWindowsPrivateFiles } from './platform/windows-private-files.js';
 
 const ProviderSchema = z.object({
   baseUrl: z.url().refine(value => ['https:', 'http:'].includes(new URL(value).protocol)),
@@ -30,11 +31,17 @@ export async function runDesktopInstall(
   const release = await verifyDesktopRelease(resources, { trustedKeys, platform: process.platform, arch: process.arch, desktopVersion,
     allowDevelopment: process.env.METAWORK_DESKTOP_INTERNAL === '1' });
   const paths = resolveMetaWorkPaths(undefined, resolve(rootArg));
+  const sourceRoot = join(resources, 'payload', 'metawork');
+  const windows = process.platform === 'win32' ? {
+    root: paths.root, files: loadWindowsPrivateFiles(join(sourceRoot, 'native/windows/metawork-platform.node')),
+  } : undefined;
+  // Protect the root before the lock, credentials, database or release staging
+  // can create children with inherited Windows permissions.
+  windows?.files.ensurePrivateDirectory(paths.root);
   const running = () => isInstanceRunning(join(paths.data, 'runtime.lock'));
   if (await running()) throw new Error('Server must finish its formal stop before installation');
-  const sourceRoot = join(resources, 'payload', 'metawork');
   const plannerRoot = join(resources, 'payload', 'planner');
-  const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials });
+  const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials, windows });
   const searchPath = desktopProcessEnvironment({ releaseRoot: sourceRoot,
     nodePath: desktopToolPaths(sourceRoot).node, env: process.env }).PATH!;
   const detectCommand = (name: string) => commandExistsOnPath(name, searchPath);

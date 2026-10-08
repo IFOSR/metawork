@@ -52,6 +52,8 @@ try {
     descriptorSha256: createHash('sha256').update(descriptor).digest('hex'),
     fileCount: Object.keys(JSON.parse(descriptor).files).length }, null, 2));
   console.log('Windows candidate resource payload verified; installer and GUI acceptance remain open.');
+  run(join(tools, 'node/node.exe'), ['scripts/probe-windows-desktop-install.mjs', resources,
+    join(candidate, 'isolated-installation'), join(evidence, 'isolated-install.json')]);
 } finally {
   await rm(keyPath, { force: true });
 }
