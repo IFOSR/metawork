@@ -61,7 +61,7 @@ export async function runDesktopInstall(
       });
     } finally { await lock.release(); }
   } else {
-    const updater = new SourceNativeUpdater({ paths, secretStore, detectCommand, isServerRunning: running, installLaunchers: false });
+    const updater = new SourceNativeUpdater({ paths, secretStore, detectCommand, isServerRunning: running, installLaunchers: false, windows });
     if (command === 'update') {
       await updater.update({ releaseId: release.releaseId, sourceRoot, plannerRoot });
     } else await updater.rollback(release.releaseId);

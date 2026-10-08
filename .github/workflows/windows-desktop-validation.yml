@@ -132,7 +132,7 @@ jobs:
       group: windows-desktop-build-${{ github.ref }}
       cancel-in-progress: false
     runs-on: windows-2022
-    timeout-minutes: 40
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -150,7 +150,7 @@ jobs:
         working-directory: native/windows
         run: node ../../apps/desktop/node_modules/node-gyp/bin/node-gyp.js rebuild --msvs_version=2022
       - name: Verify Desktop tickets stay disabled on unverified Node named pipes
-        run: npm test -- tests/gateway/desktop-local-transport.test.ts tests/management/desktop-session.test.ts tests/installation/desktop-platform.test.ts tests/installation/windows-installation-root.test.ts tests/installation/windows-desktop-release.test.ts tests/client/server-readiness.test.ts tests/executor/pi-native-launch.test.ts tests/executor/pi-cli-driver.test.ts tests/executor/runtime-home-materializer.test.ts
+        run: npm test -- tests/gateway/desktop-local-transport.test.ts tests/management/desktop-session.test.ts tests/installation/desktop-platform.test.ts tests/installation/windows-installation-root.test.ts tests/installation/windows-desktop-release.test.ts tests/installation/desktop-install-cli.test.ts tests/client/server-readiness.test.ts tests/executor/pi-native-launch.test.ts tests/executor/pi-cli-driver.test.ts tests/executor/runtime-home-materializer.test.ts
       - run: npm run build
       - run: npm run build:desktop
         id: desktop-build
@@ -214,6 +214,8 @@ jobs:
           if-no-files-found: warn
       - name: Validate combined candidate Runtime and Desktop resources
         if: ${{ !cancelled() && steps.tools.outcome == 'success' && steps.native-build.outcome == 'success' }}
+        env:
+          METAWORK_TEST_MODEL: ${{ secrets.METAWORK_TEST_MODEL }}
         run: node scripts/prepare-windows-desktop-candidate.mjs "${{ runner.temp }}/desktop-tools" "${{ runner.temp }}/desktop-candidate"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -221,7 +223,17 @@ jobs:
           name: windows-candidate-${{ github.sha }}
           path: .tmp/windows-desktop-validation/candidate/
           if-no-files-found: warn
-      # This job compiles source; it does not claim a functional packaged Desktop.
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: windows-nsis-candidate-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/desktop-candidate/shell/MetaWork-win32-x64-setup.exe
+            .tmp/windows-desktop-validation/candidate/candidate.json
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+      # Windows Server automation does not satisfy Windows 11 product acceptance.
 
   macos-regression:
     needs: changes

@@ -1,5 +1,5 @@
 // Disposable CI only: package the formal Runtime/Planner, then validate the
-// combined Desktop resource tree. This creates no installer or release.
+// combined Desktop resource tree and NSIS candidate. This publishes no release.
 import { generateKeyPairSync, createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -16,6 +16,9 @@ const tools = resolve(process.argv[2]);
 const candidate = resolve(process.argv[3]);
 const source = process.cwd();
 const node = process.execPath;
+// Keep test-provider input out of dependency installation/build subprocesses.
+const testModel = process.env.METAWORK_TEST_MODEL;
+delete process.env.METAWORK_TEST_MODEL;
 const npm = join(dirname(node), 'node_modules/npm/bin/npm-cli.js');
 function run(command, args, cwd = source, env = process.env) {
   return execFileSync(command, args, { cwd, env, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, windowsHide: true });
@@ -75,7 +78,13 @@ try {
     '--win', '--x64', '--publish', 'never', '--config.directories.output', shell], desktop, internalEnvironment);
   run(node, ['tests/packaged-install-smoke.mjs', join(shell, 'win-unpacked/MetaWork.exe'), evidence], desktop, internalEnvironment);
   const installer = join(shell, 'MetaWork-win32-x64-setup.exe');
-  run(node, ['scripts/probe-windows-desktop-nsis.mjs', installer, evidence], source, internalEnvironment);
+  await writeFile(join(evidence, 'candidate.json'), JSON.stringify({ sourceCommit,
+    installer: 'MetaWork-win32-x64-setup.exe',
+    installerSha256: createHash('sha256').update(await readFile(installer)).digest('hex'),
+    releaseId: JSON.parse(descriptor).releaseId, internalCandidate: true,
+    releaseAccepted: false }, null, 2));
+  run(node, ['scripts/probe-windows-desktop-nsis.mjs', installer, evidence], source,
+    { ...internalEnvironment, METAWORK_TEST_MODEL: testModel ?? '' });
 } finally {
   await rm(keyPath, { force: true });
 }

@@ -5,10 +5,15 @@ import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runDesktopInstall } from '../../src/desktop-install-cli.js';
 
-const mocks = vi.hoisted(() => ({ install: vi.fn(), update: vi.fn(), rollback: vi.fn(), release: vi.fn() }));
+const mocks = vi.hoisted(() => ({ install: vi.fn(), update: vi.fn(), rollback: vi.fn(), release: vi.fn(),
+  updater: vi.fn(), privateFiles: { ensurePrivateDirectory: vi.fn() } }));
 vi.mock('../../src/installation/desktop-release.js', () => ({ verifyDesktopRelease: vi.fn(async () => ({ releaseId: '0.1.5-build-aaaaaaa' })) }));
 vi.mock('../../src/installation/source-native-installer.js', () => ({ SourceNativeInstaller: class { install = mocks.install; } }));
-vi.mock('../../src/installation/source-native-updater.js', () => ({ SourceNativeUpdater: class { update = mocks.update; rollback = mocks.rollback; } }));
+vi.mock('../../src/installation/source-native-updater.js', () => ({ SourceNativeUpdater: class {
+  constructor(input: unknown) { mocks.updater(input); }
+  update = mocks.update; rollback = mocks.rollback;
+} }));
+vi.mock('../../src/platform/windows-private-files.js', () => ({ loadWindowsPrivateFiles: vi.fn(() => mocks.privateFiles) }));
 vi.mock('../../src/configuration/production-secret-store.js', () => ({ createProductionSecretStore: vi.fn(() => ({})) }));
 vi.mock('../../src/management/lock.js', () => ({ isInstanceRunning: vi.fn(async () => false) }));
 vi.mock('../../src/installation/runtime-update-lock.js', () => ({ acquireRuntimeUpdateLock: vi.fn(async () => ({ release: mocks.release })) }));
@@ -19,6 +24,22 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
 });
 describe('Desktop installation without developer configuration', () => {
+  it.each(['update', 'rollback'])('passes the private Windows filesystem to %s', async command => {
+    const root = await mkdtemp(join(tmpdir(), 'metawork-desktop-cli-')); roots.push(root);
+    const resources = join(root, 'resources'); await mkdir(resources);
+    await writeFile(join(resources, 'trusted-release-keys.json'), '{}');
+    vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+    try {
+      await runDesktopInstall([command, resources, join(root, 'installation'), '0.1.5']);
+      expect(mocks.updater).toHaveBeenCalledWith(expect.objectContaining({
+        windows: { root: join(root, 'installation'), files: mocks.privateFiles },
+      }));
+      expect(mocks.privateFiles.ensurePrivateDirectory).toHaveBeenCalledWith(join(root, 'installation'));
+      expect(command === 'update' ? mocks.update : mocks.rollback).toHaveBeenCalledOnce();
+    } finally { Object.defineProperty(process, 'platform', platform); }
+  });
   it.each(['install', 'update'])('finishes %s without reading or creating internal LLM credentials', async command => {
     const root = await mkdtemp(join(tmpdir(), 'metawork-desktop-cli-')); roots.push(root);
     const resources = join(root, 'resources'); await mkdir(resources);

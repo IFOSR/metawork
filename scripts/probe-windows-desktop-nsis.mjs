@@ -20,7 +20,8 @@ const exec = promisify(execFile);
 const temp = await mkdtemp(join(process.env.RUNNER_TEMP, 'metawork-nsis-'));
 const installDir = join(temp, 'MetaWork');
 const dataRoot = join(temp, 'account-data');
-const env = { ...process.env, METAWORK_DESKTOP_INTERNAL: '1', METAWORK_PACKAGED_SMOKE_ROOT: dataRoot };
+const env = { ...process.env, METAWORK_DESKTOP_INTERNAL: '1', METAWORK_PACKAGED_SMOKE_ROOT: dataRoot,
+  METAWORK_PACKAGED_REAL_TASK: '1' };
 for (const key of Object.keys(env)) if (key.toUpperCase() === 'PATH') delete env[key];
 env.PATH = `${process.env.SystemRoot}\\System32;${process.env.SystemRoot}`;
 
@@ -35,7 +36,7 @@ const executable = join(installDir, 'MetaWork.exe');
 const uninstaller = join(installDir, 'Uninstall MetaWork.exe');
 await Promise.all([stat(executable), stat(uninstaller)]);
 await exec(process.execPath, ['apps/desktop/tests/packaged-install-smoke.mjs', executable, evidence], {
-  cwd: process.cwd(), env, windowsHide: true, timeout: 240_000,
+  cwd: process.cwd(), env, windowsHide: true, timeout: 1_500_000,
 });
 const installationData = join(dataRoot, 'installation');
 await stat(installationData);
@@ -53,6 +54,6 @@ await assertMissing(uninstaller);
 await stat(installationData);
 await writeFile(join(evidence, 'nsis-install.json'), JSON.stringify({
   passed: true, installer, installedExecutable: executable, currentUserInstall: true,
-  cleanInstallSmoke: true, uninstalled: true, accountDataPreserved: true,
+  cleanInstallSmoke: true, realModelTasks: true, uninstalled: true, accountDataPreserved: true,
 }, null, 2));
 console.log('Windows NSIS current-user install, packaged smoke, uninstall and data preservation passed.');
