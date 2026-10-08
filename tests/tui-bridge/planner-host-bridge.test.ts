@@ -374,7 +374,7 @@ describe.skipIf(process.platform === 'win32')('PlannerHostBridge shared Proposal
 
 describe.skipIf(process.platform !== 'win32')('native Windows Planner Host', () => {
   it('serves the existing RPC protocol and refuses an occupied pipe without disrupting its owner', async () => {
-    const socketPath = `\\.\pipe\metawork-planner-${randomUUID()}`;
+    const socketPath = String.raw`\\.\pipe\metawork-planner-${randomUUID()}`;
     const windowsPipeModulePath = resolve('native/windows/build/Release/metawork_platform.node');
     const first = new PlannerHostBridge({ socketPath, windowsPipeModulePath });
     const second = new PlannerHostBridge({ socketPath, windowsPipeModulePath });
