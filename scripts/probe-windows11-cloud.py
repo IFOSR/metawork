@@ -51,23 +51,15 @@ with iso.open('rb') as source:
 }, indent=2))
 
 escape = xml.sax.saxutils.escape
-logon_script = r"""
-$ErrorActionPreference = 'Stop'
-'locating-answer-media' | Set-Content 'C:\Windows\Temp\metawork-guest-stage.txt'
-for ($attempt = 0; $attempt -lt 30; $attempt++) {
-  foreach ($drive in [IO.DriveInfo]::GetDrives()) {
-    $entry = Join-Path $drive.Name 'metawork-bootstrap.ps1'
-    if (Test-Path -LiteralPath $entry) {
-      Copy-Item -LiteralPath $entry -Destination 'C:\Windows\Temp\metawork-bootstrap.ps1' -Force
-      & 'C:\Windows\Temp\metawork-bootstrap.ps1'
-      exit
-    }
-  }
-  Start-Sleep -Seconds 2
-}
-throw 'Answer media bootstrap not found'
-"""
+# FirstLogonCommands/CommandLine is limited to 1024 characters, including the
+# encoded payload. Keep the discovery trampoline short; the media owns the script.
+logon_script = (r"$ErrorActionPreference='Stop';foreach($d in [IO.DriveInfo]::GetDrives())"
+                r"{if($d.IsReady){$p=$d.Name+'metawork-bootstrap.ps1';if([IO.File]::Exists($p))"
+                r"{Copy-Item $p C:\Windows\Temp\metawork-bootstrap.ps1 -Force;"
+                r"& C:\Windows\Temp\metawork-bootstrap.ps1;exit}}};throw 'Bootstrap media missing'")
 command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ' + base64.b64encode(logon_script.encode('utf-16le')).decode()
+if len(command) > 1024:
+    raise RuntimeError('Windows first-logon command exceeds the unattended setup limit')
 copy_bootstrap = r'cmd.exe /c for %d in (D E F G H I J) do @if exist %d:\metawork-bootstrap.ps1 copy /y %d:\metawork-bootstrap.ps1 C:\Windows\Temp\metawork-bootstrap.ps1'
 (media / 'Autounattend.xml').write_text(f'''<?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">

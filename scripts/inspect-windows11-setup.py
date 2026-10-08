@@ -12,6 +12,7 @@ def inspect_setup(disk, evidence, secrets):
     mounted = False
     report = {'scope': 'read-only-setup-diagnostics', 'files': {}, 'errors': []}
     guest = None
+    phase = 'attach-read-only-disk'
 
     def run(arguments):
         return subprocess.run(arguments, check=True, capture_output=True, text=True, timeout=30).stdout.strip()
@@ -29,10 +30,12 @@ def inspect_setup(disk, evidence, secrets):
         loop = run(['sudo', 'losetup', '--read-only', '--partscan', '--find', '--show', str(disk)])
         if not re.fullmatch(r'/dev/loop\d+', loop):
             raise RuntimeError('Unexpected loop device identity')
+        phase = 'mount-read-only-system'
         # A stopped evaluation guest can leave NTFS dirty; a read-only mount
         # still forbids writes, while norecover refuses even diagnostic reads.
         run(['sudo', 'mount', '-t', 'ntfs-3g', '-o', 'ro', loop + 'p3', str(mount)])
         mounted = True
+        phase = 'read-bounded-evidence'
         result = mount / 'Windows/Temp/metawork-guest-result.json'
         if result.is_file() and result.stat().st_size <= 32768:
             candidate = json.loads(result.read_text(encoding='utf-8-sig'))
@@ -54,6 +57,8 @@ def inspect_setup(disk, evidence, secrets):
                 report['files'][relative] = {'exists': False}
                 continue
             item = {'exists': True, 'bytes': path.stat().st_size}
+            if relative == 'Windows/Temp/metawork-guest-stage.txt' and item['bytes'] <= 1024:
+                item['stage'] = redact(path.read_text(encoding='utf-8-sig', errors='replace').strip())
             if path.suffix == '.log':
                 with path.open('rb') as handle:
                     handle.seek(max(0, item['bytes'] - 256 * 1024))
@@ -64,8 +69,13 @@ def inspect_setup(disk, evidence, secrets):
                     if re.search(r'error|fail|0x[0-9a-f]{8}|reboot|phase|specialize|oobe', line, re.I)][-120:]
             report['files'][relative] = item
     except Exception as error:
-        # Omit command output: mount/setup diagnostics are not trusted log data.
-        report['errors'].append(type(error).__name__)
+        failure = {'phase': phase, 'type': type(error).__name__}
+        # These two fixed OS commands only attach/mount the disk. Preserve their
+        # bounded diagnostics; never include setup command lines or file contents.
+        if isinstance(error, subprocess.CalledProcessError) and phase in ['attach-read-only-disk', 'mount-read-only-system']:
+            failure['exitCode'] = error.returncode
+            failure['diagnostics'] = [redact(line) for line in (error.stderr or '').splitlines()[:8]]
+        report['errors'].append(failure)
     finally:
         if mounted:
             try:
