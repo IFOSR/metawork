@@ -22,7 +22,7 @@ const build = await mkdtemp(join(tmpdir(), 'metawork-pageant-'));
 try {
   const config = fileURLToPath(new URL('../integrations/ssh2-pageant/', import.meta.url));
   const run = (command, args) => execFileSync(command, args, { stdio: 'inherit', windowsHide: true, timeout: 120_000 });
-  run('cmake', ['-S', config, '-B', build, '-A', 'x64', `-DPAGEANT_SOURCE=${source}`]);
+  run('cmake', ['-S', config, '-B', build, '-A', 'x64', `-DPAGEANT_SOURCE:FILEPATH=${source.replaceAll('\\', '/')}`]);
   run('cmake', ['--build', build, '--config', 'Release']);
   const executable = join(build, 'Release/pagent.exe');
   const bytes = await readFile(executable);
