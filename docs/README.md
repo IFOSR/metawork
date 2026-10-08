@@ -3,7 +3,7 @@
 [Desktop 无模型安装与内部版本升级修复](plans/2026-10-08-desktop-model-free-installation.md)：
 无模型安装已实现；之前的直接进程验收漏掉 Finder 启动差异。
 [Finder 更新进程修复](plans/2026-10-08-desktop-finder-update-lifecycle.md)
-记录系统终止更新程序的根因、修正和真实启动路径验收；未发布。
+已修正后台生命周期与内部包无效签名；最终 arm64 DMG 已通过 Finder 升级、连续重开和后台存活验收，待用户亲自安装；未发布。
 
 MetaWork is the proprietary commercial product represented by this repository.
 AnyFusion references identify the separate open-source upstream, attributed

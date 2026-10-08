@@ -1,7 +1,10 @@
 # Desktop Finder update lifecycle correction
 
 - Date: 2026-10-08
-- Status: Implementation and local acceptance in progress; no publication.
+- Status: Completed locally; user's manual installation acceptance pending. No publication.
+- Completion date: 2026-10-08
+- Closing implementation commit: `0a3df55c38436beeca34897ee79032ea4b513d70`
+  (lifecycle transport: `d79fbd757fc50760e05aa0db4dce32a575a668ce`).
 
 ## Observed failure
 
@@ -51,3 +54,37 @@ journal also reopens the client to report failure without bypassing recovery.
   survives quitting the Finder-launched app, including when that app started it.
 - Final unchanged arm64 internal DMG; fresh installation and actual prior Runtime
   upgrade. No GitHub release/push/tag/upload. Retain formal user data.
+
+## Delivered and verified
+
+- 27 focused native transport, transaction/recovery, diagnostic, health and
+  lifecycle tests; all 16 Desktop tests; root/Desktop typechecks and Web build.
+- Final unchanged app `0.1.8-internal-0a3df55`: LaunchServices upgrade from actual
+  prior Runtime `0.1.8-internal-bc0fb75`, with historical committed journal,
+  interrupted running status and dead helper lock. Committed authenticated render,
+  preserved configuration hash and database sentinel, two subsequent Finder
+  launches directly into the main UI, and Server survival after each Desktop exit.
+- Final unchanged app: clean model-free install, authenticated main UI, Settings
+  save, failed credential probe preservation and first activation without restart.
+- Patched fixture fault injection: port conflict caused a recorded health failure
+  and rollback; a subsequent explicit retry committed, retaining credentials,
+  configuration and work. The test cleanup now handles canonical profile paths.
+- Fresh unique OS application identity with a valid local ad-hoc seal: same Finder
+  upgrade, two reopenings and Server survival passed without inherited MetaWork
+  background authorization. This is separate from unchanged final artifact proof.
+- Final DMG checksum, mounted payload signature/inventory, app resource seal,
+  MetaWork code identity, and shell/icon/executable/CodeResources equality passed.
+  No test re-signing was applied to the final artifact or its exact test copy.
+
+Final artifact: `apps/desktop/release/MetaWork-darwin-arm64.dmg` (arm64 Internal),
+396415280 bytes, SHA-256
+`7e93e7bbbeb073b5182c8f2acbb16fca4b79523431dc036c01e9765954d7b106`.
+The signed local sidecar identifies source/shell commit `0a3df55c...`.
+Evidence: `apps/desktop/release/evidence/{finder-upgrade,fresh-application-identity,
+failure-recovery-retry,packaged-install,dmg-verification}.json`.
+
+All test clients/Servers stopped, completed test launchd jobs removed, test DMG
+unmounted and 12 disposable fixture directories moved to Trash with a manifest.
+The normal `/Applications/MetaWork.app`, installation and Desktop profile were
+preserved for the user's requested manual installation. No GitHub operation,
+Apple certificate, Intel artifact or paid model task was used.

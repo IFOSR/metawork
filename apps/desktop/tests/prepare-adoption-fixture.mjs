@@ -1,6 +1,6 @@
 import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createPackage } from '@electron/asar';
@@ -26,8 +26,8 @@ export { canonicalizeReleaseManifestPayload } from './src/installation/release-m
 // Acceptance of a distributable must preserve its signed payload and shell.
 if (process.argv.includes('--exact')) {
   execFileSync('/usr/bin/codesign', ['--verify', '--strict', application], { stdio: 'pipe' });
-  const identity = execFileSync('/usr/bin/codesign', ['-d', '-r-', application], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  if (!identity.includes('identifier "com.metawork.desktop"')) throw new Error('Packaged app has the wrong code identity');
+  const identity = spawnSync('/usr/bin/codesign', ['-d', '--verbose=4', application], { encoding: 'utf8' });
+  if (identity.status !== 0 || !/^Identifier=com\.metawork\.desktop$/mu.test(identity.stderr)) throw new Error('Packaged app has the wrong code identity');
   const descriptor = JSON.parse(await readFile(join(resources, 'desktop-release.json'), 'utf8'));
   const trustedKeys = JSON.parse(await readFile(join(resources, 'trusted-release-keys.json'), 'utf8'));
   await verifyDesktopRelease(resources, { trustedKeys, arch: process.arch,
