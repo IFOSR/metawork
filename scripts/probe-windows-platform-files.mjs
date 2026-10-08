@@ -35,6 +35,16 @@ export async function probePlatformFiles(addon, output, addonPath) {
     assert.throws(() => addon.createPrivateFile(root, 'immutable', Buffer.from('conflict')), error => error.code === 'EEXIST');
     assert.equal(addon.readPrivateFile(root, 'immutable').toString(), 'original');
     checks.push('exclusive atomic publication preserves an existing immutable record');
+    addon.ensurePrivateDirectory(join(root, 'staging'));
+    addon.createPrivateFile(root, 'staging\\body', Buffer.from('complete'));
+    addon.movePrivateEntry(root, 'staging', 'published', true);
+    assert.equal(addon.readPrivateFile(root, 'published\\body').toString(), 'complete');
+    addon.createPrivateFile(root, 'source', Buffer.from('retained'));
+    assert.throws(() => addon.movePrivateEntry(root, 'source', 'immutable', false), error => error.code === 'EEXIST');
+    assert.equal(addon.readPrivateFile(root, 'source').toString(), 'retained');
+    addon.movePrivateEntry(root, 'source', 'quarantined', false);
+    assert.equal(addon.readPrivateFile(root, 'quarantined').toString(), 'retained');
+    checks.push('guarded directory publication and file quarantine refuse destination conflicts');
     assert.throws(() => addon.writePrivateFile(root, 'oversize', Buffer.alloc(65537)), /bounded/);
     for (const path of ['..\\outside', 'C:\\outside', 'nested\\..\\outside', 'file:stream']) {
       assert.throws(() => addon.writePrivateFile(root, path, Buffer.from('denied')));
@@ -103,6 +113,10 @@ export async function probePlatformFiles(addon, output, addonPath) {
     addon.replacePrivateSymlink(root, 'active-file', 'first\\value', false);
     addon.replacePrivateSymlink(root, 'active-file', 'second\\value', false);
     assert.equal(await readFile(join(root, 'active-file'), 'utf8'), 'second');
+    addon.createPrivateFile(root, 'legacy-database', Buffer.from('old database'));
+    addon.promotePrivateFilePointer(root, 'legacy-database', 'first\\value');
+    assert.equal(await readFile(join(root, 'legacy-database'), 'utf8'), 'first');
+    assert.throws(() => addon.promotePrivateFilePointer(root, 'legacy-database', 'second\\value'), /reparse/);
     assert.throws(() => addon.replacePrivateSymlink(root, 'active', '..\\outside', true), /escapes/);
     assert.throws(() => addon.replacePrivateSymlink(root, 'target', 'second\\value', false), /symbolic link/);
     assert.equal(addon.readPrivateFile(root, 'target').toString(), 'retained');

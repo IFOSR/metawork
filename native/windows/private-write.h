@@ -72,6 +72,44 @@ void remove_private_file(const std::wstring& root, const std::wstring& relative)
   flush_private_path(path.substr(0, path.rfind(L'\\')), true);
 }
 
+// Publish a completed staging directory or quarantine a regular file without
+// replacing a concurrent destination. Both paths remain beneath the same root.
+void move_private_entry(const std::wstring& root, const std::wstring& source_relative,
+    const std::wstring& destination_relative, bool directory) {
+  assert_local_path(root);
+  std::vector<std::unique_ptr<Handle>> parents;
+  auto guarded_path = [&](const std::wstring& relative) {
+    require(!relative.empty() && relative.front() != L'\\'
+      && relative.find_first_of(L"/:\0", 0, 3) == std::wstring::npos, "relative private entry required");
+    const auto path = root + L"\\" + relative;
+    assert_local_path(path);
+    for (size_t end = path.find(L'\\', 3); end != std::wstring::npos; end = path.find(L'\\', end + 1))
+      parents.push_back(pin_directory(path.substr(0, end), end >= root.size()));
+    return path;
+  };
+  const auto source = guarded_path(source_relative);
+  const auto destination = guarded_path(destination_relative);
+  Handle file(CreateFileW(source.c_str(), DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES,
+    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+    FILE_FLAG_OPEN_REPARSE_POINT | (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0), nullptr));
+  if (file.get() == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND) throw PrivateFileNotFound();
+  require(file.get() != INVALID_HANDLE_VALUE, "open private entry for move");
+  inspect_private_file(file.get(), directory);
+  std::vector<BYTE> storage(sizeof(FILE_RENAME_INFO) + destination.size() * sizeof(wchar_t));
+  auto rename = reinterpret_cast<FILE_RENAME_INFO*>(storage.data());
+  rename->Flags = 0;
+  rename->RootDirectory = nullptr;
+  rename->FileNameLength = static_cast<DWORD>(destination.size() * sizeof(wchar_t));
+  std::memcpy(rename->FileName, destination.data(), rename->FileNameLength);
+  if (!SetFileInformationByHandle(file.get(), FileRenameInfoEx, rename, static_cast<DWORD>(storage.size()))) {
+    const DWORD error = GetLastError();
+    if (error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS) throw PrivateFileExists();
+    require(false, "move private entry");
+  }
+  flush_private_path(destination.substr(0, destination.rfind(L'\\')), true);
+  flush_private_path(source.substr(0, source.rfind(L'\\')), true);
+}
+
 void write_private_file(const std::wstring& root, const std::wstring& relative_path, const BYTE* bytes, size_t size, size_t maximum = 65536, bool replace = true) {
   assert_local_path(root);
   require(!relative_path.empty() && relative_path.front() != L'\\'

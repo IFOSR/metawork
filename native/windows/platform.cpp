@@ -41,6 +41,16 @@ napi_value files(napi_env env, napi_callback_info info) {
     } else if (operation == "flushPrivateFile" || operation == "flushPrivateDirectory") {
       if (count != 1) throw std::runtime_error("Private flush path required");
       flush_private_path(string_argument(env, arguments[0]), operation == "flushPrivateDirectory");
+    } else if (operation == "movePrivateEntry") {
+      bool directory = false;
+      if (count != 4 || napi_get_value_bool(env, arguments[3], &directory) != napi_ok)
+        throw std::runtime_error("Root, relative source, destination and directory flag required");
+      move_private_entry(string_argument(env, arguments[0]), string_argument(env, arguments[1]),
+        string_argument(env, arguments[2]), directory);
+    } else if (operation == "promotePrivateFilePointer") {
+      if (count != 3) throw std::runtime_error("Root, relative regular file and target required");
+      replace_private_symlink(string_argument(env, arguments[0]), string_argument(env, arguments[1]),
+        string_argument(env, arguments[2]), false, true);
     } else if (operation == "replacePrivateSymlink") {
       bool directory = false;
       if (count != 4 || napi_get_value_bool(env, arguments[3], &directory) != napi_ok)
@@ -75,7 +85,7 @@ napi_value files(napi_env env, napi_callback_info info) {
 }
 
 napi_value initialize(napi_env env, napi_value exports) {
-  for (const char* name : { "ensurePrivateDirectory", "readPrivateFile", "writePrivateFile", "createPrivateFile", "flushPrivateFile", "flushPrivateDirectory", "replacePrivateSymlink", "removePrivateFile" }) {
+  for (const char* name : { "ensurePrivateDirectory", "readPrivateFile", "writePrivateFile", "createPrivateFile", "flushPrivateFile", "flushPrivateDirectory", "replacePrivateSymlink", "removePrivateFile", "movePrivateEntry", "promotePrivateFilePointer" }) {
     napi_value function;
     if (napi_create_function(env, name, NAPI_AUTO_LENGTH, files, const_cast<char*>(name), &function) != napi_ok
       || napi_set_named_property(env, exports, name, function) != napi_ok) {

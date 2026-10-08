@@ -242,3 +242,9 @@ ReleasePointerTransaction 新增显式 Windows adapter，仍按 database/configu
 `a9e06f8f` 完整正式隔离安装已通过，实际安装的 DesktopServiceManager 自动启动并复用同一 Server；随后浏览器未认证检查错误预期 `{authenticated:false}`，正式契约为 `401 {error:unauthorized}`，已修正测试断言，未更改浏览器认证。完整会话与 stop 结果仍待复验。该提交 macOS arm64、Intel 及 Docker 回归均通过。
 
 原生配置 revision 中断恢复与整套 release pointer 健康失败回滚通过。其余失败已定位：Conversation 两个存储与 journal close 使用写死 `/` 的路径边界，改用平台 sep；原生并发 writer 检查旧目标句柄时另一 writer 已使 link count 归零，允许这个已取消路径链接的旧 inode 完成只读检查，仍拒绝多硬链接。新增真实 Conversation 读写覆盖；本地原有存储、journal、companion 45 项与类型检查通过。另增加不可覆盖的原子私有文件发布原语，为 companion 恢复保留冲突拒绝语义，原生云端待验证。
+
+### 升级日志 companion 的 Windows 适配（2026-10-08，待原生复验）
+
+Gateway journal backup/restore 显式接收 Windows 私有文件 adapter，保留原 manifest/hash/index 身份检查和全量 preflight。新增 guarded staging-directory move 及不可覆盖原子文件发布，恢复不用覆盖 rename 或暂时多硬链接，遇到并发目标必须复验原 hash，失败不更改冲突正文。更新器的配置、迁移、activation journal、companion 以及 prepared recovery 路径传递同一 adapter；旧普通数据库切换为版本指针使用专门的已验证 regular-file promotion，常规指针 API 仍拒绝覆盖普通文件。数据库 clone/backup 在 Windows 激活前用可写私有句柄刷新。
+
+新增原生目录发布/冲突拒绝/文件指针迁移，以及真实 SQLite 索引+segment companion 的中断发布、重试、冲突保留测试。本机 updater/companion/指针事务 58 项及 Root/Desktop 类型检查通过。完整 Desktop 协调 helper/NSIS 尚未接入，不据本次源码适配宣称 P3 升级完成；Windows 原生与 Docker 持久化回归待此提交执行。

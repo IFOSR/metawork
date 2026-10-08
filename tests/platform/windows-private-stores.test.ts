@@ -11,6 +11,7 @@ import { FileConversationStore } from '../../src/session/file-conversation-store
 import { FileConversationPresentationStore } from '../../src/storage/file-conversation-presentation-store.js';
 import { createAccountEventJournal } from '../../src/server/account-event-journal.js';
 import { runMigrations } from '../../src/storage/migrations.js';
+import { backupGatewayJournal, restoreGatewayJournal } from '../../src/installation/gateway-journal-backup.js';
 import { ReleasePointerTransaction, type ReleasePointerName } from '../../src/installation/release-pointer-transaction.js';
 import { loadWindowsPrivateFiles, type WindowsPrivateFileRoot } from '../../src/platform/windows-private-files.js';
 import { readEndpointManifest, writeEndpointManifest, type EndpointManifest } from '../../src/server/server-endpoint-manifest.js';
@@ -142,5 +143,39 @@ describe.skipIf(process.platform !== 'win32')('native Windows credential and end
     const committed = new ReleasePointerTransaction({ paths, journalPath, windows, healthCheck: async () => undefined });
     await committed.activate(targets('new'));
     expect(await committed.recover()).toEqual({ status: 'healthy' });
+  });
+  it('recovers an interrupted companion restore without replacing conflicting journal bodies', async () => {
+    const databasePath = join(windows.root, 'source.db');
+    const db = new Database(databasePath);
+    runMigrations(db);
+    const journalRoot = join(windows.root, 'events');
+    const runtime = createAccountEventJournal({ db, root: journalRoot, windows,
+      accountId: 'local-default', onError: error => { throw error; } });
+    const input = { databasePath, journalRoot, backupRoot: join(windows.root, 'backup', 'events'), windows };
+    try {
+      for (const sequence of [1, 2]) await runtime.journal.append({ protocolVersion: 2,
+        accountId: 'local-default', conversationId: 'conv_backup', eventId: `event_${sequence}`,
+        turnId: 'turn_one', requestId: null, sequence: 0, kind: 'final_answer',
+        occurredAt: '2026-10-08T00:00:00Z', payload: { lines: [`body ${sequence}`] } });
+      await runtime.stop();
+      await backupGatewayJournal(input);
+      const manifest = JSON.parse(await readFile(join(input.backupRoot, 'manifest.json'), 'utf8')) as { segments: { path: string }[] };
+      for (const segment of manifest.segments) windows.files.removePrivateFile(windows.root, relative(windows.root, join(journalRoot, segment.path)));
+      let published = 0;
+      const interrupted: WindowsPrivateFileRoot = { root: windows.root, files: { ...windows.files,
+        createPrivateFile: (...args) => {
+          windows.files.createPrivateFile(...args);
+          if (++published === 1) throw new Error('interrupted after publication');
+        },
+      } };
+      await expect(restoreGatewayJournal({ ...input, windows: interrupted })).rejects.toThrow('interrupted after publication');
+      await restoreGatewayJournal(input);
+      await restoreGatewayJournal(input);
+      expect((await runtime.journal.replay('local-default', 'conv_backup')).deltas).toHaveLength(2);
+      const conflict = join(journalRoot, manifest.segments[0]!.path);
+      windows.files.writePrivateFile(windows.root, relative(windows.root, conflict), Buffer.from('conflicting current data'));
+      await expect(restoreGatewayJournal(input)).rejects.toThrow();
+      expect(await readFile(conflict, 'utf8')).toBe('conflicting current data');
+    } finally { await runtime.stop(); db.close(); }
   });
 });

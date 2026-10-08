@@ -11,6 +11,8 @@ export interface WindowsPrivateFiles {
   flushPrivateDirectory(path: string): void;
   replacePrivateSymlink(root: string, relative: string, target: string, directory: boolean): void;
   removePrivateFile(root: string, relative: string): void;
+  movePrivateEntry(root: string, source: string, destination: string, directory: boolean): void;
+  promotePrivateFilePointer(root: string, relative: string, target: string): void;
 }
 
 export interface WindowsPrivateFileRoot {
@@ -30,7 +32,7 @@ export function writeWindowsPrivateJson(windows: WindowsPrivateFileRoot, path: s
 export function loadWindowsPrivateFiles(modulePath: string): WindowsPrivateFiles {
   if (process.platform !== 'win32' || !isAbsolute(modulePath)) throw new Error('Absolute Windows platform module required');
   const addon: unknown = createRequire(import.meta.url)(modulePath);
-  if (!addon || typeof addon !== 'object' || !['ensurePrivateDirectory', 'readPrivateFile', 'writePrivateFile', 'createPrivateFile', 'flushPrivateFile', 'flushPrivateDirectory', 'replacePrivateSymlink', 'removePrivateFile']
+  if (!addon || typeof addon !== 'object' || !['ensurePrivateDirectory', 'readPrivateFile', 'writePrivateFile', 'createPrivateFile', 'flushPrivateFile', 'flushPrivateDirectory', 'replacePrivateSymlink', 'removePrivateFile', 'movePrivateEntry', 'promotePrivateFilePointer']
     .every(name => typeof (addon as Record<string, unknown>)[name] === 'function')) {
     throw new Error('Incompatible Windows private-file adapter');
   }

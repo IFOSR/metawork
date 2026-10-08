@@ -3,7 +3,7 @@
 // Atomic replacement of an intentional release/configuration symlink. Reparse
 // ancestors and junctions remain forbidden, and the target must stay in root.
 void replace_private_symlink(const std::wstring& root, const std::wstring& relative,
-    const std::wstring& target, bool directory) {
+    const std::wstring& target, bool directory, bool promote_regular_file = false) {
   assert_local_path(root);
   require(!relative.empty() && relative.front() != L'\\'
     && relative.find_first_of(L"/:\0", 0, 3) == std::wstring::npos, "relative pointer required");
@@ -33,12 +33,18 @@ void replace_private_symlink(const std::wstring& root, const std::wstring& relat
     Handle existing(CreateFileW(destination.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
       FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr));
-    if (existing.get() == INVALID_HANDLE_VALUE) require(GetLastError() == ERROR_FILE_NOT_FOUND, "inspect replaced pointer");
+    if (existing.get() == INVALID_HANDLE_VALUE) require(!promote_regular_file && GetLastError() == ERROR_FILE_NOT_FOUND, "inspect replaced pointer");
     else {
       FILE_ATTRIBUTE_TAG_INFO tag{};
-      require(GetFileInformationByHandleEx(existing.get(), FileAttributeTagInfo, &tag, sizeof(tag)) != FALSE
-        && tag.ReparseTag == IO_REPARSE_TAG_SYMLINK, "only a symbolic link may be replaced");
-      inspect_private_file(existing.get(), directory, false, true);
+      require(GetFileInformationByHandleEx(existing.get(), FileAttributeTagInfo, &tag, sizeof(tag)) != FALSE,
+        "inspect pointer kind");
+      if (promote_regular_file) {
+        require(!directory, "only a regular file may become a pointer");
+        inspect_private_file(existing.get(), false);
+      } else {
+        require(tag.ReparseTag == IO_REPARSE_TAG_SYMLINK, "only a symbolic link may be replaced");
+        inspect_private_file(existing.get(), directory, false, true);
+      }
     }
   }
   BYTE random[24];

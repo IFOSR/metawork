@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { WindowsPrivateFileRoot } from '../platform/windows-private-files.js';
 import {
   chmod,
   lstat,
@@ -63,20 +64,22 @@ export class SourceNativeUpdater {
     isServerRunning(): Promise<boolean>;
     afterSwitch?: (name: ReleasePointerName) => Promise<void>;
     installLaunchers?: boolean;
+    windows?: WindowsPrivateFileRoot;
   }) {}
 
   /** Desktop helper crash recovery uses the same native activation and companion guards. */
   async recoverInterruptedActivation(): Promise<void> {
     if (await this.dependencies.isServerRunning()) throw new Error('Stop Server before activation recovery');
     const paths = this.dependencies.paths;
+    const windows = this.dependencies.windows;
     const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
     const lock = await acquireRuntimeUpdateLock(paths.root, 'update');
     try {
       const pointers = releasePointerPaths(paths, accountPaths);
       await recoverPreparedReleaseActivations(paths.upgradeJournals, pointers,
-        (journal, path) => restoreActivationJournal(accountPaths, journal, activationId(path)));
-      const current = await findCurrentActivation(paths.upgradeJournals, pointers);
-      const repository = new FileConfigurationRepository(accountPaths.config);
+        (journal, path) => restoreActivationJournal(accountPaths, journal, activationId(path), windows), windows);
+      const current = await findCurrentActivation(paths.upgradeJournals, pointers, windows);
+      const repository = new FileConfigurationRepository(accountPaths.config, windows);
       await repository.initialize();
       await recoverConfiguration(repository, pointers, current);
     } finally { await lock.release(); }
@@ -84,6 +87,7 @@ export class SourceNativeUpdater {
 
   async update(input: SourceNativeUpdateInput): Promise<SourceNativeUpdateResult> {
     const paths = this.dependencies.paths;
+    const windows = this.dependencies.windows;
     const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
     if (await this.dependencies.isServerRunning()) {
       throw new Error(
@@ -92,15 +96,15 @@ export class SourceNativeUpdater {
     }
     const lock = await acquireRuntimeUpdateLock(paths.root, 'update');
     try {
-      await new AccountLayoutMigrator({ paths }).migrate();
-      await ensureRevisionedDatabasePointer(accountPaths);
+      await new AccountLayoutMigrator({ paths, windows }).migrate();
+      await ensureRevisionedDatabasePointer(accountPaths, windows);
       const pointerPaths = releasePointerPaths(paths, accountPaths);
       await recoverPreparedReleaseActivations(paths.upgradeJournals, pointerPaths,
-        (journal, path) => restoreActivationJournal(accountPaths, journal, activationId(path)));
-      const currentActivation = await findCurrentActivation(paths.upgradeJournals, pointerPaths);
+        (journal, path) => restoreActivationJournal(accountPaths, journal, activationId(path), windows), windows);
+      const currentActivation = await findCurrentActivation(paths.upgradeJournals, pointerPaths, windows);
       const upgradeId = `update-${input.releaseId}-${randomUUID()}`;
       const release = resolveReleasePaths(paths.root, input.releaseId);
-      const repository = new FileConfigurationRepository(accountPaths.config);
+      const repository = new FileConfigurationRepository(accountPaths.config, windows);
       await repository.initialize();
       await recoverConfiguration(repository, pointerPaths, currentActivation);
       const snapshot = await repository.getActiveSnapshot();
@@ -152,7 +156,14 @@ export class SourceNativeUpdater {
         sentinelTables: ['schema_version'],
       });
       await chmod(candidateDatabase, 0o600);
+      if (windows) {
+        for (const path of [backupDatabase, candidateDatabase]) {
+          windows.files.flushPrivateFile(path);
+          windows.files.flushPrivateDirectory(dirname(path));
+        }
+      }
       await backupGatewayJournal({
+        windows,
         databasePath: accountPaths.database,
         journalRoot: join(accountPaths.gateway, 'events'),
         backupRoot: join(accountPaths.backups, upgradeId, 'gateway-events'),
@@ -171,10 +182,11 @@ export class SourceNativeUpdater {
         detectCommand: this.dependencies.detectCommand,
       });
       const activation = new ReleasePointerTransaction({
+        windows,
         paths: pointerPaths,
         journalPath,
         previousActivationId: currentActivation?.upgradeId,
-        beforeRollback: journal => restoreActivationJournal(accountPaths, journal, upgradeId),
+        beforeRollback: journal => restoreActivationJournal(accountPaths, journal, upgradeId, windows),
         afterSwitch: this.dependencies.afterSwitch,
         healthCheck: async () => {
           const probeResult = await probe(snapshot, { contentHash: snapshot.contentHash, files: {} });
@@ -208,6 +220,7 @@ export class SourceNativeUpdater {
 
   async rollback(releaseId: string): Promise<SourceNativeUpdateResult> {
     const paths = this.dependencies.paths;
+    const windows = this.dependencies.windows;
     const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
     if (await this.dependencies.isServerRunning()) {
       throw new Error(
@@ -216,12 +229,12 @@ export class SourceNativeUpdater {
     }
     const lock = await acquireRuntimeUpdateLock(paths.root, 'update');
     try {
-      await new AccountLayoutMigrator({ paths }).migrate();
-      await ensureRevisionedDatabasePointer(accountPaths);
+      await new AccountLayoutMigrator({ paths, windows }).migrate();
+      await ensureRevisionedDatabasePointer(accountPaths, windows);
       const pointerPaths = releasePointerPaths(paths, accountPaths);
       await recoverPreparedReleaseActivations(paths.upgradeJournals, pointerPaths,
-        (journal, path) => restoreActivationJournal(accountPaths, journal, activationId(path)));
-      const currentActivation = await findCurrentActivation(paths.upgradeJournals, pointerPaths);
+        (journal, path) => restoreActivationJournal(accountPaths, journal, activationId(path), windows), windows);
+      const currentActivation = await findCurrentActivation(paths.upgradeJournals, pointerPaths, windows);
       if (!currentActivation
         || basename(currentActivation.journal.previousTargets.application) !== releaseId) {
         throw new Error(`rollback target was not previously verified compatible: ${releaseId}`);
@@ -230,9 +243,9 @@ export class SourceNativeUpdater {
 
       // The activation journal identifies the companion for this exact previous DB.
       // Restore before any pointer switch; current bodies are never removed.
-      await restoreActivationJournal(accountPaths, target, currentActivation.upgradeId);
+      await restoreActivationJournal(accountPaths, target, currentActivation.upgradeId, windows);
 
-      const repository = new FileConfigurationRepository(accountPaths.config);
+      const repository = new FileConfigurationRepository(accountPaths.config, windows);
       await repository.initialize();
       await recoverConfiguration(repository, pointerPaths, currentActivation);
       const targetRevision = basename(target.previousTargets.configuration);
@@ -298,15 +311,17 @@ export class SourceNativeUpdater {
       const journalPath = join(paths.upgradeJournals, `${upgradeId}-activation.json`);
       // A manual rollback is itself an activation; preserve its previous index too.
       await backupGatewayJournal({
+        windows,
         databasePath: accountPaths.database,
         journalRoot: join(accountPaths.gateway, 'events'),
         backupRoot: join(accountPaths.backups, upgradeId, 'gateway-events'),
       });
       const activation = new ReleasePointerTransaction({
+        windows,
         paths: pointerPaths,
         journalPath,
         previousActivationId: currentActivation.upgradeId,
-        beforeRollback: journal => restoreActivationJournal(accountPaths, journal, upgradeId),
+        beforeRollback: journal => restoreActivationJournal(accountPaths, journal, upgradeId, windows),
         afterSwitch: this.dependencies.afterSwitch,
         healthCheck: async () => {
           const probeResult = await probe(rollbackSnapshot, {
@@ -346,8 +361,10 @@ async function restoreActivationJournal(
   accountPaths: AccountPaths,
   journal: ReleaseActivationJournal,
   upgradeId: string,
+  windows?: WindowsPrivateFileRoot,
 ): Promise<void> {
   await restoreGatewayJournal({
+    windows,
     databasePath: resolve(dirname(accountPaths.database), journal.previousTargets.database),
     journalRoot: join(accountPaths.gateway, 'events'),
     backupRoot: join(accountPaths.backups, upgradeId, 'gateway-events'),
@@ -357,6 +374,7 @@ async function restoreActivationJournal(
 async function findCurrentActivation(
   journalDirectory: string,
   paths: Record<ReleasePointerName, string>,
+  windows?: WindowsPrivateFileRoot,
 ): Promise<CommittedActivation | null> {
   const names = await readdir(journalDirectory).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return [];
@@ -365,7 +383,7 @@ async function findCurrentActivation(
   const activations: CommittedActivation[] = [];
   const pointerNames = Object.keys(paths) as ReleasePointerName[];
   for (const name of names.filter(name => name.endsWith('-activation.json'))) {
-    const journal = await readReleaseActivationJournal(join(journalDirectory, name));
+    const journal = await readReleaseActivationJournal(join(journalDirectory, name), windows);
     if (journal.phase === 'committed'
       && pointerNames.every(key => journal.paths[key] === paths[key])) {
       activations.push({ upgradeId: activationId(name), journal });
@@ -426,7 +444,7 @@ function releasePointerPaths(
   };
 }
 
-async function ensureRevisionedDatabasePointer(accountPaths: AccountPaths): Promise<void> {
+async function ensureRevisionedDatabasePointer(accountPaths: AccountPaths, windows?: WindowsPrivateFileRoot): Promise<void> {
   const info = await lstat(accountPaths.database);
   if (info.isSymbolicLink()) return;
   if (!info.isFile()) {
@@ -441,6 +459,13 @@ async function ensureRevisionedDatabasePointer(accountPaths: AccountPaths): Prom
   await backupSqliteDatabase(accountPaths.database, baseline);
   await chmod(baseline, 0o600);
   verifyCompatibleDatabase(baseline);
+  if (windows) {
+    windows.files.flushPrivateFile(baseline);
+    windows.files.flushPrivateDirectory(accountPaths.databaseRevisions);
+    windows.files.promotePrivateFilePointer(windows.root, relative(windows.root, accountPaths.database),
+      relative(dirname(accountPaths.database), baseline));
+    return;
+  }
   const temporary = `${accountPaths.database}.next-${randomUUID()}`;
   await symlink(relative(dirname(accountPaths.database), baseline), temporary);
   await rename(temporary, accountPaths.database);
