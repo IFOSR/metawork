@@ -6,10 +6,11 @@ export function desktopToolPaths(releaseRoot: string, platform = process.platfor
   const toolRoot = path.join(releaseRoot, 'desktop-tools');
   const nodeDirectory = path.join(toolRoot, platform === 'win32' ? 'node' : 'node/bin');
   const gitDirectory = path.join(toolRoot, platform === 'win32' ? 'git/cmd' : 'git/bin');
-  const executorDirectory = path.join(toolRoot, 'executor/bin');
+  const executorDirectory = path.join(toolRoot, platform === 'win32' ? 'executor' : 'executor/bin');
   return {
     node: path.join(nodeDirectory, platform === 'win32' ? 'node.exe' : 'node'),
     git: path.join(gitDirectory, platform === 'win32' ? 'git.exe' : 'git'),
+    bash: platform === 'win32' ? path.join(toolRoot, 'git/bin/bash.exe') : '/bin/bash',
     nodeDirectory, gitDirectory, executorDirectory,
     piScript: path.join(toolRoot, 'executor', platform === 'win32' ? 'node_modules' : 'lib/node_modules',
       '@mariozechner/pi-coding-agent/dist/cli.js'),

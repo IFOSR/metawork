@@ -1,5 +1,5 @@
 import { access } from 'node:fs/promises';
-import { delimiter, join } from 'node:path';
+import { delimiter, extname, join } from 'node:path';
 import type {
   CompiledConfigurationRevision,
   ConfigurationProbeResult,
@@ -79,9 +79,14 @@ export async function commandExistsOnPath(
   command: string,
   searchPath = process.env.PATH ?? '',
 ): Promise<boolean> {
+  const extensions = process.platform === 'win32' && !extname(command)
+    ? (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(extension => /^\.[a-z0-9]+$/iu.test(extension))
+    : [];
   for (const directory of searchPath.split(delimiter)) {
-    if (await access(join(directory || process.cwd(), command)).then(() => true, () => false)) {
-      return true;
+    for (const suffix of ['', ...extensions]) {
+      if (await access(join(directory || process.cwd(), command + suffix)).then(() => true, () => false)) {
+        return true;
+      }
     }
   }
   return false;

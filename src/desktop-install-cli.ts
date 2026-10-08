@@ -10,6 +10,7 @@ import { createProductionSecretStore } from './configuration/production-secret-s
 import { commandExistsOnPath } from './configuration/production-configuration-probe.js';
 import { isInstanceRunning } from './management/lock.js';
 import { acquireRuntimeUpdateLock } from './installation/runtime-update-lock.js';
+import { desktopProcessEnvironment, desktopToolPaths } from './installation/desktop-platform.js';
 
 const ProviderSchema = z.object({
   baseUrl: z.url().refine(value => ['https:', 'http:'].includes(new URL(value).protocol)),
@@ -34,8 +35,8 @@ export async function runDesktopInstall(
   const sourceRoot = join(resources, 'payload', 'metawork');
   const plannerRoot = join(resources, 'payload', 'planner');
   const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials });
-  const searchPath = [join(sourceRoot, 'desktop-tools/node/bin'), join(sourceRoot, 'desktop-tools/git/bin'),
-    join(sourceRoot, 'desktop-tools/executor/bin'), '/usr/bin', '/bin'].join(':');
+  const searchPath = desktopProcessEnvironment({ releaseRoot: sourceRoot,
+    nodePath: desktopToolPaths(sourceRoot).node, env: process.env }).PATH!;
   const detectCommand = (name: string) => commandExistsOnPath(name, searchPath);
   if (command === 'install') {
     let body = '';

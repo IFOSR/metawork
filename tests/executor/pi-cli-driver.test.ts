@@ -131,6 +131,7 @@ describe('PiCliDriver', () => {
       cwd: '/workspace/task',
       environment: {
         HOME: '/attempt/home',
+        ...(process.platform === 'win32' ? { USERPROFILE: '/attempt/home' } : {}),
         PI_CODING_AGENT_DIR: '/attempt/home/.pi/agent',
         PI_CODING_AGENT_SESSION_DIR: '/attempt/home/.pi/agent/sessions',
       },

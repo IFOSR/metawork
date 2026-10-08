@@ -96,3 +96,9 @@ PDF 构建首次被 GitHub 下载连接阻塞；本次从已有开发缓存读�
 Desktop descriptor 按 platform 区分：macOS v1 继续使用既有 executable/mode inventory；Windows x64 使用内容 hash/size 与 PE/data 格式，核对 PE32+、AMD64、可执行 image 和有界 header，拒绝跨平台/架构 payload、伪装 native 文件、Windows 路径别名/ADS/设备名和大小写冲突。所有正式 verifier 调用方显式传入期望 platform。Windows 的必要清单包括独立 Node、Git/Bash、Pi JS、Python/PDF、SQLite 及后续生产 Node-API adapter 的固定入口 `metawork/native/windows/metawork-platform.node`，并保留工具 license。
 
 本地 macOS release、Windows signed fixtures、Desktop installer 与 clean-install integration 共 4 文件/10 测试通过；Root 类型检查和 Desktop build/边界测试通过。PE fixture 从不执行，header 校验不代表 DLL 依赖闭包或真实运行验证；Windows 生产 adapter/依赖包尚未生成，当前也未放开 Windows Desktop 会话。云端原生 Windows 对应测试与 macOS 双架构回归继续执行。
+
+### Windows Pi 与安装器工具入口（2026-10-08）
+
+Windows Pi driver 的 probe/launch 使用同一内置 Node + 绝对 Pi JS 入口，不执行 npm `.cmd` 或拼接 shell 参数。Attempt 同时设置隔离 USERPROFILE，并在自己的 Pi settings 中固定内置 Bash；既有模板/provider 配置仍保留，macOS 调用方式保持不变。Windows npm global prefix 的入口目录修正为 executor 根目录；安装/更新 helper 的 Node 与搜索路径使用同一平台适配，命令发现支持 Windows PATHEXT（发现不执行脚本）。
+
+本地 Pi、配置探测、路径/安装器与真实进程 argv 检查共 5 文件/32 测试通过，2 个 Windows-only 用例交给云端；空格/中文脚本路径及引号、换行、shell 元字符均作为原样参数传递。Root/Desktop 类型检查通过。`4f8aeac` 的 macOS arm64 整个 job 已通过；Windows root 对照测试因 TEMP 8.3 别名与 .NET 自动展开的长路径文本不同而失败，现用真实临时目录长路径固定夹具并明确 UTF-8 输出，仍执行真实 PowerShell/Node 双端选择。没有改成跳过或忽略错误。

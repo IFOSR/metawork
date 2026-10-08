@@ -130,7 +130,7 @@ jobs:
       - run: npm run lint
       - run: npm run lint:desktop
       - name: Verify Desktop tickets stay disabled on unverified Node named pipes
-        run: npm test -- tests/gateway/desktop-local-transport.test.ts tests/management/desktop-session.test.ts tests/installation/desktop-platform.test.ts tests/installation/windows-installation-root.test.ts tests/installation/windows-desktop-release.test.ts tests/client/server-readiness.test.ts
+        run: npm test -- tests/gateway/desktop-local-transport.test.ts tests/management/desktop-session.test.ts tests/installation/desktop-platform.test.ts tests/installation/windows-installation-root.test.ts tests/installation/windows-desktop-release.test.ts tests/client/server-readiness.test.ts tests/executor/pi-native-launch.test.ts tests/executor/pi-cli-driver.test.ts
       - run: npm run build
       - run: npm run build:desktop
       - name: Exercise native SQLite binding

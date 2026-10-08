@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,7 +12,7 @@ afterEach(async () => {
 });
 
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), 'mw-root-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'mw-root-')));
   roots.push(root);
   const home = join(root, '用户 home');
   const local = join(root, 'redirected local data');
@@ -80,7 +80,7 @@ describe('Windows installation root selection', () => {
     const end = source.indexOf('if (-not $ManifestUrl)');
     expect(start).toBeGreaterThan(0);
     expect(end).toBeGreaterThan(start);
-    const script = "$ErrorActionPreference = 'Stop'\n$InstallRoot = $env:METAWORK_INSTALL_ROOT\n"
+    const script = "$ErrorActionPreference = 'Stop'\n[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)\n$InstallRoot = $env:METAWORK_INSTALL_ROOT\n"
       + source.slice(start, end) + '\nWrite-Output $InstallRoot';
     const environment: NodeJS.ProcessEnv = { ...process.env, USERPROFILE: value.home, ...value.env };
     delete environment.METAWORK_INSTALL_ROOT;

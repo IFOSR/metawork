@@ -12,6 +12,7 @@ import { commandExistsOnPath } from './configuration/production-configuration-pr
 import { DesktopServiceManager } from './client/desktop-service-manager.js';
 import { isInstanceRunning } from './management/lock.js';
 import { waitForDesktopShellHealth } from './installation/desktop-shell-health.js';
+import { desktopProcessEnvironment, desktopToolPaths } from './installation/desktop-platform.js';
 
 async function main(): Promise<void> {
   const [rootArg, requestArg] = process.argv.slice(2);
@@ -51,15 +52,17 @@ async function main(): Promise<void> {
     const manager = async () => {
       const identity = await currentIdentity(); if (!identity) throw new Error('No current runtime');
       const releaseRoot = await realpath(join(root, 'app/current'));
-      const nodePath = await access(join(releaseRoot, 'desktop-tools/node/bin/node')).then(
-        () => join(releaseRoot, 'desktop-tools/node/bin/node'), () => request.previousNode);
+      const nodePath = await access(desktopToolPaths(releaseRoot).node).then(
+        () => desktopToolPaths(releaseRoot).node, () => request.previousNode);
       return new DesktopServiceManager({ installRoot: root, releaseId: identity.releaseId, nodePath, configHome: request.configHome });
     };
     const updater = new SourceNativeUpdater({ paths,
       secretStore: createProductionSecretStore({ credentialsFile: paths.credentials }),
       isServerRunning: running, installLaunchers: false,
-      detectCommand: name => commandExistsOnPath(name, [join(resources, 'payload/metawork/desktop-tools/node/bin'),
-        join(resources, 'payload/metawork/desktop-tools/git/bin'), join(resources, 'payload/metawork/desktop-tools/executor/bin'), '/usr/bin', '/bin'].join(':')),
+      detectCommand: name => commandExistsOnPath(name, desktopProcessEnvironment({
+        releaseRoot: join(resources, 'payload/metawork'),
+        nodePath: desktopToolPaths(join(resources, 'payload/metawork')).node, env: process.env,
+      }).PATH),
     });
     const activation = new DesktopActivation(join(requests, 'desktop-activation.json'), {
       verify: async () => {

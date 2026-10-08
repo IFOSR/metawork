@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { chmod, copyFile, mkdir, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { resolveMetaWorkPaths } from '../installation/paths.js';
+import { desktopToolPaths } from '../installation/desktop-platform.js';
 import {
   resolveCurrentRuntimeHome,
   resolveRevisionRuntimeHome,
@@ -52,6 +53,8 @@ export class PiCliDriver implements HarnessDriver {
   private readonly fallbackHomeTemplateDir?: string;
   private readonly webExtensionSourcePath?: string;
   private readonly pdfExtensionRoot: string;
+  private readonly piCommand: { command: string; args: readonly string[] };
+  private readonly windowsShellPath?: string;
 
   constructor(dependencies: {
     probeCommand?: ProbeCommandRunner;
@@ -59,8 +62,14 @@ export class PiCliDriver implements HarnessDriver {
     generatedRuntimeRoot?: string;
     webExtensionSourcePath?: string;
     pdfExtensionRoot?: string;
+    piCommand?: { command: string; args: readonly string[] };
   } = {}) {
     this.runProbe = dependencies.probeCommand ?? defaultProbeCommand;
+    const tools = desktopToolPaths(resolveMetaWorkPaths().appCurrent);
+    this.windowsShellPath = process.platform === 'win32' ? tools.bash : undefined;
+    this.piCommand = dependencies.piCommand ?? (process.platform === 'win32'
+      ? { command: tools.node, args: [tools.piScript] }
+      : { command: 'pi', args: [] });
     this.pdfExtensionRoot = dependencies.pdfExtensionRoot
       ?? join(resolveMetaWorkPaths().appCurrent, 'dist', 'pi-pdf');
     this.explicitHomeTemplateDir = emptyToUndefined(dependencies.homeTemplateDir);
@@ -77,7 +86,7 @@ export class PiCliDriver implements HarnessDriver {
   }
 
   async probe(): Promise<HarnessProbeResult> {
-    const result = await this.runProbe('pi', ['--version']);
+    const result = await this.runProbe(this.piCommand.command, [...this.piCommand.args, '--version']);
     if (result.code === 0 && existsSync(this.pdfExtensionRoot)) {
       const pdf = await this.runProbe(join(this.pdfExtensionRoot,
         process.platform === 'win32' ? 'python/python.exe' : 'python/bin/python3'), [
@@ -103,6 +112,7 @@ export class PiCliDriver implements HarnessDriver {
       bindingFingerprint: input.bindingFingerprint,
       environment: {
         HOME: homePath,
+        ...(process.platform === 'win32' ? { USERPROFILE: homePath } : {}),
         PI_CODING_AGENT_DIR: agentPath,
         PI_CODING_AGENT_SESSION_DIR: sessionPath,
         ...input.environment,
@@ -110,6 +120,13 @@ export class PiCliDriver implements HarnessDriver {
       homeDirectories: ['.pi/agent/sessions'],
     });
     await this.seedProviderConfig(homePath, input.revisionId);
+    if (this.windowsShellPath) {
+      const settingsPath = join(homePath, '.pi', 'agent', 'settings.json');
+      const raw = await readFile(settingsPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return '{}'; throw error;
+      });
+      await writeFile(settingsPath, JSON.stringify({ ...JSON.parse(raw), shellPath: this.windowsShellPath }), { mode: 0o600 });
+    }
     await this.seedWebExtension(homePath, input.executorAffordances);
     if (existsSync(join(this.pdfExtensionRoot, 'index.ts'))) {
       const extensions = join(homePath, '.pi', 'agent', 'extensions');
@@ -123,8 +140,9 @@ export class PiCliDriver implements HarnessDriver {
   buildLaunch(input: HarnessLaunchInput): HarnessLaunchSpec {
     const agentPath = `${input.runtimeHomePath}/.pi/agent`;
     return {
-      command: 'pi',
+      command: this.piCommand.command,
       args: [
+        ...this.piCommand.args,
         '--mode',
         'json',
         ...(input.responseOnly ? ['--no-session', '--tools', ''] : []),
@@ -136,6 +154,7 @@ export class PiCliDriver implements HarnessDriver {
       cwd: input.cwd,
       environment: {
         HOME: input.runtimeHomePath,
+        ...(process.platform === 'win32' ? { USERPROFILE: input.runtimeHomePath } : {}),
         PI_CODING_AGENT_DIR: agentPath,
         PI_CODING_AGENT_SESSION_DIR: `${agentPath}/sessions`,
       },
@@ -564,6 +583,7 @@ async function defaultProbeCommand(command: string, args: readonly string[]) {
   try {
     const result = await execFileAsync(command, [...args], {
       env: safeHostEnvironment(process.env),
+      windowsHide: true,
     });
     return { code: 0, stdout: result.stdout, stderr: result.stderr };
   } catch (error) {
