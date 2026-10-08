@@ -262,3 +262,11 @@ Gateway journal backup/restore 显式接收 Windows 私有文件 adapter，保�
 本机 Planner/Executor/worktree/Account composition/模块边界共 97 项通过（3 个原生 Windows 检查在 macOS 跳过），Root/Desktop 类型检查通过。新增实际 Executor cancellation receipt 等待后代消失的 Windows 集成检查。`172c48fe` 原生编译/进程门当前通过，完整 job 尚未结束；安装内真实模型任务仍不算通过。
 
 `45a71af6` 的 native companion 中断/恢复/冲突保留、全部私有文件/pointer 测试、正式安装与会话门、两个 macOS 架构和 Docker 回归通过；独立 P0 carrier 测试的 reparse 拒绝异常文本出现不可解码字节，导致严格消息断言失败，后续提交复验，不把该失败掩盖为整体通过。
+
+### Packaged EXE 与 Windows 11 回执补充（2026-10-08，云端待执行）
+
+新增仅用于内部候选的 Windows x64 unpacked Electron packaging 配置，打包前继续验证签名资源 inventory，保留 macOS 原构建配置。候选流程以受限 PATH 启动实际 MetaWork.exe，在独立根目录走首次配置、正式安装、自动 Server/本地会话、共享 Web 渲染、刷新及退出后 Server 存活，并正式 stop 清理。不是 NSIS 安装/升级验收，不关闭 P2/P3。
+
+Windows 11 首次登录先保存本地阶段、截图与结构化回执，串口/HTTP 无响应时在 VM 停止后只读提取有界证据；网络上传失败独立记录，不等同于 OS 验收失败。通过仍要求 Windows 11 Client、Secure Boot、TPM、交互桌面与实际截图，缺失不通过。磁盘、答案文件与临时凭据不上传。
+
+`172c48fe` / run `37722602210` 全矩阵通过（Windows 原生 Job/companion/正式安装、macOS 双架构真实 Electron 和 Docker）；先前 carrier 异常文本失败未在该提交重现，仍保留严格断言。新生产 injection 提交 `813d5056` 正在云端验证，本机 Desktop 类型、脚本语法、差异检查通过。

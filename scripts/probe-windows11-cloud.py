@@ -25,6 +25,20 @@ media.mkdir()
 token = secrets.token_hex(24)
 password = secrets.token_urlsafe(24) + 'Aa1!'
 report = None
+
+
+def accepted_environment(value):
+    return (isinstance(value, dict)
+            and value.get('scope') == 'windows11-cloud-environment'
+            and value.get('passed') is True
+            and 'Windows 11' in str(value.get('os', ''))
+            and value.get('productType') == 1
+            and value.get('secureBoot') is True
+            and value.get('tpmPresent') is True
+            and value.get('interactive') is True
+            and value.get('screenshotCaptured') is True)
+
+
 url = 'https://software-static.download.prss.microsoft.com/dbazure/26300.9457.260913-1737.26h2_ge_release_svc_refresh_CLIENTENTERPRISEEVAL_OEMRET_x64FRE_en-us.iso'
 iso = root / 'windows11-evaluation.iso'
 subprocess.run(['curl', '--fail', '--location', '--retry', '2', '--max-time', '900', '--output', str(iso), url], check=True)
@@ -171,7 +185,7 @@ try:
                         pass  # A final serial line may still be in flight.
         if report is not None:
             print(json.dumps(report, indent=2), flush=True)
-            if not report.get('passed'):
+            if not accepted_environment(report):
                 raise RuntimeError('Windows 11 environment acceptance failed')
             break
         if elapsed < 30 and elapsed % 2 == 0:
@@ -197,7 +211,7 @@ try:
             raise RuntimeError('Firmware found no bootable Windows installation; retained early setup screenshots')
         time.sleep(1)
     else:
-        raise RuntimeError('Windows 11 guest did not report within 45 minutes')
+        print('No live guest report; checking bounded on-disk evidence after VM stop', flush=True)
 finally:
     if qmp:
         qmp.close()
@@ -215,7 +229,9 @@ finally:
         spec = importlib.util.spec_from_file_location('setup_diagnostics', 'scripts/inspect-windows11-setup.py')
         diagnostics = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(diagnostics)
-        diagnostics.inspect_setup(disk, evidence, [password, token])
+        report = diagnostics.inspect_setup(disk, evidence, [password, token])
     # Answer files contain a disposable guest password; only evidence is uploaded.
     shutil.rmtree(media, ignore_errors=True)
     answer_iso.unlink(missing_ok=True)
+if not accepted_environment(report):
+    raise RuntimeError('Windows 11 guest acceptance did not pass through live or on-disk evidence')

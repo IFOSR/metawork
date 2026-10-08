@@ -62,6 +62,13 @@ try {
     bundle: true, platform: 'node', format: 'esm', target: 'node22' });
   run(join(tools, 'node/node.exe'), ['scripts/probe-windows-desktop-install.mjs', resources,
     join(candidate, 'isolated-installation'), join(evidence, 'isolated-install.json'), clientPath]);
+  const desktop = join(source, 'apps/desktop');
+  const internalEnvironment = { ...process.env, METAWORK_DESKTOP_INTERNAL: '1', METAWORK_DESKTOP_RESOURCES: resources };
+  run(node, ['packaging/build.mjs'], desktop, internalEnvironment);
+  const shell = join(candidate, 'shell');
+  run(node, ['node_modules/electron-builder/out/cli/cli.js', '--config', 'packaging/electron-builder.windows.config.mjs',
+    '--win', '--x64', '--dir', '--publish', 'never', '--config.directories.output', shell], desktop, internalEnvironment);
+  run(node, ['tests/packaged-install-smoke.mjs', join(shell, 'win-unpacked/MetaWork.exe'), evidence], desktop, internalEnvironment);
 } finally {
   await rm(keyPath, { force: true });
 }

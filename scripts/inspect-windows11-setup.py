@@ -11,6 +11,7 @@ def inspect_setup(disk, evidence, secrets):
     loop = None
     mounted = False
     report = {'scope': 'read-only-setup-diagnostics', 'files': {}, 'errors': []}
+    guest = None
 
     def run(arguments):
         return subprocess.run(arguments, check=True, capture_output=True, text=True, timeout=30).stdout.strip()
@@ -30,7 +31,19 @@ def inspect_setup(disk, evidence, secrets):
             raise RuntimeError('Unexpected loop device identity')
         run(['sudo', 'mount', '-t', 'ntfs-3g', '-o', 'ro,norecover', loop + 'p3', str(mount)])
         mounted = True
+        result = mount / 'Windows/Temp/metawork-guest-result.json'
+        if result.is_file() and result.stat().st_size <= 32768:
+            candidate = json.loads(result.read_text(encoding='utf-8-sig'))
+            if candidate.get('scope') == 'windows11-cloud-environment' and isinstance(candidate.get('passed'), bool):
+                guest = candidate
+                (evidence / 'windows11-guest.json').write_text(json.dumps(guest, indent=2))
+        screen = mount / 'Windows/Temp/metawork-guest-screen.png'
+        if screen.is_file() and screen.stat().st_size <= 8 * 1024**2:
+            body = screen.read_bytes()
+            if body.startswith(b'\x89PNG\r\n\x1a\n'):
+                (evidence / 'windows11-desktop.png').write_bytes(body)
         for relative in ['Windows/System32/winload.efi', 'Windows/System32/config/SYSTEM',
+                         'Windows/Temp/metawork-bootstrap.ps1', 'Windows/Temp/metawork-guest-stage.txt',
                          'Windows/explorer.exe', 'Windows/Panther/setupact.log', 'Windows/Panther/setuperr.log',
                          'Windows/Panther/UnattendGC/setupact.log', 'Windows/Panther/UnattendGC/setuperr.log',
                          '$WINDOWS.~BT/Sources/Panther/setupact.log', '$WINDOWS.~BT/Sources/Panther/setuperr.log']:
@@ -63,3 +76,4 @@ def inspect_setup(disk, evidence, secrets):
             except Exception as error:
                 report['errors'].append('detach: ' + type(error).__name__)
         (evidence / 'setup-diagnostics.json').write_text(json.dumps(report, indent=2))
+    return guest

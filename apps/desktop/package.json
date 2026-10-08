@@ -14,6 +14,7 @@
     "lint": "tsc --noEmit",
     "test": "vitest run tests",
     "package:mac": "npm run build && electron-builder --config packaging/electron-builder.config.mjs --mac --publish never",
+    "package:win:dir": "npm run build && electron-builder --config packaging/electron-builder.windows.config.mjs --win --x64 --dir --publish never",
     "smoke": "node tests/electron-smoke.mjs",
     "prepare:runtime": "node packaging/prepare-runtime.mjs"
   },

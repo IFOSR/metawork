@@ -1,15 +1,17 @@
 # Runs once inside the disposable Windows 11 evaluation guest. No product secrets.
 $ErrorActionPreference = 'Stop'
 $report = @{ scope = 'windows11-cloud-environment'; desktopAppVerified = $false }
+'first-logon' | Set-Content -LiteralPath 'C:\Windows\Temp\metawork-guest-stage.txt'
 function Write-SerialEvidence($value) {
   # Independent of guest NIC drivers; never write credentials or answer media.
-  $serial = New-Object IO.Ports.SerialPort('COM1', 115200, 'None', 8, 'One')
+  $serial = $null
   try {
+    $serial = [IO.Ports.SerialPort]::new('COM1', 115200, [IO.Ports.Parity]::None, 8, [IO.Ports.StopBits]::One)
     $serial.WriteTimeout = 5000
     $serial.Open()
     $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($value | ConvertTo-Json -Compress)))
     $serial.WriteLine('MWCI_REPORT=' + $encoded)
-  } catch { } finally { $serial.Dispose() }
+  } catch { } finally { if ($null -ne $serial) { $serial.Dispose() } }
 }
 Write-SerialEvidence @{ scope = $report.scope; stage = 'first-logon' }
 try {
@@ -36,13 +38,19 @@ try {
     $stream = New-Object IO.MemoryStream
     try {
       $bitmap.Save($stream, [Drawing.Imaging.ImageFormat]::Png)
-      Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 -Method Post -Uri 'http://10.0.2.2:8765/@TOKEN@/screen' -ContentType 'image/png' -Body $stream.ToArray() | Out-Null
+      [IO.File]::WriteAllBytes('C:\Windows\Temp\metawork-guest-screen.png', $stream.ToArray())
+      $report.screenshotCaptured = $true
+      try {
+        Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 -Method Post -Uri 'http://10.0.2.2:8765/@TOKEN@/screen' -ContentType 'image/png' -Body $stream.ToArray() | Out-Null
+        $report.screenshotUploaded = $true
+      } catch { $report.screenshotUploaded = $false }
     } finally { $stream.Dispose() }
   } finally { $graphics.Dispose(); $bitmap.Dispose() }
 } catch {
   $report.passed = $false
   $report.error = $_.Exception.Message.Replace('@TOKEN@', '[redacted]')
 }
+[IO.File]::WriteAllText('C:\Windows\Temp\metawork-guest-result.json', ($report | ConvertTo-Json), [Text.Encoding]::UTF8)
 Write-SerialEvidence $report
 $body = [Text.Encoding]::UTF8.GetBytes(($report | ConvertTo-Json))
 for ($attempt = 0; $attempt -lt 12; $attempt++) {
