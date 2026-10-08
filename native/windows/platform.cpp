@@ -46,6 +46,9 @@ napi_value files(napi_env env, napi_callback_info info) {
         throw std::runtime_error("Root, relative pointer, target and directory flag required");
       replace_private_symlink(string_argument(env, arguments[0]), string_argument(env, arguments[1]),
         string_argument(env, arguments[2]), directory);
+    } else if (operation == "removePrivateFile") {
+      if (count != 2) throw std::runtime_error("Root and relative file required");
+      remove_private_file(string_argument(env, arguments[0]), string_argument(env, arguments[1]));
     } else if (operation == "readPrivateFile") {
       if (count != 2 && count != 3) throw std::runtime_error("Root and relative file required");
       const auto data = read_private_file(string_argument(env, arguments[0]), string_argument(env, arguments[1]), maximum);
@@ -68,7 +71,7 @@ napi_value files(napi_env env, napi_callback_info info) {
 }
 
 napi_value initialize(napi_env env, napi_value exports) {
-  for (const char* name : { "ensurePrivateDirectory", "readPrivateFile", "writePrivateFile", "flushPrivateFile", "flushPrivateDirectory", "replacePrivateSymlink" }) {
+  for (const char* name : { "ensurePrivateDirectory", "readPrivateFile", "writePrivateFile", "flushPrivateFile", "flushPrivateDirectory", "replacePrivateSymlink", "removePrivateFile" }) {
     napi_value function;
     if (napi_create_function(env, name, NAPI_AUTO_LENGTH, files, const_cast<char*>(name), &function) != napi_ok
       || napi_set_named_property(env, exports, name, function) != napi_ok) {

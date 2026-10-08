@@ -1,6 +1,6 @@
 import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createProductionSecretStore } from '../../src/configuration/production-secret-store.js';
 import { FileConfigurationRepository } from '../../src/configuration/file-configuration-repository.js';
@@ -11,6 +11,7 @@ import { FileConversationStore } from '../../src/session/file-conversation-store
 import { FileConversationPresentationStore } from '../../src/storage/file-conversation-presentation-store.js';
 import { createAccountEventJournal } from '../../src/server/account-event-journal.js';
 import { runMigrations } from '../../src/storage/migrations.js';
+import { ReleasePointerTransaction, type ReleasePointerName } from '../../src/installation/release-pointer-transaction.js';
 import { loadWindowsPrivateFiles, type WindowsPrivateFileRoot } from '../../src/platform/windows-private-files.js';
 import { readEndpointManifest, writeEndpointManifest, type EndpointManifest } from '../../src/server/server-endpoint-manifest.js';
 
@@ -113,5 +114,28 @@ describe.skipIf(process.platform !== 'win32')('native Windows credential and end
       try { expect((await restored.journal.snapshot('local-default', 'conv_windows')).lastSequence).toBe(1); }
       finally { await restored.stop(); }
     } finally { await runtime.stop(); db.close(); }
+  });
+  it('rolls back the complete Windows pointer set after failed candidate health', async () => {
+    const names: ReleasePointerName[] = ['database', 'configuration', 'generated', 'application'];
+    const paths = Object.fromEntries(names.map(name => [name, join(windows.root, 'pointers', name)])) as Record<ReleasePointerName, string>;
+    windows.files.ensurePrivateDirectory(join(windows.root, 'pointers'));
+    for (const version of ['old', 'new']) {
+      windows.files.ensurePrivateDirectory(join(windows.root, version));
+      windows.files.writePrivateFile(windows.root, `${version}\\database`, Buffer.from('database-fixture'));
+      for (const name of names.slice(1)) windows.files.ensurePrivateDirectory(join(windows.root, version, name));
+    }
+    const targets = (version: string) => Object.fromEntries(names.map(name => [name,
+      relative(dirname(paths[name]), join(windows.root, version, name))])) as Record<ReleasePointerName, string>;
+    for (const name of names) windows.files.replacePrivateSymlink(windows.root, relative(windows.root, paths[name]), targets('old')[name], name !== 'database');
+    const journalPath = join(windows.root, 'activation.json');
+    const transaction = new ReleasePointerTransaction({ paths, journalPath, windows,
+      healthCheck: async () => { throw new Error('candidate unhealthy'); } });
+    await expect(transaction.activate(targets('new'))).rejects.toThrow('candidate unhealthy');
+    const { readlink } = await import('node:fs/promises');
+    for (const name of names) expect(await readlink(paths[name])).toBe(targets('old')[name]);
+    expect(() => windows.files.readPrivateFile(windows.root, 'activation.json')).toThrow(expect.objectContaining({ code: 'ENOENT' }));
+    const committed = new ReleasePointerTransaction({ paths, journalPath, windows, healthCheck: async () => undefined });
+    await committed.activate(targets('new'));
+    expect(await committed.recover()).toEqual({ status: 'healthy' });
   });
 });

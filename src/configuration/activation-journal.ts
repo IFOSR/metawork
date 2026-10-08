@@ -48,9 +48,12 @@ export class ActivationJournalStore {
   }
 
   async clear(): Promise<void> {
+    if (this.windows) {
+      this.windows.files.removePrivateFile(this.windows.root, relative(this.windows.root, this.path));
+      return;
+    }
     await rm(this.path, { force: true });
-    if (this.windows) this.windows.files.flushPrivateDirectory(dirname(this.path));
-    else await syncDirectory(dirname(this.path));
+    await syncDirectory(dirname(this.path));
   }
 
   private async write(record: ActivationJournalRecord): Promise<void> {

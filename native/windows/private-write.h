@@ -52,6 +52,26 @@ void flush_private_path(const std::wstring& path, bool directory) {
   require(FlushFileBuffers(file.get()) != FALSE, "flush private path");
 }
 
+void remove_private_file(const std::wstring& root, const std::wstring& relative) {
+  assert_local_path(root);
+  require(!relative.empty() && relative.front() != L'\\'
+    && relative.find_first_of(L"/:\0", 0, 3) == std::wstring::npos, "relative private file required");
+  const auto path = root + L"\\" + relative;
+  assert_local_path(path);
+  std::vector<std::unique_ptr<Handle>> parents;
+  for (size_t end = path.find(L'\\', 3); end != std::wstring::npos; end = path.find(L'\\', end + 1))
+    parents.push_back(pin_directory(path.substr(0, end), end >= root.size()));
+  Handle file(CreateFileW(path.c_str(), DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES,
+    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+  if (file.get() == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND) return;
+  require(file.get() != INVALID_HANDLE_VALUE, "open private file for removal");
+  inspect_private_file(file.get(), false);
+  FILE_DISPOSITION_INFO_EX disposition{ FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS };
+  require(SetFileInformationByHandle(file.get(), FileDispositionInfoEx, &disposition, sizeof(disposition)) != FALSE,
+    "remove private file");
+  flush_private_path(path.substr(0, path.rfind(L'\\')), true);
+}
+
 void write_private_file(const std::wstring& root, const std::wstring& relative_path, const BYTE* bytes, size_t size, size_t maximum = 65536) {
   assert_local_path(root);
   require(!relative_path.empty() && relative_path.front() != L'\\'

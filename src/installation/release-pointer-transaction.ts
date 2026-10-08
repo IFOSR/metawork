@@ -8,9 +8,11 @@ import {
   rename,
   rm,
   symlink,
+  stat,
   writeFile,
 } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
+import { writeWindowsPrivateJson, type WindowsPrivateFileRoot } from '../platform/windows-private-files.js';
 
 export type ReleasePointerName =
   | 'database'
@@ -33,6 +35,7 @@ export class ReleasePointerTransaction {
     beforeRollback?: (journal: ReleaseActivationJournal) => Promise<void>;
     afterSwitch?: (name: ReleasePointerName) => Promise<void>;
     healthCheck(): Promise<void>;
+    windows?: WindowsPrivateFileRoot;
   }) {}
 
   async activate(
@@ -51,7 +54,7 @@ export class ReleasePointerTransaction {
     await this.writeJournal(journal);
     try {
       for (const name of SWITCH_ORDER) {
-        await replaceSymlink(this.dependencies.paths[name], candidateTargets[name]);
+        await replaceSymlink(this.dependencies.paths[name], candidateTargets[name], this.dependencies.windows);
         switched.push(name);
         await this.dependencies.afterSwitch?.(name);
       }
@@ -73,7 +76,7 @@ export class ReleasePointerTransaction {
       const rollbackErrors: unknown[] = [];
       for (const name of switched.reverse()) {
         try {
-          await replaceSymlink(this.dependencies.paths[name], previousTargets[name]);
+          await replaceSymlink(this.dependencies.paths[name], previousTargets[name], this.dependencies.windows);
         } catch (rollbackError) {
           rollbackErrors.push(rollbackError);
         }
@@ -98,7 +101,7 @@ export class ReleasePointerTransaction {
     if (journal.phase === 'prepared') {
       await this.dependencies.beforeRollback?.(journal);
       for (const name of SWITCH_ORDER) {
-        await replaceSymlink(this.dependencies.paths[name], journal.previousTargets[name]);
+        await replaceSymlink(this.dependencies.paths[name], journal.previousTargets[name], this.dependencies.windows);
       }
       await this.clearJournal();
       return { status: 'rolled_back' };
@@ -115,6 +118,10 @@ export class ReleasePointerTransaction {
   private async writeJournal(journal: ReleaseActivationJournal): Promise<void> {
     if (!this.dependencies.journalPath) return;
     const path = this.dependencies.journalPath;
+    if (this.dependencies.windows) {
+      writeWindowsPrivateJson(this.dependencies.windows, path, journal);
+      return;
+    }
     const parent = dirname(path);
     await mkdir(parent, { recursive: true, mode: 0o700 });
     const temporary = `${path}.tmp-${randomUUID()}`;
@@ -134,17 +141,22 @@ export class ReleasePointerTransaction {
 
   private async readJournal(): Promise<ReleaseActivationJournal | null> {
     if (!this.dependencies.journalPath) return null;
-    const present = await readFile(this.dependencies.journalPath, 'utf8')
+    const present = await readJournalFile(this.dependencies.journalPath, this.dependencies.windows)
       .catch((error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOENT') return null;
         throw error;
       });
     if (present === null) return null;
-    return readReleaseActivationJournal(this.dependencies.journalPath);
+    return readReleaseActivationJournal(this.dependencies.journalPath, this.dependencies.windows);
   }
 
   private async clearJournal(): Promise<void> {
     if (this.dependencies.journalPath) {
+      if (this.dependencies.windows) {
+        this.dependencies.windows.files.removePrivateFile(this.dependencies.windows.root,
+          relative(this.dependencies.windows.root, this.dependencies.journalPath));
+        return;
+      }
       await rm(this.dependencies.journalPath, { force: true });
     }
   }
@@ -164,6 +176,7 @@ export async function recoverPreparedReleaseActivations(
   journalDirectory: string,
   paths: Record<ReleasePointerName, string>,
   beforeRollback?: (journal: ReleaseActivationJournal, journalPath: string) => Promise<void>,
+  windows?: WindowsPrivateFileRoot,
 ): Promise<{ recoveredJournalPath: string | null }> {
   const names = await readdir(journalDirectory).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return [];
@@ -172,7 +185,7 @@ export async function recoverPreparedReleaseActivations(
   const prepared: string[] = [];
   for (const name of names.filter(name => name.endsWith('-activation.json')).sort()) {
     const journalPath = `${journalDirectory}/${name}`;
-    const journal = await readReleaseActivationJournal(journalPath);
+    const journal = await readReleaseActivationJournal(journalPath, windows);
     if (journal.phase === 'prepared') prepared.push(journalPath);
   }
   if (prepared.length > 1) {
@@ -185,6 +198,7 @@ export async function recoverPreparedReleaseActivations(
   await new ReleasePointerTransaction({
     paths,
     journalPath,
+    windows,
     beforeRollback: journal => beforeRollback?.(journal, journalPath) ?? Promise.resolve(),
     healthCheck: async () => undefined,
   }).recover();
@@ -193,8 +207,9 @@ export async function recoverPreparedReleaseActivations(
 
 export async function readReleaseActivationJournal(
   path: string,
+  windows?: WindowsPrivateFileRoot,
 ): Promise<ReleaseActivationJournal> {
-  const value = JSON.parse(await readFile(path, 'utf8')) as ReleaseActivationJournal;
+  const value = JSON.parse(await readJournalFile(path, windows)) as ReleaseActivationJournal;
   if (
     value.schemaVersion !== 1
     || (value.phase !== 'prepared' && value.phase !== 'committed')
@@ -213,8 +228,18 @@ async function readTargets(
   return Object.fromEntries(entries) as Record<ReleasePointerName, string>;
 }
 
-async function replaceSymlink(path: string, target: string): Promise<void> {
+async function readJournalFile(path: string, windows?: WindowsPrivateFileRoot): Promise<string> {
+  return windows ? windows.files.readPrivateFile(windows.root, relative(windows.root, path)).toString('utf8') : readFile(path, 'utf8');
+}
+
+async function replaceSymlink(path: string, target: string, windows?: WindowsPrivateFileRoot): Promise<void> {
   const parent = dirname(path);
+  if (windows) {
+    windows.files.ensurePrivateDirectory(parent);
+    windows.files.replacePrivateSymlink(windows.root, relative(windows.root, path), target,
+      (await stat(resolve(parent, target))).isDirectory());
+    return;
+  }
   await mkdir(parent, { recursive: true, mode: 0o700 });
   const temporary = `${path}.next-${randomUUID()}`;
   await symlink(target, temporary);

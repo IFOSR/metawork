@@ -102,6 +102,11 @@ export async function probePlatformFiles(addon, output, addonPath) {
     assert.throws(() => addon.replacePrivateSymlink(root, 'active', '..\\outside', true), /escapes/);
     assert.throws(() => addon.replacePrivateSymlink(root, 'target', 'second\\value', false), /symbolic link/);
     assert.equal(addon.readPrivateFile(root, 'target').toString(), 'retained');
+    addon.writePrivateFile(root, 'remove-me', Buffer.from('temporary'));
+    addon.removePrivateFile(root, 'remove-me');
+    assert.throws(() => addon.readPrivateFile(root, 'remove-me'), error => error.code === 'ENOENT');
+    addon.removePrivateFile(root, 'remove-me');
+    assert.throws(() => addon.removePrivateFile(root, 'active-file'), /reparse/);
     checks.push('atomic relative directory/file pointers preserve root boundary and refuse ordinary-file replacement');
     await link(join(root, 'target'), join(root, 'hard-link'));
     assert.throws(() => addon.writePrivateFile(root, 'hard-link', Buffer.from('denied')), /hard links/);

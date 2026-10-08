@@ -228,3 +228,7 @@ Server 账户迁移 manifest、Conversation metadata/pending-history、兼容 pr
 `8dc2a666` 的原生 flush 与普通用户写入已通过，但配置 revision 的 Node mkdir 子目录被 owner/ACL gate 拒绝。Windows 提权 token 的默认 owner 可为 Administrators，目录虽然继承封闭 ACL，仍不满足旧 exact-user owner 条件。按方案允许 SYSTEM/管理员管理权限，private-file owner 与 allow ACE 统一限定 current SID/SYSTEM/Administrators；不接受其他用户、宽泛组、null DACL 或 unsafe links，pipe peer SID 仍严格要求当前用户。新增 Node 创建子目录/文件的管理员与普通用户回归，复用已有跨账号拒绝；该修正待云端确认，未移除安全门。
 
 candidate 后续增加安装后的 DesktopServiceManager 自动启动/复用真实 Server、单次票据 HTTP 会话、普通浏览器未认证检查和正式 stop/drain 凭据/endpoint/runtime.lock 清理；使用无效域名假 provider key，不调用模型，真实 GUI/模型任务仍独立验收。错误证据只保留有界过滤后的 Server 错误栈，不上传登录 token。
+
+ReleasePointerTransaction 新增显式 Windows adapter，仍按 database/configuration/generated/application 顺序切换及原 journal/health/rollback 政策执行；用原生相对 symlink 替换和私有 journal 读写/删除。新增 guarded file removal，拒绝 reparse/hardlink，删除后刷新父目录。新增候选健康失败时完整指针回滚及提交后恢复测试；本机原指针事务/journal 6 项和类型检查通过。尚未在 SourceNativeUpdater/协调壳层全入口选用，待原生门与备份 companion 适配完成。
+
+`845e1aa8` 的 macOS arm64 和 Linux Docker 持久化回归通过；`41b1ff1c` 同两门通过，Intel 与原生尚在执行。`59a9be55` 两 macOS 架构已通过；均不是最新同提交发布矩阵，不能关闭 P4。
