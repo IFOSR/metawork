@@ -1,7 +1,7 @@
 # Windows Desktop 构建与交付方案
 
 - 计划日期：2026-10-07
-- 状态：In Progress / P0 管道/ACL 与 macOS 双架构基线已验证，Job 暂停竞态复验中；P1 平台适配进行中，原生文件 adapter 开始接入，尚未产出 Windows Desktop 安装包或发布
+- 状态：In Progress / P0 管道/ACL、Job 创建压力与 macOS 双架构基线已验证；P1 原生文件/管道 adapter 通过阶段检查，完整资源封装进行中，尚未产出 Windows Desktop 安装包或发布
 - 基线：`99442715e802c7ccdf09dd9a4f476a26f906a076`（当前 main，包含 v0.1.5 及后续 README 精简）
 - 分支：`feat/windows-desktop`
 - Worktree：`/Users/yuanjubian/program/metawork-windows-desktop`
@@ -111,6 +111,7 @@ Node `net` 公共 API 不提供完整 DACL/peer identity 控制。推荐封装�
 - 所有工具路径使用绝对路径、平台 path delimiter；处理 Windows `Path`/`PATH` 大小写重复，避免继承宿主全局 Node/Pi。
 - Pi 优先由内置 Node 加绝对 JS 入口启动；需要 `.cmd` 的入口使用受控 launcher，验证空格、中文和 shell 元字符参数，不将用户参数拼接为 shell 命令。
 - Git 携带 Windows 可重定位分发的完整运行依赖、Bash（Pi 如需）、模板及 license；Python/PDF、SQLite 和 Planner native deps 都来自 Windows 构建，不能复用 macOS node_modules。
+- x64 主程序/原生模块保持严格校验；Git Credential Manager 的 AnyCPU 程序集单独核验 CLR/IL。保留并实测 PortableGit 固定的 `usr/libexec/getprocaddr32.exe` WOW64 辅助进程，其余原生 x86 文件拒绝进入 Desktop payload；这不增加 32 位 Windows 支持或改变 MetaWork 的 Job 控制实现。
 - 保留各依赖许可及固定版本/校验值；普通用户端不执行 npm install 或下载编译工具。
 - ACL 从初始化到临时文件/原子替换全程有效，凭据不进入 renderer、日志、安装包或测试报告。
 

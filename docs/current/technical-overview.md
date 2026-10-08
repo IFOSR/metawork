@@ -1779,6 +1779,13 @@ gates pass; the ordinary Node pipe must not issue Desktop tickets. macOS retains
 its Unix transport. See ADR-0045 and the Windows implementation record for scope
 and actual validation results.
 
+The Windows payload inventory keeps required executables/addons at x64, checks
+CLR headers and IL-only metadata for Git Credential Manager's AnyCPU assemblies,
+and allows only PortableGit's fixed `usr/libexec/getprocaddr32.exe` as a WOW64
+subprocess. Other native x86 payload entries are rejected. Node, Git, Bash,
+Credential Manager, Pi and the documented helper each have native execution
+checks; Windows 11 clean-machine validation remains a separate gate.
+
 Desktop source checkpoint (2026-10-06): shared Web now consumes the optional
 native directory/save/menu/preferences adapter. Account-scoped bounded drafts,
 viewports and route hints persist independently of the HTTP port. The local

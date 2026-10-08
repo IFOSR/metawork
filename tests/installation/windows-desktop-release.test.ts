@@ -112,6 +112,16 @@ describe('Windows Desktop release admission', () => {
     await expect(verifyDesktopRelease(value.root, options)).rejects.toThrow('not executable');
   });
 
+  it('allows only the documented Git WOW64 helper as a native x86 subprocess', async () => {
+    const value = await fixture();
+    const bytes = managedPe(); bytes.writeUInt32LE(0, 152 + 96 + 14 * 8);
+    const allowed = join(value.payload, 'metawork/desktop-tools/git/usr/libexec/getprocaddr32.exe');
+    await mkdir(dirname(allowed), { recursive: true }); await writeFile(allowed, bytes); await value.seal();
+    await expect(verifyDesktopRelease(value.root, options)).resolves.toMatchObject({ platform: 'win32', arch: 'x64' });
+    await writeFile(join(value.payload, 'unexpected.exe'), bytes); await value.seal();
+    await expect(verifyDesktopRelease(value.root, options)).rejects.toThrow('Unapproved x86');
+  });
+
   it('rejects signed packages missing the native adapter or licenses and detects modifications', async () => {
     const value = await fixture();
     const native = join(value.payload, 'metawork/native/windows/metawork-platform.node');

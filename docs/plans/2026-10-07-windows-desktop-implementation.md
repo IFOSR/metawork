@@ -170,3 +170,7 @@ macOS payload 依赖检查与已有 Intel PDF 构建检查一致：读取 otool 
 公共 prepare-runtime 开始支持 Windows 原生 ZIP/平台工具路径和完整库存；提取前检查 Windows 路径/设备名/ADS，复制生产 adapter，验证内置 Node/SQLite/Git/Bash/Pi/Planner/Python，并要求明确内部构建策略。按已核实版本移除 Planner 两份 TUI 副本中的外平台预构建。新增只允许专用 CI 分支运行的 candidate 脚本：在一次性 checkout 中 prune 开发依赖，调用原有正式 Runtime/Planner packager，再用一次性测试密钥封装资源；私钥不上传，暂时只上传校验报告，不产生安装器或 Release。Windows 资源包实际封装尚待工具门通过。本地 release/归档校验 8 项、Desktop build 和 Root 类型检查通过。
 
 `99071a0b` 再次通过原生文件/管道/流/endpoint/偏好检查，工具失败定位为 Git Credential Manager 的 Atlassian.Bitbucket.dll（.NET AnyCPU）。inventory 新增 `pe-managed`，要求 PE32/I386 下有界且唯一映射的 CLR/BSJB metadata、ILONLY，拒绝原生入口和强制/偏好 32 位；固定必需原生工具仍要求 `pe-x64`，不能以 AnyCPU 替代 Node/Git/SQLite/MetaWork adapter。新增格式正负例和内置 Git Credential Manager 的实际 `--version`，后者待云端；本地 release 检查 9 项通过。普通用户套件增加同一生产管道探针，关闭原生连接时立即释放 I/O event handles，不等 JS GC。candidate channel 使用现有 manifest 的 preview 值，development 仍由独立签名 descriptor/编译策略决定。
+
+`d05e069b` 的标准用户生产管道及其他原生门通过，Credential Manager 实际启动通过，下一处完整性拦截为 PortableGit 的 `usr/libexec/getprocaddr32.exe`。核对 upstream getprocaddr.c：这是 MSYS 的 WOW64 helper，单参数形式只查询本进程导出函数地址，多参数形式才涉及目标 PID。保留完整工具依赖，只允许该固定 payload 路径为 `pe-x86`，增加单参数 ExitProcess 查询探测，不调用目标进程或注入模式；所有其他 x86 文件以及替换核心 x64 工具仍拒绝。格式测试本地 10 项通过，原生执行待云端。
+
+第三次 Windows 11 VM `37703046385` 仍于 45 分钟超时且最终黑屏、没有 guest report，尚不能判断登录/网卡情况。带串口回传和显示唤醒的 `37708656202` 已启动，保持环境验收未完成。

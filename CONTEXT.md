@@ -1083,6 +1083,12 @@ must neither advertise Desktop sessions nor issue tickets before the native
 identity/ACL gate is implemented and validated. macOS Unix behavior and the
 existing single-use ticket/HTTP proof remain authoritative.
 
+Windows Desktop inventory requires x64 primary executables and native modules.
+Git's pure-IL AnyCPU dependencies use a separate validated format; only the
+fixed PortableGit `usr/libexec/getprocaddr32.exe` subprocess is allowed as
+native x86 for WOW64 compatibility. No other x86 image can enter the Desktop
+payload, and the helper does not own MetaWork process or permission policy.
+
 Desktop source checkpoint (2026-10-06): shared Web now consumes the optional
 native directory/save/menu/preferences adapter. Account-scoped bounded drafts,
 viewports and route hints persist independently of the HTTP port. The local

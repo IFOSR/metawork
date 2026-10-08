@@ -85,3 +85,11 @@ are release gates. Source implementation, local smoke, signing/notarization and
 real-provider acceptance are recorded separately in the implementation log.
 No changes to Kernel policy, Task scheduling, public protocol v2 semantics or
 business database schema are authorized by this ADR.
+
+Windows x64 inventory distinguishes native x64 images from bounded, validated
+pure-IL AnyCPU assemblies supplied by Git Credential Manager. The only allowed
+native x86 image is PortableGit's fixed `usr/libexec/getprocaddr32.exe` helper,
+which MSYS uses for WOW64 compatibility; it remains an independent tool
+subprocess. Electron, Node, Git's primary entrypoint, SQLite and MetaWork's
+platform module must still be native x64. This does not add 32-bit Windows
+support or move process-control authority into a bundled Git helper.

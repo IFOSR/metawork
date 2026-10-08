@@ -67,16 +67,23 @@ try {
   if (gitVersion !== `git version ${manifest.git.version}`) throw new Error('Bundled Git version mismatch');
   const credentialManagerVersion = run(join(output, 'git/cmd/git.exe'), ['credential-manager', '--version'], { env: toolEnv });
   if (!credentialManagerVersion) throw new Error('Bundled managed Git Credential Manager did not load');
+  // MSYS uses the 32-bit helper for WOW64 process compatibility. The one-arg
+  // form only resolves a local exported function; no target PID or injection.
+  const wow64 = run(join(output, 'git/usr/libexec/getprocaddr32.exe'), ['ExitProcess'], { env: toolEnv });
+  if (!/^(?:0x)?[a-f0-9]+$/iu.test(wow64) || /^0+(?:x0+)?$/iu.test(wow64)) throw new Error('Git WOW64 helper did not load');
   const shellOutput = run(join(output, 'git/bin/bash.exe'), ['--noprofile', '--norc', '-c', 'printf metawork-bash-ok'], { env: toolEnv });
   if (shellOutput !== 'metawork-bash-ok') throw new Error('Bundled Bash failed');
   const piVersion = run(node, [join(executor, `node_modules/${manifest.pi.package}/dist/cli.js`), '--version'], { env: { ...toolEnv, PI_SKIP_VERSION_CHECK: '1' } });
   if (piVersion !== manifest.pi.version) throw new Error('Bundled Pi version mismatch');
   const files = await desktopInventory(output, 'win32');
+  for (const [path, file] of Object.entries(files)) {
+    if (file.format === 'pe-x86' && path !== 'git/usr/libexec/getprocaddr32.exe') throw new Error(`Unapproved x86 tool: ${path}`);
+  }
   for (const tool of ['node', 'git', 'executor']) {
     if (!Object.keys(files).some(path => path.startsWith(`${tool}/`) && /(?:^|\/)(?:licen[sc]e|copying|notice)[^/]*$/iu.test(path))) throw new Error(`Missing ${tool} licenses`);
   }
   await writeFile(join(output, 'tools-provenance.json'), JSON.stringify({ manifest, nodeFacts, gitVersion, piVersion, credentialManagerVersion,
-    bash: shellOutput, omittedPiTuiPrebuilds: omittedPrebuilds, fileCount: Object.keys(files).length,
+    bash: shellOutput, gitWow64HelperVerified: true, omittedPiTuiPrebuilds: omittedPrebuilds, fileCount: Object.keys(files).length,
     inventorySha256: createHash('sha256').update(JSON.stringify(files)).digest('hex') }, null, 2));
   process.stdout.write(`Verified Windows Desktop tools: ${output}\n`);
 } catch (error) {

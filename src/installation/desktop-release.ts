@@ -10,7 +10,7 @@ const pathSchema = z.string().min(1).max(1024).refine(value => !isAbsolute(value
   && !value.includes('\\') && !value.includes('\0'));
 const fileHashSchema = { sha256: z.string().regex(/^[a-f0-9]{64}$/u), size: z.number().int().nonnegative() };
 const darwinFileSchema = z.object({ ...fileHashSchema, executable: z.boolean() }).strict();
-const windowsFileSchema = z.object({ ...fileHashSchema, format: z.enum(['data', 'pe-x64', 'pe-managed']) }).strict();
+const windowsFileSchema = z.object({ ...fileHashSchema, format: z.enum(['data', 'pe-x64', 'pe-managed', 'pe-x86']) }).strict();
 const windowsPathSchema = pathSchema.refine(value => value.split('/').every(part =>
   !/[<>:"|?*\u0000-\u001f]/u.test(part) && !/[. ]$/u.test(part)
   && !/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/iu.test(part)));
@@ -104,6 +104,10 @@ export async function verifyDesktopRelease(resources: string, options: {
   const inventory = await desktopInventory(payload, release.platform);
   if (JSON.stringify(Object.keys(inventory).sort()) !== JSON.stringify(Object.keys(release.files).sort())) throw new Error('Desktop payload file set mismatch');
   for (const [path, actual] of Object.entries(inventory)) {
+    if ('format' in actual && actual.format === 'pe-x86'
+      && path !== 'metawork/desktop-tools/git/usr/libexec/getprocaddr32.exe') {
+      throw new Error('Unapproved x86 Desktop dependency');
+    }
     const expected = release.files[path]!;
     if (JSON.stringify(Object.entries(actual).sort()) !== JSON.stringify(Object.entries(expected).sort())) {
       throw new Error('Desktop payload integrity mismatch');
@@ -139,7 +143,7 @@ export async function verifyDesktopRelease(resources: string, options: {
 }
 
 /** PE header checks establish file format/architecture, not runtime dependency closure. */
-async function windowsFileFormat(path: string, size: number): Promise<'data' | 'pe-x64' | 'pe-managed'> {
+async function windowsFileFormat(path: string, size: number): Promise<'data' | 'pe-x64' | 'pe-managed' | 'pe-x86'> {
   const handle = await open(path, 'r');
   try {
     const dos = Buffer.alloc(64);
@@ -166,6 +170,7 @@ async function windowsFileFormat(path: string, size: number): Promise<'data' | '
     if (pe.readUInt16LE(4) === 0x14c && pe.readUInt16LE(24) === 0x10b && optionalSize >= 224) {
       const headers = Buffer.alloc(optionalSize + sections * 40);
       await handle.read(headers, 0, headers.length, offset + 24);
+      if (headers.readUInt32LE(92) < 15 || headers.readUInt32LE(96 + 14 * 8) === 0) return 'pe-x86';
       const mapRva = (rva: number, length: number): number | undefined => {
         if (!rva || !length) return undefined;
         const matches: number[] = [];
