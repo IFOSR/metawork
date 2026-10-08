@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { desktopBridge } from '../platform/services';
 import type {
   AttachmentMetadata,
@@ -106,6 +106,15 @@ export function WorkspaceShell({
   onRemoveAttachment: (attachmentId: string) => void;
 }) {
   const [sidebarHidden, setSidebarHidden] = useState(() => Boolean(desktopBridge() && window.matchMedia('(max-width: 1000px)').matches));
+  const shellRef = useRef<HTMLDivElement>(null);
+  const [focusSearch, setFocusSearch] = useState(false);
+  useLayoutEffect(() => {
+    if (!focusSearch || sidebarHidden) return;
+    // Focus only after React commits the visible sidebar. An animation frame
+    // can run before that commit and silently focus a display:none input.
+    shellRef.current?.querySelector<HTMLInputElement>('.workspace-sidebar input')?.focus();
+    setFocusSearch(false);
+  }, [focusSearch, sidebarHidden]);
   useEffect(() => {
     if (!desktopBridge()) return;
     const media = window.matchMedia('(max-width: 1000px)');
@@ -119,11 +128,12 @@ export function WorkspaceShell({
     if (action === 'toggle-sidebar') setSidebarHidden(value => !value);
     if (action === 'search') {
       setSidebarHidden(false);
-      requestAnimationFrame(() => document.querySelector<HTMLInputElement>('.workspace-sidebar input')?.focus());
+      setFocusSearch(true);
     }
   }), [onNewSession, onSettings, newWorkBlocked, workspaceSwitching]);
   return (
     <div
+      ref={shellRef}
       className="workspace-shell"
       data-sidebar-hidden={sidebarHidden || undefined}
       data-preview-open={previewOpen || undefined}

@@ -88,10 +88,12 @@ try {
     const win = BrowserWindow.getAllWindows()[0]; win.webContents.setZoomFactor(1); win.setSize(1440, 900);
   });
   await page.waitForFunction(() => !document.querySelector('.workspace-shell[data-sidebar-hidden]'));
-  await app.evaluate(({ Menu }) => Menu.getApplicationMenu().items.find(item => ['显示', 'View'].includes(item.label)).submenu.items.find(item => ['显示／隐藏侧栏', 'Show/Hide Sidebar'].includes(item.label)).click());
-  await page.locator('.workspace-shell[data-sidebar-hidden]').waitFor();
-  await app.evaluate(({ Menu }) => Menu.getApplicationMenu().items.find(item => ['显示', 'View'].includes(item.label)).submenu.items.find(item => ['搜索对话', 'Search Conversations'].includes(item.label)).click());
-  await page.waitForFunction(() => document.activeElement?.tagName === 'INPUT');
+  for (let iteration = 0; iteration < 3; iteration++) {
+    await app.evaluate(({ Menu }) => Menu.getApplicationMenu().items.find(item => ['显示', 'View'].includes(item.label)).submenu.items.find(item => ['显示／隐藏侧栏', 'Show/Hide Sidebar'].includes(item.label)).click());
+    await page.locator('.workspace-shell[data-sidebar-hidden]').waitFor();
+    await app.evaluate(({ Menu }) => Menu.getApplicationMenu().items.find(item => ['显示', 'View'].includes(item.label)).submenu.items.find(item => ['搜索对话', 'Search Conversations'].includes(item.label)).click());
+    await page.waitForFunction(() => document.activeElement?.matches('.workspace-sidebar input'));
+  }
   for (let i = 0; i < 10; i++) await page.evaluate(() => window.metaworkDesktop.reconnect());
   assert.equal(JSON.parse(await readFile(join(root, 'server-endpoint.json'), 'utf8')).pid, pid);
   await app.evaluate(async ({ BrowserWindow }) => {
@@ -118,5 +120,15 @@ try {
     zoom: 2, rendererRecovery: true, nativeFilesWithDialogAndHttpFixtures: true, reconnects: 10, errors }, null, 2));
   assert.deepEqual(errors, []);
   process.stdout.write(`Electron production-assets smoke passed; ready=${readyMs}ms; Server PID=${pid}.\n`);
+} catch (error) {
+  await mkdir(join(root, 'evidence'), { recursive: true });
+  const page = await app.firstWindow().catch(() => null);
+  await page?.screenshot({ path: join(root, 'desktop-failure.png') }).catch(() => undefined);
+  await writeFile(join(root, 'evidence/electron-failure.json'), JSON.stringify({
+    message: error.message, url: page?.url(), errors,
+    state: await page?.evaluate(() => ({ width: innerWidth, focusedTag: document.activeElement?.tagName,
+      sidebarHidden: document.querySelector('.workspace-shell')?.hasAttribute('data-sidebar-hidden') })).catch(() => null),
+  }, null, 2));
+  throw error;
 } finally { await app.close(); }
 if (pid) { process.kill(pid, 0); process.stdout.write('Server survived Electron exit.\n'); }

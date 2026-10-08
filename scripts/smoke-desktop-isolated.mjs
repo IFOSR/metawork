@@ -48,12 +48,14 @@ try {
   delete preparationEnvironment.ANYFUSION_INSTALL_ROOT;
   await run(['scripts/dev-desktop.mjs', '--prepare-only', '--production-assets'], preparationEnvironment);
   await run(['apps/desktop/tests/electron-smoke.mjs']);
-  await cp(join(root, 'evidence'), join(evidence, 'electron'), { recursive: true });
-  for (const name of ['desktop-1440.png', 'desktop-1100.png', 'desktop-900.png', 'desktop-200-percent.png']) {
-    await cp(join(root, name), join(evidence, name));
-  }
   passed = true;
 } finally {
+  // Preserve the failed stage too; success-only evidence hid Intel focus failures.
+  for (const name of ['evidence', 'desktop-1440.png', 'desktop-1100.png', 'desktop-900.png', 'desktop-200-percent.png', 'desktop-failure.png']) {
+    await cp(join(root, name), join(evidence, name === 'evidence' ? 'electron' : name), { recursive: true }).catch(error => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+  }
   try {
     const manifest = await readFile(join(root, 'server-endpoint.json'), 'utf8').catch(error => {
       if (error.code === 'ENOENT') return null;

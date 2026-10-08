@@ -188,3 +188,7 @@ Gateway 新增显式原生模块入口；只有实际 WindowsPipeStream 才能�
 `9d8bad0d` 已通过完整 payload 的本机工具调用及二进制库存，最终 manifest schema 拒绝默认相对 artifact URL。CI candidate 现显式传入本地 file URL，正式发布 packager 默认行为未改；资源包门仍待通过。凭据 store 和 endpoint publisher 新增显式 native private-root 参数，保留原 schema、命名空间及原子替换语义。只有已固定/校验父目录后的最终文件确实不存在，原生 read 才返回 ENOENT；ACL、链接及祖先错误不能被当作空凭据。macOS 19 项凭据/endpoint 测试和 Root/Desktop 类型检查通过；Windows 原生 store 测试与生产装配待完成。
 
 `294cc6bf` 的原生 Gateway/discovery 连续、并发、PID/manifest 负例全部通过；跨账号套件在前置 SMB 正对照超时，尚未执行到 Gateway，未据此启用生产入口。正对照改为有界异步读写并增加阶段诊断，普通账号正例/跨账号负例提前独立执行。Windows Desktop 安装 helper 先用已验证 payload 的模块保护 root，再创建锁和凭据；正式 staging 携带模块，初次指针创建按真实目标明确文件/目录 symlink。macOS 安装相关 8 项测试和类型检查通过。candidate 后续新增正式隔离安装、原生凭据读取及真实 SQLite integrity 检查，使用固定无效域名/假 key，不调用模型；该门待 Windows 实测。
+
+### Intel Desktop 回归发现与修复（2026-10-08）
+
+`d6464050` 的 Intel 原有模块检查/Gateway smoke 通过，但真实 Electron 在隐藏侧栏后菜单“搜索对话”聚焦超时（electron-smoke.mjs:94），该候选不能标为 macOS 全通过。原实现 setSidebarHidden 后用 requestAnimationFrame 聚焦，回调可能早于 React 提交可见 DOM，导致 display:none 输入框拒绝焦点。改为受请求状态控制的 useLayoutEffect，在同一组件可见状态提交后聚焦；普通浏览器未增加 native menu。实际 smoke 连续三次验证隐藏→搜索，失败时也保留界面和安全诊断。本地 arm64 构建及真实 Electron 通过，Server 退出存活检查通过，证据 `.tmp/windows-desktop-validation/macos-arm64-1791423608199`；Intel 云端复验待完成。隔离安装检查使用现有打包后的 platform-tools，不能假定 tsup 分发保留 src 目录结构。

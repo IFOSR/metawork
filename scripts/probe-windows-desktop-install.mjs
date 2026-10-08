@@ -13,7 +13,7 @@ const installRoot = resolve(installArg);
 const child = relative(resolve(process.env.RUNNER_TEMP), installRoot);
 if (!child || child.startsWith('..') || isAbsolute(child)) throw new Error('Installation must be inside runner temporary storage');
 const payload = join(resources, 'payload/metawork');
-const { desktopProcessEnvironment, desktopToolPaths } = await import(pathToFileURL(join(payload, 'dist/installation/desktop-platform.js')));
+const { desktopProcessEnvironment, desktopToolPaths } = await import('../apps/desktop/dist/platform-tools.mjs');
 const environment = desktopProcessEnvironment({ releaseRoot: payload, nodePath: desktopToolPaths(payload).node, env: process.env });
 for (const key of Object.keys(process.env)) if (key.toUpperCase() === 'PATH') delete process.env[key];
 Object.assign(process.env, environment, { METAWORK_INSTALL_ROOT: installRoot, ANYFUSION_INSTALL_ROOT: installRoot,
@@ -32,9 +32,7 @@ const native = require(join(current, 'native/windows/metawork-platform.node'));
 const credentials = JSON.parse(native.readPrivateFile(installRoot, 'credentials.json').toString());
 assert.equal(credentials.providers.provider, 'isolated-install-fixture');
 const Database = require('better-sqlite3');
-const { resolveAccountPaths } = await import(pathToFileURL(join(current, 'dist/account/account-paths.js')));
-const { LOCAL_DEFAULT_ACCOUNT_ID } = await import(pathToFileURL(join(current, 'dist/account/account-id.js')));
-const database = new Database(resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, installRoot).database, { readonly: true, fileMustExist: true });
+const database = new Database(join(installRoot, 'accounts/local-default/data/anyfusion.db'), { readonly: true, fileMustExist: true });
 try { assert.deepEqual(database.pragma('integrity_check'), [{ integrity_check: 'ok' }]); }
 finally { database.close(); }
 await writeFile(evidenceArg, JSON.stringify({ passed: true, scope: 'formal-isolated-windows-installation',
