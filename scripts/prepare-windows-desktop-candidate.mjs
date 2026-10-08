@@ -2,7 +2,7 @@
 // combined Desktop resource tree. This creates no installer or release.
 import { generateKeyPairSync, createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -37,6 +37,7 @@ try {
   }
   const artifacts = join(candidate, 'archives');
   run(node, ['scripts/prepare-windows-pageant.mjs', join(source, 'planner/AnyFusion-Pi/node_modules/ssh2')]);
+  await cp(join(source, 'planner/AnyFusion-Pi/node_modules/ssh2/util/metawork-x64-build.json'), join(evidence, 'pageant-x64.json'));
   run(node, ['scripts/package-release.mjs', '--out-dir', artifacts,
     '--artifact-base-url', pathToFileURL(artifacts).href,
     '--release-id', `0.1.5-windows-ci-${sourceCommit.slice(0, 12)}`, '--channel', 'preview',

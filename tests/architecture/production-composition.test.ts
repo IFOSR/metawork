@@ -44,7 +44,7 @@ describe('production composition root', () => {
     const administration = index.slice(adminStart, adminEnd);
 
     expect(index).toContain('resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root)');
-    expect(administration).toMatch(/new FileConfigurationRepository\(\s*accountPaths\.config,\s*\)/u);
+    expect(administration).toMatch(/new FileConfigurationRepository\(\s*accountPaths\.config,\s*windows,\s*\)/u);
     expect(administration).toContain('secretsRoot: accountPaths.secrets');
     expect(administration).toContain("resolve(accountPaths.generated, 'agent-runtime')");
     expect(administration).not.toContain('paths.configurationRevisions');
