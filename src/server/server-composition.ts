@@ -888,7 +888,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     ?? resolveLocalEndpointPath(metaclawDir, 'anyfusion-planner.sock')).trim();
   process.env.METACLAW_PLANNER_HOST_SOCKET = plannerHostSocketPath;
   process.env.METACLAW_PLANNER_TUI_SOCKET = plannerHostSocketPath;
-  const plannerHost = new PlannerHostBridge({ socketPath: plannerHostSocketPath, logger: console });
+  const plannerHost = new PlannerHostBridge({ socketPath: plannerHostSocketPath, windowsPipeModulePath, logger: console });
   const plannerSupervisor = new PlannerProcessSupervisor({
     windowsSpawn,
     socketPath: plannerHostSocketPath,

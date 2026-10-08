@@ -984,7 +984,9 @@ owned and does not depend on open Conversations; expired Gateway cursors reset
 to a compacted current/terminal snapshot. Planner Host startup probes live
 sockets before reclaiming a confirmed stale socket and records the created
 device/inode so shutdown cannot unlink a replacement. Planner RPC preserves
-structured transport uncertainty and partial tool audit.
+structured transport uncertainty and partial tool audit. With the installed Windows
+platform module, Planner Host uses the same current-user-restricted, first-instance
+native pipe listener as Gateway; the MCP process retains the existing JSONL protocol.
 
 ### Task lifecycle state convergence (2026-09-25)
 

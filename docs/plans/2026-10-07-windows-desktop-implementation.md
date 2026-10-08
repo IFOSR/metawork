@@ -270,3 +270,7 @@ Gateway journal backup/restore 显式接收 Windows 私有文件 adapter，保�
 Windows 11 首次登录先保存本地阶段、截图与结构化回执，串口/HTTP 无响应时在 VM 停止后只读提取有界证据；网络上传失败独立记录，不等同于 OS 验收失败。通过仍要求 Windows 11 Client、Secure Boot、TPM、交互桌面与实际截图，缺失不通过。磁盘、答案文件与临时凭据不上传。
 
 `172c48fe` / run `37722602210` 全矩阵通过（Windows 原生 Job/companion/正式安装、macOS 双架构真实 Electron 和 Docker）；先前 carrier 异常文本失败未在该提交重现，仍保留严格断言。新生产 injection 提交 `813d5056` 正在云端验证，本机 Desktop 类型、脚本语法、差异检查通过。
+
+### Planner Host 原生管道接入（2026-10-08，Windows 待复验）
+
+安装内 Server 为 Planner Host 注入与 Gateway 相同的受限原生 listener，保留现有 MCP/JSONL 协议、Session 提案校验与 Unix socket 身份回收。新连接在 stop 后拒绝，管道抢占必须失败。Windows 原生测试覆盖公共 Node net 客户端握手/响应、RPC 权限边界、关闭及重新绑定；双账号/SMB probe 扩展到实际 Planner Host。macOS 上原有 Planner Host、Server composition、客户端 ownership 20 项及 Root 类型检查通过；不据此标记 Windows 原生或真实模型任务通过。

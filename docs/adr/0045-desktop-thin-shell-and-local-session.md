@@ -78,6 +78,10 @@ null DACLs and unsafe links remain rejected. Pipe peer authentication continues
 to require the exact current-user SID; file administration grants do not change
 that identity contract.
 
+Server composition also injects the restricted native listener into Planner Host.
+It retains the existing JSONL proposal protocol and Application-Shell ownership;
+pipe occupancy fails closed, and other users/remote clients cannot connect.
+
 The same platform boundary provides owned process Jobs and byte streams for
 Planner and Executor adapters. Server composition injects the installed native
 spawner into those lifecycle owners; Kernel policies and cancellation fences

@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, rename, unlink } from 'node:fs/promises';
-import { createConnection, createServer, type Server, type Socket } from 'node:net';
+import { createConnection, createServer } from 'node:net';
 import { basename, dirname, join } from 'node:path';
+import type { Duplex } from 'node:stream';
+import { loadWindowsPipes, WindowsPipeServer } from '../platform/windows-pipe.js';
 import type { CommandCompletion } from '../commands/catalog.js';
 import type {
   ExecutorManualProposalResult,
@@ -48,11 +50,19 @@ export interface PlannerHostBridgeSession {
 
 export interface PlannerHostBridgeDeps {
   socketPath: string;
+  windowsPipeModulePath?: string;
   logger?: Pick<Console, 'warn'>;
 }
 
 type BridgeMessage = PlannerHostMessage<PlannerTuiSnapshot, PlannerTuiExecutorResult, PlannerTuiPermissionRequest>;
 type BoundClient = { sessionId: string; mode: 'interactive' | 'rpc' };
+interface HostListener {
+  listen(path: string, callback: () => void): unknown;
+  close(callback: (error?: Error) => void): unknown;
+  once(event: 'error', callback: (error: Error) => void): unknown;
+  off(event: 'error', callback: (error: Error) => void): unknown;
+}
+
 type SocketIdentity = { dev: bigint; ino: bigint };
 const TRUNCATED_REPORT_SUFFIX = '\n\n> Executor report truncated to fit the 1 MiB Planner Host frame.';
 const SOCKET_PROBE_TIMEOUT_MS = 250;
@@ -65,14 +75,15 @@ const SOCKET_PROBE_TIMEOUT_MS = 250;
  * account mutation is serialized by AccountKernelCoordinator.
  */
 export class PlannerHostBridge {
-  private server: Server | null = null;
+  private server: HostListener | null = null;
+  private stopping = false;
   private ownedSocketIdentity: SocketIdentity | null = null;
-  private readonly clients = new Set<Socket>();
-  private readonly bindings = new Map<Socket, BoundClient>();
+  private readonly clients = new Set<Duplex>();
+  private readonly bindings = new Map<Duplex, BoundClient>();
   private readonly sessions = new Map<string, PlannerHostBridgeSession>();
-  private readonly subscriberCleanup = new Map<Socket, () => void>();
-  private readonly sentExecutorResultIds = new Map<Socket, Set<string>>();
-  private readonly sentPermissionRequests = new Map<Socket, Map<string, PlannerTuiPermissionRequest>>();
+  private readonly subscriberCleanup = new Map<Duplex, () => void>();
+  private readonly sentExecutorResultIds = new Map<Duplex, Set<string>>();
+  private readonly sentPermissionRequests = new Map<Duplex, Map<string, PlannerTuiPermissionRequest>>();
   private readonly permissionClosureHints = new Map<string, 'resolved'>();
   private readonly submissionQueues = new Map<string, Promise<void>>();
 
@@ -89,24 +100,27 @@ export class PlannerHostBridge {
 
   async start(): Promise<void> {
     if (this.server) return;
+    this.stopping = false;
     const namedPipe = isNamedPipePath(this.deps.socketPath);
     if (!namedPipe) {
       await mkdir(dirname(this.deps.socketPath), { recursive: true });
       await this.reclaimStaleSocket();
     }
-    const server = createServer(socket => this.handleConnection(socket));
+    let server: HostListener;
+    if (this.deps.windowsPipeModulePath) {
+      if (!namedPipe) throw new Error('Windows Planner Host requires a named pipe');
+      const native = new WindowsPipeServer(loadWindowsPipes(this.deps.windowsPipeModulePath));
+      native.on('connection', (socket: Duplex) => this.handleConnection(socket));
+      server = native;
+    } else server = createServer(socket => this.handleConnection(socket));
     await new Promise<void>((resolve, reject) => {
-      const onError = (error: Error) => {
-        server.off('listening', onListening);
-        reject(error);
-      };
+      const onError = (error: Error) => reject(error);
       const onListening = () => {
         server.off('error', onError);
         resolve();
       };
       server.once('error', onError);
-      server.once('listening', onListening);
-      server.listen(this.deps.socketPath);
+      server.listen(this.deps.socketPath, onListening);
     });
     this.server = server;
     if (namedPipe) return;
@@ -126,6 +140,7 @@ export class PlannerHostBridge {
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
     for (const client of this.clients) client.destroy();
     this.clients.clear();
     this.bindings.clear();
@@ -143,7 +158,8 @@ export class PlannerHostBridge {
     }
   }
 
-  private handleConnection(socket: Socket): void {
+  private handleConnection(socket: Duplex): void {
+    if (this.stopping) { socket.destroy(); return; }
     this.clients.add(socket);
     socket.setEncoding('utf8');
     let buffer = '';
@@ -166,7 +182,7 @@ export class PlannerHostBridge {
     socket.on('close', () => this.removeClient(socket));
   }
 
-  private handleLine(socket: Socket, line: string): void {
+  private handleLine(socket: Duplex, line: string): void {
     let request: PlannerHostRequest;
     try {
       const value: unknown = JSON.parse(line);
@@ -264,7 +280,7 @@ export class PlannerHostBridge {
   }
 
   private async submitCommand(
-    socket: Socket,
+    socket: Duplex,
     session: PlannerHostBridgeSession,
     request: Extract<PlannerHostRequest, { type: 'command_submit' }>,
   ): Promise<void> {
@@ -283,7 +299,7 @@ export class PlannerHostBridge {
   }
 
   private async submitProposal(
-    socket: Socket,
+    socket: Duplex,
     session: PlannerHostBridgeSession,
     request: Extract<PlannerHostRequest, { type: 'proposal_submit' }>,
     runtimeMode: 'interactive' | 'rpc',
@@ -325,7 +341,7 @@ export class PlannerHostBridge {
   }
 
   private async resolvePermission(
-    socket: Socket,
+    socket: Duplex,
     session: PlannerHostBridgeSession,
     request: Extract<PlannerHostRequest, { type: 'permission_resolve' }>,
   ): Promise<void> {
@@ -338,7 +354,7 @@ export class PlannerHostBridge {
     }
   }
 
-  private subscribeSocket(socket: Socket, session: PlannerHostBridgeSession): void {
+  private subscribeSocket(socket: Duplex, session: PlannerHostBridgeSession): void {
     this.subscriberCleanup.get(socket)?.();
     const publish = () => {
       this.write(socket, this.snapshotMessage(null, session));
@@ -359,7 +375,7 @@ export class PlannerHostBridge {
     };
   }
 
-  private removeClient(socket: Socket): void {
+  private removeClient(socket: Duplex): void {
     this.clients.delete(socket);
     this.bindings.delete(socket);
     this.subscriberCleanup.get(socket)?.();
@@ -368,7 +384,7 @@ export class PlannerHostBridge {
     this.sentPermissionRequests.delete(socket);
   }
 
-  private writeExecutorResults(socket: Socket, session: PlannerHostBridgeSession): void {
+  private writeExecutorResults(socket: Duplex, session: PlannerHostBridgeSession): void {
     const sent = this.sentExecutorResultIds.get(socket) ?? new Set<string>();
     this.sentExecutorResultIds.set(socket, sent);
     for (const result of session.getPlannerTuiExecutorResults()) {
@@ -378,7 +394,7 @@ export class PlannerHostBridge {
     }
   }
 
-  private writePermissionRequests(socket: Socket, session: PlannerHostBridgeSession): void {
+  private writePermissionRequests(socket: Duplex, session: PlannerHostBridgeSession): void {
     if (this.bindings.get(socket)?.mode !== 'interactive') return;
     const sent = this.sentPermissionRequests.get(socket) ?? new Map<string, PlannerTuiPermissionRequest>();
     this.sentPermissionRequests.set(socket, sent);
@@ -442,7 +458,7 @@ export class PlannerHostBridge {
     };
   }
 
-  private write(socket: Socket, message: BridgeMessage): void {
+  private write(socket: Duplex, message: BridgeMessage): void {
     if (!socket.destroyed) socket.write(`${JSON.stringify(message)}\n`);
   }
 
@@ -497,7 +513,7 @@ export class PlannerHostBridge {
     });
   }
 
-  private async closeOwnedServer(server: Server, owned: SocketIdentity | null): Promise<void> {
+  private async closeOwnedServer(server: HostListener, owned: SocketIdentity | null): Promise<void> {
     if (isNamedPipePath(this.deps.socketPath)) {
       await new Promise<void>((resolve, reject) => {
         server.close(error => error ? reject(error) : resolve());

@@ -2,7 +2,8 @@ import { once } from 'node:events';
 import { lstat, unlink } from 'node:fs/promises';
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PlannerProposalResult, PlannerProposalSubmission } from '../../src/planning/planner-proposal.js';
@@ -102,7 +103,7 @@ afterEach(async () => {
   await Promise.all(bridges.splice(0).map(bridge => bridge.stop()));
 });
 
-describe('PlannerHostBridge shared Proposal Host', () => {
+describe.skipIf(process.platform === 'win32')('PlannerHostBridge shared Proposal Host', () => {
   it('refuses to replace a reachable live Planner Host socket', async () => {
     const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-live.sock`);
     const first = new PlannerHostBridge({ socketPath });
@@ -367,6 +368,37 @@ describe('PlannerHostBridge shared Proposal Host', () => {
     expect(await read(socket)).toMatchObject({ type: 'error', error: { code: 'interactive_required' } });
     expect(session.resolvePlannerTuiPermission).not.toHaveBeenCalled();
     socket.destroy();
+  });
+});
+
+
+describe.skipIf(process.platform !== 'win32')('native Windows Planner Host', () => {
+  it('serves the existing RPC protocol and refuses an occupied pipe without disrupting its owner', async () => {
+    const socketPath = `\\.\pipe\metawork-planner-${randomUUID()}`;
+    const windowsPipeModulePath = resolve('native/windows/build/Release/metawork_platform.node');
+    const first = new PlannerHostBridge({ socketPath, windowsPipeModulePath });
+    const second = new PlannerHostBridge({ socketPath, windowsPipeModulePath });
+    bridges.push(first, second);
+    const session = new FakeSession();
+    first.registerSession('session-1', session);
+    await first.start();
+    await expect(second.start()).rejects.toThrow();
+    // The existing separate MCP Node process uses the public net client.
+    const socket = await connect(socketPath);
+    try {
+      write(socket, { protocolVersion: 2, type: 'hello', requestId: 'hello', runtimeVersion: 'test', sessionId: 'session-1', mode: 'rpc' });
+      expect(await read(socket)).toMatchObject({ type: 'hello', accepted: true });
+      write(socket, { protocolVersion: 2, type: 'ping', requestId: 'ping' });
+      expect(await read(socket)).toMatchObject({ type: 'pong', requestId: 'ping' });
+      write(socket, { protocolVersion: 2, type: 'permission_resolve', requestId: 'permission', permissionRequestId: 'fixture', resolution: 'approve' });
+      expect(await read(socket)).toMatchObject({ type: 'error', error: { code: 'interactive_required' } });
+      expect(session.resolvePlannerTuiPermission).not.toHaveBeenCalled();
+      const closed = once(socket, 'close');
+      await first.stop();
+      await closed;
+      // Shutdown relinquishes the pipe so a recovered Server can bind it.
+      await second.start();
+    } finally { socket.destroy(); }
   });
 });
 
