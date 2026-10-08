@@ -103,11 +103,10 @@ export async function verifyDesktopRelease(resources: string, options: {
   const payload = await realpath(join(resources, 'payload'));
   const inventory = await desktopInventory(payload, release.platform);
   if (JSON.stringify(Object.keys(inventory).sort()) !== JSON.stringify(Object.keys(release.files).sort())) throw new Error('Desktop payload file set mismatch');
+  const unapprovedX86 = Object.entries(inventory).filter(([path, file]) => 'format' in file && file.format === 'pe-x86'
+    && path !== 'metawork/desktop-tools/git/usr/libexec/getprocaddr32.exe').map(([path]) => path);
+  if (unapprovedX86.length) throw new Error(`Unapproved x86 Desktop dependencies: ${unapprovedX86.join(', ')}`);
   for (const [path, actual] of Object.entries(inventory)) {
-    if ('format' in actual && actual.format === 'pe-x86'
-      && path !== 'metawork/desktop-tools/git/usr/libexec/getprocaddr32.exe') {
-      throw new Error('Unapproved x86 Desktop dependency');
-    }
     const expected = release.files[path]!;
     if (JSON.stringify(Object.entries(actual).sort()) !== JSON.stringify(Object.entries(expected).sort())) {
       throw new Error('Desktop payload integrity mismatch');

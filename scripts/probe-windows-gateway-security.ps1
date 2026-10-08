@@ -81,7 +81,10 @@ try {
     -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $fixture 'control.ps1')) `
     -RedirectStandardOutput (Join-Path $evidence 'control.json') -RedirectStandardError (Join-Path $evidence 'control-error.txt')
   $null = $control.Handle
-  if (-not $control.WaitForExit(25000)) { $control.Kill(); $control.WaitForExit(); throw 'SMB control timed out' }
+  # A new account's first Windows PowerShell process may spend tens of seconds
+  # initializing its profile/runtime. The actual connect/read/write gates above
+  # retain their individual five-second deadlines.
+  if (-not $control.WaitForExit(60000)) { $control.Kill(); $control.WaitForExit(); throw 'SMB control process timed out' }
   if ($control.ExitCode -ne 0) { Get-Content (Join-Path $evidence 'control-error.txt'); throw 'SMB control failed' }
   Invoke-Fixture 'remote-denied' "\\$env:COMPUTERNAME\pipe\metawork-gateway-$suffix" $pidValue $credentials[$owner]
   Invoke-Fixture 'client' $pipe $pidValue $credentials[$owner]
