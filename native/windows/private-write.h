@@ -77,6 +77,11 @@ void write_private_file(const std::wstring& root, const std::wstring& relative_p
   const auto destination = root + L"\\" + relative_path;
   assert_local_path(destination);
   std::vector<std::unique_ptr<Handle>> parents;
+  // SetFileInformationByHandle requires RootDirectory == nullptr. Pin every
+  // ancestor without delete-sharing before using an absolute rename target,
+  // so a concurrent directory rename/reparse swap cannot redirect that path.
+  for (size_t end = root.find(L'\\', 3); end != std::wstring::npos; end = root.find(L'\\', end + 1))
+    parents.push_back(pin_directory(root.substr(0, end), false));
   parents.push_back(pin_directory(root, true));
   size_t offset = root.size() + 1;
   for (;;) {
@@ -106,11 +111,11 @@ void write_private_file(const std::wstring& root, const std::wstring& relative_p
     require(WriteFile(file->get(), bytes, static_cast<DWORD>(size), &written, nullptr) != FALSE && written == size,
       "write private file");
     require(FlushFileBuffers(file->get()) != FALSE, "flush private file");
-    const auto target = destination.substr(offset);
+    const auto target = destination;
     std::vector<BYTE> storage(sizeof(FILE_RENAME_INFO) + target.size() * sizeof(wchar_t));
     auto rename = reinterpret_cast<FILE_RENAME_INFO*>(storage.data());
     rename->ReplaceIfExists = TRUE;
-    rename->RootDirectory = parents.back()->get();
+    rename->RootDirectory = nullptr;
     rename->FileNameLength = static_cast<DWORD>(target.size() * sizeof(wchar_t));
     std::memcpy(rename->FileName, target.data(), rename->FileNameLength);
     require(SetFileInformationByHandle(file->get(), FileRenameInfo, rename, static_cast<DWORD>(storage.size())) != FALSE,

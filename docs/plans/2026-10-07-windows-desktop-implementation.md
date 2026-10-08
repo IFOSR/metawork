@@ -128,3 +128,7 @@ Windows Main 的 development admission 改为 native builder 编译进去的内�
 同次普通用户 Job spike 的暂停 heartbeat 断言失败，已重新打开该门，不以历史通过结果覆盖新失败。检查发现 SuspendThread 返回不代表目标线程已经停稳，且目录枚举的文件大小可能滞后于打开文件的实际状态。新增 GetThreadContext 停稳确认，以实际文件句柄读取 heartbeat size；OpenProcess/OpenThread 的非退出类错误不再静默略过。修复仍待 Windows 复验与更强进程创建竞态覆盖，尚未提升为生产进程 adapter。
 
 Windows 11 run `37702596665` 45 分钟超时，无 guest report，最终 QMP 截图黑屏；不能判断已完成安装，更不是 GUI 验收。后续 raw disk/Hyper-V enlightenment/禁用嵌套 VMX/SVM 暴露的 run `37703046385` 已开始，尚待环境证据。
+
+### 原生 Windows 复验反馈（2026-10-08）
+
+`5791c403` 的 Windows 管道与普通用户/管理员 Job 暂停、恢复、取消检查通过；进程创建竞态覆盖仍待补齐。生产文件模块实际 MSVC 编译成功，但首次写入报 Win32 87：公开 SetFileInformationByHandle 的 RootDirectory 必须为空，不能沿用底层 NT 相对目录参数形式。修正为先以禁止 delete-sharing 的句柄固定从盘符下到目标父目录的全部祖先，再使用绝对目标路径原子替换；保留 ACL/owner/链接校验与 flush，待原生重跑。此前记录中的相对父目录 rename 不是已通过实现。

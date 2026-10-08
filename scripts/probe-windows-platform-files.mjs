@@ -44,7 +44,7 @@ export async function probePlatformFiles(addon, output) {
     assert.throws(() => addon.ensurePrivateDirectory(broad), /ACL/);
     checks.push('existing broad directory is refused without rewriting its ACL');
     await writeFile(output, JSON.stringify({ passed: true, checks, host: process.versions,
-      scope: 'platform-file-adapter', productionIntegrated: false }, null, 2));
+      scope: 'platform-file-adapter', integration: 'desktop-preferences-only' }, null, 2));
   } finally { await rm(temporary, { recursive: true, force: true }); }
 }
 
