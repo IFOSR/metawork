@@ -29,4 +29,9 @@ real prior Runtime adoption preserving configuration and data; local arm64 DMG.
 User installs the final artifact manually. Existing normal installation is not a
 test target. No GitHub release, push, tag, Apple identity or Intel build.
 
-Completion date, final validation results and closing commit: pending.
+Preliminary validation: packaged model-free install, Settings save, failed
+credential probe and first activation without restart passed. Update acceptance
+found a logical/canonical path mismatch for symlinked installation directories;
+the helper now checks physical request identity while preserving selected path
+prefixes. A dedicated symlink regression test passes. Final package acceptance
+and closing commit: pending.

@@ -112,6 +112,8 @@ for (const scenario of scenarios) {
       assert.equal(JSON.parse(await readFile(join(installationRoot, 'server-endpoint.json'), 'utf8')).pid, previous.pid);
       assert.equal(JSON.parse(await readFile(join(installationRoot, 'app/current/release-identity.json'), 'utf8')).releaseId, releaseId);
       await app.evaluate(({ dialog }) => {
+        globalThis.upgradeErrors = [];
+        dialog.showErrorBox = (title, message) => { globalThis.upgradeErrors.push({ title, message }); };
         dialog.showMessageBox = async () => { ++globalThis.adoptionDialogCount; return { response: 1, checkboxChecked: false }; };
       });
       let blocker;
@@ -126,6 +128,8 @@ for (const scenario of scenarios) {
       let interrupted = false;
       do {
         await new Promise(resolve => setTimeout(resolve, 1000));
+        const errors = await app.evaluate(() => globalThis.upgradeErrors ?? []).catch(() => []);
+        assert.deepEqual(errors, [], 'Desktop rejected the verified upgrade');
         phase = await readFile(join(installationRoot, 'upgrades/desktop-activation.json'), 'utf8').then(raw => JSON.parse(raw).phase, () => null);
         if (faultMode) {
           const status=await readFile(join(installationRoot,'upgrades/desktop-update-status.json'),'utf8').then(JSON.parse,()=>null);

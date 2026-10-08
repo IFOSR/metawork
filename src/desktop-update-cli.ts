@@ -14,13 +14,16 @@ import { isInstanceRunning } from './management/lock.js';
 import { waitForDesktopShellHealth } from './installation/desktop-shell-health.js';
 import { runDesktopUpdateTransaction } from './installation/desktop-update-transaction.js';
 import { DesktopUpdateDiagnostics } from './installation/desktop-update-diagnostics.js';
+import { resolveDesktopUpdateRoot } from './installation/desktop-update-request.js';
 
 async function main(): Promise<void> {
   const [rootArg, requestArg] = process.argv.slice(2);
   if (!rootArg || !requestArg) throw new Error('Missing update request');
-  const root = await realpath(rootArg);
+  // Preserve the installation's selected spelling for the durable request paths.
+  // macOS /tmp (and user-selected data directories) may be symlinks. Compare the
+  // request's physical identity without mixing canonical and logical prefixes.
+  const root = await resolveDesktopUpdateRoot(rootArg, requestArg);
   const requests = join(root, 'upgrades');
-  if (resolve(requestArg) !== join(requests, 'desktop-request.json')) throw new Error('Invalid update request path');
   const request = JSON.parse(await readFile(requestArg, 'utf8')) as {
     record: Omit<DesktopActivationRecord, 'schemaVersion' | 'phase'>;
     previousNode: string; previousPid: number; trustedKeys: Record<string, string>; desktopVersion: string;
