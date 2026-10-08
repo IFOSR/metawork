@@ -5,3 +5,4 @@ await build({ entryPoints: ['main/main.ts'], outfile: 'dist/main.js', bundle: tr
   define: { METAWORK_INTERNAL_WINDOWS_BUILD: String(process.platform === 'win32' && process.env.METAWORK_DESKTOP_INTERNAL === '1') } });
 await build({ entryPoints: ['preload/preload.ts'], outfile: 'dist/preload.cjs', bundle: true, platform: 'node', format: 'cjs', target: 'node22', external: ['electron'] });
 await build({ entryPoints: ['../../src/installation/desktop-release.ts'], outfile: 'dist/release-tools.mjs', bundle: true, platform: 'node', format: 'esm', target: 'node22' });
+await build({ entryPoints: ['../../src/installation/desktop-platform.ts'], outfile: 'dist/platform-tools.mjs', bundle: true, platform: 'node', format: 'esm', target: 'node22' });

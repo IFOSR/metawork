@@ -1,0 +1,58 @@
+// Narrow platform module. Production callers must pass through their owned adapters.
+#include <node_api.h>
+#include "security.h"
+#include "private-file.h"
+#include "private-write.h"
+
+std::wstring string_argument(napi_env env, napi_value value) {
+  size_t length = 0;
+  if (napi_get_value_string_utf16(env, value, nullptr, 0, &length) != napi_ok || length > 32767)
+    throw std::runtime_error("Bounded path required");
+  std::vector<char16_t> text(length + 1);
+  if (napi_get_value_string_utf16(env, value, text.data(), text.size(), &length) != napi_ok)
+    throw std::runtime_error("Path argument required");
+  return std::wstring(reinterpret_cast<wchar_t*>(text.data()), length);
+}
+
+napi_value files(napi_env env, napi_callback_info info) {
+  try {
+    napi_value arguments[3];
+    size_t count = 3;
+    void* mode = nullptr;
+    if (napi_get_cb_info(env, info, &count, arguments, nullptr, &mode) != napi_ok)
+      throw std::runtime_error("Platform arguments required");
+    const std::string operation(static_cast<const char*>(mode));
+    napi_value result;
+    if (operation == "ensurePrivateDirectory") {
+      if (count != 1) throw std::runtime_error("Directory required");
+      ensure_private_directory(string_argument(env, arguments[0]));
+    } else if (operation == "readPrivateFile") {
+      if (count != 2) throw std::runtime_error("Root and relative file required");
+      const auto data = read_private_file(string_argument(env, arguments[0]), string_argument(env, arguments[1]));
+      if (napi_create_buffer_copy(env, data.size(), data.data(), nullptr, &result) != napi_ok)
+        throw std::runtime_error("File result allocation");
+      return result;
+    } else {
+      void* bytes = nullptr;
+      size_t length = 0;
+      if (count != 3 || napi_get_buffer_info(env, arguments[2], &bytes, &length) != napi_ok)
+        throw std::runtime_error("Root, relative file and bounded buffer required");
+      write_private_file(string_argument(env, arguments[0]), string_argument(env, arguments[1]), static_cast<BYTE*>(bytes), length);
+    }
+    napi_get_undefined(env, &result); return result;
+  } catch (const std::exception& error) {
+    napi_throw_error(env, nullptr, error.what()); return nullptr;
+  }
+}
+
+napi_value initialize(napi_env env, napi_value exports) {
+  for (const char* name : { "ensurePrivateDirectory", "readPrivateFile", "writePrivateFile" }) {
+    napi_value function;
+    if (napi_create_function(env, name, NAPI_AUTO_LENGTH, files, const_cast<char*>(name), &function) != napi_ok
+      || napi_set_named_property(env, exports, name, function) != napi_ok) {
+      napi_throw_error(env, nullptr, "Platform initialization failed"); return nullptr;
+    }
+  }
+  return exports;
+}
+NAPI_MODULE(NODE_GYP_MODULE_NAME, initialize)

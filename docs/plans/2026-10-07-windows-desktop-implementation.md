@@ -114,3 +114,9 @@ Windows Pi driver 的 probe/launch 使用同一内置 Node + 绝对 Pi JS 入口
 Windows Main 的 development admission 改为 native builder 编译进去的内部构建标志；payload 自报 development 或运行时设置 METAWORK_DESKTOP_INTERNAL 都不能改变已构建 Main 的策略。macOS 现有处理保持不变，签名、hash、版本/平台矩阵始终需要通过。新增实际 esbuild 产物的正/负策略测试，分别用反向 runtime env 执行，证明只有编译标志生效；Root installer helper 仍需显式内部调用配置和完整签名验证。Windows workflow 加入 Desktop 测试。
 
 另修复 Windows PDF extension 的 ESM 路径：使用 file URL 并由真实 Node 进程加载生成的 extension，保持 macOS 行为。此前 Windows Pi/PDF 用例并非执行失败豁免，现以真正的 import 验证替代只比较路径字符串。
+
+### 生产原生文件适配封装（待 Windows 复验，2026-10-08）
+
+在 `native/windows` 开始封装独立 Node-API 模块。已验证的 PID/SID/DACL 与私有文件读取原语抽成共享头，原有 P0 探针继续消费同一份实现。新增当前 SID owner/受限可继承 ACL 的目录创建、有界私有临时文件写入、内容 flush 与相对于固定父目录句柄的原子替换；拒绝重解析、硬链接、越界及已有宽权限目录，不通过 chmod 假装 Windows ACL。失败清理临时文件。当前仍未接入 Gateway、凭据或 Endpoint 的生产调用，认证继续关闭；原生模块的 pipe/Job 能力和写入竞态/锁故障覆盖仍待完成。
+
+新增 Node 与真实 Electron Main 使用同一二进制的初始化/读写/替换检查，保留独立证据。模块为静态 CRT / N-API 8；只做文件系统/OS 原语，不引入业务或恢复策略。云端工具准备此前在 bundle 导出路径处失败，已改为消费 Desktop 的正式 release-tools/platform-tools 构建输出，本地 Desktop build 与 9 项测试通过，Windows 实际工具运行结果仍待获得。

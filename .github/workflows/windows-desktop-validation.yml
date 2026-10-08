@@ -22,6 +22,8 @@ on:
       - 'integrations/windows-desktop-tools/**'
       - 'integrations/pi-pdf/**'
       - 'native/windows-probe/**'
+      - 'native/windows/**'
+      - 'scripts/probe-windows-platform-files.mjs'
       - 'apps/desktop/**'
       - 'src/**'
       - 'web/**'
@@ -54,7 +56,7 @@ jobs:
             if subprocess.run(['git', 'cat-file', '-e', before], capture_output=True).returncode:
               subprocess.run(['git', 'fetch', '--depth=1', 'origin', before], check=True)
             paths = subprocess.check_output(['git', 'diff', '--name-only', before, 'HEAD'], text=True).splitlines()
-            windows_only = ('native/windows-probe/', 'scripts/probe-windows-', 'scripts/probe-windows11-',
+            windows_only = ('native/windows-probe/', 'native/windows/', 'scripts/probe-windows-', 'scripts/probe-windows11-',
                             'scripts/monitor-windows11-', 'scripts/windows11-cloud-', '.github/workflows/windows11-')
             macos = any(not (p.startswith(windows_only) or p.startswith('docs/') or p == 'CONTEXT.md') for p in paths)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
@@ -142,6 +144,14 @@ jobs:
         run: node planner/AnyFusion-Pi/packages/coding-agent/dist/cli.js --version
       - name: Probe Node-API carrier in Node and Electron Main
         run: node scripts/probe-windows-desktop-node-api.mjs
+      - name: Verify native private directory creation and atomic file replacement
+        run: node scripts/probe-windows-platform-files.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-platform-files-${{ github.sha }}
+          path: .tmp/windows-desktop-validation/platform-files/
+          if-no-files-found: warn
       - name: Prepare pinned relocatable Node, Git Bash and Pi tools
         run: node scripts/prepare-windows-desktop-tools.mjs "${{ runner.temp }}/desktop-tools"
       - uses: actions/upload-artifact@v4

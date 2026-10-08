@@ -3,8 +3,8 @@ import { execFileSync } from 'node:child_process';
 import { cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, join, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { desktopInventory } from '../dist/installation/desktop-release.js';
-import { desktopProcessEnvironment } from '../dist/installation/desktop-platform.js';
+import { desktopInventory } from '../apps/desktop/dist/release-tools.mjs';
+import { desktopProcessEnvironment } from '../apps/desktop/dist/platform-tools.mjs';
 
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Windows x64 native builder required');
 if (!process.argv[2]) throw new Error('Usage: prepare-windows-desktop-tools.mjs NEW_OUTPUT_DIRECTORY');
