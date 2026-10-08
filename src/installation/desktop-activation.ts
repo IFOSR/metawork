@@ -1,5 +1,6 @@
 import { mkdir, open, readFile, rename } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, relative } from 'node:path';
+import { writeWindowsPrivateJson, type WindowsPrivateFileRoot } from '../platform/windows-private-files.js';
 
 export interface DesktopActivationRecord {
   schemaVersion: 1;
@@ -23,7 +24,8 @@ export interface DesktopActivationPort {
 
 /** Shell coordination around the native updater; no database or pointer mutation here. */
 export class DesktopActivation {
-  constructor(private readonly journalPath: string, private readonly port: DesktopActivationPort) {}
+  constructor(private readonly journalPath: string, private readonly port: DesktopActivationPort,
+    private readonly windows?: WindowsPrivateFileRoot) {}
   async apply(input: Omit<DesktopActivationRecord, 'schemaVersion' | 'phase'>): Promise<void> {
     const existing = await this.read();
     if (existing && existing.phase !== 'committed' && existing.phase !== 'rolled-back') {
@@ -57,7 +59,9 @@ export class DesktopActivation {
     await this.write({ ...record, phase: 'rolled-back' });
   }
   async read(): Promise<DesktopActivationRecord | null> {
-    const raw = await readFile(this.journalPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
+    const raw = await (this.windows
+      ? Promise.resolve().then(() => this.windows!.files.readPrivateFile(this.windows!.root, relative(this.windows!.root, this.journalPath)).toString('utf8'))
+      : readFile(this.journalPath, 'utf8')).catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return null; throw error;
     });
     if (raw === null) return null;
@@ -68,6 +72,7 @@ export class DesktopActivation {
     return value;
   }
   private async write(record: DesktopActivationRecord): Promise<void> {
+    if (this.windows) { writeWindowsPrivateJson(this.windows, this.journalPath, record); return; }
     await mkdir(dirname(this.journalPath), { recursive: true, mode: 0o700 });
     const temporary = `${this.journalPath}.tmp`;
     const handle = await open(temporary, 'w', 0o600);

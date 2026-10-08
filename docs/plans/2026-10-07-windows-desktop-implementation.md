@@ -274,3 +274,7 @@ Windows 11 首次登录先保存本地阶段、截图与结构化回执，串口
 ### Planner Host 原生管道接入（2026-10-08，Windows 待复验）
 
 安装内 Server 为 Planner Host 注入与 Gateway 相同的受限原生 listener，保留现有 MCP/JSONL 协议、Session 提案校验与 Unix socket 身份回收。新连接在 stop 后拒绝，管道抢占必须失败。Windows 原生测试覆盖公共 Node net 客户端握手/响应、RPC 权限边界、关闭及重新绑定；双账号/SMB probe 扩展到实际 Planner Host。macOS 上原有 Planner Host、Server composition、客户端 ownership 20 项及 Root 类型检查通过；不据此标记 Windows 原生或真实模型任务通过。
+
+### Windows Desktop activation 持久边界（2026-10-08，未接通 NSIS）
+
+DesktopActivation 与 shell health 读写增加显式 Windows private-files adapter，沿用原状态机、challenge/instance/PID 核验和 companion 恢复先后顺序；Unix 默认路径保留。原生测试覆盖各中断 phase、companion 缺失保持 recoverable journal、重建 helper 后恢复、旧 Server 回执拒绝及 journal reparse 拒绝。本机原有 activation/health 10 项和 Root 类型检查通过；Windows 12 项私有存储检查待云端执行，NSIS 与 helper 的生产接入仍未完成。

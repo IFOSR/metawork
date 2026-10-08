@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, rename, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
+import { writeWindowsPrivateJson, type WindowsPrivateFileRoot } from '../platform/windows-private-files.js';
 
 export interface DesktopShellHealth {
   challenge: string;
@@ -10,20 +11,21 @@ export interface DesktopShellHealth {
 }
 
 /** A per-activation receipt, written only after authenticated Web assets render. */
-export async function writeDesktopShellHealth(root: string, health: DesktopShellHealth): Promise<void> {
+export async function writeDesktopShellHealth(root: string, health: DesktopShellHealth, windows?: WindowsPrivateFileRoot): Promise<void> {
   const path = join(root, 'upgrades/desktop-shell-health.json');
+  if (windows) { writeWindowsPrivateJson(windows, path, health); return; }
   const temporary = `${path}.${randomUUID()}`;
   await writeFile(temporary, JSON.stringify(health), { mode: 0o600 });
   await rename(temporary, path);
 }
 
 export async function waitForDesktopShellHealth(root: string, expected: DesktopShellHealth, options: {
-  alive(): boolean; timeoutMs?: number;
+  alive(): boolean; timeoutMs?: number; windows?: WindowsPrivateFileRoot;
 }): Promise<void> {
   const deadline = Date.now() + (options.timeoutMs ?? 120_000);
   do {
     if (!options.alive()) throw new Error('Candidate desktop exited before health verification');
-    const raw = await readFile(join(root, 'upgrades/desktop-shell-health.json'), 'utf8').catch((error: NodeJS.ErrnoException) => {
+    const raw = await readHealthFile(root, 'desktop-shell-health.json', options.windows).catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return null;
       throw error;
     });
@@ -40,14 +42,20 @@ export async function waitForDesktopShellHealth(root: string, expected: DesktopS
 
 export async function authorizeDesktopShellCheck(root: string, input: {
   challenge: string; applicationPath: string; releaseId: string;
-}): Promise<boolean> {
+}, windows?: WindowsPrivateFileRoot): Promise<boolean> {
   if (!/^[a-f0-9-]{36}$/u.test(input.challenge)) return false;
   const [request, journal] = await Promise.all([
-    readFile(join(root, 'upgrades/desktop-request.json'), 'utf8').then(JSON.parse),
-    readFile(join(root, 'upgrades/desktop-activation.json'), 'utf8').then(JSON.parse),
+    readHealthFile(root, 'desktop-request.json', windows).then(JSON.parse),
+    readHealthFile(root, 'desktop-activation.json', windows).then(JSON.parse),
   ]);
   return request.shellChallenge === input.challenge && journal.phase === 'shell-replaced'
     && request.record.candidateReleaseId === input.releaseId && journal.candidateReleaseId === input.releaseId
     && request.record.applicationPath === input.applicationPath && journal.applicationPath === input.applicationPath
     && request.record.backupApplicationPath === journal.backupApplicationPath;
+}
+
+async function readHealthFile(root: string, name: string, windows?: WindowsPrivateFileRoot): Promise<string> {
+  const path = join(root, 'upgrades', name);
+  return windows ? windows.files.readPrivateFile(windows.root, relative(windows.root, path)).toString('utf8')
+    : readFile(path, 'utf8');
 }

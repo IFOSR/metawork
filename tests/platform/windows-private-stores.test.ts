@@ -13,7 +13,10 @@ import { createAccountEventJournal } from '../../src/server/account-event-journa
 import { runMigrations } from '../../src/storage/migrations.js';
 import { backupGatewayJournal, restoreGatewayJournal } from '../../src/installation/gateway-journal-backup.js';
 import { ReleasePointerTransaction, type ReleasePointerName } from '../../src/installation/release-pointer-transaction.js';
-import { loadWindowsPrivateFiles, type WindowsPrivateFileRoot } from '../../src/platform/windows-private-files.js';
+import { DesktopActivation, type DesktopActivationPort } from '../../src/installation/desktop-activation.js';
+import { authorizeDesktopShellCheck, waitForDesktopShellHealth, writeDesktopShellHealth } from '../../src/installation/desktop-shell-health.js';
+import { randomUUID } from 'node:crypto';
+import { loadWindowsPrivateFiles, writeWindowsPrivateJson, type WindowsPrivateFileRoot } from '../../src/platform/windows-private-files.js';
 import { readEndpointManifest, writeEndpointManifest, type EndpointManifest } from '../../src/server/server-endpoint-manifest.js';
 
 describe.skipIf(process.platform !== 'win32')('native Windows credential and endpoint stores', () => {
@@ -27,6 +30,52 @@ describe.skipIf(process.platform !== 'win32')('native Windows credential and end
   });
   afterEach(async () => { await rm(temporary, { recursive: true, force: true }); });
 
+  it.each(['prepared', 'runtime-updated', 'shell-replaced'] as const)('retains interrupted %s shell activation until companion and shell recovery both succeed', async phase => {
+    const root = windows.root;
+    const path = join(root, 'upgrades/desktop-activation.json');
+    const record = { schemaVersion: 1 as const, phase, previousReleaseId: 'old', candidateReleaseId: 'new',
+      applicationPath: join(root, 'shell'), stagedApplicationPath: join(root, 'upgrades/staged'),
+      backupApplicationPath: join(root, 'upgrades/backup') };
+    writeWindowsPrivateJson(windows, path, record);
+    const calls: string[] = [];
+    let companionReady = false;
+    const port: DesktopActivationPort = {
+      verify: async () => undefined, stop: async () => { calls.push('stop'); },
+      updateRuntime: async () => undefined, replaceShell: async () => undefined,
+      startAndVerifyCandidate: async () => undefined,
+      restoreRuntime: async () => { if (!companionReady) throw new Error('missing companion'); calls.push('runtime'); },
+      restoreShell: async () => { calls.push('shell'); }, startPrevious: async () => { calls.push('start'); },
+    };
+    const activation = new DesktopActivation(path, port, windows);
+    await expect(activation.recover()).rejects.toThrow('missing companion');
+    expect((await activation.read())?.phase).toBe(phase);
+    expect(calls).toEqual(['stop']);
+    companionReady = true;
+    await new DesktopActivation(path, port, windows).recover();
+    expect(calls).toEqual(['stop', 'stop', 'runtime', 'shell', 'start']);
+    expect((await activation.read())?.phase).toBe('rolled-back');
+  });
+  it('requires matching private shell receipts and rejects redirected activation journals', async () => {
+    const root = windows.root;
+    const health = { challenge: randomUUID(), releaseId: 'new', instanceId: 'candidate', pid: 1234 };
+    const record = { candidateReleaseId: 'new', applicationPath: join(root, 'shell'), backupApplicationPath: join(root, 'backup') };
+    writeWindowsPrivateJson(windows, join(root, 'upgrades/desktop-request.json'), { shellChallenge: health.challenge, record });
+    const journal = join(root, 'upgrades/desktop-activation.json');
+    writeWindowsPrivateJson(windows, journal, { ...record, phase: 'runtime-updated' });
+    const input = { challenge: health.challenge, applicationPath: record.applicationPath, releaseId: health.releaseId };
+    expect(await authorizeDesktopShellCheck(root, input, windows)).toBe(false);
+    writeWindowsPrivateJson(windows, journal, { ...record, phase: 'shell-replaced' });
+    expect(await authorizeDesktopShellCheck(root, input, windows)).toBe(true);
+    await writeDesktopShellHealth(root, { ...health, instanceId: 'previous' }, windows);
+    await expect(waitForDesktopShellHealth(root, health, { alive: () => true, timeoutMs: 0, windows })).rejects.toThrow('readiness');
+    await writeDesktopShellHealth(root, health, windows);
+    await waitForDesktopShellHealth(root, health, { alive: () => true, windows });
+    const outside = join(temporary, 'outside-activation.json');
+    await writeFile(outside, JSON.stringify({ ...record, phase: 'shell-replaced' }));
+    await rm(journal);
+    await symlink(outside, journal);
+    await expect(authorizeDesktopShellCheck(root, input, windows)).rejects.toThrow();
+  });
   it('preserves Provider/internal namespace and delete semantics through native atomic writes', async () => {
     const path = join(windows.root, 'credentials.json');
     const store = createProductionSecretStore({ credentialsFile: path, windows });
