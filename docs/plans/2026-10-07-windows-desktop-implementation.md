@@ -1,7 +1,7 @@
 # Windows Desktop 实施与验证记录
 
 - 日期：2026-10-07
-- 状态：In Progress，P0 原生技术前置已验证，开始 P1 平台适配；生产安全 transport / process adapter 尚未接入，未交付 Windows Desktop。
+- 状态：In Progress，P0 管道/ACL 已验证，Job 暂停竞态复验中；P1 原生文件/平台适配进行中，安全 transport / process adapter 尚未接入，未交付 Windows Desktop。
 - 方案：[Windows Desktop 构建与交付](2026-10-07-windows-desktop-build-plan.md)
 - 源码基线：`bc7ad127d0ac9d6df36a03ddacc916e93806ec5d`（包含计划，运行时代码对应 `99442715e802c7ccdf09dd9a4f476a26f906a076`）。
 - 本次验证环境：macOS 27.0.1（26A434），arm64，Node 22.23.3，npm 10.9.9。
@@ -120,3 +120,11 @@ Windows Main 的 development admission 改为 native builder 编译进去的内�
 在 `native/windows` 开始封装独立 Node-API 模块。已验证的 PID/SID/DACL 与私有文件读取原语抽成共享头，原有 P0 探针继续消费同一份实现。新增当前 SID owner/受限可继承 ACL 的目录创建、有界私有临时文件写入、内容 flush 与相对于固定父目录句柄的原子替换；拒绝重解析、硬链接、越界及已有宽权限目录，不通过 chmod 假装 Windows ACL。失败清理临时文件。当前仍未接入 Gateway、凭据或 Endpoint 的生产调用，认证继续关闭；原生模块的 pipe/Job 能力和写入竞态/锁故障覆盖仍待完成。
 
 新增 Node 与真实 Electron Main 使用同一二进制的初始化/读写/替换检查，保留独立证据。模块为静态 CRT / N-API 8；只做文件系统/OS 原语，不引入业务或恢复策略。云端工具准备此前在 bundle 导出路径处失败，已改为消费 Desktop 的正式 release-tools/platform-tools 构建输出，本地 Desktop build 与 9 项测试通过，Windows 实际工具运行结果仍待获得。
+
+### 云端扩展回归发现与处理（2026-10-08）
+
+`59d9513` 的 macOS arm64 完整 job 通过。Windows 的 Desktop 测试首次真实运行后，偏好存储仍依赖 POSIX mode 的问题未被忽略：Windows Preferences 改为显式接收原生 private-file adapter，没有 adapter 时拒绝启动该存储。加载/保存按固定父目录与文件句柄验证 ACL/owner，偏好数据用显式 9 MiB 上限，其他 native file 调用仍默认 64 KiB。Main 从已验证的资源 payload 加载模块，Renderer 不可访问。Windows 测试使用真实原生读取验证隐私权限；macOS 保留既有 0600 原子写入断言和路径。本地类型检查、Desktop build 与 9 项测试通过，Windows 新接入待原生结果。
+
+同次普通用户 Job spike 的暂停 heartbeat 断言失败，已重新打开该门，不以历史通过结果覆盖新失败。检查发现 SuspendThread 返回不代表目标线程已经停稳，且目录枚举的文件大小可能滞后于打开文件的实际状态。新增 GetThreadContext 停稳确认，以实际文件句柄读取 heartbeat size；OpenProcess/OpenThread 的非退出类错误不再静默略过。修复仍待 Windows 复验与更强进程创建竞态覆盖，尚未提升为生产进程 adapter。
+
+Windows 11 run `37702596665` 45 分钟超时，无 guest report，最终 QMP 截图黑屏；不能判断已完成安装，更不是 GUI 验收。后续 raw disk/Hyper-V enlightenment/禁用嵌套 VMX/SVM 暴露的 run `37703046385` 已开始，尚待环境证据。

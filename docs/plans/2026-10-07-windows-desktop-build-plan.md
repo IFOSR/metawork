@@ -1,7 +1,7 @@
 # Windows Desktop 构建与交付方案
 
 - 计划日期：2026-10-07
-- 状态：In Progress / P0 原生技术前置与 macOS 双架构基线已验证，P1 平台适配进行中；生产安全 adapter 尚未接入，尚未产出 Windows Desktop 安装包或发布
+- 状态：In Progress / P0 管道/ACL 与 macOS 双架构基线已验证，Job 暂停竞态复验中；P1 平台适配进行中，原生文件 adapter 开始接入，尚未产出 Windows Desktop 安装包或发布
 - 基线：`99442715e802c7ccdf09dd9a4f476a26f906a076`（当前 main，包含 v0.1.5 及后续 README 精简）
 - 分支：`feat/windows-desktop`
 - Worktree：`/Users/yuanjubian/program/metawork-windows-desktop`

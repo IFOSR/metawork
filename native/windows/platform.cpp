@@ -16,28 +16,33 @@ std::wstring string_argument(napi_env env, napi_value value) {
 
 napi_value files(napi_env env, napi_callback_info info) {
   try {
-    napi_value arguments[3];
-    size_t count = 3;
+    napi_value arguments[4];
+    size_t count = 4;
     void* mode = nullptr;
     if (napi_get_cb_info(env, info, &count, arguments, nullptr, &mode) != napi_ok)
       throw std::runtime_error("Platform arguments required");
     const std::string operation(static_cast<const char*>(mode));
+    uint32_t maximum = 65536;
+    if ((operation == "readPrivateFile" && count == 3) || (operation == "writePrivateFile" && count == 4)) {
+      if (napi_get_value_uint32(env, arguments[count - 1], &maximum) != napi_ok)
+        throw std::runtime_error("Explicit file size limit required");
+    }
     napi_value result;
     if (operation == "ensurePrivateDirectory") {
       if (count != 1) throw std::runtime_error("Directory required");
       ensure_private_directory(string_argument(env, arguments[0]));
     } else if (operation == "readPrivateFile") {
-      if (count != 2) throw std::runtime_error("Root and relative file required");
-      const auto data = read_private_file(string_argument(env, arguments[0]), string_argument(env, arguments[1]));
+      if (count != 2 && count != 3) throw std::runtime_error("Root and relative file required");
+      const auto data = read_private_file(string_argument(env, arguments[0]), string_argument(env, arguments[1]), maximum);
       if (napi_create_buffer_copy(env, data.size(), data.data(), nullptr, &result) != napi_ok)
         throw std::runtime_error("File result allocation");
       return result;
     } else {
       void* bytes = nullptr;
       size_t length = 0;
-      if (count != 3 || napi_get_buffer_info(env, arguments[2], &bytes, &length) != napi_ok)
+      if ((count != 3 && count != 4) || napi_get_buffer_info(env, arguments[2], &bytes, &length) != napi_ok)
         throw std::runtime_error("Root, relative file and bounded buffer required");
-      write_private_file(string_argument(env, arguments[0]), string_argument(env, arguments[1]), static_cast<BYTE*>(bytes), length);
+      write_private_file(string_argument(env, arguments[0]), string_argument(env, arguments[1]), static_cast<BYTE*>(bytes), length, maximum);
     }
     napi_get_undefined(env, &result); return result;
   } catch (const std::exception& error) {

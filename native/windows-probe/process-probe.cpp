@@ -86,12 +86,18 @@ class SuspendedThreads {
       if (Thread32First(snapshot.value, &entry)) do {
         if (!pids.count(entry.th32OwnerProcessID) || threads_.count(entry.th32ThreadID)) continue;
         OwnedHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32OwnerProcessID));
-        if (!process.value) continue;
+        if (!process.value) {
+          check(GetLastError() == ERROR_INVALID_PARAMETER, "open live job process");
+          continue;
+        }
         BOOL contained = FALSE;
         check(IsProcessInJob(process.value, job_, &contained) != FALSE && contained, "owned job process");
-        auto thread = std::make_unique<OwnedHandle>(OpenThread(THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION,
+        auto thread = std::make_unique<OwnedHandle>(OpenThread(THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION | THREAD_GET_CONTEXT,
           FALSE, entry.th32ThreadID));
-        if (!thread->value) continue;
+        if (!thread->value) {
+          check(GetLastError() == ERROR_INVALID_PARAMETER, "open live job thread");
+          continue;
+        }
         check(GetProcessIdOfThread(thread->value) == entry.th32OwnerProcessID, "thread process identity");
         const DWORD previous = SuspendThread(thread->value);
         if (previous == static_cast<DWORD>(-1)) {
@@ -100,6 +106,14 @@ class SuspendedThreads {
           continue;
         }
         threads_.emplace(entry.th32ThreadID, std::move(thread));
+        // SuspendThread requests suspension; obtain context to wait until the
+        // target has actually stopped executing user-mode instructions.
+        CONTEXT context{}; context.ContextFlags = CONTEXT_CONTROL;
+        if (!GetThreadContext(threads_.at(entry.th32ThreadID)->value, &context)) {
+          DWORD code = STILL_ACTIVE;
+          check(GetExitCodeThread(threads_.at(entry.th32ThreadID)->value, &code) != FALSE
+            && code != STILL_ACTIVE, "suspended thread context");
+        }
         added = true;
       } while (Thread32Next(snapshot.value, &entry));
       if (!added && members(job_) == pids && !threads_.empty()) return;
@@ -127,7 +141,15 @@ class SuspendedThreads {
 std::map<std::wstring, uintmax_t> heartbeats(const std::wstring& root) {
   std::map<std::wstring, uintmax_t> values;
   for (const auto& entry : std::filesystem::directory_iterator(root)) {
-    if (entry.path().extension() == L".tick") values.emplace(entry.path().filename().wstring(), entry.file_size());
+    if (entry.path().extension() != L".tick") continue;
+    // FindFirstFile directory metadata can lag a file that remains open.
+    // Read current size through a file handle instead of that cached snapshot.
+    OwnedHandle file(CreateFileW(entry.path().c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+    check(file.value != INVALID_HANDLE_VALUE, "open heartbeat identity");
+    LARGE_INTEGER size{};
+    check(GetFileSizeEx(file.value, &size) != FALSE && size.QuadPart >= 0, "read heartbeat size");
+    values.emplace(entry.path().filename().wstring(), static_cast<uintmax_t>(size.QuadPart));
   }
   return values;
 }

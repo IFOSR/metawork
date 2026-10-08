@@ -68,10 +68,11 @@ void ensure_private_directory(const std::wstring& path) {
   }
 }
 
-void write_private_file(const std::wstring& root, const std::wstring& relative_path, const BYTE* bytes, size_t size) {
+void write_private_file(const std::wstring& root, const std::wstring& relative_path, const BYTE* bytes, size_t size, size_t maximum = 65536) {
   assert_local_path(root);
   require(!relative_path.empty() && relative_path.front() != L'\\'
-    && relative_path.find_first_of(L"/:\0", 0, 3) == std::wstring::npos && size <= 65536,
+    && relative_path.find_first_of(L"/:\0", 0, 3) == std::wstring::npos
+    && maximum > 0 && maximum <= 9 * 1024 * 1024 && size <= maximum,
     "bounded relative private file required");
   const auto destination = root + L"\\" + relative_path;
   assert_local_path(destination);

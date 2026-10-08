@@ -8,6 +8,7 @@ import { PRODUCT_ENVIRONMENT, resolveProductEnvironment } from '../../../src/ins
 import { DesktopServiceManager } from '../../../src/client/desktop-service-manager.js';
 import { exchangeDesktopSession } from '../../../src/client/desktop-session-client.js';
 import { DesktopPreferenceStore } from './preferences.js';
+import { loadWindowsPrivateFiles } from '../../../src/platform/windows-private-files.js';
 import { assertMainFrame, businessDocument, externalUrl, identifier, sameOrigin } from './security.js';
 import type { DesktopDraft, DesktopMenuAction, ShellState } from '../shared/bridge.js';
 import { DesktopNotifications } from './notifications.js';
@@ -146,7 +147,10 @@ async function connectOnce(): Promise<void> {
     const grant = await manager.connect();
     await exchangeDesktopSession(grant, webSession.fetch.bind(webSession) as typeof fetch, authenticatedInstance === grant.instanceId);
     authenticatedInstance = grant.instanceId;
-    const store = new DesktopPreferenceStore(join(app.getPath('userData'), 'preferences', grant.installationId, `${grant.accountId}.json`));
+    const store = new DesktopPreferenceStore(join(app.getPath('userData'), 'preferences', grant.installationId, `${grant.accountId}.json`),
+      process.platform === 'win32' ? loadWindowsPrivateFiles(installation
+        ? join(installation.resources, 'payload/metawork/native/windows/metawork-platform.node')
+        : join(installRoot, 'app/current/native/windows/metawork-platform.node')) : undefined);
     await preferences?.flush();
     await store.load();
     preferences = store;

@@ -137,6 +137,8 @@ jobs:
         run: npm test -- tests/gateway/desktop-local-transport.test.ts tests/management/desktop-session.test.ts tests/installation/desktop-platform.test.ts tests/installation/windows-installation-root.test.ts tests/installation/windows-desktop-release.test.ts tests/client/server-readiness.test.ts tests/executor/pi-native-launch.test.ts tests/executor/pi-cli-driver.test.ts tests/executor/runtime-home-materializer.test.ts
       - run: npm run build
       - run: npm run build:desktop
+      - name: Verify native private directory creation and atomic file replacement
+        run: node scripts/probe-windows-platform-files.mjs
       - run: npm run test:desktop
       - name: Exercise native SQLite binding
         run: node --input-type=module -e "import Database from 'better-sqlite3'; const db = new Database(':memory:'); db.exec('CREATE TABLE probe (value INTEGER); INSERT INTO probe VALUES (1)'); if (db.prepare('SELECT value FROM probe').get().value !== 1) throw Error('SQLite probe failed'); db.close();"
@@ -144,8 +146,6 @@ jobs:
         run: node planner/AnyFusion-Pi/packages/coding-agent/dist/cli.js --version
       - name: Probe Node-API carrier in Node and Electron Main
         run: node scripts/probe-windows-desktop-node-api.mjs
-      - name: Verify native private directory creation and atomic file replacement
-        run: node scripts/probe-windows-platform-files.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:

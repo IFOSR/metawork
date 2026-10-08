@@ -1,22 +1,33 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { basename, dirname } from 'node:path';
 import type { DesktopDraft, DesktopPreferences, DesktopViewport } from '../shared/bridge.js';
 import { identifier } from './security.js';
+import type { WindowsPrivateFiles } from '../../../src/platform/windows-private-files.js';
+
+const MAX_PREFERENCES_BYTES = 9 * 1024 * 1024;
 
 export class DesktopPreferenceStore {
   private value: DesktopPreferences = { theme: 'system', drafts: {} };
   private pending: Promise<void> | null = null;
   private revision = 0;
-  constructor(private readonly path: string) {}
+  constructor(private readonly path: string, private readonly privateFiles?: WindowsPrivateFiles) {
+    if (process.platform === 'win32' && !privateFiles) throw new Error('Windows preferences require the native private-file adapter');
+  }
 
   async load(): Promise<void> {
-    const raw = await readFile(this.path, 'utf8').catch((error: NodeJS.ErrnoException) => {
+    this.privateFiles?.ensurePrivateDirectory(dirname(this.path));
+    const read = async () => {
+      if (!this.privateFiles) return readFile(this.path, 'utf8');
+      await lstat(this.path); // Missing data is distinct from failed native ownership/ACL validation.
+      return this.privateFiles.readPrivateFile(dirname(this.path), basename(this.path), MAX_PREFERENCES_BYTES).toString('utf8');
+    };
+    const raw = await read().catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return null;
       throw error;
     });
     if (raw === null) return;
-    if (Buffer.byteLength(raw) > 9 * 1024 * 1024) throw new Error('Desktop preferences exceed storage limit');
+    if (Buffer.byteLength(raw) > MAX_PREFERENCES_BYTES) throw new Error('Desktop preferences exceed storage limit');
     const parsed = JSON.parse(raw) as DesktopPreferences;
     if (!parsed || !['system', 'light', 'dark'].includes(parsed.theme)
       || !parsed.drafts || Object.keys(parsed.drafts).length > 64) throw new Error('Invalid Desktop preferences');
@@ -64,9 +75,16 @@ export class DesktopPreferenceStore {
     ++this.revision;
     if (this.pending) return this.pending;
     this.pending = (async () => {
+      if (this.privateFiles) await Promise.resolve();
       for (;;) {
         const revision = this.revision;
         const data = JSON.stringify(this.value);
+        if (this.privateFiles) {
+          this.privateFiles.ensurePrivateDirectory(dirname(this.path));
+          this.privateFiles.writePrivateFile(dirname(this.path), basename(this.path), Buffer.from(data), MAX_PREFERENCES_BYTES);
+          if (revision === this.revision) break;
+          continue;
+        }
         await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
         const temporary = `${this.path}.${randomUUID()}.tmp`;
         try {

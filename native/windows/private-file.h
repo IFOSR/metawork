@@ -55,7 +55,8 @@ std::wstring long_path(const std::wstring& path) {
   return L"\\\\?\\" + std::wstring(buffer.data(), size);
 }
 
-std::vector<BYTE> read_private_file(const std::wstring& root, const std::wstring& relative_path) {
+std::vector<BYTE> read_private_file(const std::wstring& root, const std::wstring& relative_path, size_t maximum = 65536) {
+  require(maximum > 0 && maximum <= 9 * 1024 * 1024, "bounded private read limit");
   require(root.size() > 3 && root[1] == L':' && root[2] == L'\\'
     && root.find(L'/') == std::wstring::npos && root.find(L'\0') == std::wstring::npos,
     "absolute local root required");
@@ -92,7 +93,7 @@ std::vector<BYTE> read_private_file(const std::wstring& root, const std::wstring
   require(_wcsicmp(final_path(file.get()).c_str(), long_path(path).c_str()) == 0,
     "file path redirection refused");
   LARGE_INTEGER size{};
-  require(GetFileSizeEx(file.get(), &size) != FALSE && size.QuadPart >= 0 && size.QuadPart <= 65536,
+  require(GetFileSizeEx(file.get(), &size) != FALSE && size.QuadPart >= 0 && static_cast<ULONGLONG>(size.QuadPart) <= maximum,
     "bounded private file size");
   std::vector<BYTE> data(static_cast<size_t>(size.QuadPart));
   DWORD read = 0;
