@@ -1,5 +1,4 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import { access, cp, mkdir, open, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { DesktopActivation, type DesktopActivationRecord } from './installation/desktop-activation.js';
@@ -15,6 +14,7 @@ import { waitForDesktopShellHealth } from './installation/desktop-shell-health.j
 import { runDesktopUpdateTransaction } from './installation/desktop-update-transaction.js';
 import { DesktopUpdateDiagnostics } from './installation/desktop-update-diagnostics.js';
 import { resolveDesktopUpdateRoot } from './installation/desktop-update-request.js';
+import { restoreDesktopApplication } from './installation/desktop-shell-restore.js';
 
 async function main(): Promise<void> {
   const [rootArg, requestArg] = process.argv.slice(2);
@@ -133,13 +133,7 @@ async function main(): Promise<void> {
         await updater.recoverInterruptedActivation();
         if ((await currentIdentity())?.releaseId !== record.previousReleaseId) await updater.rollback(record.previousReleaseId);
       },
-      restoreShell: async () => {
-        if (await access(record.backupApplicationPath).then(() => true, () => false)) {
-          if (await access(record.applicationPath).then(() => true, () => false)) await rename(record.applicationPath, `${record.applicationPath}.metawork-failed-${randomUUID()}`);
-          await rename(record.backupApplicationPath, record.applicationPath);
-        }
-        await rm(`${record.applicationPath}.metawork-staged`, { recursive: true, force: true });
-      },
+      restoreShell: () => restoreDesktopApplication(record),
       startPrevious: async () => { await (await manager()).startForUpdate(); },
     }));
     // The helper is independent of Electron; wait for client exit before replacing its bundle.

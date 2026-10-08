@@ -88,3 +88,20 @@ unmounted and 12 disposable fixture directories moved to Trash with a manifest.
 The normal `/Applications/MetaWork.app`, installation and Desktop profile were
 preserved for the user's requested manual installation. No GitHub operation,
 Apple certificate, Intel artifact or paid model task was used.
+
+## Post-installation failed bundle cleanup (2026-10-08)
+
+The user's normal installation subsequently committed `0.1.8-internal-0a3df55`
+at 23:17:29; both app and Runtime identities match. A prior recovery left a sibling
+`MetaWork.app.metawork-failed-<uuid>` in Applications. Successful commit removed
+its own backup but did not own that older orphan. The inactive failed bundle was
+moved to Trash after checking the committed journal and running process path;
+Applications now contains only `MetaWork.app`, with normal account data retained.
+
+Source correction: shell recovery discards only the failed replaceable app bundle,
+then renames the retained original backup into place. It no longer creates a
+visible failed-app sibling. An interruption between removal and rename retains
+the backup for retry; absence of a backup preserves the installed app. Three
+filesystem regressions plus sixteen activation/transaction tests pass, as does
+the root typecheck. This follow-up is source-only; the already installed app and
+the `0a3df55` DMG were not modified or repackaged.
