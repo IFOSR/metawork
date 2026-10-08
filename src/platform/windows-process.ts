@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
-import { isAbsolute } from 'node:path';
+import { statSync } from 'node:fs';
+import { delimiter, extname, isAbsolute, join, resolve } from 'node:path';
 import { WindowsNativeStream, type WindowsStreamPrimitives } from './windows-native-stream.js';
 
 interface SpawnedProcess {
@@ -55,6 +56,39 @@ export interface WindowsProcessInput {
   args: readonly string[];
   cwd: string;
   env: NodeJS.ProcessEnv;
+}
+
+export interface WindowsSpawnOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  stdio?: 'inherit' | readonly ('pipe' | 'ignore')[];
+}
+
+export type WindowsProcessSpawner = (command: string, args: readonly string[], options: WindowsSpawnOptions) => WindowsOwnedProcess;
+
+export function createWindowsProcessSpawner(native: WindowsProcessPrimitives): WindowsProcessSpawner {
+  return (command, args, options) => {
+    const cwd = resolve(options.cwd ?? process.cwd());
+    const env = options.env ?? process.env;
+    const search = Object.entries(env).find(([key]) => key.toUpperCase() === 'PATH')?.[1] ?? '';
+    const candidates = isAbsolute(command) || /[\\/]/u.test(command)
+      ? [resolve(cwd, command)] : search.split(delimiter).filter(Boolean).map(directory => join(directory, command));
+    const executable = candidates.flatMap(path => extname(path) ? [path] : [path + '.exe', path + '.com'])
+      .find(path => { try { return statSync(path).isFile(); } catch { return false; } });
+    if (!executable || !/\.(exe|com)$/iu.test(executable)) throw new Error('Windows owned process requires an executable; configure a Node script through the bundled Node entry');
+    const child = new WindowsOwnedProcess(native, { executable, args, cwd, env });
+    if (options.stdio === 'inherit') {
+      process.stdin.pipe(child.stdin);
+      child.stdout.pipe(process.stdout, { end: false });
+      child.stderr.pipe(process.stderr, { end: false });
+      child.once('close', () => { process.stdin.unpipe(child.stdin); });
+    } else {
+      if (options.stdio?.[0] === 'ignore') child.stdin.end();
+      if (options.stdio?.[1] === 'ignore') child.stdout.resume();
+      if (options.stdio?.[2] === 'ignore') child.stderr.resume();
+    }
+    return child;
+  };
 }
 
 /** An owned process group. Exit is reported only after all Job members and stdio settle. */

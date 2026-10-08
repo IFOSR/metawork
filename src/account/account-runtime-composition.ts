@@ -96,6 +96,8 @@ export function buildAccountRuntimeComposition(deps: {
   getRuntimeConfiguration?: Parameters<typeof buildAccountExecutionServices>[0]['getRuntimeConfiguration'];
   getActiveRuntimeConfiguration?: Parameters<typeof buildAccountExecutionServices>[0]['getActiveRuntimeConfiguration'];
   probeCommand?: ProbeCommandRunner;
+  windowsSpawn?: Parameters<typeof buildAccountTaskServices>[0]['windowsSpawn'];
+  createLocalProcessRunner?: Parameters<typeof buildAccountExecutionServices>[0]['createLocalProcessRunner'];
   attemptExecutionBackend?: AttemptExecutionBackend;
   plannerSupervisor?: PlannerProcessController;
   planningAgent?: PlanningAgent;
@@ -128,6 +130,7 @@ export function buildAccountRuntimeComposition(deps: {
     taskEngine: deps.taskEngine,
     getAgentClasses: () => deps.stagedConfiguration.snapshot.config.agentClasses,
     attemptExecutionBackend: deps.attemptExecutionBackend,
+    windowsSpawn: deps.windowsSpawn,
   });
   const executionServices = buildAccountExecutionServices({
     stagedConfiguration: deps.stagedConfiguration,
@@ -135,6 +138,7 @@ export function buildAccountRuntimeComposition(deps: {
     getRuntimeConfiguration: deps.getRuntimeConfiguration,
     getActiveRuntimeConfiguration: deps.getActiveRuntimeConfiguration,
     probeCommand: deps.probeCommand,
+    createLocalProcessRunner: deps.createLocalProcessRunner,
     attemptExecutionBackend: taskServices.attemptExecutionBackend,
     attemptExecutionRepository: workspaceServices.attemptExecutionRepository,
     attemptsRoot: deps.attemptsRoot,

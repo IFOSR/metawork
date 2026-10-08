@@ -256,3 +256,9 @@ Gateway journal backup/restore 显式接收 Windows 私有文件 adapter，保�
 新增 Node-API process adapter：CreateProcess suspended、仅三个 stdio 句柄继承、执行前加入 KILL_ON_JOB_CLOSE Job，异步线程 quiescence/pause/resume 使用已验证的公开 Win32 API，取消终止整个 Job。TS 字节流抽为不含身份授权的公共平台流，Gateway 仍只接受原 authenticated WindowsPipeStream；进程 stdio 不会被误当成本地身份管道。进程退出仅在全部 Job 成员与输出收敛后报告，并显式释放句柄；原 CLI root 退出时清理其仍存活后代。
 
 新增真实 Node argv/Unicode env/2 MiB stdin/out 往返，以及后代暂停/恢复/取消和无关进程保留原生测试。本机类型检查、argv/env 纯检查和 Unix 本地会话检查通过，Windows 原生编译/执行待云端。此 adapter 尚未注入 Planner、Executor 与 worktree backend，P0 spike 仍不能代替生产链验收。
+
+生产进程适配继续：Server composition 显式加载安装内平台模块，为 Planner、worktree backend、每个独立 Local CLI/Image API runner 注入 Windows spawner。每个 adapter 保留独立 attempt map，避免一个 adapter 的 abort 扩大至其他运行实例；Unix 默认 spawn、信号和回收路径不改。新增最小 ManagedProcess 公共事件/流契约，不使用 Node 私有句柄或伪造 ChildProcess。Windows launch 明确使用 exe/com + CRT argv 编码，不把参数交给 shell；可选 npm cmd shim 需通过固定 Node 入口配置，完整可选 Codex 入口仍待评估。
+
+本机 Planner/Executor/worktree/Account composition/模块边界共 97 项通过（3 个原生 Windows 检查在 macOS 跳过），Root/Desktop 类型检查通过。新增实际 Executor cancellation receipt 等待后代消失的 Windows 集成检查。`172c48fe` 原生编译/进程门当前通过，完整 job 尚未结束；安装内真实模型任务仍不算通过。
+
+`45a71af6` 的 native companion 中断/恢复/冲突保留、全部私有文件/pointer 测试、正式安装与会话门、两个 macOS 架构和 Docker 回归通过；独立 P0 carrier 测试的 reparse 拒绝异常文本出现不可解码字节，导致严格消息断言失败，后续提交复验，不把该失败掩盖为整体通过。

@@ -1,3 +1,5 @@
+import { createWindowsProcessSpawner, loadWindowsProcesses } from '../platform/windows-process.js';
+import { SpawnLocalCliChildProcessRunner } from '../executor/local-cli-executor-adapter.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { loadWindowsPrivateFiles } from '../platform/windows-private-files.js';
@@ -414,6 +416,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     ? candidateWindowsModule : undefined;
   const windows = windowsPipeModulePath
     ? { root: paths.root, files: loadWindowsPrivateFiles(windowsPipeModulePath) } : undefined;
+  const windowsSpawn = windowsPipeModulePath
+    ? createWindowsProcessSpawner(loadWindowsProcesses(windowsPipeModulePath)) : undefined;
   // A Desktop release protects its installation before any mutable child is
   // created. Missing native support never enables Desktop tickets on net pipes.
   windows?.files.ensurePrivateDirectory(paths.root);
@@ -886,6 +890,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   process.env.METACLAW_PLANNER_TUI_SOCKET = plannerHostSocketPath;
   const plannerHost = new PlannerHostBridge({ socketPath: plannerHostSocketPath, logger: console });
   const plannerSupervisor = new PlannerProcessSupervisor({
+    windowsSpawn,
     socketPath: plannerHostSocketPath,
     gatewaySocketPath,
     // Server startup is Workspace-neutral. Planner RPC still needs a cwd
@@ -1026,6 +1031,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   });
   let conversationRegistry: ConversationRegistry | null = null;
   accountRuntimeComposition = buildAccountRuntimeComposition({
+    windowsSpawn,
+    createLocalProcessRunner: windowsSpawn ? () => new SpawnLocalCliChildProcessRunner({ windowsSpawn }) : undefined,
     recoveryReplan,
     resolveConfigurationSnapshot: revisionId => configurationService.getSnapshot(revisionId),
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,

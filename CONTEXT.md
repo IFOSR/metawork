@@ -1090,6 +1090,14 @@ Windows SIGTERM is not an allowed graceful-stop fallback. Installed lifecycle
 and active-work cleanup acceptance remain open (ADR-0045).
 macOS Unix behavior and the existing single-use ticket/HTTP proof remain authoritative.
 
+Windows Server composition now injects an owned Job spawner into Planner,
+local CLI/Image API Executor runners and the worktree backend. The platform
+adapter owns only process/stdio operations: suspended creation, assignment before
+execution, verified thread pause/resume and whole-Job cancellation. Attempt exit
+waits for all descendants and output to settle; task/cancellation policy stays
+with the existing Kernel and Runtime owners. Actual installed model-task and
+active-work drain acceptance remain open.
+
 Windows Desktop inventory requires x64 primary executables and native modules.
 Git's pure-IL AnyCPU dependencies use a separate validated format; only the
 fixed PortableGit `usr/libexec/getprocaddr32.exe` subprocess is allowed as

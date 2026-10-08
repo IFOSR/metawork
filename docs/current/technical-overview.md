@@ -1787,6 +1787,13 @@ private completion receipt plus exit; it cannot fall back to Windows SIGTERM
 or console-wide Ctrl-Break. Unix signal behavior remains unchanged. Installed
 Server and active-work cleanup tests are still required.
 
+The installed Windows platform module also provides the process spawner selected
+by Server composition for Planner, local CLI/Image API Executors and worktree
+attempts. Each root joins its owned Job before executing; cancellation waits
+for every member to exit. Thread pause/resume uses verified quiescence and runs
+outside the JavaScript event loop. The adapter changes no Kernel scheduling or
+recovery decision. Actual installed model-task/cleanup acceptance remains open.
+
 The Windows payload inventory keeps required executables/addons at x64, checks
 CLR headers and IL-only metadata for Git Credential Manager's AnyCPU assemblies,
 and allows only PortableGit's fixed `usr/libexec/getprocaddr32.exe` as a WOW64

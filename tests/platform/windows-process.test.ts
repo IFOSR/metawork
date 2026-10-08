@@ -3,8 +3,9 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { WindowsOwnedProcess, loadWindowsProcesses, quoteWindowsArgument, windowsEnvironmentBlock } from '../../src/platform/windows-process.js';
+import { WindowsOwnedProcess, createWindowsProcessSpawner, loadWindowsProcesses, quoteWindowsArgument, windowsEnvironmentBlock } from '../../src/platform/windows-process.js';
 import { WindowsPipeStream } from '../../src/platform/windows-pipe.js';
+import { SpawnLocalCliChildProcessRunner } from '../../src/executor/local-cli-executor-adapter.js';
 
 it('quotes Windows argv without a shell and rejects ambiguous environment keys', () => {
   expect(quoteWindowsArgument('')).toBe('""');
@@ -27,9 +28,8 @@ describe.skipIf(process.platform !== 'win32')('owned native Windows processes', 
   afterEach(async () => {
     for (const child of active.splice(0)) {
       child.stdout.resume(); child.stderr.resume();
-      if (child.exitCode === null && child.signalCode === null) {
-        const done = once(child, 'close'); child.kill('SIGKILL'); await done;
-      }
+      const done = once(child, 'close');
+      if (child.kill('SIGKILL')) await done;
     }
     for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
   });
@@ -78,5 +78,27 @@ describe.skipIf(process.platform !== 'win32')('owned native Windows processes', 
     expect(await done).toEqual([null, 'SIGTERM']);
     expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
     expect(() => process.kill(unrelated.pid, 0)).not.toThrow();
+  }, 20_000);
+
+  it('keeps the Executor cancellation receipt pending until its descendant has exited', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mw-executor-job-')); roots.push(root);
+    const native = loadWindowsProcesses(resolve('native/windows/build/Release/metawork_platform.node'));
+    const runner = new SpawnLocalCliChildProcessRunner({ windowsSpawn: createWindowsProcessSpawner(native) });
+    let ready!: () => void;
+    const started = new Promise<void>(resolve => { ready = resolve; });
+    const leaf = `require('node:fs').writeFileSync('descendant.pid',String(process.pid)); setInterval(()=>{},1000);`;
+    const result = runner.run({ attemptId: 'owned-attempt', command: process.execPath,
+      args: ['-e', `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(leaf)}],{stdio:'ignore',detached:true});
+        const t=setInterval(()=>{ if(require('node:fs').existsSync('descendant.pid')) { clearInterval(t); console.log('ready'); } },10);
+        setInterval(()=>{},1000);`], cwd: root, environment: {}, onLine: line => { if (line === 'ready') ready(); } });
+    let readyTimer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([started, result.then(() => { throw new Error('Executor exited before readiness'); }),
+        new Promise<never>((_resolve, reject) => { readyTimer = setTimeout(() => reject(new Error('Executor readiness timed out')), 5000); })]);
+      const pid = Number(await readFile(join(root, 'descendant.pid'), 'utf8'));
+      runner.abort('owned-attempt');
+      expect((await result).diagnostics?.terminationSource).toBe('abort');
+      expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
+    } finally { if (readyTimer) clearTimeout(readyTimer); runner.abort(); await result; }
   }, 20_000);
 });

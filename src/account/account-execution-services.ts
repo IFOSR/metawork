@@ -18,8 +18,9 @@ import { HarnessDriverRegistry } from '../executor/harness-driver-registry.js';
 import { CodexCliDriver } from '../executor/codex-cli-driver.js';
 import { PiCliDriver } from '../executor/pi-cli-driver.js';
 import type { ProbeCommandRunner } from '../executor/harness-driver.js';
-import { LocalCliExecutorAdapter } from '../executor/local-cli-executor-adapter.js';
+import { LocalCliExecutorAdapter, type LocalCliChildProcessRunner } from '../executor/local-cli-executor-adapter.js';
 import { ContainerCompatibilityAdapter } from '../executor/container-compatibility-adapter.js';
+import { ImageApiCliDriver } from '../executor/image-api-cli-driver.js';
 import { ImageApiExecutorAdapter } from '../executor/image-api-executor-adapter.js';
 import { PiCompositeExecutorAdapter } from '../executor/pi-composite-executor-adapter.js';
 import { getPermissionProfile } from '../resource/permission-profiles.js';
@@ -42,6 +43,7 @@ export function buildAccountExecutionServices(deps: {
   ) => ReturnType<typeof buildRuntimeConfigurationView> | null;
   getActiveRuntimeConfiguration?: () => ReturnType<typeof buildRuntimeConfigurationView>;
   probeCommand?: ProbeCommandRunner;
+  createLocalProcessRunner?: () => LocalCliChildProcessRunner;
   attemptExecutionBackend: AttemptExecutionBackend;
   attemptExecutionRepository: SqliteAttemptExecutionRepository;
   attemptsRoot: string;
@@ -61,6 +63,7 @@ export function buildAccountExecutionServices(deps: {
     driverRegistry.register(driver, input => {
       if ((deps.attemptExecutionBackend.kind ?? 'container') === 'worktree') {
         const piAdapter = new LocalCliExecutorAdapter({
+          processRunner: deps.createLocalProcessRunner?.(),
           agentClassId: input.authorizedBinding.agentClassRef,
           driver: input.driver,
           runtimeBinding: input.runtimeBinding,
@@ -72,6 +75,7 @@ export function buildAccountExecutionServices(deps: {
         });
         if (input.driver.id !== 'pi-cli') return piAdapter;
         const imageAdapter = new ImageApiExecutorAdapter({
+          runner: deps.createLocalProcessRunner ? new ImageApiCliDriver({ processRunner: deps.createLocalProcessRunner() }) : undefined,
           agentClassId: input.authorizedBinding.agentClassRef,
           authorizedBinding: input.authorizedBinding,
           runtimeBinding: input.runtimeBinding,

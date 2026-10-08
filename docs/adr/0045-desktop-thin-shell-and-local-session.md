@@ -78,6 +78,15 @@ null DACLs and unsafe links remain rejected. Pipe peer authentication continues
 to require the exact current-user SID; file administration grants do not change
 that identity contract.
 
+The same platform boundary provides owned process Jobs and byte streams for
+Planner and Executor adapters. Server composition injects the installed native
+spawner into those lifecycle owners; Kernel policies and cancellation fences
+remain unchanged. A child starts suspended, joins its non-inheritable Job before
+execution, and inherits only its three stdio handles. Pause/resume uses documented
+thread operations with quiescence checks; cancellation reports completion only
+after the kernel confirms that the Job is empty. Plain stdio streams carry no
+Gateway identity. Unix process behavior continues through the existing spawner.
+
 This selects the carrier, not a completed transport: asynchronous connection
 lifecycle, cancellation, bounded buffering, private file writes/replacement,
 remote rejection and packaged dependency closure remain validation gates. The

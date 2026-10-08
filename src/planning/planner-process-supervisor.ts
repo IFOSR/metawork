@@ -1,4 +1,7 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import type { ManagedProcess } from '../platform/process-port.js';
+import type { WindowsOwnedProcess, WindowsProcessSpawner } from '../platform/windows-process.js';
+type PlannerChildProcess = ManagedProcess;
 import { existsSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { mkdir } from 'node:fs/promises';
@@ -136,6 +139,7 @@ type SpawnFn = typeof spawn;
 export interface PlannerProcessSupervisorDeps {
   command?: string;
   spawn?: SpawnFn;
+  windowsSpawn?: WindowsProcessSpawner;
   plannerHome?: string;
   cwd?: string;
   /** Runtime-owned directory used as the Planner process cwd and safety root. */
@@ -190,8 +194,8 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
   private currentRuntimeEnvironment?: Readonly<NodeJS.ProcessEnv>;
   private readonly sessionQueues = new Map<string, Promise<void>>();
   private readonly closedSessions = new Set<string>();
-  private readonly activeProcesses = new Set<ChildProcess>();
-  private readonly trackedProcesses = new Map<ChildProcess, TrackedPlannerProcess>();
+  private readonly activeProcesses = new Set<PlannerChildProcess>();
+  private readonly trackedProcesses = new Map<PlannerChildProcess, TrackedPlannerProcess>();
   private stopping = false;
 
   constructor(private readonly deps: PlannerProcessSupervisorDeps = {}) {
@@ -316,7 +320,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       input.configurationRevision,
     );
     this.assertSessionOpen(input.sessionId);
-    const child = (this.deps.spawn ?? spawn)(launch.command, launch.args, {
+    const child: ManagedProcess = (this.deps.spawn ?? this.deps.windowsSpawn ?? spawn)(launch.command, launch.args, {
       cwd: launch.cwd,
       stdio: 'inherit',
       env: launch.env,
@@ -347,7 +351,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       this.currentConfigurationRevision,
     );
     this.assertSessionOpen('probe');
-    const child = (this.deps.spawn ?? spawn)(launch.command, ['--version'], {
+    const child: ManagedProcess = (this.deps.spawn ?? this.deps.windowsSpawn ?? spawn)(launch.command, ['--version'], {
       cwd: launch.cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: launch.env,
@@ -436,7 +440,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     const stateRequestId = `${requestId}-state`;
 
     return new Promise((resolve, reject) => {
-      const proc = (this.deps.spawn ?? spawn)(launch.command, launch.args, {
+      const proc: ManagedProcess = (this.deps.spawn ?? this.deps.windowsSpawn ?? spawn)(launch.command, launch.args, {
         cwd: launch.cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: launch.env,
@@ -1057,7 +1061,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     }
   }
 
-  private trackProcess(child: ChildProcess, sessionId: string): TrackedPlannerProcess {
+  private trackProcess(child: PlannerChildProcess, sessionId: string): TrackedPlannerProcess {
     this.activeProcesses.add(child);
     let finish!: () => void;
     let completed = false;
@@ -1081,11 +1085,11 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     return tracked;
   }
 
-  private async terminateProcesses(processes: ChildProcess[]): Promise<void> {
+  private async terminateProcesses(processes: PlannerChildProcess[]): Promise<void> {
     await Promise.all(processes.map(child => this.terminateProcess(child)));
   }
 
-  private async terminateProcess(child: ChildProcess): Promise<void> {
+  private async terminateProcess(child: PlannerChildProcess): Promise<void> {
     const tracked = this.trackedProcesses.get(child);
     if (!tracked) return;
     tracked.stopPromise ??= (async () => {

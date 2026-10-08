@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import type { ManagedProcess } from '../platform/process-port.js';
+import { WindowsOwnedProcess, type WindowsProcessSpawner } from '../platform/windows-process.js';
 import { stat } from 'node:fs/promises';
 import type {
   AttemptExecutionBackend,
@@ -15,7 +17,7 @@ interface WorktreeAttempt {
   input: CreateAttemptExecutionInput;
   record: AttemptExecutionRecord;
   workspacePath: string;
-  child: ChildProcess | null;
+  child: ManagedProcess | null;
   logs: string;
   waitPromise: Promise<number> | null;
   resolveWait: ((exitCode: number) => void) | null;
@@ -29,6 +31,7 @@ interface WorktreeAttempt {
  * the Runtime moves away from sibling Executor containers.
  */
 export class WorktreeAttemptExecutionBackend implements AttemptExecutionBackend {
+  constructor(private readonly windowsSpawn?: WindowsProcessSpawner) {}
   readonly kind = 'worktree' as const;
   readonly pathMode = 'native' as const;
   private readonly attempts = new Map<string, WorktreeAttempt>();
@@ -87,7 +90,7 @@ export class WorktreeAttemptExecutionBackend implements AttemptExecutionBackend 
   async start(containerId: string): Promise<void> {
     const attempt = this.requireAttempt(containerId);
     if (attempt.child) return;
-    const child = spawn(attempt.input.command, attempt.input.args, {
+    const child: ManagedProcess = (this.windowsSpawn ?? spawn)(attempt.input.command, attempt.input.args, {
       cwd: attempt.workspacePath,
       env: {
         ...process.env,
@@ -137,8 +140,9 @@ export class WorktreeAttemptExecutionBackend implements AttemptExecutionBackend 
     const attempt = this.requireAttempt(containerId);
     const pid = attempt.child?.pid;
     if (!pid || attempt.record.status !== 'running') return;
-    if (process.platform === 'win32') throw new Error('worktree attempt pause is unavailable on Windows');
-    process.kill(-pid, 'SIGSTOP');
+    if (attempt.child instanceof WindowsOwnedProcess) await attempt.child.pause();
+    else if (process.platform === 'win32') throw new Error('Windows owned process adapter required for pause');
+    else process.kill(-pid, 'SIGSTOP');
     attempt.record.status = 'paused';
   }
 
@@ -146,8 +150,9 @@ export class WorktreeAttemptExecutionBackend implements AttemptExecutionBackend 
     const attempt = this.requireAttempt(containerId);
     const pid = attempt.child?.pid;
     if (!pid || attempt.record.status !== 'paused') return;
-    if (process.platform === 'win32') throw new Error('worktree attempt resume is unavailable on Windows');
-    process.kill(-pid, 'SIGCONT');
+    if (attempt.child instanceof WindowsOwnedProcess) await attempt.child.resume();
+    else if (process.platform === 'win32') throw new Error('Windows owned process adapter required for resume');
+    else process.kill(-pid, 'SIGCONT');
     attempt.record.status = 'running';
   }
 

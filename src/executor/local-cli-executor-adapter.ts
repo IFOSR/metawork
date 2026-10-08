@@ -1,4 +1,6 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import type { ManagedProcess } from '../platform/process-port.js';
+import { WindowsOwnedProcess, type WindowsProcessSpawner } from '../platform/windows-process.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { OperationActivityMonitor, type OperationHealth } from './operation-activity-monitor.js';
 import type { RuntimePrivateConfigurationBinding } from '../configuration/types.js';
@@ -77,10 +79,11 @@ type LocalCliSpawn = (
     detached: boolean;
     windowsHide: boolean;
   },
-) => ChildProcess;
+) => ManagedProcess;
 
 export interface SpawnLocalCliChildProcessRunnerDependencies {
   spawnProcess?: LocalCliSpawn;
+  windowsSpawn?: WindowsProcessSpawner;
   hostEnvironment?: NodeJS.ProcessEnv;
   signalProcess?: (pid: number, signal: NodeJS.Signals) => void;
   terminationGraceMs?: number;
@@ -396,7 +399,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
 
 export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunner {
   private readonly activeProcesses = new Map<string, {
-    child: ChildProcess;
+    child: ManagedProcess;
     abort(): void;
   }>();
   private readonly spawnProcess: LocalCliSpawn;
@@ -407,7 +410,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
   private readonly processGroupExists: (pid: number) => boolean;
 
   constructor(dependencies: SpawnLocalCliChildProcessRunnerDependencies = {}) {
-    this.spawnProcess = dependencies.spawnProcess ?? spawn;
+    this.spawnProcess = dependencies.spawnProcess ?? dependencies.windowsSpawn ?? spawn;
     this.hostEnvironment = dependencies.hostEnvironment ?? process.env;
     this.signalProcess = dependencies.signalProcess ?? process.kill;
     this.terminationGraceMs = dependencies.terminationGraceMs ?? DEFAULT_TERMINATION_GRACE_MS;
@@ -433,7 +436,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
     }
 
     return new Promise(resolve => {
-      const child = this.spawnProcess(input.command, input.args, {
+      const child: ManagedProcess = this.spawnProcess(input.command, input.args, {
         cwd: input.cwd,
         env: {
           ...safeHostEnvironment(this.hostEnvironment),
@@ -469,6 +472,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
         const pid = child.pid;
         if (!pid) return;
         try {
+          if (child instanceof WindowsOwnedProcess) { child.kill(signal); return; }
           this.signalProcess(process.platform === 'win32' ? pid : -pid, signal);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
@@ -587,7 +591,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
   abort(attemptId?: string): void {
     const processes = attemptId
       ? [this.activeProcesses.get(attemptId)].filter(
-          (entry): entry is { child: ChildProcess; abort(): void } => Boolean(entry),
+          (entry): entry is { child: ManagedProcess; abort(): void } => Boolean(entry),
         )
       : [...this.activeProcesses.values()];
     for (const activeProcess of processes) activeProcess.abort();

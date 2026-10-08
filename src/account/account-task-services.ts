@@ -5,6 +5,7 @@
  * 作用域的 runtime-wide 服务，按账户构造一次。
  */
 
+import type { WindowsProcessSpawner } from '../platform/windows-process.js';
 import type { TaskEngine } from '../task/task-engine.js';
 import { TaskRuntimeService } from '../task/task-runtime-service.js';
 import { AgentClassService } from '../executor/agent-class-service.js';
@@ -23,6 +24,7 @@ export function buildAccountTaskServices(deps: {
   agentClasses?: ConstructorParameters<typeof AgentClassService>[0]['agentClasses'];
   getAgentClasses?: ConstructorParameters<typeof AgentClassService>[0]['getAgentClasses'];
   attemptExecutionBackend?: AttemptExecutionBackend;
+  windowsSpawn?: WindowsProcessSpawner;
 }): AccountTaskServices {
   return {
     taskRuntimeService: new TaskRuntimeService({
@@ -33,13 +35,13 @@ export function buildAccountTaskServices(deps: {
       agentClasses: deps.agentClasses,
       getAgentClasses: deps.getAgentClasses,
     }),
-    attemptExecutionBackend: deps.attemptExecutionBackend ?? createDefaultAttemptExecutionBackend(),
+    attemptExecutionBackend: deps.attemptExecutionBackend ?? createDefaultAttemptExecutionBackend(deps.windowsSpawn),
   };
 }
 
-function createDefaultAttemptExecutionBackend(): AttemptExecutionBackend {
+function createDefaultAttemptExecutionBackend(windowsSpawn?: WindowsProcessSpawner): AttemptExecutionBackend {
   const backend = (process.env.METACLAW_EXECUTOR_BACKEND ?? 'worktree').trim().toLowerCase();
   if (backend === 'docker' || backend === 'container') return new DockerCliAttemptExecutionBackend();
-  if (backend === 'worktree' || backend === 'native' || backend === '') return new WorktreeAttemptExecutionBackend();
+  if (backend === 'worktree' || backend === 'native' || backend === '') return new WorktreeAttemptExecutionBackend(windowsSpawn);
   throw new Error(`Unsupported METACLAW_EXECUTOR_BACKEND: ${backend}`);
 }
