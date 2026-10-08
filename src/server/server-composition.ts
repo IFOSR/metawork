@@ -1,3 +1,4 @@
+import { resolveHostToolPath } from '../utils/host-tool-path.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { DesktopSessionService } from '../management/desktop-session.js';
@@ -402,6 +403,8 @@ async function startWebMode(options: {
 }
 
 export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
+  const toolPath = await resolveHostToolPath(process.env);
+  if (toolPath !== undefined) process.env.PATH = toolPath;
   const paths = resolveMetaWorkPaths();
   const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
   const applicationRoot = existsSync(paths.appCurrent)

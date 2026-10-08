@@ -7880,3 +7880,70 @@ html[data-platform='desktop'] .workspace-header { column-gap: 16px; }
   html[data-platform='desktop'] .workspace-header { grid-template-columns: minmax(0, 1fr); }
   html[data-platform='desktop'] .workspace-runtime { grid-column: 1; grid-row: 3; justify-self: start; }
 }
+
+/* Keep tool notices out of the flexible workspace row, even when absent. */
+.workspace-main {
+  grid-template-rows: minmax(78px, auto) auto minmax(0, 1fr) auto;
+}
+.workspace-main > .workspace-header { grid-row: 1; }
+.workspace-main > .agent-readiness-banner { grid-row: 2; }
+.workspace-main > .workspace-body { grid-row: 3; }
+.workspace-main > .composer-wrap { grid-row: 4; }
+
+.agent-readiness-banner { align-self: start; }
+.agent-readiness-required,
+.agent-readiness-optional {
+  background: var(--surface-raised, var(--bg-panel));
+  border-color: var(--line-subtle, var(--border));
+  align-items: flex-start;
+  padding: 14px 16px;
+}
+.agent-readiness-required {
+  border-inline-start: 3px solid var(--yellow);
+}
+.agent-readiness-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 600;
+}
+.agent-readiness-copy { flex: 1; min-width: 0; }
+.agent-readiness-banner strong { font-size: 13px; line-height: 1.6; }
+.agent-readiness-banner p { font-size: 12px; line-height: 1.65; }
+.agent-readiness-banner small { color: var(--text-dim); overflow-wrap: anywhere; }
+.agent-readiness-banner .agent-readiness-actions { flex-wrap: wrap; }
+.agent-readiness-banner .agent-readiness-actions button,
+.agent-readiness-banner .agent-readiness-actions a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  text-decoration: none;
+}
+.agent-readiness-banner .agent-readiness-actions :is(button, a):hover {
+  background: var(--bg-elevated);
+  border-color: var(--accent);
+}
+.agent-readiness-banner :is(button, a, summary):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.agent-readiness-details { margin-top: 6px; font-size: 12px; }
+.agent-readiness-details summary { width: fit-content; cursor: pointer; color: var(--text-dim); }
+.agent-readiness-details[open] .agent-readiness-actions { margin-top: 8px; }
+@media (max-width: 760px) {
+  .agent-readiness-optional { flex-direction: row; flex-wrap: wrap; gap: 10px; }
+  .agent-readiness-optional > .agent-readiness-actions { margin-inline-start: 32px; }
+}

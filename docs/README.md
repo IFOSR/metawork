@@ -210,3 +210,5 @@ only the applicable accepted ADRs. Avoid loading every dated plan by default.
 Desktop implementation: [isolated branch progress](plans/2026-10-05-metawork-desktop-implementation.md).
 
 - [v0.1.6 internal Desktop release](plans/2026-10-08-v0.1.6-release.md) — 2026-10-08 release and artifact acceptance.
+
+- [v0.1.7 Desktop release](plans/2026-10-08-v0.1.7-release.md) — CLI discovery and readiness UI.

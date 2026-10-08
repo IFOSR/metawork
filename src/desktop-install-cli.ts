@@ -1,3 +1,4 @@
+import { resolveHostToolPath } from './utils/host-tool-path.js';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -21,6 +22,8 @@ export async function runDesktopInstall(
   argv: string[],
   input: AsyncIterable<string | Buffer> = process.stdin,
 ): Promise<void> {
+  const toolPath = await resolveHostToolPath(process.env);
+  if (toolPath !== undefined) process.env.PATH = toolPath;
   const [command, resourcesArg, rootArg, desktopVersion] = argv;
   if (!['install', 'update', 'rollback', 'prepare-desktop'].includes(command ?? '') || !resourcesArg || !rootArg || !desktopVersion) {
     throw new Error('Invalid desktop installer arguments');

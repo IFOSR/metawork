@@ -1890,3 +1890,13 @@ invoice values: build, run the bundled Python on
 `npm run smoke:pi-pdf`. API keys are never written into the test home. The real
 Desktop invoice task is also verified through Kernel publication and billing,
 not only by an HTTP success or standalone command. See the PDF repair plan.
+
+### macOS host CLI discovery
+
+Server startup and Desktop installation augment their inherited PATH with the
+user login shell PATH (bounded to three seconds), followed by standard Homebrew,
+user-local and stable tool-manager paths. Only PATH is imported; inherited
+packaged tools retain priority and empty/relative entries are excluded. Readiness
+probes, configuration checks and Executor launches share the resulting Server
+environment. Shell failure falls back without preventing startup. Restart an
+already running Server to pick up this startup fix.

@@ -2337,12 +2337,12 @@ export function SettingsPanel({
                       <div className="agent-readiness-settings-card agent-readiness-settings-optional" key={agent.agentId}>
                         <div>
                           <strong>
-                            {agent.displayName} {agent.status === 'installed' ? '已安装' : '可选增强'}
+                            {agent.displayName} {agent.status === 'installed' ? '已安装' : agent.status === 'checking' ? '正在检测' : agent.status === 'broken' ? '暂不可用' : '未检测到 · 可选工具'}
                           </strong>
                           <p>
                             {agent.status === 'installed'
                               ? '执行工具已安装，目前没有启用的智能体需要它。'
-                              : '当前没有启用的智能体需要此工具，不影响其他智能体的配置保存。'}
+                              : agent.status === 'checking' ? '正在检查执行工具是否可用…' : '当前没有启用的智能体需要此工具，不影响其他智能体的配置保存。'}
                           </p>
                         </div>
                         {agent.status !== 'installed' && (

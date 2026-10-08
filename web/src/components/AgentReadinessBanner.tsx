@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { AgentReadiness } from '../api/types';
 import { requiredAgentBlock } from '../agent-readiness';
 
@@ -10,9 +11,11 @@ export function AgentReadinessBanner({
   onRefresh: () => void;
   onOpenSettings: () => void;
 }) {
+  const [dismissedStatus, setDismissedStatus] = useState<string | null>(null);
   const block = requiredAgentBlock(agents);
   const codex = agents.find(agent => agent.agentId === 'codex-cli');
-  const showCodexNotice = codex && !codex.required && codex.status !== 'installed';
+  const showCodexNotice = codex && !codex.required && codex.status !== 'installed'
+    && codex.status !== 'checking' && dismissedStatus !== codex.status;
   // 文案一律用服务端按 AgentClass 解析出的名字，与设置里的“智能体名称”保持一致。
   const requiredAgentName = block.agent?.displayName ?? '必需智能体';
 
@@ -47,26 +50,23 @@ export function AgentReadinessBanner({
       )}
       {showCodexNotice && (
         <div className="agent-readiness-optional">
-          <div>
-            <strong>{codex.displayName} 未安装，可选增强</strong>
-            <p>
-              安装后对 GPT/Codex 系列模型的兼容性更强，更适合代码理解、修改、测试和仓库级工程任务，
-              并提供额外的执行工具选择。多个助手可以共用同一个工具。
-            </p>
+          <span className="agent-readiness-icon" aria-hidden="true">i</span>
+          <div className="agent-readiness-copy">
+            <strong>{codex.displayName} · {codex.status === 'broken' ? '暂不可用' : '未检测到'}</strong>
+            <p>可选工具，不影响当前工作。已安装？可以重新检测。</p>
+            <details className="agent-readiness-details">
+              <summary>了解更多</summary>
+              <p>用于 GPT/Codex 模型的代码任务，多个智能体可以共用。终端中可用的工具，在桌面应用中可能尚未被识别。</p>
+              <div className="agent-readiness-actions">
+                <a href={codex.installUrl} target="_blank" rel="noopener noreferrer">安装说明 ↗</a>
+                <button type="button" className="secondary" onClick={onOpenSettings}>管理智能体</button>
+              </div>
+            </details>
           </div>
           <div className="agent-readiness-actions">
-            <button
-              type="button"
-              onClick={() => codex.installUrl && window.open(
-                codex.installUrl,
-                '_blank',
-                'noopener,noreferrer',
-              )}
-            >
-              了解安装方式
-            </button>
-            <button type="button" className="secondary" onClick={onOpenSettings}>设置</button>
             <button type="button" className="secondary" onClick={onRefresh}>重新检测</button>
+            <button type="button" className="secondary" onClick={() => setDismissedStatus(codex.status)}
+              aria-label="暂时收起可选工具提示" title="本次页面访问内收起，仍可在设置中查看">暂时收起</button>
           </div>
         </div>
       )}
