@@ -16,6 +16,7 @@ std::wstring string_argument(napi_env env, napi_value value) {
 }
 
 #include "pipe.h"
+#include "process.h"
 
 napi_value files(napi_env env, napi_callback_info info) {
   try {
@@ -98,6 +99,13 @@ napi_value initialize(napi_env env, napi_value exports) {
     if (napi_create_function(env, name, NAPI_AUTO_LENGTH, pipes, const_cast<char*>(name), &function) != napi_ok
       || napi_set_named_property(env, exports, name, function) != napi_ok) {
       napi_throw_error(env, nullptr, "Pipe initialization failed"); return nullptr;
+    }
+  }
+  for (const char* name : { "processSpawn", "processStatus", "processKill", "processPause", "processResume", "processDispose" }) {
+    napi_value function;
+    if (napi_create_function(env, name, NAPI_AUTO_LENGTH, windows_process::operations, const_cast<char*>(name), &function) != napi_ok
+      || napi_set_named_property(env, exports, name, function) != napi_ok) {
+      napi_throw_error(env, nullptr, "Process initialization failed"); return nullptr;
     }
   }
   return exports;

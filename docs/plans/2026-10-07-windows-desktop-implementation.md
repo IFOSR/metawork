@@ -248,3 +248,11 @@ ReleasePointerTransaction 新增显式 Windows adapter，仍按 database/configu
 Gateway journal backup/restore 显式接收 Windows 私有文件 adapter，保留原 manifest/hash/index 身份检查和全量 preflight。新增 guarded staging-directory move 及不可覆盖原子文件发布，恢复不用覆盖 rename 或暂时多硬链接，遇到并发目标必须复验原 hash，失败不更改冲突正文。更新器的配置、迁移、activation journal、companion 以及 prepared recovery 路径传递同一 adapter；旧普通数据库切换为版本指针使用专门的已验证 regular-file promotion，常规指针 API 仍拒绝覆盖普通文件。数据库 clone/backup 在 Windows 激活前用可写私有句柄刷新。
 
 新增原生目录发布/冲突拒绝/文件指针迁移，以及真实 SQLite 索引+segment companion 的中断发布、重试、冲突保留测试。本机 updater/companion/指针事务 58 项及 Root/Desktop 类型检查通过。完整 Desktop 协调 helper/NSIS 尚未接入，不据本次源码适配宣称 P3 升级完成；Windows 原生与 Docker 持久化回归待此提交执行。
+
+`11dd03b8` / run `37720845429` 全部当前自动化 job 成功：Windows build/原生 transport/store/process spike/完整资源/正式隔离安装/真实安装 Server 自动启动复用/Desktop 票据 HTTP 会话/普通浏览器 401/正式 drain 与退出清理；macOS arm64、Intel（含真实 Electron）及 Linux Docker owning-seam 回归全部通过。此矩阵未覆盖 packaged GUI、真实模型任务或 NSIS，不能关闭 P2–P5；后续提交仍需复验。
+
+### 生产 Job 进程适配开发（2026-10-08，未选择为运行默认）
+
+新增 Node-API process adapter：CreateProcess suspended、仅三个 stdio 句柄继承、执行前加入 KILL_ON_JOB_CLOSE Job，异步线程 quiescence/pause/resume 使用已验证的公开 Win32 API，取消终止整个 Job。TS 字节流抽为不含身份授权的公共平台流，Gateway 仍只接受原 authenticated WindowsPipeStream；进程 stdio 不会被误当成本地身份管道。进程退出仅在全部 Job 成员与输出收敛后报告，并显式释放句柄；原 CLI root 退出时清理其仍存活后代。
+
+新增真实 Node argv/Unicode env/2 MiB stdin/out 往返，以及后代暂停/恢复/取消和无关进程保留原生测试。本机类型检查、argv/env 纯检查和 Unix 本地会话检查通过，Windows 原生编译/执行待云端。此 adapter 尚未注入 Planner、Executor 与 worktree backend，P0 spike 仍不能代替生产链验收。
