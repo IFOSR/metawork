@@ -1,7 +1,7 @@
 # Desktop adoption of an existing Web Runtime
 
 - Plan date: 2026-10-08
-- Status: Implementation and local acceptance complete; release pending
+- Status: Complete; published in v0.1.6 on 2026-10-08
 
 ## Problem and delivery
 
@@ -68,3 +68,5 @@ normal installation or customer data for acceptance.
 - Closing implementation commit: the `fix(desktop): adopt existing native runtimes`
   commit containing this plan. Release delivery is tracked in
   `2026-10-08-v0.1.6-release.md`.
+
+- Customer delivery: [v0.1.6](https://github.com/IFOSR/metawork/releases/tag/v0.1.6), source commit `c534d4c6`; final DMG passed clean installation, native reuse and old-version adoption.

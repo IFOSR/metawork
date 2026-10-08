@@ -74,7 +74,7 @@ existing names where changing them would break installations.
 source of truth for the current installable version. A newer source checkout
 is not a published release.
 
-The current internal release is **v0.1.5**. It includes the Server/Web/TUI
+The current internal release is **v0.1.6**. It includes the Server/Web/TUI
 runtime and an Apple Silicon Desktop DMG for company use. The Desktop DMG is
 **not signed with an Apple Developer ID and is not notarized**; it is intentionally
 distributed for the internal macOS fleet. The [release page](https://github.com/IFOSR/metawork/releases/latest)
