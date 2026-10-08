@@ -79,11 +79,15 @@ export async function probePlatformFiles(addon, output, addonPath) {
       checks.push('two concurrent writers and two readers observe only whole private records');
     }
     addon.writePrivateFile(root, 'target', Buffer.from('retained'));
+    addon.flushPrivateFile(join(root, 'target'));
+    addon.flushPrivateDirectory(root);
+    checks.push('writable private file and directory handles flush successfully');
     await link(join(root, 'target'), join(root, 'hard-link'));
     assert.throws(() => addon.writePrivateFile(root, 'hard-link', Buffer.from('denied')), /hard links/);
     await rm(join(root, 'hard-link'));
     await symlink(join(root, 'nested'), join(root, 'junction'), 'junction');
     assert.throws(() => addon.ensurePrivateDirectory(join(root, 'junction')), /directory/);
+    assert.throws(() => addon.flushPrivateDirectory(join(root, 'junction')), /reparse/);
     assert.throws(() => addon.writePrivateFile(root, 'junction\\endpoint.json', Buffer.from('denied')), /directory/);
     assert.equal(addon.readPrivateFile(root, 'target').toString(), 'retained');
     checks.push('hard-link and reparse replacement denied');

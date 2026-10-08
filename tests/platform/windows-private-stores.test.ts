@@ -3,6 +3,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createProductionSecretStore } from '../../src/configuration/production-secret-store.js';
+import { FileConfigurationRepository } from '../../src/configuration/file-configuration-repository.js';
+import { AnyFusionConfigurationV2Schema } from '../../src/configuration/schema.js';
+import { dump } from 'js-yaml';
 import { loadWindowsPrivateFiles, type WindowsPrivateFileRoot } from '../../src/platform/windows-private-files.js';
 import { readEndpointManifest, writeEndpointManifest, type EndpointManifest } from '../../src/server/server-endpoint-manifest.js';
 
@@ -63,5 +66,24 @@ describe.skipIf(process.platform !== 'win32')('native Windows credential and end
     catch (error) { failure = error; }
     expect(failure).toBeInstanceOf(Error);
     expect((failure as NodeJS.ErrnoException).code).not.toBe('ENOENT');
+  });
+  it('persists revisions and recovers a prepared activation through native durable files', async () => {
+    const repository = new FileConfigurationRepository(join(windows.root, 'configuration'), windows);
+    await repository.initialize();
+    const config = AnyFusionConfigurationV2Schema.parse({ schemaVersion: 2, providers: {}, models: {}, harnesses: {},
+      agentClasses: {}, permissionProfiles: {}, runtimePolicy: {}, gateway: {} });
+    for (const revisionId of ['first', 'second']) {
+      await repository.writeRevision({ revisionId, contentHash: revisionId, files: { 'config.yaml': dump(config) } });
+    }
+    await repository.activateRevision('first', null);
+    expect((await repository.getActiveSnapshot()).revisionId).toBe('first');
+    await repository.journal.writePrepared({ transactionId: 'interrupted', previousRevisionId: 'first', nextRevisionId: 'second' });
+    await repository.replaceActivePointer('second');
+    const recovered = new FileConfigurationRepository(repository.rootPath, windows);
+    expect(await recovered.recover()).toEqual({ status: 'recovered', activeRevisionId: 'second' });
+    expect((await recovered.journal.read())?.phase).toBe('committed');
+    expect((await recovered.getActiveSnapshot()).revisionId).toBe('second');
+    await recovered.restoreActiveRevision('first', 'second');
+    expect((await recovered.getActiveSnapshot()).revisionId).toBe('first');
   });
 });

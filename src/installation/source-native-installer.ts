@@ -33,6 +33,7 @@ import {
 } from './native-launcher.js';
 import { writeBuildSourceMetadata, buildSourceMetadataPath } from './build-source.js';
 import { writeReleaseIdentity } from './release-identity.js';
+import type { WindowsPrivateFileRoot } from '../platform/windows-private-files.js';
 
 const RELEASE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 
@@ -64,6 +65,7 @@ export class SourceNativeInstaller {
     detectCommand(command: string): Promise<boolean>;
     /** Desktop terminal integration is explicit; never replace a user's CLI on first launch. */
     installLaunchers?: boolean;
+    windows?: WindowsPrivateFileRoot;
   }) {}
 
   async install(input: SourceNativeInstallInput): Promise<SourceNativeInstallResult> {
@@ -83,7 +85,7 @@ export class SourceNativeInstaller {
       accountPaths.databaseRevisions,
       `${input.releaseId}-${configurationRevision}.db`,
     );
-    const repository = new FileConfigurationRepository(accountPaths.config);
+    const repository = new FileConfigurationRepository(accountPaths.config, this.dependencies.windows);
     const service = new ConfigurationService({
       repository,
       createRevisionId: () => configurationRevision,

@@ -36,6 +36,9 @@ napi_value files(napi_env env, napi_callback_info info) {
     if (operation == "ensurePrivateDirectory") {
       if (count != 1) throw std::runtime_error("Directory required");
       ensure_private_directory(string_argument(env, arguments[0]));
+    } else if (operation == "flushPrivateFile" || operation == "flushPrivateDirectory") {
+      if (count != 1) throw std::runtime_error("Private flush path required");
+      flush_private_path(string_argument(env, arguments[0]), operation == "flushPrivateDirectory");
     } else if (operation == "readPrivateFile") {
       if (count != 2 && count != 3) throw std::runtime_error("Root and relative file required");
       const auto data = read_private_file(string_argument(env, arguments[0]), string_argument(env, arguments[1]), maximum);
@@ -58,7 +61,7 @@ napi_value files(napi_env env, napi_callback_info info) {
 }
 
 napi_value initialize(napi_env env, napi_value exports) {
-  for (const char* name : { "ensurePrivateDirectory", "readPrivateFile", "writePrivateFile" }) {
+  for (const char* name : { "ensurePrivateDirectory", "readPrivateFile", "writePrivateFile", "flushPrivateFile", "flushPrivateDirectory" }) {
     napi_value function;
     if (napi_create_function(env, name, NAPI_AUTO_LENGTH, files, const_cast<char*>(name), &function) != napi_ok
       || napi_set_named_property(env, exports, name, function) != napi_ok) {

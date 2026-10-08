@@ -12,7 +12,8 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import type { WindowsPrivateFileRoot } from '../platform/windows-private-files.js';
 import { load } from 'js-yaml';
 import {
   ActivationJournalStore,
@@ -56,15 +57,16 @@ export class FileConfigurationRepository {
   readonly activePath: string;
   readonly journal: ActivationJournalStore;
 
-  constructor(rootPath: string) {
+  constructor(rootPath: string, private readonly windows?: WindowsPrivateFileRoot) {
     this.rootPath = resolve(rootPath);
     this.revisionsPath = join(this.rootPath, 'revisions');
     this.activePath = join(this.rootPath, 'active');
-    this.journal = new ActivationJournalStore(join(this.rootPath, 'activation-journal.json'));
+    this.journal = new ActivationJournalStore(join(this.rootPath, 'activation-journal.json'), windows);
   }
 
   async initialize(): Promise<void> {
-    await mkdir(this.revisionsPath, { recursive: true, mode: 0o700 });
+    if (this.windows) this.windows.files.ensurePrivateDirectory(this.revisionsPath);
+    else await mkdir(this.revisionsPath, { recursive: true, mode: 0o700 });
   }
 
   async writeRevision(input: WriteConfigurationRevisionInput): Promise<void> {
@@ -82,8 +84,7 @@ export class FileConfigurationRepository {
         const destination = resolveInside(stagePath, relativePath);
         await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
         const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value, 'utf8');
-        await writeFile(destination, bytes, { flag: 'wx', mode: 0o600 });
-        await syncFile(destination);
+        await this.writeRevisionFile(destination, bytes);
         manifestFiles.push({
           path: relativePath,
           sha256: createHash('sha256').update(bytes).digest('hex'),
@@ -97,15 +98,10 @@ export class FileConfigurationRepository {
         files: manifestFiles,
       };
       const manifestPath = join(stagePath, 'revision-manifest.json');
-      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
-        encoding: 'utf8',
-        flag: 'wx',
-        mode: 0o600,
-      });
-      await syncFile(manifestPath);
-      await syncDirectory(stagePath);
+      await this.writeRevisionFile(manifestPath, Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`));
+      await this.syncDirectory(stagePath);
       await rename(stagePath, finalPath);
-      await syncDirectory(this.revisionsPath);
+      await this.syncDirectory(this.revisionsPath);
       await makeTreeImmutable(finalPath);
     } catch (error) {
       await rm(stagePath, { recursive: true, force: true }).catch(() => undefined);
@@ -115,7 +111,7 @@ export class FileConfigurationRepository {
 
   async readSnapshot(revisionId: string): Promise<ConfigurationSnapshot> {
     const manifest = await this.verifyRevision(revisionId);
-    const configSource = await readFile(join(this.revisionPath(revisionId), 'config.yaml'), 'utf8');
+    const configSource = await this.readRevisionFile(join(this.revisionPath(revisionId), 'config.yaml'));
     return {
       revisionId,
       contentHash: manifest.contentHash,
@@ -171,7 +167,7 @@ export class FileConfigurationRepository {
     const temporaryPath = join(this.rootPath, `.active-${randomUUID()}`);
     await symlink(join('revisions', revisionId), temporaryPath, 'dir');
     await rename(temporaryPath, this.activePath);
-    await syncDirectory(this.rootPath);
+    await this.syncDirectory(this.rootPath);
   }
 
   /**
@@ -225,7 +221,7 @@ export class FileConfigurationRepository {
   private async verifyRevision(revisionId: string): Promise<RevisionManifest> {
     assertRevisionId(revisionId);
     const revisionPath = this.revisionPath(revisionId);
-    const source = await readFile(join(revisionPath, 'revision-manifest.json'), 'utf8');
+    const source = await this.readRevisionFile(join(revisionPath, 'revision-manifest.json'));
     const manifest = JSON.parse(source) as RevisionManifest;
     if (
       manifest.schemaVersion !== 1
@@ -236,7 +232,10 @@ export class FileConfigurationRepository {
       throw new Error(`invalid configuration revision manifest: ${revisionId}`);
     }
     for (const entry of manifest.files) {
-      const bytes = await readFile(resolveInside(revisionPath, entry.path));
+      const path = resolveInside(revisionPath, entry.path);
+      const bytes = this.windows
+        ? this.windows.files.readPrivateFile(this.windows.root, relative(this.windows.root, path), 9 * 1024 * 1024)
+        : await readFile(path);
       const actualHash = createHash('sha256').update(bytes).digest('hex');
       if (actualHash !== entry.sha256) {
         throw new Error(`configuration revision hash mismatch: ${entry.path}`);
@@ -274,6 +273,26 @@ export class FileConfigurationRepository {
   private revisionPath(revisionId: string): string {
     return join(this.revisionsPath, revisionId);
   }
+
+  private async readRevisionFile(path: string): Promise<string> {
+    return this.windows
+      ? this.windows.files.readPrivateFile(this.windows.root, relative(this.windows.root, path), 9 * 1024 * 1024).toString('utf8')
+      : readFile(path, 'utf8');
+  }
+
+  private async writeRevisionFile(path: string, bytes: Buffer): Promise<void> {
+    if (this.windows) {
+      this.windows.files.writePrivateFile(this.windows.root, relative(this.windows.root, path), bytes, 9 * 1024 * 1024);
+    } else {
+      await writeFile(path, bytes, { flag: 'wx', mode: 0o600 });
+      await syncFile(path);
+    }
+  }
+
+  private async syncDirectory(path: string): Promise<void> {
+    if (this.windows) this.windows.files.flushPrivateDirectory(path);
+    else await syncDirectory(path);
+  }
 }
 
 async function makeTreeImmutable(path: string): Promise<void> {
@@ -293,7 +312,7 @@ function resolveInside(root: string, relativePath: string): string {
   if (!relativePath || relativePath.includes('\0')) throw new Error('invalid revision file path');
   const resolved = resolve(root, relativePath);
   const rel = relative(root, resolved);
-  if (rel === '..' || rel.startsWith(`..${sep}`) || rel === '') {
+  if (rel === '..' || rel.startsWith(`..${sep}`) || rel === '' || isAbsolute(rel)) {
     throw new Error(`revision file path escapes revision directory: ${relativePath}`);
   }
   return resolved;

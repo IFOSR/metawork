@@ -212,3 +212,9 @@ Gateway 新增显式原生模块入口；只有实际 WindowsPipeStream 才能�
 本机 Root/Desktop 类型检查及生命周期、锁、普通管道拒绝、模块边界 50 项通过。新增 Windows 原生测试覆盖完整 drain 顺序、失败清理回报及错误 PID/startedAt 拒绝；云端与实际安装中的活跃任务停止仍待通过，不能据源码补齐关闭 P1/P3。
 
 `cd6ec78c` 云端原生 Server 停止测试 3 项通过（同批 stream/store/锁 22 项通过、Unix 信号专属 1 项跳过）。macOS arm64 完整回归发现 PDF 取消 fixture 偶发未经历 SIGKILL：fixture 先发布 PID 再写 stderr，取消可在两者之间关闭父管道，使 EPIPE 提前结束本应忽略 SIGTERM 的 worker。就绪发布移至首次 stderr 写完成回调，保留真实 group 消失和 SIGKILL 断言；不改变生产取消逻辑。修正后本地 PDF 两项通过，云端复验待完成。
+
+### 配置持久化的 Windows 句柄适配（2026-10-08）
+
+run `37717090425` 的原生探测确认普通文件及 NTFS 目录在 GENERIC_WRITE 句柄下 FlushFileBuffers 成功，而只读句柄均返回 Win32=5；未吞掉 fsync 错误。生产 platform 新增带祖先固定/重解析拒绝/ACL 检查的可写刷新，原子替换后刷新文件和父目录；替换后的刷新失败保留完整新文件供 journal 恢复，不再把它当临时文件删除。配置 revision 和 activation journal 显式接受同一 Windows 私有根，Desktop 安装/Server composition 接入，旧 schema/激活政策/Unix fsync 保持。
+
+新增普通/管理员 file probe 和配置两版本激活、中断恢复、回滚检查，原生云端待执行。本地类型检查与配置/安装/PDF 23 项通过。完整 updater 的指针切换及所有 Windows 初始化入口尚需继续接入，不据此宣称安装/升级完成。

@@ -505,7 +505,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
 
   if (cliCommand.kind === 'server' && cliCommand.action === 'doctor') {
     const configurationRepository = new FileConfigurationRepository(
-      accountPaths.config,
+      accountPaths.config, windows,
     );
     await configurationRepository.initialize();
     const recovery = await configurationRepository.recover();
@@ -582,7 +582,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
 
   if (cliCommand.kind === 'admin') {
     const configurationRepository = new FileConfigurationRepository(
-      accountPaths.config,
+      accountPaths.config, windows,
     );
     await configurationRepository.initialize();
     const recovery = await configurationRepository.recover();
@@ -654,7 +654,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   // before the first configuration or recovery turn.
   mkdirSync(accountPaths.workspaceStore, { recursive: true });
 
-  const configurationRepository = new FileConfigurationRepository(accountPaths.config);
+  const configurationRepository = new FileConfigurationRepository(accountPaths.config, windows);
   await configurationRepository.initialize();
   const recovery = await configurationRepository.recover();
   if (recovery.status === 'empty') {

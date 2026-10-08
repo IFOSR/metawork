@@ -55,7 +55,7 @@ export async function runDesktopInstall(
     body = '';
     const lock = await acquireRuntimeUpdateLock(paths.root, 'update');
     try {
-      await new SourceNativeInstaller({ paths, secretStore, detectCommand, installLaunchers: false }).install({
+      await new SourceNativeInstaller({ paths, secretStore, detectCommand, installLaunchers: false, windows }).install({
         releaseId: release.releaseId, sourceRoot, plannerRoot, executorPreset: 'desktop-pi',
         provider: { ...provider, region: 'international', secretReference: 'file-secret:anyfusion/providers/provider' },
       });

@@ -37,6 +37,21 @@ void ensure_private_directory(const std::wstring& path) {
   }
 }
 
+void flush_private_path(const std::wstring& path, bool directory) {
+  assert_local_path(path);
+  std::vector<std::unique_ptr<Handle>> parents;
+  for (size_t end = path.find(L'\\', 3); end != std::wstring::npos; end = path.find(L'\\', end + 1))
+    parents.push_back(pin_directory(path.substr(0, end), false));
+  // FlushFileBuffers needs GENERIC_WRITE even for an NTFS directory. Node's
+  // read-only fsync handles cannot provide this Windows durability primitive.
+  Handle file(CreateFileW(path.c_str(), GENERIC_WRITE | READ_CONTROL | FILE_READ_ATTRIBUTES,
+    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+    FILE_FLAG_OPEN_REPARSE_POINT | (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0), nullptr));
+  require(file.get() != INVALID_HANDLE_VALUE, "open private flush handle");
+  inspect_private_file(file.get(), directory);
+  require(FlushFileBuffers(file.get()) != FALSE, "flush private path");
+}
+
 void write_private_file(const std::wstring& root, const std::wstring& relative_path, const BYTE* bytes, size_t size, size_t maximum = 65536) {
   assert_local_path(root);
   require(!relative_path.empty() && relative_path.front() != L'\\'
@@ -74,6 +89,7 @@ void write_private_file(const std::wstring& root, const std::wstring& relative_p
     FILE_SHARE_READ | FILE_SHARE_DELETE, security.get(), CREATE_NEW,
     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
   require(file->get() != INVALID_HANDLE_VALUE, "create private temporary file");
+  bool replaced = false;
   try {
     inspect_private_file(file->get(), false);
     DWORD written = 0;
@@ -91,9 +107,16 @@ void write_private_file(const std::wstring& root, const std::wstring& relative_p
     std::memcpy(rename->FileName, target.data(), rename->FileNameLength);
     require(SetFileInformationByHandle(file->get(), FileRenameInfoEx, rename, static_cast<DWORD>(storage.size())) != FALSE,
       "atomic private file replacement");
+    replaced = true;
+    require(FlushFileBuffers(file->get()) != FALSE, "flush replaced private file");
+    flush_private_path(destination.substr(0, offset - 1), true);
   } catch (...) {
-    FILE_DISPOSITION_INFO disposition{ TRUE };
-    SetFileInformationByHandle(file->get(), FileDispositionInfo, &disposition, sizeof(disposition));
+    // A post-rename flush failure is an uncertain durable outcome. Preserve the
+    // complete replacement for journal recovery; only delete unpublished temps.
+    if (!replaced) {
+      FILE_DISPOSITION_INFO disposition{ TRUE };
+      SetFileInformationByHandle(file->get(), FileDispositionInfo, &disposition, sizeof(disposition));
+    }
     throw;
   }
 }
