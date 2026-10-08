@@ -115,7 +115,7 @@ class SuspendedThreads {
         }
         BOOL contained = FALSE;
         check(IsProcessInJob(process.value, job_, &contained) != FALSE && contained, "owned job process");
-        auto thread = std::make_unique<OwnedHandle>(OpenThread(THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION | THREAD_GET_CONTEXT,
+        auto thread = std::make_unique<OwnedHandle>(OpenThread(SYNCHRONIZE | THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION | THREAD_GET_CONTEXT,
           FALSE, entry.th32ThreadID));
         if (!thread->value) {
           check(GetLastError() == ERROR_INVALID_PARAMETER, "open live job thread");
@@ -124,8 +124,13 @@ class SuspendedThreads {
         check(GetProcessIdOfThread(thread->value) == entry.th32OwnerProcessID, "thread process identity");
         const DWORD previous = SuspendThread(thread->value);
         if (previous == static_cast<DWORD>(-1)) {
-          DWORD code = STILL_ACTIVE;
-          check(GetExitCodeThread(thread->value, &code) != FALSE && code != STILL_ACTIVE, "suspend live thread");
+          const DWORD error = GetLastError();
+          // A terminating thread can reject suspension before its exit code
+          // becomes visible. Require the retained object to signal; never
+          // interpret ACCESS_DENIED alone as proof that a thread has exited.
+          if (WaitForSingleObject(thread->value, 100) != WAIT_OBJECT_0) {
+            SetLastError(error); check(false, "suspend live thread");
+          }
           continue;
         }
         threads_.emplace(entry.th32ThreadID, std::move(thread));
@@ -133,9 +138,10 @@ class SuspendedThreads {
         // target has actually stopped executing user-mode instructions.
         CONTEXT context{}; context.ContextFlags = CONTEXT_CONTROL;
         if (!GetThreadContext(threads_.at(entry.th32ThreadID)->value, &context)) {
-          DWORD code = STILL_ACTIVE;
-          check(GetExitCodeThread(threads_.at(entry.th32ThreadID)->value, &code) != FALSE
-            && code != STILL_ACTIVE, "suspended thread context");
+          const DWORD error = GetLastError();
+          if (WaitForSingleObject(threads_.at(entry.th32ThreadID)->value, 100) != WAIT_OBJECT_0) {
+            SetLastError(error); check(false, "suspended thread context");
+          }
         }
         added = true;
       } while (Thread32Next(snapshot.value, &entry));
@@ -149,8 +155,7 @@ class SuspendedThreads {
     bool failed = false;
     for (auto& entry : threads_) {
       if (ResumeThread(entry.second->value) == static_cast<DWORD>(-1)) {
-        DWORD code = STILL_ACTIVE;
-        if (!GetExitCodeThread(entry.second->value, &code) || code == STILL_ACTIVE) failed = true;
+        if (WaitForSingleObject(entry.second->value, 100) != WAIT_OBJECT_0) failed = true;
       }
     }
     threads_.clear();

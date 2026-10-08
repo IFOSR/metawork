@@ -150,3 +150,11 @@ Windows 11 run `37702596665` 45 分钟超时，无 guest report，最终 QMP 截
 P0 Job 测试扩展为主 worker 持续创建短生命周期子进程（同时保留原线程创建压力），暂停时同时核对固定 worker 与新增子进程 heartbeat，取消前持有当时所有 Job 成员的进程句柄并等待真实退出。此新增压力门待原生通过。工具包验证改为只依赖已成功的 Desktop 工具构建，不再被相互独立的文件/管道测试失败短路，以一次运行收集独立缺陷，整体 workflow 仍保留失败状态。
 
 `6e8f049a` 的并发替换仍报 ACCESS_DENIED，证明共享标志修正尚不足以关闭该门。对照 Microsoft FILE_RENAME_INFO / FILE_RENAME_INFORMATION 文档，补用 Windows 11/NTFS 支持的 FileRenameInfoEx + REPLACE_IF_EXISTS/POSIX_SEMANTICS，以允许持有 delete-sharing 的旧读句柄继续读旧内容、新打开读新内容；不使用忽略 ACL/只读限制的标志。SDK target 显式设为 Windows 10 API 级别（产品最低仍 Windows 11），保留不允许 delete-sharing 的锁定目标负例，待原生验证。
+
+### 共享清单与压力验证跟进（2026-10-08）
+
+`1c3590d5` 的子进程创建压力在管理员/普通用户下通过，后续 `6a93bc45` 再现线程退出时 SuspendThread 失败而 exit code 尚未更新。新增 SYNCHRONIZE 权限并等待保留的线程对象实际 signaled；不会仅凭 ACCESS_DENIED 略过存活线程，超过 100 ms 仍失败。该门继续开放，不能将一次压力通过记为生产能力完成。
+
+`1c3590d5` 的 Windows 源码检查捕获 endpoint 被读取时 Node rename 偶发 EPERM。`6013f571` 的 replaceFile 仅在 Windows 对锁/权限类错误进行最多 500 ms 的有界重试，始终原子 rename，不先删除目标；持续错误仍失败，清单写入清理自己的临时文件。readiness 测试的旁路观察 Promise 补失败处理，避免原断言失败后清理 child 产生额外 unhandled rejection。macOS 本地清单/readiness 8 项、基本替换 1 项及类型检查通过，真实 Windows 短锁/持续锁测试待云端。
+
+macOS payload 依赖检查与已有 Intel PDF 构建检查一致：读取 otool -l 的 dependency load commands，排除模块自己的 LC_ID_DYLIB。本地实际 cryptography Mach-O 提取 libiconv/libSystem 通过；未据此宣称签名分发已验收。
