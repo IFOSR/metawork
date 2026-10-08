@@ -7,12 +7,35 @@ The project follows [Semantic Versioning](https://semver.org/) for public releas
 
 ## [Unreleased]
 
-## [0.1.5] - Unreleased
+## [0.1.7] - 2026-10-08
+
+### Fixed
+
+- Desktop launched from Finder discovers host-installed Codex CLI tools using
+  the same PATH for readiness checks and execution.
+- Optional tool notices remain compact in light/dark themes and narrow windows,
+  with refresh, details and dismissal controls and distinct readiness states.
+
+This internal release provides the macOS Apple Silicon DMG and matching native
+Runtime/Planner archives; Apple Developer ID signing and notarization are absent.
+
+## [0.1.6] - 2026-10-08
 
 ### Added
 
-- macOS Desktop release pipeline with signed/notarized Apple Silicon and Intel
-  installers, bundled Runtime/Web/Planner and reviewed Node/Git/Pi distributions.
+- Desktop adopts a matching existing native Runtime and offers an in-app upgrade
+  for older releases, preserving account configuration, credentials and history.
+
+Published as a macOS Apple Silicon internal release without Apple Developer ID
+signing or notarization.
+
+## [0.1.5] - 2026-10-07
+
+### Added
+
+- macOS Desktop release pipeline with bundled Runtime/Web/Planner and Node/Git/Pi
+  distributions. The published internal release includes Apple Silicon only;
+  signed/notarized production releases and Intel acceptance remain pending.
 - Complete release-set verification and stable download names for choosing
   Desktop or Server/Web/TUI installation from the README.
 

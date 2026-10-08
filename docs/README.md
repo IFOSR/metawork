@@ -35,7 +35,8 @@ This directory contains both current technical documentation and historical plan
 
 - [AnyFusion v1.2.0 Preview](releases/v1.2.0-preview.0.md): public preview highlights, architecture summary, deployment status, and known limitations.
 - [MetaWork v1.2.0 Preview 6](releases/v1.2.0-preview.6.md): historical preview release matrix and build notes.
-- [MetaWork v0.1.4 Release](releases/v0.1.4.md): current stable release with redesigned settings, description-first routing, independent settings AI, and corrected GitHub installation downloads.
+- [MetaWork v0.1.7 Internal Release](releases/v0.1.7.md): latest macOS arm64 internal release with host CLI discovery and compact readiness notices; Apple signing/notarization remain pending.
+- [MetaWork v0.1.4 Release](releases/v0.1.4.md): historical stable release with redesigned settings, description-first routing, independent settings AI, and corrected GitHub installation downloads.
 - [MetaWork v0.1.3 Release](releases/v0.1.3.md): previous stable release with multi-client observation features.
 - [Changelog](../CHANGELOG.md): public release history.
 
@@ -211,4 +212,4 @@ Desktop implementation: [isolated branch progress](plans/2026-10-05-metawork-des
 
 - [v0.1.6 internal Desktop release](plans/2026-10-08-v0.1.6-release.md) — 2026-10-08 release and artifact acceptance.
 
-- [v0.1.7 Desktop release](plans/2026-10-08-v0.1.7-release.md) — CLI discovery and readiness UI.
+- [v0.1.7 Desktop release](plans/2026-10-08-v0.1.7-release.md) — published latest on 2026-10-08; CLI discovery, readiness UI and artifact acceptance.
