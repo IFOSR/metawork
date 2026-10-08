@@ -72,7 +72,8 @@ void write_private_file(const std::wstring& root, const std::wstring& relative_p
   const auto temporary = destination.substr(0, offset) + L".metawork-write-" + suffix;
   PrivateSecurity security;
   auto file = std::make_unique<Handle>(CreateFileW(temporary.c_str(), GENERIC_WRITE | DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES,
-    0, security.get(), CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    FILE_SHARE_READ | FILE_SHARE_DELETE, security.get(), CREATE_NEW,
+    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
   require(file->get() != INVALID_HANDLE_VALUE, "create private temporary file");
   try {
     inspect_private_file(file->get(), false);

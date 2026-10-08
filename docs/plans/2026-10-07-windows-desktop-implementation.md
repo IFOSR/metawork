@@ -142,3 +142,5 @@ Windows 11 run `37702596665` 45 分钟超时，无 guest report，最终 QMP 截
 新增 Node/Electron 同模块的 24 次顺序重连、同名 12 并发连接、双向字节/EOF、背压、待完成读写取消、错误 PID 和名称抢占检查。尚未接入 Gateway/客户端，Windows Desktop ticket 继续关闭；公共流封装、跨账号生产模块实测和完整认证回归仍待完成。
 
 `f511e7e2` 的原生文件 Node/Electron、Desktop 偏好测试和 SQLite/Planner/Node-API 已通过。固定工具已实际执行 Node、Git、Bash、Pi 版本验证；inventory 阶段遇到带 native 扩展名的非 PE 文件，补充具体路径诊断后复验，没有跳过检查。
+
+并发原生复验 `e11aa801` 暴露 Win32 5：替换后的文件句柄关闭前，原临时文件的零共享模式短暂阻止其他 writer 原子替换。调整为 READ/DELETE sharing，继续拒绝 WRITE sharing；这允许后续原子替换而不允许原地修改。测试仍只重试明确的 sharing violation，未放宽 ACL 或把 ACCESS_DENIED 视为通过。新增云端 VM 串口回传和非点击式唤醒显示诊断，后续运行可区分 guest 未登录与网络回传不可用；当前运行继续等待，不取消安装。

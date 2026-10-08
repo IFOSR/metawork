@@ -1,5 +1,6 @@
 """Provision an isolated evaluation guest; do not publish its disk or credentials."""
 import hashlib
+import base64
 import http.server
 import json
 import os
@@ -125,6 +126,7 @@ try:
         '-drive', f'file={answer_iso},media=cdrom,if=ide,index=3,readonly=on',
         '-boot', 'order=c,once=d', '-netdev', 'user,id=net0', '-device', 'e1000e,netdev=net0',
         '-display', 'none', '-vga', 'std', '-qmp', f'unix:{root / "qmp.sock"},server=on,wait=off',
+        '-serial', f'file:{evidence / "guest-serial.log"}',
     ], stdout=log, stderr=log)
     for _ in range(100):
         if (root / 'qmp.sock').exists():
@@ -151,6 +153,17 @@ try:
     for elapsed in range(45 * 60):
         if qemu.poll() is not None:
             raise RuntimeError('Windows guest VM exited unexpectedly')
+        serial = evidence / 'guest-serial.log'
+        if report is None and serial.exists():
+            for line in serial.read_text(errors='replace').splitlines():
+                if line.startswith('MWCI_REPORT=') and len(line) < 32768:
+                    try:
+                        candidate = json.loads(base64.b64decode(line.split('=', 1)[1], validate=True))
+                        if candidate.get('scope') == 'windows11-cloud-environment' and isinstance(candidate.get('passed'), bool):
+                            report = candidate
+                            (evidence / 'windows11-guest.json').write_text(json.dumps(report, indent=2))
+                    except (ValueError, UnicodeError):
+                        pass  # A final serial line may still be in flight.
         if report is not None:
             print(json.dumps(report, indent=2), flush=True)
             if not report.get('passed'):
@@ -161,6 +174,9 @@ try:
         if elapsed % 60 == 0:
             print(f'Windows 11 guest provisioning: {elapsed}s; waiting for guest evidence', flush=True)
             ppm = evidence / 'latest-console.ppm'
+            # Wake display power saving without clicking or entering commands.
+            command('human-monitor-command', {'command-line': 'mouse_move 1 0'})
+            time.sleep(0.2)
             command('screendump', {'filename': str(ppm)})
             from PIL import Image
             with Image.open(ppm) as screenshot:
