@@ -130,6 +130,15 @@ worktree belongs in the repository or application resources.
 
 ## Installation, updates and removal
 
+The main menu's **检查更新…** checks the official latest release and offers a
+matching Mac DMG download after confirmation. It never silently installs or
+downgrades a newer local build. Install the download by quitting Desktop and
+replacing the app in Applications. **高级 → 从文件安装更新…** remains available
+for an already downloaded application. Installation selection, terminal setup,
+Server stop and clearing local login/drafts also live under **高级**.
+Reconnect is disabled while connected or connecting, and becomes available on
+connection failure. **修复未完成的更新…** appears only when recovery is required.
+
 First launch verifies the bundled distribution, accepts model configuration in
 the startup page and invokes the native installer in a separate Node process.
 Production installation does not require developer internal LLM credentials.

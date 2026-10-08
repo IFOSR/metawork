@@ -180,16 +180,19 @@ for (const scenario of scenarios) {
         await recovered.screenshot({path:join(runRoot,'recovered-upgrade.png')});
         console.log('Failed upgrade restored usable upgrade UI and safe diagnostic');
         const before=await readFile(join(installationRoot,'upgrades/desktop-activation.json'),'utf8');
-        await app.evaluate(({dialog,Menu})=>{
-          dialog.showMessageBox=async()=>({response:1,checkboxChecked:false});
-          Menu.getApplicationMenu().items[0].submenu.items.find(i=>/Repair Interrupted|修复未完成/.test(i.label)).click();
-        });
-        await new Promise(resolve=>app.once('close',resolve));
-        const repairDeadline=Date.now()+180000;
-        while(Date.now()<repairDeadline){
-          const d=await readFile(join(installationRoot,'upgrades/desktop-update-status.json'),'utf8').then(JSON.parse,()=>null);
-          if(d?.operation==='repair' && d.outcome==='rolled-back' && !await access(join(installationRoot,'upgrades/desktop-helper.lock')).then(()=>true,()=>false))break;
-          await new Promise(resolve=>setTimeout(resolve,500));
+        assert.equal(await app.evaluate(({ Menu }) => Menu.getApplicationMenu().getMenuItemById('repair-update').visible), interruptedMode);
+        if (interruptedMode) {
+          await app.evaluate(({dialog,Menu})=>{
+            dialog.showMessageBox=async()=>({response:1,checkboxChecked:false});
+            Menu.getApplicationMenu().items[0].submenu.items.find(i=>/Repair Interrupted|修复未完成/.test(i.label)).click();
+          });
+          await new Promise(resolve=>app.once('close',resolve));
+          const repairDeadline=Date.now()+180000;
+          while(Date.now()<repairDeadline){
+            const d=await readFile(join(installationRoot,'upgrades/desktop-update-status.json'),'utf8').then(JSON.parse,()=>null);
+            if(d?.operation==='repair' && d.outcome==='rolled-back' && !await access(join(installationRoot,'upgrades/desktop-helper.lock')).then(()=>true,()=>false))break;
+            await new Promise(resolve=>setTimeout(resolve,500));
+          }
         }
         const afterRepair = await readFile(join(installationRoot,'upgrades/desktop-activation.json'),'utf8');
         if (interruptedMode) assert.equal(JSON.parse(afterRepair).phase, 'rolled-back');

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { _electron } from 'playwright-core';
+import { verifyDesktopMenu } from './menu-smoke.mjs';
 
 // Clean-install smoke of the signed app; no model requests or paid task execution.
 const application = resolve(process.argv[2] ?? '');
@@ -34,6 +35,7 @@ try {
   await page.locator('.workspace-shell').waitFor({ timeout: 30000 });
   const authenticated = await page.evaluate(async () => (await (await fetch('/api/auth/session')).json()).authenticated);
   assert.equal(authenticated, true);
+  await verifyDesktopMenu(app);
   await assert.rejects(access(join(installRoot, 'internal/llm-credentials.json')));
   serverPid = JSON.parse(await readFile(join(installRoot, 'server-endpoint.json'), 'utf8')).pid;
   await page.reload();

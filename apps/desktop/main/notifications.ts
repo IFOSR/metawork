@@ -12,6 +12,7 @@ export class DesktopNotifications {
     fetch: typeof fetch;
     show: (event: ClientNotification) => void;
     unavailable: () => void;
+    available?: () => void;
   }) {}
   attach(origin: string): void {
     if (origin !== this.origin) { this.origin = origin; this.cursor = null; }
@@ -38,6 +39,7 @@ export class DesktopNotifications {
         this.deps.show(event);
       }
       this.cursor = page.cursor;
+      this.deps.available?.();
     } catch { if (!this.stopped && this.origin === origin) this.deps.unavailable(); }
     finally { this.polling = false; }
   }

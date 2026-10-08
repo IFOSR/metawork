@@ -15,6 +15,7 @@ export default {
   appId: 'com.metawork.desktop', productName: 'MetaWork', asar: true, npmRebuild: false,
   artifactName: 'MetaWork-darwin-${arch}.${ext}',
   directories: { output: 'release' },
+  icon: resolve('assets/metawork.icns'),
   files: ['dist/main.js', 'dist/preload.cjs', 'shell/**', 'package.json'],
   extraResources: [{ from: resolve(resources), to: '.', filter: ['desktop-release.json', 'trusted-release-keys.json', 'payload/**'] }],
   forceCodeSigning: !internal,

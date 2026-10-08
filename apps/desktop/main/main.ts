@@ -18,6 +18,7 @@ import { launchDesktopUpdate, pendingDesktopUpdate, prepareDesktopRepair, prepar
 import { readDesktopUpdateDiagnostic } from '../../../src/installation/desktop-update-diagnostics.js';
 import { installNativeLauncher } from '../../../src/installation/native-launcher.js';
 import { authorizeDesktopShellCheck, writeDesktopShellHealth } from '../../../src/installation/desktop-shell-health.js';
+import { checkDesktopRelease } from './release-check.js';
 import { startupFailureCode } from './startup-diagnostic.js';
 
 app.setName('MetaWork');
@@ -42,6 +43,9 @@ let selectedConfigHome: string | undefined;
 let preferences: DesktopPreferenceStore | null = null;
 let state: ShellState = { phase: 'connecting', message: '正在连接后台服务…' };
 let quitting = false;
+let checkingUpdate = false;
+let recoveryRequired = false;
+let backendUnavailable = false;
 let connectPromise: Promise<void> | null = null;
 const downloads = new Map<string, string>();
 let saving = false;
@@ -59,6 +63,8 @@ function menuLabels(): {
   reconnect: string;
   stopService: string;
   installUpdate: string;
+  checkUpdate: string;
+  advanced: string;
   repairUpdate: string;
   selectInstallation: string;
   installCommand: string;
@@ -88,15 +94,15 @@ function menuLabels(): {
   const chinese = /^zh(?:-|$)/iu.test(app.getLocale());
   return chinese ? {
     application: 'MetaWork', about: '关于 MetaWork', settings: '设置…', reconnect: '重新连接后台',
-    stopService: '停止后台服务…', installUpdate: '安装新版应用…', repairUpdate: '修复未完成的更新…',
-    selectInstallation: '选择已有安装…', installCommand: '安装终端命令…', logout: '退出本地会话并清理草稿',
+    stopService: '停止后台服务…', installUpdate: '从文件安装更新…', checkUpdate: '检查更新…', advanced: '高级', repairUpdate: '修复未完成的更新…',
+    selectInstallation: '切换数据目录…', installCommand: '安装终端命令…', logout: '清除本机登录和草稿…',
     quit: '退出桌面（后台继续运行）', file: '文件', newConversation: '新建对话', hideWindow: '隐藏窗口',
     edit: '编辑', undo: '撤销', redo: '重做', cut: '剪切', copy: '复制', paste: '粘贴', selectAll: '全选',
     view: '显示', search: '搜索对话', sidebar: '显示／隐藏侧栏', resetZoom: '重置缩放', zoomIn: '放大',
     zoomOut: '缩小', fullscreen: '全屏', window: '窗口', minimize: '最小化', close: '关闭',
   } : {
     application: 'MetaWork', about: 'About MetaWork', settings: 'Settings…', reconnect: 'Reconnect to Server',
-    stopService: 'Stop Server…', installUpdate: 'Install Update…', repairUpdate: 'Repair Interrupted Update…',
+    stopService: 'Stop Server…', installUpdate: 'Install Update from File…', checkUpdate: 'Check for Updates…', advanced: 'Advanced', repairUpdate: 'Repair Interrupted Update…',
     selectInstallation: 'Choose Existing Installation…', installCommand: 'Install Terminal Command…',
     logout: 'Sign Out and Clear Drafts', quit: 'Quit MetaWork (Server Continues)', file: 'File',
     newConversation: 'New Conversation', hideWindow: 'Hide Window', edit: 'Edit', undo: 'Undo', redo: 'Redo',
@@ -121,7 +127,36 @@ function ownedShell(event: IpcMainInvokeEvent): void {
 function showWindow(): void { window?.show(); window?.focus(); }
 function setState(next: ShellState): void {
   state = next;
+  if (next.phase === 'ready') backendUnavailable = false;
+  refreshMenuState();
   if (window?.webContents.getURL() === shellUrl) window.webContents.send('shell:state', state);
+}
+function refreshMenuState(): void {
+  const menu = Menu.getApplicationMenu();
+  const reconnect = menu?.getMenuItemById('reconnect');
+  if (reconnect) reconnect.enabled = !recoveryRequired && state.phase !== 'connecting' && (state.phase === 'error' || backendUnavailable);
+  const repair = menu?.getMenuItemById('repair-update');
+  if (repair) { repair.visible = recoveryRequired; repair.enabled = recoveryRequired && state.phase !== 'connecting'; }
+  const check = menu?.getMenuItemById('check-update');
+  if (check) { check.enabled = !checkingUpdate; check.label = checkingUpdate ? (/^zh/i.test(app.getLocale()) ? '正在检查更新…' : 'Checking for Updates…') : menuLabels().checkUpdate; }
+}
+async function checkForUpdates(): Promise<void> {
+  if (!window || checkingUpdate) return;
+  checkingUpdate = true; refreshMenuState();
+  try {
+    const update = await checkDesktopRelease(app.getVersion(), process.arch);
+    if (!update) {
+      await dialog.showMessageBox(window, { message: '暂无更新版本', detail: `当前版本：${app.getVersion()}。`, buttons: ['好'] });
+      return;
+    }
+    const answer = await dialog.showMessageBox(window, { message: `发现新版本 ${update.version}`,
+      detail: `当前版本：${app.getVersion()}。将打开浏览器下载安装包。下载完成后退出 MetaWork，将新版拖入“应用程序”替换，再打开完成升级。`,
+      buttons: ['稍后', '下载安装包'], defaultId: 1, cancelId: 0 });
+    if (answer.response === 1) await shell.openExternal(update.downloadUrl);
+  } catch {
+    await dialog.showMessageBox(window, { type: 'warning', message: '暂时无法检查更新',
+      detail: '请检查网络后重试。当前安装不会改变。', buttons: ['好'] });
+  } finally { checkingUpdate = false; refreshMenuState(); }
 }
 function connect(): Promise<void> {
   connectPromise ??= connectOnce().finally(() => { connectPromise = null; });
@@ -136,10 +171,11 @@ async function connectOnce(): Promise<void> {
     if (installation) {
       const release = await installation.verify();
       stage = 'installation';
-      if (await pendingDesktopUpdate(installRoot)
+      recoveryRequired = await pendingDesktopUpdate(installRoot)
         && !(shellCheckChallenge && await authorizeDesktopShellCheck(installRoot, {
           challenge: shellCheckChallenge, applicationPath: resolve(process.resourcesPath, '../..'), releaseId: release.releaseId,
-        }))) throw new Error('Desktop update requires recovery');
+        }));
+      if (recoveryRequired) throw new Error('Desktop update requires recovery');
       if (!await installation.installed()) {
         setState({ phase: 'setup', message: '运行环境已就绪。添加模型连接后即可开始工作。' });
         return;
@@ -361,6 +397,10 @@ async function updateApplication(recover = false, adoptExistingRuntime = false):
 }
 
 async function logoutDesktop(): Promise<void> {
+  if (!window) return;
+  const answer = await dialog.showMessageBox(window, { type: 'warning', message: '清除本机登录和未发送草稿？',
+    detail: '已保存的对话和工作数据不会删除。', buttons: ['取消', '清除'], defaultId: 0, cancelId: 0 });
+  if (answer.response !== 1) return;
   const currentOrigin = origin;
   origin = null; notifications.stop();
   authenticatedInstance = null;
@@ -416,7 +456,8 @@ async function start(): Promise<void> {
   webSession.on('will-download', event => event.preventDefault());
   notifications = new DesktopNotifications({
     fetch: webSession.fetch.bind(webSession) as typeof fetch,
-    unavailable: () => { /* Web's connection indicator and explicit reconnect retain the draft. */ },
+    unavailable: () => { backendUnavailable = true; refreshMenuState(); },
+    available: () => { backendUnavailable = false; refreshMenuState(); },
     show: event => {
       if (!Notification.isSupported()) return;
       const notice = new Notification({ title: 'MetaWork', body: event.kind === 'approval'
@@ -498,13 +539,18 @@ async function start(): Promise<void> {
     { label: labels.application, submenu: [
       { role: 'about', label: labels.about },
       { label: labels.settings, accelerator: 'CmdOrCtrl+,', click: () => menuAction('settings') },
-      { type: 'separator' }, { label: labels.reconnect, click: () => { void connect(); } },
-      { label: labels.stopService, click: () => { void stopService(); } },
-      { label: labels.installUpdate, enabled: app.isPackaged, click: () => { void updateApplication(); } },
-      { label: labels.repairUpdate, enabled: app.isPackaged, click: () => { void updateApplication(true); } },
-      { label: labels.selectInstallation, enabled: app.isPackaged, click: () => { void selectInstallation(); } },
-      { label: labels.installCommand, enabled: app.isPackaged, click: () => { void installTerminalCommand(); } },
-      { label: labels.logout, click: () => { void logoutDesktop(); } },
+      { id: 'check-update', label: labels.checkUpdate, click: () => { void checkForUpdates(); } },
+      { type: 'separator' },
+      { id: 'reconnect', label: labels.reconnect, enabled: false, click: () => { void connect(); } },
+      { id: 'repair-update', label: labels.repairUpdate, visible: false, click: () => { void updateApplication(true); } },
+      { label: labels.advanced, submenu: [
+        { label: labels.installUpdate, enabled: app.isPackaged, click: () => { void updateApplication(); } },
+        { label: labels.selectInstallation, enabled: app.isPackaged, click: () => { void selectInstallation(); } },
+        { label: labels.installCommand, enabled: app.isPackaged, click: () => { void installTerminalCommand(); } },
+        { type: 'separator' },
+        { label: labels.stopService, click: () => { void stopService(); } },
+        { label: labels.logout, click: () => { void logoutDesktop(); } },
+      ] },
       { type: 'separator' }, { role: 'hide', label: labels.hideWindow },
       { label: labels.quit, accelerator: 'CmdOrCtrl+Q', click: () => app.quit() },
     ] },
