@@ -1,7 +1,9 @@
 # Desktop installation without model credentials
 
 - Date: 2026-10-08
-- Status: In progress; local arm64 Internal validation only. No publication.
+- Status: Completed locally; user installation acceptance pending. No publication.
+- Completion date: 2026-10-08
+- Closing implementation commit: `0f7e73418e29548268fbdd65e09b6057ad01e7b8`.
 
 ## Scope and ownership
 
@@ -33,5 +35,30 @@ Preliminary validation: packaged model-free install, Settings save, failed
 credential probe and first activation without restart passed. Update acceptance
 found a logical/canonical path mismatch for symlinked installation directories;
 the helper now checks physical request identity while preserving selected path
-prefixes. A dedicated symlink regression test passes. Final package acceptance
-and closing commit: pending.
+prefixes. A dedicated symlink regression test passes.
+
+Final validation:
+
+- 131 focused native tests passed across installer/updater, release comparison,
+  request paths, staged configuration, activation, account Planner and supervisor.
+  All 16 Desktop tests passed. Root/Desktop typechecks and Web production build passed.
+- Exact final app: automatic installation with empty Provider/Model catalogs;
+  authenticated main UI and Settings; saving disabled presets; a failed credential
+  probe preserves revision/readiness; first real configuration activation succeeds
+  without restarting Server. No paid model request was executed.
+- Exact app copied without modifying/re-signing its shell or payload: actual prior
+  Runtime `0.1.8-internal-bc0fb75` upgraded to `0.1.8-internal-0f7e734` through a
+  symlinked `/tmp` installation root. Cancellation preserved the original service;
+  accepted update committed with authenticated render, unchanged configuration
+  content hash, unchanged credential file and retained database sentinel.
+- DMG filesystem verification and mounted signed payload inventory passed. Mounted
+  app.asar, icon and descriptor match the tested app. The test mount was detached.
+
+Local delivery: `apps/desktop/release/MetaWork-darwin-arm64.dmg`, arm64 Internal,
+392411144 bytes; SHA-256
+`00f9c164a2c478e2b761add7395ee0682e56c68a1745d20131ebe5c140e4b649`.
+Desktop and Runtime both come from the closing implementation commit. Evidence is
+under `apps/desktop/release/evidence/` and
+`.tmp/onboarding-0f7e734/exact-upgrade/evidence/`. No normal installation was
+replaced, and no release/tag/push/upload was performed. User installs the DMG
+manually to complete personal acceptance.

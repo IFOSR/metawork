@@ -1,5 +1,8 @@
 # MetaWork Documentation
 
+[Desktop 无模型安装与内部版本升级修复](plans/2026-10-08-desktop-model-free-installation.md)：
+本机 arm64 Internal 安装包已通过全新安装与真实旧 Runtime 升级验收，待用户亲自安装；未发布。
+
 MetaWork is the proprietary commercial product represented by this repository.
 AnyFusion references identify the separate open-source upstream, attributed
 components such as `AnyFusion-Pi`, compatibility contracts, or historical
