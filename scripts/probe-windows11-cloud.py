@@ -37,7 +37,8 @@ with iso.open('rb') as source:
 }, indent=2))
 
 escape = xml.sax.saxutils.escape
-command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"$v=Get-CimInstance Win32_LogicalDisk | Where-Object VolumeName -eq 'MWCI'; & (Join-Path $v.DeviceID 'metawork-bootstrap.ps1')\""
+command = r'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Windows\Temp\metawork-bootstrap.ps1'
+copy_bootstrap = r'cmd.exe /c for %d in (D E F G H I J) do @if exist %d:\metawork-bootstrap.ps1 copy /y %d:\metawork-bootstrap.ps1 C:\Windows\Temp\metawork-bootstrap.ps1'
 (media / 'Autounattend.xml').write_text(f'''<?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
   <settings pass="windowsPE">
@@ -61,6 +62,9 @@ command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"$v=Get-C
     </component>
   </settings>
   <settings pass="specialize">
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <RunSynchronous><RunSynchronousCommand wcm:action="add"><Order>1</Order><Path>{escape(copy_bootstrap)}</Path></RunSynchronousCommand></RunSynchronous>
+    </component>
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"><ComputerName>MWCI</ComputerName><TimeZone>UTC</TimeZone></component>
   </settings>
   <settings pass="oobeSystem">
@@ -172,7 +176,7 @@ try:
             break
         if elapsed < 30 and elapsed % 2 == 0:
             command('human-monitor-command', {'command-line': 'sendkey ret'})
-        if elapsed % 60 == 0:
+        if elapsed % 60 == 0 or (elapsed < 180 and elapsed % 10 == 0):
             print(f'Windows 11 guest provisioning: {elapsed}s; waiting for guest evidence', flush=True)
             (evidence / 'vm-status.json').write_text(json.dumps({
                 'elapsedSeconds': elapsed, 'status': command('query-status'),
@@ -186,7 +190,11 @@ try:
             from PIL import Image
             with Image.open(ppm) as screenshot:
                 screenshot.save(evidence / 'latest-console.png')
+                if elapsed < 180:
+                    screenshot.save(evidence / f'boot-{elapsed:03d}.png')
             ppm.unlink()
+        if serial.exists() and 'No bootable option or device was found' in serial.read_text(errors='replace'):
+            raise RuntimeError('Firmware found no bootable Windows installation; retained early setup screenshots')
         time.sleep(1)
     else:
         raise RuntimeError('Windows 11 guest did not report within 45 minutes')

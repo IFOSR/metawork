@@ -232,3 +232,9 @@ candidate 后续增加安装后的 DesktopServiceManager 自动启动/复用真�
 ReleasePointerTransaction 新增显式 Windows adapter，仍按 database/configuration/generated/application 顺序切换及原 journal/health/rollback 政策执行；用原生相对 symlink 替换和私有 journal 读写/删除。新增 guarded file removal，拒绝 reparse/hardlink，删除后刷新父目录。新增候选健康失败时完整指针回滚及提交后恢复测试；本机原指针事务/journal 6 项和类型检查通过。尚未在 SourceNativeUpdater/协调壳层全入口选用，待原生门与备份 companion 适配完成。
 
 `845e1aa8` 的 macOS arm64 和 Linux Docker 持久化回归通过；`41b1ff1c` 同两门通过，Intel 与原生尚在执行。`59a9be55` 两 macOS 架构已通过；均不是最新同提交发布矩阵，不能关闭 P4。
+
+### 干净 Windows 11 环境诊断（2026-10-08）
+
+第五轮 `37713269208` 未完成：UEFI 日志和进度截图显示安装盘启动后重启，磁盘已分区但未写入 Windows 系统文件，随后没有可启动设备。ISO SHA256 与此前到达真实桌面的第四轮相同；不能把这一环境失败解释为产品验收通过。下一轮保留启动前三分钟的逐十秒截图，发现无启动设备即退出并收集只读诊断，避免无证据等待。FirstLogon 改为执行 specialize 阶段复制到本地的 bootstrap，移除首次登录时对光驱 WMI 枚举的依赖；仍须收到实际 Windows 11 / Secure Boot / TPM / 交互桌面回执才通过。
+
+`a9e06f8f` 的 macOS arm64 与 Docker owning-seam 回归通过，普通用户的原生私有文件/原子替换/相对指针/管道 probe 通过。管理员侧及完整安装尚有失败，继续处理；P1/P4/P5 未关闭。
