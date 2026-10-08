@@ -17,12 +17,15 @@ try {
   Copy-Item (Get-Command node.exe).Source (Join-Path $fixture 'node.exe')
   Copy-Item (Join-Path $repo 'native/windows/build/Release/metawork_platform.node') $fixture
   Copy-Item (Join-Path $PSScriptRoot 'probe-windows-platform-files.mjs') $fixture
+  Copy-Item (Join-Path $PSScriptRoot 'probe-windows-platform-pipes.mjs') $fixture
   @'
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { probePlatformFiles } from './probe-windows-platform-files.mjs';
+import { probePlatformPipes } from './probe-windows-platform-pipes.mjs';
 const addon = resolve('metawork_platform.node');
 await probePlatformFiles(createRequire(import.meta.url)(addon), resolve('result.json'), addon);
+await probePlatformPipes(createRequire(import.meta.url)(addon), resolve('pipes.json'));
 '@ | Set-Content (Join-Path $fixture 'run.mjs')
   @'
 $ErrorActionPreference = 'Stop'
@@ -48,9 +51,11 @@ exit $LASTEXITCODE
   }
   $report = Get-Content (Join-Path $fixture 'result.json') -Raw | ConvertFrom-Json
   if ($report.passed -ne $true) { throw 'Missing standard-user native file evidence' }
+  $pipes = Get-Content (Join-Path $fixture 'pipes.json') -Raw | ConvertFrom-Json
+  if ($pipes.passed -ne $true) { throw 'Missing standard-user native pipe evidence' }
 } finally {
   if ($child -and -not $child.HasExited) { $child.Kill(); $child.WaitForExit() }
-  foreach ($file in @('result.json', 'stdout.txt', 'stderr.txt')) {
+  foreach ($file in @('result.json', 'pipes.json', 'stdout.txt', 'stderr.txt')) {
     if (Test-Path (Join-Path $fixture $file)) { Copy-Item (Join-Path $fixture $file) $evidence }
   }
   if ($created) { Remove-LocalUser -Name $name }

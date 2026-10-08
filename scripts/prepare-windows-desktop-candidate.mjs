@@ -36,7 +36,7 @@ try {
   }
   const artifacts = join(candidate, 'archives');
   run(node, ['scripts/package-release.mjs', '--out-dir', artifacts,
-    '--release-id', `0.1.5-windows-ci-${sourceCommit.slice(0, 12)}`, '--channel', 'development',
+    '--release-id', `0.1.5-windows-ci-${sourceCommit.slice(0, 12)}`, '--channel', 'preview',
     '--key-id', keyId, '--signing-key', keyPath]);
   const resources = join(candidate, 'resources');
   run(node, ['apps/desktop/packaging/prepare-runtime.mjs', '--artifacts', artifacts, '--output', resources,

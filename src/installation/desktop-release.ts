@@ -10,7 +10,7 @@ const pathSchema = z.string().min(1).max(1024).refine(value => !isAbsolute(value
   && !value.includes('\\') && !value.includes('\0'));
 const fileHashSchema = { sha256: z.string().regex(/^[a-f0-9]{64}$/u), size: z.number().int().nonnegative() };
 const darwinFileSchema = z.object({ ...fileHashSchema, executable: z.boolean() }).strict();
-const windowsFileSchema = z.object({ ...fileHashSchema, format: z.enum(['data', 'pe-x64']) }).strict();
+const windowsFileSchema = z.object({ ...fileHashSchema, format: z.enum(['data', 'pe-x64', 'pe-managed']) }).strict();
 const windowsPathSchema = pathSchema.refine(value => value.split('/').every(part =>
   !/[<>:"|?*\u0000-\u001f]/u.test(part) && !/[. ]$/u.test(part)
   && !/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/iu.test(part)));
@@ -139,7 +139,7 @@ export async function verifyDesktopRelease(resources: string, options: {
 }
 
 /** PE header checks establish file format/architecture, not runtime dependency closure. */
-async function windowsFileFormat(path: string, size: number): Promise<'data' | 'pe-x64'> {
+async function windowsFileFormat(path: string, size: number): Promise<'data' | 'pe-x64' | 'pe-managed'> {
   const handle = await open(path, 'r');
   try {
     const dos = Buffer.alloc(64);
@@ -154,12 +154,46 @@ async function windowsFileFormat(path: string, size: number): Promise<'data' | '
     await handle.read(pe, 0, pe.length, offset);
     const sections = pe.readUInt16LE(6);
     const optionalSize = pe.readUInt16LE(20);
-    if (pe.readUInt32LE(0) !== 0x4550 || pe.readUInt16LE(4) !== 0x8664
-      || pe.readUInt16LE(24) !== 0x20b || !(pe.readUInt16LE(22) & 2)
-      || !sections || sections > 96 || optionalSize < 112
+    if (pe.readUInt32LE(0) !== 0x4550 || !(pe.readUInt16LE(22) & 2)
+      || !sections || sections > 96 || optionalSize < 96
       || offset + 24 + optionalSize + sections * 40 > size) {
       throw new Error(`Windows native file is not a valid x64 PE image: ${path}`);
     }
-    return 'pe-x64';
+    if (pe.readUInt16LE(4) === 0x8664 && pe.readUInt16LE(24) === 0x20b && optionalSize >= 112) return 'pe-x64';
+    // Git Credential Manager includes pure-IL AnyCPU assemblies with PE32/I386
+    // headers. They are not x86 native libraries. Require a bounded CLR header
+    // and metadata, ILONLY, and no 32-bit/native-entrypoint requirements.
+    if (pe.readUInt16LE(4) === 0x14c && pe.readUInt16LE(24) === 0x10b && optionalSize >= 224) {
+      const headers = Buffer.alloc(optionalSize + sections * 40);
+      await handle.read(headers, 0, headers.length, offset + 24);
+      const mapRva = (rva: number, length: number): number | undefined => {
+        if (!rva || !length) return undefined;
+        const matches: number[] = [];
+        for (let index = 0; index < sections; index++) {
+          const start = optionalSize + index * 40;
+          const virtual = headers.readUInt32LE(start + 12);
+          const rawSize = headers.readUInt32LE(start + 16);
+          const raw = headers.readUInt32LE(start + 20);
+          const delta = rva - virtual;
+          if (delta >= 0 && delta + length <= rawSize && raw + delta + length <= size) matches.push(raw + delta);
+        }
+        return matches.length === 1 ? matches[0] : undefined;
+      };
+      const clrSize = headers.readUInt32LE(96 + 14 * 8 + 4);
+      const clrOffset = headers.readUInt32LE(92) >= 15 && clrSize >= 72
+        ? mapRva(headers.readUInt32LE(96 + 14 * 8), clrSize) : undefined;
+      if (clrOffset !== undefined) {
+        const clr = Buffer.alloc(72); await handle.read(clr, 0, clr.length, clrOffset);
+        const flags = clr.readUInt32LE(16);
+        const metadataSize = clr.readUInt32LE(12);
+        const metadata = metadataSize >= 16 ? mapRva(clr.readUInt32LE(8), metadataSize) : undefined;
+        if (clr.readUInt32LE(0) >= 72 && clr.readUInt32LE(0) <= clrSize
+          && (flags & 1) !== 0 && (flags & (2 | 0x10 | 0x20000)) === 0 && metadata !== undefined) {
+          const signature = Buffer.alloc(4); await handle.read(signature, 0, 4, metadata);
+          if (signature.toString('ascii') === 'BSJB') return 'pe-managed';
+        }
+      }
+    }
+    throw new Error(`Windows native file is not a valid x64 PE image or AnyCPU assembly: ${path}`);
   } finally { await handle.close(); }
 }

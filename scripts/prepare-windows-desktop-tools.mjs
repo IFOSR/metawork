@@ -65,6 +65,8 @@ try {
   if (nodeFacts.version !== manifest.node.version || nodeFacts.abi !== '127' || nodeFacts.arch !== 'x64' || nodeFacts.platform !== 'win32') throw new Error('Bundled Node matrix mismatch');
   const gitVersion = run(join(output, 'git/cmd/git.exe'), ['--version'], { env: toolEnv });
   if (gitVersion !== `git version ${manifest.git.version}`) throw new Error('Bundled Git version mismatch');
+  const credentialManagerVersion = run(join(output, 'git/cmd/git.exe'), ['credential-manager', '--version'], { env: toolEnv });
+  if (!credentialManagerVersion) throw new Error('Bundled managed Git Credential Manager did not load');
   const shellOutput = run(join(output, 'git/bin/bash.exe'), ['--noprofile', '--norc', '-c', 'printf metawork-bash-ok'], { env: toolEnv });
   if (shellOutput !== 'metawork-bash-ok') throw new Error('Bundled Bash failed');
   const piVersion = run(node, [join(executor, `node_modules/${manifest.pi.package}/dist/cli.js`), '--version'], { env: { ...toolEnv, PI_SKIP_VERSION_CHECK: '1' } });
@@ -73,7 +75,7 @@ try {
   for (const tool of ['node', 'git', 'executor']) {
     if (!Object.keys(files).some(path => path.startsWith(`${tool}/`) && /(?:^|\/)(?:licen[sc]e|copying|notice)[^/]*$/iu.test(path))) throw new Error(`Missing ${tool} licenses`);
   }
-  await writeFile(join(output, 'tools-provenance.json'), JSON.stringify({ manifest, nodeFacts, gitVersion, piVersion,
+  await writeFile(join(output, 'tools-provenance.json'), JSON.stringify({ manifest, nodeFacts, gitVersion, piVersion, credentialManagerVersion,
     bash: shellOutput, omittedPiTuiPrebuilds: omittedPrebuilds, fileCount: Object.keys(files).length,
     inventorySha256: createHash('sha256').update(JSON.stringify(files)).digest('hex') }, null, 2));
   process.stdout.write(`Verified Windows Desktop tools: ${output}\n`);

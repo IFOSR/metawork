@@ -168,3 +168,5 @@ macOS payload 依赖检查与已有 Intel PDF 构建检查一致：读取 otool 
 `33c162c6` 已通过 Node/Electron 同模块的文件并发/锁/权限检查、普通用户文件检查、持续同名管道的顺序和并发连接、Duplex 背压与关闭、Windows endpoint 短锁/持久锁、Desktop 偏好、SQLite/Planner/Node-API 检查；Job 创建 churn 也通过。尚未将管道接入 Gateway，不能视为 Windows Desktop 自动认证完成。工具包清单继续发现非 x64 PE，补充全部 PE 失败路径诊断，不放宽执行文件验证。
 
 公共 prepare-runtime 开始支持 Windows 原生 ZIP/平台工具路径和完整库存；提取前检查 Windows 路径/设备名/ADS，复制生产 adapter，验证内置 Node/SQLite/Git/Bash/Pi/Planner/Python，并要求明确内部构建策略。按已核实版本移除 Planner 两份 TUI 副本中的外平台预构建。新增只允许专用 CI 分支运行的 candidate 脚本：在一次性 checkout 中 prune 开发依赖，调用原有正式 Runtime/Planner packager，再用一次性测试密钥封装资源；私钥不上传，暂时只上传校验报告，不产生安装器或 Release。Windows 资源包实际封装尚待工具门通过。本地 release/归档校验 8 项、Desktop build 和 Root 类型检查通过。
+
+`99071a0b` 再次通过原生文件/管道/流/endpoint/偏好检查，工具失败定位为 Git Credential Manager 的 Atlassian.Bitbucket.dll（.NET AnyCPU）。inventory 新增 `pe-managed`，要求 PE32/I386 下有界且唯一映射的 CLR/BSJB metadata、ILONLY，拒绝原生入口和强制/偏好 32 位；固定必需原生工具仍要求 `pe-x64`，不能以 AnyCPU 替代 Node/Git/SQLite/MetaWork adapter。新增格式正负例和内置 Git Credential Manager 的实际 `--version`，后者待云端；本地 release 检查 9 项通过。普通用户套件增加同一生产管道探针，关闭原生连接时立即释放 I/O event handles，不等 JS GC。candidate channel 使用现有 manifest 的 preview 值，development 仍由独立签名 descriptor/编译策略决定。

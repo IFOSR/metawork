@@ -10,7 +10,10 @@ struct PipeIo {
     value.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     require(value.hEvent != nullptr, "pipe event");
   }
-  ~PipeIo() { CloseHandle(value.hEvent); }
+  ~PipeIo() { release(); }
+  void release() {
+    if (value.hEvent) { CloseHandle(value.hEvent); value.hEvent = nullptr; }
+  }
   void reset() {
     require(!pending, "completed pipe operation required");
     const auto event = value.hEvent;
@@ -31,12 +34,14 @@ struct PipeConnection {
     if (handle == INVALID_HANDLE_VALUE) return;
     CancelIoEx(handle, nullptr);
     for (auto operation : { &accept, &read, &write }) {
-      if (!operation->pending) continue;
-      DWORD transferred = 0;
-      // Cancellation is asynchronous: buffers/OVERLAPPED must remain alive
-      // until the kernel has acknowledged completion, including on GC.
-      GetOverlappedResult(handle, &operation->value, &transferred, TRUE);
-      operation->pending = false;
+      if (operation->pending) {
+        DWORD transferred = 0;
+        // Cancellation is asynchronous: buffers/OVERLAPPED must remain alive
+        // until the kernel has acknowledged completion, including on GC.
+        GetOverlappedResult(handle, &operation->value, &transferred, TRUE);
+        operation->pending = false;
+      }
+      operation->release();
     }
     CloseHandle(handle); handle = INVALID_HANDLE_VALUE;
   }

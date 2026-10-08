@@ -22,6 +22,18 @@ function pe(machine = 0x8664) {
   bytes.writeUInt16LE(240, 148); bytes.writeUInt16LE(2, 150); bytes.writeUInt16LE(0x20b, 152);
   return bytes;
 }
+function managedPe(flags = 1) {
+  const bytes = Buffer.alloc(1024); pe(0x14c).copy(bytes);
+  bytes.writeUInt16LE(224, 148); bytes.writeUInt16LE(0x10b, 152);
+  bytes.writeUInt32LE(16, 152 + 92);
+  bytes.writeUInt32LE(0x2000, 152 + 96 + 14 * 8); bytes.writeUInt32LE(72, 152 + 96 + 14 * 8 + 4);
+  const section = 152 + 224;
+  bytes.writeUInt32LE(512, section + 8); bytes.writeUInt32LE(0x2000, section + 12);
+  bytes.writeUInt32LE(512, section + 16); bytes.writeUInt32LE(512, section + 20);
+  bytes.writeUInt32LE(72, 512); bytes.writeUInt32LE(0x2080, 520); bytes.writeUInt32LE(64, 524);
+  bytes.writeUInt32LE(flags, 528); bytes.write('BSJB', 640);
+  return bytes;
+}
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'mw-win-release-')); roots.push(root);
   const payload = join(root, 'payload');
@@ -81,6 +93,23 @@ describe('Windows Desktop release admission', () => {
       await writeFile(join(value.payload, 'metawork/desktop-tools/node/node.exe'), bytes);
       await expect(desktopInventory(value.payload, 'win32')).rejects.toThrow(/PE/u);
     }
+  });
+
+  it('recognizes AnyCPU libraries without allowing them to replace required x64 tools', async () => {
+    const value = await fixture();
+    const path = join(value.payload, 'managed.dll');
+    await writeFile(path, managedPe());
+    expect((await desktopInventory(value.payload, 'win32'))['managed.dll']?.format).toBe('pe-managed');
+    for (const flags of [0, 3, 0x11, 0x20001]) {
+      await writeFile(path, managedPe(flags));
+      await expect(desktopInventory(value.payload, 'win32')).rejects.toThrow(/PE/u);
+    }
+    const invalidRva = managedPe(); invalidRva.writeUInt32LE(0xfffffff0, 520);
+    await writeFile(path, invalidRva);
+    await expect(desktopInventory(value.payload, 'win32')).rejects.toThrow(/PE/u);
+    await rm(path);
+    await writeFile(join(value.payload, 'metawork/desktop-tools/node/node.exe'), managedPe()); await value.seal();
+    await expect(verifyDesktopRelease(value.root, options)).rejects.toThrow('not executable');
   });
 
   it('rejects signed packages missing the native adapter or licenses and detects modifications', async () => {
