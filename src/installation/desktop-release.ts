@@ -56,6 +56,7 @@ export function desktopInventory(root: string, platform: 'darwin' | 'win32'): Pr
 export async function desktopInventory(root: string, platform: 'darwin' | 'win32' = 'darwin'): Promise<DesktopRelease['files']> {
   const files: DesktopRelease['files'] = Object.create(null);
   const windowsNames = new Set<string>();
+  const pending: Array<{ path: string; name: string }> = [];
   async function visit(directory: string): Promise<void> {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
@@ -69,14 +70,28 @@ export async function desktopInventory(root: string, platform: 'darwin' | 'win32
       if (entry.isDirectory()) await visit(path);
       else {
         if (!entry.isFile()) throw new Error('Desktop payload cannot contain links or special files');
-        const file = await hashReleaseFile(path);
-        files[name] = platform === 'win32'
-          ? { sha256: file.sha256, size: file.size, format: await windowsFileFormat(path, file.size) }
-          : file;
+        pending.push({ path, name });
       }
     }
   }
   await visit(root);
+  // A production payload contains tens of thousands of small files. Hashing
+  // each one serially makes a fresh Windows launch spend several minutes in
+  // the connecting state. Keep a bounded worker pool so integrity validation
+  // remains complete while allowing the filesystem to make progress.
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = cursor++;
+      const item = pending[index];
+      if (!item) return;
+      const file = await hashReleaseFile(item.path);
+      files[item.name] = platform === 'win32'
+        ? { sha256: file.sha256, size: file.size, format: await windowsFileFormat(item.path, file.size) }
+        : file;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(24, pending.length) }, () => worker()));
   return files;
 }
 
