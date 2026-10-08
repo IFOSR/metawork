@@ -52,10 +52,11 @@ for (const scenario of scenarios) {
     db.close();
   }
   const configuration = await readlink(join(installationRoot, 'accounts/local-default/config/active'));
-  const credentials = await readFile(paths.credentials, 'utf8');
   const manager = new DesktopServiceManager({ installRoot: installationRoot, releaseId, nodePath: node,
     configHome: env.METAWORK_CONFIG_HOME, env });
   await manager.startForUpdate();
+  // Native startup may import missing local Agent credentials before Desktop attaches.
+  const credentials = await readFile(paths.credentials, 'utf8');
   console.log(`Native ${scenario} Server ready; opening Desktop`);
   const previous = JSON.parse(await readFile(join(installationRoot, 'server-endpoint.json'), 'utf8'));
   let app;
@@ -126,7 +127,7 @@ for (const scenario of scenarios) {
     try { assert.deepEqual(retained.prepare('SELECT value FROM desktop_adoption_acceptance').get(), { value: 'existing work' }); }
     finally { retained.close(); }
     assert.equal(await readlink(join(installationRoot, 'accounts/local-default/config/active')), configuration);
-    assert.equal(await readFile(paths.credentials, 'utf8'), credentials);
+    assert.ok(await readFile(paths.credentials, 'utf8') === credentials, 'Desktop must preserve native credentials');
     evidence.push({ scenario, authenticatedRender: true, configurationPreserved: true, credentialsPreserved: true, workPreserved: true });
     console.log(`Passed native ${scenario}: authenticated Desktop and preserved account data`);
   } catch (error) {

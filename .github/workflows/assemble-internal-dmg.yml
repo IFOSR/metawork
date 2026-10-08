@@ -1,0 +1,69 @@
+name: Assemble internal DMG upload
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing draft release tag
+        required: true
+      sha256:
+        description: Expected complete DMG SHA256
+        required: true
+      parts:
+        description: Number of sequential upload parts
+        required: true
+permissions:
+  contents: write
+concurrency:
+  group: assemble-internal-dmg-${{ inputs.tag }}
+  cancel-in-progress: false
+jobs:
+  assemble:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      EXPECTED_SHA256: ${{ inputs.sha256 }}
+      PART_COUNT: ${{ inputs.parts }}
+    steps:
+      - name: Validate request and download draft parts
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$EXPECTED_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$PART_COUNT" =~ ^[0-9]+$ ]]
+          test "$PART_COUNT" -ge 1 && test "$PART_COUNT" -le 32
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          gh release download "$RELEASE_TAG" --pattern 'MetaWork-darwin-arm64.dmg.part-*' --dir parts
+          gh release download "$RELEASE_TAG" --pattern SHA256SUMS.txt --dir checksums
+      - name: Assemble and verify exact bytes
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, pathlib
+          name = 'MetaWork-darwin-arm64.dmg'
+          parts = pathlib.Path('parts')
+          expected = [f'{name}.part-{i:03}' for i in range(int(os.environ['PART_COUNT']))]
+          assert sorted(p.name for p in parts.iterdir()) == expected
+          sums = dict(line.split('  ', 1)[::-1] for line in pathlib.Path('checksums/SHA256SUMS.txt').read_text().splitlines())
+          assert sums[name] == os.environ['EXPECTED_SHA256']
+          digest = hashlib.sha256()
+          with open(name, 'wb') as output:
+              for part in expected:
+                  with (parts / part).open('rb') as source:
+                      while chunk := source.read(1024 * 1024):
+                          digest.update(chunk)
+                          output.write(chunk)
+          assert digest.hexdigest() == os.environ['EXPECTED_SHA256']
+          PY
+      - name: Upload verified DMG and remove temporary parts
+        run: |
+          set -euo pipefail
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          gh release upload "$RELEASE_TAG" MetaWork-darwin-arm64.dmg
+          RELEASE_ID="$(gh release view "$RELEASE_TAG" --json databaseId --jq .databaseId)"
+          DIGEST="$(gh api "repos/$GH_REPO/releases/$RELEASE_ID/assets" --jq '.[] | select(.name == "MetaWork-darwin-arm64.dmg") | .digest')"
+          test "$DIGEST" = "sha256:$EXPECTED_SHA256"
+          for part in parts/*; do
+            gh release delete-asset "$RELEASE_TAG" "${part##*/}" --yes
+          done
