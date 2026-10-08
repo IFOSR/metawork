@@ -8,7 +8,8 @@ bool trusted_sid(PSID sid, const std::vector<BYTE>& own) {
     || IsWellKnownSid(sid, WinBuiltinAdministratorsSid) != FALSE;
 }
 
-void inspect_private_file(HANDLE file, bool directory) {
+void inspect_private_file(HANDLE file, bool directory, bool allow_unlinked = false) {
+  require(GetFileType(file) == FILE_TYPE_DISK, "ordinary disk file required");
   FILE_ATTRIBUTE_TAG_INFO attributes{};
   require(GetFileInformationByHandleEx(file, FileAttributeTagInfo, &attributes, sizeof(attributes)) != FALSE,
     "file attributes");
@@ -16,7 +17,8 @@ void inspect_private_file(HANDLE file, bool directory) {
   require(!!(attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == directory, "file kind");
   BY_HANDLE_FILE_INFORMATION information{};
   require(GetFileInformationByHandle(file, &information) != FALSE, "file information");
-  if (!directory) require(information.nNumberOfLinks == 1, "hard links refused");
+  if (!directory) require(information.nNumberOfLinks == 1
+    || (allow_unlinked && information.nNumberOfLinks == 0), "hard links refused");
   PSID owner = nullptr;
   PACL acl = nullptr;
   PSECURITY_DESCRIPTOR descriptor = nullptr;
@@ -120,9 +122,10 @@ std::vector<BYTE> read_private_file(const std::wstring& root, const std::wstring
   Handle file(CreateFileW(path.c_str(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ | FILE_SHARE_DELETE,
     nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
   require(file.get() != INVALID_HANDLE_VALUE, "open private file");
-  inspect_private_file(file.get(), false);
-  require(_wcsicmp(final_path(file.get()).c_str(), long_path(path).c_str()) == 0,
-    "file path redirection refused");
+  // Every ancestor is already pinned and non-reparse, and this final open uses
+  // OPEN_REPARSE_POINT. Validate the opened inode, not its later pathname:
+  // POSIX replacement can unlink/rename that inode while a reader retains it.
+  inspect_private_file(file.get(), false, true);
   LARGE_INTEGER size{};
   require(GetFileSizeEx(file.get(), &size) != FALSE && size.QuadPart >= 0 && static_cast<ULONGLONG>(size.QuadPart) <= maximum,
     "bounded private file size");

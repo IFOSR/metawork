@@ -50,6 +50,16 @@ try {
     join(process.env.SystemRoot, 'System32'), process.env.SystemRoot].join(';');
   const npm = join(output, 'node/node_modules/npm/bin/npm-cli.js');
   run(node, [npm, 'ci', '--omit=dev', '--no-audit', '--no-fund'], { cwd: executor, env: toolEnv });
+  // Pi TUI's locked package ships all six OS/architecture prebuilds in one
+  // tarball. Its native loader selects native/<platform>/prebuilds/<platform>-<arch>.
+  // Keep the Windows x64 helper and notices; do not ship foreign native code.
+  const tui = join(executor, 'node_modules/@earendil-works/pi-tui');
+  const tuiPackage = JSON.parse(await readFile(join(tui, 'package.json'), 'utf8'));
+  if (tuiPackage.version !== '1.1.0') throw new Error('Review Pi TUI native pruning for the new locked version');
+  const omittedPrebuilds = ['native/darwin/prebuilds', 'native/linux/prebuilds', 'native/win32/prebuilds/win32-arm64'];
+  for (const path of omittedPrebuilds) await rm(join(tui, path), { recursive: true });
+  run(node, ['-e', 'const helper=require(process.argv[1]); if(typeof helper.getText!=="function" || typeof helper.getImage!=="function") throw Error("Pi TUI native helper mismatch")',
+    join(tui, 'native/win32/prebuilds/win32-x64/win32-platform.node')], { env: toolEnv });
   await rm(downloads, { recursive: true });
   const nodeFacts = JSON.parse(run(node, ['-p', 'JSON.stringify({version:process.versions.node,abi:process.versions.modules,arch:process.arch,platform:process.platform})'], { env: toolEnv }));
   if (nodeFacts.version !== manifest.node.version || nodeFacts.abi !== '127' || nodeFacts.arch !== 'x64' || nodeFacts.platform !== 'win32') throw new Error('Bundled Node matrix mismatch');
@@ -64,7 +74,8 @@ try {
     if (!Object.keys(files).some(path => path.startsWith(`${tool}/`) && /(?:^|\/)(?:licen[sc]e|copying|notice)[^/]*$/iu.test(path))) throw new Error(`Missing ${tool} licenses`);
   }
   await writeFile(join(output, 'tools-provenance.json'), JSON.stringify({ manifest, nodeFacts, gitVersion, piVersion,
-    bash: shellOutput, fileCount: Object.keys(files).length, inventorySha256: createHash('sha256').update(JSON.stringify(files)).digest('hex') }, null, 2));
+    bash: shellOutput, omittedPiTuiPrebuilds: omittedPrebuilds, fileCount: Object.keys(files).length,
+    inventorySha256: createHash('sha256').update(JSON.stringify(files)).digest('hex') }, null, 2));
   process.stdout.write(`Verified Windows Desktop tools: ${output}\n`);
 } catch (error) {
   await rm(output, { recursive: true, force: true });

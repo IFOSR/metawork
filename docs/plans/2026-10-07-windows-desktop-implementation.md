@@ -158,3 +158,7 @@ P0 Job 测试扩展为主 worker 持续创建短生命周期子进程（同时�
 `1c3590d5` 的 Windows 源码检查捕获 endpoint 被读取时 Node rename 偶发 EPERM。`6013f571` 的 replaceFile 仅在 Windows 对锁/权限类错误进行最多 500 ms 的有界重试，始终原子 rename，不先删除目标；持续错误仍失败，清单写入清理自己的临时文件。readiness 测试的旁路观察 Promise 补失败处理，避免原断言失败后清理 child 产生额外 unhandled rejection。macOS 本地清单/readiness 8 项、基本替换 1 项及类型检查通过，真实 Windows 短锁/持续锁测试待云端。
 
 macOS payload 依赖检查与已有 Intel PDF 构建检查一致：读取 otool -l 的 dependency load commands，排除模块自己的 LC_ID_DYLIB。本地实际 cryptography Mach-O 提取 libiconv/libSystem 通过；未据此宣称签名分发已验收。
+
+`6a93bc45` 的 FileRenameInfoEx 已越过旧写入失败，双写双读暴露另一处误判：旧文件被原子替换后，打开的旧 inode 路径可以变化或链接数变为 0，不能再拿后续路径文本判定其来源。reader 现在固定并验证全部祖先，再 OPEN_REPARSE_POINT 打开最终文件，核验该句柄的磁盘类型、ACL/owner 和不超过一个链接；只对该已打开 reader 允许替换后的零链接。保留所有 reparse/hardlink 拒绝检查，不把路径比较错误加入重试白名单。
+
+工具清单失败已定位为 upstream Pi TUI 1.1.0 在同一 npm tarball 中携带 Darwin/Linux/Windows arm64 原生预构建。检查其实际 native-module-path/native-platform loader 后，在锁定版本的构建阶段仅移除三个不适用的 prebuild 目录，保留 Windows x64、源码与许可；额外用内置 Node 实际 require Windows TUI helper 并验证导出。完整 inventory 继续拒绝任何剩余错误平台二进制，待云端验证。
