@@ -132,3 +132,5 @@ Windows 11 run `37702596665` 45 分钟超时，无 guest report，最终 QMP 截
 ### 原生 Windows 复验反馈（2026-10-08）
 
 `5791c403` 的 Windows 管道与普通用户/管理员 Job 暂停、恢复、取消检查通过；进程创建竞态覆盖仍待补齐。生产文件模块实际 MSVC 编译成功，但首次写入报 Win32 87：公开 SetFileInformationByHandle 的 RootDirectory 必须为空，不能沿用底层 NT 相对目录参数形式。修正为先以禁止 delete-sharing 的句柄固定从盘符下到目标父目录的全部祖先，再使用绝对目标路径原子替换；保留 ACL/owner/链接校验与 flush，待原生重跑。此前记录中的相对父目录 rename 不是已通过实现。
+
+补充生产文件 adapter 原生检查：管理员 Node/Electron Main 与临时普通用户分别验证文件占用失败保留旧内容/清理临时文件、显式 9 MiB 偏好上限、无效数值拒绝和双写双读并发整记录。读取也固定祖先目录，允许原子替换期间的 delete-sharing、仍拒绝原地并发写入；夹具只允许短暂 sharing violation 重试，其他异常仍失败。以上新增用例待 Windows 运行，macOS 路径未修改。

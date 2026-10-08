@@ -55,11 +55,40 @@ std::wstring long_path(const std::wstring& path) {
   return L"\\\\?\\" + std::wstring(buffer.data(), size);
 }
 
+void assert_local_path(const std::wstring& path) {
+  require(path.size() > 3 && path[1] == L':' && path[2] == L'\\'
+    && path.find_first_of(L"/\0", 0, 2) == std::wstring::npos && path.find(L':', 2) == std::wstring::npos,
+    "absolute local path required");
+  size_t offset = 3;
+  while (offset < path.size()) {
+    const auto end = path.find(L'\\', offset);
+    const auto part = path.substr(offset, end == std::wstring::npos ? end : end - offset);
+    require(!part.empty() && part != L"." && part != L".." && part.back() != L'.' && part.back() != L' ',
+      "unsafe private directory segment");
+    if (end == std::wstring::npos) return;
+    offset = end + 1;
+  }
+  require(false, "trailing directory separator refused");
+}
+
+std::unique_ptr<Handle> pin_directory(const std::wstring& path, bool private_directory) {
+  auto handle = std::make_unique<Handle>(CreateFileW(path.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES
+    | (private_directory ? FILE_ADD_FILE | FILE_DELETE_CHILD : 0),
+    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+  require(handle->get() != INVALID_HANDLE_VALUE, "pin directory");
+  FILE_ATTRIBUTE_TAG_INFO info{};
+  require(GetFileInformationByHandleEx(handle->get(), FileAttributeTagInfo, &info, sizeof(info)) != FALSE
+    && (info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !(info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT),
+    "ordinary directory required");
+  require(_wcsicmp(final_path(handle->get()).c_str(), long_path(path).c_str()) == 0, "directory redirection refused");
+  if (private_directory) inspect_private_file(handle->get(), true);
+  return handle;
+}
+
 std::vector<BYTE> read_private_file(const std::wstring& root, const std::wstring& relative_path, size_t maximum = 65536) {
   require(maximum > 0 && maximum <= 9 * 1024 * 1024, "bounded private read limit");
-  require(root.size() > 3 && root[1] == L':' && root[2] == L'\\'
-    && root.find(L'/') == std::wstring::npos && root.find(L'\0') == std::wstring::npos,
-    "absolute local root required");
+  assert_local_path(root);
   require(!relative_path.empty() && relative_path.find_first_of(L"/:\0", 0, 3) == std::wstring::npos,
     "relative file path required");
   std::vector<std::unique_ptr<Handle>> directories;
@@ -73,6 +102,8 @@ std::vector<BYTE> read_private_file(const std::wstring& root, const std::wstring
       "directory path redirection refused");
     directories.push_back(std::move(handle));
   };
+  for (size_t end = root.find(L'\\', 3); end != std::wstring::npos; end = root.find(L'\\', end + 1))
+    directories.push_back(pin_directory(root.substr(0, end), false));
   open_directory(root);
   std::wstring path = root;
   size_t offset = 0;
@@ -86,7 +117,7 @@ std::vector<BYTE> read_private_file(const std::wstring& root, const std::wstring
     open_directory(path);
     offset = separator + 1;
   }
-  Handle file(CreateFileW(path.c_str(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ,
+  Handle file(CreateFileW(path.c_str(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ | FILE_SHARE_DELETE,
     nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
   require(file.get() != INVALID_HANDLE_VALUE, "open private file");
   inspect_private_file(file.get(), false);

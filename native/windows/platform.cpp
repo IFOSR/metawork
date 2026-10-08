@@ -24,8 +24,11 @@ napi_value files(napi_env env, napi_callback_info info) {
     const std::string operation(static_cast<const char*>(mode));
     uint32_t maximum = 65536;
     if ((operation == "readPrivateFile" && count == 3) || (operation == "writePrivateFile" && count == 4)) {
-      if (napi_get_value_uint32(env, arguments[count - 1], &maximum) != napi_ok)
+      double limit = 0;
+      if (napi_get_value_double(env, arguments[count - 1], &limit) != napi_ok
+        || !(limit >= 1 && limit <= 9 * 1024 * 1024) || limit != static_cast<uint32_t>(limit))
         throw std::runtime_error("Explicit file size limit required");
+      maximum = static_cast<uint32_t>(limit);
     }
     napi_value result;
     if (operation == "ensurePrivateDirectory") {

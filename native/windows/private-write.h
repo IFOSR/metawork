@@ -21,37 +21,6 @@ class PrivateSecurity {
   SECURITY_ATTRIBUTES attributes_{};
 };
 
-void assert_local_path(const std::wstring& path) {
-  require(path.size() > 3 && path[1] == L':' && path[2] == L'\\'
-    && path.find_first_of(L"/\0", 0, 2) == std::wstring::npos && path.find(L':', 2) == std::wstring::npos,
-    "absolute local path required");
-  size_t offset = 3;
-  while (offset < path.size()) {
-    const auto end = path.find(L'\\', offset);
-    const auto part = path.substr(offset, end == std::wstring::npos ? end : end - offset);
-    require(!part.empty() && part != L"." && part != L".." && part.back() != L'.' && part.back() != L' ',
-      "unsafe private directory segment");
-    if (end == std::wstring::npos) return;
-    offset = end + 1;
-  }
-  require(false, "trailing directory separator refused");
-}
-
-std::unique_ptr<Handle> pin_directory(const std::wstring& path, bool private_directory) {
-  auto handle = std::make_unique<Handle>(CreateFileW(path.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES
-    | (private_directory ? FILE_ADD_FILE | FILE_DELETE_CHILD : 0),
-    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-  require(handle->get() != INVALID_HANDLE_VALUE, "pin directory");
-  FILE_ATTRIBUTE_TAG_INFO info{};
-  require(GetFileInformationByHandleEx(handle->get(), FileAttributeTagInfo, &info, sizeof(info)) != FALSE
-    && (info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !(info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT),
-    "ordinary directory required");
-  require(_wcsicmp(final_path(handle->get()).c_str(), long_path(path).c_str()) == 0, "directory redirection refused");
-  if (private_directory) inspect_private_file(handle->get(), true);
-  return handle;
-}
-
 void ensure_private_directory(const std::wstring& path) {
   assert_local_path(path);
   PrivateSecurity security;

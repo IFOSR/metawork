@@ -24,6 +24,7 @@ on:
       - 'native/windows-probe/**'
       - 'native/windows/**'
       - 'scripts/probe-windows-platform-files.mjs'
+      - 'scripts/probe-windows-platform-standard-user.ps1'
       - 'apps/desktop/**'
       - 'src/**'
       - 'web/**'
@@ -139,6 +140,9 @@ jobs:
       - run: npm run build:desktop
       - name: Verify native private directory creation and atomic file replacement
         run: node scripts/probe-windows-platform-files.mjs
+      - name: Verify native private file writes without administrator rights
+        shell: pwsh
+        run: ./scripts/probe-windows-platform-standard-user.ps1
       - run: npm run test:desktop
       - name: Exercise native SQLite binding
         run: node --input-type=module -e "import Database from 'better-sqlite3'; const db = new Database(':memory:'); db.exec('CREATE TABLE probe (value INTEGER); INSERT INTO probe VALUES (1)'); if (db.prepare('SELECT value FROM probe').get().value !== 1) throw Error('SQLite probe failed'); db.close();"
