@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { isAbsolute } from 'node:path';
+import { dirname, isAbsolute, relative, sep } from 'node:path';
 
 /** OS operations only; each caller retains its existing data schema and lifecycle. */
 export interface WindowsPrivateFiles {
@@ -13,6 +13,15 @@ export interface WindowsPrivateFiles {
 export interface WindowsPrivateFileRoot {
   root: string;
   files: WindowsPrivateFiles;
+}
+
+/** Persist the caller's existing JSON schema through the guarded Windows writer. */
+export function writeWindowsPrivateJson(windows: WindowsPrivateFileRoot, path: string, value: unknown): void {
+  const child = relative(windows.root, path);
+  if (!child || child === '..' || child.startsWith(`..${sep}`) || isAbsolute(child)) throw new Error('Private JSON path escapes installation');
+  windows.files.ensurePrivateDirectory(dirname(path));
+  windows.files.writePrivateFile(windows.root, child,
+    Buffer.from(`${JSON.stringify(value, null, 2)}\n`), 9 * 1024 * 1024);
 }
 
 export function loadWindowsPrivateFiles(modulePath: string): WindowsPrivateFiles {

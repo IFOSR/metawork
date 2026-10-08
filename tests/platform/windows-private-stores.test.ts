@@ -6,6 +6,11 @@ import { createProductionSecretStore } from '../../src/configuration/production-
 import { FileConfigurationRepository } from '../../src/configuration/file-configuration-repository.js';
 import { AnyFusionConfigurationV2Schema } from '../../src/configuration/schema.js';
 import { dump } from 'js-yaml';
+import Database from 'better-sqlite3';
+import { FileConversationStore } from '../../src/session/file-conversation-store.js';
+import { FileConversationPresentationStore } from '../../src/storage/file-conversation-presentation-store.js';
+import { createAccountEventJournal } from '../../src/server/account-event-journal.js';
+import { runMigrations } from '../../src/storage/migrations.js';
 import { loadWindowsPrivateFiles, type WindowsPrivateFileRoot } from '../../src/platform/windows-private-files.js';
 import { readEndpointManifest, writeEndpointManifest, type EndpointManifest } from '../../src/server/server-endpoint-manifest.js';
 
@@ -85,5 +90,28 @@ describe.skipIf(process.platform !== 'win32')('native Windows credential and end
     expect((await recovered.getActiveSnapshot()).revisionId).toBe('second');
     await recovered.restoreActiveRevision('first', 'second');
     expect((await recovered.getActiveSnapshot()).revisionId).toBe('first');
+  });
+  it('preserves Conversation JSON and segmented journal facts across store reconstruction', async () => {
+    const conversations = new FileConversationStore(join(windows.root, 'conversations'), { windows });
+    await conversations.initialize();
+    expect((await conversations.readCatalog()).conversations).toEqual([]);
+    const presentation = new FileConversationPresentationStore(join(windows.root, 'presentation'), undefined, windows);
+    await presentation.initialize();
+    await presentation.write({ version: 1, conversationId: 'conv_windows', turns: [] });
+    expect(await presentation.read('conv_windows')).toMatchObject({ version: 1, turns: [] });
+    const db = new Database(':memory:');
+    runMigrations(db);
+    const create = () => createAccountEventJournal({ db, root: join(windows.root, 'events'),
+      accountId: 'local-default', onError: error => { throw error; }, windows });
+    const runtime = create();
+    try {
+      await runtime.journal.append({ protocolVersion: 2, accountId: 'local-default', conversationId: 'conv_windows',
+        eventId: 'windows-event', turnId: 'turn_one', requestId: 'request_one', sequence: 0,
+        kind: 'final_answer', occurredAt: '2026-10-08T00:00:00Z', payload: { lines: ['persisted'] } });
+      await runtime.stop();
+      const restored = create();
+      try { expect((await restored.journal.snapshot('local-default', 'conv_windows')).lastSequence).toBe(1); }
+      finally { await restored.stop(); }
+    } finally { await runtime.stop(); db.close(); }
   });
 });

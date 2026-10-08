@@ -218,3 +218,5 @@ Gateway 新增显式原生模块入口；只有实际 WindowsPipeStream 才能�
 run `37717090425` 的原生探测确认普通文件及 NTFS 目录在 GENERIC_WRITE 句柄下 FlushFileBuffers 成功，而只读句柄均返回 Win32=5；未吞掉 fsync 错误。生产 platform 新增带祖先固定/重解析拒绝/ACL 检查的可写刷新，原子替换后刷新文件和父目录；替换后的刷新失败保留完整新文件供 journal 恢复，不再把它当临时文件删除。配置 revision 和 activation journal 显式接受同一 Windows 私有根，Desktop 安装/Server composition 接入，旧 schema/激活政策/Unix fsync 保持。
 
 新增普通/管理员 file probe 和配置两版本激活、中断恢复、回滚检查，原生云端待执行。本地类型检查与配置/安装/PDF 23 项通过。完整 updater 的指针切换及所有 Windows 初始化入口尚需继续接入，不据此宣称安装/升级完成。
+
+Server 账户迁移 manifest、Conversation metadata/pending-history、兼容 presentation JSON 及唯一 segmented journal writer 已显式接入同一 Windows 私有文件根；不新增 writer，不改 SQLite schema、事件索引提交点或恢复政策。Unix 路径保留原实现。本机相关 38 项及 Root/Desktop 类型检查通过，新增 native store 重建后事实读取检查。因涉及持久化，专用 workflow 同时增加既有 Dockerfile.test 的 Linux owning-seam 回归，Windows/macOS/Docker 实测结果分别记录，尚不代表 P1 安装通过。

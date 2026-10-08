@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { measureNavigationStage } from '../utils/navigation-diagnostics.js';
+import { writeWindowsPrivateJson, type WindowsPrivateFileRoot } from '../platform/windows-private-files.js';
 import { isValidConversationId } from './conversation-types.js';
 import type { ConversationHistoryStore, ConversationHistoryRequest } from './conversation-history-store.js';
 import {
@@ -37,6 +38,7 @@ export class FileConversationStore implements ConversationStore {
   readonly quarantineDir: string;
 
   constructor(rootDir: string, private readonly options: {
+    readonly windows?: WindowsPrivateFileRoot;
     readonly onMetadataCommitted?: (metadata: ConversationMetadata) => void;
     readonly history?: ConversationHistoryStore<ConversationTurn>;
     readonly metadataIndex?: ConversationMetadataIndex;
@@ -74,7 +76,7 @@ export class FileConversationStore implements ConversationStore {
 
   async writeCatalog(catalog: ConversationCatalogFile): Promise<void> {
     assertCatalog(catalog);
-    await atomicWriteJson(this.catalogPath, catalog);
+    await atomicWriteJson(this.catalogPath, catalog, this.options.windows);
   }
 
   async readConversation(conversationId: string): Promise<ConversationRecord | null> {
@@ -114,7 +116,7 @@ export class FileConversationStore implements ConversationStore {
       const updated = { ...record, conversation: metadata };
       assertRecord(updated, conversationId);
       if (JSON.stringify(metadata) === JSON.stringify(record.conversation)) return metadata;
-      await atomicWriteJson(this.recordPath(conversationId), updated);
+      await atomicWriteJson(this.recordPath(conversationId), updated, this.options.windows);
       this.options.metadataIndex?.put(metadata);
       this.options.onMetadataCommitted?.(metadata);
       return metadata;
@@ -145,7 +147,7 @@ export class FileConversationStore implements ConversationStore {
       await this.recoverPendingHistory(record.conversation.id);
       const history = this.options.history;
       if (!history) {
-        await atomicWriteJson(path, record);
+        await atomicWriteJson(path, record, this.options.windows);
         this.options.metadataIndex?.put(record.conversation);
         this.options.onMetadataCommitted?.(record.conversation);
         return;
@@ -155,7 +157,7 @@ export class FileConversationStore implements ConversationStore {
         if (!previous && record.turns.length === 0) {
           // First creation has no old indexed state to protect. The atomic
           // record itself recovers missing indexes if initialization is interrupted.
-          await atomicWriteJson(path, record);
+          await atomicWriteJson(path, record, this.options.windows);
           await this.importHistory(record.conversation.id, []);
           this.options.metadataIndex?.put(record.conversation);
           this.options.onMetadataCommitted?.(record.conversation);
@@ -165,7 +167,7 @@ export class FileConversationStore implements ConversationStore {
       }
       // A durable write intent closes the JSON/index crash window. Recovery
       // repeats this exact write before serving either the record or its pages.
-      await atomicWriteJson(`${path}.pending-history`, record);
+      await atomicWriteJson(`${path}.pending-history`, record, this.options.windows);
       await this.recoverPendingHistory(record.conversation.id);
     });
   }
@@ -230,7 +232,7 @@ export class FileConversationStore implements ConversationStore {
       throw error;
     }
     const record = parseRecord(raw, conversationId);
-    await atomicWriteJson(path, record);
+    await atomicWriteJson(path, record, this.options.windows);
     await this.importHistory(conversationId, record.turns);
     for (const turn of record.turns) history.upsert(conversationId, turn);
     this.options.metadataIndex?.put(record.conversation);
@@ -272,7 +274,8 @@ export class FileConversationStore implements ConversationStore {
   }
 }
 
-async function atomicWriteJson(path: string, value: unknown): Promise<void> {
+async function atomicWriteJson(path: string, value: unknown, windows?: WindowsPrivateFileRoot): Promise<void> {
+  if (windows) { writeWindowsPrivateJson(windows, path, value); return; }
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporaryPath = `${path}.tmp-${process.pid}-${randomUUID()}`;
   const bytes = `${JSON.stringify(value, null, 2)}\n`;

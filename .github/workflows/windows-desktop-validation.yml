@@ -259,3 +259,28 @@ jobs:
           name: macos-regression-${{ matrix.runner }}-${{ github.sha }}
           path: .tmp/windows-desktop-validation/
           if-no-files-found: warn
+
+  persistence-docker-regression:
+    needs: changes
+    if: needs.changes.outputs.macos == 'true'
+    concurrency:
+      group: windows-desktop-persistence-${{ github.ref }}
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the existing Linux regression image
+        run: docker build -f Dockerfile.test -t metawork-windows-regression .
+      - name: Verify unchanged persistence and recovery contracts in Docker
+        run: >-
+          docker run --rm metawork-windows-regression npm test --
+          tests/configuration/file-configuration-repository.test.ts
+          tests/configuration/activation-journal.test.ts
+          tests/session/file-conversation-store.test.ts
+          tests/storage/file-conversation-presentation-store.test.ts
+          tests/gateway/segmented-event-journal.test.ts
+          tests/server/account-event-journal.test.ts
+          tests/installation/account-layout-migrator.test.ts
+          tests/installation/source-native-installer.test.ts
+          tests/installation/release-pointer-transaction.test.ts

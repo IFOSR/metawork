@@ -22,6 +22,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
+import { writeWindowsPrivateJson, type WindowsPrivateFileRoot } from '../platform/windows-private-files.js';
 import Database from 'better-sqlite3';
 import { FileAccountRepository } from '../account/file-account-repository.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
@@ -68,6 +69,7 @@ export class AccountLayoutMigrator {
     accountId?: string;
     now?: () => string;
     afterActivate?: () => Promise<void>;
+    windows?: WindowsPrivateFileRoot;
   }) {
     this.accountId = deps.accountId ?? LOCAL_DEFAULT_ACCOUNT_ID;
     this.now = deps.now ?? (() => new Date().toISOString());
@@ -134,7 +136,7 @@ export class AccountLayoutMigrator {
       manifest,
       manifestHash: hashManifest(manifest),
     };
-    await writeAtomicJson(journalPath, prepared);
+    await writeAtomicJson(journalPath, prepared, this.deps.windows);
 
     let activated = false;
     try {
@@ -252,7 +254,7 @@ export class AccountLayoutMigrator {
       return this.readManifest(root);
     }
     const manifest = await collectManifest(root);
-    await writeAtomicJson(manifestPath, manifest);
+    await writeAtomicJson(manifestPath, manifest, this.deps.windows);
     return manifest;
   }
 
@@ -457,7 +459,8 @@ async function collectManifest(root: string): Promise<LayoutManifest> {
   }
 }
 
-async function writeAtomicJson(path: string, value: unknown): Promise<void> {
+async function writeAtomicJson(path: string, value: unknown, windows?: WindowsPrivateFileRoot): Promise<void> {
+  if (windows) { writeWindowsPrivateJson(windows, path, value); return; }
   const parent = dirname(path);
   await mkdir(parent, { recursive: true, mode: 0o700 });
   const temporary = `${path}.tmp-${randomUUID()}`;

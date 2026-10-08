@@ -648,7 +648,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   // See configuration/provider-credential-migration.ts.
 
   // ADR-0031: 账户数据根——迁移并激活 local-default 账户，运行时使用账户作用域数据。
-  await new AccountLayoutMigrator({ paths }).migrate();
+  await new AccountLayoutMigrator({ paths, windows }).migrate();
   // Planner RPC runs from an account-owned directory. This keeps Server
   // startup independent of the shell directory and guarantees the cwd exists
   // before the first configuration or recovery turn.
@@ -819,10 +819,12 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   const presentationStore = new FileConversationPresentationStore(
     resolve(accountPaths.conversations, 'web-presentation'),
     new SqliteConversationHistoryRepo(db, LOCAL_DEFAULT_ACCOUNT_ID, 'presentation'),
+    windows,
   );
   const conversationStore = new FileConversationStore(
     resolve(accountPaths.conversations, 'gateway'),
     {
+      windows,
       onMetadataCommitted: metadata => directoryProjector?.observeMetadata(metadata),
       history: canonicalHistory,
       metadataIndex: new SqliteConversationMetadataIndex(db, LOCAL_DEFAULT_ACCOUNT_ID),
@@ -1366,6 +1368,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   );
   await conversationBindings.initialize();
   const eventJournalRuntime = createAccountEventJournal({
+    windows,
     historyWorkerUrl: new URL('./conversation-history-worker.js', import.meta.url),
     prepareHistory: async conversationId => {
       if (!canonicalHistory.isImported(conversationId)

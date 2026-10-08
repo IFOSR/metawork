@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import type { ConversationTurn } from '../management/web-session-types.js';
 import { boundWebSessionTurns } from '../management/web-session-types.js';
 import { isValidConversationId } from '../session/conversation-types.js';
+import { writeWindowsPrivateJson, type WindowsPrivateFileRoot } from '../platform/windows-private-files.js';
 import type {
   ConversationHistoryStore, ConversationHistoryPage, ConversationHistoryRequest,
 } from '../session/conversation-history-store.js';
@@ -32,7 +33,8 @@ export class FileConversationPresentationStore implements ConversationPresentati
   readonly recordsDir: string;
   readonly quarantineDir: string;
 
-  constructor(rootDir: string, private readonly history?: ConversationHistoryStore<ConversationTurn>) {
+  constructor(rootDir: string, private readonly history?: ConversationHistoryStore<ConversationTurn>,
+    private readonly windows?: WindowsPrivateFileRoot) {
     this.rootDir = resolve(rootDir);
     this.recordsDir = join(this.rootDir, 'records');
     this.quarantineDir = join(this.rootDir, 'quarantine');
@@ -136,7 +138,7 @@ export class FileConversationPresentationStore implements ConversationPresentati
       this.history.replace(record.conversationId, record.turns);
       return;
     }
-    await atomicWriteJson(this.recordPath(record.conversationId), record);
+    await atomicWriteJson(this.recordPath(record.conversationId), record, this.windows);
   }
 
   async delete(conversationId: string): Promise<boolean> {
@@ -211,7 +213,8 @@ function isPresentationTurn(value: unknown, conversationId: string): value is Co
     && Array.isArray(value.artifacts);
 }
 
-async function atomicWriteJson(path: string, value: unknown): Promise<void> {
+async function atomicWriteJson(path: string, value: unknown, windows?: WindowsPrivateFileRoot): Promise<void> {
+  if (windows) { writeWindowsPrivateJson(windows, path, value); return; }
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporaryPath = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let handle: Awaited<ReturnType<typeof open>> | undefined;

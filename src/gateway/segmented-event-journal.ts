@@ -1,8 +1,9 @@
 import { recordNavigationRead } from '../utils/navigation-diagnostics.js';
 import { randomUUID } from 'node:crypto';
+import type { WindowsPrivateFileRoot } from '../platform/windows-private-files.js';
 import { mkdir, open, opendir, readFile, rename, unlink } from 'node:fs/promises';
 import type { Dir } from 'node:fs';
-import { resolve } from 'node:path';
+import { relative, resolve } from 'node:path';
 import { isValidAccountId } from '../account/account-id.js';
 import { isValidConversationId } from '../session/conversation-types.js';
 import type { EventJournal, TracePage } from './event-journal.js';
@@ -41,6 +42,7 @@ export class SegmentedEventJournal implements EventJournal {
     private readonly legacy: Required<Pick<EventJournal, 'exportRetained'>>,
     private readonly readModel?: ConversationReadModel,
     private readonly onProjectionError: (error: unknown) => void = () => undefined,
+    private readonly windows?: WindowsPrivateFileRoot,
   ) {}
 
   append(event: GatewayEventEnvelope): Promise<GatewayEventEnvelope> {
@@ -379,6 +381,12 @@ export class SegmentedEventJournal implements EventJournal {
     if (byteLength > MAX_JOURNAL_SEGMENT_BYTES) throw new Error('journal_segment_oversized');
     const id = randomUUID();
     const directory = this.directory(accountId, conversationId);
+    if (this.windows) {
+      this.windows.files.ensurePrivateDirectory(directory);
+      this.windows.files.writePrivateFile(this.windows.root,
+        relative(this.windows.root, this.segmentPath(accountId, conversationId, id)), Buffer.from(body), MAX_JOURNAL_SEGMENT_BYTES);
+      return { id, firstSequence: events[0]!.sequence, lastSequence: events.at(-1)!.sequence, byteLength };
+    }
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const path = this.segmentPath(accountId, conversationId, id);
     const temporary = `${path}.pending`;
