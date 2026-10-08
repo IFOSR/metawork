@@ -1,6 +1,8 @@
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
 import { PiCliDriver } from '../../src/executor/pi-cli-driver.js';
 import { desktopToolPaths } from '../../src/installation/desktop-platform.js';
@@ -28,7 +30,11 @@ describe('PiCliDriver', () => {
       const driver = new PiCliDriver({ pdfExtensionRoot, probeCommand });
       const home = await driver.materializeHome({ attemptId: 'pdf-attempt', revisionId: 'r', agentClassId: 'pi',
         bindingFingerprint: 'f', attemptsRoot: join(root, 'attempts'), environment: {} });
-      expect(await readFile(join(home.homePath, '.pi/agent/extensions/pi-pdf.ts'), 'utf8')).toContain(join(pdfExtensionRoot, 'index.ts'));
+      const extension = join(home.homePath, '.pi/agent/extensions/pi-pdf.ts');
+      expect(await readFile(extension, 'utf8')).toContain(pathToFileURL(join(pdfExtensionRoot, 'index.ts')).href);
+      expect(execFileSync(process.execPath, ['--input-type=module', '-e',
+        'const m = await import(process.argv[1]); process.stdout.write(typeof m.default)', pathToFileURL(extension).href],
+      { encoding: 'utf8', windowsHide: true })).toBe('function');
       await expect(stat(join(home.homePath, '.pi/agent/auth.json'))).rejects.toThrow();
       expect((await driver.probe()).available).toBe(true);
       expect(probeCommand.mock.calls[1][0]).toBe(join(pdfExtensionRoot,

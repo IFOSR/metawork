@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { pathToFileURL } from 'node:url';
 import { resolveMetaWorkPaths } from '../installation/paths.js';
 import { desktopToolPaths } from '../installation/desktop-platform.js';
 import {
@@ -132,7 +133,7 @@ export class PiCliDriver implements HarnessDriver {
       const extensions = join(homePath, '.pi', 'agent', 'extensions');
       await mkdir(extensions, { recursive: true, mode: 0o700 });
       await writeFile(join(extensions, 'pi-pdf.ts'),
-        `export { default } from ${JSON.stringify(join(this.pdfExtensionRoot, 'index.ts'))};\n`, { mode: 0o600 });
+        `export { default } from ${JSON.stringify(pathToFileURL(join(this.pdfExtensionRoot, 'index.ts')).href)};\n`, { mode: 0o600 });
     }
     return home;
   }
