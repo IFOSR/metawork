@@ -11,6 +11,7 @@ import type { ConversationObservationFrame } from './conversation-observation.js
 import type { ConversationViewCursor } from '../session/conversation-read-model.js';
 
 export type GatewayClientMessage =
+  | { type: 'request_server_stop'; nonce: string; pid: number; startedAt: string }
   | { type: 'register_desktop_session'; nonce: string }
   | { type: 'observe'; connectionId: string; observationId: string; conversationId: string; cursor?: ConversationViewCursor }
   | { type: 'unobserve'; observationId: string }
@@ -42,6 +43,7 @@ export type GatewayClientMessage =
     };
 
 export type GatewayServerMessage =
+  | { type: 'server_stop_accepted'; nonce: string }
   | { type: 'desktop_session_registered'; grant: DesktopSessionGrant }
   | { type: 'observation'; frame: ConversationObservationFrame }
   | {
@@ -93,6 +95,13 @@ export type GatewayServerMessage =
 export function parseGatewayClientMessage(input: unknown): GatewayClientMessage | null {
   if (typeof input !== 'object' || input === null) return null;
   const candidate = input as Record<string, unknown>;
+
+  if (candidate.type === 'request_server_stop') {
+    return Object.keys(candidate).every(key => ['type', 'nonce', 'pid', 'startedAt'].includes(key))
+      && isDesktopNonce(candidate.nonce) && Number.isSafeInteger(candidate.pid) && (candidate.pid as number) > 0
+      && typeof candidate.startedAt === 'string' && candidate.startedAt.length > 0 && candidate.startedAt.length <= 64
+      ? { type: 'request_server_stop', nonce: candidate.nonce, pid: candidate.pid as number, startedAt: candidate.startedAt } : null;
+  }
 
   if (candidate.type === 'unobserve') {
     return Object.keys(candidate).every(key => ['type', 'observationId'].includes(key))

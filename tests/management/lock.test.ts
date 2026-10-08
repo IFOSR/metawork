@@ -61,7 +61,7 @@ describe('instance lock ownership', () => {
 });
 
 describe('stopInstanceForRestart', () => {
-  it('signals the lock holder and waits for it to exit', async () => {
+  it.skipIf(process.platform === 'win32')('signals the lock holder and waits for it to exit', async () => {
     const directory = await mkdtemp(resolve(tmpdir(), 'anyfusion-lock-'));
     const lockPath = resolve(directory, 'runtime.lock');
     await writeFile(lockPath, '{"pid":"4242","startedAt":"2026-08-17T00:00:00.000Z"}\n');
@@ -84,5 +84,27 @@ describe('stopInstanceForRestart', () => {
 
     expect(result).toEqual({ status: 'stopped', pid: 4242 });
     expect(signals).toEqual([0, 'SIGTERM', 0]);
+  });
+  it('waits for formal drain completion before checking process exit', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'anyfusion-lock-'));
+    const lockPath = resolve(directory, 'runtime.lock');
+    await writeFile(lockPath, '{"pid":"4242","startedAt":"fixture"}\n');
+    let stopped = false;
+    const signals: Array<NodeJS.Signals | 0> = [];
+    const result = await stopInstanceForRestart(lockPath, {
+      requestStop: async pid => { expect(pid).toBe(4242); stopped = true; },
+      signalProcess: (_pid, signal) => {
+        signals.push(signal);
+        if (stopped) throw Object.assign(new Error('exited'), { code: 'ESRCH' });
+        return true;
+      },
+      sleep: async () => undefined,
+    });
+    expect(result).toEqual({ status: 'stopped', pid: 4242 });
+    expect(signals).toEqual([0, 0]);
+    await expect(stopInstanceForRestart(lockPath, {
+      requestStop: async () => { throw new Error('drain failed'); },
+      signalProcess: () => true,
+    })).rejects.toThrow('drain failed');
   });
 });

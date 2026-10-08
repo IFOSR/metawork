@@ -14,6 +14,30 @@ import { DesktopSessionService } from '../../src/management/desktop-session.js';
 import { resolveLocalEndpointPath } from '../../src/platform/local-endpoint.js';
 
 describe('Desktop ticket transport admission', () => {
+  it('never enables lifecycle control on ordinary Node transports', async () => {
+    const root = await mkdtemp(join(process.platform === 'darwin' ? '/tmp' : tmpdir(), 'mwd-stop-'));
+    const path = resolveLocalEndpointPath(root, 'gateway.sock');
+    const prepareServerStop = vi.fn(() => vi.fn());
+    const server = new MetaclawGatewayServer({ socketPath: path,
+      gateway: { handle: vi.fn() } as unknown as ClientGateway, journal: new FileEventJournal(join(root, 'journal')),
+      subscriptions: new GatewaySubscriptions(), authorizeAttach: async () => false, prepareServerStop });
+    let socket: ReturnType<typeof createConnection> | undefined;
+    try {
+      await server.start();
+      const result = await new Promise<unknown>((resolve, reject) => {
+        socket = createConnection(path);
+        socket.setTimeout(3000, () => reject(new Error('Lifecycle denial timed out')));
+        socket.on('error', reject);
+        socket.on('data', createJsonLineParser<Record<string, unknown>>(message => {
+          if (message.type !== 'hello') resolve(message);
+        }, { maxFrameBytes: 4096, onError: reject }));
+        socket.once('connect', () => socket!.write(encodeJsonLine({ type: 'request_server_stop',
+          nonce: randomBytes(32).toString('hex'), pid: process.pid, startedAt: 'fixture' })));
+      });
+      expect(result).toEqual({ type: 'error', message: 'Server lifecycle control is unavailable' });
+      expect(prepareServerStop).not.toHaveBeenCalled();
+    } finally { socket?.destroy(); await server.stop(); await rm(root, { recursive: true, force: true }); }
+  });
   it.each([true, false])('requires a supported OS-user transport and an issuer (%s)', async configured => {
     const root = await mkdtemp(join(process.platform === 'darwin' ? '/tmp' : tmpdir(), 'mwdg-'));
     const path = resolveLocalEndpointPath(root, 'gateway.sock');

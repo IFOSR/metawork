@@ -1781,6 +1781,12 @@ the private endpoint and OS pipe PID. Ordinary Node pipes cannot issue tickets.
 macOS retains its Unix transport. Packaged installation and Windows end-to-end
 acceptance remain open; see the implementation record for commit-bound results.
 
+Windows formal stop/restart is an authenticated local lifecycle request to the
+same ServerApplication.stop/drain. It checks PID/start identity and waits for a
+private completion receipt plus exit; it cannot fall back to Windows SIGTERM
+or console-wide Ctrl-Break. Unix signal behavior remains unchanged. Installed
+Server and active-work cleanup tests are still required.
+
 The Windows payload inventory keeps required executables/addons at x64, checks
 CLR headers and IL-only metadata for Git Credential Manager's AnyCPU assemblies,
 and allows only PortableGit's fixed `usr/libexec/getprocaddr32.exe` as a WOW64

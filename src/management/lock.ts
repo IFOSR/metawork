@@ -36,6 +36,8 @@ interface StopInstanceForRestartOptions {
   pollIntervalMs?: number;
   signalProcess?: (pid: number, signal: NodeJS.Signals | 0) => boolean;
   sleep?: (durationMs: number) => Promise<void>;
+  /** Windows must request the formal Server drain; SIGTERM is TerminateProcess. */
+  requestStop?: (pid: number) => Promise<void>;
 }
 
 interface LockRecord {
@@ -86,7 +88,11 @@ export async function stopInstanceForRestart(
   }
 
   try {
-    signalProcess(pid, 'SIGTERM');
+    if (options.requestStop) await options.requestStop(pid);
+    else {
+      if (process.platform === 'win32') throw new Error('Windows Server stop requires authenticated lifecycle control');
+      signalProcess(pid, 'SIGTERM');
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
       return { status: 'stopped', pid };

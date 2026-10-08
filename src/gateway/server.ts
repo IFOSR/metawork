@@ -26,6 +26,8 @@ import { MAX_CONNECTION_OBSERVATIONS, type ConversationObservationService, type 
 interface GatewayServerDeps {
   socketPath: string;
   windowsPipeModulePath?: string;
+  /** Authorizes one OS-owner lifecycle request; returned action runs after acknowledgement flush. */
+  prepareServerStop?(input: { nonce: string; pid: number; startedAt: string }): () => void;
   gateway: ClientGateway;
   journal: EventJournal;
   subscriptions: GatewaySubscriptions;
@@ -396,6 +398,15 @@ export class MetaclawGatewayServer {
         } catch {
           send({ type: 'error', message: 'Desktop session is unavailable' });
         }
+        return;
+      }
+      if (message.type === 'request_server_stop') {
+        try {
+          if (!(socket instanceof WindowsPipeStream) || !this.deps.prepareServerStop) throw new Error('unavailable');
+          const stop = this.deps.prepareServerStop(message);
+          socket.write(encodeJsonLine({ type: 'server_stop_accepted', nonce: message.nonce } satisfies GatewayServerMessage),
+            () => stop());
+        } catch { send({ type: 'error', message: 'Server lifecycle control is unavailable' }); }
         return;
       }
       if (message.type === 'register_web_launch') {

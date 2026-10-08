@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { stopInstanceForRestart } from './management/lock.js';
 import { waitForStartedServer } from './client/server-readiness.js';
 import { readReleaseIdentity } from './installation/release-identity.js';
+import { requestWindowsServerStop } from './client/windows-server-stop.js';
 
 const command = parseCliArgs(process.argv.slice(2));
 const run = command.kind === 'build'
@@ -67,7 +68,10 @@ async function runPairing(
 
 async function restartServerWithCurrentRelease(): Promise<void> {
   const paths = resolveMetaWorkPaths();
-  const result = await stopInstanceForRestart(join(paths.data, 'runtime.lock'));
+  const result = await stopInstanceForRestart(join(paths.data, 'runtime.lock'), process.platform === 'win32' ? {
+    requestStop: expectedPid => requestWindowsServerStop({ root: paths.root, releaseRoot: paths.appCurrent,
+      modulePath: join(paths.appCurrent, 'native/windows/metawork-platform.node'), expectedPid }),
+  } : {});
   process.stdout.write(
     result.status === 'stopped'
       ? `MetaWork Server 旧实例已停止（PID ${result.pid}），正在重新启动。\n`

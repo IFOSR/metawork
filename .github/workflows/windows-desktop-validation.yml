@@ -161,7 +161,7 @@ jobs:
         run: node scripts/probe-windows-platform-pipes.mjs
       - name: Verify native Duplex backpressure and client lifecycle
         if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
-        run: npm test -- tests/platform/windows-pipe.test.ts tests/platform/atomic-replace.test.ts tests/platform/windows-private-stores.test.ts tests/gateway/windows-desktop-transport.test.ts
+        run: npm test -- tests/platform/windows-pipe.test.ts tests/platform/atomic-replace.test.ts tests/platform/windows-private-stores.test.ts tests/gateway/windows-desktop-transport.test.ts tests/gateway/windows-server-stop.test.ts tests/management/lock.test.ts
       - name: Verify production Gateway denial across standard accounts and SMB
         if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
         shell: pwsh

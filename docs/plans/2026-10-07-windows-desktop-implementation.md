@@ -204,3 +204,9 @@ Gateway 新增显式原生模块入口；只有实际 WindowsPipeStream 才能�
 已定位 Planner 的 ssh2@1.17.0 自带 `util/pagent.exe` 为 x86。新增构建步骤核验包版本和原始 C 源码 SHA256，以 MSVC x64/static CRT 重建该辅助程序，强制包含标准头文件避免旧 C 隐式声明截断指针；不改上游源码、不删除 SSH agent 功能、不扩展 x86 白名单。打包前验证 PE 架构、参数拒绝、无 agent 拒绝及临时 Pageant 窗口的 SSH identities 二进制往返，并记录来源/产物哈希。原生构建与完整资源门待云端执行。
 
 第四次 Windows 11 最终截图已确认进入真实桌面（官方 Enterprise Evaluation，MWCI 登录），但 bootstrap 未回报，故仍不是环境或产品验收通过；第五次继续收集 setup/首次登录诊断。macOS `e417ae61` 两架构的模块回归、Gateway smoke 和实际 Electron 均通过，最新提交仍需同提交矩阵验收。
+
+### Windows 正式停止的 Server 生命周期接入（2026-10-08）
+
+源码新增仅原生身份管道允许的停止请求，绑定 OS PID、endpoint startedAt 和随机 nonce。Gateway 不拥有清理政策，只转交现有 ServerApplication.stop；正常清理或失败都写受 ACL 保护的对应凭据，CLI 同时要求成功凭据和进程退出，不把强杀造成的 PID 消失当作成功。正式 stop/restart 共用此入口，Windows 缺 native adapter 时明确失败，禁止 SIGTERM/共享控制台 Ctrl-Break 降级；Unix 信号路径不变。ADR-0045、CONTEXT 与技术概览已记录边界。
+
+本机 Root/Desktop 类型检查及生命周期、锁、普通管道拒绝、模块边界 50 项通过。新增 Windows 原生测试覆盖完整 drain 顺序、失败清理回报及错误 PID/startedAt 拒绝；云端与实际安装中的活跃任务停止仍待通过，不能据源码补齐关闭 P1/P3。

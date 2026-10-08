@@ -81,6 +81,19 @@ product acceptance remain separate gates. Existing Unix behavior,
 single-use ticket/HTTP proof and Installer/Updater activation authority remain
 the same. See the Windows implementation log for commit-bound evidence.
 
+Windows formal stop/restart uses an OS-owner-only lifecycle request on the
+verified native Gateway pipe. This replaces Windows SIGTERM (which forcibly
+terminates the process) with the same ServerApplication.stop/drain used by Unix
+signals. The request binds the kernel-observed PID, endpoint start identity and
+a fresh nonce; ordinary Node pipes, HTTP and renderer IPC cannot invoke it.
+Gateway only admits the transport request; Server remains the lifecycle owner.
+After stop settles, Server writes a private nonce-bound success/failure receipt
+and exits. CLI requires a successful receipt and process exit, never just a
+disappearing PID. No force-kill or shared-console Ctrl-Break fallback is allowed.
+This local control frame does not add a Task command or change Kernel policy.
+Source and native lifecycle tests do not replace installed active-work cleanup
+acceptance, which remains mandatory in the Windows plan.
+
 The approved plan is larger than an Electron wrapper: independent service
 survival, local authentication, clean-machine dependencies and upgrade recovery
 are release gates. Source implementation, local smoke, signing/notarization and

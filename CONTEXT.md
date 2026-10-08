@@ -1083,6 +1083,11 @@ and SMB rejection checks have passed. Source composition now selects the native
 transport when the installed release contains its module; Desktop requires it
 on Windows. Ordinary Node named pipes never advertise Desktop sessions or issue
 tickets. Packaged installation and end-to-end Windows acceptance remain open.
+Windows formal stop/restart now requests the existing Server drain through the
+verified native Gateway and requires a nonce-bound completion receipt plus
+process exit. Ordinary Node pipes cannot stop Server through this frame;
+Windows SIGTERM is not an allowed graceful-stop fallback. Installed lifecycle
+and active-work cleanup acceptance remain open (ADR-0045).
 macOS Unix behavior and the existing single-use ticket/HTTP proof remain authoritative.
 
 Windows Desktop inventory requires x64 primary executables and native modules.

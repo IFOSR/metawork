@@ -68,6 +68,7 @@ import { ConversationRegistry } from '../session/conversation-registry.js';
 import { createNotificationService } from '../notifications/feishu.js';
 import { nanoid } from 'nanoid';
 import { MetaclawGatewayServer } from '../gateway/server.js';
+import { requestWindowsServerStop } from '../client/windows-server-stop.js';
 import { resolveGatewaySocketPath } from '../gateway/gateway-paths.js';
 import { resolveLocalEndpointPath } from '../platform/local-endpoint.js';
 import { MarkdownPreviewServer } from '../integrations/markdown-preview.js';
@@ -457,6 +458,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   if (!existsSync(snapshotDir)) mkdirSync(snapshotDir, { recursive: true });
 
   const runtimeLockPath = resolve(paths.data, 'runtime.lock');
+  const stopOptions = process.platform === 'win32' ? {
+    requestStop: (expectedPid: number) => requestWindowsServerStop({ root: paths.root, releaseRoot: applicationRoot,
+      modulePath: candidateWindowsModule, expectedPid }),
+  } : {};
   if (cliCommand.kind === 'server' && cliCommand.action === 'status') {
     const instanceRunning = await isInstanceRunning(runtimeLockPath);
     const manifest = await readEndpointManifest(endpointManifestPath).catch(() => null);
@@ -480,7 +485,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   }
 
   if (cliCommand.kind === 'server' && cliCommand.action === 'stop') {
-    const result = await stopInstanceForRestart(runtimeLockPath);
+    const result = await stopInstanceForRestart(runtimeLockPath, stopOptions);
     process.stdout.write(
       result.status === 'stopped'
         ? `MetaWork Server 已停止（PID ${result.pid}）。\n`
@@ -490,7 +495,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   }
 
   if (cliCommand.kind === 'server' && cliCommand.action === 'restart') {
-    const result = await stopInstanceForRestart(runtimeLockPath);
+    const result = await stopInstanceForRestart(runtimeLockPath, stopOptions);
     process.stdout.write(
       result.status === 'stopped'
         ? `MetaWork Server 旧实例已停止（PID ${result.pid}），正在重新启动。\n`
@@ -1976,6 +1981,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   const webLaunchContexts = new WebLaunchContextService();
   const webAuth = new WebAuthService();
   const desktopInstanceId = randomUUID();
+  const serverStartedAt = new Date().toISOString();
+  let localStopRequested = false;
   const desktopInstallationId = createHash('sha256').update(await realpath(paths.root)).digest('hex');
   const desktopRelease = await readReleaseIdentity(join(applicationRoot, 'release-identity.json'));
   let desktopReady = false;
@@ -1989,6 +1996,19 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   const gatewayServer = new MetaclawGatewayServer({
     socketPath: gatewaySocketPath,
     windowsPipeModulePath,
+    prepareServerStop: input => {
+      if (!windows || !desktopReady || !serverApplication || localStopRequested
+        || input.pid !== process.pid || input.startedAt !== serverStartedAt) throw new Error('Server stop identity mismatch');
+      localStopRequested = true;
+      return () => {
+        void shutdown().then(() => true, () => false).then(stopped => {
+          windows.files.writePrivateFile(paths.root, 'server-stop-receipt.json', Buffer.from(JSON.stringify({
+            nonce: input.nonce, pid: process.pid, startedAt: serverStartedAt, stopped,
+          })));
+          process.exit(stopped ? 0 : 1);
+        }).catch(() => process.exit(1));
+      };
+    },
     gateway: clientGateway,
     journal: eventJournal,
     subscriptions: gatewaySubscriptions,
@@ -2762,7 +2782,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           serverVersion: process.env.METAWORK_VERSION ?? identity?.releaseId ?? 'development',
           gatewayProtocolVersion: 2,
           pid: process.pid,
-          startedAt: new Date().toISOString(),
+          startedAt: serverStartedAt,
           state: 'ready',
           unixSocketPath: endpoints.unixSocketPath,
           webOrigin: endpoints.webOrigin,
