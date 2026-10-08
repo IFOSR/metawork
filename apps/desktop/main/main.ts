@@ -62,7 +62,6 @@ function menuLabels(): {
   settings: string;
   reconnect: string;
   stopService: string;
-  installUpdate: string;
   checkUpdate: string;
   advanced: string;
   repairUpdate: string;
@@ -94,7 +93,7 @@ function menuLabels(): {
   const chinese = /^zh(?:-|$)/iu.test(app.getLocale());
   return chinese ? {
     application: 'MetaWork', about: '关于 MetaWork', settings: '设置…', reconnect: '重新连接后台',
-    stopService: '停止后台服务…', installUpdate: '从文件安装更新…', checkUpdate: '检查更新…', advanced: '高级', repairUpdate: '修复未完成的更新…',
+    stopService: '停止后台服务…', checkUpdate: '检查更新…', advanced: '高级', repairUpdate: '修复未完成的更新…',
     selectInstallation: '切换数据目录…', installCommand: '安装终端命令…', logout: '清除本机登录和草稿…',
     quit: '退出桌面（后台继续运行）', file: '文件', newConversation: '新建对话', hideWindow: '隐藏窗口',
     edit: '编辑', undo: '撤销', redo: '重做', cut: '剪切', copy: '复制', paste: '粘贴', selectAll: '全选',
@@ -102,7 +101,7 @@ function menuLabels(): {
     zoomOut: '缩小', fullscreen: '全屏', window: '窗口', minimize: '最小化', close: '关闭',
   } : {
     application: 'MetaWork', about: 'About MetaWork', settings: 'Settings…', reconnect: 'Reconnect to Server',
-    stopService: 'Stop Server…', installUpdate: 'Install Update from File…', checkUpdate: 'Check for Updates…', advanced: 'Advanced', repairUpdate: 'Repair Interrupted Update…',
+    stopService: 'Stop Server…', checkUpdate: 'Check for Updates…', advanced: 'Advanced', repairUpdate: 'Repair Interrupted Update…',
     selectInstallation: 'Choose Existing Installation…', installCommand: 'Install Terminal Command…',
     logout: 'Sign Out and Clear Drafts', quit: 'Quit MetaWork (Server Continues)', file: 'File',
     newConversation: 'New Conversation', hideWindow: 'Hide Window', edit: 'Edit', undo: 'Undo', redo: 'Redo',
@@ -240,7 +239,7 @@ ipcMain.handle('shell:retry', event => { ownedShell(event); return connect(); })
 ipcMain.handle('shell:upgrade', async event => {
   ownedShell(event);
   if (!installation || state.phase !== 'upgrade') throw new Error('Runtime upgrade is unavailable');
-  await updateApplication(false, true);
+  await updateApplication();
 });
 ipcMain.handle('desktop:preferences', event => { owned(event); return preferences!.read(); });
 ipcMain.handle('desktop:theme', (event, theme: unknown) => { owned(event); return preferences!.setTheme(theme); });
@@ -339,40 +338,34 @@ async function stopService(): Promise<void> {
   } catch { dialog.showErrorBox('服务尚未停止', '请检查后台状态。任务状态以 Server 中的记录为准。'); }
 }
 
-async function updateApplication(recover = false, adoptExistingRuntime = false): Promise<void> {
+async function updateApplication(recover = false): Promise<void> {
   if (!app.isPackaged || !window || !installation || updatingApplication) return;
   updatingApplication = true;
   try {
     if (!recover) {
       const applicationPath = resolve(process.resourcesPath, '../..');
-      let candidatePath = applicationPath;
-      if (!adoptExistingRuntime) {
-        const selected = await dialog.showOpenDialog(window, { title: '选择新版 MetaWork.app',
-          properties: ['openFile'], filters: [{ name: 'MetaWork 应用', extensions: ['app'] }] });
-        if (selected.canceled || !selected.filePaths[0]) return;
-        candidatePath = selected.filePaths[0];
-      }
       setState({ phase: 'connecting', message: '正在准备后台更新，完成后将自动重新打开…' });
       await prepareDesktopUpdate({ root: installRoot, applicationPath,
-        candidatePath, resources: process.resourcesPath, adoptExistingRuntime,
+        candidatePath: applicationPath, resources: process.resourcesPath, adoptExistingRuntime: true,
         configHome: selectedConfigHome, userDataPath: app.getPath('userData') });
+    } else {
+      let taskSummary = '后台状态暂不可读；安装器会在正式停止完成后才切换版本。';
+      if (origin) {
+        const response = await webSession.fetch(`${origin}/api/client/service-activity`, { redirect: 'error', signal: AbortSignal.timeout(5000) });
+        if (!response.ok) throw new Error('Service activity is unavailable');
+        const activity = await response.json() as { activeTasks: number };
+        taskSummary = `当前有 ${activity.activeTasks} 个未结束任务。修复会执行全局停止流程，所有客户端会暂时断开。`;
+      }
+      // Startup completion already obtains consent; interrupted repair has its
+      // own confirmation before changing the installed environment.
+      const answer = await dialog.showMessageBox(window, { type: 'warning',
+        message: '修复上次未完成的更新？',
+        detail: `${taskSummary}\n桌面将退出，由独立安装器完成切换。回滚可能恢复到升级前的数据时间点。`,
+        buttons: ['取消', '退出并修复'], defaultId: 0, cancelId: 0 });
+      if (answer.response !== 1) { updatingApplication = false; await connect(); return; }
+      await prepareDesktopRepair({ root: installRoot, resources: process.resourcesPath,
+        desktopVersion: app.getVersion() });
     }
-    let taskSummary = '后台状态暂不可读；安装器会在正式停止完成后才切换版本。';
-    if (origin) {
-      const response = await webSession.fetch(`${origin}/api/client/service-activity`, { redirect: 'error', signal: AbortSignal.timeout(5000) });
-      if (!response.ok) throw new Error('Service activity is unavailable');
-      const activity = await response.json() as { activeTasks: number };
-      taskSummary = `当前有 ${activity.activeTasks} 个未结束任务。升级会执行全局停止流程，所有客户端会暂时断开。`;
-    }
-    // The startup action already explains interruption and obtains consent.
-    // File installation and repair still need their own confirmation.
-    const answer = adoptExistingRuntime ? { response: 1 } : await dialog.showMessageBox(window, { type: 'warning',
-      message: recover ? '修复上次未完成的更新？' : '安装已验证的新版应用？',
-      detail: `${taskSummary}\n桌面将退出，由独立安装器完成切换。回滚可能恢复到升级前的数据时间点。`,
-      buttons: ['取消', recover ? '退出并修复' : '退出并更新'], defaultId: 0, cancelId: 0 });
-    if (answer.response !== 1) { updatingApplication = false; await connect(); return; }
-    if (recover) await prepareDesktopRepair({ root: installRoot, resources: process.resourcesPath,
-      desktopVersion: app.getVersion() });
     await preferences?.flush();
     notifications.stop();
     await launchDesktopUpdate(installRoot, recover);
@@ -536,7 +529,6 @@ async function start(): Promise<void> {
       { id: 'reconnect', label: labels.reconnect, enabled: false, click: () => { void connect(); } },
       { id: 'repair-update', label: labels.repairUpdate, visible: false, click: () => { void updateApplication(true); } },
       { label: labels.advanced, submenu: [
-        { label: labels.installUpdate, enabled: app.isPackaged, click: () => { void updateApplication(); } },
         { label: labels.selectInstallation, enabled: app.isPackaged, click: () => { void selectInstallation(); } },
         { label: labels.installCommand, enabled: app.isPackaged, click: () => { void installTerminalCommand(); } },
         { type: 'separator' },

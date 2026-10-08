@@ -133,14 +133,15 @@ worktree belongs in the repository or application resources.
 The main menu's **检查更新…** checks the official latest release and offers a
 matching Mac DMG download after confirmation. It never silently installs or
 downgrades a newer local build. Install the download by quitting Desktop and
-replacing the app in Applications. **高级 → 从文件安装更新…** remains available
-for an already downloaded application. Installation selection, terminal setup,
-Server stop and clearing local login/drafts also live under **高级**.
+replacing the app in Applications; startup then completes the bundled Runtime
+update. There is no separate file-installation menu or application picker.
+Installation selection, terminal setup, Server stop and clearing local
+login/drafts live under **高级**.
 Reconnect is disabled while connected or connecting, and becomes available on
 connection failure. **修复未完成的更新…** appears only when recovery is required.
 
-First launch verifies the bundled distribution, accepts model configuration in
-the startup page and invokes the native installer in a separate Node process.
+First launch verifies the bundled distribution and invokes the native installer
+without requiring model credentials. Models are configured later in Settings.
 Production installation does not require developer internal LLM credentials.
 Optional internal AI features remain unavailable until separately provisioned;
 existing internal configuration is preserved during update.
@@ -148,9 +149,9 @@ The canonical installation is `~/.metawork` unless explicitly selected. Finder
 can restore an installation/configuration selection from Desktop preferences.
 An existing incompatible Runtime is rejected rather than opening a second one.
 
-Use **安装新版应用…** in a running compatible Desktop to select the next signed
-MetaWork.app. The adapter verifies its signing team, release trust and
-compatibility, stages it, and asks for the global-stop impact confirmation.
+When the installed app and Runtime versions differ, startup offers
+**完成更新并重启** and explains task/client interruption. The adapter verifies
+and stages the installed app's bundled release; it does not select another app.
 After Desktop exits, an independent installed helper runs the native updater,
 replaces the app, checks the new Server identity and waits for the new Desktop
 to authenticate and render shared Web assets before committing. On failure it
