@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { ManagedProcess } from '../platform/process-port.js';
-import type { WindowsOwnedProcess, WindowsProcessSpawner } from '../platform/windows-process.js';
+import type { WindowsOwnedProcess, WindowsProcessSpawner, WindowsSpawnOptions } from '../platform/windows-process.js';
 type PlannerChildProcess = ManagedProcess;
 import { existsSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -320,7 +320,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       input.configurationRevision,
     );
     this.assertSessionOpen(input.sessionId);
-    const child: ManagedProcess = (this.deps.spawn ?? this.deps.windowsSpawn ?? spawn)(launch.command, launch.args, {
+    const child: ManagedProcess = this.spawnProcess(launch.command, launch.args, {
       cwd: launch.cwd,
       stdio: 'inherit',
       env: launch.env,
@@ -351,7 +351,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       this.currentConfigurationRevision,
     );
     this.assertSessionOpen('probe');
-    const child: ManagedProcess = (this.deps.spawn ?? this.deps.windowsSpawn ?? spawn)(launch.command, ['--version'], {
+    const child: ManagedProcess = this.spawnProcess(launch.command, ['--version'], {
       cwd: launch.cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: launch.env,
@@ -440,7 +440,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     const stateRequestId = `${requestId}-state`;
 
     return new Promise((resolve, reject) => {
-      const proc: ManagedProcess = (this.deps.spawn ?? this.deps.windowsSpawn ?? spawn)(launch.command, launch.args, {
+      const proc: ManagedProcess = this.spawnProcess(launch.command, launch.args, {
         cwd: launch.cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: launch.env,
@@ -1039,6 +1039,21 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
         ...buildPlannerMcpLaunchEnv(),
       },
     };
+  }
+
+  private spawnProcess(command: string, args: string[], options: WindowsSpawnOptions): ManagedProcess {
+    if (this.deps.windowsSpawn && !this.deps.spawn) {
+      // Native Windows cannot execute a JS shebang. The independent Server's
+      // pinned Node launches the installed Planner entry directly, without cmd.
+      if (/\.[cm]?js$/iu.test(command)) {
+        if (!isAbsolute(command)) throw new Error('Windows Planner script must be absolute');
+        return this.deps.windowsSpawn(process.execPath, [command, ...args], options);
+      }
+      return this.deps.windowsSpawn(command, args, options);
+    }
+    return (this.deps.spawn ?? spawn)(command, args, {
+      ...options, stdio: options.stdio === 'inherit' ? 'inherit' : options.stdio ? [...options.stdio] : undefined,
+    });
   }
 
   private resolveCommand(): string {

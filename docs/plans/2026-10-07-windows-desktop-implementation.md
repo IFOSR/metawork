@@ -278,3 +278,5 @@ Windows 11 首次登录先保存本地阶段、截图与结构化回执，串口
 ### Windows Desktop activation 持久边界（2026-10-08，未接通 NSIS）
 
 DesktopActivation 与 shell health 读写增加显式 Windows private-files adapter，沿用原状态机、challenge/instance/PID 核验和 companion 恢复先后顺序；Unix 默认路径保留。原生测试覆盖各中断 phase、companion 缺失保持 recoverable journal、重建 helper 后恢复、旧 Server 回执拒绝及 journal reparse 拒绝。本机原有 activation/health 10 项和 Root 类型检查通过；Windows 12 项私有存储检查待云端执行，NSIS 与 helper 的生产接入仍未完成。
+
+`813d5056` / run `37723271152` Windows、macOS arm64/Intel、Docker 全部现有自动门通过。后续检查发现 Planner 正式配置指向 cli.js，Windows CreateProcess 不能直接执行 shebang；Supervisor 三个入口统一通过当前独立 Server 的固定 Node 启动绝对 JS 入口，仍使用 owned Job，不引入 cmd 参数拼接。新增中文/空格脚本路径的原生 probe 回归。本机 Planner 43 项通过（4 个 Windows 项跳过），Root 类型检查通过。真实模型任务继续准备，不能用 probe 代替。

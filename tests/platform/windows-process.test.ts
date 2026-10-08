@@ -1,10 +1,11 @@
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WindowsOwnedProcess, createWindowsProcessSpawner, loadWindowsProcesses, quoteWindowsArgument, windowsEnvironmentBlock } from '../../src/platform/windows-process.js';
 import { WindowsPipeStream } from '../../src/platform/windows-pipe.js';
+import { PlannerProcessSupervisor } from '../../src/planning/planner-process-supervisor.js';
 import { SpawnLocalCliChildProcessRunner } from '../../src/executor/local-cli-executor-adapter.js';
 
 it('quotes Windows argv without a shell and rejects ambiguous environment keys', () => {
@@ -79,6 +80,17 @@ describe.skipIf(process.platform !== 'win32')('owned native Windows processes', 
     expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
     expect(() => process.kill(unrelated.pid, 0)).not.toThrow();
   }, 20_000);
+
+  it('launches an installed Planner JavaScript entry through the Server Node executable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mw-planner-job-')); roots.push(root);
+    const command = join(root, '中文 planner.cjs');
+    await writeFile(command, "if(process.argv[2]!=='--version')process.exit(2);console.log('planner-entry-ok');");
+    const native = loadWindowsProcesses(resolve('native/windows/build/Release/metawork_platform.node'));
+    const supervisor = new PlannerProcessSupervisor({ command, cwd: root, plannerHome: root,
+      windowsSpawn: createWindowsProcessSpawner(native) });
+    try { expect(await supervisor.probe()).toEqual({ available: true, detail: 'planner-entry-ok' }); }
+    finally { await supervisor.stop(); }
+  });
 
   it('keeps the Executor cancellation receipt pending until its descendant has exited', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mw-executor-job-')); roots.push(root);
