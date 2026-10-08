@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 import { access, readFile, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { verifyDesktopRelease, type DesktopRelease } from '../../../src/installation/desktop-release.js';
+import { readReleaseIdentity } from '../../../src/installation/release-identity.js';
+import { desktopSupportRoot } from '../../../src/installation/desktop-support.js';
 import type { DesktopSetupInput } from '../shared/bridge.js';
 
 /** Installation transport only: database/configuration/activation remain in the native helper. */
@@ -18,12 +20,29 @@ export class DesktopInstallation {
     return this.release;
   }
   async installed(): Promise<boolean> {
-    return access(join(this.root, 'app/current/release-identity.json')).then(() => true, () => false);
+    return access(join(this.root, 'app/current/release-identity.json')).then(() => true, error => {
+      if (error.code === 'ENOENT') return false; throw error;
+    });
+  }
+  async needsUpgrade(): Promise<boolean> {
+    const release = await this.verify();
+    const identity = await readReleaseIdentity(join(this.root, 'app/current/release-identity.json'));
+    return identity !== null && identity.releaseId !== release.releaseId;
   }
   async nodePath(): Promise<string> {
-    return realpath(join(this.root, 'app/current/desktop-tools/node/bin/node'));
+    // Older native installations may not contain Desktop's bundled Node. Check
+    // compatibility first so they report a version mismatch, not a startup error.
+    const release = await this.verify();
+    const identity = await readReleaseIdentity(join(this.root, 'app/current/release-identity.json'));
+    if (identity?.releaseId !== release.releaseId) throw new Error('Installed release mismatch');
+    try { return await realpath(join(this.root, 'app/current/desktop-tools/node/bin/node')); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    // Native Web releases omit Desktop tools. Provision a durable helper/tool
+    // directory, preserving the immutable release and all existing account data.
+    await this.run('prepare-desktop');
+    return realpath(join(desktopSupportRoot(this.root, release.releaseId), 'desktop-tools/node/bin/node'));
   }
-  async run(command: 'install' | 'update' | 'rollback', provider?: DesktopSetupInput): Promise<void> {
+  async run(command: 'install' | 'update' | 'rollback' | 'prepare-desktop', provider?: DesktopSetupInput): Promise<void> {
     if (this.installing) throw new Error('Installation already in progress');
     this.installing = true;
     try {

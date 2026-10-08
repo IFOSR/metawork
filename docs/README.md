@@ -109,6 +109,8 @@ replacing those semantics.
 
 ## Active Delivery
 
+- [Desktop 接入已有 Web Runtime](plans/2026-10-08-desktop-existing-runtime-adoption.md)：同版本复用与工具补齐、旧版本原地升级、数据保留及联合激活回滚验证。
+
 - [v0.1.5 Web 与 Desktop 联合发布](plans/2026-10-07-v0.1.5-release.md)：准备中；统一版本、完整产物发布校验及中英文安装入口。正式签名与线上发布尚未完成。
 
 - [MetaWork Desktop macOS 首版方案](plans/2026-10-05-metawork-desktop-design-review.md)：已批准、实施中。Electron 壳与正式 Web 产物已通过本地 smoke；签名依赖包、干净机器与联合更新发布验收尚未完成，详见[实施记录](plans/2026-10-05-metawork-desktop-implementation.md)。
@@ -206,3 +208,5 @@ Read `AGENTS.md`, then `CONTEXT.md`, then this map. Open
 only the applicable accepted ADRs. Avoid loading every dated plan by default.
 
 Desktop implementation: [isolated branch progress](plans/2026-10-05-metawork-desktop-implementation.md).
+
+- [v0.1.6 internal Desktop release](plans/2026-10-08-v0.1.6-release.md) — 2026-10-08 release and artifact acceptance.

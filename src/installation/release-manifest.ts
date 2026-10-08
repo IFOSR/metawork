@@ -256,7 +256,7 @@ function findCompatibilityProblem(
   return null;
 }
 
-function compareSemanticVersions(left: string, right: string): number {
+export function compareSemanticVersions(left: string, right: string): number {
   const leftVersion = parseSemanticVersion(left);
   const rightVersion = parseSemanticVersion(right);
 

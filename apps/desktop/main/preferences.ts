@@ -1,8 +1,27 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { cp, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import type { DesktopDraft, DesktopPreferences, DesktopViewport } from '../shared/bridge.js';
 import { identifier } from './security.js';
+
+/** Chromium owns "Preferences"; its name also occupies "preferences" on macOS. */
+export async function desktopPreferencePath(userData: string, installationId: string, accountId: string): Promise<string> {
+  if (!identifier(installationId) || !identifier(accountId)) throw new Error('Invalid preference scope');
+  const path = join(userData, 'account-preferences', installationId, `${accountId}.json`);
+  const legacy = join(userData, 'preferences');
+  const info = await lstat(legacy).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null; throw error;
+  });
+  if (info?.isDirectory()) {
+    const current = join(userData, 'account-preferences');
+    await mkdir(current, { recursive: true, mode: 0o700 });
+    // Copy all scopes without replacing newer edits. Retain an archive and free
+    // Chromium's filename only after the copy completes; interruption is retryable.
+    await cp(legacy, current, { recursive: true, force: false, errorOnExist: false });
+    await rename(legacy, join(userData, `preferences-backup-${randomUUID()}`));
+  }
+  return path;
+}
 
 export class DesktopPreferenceStore {
   private value: DesktopPreferences = { theme: 'system', drafts: {} };

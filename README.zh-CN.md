@@ -95,11 +95,14 @@ Web 已包含在 Server 安装包中，不需要安装 Desktop。
    **系统设置 → 隐私与安全性**，找到安全提示并点击“仍要打开”，然后再次执行本步。
 5. MetaWork 安装窗口会要求填写“模型 API 地址”“模型 ID”“API Key”。填入公司
    使用的模型服务信息后点击“安装并开始使用”。凭据保存在本机 macOS 凭据库。
+   如果以前已安装 Web／终端 Runtime，Desktop 会沿用原安装：同版本直接接入，
+   缺少桌面运行工具时自动补齐；旧版本显示 **升级并接入已有数据**。确认后会暂时
+   停止后台服务，备份并迁移原有数据，再打开桌面，无需重新填写 API Key。
 6. 安装完成后会打开 Web 工作区；首次使用时完成登录并选择 Workspace。
 
 安装包包含 Node、Pi Executor、Server/Web 与 Planner；macOS Command Line Tools 提供
-仓库操作所需的系统 Git，Codex 为可选项。默认安装目录为 `~/.metawork`，兼容的已有安装会被复用，版本不兼容
-时需要联合升级。可通过菜单 **安装终端命令…** 安装 `metawork`，让 Web/TUI 连接同一
+仓库操作所需的系统 Git，Codex 为可选项。默认安装目录为 `~/.metawork`。已有安装的
+模型配置、对话和工作数据会保留；请勿为接入 Desktop 删除该目录。可通过菜单 **安装终端命令…** 安装 `metawork`，让 Web/TUI 连接同一
 Server。关闭窗口或退出 Desktop 后，后台服务和任务继续运行。
 
 升级时下载并挂载最新 DMG，在当前 Desktop 中选择 **安装新版应用…**，选中新包的

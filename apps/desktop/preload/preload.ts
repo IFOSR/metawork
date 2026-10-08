@@ -8,6 +8,7 @@ if (process.isMainFrame) {
       state: () => ipcRenderer.invoke('shell:state'),
       retry: () => ipcRenderer.invoke('shell:retry'),
       setup: input => ipcRenderer.invoke('shell:setup', input),
+      upgrade: () => ipcRenderer.invoke('shell:upgrade'),
       onState: listener => {
         const receive = (_event: unknown, state: ShellState) => listener(state);
         ipcRenderer.on('shell:state', receive);

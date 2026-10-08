@@ -1067,6 +1067,16 @@ _Avoid_: universal capability broker, syscall enforcement claim, caller-declared
 
 ## Desktop implementation boundary (2026-10-05)
 
+Existing native Runtime adoption (2026-10-08): Desktop reuses a matching Web/TUI
+release and provisions missing tools through its verified installer into
+`desktop-support/<releaseId>`, without editing the active immutable release or
+account configuration. A different installed release offers an in-app upgrade
+using the downloaded app and the existing native updater's backups, schema
+migration and rollback. Installer-only lifecycle calls work before Desktop
+session support exists. Candidate commit still requires authenticated Desktop
+rendering; a durable support helper permits repair without staged candidate code.
+See ADR-0045 and the existing-runtime adoption implementation plan.
+
 [ADR-0045](docs/adr/0045-desktop-thin-shell-and-local-session.md) accepts the isolated Desktop implementation: `apps/desktop`
 loads the shared Web UI and connects to the canonical independent Server. The
 local installation adapter is the only client exception allowed to invoke

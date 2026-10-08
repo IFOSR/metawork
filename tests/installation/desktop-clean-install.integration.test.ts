@@ -1,5 +1,5 @@
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -8,9 +8,14 @@ import { runDesktopInstall } from '../../src/desktop-install-cli.js';
 import { desktopInventory } from '../../src/installation/desktop-release.js';
 import { canonicalizeReleaseManifestPayload } from '../../src/installation/release-manifest.js';
 import { loadInternalSettingsAssistantConfig } from '../../src/configuration/internal-settings-assistant-config.js';
+import { SourceNativeInstaller } from '../../src/installation/source-native-installer.js';
+import { resolveMetaWorkPaths } from '../../src/installation/paths.js';
+import { createProductionSecretStore } from '../../src/configuration/production-secret-store.js';
+import { desktopSupportRoot } from '../../src/installation/desktop-support.js';
+import Database from 'better-sqlite3';
 
 describe.skipIf(process.platform === 'win32')('clean Desktop installer transaction', () => {
-  it('activates a signed fixture with user provider settings and no developer credentials', async () => {
+  it.each(['clean', 'native-reuse', 'native-upgrade'])('handles %s with signed payloads and preserves existing account data', async scenario => {
     const root = await mkdtemp(join(tmpdir(), 'metawork-desktop-clean-'));
     const resources = join(root, 'resources');
     const installRoot = join(root, 'installation');
@@ -19,7 +24,7 @@ describe.skipIf(process.platform === 'win32')('clean Desktop installer transacti
       value: sign(null, Buffer.from(canonicalizeReleaseManifestPayload(value)), keys.privateKey).toString('base64') } });
     try {
       vi.stubEnv('METAWORK_SECRET_STORE', 'file'); vi.stubEnv('ANYFUSION_SECRET_STORE', 'file');
-      vi.stubEnv('METAWORK_DESKTOP_DEVELOPMENT', '1');
+      vi.stubEnv('METAWORK_DESKTOP_INTERNAL', '1');
       vi.stubEnv('METAWORK_INTERNAL_LLM_SOURCE_ROOT', join(root, 'missing-developer-home'));
       const payload = join(resources, 'payload');
       const contents: Record<string, string> = {
@@ -58,14 +63,53 @@ describe.skipIf(process.platform === 'win32')('clean Desktop installer transacti
         runtimeManifest: runtime, files: await desktopInventory(payload),
       })));
       vi.spyOn(process.stdout, 'write').mockReturnValue(true);
-      await runDesktopInstall(['install', resources, installRoot, '0.1.5'], Readable.from([
+      const database = join(installRoot, 'accounts/local-default/data/anyfusion.db');
+      const config = join(installRoot, 'accounts/local-default/config/active');
+      const paths = resolveMetaWorkPaths(undefined, installRoot);
+      let previousConfiguration: string | undefined;
+      let previousCredentials: string | undefined;
+      let previousDatabase: Buffer | undefined;
+      if (scenario !== 'clean') {
+        const nativeSource = join(root, 'native-source');
+        await cp(join(payload, 'metawork'), nativeSource, { recursive: true });
+        await rm(join(nativeSource, 'desktop-tools'), { recursive: true });
+        await new SourceNativeInstaller({ paths,
+          secretStore: createProductionSecretStore({ credentialsFile: paths.credentials }),
+          detectCommand: async command => command === 'pi', installLaunchers: false,
+        }).install({ releaseId: scenario === 'native-reuse' ? '0.1.5-build-aaaaaaa' : '1.2.0-preview.3-build-e33e516-1789389295',
+          sourceRoot: nativeSource, plannerRoot: join(payload, 'planner'), executorPreset: 'desktop-pi',
+          provider: { baseUrl: 'https://existing-provider.example.test/v1', apiKey: 'existing-user-key', modelId: 'existing-model',
+            region: 'international', secretReference: 'file-secret:anyfusion/providers/provider' },
+        });
+        const db = new Database(database);
+        try { db.exec("CREATE TABLE adoption_test (value TEXT); INSERT INTO adoption_test VALUES ('existing work');"); }
+        finally { db.close(); }
+        previousConfiguration = await readlink(config);
+        previousCredentials = await readFile(paths.credentials, 'utf8');
+        previousDatabase = await readFile(database);
+      }
+      await runDesktopInstall([scenario === 'clean' ? 'install' : scenario === 'native-reuse' ? 'prepare-desktop' : 'update',
+        resources, installRoot, '0.1.5'], Readable.from(scenario === 'clean' ? [
         JSON.stringify({ baseUrl: 'https://provider.example.test/v1', apiKey: 'test-user-key', modelId: 'test-model' }),
-      ]));
+      ] : []));
       expect(JSON.parse(await readFile(join(installRoot, 'app/current/release-identity.json'), 'utf8')))
         .toMatchObject({ releaseId: '0.1.5-build-aaaaaaa' });
       await expect(access(join(installRoot, 'accounts/local-default/data/anyfusion.db'))).resolves.toBeUndefined();
       await expect(access(join(installRoot, 'internal/llm-credentials.json'))).rejects.toThrow();
       await expect(loadInternalSettingsAssistantConfig({ installRoot })).resolves.toMatchObject({ enabled: false });
+      if (scenario !== 'clean') {
+        expect(await readlink(config)).toBe(previousConfiguration);
+        expect(await readFile(paths.credentials, 'utf8')).toBe(previousCredentials);
+        const db = new Database(database, { readonly: true });
+        try { expect(db.prepare('SELECT value FROM adoption_test').get()).toEqual({ value: 'existing work' }); }
+        finally { db.close(); }
+      }
+      if (scenario === 'native-reuse') {
+        expect(await readFile(database)).toEqual(previousDatabase);
+        await expect(access(join(installRoot, 'app/current/desktop-tools'))).rejects.toThrow();
+        await expect(access(join(desktopSupportRoot(installRoot, '0.1.5-build-aaaaaaa'), 'desktop-tools/node/bin/node')))
+          .resolves.toBeUndefined();
+      }
     } finally {
       vi.restoreAllMocks(); vi.unstubAllEnvs();
       async function writable(path: string): Promise<void> {

@@ -1762,6 +1762,17 @@ activation as failed.
 
 ## Desktop implementation boundary (2026-10-05)
 
+Desktop also admits existing native Web/TUI installations (2026-10-08). Matching
+release identities reuse the same Server and account; the verified helper
+provisions missing Desktop tools into `desktop-support/<releaseId>` outside the
+immutable active release. Different identities offer an in-app upgrade from
+the downloaded app, using SourceNativeUpdater for schema/configuration checks,
+backups, pointer activation and rollback. The updater uses formal native
+lifecycle commands even when the previous Server has no Desktop session API.
+Candidate activation still waits for authenticated rendering, preserves the
+Desktop profile on relaunch, and retains recovery code outside staging.
+No second account, Runtime admission authority or credential setup is created.
+
 [ADR-0045](../adr/0045-desktop-thin-shell-and-local-session.md) accepts the isolated Desktop implementation: `apps/desktop`
 loads the shared Web UI and connects to the canonical independent Server. The
 local installation adapter is the only client exception allowed to invoke

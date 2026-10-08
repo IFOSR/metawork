@@ -10,6 +10,7 @@ import { createProductionSecretStore } from './configuration/production-secret-s
 import { commandExistsOnPath } from './configuration/production-configuration-probe.js';
 import { isInstanceRunning } from './management/lock.js';
 import { acquireRuntimeUpdateLock } from './installation/runtime-update-lock.js';
+import { prepareDesktopSupport } from './installation/desktop-support.js';
 
 const ProviderSchema = z.object({
   baseUrl: z.url().refine(value => ['https:', 'http:'].includes(new URL(value).protocol)),
@@ -21,7 +22,7 @@ export async function runDesktopInstall(
   input: AsyncIterable<string | Buffer> = process.stdin,
 ): Promise<void> {
   const [command, resourcesArg, rootArg, desktopVersion] = argv;
-  if (!['install', 'update', 'rollback'].includes(command ?? '') || !resourcesArg || !rootArg || !desktopVersion) {
+  if (!['install', 'update', 'rollback', 'prepare-desktop'].includes(command ?? '') || !resourcesArg || !rootArg || !desktopVersion) {
     throw new Error('Invalid desktop installer arguments');
   }
   const resources = resolve(resourcesArg);
@@ -29,6 +30,11 @@ export async function runDesktopInstall(
   const release = await verifyDesktopRelease(resources, { trustedKeys, arch: process.arch, desktopVersion,
     allowDevelopment: process.env.METAWORK_DESKTOP_INTERNAL === '1' });
   const paths = resolveMetaWorkPaths(undefined, resolve(rootArg));
+  if (command === 'prepare-desktop') {
+    await prepareDesktopSupport(resources, paths.root, release);
+    process.stdout.write(JSON.stringify({ ok: true, releaseId: release.releaseId }) + '\n');
+    return;
+  }
   const running = () => isInstanceRunning(join(paths.data, 'runtime.lock'));
   if (await running()) throw new Error('Server must finish its formal stop before installation');
   const sourceRoot = join(resources, 'payload', 'metawork');

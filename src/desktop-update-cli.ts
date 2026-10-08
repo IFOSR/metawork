@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { access, cp, mkdir, open, readFile, realpath, rename, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { DesktopActivation, type DesktopActivationRecord } from './installation/desktop-activation.js';
 import { verifyDesktopRelease } from './installation/desktop-release.js';
 import { readReleaseIdentity } from './installation/release-identity.js';
@@ -24,6 +24,7 @@ async function main(): Promise<void> {
     previousNode: string; previousPid: number; trustedKeys: Record<string, string>; desktopVersion: string;
     shellChallenge: string;
     configHome?: string;
+    userDataPath?: string;
   };
   const record = request.record;
   if (!record.applicationPath.endsWith('.app') || !record.stagedApplicationPath.startsWith(`${requests}/`)
@@ -45,6 +46,14 @@ async function main(): Promise<void> {
   try {
     const resources = join(record.stagedApplicationPath, 'Contents/Resources');
     let candidateShell: ChildProcess | undefined;
+    const startShell = (challenge?: string) => {
+      const env: NodeJS.ProcessEnv = { ...process.env, METAWORK_INSTALL_ROOT: root, ANYFUSION_INSTALL_ROOT: root,
+        ...(request.configHome ? { METAWORK_CONFIG_HOME: request.configHome, ANYFUSION_CONFIG_HOME: request.configHome } : {}) };
+      for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE']) delete env[key];
+      return spawn(join(record.applicationPath, 'Contents/MacOS/MetaWork'),
+        [...(request.userDataPath ? [`--user-data-dir=${request.userDataPath}`] : []),
+          ...(challenge ? [`--metawork-update-check=${challenge}`] : [])], { detached: true, stdio: 'ignore', env });
+    };
     const paths = resolveMetaWorkPaths(undefined, root);
     const running = () => isInstanceRunning(join(root, 'data/runtime.lock'));
     const currentIdentity = () => readReleaseIdentity(join(root, 'app/current/release-identity.json'));
@@ -55,15 +64,20 @@ async function main(): Promise<void> {
         () => join(releaseRoot, 'desktop-tools/node/bin/node'), () => request.previousNode);
       return new DesktopServiceManager({ installRoot: root, releaseId: identity.releaseId, nodePath, configHome: request.configHome });
     };
+    const helperTools = resolve(dirname(process.execPath), '../..');
     const updater = new SourceNativeUpdater({ paths,
       secretStore: createProductionSecretStore({ credentialsFile: paths.credentials }),
       isServerRunning: running, installLaunchers: false,
       detectCommand: name => commandExistsOnPath(name, [join(resources, 'payload/metawork/desktop-tools/node/bin'),
-        join(resources, 'payload/metawork/desktop-tools/git/bin'), join(resources, 'payload/metawork/desktop-tools/executor/bin'), '/usr/bin', '/bin'].join(':')),
+        join(resources, 'payload/metawork/desktop-tools/git/bin'), join(resources, 'payload/metawork/desktop-tools/executor/bin'),
+        join(helperTools, 'node/bin'), join(helperTools, 'git/bin'), join(helperTools, 'executor/bin'),
+        process.env.PATH ?? '/usr/bin:/bin'].join(':')),
     });
     const activation = new DesktopActivation(join(requests, 'desktop-activation.json'), {
       verify: async () => {
-        const release = await verifyDesktopRelease(resources, { trustedKeys: request.trustedKeys, arch: process.arch, desktopVersion: request.desktopVersion });
+        const descriptor = JSON.parse(await readFile(join(resources, 'desktop-release.json'), 'utf8'));
+        const release = await verifyDesktopRelease(resources, { trustedKeys: request.trustedKeys, arch: process.arch,
+          desktopVersion: request.desktopVersion, allowDevelopment: descriptor.development === true });
         if (release.releaseId !== record.candidateReleaseId || !/^[a-f0-9-]{36}$/u.test(request.shellChallenge)) throw new Error('Candidate release mismatch');
         if ((await currentIdentity())?.releaseId !== record.previousReleaseId) throw new Error('Previous runtime changed');
         if (await access(record.backupApplicationPath).then(() => true, () => false)) throw new Error('Previous application backup must be retained or archived first');
@@ -77,24 +91,20 @@ async function main(): Promise<void> {
             await new Promise(resolve => setTimeout(resolve, 100));
           }
         }
-        if (await running()) await (await manager()).stop();
+        if (await running()) await (await manager()).stopForUpdate();
       },
       updateRuntime: () => updater.update({ releaseId: record.candidateReleaseId,
         sourceRoot: join(resources, 'payload/metawork'), plannerRoot: join(resources, 'payload/planner') }).then(() => undefined),
       replaceShell: async () => {
         const stagedSibling = `${record.applicationPath}.metawork-staged`;
-        await cp(record.stagedApplicationPath, stagedSibling, { recursive: true, errorOnExist: true, force: false });
+        await cp(record.stagedApplicationPath, stagedSibling, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true });
         await rename(record.applicationPath, record.backupApplicationPath);
         await rename(stagedSibling, record.applicationPath);
       },
       startAndVerifyCandidate: async () => {
         const grant = await (await manager()).connect();
         if (grant.releaseId !== record.candidateReleaseId) throw new Error('Candidate runtime failed health check');
-        const env = { ...process.env, METAWORK_INSTALL_ROOT: root, ANYFUSION_INSTALL_ROOT: root,
-          ...(request.configHome ? { METAWORK_CONFIG_HOME: request.configHome, ANYFUSION_CONFIG_HOME: request.configHome } : {}) };
-        for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE']) delete env[key as keyof typeof env];
-        candidateShell = spawn(join(record.applicationPath, 'Contents/MacOS/MetaWork'),
-          [`--metawork-update-check=${request.shellChallenge}`], { detached: true, stdio: 'ignore', env });
+        candidateShell = startShell(request.shellChallenge);
         await new Promise<void>((resolve, reject) => {
           candidateShell!.once('spawn', resolve); candidateShell!.once('error', reject);
         });
@@ -115,7 +125,7 @@ async function main(): Promise<void> {
         }
         await rm(`${record.applicationPath}.metawork-staged`, { recursive: true, force: true });
       },
-      startPrevious: async () => { await (await manager()).connect(); },
+      startPrevious: async () => { await (await manager()).startForUpdate(); },
     });
     // The helper is independent of Electron; wait for client exit before replacing its bundle.
     process.stdout.write('READY\n');
@@ -137,13 +147,13 @@ async function main(): Promise<void> {
       try { await activation.apply(record); }
       catch (error) {
         if ((await activation.read())?.phase === 'rolled-back') {
-          const child = spawn('/usr/bin/open', [record.applicationPath], { detached: true, stdio: 'ignore' }); child.unref();
+          const child = startShell(); child.unref();
         }
         throw error;
       }
     }
     if (!candidateShell || candidateShell.exitCode !== null || candidateShell.signalCode !== null) {
-      const child = spawn('/usr/bin/open', [record.applicationPath], { detached: true, stdio: 'ignore' }); child.unref();
+      const child = startShell(); child.unref();
     }
   } finally { await rm(lockPath, { force: true }); }
 }

@@ -113,13 +113,18 @@ account data. Web is included in the Server package and does not require Desktop
 5. The MetaWork setup window asks for **模型 API 地址**, **模型 ID** and **API Key**.
    Enter the provider values used by your company and choose **安装并开始使用**.
    Credentials are stored in the local macOS credential store.
+   If a Web/terminal Runtime is already installed, Desktop reuses it. Matching
+   releases connect directly, provisioning missing Desktop tools automatically.
+   Older releases show **升级并接入已有数据** (upgrade and use existing data).
+   After confirmation, the installer stops Server, backs up and migrates the
+   existing installation, and opens Desktop without asking for another API key.
 6. After setup, MetaWork opens the Web workspace. Keep the Desktop running while
    you complete the first login and choose a Workspace.
 
 Desktop bundles Node, Pi Executor, Server/Web and Planner. macOS Command Line Tools
 provide the system Git used for repository operations; Codex is optional. The default installation
-is `~/.metawork`. Compatible existing installations are reused; incompatible
-versions require a coordinated update. **Install Terminal Command…** optionally
+is `~/.metawork`. Existing model settings, conversations and work data are
+preserved; do not delete this directory to add Desktop. **Install Terminal Command…** optionally
 adds `metawork`, allowing Web/TUI to connect to the same Server. Quitting Desktop
 leaves Server and background work running.
 

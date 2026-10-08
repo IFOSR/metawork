@@ -1,13 +1,13 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, powerMonitor, screen, session, shell, type IpcMainInvokeEvent, type Session } from 'electron';
 import { randomUUID } from 'node:crypto';
-import { access, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, appendFile, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveMetaWorkPaths } from '../../../src/installation/paths.js';
 import { PRODUCT_ENVIRONMENT, resolveProductEnvironment } from '../../../src/installation/product-environment.js';
 import { DesktopServiceManager } from '../../../src/client/desktop-service-manager.js';
 import { exchangeDesktopSession } from '../../../src/client/desktop-session-client.js';
-import { DesktopPreferenceStore } from './preferences.js';
+import { DesktopPreferenceStore, desktopPreferencePath } from './preferences.js';
 import { assertMainFrame, businessDocument, externalUrl, identifier, sameOrigin } from './security.js';
 import type { DesktopDraft, DesktopMenuAction, ShellState } from '../shared/bridge.js';
 import { DesktopNotifications } from './notifications.js';
@@ -17,6 +17,7 @@ import type { DesktopSetupInput } from '../shared/bridge.js';
 import { launchDesktopUpdate, pendingDesktopUpdate, prepareDesktopUpdate } from './update.js';
 import { installNativeLauncher } from '../../../src/installation/native-launcher.js';
 import { authorizeDesktopShellCheck, writeDesktopShellHealth } from '../../../src/installation/desktop-shell-health.js';
+import { startupFailureCode } from './startup-diagnostic.js';
 
 app.setName('MetaWork');
 
@@ -129,9 +130,11 @@ async function connectOnce(): Promise<void> {
   const win = window;
   if (!win) return;
   setState({ phase: 'connecting', message: '正在确认安装和后台服务…' });
+  let stage = 'payload';
   try {
     if (installation) {
       const release = await installation.verify();
+      stage = 'installation';
       if (await pendingDesktopUpdate(installRoot)
         && !(shellCheckChallenge && await authorizeDesktopShellCheck(installRoot, {
           challenge: shellCheckChallenge, applicationPath: resolve(process.resourcesPath, '../..'), releaseId: release.releaseId,
@@ -140,19 +143,28 @@ async function connectOnce(): Promise<void> {
         setState({ phase: 'setup', message: '运行环境已就绪。添加模型连接后即可开始工作。' });
         return;
       }
+      if (await installation.needsUpgrade()) {
+        setState({ phase: 'upgrade', message: '发现已有的 Web／终端运行环境。接入桌面需要升级后台服务；原有模型配置、对话和工作数据会保留，无需重新填写 API Key。升级会暂时断开其他客户端。' });
+        return;
+      }
+      stage = 'runtime-tools';
       manager = new DesktopServiceManager({ installRoot, releaseId: release.releaseId, nodePath: await installation.nodePath(),
         configHome: selectedConfigHome });
     }
+    stage = 'server';
     const grant = await manager.connect();
+    stage = 'session';
     await exchangeDesktopSession(grant, webSession.fetch.bind(webSession) as typeof fetch, authenticatedInstance === grant.instanceId);
     authenticatedInstance = grant.instanceId;
-    const store = new DesktopPreferenceStore(join(app.getPath('userData'), 'preferences', grant.installationId, `${grant.accountId}.json`));
+    stage = 'preferences';
+    const store = new DesktopPreferenceStore(await desktopPreferencePath(app.getPath('userData'), grant.installationId, grant.accountId));
     await preferences?.flush();
     await store.load();
     preferences = store;
     origin = !app.isPackaged && process.env.METAWORK_DESKTOP_UI_ORIGIN ? process.env.METAWORK_DESKTOP_UI_ORIGIN : grant.webOrigin;
     if (!/^http:\/\/127\.0\.0\.1:\d+$/u.test(origin)) throw new Error('Invalid UI origin');
     notifications.attach(grant.webOrigin);
+    stage = 'web';
     if (!win.isDestroyed() && !sameOrigin(win.webContents.getURL(), origin)) await win.loadURL(origin);
     if (shellCheckChallenge) {
       const deadline = Date.now() + 30_000;
@@ -166,6 +178,10 @@ async function connectOnce(): Promise<void> {
     setState({ phase: 'ready', message: '后台服务已连接' });
   } catch (error) {
     // Never interpolate provider response bodies or native command output into diagnostics.
+    const diagnostic = { time: new Date().toISOString(), stage, code: startupFailureCode(error) };
+    console.error('[MetaWork Desktop] startup failed', diagnostic);
+    await appendFile(join(app.getPath('userData'), 'startup.log'), `${JSON.stringify(diagnostic)}\n`, { mode: 0o600 })
+      .catch(() => undefined);
     origin = null;
     setState({ phase: 'error', message: error instanceof Error && /update requires recovery/u.test(error.message)
       ? '配套更新尚未完成。请使用 MetaWork 菜单中的“修复未完成的更新”。'
@@ -178,6 +194,11 @@ async function connectOnce(): Promise<void> {
 
 ipcMain.handle('shell:state', event => { ownedShell(event); return state; });
 ipcMain.handle('shell:retry', event => { ownedShell(event); return connect(); });
+ipcMain.handle('shell:upgrade', async event => {
+  ownedShell(event);
+  if (!installation || state.phase !== 'upgrade') throw new Error('Runtime upgrade is unavailable');
+  await updateApplication(false, true);
+});
 ipcMain.handle('shell:setup', async (event, input: DesktopSetupInput) => {
   ownedShell(event);
   if (!installation || state.phase !== 'setup' || !input || typeof input !== 'object'
@@ -288,17 +309,22 @@ async function stopService(): Promise<void> {
   } catch { dialog.showErrorBox('服务尚未停止', '请检查后台状态。任务状态以 Server 中的记录为准。'); }
 }
 
-async function updateApplication(recover = false): Promise<void> {
+async function updateApplication(recover = false, adoptExistingRuntime = false): Promise<void> {
   if (!app.isPackaged || !window || !installation) return;
   try {
     if (!recover) {
-      const selected = await dialog.showOpenDialog(window, { title: '选择新版 MetaWork.app',
-        properties: ['openFile'], filters: [{ name: 'MetaWork 应用', extensions: ['app'] }] });
-      if (selected.canceled || !selected.filePaths[0]) return;
+      const applicationPath = resolve(process.resourcesPath, '../..');
+      let candidatePath = applicationPath;
+      if (!adoptExistingRuntime) {
+        const selected = await dialog.showOpenDialog(window, { title: '选择新版 MetaWork.app',
+          properties: ['openFile'], filters: [{ name: 'MetaWork 应用', extensions: ['app'] }] });
+        if (selected.canceled || !selected.filePaths[0]) return;
+        candidatePath = selected.filePaths[0];
+      }
       setState({ phase: 'connecting', message: '正在验证新版应用和配套运行时…' });
-      await prepareDesktopUpdate({ root: installRoot, applicationPath: resolve(process.resourcesPath, '../..'),
-        candidatePath: selected.filePaths[0], resources: process.resourcesPath,
-        configHome: selectedConfigHome });
+      await prepareDesktopUpdate({ root: installRoot, applicationPath,
+        candidatePath, resources: process.resourcesPath, adoptExistingRuntime,
+        configHome: selectedConfigHome, userDataPath: app.getPath('userData') });
     }
     let taskSummary = '后台状态暂不可读；安装器会在正式停止完成后才切换版本。';
     if (origin) {
@@ -308,16 +334,21 @@ async function updateApplication(recover = false): Promise<void> {
       taskSummary = `当前有 ${activity.activeTasks} 个未结束任务。升级会执行全局停止流程，所有客户端会暂时断开。`;
     }
     const answer = await dialog.showMessageBox(window, { type: 'warning',
-      message: recover ? '修复上次未完成的更新？' : '安装已验证的新版应用？',
-      detail: `${taskSummary}\n桌面将退出，由独立安装器完成切换。回滚可能恢复到升级前的数据时间点。`,
+      message: recover ? '修复上次未完成的更新？' : adoptExistingRuntime ? '升级已有运行环境并接入桌面？' : '安装已验证的新版应用？',
+      detail: `${taskSummary}\n${adoptExistingRuntime ? '沿用已有账号、模型配置和工作数据；安装器会备份数据库并执行迁移。\n' : ''}桌面将退出，由独立安装器完成切换。回滚可能恢复到升级前的数据时间点。`,
       buttons: ['取消', recover ? '退出并修复' : '退出并更新'], defaultId: 0, cancelId: 0 });
-    if (answer.response !== 1) return;
+    if (answer.response !== 1) { await connect(); return; }
     await preferences?.flush();
     notifications.stop();
     await launchDesktopUpdate(installRoot);
     app.quit();
-  } catch {
-    dialog.showErrorBox('更新尚未完成', '请确认新版应用签名、配套版本、磁盘空间和应用目录写入权限。已有数据与更新记录会保留；可使用“修复未完成的更新”重试。');
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Installed Runtime is newer; download a newer Desktop') {
+      dialog.showErrorBox('需要更新桌面应用', '已有后台运行时比这个安装包更新。请下载较新的 Desktop，再接入原有数据。');
+    } else {
+      dialog.showErrorBox('更新尚未完成', '请确认新版应用签名、配套版本、磁盘空间和应用目录写入权限。已有数据与更新记录会保留；可使用“修复未完成的更新”重试。');
+    }
+    await connect();
   }
 }
 

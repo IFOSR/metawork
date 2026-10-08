@@ -17,7 +17,7 @@ it('keeps business Runtime implementations out of the Electron entry and Web bri
   const web = await readFile('../../web/src/platform/services.ts', 'utf8');
   expect(web).not.toMatch(/from ['"](?:electron|node:)/u);
   const graph = await build({ entryPoints: ['main/main.ts'], bundle: true, write: false, metafile: true,
-    platform: 'node', format: 'esm', external: ['electron'] });
+    platform: 'node', format: 'esm', external: ['electron', 'original-fs'] });
   for (const path of Object.keys(graph.metafile!.inputs)) {
     expect(path).not.toMatch(/src\/(?:storage|account|kernel|execution|executor|planning)\//u);
     expect(path).not.toContain('server-composition');

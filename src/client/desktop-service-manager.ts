@@ -1,11 +1,12 @@
 import { spawn } from 'node:child_process';
 import { access, mkdir, open, realpath } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { dirname, join, relative, isAbsolute, sep } from 'node:path';
+import { dirname, join, relative, isAbsolute, sep, resolve } from 'node:path';
 import { isInstanceRunning } from '../management/lock.js';
 import { readReleaseIdentity } from '../installation/release-identity.js';
 import { discoverDesktopSession } from './desktop-session-client.js';
 import type { DesktopSessionGrant } from '../gateway/desktop-session-contract.js';
+import { resolveClientEndpoint } from './client-endpoint-resolver.js';
 
 export interface DesktopRuntime {
   installRoot: string;
@@ -26,11 +27,16 @@ export class DesktopServiceManager {
   }
 
   private async connectOnce(): Promise<DesktopSessionGrant> {
+    await this.startProcess();
+    return this.waitReady();
+  }
+
+  private async startProcess(): Promise<void> {
     const root = await this.releaseRoot();
     const lock = join(this.runtime.installRoot, 'data', 'runtime.lock');
     if (await isInstanceRunning(lock)) {
       // A live incompatible instance must never trigger another Server spawn.
-      return this.waitReady();
+      return;
     }
     await mkdir(join(this.runtime.installRoot, 'logs'), { recursive: true, mode: 0o700 });
     const log = await open(join(this.runtime.installRoot, 'logs', 'desktop-server.log'), 'a', 0o600);
@@ -45,7 +51,19 @@ export class DesktopServiceManager {
       });
       child.unref();
     } finally { await log.close(); }
-    return this.waitReady();
+  }
+
+  /** Updater rollback may restore a Web Server predating Desktop sessions. */
+  async startForUpdate(): Promise<void> {
+    await this.startProcess();
+    const deadline = Date.now() + 30_000;
+    do {
+      const endpoint = await resolveClientEndpoint(join(this.runtime.installRoot, 'server-endpoint.json'), 2,
+        { releaseId: this.runtime.releaseId });
+      if (endpoint.ok) return;
+      await new Promise(resolve => setTimeout(resolve, 300));
+    } while (Date.now() < deadline);
+    throw new Error('Previous Server did not become ready');
   }
 
   private async waitReady(): Promise<DesktopSessionGrant> {
@@ -74,6 +92,11 @@ export class DesktopServiceManager {
       manifestPath: join(this.runtime.installRoot, 'server-endpoint.json'),
       releaseId: this.runtime.releaseId,
     });
+    await this.stopForUpdate();
+  }
+
+  /** Explicit installer action; legacy Web Servers cannot issue Desktop tickets. */
+  async stopForUpdate(): Promise<void> {
     const root = await this.releaseRoot();
     await new Promise<void>((resolve, reject) => {
       const child = spawn(this.runtime.nodePath, [join(root, 'dist', 'index.js'), 'server', 'stop'], {
@@ -106,10 +129,11 @@ export class DesktopServiceManager {
     delete env.ELECTRON_RUN_AS_NODE;
     delete env.ANYFUSION_PLANNER_WORKSPACE;
     delete env.METACLAW_PLANNER_WORKDIR;
+    const tools = resolve(dirname(this.runtime.nodePath), '../..');
     return {
       ...env,
-      PATH: [dirname(this.runtime.nodePath), join(root, 'desktop-tools', 'git', 'bin'),
-        join(root, 'desktop-tools', 'executor', 'bin'), join(root, 'bin'), env.PATH ?? '/usr/bin:/bin'].join(':'),
+      PATH: [dirname(this.runtime.nodePath), join(tools, 'git', 'bin'),
+        join(tools, 'executor', 'bin'), join(root, 'bin'), env.PATH ?? '/usr/bin:/bin'].join(':'),
       METAWORK_INSTALL_ROOT: this.runtime.installRoot,
       ANYFUSION_INSTALL_ROOT: this.runtime.installRoot,
       ...(this.runtime.configHome ? { METAWORK_CONFIG_HOME: this.runtime.configHome, ANYFUSION_CONFIG_HOME: this.runtime.configHome } : {}),

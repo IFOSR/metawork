@@ -55,3 +55,28 @@ are release gates. Source implementation, local smoke, signing/notarization and
 real-provider acceptance are recorded separately in the implementation log.
 No changes to Kernel policy, Task scheduling, public protocol v2 semantics or
 business database schema are authorized by this ADR.
+
+## Existing native installation amendment (2026-10-08)
+
+First Desktop launch admits existing Web/TUI installations through the same
+Installer/Upgrader authority. Matching release identities reuse the current
+Server and account. Native distributions need not contain Desktop tools: the
+verified installation helper may provision a release-scoped `desktop-support`
+directory outside the immutable active release. It supplies durable Node/tools
+and update recovery code, not another active Runtime or account.
+
+Different release identities expose an explicit upgrade action using the app
+already downloaded. SourceNativeUpdater validates actual database schema and
+configuration compatibility, including the historical preview-to-current product
+version transition from `1.2.0-preview.*` into the `0.1.*` product line. This
+explicit historical renumbering is the only version-order exception; ordinary
+stable-to-older-Desktop downgrades remain rejected. Existing backup, migration, activation and rollback gates remain
+mandatory. Newer unsupported database schemas continue to fail closed.
+
+Installer lifecycle operations use the installed Server's formal start/stop CLI,
+so a pre-Desktop Server need not implement Desktop authentication to be upgraded
+or restarted after rollback. Ordinary client attachment and user-facing stop
+retain their Desktop session checks. Joint commit still requires the candidate
+Server identity and authenticated-render receipt. Native adoption retains a
+verified helper independently of the staged app; repair can run without that
+candidate. Relaunch preserves the installation, config home and Desktop profile.
