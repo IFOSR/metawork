@@ -7,6 +7,11 @@ class PrivateFileNotFound : public std::runtime_error {
   PrivateFileNotFound() : std::runtime_error("Private file does not exist") {}
 };
 
+class PrivateFileExists : public std::runtime_error {
+ public:
+  PrivateFileExists() : std::runtime_error("Private file already exists") {}
+};
+
 bool trusted_sid(PSID sid, const std::vector<BYTE>& own) {
   return EqualSid(sid, const_cast<BYTE*>(own.data())) != FALSE
     || IsWellKnownSid(sid, WinLocalSystemSid) != FALSE

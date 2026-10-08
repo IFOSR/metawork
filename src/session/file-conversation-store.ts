@@ -12,7 +12,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { measureNavigationStage } from '../utils/navigation-diagnostics.js';
 import { writeWindowsPrivateJson, type WindowsPrivateFileRoot } from '../platform/windows-private-files.js';
 import { isValidConversationId } from './conversation-types.js';
@@ -254,7 +254,7 @@ export class FileConversationStore implements ConversationStore {
       throw new Error(`Invalid conversation id: ${conversationId}`);
     }
     const path = resolve(this.recordsDir, `${conversationId}.json`);
-    if (!path.startsWith(`${this.recordsDir}/`)) {
+    if (!path.startsWith(`${this.recordsDir}${sep}`)) {
       throw new Error(`Invalid conversation id: ${conversationId}`);
     }
     return path;

@@ -57,7 +57,9 @@ try {
     if (values.length) cookie = values.map(value => value.split(';')[0]).join('; ');
     return response;
   };
-  assert.equal((await (await fetch(`${grant.webOrigin}/api/auth/session`)).json()).authenticated, false);
+  const anonymous = await fetch(`${grant.webOrigin}/api/auth/session`);
+  assert.equal(anonymous.status, 401);
+  assert.equal((await anonymous.json()).error, 'unauthorized');
   await exchangeDesktopSession(grant, sessionFetch);
   assert.equal((await (await sessionFetch(`${grant.webOrigin}/api/auth/session`)).json()).authenticated, true);
   const web = await sessionFetch(grant.webOrigin);

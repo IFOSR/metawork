@@ -72,7 +72,7 @@ void remove_private_file(const std::wstring& root, const std::wstring& relative)
   flush_private_path(path.substr(0, path.rfind(L'\\')), true);
 }
 
-void write_private_file(const std::wstring& root, const std::wstring& relative_path, const BYTE* bytes, size_t size, size_t maximum = 65536) {
+void write_private_file(const std::wstring& root, const std::wstring& relative_path, const BYTE* bytes, size_t size, size_t maximum = 65536, bool replace = true) {
   assert_local_path(root);
   require(!relative_path.empty() && relative_path.front() != L'\\'
     && relative_path.find_first_of(L"/:\0", 0, 3) == std::wstring::npos
@@ -97,7 +97,12 @@ void write_private_file(const std::wstring& root, const std::wstring& relative_p
     Handle existing(CreateFileW(destination.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (existing.get() == INVALID_HANDLE_VALUE) require(GetLastError() == ERROR_FILE_NOT_FOUND, "inspect replaced file");
-    else inspect_private_file(existing.get(), false);
+    else {
+      // Another guarded writer can unlink this inspected inode by atomic
+      // replacement. It remains safe to inspect; we never mutate its contents.
+      inspect_private_file(existing.get(), false, true);
+      if (!replace) throw PrivateFileExists();
+    }
   }
   BYTE random[24];
   require(BCryptGenRandom(nullptr, random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0, "private temporary identity");
@@ -121,12 +126,15 @@ void write_private_file(const std::wstring& root, const std::wstring& relative_p
     auto rename = reinterpret_cast<FILE_RENAME_INFO*>(storage.data());
     // Windows 11/NTFS: retain open readers on the previous inode while new
     // opens see the replacement. Readers still must allow delete-sharing.
-    rename->Flags = FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
+    rename->Flags = replace ? FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS : 0;
     rename->RootDirectory = nullptr;
     rename->FileNameLength = static_cast<DWORD>(target.size() * sizeof(wchar_t));
     std::memcpy(rename->FileName, target.data(), rename->FileNameLength);
-    require(SetFileInformationByHandle(file->get(), FileRenameInfoEx, rename, static_cast<DWORD>(storage.size())) != FALSE,
-      "atomic private file replacement");
+    if (!SetFileInformationByHandle(file->get(), FileRenameInfoEx, rename, static_cast<DWORD>(storage.size()))) {
+      const DWORD error = GetLastError();
+      if (!replace && (error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS)) throw PrivateFileExists();
+      require(false, "atomic private file replacement");
+    }
     replaced = true;
     require(FlushFileBuffers(file->get()) != FALSE, "flush replaced private file");
     flush_private_path(destination.substr(0, offset - 1), true);

@@ -238,3 +238,7 @@ ReleasePointerTransaction 新增显式 Windows adapter，仍按 database/configu
 第五轮 `37713269208` 未完成：UEFI 日志和进度截图显示安装盘启动后重启，磁盘已分区但未写入 Windows 系统文件，随后没有可启动设备。ISO SHA256 与此前到达真实桌面的第四轮相同；不能把这一环境失败解释为产品验收通过。下一轮保留启动前三分钟的逐十秒截图，发现无启动设备即退出并收集只读诊断，避免无证据等待。FirstLogon 改为执行 specialize 阶段复制到本地的 bootstrap，移除首次登录时对光驱 WMI 枚举的依赖；仍须收到实际 Windows 11 / Secure Boot / TPM / 交互桌面回执才通过。
 
 `a9e06f8f` 的 macOS arm64 与 Docker owning-seam 回归通过，普通用户的原生私有文件/原子替换/相对指针/管道 probe 通过。管理员侧及完整安装尚有失败，继续处理；P1/P4/P5 未关闭。
+
+`a9e06f8f` 完整正式隔离安装已通过，实际安装的 DesktopServiceManager 自动启动并复用同一 Server；随后浏览器未认证检查错误预期 `{authenticated:false}`，正式契约为 `401 {error:unauthorized}`，已修正测试断言，未更改浏览器认证。完整会话与 stop 结果仍待复验。该提交 macOS arm64、Intel 及 Docker 回归均通过。
+
+原生配置 revision 中断恢复与整套 release pointer 健康失败回滚通过。其余失败已定位：Conversation 两个存储与 journal close 使用写死 `/` 的路径边界，改用平台 sep；原生并发 writer 检查旧目标句柄时另一 writer 已使 link count 归零，允许这个已取消路径链接的旧 inode 完成只读检查，仍拒绝多硬链接。新增真实 Conversation 读写覆盖；本地原有存储、journal、companion 45 项与类型检查通过。另增加不可覆盖的原子私有文件发布原语，为 companion 恢复保留冲突拒绝语义，原生云端待验证。

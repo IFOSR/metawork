@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { WindowsPrivateFileRoot } from '../platform/windows-private-files.js';
 import { mkdir, open, opendir, readFile, rename, unlink } from 'node:fs/promises';
 import type { Dir } from 'node:fs';
-import { relative, resolve } from 'node:path';
+import { relative, resolve, sep } from 'node:path';
 import { isValidAccountId } from '../account/account-id.js';
 import { isValidConversationId } from '../session/conversation-types.js';
 import type { EventJournal, TracePage } from './event-journal.js';
@@ -258,7 +258,7 @@ export class SegmentedEventJournal implements EventJournal {
   async close(): Promise<void> {
     // The owner stops the maintenance timer before closing the journal.
     await Promise.all([...operations.entries()]
-      .filter(([key]) => key.startsWith(`${resolve(this.root)}/`)).map(([, pending]) => pending.catch(() => undefined)));
+      .filter(([key]) => key.startsWith(`${resolve(this.root)}${sep}`)).map(([, pending]) => pending.catch(() => undefined)));
     for (const directory of this.cleanupDirectories.values()) await directory.close();
     this.cleanupDirectories.clear();
   }

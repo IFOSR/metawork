@@ -31,6 +31,10 @@ export async function probePlatformFiles(addon, output, addonPath) {
     }
     assert.deepEqual(await readdir(join(root, 'nested')), ['endpoint.json']);
     checks.push('atomic replacement keeps owner/ACL and no temporary files');
+    addon.createPrivateFile(root, 'immutable', Buffer.from('original'));
+    assert.throws(() => addon.createPrivateFile(root, 'immutable', Buffer.from('conflict')), error => error.code === 'EEXIST');
+    assert.equal(addon.readPrivateFile(root, 'immutable').toString(), 'original');
+    checks.push('exclusive atomic publication preserves an existing immutable record');
     assert.throws(() => addon.writePrivateFile(root, 'oversize', Buffer.alloc(65537)), /bounded/);
     for (const path of ['..\\outside', 'C:\\outside', 'nested\\..\\outside', 'file:stream']) {
       assert.throws(() => addon.writePrivateFile(root, path, Buffer.from('denied')));

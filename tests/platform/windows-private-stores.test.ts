@@ -96,6 +96,11 @@ describe.skipIf(process.platform !== 'win32')('native Windows credential and end
     const conversations = new FileConversationStore(join(windows.root, 'conversations'), { windows });
     await conversations.initialize();
     expect((await conversations.readCatalog()).conversations).toEqual([]);
+    await conversations.writeConversation({ version: 3, conversation: {
+      id: 'conv_windows', plannerSessionId: 'planner_windows', accountId: 'local-default', title: 'Windows',
+      createdAt: '2026-10-08T00:00:00Z', updatedAt: '2026-10-08T00:00:00Z', archived: false, workspaceBinding: null,
+    }, turns: [] });
+    expect((await conversations.readConversation('conv_windows'))?.conversation.title).toBe('Windows');
     const presentation = new FileConversationPresentationStore(join(windows.root, 'presentation'), undefined, windows);
     await presentation.initialize();
     await presentation.write({ version: 1, conversationId: 'conv_windows', turns: [] });

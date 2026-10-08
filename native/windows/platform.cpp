@@ -26,7 +26,8 @@ napi_value files(napi_env env, napi_callback_info info) {
       throw std::runtime_error("Platform arguments required");
     const std::string operation(static_cast<const char*>(mode));
     uint32_t maximum = 65536;
-    if ((operation == "readPrivateFile" && count == 3) || (operation == "writePrivateFile" && count == 4)) {
+    if ((operation == "readPrivateFile" && count == 3)
+      || ((operation == "writePrivateFile" || operation == "createPrivateFile") && count == 4)) {
       double limit = 0;
       if (napi_get_value_double(env, arguments[count - 1], &limit) != napi_ok
         || !(limit >= 1 && limit <= 9 * 1024 * 1024) || limit != static_cast<uint32_t>(limit))
@@ -60,18 +61,21 @@ napi_value files(napi_env env, napi_callback_info info) {
       size_t length = 0;
       if ((count != 3 && count != 4) || napi_get_buffer_info(env, arguments[2], &bytes, &length) != napi_ok)
         throw std::runtime_error("Root, relative file and bounded buffer required");
-      write_private_file(string_argument(env, arguments[0]), string_argument(env, arguments[1]), static_cast<BYTE*>(bytes), length, maximum);
+      write_private_file(string_argument(env, arguments[0]), string_argument(env, arguments[1]), static_cast<BYTE*>(bytes), length, maximum,
+        operation != "createPrivateFile");
     }
     napi_get_undefined(env, &result); return result;
   } catch (const PrivateFileNotFound& error) {
     napi_throw_error(env, "ENOENT", error.what()); return nullptr;
+  } catch (const PrivateFileExists& error) {
+    napi_throw_error(env, "EEXIST", error.what()); return nullptr;
   } catch (const std::exception& error) {
     napi_throw_error(env, nullptr, error.what()); return nullptr;
   }
 }
 
 napi_value initialize(napi_env env, napi_value exports) {
-  for (const char* name : { "ensurePrivateDirectory", "readPrivateFile", "writePrivateFile", "flushPrivateFile", "flushPrivateDirectory", "replacePrivateSymlink", "removePrivateFile" }) {
+  for (const char* name : { "ensurePrivateDirectory", "readPrivateFile", "writePrivateFile", "createPrivateFile", "flushPrivateFile", "flushPrivateDirectory", "replacePrivateSymlink", "removePrivateFile" }) {
     napi_value function;
     if (napi_create_function(env, name, NAPI_AUTO_LENGTH, files, const_cast<char*>(name), &function) != napi_ok
       || napi_set_named_property(env, exports, name, function) != napi_ok) {
