@@ -134,3 +134,11 @@ Windows 11 run `37702596665` 45 分钟超时，无 guest report，最终 QMP 截
 `5791c403` 的 Windows 管道与普通用户/管理员 Job 暂停、恢复、取消检查通过；进程创建竞态覆盖仍待补齐。生产文件模块实际 MSVC 编译成功，但首次写入报 Win32 87：公开 SetFileInformationByHandle 的 RootDirectory 必须为空，不能沿用底层 NT 相对目录参数形式。修正为先以禁止 delete-sharing 的句柄固定从盘符下到目标父目录的全部祖先，再使用绝对目标路径原子替换；保留 ACL/owner/链接校验与 flush，待原生重跑。此前记录中的相对父目录 rename 不是已通过实现。
 
 补充生产文件 adapter 原生检查：管理员 Node/Electron Main 与临时普通用户分别验证文件占用失败保留旧内容/清理临时文件、显式 9 MiB 偏好上限、无效数值拒绝和双写双读并发整记录。读取也固定祖先目录，允许原子替换期间的 delete-sharing、仍拒绝原地并发写入；夹具只允许短暂 sharing violation 重试，其他异常仍失败。以上新增用例待 Windows 运行，macOS 路径未修改。
+
+### 持续管道监听 adapter 开始实现（2026-10-08，待原生验证）
+
+生产 Node-API 模块新增独立监听句柄和连接句柄：首次实例防抢占，当前 SID 的 DACL 与远程拒绝，每次 accept 先创建下一实例再交付连接，避免客户端轮换期间丢失名称所有权。所有读写使用 overlapped I/O；JS 轮询完成状态，单次写入最多 64 KiB，保留写入缓存直到完成，关闭时取消并等待内核释放 OVERLAPPED。连接的 Server PID 来自 OS 并匹配期望值，双端核验当前 SID；句柄用 N-API type tag 隔离。
+
+新增 Node/Electron 同模块的 24 次顺序重连、同名 12 并发连接、双向字节/EOF、背压、待完成读写取消、错误 PID 和名称抢占检查。尚未接入 Gateway/客户端，Windows Desktop ticket 继续关闭；公共流封装、跨账号生产模块实测和完整认证回归仍待完成。
+
+`f511e7e2` 的原生文件 Node/Electron、Desktop 偏好测试和 SQLite/Planner/Node-API 已通过。固定工具已实际执行 Node、Git、Bash、Pi 版本验证；inventory 阶段遇到带 native 扩展名的非 PE 文件，补充具体路径诊断后复验，没有跳过检查。

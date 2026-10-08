@@ -14,6 +14,8 @@ std::wstring string_argument(napi_env env, napi_value value) {
   return std::wstring(reinterpret_cast<wchar_t*>(text.data()), length);
 }
 
+#include "pipe.h"
+
 napi_value files(napi_env env, napi_callback_info info) {
   try {
     napi_value arguments[4];
@@ -59,6 +61,14 @@ napi_value initialize(napi_env env, napi_value exports) {
     if (napi_create_function(env, name, NAPI_AUTO_LENGTH, files, const_cast<char*>(name), &function) != napi_ok
       || napi_set_named_property(env, exports, name, function) != napi_ok) {
       napi_throw_error(env, nullptr, "Platform initialization failed"); return nullptr;
+    }
+  }
+  for (const char* name : { "pipeListen", "pipeAccept", "pipeConnect", "pipePeerPid", "pipeRead",
+      "pipeWrite", "pipeWriteReady", "pipeClose", "pipeCloseListener" }) {
+    napi_value function;
+    if (napi_create_function(env, name, NAPI_AUTO_LENGTH, pipes, const_cast<char*>(name), &function) != napi_ok
+      || napi_set_named_property(env, exports, name, function) != napi_ok) {
+      napi_throw_error(env, nullptr, "Pipe initialization failed"); return nullptr;
     }
   }
   return exports;

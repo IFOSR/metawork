@@ -140,7 +140,7 @@ async function windowsFileFormat(path: string, size: number): Promise<'data' | '
     const dos = Buffer.alloc(64);
     await handle.read(dos, 0, dos.length, 0);
     if (dos.readUInt16LE(0) !== 0x5a4d) {
-      if (/\.(?:exe|dll|node|pyd)$/iu.test(path)) throw new Error('Windows native file is not PE');
+      if (/\.(?:exe|dll|node|pyd)$/iu.test(path)) throw new Error(`Windows native file is not PE: ${path}`);
       return 'data';
     }
     const offset = dos.readUInt32LE(0x3c);
