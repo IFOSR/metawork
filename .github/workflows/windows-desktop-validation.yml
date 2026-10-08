@@ -190,6 +190,7 @@ jobs:
           path: .tmp/windows-desktop-validation/platform-pipes/
           if-no-files-found: warn
       - name: Prepare pinned relocatable Node, Git Bash and Pi tools
+        id: tools
         if: ${{ !cancelled() && steps.desktop-build.outcome == 'success' }}
         run: node scripts/prepare-windows-desktop-tools.mjs "${{ runner.temp }}/desktop-tools"
       - uses: actions/upload-artifact@v4
@@ -205,6 +206,7 @@ jobs:
           path: .tmp/windows-desktop-validation/node-api/
           if-no-files-found: warn
       - name: Validate combined candidate Runtime and Desktop resources
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' && steps.native-build.outcome == 'success' }}
         run: node scripts/prepare-windows-desktop-candidate.mjs "${{ runner.temp }}/desktop-tools" "${{ runner.temp }}/desktop-candidate"
       - uses: actions/upload-artifact@v4
         if: always()
