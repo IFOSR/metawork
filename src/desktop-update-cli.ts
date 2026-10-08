@@ -150,6 +150,11 @@ async function main(): Promise<void> {
     }
     await runDesktopUpdateTransaction({ activation, record, recoverOnly: request.recoverOnly === true,
       candidateRunning: () => Boolean(candidateShell && candidateShell.exitCode === null && candidateShell.signalCode === null),
+      finalize: async () => {
+        await rm(record.backupApplicationPath, { recursive: true, force: true });
+        await rm(record.stagedApplicationPath, { recursive: true, force: true });
+        await rm(dirname(record.stagedApplicationPath), { recursive: true, force: true });
+      },
       releaseLock,
       relaunch: () => { const child = startShell(); child.unref(); },
     });

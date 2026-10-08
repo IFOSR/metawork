@@ -44,6 +44,10 @@ does not assign it a narrower cause.
 - A newly downloaded, verified Desktop provisions its own support helper before
   repairing an interrupted transaction. Recovery still preserves the original
   activation identities and trust anchor when staging or the old helper is gone.
+- After the candidate passes its authenticated health check and the activation
+  journal is committed, the helper removes the old application backup and the
+  temporary staged bundle. Failed or interrupted activation retains both for
+  rollback.
 - The release workflow now uses the previous latest DMG on both macOS
   architectures and injects a readiness failure plus a killed-helper
   interruption, then verifies rollback, repair, retry and retained data.
@@ -58,6 +62,9 @@ does not assign it a narrower cause.
   and helper-kill → recovery → retry, preserving authenticated rendering,
   configuration, credentials and a database work sentinel. The fixture uses an
   ephemeral signing key and is not a release artifact.
+- The local arm64 Internal DMG passed clean installation and DMG checksum
+  verification. The existing committed backup was removed from `/Applications`
+  after confirming the new Desktop was running.
 - Linux and Intel real-host execution were not performed on this workstation;
   both remain required by the release matrix.
 
@@ -69,4 +76,5 @@ DMG gate passes. Customers with a working installation do not need to
 downgrade; customers in a recovery loop should use the verified Desktop repair
 procedure in `docs/current/releasing.md` and preserve their installation data.
 
-Closing commit: `fix(desktop): make update recovery safe for customers`.
+Closing commits: `fix(desktop): make update recovery safe for customers` and
+`fix(desktop): remove committed update backups`.

@@ -23,6 +23,7 @@ async function fixture() {
     applicationPath: '/Applications/MetaWork.app', stagedApplicationPath: '/stage/MetaWork.app',
     backupApplicationPath: '/Applications/MetaWork.app.backup' };
   const input = { activation, record, recoverOnly: false, candidateRunning: () => true,
+    finalize: vi.fn(async () => {}),
     releaseLock: async () => { await rm(lock); },
     relaunch: vi.fn(() => { expect(existsSync(lock)).toBe(false); }) };
   return { input, port, journal, lock };
@@ -33,6 +34,7 @@ it('reopens the restored Desktop only after releasing the live helper lock', asy
   port.startAndVerifyCandidate.mockRejectedValue(new Error('Candidate health failed'));
   await expect(runDesktopUpdateTransaction(input)).rejects.toThrow('Candidate health failed');
   expect((await input.activation.read())?.phase).toBe('rolled-back');
+  expect(input.finalize).not.toHaveBeenCalled();
   expect(input.relaunch).toHaveBeenCalledOnce();
   expect(port.startPrevious).toHaveBeenCalledOnce();
 });
@@ -44,6 +46,7 @@ it.each(['rolled-back', 'committed'])('repair of a %s update does not apply the 
   expect(port.verify).not.toHaveBeenCalled();
   expect(port.updateRuntime).not.toHaveBeenCalled();
   expect(port.restoreRuntime).not.toHaveBeenCalled();
+  expect(input.finalize).not.toHaveBeenCalled();
   expect(input.relaunch).toHaveBeenCalledOnce();
 });
 
@@ -71,6 +74,7 @@ it('does not reopen a second Desktop after the candidate commits', async () => {
   const { input } = await fixture();
   await runDesktopUpdateTransaction(input);
   expect((await input.activation.read())?.phase).toBe('committed');
+  expect(input.finalize).toHaveBeenCalledOnce();
   expect(input.relaunch).not.toHaveBeenCalled();
 });
 

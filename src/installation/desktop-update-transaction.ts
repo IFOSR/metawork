@@ -6,6 +6,8 @@ export async function runDesktopUpdateTransaction(input: {
   record: Omit<DesktopActivationRecord, 'schemaVersion' | 'phase'>;
   recoverOnly: boolean;
   candidateRunning(): boolean;
+  /** Remove rollback/staging bundles only after the candidate is committed. */
+  finalize?(): Promise<void>;
   releaseLock(): Promise<void>;
   relaunch(): void;
 }): Promise<void> {
@@ -28,6 +30,10 @@ export async function runDesktopUpdateTransaction(input: {
         relaunch = (await input.activation.read())?.phase === 'rolled-back';
         throw error;
       }
+      // Cleanup is deliberately after DesktopActivation writes `committed`.
+      // A cleanup failure must not turn a successful activation into a retry or
+      // rollback; the leftover bundle is safe to remove on a later run.
+      if (input.finalize) await input.finalize().catch(() => undefined);
       relaunch = !input.candidateRunning();
     }
   } finally {
