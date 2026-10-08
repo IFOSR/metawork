@@ -27,7 +27,7 @@ describe('Desktop release-local process paths', () => {
         Node_Path: 'D:\\global', Electron_Run_As_Node: '1', SystemRoot: 'D:\\Windows', KEEP: 'value' } });
     expect(Object.keys(env).filter(key => key.toLowerCase() === 'path')).toEqual(['PATH']);
     expect(env.PATH?.split(';')).toEqual([`${root}\\desktop-tools\\node`, `${root}\\desktop-tools\\git\\cmd`,
-      `${root}\\desktop-tools\\executor`, 'D:\\Windows\\System32', 'D:\\Windows', 'D:\\Windows\\System32\\WindowsPowerShell\\v1.0']);
+      `${root}\\desktop-tools\\executor\\node_modules\\.bin`, 'D:\\Windows\\System32', 'D:\\Windows', 'D:\\Windows\\System32\\WindowsPowerShell\\v1.0']);
     expect(Object.keys(env).some(key => /^(?:node_options|node_path|electron_run_as_node)$/iu.test(key))).toBe(false);
     expect(env.KEEP).toBe('value');
   });
@@ -36,7 +36,7 @@ describe('Desktop release-local process paths', () => {
     const env = { Path: 'D:\\existing', SystemRoot: 'C:\\Windows' };
     const result = desktopProcessEnvironment({ releaseRoot: 'C:\\runtime', nodePath: 'D:\\Node 22\\node.exe',
       env, platform: 'win32', inheritPath: true, includeReleaseBin: true });
-    expect(result.PATH).toBe('D:\\Node 22;C:\\runtime\\desktop-tools\\git\\cmd;C:\\runtime\\desktop-tools\\executor;C:\\runtime\\bin;D:\\existing');
+    expect(result.PATH).toBe('D:\\Node 22;C:\\runtime\\desktop-tools\\git\\cmd;C:\\runtime\\desktop-tools\\executor\\node_modules\\.bin;C:\\runtime\\bin;D:\\existing');
     expect(env).toEqual({ Path: 'D:\\existing', SystemRoot: 'C:\\Windows' });
   });
 });

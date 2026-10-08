@@ -114,7 +114,7 @@ export async function verifyDesktopRelease(resources: string, options: {
       'metawork/node_modules/better-sqlite3/build/Release/better_sqlite3.node',
       'metawork/native/windows/metawork-platform.node'];
   const windowsScripts = release.platform === 'win32'
-    ? ['metawork/desktop-tools/executor/node_modules/@mariozechner/pi-coding-agent/dist/cli.js', 'metawork/dist/pi-pdf/index.ts'] : [];
+    ? ['metawork/desktop-tools/executor/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', 'metawork/dist/pi-pdf/index.ts'] : [];
   for (const required of [...shared, ...nativeTools, ...windowsScripts]) {
     if (!inventory[required]) throw new Error('Required Desktop runtime dependency is missing');
   }

@@ -1,6 +1,6 @@
 import { boundedPathSegment } from '../utils/bounded-path-segment.js';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type {
   MaterializedRuntimeHome,
   RuntimeHomeInput,
@@ -71,11 +71,13 @@ function safeSegment(value: string, label: string): string {
 }
 
 function resolveInside(root: string, relativePath: string): string {
-  if (!relativePath || relativePath.startsWith('/') || relativePath.includes('\0')) {
+  if (!relativePath || isAbsolute(relativePath) || relativePath.includes('\0')
+    || (process.platform === 'win32' && relativePath.includes(':'))) {
     throw new Error('runtime home directory must be relative');
   }
   const resolved = resolve(root, relativePath);
-  if (!resolved.startsWith(`${resolve(root)}/`)) {
+  const child = relative(root, resolved);
+  if (!child || child === '..' || child.startsWith(`..${sep}`) || isAbsolute(child)) {
     throw new Error('runtime home directory escapes attempt home');
   }
   return resolved;

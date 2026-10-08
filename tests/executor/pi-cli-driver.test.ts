@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { PiCliDriver } from '../../src/executor/pi-cli-driver.js';
+import { desktopToolPaths } from '../../src/installation/desktop-platform.js';
+import { resolveMetaWorkPaths } from '../../src/installation/paths.js';
 
 describe('PiCliDriver', () => {
   it('observes real model and tool activity without renewing on empty model keepalives', () => {
@@ -179,13 +181,16 @@ describe('PiCliDriver', () => {
         requiredCapabilities: ['image-generation'],
       });
 
-      expect(launch.command).toBe('pi');
-      expect(launch.args[0]).toBe('--mode');
+      const tools = desktopToolPaths(resolveMetaWorkPaths().appCurrent);
+      expect(launch.command).toBe(process.platform === 'win32' ? tools.node : 'pi');
+      expect(launch.args).not.toContain(bundledEntrypoint);
+      expect(launch.args[process.platform === 'win32' ? 1 : 0]).toBe('--mode');
       await expect(driver.probe()).resolves.toEqual({
         available: true,
         detail: '0.80.2',
       });
-      expect(probeCommand).toHaveBeenCalledWith('pi', ['--version']);
+      expect(probeCommand).toHaveBeenCalledWith(launch.command,
+        process.platform === 'win32' ? [tools.piScript, '--version'] : ['--version']);
     } finally {
       vi.unstubAllEnvs();
     }

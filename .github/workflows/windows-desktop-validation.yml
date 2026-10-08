@@ -18,6 +18,8 @@ on:
       - 'scripts/smoke-unified-gateway.mjs'
       - 'scripts/prepare-pi-pdf.mjs'
       - 'scripts/install.ps1'
+      - 'scripts/prepare-windows-desktop-tools.mjs'
+      - 'integrations/windows-desktop-tools/**'
       - 'integrations/pi-pdf/**'
       - 'native/windows-probe/**'
       - 'apps/desktop/**'
@@ -130,7 +132,7 @@ jobs:
       - run: npm run lint
       - run: npm run lint:desktop
       - name: Verify Desktop tickets stay disabled on unverified Node named pipes
-        run: npm test -- tests/gateway/desktop-local-transport.test.ts tests/management/desktop-session.test.ts tests/installation/desktop-platform.test.ts tests/installation/windows-installation-root.test.ts tests/installation/windows-desktop-release.test.ts tests/client/server-readiness.test.ts tests/executor/pi-native-launch.test.ts tests/executor/pi-cli-driver.test.ts
+        run: npm test -- tests/gateway/desktop-local-transport.test.ts tests/management/desktop-session.test.ts tests/installation/desktop-platform.test.ts tests/installation/windows-installation-root.test.ts tests/installation/windows-desktop-release.test.ts tests/client/server-readiness.test.ts tests/executor/pi-native-launch.test.ts tests/executor/pi-cli-driver.test.ts tests/executor/runtime-home-materializer.test.ts
       - run: npm run build
       - run: npm run build:desktop
       - name: Exercise native SQLite binding
@@ -139,6 +141,14 @@ jobs:
         run: node planner/AnyFusion-Pi/packages/coding-agent/dist/cli.js --version
       - name: Probe Node-API carrier in Node and Electron Main
         run: node scripts/probe-windows-desktop-node-api.mjs
+      - name: Prepare pinned relocatable Node, Git Bash and Pi tools
+        run: node scripts/prepare-windows-desktop-tools.mjs "${{ runner.temp }}/desktop-tools"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-tools-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-tools/tools-provenance.json
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -172,7 +182,7 @@ jobs:
       - run: npm run lint
       - run: npm run lint:desktop
       - name: Shared Server, client, Web, TUI and installer regressions
-        run: npm test -- tests/platform tests/client tests/gateway tests/tui-bridge tests/installation tests/server tests/web tests/management tests/architecture tests/integration/independent-client-lifecycle.integration.test.ts
+        run: npm test -- tests/platform tests/client tests/gateway tests/tui-bridge tests/installation tests/server tests/web tests/management tests/architecture tests/executor tests/configuration tests/integration/independent-client-lifecycle.integration.test.ts
       - run: npm run test:desktop
       - run: npm run build
       - run: npm run smoke:gateway

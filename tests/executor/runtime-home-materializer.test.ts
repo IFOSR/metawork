@@ -1,6 +1,6 @@
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { RuntimeHomeMaterializer } from '../../src/executor/runtime-home-materializer.js';
 
@@ -29,7 +29,7 @@ describe('RuntimeHomeMaterializer', () => {
 
     // The attempt directory name is a bounded projection of the attempt id, so
     // deep attempt identities cannot overflow filesystem limits.
-    const attemptSegment = result.homePath.slice(root.length + 1).split('/')[0]!;
+    const attemptSegment = result.homePath.slice(root.length + 1).split(sep)[0]!;
     expect(attemptSegment).toContain('attempt-123');
     expect(result.homePath).toBe(join(root, attemptSegment, 'home'));
     expect(await stat(join(root, attemptSegment, 'logs'))).toBeTruthy();
@@ -45,5 +45,16 @@ describe('RuntimeHomeMaterializer', () => {
     expect(await readFile(join(root, attemptSegment, 'environment.json'), 'utf8'))
       .not.toContain('sk-attempt-scoped-secret');
     expect(await readFile(join(root, attemptSegment, 'receipt.json'), 'utf8')).toContain('"status": "pending"');
+  });
+
+  it('creates nested platform directories while rejecting paths outside the attempt home', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mw-home-boundary-')); roots.push(root);
+    const materializer = new RuntimeHomeMaterializer(root);
+    const input = { attemptId: 'fixture', revisionId: 'r', agentClassId: 'pi', bindingFingerprint: 'f', environment: {} };
+    const home = await materializer.materialize({ ...input, homeDirectories: ['.pi/agent/sessions'] });
+    expect((await stat(join(home.homePath, '.pi/agent/sessions'))).isDirectory()).toBe(true);
+    for (const path of ['../escape', '.', join(root, 'absolute'), ...(process.platform === 'win32' ? ['..\\escape', 'C:escape', 'file:stream'] : [])]) {
+      await expect(materializer.materialize({ ...input, homeDirectories: [path] })).rejects.toThrow(/relative|escapes/u);
+    }
   });
 });

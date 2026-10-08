@@ -1,0 +1,9 @@
+{
+  "name": "metawork-windows-executor-tools",
+  "version": "1.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.1.0"
+  }
+}

@@ -99,6 +99,12 @@ Desktop descriptor 按 platform 区分：macOS v1 继续使用既有 executable/
 
 ### Windows Pi 与安装器工具入口（2026-10-08）
 
-Windows Pi driver 的 probe/launch 使用同一内置 Node + 绝对 Pi JS 入口，不执行 npm `.cmd` 或拼接 shell 参数。Attempt 同时设置隔离 USERPROFILE，并在自己的 Pi settings 中固定内置 Bash；既有模板/provider 配置仍保留，macOS 调用方式保持不变。Windows npm global prefix 的入口目录修正为 executor 根目录；安装/更新 helper 的 Node 与搜索路径使用同一平台适配，命令发现支持 Windows PATHEXT（发现不执行脚本）。
+Windows Pi driver 的 probe/launch 使用同一内置 Node + 绝对 Pi JS 入口，不执行 npm `.cmd` 或拼接 shell 参数。Attempt 同时设置隔离 USERPROFILE，并在自己的 Pi settings 中固定内置 Bash；既有模板/provider 配置仍保留，macOS 调用方式保持不变。Windows Executor 使用独立 npm lock 安装在 executor 下，命令发现目录为 executor/node_modules/.bin；安装/更新 helper 的 Node 与搜索路径使用同一平台适配，命令发现支持 Windows PATHEXT（发现不执行脚本）。
 
 本地 Pi、配置探测、路径/安装器与真实进程 argv 检查共 5 文件/32 测试通过，2 个 Windows-only 用例交给云端；空格/中文脚本路径及引号、换行、shell 元字符均作为原样参数传递。Root/Desktop 类型检查通过。`4f8aeac` 的 macOS arm64 整个 job 已通过；Windows root 对照测试因 TEMP 8.3 别名与 .NET 自动展开的长路径文本不同而失败，现用真实临时目录长路径固定夹具并明确 UTF-8 输出，仍执行真实 PowerShell/Node 双端选择。没有改成跳过或忽略错误。
+
+### 固定 Windows 工具依赖与原生目录回归（2026-10-08）
+
+新增独立 Windows 工具 manifest：Node 22.23.3 官方 SHA256、PortableGit 2.56.0.windows.2 官方 release asset digest，以及维护中的 upstream `@earendil-works/pi-coding-agent` 1.1.0/npm integrity 与完整 npm lock。构建器先核对 hash 再用构建机 7-Zip 解压，保留 Git/Bash/模板/许可证，使用内置 Node 安装 locked Pi，再以受控 PATH 实际运行 Node/Git/Bash/Pi 并验证 Windows inventory，输出来源报告。普通用户无 npm/编译工具步骤。Windows Pi 的 JS 入口随正式包名固定；macOS 现有 PATH 启动方式不变。Windows 工具原生执行尚待云端结果，不代表依赖闭包验收。
+
+`5b43cb8` 的 Windows 测试已通过安装根/PowerShell 对照与 PE release 校验，但暴露 RuntimeHomeMaterializer 的 POSIX `/` 前缀判断使合法 Windows HOME 子目录被拒绝。改用平台 relative/sep 检查，保留绝对路径、越界、Windows drive-relative 与 ADS 拒绝；扩展真实目录用例并调整 Planner/Executor 分离测试的 Windows 预期，不跳过行为检查。本地相关 5 文件/31 项通过、2 Windows-only 项待云端，类型检查通过。macOS 云端回归追加完整 Executor 与配置域测试。

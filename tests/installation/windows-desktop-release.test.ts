@@ -30,7 +30,7 @@ async function fixture() {
     'metawork/desktop-tools/node/node.exe', 'metawork/desktop-tools/git/cmd/git.exe',
     'metawork/desktop-tools/git/bin/bash.exe', 'metawork/dist/pi-pdf/python/python.exe', 'metawork/dist/pi-pdf/index.ts',
     'metawork/node_modules/better-sqlite3/build/Release/better_sqlite3.node', 'metawork/native/windows/metawork-platform.node',
-    'metawork/desktop-tools/executor/node_modules/@mariozechner/pi-coding-agent/dist/cli.js',
+    'metawork/desktop-tools/executor/node_modules/@earendil-works/pi-coding-agent/dist/cli.js',
     ...['node', 'git', 'executor'].map(tool => `metawork/desktop-tools/${tool}/LICENSE`)]) {
     const path = join(payload, file); await mkdir(dirname(path), { recursive: true });
     await writeFile(path, /\.(exe|node)$/u.test(file) ? pe() : 'fixture');
