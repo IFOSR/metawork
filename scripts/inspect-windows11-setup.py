@@ -60,13 +60,21 @@ def inspect_setup(disk, evidence, secrets):
         if not mounted:
             raise RuntimeError('No readable Windows system partition')
         phase = 'read-bounded-evidence'
-        result = mount / 'Windows/Temp/metawork-guest-result.json'
-        if result.is_file() and result.stat().st_size <= 32768:
-            candidate = json.loads(result.read_text(encoding='utf-8-sig'))
-            if candidate.get('scope') == 'windows11-cloud-environment' and isinstance(candidate.get('passed'), bool):
-                guest = candidate
-                (evidence / 'windows11-guest.json').write_text(json.dumps(guest, indent=2))
+        sources = [(mount / 'Windows/Temp/metawork-guest-result.json',
+                    mount / 'Windows/Temp/metawork-guest-screen.png')]
+        for user in (mount / 'Users').iterdir():
+            if user.is_dir() and not user.is_symlink():
+                local = user / 'AppData/Local/Temp/metawork-guest'
+                sources.append((local / 'result.json', local / 'screen.png'))
         screen = mount / 'Windows/Temp/metawork-guest-screen.png'
+        for result, candidate_screen in sources:
+            if result.is_file() and result.stat().st_size <= 32768:
+                candidate = json.loads(result.read_text(encoding='utf-8-sig'))
+                if candidate.get('scope') == 'windows11-cloud-environment' and isinstance(candidate.get('passed'), bool):
+                    guest = candidate
+                    screen = candidate_screen
+                    (evidence / 'windows11-guest.json').write_text(json.dumps(guest, indent=2))
+                    break
         if screen.is_file() and screen.stat().st_size <= 8 * 1024**2:
             body = screen.read_bytes()
             if body.startswith(b'\x89PNG\r\n\x1a\n'):
