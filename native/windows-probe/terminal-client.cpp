@@ -47,8 +47,6 @@ int wmain(int argc, wchar_t** argv) {
     std::cerr << "ConPTY: creating console\n";
     check(SUCCEEDED(CreatePseudoConsole({ 140, 45 }, inputRead.value, outputWrite.value, 0, &console)), "ConPTY creation");
     std::cerr << "ConPTY: console ready\n";
-    CloseHandle(inputRead.value); inputRead.value = nullptr;
-    CloseHandle(outputWrite.value); outputWrite.value = nullptr;
     job.value = CreateJobObjectW(nullptr, nullptr);
     check(job.value != nullptr, "Client Job creation");
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
@@ -70,6 +68,10 @@ int wmain(int argc, wchar_t** argv) {
     DeleteProcThreadAttributeList(attributes);
     check(created, "Installed CLI creation");
     std::cerr << "ConPTY: client created\n";
+    // Keep the console's pipe ends alive until CreateProcess has attached its
+    // client, as required by the ConPTY handle-lifetime contract.
+    CloseHandle(inputRead.value); inputRead.value = nullptr;
+    CloseHandle(outputWrite.value); outputWrite.value = nullptr;
     Handle child{ process.hProcess }, thread{ process.hThread };
     if (!AssignProcessToJobObject(job.value, child.value)) {
       TerminateProcess(child.value, 2); throw std::runtime_error("Client Job assignment");
