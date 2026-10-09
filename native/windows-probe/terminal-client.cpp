@@ -12,7 +12,7 @@ struct Handle {
   ~Handle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
 };
 void check(bool ok, const char* label) {
-  if (!ok) throw std::runtime_error(label);
+  if (!ok) throw std::runtime_error(std::string(label) + " Win32=" + std::to_string(GetLastError()));
 }
 std::wstring quote(const std::wstring& value) {
   std::wstring out = L"\"";
@@ -44,7 +44,9 @@ int wmain(int argc, wchar_t** argv) {
     Handle inputRead, inputWrite, outputRead, outputWrite, job;
     check(CreatePipe(&inputRead.value, &inputWrite.value, nullptr, 0), "ConPTY input pipe");
     check(CreatePipe(&outputRead.value, &outputWrite.value, nullptr, 0), "ConPTY output pipe");
+    std::cerr << "ConPTY: creating console\n";
     check(SUCCEEDED(CreatePseudoConsole({ 140, 45 }, inputRead.value, outputWrite.value, 0, &console)), "ConPTY creation");
+    std::cerr << "ConPTY: console ready\n";
     CloseHandle(inputRead.value); inputRead.value = nullptr;
     CloseHandle(outputWrite.value); outputWrite.value = nullptr;
     job.value = CreateJobObjectW(nullptr, nullptr);
@@ -62,15 +64,18 @@ int wmain(int argc, wchar_t** argv) {
     PROCESS_INFORMATION process{};
     std::wstring command;
     for (int i = 1; i < argc; i++) { if (i > 1) command += L' '; command += quote(argv[i]); }
+    std::cerr << "ConPTY: creating client\n";
     const bool created = CreateProcessW(argv[1], command.data(), nullptr, nullptr, FALSE,
       EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED, nullptr, nullptr, &startup.StartupInfo, &process) != FALSE;
     DeleteProcThreadAttributeList(attributes);
     check(created, "Installed CLI creation");
+    std::cerr << "ConPTY: client created\n";
     Handle child{ process.hProcess }, thread{ process.hThread };
     if (!AssignProcessToJobObject(job.value, child.value)) {
       TerminateProcess(child.value, 2); throw std::runtime_error("Client Job assignment");
     }
     check(ResumeThread(thread.value) != static_cast<DWORD>(-1), "Installed CLI resume");
+    std::cerr << "ConPTY: client resumed\n";
     std::thread output([&] { copy(outputRead.value, GetStdHandle(STD_OUTPUT_HANDLE)); });
     std::thread input([&] {
       copy(GetStdHandle(STD_INPUT_HANDLE), inputWrite.value);
@@ -78,8 +83,11 @@ int wmain(int argc, wchar_t** argv) {
     });
     WaitForSingleObject(child.value, INFINITE);
     DWORD code = 2; GetExitCodeProcess(child.value, &code);
+    std::cerr << "ConPTY: client exited " << code << '\n';
     CancelSynchronousIo(input.native_handle()); input.join();
+    std::cerr << "ConPTY: input closed\n";
     ClosePseudoConsole(console); console = nullptr;
+    std::cerr << "ConPTY: console closed\n";
     output.join();
     return static_cast<int>(code);
   } catch (const std::exception& error) {

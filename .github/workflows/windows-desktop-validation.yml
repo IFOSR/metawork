@@ -57,6 +57,8 @@ jobs:
       - name: Compile and verify native pipe identity and cross-account denial
         shell: pwsh
         run: ./scripts/probe-windows-desktop-pipe.ps1
+      - name: Verify the compiled ConPTY carrier before installing dependencies
+        run: node apps/desktop/tests/terminal-carrier-smoke.mjs .tmp/windows-pipe-probe/Release/metawork-terminal-client.exe
       - name: Verify the same pipe boundary with a standard-user server
         shell: pwsh
         run: ./scripts/probe-windows-desktop-pipe.ps1 -StandardUser
