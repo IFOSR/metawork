@@ -21,6 +21,7 @@ on:
       - 'scripts/install.ps1'
       - 'scripts/prepare-windows-desktop-tools.mjs'
       - 'scripts/prepare-windows-desktop-candidate.mjs'
+      - 'scripts/prepare-macos-desktop-candidate.mjs'
       - 'scripts/prepare-windows-pageant.mjs'
       - 'integrations/ssh2-pageant/**'
       - 'scripts/probe-windows-desktop-install.mjs'
@@ -278,6 +279,18 @@ jobs:
       - run: npm run smoke:gateway
       - name: Real Electron with isolated fixture configuration
         run: node scripts/smoke-desktop-isolated.mjs
+      - name: Download signed base tools for the retained macOS Desktop architecture
+        if: matrix.runner == 'macos-15'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release download v0.1.8 --pattern MetaWork-darwin-arm64.dmg
+          --pattern desktop-manifest.darwin-arm64.json --dir "${{ runner.temp }}/macos-base"
+      - name: Build this source as packaged macOS Desktop and execute real model tasks
+        if: matrix.runner == 'macos-15'
+        env:
+          METAWORK_TEST_MODEL: ${{ secrets.METAWORK_TEST_MODEL }}
+        run: node scripts/prepare-macos-desktop-candidate.mjs "${{ runner.temp }}/macos-base" "${{ runner.temp }}/macos-candidate"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

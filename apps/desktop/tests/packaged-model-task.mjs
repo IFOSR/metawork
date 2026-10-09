@@ -10,7 +10,7 @@ import { promisify } from 'node:util';
 // Real installed Planner/Pi task acceptance. Never records provider inputs,
 // model responses, process command lines or database contents in CI artifacts.
 export async function runPackagedModelTasks({ page, root, installRoot, evidence, onActiveTask }) {
-  assert.equal(process.platform, 'win32');
+  assert.ok(['win32', 'darwin'].includes(process.platform));
   const release = await realpath(join(installRoot, 'app/current'));
   const require = createRequire(join(release, 'package.json'));
   const Database = require('better-sqlite3');
@@ -48,7 +48,7 @@ export async function runPackagedModelTasks({ page, root, installRoot, evidence,
     await page.goto(`${endpoint.webOrigin}/#${new URLSearchParams({ workspace: selected.workspaceId, conversation: created.conversationId })}`);
     const composer = page.locator('.composer textarea');
     await composer.waitFor({ state: 'visible' });
-    const marker = `MetaWork Windows acceptance ${randomUUID()}`;
+    const marker = `MetaWork ${process.platform} acceptance ${randomUUID()}`;
     await composer.fill(`Create smoke-result.md in the managed Task workspace with exactly this line: ${marker}. Use the Pi Executor to create the file, publish it as a file artifact, and finish the task. The Runtime supplies the authorized directory; do not ask for a path.`);
     await page.locator('.composer button[type=submit]').click();
     report.taskSubmittedThroughPackagedWeb = true;
@@ -76,7 +76,7 @@ export async function runPackagedModelTasks({ page, root, installRoot, evidence,
     const allowedRoots = await Promise.all([installRoot, workspace].map(path => realpath(path)));
     assert.ok(allowedRoots.some(parent => {
       const child = relative(parent, artifactPath);
-      return child && child !== '..' && !child.startsWith('..\\') && !isAbsolute(child);
+      return child && child !== '..' && !child.startsWith('..\\') && !child.startsWith('../') && !isAbsolute(child);
     }), 'Artifact escaped the disposable test roots');
     assert.equal((await readFile(artifactPath, 'utf8')).trim(), marker);
     report.artifactVerified = true;
@@ -89,6 +89,20 @@ export async function runPackagedModelTasks({ page, root, installRoot, evidence,
     await composer.fill(`Cancellation acceptance: run a Bash command that prints ${cancelMarker} once per second for 300 seconds. Include that literal marker in the command text. Start it now, keep the task active until it finishes, and do not create or modify files. I will cancel it from the client.`);
     await page.locator('.composer button[type=submit]').click();
     const processIds = async () => {
+      if (process.platform === 'darwin') {
+        const { stdout } = await promisify(execFile)('/bin/ps', ['-axo', 'pid=,ppid=,command='], { timeout: 15000 });
+        const rows = stdout.split('\n').flatMap(line => {
+          const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/u.exec(line);
+          return match ? [{ pid: Number(match[1]), parent: Number(match[2]), command: match[3] }] : [];
+        });
+        const ids = new Set(rows.filter(row => row.command.includes(cancelMarker)).map(row => row.pid));
+        let previous;
+        do {
+          previous = ids.size;
+          for (const row of rows) if (ids.has(row.parent)) ids.add(row.pid);
+        } while (previous !== ids.size);
+        return [...ids];
+      }
       const script = `$ErrorActionPreference='Stop'; $items=@(Get-CimInstance Win32_Process);
         $ids=[Collections.Generic.HashSet[int]]::new();
         foreach($item in $items) { if($item.CommandLine -and $item.CommandLine.Contains('${cancelMarker}')) { [void]$ids.Add([int]$item.ProcessId) } }

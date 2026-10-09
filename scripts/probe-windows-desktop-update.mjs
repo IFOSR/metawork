@@ -89,16 +89,24 @@ export async function runWindowsDesktopUpdates({ application, installRoot, resou
       const before = await json(join(installRoot, 'server-endpoint.json'));
       await app.evaluate(({ dialog, Menu }, candidate) => {
         globalThis.__mwUpdateConfirmation = false;
+        globalThis.__mwUpdateError = false;
         dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [candidate] });
         dialog.showMessageBox = async (_window, options) => {
-          globalThis.__mwUpdateConfirmation = options.buttons.includes('退出并更新');
-          return { response: 1, checkboxChecked: false };
+          globalThis.__mwUpdateConfirmation = options.buttons.includes('退出并更新')
+            && options.detail.includes('未结束任务');
+          return new Promise(done => { globalThis.__mwConfirmUpdate = done; });
         };
         dialog.showErrorBox = () => { globalThis.__mwUpdateError = true; };
         const item = Menu.getApplicationMenu().items[0].submenu.items.find(value => ['安装新版应用…', 'Install Update…'].includes(value.label));
         if (!item) throw new Error('Missing update menu');
         item.click();
       }, installer);
+      await waitFor(async () => {
+        const state = await app.evaluate(() => ({ confirmed: globalThis.__mwUpdateConfirmation, failed: globalThis.__mwUpdateError }));
+        assert.equal(state.failed, false, 'Desktop rejected candidate preparation before impact confirmation');
+        return state.confirmed;
+      }, 'verified candidate and actual task-impact confirmation');
+      await app.evaluate(() => globalThis.__mwConfirmUpdate({ response: 1, checkboxChecked: false }));
       if (scenario === 'interrupted') {
         await waitFor(async () => {
           const record = await json(activationPath).catch(() => null);
@@ -148,7 +156,7 @@ export async function runWindowsDesktopUpdates({ application, installRoot, resou
       await restoredPage.screenshot({ path: join(evidence, `update-${scenario}.png`) });
       await app.close(); app = undefined;
       report.scenarios.push({ scenario, expectedPhase, previousReleaseId: record.previousReleaseId, candidateReleaseId: releaseId,
-        activeReleaseId: previous, tasksPreserved: true, authenticatedWorkspace: true });
+        activeReleaseId: previous, impactConfirmed: true, tasksPreserved: true, authenticatedWorkspace: true });
       console.log(`Installed Windows ${scenario} activation acceptance passed.`);
       await rm(fixture, { recursive: true, force: true });
     }
