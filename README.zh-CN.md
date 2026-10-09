@@ -61,7 +61,7 @@ AnyFusion 标识。
 [最新稳定版](https://github.com/IFOSR/metawork/releases/latest)是当前可安装版本的
 统一发布入口。源码版本领先不代表已发布。
 
-当前内部发布版本是 **v0.1.6**，包含 Server/Web/TUI 运行时和供公司内部使用的
+当前内部发布版本是 **v0.1.8**，包含 Server/Web/TUI 运行时和供公司内部使用的
 Apple Silicon Desktop DMG。该 Desktop DMG **未使用 Apple Developer ID 签名且未公证**，专门用于公司内部
 macOS 设备。[Release 页面](https://github.com/IFOSR/metawork/releases/latest)
 是实际下载文件和校验值的唯一来源。
@@ -93,21 +93,21 @@ Web 已包含在 Server 安装包中，不需要安装 Desktop。
 4. 由于这是未公证内部 DMG，首次启动可能被 macOS 拦截。在 Finder 中右键
    **MetaWork.app**，选择“打开”，再确认“打开”。如果仍被拦截，进入
    **系统设置 → 隐私与安全性**，找到安全提示并点击“仍要打开”，然后再次执行本步。
-5. MetaWork 安装窗口会要求填写“模型 API 地址”“模型 ID”“API Key”。填入公司
-   使用的模型服务信息后点击“安装并开始使用”。凭据保存在本机 macOS 凭据库。
-   如果以前已安装 Web／终端 Runtime，Desktop 会沿用原安装：同版本直接接入，
-   缺少桌面运行工具时自动补齐；旧版本显示 **升级并接入已有数据**。确认后会暂时
-   停止后台服务，备份并迁移原有数据，再打开桌面，无需重新填写 API Key。
-6. 安装完成后会打开 Web 工作区；首次使用时完成登录并选择 Workspace。
+5. 首次启动不要求填写模型凭据。如果 Desktop 与本地 Runtime 的发布标识不一致，
+   页面会显示 **完成更新并重启**。只点击一次并等待；页面会显示更新进度，并提示
+   不要重复点击或重新打开应用。已有凭据、对话和工作数据会保留。
+6. Runtime 完成一次更新后会打开 Web 工作区；模型可稍后在设置中配置，然后完成
+   首次登录并选择 Workspace。
 
 安装包包含 Node、Pi Executor、Server/Web 与 Planner；macOS Command Line Tools 提供
 仓库操作所需的系统 Git，Codex 为可选项。默认安装目录为 `~/.metawork`。已有安装的
 模型配置、对话和工作数据会保留；请勿为接入 Desktop 删除该目录。可通过菜单 **安装终端命令…** 安装 `metawork`，让 Web/TUI 连接同一
 Server。关闭窗口或退出 Desktop 后，后台服务和任务继续运行。
 
-升级时下载并挂载最新 DMG，在当前 Desktop 中选择 **安装新版应用…**，选中新包的
-`MetaWork.app`。程序协调 Desktop 与 Server 升级，并提示对运行中工作的影响。
-Desktop 管理的安装应使用这一入口，避免只更新 Server 导致版本不匹配。
+升级时下载并挂载最新 DMG，退出 MetaWork，将 `MetaWork.app` 替换到“应用程序”。
+下次启动时，如果 Desktop 与本地 Runtime 的发布标识不一致，选择一次
+**完成更新并重启**并等待进度提示。没有单独的文件安装菜单。不要删除
+`~/.metawork` 或应用支持目录。
 
 以后使用浏览器时，启动 Desktop（或已安装的 Server）后执行 `metawork web`；使用
 原生终端界面执行 `metawork tui`。两者都连接 Desktop 创建的同一 Server 和账号数据，

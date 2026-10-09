@@ -1,9 +1,9 @@
 # MetaWork Documentation
 
 [Desktop 无模型安装与内部版本升级修复](plans/2026-10-08-desktop-model-free-installation.md)：
-无模型安装已实现；之前的直接进程验收漏掉 Finder 启动差异。
+无模型安装已实现；首次启动不要求填写模型信息。
 [Finder 更新进程修复](plans/2026-10-08-desktop-finder-update-lifecycle.md)
-已修正后台生命周期与内部包无效签名；最终 arm64 DMG 已通过 Finder 升级、连续重开和后台存活验收，待用户亲自安装；未发布。
+已修正后台生命周期、内部包签名和更新进度提示；arm64 DMG 已发布到 GitHub v0.1.8。
 
 MetaWork is the proprietary commercial product represented by this repository.
 AnyFusion references identify the separate open-source upstream, attributed
@@ -221,4 +221,4 @@ Desktop implementation: [isolated branch progress](plans/2026-10-05-metawork-des
 - [v0.1.6 internal Desktop release](plans/2026-10-08-v0.1.6-release.md) — 2026-10-08 release and artifact acceptance.
 
 - [v0.1.7 Desktop release](plans/2026-10-08-v0.1.7-release.md) — published latest on 2026-10-08; CLI discovery, readiness UI and artifact acceptance.
-- [Desktop update recovery loop](plans/2026-10-08-desktop-update-recovery-loop.md) — laptop recovered; lock-release ordering and repair-only source correction validated, awaiting a new release.
+- [Desktop update recovery loop](plans/2026-10-08-desktop-update-recovery-loop.md) — lock-release ordering and repair-only source correction validated and included in v0.1.8.

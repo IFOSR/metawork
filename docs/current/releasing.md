@@ -1,8 +1,9 @@
 # Publishing Server/Web and Desktop together
 
 Root, Web and Desktop package/lock versions must match. Prepare release notes,
-CHANGELOG and a release plan before tagging. Use a new version: the workflow
-refuses to overwrite published releases. Source preparation is not publication.
+CHANGELOG and a release plan before tagging. Published releases are immutable;
+use a new version for future releases. The current published internal release is
+`v0.1.8` (macOS arm64 only).
 
 ## GitHub Actions configuration
 
@@ -67,9 +68,12 @@ developer internal LLM credentials. Existing internal configuration is preserved
 when absent, optional internal AI functions remain unavailable. The development
 helper's system-model provisioning is separate from production installation.
 
-Desktop updates coordinate app and Server through **Install New Application…**.
-CLI-managed installations stop Server, run the installer, and restart. Clients
-of the same installation/account share one Server and its data.
+Desktop updates coordinate app and Server after the user replaces the app from
+the DMG. If the Desktop and local Runtime identities differ, startup offers one
+**完成更新并重启** action with progress and repeat-click protection. There is no
+separate file-installation menu. CLI-managed installations stop Server, run the
+installer, and restart. Clients of the same installation/account share one
+Server and its data.
 
 ### Customer recovery after an interrupted Desktop update
 

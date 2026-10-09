@@ -74,7 +74,7 @@ existing names where changing them would break installations.
 source of truth for the current installable version. A newer source checkout
 is not a published release.
 
-The current internal release is **v0.1.6**. It includes the Server/Web/TUI
+The current internal release is **v0.1.8**. It includes the Server/Web/TUI
 runtime and an Apple Silicon Desktop DMG for company use. The Desktop DMG is
 **not signed with an Apple Developer ID and is not notarized**; it is intentionally
 distributed for the internal macOS fleet. The [release page](https://github.com/IFOSR/metawork/releases/latest)
@@ -110,16 +110,13 @@ account data. Web is included in the Server package and does not require Desktop
    Finder, right-click **MetaWork.app** and choose **Open**, then confirm **Open**.
    If macOS still blocks it, open **System Settings → Privacy & Security**, scroll
    to the security message, and choose **Open Anyway**; then repeat step 3.
-5. The MetaWork setup window asks for **模型 API 地址**, **模型 ID** and **API Key**.
-   Enter the provider values used by your company and choose **安装并开始使用**.
-   Credentials are stored in the local macOS credential store.
-   If a Web/terminal Runtime is already installed, Desktop reuses it. Matching
-   releases connect directly, provisioning missing Desktop tools automatically.
-   Older releases show **升级并接入已有数据** (upgrade and use existing data).
-   After confirmation, the installer stops Server, backs up and migrates the
-   existing installation, and opens Desktop without asking for another API key.
-6. After setup, MetaWork opens the Web workspace. Keep the Desktop running while
-   you complete the first login and choose a Workspace.
+5. The first launch does not ask for model credentials. If the installed Desktop
+   and local Runtime have different release identities, it shows **完成更新并重启**.
+   Click it once and wait; the page shows update progress and tells you not to
+   click again or reopen the app. Existing credentials, conversations and work
+   data are preserved.
+6. After the one-time Runtime update, MetaWork opens the Web workspace. Configure
+   models later in Settings, then complete the first login and choose a Workspace.
 
 Desktop bundles Node, Pi Executor, Server/Web and Planner. macOS Command Line Tools
 provide the system Git used for repository operations; Codex is optional. The default installation
@@ -133,11 +130,11 @@ To use the browser later, start Desktop (or start the installed Server), then ru
 `metawork tui` in the same installation. Both clients use the Server and account
 data created by Desktop; do not create a second installation for them.
 
-To update, download/mount the latest DMG, then use **Install New Application…**
-in the running Desktop to select its `MetaWork.app`. If macOS blocks the new app,
-apply the right-click **Open** / **Open Anyway** steps above first. This updates
-Desktop and Server together and explains the impact on active work. Use this path
-for a Desktop-managed installation instead of updating only its Server.
+To update, download/mount the latest DMG, quit MetaWork, and replace
+`MetaWork.app` in Applications. On the next launch, if the Desktop and local
+Runtime identities differ, choose **完成更新并重启** once and wait for the
+progress indicator. There is no separate file-installation menu. Do not delete
+`~/.metawork` or the application support directory.
 
 ### Server with Web / TUI / Feishu
 
