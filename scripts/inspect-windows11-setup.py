@@ -32,7 +32,7 @@ def inspect_setup(disk, evidence, secrets):
             raise RuntimeError('Unexpected loop device identity')
         phase = 'identify-system-partition'
         run(['sudo', 'udevadm', 'settle', '--timeout=10'])
-        devices = json.loads(run(['lsblk', '--json', '--bytes', '--output', 'PATH,TYPE,SIZE', loop]))
+        devices = json.loads(run(['lsblk', '--json', '--tree', '--bytes', '--output', 'PATH,TYPE,SIZE', loop]))
         partitions = devices['blockdevices'][0].get('children', [])
         report['partitions'] = []
         ntfs = []

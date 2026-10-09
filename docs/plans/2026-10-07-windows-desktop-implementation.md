@@ -315,3 +315,5 @@ Windows 11 证据：[`37739922946`](https://github.com/IFOSR/metawork/actions/ru
 - 增加独立普通浏览器的同安装验收脚本：从安装版 `web --no-open` 入口打开，独立 Cookie 必须先拒绝匿名会话并要求账密登录；观察 Desktop 创建的相同任务，通过认证下载实际产物并校验内容，拒绝匿名下载，核对取消终态及重载后的历史/Server PID。使用 runner 自带 Chrome/Edge；尚待真实执行，不能据此宣称 Web 或三客户端完整通过。
 - `fb2fd0d0` / `37869220953` 的 NSIS 构建已通过，packaged 首次激活仍在 `writeRevisionFile` 报 Win32 3；这轮不包含长路径修复。`19e28470` / `37871065012` 已取得 Node、Electron Main 及普通用户 >400 字符路径 probe 通过证据（`windows-platform-files` artifact），packaged 安装结果仍待收集。
 - 原生 TUI 验收准备发现 Windows 不能直接执行 vendored `cli.js`，改为使用启动 CLI 的同一个 Node；Web 系统浏览器入口改用 `rundll32`，并把异步启动失败交回命令调用者。新增真实非可执行 JS 子进程测试和浏览器启动失败测试，本地 10 tests/类型检查通过。三客户端测试补真实 PTY/ConPTY 中的已安装 TUI、Task Dashboard、活动任务中退出并重连、取消终态；本机 PTY 载体验证通过，ConPTY 编译及完整安装版执行仍待收集。
+- Windows 11 环境 `37868006655` 最终只有桌面截图、无验收回执，仍失败。修正诊断 `lsblk` 必须显式 `--tree` 才产生 children 的问题；控制台回退先用短命令打开管理员 PowerShell，再在终端执行长 bootstrap，避免 Run 编辑框长度限制，并显式确认 UAC。未禁用 Secure Boot/TPM，未将管理员环境检查计为普通用户产品验收。
+- macOS packaged `cb0de7b4` / `37870641335` 已完成新源码 `.app` 构建和安装，但连接服务失败；旧脚本继续等待 600 秒才失败。新增即时连接失败判定、Main 的有界错误/递归 cause 诊断及仅固定错误分类/函数名的启动日志摘要。该结果是待定位的打包验收失败，不以既有开发壳通过代替。

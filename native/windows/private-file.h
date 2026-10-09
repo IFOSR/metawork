@@ -94,6 +94,7 @@ void assert_local_path(const std::wstring& path) {
     require(!part.empty() && part != L"." && part != L".." && part.back() != L'.' && part.back() != L' ',
       "unsafe private directory segment");
     require(part.find_first_of(L"<>\"|?*") == std::wstring::npos, "unsafe native path character");
+    for (const wchar_t character : part) require(character >= L' ', "unsafe native path control character");
     const auto stem = part.substr(0, part.find(L'.'));
     require(_wcsicmp(stem.c_str(), L"CON") && _wcsicmp(stem.c_str(), L"PRN")
       && _wcsicmp(stem.c_str(), L"AUX") && _wcsicmp(stem.c_str(), L"NUL")

@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, powerMonitor, screen, session, shell, Tray, type IpcMainInvokeEvent, type Session } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { access, mkdir, open, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { desktopInstallFailure } from '../../../src/installation/desktop-install-progress.js';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveMetaWorkPaths } from '../../../src/installation/paths.js';
@@ -183,6 +184,10 @@ async function connectOnce(): Promise<void> {
     setState({ phase: 'ready', message: '后台服务已连接' });
   } catch (error) {
     // Never interpolate provider response bodies or native command output into diagnostics.
+    try {
+      await writeFile(join(app.getPath('userData'), 'connection-failure.json'),
+        JSON.stringify(desktopInstallFailure(error)), { mode: 0o600 });
+    } catch { /* Diagnostic failure must not prevent the original recovery UI. */ }
     origin = null;
     setState({ phase: 'error', message: error instanceof Error && /update requires recovery/u.test(error.message)
       ? '配套更新尚未完成。请使用 MetaWork 菜单中的“修复未完成的更新”。'

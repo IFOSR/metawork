@@ -40,7 +40,7 @@ export async function probePlatformFiles(addon, output, addonPath) {
     addon.createPrivateFile(root, `${deep}\\temporary`, Buffer.from('remove'));
     addon.removePrivateFile(root, `${deep}\\temporary`);
     assert.throws(() => addon.readPrivateFile(root, `${deep}\\temporary`), error => error.code === 'ENOENT');
-    for (const segment of ['NUL', 'con.txt', 'COM1', 'LPT9.log', 'unsafe?name']) {
+    for (const segment of ['NUL', 'con.txt', 'COM1', 'LPT9.log', 'unsafe?name', 'unsafe\nname']) {
       assert.throws(() => addon.writePrivateFile(root, `${deep}\\${segment}`, Buffer.from('denied')), /path/);
     }
     checks.push('paths beyond MAX_PATH retain atomic writes, flush, publication, relative pointers and reparse/device denial');

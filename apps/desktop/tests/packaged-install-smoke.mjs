@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, open, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -85,6 +85,8 @@ try {
       page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\/$/, { timeout: 600000 }),
       page.locator('#status').filter({ hasText: '安装未完成' }).waitFor({ timeout: 600000 })
         .then(() => { throw new Error('Packaged installation failed; inspect the bounded installation diagnostic'); }),
+      page.locator('#retry:visible').waitFor({ timeout: 600000 })
+        .then(() => { throw new Error('Packaged connection failed; inspect the bounded connection diagnostic'); }),
     ]);
     clearInterval(progressTimer);
     await writeFile(join(evidence, 'packaged-setup-progress.json'), JSON.stringify(setupProgress, null, 2));
@@ -140,7 +142,25 @@ try {
   const shellState = await page?.evaluate(() => window.metaworkShell?.state()).catch(() => undefined);
   const installationFailure = await readFile(join(installRoot, 'logs/desktop-install-failure.json'), 'utf8')
     .then(JSON.parse).catch(() => undefined);
-  await writeFile(join(evidence, 'packaged-install-failure.json'), JSON.stringify({ message: safeMessage, url: page?.url(), shellState, setupProgress, installationFailure }, null, 2));
+  const profile = await app.evaluate(({ app }) => app.getPath('userData')).catch(() => null);
+  const connectionFailure = profile ? await readFile(join(profile, 'connection-failure.json'), 'utf8')
+    .then(JSON.parse).catch(() => undefined) : undefined;
+  const startupLog = await open(join(installRoot, 'logs/desktop-server.log'), 'r').then(async file => {
+    try {
+      const size = (await file.stat()).size;
+      const buffer = Buffer.alloc(Math.min(size, 131072));
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, Math.max(0, size - buffer.length));
+      const text = buffer.subarray(0, bytesRead).toString('utf8');
+      // Preserve only predefined classifications and function names. Never
+      // export a raw Server log, provider text, account content or local path.
+      return { bytes: size, classifications: ['ERR_MODULE_NOT_FOUND', 'MODULE_NOT_FOUND', 'ENOENT', 'EACCES', 'EPERM',
+        'EADDRINUSE', 'ENAMETOOLONG', 'SQLITE_ERROR', 'SQLITE_CANTOPEN', 'NODE_MODULE_VERSION',
+        'SyntaxError', 'TypeError', 'Cannot find package', 'Cannot find module', 'Library not loaded',
+        'code signature invalid'].filter(value => text.includes(value)),
+      frames: [...text.matchAll(/\bat (?:async )?([A-Za-z_$][\w.$]*) \(/gu)].slice(-16).map(match => match[1]) };
+    } finally { await file.close(); }
+  }).catch(() => undefined);
+  await writeFile(join(evidence, 'packaged-install-failure.json'), JSON.stringify({ message: safeMessage, url: page?.url(), shellState, setupProgress, installationFailure, connectionFailure, startupLog }, null, 2));
   throw new Error(safeMessage);
 } finally {
   clearInterval(progressTimer);

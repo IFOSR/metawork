@@ -42,8 +42,15 @@ jobs:
           name: windows11-progress-setup-${{ github.sha }}
           path: ${{ runner.temp }}/metawork-windows11/evidence/
           if-no-files-found: warn
-      - name: Require completed guest acceptance
-        run: python3 scripts/monitor-windows11-cloud.py finish 3000
+      - name: Collect console bootstrap progress
+        run: python3 scripts/monitor-windows11-cloud.py snapshot 900
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows11-progress-console-${{ github.sha }}
+          path: ${{ runner.temp }}/metawork-windows11/evidence/
+          if-no-files-found: warn
+      - name: Require final guest acceptance receipt
+        run: python3 scripts/monitor-windows11-cloud.py finish 2100
       - uses: actions/upload-artifact@v4
         if: always()
         with:

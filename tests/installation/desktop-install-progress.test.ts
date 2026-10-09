@@ -18,4 +18,13 @@ describe('Bounded installation failure diagnostics', () => {
     expect(desktopInstallFailure(Object.assign(new Error('secret'), { code: 'secret' })))
       .toMatchObject({ code: 'INSTALLATION_FAILED' });
   });
+  it('retains a readiness cause code without copying its private message', () => {
+    const cause = Object.assign(new Error('private-provider-value'), { code: 'ENOENT' });
+    const error = new Error('private-connection-value', { cause });
+    cause.cause = error;
+    const report = desktopInstallFailure(error);
+    expect(report).toMatchObject({ cause: { code: 'ENOENT' } });
+    expect(JSON.stringify(report)).not.toContain('private-');
+    expect(JSON.stringify(report).length).toBeLessThan(2048);
+  });
 });

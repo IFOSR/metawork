@@ -30,6 +30,18 @@ def launch_bootstrap(command, text):
     press('esc')
     press('meta_l-r')
     time.sleep(1)
+    press('ctrl-a')
+    # The Run dialog has a much shorter command limit than a PowerShell
+    # terminal. Open an elevated terminal with a short command first.
+    for key in console_keys('powershell.exe -NoProfile -ExecutionPolicy Bypass'):
+        press(key)
+    # Environment bootstrap inspects firmware policy with the disposable admin
+    # account. UAC is confirmed explicitly; product acceptance uses a separate
+    # ordinary-user session and cannot claim this as product-user evidence.
+    press('ctrl-shift-ret')
+    time.sleep(3)
+    press('alt-y')
+    time.sleep(3)
     for key in keys:
         press(key)
     press('ret')

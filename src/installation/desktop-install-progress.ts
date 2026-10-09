@@ -15,5 +15,7 @@ export function desktopInstallFailure(error: unknown, depth = 0): object {
       return match ? [match[1]] : [];
     }),
     ...(error instanceof AggregateError ? { causes: error.errors.slice(0, 4).map(cause => desktopInstallFailure(cause, depth + 1)) } : {}),
+    ...(!(error instanceof AggregateError) && error.cause instanceof Error
+      ? { cause: desktopInstallFailure(error.cause, depth + 1) } : {}),
   };
 }
