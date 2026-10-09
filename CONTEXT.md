@@ -1114,6 +1114,12 @@ contain one another; the helper runs from the immutable Runtime release. This
 source integration does not close installed upgrade, rollback, interruption or
 uninstall acceptance.
 
+Windows uninstall source flow asks Desktop for service activity and formal drain,
+then waits for its bounded acknowledgment and process exit before removing shell
+files. Silent uninstall still requires confirmation when Tasks are unfinished;
+declining preserves running work. NSIS does not force-kill Desktop/Server and
+does not remove account data. Installed native acceptance remains pending.
+
 Desktop source checkpoint (2026-10-06): shared Web now consumes the optional
 native directory/save/menu/preferences adapter. Account-scoped bounded drafts,
 viewports and route hints persist independently of the HTTP port. The local

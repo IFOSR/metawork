@@ -19,6 +19,7 @@ import { launchDesktopUpdate, pendingDesktopUpdate, prepareDesktopUpdate } from 
 import { installNativeLauncher } from '../../../src/installation/native-launcher.js';
 import { authorizeDesktopShellCheck, writeDesktopShellHealth } from '../../../src/installation/desktop-shell-health.js';
 import { desktopApplicationRoot } from '../../../src/installation/desktop-platform.js';
+import { uninstallReceiptPath, writeUninstallReceipt } from './uninstall.js';
 
 app.setName('MetaWork');
 if (process.platform === 'win32') app.setAppUserModelId('com.metawork.desktop');
@@ -49,6 +50,7 @@ const downloads = new Map<string, string>();
 let saving = false;
 let updating = false;
 let queuedInstaller: string | undefined;
+let queuedUninstall: string[] | undefined;
 let notifications: DesktopNotifications;
 let notificationTimer: ReturnType<typeof setInterval> | undefined;
 let windowState: WindowState;
@@ -354,6 +356,51 @@ function receiveInstaller(args: string[]): void {
   showWindow(); void updateApplication(false, candidate);
 }
 
+async function receiveUninstaller(args: string[]): Promise<void> {
+  if (!app.isPackaged || process.platform !== 'win32') return;
+  const path = args.find(value => value.startsWith('--metawork-uninstall='))?.slice('--metawork-uninstall='.length);
+  if (!path) return;
+  if (!installation || !window) { queuedUninstall = args; return; }
+  let receipt: string;
+  try { receipt = await uninstallReceiptPath(path); } catch { return; }
+  if (updating) { await writeUninstallReceipt(receipt, false).catch(() => undefined); return; }
+  updating = true;
+  let approved = false;
+  try {
+    const installed = await installation.installed();
+    let activeTasks = 0;
+    if (installed) {
+      if (!origin) throw new Error('Service activity is unavailable');
+      const response = await webSession.fetch(`${origin}/api/client/service-activity`, {
+        redirect: 'error', signal: AbortSignal.timeout(5000),
+      });
+      if (!response.ok) throw new Error('Service activity is unavailable');
+      const activity = await response.json() as { activeTasks: number };
+      if (!Number.isSafeInteger(activity.activeTasks) || activity.activeTasks < 0) throw new Error('Invalid service activity');
+      activeTasks = activity.activeTasks;
+    }
+    if (activeTasks > 0 || !args.includes('--metawork-uninstall-silent')) {
+      showWindow();
+      const answer = await dialog.showMessageBox(window, { type: 'warning', title: '卸载 MetaWork',
+        message: activeTasks > 0 ? `当前有 ${activeTasks} 个未结束任务，仍要停止服务并卸载？` : '停止后台服务并卸载桌面应用？',
+        detail: 'Web、TUI、飞书和桌面将同时断开。配置、对话和工作成果会保留，可在重新安装后继续使用。',
+        buttons: ['继续运行', '停止服务并卸载'], defaultId: 0, cancelId: 0 });
+      if (answer.response !== 1) return;
+    }
+    if (installed) await manager.stop();
+    await preferences?.flush();
+    notifications.stop();
+    approved = true;
+  } catch {
+    dialog.showErrorBox('尚未卸载', '无法确认后台状态或完成正式停止。应用和数据已保留，请检查服务状态后重试。');
+  } finally {
+    try { await writeUninstallReceipt(receipt, approved); }
+    catch { approved = false; }
+    updating = false;
+    if (approved) app.quit();
+  }
+}
+
 async function logoutDesktop(): Promise<void> {
   const currentOrigin = origin;
   origin = null; notifications.stop();
@@ -545,11 +592,13 @@ async function start(): Promise<void> {
   await connect();
   receiveInstaller(queuedInstaller ? [`--metawork-install-update=${queuedInstaller}`] : process.argv);
   queuedInstaller = undefined;
+  await receiveUninstaller(queuedUninstall ?? process.argv);
+  queuedUninstall = undefined;
 }
 
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance', (_event, args) => { showWindow(); receiveInstaller(args); });
+  app.on('second-instance', (_event, args) => { showWindow(); receiveInstaller(args); void receiveUninstaller(args); });
   app.on('activate', showWindow);
   app.on('window-all-closed', () => undefined);
   app.on('before-quit', event => {

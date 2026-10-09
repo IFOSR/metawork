@@ -1813,6 +1813,12 @@ authenticated workspace-render receipt. It preserves the selected user-data
 directory and rejects overlapping shell/Runtime roots. Native installed update,
 rollback, interruption and uninstall-impact validation remain release gates.
 
+The Windows uninstaller delegates service-activity inspection and formal drain
+to Desktop before deleting shell files. Active work requires impact confirmation
+even in silent mode; NSIS requires an acknowledgment and client exit, with no
+process-kill fallback. Retained account data must reopen after reinstall.
+These native acceptance checks are pending.
+
 Desktop source checkpoint (2026-10-06): shared Web now consumes the optional
 native directory/save/menu/preferences adapter. Account-scoped bounded drafts,
 viewports and route hints persist independently of the HTTP port. The local

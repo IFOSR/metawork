@@ -1,5 +1,81 @@
 ; NSIS owns first installation and extraction only. Existing installations go
 ; through the Desktop impact confirmation and the common activation helper.
+!ifdef BUILD_UNINSTALLER
+  Var mwUninstallApproved
+!endif
+
+!macro customHeader
+  !ifdef BUILD_UNINSTALLER
+    Function un.MetaWorkConfirm
+      ${If} $mwUninstallApproved == "true"
+        Return
+      ${EndIf}
+      InitPluginsDir
+      StrCpy $R0 ""
+      ${If} ${Silent}
+        StrCpy $R0 "--metawork-uninstall-silent"
+      ${EndIf}
+      Exec '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" "--metawork-uninstall=$PLUGINSDIR\metawork-uninstall-result" $R0'
+      ${If} ${Errors}
+        SetErrorLevel 2
+        Quit
+      ${EndIf}
+      StrCpy $R2 0
+      ${Do}
+        ${If} ${FileExists} "$PLUGINSDIR\metawork-uninstall-result"
+          ${ExitDo}
+        ${EndIf}
+        Sleep 250
+        IntOp $R2 $R2 + 1
+      ${LoopUntil} $R2 >= 1200
+      ClearErrors
+      FileOpen $R0 "$PLUGINSDIR\metawork-uninstall-result" r
+      ${If} ${Errors}
+        SetErrorLevel 2
+        Quit
+      ${EndIf}
+      FileRead $R0 $R1
+      FileRead $R0 $R2
+      FileClose $R0
+      ${If} $R1 != "approved$\r$\n"
+      ${OrIf} $R2 <= 0
+        SetErrorLevel 2
+        Quit
+      ${EndIf}
+      ; Wait for the approved Main process. Never force-kill the application or
+      ; an independent Server; failed drain or client exit prevents removal.
+      System::Call 'kernel32::OpenProcess(i 0x00100000, i 0, i R2) p.R3 ?e'
+      Pop $R4
+      ${If} $R3 != 0
+        System::Call 'kernel32::WaitForSingleObject(p R3, i 30000) i.R4'
+        System::Call 'kernel32::CloseHandle(p R3)'
+        ${If} $R4 != 0
+          SetErrorLevel 2
+          Quit
+        ${EndIf}
+      ${ElseIf} $R4 != 87
+        SetErrorLevel 2
+        Quit
+      ${EndIf}
+      StrCpy $mwUninstallApproved "true"
+    FunctionEnd
+  !endif
+!macroend
+
+!macro customCheckAppRunning
+  !ifdef BUILD_UNINSTALLER
+    Call un.MetaWorkConfirm
+  !else
+    ; The registered-installation branch already handed off in customInit.
+    ; Refuse an unregistered occupied destination instead of overwriting it.
+    ${If} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
+      MessageBox MB_OK|MB_ICONEXCLAMATION "Open MetaWork and use Install Update before replacing this installation." /SD IDOK
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
+  !endif
+!macroend
+
 !macro customInit
   ${GetParameters} $R0
   ClearErrors

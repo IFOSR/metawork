@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 
 // Real installed Planner/Pi task acceptance. Never records provider inputs,
 // model responses, process command lines or database contents in CI artifacts.
-export async function runPackagedModelTasks({ page, root, installRoot, evidence }) {
+export async function runPackagedModelTasks({ page, root, installRoot, evidence, onActiveTask }) {
   assert.equal(process.platform, 'win32');
   const release = await realpath(join(installRoot, 'app/current'));
   const require = createRequire(join(release, 'package.json'));
@@ -103,6 +103,12 @@ export async function runPackagedModelTasks({ page, root, installRoot, evidence 
     }, 'real Executor command running');
     const cancellationTask = db.prepare('SELECT id FROM tasks WHERE id != ? ORDER BY created_at DESC LIMIT 1').get(task.id);
     assert.ok(cancellationTask, 'No Task owns the running cancellation command');
+    if (onActiveTask) {
+      await onActiveTask();
+      assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(cancellationTask.id)?.status, 'running');
+      assert.ok((await processIds()).length, 'Declining uninstall stopped active Executor work');
+      report.activeUninstallDeclinedWithoutStopping = true;
+    }
     page.once('dialog', dialog => dialog.accept());
     await page.locator('.composer .stop-button').click();
     await waitFor(async () => {

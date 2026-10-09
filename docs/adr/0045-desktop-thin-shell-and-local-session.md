@@ -146,5 +146,9 @@ The new shell retains the selected Desktop user-data directory. Windows staging
 uses the current installed trust keys to verify candidate payloads; internal
 unsigned EXEs remain subject to the explicitly enabled internal-build gate.
 NSIS compilation, installed upgrade, rollback and interruption tests remain
-mandatory and are recorded separately from source checks. Uninstall impact
-confirmation remains an open Windows delivery requirement.
+mandatory and are recorded separately from source checks. The uninstall adapter
+also delegates activity inspection, user confirmation and formal drain to Desktop.
+Only its completed acknowledgment and Main-process exit permit NSIS removal;
+silent mode cannot waive active-work confirmation. Account data is retained.
+Actual active-work denial, successful drain and reinstall reuse remain native
+acceptance requirements.
