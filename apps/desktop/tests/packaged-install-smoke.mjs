@@ -48,18 +48,20 @@ for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE',
   'METAWORK_DESKTOP_DEVELOPMENT_ROOT', 'METAWORK_DESKTOP_DEVELOPMENT', 'METAWORK_DESKTOP_UI_ORIGIN']) delete env[key];
 const evidence = resolve(process.argv[3] ?? 'apps/desktop/release/evidence');
 await mkdir(evidence, { recursive: true });
-const app = await _electron.launch({ executablePath: windows ? application : join(application, 'Contents/MacOS/MetaWork'),
+const launch = () => _electron.launch({ executablePath: windows ? application : join(application, 'Contents/MacOS/MetaWork'),
   // On a disposable NSIS runner use the normal profile so a second EXE launch
   // from its uninstaller reaches this exact Main process through Electron's lock.
   args: nsis ? [] : [`--user-data-dir=${join(root, 'desktop-profile')}`], env, timeout: 120000 });
+let app = await launch();
 let serverPid;
 let progressTimer;
 let browser;
 let terminal;
+let activeDesktopLifecycleVerified = false;
 const setupProgress = [];
 try {
   assert.equal(await app.evaluate(({ app }) => app.isPackaged), true);
-  const page = await app.firstWindow();
+  let page = await app.firstWindow();
   if (!existing) {
     // waitForFunction treats an async predicate's Promise as truthy in this
     // pinned Playwright version. Poll the rendered state, then read IPC once.
@@ -122,6 +124,43 @@ try {
       } finally {
         await app.evaluate(({ dialog }) => { dialog.showMessageBox = globalThis.__mwUninstallDialog; });
       }
+      const draft = `Unsent acceptance draft ${randomUUID()}`;
+      await page.locator('.composer textarea').fill(draft);
+      const draftDeadline = Date.now() + 15000;
+      while (!await page.evaluate(async value => Object.values((await window.metaworkDesktop.readPreferences()).drafts)
+        .some(item => item.text === value), draft)) {
+        if (Date.now() >= draftDeadline) throw new Error('Desktop did not retain the unsent draft');
+        await new Promise(done => setTimeout(done, 100));
+      }
+      assert.equal(await app.evaluate(({ BrowserWindow }) => {
+        const window = BrowserWindow.getAllWindows()[0]; window.close(); return window.isVisible();
+      }), false, 'Closing the window must hide it');
+      process.kill(serverPid, 0);
+      await promisify(execFile)(application, [], { env, windowsHide: true, timeout: 30000 });
+      assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible()), true);
+      assert.equal(await page.locator('.composer textarea').inputValue(), draft);
+      const child = app.process();
+      const exited = new Promise(done => child.once('exit', code => done(code)));
+      await app.evaluate(({ Menu }) => {
+        const item = Menu.getApplicationMenu().items[0].submenu.items.find(value =>
+          ['退出桌面（后台继续运行）', 'Quit MetaWork (Server Continues)'].includes(value.label));
+        if (!item) throw new Error('Missing Desktop quit action');
+        setTimeout(() => item.click(), 50);
+      });
+      let exitTimer;
+      try {
+        assert.equal(await Promise.race([exited, new Promise((_, reject) => {
+          exitTimer = setTimeout(() => reject(new Error('Desktop menu quit did not exit')), 30000);
+        })]), 0);
+      } finally { clearTimeout(exitTimer); }
+      process.kill(serverPid, 0);
+      app = await launch();
+      page = await app.firstWindow();
+      await page.locator('.workspace-shell').waitFor({ timeout: 120000 });
+      assert.equal(await page.locator('.composer textarea').inputValue(), draft);
+      assert.equal(JSON.parse(await readFile(join(installRoot, 'server-endpoint.json'), 'utf8')).pid, serverPid);
+      activeDesktopLifecycleVerified = true;
+      return page;
     } : undefined });
   await page.reload();
   await page.locator('.workspace-shell').waitFor({ timeout: 30000 });
@@ -131,7 +170,7 @@ try {
   await writeFile(join(evidence, 'packaged-install.json'), JSON.stringify({
     application, authenticated, cleanInstall: !existing, existingInstallReused: existing, developerCredentialsAbsent: true,
     restrictedPath: env.PATH, serverSurvivedExit: true, paidTaskExecuted: realTasks,
-    platform: process.platform, arch: process.arch, packaged: true,
+    platform: process.platform, arch: process.arch, packaged: true, activeDesktopLifecycleVerified,
   }, null, 2));
   console.log('Packaged Desktop clean installation, authenticated Web and Server survival passed.');
 } catch (error) {

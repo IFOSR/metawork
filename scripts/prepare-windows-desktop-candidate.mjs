@@ -20,9 +20,9 @@ const node = process.execPath;
 const testModel = process.env.METAWORK_TEST_MODEL;
 delete process.env.METAWORK_TEST_MODEL;
 const npm = join(dirname(node), 'node_modules/npm/bin/npm-cli.js');
-function run(command, args, cwd = source, env = process.env, live = false) {
+function run(command, args, cwd = source, env = process.env, live = false, timeout = 1200000) {
   return execFileSync(command, args, { cwd, env, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, windowsHide: true,
-    ...(live ? { stdio: 'inherit' } : {}) });
+    timeout, ...(live ? { stdio: 'inherit' } : {}) });
 }
 const sourceCommit = run('git.exe', ['rev-parse', 'HEAD']).trim();
 if (sourceCommit !== process.env.GITHUB_SHA) throw new Error('Candidate source commit mismatch');
@@ -85,7 +85,7 @@ try {
     releaseId: JSON.parse(descriptor).releaseId, internalCandidate: true,
     releaseAccepted: false }, null, 2));
   run(node, ['scripts/probe-windows-desktop-nsis.mjs', installer, evidence, resources, keyPath], source,
-    { ...internalEnvironment, METAWORK_TEST_MODEL: testModel ?? '' }, true);
+    { ...internalEnvironment, METAWORK_TEST_MODEL: testModel ?? '' }, true, 6300000);
 } finally {
   await rm(keyPath, { force: true });
 }

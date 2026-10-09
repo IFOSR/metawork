@@ -88,7 +88,7 @@ export async function runPackagedModelTasks({ page, root, installRoot, evidence,
     await observer?.artifact({ marker, taskId: task.id });
 
     const cancelMarker = `mw-cancel-${randomUUID()}`;
-    await composer.fill(`Cancellation acceptance: run a Bash command that prints ${cancelMarker} once per second for 300 seconds. Include that literal marker in the command text. Start it now, keep the task active until it finishes, and do not create or modify files. I will cancel it from the client.`);
+    await composer.fill(`Cancellation acceptance: run a Bash command that prints ${cancelMarker} once per second for 600 seconds. Include that literal marker in the command text. Start it now, keep the task active until it finishes, and do not create or modify files. I will cancel it from the client.`);
     await page.locator('.composer button[type=submit]').click();
     const processIds = async () => {
       if (process.platform === 'darwin') {
@@ -124,7 +124,7 @@ export async function runPackagedModelTasks({ page, root, installRoot, evidence,
     console.log('Real cancellation command is running in an Executor process.');
     await observer?.running({ marker: cancelMarker, taskId: cancellationTask.id });
     if (onActiveTask) {
-      await onActiveTask();
+      page = await onActiveTask() ?? page;
       assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(cancellationTask.id)?.status, 'running');
       assert.ok((await processIds()).length, 'Declining uninstall stopped active Executor work');
       report.activeUninstallDeclinedWithoutStopping = true;

@@ -335,3 +335,5 @@ Windows 11 环境 run `37872643258` 仍失败：已有交互桌面，但无验�
 `b5c50de0` / run `37877289114` 的完整 windows-pipe job 通过，含原生 140 列 ConPTY、进程树与跨账号管道门。根因是 ConPTY Client 继承了测试宿主重定向的标准句柄，Node isatty=false；CreateProcess 前暂时清除宿主标准句柄、创建后恢复，Client 取得真实 console handle 后通过。此前关闭时机修正单独不足以解决。后续 Windows launcher 单测暴露两个 POSIX 路径字面量断言，使用平台 resolve 生成测试期望，保持安装布局优先与来源边界检查；本地 10 个客户端测试通过。
 
 补齐 Windows 11 产品自动验收链路（尚未执行）：Windows 构建及全部前置门成功后，将原 NSIS 字节和测试工具封装为独立 acceptance kit，再启动同提交的 Windows 11 VM。环境证据通过后，显式配置声明的 Developer Mode 前置，创建无管理员组成员身份的交互账号，并以 Limited scheduled task 执行原安装包/真实模型/独立浏览器/ConPTY/拒绝活动任务卸载/卸载重装任务保留检查。每项核对 OS、elevated=false、交互状态、source commit 和安装包 SHA256。测试模型通过仅宿主 loopback 暴露的随机 token URL 临时传入，不进入 kit、应答文件、构建子进程或上传日志；产品首次配置期间不自动截取 VM 控制台，仅接收测试脚本选择/脱敏的证据。环境通过不替代 product 回执，未通过不得关闭 P5。
+
+进一步补齐已安装 Desktop 运行中任务的生命周期断言：保存未发送草稿，真实关闭窗口并通过再次启动 EXE 恢复，从正式菜单退出后检查 Server 存活，再重开同账号/草稿/会话并取消原任务。与浏览器及真实 TUI 同时观察；尚待原生安装版执行。候选脚本为每个构建/基础 smoke 子进程设 20 分钟边界、NSIS 全链路设 105 分钟边界，避免此前已保存失败报告后仍长期占用 job；超时仍失败，不替代任何成功断言。
