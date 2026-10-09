@@ -1,11 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { DesktopDraft, DesktopPreferences, DesktopViewport } from '../shared/bridge.js';
 import { identifier } from './security.js';
 import type { WindowsPrivateFiles } from '../../../src/platform/windows-private-files.js';
 
 const MAX_PREFERENCES_BYTES = 9 * 1024 * 1024;
+
+export function desktopPreferencesPath(userData: string, installationId: string, accountId: string): string {
+  // Chromium owns userData/Preferences, including on case-insensitive filesystems.
+  return join(userData, 'metawork-preferences', installationId, `${accountId}.json`);
+}
 
 export class DesktopPreferenceStore {
   private value: DesktopPreferences = { theme: 'system', drafts: {} };

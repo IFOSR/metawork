@@ -321,3 +321,7 @@ Windows 11 证据：[`37739922946`](https://github.com/IFOSR/metawork/actions/ru
 ### 2026-10-09 用户范围纠正：仅 Windows
 
 用户明确要求专注 Windows，并删除此前生成的 Mac 包。移除专用 workflow 的 macOS jobs、其分类 job 和新增 Mac candidate 脚本，保留 Windows jobs 与 Docker 共享持久化回归；撤销旧 §6.1 的 Mac packaged 交付门。取消仍运行或排队的 Mac 构建，清理本轮 Mac 调试 worktree、候选包、下载副本、隔离安装和对应云端产物。历史失败记录仅用于解释已发生的工作，不再要求继续 Mac 验收。Windows 全部门仍未完成，不改版本、不合并 main、不打 tag、不发布 Release。
+
+清理验证：Mac 调试 worktree、候选/工具下载/隔离账号文件已移除；该分支 97 个 macOS validation artifacts 已删除，相关运行已取消。`85cebcc8` 移除 Mac CI 与打包脚本，工作流仅保留 3 个 Windows job 与 Docker 回归。
+
+Windows 首次连接源码排查发现 `userData/preferences` 与 Chromium 的 `userData/Preferences` 在 Windows 的大小写不敏感文件系统上冲突。改用独立 `metawork-preferences` 目录，并添加真实 Preferences 文件共存、草稿持久化及原文件不变的回归。Desktop 14 测试和类型检查通过；仍需 Windows 安装包实际复验。

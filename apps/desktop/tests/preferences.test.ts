@@ -1,9 +1,9 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { DesktopPreferenceStore } from '../main/preferences.js';
+import { DesktopPreferenceStore, desktopPreferencesPath } from '../main/preferences.js';
 import { loadWindowsPrivateFiles } from '../../../src/platform/windows-private-files.js';
 
 const privateFiles = process.platform === 'win32' ? loadWindowsPrivateFiles(
@@ -13,6 +13,19 @@ const storeAt = (path: string) => new DesktopPreferenceStore(path, privateFiles)
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 describe('Desktop account preferences', () => {
+  it('loads and saves beside the Chromium Preferences file without replacing it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'desktop-preferences-')); roots.push(root);
+    const chromium = join(root, 'Preferences');
+    const original = JSON.stringify({ browser: { has_seen_welcome_page: true } });
+    await writeFile(chromium, original);
+    const path = desktopPreferencesPath(root, 'installation', 'account');
+    const store = storeAt(path);
+    await store.load();
+    await store.setDraft('conversation', { text: '保留草稿', attachments: [] });
+    const restored = storeAt(path); await restored.load();
+    expect(restored.read().drafts.conversation.text).toBe('保留草稿');
+    expect(await readFile(chromium, 'utf8')).toBe(original);
+  });
   it('persists the latest concurrent draft atomically and restores independent of port', async () => {
     const root = await mkdtemp(join(tmpdir(), 'desktop-preferences-')); roots.push(root);
     const path = join(root, 'installation/account.json');
