@@ -300,3 +300,10 @@ Windows 11 证据：[`37739922946`](https://github.com/IFOSR/metawork/actions/ru
 首次安装续验为独立 helper 增加固定阶段进度（验证、复制、配置、激活），只允许这些枚举进入 Desktop 状态，不转发任意 stdout 或模型配置。packaged smoke 记录阶段变化，将首次安装预算调整为 10 分钟并保留失败断言；NSIS 总预算容纳两个真实任务。payload 并发验证在首个失败后等待所有在途文件句柄关闭才返回，避免 Windows 清理 staging 时竞争。取消验收同时检查命令及其后代 PID。上述补充仍待原生执行证据，不能标记验收通过。
 
 仍必须关闭：Windows 11 普通用户真实 packaged 产品验收；真实任务和取消门的实际结果；Windows 协调升级（目前 UI/helper 仍有 `.app`、`codesign`、`/usr/bin/open` 假设）、失败回滚和中断恢复；运行中任务的卸载确认与重装数据复用；§6.1 同源 macOS packaged/Web/TUI/三客户端和安装升级完整验收。基础 CI 通过只覆盖 workflow 已声明场景，不能据此关闭 P3–P5。
+
+### 2026-10-09 继续验收（未完成）
+
+- `e9a12fe4` / [`37772227553`](https://github.com/IFOSR/metawork/actions/runs/37772227553)：原生、Docker 与两个 macOS job 通过；packaged 安装约 20 秒进入复制，125 秒进入激活，170 秒回到安装失败页。NSIS 和真实任务仍未执行。此证据排除了“只是 180 秒不够”的判断。
+- `468d537f` / [`37771405476`](https://github.com/IFOSR/metawork/actions/runs/37771405476)：Windows 11 交互桌面可见，但仍无回执；固定挂载第 3 分区报 NTFS signature missing。不能从截图宣称 TPM/Secure Boot 通过。
+- `9daeec1b` 加入仅错误码/调用名的安装失败报告，省去已失败后继续等待 10 分钟；显式为后续 packaged 测试启用计划要求的 Developer Mode（普通用户 probe 会恢复之前的设置）。环境验收改为探测 NTFS 系统分区，并在首次登录回执缺失时从交互控制台启动同一无密钥 bootstrap。Windows 复验 [`37868006653`](https://github.com/IFOSR/metawork/actions/runs/37868006653)，Windows 11 环境复验 [`37868006655`](https://github.com/IFOSR/metawork/actions/runs/37868006655)，结果待收集。本机两个类型检查、安装/诊断 12 测试通过。
+- Windows 协调更新源码已接入 NSIS 独立 staging、既有安装转交 Desktop 确认、平台路径、Windows 私有 request/lock/journal、SourceNativeUpdater、候选 workspace 渲染回执和保留 user-data 目录；拒绝壳层与 Runtime 根互相包含。macOS 保持 `.app`/签名验证。当前仅通过 Root/Desktop 类型检查、16 个路径/activation/health 测试及 11 个 Desktop 测试；NSIS 编译及真实升级/失败回滚/中断恢复尚待执行，不能据此关闭 P3。

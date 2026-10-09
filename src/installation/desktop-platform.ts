@@ -1,4 +1,49 @@
 import { posix, win32 } from 'node:path';
+import type { DesktopActivationRecord } from './desktop-activation.js';
+
+/** Native shell layout only; the activation transaction still owns replacement. */
+export function desktopApplicationPaths(applicationRoot: string, platform = process.platform) {
+  const path = platform === 'win32' ? win32 : posix;
+  return {
+    resources: path.join(applicationRoot, platform === 'win32' ? 'resources' : 'Contents/Resources'),
+    executable: path.join(applicationRoot, platform === 'win32' ? 'MetaWork.exe' : 'Contents/MacOS/MetaWork'),
+  };
+}
+
+export function desktopApplicationRoot(resources: string, platform = process.platform): string {
+  const path = platform === 'win32' ? win32 : posix;
+  return path.resolve(resources, platform === 'win32' ? '..' : '../..');
+}
+
+export function desktopReleaseRootFromNode(node: string, platform = process.platform): string {
+  const path = platform === 'win32' ? win32 : posix;
+  return path.resolve(path.dirname(node), platform === 'win32' ? '../..' : '../../..');
+}
+
+export function assertDesktopActivationPaths(root: string, record: Pick<DesktopActivationRecord,
+  'applicationPath' | 'stagedApplicationPath' | 'backupApplicationPath'>, platform = process.platform): void {
+  const path = platform === 'win32' ? win32 : posix;
+  const { applicationPath, stagedApplicationPath, backupApplicationPath } = record;
+  for (const value of [applicationPath, stagedApplicationPath, backupApplicationPath]) {
+    if (typeof value !== 'string' || !path.isAbsolute(value) || path.resolve(value) !== value
+      || value === path.parse(value).root || (platform === 'win32' && !/^[a-z]:\\/iu.test(value))) {
+      throw new Error('Invalid application paths');
+    }
+  }
+  const staged = path.relative(path.join(root, 'upgrades'), stagedApplicationPath);
+  const contains = (parent: string, child: string) => {
+    const value = path.relative(parent, child);
+    return !value || (value !== '..' && !value.startsWith(`..${path.sep}`) && !path.isAbsolute(value));
+  };
+  const backupPrefix = `${applicationPath}.metawork-backup-`;
+  if ((platform !== 'win32' && !applicationPath.endsWith('.app'))
+    || contains(applicationPath, root) || contains(root, applicationPath)
+    || !staged || staged === '..' || staged.startsWith(`..${path.sep}`) || path.isAbsolute(staged)
+    || !backupApplicationPath.startsWith(backupPrefix)
+    || !/^[a-f0-9-]{36}$/u.test(backupApplicationPath.slice(backupPrefix.length))) {
+    throw new Error('Invalid application paths');
+  }
+}
 
 /** Release-local tool locations only; lifecycle and activation remain caller-owned. */
 export function desktopToolPaths(releaseRoot: string, platform = process.platform) {

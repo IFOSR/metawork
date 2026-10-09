@@ -1,7 +1,8 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { access, cp, mkdir, open, readFile, realpath, rename, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { DesktopActivation, type DesktopActivationRecord } from './installation/desktop-activation.js';
 import { verifyDesktopRelease } from './installation/desktop-release.js';
 import { readReleaseIdentity } from './installation/release-identity.js';
@@ -12,39 +13,52 @@ import { commandExistsOnPath } from './configuration/production-configuration-pr
 import { DesktopServiceManager } from './client/desktop-service-manager.js';
 import { isInstanceRunning } from './management/lock.js';
 import { waitForDesktopShellHealth } from './installation/desktop-shell-health.js';
-import { desktopProcessEnvironment, desktopToolPaths } from './installation/desktop-platform.js';
+import { assertDesktopActivationPaths, desktopApplicationPaths, desktopProcessEnvironment, desktopToolPaths } from './installation/desktop-platform.js';
+import { loadWindowsPrivateFiles } from './platform/windows-private-files.js';
 
 async function main(): Promise<void> {
   const [rootArg, requestArg] = process.argv.slice(2);
   if (!rootArg || !requestArg) throw new Error('Missing update request');
   const root = await realpath(rootArg);
   const requests = join(root, 'upgrades');
-  if (resolve(requestArg) !== join(requests, 'desktop-request.json')) throw new Error('Invalid update request path');
-  const request = JSON.parse(await readFile(requestArg, 'utf8')) as {
+  if (await realpath(requestArg) !== join(requests, 'desktop-request.json')) throw new Error('Invalid update request path');
+  const windows = process.platform === 'win32' ? { root,
+    files: loadWindowsPrivateFiles(join(root, 'app/current/native/windows/metawork-platform.node')) } : undefined;
+  const readPrivate = (path: string) => windows
+    ? Promise.resolve().then(() => windows.files.readPrivateFile(root, relative(root, path)).toString('utf8')) : readFile(path, 'utf8');
+  const request = JSON.parse(await readPrivate(requestArg)) as {
     record: Omit<DesktopActivationRecord, 'schemaVersion' | 'phase'>;
     previousNode: string; previousPid: number; trustedKeys: Record<string, string>; desktopVersion: string;
     shellChallenge: string;
-    configHome?: string;
+    configHome?: string; userDataPath?: string;
   };
   const record = request.record;
-  if (!record.applicationPath.endsWith('.app') || !record.stagedApplicationPath.startsWith(`${requests}/`)
-    || !record.backupApplicationPath.startsWith(`${record.applicationPath}.metawork-backup-`)
-    || !/^[a-f0-9-]{36}$/u.test(record.backupApplicationPath.slice(`${record.applicationPath}.metawork-backup-`.length))) throw new Error('Invalid application paths');
+  assertDesktopActivationPaths(root, record);
   await mkdir(requests, { recursive: true, mode: 0o700 });
   const lockPath = join(requests, 'desktop-helper.lock');
-  const lock = await open(lockPath, 'wx', 0o600).catch(async error => {
+  const createLock = async (): Promise<void> => {
+    if (windows) windows.files.createPrivateFile(root, relative(root, lockPath), Buffer.from(String(process.pid)));
+    else {
+      const file = await open(lockPath, 'wx', 0o600);
+      try { await file.writeFile(String(process.pid)); } finally { await file.close(); }
+    }
+  };
+  const removeLock = async (): Promise<void> => {
+    if (windows) windows.files.removePrivateFile(root, relative(root, lockPath));
+    else await rm(lockPath, { force: true });
+  };
+  await createLock().catch(async error => {
     if (error.code !== 'EEXIST') throw error;
-    const pid = Number(await readFile(lockPath, 'utf8'));
+    const pid = Number(await readPrivate(lockPath));
     if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid helper lock');
     try { process.kill(pid, 0); } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code === 'ESRCH') { await rm(lockPath); return open(lockPath, 'wx', 0o600); }
+      if ((cause as NodeJS.ErrnoException).code === 'ESRCH') { await removeLock(); return createLock(); }
       throw cause;
     }
     throw new Error('Another desktop update is running');
   });
-  await lock.writeFile(String(process.pid)); await lock.close();
   try {
-    const resources = join(record.stagedApplicationPath, 'Contents/Resources');
+    const resources = desktopApplicationPaths(record.stagedApplicationPath).resources;
     let candidateShell: ChildProcess | undefined;
     const paths = resolveMetaWorkPaths(undefined, root);
     const running = () => isInstanceRunning(join(root, 'data/runtime.lock'));
@@ -57,8 +71,8 @@ async function main(): Promise<void> {
       return new DesktopServiceManager({ installRoot: root, releaseId: identity.releaseId, nodePath, configHome: request.configHome });
     };
     const updater = new SourceNativeUpdater({ paths,
-      secretStore: createProductionSecretStore({ credentialsFile: paths.credentials }),
-      isServerRunning: running, installLaunchers: false,
+      secretStore: createProductionSecretStore({ credentialsFile: paths.credentials, windows }),
+      isServerRunning: running, installLaunchers: false, windows,
       detectCommand: name => commandExistsOnPath(name, desktopProcessEnvironment({
         releaseRoot: join(resources, 'payload/metawork'),
         nodePath: desktopToolPaths(join(resources, 'payload/metawork')).node, env: process.env,
@@ -66,14 +80,18 @@ async function main(): Promise<void> {
     });
     const activation = new DesktopActivation(join(requests, 'desktop-activation.json'), {
       verify: async () => {
-        const release = await verifyDesktopRelease(resources, { trustedKeys: request.trustedKeys, platform: process.platform, arch: process.arch, desktopVersion: request.desktopVersion });
+        const release = await verifyDesktopRelease(resources, { trustedKeys: request.trustedKeys, platform: process.platform, arch: process.arch,
+          desktopVersion: request.desktopVersion, allowDevelopment: process.env.METAWORK_DESKTOP_INTERNAL === '1' });
         if (release.releaseId !== record.candidateReleaseId || !/^[a-f0-9-]{36}$/u.test(request.shellChallenge)) throw new Error('Candidate release mismatch');
         if ((await currentIdentity())?.releaseId !== record.previousReleaseId) throw new Error('Previous runtime changed');
         if (await access(record.backupApplicationPath).then(() => true, () => false)) throw new Error('Previous application backup must be retained or archived first');
       },
       stop: async () => {
         if (candidateShell && candidateShell.exitCode === null && candidateShell.signalCode === null) {
-          candidateShell.kill('SIGTERM');
+          if (windows) {
+            await promisify(execFile)(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/taskkill.exe'),
+              ['/PID', String(candidateShell.pid), '/T', '/F'], { windowsHide: true, timeout: 15_000 });
+          } else candidateShell.kill('SIGTERM');
           const deadline = Date.now() + 15_000;
           while (candidateShell.exitCode === null && candidateShell.signalCode === null) {
             if (Date.now() >= deadline) throw new Error('Candidate desktop must exit before recovery');
@@ -96,14 +114,16 @@ async function main(): Promise<void> {
         const env = { ...process.env, METAWORK_INSTALL_ROOT: root, ANYFUSION_INSTALL_ROOT: root,
           ...(request.configHome ? { METAWORK_CONFIG_HOME: request.configHome, ANYFUSION_CONFIG_HOME: request.configHome } : {}) };
         for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE']) delete env[key as keyof typeof env];
-        candidateShell = spawn(join(record.applicationPath, 'Contents/MacOS/MetaWork'),
-          [`--metawork-update-check=${request.shellChallenge}`], { detached: true, stdio: 'ignore', env });
+        candidateShell = spawn(desktopApplicationPaths(record.applicationPath).executable,
+          [`--metawork-update-check=${request.shellChallenge}`, ...(request.userDataPath ? [`--user-data-dir=${request.userDataPath}`] : [])],
+          { detached: true, stdio: 'ignore', env });
         await new Promise<void>((resolve, reject) => {
           candidateShell!.once('spawn', resolve); candidateShell!.once('error', reject);
         });
         await waitForDesktopShellHealth(root, { challenge: request.shellChallenge, releaseId: grant.releaseId,
           instanceId: grant.instanceId, pid: candidateShell.pid! }, {
           alive: () => candidateShell!.exitCode === null && candidateShell!.signalCode === null,
+          windows,
         });
         candidateShell.unref();
       },
@@ -119,7 +139,17 @@ async function main(): Promise<void> {
         await rm(`${record.applicationPath}.metawork-staged`, { recursive: true, force: true });
       },
       startPrevious: async () => { await (await manager()).connect(); },
-    });
+    }, windows);
+    const reopen = () => {
+      const env = { ...process.env, METAWORK_INSTALL_ROOT: root, ANYFUSION_INSTALL_ROOT: root,
+        ...(request.configHome ? { METAWORK_CONFIG_HOME: request.configHome, ANYFUSION_CONFIG_HOME: request.configHome } : {}) };
+      const child = windows
+        ? spawn(desktopApplicationPaths(record.applicationPath).executable,
+          request.userDataPath ? [`--user-data-dir=${request.userDataPath}`] : [], { detached: true, stdio: 'ignore', env })
+        : spawn('/usr/bin/open', [record.applicationPath,
+          ...(request.userDataPath ? ['--args', `--user-data-dir=${request.userDataPath}`] : [])], { detached: true, stdio: 'ignore', env });
+      child.unref();
+    };
     // The helper is independent of Electron; wait for client exit before replacing its bundle.
     process.stdout.write('READY\n');
     const deadline = Date.now() + 60_000;
@@ -140,15 +170,15 @@ async function main(): Promise<void> {
       try { await activation.apply(record); }
       catch (error) {
         if ((await activation.read())?.phase === 'rolled-back') {
-          const child = spawn('/usr/bin/open', [record.applicationPath], { detached: true, stdio: 'ignore' }); child.unref();
+          reopen();
         }
         throw error;
       }
     }
     if (!candidateShell || candidateShell.exitCode !== null || candidateShell.signalCode !== null) {
-      const child = spawn('/usr/bin/open', [record.applicationPath], { detached: true, stdio: 'ignore' }); child.unref();
+      reopen();
     }
-  } finally { await rm(lockPath, { force: true }); }
+  } finally { await removeLock(); }
 }
 void main().catch(async () => {
   // Preserve the activation record; the UI must not bypass failed recovery.

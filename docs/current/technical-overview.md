@@ -1803,6 +1803,16 @@ subprocess. Other native x86 payload entries are rejected. Node, Git, Bash,
 Credential Manager, Pi and the documented helper each have native execution
 checks; Windows 11 clean-machine validation remains a separate gate.
 
+Windows update source integration (2026-10-09, acceptance pending) uses NSIS only
+for clean installation and extraction into a new staging directory. Launching
+a newer installer for a registered installation opens the existing Desktop
+impact-confirmation flow. The independent activation helper uses the Windows
+shell layout and guarded private request/lock/journal operations, invokes the
+same SourceNativeUpdater, and waits for candidate Server identity and a matching
+authenticated workspace-render receipt. It preserves the selected user-data
+directory and rejects overlapping shell/Runtime roots. Native installed update,
+rollback, interruption and uninstall-impact validation remain release gates.
+
 Desktop source checkpoint (2026-10-06): shared Web now consumes the optional
 native directory/save/menu/preferences adapter. Account-scoped bounded drafts,
 viewports and route hints persist independently of the HTTP port. The local

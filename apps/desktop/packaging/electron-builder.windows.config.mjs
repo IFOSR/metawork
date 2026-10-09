@@ -30,6 +30,7 @@ export default {
   forceCodeSigning: false,
   win: { target: [{ target: 'nsis', arch: ['x64'] }, { target: 'dir', arch: ['x64'] }], signAndEditExecutable: false },
   nsis: {
+    include: 'packaging/windows-installer.nsh',
     oneClick: false,
     perMachine: false,
     allowElevation: false,

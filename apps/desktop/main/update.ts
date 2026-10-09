@@ -1,19 +1,29 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, cp, mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { verifyDesktopRelease } from '../../../src/installation/desktop-release.js';
 import { readReleaseIdentity } from '../../../src/installation/release-identity.js';
 import { decideReleaseCompatibility, parseReleaseManifest } from '../../../src/installation/release-manifest.js';
 import { allowDevelopmentPayload } from '../shared/build-policy.js';
+import { assertDesktopActivationPaths, desktopApplicationPaths, desktopReleaseRootFromNode, desktopToolPaths } from '../../../src/installation/desktop-platform.js';
+import { loadWindowsPrivateFiles, writeWindowsPrivateJson, type WindowsPrivateFileRoot } from '../../../src/platform/windows-private-files.js';
 
-export async function pendingDesktopUpdate(root: string): Promise<boolean> {
-  const helperPid = await readFile(join(root, 'upgrades/desktop-helper.lock'), 'utf8').catch(() => null);
+export async function pendingDesktopUpdate(root: string, windows?: WindowsPrivateFileRoot): Promise<boolean> {
+  const exists = await access(join(root, 'upgrades')).then(() => true, (error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return false; throw error;
+  });
+  if (!exists) return false;
+  const read = (name: string) => windows ? Promise.resolve().then(() =>
+    windows.files.readPrivateFile(root, join('upgrades', name)).toString('utf8')) : readFile(join(root, 'upgrades', name), 'utf8');
+  const helperPid = await read('desktop-helper.lock').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null; throw error;
+  });
   if (helperPid && Number.isSafeInteger(Number(helperPid)) && Number(helperPid) > 0) {
     try { process.kill(Number(helperPid), 0); return true; } catch { /* Durable activation below decides recovery. */ }
   }
-  const raw = await readFile(join(root, 'upgrades/desktop-activation.json'), 'utf8').catch((error: NodeJS.ErrnoException) => {
+  const raw = await read('desktop-activation.json').catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return null; throw error;
   });
   return raw !== null && !['committed', 'rolled-back'].includes(JSON.parse(raw).phase);
@@ -28,16 +38,39 @@ function teamId(path: string): string {
 }
 
 export async function prepareDesktopUpdate(input: {
-  root: string; applicationPath: string; candidatePath: string; resources: string; configHome?: string;
+  root: string; applicationPath: string; candidatePath: string; resources: string; configHome?: string; userDataPath?: string;
 }): Promise<string> {
-  if (await pendingDesktopUpdate(input.root)) throw new Error('Recover the pending update first');
+  input = { ...input, root: await realpath(input.root) };
   const applicationPath = await realpath(input.applicationPath);
-  const candidatePath = await realpath(input.candidatePath);
-  if (!applicationPath.endsWith('.app') || !candidatePath.endsWith('.app') || candidatePath === applicationPath) throw new Error('Select a different MetaWork application');
+  let candidatePath = await realpath(input.candidatePath);
+  const windows = process.platform === 'win32' ? { root: input.root,
+    files: loadWindowsPrivateFiles(join(input.resources, 'payload/metawork/native/windows/metawork-platform.node')) } : undefined;
+  if (await pendingDesktopUpdate(input.root, windows)) throw new Error('Recover the pending update first');
+  if (windows) {
+    if (!candidatePath.toLowerCase().endsWith('.exe')) throw new Error('Select a MetaWork Windows installer');
+  } else if (!applicationPath.endsWith('.app') || !candidatePath.endsWith('.app')) throw new Error('Select a MetaWork application');
+  if (candidatePath === applicationPath) throw new Error('Select a different MetaWork application');
   await access(dirname(applicationPath), constants.W_OK);
-  if (teamId(candidatePath) !== teamId(applicationPath)) throw new Error('Application signing team mismatch');
+  const directory = join(input.root, 'upgrades');
+  const stageDirectory = join(directory, `desktop-stage-${randomUUID()}`);
+  if (windows) windows.files.ensurePrivateDirectory(stageDirectory);
+  else await mkdir(stageDirectory, { recursive: true, mode: 0o700 });
+  const stagedApplicationPath = join(stageDirectory, windows ? 'MetaWork' : 'MetaWork.app');
+  if (windows) {
+    // NSIS staging extracts only into a new directory. It neither overwrites
+    // an installed shell nor touches registration, shortcuts or Runtime data.
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(candidatePath, ['/S', `/metawork-stage=${stagedApplicationPath}`], {
+        cwd: stageDirectory, windowsHide: true, stdio: 'ignore',
+      });
+      child.once('error', reject);
+      child.once('exit', code => code === 0 ? resolve() : reject(new Error('Candidate extraction failed')));
+    });
+    candidatePath = await realpath(stagedApplicationPath);
+    await access(desktopApplicationPaths(candidatePath).executable);
+  } else if (teamId(candidatePath) !== teamId(applicationPath)) throw new Error('Application signing team mismatch');
   const keys = JSON.parse(await readFile(join(input.resources, 'trusted-release-keys.json'), 'utf8')) as Record<string, string>;
-  const candidateResources = join(candidatePath, 'Contents/Resources');
+  const candidateResources = desktopApplicationPaths(candidatePath).resources;
   const candidateDescriptor = JSON.parse(await readFile(join(candidateResources, 'desktop-release.json'), 'utf8')) as { desktopVersion: string; development?: boolean };
   const candidate = await verifyDesktopRelease(candidateResources, { trustedKeys: keys, platform: process.platform, arch: process.arch,
     desktopVersion: candidateDescriptor.desktopVersion, allowDevelopment: allowDevelopmentPayload(candidateDescriptor.development === true) });
@@ -48,30 +81,39 @@ export async function prepareDesktopUpdate(input: {
     candidate: parseReleaseManifest(candidate.runtimeManifest),
     requiredCompatibility: parseReleaseManifest(currentDescriptor.runtimeManifest).compatibility });
   if (!compatibility.ok) throw new Error('Desktop update compatibility mismatch');
-  const directory = join(input.root, 'upgrades');
-  const stagedApplicationPath = join(directory, `desktop-stage-${randomUUID()}`, 'MetaWork.app');
-  await mkdir(dirname(stagedApplicationPath), { recursive: true, mode: 0o700 });
-  await cp(candidatePath, stagedApplicationPath, { recursive: true });
-  if (teamId(stagedApplicationPath) !== teamId(applicationPath)) throw new Error('Staged application signature rejected');
-  const previousNode = await realpath(join(input.root, 'app/current/desktop-tools/node/bin/node'));
+  if (!windows) {
+    await cp(candidatePath, stagedApplicationPath, { recursive: true });
+    if (teamId(stagedApplicationPath) !== teamId(applicationPath)) throw new Error('Staged application signature rejected');
+  }
+  const previousNode = await realpath(desktopToolPaths(join(input.root, 'app/current')).node);
   const requestPath = join(directory, 'desktop-request.json');
-  await writeFile(`${requestPath}.tmp`, JSON.stringify({
+  const request = {
     record: { previousReleaseId: previous.releaseId, candidateReleaseId: candidate.releaseId,
       applicationPath, stagedApplicationPath, backupApplicationPath: `${applicationPath}.metawork-backup-${randomUUID()}` },
     previousNode, previousPid: process.pid, trustedKeys: keys, desktopVersion: candidate.desktopVersion,
     shellChallenge: randomUUID(),
     configHome: input.configHome,
-  }), { mode: 0o600 });
-  await rename(`${requestPath}.tmp`, requestPath);
+    userDataPath: input.userDataPath,
+  };
+  assertDesktopActivationPaths(input.root, request.record);
+  if (windows) writeWindowsPrivateJson(windows, requestPath, request);
+  else {
+    await writeFile(`${requestPath}.tmp`, JSON.stringify(request), { mode: 0o600 });
+    await rename(`${requestPath}.tmp`, requestPath);
+  }
   return requestPath;
 }
 
 export async function launchDesktopUpdate(root: string): Promise<void> {
   const requestPath = join(root, 'upgrades/desktop-request.json');
-  const request = JSON.parse(await readFile(requestPath, 'utf8'));
+  const windows = process.platform === 'win32' ? { root,
+    files: loadWindowsPrivateFiles(join(root, 'app/current/native/windows/metawork-platform.node')) } : undefined;
+  const request = JSON.parse(windows
+    ? windows.files.readPrivateFile(root, relative(root, requestPath)).toString('utf8') : await readFile(requestPath, 'utf8'));
   request.previousPid = process.pid;
-  await writeFile(requestPath, JSON.stringify(request), { mode: 0o600 });
-  const release = resolve(dirname(request.previousNode), '../../..');
+  if (windows) writeWindowsPrivateJson(windows, requestPath, request);
+  else await writeFile(requestPath, JSON.stringify(request), { mode: 0o600 });
+  const release = desktopReleaseRootFromNode(request.previousNode);
   const helper = join(release, 'dist/desktop-update-cli.js');
   await access(helper);
   const env = { ...process.env };

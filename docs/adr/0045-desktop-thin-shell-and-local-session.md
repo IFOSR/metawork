@@ -128,3 +128,23 @@ which MSYS uses for WOW64 compatibility; it remains an independent tool
 subprocess. Electron, Node, Git's primary entrypoint, SQLite and MetaWork's
 platform module must still be native x64. This does not add 32-bit Windows
 support or move process-control authority into a bundled Git helper.
+
+### Windows coordinated update adapter (2026-10-09, acceptance pending)
+
+NSIS may extract a selected candidate into a new staging directory, but may not
+overwrite an existing registered installation. Direct installer launches hand
+the selected EXE to the existing Desktop confirmation flow. The same independent
+DesktopActivation helper then invokes SourceNativeUpdater, replaces the shell,
+and requires the candidate Server and authenticated workspace-render receipt.
+Windows paths, native private request/lock/journal operations and executable
+launches adapt this existing transaction; they add no second updater or recovery
+policy. The helper executes from an immutable Runtime release outside the shell
+directory. Shell and Runtime roots must not contain one another. Recovery retains
+the existing database/journal companion preflight before restoring either side.
+
+The new shell retains the selected Desktop user-data directory. Windows staging
+uses the current installed trust keys to verify candidate payloads; internal
+unsigned EXEs remain subject to the explicitly enabled internal-build gate.
+NSIS compilation, installed upgrade, rollback and interruption tests remain
+mandatory and are recorded separately from source checks. Uninstall impact
+confirmation remains an open Windows delivery requirement.

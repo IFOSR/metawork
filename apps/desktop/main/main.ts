@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, powerMonitor, screen, session, shell, Tray, type IpcMainInvokeEvent, type Session } from 'electron';
 import { randomUUID } from 'node:crypto';
-import { access, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, open, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveMetaWorkPaths } from '../../../src/installation/paths.js';
@@ -18,6 +18,7 @@ import type { DesktopSetupInput } from '../shared/bridge.js';
 import { launchDesktopUpdate, pendingDesktopUpdate, prepareDesktopUpdate } from './update.js';
 import { installNativeLauncher } from '../../../src/installation/native-launcher.js';
 import { authorizeDesktopShellCheck, writeDesktopShellHealth } from '../../../src/installation/desktop-shell-health.js';
+import { desktopApplicationRoot } from '../../../src/installation/desktop-platform.js';
 
 app.setName('MetaWork');
 if (process.platform === 'win32') app.setAppUserModelId('com.metawork.desktop');
@@ -46,6 +47,8 @@ let tray: Tray | undefined;
 let connectPromise: Promise<void> | null = null;
 const downloads = new Map<string, string>();
 let saving = false;
+let updating = false;
+let queuedInstaller: string | undefined;
 let notifications: DesktopNotifications;
 let notificationTimer: ReturnType<typeof setInterval> | undefined;
 let windowState: WindowState;
@@ -138,10 +141,12 @@ async function connectOnce(): Promise<void> {
   try {
     if (installation) {
       const release = await installation.verify();
-      if (await pendingDesktopUpdate(installRoot)
+      const windows = process.platform === 'win32' ? { root: installRoot,
+        files: loadWindowsPrivateFiles(join(installation.resources, 'payload/metawork/native/windows/metawork-platform.node')) } : undefined;
+      if (await pendingDesktopUpdate(installRoot, windows)
         && !(shellCheckChallenge && await authorizeDesktopShellCheck(installRoot, {
-          challenge: shellCheckChallenge, applicationPath: resolve(process.resourcesPath, '../..'), releaseId: release.releaseId,
-        }))) throw new Error('Desktop update requires recovery');
+          challenge: shellCheckChallenge, applicationPath: await realpath(desktopApplicationRoot(process.resourcesPath)), releaseId: release.releaseId,
+        }, windows))) throw new Error('Desktop update requires recovery');
       if (!await installation.installed()) {
         setState({ phase: 'setup', message: '运行环境已就绪。添加模型连接后即可开始工作。' });
         return;
@@ -165,12 +170,13 @@ async function connectOnce(): Promise<void> {
     if (!win.isDestroyed() && !sameOrigin(win.webContents.getURL(), origin)) await win.loadURL(origin);
     if (shellCheckChallenge) {
       const deadline = Date.now() + 30_000;
-      while (!await win.webContents.executeJavaScript('Boolean(document.getElementById("root")?.childElementCount)')) {
+      while (!await win.webContents.executeJavaScript('Boolean(document.querySelector(".workspace-shell"))')) {
         if (Date.now() >= deadline) throw new Error('Desktop Web did not render');
         await new Promise(resolve => setTimeout(resolve, 100));
       }
       await writeDesktopShellHealth(installRoot, { challenge: shellCheckChallenge, releaseId: grant.releaseId,
-        instanceId: grant.instanceId, pid: process.pid });
+        instanceId: grant.instanceId, pid: process.pid }, process.platform === 'win32' ? { root: installRoot,
+        files: loadWindowsPrivateFiles(join(installRoot, 'app/current/native/windows/metawork-platform.node')) } : undefined);
     }
     setState({ phase: 'ready', message: '后台服务已连接' });
   } catch (error) {
@@ -305,17 +311,19 @@ async function stopService(): Promise<void> {
   } catch { dialog.showErrorBox('服务尚未停止', '请检查后台状态。任务状态以 Server 中的记录为准。'); }
 }
 
-async function updateApplication(recover = false): Promise<void> {
-  if (!app.isPackaged || !window || !installation) return;
+async function updateApplication(recover = false, installerPath?: string): Promise<void> {
+  if (!app.isPackaged || !window || !installation || updating) return;
+  updating = true;
   try {
     if (!recover) {
-      const selected = await dialog.showOpenDialog(window, { title: '选择新版 MetaWork.app',
-        properties: ['openFile'], filters: [{ name: 'MetaWork 应用', extensions: ['app'] }] });
+      const selected = installerPath ? { canceled: false, filePaths: [installerPath] }
+        : await dialog.showOpenDialog(window, { title: process.platform === 'win32' ? '选择新版 MetaWork 安装包' : '选择新版 MetaWork.app',
+          properties: ['openFile'], filters: [{ name: 'MetaWork 应用', extensions: [process.platform === 'win32' ? 'exe' : 'app'] }] });
       if (selected.canceled || !selected.filePaths[0]) return;
       setState({ phase: 'connecting', message: '正在验证新版应用和配套运行时…' });
-      await prepareDesktopUpdate({ root: installRoot, applicationPath: resolve(process.resourcesPath, '../..'),
+      await prepareDesktopUpdate({ root: installRoot, applicationPath: desktopApplicationRoot(process.resourcesPath),
         candidatePath: selected.filePaths[0], resources: process.resourcesPath,
-        configHome: selectedConfigHome });
+        configHome: selectedConfigHome, userDataPath: app.getPath('userData') });
     }
     let taskSummary = '后台状态暂不可读；安装器会在正式停止完成后才切换版本。';
     if (origin) {
@@ -335,7 +343,15 @@ async function updateApplication(recover = false): Promise<void> {
     app.quit();
   } catch {
     dialog.showErrorBox('更新尚未完成', '请确认新版应用签名、配套版本、磁盘空间和应用目录写入权限。已有数据与更新记录会保留；可使用“修复未完成的更新”重试。');
-  }
+  } finally { updating = false; }
+}
+
+function receiveInstaller(args: string[]): void {
+  if (!app.isPackaged || process.platform !== 'win32') return;
+  const candidate = args.find(value => value.startsWith('--metawork-install-update='))?.slice('--metawork-install-update='.length);
+  if (!candidate || candidate.length > 4096 || !isAbsolute(candidate) || !candidate.toLowerCase().endsWith('.exe')) return;
+  if (!installation || !window) { queuedInstaller = candidate; return; }
+  showWindow(); void updateApplication(false, candidate);
 }
 
 async function logoutDesktop(): Promise<void> {
@@ -527,11 +543,13 @@ async function start(): Promise<void> {
   powerMonitor.on('resume', () => { void connect(); });
   await window.loadURL(shellUrl);
   await connect();
+  receiveInstaller(queuedInstaller ? [`--metawork-install-update=${queuedInstaller}`] : process.argv);
+  queuedInstaller = undefined;
 }
 
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance', showWindow);
+  app.on('second-instance', (_event, args) => { showWindow(); receiveInstaller(args); });
   app.on('activate', showWindow);
   app.on('window-all-closed', () => undefined);
   app.on('before-quit', event => {

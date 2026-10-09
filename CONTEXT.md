@@ -1104,6 +1104,16 @@ fixed PortableGit `usr/libexec/getprocaddr32.exe` subprocess is allowed as
 native x86 for WOW64 compatibility. No other x86 image can enter the Desktop
 payload, and the helper does not own MetaWork process or permission policy.
 
+Windows coordinated update source adapter (2026-10-09, native acceptance pending):
+NSIS stages a candidate into a new directory and forwards existing-installation
+launches to Desktop's impact confirmation. The independent DesktopActivation
+helper keeps SourceNativeUpdater as the Runtime authority, uses private Windows
+requests/locks/journals, and commits only after candidate Server identity and an
+authenticated workspace-render receipt. Shell and Runtime directories cannot
+contain one another; the helper runs from the immutable Runtime release. This
+source integration does not close installed upgrade, rollback, interruption or
+uninstall acceptance.
+
 Desktop source checkpoint (2026-10-06): shared Web now consumes the optional
 native directory/save/menu/preferences adapter. Account-scoped bounded drafts,
 viewports and route hints persist independently of the HTTP port. The local
