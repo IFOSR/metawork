@@ -21,6 +21,8 @@ on:
       - 'scripts/install.ps1'
       - 'scripts/prepare-windows-desktop-tools.mjs'
       - 'scripts/prepare-windows-desktop-candidate.mjs'
+      - 'scripts/prepare-windows11-acceptance-kit.mjs'
+      - 'scripts/probe-windows11-desktop.mjs'
       - 'scripts/prepare-windows-pageant.mjs'
       - 'integrations/ssh2-pageant/**'
       - 'scripts/probe-windows-desktop-install.mjs'
@@ -90,6 +92,14 @@ jobs:
           node-version: 22.23.3
       - name: Collect native Windows prerequisite evidence
         run: node scripts/probe-windows-desktop-environment.mjs
+      - name: Parse Windows 11 environment and ordinary-user acceptance scripts
+        shell: pwsh
+        run: |
+          foreach ($path in @('scripts/windows11-cloud-bootstrap.ps1', 'scripts/windows11-product-runner.ps1')) {
+            $tokens = $null; $errors = $null
+            [Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count) { $errors | Format-List; throw "PowerShell acceptance syntax failed: $path" }
+          }
       - name: Inspect native file and directory durability primitives
         shell: pwsh
         run: ./scripts/probe-windows-file-durability.ps1
@@ -212,6 +222,20 @@ jobs:
         env:
           METAWORK_TEST_MODEL: ${{ secrets.METAWORK_TEST_MODEL }}
         run: node scripts/prepare-windows-desktop-candidate.mjs "${{ runner.temp }}/desktop-tools" "${{ runner.temp }}/desktop-candidate"
+      - name: Prepare the unchanged installer and tooling for Windows 11
+        shell: pwsh
+        run: |
+          node scripts/prepare-windows11-acceptance-kit.mjs "${{ runner.temp }}/desktop-candidate" "${{ runner.temp }}/desktop-tools" "${{ runner.temp }}/windows11-kit"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows 11 acceptance kit preparation failed' }
+          tar.exe -a -cf "${{ runner.temp }}/acceptance.zip" -C "${{ runner.temp }}/windows11-kit" .
+          if ($LASTEXITCODE -ne 0) { throw 'Windows 11 acceptance kit archive failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows11-acceptance-kit-${{ github.sha }}
+          path: ${{ runner.temp }}/acceptance.zip
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -229,6 +253,14 @@ jobs:
           retention-days: 7
           if-no-files-found: error
       # Windows Server automation does not satisfy Windows 11 product acceptance.
+
+  windows11-product:
+    needs: [windows-build, windows-pipe, windows-environment, persistence-docker-regression]
+    uses: ./.github/workflows/windows11-cloud-validation.yml
+    with:
+      candidate-artifact: windows11-acceptance-kit-${{ github.sha }}
+    secrets:
+      METAWORK_TEST_MODEL: ${{ secrets.METAWORK_TEST_MODEL }}
 
   persistence-docker-regression:
     concurrency:

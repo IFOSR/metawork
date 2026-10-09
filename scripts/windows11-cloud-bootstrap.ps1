@@ -14,6 +14,36 @@ function Write-SerialEvidence($value) {
   } catch { } finally { if ($null -ne $serial) { $serial.Dispose() } }
 }
 Write-SerialEvidence @{ scope = $report.scope; stage = 'first-logon' }
+function Prepare-ProductSession {
+  if ('@PRODUCT_ENABLED@' -ne 'true') { return }
+  $name = 'MWProduct'
+  $password = ConvertTo-SecureString '@PRODUCT_PASSWORD@' -AsPlainText -Force
+  if (-not (Get-LocalUser -Name $name -ErrorAction SilentlyContinue)) {
+    New-LocalUser -Name $name -Password $password -Description 'Disposable ordinary-user product acceptance' | Out-Null
+    Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $name
+  }
+  # Declared symlink prerequisite; the product still runs with an ordinary token.
+  $policy = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
+  New-Item -Path $policy -Force | Out-Null
+  Set-ItemProperty -Path $policy -Name AllowDevelopmentWithoutDevLicense -Type DWord -Value 1
+  $directory = 'C:\ProgramData\MetaWorkAcceptance'
+  New-Item -ItemType Directory -Force $directory | Out-Null
+  $runner = Join-Path $directory 'run.ps1'
+  Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Uri 'http://10.0.2.2:8765/@TOKEN@/product-runner' -OutFile $runner
+  $account = "$env:COMPUTERNAME\$name"
+  $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File $runner"
+  $trigger = New-ScheduledTaskTrigger -AtLogOn -User $account
+  $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Limited
+  $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 65)
+  Register-ScheduledTask -TaskName 'MetaWorkOrdinaryUserAcceptance' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+  $logon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+  Set-ItemProperty $logon -Name AutoAdminLogon -Value '1'
+  Set-ItemProperty $logon -Name DefaultDomainName -Value $env:COMPUTERNAME
+  Set-ItemProperty $logon -Name DefaultUserName -Value $name
+  Set-ItemProperty $logon -Name DefaultPassword -Value '@PRODUCT_PASSWORD@'
+  Set-ItemProperty $logon -Name AutoLogonCount -Type DWord -Value 1
+  $report.productSessionPrepared = $true
+}
 try {
   $os = Get-CimInstance Win32_OperatingSystem
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -46,10 +76,12 @@ try {
       } catch { $report.screenshotUploaded = $false }
     } finally { $stream.Dispose() }
   } finally { $graphics.Dispose(); $bitmap.Dispose() }
+  if ($report.passed) { Prepare-ProductSession }
 } catch {
   $report.passed = $false
-  $report.error = $_.Exception.Message.Replace('@TOKEN@', '[redacted]')
+  $report.error = $_.Exception.Message.Replace('@TOKEN@', '[redacted]').Replace('@PRODUCT_PASSWORD@', '[redacted]')
 }
+if ($report.passed -and $report.productSessionPrepared) { shutdown.exe /r /t 10 | Out-Null }
 [IO.File]::WriteAllText('C:\Windows\Temp\metawork-guest-result.json', ($report | ConvertTo-Json), [Text.Encoding]::UTF8)
 Write-SerialEvidence $report
 $body = [Text.Encoding]::UTF8.GetBytes(($report | ConvertTo-Json))

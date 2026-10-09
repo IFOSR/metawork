@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   TuiClientLauncher,
@@ -120,7 +120,7 @@ writeFileSync('client-result.json', JSON.stringify({ node: process.execPath, arg
   });
 
   it('resolves the staged Planner layout from an installed release', () => {
-    const installedPlannerCommand = '/install/app/releases/1.2.0-preview.0/planner/packages/coding-agent/dist/cli.js';
+    const installedPlannerCommand = resolve('/install/app/releases/1.2.0-preview.0/planner/packages/coding-agent/dist/cli.js');
 
     expect(resolveVendoredPlannerCommand(
       '/install/app/releases/1.2.0-preview.0/dist',
@@ -130,8 +130,8 @@ writeFileSync('client-result.json', JSON.stringify({ node: process.execPath, arg
   });
 
   it('does not select a Planner binary from the Client startup directory', () => {
-    const installedPlannerCommand = '/install/app/current/planner/packages/coding-agent/dist/cli.js';
-    const workspacePlannerCommand = '/workspace-a/planner/AnyFusion-Pi/packages/coding-agent/dist/cli.js';
+    const installedPlannerCommand = resolve('/install/app/current/planner/packages/coding-agent/dist/cli.js');
+    const workspacePlannerCommand = resolve('/workspace-a/planner/AnyFusion-Pi/packages/coding-agent/dist/cli.js');
 
     expect(resolveVendoredPlannerCommand(
       '/install/app/current/dist',

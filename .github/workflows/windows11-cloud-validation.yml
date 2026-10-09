@@ -1,5 +1,13 @@
 name: Windows 11 cloud environment validation
 on:
+  workflow_call:
+    inputs:
+      candidate-artifact:
+        required: true
+        type: string
+    secrets:
+      METAWORK_TEST_MODEL:
+        required: true
   workflow_dispatch:
   push:
     branches: ['feat/windows-desktop']
@@ -10,6 +18,7 @@ on:
       - 'scripts/monitor-windows11-cloud.py'
       - 'scripts/inspect-windows11-setup.py'
       - 'scripts/windows11-console-input.py'
+      - 'scripts/windows11-product-runner.ps1'
 permissions:
   contents: read
 concurrency:
@@ -18,15 +27,23 @@ concurrency:
 jobs:
   windows11-guest:
     runs-on: ubuntu-24.04
-    timeout-minutes: 70
+    timeout-minutes: 140
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        if: inputs.candidate-artifact != ''
+        with:
+          name: ${{ inputs.candidate-artifact }}
+          path: ${{ runner.temp }}/windows11-kit
       - name: Prepare disposable virtualization host
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq qemu-system-x86 ovmf swtpm xorriso python3-pil ntfs-3g
           sudo chmod a+rw /dev/kvm
       - name: Boot official Windows 11 evaluation with TPM and Secure Boot
+        env:
+          METAWORK_TEST_MODEL: ${{ inputs.candidate-artifact != '' && secrets.METAWORK_TEST_MODEL || '' }}
+          METAWORK_WINDOWS11_KIT: ${{ inputs.candidate-artifact != '' && format('{0}/windows11-kit/acceptance.zip', runner.temp) || '' }}
         run: python3 scripts/monitor-windows11-cloud.py start
       - name: Collect early installation progress
         run: python3 scripts/monitor-windows11-cloud.py snapshot 300
@@ -50,7 +67,7 @@ jobs:
           path: ${{ runner.temp }}/metawork-windows11/evidence/
           if-no-files-found: warn
       - name: Require final guest acceptance receipt
-        run: python3 scripts/monitor-windows11-cloud.py finish 2100
+        run: python3 scripts/monitor-windows11-cloud.py finish ${{ inputs.candidate-artifact != '' && '6300' || '2100' }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:

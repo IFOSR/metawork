@@ -25,6 +25,18 @@ media.mkdir()
 token = secrets.token_hex(24)
 password = secrets.token_urlsafe(24) + 'Aa1!'
 report = None
+product_report = None
+product_password = secrets.token_urlsafe(24) + 'Aa1!'
+kit_path = Path(os.environ['METAWORK_WINDOWS11_KIT']) if os.environ.get('METAWORK_WINDOWS11_KIT') else None
+model_text = os.environ.pop('METAWORK_TEST_MODEL', '')
+kit_sha = ''
+if kit_path:
+    model = json.loads(model_text)
+    if not isinstance(model, dict) or not all(isinstance(model.get(key), str) and model[key].strip()
+                                             for key in ['baseUrl', 'modelId', 'apiKey']):
+        raise RuntimeError('Windows 11 product acceptance requires the test model JSON')
+    with kit_path.open('rb') as source:
+        kit_sha = hashlib.file_digest(source, 'sha256').hexdigest()
 
 
 def accepted_environment(value):
@@ -99,7 +111,13 @@ copy_bootstrap = r'cmd.exe /c for %d in (D E F G H I J) do @if exist %d:\metawor
     </component>
   </settings>
 </unattend>''', encoding='utf-8')
-bootstrap = Path('scripts/windows11-cloud-bootstrap.ps1').read_text().replace('@TOKEN@', token).replace('@SOURCE_COMMIT@', os.environ['GITHUB_SHA'])
+bootstrap = (Path('scripts/windows11-cloud-bootstrap.ps1').read_text()
+             .replace('@TOKEN@', token).replace('@SOURCE_COMMIT@', os.environ['GITHUB_SHA'])
+             .replace('@PRODUCT_ENABLED@', 'true' if kit_path else 'false')
+             .replace('@PRODUCT_PASSWORD@', product_password))
+product_runner = (Path('scripts/windows11-product-runner.ps1').read_text()
+                  .replace('@TOKEN@', token).replace('@SOURCE_COMMIT@', os.environ['GITHUB_SHA'])
+                  .replace('@KIT_SHA256@', kit_sha)).encode('utf-8-sig')
 (media / 'metawork-bootstrap.ps1').write_text(bootstrap, encoding='utf-8-sig')
 answer_iso = root / 'answers.iso'
 subprocess.run(['xorriso', '-as', 'mkisofs', '-quiet', '-J', '-r', '-V', 'MWCI', '-o', str(answer_iso), str(media)], check=True)
@@ -112,14 +130,52 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
+    def do_GET(self):
+        if not kit_path:
+            self.send_error(404)
+            return
+        if self.path == f'/{token}/kit':
+            self.send_response(200)
+            self.send_header('Content-Length', str(kit_path.stat().st_size))
+            self.end_headers()
+            with kit_path.open('rb') as source:
+                shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
+            return
+        body = (model_text.encode() if self.path == f'/{token}/model'
+                else product_runner if self.path == f'/{token}/product-runner' else None)
+        if body is None:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self):
-        global report
+        global report, product_report
         length = int(self.headers.get('Content-Length', '0'))
-        if self.path not in [f'/{token}/result', f'/{token}/screen'] or not 0 < length <= 8 * 1024**2:
+        product_names = {'packaged-install.json', 'packaged-install.png', 'packaged-install-failure.json',
+                         'packaged-install-failure.png', 'packaged-setup-progress.json', 'real-model-task.json',
+                         'native-terminal.json', 'ordinary-browser.json', 'real-artifact-task.png',
+                         'real-cancelled-task.png', 'browser-artifact.png', 'browser-cancelled.png',
+                         'reinstall/packaged-install.json', 'reinstall/packaged-install.png'}
+        product_name = self.path.removeprefix(f'/{token}/product/')
+        product_upload = kit_path and self.path.startswith(f'/{token}/product/') and product_name in product_names
+        valid = self.path in [f'/{token}/result', f'/{token}/screen'] or product_upload or (
+            kit_path and self.path == f'/{token}/product-result')
+        if not valid or not 0 < length <= 8 * 1024**2:
             self.send_error(400)
             return
         body = self.rfile.read(length)
-        if self.path.endswith('/result'):
+        if self.path == f'/{token}/product-result':
+            value = json.loads(body)
+            (evidence / 'windows11-product.json').write_text(json.dumps(value, indent=2))
+            product_report = value
+        elif product_upload:
+            destination = evidence / 'product' / product_name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(body)
+        elif self.path.endswith('/result'):
             report = json.loads(body)
             (evidence / 'windows11-guest.json').write_text(json.dumps(report, indent=2))
         else:
@@ -177,7 +233,8 @@ try:
                 return value['return']
 
     command('qmp_capabilities')
-    for elapsed in range(45 * 60):
+    environment_logged = False
+    for elapsed in range((110 if kit_path else 45) * 60):
         if qemu.poll() is not None:
             raise RuntimeError('Windows guest VM exited unexpectedly')
         serial = evidence / 'guest-serial.log'
@@ -192,11 +249,20 @@ try:
                     except (ValueError, UnicodeError):
                         pass  # A final serial line may still be in flight.
         if report is not None:
-            print(json.dumps(report, indent=2), flush=True)
+            if not environment_logged:
+                print(json.dumps(report, indent=2), flush=True)
+                environment_logged = True
             if not accepted_environment(report):
                 raise RuntimeError('Windows 11 environment acceptance failed')
-            break
-        if elapsed in [1200, 1560]:
+            if not kit_path:
+                break
+            if product_report is not None:
+                if (product_report.get('passed') is not True or product_report.get('elevated') is not False
+                        or product_report.get('interactive') is not True
+                        or product_report.get('sourceCommit') != os.environ['GITHUB_SHA']):
+                    raise RuntimeError('Windows 11 ordinary-user product acceptance failed')
+                break
+        if report is None and elapsed in [1200, 1560]:
             # A completed desktop can omit FirstLogonCommands on evaluation
             # images. Explicitly launch the same bounded, secret-free bootstrap
             # through the interactive console; a report is still mandatory.
@@ -215,11 +281,14 @@ try:
         if elapsed < 30 and elapsed % 2 == 0:
             command('human-monitor-command', {'command-line': 'sendkey ret'})
         if elapsed % 60 == 0 or (elapsed < 180 and elapsed % 10 == 0):
-            print(f'Windows 11 guest provisioning: {elapsed}s; waiting for guest evidence', flush=True)
+            print(f'Windows 11 guest: {elapsed}s; waiting for {"product" if report and kit_path else "environment"} evidence', flush=True)
             (evidence / 'vm-status.json').write_text(json.dumps({
                 'elapsedSeconds': elapsed, 'status': command('query-status'),
                 'blockStats': command('query-blockstats'),
             }, indent=2))
+        if report is None and (elapsed % 60 == 0 or (elapsed < 180 and elapsed % 10 == 0)):
+            # Once product configuration starts, only the product harness's
+            # selected/redacted screenshots may enter uploaded evidence.
             ppm = evidence / 'latest-console.ppm'
             # Wake display power saving without clicking or entering commands.
             command('human-monitor-command', {'command-line': 'mouse_move 1 0'})
@@ -253,9 +322,11 @@ finally:
         spec = importlib.util.spec_from_file_location('setup_diagnostics', 'scripts/inspect-windows11-setup.py')
         diagnostics = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(diagnostics)
-        report = diagnostics.inspect_setup(disk, evidence, [password, token])
+        report = diagnostics.inspect_setup(disk, evidence, [password, product_password, token])
     # Answer files contain a disposable guest password; only evidence is uploaded.
     shutil.rmtree(media, ignore_errors=True)
     answer_iso.unlink(missing_ok=True)
 if not accepted_environment(report):
     raise RuntimeError('Windows 11 guest acceptance did not pass through live or on-disk evidence')
+if kit_path and (not product_report or product_report.get('passed') is not True):
+    raise RuntimeError('Windows 11 product acceptance did not pass')

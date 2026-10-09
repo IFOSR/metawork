@@ -331,3 +331,7 @@ Windows 首次连接源码排查发现 `userData/preferences` 与 Chromium 的 `
 `32397ba4` / run `37873710666` 的环境、受限管道/进程门和 Docker 回归通过，构建 job 在 ConPTY 测试载体运行超时处失败，未生成该提交候选包。`b4101ce6`、`44dabc93`、`d400e76a` 诊断确认进程创建/恢复成功且 Node 脚本已进入，阻塞在终端流初始化；调整管道句柄关闭时机尚不足以修复。ConPTY smoke 提前放入独立 windows-pipe job，完整安装版真实 TUI 检查继续保留；Windows build 不重复相同的 carrier smoke，以同时获得安装包诊断，完整 workflow 仍要求独立门通过。
 
 Windows 11 环境 run `37872643258` 仍失败：已有交互桌面，但无验收回执。分区诊断已正确识别系统盘为 BitLocker、恢复盘为 NTFS，无法离线提取系统日志；未解密系统盘或关闭 TPM/Secure Boot。后续改用较长按键保持/间隔，并记录 Run、UAC、PowerShell 和执行后的控制台截图，复验首次登录脚本启动过程；这仍不是产品通过证据。
+
+`b5c50de0` / run `37877289114` 的完整 windows-pipe job 通过，含原生 140 列 ConPTY、进程树与跨账号管道门。根因是 ConPTY Client 继承了测试宿主重定向的标准句柄，Node isatty=false；CreateProcess 前暂时清除宿主标准句柄、创建后恢复，Client 取得真实 console handle 后通过。此前关闭时机修正单独不足以解决。后续 Windows launcher 单测暴露两个 POSIX 路径字面量断言，使用平台 resolve 生成测试期望，保持安装布局优先与来源边界检查；本地 10 个客户端测试通过。
+
+补齐 Windows 11 产品自动验收链路（尚未执行）：Windows 构建及全部前置门成功后，将原 NSIS 字节和测试工具封装为独立 acceptance kit，再启动同提交的 Windows 11 VM。环境证据通过后，显式配置声明的 Developer Mode 前置，创建无管理员组成员身份的交互账号，并以 Limited scheduled task 执行原安装包/真实模型/独立浏览器/ConPTY/拒绝活动任务卸载/卸载重装任务保留检查。每项核对 OS、elevated=false、交互状态、source commit 和安装包 SHA256。测试模型通过仅宿主 loopback 暴露的随机 token URL 临时传入，不进入 kit、应答文件、构建子进程或上传日志；产品首次配置期间不自动截取 VM 控制台，仅接收测试脚本选择/脱敏的证据。环境通过不替代 product 回执，未通过不得关闭 P5。
