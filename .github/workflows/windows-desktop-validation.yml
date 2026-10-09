@@ -25,6 +25,7 @@ on:
       - 'integrations/ssh2-pageant/**'
       - 'scripts/probe-windows-desktop-install.mjs'
       - 'scripts/probe-windows-desktop-nsis.mjs'
+      - 'scripts/probe-windows-desktop-update.mjs'
       - 'integrations/windows-desktop-tools/**'
       - 'integrations/pi-pdf/**'
       - 'native/windows-probe/**'
@@ -132,7 +133,7 @@ jobs:
       group: windows-desktop-build-${{ github.ref }}
       cancel-in-progress: false
     runs-on: windows-2022
-    timeout-minutes: 55
+    timeout-minutes: 95
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -52,6 +52,7 @@ export async function runPackagedModelTasks({ page, root, installRoot, evidence,
     await composer.fill(`Create smoke-result.md in the managed Task workspace with exactly this line: ${marker}. Use the Pi Executor to create the file, publish it as a file artifact, and finish the task. The Runtime supplies the authorized directory; do not ask for a path.`);
     await page.locator('.composer button[type=submit]').click();
     report.taskSubmittedThroughPackagedWeb = true;
+    console.log('Installed packaged Web submitted the real artifact request.');
     const task = await waitFor(() => {
       const rows = db.prepare('SELECT id, status FROM tasks ORDER BY created_at').all();
       assert.ok(rows.length <= 1, 'The artifact request created duplicate Tasks');
@@ -80,6 +81,7 @@ export async function runPackagedModelTasks({ page, root, installRoot, evidence,
     assert.equal((await readFile(artifactPath, 'utf8')).trim(), marker);
     report.artifactVerified = true;
     report.artifactTaskId = task.id;
+    console.log('Installed Planner, Executor, publication and artifact content verified.');
     assert.ok(db.prepare("SELECT COUNT(*) AS count FROM planner_proposal_submissions WHERE status = 'accepted'").get().count > 0);
     await page.screenshot({ path: join(evidence, 'real-artifact-task.png') });
 
@@ -103,6 +105,7 @@ export async function runPackagedModelTasks({ page, root, installRoot, evidence,
     }, 'real Executor command running');
     const cancellationTask = db.prepare('SELECT id FROM tasks WHERE id != ? ORDER BY created_at DESC LIMIT 1').get(task.id);
     assert.ok(cancellationTask, 'No Task owns the running cancellation command');
+    console.log('Real cancellation command is running in an Executor process.');
     if (onActiveTask) {
       await onActiveTask();
       assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(cancellationTask.id)?.status, 'running');
@@ -123,8 +126,11 @@ export async function runPackagedModelTasks({ page, root, installRoot, evidence,
     report.cancelledTaskId = cancellationTask.id;
     report.cancelledProcessCount = running.length;
     report.passed = true;
+    console.log('Client cancellation and Executor descendant cleanup verified.');
     await page.screenshot({ path: join(evidence, 'real-cancelled-task.png') });
   } finally {
+    report.taskStates = db.prepare('SELECT status, COUNT(*) AS count FROM tasks GROUP BY status').all();
+    report.proposalStates = db.prepare('SELECT status, COUNT(*) AS count FROM planner_proposal_submissions GROUP BY status').all();
     client.dispose(); transport.close(); db.close();
     await writeFile(join(evidence, 'real-model-task.json'), JSON.stringify(report, null, 2));
   }

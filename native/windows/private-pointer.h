@@ -25,12 +25,12 @@ void replace_private_symlink(const std::wstring& root, const std::wstring& relat
     parents.push_back(pin_directory(destination.substr(0, end), end >= root.size()));
   for (size_t end = target_path.find(L'\\', root.size() + 1); end != std::wstring::npos; end = target_path.find(L'\\', end + 1))
     parents.push_back(pin_directory(target_path.substr(0, end), true));
-  Handle pointed(CreateFileW(target_path.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+  Handle pointed(CreateFileW(native_path(target_path).c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
     nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr));
   require(pointed.get() != INVALID_HANDLE_VALUE, "open pointer target");
   inspect_private_file(pointed.get(), directory);
   {
-    Handle existing(CreateFileW(destination.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
+    Handle existing(CreateFileW(native_path(destination).c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
       FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr));
     if (existing.get() == INVALID_HANDLE_VALUE) require(!promote_regular_file && GetLastError() == ERROR_FILE_NOT_FOUND, "inspect replaced pointer");
@@ -52,24 +52,25 @@ void replace_private_symlink(const std::wstring& root, const std::wstring& relat
   std::wstring suffix;
   for (const auto value : random) { suffix += L"0123456789abcdef"[value >> 4]; suffix += L"0123456789abcdef"[value & 15]; }
   const auto temporary = parent + L"\\.metawork-link-" + suffix;
-  require(CreateSymbolicLinkW(temporary.c_str(), target.c_str(), SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+  require(CreateSymbolicLinkW(native_path(temporary).c_str(), target.c_str(), SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
     | (directory ? SYMBOLIC_LINK_FLAG_DIRECTORY : 0)) != FALSE, "create private relative symlink");
-  Handle link(CreateFileW(temporary.c_str(), DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES,
+  Handle link(CreateFileW(native_path(temporary).c_str(), DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES,
     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
     FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr));
   if (link.get() == INVALID_HANDLE_VALUE) {
-    if (directory) RemoveDirectoryW(temporary.c_str()); else DeleteFileW(temporary.c_str());
+    if (directory) RemoveDirectoryW(native_path(temporary).c_str()); else DeleteFileW(native_path(temporary).c_str());
     require(false, "open private symlink");
   }
   bool replaced = false;
   try {
     inspect_private_file(link.get(), directory, false, true);
-    std::vector<BYTE> storage(sizeof(FILE_RENAME_INFO) + destination.size() * sizeof(wchar_t));
+    const auto native_destination = native_path(destination);
+    std::vector<BYTE> storage(sizeof(FILE_RENAME_INFO) + native_destination.size() * sizeof(wchar_t));
     auto rename = reinterpret_cast<FILE_RENAME_INFO*>(storage.data());
     rename->Flags = FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
     rename->RootDirectory = nullptr;
-    rename->FileNameLength = static_cast<DWORD>(destination.size() * sizeof(wchar_t));
-    std::memcpy(rename->FileName, destination.data(), rename->FileNameLength);
+    rename->FileNameLength = static_cast<DWORD>(native_destination.size() * sizeof(wchar_t));
+    std::memcpy(rename->FileName, native_destination.data(), rename->FileNameLength);
     require(SetFileInformationByHandle(link.get(), FileRenameInfoEx, rename, static_cast<DWORD>(storage.size())) != FALSE,
       "atomic private pointer replacement");
     replaced = true;

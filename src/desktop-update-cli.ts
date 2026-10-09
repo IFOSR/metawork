@@ -1,7 +1,7 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
-import { access, cp, mkdir, open, readFile, realpath, rename, rm } from 'node:fs/promises';
+import { access, cp, mkdir, open, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { DesktopActivation, type DesktopActivationRecord } from './installation/desktop-activation.js';
 import { verifyDesktopRelease } from './installation/desktop-release.js';
@@ -14,7 +14,8 @@ import { DesktopServiceManager } from './client/desktop-service-manager.js';
 import { isInstanceRunning } from './management/lock.js';
 import { waitForDesktopShellHealth } from './installation/desktop-shell-health.js';
 import { assertDesktopActivationPaths, desktopApplicationPaths, desktopProcessEnvironment, desktopToolPaths } from './installation/desktop-platform.js';
-import { loadWindowsPrivateFiles } from './platform/windows-private-files.js';
+import { loadWindowsPrivateFiles, writeWindowsPrivateJson } from './platform/windows-private-files.js';
+import { desktopInstallFailure } from './installation/desktop-install-progress.js';
 
 async function main(): Promise<void> {
   const [rootArg, requestArg] = process.argv.slice(2);
@@ -178,6 +179,13 @@ async function main(): Promise<void> {
     if (!candidateShell || candidateShell.exitCode !== null || candidateShell.signalCode !== null) {
       reopen();
     }
+  } catch (error) {
+    const path = join(requests, 'desktop-update-failure.json');
+    try {
+      if (windows) writeWindowsPrivateJson(windows, path, desktopInstallFailure(error));
+      else await writeFile(path, JSON.stringify(desktopInstallFailure(error)), { mode: 0o600 });
+    } catch { /* Keep the original activation failure and recovery journal. */ }
+    throw error;
   } finally { await removeLock(); }
 }
 void main().catch(async () => {

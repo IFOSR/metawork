@@ -63,13 +63,24 @@ std::wstring final_path(HANDLE handle) {
   return std::wstring(buffer.data(), size);
 }
 
+void assert_local_path(const std::wstring& path);
+
+// Node fs accepts extended-length paths, but direct Win32 calls otherwise
+// retain MAX_PATH limits (including our random temporary file names).
+// Validation remains on the ordinary absolute DOS path before adding a prefix.
+std::wstring native_path(const std::wstring& path) {
+  assert_local_path(path);
+  require(path.size() < 32763, "bounded native path required");
+  return L"\\\\?\\" + path;
+}
+
 std::wstring long_path(const std::wstring& path) {
   // Hosted Windows TEMP may contain an 8.3 username. Expand lexical aliases
   // before comparison without accepting a different reparse target path.
   std::vector<wchar_t> buffer(32768);
-  const DWORD size = GetLongPathNameW(path.c_str(), buffer.data(), static_cast<DWORD>(buffer.size()));
+  const DWORD size = GetLongPathNameW(native_path(path).c_str(), buffer.data(), static_cast<DWORD>(buffer.size()));
   require(size > 0 && size < buffer.size(), "long file path");
-  return L"\\\\?\\" + std::wstring(buffer.data(), size);
+  return std::wstring(buffer.data(), size);
 }
 
 void assert_local_path(const std::wstring& path) {
@@ -82,6 +93,13 @@ void assert_local_path(const std::wstring& path) {
     const auto part = path.substr(offset, end == std::wstring::npos ? end : end - offset);
     require(!part.empty() && part != L"." && part != L".." && part.back() != L'.' && part.back() != L' ',
       "unsafe private directory segment");
+    require(part.find_first_of(L"<>\"|?*") == std::wstring::npos, "unsafe native path character");
+    const auto stem = part.substr(0, part.find(L'.'));
+    require(_wcsicmp(stem.c_str(), L"CON") && _wcsicmp(stem.c_str(), L"PRN")
+      && _wcsicmp(stem.c_str(), L"AUX") && _wcsicmp(stem.c_str(), L"NUL")
+      && !(stem.size() == 4 && (!_wcsnicmp(stem.c_str(), L"COM", 3) || !_wcsnicmp(stem.c_str(), L"LPT", 3))
+        && ((stem[3] >= L'1' && stem[3] <= L'9') || stem[3] == 0x00b9 || stem[3] == 0x00b2 || stem[3] == 0x00b3)),
+      "reserved native path segment");
     if (end == std::wstring::npos) return;
     offset = end + 1;
   }
@@ -89,7 +107,7 @@ void assert_local_path(const std::wstring& path) {
 }
 
 std::unique_ptr<Handle> pin_directory(const std::wstring& path, bool private_directory) {
-  auto handle = std::make_unique<Handle>(CreateFileW(path.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES
+  auto handle = std::make_unique<Handle>(CreateFileW(native_path(path).c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES
     | (private_directory ? FILE_ADD_FILE | FILE_DELETE_CHILD : 0),
     FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
     FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
@@ -110,7 +128,7 @@ std::vector<BYTE> read_private_file(const std::wstring& root, const std::wstring
     "relative file path required");
   std::vector<std::unique_ptr<Handle>> directories;
   auto open_directory = [&](const std::wstring& path) {
-    auto handle = std::make_unique<Handle>(CreateFileW(path.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
+    auto handle = std::make_unique<Handle>(CreateFileW(native_path(path).c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
       FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
       FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     require(handle->get() != INVALID_HANDLE_VALUE, "open private directory");
@@ -134,7 +152,7 @@ std::vector<BYTE> read_private_file(const std::wstring& root, const std::wstring
     open_directory(path);
     offset = separator + 1;
   }
-  Handle file(CreateFileW(path.c_str(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ | FILE_SHARE_DELETE,
+  Handle file(CreateFileW(native_path(path).c_str(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ | FILE_SHARE_DELETE,
     nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
   // Only a missing final file is an empty-store case. Missing/unsafe ancestors,
   // ACL denial and malformed paths must never become a new empty credential store.

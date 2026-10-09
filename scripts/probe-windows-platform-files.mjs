@@ -24,6 +24,26 @@ export async function probePlatformFiles(addon, output, addonPath) {
     addon.writePrivateFile(root, 'nested\\endpoint.json', Buffer.from('first'));
     assert.equal(addon.readPrivateFile(root, 'nested\\endpoint.json').toString(), 'first');
     checks.push('private initialization and Unicode nested file');
+    const deep = Array.from({ length: 5 }, (_, index) => `中文 long configuration segment ${index} ${'x'.repeat(40)}`).join('\\');
+    assert.ok(join(root, deep).length > 400);
+    addon.ensurePrivateDirectory(join(root, deep, 'stage'));
+    addon.writePrivateFile(root, `${deep}\\stage\\config.yaml`, Buffer.from('long configuration'));
+    addon.writePrivateFile(root, `${deep}\\stage\\config.yaml`, Buffer.from('replaced configuration'));
+    assert.equal(addon.readPrivateFile(root, `${deep}\\stage\\config.yaml`).toString(), 'replaced configuration');
+    addon.flushPrivateFile(join(root, deep, 'stage/config.yaml'));
+    addon.movePrivateEntry(root, `${deep}\\stage`, `${deep}\\revision`, true);
+    addon.replacePrivateSymlink(root, `${deep}\\active`, 'revision', true);
+    addon.replacePrivateSymlink(root, `${deep}\\database`, 'revision\\config.yaml', false);
+    assert.equal(await readFile(join(root, deep, 'active/config.yaml'), 'utf8'), 'replaced configuration');
+    assert.equal(await readFile(join(root, deep, 'database'), 'utf8'), 'replaced configuration');
+    assert.throws(() => addon.writePrivateFile(root, `${deep}\\active\\config.yaml`, Buffer.from('denied')), /directory/);
+    addon.createPrivateFile(root, `${deep}\\temporary`, Buffer.from('remove'));
+    addon.removePrivateFile(root, `${deep}\\temporary`);
+    assert.throws(() => addon.readPrivateFile(root, `${deep}\\temporary`), error => error.code === 'ENOENT');
+    for (const segment of ['NUL', 'con.txt', 'COM1', 'LPT9.log', 'unsafe?name']) {
+      assert.throws(() => addon.writePrivateFile(root, `${deep}\\${segment}`, Buffer.from('denied')), /path/);
+    }
+    checks.push('paths beyond MAX_PATH retain atomic writes, flush, publication, relative pointers and reparse/device denial');
     for (let index = 0; index < 20; index++) {
       const bytes = Buffer.alloc(16384, index);
       addon.writePrivateFile(root, 'nested\\endpoint.json', bytes);

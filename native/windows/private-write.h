@@ -29,7 +29,7 @@ void ensure_private_directory(const std::wstring& path) {
   for (;;) {
     const size_t end = path.find(L'\\', offset);
     const auto current = path.substr(0, end);
-    const bool created = CreateDirectoryW(current.c_str(), security.get()) != FALSE;
+    const bool created = CreateDirectoryW(native_path(current).c_str(), security.get()) != FALSE;
     require(created || GetLastError() == ERROR_ALREADY_EXISTS, "create private directory");
     parents.push_back(pin_directory(current, created || end == std::wstring::npos));
     if (end == std::wstring::npos) break;
@@ -44,7 +44,7 @@ void flush_private_path(const std::wstring& path, bool directory) {
     parents.push_back(pin_directory(path.substr(0, end), false));
   // FlushFileBuffers needs GENERIC_WRITE even for an NTFS directory. Node's
   // read-only fsync handles cannot provide this Windows durability primitive.
-  Handle file(CreateFileW(path.c_str(), GENERIC_WRITE | READ_CONTROL | FILE_READ_ATTRIBUTES,
+  Handle file(CreateFileW(native_path(path).c_str(), GENERIC_WRITE | READ_CONTROL | FILE_READ_ATTRIBUTES,
     FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
     FILE_FLAG_OPEN_REPARSE_POINT | (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0), nullptr));
   require(file.get() != INVALID_HANDLE_VALUE, "open private flush handle");
@@ -61,7 +61,7 @@ void remove_private_file(const std::wstring& root, const std::wstring& relative)
   std::vector<std::unique_ptr<Handle>> parents;
   for (size_t end = path.find(L'\\', 3); end != std::wstring::npos; end = path.find(L'\\', end + 1))
     parents.push_back(pin_directory(path.substr(0, end), end >= root.size()));
-  Handle file(CreateFileW(path.c_str(), DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES,
+  Handle file(CreateFileW(native_path(path).c_str(), DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES,
     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
   if (file.get() == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND) return;
   require(file.get() != INVALID_HANDLE_VALUE, "open private file for removal");
@@ -89,18 +89,19 @@ void move_private_entry(const std::wstring& root, const std::wstring& source_rel
   };
   const auto source = guarded_path(source_relative);
   const auto destination = guarded_path(destination_relative);
-  Handle file(CreateFileW(source.c_str(), DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES,
+  Handle file(CreateFileW(native_path(source).c_str(), DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES,
     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
     FILE_FLAG_OPEN_REPARSE_POINT | (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0), nullptr));
   if (file.get() == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND) throw PrivateFileNotFound();
   require(file.get() != INVALID_HANDLE_VALUE, "open private entry for move");
   inspect_private_file(file.get(), directory);
-  std::vector<BYTE> storage(sizeof(FILE_RENAME_INFO) + destination.size() * sizeof(wchar_t));
+  const auto native_destination = native_path(destination);
+  std::vector<BYTE> storage(sizeof(FILE_RENAME_INFO) + native_destination.size() * sizeof(wchar_t));
   auto rename = reinterpret_cast<FILE_RENAME_INFO*>(storage.data());
   rename->Flags = 0;
   rename->RootDirectory = nullptr;
-  rename->FileNameLength = static_cast<DWORD>(destination.size() * sizeof(wchar_t));
-  std::memcpy(rename->FileName, destination.data(), rename->FileNameLength);
+  rename->FileNameLength = static_cast<DWORD>(native_destination.size() * sizeof(wchar_t));
+  std::memcpy(rename->FileName, native_destination.data(), rename->FileNameLength);
   if (!SetFileInformationByHandle(file.get(), FileRenameInfoEx, rename, static_cast<DWORD>(storage.size()))) {
     const DWORD error = GetLastError();
     if (error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS) throw PrivateFileExists();
@@ -132,7 +133,7 @@ void write_private_file(const std::wstring& root, const std::wstring& relative_p
     offset = separator + 1;
   }
   {
-    Handle existing(CreateFileW(destination.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
+    Handle existing(CreateFileW(native_path(destination).c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (existing.get() == INVALID_HANDLE_VALUE) require(GetLastError() == ERROR_FILE_NOT_FOUND, "inspect replaced file");
     else {
@@ -148,7 +149,7 @@ void write_private_file(const std::wstring& root, const std::wstring& relative_p
   for (const auto value : random) { suffix += L"0123456789abcdef"[value >> 4]; suffix += L"0123456789abcdef"[value & 15]; }
   const auto temporary = destination.substr(0, offset) + L".metawork-write-" + suffix;
   PrivateSecurity security;
-  auto file = std::make_unique<Handle>(CreateFileW(temporary.c_str(), GENERIC_WRITE | DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES,
+  auto file = std::make_unique<Handle>(CreateFileW(native_path(temporary).c_str(), GENERIC_WRITE | DELETE | READ_CONTROL | FILE_READ_ATTRIBUTES,
     FILE_SHARE_READ | FILE_SHARE_DELETE, security.get(), CREATE_NEW,
     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
   require(file->get() != INVALID_HANDLE_VALUE, "create private temporary file");
@@ -159,7 +160,7 @@ void write_private_file(const std::wstring& root, const std::wstring& relative_p
     require(WriteFile(file->get(), bytes, static_cast<DWORD>(size), &written, nullptr) != FALSE && written == size,
       "write private file");
     require(FlushFileBuffers(file->get()) != FALSE, "flush private file");
-    const auto target = destination;
+    const auto target = native_path(destination);
     std::vector<BYTE> storage(sizeof(FILE_RENAME_INFO) + target.size() * sizeof(wchar_t));
     auto rename = reinterpret_cast<FILE_RENAME_INFO*>(storage.data());
     // Windows 11/NTFS: retain open readers on the previous inode while new

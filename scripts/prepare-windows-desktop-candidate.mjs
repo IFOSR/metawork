@@ -20,8 +20,9 @@ const node = process.execPath;
 const testModel = process.env.METAWORK_TEST_MODEL;
 delete process.env.METAWORK_TEST_MODEL;
 const npm = join(dirname(node), 'node_modules/npm/bin/npm-cli.js');
-function run(command, args, cwd = source, env = process.env) {
-  return execFileSync(command, args, { cwd, env, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, windowsHide: true });
+function run(command, args, cwd = source, env = process.env, live = false) {
+  return execFileSync(command, args, { cwd, env, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, windowsHide: true,
+    ...(live ? { stdio: 'inherit' } : {}) });
 }
 const sourceCommit = run('git.exe', ['rev-parse', 'HEAD']).trim();
 if (sourceCommit !== process.env.GITHUB_SHA) throw new Error('Candidate source commit mismatch');
@@ -76,15 +77,15 @@ try {
   const shell = join(candidate, 'shell');
   run(node, ['node_modules/electron-builder/out/cli/cli.js', '--config', 'packaging/electron-builder.windows.config.mjs',
     '--win', '--x64', '--publish', 'never', '--config.directories.output', shell], desktop, internalEnvironment);
-  run(node, ['tests/packaged-install-smoke.mjs', join(shell, 'win-unpacked/MetaWork.exe'), evidence], desktop, internalEnvironment);
+  run(node, ['tests/packaged-install-smoke.mjs', join(shell, 'win-unpacked/MetaWork.exe'), evidence], desktop, internalEnvironment, true);
   const installer = join(shell, 'MetaWork-win32-x64-setup.exe');
   await writeFile(join(evidence, 'candidate.json'), JSON.stringify({ sourceCommit,
     installer: 'MetaWork-win32-x64-setup.exe',
     installerSha256: createHash('sha256').update(await readFile(installer)).digest('hex'),
     releaseId: JSON.parse(descriptor).releaseId, internalCandidate: true,
     releaseAccepted: false }, null, 2));
-  run(node, ['scripts/probe-windows-desktop-nsis.mjs', installer, evidence], source,
-    { ...internalEnvironment, METAWORK_TEST_MODEL: testModel ?? '' });
+  run(node, ['scripts/probe-windows-desktop-nsis.mjs', installer, evidence, resources, keyPath], source,
+    { ...internalEnvironment, METAWORK_TEST_MODEL: testModel ?? '' }, true);
 } finally {
   await rm(keyPath, { force: true });
 }

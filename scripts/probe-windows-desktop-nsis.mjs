@@ -7,12 +7,13 @@ import { createRequire } from 'node:module';
 import { execFile } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { runWindowsDesktopUpdates } from './probe-windows-desktop-update.mjs';
 
 if (process.platform !== 'win32' || process.arch !== 'x64' || process.env.GITHUB_ACTIONS !== 'true') {
   throw new Error('Disposable Windows x64 runner required');
 }
-const [installerArg, evidenceArg] = process.argv.slice(2);
-if (!installerArg || !evidenceArg) throw new Error('Installer and evidence paths required');
+const [installerArg, evidenceArg, resourcesArg, signingKeyArg] = process.argv.slice(2);
+if (!installerArg || !evidenceArg || !resourcesArg || !signingKeyArg) throw new Error('Installer, evidence and update-fixture inputs required');
 const installer = resolve(installerArg);
 const evidence = resolve(evidenceArg);
 await mkdir(evidence, { recursive: true });
@@ -74,6 +75,8 @@ try {
   assert.equal(database.prepare('SELECT status FROM tasks WHERE id = ?').get(tasks.artifactTaskId)?.status, 'done');
   assert.equal(database.prepare('SELECT status FROM tasks WHERE id = ?').get(tasks.cancelledTaskId)?.status, 'cancelled');
 } finally { database.close(); }
+await runWindowsDesktopUpdates({ application: executable, installRoot: installationData,
+  resources: resolve(resourcesArg), signingKey: resolve(signingKeyArg), evidence, env });
 await exec(uninstaller, ['/S'], { cwd: temp, env, windowsHide: true, timeout: 180_000 });
 for (let attempt = 0; attempt < 60 && await access(executable).then(() => true, () => false); attempt += 1) {
   await new Promise(resolveDelay => setTimeout(resolveDelay, 500));
@@ -83,5 +86,6 @@ await writeFile(join(evidence, 'nsis-install.json'), JSON.stringify({
   passed: true, installer, installedExecutable: executable, currentUserInstall: true,
   cleanInstallSmoke: true, realModelTasks: true, uninstalled: true, accountDataPreserved: true,
   activeUninstallDeclined: true, reinstallReusedAccountAndTasks: true,
+  coordinatedUpdateAndRecovery: true,
 }, null, 2));
 console.log('Windows NSIS current-user install, packaged smoke, uninstall and data preservation passed.');
