@@ -313,3 +313,5 @@ Windows 11 证据：[`37739922946`](https://github.com/IFOSR/metawork/actions/ru
 
 - `da1d85ae` 提交长路径修复及已安装更新验收，复验 https://github.com/IFOSR/metawork/actions/runs/37870151697 排队中。补充 macOS arm64 当前源码 packaged 验收：只从已验证签名及哈希的 v0.1.8 DMG 提取 Node/Git/Pi 工具，Runtime/Planner/Web/Desktop 全部来自本分支当前提交；独立短路径安装，真实模型产物及取消子进程清理。既有 Intel 源码回归保留；尚未取得 packaged 原生结果，也不声称覆盖完整 §6.1。
 - 增加独立普通浏览器的同安装验收脚本：从安装版 `web --no-open` 入口打开，独立 Cookie 必须先拒绝匿名会话并要求账密登录；观察 Desktop 创建的相同任务，通过认证下载实际产物并校验内容，拒绝匿名下载，核对取消终态及重载后的历史/Server PID。使用 runner 自带 Chrome/Edge；尚待真实执行，不能据此宣称 Web 或三客户端完整通过。
+- `fb2fd0d0` / `37869220953` 的 NSIS 构建已通过，packaged 首次激活仍在 `writeRevisionFile` 报 Win32 3；这轮不包含长路径修复。`19e28470` / `37871065012` 已取得 Node、Electron Main 及普通用户 >400 字符路径 probe 通过证据（`windows-platform-files` artifact），packaged 安装结果仍待收集。
+- 原生 TUI 验收准备发现 Windows 不能直接执行 vendored `cli.js`，改为使用启动 CLI 的同一个 Node；Web 系统浏览器入口改用 `rundll32`，并把异步启动失败交回命令调用者。新增真实非可执行 JS 子进程测试和浏览器启动失败测试，本地 10 tests/类型检查通过。三客户端测试补真实 PTY/ConPTY 中的已安装 TUI、Task Dashboard、活动任务中退出并重连、取消终态；本机 PTY 载体验证通过，ConPTY 编译及完整安装版执行仍待收集。

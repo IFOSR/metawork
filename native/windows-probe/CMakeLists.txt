@@ -15,3 +15,8 @@ target_compile_definitions(metawork-process-probe PRIVATE UNICODE _UNICODE WIN32
 target_compile_options(metawork-process-probe PRIVATE /W4 /WX /EHsc)
 target_link_libraries(metawork-process-probe PRIVATE advapi32)
 set_property(TARGET metawork-process-probe PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_executable(metawork-terminal-client terminal-client.cpp)
+target_compile_features(metawork-terminal-client PRIVATE cxx_std_17)
+target_compile_definitions(metawork-terminal-client PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
+target_compile_options(metawork-terminal-client PRIVATE /W4 /WX /EHsc)
+set_property(TARGET metawork-terminal-client PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")

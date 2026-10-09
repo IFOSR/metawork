@@ -62,4 +62,15 @@ describe('WebClientLauncher', () => {
     expect(resolveEndpoint).toHaveBeenCalledWith('/tmp/endpoint.json', 2);
     expect(open).not.toHaveBeenCalled();
   });
+
+  it('reports an unavailable system browser launcher instead of an unhandled child-process error', async () => {
+    const launcher = new WebClientLauncher({
+      manifestPath: '/tmp/endpoint.json', startupWorkspacePath: '/repo-b',
+      resolveEndpoint: async () => ({ ok: true, manifestVersion: 1,
+        socketPath: '/tmp/gateway.sock', webOrigin: 'http://127.0.0.1:8788' }),
+      registerLaunch: async () => ({ token: 'opaque-launch-token', expiresAt: '2026-08-27T08:01:00.000Z' }),
+      open: async () => { throw new Error('Browser launcher unavailable'); },
+    });
+    await expect(launcher.start({ noOpen: false })).rejects.toThrow('Browser launcher unavailable');
+  });
 });

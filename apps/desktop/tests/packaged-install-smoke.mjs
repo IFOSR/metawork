@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { _electron } from 'playwright-core';
 import { runPackagedModelTasks } from './packaged-model-task.mjs';
 import { packagedBrowser } from './packaged-browser.mjs';
+import { packagedTerminal } from './packaged-terminal.mjs';
 
 // Fixture smoke by default; NSIS acceptance explicitly enables real model tasks.
 const application = resolve(process.argv[2] ?? '');
@@ -54,6 +55,7 @@ const app = await _electron.launch({ executablePath: windows ? application : joi
 let serverPid;
 let progressTimer;
 let browser;
+let terminal;
 const setupProgress = [];
 try {
   assert.equal(await app.evaluate(({ app }) => app.isPackaged), true);
@@ -93,7 +95,10 @@ try {
   await assert.rejects(access(join(installRoot, 'internal/llm-credentials.json')));
   serverPid = JSON.parse(await readFile(join(installRoot, 'server-endpoint.json'), 'utf8')).pid;
   if (realTasks) browser = await packagedBrowser({ installRoot, evidence, env });
-  if (realTasks) await runPackagedModelTasks({ page, root, installRoot, evidence, observer: browser,
+  if (realTasks) terminal = await packagedTerminal({ installRoot, evidence, env });
+  const observer = Object.fromEntries(['workspace', 'artifact', 'running', 'cancelled'].map(name =>
+    [name, async value => { await browser[name](value); await terminal[name](value); }]));
+  if (realTasks) await runPackagedModelTasks({ page, root, installRoot, evidence, observer,
     onActiveTask: nsis ? async () => {
       await app.evaluate(({ dialog }) => {
         globalThis.__mwUninstallDialog = dialog.showMessageBox;
@@ -139,7 +144,10 @@ try {
   throw new Error(safeMessage);
 } finally {
   clearInterval(progressTimer);
-  try { await browser?.close(); }
+  try {
+    try { await terminal?.close(); }
+    finally { await browser?.close(); }
+  }
   finally {
     await app.close().catch(() => undefined);
     const node = join(installRoot, 'app/current/desktop-tools/node', windows ? 'node.exe' : 'bin/node');

@@ -1,4 +1,7 @@
 import { EventEmitter } from 'node:events';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   TuiClientLauncher,
@@ -85,8 +88,8 @@ describe('TuiClientLauncher', () => {
     await launcher.start();
 
     expect(spawnProcess).toHaveBeenCalledWith(
-      '/tmp/pi-client',
-      ['--gateway-socket', '/tmp/gateway.sock', '--workspace-hint', '/repo-a'],
+      process.execPath,
+      ['/tmp/pi-client', '--gateway-socket', '/tmp/gateway.sock', '--workspace-hint', '/repo-a'],
       expect.objectContaining({
         cwd: '/repo-a',
         stdio: 'inherit',
@@ -95,6 +98,25 @@ describe('TuiClientLauncher', () => {
         }),
       }),
     );
+  });
+
+  it('runs a non-executable JavaScript client through the current Node runtime', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'metawork-tui-launch-'));
+    try {
+      const command = join(workspace, 'client.mjs');
+      await writeFile(command, `import { writeFileSync } from 'node:fs';
+writeFileSync('client-result.json', JSON.stringify({ node: process.execPath, args: process.argv.slice(2) }));`, { mode: 0o600 });
+      await new TuiClientLauncher({
+        manifestPath: join(workspace, 'endpoint.json'), command, startupWorkspacePath: workspace,
+        conversationId: 'conv_attached',
+        resolveEndpoint: async () => ({ ok: true, manifestVersion: 1,
+          socketPath: 'test-gateway', webOrigin: 'http://127.0.0.1:8788' }),
+      }).start();
+      expect(JSON.parse(await readFile(join(workspace, 'client-result.json'), 'utf8'))).toEqual({
+        node: process.execPath,
+        args: ['--gateway-socket', 'test-gateway', '--conversation-id', 'conv_attached', '--workspace-hint', workspace],
+      });
+    } finally { await rm(workspace, { recursive: true, force: true }); }
   });
 
   it('resolves the staged Planner layout from an installed release', () => {

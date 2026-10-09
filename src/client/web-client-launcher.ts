@@ -19,7 +19,7 @@ export interface WebClientLauncherDeps {
     socketPath: string,
     input: WebLaunchContextInput,
   ) => Promise<IssuedWebLaunchContext>;
-  readonly open?: (url: string) => void;
+  readonly open?: (url: string) => void | Promise<void>;
 }
 
 export class WebClientLauncher {
@@ -43,7 +43,7 @@ export class WebClientLauncher {
     });
     // 启动提示不是登录凭据：只携带本机目录建议，浏览器仍需用户显式登录。
     const url = `${endpoint.webOrigin.replace(/\/+$/u, '')}/#launch=${encodeURIComponent(launch.token)}`;
-    if (!options.noOpen) this.deps.open?.(url);
+    if (!options.noOpen) await this.deps.open?.(url);
     return url;
   }
 }

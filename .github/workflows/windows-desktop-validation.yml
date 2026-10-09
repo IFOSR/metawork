@@ -151,8 +151,16 @@ jobs:
         id: native-build
         working-directory: native/windows
         run: node ../../apps/desktop/node_modules/node-gyp/bin/node-gyp.js rebuild --msvs_version=2022
+      - name: Build acceptance-only native terminal carrier
+        run: |
+          cmake -S native/windows-probe -B .tmp/windows-terminal-probe -A x64
+          if ($LASTEXITCODE -ne 0) { throw 'Terminal carrier configure failed' }
+          cmake --build .tmp/windows-terminal-probe --config Release --target metawork-terminal-client
+          if ($LASTEXITCODE -ne 0) { throw 'Terminal carrier compilation failed' }
+          node apps/desktop/tests/terminal-carrier-smoke.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Terminal carrier did not provide a real terminal' }
       - name: Verify Desktop tickets stay disabled on unverified Node named pipes
-        run: npm test -- tests/gateway/desktop-local-transport.test.ts tests/management/desktop-session.test.ts tests/installation/desktop-platform.test.ts tests/installation/windows-installation-root.test.ts tests/installation/windows-desktop-release.test.ts tests/installation/desktop-install-cli.test.ts tests/client/server-readiness.test.ts tests/executor/pi-native-launch.test.ts tests/executor/pi-cli-driver.test.ts tests/executor/runtime-home-materializer.test.ts
+        run: npm test -- tests/gateway/desktop-local-transport.test.ts tests/management/desktop-session.test.ts tests/installation/desktop-platform.test.ts tests/installation/windows-installation-root.test.ts tests/installation/windows-desktop-release.test.ts tests/installation/desktop-install-cli.test.ts tests/client/server-readiness.test.ts tests/client/tui-client-launcher.test.ts tests/client/web-client-launcher.test.ts tests/executor/pi-native-launch.test.ts tests/executor/pi-cli-driver.test.ts tests/executor/runtime-home-materializer.test.ts
       - run: npm run build
       - run: npm run build:desktop
         id: desktop-build

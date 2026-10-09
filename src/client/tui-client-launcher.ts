@@ -67,7 +67,10 @@ async function runVendoredPlannerClient(
     ANYFUSION_PLANNER_WORKSPACE: _plannerWorkspace,
     ...clientEnvironment
   } = process.env;
-  const child = spawnProcess(command, [
+  // Use the same installed Node runtime; Windows cannot execute a .js shebang,
+  // and Unix clients must not select a different Node through the user's PATH.
+  const child = spawnProcess(process.execPath, [
+    command,
     '--gateway-socket',
     socketPath,
     ...(conversationId ? ['--conversation-id', conversationId] : []),

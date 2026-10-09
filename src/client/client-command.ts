@@ -1,19 +1,24 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, win32 } from 'node:path';
 import type { CliCommand } from '../cli/args.js';
 import { resolveMetaWorkPaths } from '../installation/paths.js';
 import { resolveMetaclawDir } from '../utils/paths.js';
 import { TuiClientLauncher } from './tui-client-launcher.js';
 import { WebClientLauncher } from './web-client-launcher.js';
 
-export function openBrowser(url: string): void {
+export async function openBrowser(url: string): Promise<void> {
   const command = process.platform === 'darwin'
-    ? 'open'
+    ? '/usr/bin/open'
     : process.platform === 'win32'
-      ? 'start'
+      ? win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/rundll32.exe')
       : 'xdg-open';
-  spawn(command, [url], { stdio: 'ignore', detached: true }).unref();
+  const args = process.platform === 'win32' ? ['url.dll,FileProtocolHandler', url] : [url];
+  await new Promise<void>((resolveLaunch, reject) => {
+    const child = spawn(command, args, { stdio: 'ignore', detached: true });
+    child.once('error', reject);
+    child.once('spawn', () => { child.unref(); resolveLaunch(); });
+  });
 }
 
 export async function runClientCommand(command: Extract<CliCommand, { kind: 'tui' | 'web' }>): Promise<void> {
