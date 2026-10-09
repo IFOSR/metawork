@@ -234,6 +234,7 @@ try:
 
     command('qmp_capabilities')
     environment_logged = False
+    boot_key_sent = False
     for elapsed in range((110 if kit_path else 45) * 60):
         if qemu.poll() is not None:
             raise RuntimeError('Windows guest VM exited unexpectedly')
@@ -278,8 +279,14 @@ try:
                 ppm.unlink()
             console_input.launch_bootstrap(command, bootstrap_command, bootstrap_snapshot)
             (evidence / 'console-bootstrap.json').write_text(json.dumps({'attempted': True, 'elapsedSeconds': elapsed}))
-        if elapsed < 30 and elapsed % 2 == 0:
-            command('human-monitor-command', {'command-line': 'sendkey ret'})
+        if (not boot_key_sent and elapsed < 60 and serial.exists()
+                and 'starting Boot0001' in serial.read_text(errors='replace')):
+            # Answer the DVD's boot prompt only. Repeated Enter for 30 seconds
+            # can reach Setup's focused Support/Cancel controls and abort it.
+            for _ in range(3):
+                time.sleep(0.6)
+                command('human-monitor-command', {'command-line': 'sendkey ret 100'})
+            boot_key_sent = True
         if elapsed % 60 == 0 or (elapsed < 180 and elapsed % 10 == 0):
             print(f'Windows 11 guest: {elapsed}s; waiting for {"product" if report and kit_path else "environment"} evidence', flush=True)
             (evidence / 'vm-status.json').write_text(json.dumps({
