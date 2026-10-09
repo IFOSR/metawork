@@ -20,16 +20,21 @@ def console_keys(text):
     return keys
 
 
-def launch_bootstrap(command, text):
+def launch_bootstrap(command, text, snapshot=lambda stage: None):
     keys = console_keys(text)
 
     def press(key):
-        command('human-monitor-command', {'command-line': 'sendkey ' + key + ' 20'})
-        time.sleep(0.04)
+        # QEMU key releases use guest-clock timers. Allow the guest to observe
+        # the whole chord before sending another key, even during first login.
+        command('human-monitor-command', {'command-line': 'sendkey ' + key + ' 100'})
+        time.sleep(0.2)
 
     press('esc')
+    press('meta_l-d')
+    time.sleep(2)
     press('meta_l-r')
-    time.sleep(1)
+    time.sleep(3)
+    snapshot('run-dialog')
     press('ctrl-a')
     # The Run dialog has a much shorter command limit than a PowerShell
     # terminal. Open an elevated terminal with a short command first.
@@ -39,9 +44,13 @@ def launch_bootstrap(command, text):
     # account. UAC is confirmed explicitly; product acceptance uses a separate
     # ordinary-user session and cannot claim this as product-user evidence.
     press('ctrl-shift-ret')
-    time.sleep(3)
+    time.sleep(5)
+    snapshot('elevation')
     press('alt-y')
-    time.sleep(3)
+    time.sleep(5)
+    snapshot('powershell')
     for key in keys:
         press(key)
     press('ret')
+    time.sleep(10)
+    snapshot('executed')

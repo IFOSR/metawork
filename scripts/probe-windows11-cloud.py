@@ -196,14 +196,21 @@ try:
             if not accepted_environment(report):
                 raise RuntimeError('Windows 11 environment acceptance failed')
             break
-        if elapsed == 1200:
+        if elapsed in [1200, 1560]:
             # A completed desktop can omit FirstLogonCommands on evaluation
             # images. Explicitly launch the same bounded, secret-free bootstrap
             # through the interactive console; a report is still mandatory.
             spec = importlib.util.spec_from_file_location('console_input', 'scripts/windows11-console-input.py')
             console_input = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(console_input)
-            console_input.launch_bootstrap(command, bootstrap_command)
+            def bootstrap_snapshot(stage):
+                from PIL import Image
+                ppm = root / 'bootstrap-console.ppm'
+                command('screendump', {'filename': str(ppm)})
+                with Image.open(ppm) as screenshot:
+                    screenshot.save(evidence / f'console-{elapsed}-{stage}.png')
+                ppm.unlink()
+            console_input.launch_bootstrap(command, bootstrap_command, bootstrap_snapshot)
             (evidence / 'console-bootstrap.json').write_text(json.dumps({'attempted': True, 'elapsedSeconds': elapsed}))
         if elapsed < 30 and elapsed % 2 == 0:
             command('human-monitor-command', {'command-line': 'sendkey ret'})
