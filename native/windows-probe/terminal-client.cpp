@@ -32,10 +32,13 @@ void copy(HANDLE from, HANDLE to) {
     DWORD offset = 0;
     while (offset < read) {
       DWORD written = 0;
-      if (!WriteFile(to, buffer + offset, read - offset, &written, nullptr) || !written) return;
+      if (!WriteFile(to, buffer + offset, read - offset, &written, nullptr) || !written) {
+        std::cerr << "ConPTY: pipe write failed " << GetLastError() << '\n'; return;
+      }
       offset += written;
     }
   }
+  std::cerr << "ConPTY: pipe read ended " << GetLastError() << '\n';
 }
 int wmain(int argc, wchar_t** argv) {
   if (argc < 2) return 2;
