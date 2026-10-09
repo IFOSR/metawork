@@ -53,6 +53,18 @@ const launch = () => _electron.launch({ executablePath: windows ? application : 
   // from its uninstaller reaches this exact Main process through Electron's lock.
   args: nsis ? [] : [`--user-data-dir=${join(root, 'desktop-profile')}`], env, timeout: 120000 });
 let app = await launch();
+async function quitDesktop() {
+  const child = app.process();
+  if (child.exitCode !== null) return;
+  const exited = new Promise(done => child.once('exit', code => done(code)));
+  await app.evaluate(({ app }) => { setTimeout(() => app.quit(), 50); });
+  let timer;
+  try {
+    assert.equal(await Promise.race([exited, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Desktop graceful exit timed out')), 30000);
+    })]), 0);
+  } finally { clearTimeout(timer); }
+}
 let serverPid;
 let progressTimer;
 let browser;
@@ -165,7 +177,7 @@ try {
   await page.reload();
   await page.locator('.workspace-shell').waitFor({ timeout: 30000 });
   await page.screenshot({ path: join(evidence, 'packaged-install.png') });
-  await app.close();
+  await quitDesktop();
   process.kill(serverPid, 0);
   await writeFile(join(evidence, 'packaged-install.json'), JSON.stringify({
     application, authenticated, cleanInstall: !existing, existingInstallReused: existing, developerCredentialsAbsent: true,
@@ -208,7 +220,7 @@ try {
     finally { await browser?.close(); }
   }
   finally {
-    await app.close().catch(() => undefined);
+    await quitDesktop().catch(() => { app.process().kill('SIGKILL'); });
     const node = join(installRoot, 'app/current/desktop-tools/node', windows ? 'node.exe' : 'bin/node');
     const cli = join(installRoot, 'app/current/dist/index.js');
     if (await access(cli).then(() => true, () => false)) {

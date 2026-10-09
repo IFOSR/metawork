@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AgentInstallationReadinessService,
+  resolveInstallationProbeCommand,
   type VersionProbeResult,
 } from '../../src/management/agent-installation-readiness-service.js';
 
@@ -9,6 +10,15 @@ function installed(stdout = 'pi 1.2.3'): VersionProbeResult {
 }
 
 describe('AgentInstallationReadinessService', () => {
+  it('probes Windows Pi through the same installed Node and script as the Executor', () => {
+    const invocation = resolveInstallationProbeCommand('pi', ['--version'], 'win32', 'C:\\中文 install\\app\\current');
+    expect(invocation).toEqual({
+      command: 'C:\\中文 install\\app\\current\\desktop-tools\\node\\node.exe',
+      args: ['C:\\中文 install\\app\\current\\desktop-tools\\executor\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js', '--version'],
+    });
+    expect(resolveInstallationProbeCommand('codex', ['--version'], 'win32')).toEqual({ command: 'codex', args: ['--version'] });
+    expect(resolveInstallationProbeCommand('pi', ['--version'], 'darwin')).toEqual({ command: 'pi', args: ['--version'] });
+  });
   it('projects requirements from currently enabled tools, not built-in assistant names', async () => {
     let required: Array<'pi-agent' | 'codex-cli'> = ['codex-cli'];
     const service = new AgentInstallationReadinessService({

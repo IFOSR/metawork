@@ -2,6 +2,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { safeHostEnvironment } from '../executor/harness-driver.js';
+import { desktopToolPaths } from '../installation/desktop-platform.js';
+import { resolveMetaWorkPaths } from '../installation/paths.js';
 import { resolveAgentDisplayName } from '../configuration/user-facing-names.js';
 import {
   AGENT_INSTALLATION_CATALOG,
@@ -190,7 +192,8 @@ async function defaultVersionProbe(
   timeoutMs: number,
 ): Promise<VersionProbeResult> {
   try {
-    const result = await execFileAsync(command, [...args], {
+    const invocation = resolveInstallationProbeCommand(command, args);
+    const result = await execFileAsync(invocation.command, [...invocation.args], {
       env: safeHostEnvironment(process.env),
       timeout: timeoutMs,
       maxBuffer: 16 * 1024,
@@ -220,6 +223,19 @@ async function defaultVersionProbe(
       stderr: String(candidate.stderr ?? candidate.message ?? ''),
     };
   }
+}
+
+export function resolveInstallationProbeCommand(
+  command: string,
+  args: readonly string[],
+  platform = process.platform,
+  releaseRoot = resolveMetaWorkPaths().appCurrent,
+): { command: string; args: readonly string[] } {
+  if (platform === 'win32' && command === 'pi') {
+    const tools = desktopToolPaths(releaseRoot, platform);
+    return { command: tools.node, args: [tools.piScript, ...args] };
+  }
+  return { command, args };
 }
 
 function firstOutputLine(output: string): string {
