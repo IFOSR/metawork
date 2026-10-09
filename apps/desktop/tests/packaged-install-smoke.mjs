@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { _electron } from 'playwright-core';
 import { runPackagedModelTasks } from './packaged-model-task.mjs';
+import { packagedBrowser } from './packaged-browser.mjs';
 
 // Fixture smoke by default; NSIS acceptance explicitly enables real model tasks.
 const application = resolve(process.argv[2] ?? '');
@@ -35,8 +37,10 @@ const env = { ...process.env,
   METAWORK_CONFIG_HOME: join(root, 'config'), ANYFUSION_CONFIG_HOME: join(root, 'config'),
   METAWORK_SECRET_STORE: 'file', ANYFUSION_SECRET_STORE: 'file',
   METAWORK_WEB_PORT: '0', METACLAW_DISABLE_MARKDOWN_PREVIEW: '1',
+  ANYFUSION_WEB_USERNAME: 'acceptance', ANYFUSION_WEB_PASSWORD: randomUUID(),
   METAWORK_INTERNAL_LLM_SOURCE_ROOT: join(root, 'absent-developer-configuration') };
 delete env.METAWORK_TEST_MODEL;
+delete env.ANYFUSION_WEB_PASSWORD_HASH;
 for (const key of Object.keys(env)) if (key.toUpperCase() === 'PATH') delete env[key];
 env.PATH = windows ? `${process.env.SystemRoot}\\System32;${process.env.SystemRoot}` : '/usr/bin:/bin';
 for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE',
@@ -49,6 +53,7 @@ const app = await _electron.launch({ executablePath: windows ? application : joi
   args: nsis ? [] : [`--user-data-dir=${join(root, 'desktop-profile')}`], env, timeout: 120000 });
 let serverPid;
 let progressTimer;
+let browser;
 const setupProgress = [];
 try {
   assert.equal(await app.evaluate(({ app }) => app.isPackaged), true);
@@ -87,7 +92,8 @@ try {
   assert.equal(authenticated, true);
   await assert.rejects(access(join(installRoot, 'internal/llm-credentials.json')));
   serverPid = JSON.parse(await readFile(join(installRoot, 'server-endpoint.json'), 'utf8')).pid;
-  if (realTasks) await runPackagedModelTasks({ page, root, installRoot, evidence,
+  if (realTasks) browser = await packagedBrowser({ installRoot, evidence, env });
+  if (realTasks) await runPackagedModelTasks({ page, root, installRoot, evidence, observer: browser,
     onActiveTask: nsis ? async () => {
       await app.evaluate(({ dialog }) => {
         globalThis.__mwUninstallDialog = dialog.showMessageBox;
@@ -133,10 +139,13 @@ try {
   throw new Error(safeMessage);
 } finally {
   clearInterval(progressTimer);
-  await app.close().catch(() => undefined);
-  const node = join(installRoot, 'app/current/desktop-tools/node', windows ? 'node.exe' : 'bin/node');
-  const cli = join(installRoot, 'app/current/dist/index.js');
-  if (await access(cli).then(() => true, () => false)) {
-    await promisify(execFile)(node, [cli, 'server', 'stop'], { env, cwd: installRoot, timeout: 30000 });
+  try { await browser?.close(); }
+  finally {
+    await app.close().catch(() => undefined);
+    const node = join(installRoot, 'app/current/desktop-tools/node', windows ? 'node.exe' : 'bin/node');
+    const cli = join(installRoot, 'app/current/dist/index.js');
+    if (await access(cli).then(() => true, () => false)) {
+      await promisify(execFile)(node, [cli, 'server', 'stop'], { env, cwd: installRoot, timeout: 30000 });
+    }
   }
 }

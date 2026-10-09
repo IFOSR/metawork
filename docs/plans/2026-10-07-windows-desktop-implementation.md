@@ -312,3 +312,4 @@ Windows 11 证据：[`37739922946`](https://github.com/IFOSR/metawork/actions/ru
 - 补充已安装升级验收：同源、同一临时签名信任根生成独立测试 release identity，分别走实际菜单/NSIS 的正常更新、有意不渲染 workspace 的签名故障候选回滚、Runtime 切换后终止 helper 再从修复菜单恢复。每次检查持久 activation、Server 与 shell 重新启动、数据库完整性、原任务保留、实际认证 workspace 截图。故障候选不上传为产品候选；当前仅完成脚本和类型检查，尚无原生通过证据。Windows job 预算覆盖这些额外场景，成功条件未放宽。
 
 - `da1d85ae` 提交长路径修复及已安装更新验收，复验 https://github.com/IFOSR/metawork/actions/runs/37870151697 排队中。补充 macOS arm64 当前源码 packaged 验收：只从已验证签名及哈希的 v0.1.8 DMG 提取 Node/Git/Pi 工具，Runtime/Planner/Web/Desktop 全部来自本分支当前提交；独立短路径安装，真实模型产物及取消子进程清理。既有 Intel 源码回归保留；尚未取得 packaged 原生结果，也不声称覆盖完整 §6.1。
+- 增加独立普通浏览器的同安装验收脚本：从安装版 `web --no-open` 入口打开，独立 Cookie 必须先拒绝匿名会话并要求账密登录；观察 Desktop 创建的相同任务，通过认证下载实际产物并校验内容，拒绝匿名下载，核对取消终态及重载后的历史/Server PID。使用 runner 自带 Chrome/Edge；尚待真实执行，不能据此宣称 Web 或三客户端完整通过。

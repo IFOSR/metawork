@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 
 // Real installed Planner/Pi task acceptance. Never records provider inputs,
 // model responses, process command lines or database contents in CI artifacts.
-export async function runPackagedModelTasks({ page, root, installRoot, evidence, onActiveTask }) {
+export async function runPackagedModelTasks({ page, root, installRoot, evidence, onActiveTask, observer }) {
   assert.ok(['win32', 'darwin'].includes(process.platform));
   const release = await realpath(join(installRoot, 'app/current'));
   const require = createRequire(join(release, 'package.json'));
@@ -45,6 +45,7 @@ export async function runPackagedModelTasks({ page, root, installRoot, evidence,
     const selected = accepted(await client.initializeWorkspace(`/workspace ${workspace}`));
     const created = accepted(await client.createConversation(selected.workspaceId));
     assert.ok(created.conversationId);
+    await observer?.workspace({ workspace, workspaceId: selected.workspaceId, conversationId: created.conversationId });
     await page.goto(`${endpoint.webOrigin}/#${new URLSearchParams({ workspace: selected.workspaceId, conversation: created.conversationId })}`);
     const composer = page.locator('.composer textarea');
     await composer.waitFor({ state: 'visible' });
@@ -84,6 +85,7 @@ export async function runPackagedModelTasks({ page, root, installRoot, evidence,
     console.log('Installed Planner, Executor, publication and artifact content verified.');
     assert.ok(db.prepare("SELECT COUNT(*) AS count FROM planner_proposal_submissions WHERE status = 'accepted'").get().count > 0);
     await page.screenshot({ path: join(evidence, 'real-artifact-task.png') });
+    await observer?.artifact({ marker, taskId: task.id });
 
     const cancelMarker = `mw-cancel-${randomUUID()}`;
     await composer.fill(`Cancellation acceptance: run a Bash command that prints ${cancelMarker} once per second for 300 seconds. Include that literal marker in the command text. Start it now, keep the task active until it finishes, and do not create or modify files. I will cancel it from the client.`);
@@ -120,6 +122,7 @@ export async function runPackagedModelTasks({ page, root, installRoot, evidence,
     const cancellationTask = db.prepare('SELECT id FROM tasks WHERE id != ? ORDER BY created_at DESC LIMIT 1').get(task.id);
     assert.ok(cancellationTask, 'No Task owns the running cancellation command');
     console.log('Real cancellation command is running in an Executor process.');
+    await observer?.running({ marker: cancelMarker, taskId: cancellationTask.id });
     if (onActiveTask) {
       await onActiveTask();
       assert.equal(db.prepare('SELECT status FROM tasks WHERE id = ?').get(cancellationTask.id)?.status, 'running');
@@ -141,6 +144,7 @@ export async function runPackagedModelTasks({ page, root, installRoot, evidence,
     report.cancelledProcessCount = running.length;
     report.passed = true;
     console.log('Client cancellation and Executor descendant cleanup verified.');
+    await observer?.cancelled({ marker: cancelMarker, taskId: cancellationTask.id });
     await page.screenshot({ path: join(evidence, 'real-cancelled-task.png') });
   } finally {
     report.taskStates = db.prepare('SELECT status, COUNT(*) AS count FROM tasks GROUP BY status').all();
