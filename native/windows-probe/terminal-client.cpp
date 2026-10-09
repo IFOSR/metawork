@@ -66,9 +66,22 @@ int wmain(int argc, wchar_t** argv) {
     std::wstring command;
     for (int i = 1; i < argc; i++) { if (i > 1) command += L' '; command += quote(argv[i]); }
     std::cerr << "ConPTY: creating client\n";
+    // This host is itself launched with redirected pipes. Do not let those
+    // standard-handle values leak into the client instead of its new console.
+    const HANDLE hostInput = GetStdHandle(STD_INPUT_HANDLE);
+    const HANDLE hostOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    const HANDLE hostError = GetStdHandle(STD_ERROR_HANDLE);
+    SetStdHandle(STD_INPUT_HANDLE, nullptr);
+    SetStdHandle(STD_OUTPUT_HANDLE, nullptr);
+    SetStdHandle(STD_ERROR_HANDLE, nullptr);
     const bool created = CreateProcessW(argv[1], command.data(), nullptr, nullptr, FALSE,
       EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED, nullptr, nullptr, &startup.StartupInfo, &process) != FALSE;
+    const DWORD createError = GetLastError();
+    SetStdHandle(STD_INPUT_HANDLE, hostInput);
+    SetStdHandle(STD_OUTPUT_HANDLE, hostOutput);
+    SetStdHandle(STD_ERROR_HANDLE, hostError);
     DeleteProcThreadAttributeList(attributes);
+    SetLastError(createError);
     check(created, "Installed CLI creation");
     std::cerr << "ConPTY: client created\n";
     // Keep the console's pipe ends alive until CreateProcess has attached its
