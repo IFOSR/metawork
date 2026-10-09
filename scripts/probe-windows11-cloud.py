@@ -96,7 +96,9 @@ copy_bootstrap = r'cmd.exe /c for %d in (D E F G H I J) do @if exist %d:\metawor
   </settings>
   <settings pass="specialize">
     <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
-      <RunSynchronous><RunSynchronousCommand wcm:action="add"><Order>1</Order><Path>{escape(copy_bootstrap)}</Path></RunSynchronousCommand></RunSynchronous>
+      <RunSynchronous><RunSynchronousCommand wcm:action="add"><Order>1</Order><Path>{escape(copy_bootstrap)}</Path></RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add"><Order>2</Order><Path>reg.exe add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock /v AllowDevelopmentWithoutDevLicense /t REG_DWORD /d 1 /f</Path></RunSynchronousCommand>
+      </RunSynchronous>
     </component>
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"><ComputerName>MWCI</ComputerName><TimeZone>UTC</TimeZone></component>
   </settings>

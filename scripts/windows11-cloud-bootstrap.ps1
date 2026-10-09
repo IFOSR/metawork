@@ -18,6 +18,15 @@ function Write-SerialEvidence($value) {
 Write-SerialEvidence @{ scope = $report.scope; stage = 'first-logon' }
 function Prepare-ProductSession {
   if ('@PRODUCT_ENABLED@' -ne 'true') { return }
+  if (-not $report.elevated) {
+    # If setup already logged on with a standard token, keep that session.
+    # Developer Mode is a declared machine prerequisite set by Windows Setup.
+    $runner = Join-Path $localEvidence 'product-runner.ps1'
+    Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Uri 'http://10.0.2.2:8765/@TOKEN@/product-runner' -OutFile $runner
+    $script:ordinaryProductRunner = $runner
+    $report.productSessionPrepared = $true
+    return
+  }
   $name = 'MWProduct'
   $password = ConvertTo-SecureString '@PRODUCT_PASSWORD@' -AsPlainText -Force
   if (-not (Get-LocalUser -Name $name -ErrorAction SilentlyContinue)) {
@@ -88,7 +97,6 @@ try {
   $report.passed = $false
   $report.error = $_.Exception.Message.Replace('@TOKEN@', '[redacted]').Replace('@PRODUCT_PASSWORD@', '[redacted]')
 }
-if ($report.passed -and $report.productSessionPrepared) { shutdown.exe /r /t 10 | Out-Null }
 [IO.File]::WriteAllText((Join-Path $localEvidence 'result.json'), ($report | ConvertTo-Json), [Text.Encoding]::UTF8)
 Write-SerialEvidence $report
 $body = [Text.Encoding]::UTF8.GetBytes(($report | ConvertTo-Json))
@@ -97,4 +105,8 @@ for ($attempt = 0; $attempt -lt 12; $attempt++) {
     Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 -Method Post -Uri 'http://10.0.2.2:8765/@TOKEN@/result' -ContentType 'application/json' -Body $body | Out-Null
     break
   } catch { Start-Sleep -Seconds 5 }
+}
+if ($report.passed -and $report.productSessionPrepared) {
+  if ($ordinaryProductRunner) { & $ordinaryProductRunner }
+  else { shutdown.exe /r /t 10 | Out-Null }
 }
