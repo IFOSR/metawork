@@ -325,3 +325,9 @@ Windows 11 证据：[`37739922946`](https://github.com/IFOSR/metawork/actions/ru
 清理验证：Mac 调试 worktree、候选/工具下载/隔离账号文件已移除；该分支 97 个 macOS validation artifacts 已删除，相关运行已取消。`85cebcc8` 移除 Mac CI 与打包脚本，工作流仅保留 3 个 Windows job 与 Docker 回归。
 
 Windows 首次连接源码排查发现 `userData/preferences` 与 Chromium 的 `userData/Preferences` 在 Windows 的大小写不敏感文件系统上冲突。改用独立 `metawork-preferences` 目录，并添加真实 Preferences 文件共存、草稿持久化及原文件不变的回归。Desktop 14 测试和类型检查通过；仍需 Windows 安装包实际复验。
+
+### Windows 专项继续验收（2026-10-09，未完成）
+
+`32397ba4` / run `37873710666` 的环境、受限管道/进程门和 Docker 回归通过，构建 job 在 ConPTY 测试载体运行超时处失败，未生成该提交候选包。`b4101ce6`、`44dabc93`、`d400e76a` 诊断确认进程创建/恢复成功且 Node 脚本已进入，阻塞在终端流初始化；调整管道句柄关闭时机尚不足以修复。ConPTY smoke 提前放入独立 windows-pipe job，完整安装版真实 TUI 检查继续保留；Windows build 不重复相同的 carrier smoke，以同时获得安装包诊断，完整 workflow 仍要求独立门通过。
+
+Windows 11 环境 run `37872643258` 仍失败：已有交互桌面，但无验收回执。分区诊断已正确识别系统盘为 BitLocker、恢复盘为 NTFS，无法离线提取系统日志；未解密系统盘或关闭 TPM/Secure Boot。后续改用较长按键保持/间隔，并记录 Run、UAC、PowerShell 和执行后的控制台截图，复验首次登录脚本启动过程；这仍不是产品通过证据。
