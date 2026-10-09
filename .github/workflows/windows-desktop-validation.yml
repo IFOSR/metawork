@@ -118,7 +118,7 @@ jobs:
       group: windows-desktop-build-${{ github.ref }}
       cancel-in-progress: false
     runs-on: windows-2022
-    timeout-minutes: 95
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

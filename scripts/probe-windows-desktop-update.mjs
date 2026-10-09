@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import { _electron } from '../apps/desktop/node_modules/playwright-core/index.mjs';
 import { desktopInventory, verifyDesktopRelease } from '../apps/desktop/dist/release-tools.mjs';
 import { stable } from './verify-release-assets.mjs';
+import { quitPackagedDesktop } from '../apps/desktop/tests/packaged-quit.mjs';
 
 const exec = promisify(execFile);
 const pause = ms => new Promise(done => setTimeout(done, ms));
@@ -119,7 +120,7 @@ export async function runWindowsDesktopUpdates({ application, installRoot, resou
         assert.ok(Number.isSafeInteger(helper) && helper > 0);
         process.kill(helper, 'SIGKILL');
         await waitFor(() => { try { process.kill(helper, 0); return false; } catch (error) { if (error.code === 'ESRCH') return true; throw error; } }, 'helper exit', 30000);
-        await app.close().catch(() => undefined);
+        await quitPackagedDesktop(app);
         app = await _electron.launch({ executablePath: application, env, timeout: 120000 });
         await (await app.firstWindow()).locator('#retry:visible').waitFor({ timeout: 120000 });
         await app.evaluate(({ dialog, Menu }) => {
@@ -148,7 +149,7 @@ export async function runWindowsDesktopUpdates({ application, installRoot, resou
         assert.equal(receipt.challenge, request.shellChallenge);
         process.kill(receipt.pid, 0);
       }
-      await app.close().catch(() => undefined); app = undefined;
+      await quitPackagedDesktop(app); app = undefined;
       await closeOwnedShells();
       process.kill(endpoint.pid, 0);
       app = await _electron.launch({ executablePath: application, env, timeout: 120000 });
@@ -157,7 +158,7 @@ export async function runWindowsDesktopUpdates({ application, installRoot, resou
       assert.equal(await restoredPage.evaluate(async () => (await (await fetch('/api/auth/session')).json()).authenticated), true);
       assert.deepEqual(await taskStates(), baselineTasks);
       await restoredPage.screenshot({ path: join(evidence, `update-${scenario}.png`) });
-      await app.close(); app = undefined;
+      await quitPackagedDesktop(app); app = undefined;
       report.scenarios.push({ scenario, expectedPhase, previousReleaseId: record.previousReleaseId, candidateReleaseId: releaseId,
         activeReleaseId: previous, impactConfirmed: true, tasksPreserved: true, authenticatedWorkspace: true });
       console.log(`Installed Windows ${scenario} activation acceptance passed.`);
@@ -165,7 +166,7 @@ export async function runWindowsDesktopUpdates({ application, installRoot, resou
     }
     report.passed = true;
   } finally {
-    await app?.close().catch(() => undefined);
+    if (app) await quitPackagedDesktop(app).catch(() => { app.process().kill('SIGKILL'); });
     report.activationPhase = (await json(activationPath).catch(() => null))?.phase;
     if (!report.passed) report.failure = await json(join(installRoot, 'upgrades/desktop-update-failure.json')).catch(() => undefined);
     await writeFile(join(evidence, 'desktop-updates.json'), JSON.stringify(report, null, 2));

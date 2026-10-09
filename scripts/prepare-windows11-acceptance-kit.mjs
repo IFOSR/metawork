@@ -14,7 +14,7 @@ await mkdir(output, { recursive: false });
 const installer = 'MetaWork-win32-x64-setup.exe';
 await cp(join(candidate, 'shell', installer), join(output, installer));
 await cp(join(resolve(toolsArg), 'node/node.exe'), join(output, 'node.exe'));
-for (const name of ['packaged-install-smoke.mjs', 'packaged-model-task.mjs', 'packaged-browser.mjs', 'packaged-terminal.mjs']) {
+for (const name of ['packaged-install-smoke.mjs', 'packaged-model-task.mjs', 'packaged-browser.mjs', 'packaged-terminal.mjs', 'packaged-quit.mjs']) {
   const target = join(output, 'apps/desktop/tests', name);
   await mkdir(join(output, 'apps/desktop/tests'), { recursive: true });
   await cp(resolve('apps/desktop/tests', name), target);
