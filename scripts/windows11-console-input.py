@@ -37,16 +37,10 @@ def launch_bootstrap(command, text, snapshot=lambda stage: None):
     snapshot('run-dialog')
     press('ctrl-a')
     # The Run dialog has a much shorter command limit than a PowerShell
-    # terminal. Open an elevated terminal with a short command first.
+    # terminal. Environment facts are readable without elevation.
     for key in console_keys('powershell.exe -NoProfile -ExecutionPolicy Bypass'):
         press(key)
-    # Environment bootstrap inspects firmware policy with the disposable admin
-    # account. UAC is confirmed explicitly; product acceptance uses a separate
-    # ordinary-user session and cannot claim this as product-user evidence.
-    press('ctrl-shift-ret')
-    time.sleep(5)
-    snapshot('elevation')
-    press('alt-y')
+    press('ret')
     time.sleep(5)
     snapshot('powershell')
     for key in keys:

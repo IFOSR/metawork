@@ -67,8 +67,7 @@ escape = xml.sax.saxutils.escape
 # encoded payload. Keep the discovery trampoline short; the media owns the script.
 logon_script = (r"$ErrorActionPreference='Stop';foreach($d in [IO.DriveInfo]::GetDrives())"
                 r"{if($d.IsReady){$p=$d.Name+'metawork-bootstrap.ps1';if([IO.File]::Exists($p))"
-                r"{Copy-Item $p C:\Windows\Temp\metawork-bootstrap.ps1 -Force;"
-                r"& C:\Windows\Temp\metawork-bootstrap.ps1;exit}}};throw 'Bootstrap media missing'")
+                r"{& $p;exit}}};throw 'Bootstrap media missing'")
 bootstrap_command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ' + base64.b64encode(logon_script.encode('utf-16le')).decode()
 if len(bootstrap_command) > 1024:
     raise RuntimeError('Windows first-logon command exceeds the unattended setup limit')

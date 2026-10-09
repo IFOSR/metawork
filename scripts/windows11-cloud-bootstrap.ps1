@@ -1,7 +1,9 @@
 # Runs once inside the disposable Windows 11 evaluation guest. No product secrets.
 $ErrorActionPreference = 'Stop'
 $report = @{ scope = 'windows11-cloud-environment'; sourceCommit = '@SOURCE_COMMIT@'; desktopAppVerified = $false }
-'first-logon' | Set-Content -LiteralPath 'C:\Windows\Temp\metawork-guest-stage.txt'
+$localEvidence = Join-Path $env:TEMP 'metawork-guest'
+New-Item -ItemType Directory -Force $localEvidence | Out-Null
+'first-logon' | Set-Content -LiteralPath (Join-Path $localEvidence 'stage.txt')
 function Write-SerialEvidence($value) {
   # Independent of guest NIC drivers; never write credentials or answer media.
   $serial = $null
@@ -54,8 +56,13 @@ try {
   $report.architecture = $os.OSArchitecture
   $report.interactive = [Environment]::UserInteractive
   $report.elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-  $report.secureBoot = Confirm-SecureBootUEFI
-  $report.tpmPresent = (Get-Tpm).TpmPresent
+  $report.account = $identity.Name
+  $report.expectedProvisionedAccount = $env:USERNAME -eq 'MWCI'
+  $report.secureBoot = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State').UEFISecureBootEnabled -eq 1
+  $tpm = @(Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPDeviceID -like 'ACPI\MSFT0101*' -and $_.ConfigManagerErrorCode -eq 0 })
+  $report.tpmPresent = $tpm.Count -gt 0
+  $report.secureBootEvidence = 'firmware-backed-system-registry'
+  $report.tpmEvidence = 'started-ACPI-MSFT0101-device'
   $report.passed = $os.Caption -match 'Windows 11' -and $os.ProductType -eq 1 -and $report.secureBoot -and $report.tpmPresent -and $report.interactive
   Add-Type -AssemblyName System.Windows.Forms
   Add-Type -AssemblyName System.Drawing
@@ -68,7 +75,7 @@ try {
     $stream = New-Object IO.MemoryStream
     try {
       $bitmap.Save($stream, [Drawing.Imaging.ImageFormat]::Png)
-      [IO.File]::WriteAllBytes('C:\Windows\Temp\metawork-guest-screen.png', $stream.ToArray())
+      [IO.File]::WriteAllBytes((Join-Path $localEvidence 'screen.png'), $stream.ToArray())
       $report.screenshotCaptured = $true
       try {
         Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 -Method Post -Uri 'http://10.0.2.2:8765/@TOKEN@/screen' -ContentType 'image/png' -Body $stream.ToArray() | Out-Null
@@ -82,7 +89,7 @@ try {
   $report.error = $_.Exception.Message.Replace('@TOKEN@', '[redacted]').Replace('@PRODUCT_PASSWORD@', '[redacted]')
 }
 if ($report.passed -and $report.productSessionPrepared) { shutdown.exe /r /t 10 | Out-Null }
-[IO.File]::WriteAllText('C:\Windows\Temp\metawork-guest-result.json', ($report | ConvertTo-Json), [Text.Encoding]::UTF8)
+[IO.File]::WriteAllText((Join-Path $localEvidence 'result.json'), ($report | ConvertTo-Json), [Text.Encoding]::UTF8)
 Write-SerialEvidence $report
 $body = [Text.Encoding]::UTF8.GetBytes(($report | ConvertTo-Json))
 for ($attempt = 0; $attempt -lt 12; $attempt++) {
