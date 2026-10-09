@@ -8,8 +8,8 @@ import { cp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { _electron } from '../apps/desktop/node_modules/playwright-core/index.mjs';
-import { canonicalizeReleaseManifestPayload } from '../dist/installation/release-manifest.js';
 import { desktopInventory, verifyDesktopRelease } from '../apps/desktop/dist/release-tools.mjs';
+import { stable } from './verify-release-assets.mjs';
 
 const exec = promisify(execFile);
 const pause = ms => new Promise(done => setTimeout(done, ms));
@@ -35,8 +35,11 @@ export async function runWindowsDesktopUpdates({ application, installRoot, resou
   await mkdir(fixtureRoot, { recursive: false });
   const report = { passed: false, sourceCommit: base.sourceCommit, baseReleaseId: base.releaseId, scenarios: [] };
   const activationPath = join(installRoot, 'upgrades/desktop-activation.json');
-  const signManifest = value => ({ ...value, signature: { algorithm: 'ed25519', keyId: base.signature.keyId,
-    value: sign(null, Buffer.from(canonicalizeReleaseManifestPayload(value)), key).toString('base64') } });
+  const signManifest = value => {
+    const { signature: _signature, ...payload } = value;
+    return { ...payload, signature: { algorithm: 'ed25519', keyId: base.signature.keyId,
+      value: sign(null, Buffer.from(stable(payload)), key).toString('base64') } };
+  };
   const taskStates = async () => {
     const release = await realpath(join(installRoot, 'app/current'));
     const Database = createRequire(join(release, 'package.json'))('better-sqlite3');
