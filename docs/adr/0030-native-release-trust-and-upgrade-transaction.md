@@ -389,3 +389,16 @@ fault injection are not yet accepted; the implementation plan tracks them.
   quarantine cleanup.
 - Future multi-top-level-Task scheduling during upgrade windows.
 - Implementation of schema versions after SQLite v30.
+
+## Application health versus Executor readiness (2026-10-09)
+
+Native update and rollback continue to validate release integrity, required
+Planner artifacts, credentials migration, database integrity and coordinated
+activation. A missing external Executor command is not a program-activation
+failure. Retain the configuration and expose unavailable tool status through
+the ordinary application after update. No silent Executor substitution occurs.
+Packaged required files, including the managed Pi distribution, must still pass
+signed inventory verification before any candidate helper is executed.
+Managed tool recovery is release-matched and uses the existing lock and formal
+Server lifecycle, with verified staging and atomic selection outside immutable
+release directories. It does not create a second data or recovery authority.

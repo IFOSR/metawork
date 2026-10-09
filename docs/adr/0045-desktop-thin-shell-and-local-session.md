@@ -119,3 +119,19 @@ identifier matches `com.metawork.desktop`. An Apple certificate is not required.
 Keeping the renamed Electron stub's invalid linker signature lets BTM reject and
 unload even launchd jobs on app exit. Launchd does not bypass macOS background
 policy. Final smoke must use the unchanged packaged app, never a re-signed copy.
+
+## Managed Pi and optional host tools (2026-10-09)
+
+Desktop ships the Pi Executor separately from the internal AnyFusion-Pi Planner.
+Managed Pi is selected by the installed release's absolute entrypoint and paired
+Node, never by the user's global Pi. Codex remains an optional external tool;
+its absence must not block application installation or update. Settings, probes
+and worktree execution consume the same resolved executable binding. Personal
+tool homes are not substituted for isolated attempt homes.
+
+A damaged managed tool tree can be restored only from a verified payload with
+the exact active release identity, after formal Server stop and under the
+existing runtime/update lock. A staged, verified support tree is selected by an
+atomic release-scoped pointer; the immutable active application is not edited.
+Automatic repair is attempted once per release, then requires an explicit retry.
+The ordinary Web settings remain reachable when execution tools are unavailable.

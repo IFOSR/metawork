@@ -386,3 +386,20 @@ hot field set. Account recovery and queue promotion read the currently activated
 Kernel configuration rather than capturing its startup object. Other attempt
 and backend policy limits remain restart-required; strict idle admission is
 unchanged.
+
+## Optional executable binding amendment (2026-10-09)
+
+Pi remains required for new-work admission; Codex is product-optional even when
+an enabled agent references it. Individual execution failures and recovery stay
+on the existing Kernel path. UI tool readiness is not execution authorization.
+
+Codex's local-cli command may be its registered name or an absolute executable
+entrypoint. Only this command-field change is a bounded hot-update exception:
+the strict idle gate remains mandatory, the candidate executable must pass
+identity and exec/JSON protocol probes, and each adapter is constructed from
+the attempt's revision-bound Harness command. No live daemon holds this binding,
+so this narrow change does not require a Server restart. Driver, transport, args,
+permission profiles and other process changes retain their restart requirements.
+Historical revisions are not rewritten. Unchanged missing tool bindings do not
+block repairing unrelated settings; unavailable tools still fail execution
+probes and cannot become usable merely through a settings save.

@@ -146,6 +146,7 @@ export class DesktopServiceManager {
       ANYFUSION_INSTALL_ROOT: this.runtime.installRoot,
       ...(this.runtime.configHome ? { METAWORK_CONFIG_HOME: this.runtime.configHome, ANYFUSION_CONFIG_HOME: this.runtime.configHome } : {}),
       METAWORK_RELEASE_ID: this.runtime.releaseId,
+      METAWORK_MANAGED_PI: join(tools, 'executor', 'bin', 'pi'),
       METACLAW_EXECUTOR_BACKEND: 'worktree',
       ANYFUSION_PI_SOURCE_ROOT: join(root, 'planner'),
       METACLAW_PLANNER_COMMAND: join(root, 'planner', 'packages', 'coding-agent', 'dist', 'cli.js'),

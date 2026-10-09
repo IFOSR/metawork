@@ -45,16 +45,19 @@ export class CodexCliDriver implements HarnessDriver {
   readonly executionProtocols = ['workspace-image-artifact-v1'] as const;
   readonly supportsResponseOnly = true;
   private readonly runProbe: ProbeCommandRunner;
+  private readonly command: string;
   private readonly explicitHomeTemplateDir?: string;
   private readonly generatedRuntimeRoot?: string;
   private readonly fallbackHomeTemplateDir?: string;
 
   constructor(dependencies: {
+    command?: string;
     probeCommand?: ProbeCommandRunner;
     homeTemplateDir?: string;
     generatedRuntimeRoot?: string;
   } = {}) {
     this.runProbe = dependencies.probeCommand ?? defaultProbeCommand;
+    this.command = dependencies.command ?? 'codex';
     this.explicitHomeTemplateDir = emptyToUndefined(dependencies.homeTemplateDir);
     this.generatedRuntimeRoot = emptyToUndefined(dependencies.generatedRuntimeRoot);
     this.fallbackHomeTemplateDir = emptyToUndefined(
@@ -64,7 +67,7 @@ export class CodexCliDriver implements HarnessDriver {
   }
 
   async probe(): Promise<HarnessProbeResult> {
-    const result = await this.runProbe('codex', ['--version']);
+    const result = await this.runProbe(this.command, ['--version']);
     return result.code === 0
       ? { available: true, detail: result.stdout.trim() }
       : { available: false, detail: result.stderr.trim() || `codex exited with ${result.code}` };
@@ -89,7 +92,7 @@ export class CodexCliDriver implements HarnessDriver {
 
   buildLaunch(input: HarnessLaunchInput): HarnessLaunchSpec {
     return {
-      command: 'codex',
+      command: this.command,
       // Native attempts are trusted user-space processes. Runtime still gates
       // system-control and high-impact external capabilities separately.
       args: buildCodexNonInteractiveArgs(input.prompt, {
@@ -337,6 +340,7 @@ async function defaultProbeCommand(command: string, args: readonly string[]) {
   try {
     const result = await execFileAsync(command, [...args], {
       env: safeHostEnvironment(process.env),
+      timeout: 5000, maxBuffer: 64 * 1024,
     });
     return { code: 0, stdout: result.stdout, stderr: result.stderr };
   } catch (error) {

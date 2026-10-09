@@ -52,8 +52,10 @@ export class PiCliDriver implements HarnessDriver {
   private readonly fallbackHomeTemplateDir?: string;
   private readonly webExtensionSourcePath?: string;
   private readonly pdfExtensionRoot: string;
+  private readonly command: string;
 
   constructor(dependencies: {
+    command?: string;
     probeCommand?: ProbeCommandRunner;
     homeTemplateDir?: string;
     generatedRuntimeRoot?: string;
@@ -61,6 +63,7 @@ export class PiCliDriver implements HarnessDriver {
     pdfExtensionRoot?: string;
   } = {}) {
     this.runProbe = dependencies.probeCommand ?? defaultProbeCommand;
+    this.command = dependencies.command ?? 'pi';
     this.pdfExtensionRoot = dependencies.pdfExtensionRoot
       ?? join(resolveMetaWorkPaths().appCurrent, 'dist', 'pi-pdf');
     this.explicitHomeTemplateDir = emptyToUndefined(dependencies.homeTemplateDir);
@@ -77,7 +80,7 @@ export class PiCliDriver implements HarnessDriver {
   }
 
   async probe(): Promise<HarnessProbeResult> {
-    const result = await this.runProbe('pi', ['--version']);
+    const result = await this.runProbe(this.command, ['--version']);
     if (result.code === 0 && existsSync(this.pdfExtensionRoot)) {
       const pdf = await this.runProbe(join(this.pdfExtensionRoot,
         process.platform === 'win32' ? 'python/python.exe' : 'python/bin/python3'), [
@@ -123,7 +126,7 @@ export class PiCliDriver implements HarnessDriver {
   buildLaunch(input: HarnessLaunchInput): HarnessLaunchSpec {
     const agentPath = `${input.runtimeHomePath}/.pi/agent`;
     return {
-      command: 'pi',
+      command: this.command,
       args: [
         '--mode',
         'json',
@@ -564,6 +567,7 @@ async function defaultProbeCommand(command: string, args: readonly string[]) {
   try {
     const result = await execFileAsync(command, [...args], {
       env: safeHostEnvironment(process.env),
+      timeout: 5000, maxBuffer: 64 * 1024,
     });
     return { code: 0, stdout: result.stdout, stderr: result.stderr };
   } catch (error) {

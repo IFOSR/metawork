@@ -16,6 +16,7 @@ import { ExecutionRuntime, ExecutorRegistry } from '../execution/execution-runti
 import type { SqliteAttemptExecutionRepository } from '../storage/attempt-execution-backend-repo.js';
 import { HarnessDriverRegistry } from '../executor/harness-driver-registry.js';
 import { CodexCliDriver } from '../executor/codex-cli-driver.js';
+import { resolveExecutorTool } from '../utils/executor-tool-path.js';
 import { PiCliDriver } from '../executor/pi-cli-driver.js';
 import type { ProbeCommandRunner } from '../executor/harness-driver.js';
 import { LocalCliExecutorAdapter } from '../executor/local-cli-executor-adapter.js';
@@ -60,9 +61,14 @@ export function buildAccountExecutionServices(deps: {
   const registerLocalDriver = (driver: CodexCliDriver | PiCliDriver) => {
     driverRegistry.register(driver, input => {
       if ((deps.attemptExecutionBackend.kind ?? 'container') === 'worktree') {
+        const command = resolveExecutorTool(input.harness.transport === 'local-cli'
+          ? input.harness.command : driver.id === 'pi-cli' ? 'pi' : 'codex');
+        const boundDriver = driver.id === 'pi-cli'
+          ? new PiCliDriver({ command, probeCommand, generatedRuntimeRoot: deps.generatedRuntimeRoot })
+          : new CodexCliDriver({ command, probeCommand, generatedRuntimeRoot: deps.generatedRuntimeRoot });
         const piAdapter = new LocalCliExecutorAdapter({
           agentClassId: input.authorizedBinding.agentClassRef,
-          driver: input.driver,
+          driver: boundDriver,
           runtimeBinding: input.runtimeBinding,
           authorizedBinding: input.authorizedBinding,
           modelId: input.configuration.models[input.authorizedBinding.modelRef]!.modelId,

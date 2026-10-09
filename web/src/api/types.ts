@@ -174,6 +174,8 @@ export interface ProviderCredentialStatus {
 export type AgentReadinessStatus = 'checking' | 'installed' | 'missing' | 'broken';
 
 export interface AgentReadiness {
+  path?: string;
+  managed?: boolean;
   agentId: 'pi-agent' | 'codex-cli';
   required: boolean;
   displayName: string;

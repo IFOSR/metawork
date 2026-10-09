@@ -1,4 +1,7 @@
 import { resolveHostToolPath } from '../utils/host-tool-path.js';
+import { resolveExecutorTool } from '../utils/executor-tool-path.js';
+import { validateCodexCommand } from '../executor/tool-validation.js';
+import { defaultVersionProbe } from '../management/agent-installation-readiness-service.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { DesktopSessionService } from '../management/desktop-session.js';
@@ -724,6 +727,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     probe: createProductionConfigurationProbe({
       releaseRoot: applicationRoot,
       secretStore,
+      previousSnapshot: () => configurationRepository.getActiveSnapshot(),
     }),
   });
   const runtimeBindings = createProductionRuntimeBindings({
@@ -1086,8 +1090,16 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     gate: configurationActivationGate,
     initialSnapshot: migratedSnapshot,
     validateActivationConfig: validateEnabledModelPrices,
-    prepareConfig: ({ config, secrets, spanApiKey }) => {
+    prepareConfig: async ({ config, secrets, spanApiKey }) => {
       const prepared = structuredClone(config) as AnyFusionConfigurationV2;
+      const previous = (await configurationRepository.getActiveSnapshot()).config;
+      for (const [ref, harness] of Object.entries(prepared.harnesses)) {
+        const old = previous.harnesses[ref];
+        if (harness.transport === 'local-cli' && harness.driverId === 'codex-cli'
+          && (old?.transport !== 'local-cli' || old.command !== harness.command)) {
+          await validateCodexCommand(harness.command);
+        }
+      }
       for (const [providerRef, apiKey] of Object.entries(secrets)) {
         const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
         const provider = prepared.providers[providerRef];
@@ -1197,20 +1209,31 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
   });
   const agentReadiness = new AgentInstallationReadinessService({
-    requiredAgentIds: () => {
-      const config = configurationRuntimeCoordinator.getSnapshot().config;
-      return [...new Set(Object.values(config.agentClasses)
-        .filter(agent => agent.kind === 'executor' && agent.enabled)
-        .flatMap(agent => {
-          const driver = config.harnesses[agent.harnessRef]?.driverId;
-          return driver === 'pi-cli' ? ['pi-agent' as const]
-            : driver === 'codex-cli' ? ['codex-cli' as const] : [];
-        }))];
+    requiredAgentIds: () => ['pi-agent'],
+    resolveCommand: definition => {
+      const driverId = definition.agentId === 'pi-agent' ? 'pi-cli' : 'codex-cli';
+      const harness = Object.values(configurationRuntimeCoordinator.getSnapshot().config.harnesses)
+        .find(harness => harness.driverId === driverId && harness.transport === 'local-cli');
+      const command = resolveExecutorTool(harness?.transport === 'local-cli' ? harness.command : definition.command,
+        { releaseRoot: applicationRoot });
+      return { command, managed: definition.agentId === 'pi-agent' && Boolean(process.env.METAWORK_MANAGED_PI
+        || command.includes('/desktop-tools/executor/') || command.includes('.tools/executor/')) };
+    },
+    probe: async (command, args, timeoutMs) => {
+      const result = await defaultVersionProbe(command, args, timeoutMs);
+      const codex = Object.values(configurationRuntimeCoordinator.getSnapshot().config.harnesses)
+        .find(harness => harness.driverId === 'codex-cli' && harness.transport === 'local-cli');
+      if (result.kind === 'exit' && result.code === 0
+        && command === resolveExecutorTool(codex?.transport === 'local-cli' ? codex.command : 'codex')) {
+        try { await validateCodexCommand(command); }
+        catch (error) { return { kind: 'error', detail: (error as Error).message }; }
+      }
+      return result;
     },
     // Installation belongs to the shared tool, not one arbitrarily chosen assistant.
     resolveDisplayName: agentId => agentId === 'pi-agent' ? 'Pi' : 'Codex CLI',
   });
-  republishAgentReadiness = () => agentReadiness.republish();
+  republishAgentReadiness = () => { void agentReadiness.refresh({ force: true }).catch(() => undefined); };
   const runtimePort = activatedAccountRuntime.getConversationPort();
   conversationRegistry = new ConversationRegistry();
 

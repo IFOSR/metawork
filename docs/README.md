@@ -17,6 +17,8 @@ This directory contains both current technical documentation and historical plan
 
 ## Current Docs
 
+- [Pi 随应用维护与可选执行工具接入方案](plans/2026-10-09-managed-pi-and-optional-tools-design.md)：v0.1.9 本地 arm64 DMG 与自动验收完成，待用户安装验证，尚未发布；Pi 随 MetaWork 维护，Codex 支持自动发现与路径配置，其缺失不阻断应用更新。
+
 - [PDF 处理与执行卡住修复方案](plans/2026-10-06-pdf-processing-and-executor-stall-repair.md)：已完成原生 macOS arm64 实施与验收；补齐 DeepSeek Flash 视觉输入、系统 Pi 的 PDF 能力接入、持续无活动检测与真实进度展示，不限制正常长任务总时长。
 
 - [智能体基础操作与职责分工](plans/2026-10-06-agent-baseline-permissions-design.md)：本地代码、原生与 Electron 验收完成，Docker 实跑待验收；取消研究/工程权限二选一，基础操作默认可用，职责负责分工，敏感操作沿用系统授权。
@@ -117,6 +119,8 @@ replacing those semantics.
 - [附件资源执行实施计划](plans/2026-09-17-attachment-resource-execution-implementation-plan.md): delivered attachment storage, Planner metadata projection, Kernel eligibility, attempt-local materialization, document-processing routing, Web migration, and local validation evidence. The standalone document-reader bundle was reversed on 2026-09-18. Docker image validation remains network-blocked.
 
 ## Active Delivery
+
+- [一期账号授权与官方内置 AI 最终方案](plans/2026-10-09-account-license-and-managed-internal-ai-design.md)：产品方案已确认、尚未实施。Web/Desktop 登录归属本机 Server，TUI/飞书共享状态；单当前官方账号、无硬件绑定或短租约，活动任务每日后台核验，内置模型配置与密钥仅由官方维护。
 
 - [Desktop 接入已有 Web Runtime](plans/2026-10-08-desktop-existing-runtime-adoption.md)：同版本复用与工具补齐、旧版本原地升级、数据保留及联合激活回滚验证。
 

@@ -36,6 +36,7 @@ export const SPAN_ROUTING_MIN_TIMEOUT_MS = 500;
 export const SPAN_ROUTING_MAX_TIMEOUT_MS = 10_000;
 const RELEASE_REFERENCE = /^release:[a-z][a-z0-9-]{0,63}$/;
 const BARE_COMMAND = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const ABSOLUTE_EXECUTABLE = /^(?:\/|[A-Za-z]:[\\/])[^\r\n\0]{1,2047}$/u;
 const DOMAIN_NAME =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
@@ -245,7 +246,7 @@ const HarnessDefinitionSchema = z.discriminatedUnion('transport', [
   z.object({
     ...HarnessBaseShape,
     transport: z.literal('local-cli'),
-    command: z.string().regex(BARE_COMMAND),
+    command: z.string().refine(value => BARE_COMMAND.test(value) || ABSOLUTE_EXECUTABLE.test(value)),
     args: uniqueArray(CommandArgumentSchema, 'command argument', 64).default([]),
   }).strict(),
   z.object({
@@ -592,7 +593,8 @@ export const AnyFusionConfigurationV2Schema = z.object({
       && (
         driver.transport !== 'local-cli'
         || !('command' in driver)
-        || driver.command !== harness.command
+        || (driver.command !== harness.command
+          && !(harness.driverId === 'codex-cli' && ABSOLUTE_EXECUTABLE.test(harness.command)))
       )
     ) {
       context.addIssue({

@@ -1,4 +1,5 @@
 import { ModelCapabilityDetails } from './ModelCapabilityDetails';
+import { ExecutorTools } from './ExecutorTools';
 import { sameAiText, aiActionError, type ResponsibilityRewriteFeedback } from './AiActionStatus';
 import { useEffect, useRef, useState } from 'react';
 import type { HttpClient } from '../api/http';
@@ -432,6 +433,7 @@ export function SettingsPanel({
 }: SettingsPanelProps) {
   const [activationState, setActivationState] = useState<ConfigurationRuntimeState | null>(runtime);
   const [revisionId, setRevisionId] = useState<string | null>(null);
+  const [codexCommand, setCodexCommand] = useState('codex');
   const [draft, setDraft] = useState<RoutingDraft | null>(null);
   const [facts, setFacts] = useState<RoutingFacts | null>(null);
   const [catalog, setCatalog] = useState<CatalogDraft | null>(null);
@@ -507,6 +509,8 @@ export function SettingsPanel({
     completion?: ConfigurationCompletionResult,
   ) => {
     const config = snapshot.config as RawRecord;
+    const codex = Object.values(asRecord(config.harnesses)).map(asRecord).find(harness => harness.driverId === 'codex-cli');
+    setCodexCommand(typeof codex?.command === 'string' ? codex.command : 'codex');
     setRevisionId(snapshot.revisionId);
     setExecutorDefinitions({});
     setExecutorPermissionProfiles({});
@@ -774,6 +778,12 @@ export function SettingsPanel({
     const originalProviders = asRecord(originalConfig.providers);
     const originalAgentClasses = { ...asRecord(originalConfig.agentClasses), ...executorDefinitions };
     const harnesses = { ...asRecord(originalConfig.harnesses) };
+    for (const [ref, value] of Object.entries(harnesses)) {
+      const harness = asRecord(value);
+      if (harness.driverId === 'codex-cli' && harness.transport === 'local-cli') {
+        harnesses[ref] = { ...harness, command: codexCommand.trim() || 'codex' };
+      }
+    }
     const spanRoutingSection = buildSpanRoutingSection(spanDraft, originalConfig);
     const knownSecretReferences = Object.values(originalProviders)
       .map(provider => asRecord(provider).apiKeyRef)
@@ -2293,6 +2303,9 @@ export function SettingsPanel({
                 )}
               </section>
 
+              <ExecutorTools agents={agentReadiness} http={http} command={codexCommand}
+                onCommand={setCodexCommand} disabled={editingDisabled} />
+
               <section className="settings-section agents-section" aria-labelledby="agents-heading">
                 <div className="section-heading">
                   <div>
@@ -2306,60 +2319,6 @@ export function SettingsPanel({
                 {executorView?.executors.length === 0 && <p role="status">尚无智能体。新增并启用智能体后才能开始新工作。</p>}
                 {executorView && executorView.executors.length > 0 && executorView.executors.every(agent => !agent.enabled)
                   && <p role="status">全部智能体已停用，请先启用至少一名智能体。</p>}
-                {agentReadiness.length > 0 && (
-                  <div className="agent-readiness-settings">
-                    {agentReadiness.filter(agent => agent.required).map(agent => (
-                      <div className={`agent-readiness-settings-card agent-readiness-settings-${agent.status}`} key={agent.agentId}>
-                        <div>
-                          <strong>
-                            {agent.displayName} {agent.status === 'installed' ? '已就绪' : '未就绪'}
-                          </strong>
-                          <p>
-                            {agent.status === 'installed'
-                              ? '此执行工具已安装，可供多个智能体共用。'
-                              : '当前启用的智能体需要此工具。请先安装，或在空闲时停用使用它的智能体。'}
-                          </p>
-                        </div>
-                        {agent.status !== 'installed' && (
-                          <div className="agent-readiness-actions">
-                            <button
-                              type="button"
-                              className="ghost-button"
-                              onClick={() => window.open(agent.installUrl, '_blank', 'noopener,noreferrer')}
-                            >
-                              打开安装页面
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                    {agentReadiness.filter(agent => !agent.required).map(agent => (
-                      <div className="agent-readiness-settings-card agent-readiness-settings-optional" key={agent.agentId}>
-                        <div>
-                          <strong>
-                            {agent.displayName} {agent.status === 'installed' ? '已安装' : agent.status === 'checking' ? '正在检测' : agent.status === 'broken' ? '暂不可用' : '未检测到 · 可选工具'}
-                          </strong>
-                          <p>
-                            {agent.status === 'installed'
-                              ? '执行工具已安装，目前没有启用的智能体需要它。'
-                              : agent.status === 'checking' ? '正在检查执行工具是否可用…' : '当前没有启用的智能体需要此工具，不影响其他智能体的配置保存。'}
-                          </p>
-                        </div>
-                        {agent.status !== 'installed' && (
-                          <div className="agent-readiness-actions">
-                            <button
-                              type="button"
-                              className="ghost-button"
-                              onClick={() => window.open(agent.installUrl, '_blank', 'noopener,noreferrer')}
-                            >
-                              查看安装说明
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
                 <p className="routing-section-note">智能体按“职责 → 模型 → 能力画像”组织。默认收起配置详情，先看整体状态，再进入单个智能体编辑。</p>
                 <div className="routing-stack">
                   {Object.entries(draft)

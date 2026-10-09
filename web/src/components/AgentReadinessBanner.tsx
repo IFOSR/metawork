@@ -43,21 +43,11 @@ export function AgentReadinessBanner({
           <div>
             <strong>{block.message}</strong>
             <p>
-              当前启用的助手需要 {requiredAgentName}。请安装该执行工具，或在系统空闲时停用使用它的助手。
+              {block.agent?.managed ? '内置执行组件暂不可用，请在设置中恢复。历史记录和设置仍可使用。' : `开始新工作需要 ${requiredAgentName}，请在设置中检查执行工具。`}
             </p>
             {block.agent?.detail && <small>{block.agent.detail}</small>}
           </div>
           <div className="agent-readiness-actions">
-            <button
-              type="button"
-              onClick={() => block.agent?.installUrl && window.open(
-                block.agent.installUrl,
-                '_blank',
-                'noopener,noreferrer',
-              )}
-            >
-              打开安装页面
-            </button>
             <button type="button" className="secondary" onClick={onOpenSettings}>设置</button>
             <button type="button" className="secondary" onClick={onRefresh}>重新检测</button>
           </div>
@@ -68,7 +58,7 @@ export function AgentReadinessBanner({
           <span className="agent-readiness-icon" aria-hidden="true">i</span>
           <div className="agent-readiness-copy">
             <strong>{codex.displayName} · {codex.status === 'broken' ? '暂不可用' : '未检测到'}</strong>
-            <p>可选工具，不影响当前工作。已安装？可以重新检测。</p>
+            <p>可选工具；暂不可用时仅影响使用 Codex 的智能体。</p>
             <details className="agent-readiness-details">
               <summary>了解更多</summary>
               <p>用于 GPT/Codex 模型的代码任务，多个智能体可以共用。终端中可用的工具，在桌面应用中可能尚未被识别。</p>

@@ -984,42 +984,53 @@ body {
   width: min(360px, 100%);
 }
 
-.agent-readiness-settings {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 16px;
+/* Execution tools share the workbench's neutral surfaces and button language. */
+.executor-tools-list { display: grid; gap: 12px; }
+.executor-tool-card {
+  min-width: 0;
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-panel);
 }
-
-.agent-readiness-settings-card {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 14px;
-  border: 1px solid rgba(224, 178, 60, 0.5);
-  border-radius: 10px;
-  background: rgba(224, 178, 60, 0.08);
+.executor-tool-header,
+.executor-tool-title { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.executor-tool-header { justify-content: space-between; gap: 12px; }
+.executor-tool-title h4 { margin: 0; font-size: 15px; font-weight: 650; }
+.executor-tool-kind,
+.executor-tool-version { color: var(--text-dim); font-size: 12px; }
+.executor-tool-kind { padding: 2px 7px; border-radius: 5px; background: var(--bg-elevated); }
+.executor-tool-version { font-variant-numeric: tabular-nums; }
+.executor-tool-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); }
+.executor-tool-status > span { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.executor-tool-status[data-status='installed'] { color: var(--green); }
+.executor-tool-status[data-status='broken'] { color: var(--red); }
+.executor-tool-status[data-status='pending'] { color: var(--accent); }
+.executor-tool-description { margin: 10px 0 0; color: var(--text-dim); font-size: 13px; line-height: 1.6; }
+.executor-tool-path { margin-top: 10px; font-size: 12px; color: var(--text-dim); }
+.executor-tool-path summary { width: fit-content; cursor: pointer; }
+.executor-tool-path code,
+.executor-tool-path p { display: block; margin: 8px 0 0; overflow-wrap: anywhere; line-height: 1.6; }
+.executor-tool-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.executor-tool-actions .ghost-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 36px;
+  padding: 7px 13px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  text-decoration: none;
 }
-
-.agent-readiness-settings-card strong {
-  display: block;
-}
-
-.agent-readiness-settings-card p {
-  max-width: 760px;
-  margin: 5px 0 0;
-  color: var(--text-dim);
-  line-height: 1.5;
-}
-
-.agent-readiness-settings-installed {
-  border-color: rgba(55, 201, 127, 0.5);
-  background: rgba(55, 201, 127, 0.08);
-}
-
-.agent-readiness-settings-optional {
-  border-color: rgba(76, 141, 255, 0.5);
-  background: rgba(76, 141, 255, 0.08);
+.executor-tool-actions .ghost-button:focus-visible,
+.executor-tool-path summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.executor-tool-actions button:disabled { opacity: 0.45; cursor: not-allowed; }
+.executor-tools-message:not(:empty) { margin-top: 12px; color: var(--text-dim); font-size: 13px; }
+@media (max-width: 600px) {
+  .executor-tool-card { padding: 15px; }
+  .executor-tool-actions .ghost-button { min-height: 40px; }
 }
 
 .settings-header h2,

@@ -38,6 +38,21 @@ afterEach(() => {
 });
 
 describe('SourceNativeUpdater', () => {
+  it('updates and rolls back with enabled Codex absent, preserving configuration and data', async () => {
+    const fixture = await installedFixture();
+    const repository = new FileConfigurationRepository(fixture.accountPaths.config);
+    const before = await repository.getActiveSnapshot();
+    expect(Object.values(before.config.agentClasses).some(agent => agent.enabled && agent.harnessRef === 'codex-cli')).toBe(true);
+    const sourceRoot = join(fixture.home, 'without-codex');
+    const plannerRoot = join(fixture.home, 'planner-without-codex');
+    fixtureRelease(sourceRoot, plannerRoot, 'next-runtime', 'next-planner');
+    const updater = new SourceNativeUpdater({ paths: fixture.paths, secretStore: fixture.secretStore,
+      detectCommand: async () => false, isServerRunning: async () => false });
+    await updater.update({ releaseId: '1.2.1-preview.0', sourceRoot, plannerRoot });
+    expect((await repository.getActiveSnapshot()).contentHash).toBe(before.contentHash);
+    await updater.rollback('1.2.0-preview.0');
+    expect((await repository.getActiveSnapshot()).contentHash).toBe(before.contentHash);
+  });
   it('preserves a model-free installation across update and rollback', async () => {
     const fixture = await installedFixture(false);
     const repository = new FileConfigurationRepository(fixture.accountPaths.config);

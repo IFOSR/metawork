@@ -18,7 +18,7 @@ export function requiredAgentBlock(
   if (agents.length === 0 || (agent && agent.status !== 'installed')) {
     return {
       blocked: true,
-      message: `需要先安装${agent?.displayName ?? '必需智能体'}才能开始新工作。`,
+      message: agent?.managed ? '内置执行组件暂不可用，请在设置中恢复。' : `需要先安装${agent?.displayName ?? '必需智能体'}才能开始新工作。`,
       agent,
     };
   }

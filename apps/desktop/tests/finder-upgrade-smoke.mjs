@@ -26,10 +26,14 @@ const env = { PATH: `${toolsPath}:/usr/bin:/bin`, METAWORK_INSTALL_ROOT: root, A
   METAWORK_CONFIG_HOME: join(root, 'config'), ANYFUSION_CONFIG_HOME: join(root, 'config'),
   METAWORK_WEB_PORT: '0', METAWORK_SECRET_STORE: 'file', ANYFUSION_SECRET_STORE: 'file',
   METAWORK_INTERNAL_LLM_SOURCE_ROOT: join(root, 'absent-internal-config') };
+const missingCodex = process.env.METAWORK_SMOKE_ENABLED_CODEX === '1';
+if (missingCodex) {
+  env.HOME = join(root, 'empty-home'); await mkdir(env.HOME, { recursive: true });
+}
 Object.assign(process.env, env);
 const paths = resolveMetaWorkPaths(undefined, root);
 await new SourceNativeInstaller({ paths, secretStore: createProductionSecretStore({ credentialsFile: paths.credentials }),
-  detectCommand: name => commandExistsOnPath(name, env.PATH), installLaunchers: false }).install({
+  detectCommand: name => missingCodex ? Promise.resolve(true) : commandExistsOnPath(name, env.PATH), installLaunchers: false }).install({
   releaseId: previous.releaseId, sourceRoot: previousRuntime, plannerRoot: join(previousRuntime, 'planner'),
   executorPreset: 'desktop-pi', provider: { baseUrl: 'https://provider.example.invalid/v1', modelId: 'deepseek-chat',
     apiKey: 'existing-user-fixture', region: 'international', secretReference: 'file-secret:anyfusion/providers/provider' },
@@ -106,6 +110,13 @@ try {
     const reopened = await openFinder();
     await reopened.locator('.workspace-shell').waitFor({ state: 'visible', timeout: 120000 });
     assert.equal(await reopened.evaluate(async () => (await (await fetch('/api/auth/session')).json()).authenticated), true);
+    if (missingCodex) {
+      const tools = await reopened.evaluate(async () => (await (await fetch('/api/agents/readiness/refresh', { method: 'POST' })).json()).agents);
+      const codex = tools.find(tool => tool.agentId === 'codex-cli');
+      assert.equal(codex.required, false);
+      assert.notEqual(codex.status, 'installed');
+      assert.equal(tools.find(tool => tool.agentId === 'pi-agent').managed, true);
+    }
     endpoint = await json(join(root, 'server-endpoint.json'));
     if (serverPid) assert.equal(endpoint.pid, serverPid, 'reopening Desktop must reuse Server');
     serverPid = endpoint.pid;
@@ -119,7 +130,7 @@ try {
   assert.equal(await access(join(root, 'upgrades/desktop-helper.lock')).then(() => true, () => false), false);
   await writeFile(join(fixture, 'finder-evidence.json'), JSON.stringify({ releaseId: descriptor.releaseId,
     launch: 'LaunchServices', historicalJournal: true, staleHelper: true, authenticatedRender: true,
-    repeatLaunches: 2, serverSurvivesFinderQuit: true, configurationAndWorkPreserved: true }, null, 2));
+    repeatLaunches: 2, serverSurvivesFinderQuit: true, configurationAndWorkPreserved: true, enabledCodexMissing: missingCodex }, null, 2));
   console.log('PASS: Finder upgrade, retained data, two restarts, independent Server');
 } finally {
   await browser?.close().catch(() => {});

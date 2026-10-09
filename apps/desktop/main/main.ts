@@ -19,6 +19,7 @@ import { installNativeLauncher } from '../../../src/installation/native-launcher
 import { authorizeDesktopShellCheck, writeDesktopShellHealth } from '../../../src/installation/desktop-shell-health.js';
 import { checkDesktopRelease } from './release-check.js';
 import { startupFailureCode } from './startup-diagnostic.js';
+import { claimAutomaticPiRepair } from '../../../src/installation/managed-pi-recovery.js';
 
 app.setName('MetaWork');
 
@@ -218,6 +219,10 @@ async function connectOnce(): Promise<void> {
         instanceId: grant.instanceId, pid: process.pid });
     }
     setState({ phase: 'ready', message: '后台服务已连接' });
+    if (installation && !shellCheckChallenge && !await installation.piIntact()) {
+      // Run only after ordinary Web is available. Failed repair never becomes an update loop.
+      setTimeout(() => { void repairPi(true).catch(() => undefined); }, 0);
+    }
   } catch (error) {
     // Never interpolate provider response bodies or native command output into diagnostics.
     const diagnostic = { time: new Date().toISOString(), stage, code: startupFailureCode(error) };
@@ -248,6 +253,12 @@ ipcMain.handle('desktop:clear-drafts', event => { owned(event); return preferenc
 ipcMain.handle('desktop:viewport', (event, id, value) => { owned(event); return preferences!.setViewport(id, value); });
 ipcMain.handle('desktop:route', (event, route) => { owned(event); return preferences!.setRoute(route); });
 ipcMain.handle('desktop:reconnect', event => { owned(event); return connect(); });
+ipcMain.handle('desktop:select-executor', async event => {
+  owned(event);
+  const result = await dialog.showOpenDialog(window!, { title: '选择 Codex 可执行文件', properties: ['openFile', 'showHiddenFiles'] });
+  return result.canceled ? null : result.filePaths[0] ?? null;
+});
+ipcMain.handle('desktop:repair-pi', event => { owned(event); return repairPi(false); });
 ipcMain.handle('desktop:select-workspace', async event => {
   owned(event);
   const result = await dialog.showOpenDialog(window!, { title: '选择工作区', properties: ['openDirectory', 'createDirectory'] });
@@ -336,6 +347,34 @@ async function stopService(): Promise<void> {
     setState({ phase: 'error', message: '后台服务已停止。点击重新连接可再次启动。' });
     await window.loadURL(shellUrl);
   } catch { dialog.showErrorBox('服务尚未停止', '请检查后台状态。任务状态以 Server 中的记录为准。'); }
+}
+
+let piRepairPromise: Promise<{ ok: boolean; message: string }> | null = null;
+function repairPi(automatic: boolean): Promise<{ ok: boolean; message: string }> {
+  piRepairPromise ??= repairPiOnce(automatic).finally(() => { piRepairPromise = null; });
+  return piRepairPromise;
+}
+async function repairPiOnce(automatic: boolean): Promise<{ ok: boolean; message: string }> {
+  if (!installation || !origin || updatingApplication) return { ok: false, message: '当前无法恢复，请稍后重试。' };
+  const response = await webSession.fetch(`${origin}/api/config/activation-status`);
+  const gate = await response.json() as { activationAllowed?: boolean };
+  if (!response.ok || !gate.activationAllowed) return { ok: false, message: '请等待任务完成后恢复执行组件。' };
+  const release = await installation.verify();
+  if (automatic && !await claimAutomaticPiRepair(installRoot, release.releaseId)) {
+    return { ok: false, message: '自动恢复未完成，请在设置中重试恢复。' };
+  }
+  updatingApplication = true;
+  try {
+    setState({ phase: 'connecting', busy: true, message: '正在恢复执行组件，请等待，无需重复打开应用…' });
+    await manager.stopForUpdate();
+    await installation.run('repair-tools');
+    return { ok: true, message: '执行组件已恢复，正在重新连接。' };
+  } catch {
+    return { ok: false, message: '执行组件恢复失败。请检查磁盘空间与权限，或重新安装相同版本 MetaWork。' };
+  } finally {
+    updatingApplication = false;
+    await connect();
+  }
 }
 
 async function updateApplication(recover = false): Promise<void> {

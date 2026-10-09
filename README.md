@@ -70,6 +70,11 @@ existing names where changing them would break installations.
 
 ## Release
 
+Local development: **v0.1.9** is an unpublished macOS arm64 acceptance build.
+It keeps Pi managed with MetaWork, adds optional Codex path settings, and prevents
+missing external tools from rolling back application updates. See the
+[implementation and validation record](docs/plans/2026-10-09-managed-pi-and-optional-tools-design.md).
+
 [Latest stable release](https://github.com/IFOSR/metawork/releases/latest) is the
 source of truth for the current installable version. A newer source checkout
 is not a published release.

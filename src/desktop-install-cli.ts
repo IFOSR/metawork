@@ -12,6 +12,7 @@ import { commandExistsOnPath } from './configuration/production-configuration-pr
 import { isInstanceRunning } from './management/lock.js';
 import { acquireRuntimeUpdateLock } from './installation/runtime-update-lock.js';
 import { prepareDesktopSupport } from './installation/desktop-support.js';
+import { restoreManagedTools } from './installation/managed-pi-recovery.js';
 
 const ProviderSchema = z.object({
   baseUrl: z.url().refine(value => ['https:', 'http:'].includes(new URL(value).protocol)),
@@ -25,7 +26,7 @@ export async function runDesktopInstall(
   const toolPath = await resolveHostToolPath(process.env);
   if (toolPath !== undefined) process.env.PATH = toolPath;
   const [command, resourcesArg, rootArg, desktopVersion] = argv;
-  if (!['install', 'update', 'rollback', 'prepare-desktop'].includes(command ?? '') || !resourcesArg || !rootArg || !desktopVersion) {
+  if (!['install', 'update', 'rollback', 'prepare-desktop', 'repair-tools'].includes(command ?? '') || !resourcesArg || !rootArg || !desktopVersion) {
     throw new Error('Invalid desktop installer arguments');
   }
   const resources = resolve(resourcesArg);
@@ -40,11 +41,15 @@ export async function runDesktopInstall(
   }
   const running = () => isInstanceRunning(join(paths.data, 'runtime.lock'));
   if (await running()) throw new Error('Server must finish its formal stop before installation');
+  if (command === 'repair-tools') {
+    await restoreManagedTools(resources, paths.root, release);
+    return;
+  }
   const sourceRoot = join(resources, 'payload', 'metawork');
   const plannerRoot = join(resources, 'payload', 'planner');
   const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials });
   const searchPath = [join(sourceRoot, 'desktop-tools/node/bin'), join(sourceRoot, 'desktop-tools/git/bin'),
-    join(sourceRoot, 'desktop-tools/executor/bin'), '/usr/bin', '/bin'].join(':');
+    join(sourceRoot, 'desktop-tools/executor/bin'), process.env.PATH ?? '/usr/bin:/bin'].join(':');
   const detectCommand = (name: string) => commandExistsOnPath(name, searchPath);
   if (command === 'install') {
     let body = '';

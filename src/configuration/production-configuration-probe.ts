@@ -1,5 +1,6 @@
 import { access } from 'node:fs/promises';
-import { delimiter, join } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
+import { executableFile, resolveExecutorTool } from '../utils/executor-tool-path.js';
 import type {
   CompiledConfigurationRevision,
   ConfigurationProbeResult,
@@ -11,11 +12,14 @@ export function createProductionConfigurationProbe(input: {
   releaseRoot: string;
   secretStore: SecretStore;
   detectCommand?: (command: string) => Promise<boolean>;
+  /** Program activation is independent of external Executor installation readiness. */
+  checkExecutors?: boolean;
+  previousSnapshot?: () => Promise<ConfigurationSnapshot>;
 }): (
   snapshot: ConfigurationSnapshot,
   compiled: CompiledConfigurationRevision,
 ) => Promise<ConfigurationProbeResult> {
-  const detectCommand = input.detectCommand ?? commandExistsOnPath;
+  const detectCommand = input.detectCommand ?? (async command => executableFile(resolveExecutorTool(command, { releaseRoot: input.releaseRoot })));
   return async snapshot => {
     const issues: string[] = [];
     for (const [providerRef, provider] of Object.entries(snapshot.config.providers)) {
@@ -59,12 +63,17 @@ export function createProductionConfigurationProbe(input: {
       }
     }
 
+    const previous = await input.previousSnapshot?.();
     const requiredHarnesses = new Set(Object.values(snapshot.config.agentClasses)
       .filter(agent => agent.enabled)
       .map(agent => agent.harnessRef));
     for (const [ref, harness] of Object.entries(snapshot.config.harnesses)) {
+      if (input.checkExecutors === false) continue;
       if (!requiredHarnesses.has(ref)) continue;
       if (harness.transport !== 'local-cli' || !harness.enabled) continue;
+      // Unchanged unavailable tools must not block repairing unrelated settings.
+      const old = previous?.config.harnesses[ref];
+      if (old?.transport === 'local-cli' && old.command === harness.command) continue;
       const commandAvailable = await detectCommand(harness.command);
       if (!commandAvailable) {
         issues.push(`Executor command is unavailable: ${harness.command}`);
@@ -79,10 +88,7 @@ export async function commandExistsOnPath(
   command: string,
   searchPath = process.env.PATH ?? '',
 ): Promise<boolean> {
-  for (const directory of searchPath.split(delimiter)) {
-    if (await access(join(directory || process.cwd(), command)).then(() => true, () => false)) {
-      return true;
-    }
-  }
-  return false;
+  if (isAbsolute(command)) return executableFile(command);
+  if (command.includes('/') || command.includes('\\')) return false;
+  return searchPath.split(delimiter).some(directory => isAbsolute(directory) && executableFile(join(directory, command)));
 }

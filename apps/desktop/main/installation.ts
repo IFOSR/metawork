@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
 import { access, readFile, realpath } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { verifyDesktopRelease, type DesktopRelease } from '../../../src/installation/desktop-release.js';
 import { readReleaseIdentity } from '../../../src/installation/release-identity.js';
 import { desktopSupportRoot } from '../../../src/installation/desktop-support.js';
+import { recoveredToolsPath, verifyManagedPi } from '../../../src/installation/managed-pi-recovery.js';
 
 /** Installation transport only: database/configuration/activation remain in the native helper. */
 export class DesktopInstallation {
@@ -34,6 +35,8 @@ export class DesktopInstallation {
     const release = await this.verify();
     const identity = await readReleaseIdentity(join(this.root, 'app/current/release-identity.json'));
     if (identity?.releaseId !== release.releaseId) throw new Error('Installed release mismatch');
+    try { return await realpath(join(recoveredToolsPath(this.root, release.releaseId), 'node/bin/node')); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     try { return await realpath(join(this.root, 'app/current/desktop-tools/node/bin/node')); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     // Native Web releases omit Desktop tools. Provision a durable helper/tool
@@ -41,7 +44,11 @@ export class DesktopInstallation {
     await this.run('prepare-desktop');
     return realpath(join(desktopSupportRoot(this.root, release.releaseId), 'desktop-tools/node/bin/node'));
   }
-  async run(command: 'install' | 'update' | 'rollback' | 'prepare-desktop'): Promise<void> {
+  async piIntact(): Promise<boolean> {
+    const node = await this.nodePath();
+    return verifyManagedPi(resolve(dirname(node), '../..'), await this.verify());
+  }
+  async run(command: 'install' | 'update' | 'rollback' | 'prepare-desktop' | 'repair-tools'): Promise<void> {
     if (this.installing) throw new Error('Installation already in progress');
     this.installing = true;
     try {

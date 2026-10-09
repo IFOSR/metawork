@@ -61,6 +61,10 @@ AnyFusion 标识。
 [最新稳定版](https://github.com/IFOSR/metawork/releases/latest)是当前可安装版本的
 统一发布入口。源码版本领先不代表已发布。
 
+本地开发中的 **v0.1.9** 是尚未发布的 macOS arm64 验收版：Pi 随 MetaWork
+维护，Codex 支持可选路径配置，外部工具缺失不再导致应用升级回滚。
+实施与验证进展见[方案记录](docs/plans/2026-10-09-managed-pi-and-optional-tools-design.md)。
+
 当前内部发布版本是 **v0.1.8**，包含 Server/Web/TUI 运行时和供公司内部使用的
 Apple Silicon Desktop DMG。该 Desktop DMG **未使用 Apple Developer ID 签名且未公证**，专门用于公司内部
 macOS 设备。[Release 页面](https://github.com/IFOSR/metawork/releases/latest)

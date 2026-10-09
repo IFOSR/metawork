@@ -7,6 +7,13 @@ The project follows [Semantic Versioning](https://semver.org/) for public releas
 
 ## [Unreleased]
 
+## [0.1.9] - Local acceptance candidate (not published)
+
+- Keep Pi Executor managed with the application; optional Codex has executable
+  path configuration and no longer blocks application update when unavailable.
+- Unify tool detection and execution bindings; add bounded, release-matched
+  managed-component recovery and clear tool settings.
+
 ## [0.1.7] - 2026-10-08
 
 ### Fixed

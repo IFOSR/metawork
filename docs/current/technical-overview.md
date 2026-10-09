@@ -1,5 +1,14 @@
 # MetaWork
 
+Managed Pi and optional tools (2026-10-09): Desktop uses its release-managed Pi
+Executor entrypoint, independent of the user's global Pi. Codex paths are
+validated and activated through the existing strict-idle settings transaction;
+probe and execution use the same resolved entrypoint. Missing external tools
+do not roll back program updates. Managed tool repair is release-matched,
+serialized with the existing update lock and limited to one automatic attempt.
+See the managed-Pi plan for implementation and packaged acceptance status.
+
+
 Desktop first launch (2026-10-08, ADR-0045) initializes without model credentials:
 empty Provider/Model catalogs, disabled editable AgentClass presets, and an
 explicitly absent Planner binding. The ordinary Server provides Settings and

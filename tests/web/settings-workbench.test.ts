@@ -314,14 +314,9 @@ describe('Settings workbench model semantics', () => {
         readFile(new URL('../../src/server/server-composition.ts', import.meta.url), 'utf8'),
       ]);
 
-    // 多个助手共用执行工具；安装卡片使用服务端工具名称。
-    expect(settingsSource).toContain(
-      "{agent.displayName} {agent.status === 'installed' ? '已就绪' : '未就绪'}",
-    );
-    expect(settingsSource).toContain(
-      "{agent.displayName} {agent.status === 'installed' ? '已安装' : '可选增强'}",
-    );
-    expect(bannerSource).toContain('<strong>{codex.displayName} 未安装，可选增强</strong>');
+    // Tool controls now have their own component rather than duplicated agent notices.
+    expect(settingsSource).toContain('<ExecutorTools');
+    expect(bannerSource).toContain('内置执行组件暂不可用');
 
     // 任何用户可见文案都不得再硬编码“智能体 N”，否则会与“智能体名称”不一致。
     expect(settingsSource).not.toMatch(/智能体 [12]/u);
@@ -337,7 +332,7 @@ describe('Settings workbench model semantics', () => {
     // 否则卡片要等到下次探测（TTL 或手动重新检测）才更新。
     expect(serviceSource).toContain('republish(): void');
     expect(serviceSource).toContain('deriveNames(this.state)');
-    expect(compositionSource).toContain('republishAgentReadiness = () => agentReadiness.republish();');
+    expect(compositionSource).toContain('agentReadiness.refresh({ force: true })');
     expect(compositionSource).toContain('republishAgentReadiness?.();');
   });
 

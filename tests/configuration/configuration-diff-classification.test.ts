@@ -7,6 +7,17 @@ import { buildStagedLegacyConfiguration } from '../../src/configuration/staged-l
 import { buildExecutorConfigurationCandidate } from '../../src/configuration/executor-configuration.js';
 
 describe('configuration diff classification', () => {
+  it('allows only a Codex executable binding change through the idle transaction', () => {
+    const base = buildStagedLegacyConfiguration({ testMode: true }).snapshot.config;
+    const next = structuredClone(base);
+    const ref = Object.keys(next.harnesses).find(ref => next.harnesses[ref]!.driverId === 'codex-cli')!;
+    const harness = next.harnesses[ref]!;
+    if (harness.transport !== 'local-cli') throw new Error('expected CLI');
+    harness.command = '/Users/example/My Tools/codex';
+    expect(classifyConfigurationDiff(base, next).classification).toBe('hot');
+    harness.args = ['--unreviewed'];
+    expect(classifyConfigurationDiff(base, next).classification).toBe('restart_required');
+  });
   it('hot activates the settings task limit without allowing unrelated runtime policy changes', () => {
     const base = buildStagedLegacyConfiguration({ testMode: true }).snapshot.config;
     const next = structuredClone(base);

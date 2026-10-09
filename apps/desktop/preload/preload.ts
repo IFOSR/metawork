@@ -19,6 +19,8 @@ if (process.isMainFrame) {
     const bridge: DesktopBridge = {
       version: 1,
       selectWorkspaceDirectory: () => ipcRenderer.invoke('desktop:select-workspace'),
+      selectExecutorFile: () => ipcRenderer.invoke('desktop:select-executor'),
+      repairPi: () => ipcRenderer.invoke('desktop:repair-pi'),
       saveArtifact: id => ipcRenderer.invoke('desktop:save-artifact', id),
       showDownloadedArtifact: id => ipcRenderer.invoke('desktop:reveal-artifact', id),
       readPreferences: () => ipcRenderer.invoke('desktop:preferences'),

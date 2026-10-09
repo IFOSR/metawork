@@ -30,6 +30,8 @@ export type VersionProbeRunner = (
 export type AgentInstallStatus = 'checking' | 'installed' | 'missing' | 'broken';
 
 export interface AgentReadiness {
+  path?: string;
+  managed?: boolean;
   agentId: SupportedAgentId;
   required: boolean;
   displayName: string;
@@ -41,6 +43,7 @@ export interface AgentReadiness {
 }
 
 export interface AgentInstallationReadinessServiceDeps {
+  resolveCommand?: (definition: AgentInstallationDefinition) => { command: string; managed: boolean };
   probe?: VersionProbeRunner;
   now?: () => number;
   ttlMs?: number;
@@ -153,9 +156,11 @@ export class AgentInstallationReadinessService {
     definition: AgentInstallationDefinition,
   ): Promise<AgentReadiness> {
     const checkedAt = new Date(this.now()).toISOString();
+    const resolved = this.deps.resolveCommand?.(definition);
+    const metadata = resolved ? { path: resolved.command, managed: resolved.managed } : {};
     let result: VersionProbeResult;
     try {
-      result = await this.probe(definition.command, definition.args, this.timeoutMs);
+      result = await this.probe(resolved?.command ?? definition.command, definition.args, this.timeoutMs);
     } catch (error) {
       result = {
         kind: 'error',
@@ -165,6 +170,7 @@ export class AgentInstallationReadinessService {
     if (result.kind === 'exit' && result.code === 0) {
       return {
         ...this.initialState(definition),
+        ...metadata,
         status: 'installed',
         version: firstOutputLine(result.stdout),
         checkedAt,
@@ -172,6 +178,7 @@ export class AgentInstallationReadinessService {
     }
     return {
       ...this.initialState(definition),
+      ...metadata,
       status: result.kind === 'missing' ? 'missing' : 'broken',
       detail: boundedDetail(detailForProbeResult(result)),
       checkedAt,
@@ -184,7 +191,7 @@ export class AgentInstallationReadinessService {
   }
 }
 
-async function defaultVersionProbe(
+export async function defaultVersionProbe(
   command: string,
   args: readonly string[],
   timeoutMs: number,

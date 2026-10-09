@@ -8,7 +8,7 @@ const stages = ['waiting-desktop', 'verify', 'stop', 'updateRuntime', 'replaceSh
 type Stage = typeof stages[number];
 const codes = ['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'ENOSPC', 'ECONNREFUSED', 'EADDRINUSE',
   'runtime-not-ready', 'desktop-not-ready', 'desktop-exited', 'identity-mismatch',
-  'payload-rejected', 'desktop-not-exited', 'unexpected'] as const;
+  'payload-rejected', 'desktop-not-exited', 'configuration-invalid', 'unexpected'] as const;
 type FailureCode = typeof codes[number];
 export interface DesktopUpdateDiagnostic {
   schemaVersion: 1;

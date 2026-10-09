@@ -592,7 +592,7 @@ describe('AnyFusion configuration schema v2', () => {
     }).success).toBe(false);
   });
 
-  it('requires local CLI Harnesses to use a registered driver and bare command', () => {
+  it('requires registered tools and permits an absolute Codex executable', () => {
     const config = completeConfiguration();
 
     expect(AnyFusionConfigurationV2Schema.safeParse({
@@ -628,7 +628,7 @@ describe('AnyFusion configuration schema v2', () => {
           command: '/usr/local/bin/codex',
         },
       },
-    }).success).toBe(false);
+    }).success).toBe(true);
 
     expect(AnyFusionConfigurationV2Schema.safeParse({
       ...config,

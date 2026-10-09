@@ -166,6 +166,7 @@ export class SourceNativeUpdater {
       };
       const journalPath = join(paths.upgradeJournals, `${upgradeId}-activation.json`);
       const probe = createProductionConfigurationProbe({
+        checkExecutors: false,
         releaseRoot: release.releaseRoot,
         secretStore: this.dependencies.secretStore,
         detectCommand: this.dependencies.detectCommand,
@@ -179,9 +180,9 @@ export class SourceNativeUpdater {
         healthCheck: async () => {
           const probeResult = await probe(snapshot, { contentHash: snapshot.contentHash, files: {} });
           if (!probeResult.ok) {
-            throw new Error(
+            throw Object.assign(new Error(
               `candidate configuration probe failed: ${(probeResult.issues ?? []).join('; ')}`,
-            );
+            ), { code: 'configuration-invalid' });
           }
           verifyActiveDatabase(accountPaths.database);
         },
@@ -247,6 +248,7 @@ export class SourceNativeUpdater {
       });
       const targetReleaseRoot = resolve(dirname(paths.appCurrent), target.previousTargets.application);
       const probe = createProductionConfigurationProbe({
+        checkExecutors: false,
         releaseRoot: targetReleaseRoot,
         secretStore: this.dependencies.secretStore,
         detectCommand: this.dependencies.detectCommand,

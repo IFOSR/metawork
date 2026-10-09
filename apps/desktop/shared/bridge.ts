@@ -10,6 +10,8 @@ export interface DesktopPreferences {
 export interface DesktopBridge {
   version: 1;
   selectWorkspaceDirectory(): Promise<string | null>;
+  selectExecutorFile?(): Promise<string | null>;
+  repairPi?(): Promise<{ ok: boolean; message: string }>;
   saveArtifact(artifactId: string): Promise<string | null>;
   showDownloadedArtifact(downloadId: string): Promise<void>;
   readPreferences(): Promise<DesktopPreferences>;
