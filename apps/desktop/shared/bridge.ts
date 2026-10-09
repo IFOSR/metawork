@@ -24,6 +24,10 @@ export interface DesktopBridge {
 export interface ShellState {
   phase: 'connecting' | 'ready' | 'error' | 'upgrade';
   message: string;
+  /** A blocking native update is in progress; the shell must not offer actions. */
+  busy?: boolean;
+  /** Percent complete when known; null keeps the progress indicator indeterminate. */
+  progress?: number | null;
 }
 export interface DesktopShellBridge {
   state(): Promise<ShellState>;

@@ -344,10 +344,13 @@ async function updateApplication(recover = false): Promise<void> {
   try {
     if (!recover) {
       const applicationPath = resolve(process.resourcesPath, '../..');
-      setState({ phase: 'connecting', message: '正在准备后台更新，完成后将自动重新打开…' });
+      setState({ phase: 'connecting', busy: true, progress: 8,
+        message: '正在准备后台更新（1/4），请不要重复点击或重新打开应用…' });
       await prepareDesktopUpdate({ root: installRoot, applicationPath,
         candidatePath: applicationPath, resources: process.resourcesPath, adoptExistingRuntime: true,
         configHome: selectedConfigHome, userDataPath: app.getPath('userData') });
+      setState({ phase: 'connecting', busy: true, progress: 28,
+        message: '已准备更新包（2/4），正在启动独立更新程序…' });
     } else {
       let taskSummary = '后台状态暂不可读；安装器会在正式停止完成后才切换版本。';
       if (origin) {
@@ -368,7 +371,11 @@ async function updateApplication(recover = false): Promise<void> {
     }
     await preferences?.flush();
     notifications.stop();
+    setState({ phase: 'connecting', busy: true, progress: 62,
+      message: '正在停止后台并切换运行环境（3/4），请保持等待…' });
     await launchDesktopUpdate(installRoot, recover);
+    setState({ phase: 'connecting', busy: true, progress: 92,
+      message: '正在验证新版并自动重启（4/4），无需任何操作…' });
     app.quit();
   } catch (error) {
     if (error instanceof Error && error.message === 'Installed Runtime is newer; download a newer Desktop') {

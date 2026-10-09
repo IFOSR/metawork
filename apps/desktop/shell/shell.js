@@ -1,12 +1,20 @@
 const status = document.getElementById('status');
 const retry = document.getElementById('retry');
 const upgrade = document.getElementById('upgrade');
+const updateStatus = document.getElementById('update-status');
+const updateProgress = document.getElementById('update-progress');
 function render(state) {
   status.textContent = state.message;
+  const busy = state.busy === true;
+  updateStatus.hidden = !busy;
+  updateStatus.setAttribute('aria-busy', String(busy));
+  if (state.progress == null) updateProgress.removeAttribute('style');
+  else updateProgress.style.width = `${Math.max(0, Math.min(100, state.progress))}%`;
   retry.hidden = state.phase !== 'error';
-  retry.disabled = state.phase === 'connecting';
+  retry.disabled = state.phase === 'connecting' || busy;
   upgrade.hidden = state.phase !== 'upgrade';
-  upgrade.disabled = state.phase === 'connecting';
+  upgrade.disabled = state.phase === 'connecting' || busy;
+  document.body.dataset.busy = String(busy);
 }
 window.metaworkShell.onState(render);
 window.metaworkShell.state().then(render);

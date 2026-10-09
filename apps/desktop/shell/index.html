@@ -13,6 +13,10 @@
     <div class="indicator" aria-hidden="true"></div>
     <h1>让工作继续</h1>
     <p id="status" role="status" aria-live="polite">正在连接后台服务…</p>
+    <section id="update-status" hidden aria-live="polite" aria-label="更新进度">
+      <div class="progress-track"><div id="update-progress" class="progress-value"></div></div>
+      <p id="update-hint">更新正在进行，请不要重复点击或重新打开 MetaWork。完成后应用会自动重启。</p>
+    </section>
     <button id="retry" hidden>重新连接</button>
     <button id="upgrade" hidden>完成更新并重启</button>
     <p class="note">关闭窗口或退出桌面，后台工作仍会继续。</p>

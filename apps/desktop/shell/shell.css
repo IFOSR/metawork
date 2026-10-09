@@ -6,6 +6,12 @@ main { width: min(440px, calc(100vw - 64px)); padding: 48px 0; }
 h1 { font-size: 32px; font-weight: 500; letter-spacing: -.04em; margin: 0 0 16px; }
 p { line-height: 1.8; font-size: 14px; }
 #status { min-height: 52px; }
+#update-status { margin-top: 18px; }
+.progress-track { height: 8px; overflow: hidden; border-radius: 999px; background: light-dark(#dfe4da, #3b4439); }
+.progress-value { width: 0; height: 100%; border-radius: inherit; background: #6c8262; transition: width .35s ease; }
+#update-hint { margin: 10px 0 0; font-size: 12px; opacity: .65; }
+body[data-busy="true"] .indicator { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
 .note { margin-top: 64px; opacity: .6; font-size: 12px; }
 button { margin-top: 16px; padding: 10px 24px; border-radius: 6px; border: 1px solid #6c8262; background: #6c8262; color: white; font: inherit; cursor: pointer; }
 button:focus-visible { outline: 3px solid #90a9cc; outline-offset: 4px; }
