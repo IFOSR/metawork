@@ -212,6 +212,17 @@ jobs:
           name: windows-node-api-${{ github.sha }}
           path: .tmp/windows-desktop-validation/node-api/
           if-no-files-found: warn
+      - name: Configure declared Developer Mode prerequisite for packaged Desktop
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' && steps.native-build.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $policy = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
+          New-Item -Path $policy -Force | Out-Null
+          Set-ItemProperty -Path $policy -Name AllowDevelopmentWithoutDevLicense -Type DWord -Value 1
+          $enabled = (Get-ItemProperty -Path $policy -Name AllowDevelopmentWithoutDevLicense).AllowDevelopmentWithoutDevLicense -eq 1
+          if (-not $enabled) { throw 'Desktop acceptance requires Developer Mode for ordinary-user symbolic links' }
+          New-Item -ItemType Directory -Force .tmp/windows-desktop-validation/candidate | Out-Null
+          @{ developerMode = $enabled; scope = 'disposable-runner-prerequisite' } | ConvertTo-Json | Set-Content .tmp/windows-desktop-validation/candidate/prerequisites.json
       - name: Validate combined candidate Runtime and Desktop resources
         if: ${{ !cancelled() && steps.tools.outcome == 'success' && steps.native-build.outcome == 'success' }}
         env:

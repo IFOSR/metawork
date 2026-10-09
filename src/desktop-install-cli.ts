@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
@@ -11,8 +11,8 @@ import { commandExistsOnPath } from './configuration/production-configuration-pr
 import { isInstanceRunning } from './management/lock.js';
 import { acquireRuntimeUpdateLock } from './installation/runtime-update-lock.js';
 import { desktopProcessEnvironment, desktopToolPaths } from './installation/desktop-platform.js';
-import { loadWindowsPrivateFiles } from './platform/windows-private-files.js';
-import type { DesktopInstallPhase } from './installation/desktop-install-progress.js';
+import { loadWindowsPrivateFiles, writeWindowsPrivateJson } from './platform/windows-private-files.js';
+import { desktopInstallFailure, type DesktopInstallPhase } from './installation/desktop-install-progress.js';
 
 const ProviderSchema = z.object({
   baseUrl: z.url().refine(value => ['https:', 'http:'].includes(new URL(value).protocol)),
@@ -43,35 +43,48 @@ export async function runDesktopInstall(
   // Protect the root before the lock, credentials, database or release staging
   // can create children with inherited Windows permissions.
   windows?.files.ensurePrivateDirectory(paths.root);
-  const running = () => isInstanceRunning(join(paths.data, 'runtime.lock'));
-  if (await running()) throw new Error('Server must finish its formal stop before installation');
-  const plannerRoot = join(resources, 'payload', 'planner');
-  const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials, windows });
-  const searchPath = desktopProcessEnvironment({ releaseRoot: sourceRoot,
-    nodePath: desktopToolPaths(sourceRoot).node, env: process.env }).PATH!;
-  const detectCommand = (name: string) => commandExistsOnPath(name, searchPath);
-  if (command === 'install') {
-    let body = '';
-    for await (const chunk of input) {
-      body += String(chunk);
-      if (Buffer.byteLength(body) > 16384) throw new Error('Setup input exceeds limit');
+  try {
+    const running = () => isInstanceRunning(join(paths.data, 'runtime.lock'));
+    if (await running()) throw new Error('Server must finish its formal stop before installation');
+    const plannerRoot = join(resources, 'payload', 'planner');
+    const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials, windows });
+    const searchPath = desktopProcessEnvironment({ releaseRoot: sourceRoot,
+      nodePath: desktopToolPaths(sourceRoot).node, env: process.env }).PATH!;
+    const detectCommand = (name: string) => commandExistsOnPath(name, searchPath);
+    if (command === 'install') {
+      let body = '';
+      for await (const chunk of input) {
+        body += String(chunk);
+        if (Buffer.byteLength(body) > 16384) throw new Error('Setup input exceeds limit');
+      }
+      const provider = ProviderSchema.parse(JSON.parse(body));
+      body = '';
+      const lock = await acquireRuntimeUpdateLock(paths.root, 'update');
+      try {
+        await new SourceNativeInstaller({ paths, secretStore, detectCommand, installLaunchers: false, windows, onProgress }).install({
+          releaseId: release.releaseId, sourceRoot, plannerRoot, executorPreset: 'desktop-pi',
+          provider: { ...provider, region: 'international', secretReference: 'file-secret:anyfusion/providers/provider' },
+        });
+      } finally { await lock.release(); }
+    } else {
+      const updater = new SourceNativeUpdater({ paths, secretStore, detectCommand, isServerRunning: running, installLaunchers: false, windows });
+      if (command === 'update') {
+        await updater.update({ releaseId: release.releaseId, sourceRoot, plannerRoot });
+      } else await updater.rollback(release.releaseId);
     }
-    const provider = ProviderSchema.parse(JSON.parse(body));
-    body = '';
-    const lock = await acquireRuntimeUpdateLock(paths.root, 'update');
+    process.stdout.write(JSON.stringify({ ok: true, releaseId: release.releaseId }) + '\n');
+  } catch (error) {
+    const diagnostic = desktopInstallFailure(error);
+    const path = join(paths.root, 'logs/desktop-install-failure.json');
     try {
-      await new SourceNativeInstaller({ paths, secretStore, detectCommand, installLaunchers: false, windows, onProgress }).install({
-        releaseId: release.releaseId, sourceRoot, plannerRoot, executorPreset: 'desktop-pi',
-        provider: { ...provider, region: 'international', secretReference: 'file-secret:anyfusion/providers/provider' },
-      });
-    } finally { await lock.release(); }
-  } else {
-    const updater = new SourceNativeUpdater({ paths, secretStore, detectCommand, isServerRunning: running, installLaunchers: false, windows });
-    if (command === 'update') {
-      await updater.update({ releaseId: release.releaseId, sourceRoot, plannerRoot });
-    } else await updater.rollback(release.releaseId);
+      if (windows) writeWindowsPrivateJson(windows, path, diagnostic);
+      else {
+        await mkdir(join(paths.root, 'logs'), { recursive: true, mode: 0o700 });
+        await writeFile(path, JSON.stringify(diagnostic), { mode: 0o600 });
+      }
+    } catch { /* Preserve the installation error when diagnostics cannot be saved. */ }
+    throw error;
   }
-  process.stdout.write(JSON.stringify({ ok: true, releaseId: release.releaseId }) + '\n');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

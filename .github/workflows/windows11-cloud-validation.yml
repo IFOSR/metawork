@@ -9,6 +9,7 @@ on:
       - 'scripts/windows11-cloud-bootstrap.ps1'
       - 'scripts/monitor-windows11-cloud.py'
       - 'scripts/inspect-windows11-setup.py'
+      - 'scripts/windows11-console-input.py'
 permissions:
   contents: read
 concurrency:

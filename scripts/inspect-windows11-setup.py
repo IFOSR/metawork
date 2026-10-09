@@ -30,11 +30,35 @@ def inspect_setup(disk, evidence, secrets):
         loop = run(['sudo', 'losetup', '--read-only', '--partscan', '--find', '--show', str(disk)])
         if not re.fullmatch(r'/dev/loop\d+', loop):
             raise RuntimeError('Unexpected loop device identity')
+        phase = 'identify-system-partition'
+        run(['sudo', 'udevadm', 'settle', '--timeout=10'])
+        devices = json.loads(run(['lsblk', '--json', '--bytes', '--output', 'PATH,TYPE,SIZE', loop]))
+        partitions = devices['blockdevices'][0].get('children', [])
+        report['partitions'] = []
+        ntfs = []
+        for partition in partitions:
+            path = partition['path']
+            if partition['type'] != 'part' or not re.fullmatch(re.escape(loop) + r'p\d+', path):
+                continue
+            probe = subprocess.run(['sudo', 'blkid', '-p', '-s', 'TYPE', '-o', 'value', path],
+                                   capture_output=True, text=True, timeout=10)
+            filesystem = probe.stdout.strip()
+            report['partitions'].append({'path': path, 'bytes': partition['size'],
+                                         'filesystem': filesystem if re.fullmatch(r'[\w-]{1,32}', filesystem) else 'unknown'})
+            if filesystem == 'ntfs':
+                ntfs.append(partition)
         phase = 'mount-read-only-system'
         # A stopped evaluation guest can leave NTFS dirty; a read-only mount
         # still forbids writes, while norecover refuses even diagnostic reads.
-        run(['sudo', 'mount', '-t', 'ntfs-3g', '-o', 'ro', loop + 'p3', str(mount)])
-        mounted = True
+        for partition in sorted(ntfs, key=lambda value: value['size'], reverse=True):
+            run(['sudo', 'mount', '-t', 'ntfs-3g', '-o', 'ro', partition['path'], str(mount)])
+            mounted = True
+            if (mount / 'Windows/System32/config/SYSTEM').is_file():
+                break
+            run(['sudo', 'umount', str(mount)])
+            mounted = False
+        if not mounted:
+            raise RuntimeError('No readable Windows system partition')
         phase = 'read-bounded-evidence'
         result = mount / 'Windows/Temp/metawork-guest-result.json'
         if result.is_file() and result.stat().st_size <= 32768:

@@ -57,8 +57,8 @@ logon_script = (r"$ErrorActionPreference='Stop';foreach($d in [IO.DriveInfo]::Ge
                 r"{if($d.IsReady){$p=$d.Name+'metawork-bootstrap.ps1';if([IO.File]::Exists($p))"
                 r"{Copy-Item $p C:\Windows\Temp\metawork-bootstrap.ps1 -Force;"
                 r"& C:\Windows\Temp\metawork-bootstrap.ps1;exit}}};throw 'Bootstrap media missing'")
-command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ' + base64.b64encode(logon_script.encode('utf-16le')).decode()
-if len(command) > 1024:
+bootstrap_command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ' + base64.b64encode(logon_script.encode('utf-16le')).decode()
+if len(bootstrap_command) > 1024:
     raise RuntimeError('Windows first-logon command exceeds the unattended setup limit')
 copy_bootstrap = r'cmd.exe /c for %d in (D E F G H I J) do @if exist %d:\metawork-bootstrap.ps1 copy /y %d:\metawork-bootstrap.ps1 C:\Windows\Temp\metawork-bootstrap.ps1'
 (media / 'Autounattend.xml').write_text(f'''<?xml version="1.0" encoding="utf-8"?>
@@ -95,7 +95,7 @@ copy_bootstrap = r'cmd.exe /c for %d in (D E F G H I J) do @if exist %d:\metawor
       <OOBE><HideEULAPage>true</HideEULAPage><HideOEMRegistrationScreen>true</HideOEMRegistrationScreen><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><ProtectYourPC>3</ProtectYourPC></OOBE>
       <UserAccounts><LocalAccounts><LocalAccount wcm:action="add"><Name>MWCI</Name><Group>Administrators</Group><DisplayName>MetaWork CI</DisplayName><Password><Value>{escape(password)}</Value><PlainText>true</PlainText></Password></LocalAccount></LocalAccounts></UserAccounts>
       <AutoLogon><Username>MWCI</Username><Enabled>true</Enabled><LogonCount>1</LogonCount><Password><Value>{escape(password)}</Value><PlainText>true</PlainText></Password></AutoLogon>
-      <FirstLogonCommands><SynchronousCommand wcm:action="add"><Order>1</Order><Description>MetaWork isolated guest evidence</Description><CommandLine>{escape(command)}</CommandLine></SynchronousCommand></FirstLogonCommands>
+      <FirstLogonCommands><SynchronousCommand wcm:action="add"><Order>1</Order><Description>MetaWork isolated guest evidence</Description><CommandLine>{escape(bootstrap_command)}</CommandLine></SynchronousCommand></FirstLogonCommands>
     </component>
   </settings>
 </unattend>''', encoding='utf-8')
@@ -196,6 +196,15 @@ try:
             if not accepted_environment(report):
                 raise RuntimeError('Windows 11 environment acceptance failed')
             break
+        if elapsed == 1200:
+            # A completed desktop can omit FirstLogonCommands on evaluation
+            # images. Explicitly launch the same bounded, secret-free bootstrap
+            # through the interactive console; a report is still mandatory.
+            spec = importlib.util.spec_from_file_location('console_input', 'scripts/windows11-console-input.py')
+            console_input = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(console_input)
+            console_input.launch_bootstrap(command, bootstrap_command)
+            (evidence / 'console-bootstrap.json').write_text(json.dumps({'attempted': True, 'elapsedSeconds': elapsed}))
         if elapsed < 30 and elapsed % 2 == 0:
             command('human-monitor-command', {'command-line': 'sendkey ret'})
         if elapsed % 60 == 0 or (elapsed < 180 and elapsed % 10 == 0):

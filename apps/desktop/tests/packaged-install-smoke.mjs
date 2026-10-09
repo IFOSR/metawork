@@ -69,7 +69,11 @@ try {
     }).catch(() => undefined);
   }, 5000);
   await page.locator('#setup button[type=submit]').click();
-  await page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\/$/, { timeout: 600000 });
+  await Promise.race([
+    page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\/$/, { timeout: 600000 }),
+    page.locator('#status').filter({ hasText: '安装未完成' }).waitFor({ timeout: 600000 })
+      .then(() => { throw new Error('Packaged installation failed; inspect the bounded installation diagnostic'); }),
+  ]);
   clearInterval(progressTimer);
   await writeFile(join(evidence, 'packaged-setup-progress.json'), JSON.stringify(setupProgress, null, 2));
   await page.locator('.workspace-shell').waitFor({ timeout: 30000 });
@@ -95,7 +99,9 @@ try {
   if (page?.url().startsWith('file:')) await page.locator('#api-key').evaluate(input => { input.value = ''; }).catch(() => undefined);
   await page?.screenshot({ path: join(evidence, 'packaged-install-failure.png') }).catch(() => undefined);
   const shellState = await page?.evaluate(() => window.metaworkShell?.state()).catch(() => undefined);
-  await writeFile(join(evidence, 'packaged-install-failure.json'), JSON.stringify({ message: safeMessage, url: page?.url(), shellState, setupProgress }, null, 2));
+  const installationFailure = await readFile(join(installRoot, 'logs/desktop-install-failure.json'), 'utf8')
+    .then(JSON.parse).catch(() => undefined);
+  await writeFile(join(evidence, 'packaged-install-failure.json'), JSON.stringify({ message: safeMessage, url: page?.url(), shellState, setupProgress, installationFailure }, null, 2));
   throw new Error(safeMessage);
 } finally {
   clearInterval(progressTimer);
