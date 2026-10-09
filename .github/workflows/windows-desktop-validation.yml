@@ -21,7 +21,6 @@ on:
       - 'scripts/install.ps1'
       - 'scripts/prepare-windows-desktop-tools.mjs'
       - 'scripts/prepare-windows-desktop-candidate.mjs'
-      - 'scripts/prepare-macos-desktop-candidate.mjs'
       - 'scripts/prepare-windows-pageant.mjs'
       - 'integrations/ssh2-pageant/**'
       - 'scripts/probe-windows-desktop-install.mjs'
@@ -47,33 +46,6 @@ permissions:
   contents: read
 
 jobs:
-  changes:
-    runs-on: ubuntu-24.04
-    outputs:
-      macos: ${{ steps.classify.outputs.macos }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-      - id: classify
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import json, os, re, subprocess
-          event = json.load(open(os.environ['GITHUB_EVENT_PATH']))
-          before = event.get('before', '')
-          macos = True
-          if os.environ['GITHUB_EVENT_NAME'] == 'push' and re.fullmatch(r'[a-f0-9]{40}', before) and before != '0' * 40:
-            if subprocess.run(['git', 'cat-file', '-e', before], capture_output=True).returncode:
-              subprocess.run(['git', 'fetch', '--depth=1', 'origin', before], check=True)
-            paths = subprocess.check_output(['git', 'diff', '--name-only', before, 'HEAD'], text=True).splitlines()
-            windows_only = ('native/windows-probe/', 'native/windows/', 'scripts/probe-windows-', 'scripts/probe-windows11-',
-                            'scripts/monitor-windows11-', 'scripts/windows11-cloud-', '.github/workflows/windows11-')
-            macos = any(not (p.startswith(windows_only) or p.startswith('docs/') or p == 'CONTEXT.md') for p in paths)
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-            out.write('macos=' + str(macos).lower() + '\n')
-          print('Run macOS regressions:', macos, '(manual runs always include both architectures)')
-          PY
   windows-pipe:
     concurrency:
       group: windows-desktop-pipe-${{ github.ref }}
@@ -256,59 +228,7 @@ jobs:
           if-no-files-found: error
       # Windows Server automation does not satisfy Windows 11 product acceptance.
 
-  macos-regression:
-    needs: changes
-    if: needs.changes.outputs.macos == 'true'
-    concurrency:
-      group: windows-desktop-macos-${{ matrix.runner }}-${{ github.ref }}
-      cancel-in-progress: false
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [macos-15, macos-15-intel]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 95
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.23.3
-      - run: npm ci
-      - run: npm ci --prefix web --ignore-scripts
-      - run: npm ci --prefix apps/desktop
-      - run: npm ci --prefix planner/AnyFusion-Pi --ignore-scripts
-      - run: npm run build:offline --prefix planner/AnyFusion-Pi
-      - run: npm run lint
-      - run: npm run lint:desktop
-      - name: Shared Server, client, Web, TUI and installer regressions
-        run: npm test -- tests/platform tests/client tests/gateway tests/tui-bridge tests/installation tests/server tests/web tests/management tests/architecture tests/executor tests/configuration tests/integration/independent-client-lifecycle.integration.test.ts
-      - run: npm run test:desktop
-      - run: npm run build
-      - run: npm run smoke:gateway
-      - name: Real Electron with isolated fixture configuration
-        run: node scripts/smoke-desktop-isolated.mjs
-      - name: Download signed base tools for the retained macOS Desktop architecture
-        if: matrix.runner == 'macos-15'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release download v0.1.8 --pattern MetaWork-darwin-arm64.dmg
-          --pattern desktop-manifest.darwin-arm64.json --dir "${{ runner.temp }}/macos-base"
-      - name: Build this source as packaged macOS Desktop and execute real model tasks
-        if: matrix.runner == 'macos-15'
-        env:
-          METAWORK_TEST_MODEL: ${{ secrets.METAWORK_TEST_MODEL }}
-        run: node scripts/prepare-macos-desktop-candidate.mjs "${{ runner.temp }}/macos-base" "${{ runner.temp }}/macos-candidate"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: macos-regression-${{ matrix.runner }}-${{ github.sha }}
-          path: .tmp/windows-desktop-validation/
-          if-no-files-found: warn
-
   persistence-docker-regression:
-    needs: changes
-    if: needs.changes.outputs.macos == 'true'
     concurrency:
       group: windows-desktop-persistence-${{ github.ref }}
       cancel-in-progress: false

@@ -159,7 +159,7 @@ Windows 的 Node `process.kill(pid, 'SIGTERM')` 是强制终止，不能作为�
 | P1 | 平台路径/工具入口、安装根目录、release schema/清单与安装器 | Windows isolated install 成功，Server 独立启动，依赖不来自开发机 |
 | P2 | Electron 会话、Web 渲染、菜单/托盘、窗口恢复、任务执行、取消及 Server 生命周期 | EXE 内真实 Web 登录完成，任务产物可打开；关闭隐藏、恢复、退出、停止服务分别满足 macOS 对应语义 |
 | P3 | NSIS 新装/升级/卸载、activation/rollback Windows 适配 | 新装、覆盖升级、失败回滚、中断恢复和保留数据卸载通过 |
-| P4 | CI、候选分发清单与包、原有系统完整回归（§6.1） | Windows 原生门及 macOS Desktop、Server、Web、TUI、多客户端、安装升级回归全部通过，证据对应最终候选提交 |
+| P4 | Windows CI、候选分发清单与包、共享源码回归（§6.1） | Windows 原生门及 Desktop、Server、Web、TUI、多客户端、安装升级回归全部通过，证据对应最终候选提交 |
 | P5 | 干净 Windows 11 人工验收、README 与发布资料 | 用户能从下载到完成第一个任务；记录证据后再执行已确认的发布范围 |
 
 每阶段记录实际执行的平台/版本/提交、失败及剩余阻塞；不把单元测试、构建成功或后台 HTTP 正常当作 packaged Desktop 启动成功。
@@ -171,37 +171,20 @@ Windows 的 Node `process.kill(pid, 'SIGTERM')` 是强制终止，不能作为�
 - **干净机新装**：无预装 Node/Git/Python/VS，普通用户、开发者模式启用；安装前置不满足时清晰退出且无半安装；中文/空格用户名及工作目录、路径长度边界。
 - **本地身份**：其他 Windows 普通账号不能读取凭据/注册 Desktop session；恶意占用 pipe、伪造 endpoint PID、重放/过期 ticket、越界链接被拒绝；Renderer 无票据/原始凭据。
 - **真实客户端**：按完整 packaged-install 流程，窗口从安装页转到认证后的 Web，确认根节点渲染/可交互；重启、重连、Renderer 崩溃、下载与外链、通知可用。
-- **跨平台行为一致性**：以同一源提交的 macOS/Windows 候选运行同一组场景，逐项核对 §1.1；覆盖首次启动、复用已有安装、本地自动会话、关闭隐藏后草稿/页面恢复、完全退出后 Server/任务存活、重新启动连接、显式停止、安装新版与修复未完成更新。记录平台入口差异和未通过项，不能用 macOS 通过代替 Windows 证据。
+- **Windows 行为一致性**：对照现有产品契约，在 Windows 候选运行场景，逐项核对 §1.1；覆盖首次启动、复用已有安装、本地自动会话、关闭隐藏后草稿/页面恢复、完全退出后 Server/任务存活、重新启动连接、显式停止、安装新版与修复未完成更新。记录平台入口差异和未通过项，不能用 macOS 通过代替 Windows 证据。
 - **任务链**：使用测试模型配置完成一个 Planner → Pi → 本地文件产物任务，再验证取消及残留子进程；关闭 Desktop 后从 Web/TUI 观察同一账号任务；PDF 样例任务可运行。外部模型连通性单列记录，不能用 mock 代替该门。
 - **并存**：Desktop 管理安装与独立 PowerShell 安装能被正确发现，版本冲突提示升级，不启动第二个同账号 Runtime。
 - **升级/恢复**：旧→新安装，active work 拦截/确认，EXE 文件占用，中途进程终止，新 Server 或 Web 不健康时回滚；日志/数据库/journal 保持一致。
 - **卸载**：后台任务存在时明确提示；默认保留数据；重装可恢复；无关进程/其他安装不受影响。
-- **原有系统回归**：必须完成 §6.1 的 macOS Desktop、Server、Web、TUI、多客户端及安装升级检查。此前已发布包的磁盘校验或服务启动证据不作为本次候选通过证据。
+- **共享源码回归**：按修订后的 §6.1 验证共享边界，Mac 打包不在本轮范围。此前已发布包的磁盘校验或服务启动证据不作为本次候选通过证据。
 
 现有 Windows pause/resume 能力缺口须在 P0 核对 macOS Desktop 是否暴露或依赖该行为；若属于对应产品场景，则作为一致性交付阻塞补齐等价实现，不以能力说明豁免。不得通过模拟 SIGSTOP 宣称支持。任务取消和子进程清理是首版必须通过的门。
 
-### 6.1 原有系统回归：Windows 交付的强制门槛
+### 6.1 共享源码回归与本轮范围（2026-10-09 修订）
 
-用户明确要求 Windows 适配不能影响原有 macOS Desktop、Server、Web、TUI 的正常运行。共享代码的回归验收与 Windows 验收具有同等交付优先级；不能只验证 Windows，也不能以“未直接修改某客户端”跳过其端到端检查。
+用户最新明确要求只完成 Windows，删除本轮生成的 Mac 包。因此本轮不构建、下载、安装或验收 Mac 分发包，也不运行 macOS CI job；此前同源 macOS packaged 验收要求撤销，不作为 Windows P4/P5 的关闭条件。
 
-| 范围 | 必须验证的原有行为 | 证据要求 |
-| --- | --- | --- |
-| macOS Desktop | 干净安装和首次配置；Server 未运行时自动启动、已运行时复用；本地自动认证及真实 Web 渲染；工作区/会话切换、设置保存激活、文件选择/下载/打开；关闭隐藏与恢复草稿、退出后任务继续、重启重连、Renderer 崩溃恢复；显式停止前确认影响 | 使用同一候选提交的真实 `.app`，保留安装、界面和进程证据；覆盖本轮保留发布的 macOS 架构，不能只跑开发 Electron |
-| Server 与执行链 | 正式 start/status/stop、runtime.lock、endpoint 发布和重复实例拒绝；Planner RPC → Kernel → Pi 执行 → 产物交付；任务取消及子进程清理；受控重启后的持久恢复；账号数据及凭据沿用 | 归属模块测试和隔离安装中的真实进程/真实模型任务；核对 Task、产物及恢复事实，不用仅 HTTP 健康检查替代 |
-| 普通浏览器 Web | `metawork web` 打开已运行的 Server；浏览器显式登录，Desktop 自动会话不绕过浏览器认证；工作区/会话导航、历史分页、实时输出、断线重连、设置保存激活、权限处理、任务取消和产物下载 | 真实浏览器加载候选生产 Web 资源；记录交互与授权结果，不用 Electron 内 Web 通过代替普通浏览器验证 |
-| 原生 TUI | `metawork tui` / 裸 `metawork` 连接同一 Server；工作区/会话选择、历史与实时输出、Task 面板、命令和权限响应、取消、断线重连；退出 TUI 后任务继续；Server 不可用时保留原有明确提示 | 构建 vendored AnyFusion-Pi 的 `build:offline`，运行协议/启动器测试及真实终端交互；不能用模拟 Gateway 客户端代替完整 TUI |
-| 多客户端并存 | Desktop、浏览器、TUI 在同一隔离安装及账号下同时观察同一任务；状态、权限解决和终态一致；一端退出不停止其他客户端或任务；重连不重复提交命令、不创建第二个 Runtime；显式 Server stop 对所有客户端的影响一致 | 自动化协议检查与真实三客户端场景分别记录；核对 Server 实例、账号及 Task 身份 |
-| macOS 安装、升级与回滚 | 现有受支持版本 → 候选版本；复用已有安装/配置/数据；运行中工作确认、安装新版应用、修复未完成更新；模拟新 Server 或 Desktop 健康失败后的壳层及数据库/journal companion 恢复；CLI 入口继续可用 | 在独立安装中使用旧版和候选分发，记录升级前后身份、数据、CLI/Desktop/Web/TUI 可用性；不在日常使用安装上做故障注入 |
-| 其他共享入口与发布 | 飞书 Gateway 的账号/会话路由、权限、取消与结果投影；现有原生 CLI 安装入口及 macOS 下载资产、校验清单和发布版本一致性 | 跑现有飞书/集成契约测试；如改动相关边界，补对应集成验证。外部实发不属于默认回归授权；必要实发未验证时如实记录。正式发布前验证实际下载资产 |
-
-执行与证据规则：
-
-1. 实施前记录 macOS 基线提交、版本、架构、关键场景结果及已存在的问题；候选版本重复同一行为场景并比较。已有失败必须记录原因，不能冒充通过，也不能掩盖本轮引入的退化。
-2. 所有安装、升级、恢复和真实任务测试使用独立安装根、配置目录、账号、工作区及测试模型配置；明确设置测试入口支持的隔离参数，避免 smoke 默认连接日常配置。不得覆盖日常 macOS 安装、停止用户正在使用的 Server、修改真实账号数据或污染凭据。
-3. 自动化基础检查包括 `npm run lint`、`npm run lint:desktop`、`npm run build --prefix web`、`npm run test:desktop`，以及 `tests/client/`、`tests/gateway/`、`tests/tui-bridge/`、`tests/installation/`、`tests/server/`和受影响的 Session/Execution/Storage 归属测试。SQLite/POSIX 测试在可用的原生 macOS 或规定的 Docker 环境执行，不用 Windows 宿主失败替代验证。
-4. 复用 `npm run smoke:clients`、`npm run smoke:gateway`、`npm run smoke:desktop`、`apps/desktop/tests/packaged-install-smoke.mjs` 和真实任务 smoke；先核对各入口的隔离配置及覆盖范围，再补齐上表未覆盖的浏览器、终端和安装升级场景。现有 `smoke:clients` 是协议集成测试，packaged-install smoke 使用模型配置夹具且不执行真实模型任务，均不能单独证明完整验收。
-5. 每项记录候选源提交、分发版本/哈希、OS/架构、执行入口、结果及日志/截图位置；未执行、环境受阻或外部模型不可用均标为未完成。最终候选发生影响行为的修改后，重跑受影响检查；证据必须对应待交付代码和包。
-6. macOS Desktop、Server、Web、TUI 或共享安装升级路径出现本轮回归，必须修复并复验后才能合并或发布 Windows 交付；任何必需验收缺失都不能将 P4/P5 标为完成。Windows 构建成功不构成原有系统正常运行的证明。
+Windows 仍须完成 Desktop、独立浏览器 Web、真实终端 TUI 的同账号任务观察、真实模型产物与取消、Server 生命周期、NSIS 卸载重装、协调升级、失败回滚、中断恢复以及 Windows 11 普通用户安装验收。源码共享边界使用归属模块测试及 Docker 持久化回归；所有真实任务和故障注入使用隔离安装与测试账号。每项记录源提交、包哈希、操作系统、结果和证据，未执行项目不得标为通过。
 
 ## 7. README 安装说明交付
 

@@ -299,7 +299,7 @@ Windows 11 证据：[`37739922946`](https://github.com/IFOSR/metawork/actions/ru
 
 首次安装续验为独立 helper 增加固定阶段进度（验证、复制、配置、激活），只允许这些枚举进入 Desktop 状态，不转发任意 stdout 或模型配置。packaged smoke 记录阶段变化，将首次安装预算调整为 10 分钟并保留失败断言；NSIS 总预算容纳两个真实任务。payload 并发验证在首个失败后等待所有在途文件句柄关闭才返回，避免 Windows 清理 staging 时竞争。取消验收同时检查命令及其后代 PID。上述补充仍待原生执行证据，不能标记验收通过。
 
-仍必须关闭：Windows 11 普通用户真实 packaged 产品验收；真实任务和取消门的实际结果；Windows 协调升级（目前 UI/helper 仍有 `.app`、`codesign`、`/usr/bin/open` 假设）、失败回滚和中断恢复；运行中任务的卸载确认与重装数据复用；§6.1 同源 macOS packaged/Web/TUI/三客户端和安装升级完整验收。基础 CI 通过只覆盖 workflow 已声明场景，不能据此关闭 P3–P5。
+仍必须关闭：Windows 11 普通用户真实 packaged 产品验收；真实任务和取消门的实际结果；Windows 协调升级（目前 UI/helper 仍有 `.app`、`codesign`、`/usr/bin/open` 假设）、失败回滚和中断恢复；运行中任务的卸载确认与重装数据复用。2026-10-09 用户撤销 Mac 打包与验收范围，见最新范围记录。基础 CI 通过只覆盖 workflow 已声明场景，不能据此关闭 P3–P5。
 
 ### 2026-10-09 继续验收（未完成）
 
@@ -317,3 +317,7 @@ Windows 11 证据：[`37739922946`](https://github.com/IFOSR/metawork/actions/ru
 - 原生 TUI 验收准备发现 Windows 不能直接执行 vendored `cli.js`，改为使用启动 CLI 的同一个 Node；Web 系统浏览器入口改用 `rundll32`，并把异步启动失败交回命令调用者。新增真实非可执行 JS 子进程测试和浏览器启动失败测试，本地 10 tests/类型检查通过。三客户端测试补真实 PTY/ConPTY 中的已安装 TUI、Task Dashboard、活动任务中退出并重连、取消终态；本机 PTY 载体验证通过，ConPTY 编译及完整安装版执行仍待收集。
 - Windows 11 环境 `37868006655` 最终只有桌面截图、无验收回执，仍失败。修正诊断 `lsblk` 必须显式 `--tree` 才产生 children 的问题；控制台回退先用短命令打开管理员 PowerShell，再在终端执行长 bootstrap，避免 Run 编辑框长度限制，并显式确认 UAC。未禁用 Secure Boot/TPM，未将管理员环境检查计为普通用户产品验收。
 - macOS packaged `cb0de7b4` / `37870641335` 已完成新源码 `.app` 构建和安装，但连接服务失败；旧脚本继续等待 600 秒才失败。新增即时连接失败判定、Main 的有界错误/递归 cause 诊断及仅固定错误分类/函数名的启动日志摘要。该结果是待定位的打包验收失败，不以既有开发壳通过代替。
+
+### 2026-10-09 用户范围纠正：仅 Windows
+
+用户明确要求专注 Windows，并删除此前生成的 Mac 包。移除专用 workflow 的 macOS jobs、其分类 job 和新增 Mac candidate 脚本，保留 Windows jobs 与 Docker 共享持久化回归；撤销旧 §6.1 的 Mac packaged 交付门。取消仍运行或排队的 Mac 构建，清理本轮 Mac 调试 worktree、候选包、下载副本、隔离安装和对应云端产物。历史失败记录仅用于解释已发生的工作，不再要求继续 Mac 验收。Windows 全部门仍未完成，不改版本、不合并 main、不打 tag、不发布 Release。
