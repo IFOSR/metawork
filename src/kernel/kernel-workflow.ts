@@ -1,3 +1,4 @@
+import { allowsKernelAction, type ProductionAuthorizationFact } from './production-authorization.js';
 import { createHash } from 'node:crypto';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { KernelDecision, KernelDecisionAction, KernelEvent, KernelSnapshot } from './control-kernel.js';
@@ -105,6 +106,7 @@ export interface KernelWorkflowClock {
 }
 
 export interface DurableKernelWorkflowDeps {
+  productionAuthorization?: () => ProductionAuthorizationFact;
   kernel: KernelDecider;
   buildSnapshot(event: KernelEvent): KernelSnapshot;
   store: KernelWorkflowStore;
@@ -165,7 +167,7 @@ export class DurableKernelWorkflow implements KernelWorkflow {
     while (handled < MAX_DECISIONS_PER_DRAIN) {
       const application = this.deps.store.listRecoverableApplications(
         this.deps.acceptedActions, this.deps.taskId, this.deps.correlationId,
-      )[0];
+      ).find(item => allowsKernelAction(item.decision.action, this.deps.productionAuthorization?.()));
       if (application) {
         decisions.push(application.decision);
         handled += 1;
@@ -178,7 +180,10 @@ export class DurableKernelWorkflow implements KernelWorkflow {
         this.deps.clock.now(), this.deps.acceptedEventTypes, this.deps.taskId, this.deps.correlationId,
       );
       if (!event) break;
-      const snapshot = this.deps.buildSnapshot(event);
+      const snapshot = {
+        ...this.deps.buildSnapshot(event),
+        ...(this.deps.productionAuthorization ? { productionAuthorization: this.deps.productionAuthorization() } : {}),
+      };
       const nextDecision = this.deps.kernel.decide(event, snapshot);
       this.deps.store.issue(event.id, ledgerRecord(event, snapshot, nextDecision));
     }

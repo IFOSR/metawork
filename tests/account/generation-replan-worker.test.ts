@@ -23,6 +23,16 @@ afterEach(() => {
 });
 
 describe('GenerationReplanWorker', () => {
+  it('keeps scheduled jobs durable without claiming Planner work until authorization is restored', async () => {
+    const fixture = createFixture(); const job = fixture.seedScheduledJob(); const planner = fakePlannerPort(fixture.db);
+    const before = fixture.repo.find(job);
+    let allowed = false;
+    const worker = fixture.worker(planner.port, { productionAuthorization: () => ({ allowed }) });
+    expect((await worker.run()).claimed).toBe(0); expect(planner.plans).toBe(0);
+    expect(fixture.repo.find(job)).toEqual(before);
+    allowed = true; expect((await worker.run()).submitted).toBe(1); expect(planner.plans).toBe(1);
+  });
+
   it('consumes a scheduled Replan Job without any foreground Conversation', async () => {
     const fixture = createFixture();
     const jobId = fixture.seedScheduledJob();
@@ -303,7 +313,7 @@ interface Fixture {
   readonly db: Database.Database;
   worker(
     planner: GenerationReplanPlannerPort,
-    options?: { leaseMs?: number; backoffMs?: number; budgetMs?: number },
+    options?: { leaseMs?: number; backoffMs?: number; budgetMs?: number; productionAuthorization?: () => { allowed: boolean } },
   ): GenerationReplanWorker;
   seedScheduledJob(options?: {
     createdAt?: string;
@@ -346,6 +356,7 @@ function createFixture(): Fixture {
     repo,
     cutoff: () => createdAt,
     worker: (planner, options = {}) => new GenerationReplanWorker({
+      productionAuthorization: options.productionAuthorization,
       replanRepo: repo,
       planner,
       findTask: taskId => (taskId === TASK_ID ? {

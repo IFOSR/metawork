@@ -1,6 +1,7 @@
+import { LocalAuthorizationService } from '../../src/authorization/local-authorization-service.js';
 import { DesktopSessionService } from '../../src/management/desktop-session.js';
 import { randomBytes } from 'node:crypto';
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createConnection, createServer, type Socket } from 'node:net';
 import { basename, join } from 'node:path';
@@ -70,6 +71,35 @@ describe('single settings activation boundary', () => {
     expect(calls).toEqual([['revision-test', config, { provider: 'candidate-secret' }, 'span-secret']]);
     expect(result).toMatchObject({ status: 200, body: { ok: true, revisionId: 'next-revision' } });
     expect(JSON.stringify(result.body)).not.toContain('secret');
+  });
+});
+
+describe('official account local authentication boundary', () => {
+  it('requires local authentication, rejects foreign origins, and never returns an official token', async () => {
+    const port = await reservePort();
+    const origin = `http://127.0.0.1:${port}`;
+    let logins = 0;
+    const fact = { status: 'active' as const, plan: 'internal_perpetual' as const, effectiveAt: new Date().toISOString(), expiresAt: null, revision: 1, serverTime: new Date().toISOString() };
+    const auth = new LocalAuthorizationService({ client: {
+      login: async () => { logins++; return { sessionToken: 'private-official-session', account: { accountId: 'a', email: 'a@example.com' }, entitlement: fact }; },
+      logout: async () => {}, register: async () => {}, verifyEntitlement: async () => fact,
+      getPlans: async () => ({ plans: [] }), createOrder: async () => ({}),
+      ai: async () => ({ operation: 'model_summary' as const, result: {}, entitlement: fact }),
+    } });
+    const server = createManagementServer(port, { officialAuthorization: auth });
+    await server.start();
+    try {
+      expect((await fetch(`${origin}/api/official-auth/status`)).status).toBe(401);
+      const body = JSON.stringify({ email: 'a@example.com', password: 'private-password' });
+      expect((await fetch(`${origin}/api/official-auth/login`, { method: 'POST', body })).status).toBe(401);
+      const headers = { authorization: 'Bearer manual-token', 'content-type': 'application/json', origin: 'https://untrusted.example' };
+      expect((await fetch(`${origin}/api/official-auth/login`, { method: 'POST', headers, body })).status).toBe(403);
+      expect(logins).toBe(0);
+      const result = await fetch(`${origin}/api/official-auth/login`, { method: 'POST', headers: { ...headers, origin }, body });
+      expect(result.status).toBe(200);
+      const projection = await result.text();
+      expect(projection).toContain('active'); expect(projection).not.toContain('private-official-session'); expect(projection).not.toContain('private-password');
+    } finally { await server.stop(); await auth.dispose(); }
   });
 });
 
@@ -2234,9 +2264,42 @@ describe('ManagementServer WebSocket authentication', () => {
       await server.stop();
     }
   });
+
+  it('downloads original Markdown or a derived PDF through the same artifact authorization', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'metawork-report-download-'));
+    const source = '# 中文报告\r\n\r\n完整原文，不应修改。\r\n';
+    const path = join(root, 'report.md');
+    await writeFile(path, source);
+    const artifact = { displayName: '中文报告.md', previewKind: 'markdown', mediaType: 'text/markdown', byteLength: Buffer.byteLength(source) };
+    const port = await reservePort();
+    const server = createManagementServer(port, { artifactQuery: {
+      resolveDownload: async (id: string) => id === 'denied' ? { ok: false, reason: 'unauthorized' }
+        : id === 'missing' ? { ok: false, reason: 'not_found' }
+        : { ok: true, artifact: id === 'binary' ? { ...artifact, previewKind: 'unsupported' } : artifact, absolutePath: id === 'unavailable' ? join(root, 'missing.md') : path },
+      readReportImage: async () => undefined,
+    } as never });
+    await server.start();
+    try {
+      const headers = { authorization: 'Bearer manual-token' };
+      const url = `http://127.0.0.1:${port}/api/artifacts/report/download`;
+      expect((await fetch(`${url}?format=pdf`)).status).toBe(401);
+      const original = await fetch(url, { headers });
+      expect(await original.text()).toBe(source);
+      const pdf = await fetch(`${url}?format=pdf`, { headers });
+      expect(pdf.status).toBe(200);
+      expect(pdf.headers.get('content-type')).toBe('application/pdf');
+      expect(decodeURIComponent(pdf.headers.get('content-disposition')!)).toContain('中文报告.pdf');
+      expect(Buffer.from(await pdf.arrayBuffer()).subarray(0, 5).toString()).toBe('%PDF-');
+      for (const [id, status] of [['denied', 403], ['missing', 404], ['binary', 415], ['unavailable', 500]] as const) {
+        expect((await fetch(url.replace('/report/', `/${id}/`) + '?format=pdf', { headers })).status).toBe(status);
+      }
+      expect((await fetch(`${url}?format=docx`, { headers })).status).toBe(400);
+    } finally { await server.stop(); await rm(root, { recursive: true, force: true }); }
+  });
 });
 
 interface ManagementServerTestOverrides {
+  officialAuthorization?: LocalAuthorizationService;
   desktopSessions?: DesktopSessionService;
   readonly webSocketAuthTimeoutMs?: number;
   readonly sessionRuntime?: ManagementWebSessionRuntime;
@@ -2269,6 +2332,7 @@ function createManagementServer(
     token: webAuth.manualAccessToken,
     webAuth,
     desktopSessions: overrides.desktopSessions,
+    officialAuthorization: overrides.officialAuthorization,
     launchContexts: overrides.launchContexts ?? new WebLaunchContextService(),
     workspaceDirectoryBrowser: overrides.workspaceDirectoryBrowser
       ?? new WorkspaceDirectoryBrowser(),

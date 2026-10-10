@@ -17,7 +17,6 @@ import {
   type ExecutorCapabilityProfileInput,
 } from './executor-capability-profile-core.js';
 
-const MAX_MANUAL_BYTES = 24_000;
 const ROUTING_CAPABILITY_LABELS: Record<RoutingCapabilityId, string> = {
   'current-web-research': '当前公共网络研究',
   'image-editing': '图片编辑',
@@ -73,11 +72,8 @@ export function buildExecutorCapabilityManual(
     userProfile,
     profile.sourceFingerprint,
   );
-  if (Buffer.byteLength(markdown, 'utf8') > MAX_MANUAL_BYTES) {
-    throw new Error(
-      `Executor capability manual exceeds ${MAX_MANUAL_BYTES}-byte limit: ${input.agentClassRef}`,
-    );
-  }
+  // Valid configuration can produce a large manual, especially with Chinese
+  // model evidence. Preserve its full semantics rather than blocking activation.
   return {
     agentClassRef: input.agentClassRef,
     configurationRevision: input.configurationRevision,

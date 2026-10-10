@@ -10,7 +10,7 @@
 
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import {
   USER_ARTIFACTS_DIRECTORY,
   resolvePreviewKind,
@@ -138,6 +138,26 @@ export class ArtifactPreviewService {
     const stat = await lstat(safePath);
     if (!stat.isFile()) return { ok: false, reason: 'unavailable' };
     return { ok: true, artifact: projection, absolutePath: safePath };
+  }
+
+  /** Optional report illustrations, confined to the authorized report's directory. No network reads. */
+  async readReportImage(artifactId: string, reference: string): Promise<string | undefined> {
+    if (/^(?:[a-z][a-z\d+.-]*:|[\\/])/iu.test(reference)) return undefined;
+    const source = await this.resolveDownload(artifactId);
+    if (!source.ok) return undefined;
+    try {
+      const directory = dirname(source.absolutePath);
+      const path = await this.safePublishedPath(resolve(directory, decodeURIComponent(reference.split('#')[0]!)));
+      const rel = relative(directory, path);
+      if (!rel || rel.startsWith('..') || isAbsolute(rel)) return undefined;
+      const stat = await lstat(path);
+      if (!stat.isFile() || stat.size > MAX_IMAGE_PREVIEW_BYTES) return undefined;
+      const data = await readFile(path);
+      const png = data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      const jpeg = data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
+      if (!png && !jpeg) return undefined;
+      return `data:image/${png ? 'png' : 'jpeg'};base64,${data.toString('base64')}`;
+    } catch { return undefined; }
   }
 
   private async loadAuthorized(artifactId: string): Promise<LoadedArtifact> {

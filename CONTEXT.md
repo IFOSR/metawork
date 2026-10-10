@@ -1,5 +1,28 @@
 # MetaWork Planning Agent And Work Unit Context
 
+Official account authorization (2026-10-09, ADR-0047): the local Server now
+owns an in-memory official session and normalized entitlement state. Production
+Gateway admission verifies that entitlement online; active work triggers one
+Server-level daily check after 24 hours from the last successful verification.
+The official reference service is deployed on huoshan and owns account/session
+digests, licenses, public plan prices, pending-payment orders and fixed internal
+AI operations. Query billing remains separate. No local session token is
+persisted, and Server restart requires official login again. Local Web cookie /
+Desktop ticket authentication remains mandatory for official-account routes.
+Official AI simplification (2026-10-10): the service authenticates/authorizes the
+request, selects a fixed business prompt, calls the configured model with provider
+defaults and returns parsed business JSON. It does not impose AI quotas, request
+deduplication, concurrency gates, output-token/thinking settings, or duplicate
+business schemas/content filters. Local settings consumers own renderable result
+validation; deterministic activation and Kernel authorization are unchanged.
+Kernel owns the pure production-action policy, applied to every snapshot,
+durable decision replay and pending attempt launch. Closed authorization defers
+productive recovery while permitting cancellation, terminal observations and
+cleanup. Planner queues and account Replan Workers consume the same fact.
+In-process account changes cannot inherit unfinished work; live Planner turns,
+reservations, leases and publication cleanup must settle before login.
+See `docs/current/official-account-operations.md` for migration and deployment.
+
 Managed Pi and optional tools (2026-10-09): Desktop uses its release-managed Pi
 Executor entrypoint, independent of the user's global Pi. Codex paths are
 validated and activated through the existing strict-idle settings transaction;
@@ -56,6 +79,10 @@ duties, reuses only unchanged persisted assertions and never generates capabilit
 grants. AI editing/explanation/public-model summarization remain explicit calls
 to InternalLlmService. Planner hot rebinding only manages process/configuration
 lifecycle; it must never become a settings semantic turn (ADR-0044 correction).
+Generated Executor capability manuals retain their full content: the former
+24,000-byte compilation and 60,000-byte Planner projection limits are removed
+(2026-10-10, ADR-0015 correction). Valid Chinese/model evidence must not make
+activation or subsequent `get_planning_context` fail solely due to manual length.
 Settings has one activation action: “保存并激活”. Agent create/edit dialogs save
 only to the current page draft, and confirmed enable/disable/removal also update
 that draft. Read-only preparation uses the page's unactivated models/agents and
@@ -79,15 +106,16 @@ cannot satisfy an explicit cost ceiling. Deterministic fallback uses configured
 numeric policies and stable ordering, not semantic guesses. See ADR-0033's
 2026-10-05 amendment and the description-first routing implementation plan.
 
-Settings responsibility rewriting uses the installation-owned SettingsAssistant
-LLM independently of Planner. Model catalog descriptions are background data,
+Settings responsibility rewriting uses the official SettingsAssistant business
+operation independently of Planner. Model catalog descriptions are background data,
 not duty text. Only a validated LLM-generated draft may replace the editor
 text; unavailable credentials, failed requests and invalid/truncated output
 preserve the source and report a controlled failure (ADR-0044). Deterministic
 capability compilation remains separate from this semantic editing operation.
 SettingsAssistant and selected-model OpenRouter profile summarization share
-InternalLlmService, with per-request developer configuration from
-`internal/llm.json` and a separate `internal/llm-credentials.json` SecretStore.
+InternalLlmService, using fixed official business operations in production
+(ADR-0047). Production does not load `internal/llm.json` or
+`internal/llm-credentials.json`, and has no local-model fallback.
 Summaries become model routingNotes; they never grant hard capabilities.
 The Agent settings capability section uses a separate read-only internal-LLM
 explanation of selected-model evidence and available tool affordances. It speaks

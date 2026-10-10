@@ -1680,6 +1680,15 @@ describe('PlannerProcessSupervisor', () => {
     await expect(running).resolves.toBeUndefined();
   });
 
+  it('does not spawn a Planner turn without official production authorization', async () => {
+    const spawn = vi.fn();
+    const supervisor = new PlannerProcessSupervisor({ command: '/release/planner', spawn: spawn as never,
+      productionAuthorization: () => ({ allowed: false }),
+    });
+    await expect(supervisor.run('work', { request: { sessionId: 'not-authorized', source: 'gateway' } } as never, 'kernel')).rejects.toThrow('官方账号');
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it('does not start queued or new RPC turns after the session is stopped', async () => {
     const child = fakeProcess();
     child.kill = vi.fn((signal: NodeJS.Signals = 'SIGTERM') => {

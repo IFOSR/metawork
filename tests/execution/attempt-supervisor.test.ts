@@ -167,6 +167,28 @@ function outcomeEvent(item: KernelDispatchItemRecord): KernelEvent {
 }
 
 describe('AttemptSupervisor', () => {
+  it('finishes an active attempt but defers queued launch after authorization closes, including recovery', async () => {
+    const repository = new MemoryDispatchItems();
+    let allowed = true;
+    const supervisor = new AttemptSupervisor(repository, 1, 1, {}, () => ({ allowed }));
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started: string[] = [];
+    const context = { run: async (item: KernelDispatchItemRecord) => {
+      started.push(item.attemptId); await gate; return outcomeEvent(item);
+    }, submit: async () => undefined, onLaunchError: async (item: KernelDispatchItemRecord) => outcomeEvent(item) };
+    for (const suffix of ['a', 'b']) {
+      const decision = batchDecisionForTask('task-a', `attempt-${suffix}`);
+      supervisor.enqueue(decision, bindingContext(decision, 'generation-a'), context, new Date().toISOString());
+    }
+    allowed = false; release(); await supervisor.drain('task-a');
+    supervisor.recover('task-a', context); await supervisor.drain('task-a');
+    expect(started).toEqual(['attempt-a']);
+    expect(repository.records.get('attempt-b')?.status).toBe('pending_launch');
+    allowed = true; supervisor.recover('task-a', context); await supervisor.drain('task-a');
+    expect(started).toEqual(['attempt-a', 'attempt-b']);
+  });
+
   it('kicks a queued Task when another Task releases the account slot', async () => {
     const repository = new MemoryDispatchItems();
     const supervisor = new AttemptSupervisor(repository, 1, 1);

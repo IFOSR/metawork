@@ -199,6 +199,14 @@ const snapshot: KernelSnapshot = {
 };
 
 describe('ControlKernel', () => {
+  it('blocks dispatch when the Server entitlement fact is closed', () => {
+    const decision = new ControlKernel().decide(runtimeEvent({ type: 'dispatch_requested', reason: 'start' }), {
+      ...dispatchSnapshot(),
+      productionAuthorization: { allowed: false, reason: 'official authorization state: expired' },
+    });
+    expect(decision.action).toEqual({ type: 'block_work', taskId: 'task_1', subtaskId: 'subtask_1', preserveSubtaskState: true });
+    expect(decision.reason).toContain('expired');
+  });
   it('uses an Auto AgentClass default as the resolver preference for agent-class-default', () => {
     expect(resolvePreferredModelRef(
       { mode: 'agent-class-default' },

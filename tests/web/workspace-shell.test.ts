@@ -73,7 +73,7 @@ describe('Web workspace shell', () => {
     expect(styles).toContain('.agent-readiness-banner');
     expect(banner).toContain('Codex');
     expect(banner).toContain('GPT/Codex');
-    expect(banner).toContain('更适合代码理解、修改、测试和仓库级工程任务');
+    expect(banner).toContain('用于 GPT/Codex 模型的代码任务');
   });
 
   it('creates a Workspace by browsing local directories', async () => {
@@ -221,7 +221,7 @@ describe('Web workspace shell', () => {
       expect(drawer).toContain(`'${token}'`);
     }
     expect(drawer).toContain('onToggleCollapse');
-    expect(drawer).toContain('artifactDownloadUrl');
+    expect(drawer).toContain('ArtifactDownload');
 
     // 对话与轨迹使用结构化 ArtifactLink。
     expect(link).toContain('ArtifactProjection');

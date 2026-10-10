@@ -218,3 +218,10 @@ produced by the Server-side Span advisor before the event was enqueued.
 - Observations carry only internal refs, validated probabilities, a resolved
   model version, bounded usage, and a finite failure reason. Credentials, raw
   requests, and raw provider payloads are never persisted.
+
+## 2026-10-09 amendment
+
+[ADR-0047](0047-account-license-and-official-ai.md) adds the official commercial
+authorization fact and recovery fences. It also supersedes production local
+internal-LLM configuration with fixed official business operations. Existing
+deterministic activation and Kernel ownership remain in force.

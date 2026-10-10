@@ -82,6 +82,7 @@ export class AccountStartupRecoveryService {
   }
 
   constructor(private readonly deps: {
+    readonly productionAuthorization?: () => { allowed: boolean; reason?: string };
     readonly db: Database.Database;
     readonly recoveryReplan?: RecoveryReplan;
     readonly resolveConfigurationSnapshot?: (revisionId: string) => Promise<ConfigurationSnapshot>;
@@ -800,6 +801,7 @@ export class AccountStartupRecoveryService {
    */
   private async runReplanWorker(): Promise<{ claimed: number }> {
     const worker = this.replanWorker ??= new GenerationReplanWorker({
+      productionAuthorization: this.deps.productionAuthorization,
       replanRepo: this.deps.runtimeExecutionServices.generationReplanRepo,
       planner: this.buildReplanPlannerPort(),
       findTask: taskId => this.deps.taskServices.taskRuntimeService.findTask(taskId),

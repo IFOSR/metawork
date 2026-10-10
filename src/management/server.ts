@@ -1,8 +1,10 @@
+import { OfficialAuthorizationError } from '../authorization/types.js';
 import type { DesktopSessionService } from './desktop-session.js';
 import type { ClientNotificationPage } from '../gateway/client-notification-feed.js';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { collectNavigationDiagnostics } from '../utils/navigation-diagnostics.js';
 import { createReadStream, existsSync, statSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import type { Socket } from 'node:net';
 import { MAX_CONNECTION_OBSERVATIONS, type ConversationObservationService, type ConversationObservationHandle } from '../gateway/conversation-observation.js';
 import { parseGatewayClientMessage } from '../gateway/protocol.js';
@@ -31,6 +33,7 @@ import type { WebAuthService } from './web-auth.js';
 import type { WebLaunchContextService } from './web-launch-context.js';
 import type { WorkspaceDirectoryBrowser } from './workspace-directory-browser.js';
 import type { ManagementWebSessionRuntime } from './web-session-runtime-types.js';
+import type { LocalAuthorizationService } from '../authorization/local-authorization-service.js';
 import type {
   ArtifactDownloadResult,
   ArtifactMetadataResult,
@@ -288,6 +291,8 @@ export interface ManagementServerDeps {
     refresh(input?: { force?: boolean }): Promise<readonly AgentReadiness[]>;
     subscribe(listener: (agents: readonly AgentReadiness[]) => void): () => void;
   };
+  /** Official account authorization is owned by the Server and projected to clients. */
+  officialAuthorization?: LocalAuthorizationService;
 }
 
 const MIME: Record<string, string> = {
@@ -851,6 +856,12 @@ export class ManagementServer {
     }
     const clientId = authSession?.clientId ?? 'manual-bearer-client';
 
+    if (url.pathname.startsWith('/api/official-auth')) {
+      await this.handleOfficialAuth(request, response, url);
+      return;
+    }
+
+
     if (request.method === 'GET' && url.pathname === '/api/client/notifications') {
       const cursor = url.searchParams.get('cursor');
       if (cursor && cursor.length > 128) { this.sendJson(response, 400, { error: 'invalid_cursor' }); return; }
@@ -876,7 +887,7 @@ export class ManagementServer {
 
     const artifactDownloadMatch = /^\/api\/artifacts\/([^/]+)\/download$/u.exec(url.pathname);
     if (request.method === 'GET' && artifactDownloadMatch) {
-      await this.handleArtifactDownload(request, response, decodeURIComponent(artifactDownloadMatch[1]!));
+      await this.handleArtifactDownload(request, response, decodeURIComponent(artifactDownloadMatch[1]!), url.searchParams.get('format'));
       return;
     }
 
@@ -1557,6 +1568,79 @@ export class ManagementServer {
     this.sendJson(response, 404, { error: 'not found', path: url.pathname });
   }
 
+  private async handleOfficialAuth(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+  ): Promise<void> {
+    const authorization = this.deps.officialAuthorization;
+    if (!authorization) {
+      this.sendJson(response, 503, { error: 'official_authorization_unavailable' });
+      return;
+    }
+    response.setHeader('Cache-Control', 'no-store');
+    if (request.method === 'GET' && url.pathname === '/api/official-auth/status') {
+      this.sendJson(response, 200, authorization.getStatus());
+      return;
+    }
+    if (!this.isAllowedWebSocketOrigin(request.headers.origin)) {
+      this.sendJson(response, 403, { error: 'forbidden_origin' });
+      return;
+    }
+    try {
+      if (request.method === 'GET' && url.pathname === '/api/official-auth/plans') {
+        this.sendJson(response, 200, await authorization.getPlans());
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/api/official-auth/register') {
+        const body = await readRequestBody(request);
+        if (typeof body.email !== 'string' || typeof body.password !== 'string') {
+          this.sendJson(response, 400, { error: 'invalid_account' }); return;
+        }
+        await authorization.register(body.email, body.password);
+        this.sendJson(response, 201, { registered: true }); return;
+      }
+      if (request.method === 'POST' && url.pathname === '/api/official-auth/login') {
+        const body = await readRequestBody(request);
+        const email = typeof body.email === 'string' ? body.email.trim() : '';
+        const password = typeof body.password === 'string' ? body.password : '';
+        if (!email || !password) {
+          this.sendJson(response, 400, { error: 'email and password are required' });
+          return;
+        }
+        this.sendJson(response, 200, await authorization.login(email, password));
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/api/official-auth/logout') {
+        await authorization.logout();
+        response.writeHead(204);
+        response.end();
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/api/official-auth/verify') {
+        this.sendJson(response, 200, await authorization.verifyForProduction());
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/api/official-auth/orders') {
+        const body = await readRequestBody(request);
+        const plan = body.plan === 'trial' || body.plan === 'monthly' || body.plan === 'annual' ? body.plan : null;
+        const idempotencyKey = typeof body.idempotencyKey === 'string' ? body.idempotencyKey.trim() : '';
+        if (!plan || !idempotencyKey) { this.sendJson(response, 400, { error: 'plan and idempotencyKey are required' }); return; }
+        this.sendJson(response, 201, await authorization.createOrder(plan, idempotencyKey));
+        return;
+      }
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      const status = code === 'already_logged_in' ? 409
+        : code === 'entitlement_inactive' ? 402
+          : code === 'session_invalid' ? 401
+            : code === 'verification_unavailable' ? 503 : 400;
+      this.sendJson(response, status, { error: code ?? 'official_authorization_failed', message: error instanceof OfficialAuthorizationError ? error.message : '官方账号操作失败，请重试。' });
+      return;
+    }
+    this.sendJson(response, 404, { error: 'not_found' });
+  }
+
   private artifactFailureStatus(reason: string): number {
     if (reason === 'unauthorized') return 403;
     if (reason === 'unavailable') return 410;
@@ -1606,7 +1690,12 @@ export class ManagementServer {
     request: IncomingMessage,
     response: ServerResponse,
     artifactId: string,
+    format: string | null = null,
   ): Promise<void> {
+    if (format !== null && format !== 'original' && format !== 'pdf') {
+      this.sendJson(response, 400, { error: 'unsupported_download_format' });
+      return;
+    }
     const service = this.deps.artifactQuery;
     if (!service) {
       this.sendJson(response, 503, { error: 'artifact preview unavailable' });
@@ -1615,6 +1704,31 @@ export class ManagementServer {
     const result: ArtifactDownloadResult = await service.resolveDownload(artifactId);
     if (!result.ok) {
       this.sendJson(response, this.artifactFailureStatus(result.reason), { error: result.reason });
+      return;
+    }
+    if (format === 'pdf') {
+      if (result.artifact.previewKind !== 'markdown') {
+        this.sendJson(response, 415, { error: 'pdf_requires_markdown' });
+        return;
+      }
+      try {
+        const { createReportPdf, reportPdfName } = await import('./report-pdf.js');
+        const source = await readFile(result.absolutePath, 'utf8');
+        const pdf = await createReportPdf(source, result.artifact.displayName,
+          reference => service.readReportImage(artifactId, reference));
+        const name = reportPdfName(result.artifact.displayName).replace(/[^\w.\-\u4e00-\u9fff]+/gu, '_');
+        response.writeHead(200, {
+          'Content-Type': 'application/pdf',
+          'Content-Length': pdf.byteLength,
+          'Cache-Control': 'no-store',
+          'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+          'X-Content-Type-Options': 'nosniff',
+        });
+        response.end(pdf);
+      } catch (error) {
+        console.error('[MetaWork Web] PDF export failed', { artifactId, message: (error as Error).message });
+        this.sendJson(response, 500, { error: 'pdf_export_failed' });
+      }
       return;
     }
     let filePath: string;
@@ -1739,6 +1853,9 @@ export class ManagementServer {
 interface RequestBody {
   change?: unknown;
   token?: string;
+  email?: string;
+  plan?: string;
+  idempotencyKey?: string;
   username?: string;
   password?: string;
   baseRevisionId?: string;

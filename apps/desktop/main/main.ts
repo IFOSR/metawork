@@ -265,9 +265,9 @@ ipcMain.handle('desktop:select-workspace', async event => {
   owned(event);
   return result.canceled ? null : result.filePaths[0] ?? null;
 });
-ipcMain.handle('desktop:save-artifact', async (event, id: unknown) => {
+ipcMain.handle('desktop:save-artifact', async (event, id: unknown, format: unknown = 'original') => {
   owned(event);
-  if (!identifier(id) || saving) throw new Error('下载请求不可用');
+  if (!identifier(id) || saving || (format !== 'original' && format !== 'pdf')) throw new Error('下载请求不可用');
   saving = true;
   let temporary: string | null = null;
   const downloadOrigin = origin;
@@ -277,13 +277,15 @@ ipcMain.handle('desktop:save-artifact', async (event, id: unknown) => {
     if (!metaResponse.ok) throw new Error('产物不可用');
     const body = await metaResponse.json() as { artifact?: { displayName?: string } };
     const metadata = body.artifact ?? {};
-    const name = typeof metadata.displayName === 'string'
+    const originalName = typeof metadata.displayName === 'string'
       ? metadata.displayName.replace(/[\\/\x00-\x1f]/gu, '_').slice(0, 200) : 'artifact';
+    const name = format === 'pdf' ? `${originalName.replace(/\.(?:md|markdown)$/iu, '')}.pdf` : originalName;
     owned(event);
-    const result = await dialog.showSaveDialog(window!, { title: '保存产物', defaultPath: name });
+    const result = await dialog.showSaveDialog(window!, { title: '保存产物', defaultPath: name,
+      ...(format === 'pdf' ? { filters: [{ name: 'PDF 文档', extensions: ['pdf'] }] } : {}) });
     if (result.canceled || !result.filePath) return null;
     owned(event);
-    const response = await webSession.fetch(`${url}/download`, { redirect: 'error', signal: AbortSignal.timeout(120_000) });
+    const response = await webSession.fetch(`${url}/download${format === 'pdf' ? '?format=pdf' : ''}`, { redirect: 'error', signal: AbortSignal.timeout(120_000) });
     if (!response.ok || !response.body) throw new Error('产物下载失败');
     temporary = join(dirname(result.filePath), `.metawork-download-${randomUUID()}`);
     const file = await open(temporary, 'wx', 0o600);

@@ -328,8 +328,15 @@ export class HttpClient {
     return this.request(`/api/artifacts/${encodeURIComponent(artifactId)}/preview`);
   }
 
-  artifactDownloadUrl(artifactId: string): string {
-    return `/api/artifacts/${encodeURIComponent(artifactId)}/download`;
+  artifactDownloadUrl(artifactId: string, format: 'original' | 'pdf' = 'original'): string {
+    return `/api/artifacts/${encodeURIComponent(artifactId)}/download${format === 'pdf' ? '?format=pdf' : ''}`;
+  }
+
+  async downloadArtifactPdf(artifactId: string): Promise<Blob> {
+    const response = await fetch(this.artifactDownloadUrl(artifactId, 'pdf'), { credentials: 'same-origin' });
+    if (response.status === 401) this.onUnauthorized?.();
+    if (!response.ok) throw new Error('PDF 导出失败，请重试。');
+    return response.blob();
   }
 
   async uploadAttachment(

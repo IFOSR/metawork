@@ -82,6 +82,19 @@ function createFixture(options: {
 }
 
 describe('ArtifactPreviewService', () => {
+  it('reads report illustrations only inside the authorized report directory', async () => {
+    const { service, root, taskDirectory } = createFixture({});
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
+    writeFileSync(join(taskDirectory, '图表.png'), png);
+    writeFileSync(join(root, 'outside.png'), png);
+    symlinkSync(join(root, 'outside.png'), join(taskDirectory, 'escaped.png'));
+    expect(await service.readReportImage('artifact_demo', encodeURIComponent('图表.png'))).toBe(`data:image/png;base64,${png.toString('base64')}`);
+    for (const reference of ['https://example.com/a.png', 'file:///etc/passwd', '../outside.png', 'escaped.png', 'report.md', '%E0%A4%A']) {
+      expect(await service.readReportImage('artifact_demo', reference)).toBeUndefined();
+    }
+    const denied = createFixture({ authorize: () => false });
+    expect(await denied.service.readReportImage('artifact_demo', '图表.png')).toBeUndefined();
+  });
   it('returns the restricted projection without internal paths for metadata', async () => {
     const { service } = createFixture({});
 

@@ -118,14 +118,14 @@ export type NewWorkAdmissionResult =
   | { readonly allowed: true }
   | {
       readonly allowed: false;
-      readonly reason: 'required_agent_unavailable' | 'no_enabled_executor' | 'configuration_invalid';
+      readonly reason: 'required_agent_unavailable' | 'no_enabled_executor' | 'configuration_invalid' | 'official_authorization_required';
       readonly agentId?: 'pi-agent' | 'codex-cli';
     };
 
 export interface NewWorkAdmission {
   check(command: Extract<GatewayCommand, {
-    kind: 'user_message' | 'create_conversation';
-  }>): NewWorkAdmissionResult;
+    kind: 'user_message' | 'create_conversation' | 'slash_command';
+  }>): NewWorkAdmissionResult | Promise<NewWorkAdmissionResult>;
 }
 
 export type ClientGatewayResult = CommandReceipt | GatewayError;
@@ -215,14 +215,14 @@ export class ClientGateway {
       return this.handleReadOnly(envelope, account.accountId, `${principal.kind}:${principal.id}`);
     }
 
-    const admissionCheck = newWorkAdmissionFor(envelope.command, this.deps.newWorkAdmission);
+    const admissionCheck = await newWorkAdmissionFor(envelope.command, this.deps.newWorkAdmission);
     if (admissionCheck && !admissionCheck.allowed) {
       return {
         requestId: envelope.requestId,
         idempotencyKey: envelope.idempotencyKey,
         status: 'rejected',
         conversationId: null,
-        reason: admissionCheck.reason,
+        reason: admissionCheck.reason === 'official_authorization_required' ? '请在本机 Web / Desktop 登录 MetaWork 官方账号并刷新权益；历史浏览、导出和取消仍可使用。' : admissionCheck.reason,
         code: admissionCheck.reason,
         agentId: admissionCheck.agentId,
       };
@@ -567,13 +567,15 @@ function isWorkspaceCommand(command: GatewayCommand): command is Extract<Gateway
   ].includes(command.kind);
 }
 
-function newWorkAdmissionFor(
+async function newWorkAdmissionFor(
   command: GatewayCommand,
   admission: NewWorkAdmission | undefined,
-): NewWorkAdmissionResult | null {
-  if (!admission || (command.kind !== 'user_message' && command.kind !== 'create_conversation')) {
+): Promise<NewWorkAdmissionResult | null> {
+  if (!admission || (command.kind !== 'user_message' && command.kind !== 'create_conversation' && command.kind !== 'slash_command')) {
     return null;
   }
+  if (command.kind === 'slash_command' && command.text.trim().startsWith('/') && !/^\/task\s+(?:resume|unblock|retry|replan|recover)(?:\s|$)/u.test(command.text.trim())) return null;
+  if (command.kind === 'slash_command' && /^\/task\s+recover\s+\S+\s+\S+\s+assume-applied\s*$/u.test(command.text.trim())) return null;
   return admission.check(command);
 }
 

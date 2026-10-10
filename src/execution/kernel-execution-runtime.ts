@@ -467,6 +467,8 @@ export interface KernelExecutionRuntimeDeps {
     }): Promise<KernelEvent | null>;
     buildPlanAdmissionSnapshot(event: Extract<KernelEvent, { type: 'plan_proposed' }>): KernelSnapshot;
   };
+  /** Read-only Server authorization projection consumed by Kernel snapshots. */
+  productionAuthorization?: () => { allowed: boolean; reason?: string };
 }
 
 /** Runtime handler set for Kernel decisions. It applies one authorized action and reports one fact. */
@@ -495,6 +497,7 @@ export class KernelExecutionRuntime {
       deps.dispatchItemRepo,
       deps.maxConcurrentAttempts,
       deps.maxConcurrentAttemptsPerTask ?? deps.maxConcurrentAttempts,
+      {}, deps.productionAuthorization,
     );
   }
 
@@ -713,6 +716,7 @@ export class KernelExecutionRuntime {
         recoveryCheckId,
       };
       const workflow = new DurableKernelWorkflow({
+        productionAuthorization: this.deps.productionAuthorization,
         kernel: this.deps.controlKernel,
         buildSnapshot: () => ({
           schemaVersion: 5,
@@ -786,6 +790,7 @@ export class KernelExecutionRuntime {
     let receipt: CancellationReceipt | null = null;
     let controlError: string | null = null;
     const workflow = new DurableKernelWorkflow({
+      productionAuthorization: this.deps.productionAuthorization,
       kernel: this.deps.controlKernel,
       buildSnapshot: () => this.deps.cancellationCoordinator.buildSnapshot(event.taskId!),
       store: this.deps.kernelWorkflowStore,
@@ -1161,6 +1166,7 @@ export class KernelExecutionRuntime {
       // Kept as a compatibility projection. Kernel policy uses the scoped map.
       runningTaskId: task?.id ?? null,
       graphState,
+      productionAuthorization: this.deps.productionAuthorization?.(),
       subtasks: subtasks.map(subtask => ({
         id: subtask.id,
         taskId: subtask.taskId,
@@ -2727,6 +2733,7 @@ export class KernelExecutionRuntime {
       onLaunchError: async (item, error) => this.launchFailureEvent(item, error),
     };
     workflow = new DurableKernelWorkflow({
+      productionAuthorization: this.deps.productionAuthorization,
       kernel: this.deps.controlKernel,
       buildSnapshot,
       store: this.deps.kernelWorkflowStore,
@@ -3080,6 +3087,7 @@ export class KernelExecutionRuntime {
       onLaunchError: async (item, error) => this.launchFailureEvent(item, error),
     };
     workflow = new DurableKernelWorkflow({
+      productionAuthorization: this.deps.productionAuthorization,
       kernel: this.deps.controlKernel,
       buildSnapshot: event => event.type === 'plan_proposed'
         ? this.deps.callbacks.buildPlanAdmissionSnapshot(event)

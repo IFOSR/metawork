@@ -1,3 +1,4 @@
+import { allowsKernelAction, type ProductionAuthorizationFact } from './production-authorization.js';
 import { createHash } from 'node:crypto';
 import type {
   KernelConfigurationView,
@@ -360,7 +361,7 @@ export interface KernelResumeRecoveryCandidate {
   attemptPayload?: KernelAttemptPayload;
 }
 
-export type KernelSnapshot =
+export type KernelSnapshot = { productionAuthorization?: ProductionAuthorizationFact } & (
   | {
       schemaVersion: 5;
       type: 'plan_admission';
@@ -385,6 +386,8 @@ export type KernelSnapshot =
       activeTaskByConversation?: Record<string, string | null>;
       runningTaskId: string | null;
       graphState: 'ready' | 'missing' | 'conflict';
+      /** Server-projected commercial admission fact; Kernel consumes the fact only. */
+      productionAuthorization?: { allowed: boolean; reason?: string };
       subtasks: KernelSubtaskFact[];
       frontier: string[];
       dependencyReadiness?: KernelDependencyReadinessFact[];
@@ -495,7 +498,7 @@ export type KernelSnapshot =
       deferredPlan: Extract<KernelEvent, { type: 'plan_proposed' }> | null;
       deferredBindings: AuthorizedExecutorBinding[];
       executorStatuses: KernelExecutorStatusProjection[];
-    };
+    });
 
 export type KernelDecisionAction =
   | { type: 'reject_request' }
@@ -717,6 +720,15 @@ const MAX_CORRECTION_INPUT_BYTES = 128 * 1024;
 /** Pure strategic interpreter for every Phase 3 control-plane event. */
 export class ControlKernel {
   decide(event: KernelEvent, snapshot: KernelSnapshot): KernelDecision {
+    const result = this.decidePolicy(event, snapshot);
+    if (!allowsKernelAction(result.action, snapshot.productionAuthorization)) {
+      return decision(event, { type: 'block_work', taskId: event.taskId ?? '', subtaskId: event.subtaskId ?? null, preserveSubtaskState: true },
+        snapshot.productionAuthorization?.reason ?? 'official_authorization_required');
+    }
+    return result;
+  }
+
+  private decidePolicy(event: KernelEvent, snapshot: KernelSnapshot): KernelDecision {
     if (!snapshotMatches(event, snapshot)) {
       return decision(event, { type: 'block_work', taskId: event.taskId ?? '', subtaskId: event.subtaskId ?? null }, 'event and snapshot do not match');
     }

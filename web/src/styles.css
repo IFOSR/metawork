@@ -5050,7 +5050,51 @@ select:focus-visible {
 .artifact-drawer-actions {
   display: flex;
   gap: 6px;
+  flex-shrink: 0;
 }
+
+.artifact-download { position: relative; }
+.artifact-download .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.artifact-drawer-actions .artifact-download-toggle {
+  width: auto;
+  min-width: 64px;
+  padding: 0 9px;
+  white-space: nowrap;
+}
+.artifact-download-options,
+.artifact-download-feedback {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 20;
+  width: 206px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-panel, #1a1e19);
+  box-shadow: 0 8px 24px #0003;
+}
+.artifact-drawer-actions .artifact-download-options :is(a, button),
+.artifact-drawer-actions .artifact-download-feedback button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  min-height: 40px;
+  height: auto;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+.artifact-download-options small { color: var(--text-dim); }
+.artifact-download :is(button, a):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.artifact-download button:disabled { cursor: wait; opacity: 0.7; }
+.artifact-download-feedback { font-size: 12px; }
+.artifact-download-feedback [role='alert'] { display: block; padding: 8px; }
+.artifact-download-options ~ .artifact-download-feedback { display: none; }
+:root[data-theme='light'] .artifact-download-options,
+:root[data-theme='light'] .artifact-download-feedback { background: #fff; }
 
 .artifact-drawer-actions button,
 .artifact-drawer-actions a {
@@ -7958,3 +8002,39 @@ html[data-platform='desktop'] .workspace-header { column-gap: 16px; }
   .agent-readiness-optional { flex-direction: row; flex-wrap: wrap; gap: 10px; }
   .agent-readiness-optional > .agent-readiness-actions { margin-inline-start: 32px; }
 }
+
+.official-app-frame { height: 100%; display: flex; flex-direction: column; }
+.official-app-frame > .workspace-shell { flex: 1; min-height: 0; height: auto; }
+.official-account-bar { flex: 0 0 auto; display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 36px; padding: 4px 18px; border-bottom: 1px solid var(--border); background: var(--bg-panel); font-size: 12px; color: var(--text-dim); }
+.official-account-bar > span { display: flex; align-items: center; gap: 8px; }
+.official-indicator { width: 6px; height: 6px; border-radius: 50%; background: var(--yellow); }
+.official-indicator[data-active='true'] { background: var(--green); }
+.official-account-bar button, .official-account-dialog button { border: 1px solid var(--border); color: var(--text); background: var(--bg-elevated); padding: 7px 12px; border-radius: 6px; cursor: pointer; font: inherit; }
+.official-account-bar button { padding: 4px 10px; }
+.official-account-dialog { width: min(690px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); padding: 26px; border: 1px solid var(--border); border-radius: 12px; color: var(--text); background: var(--bg-panel); overflow-y: auto; }
+.official-account-dialog::backdrop { background: rgb(0 0 0 / 55%); }
+.official-account-dialog header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.official-account-dialog h2 { margin: 5px 0 0; font-size: 24px; font-weight: 600; }
+.official-account-dialog header small { color: var(--text-dim); font-size: 10px; letter-spacing: .12em; }
+.official-note, .official-account-dialog footer { color: var(--text-dim); font-size: 12px; line-height: 1.8; }
+.official-account-dialog form { display: grid; gap: 8px; margin: 22px 0; }
+.official-account-dialog label { font-size: 12px; }
+.official-account-dialog input { width: 100%; min-height: 40px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: var(--bg); color: var(--text); font: inherit; }
+.official-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.official-account-dialog button.primary { background: var(--accent); color: #fff; }
+.official-account-dialog button:disabled { opacity: .5; cursor: not-allowed; }
+.official-account-dialog :is(button,input):focus-visible, .official-account-bar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.official-account-dialog button:hover:not(:disabled), .official-account-bar button:hover { border-color: var(--accent); }
+.official-current { padding: 16px 0; overflow-wrap: anywhere; }
+.official-current p { margin: 8px 0; font-size: 13px; color: var(--text-dim); }
+.official-plans { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin: 24px 0; }
+.official-plans article { border-top: 2px solid var(--border); padding: 16px 0 0; }
+.official-plans h3 { font-size: 14px; margin: 0 0 14px; }
+.official-plans p { font-size: 11px; color: var(--text-dim); }
+.official-plans .official-price { color: var(--text); font-size: 24px; font-variant-numeric: tabular-nums; margin: 0; }
+.official-price small { font-size: 11px; color: var(--text-dim); }
+.official-plans button { font-size: 11px; }
+.official-error { color: var(--red); line-height: 1.7; }
+.official-message { color: var(--green); line-height: 1.7; overflow-wrap: anywhere; }
+.official-account-dialog footer { border-top: 1px solid var(--border); padding-top: 16px; }
+@media(max-width: 540px) { .official-account-dialog { padding: 20px; } .official-plans { grid-template-columns: 1fr; gap: 20px; } .official-plans article { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; } .official-plans h3, .official-plans p { margin: 0; } }

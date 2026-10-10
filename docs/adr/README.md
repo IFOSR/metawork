@@ -161,6 +161,9 @@ When two current ADRs appear to overlap, the more specific topic ADR defines its
 
 ## Active implementation
 
+- [ADR-0047](0047-account-license-and-official-ai.md), accepted 2026-10-09:
+  official account sessions, entitlement admission and managed internal AI.
+
 - [ADR-0043](0043-explicit-conversation-observation-and-client-read-models.md), accepted 2026-10-03: implementation remains local pending user validation. See the [design](../plans/2026-10-02-frontend-observation-architecture-upgrade-design.md) and [evidence and remaining gates](../plans/2026-10-02-frontend-observation-implementation.md).
 
 ## Status rules

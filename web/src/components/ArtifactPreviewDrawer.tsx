@@ -4,8 +4,7 @@ import type { HttpClient } from '../api/http';
 import { formatBytes } from './ArtifactLink';
 import { MarkdownContent } from './MarkdownContent';
 import { BudgetedImage } from './BudgetedImage';
-import { NativeArtifactSave } from '../platform/native-artifact-save';
-import { desktopBridge } from '../platform/services';
+import { ArtifactDownload } from './ArtifactDownload';
 
 export type PreviewDrawerState =
   | { status: 'closed' }
@@ -85,16 +84,7 @@ export function ArtifactPreviewDrawer({
                 {maximized ? '⤡' : '⤢'}
               </button>
             )}
-            {desktopBridge() ? <NativeArtifactSave key={state.artifact.artifactId} artifactId={state.artifact.artifactId} /> : http && (
-              <a
-                className="artifact-drawer-download"
-                href={http.artifactDownloadUrl(state.artifact.artifactId)}
-                download={state.artifact.displayName}
-                title="下载"
-              >
-                ⬇
-              </a>
-            )}
+            <ArtifactDownload key={state.artifact.artifactId} http={http} artifact={state.artifact} />
           </>
         )}
         <button

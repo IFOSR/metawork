@@ -12,7 +12,7 @@ export interface DesktopBridge {
   selectWorkspaceDirectory(): Promise<string | null>;
   selectExecutorFile?(): Promise<string | null>;
   repairPi?(): Promise<{ ok: boolean; message: string }>;
-  saveArtifact(artifactId: string): Promise<string | null>;
+  saveArtifact(artifactId: string, format?: 'original' | 'pdf'): Promise<string | null>;
   showDownloadedArtifact(downloadId: string): Promise<void>;
   readPreferences(): Promise<DesktopPreferences>;
   setTheme(theme: DesktopPreferences['theme']): Promise<void>;

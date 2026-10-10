@@ -30,6 +30,20 @@ const fallbackBinding: AuthorizedExecutorBinding = {
 const fallbackBindingFingerprint = 'd743e2dac20afaf43b8afa9e85f2c350916301c268d799bbbd850d43135d7ec8';
 
 describe('DurableKernelWorkflow', () => {
+  it('defers durable productive applications while logged out and replays on explicit recovery', async () => {
+    const store = new MemoryWorkflowStore();
+    const event = directReplyEvent();
+    const decision: KernelDecision = { ...directReplyDecision(event), action: { type: 'schedule_replan', taskId: 'task', generationId: 'gen', sourceRevision: 1, replanJobId: 'job' } };
+    let allowed = false; let applied = 0;
+    const workflow = new DurableKernelWorkflow({ store, kernel: { decide: () => decision }, buildSnapshot: () => planSnapshot(),
+      productionAuthorization: () => ({ allowed }), clock: { now: () => event.occurredAt },
+      runtime: { apply: async () => { applied++; return null; } } });
+    await workflow.submit(event); await workflow.recover();
+    expect(applied).toBe(0); expect(store.application?.status).toBe('pending');
+    allowed = true; await workflow.recover();
+    expect(applied).toBe(1); expect(store.application?.status).toBe('applied');
+  });
+
   it('leaves an interrupted application recoverable and resumes it after restart', async () => {
     const store = new MemoryWorkflowStore();
     const event = directReplyEvent();

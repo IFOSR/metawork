@@ -119,13 +119,14 @@ describe('native install CLI', () => {
         HOME: root,
         METAWORK_INSTALL_ROOT: installRoot,
         METAWORK_SECRET_STORE: 'file',
+        METAWORK_PROVIDER_URL: 'https://wizard.example/v1',
       },
       platform: 'linux',
       detectCommand: async () => true,
       isServerRunning: async () => false,
       isInteractive: () => true,
       collectProviderConfiguration: async defaults => {
-        expect(defaults.baseUrl).toBeUndefined();
+        expect(defaults.baseUrl).toBe('https://wizard.example/v1');
         expect(defaults.modelId).toBeUndefined();
         return {
           baseUrl: 'https://api.deepseek.com/v1',
@@ -144,6 +145,23 @@ describe('native install CLI', () => {
     const snapshot = await repository.getActiveSnapshot();
     expect(snapshot.config.providers.provider?.baseUrl).toBe('https://api.deepseek.com/v1');
     expect(snapshot.config.models['default-model']?.modelId).toBe('deepseek-chat');
+  });
+
+  it('installs a model-free login/settings shell without invoking the provider wizard', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'metawork-native-cli-model-free-')); cleanup.push(root);
+    const sourceRoot = join(root, 'source'); const plannerRoot = join(root, 'planner-source');
+    fixtureRelease(sourceRoot, plannerRoot);
+    const installRoot = join(root, 'installed');
+    const exitCode = await runNativeInstallCli(['install', '1.2.0-preview.0', '--source-root', sourceRoot, '--planner-root', plannerRoot], {
+      env: { HOME: root, METAWORK_INSTALL_ROOT: installRoot, METAWORK_SECRET_STORE: 'file' }, platform: 'linux',
+      detectCommand: async () => true, isServerRunning: async () => false, isInteractive: () => true,
+      collectProviderConfiguration: async () => { throw new Error('model-free install must not prompt for provider credentials'); },
+    });
+    expect(exitCode).toBe(0);
+    expect(() => lstatSync(join(installRoot, 'internal/llm-credentials.json'))).toThrow();
+    const repository = new FileConfigurationRepository(resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, installRoot).config);
+    await repository.initialize(); await repository.recover();
+    expect((await repository.getActiveSnapshot()).config.models).toEqual({});
   });
 
   it('fails closed without provider configuration in non-interactive installs', async () => {

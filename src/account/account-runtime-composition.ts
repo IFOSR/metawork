@@ -74,6 +74,7 @@ export function buildAccountRuntimeComposition(deps: {
   notifier: NotificationService;
   /** 任务 → 会话工作区解析（恢复/定时请求缺 workspacePath 时兜底）。 */
   resolveWorkspacePath?: (taskId: string) => Promise<string | null>;
+  productionAuthorization?: () => { allowed: boolean; reason?: string };
   /** 用户可见 Workspace 根（进程启动目录），与内部 workspaceStore 是不同依赖。 */
   userWorkspaceRoot?: string;
   resolveUserWorkspaceRoot?: (
@@ -224,6 +225,7 @@ export function buildAccountRuntimeComposition(deps: {
     getRuntimeConfiguration: deps.getRuntimeConfiguration,
     taskRuntimeService: taskServices.taskRuntimeService,
     ...(deps.resolveWorkspacePath ? { resolveWorkspacePath: deps.resolveWorkspacePath } : {}),
+    ...(deps.productionAuthorization ? { productionAuthorization: deps.productionAuthorization } : {}),
     agentClassService: taskServices.agentClassService,
     workGraphRuntimeService: repositories.workGraphRuntimeService,
     subtaskRepo: repositories.subtaskRepo,
@@ -281,6 +283,7 @@ export function buildAccountRuntimeComposition(deps: {
   const kernelCoordinator = deps.buildKernelCoordinator
     ? deps.buildKernelCoordinator(deps.accountId)
     : new AccountKernelCoordinator({
+        productionAuthorization: deps.productionAuthorization,
         kernel: kernelServices.controlKernel,
         store: kernelServices.kernelWorkflowRepo,
         clock: { now: () => new Date().toISOString() },
@@ -298,6 +301,7 @@ export function buildAccountRuntimeComposition(deps: {
         ],
       });
   startupRecovery = new AccountStartupRecoveryService({
+    productionAuthorization: deps.productionAuthorization,
     recoveryReplan: deps.recoveryReplan,
     resolveConfigurationSnapshot: deps.resolveConfigurationSnapshot,
     db: deps.db,

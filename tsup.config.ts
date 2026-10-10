@@ -1,4 +1,5 @@
 import { defineConfig } from 'tsup';
+import { cp } from 'node:fs/promises';
 
 export default defineConfig({
   entry: [
@@ -22,4 +23,8 @@ export default defineConfig({
   sourcemap: true,
   banner: { js: '#!/usr/bin/env node' },
   external: ['better-sqlite3'],
+  onSuccess: async () => {
+    // Ship the PDF fonts and their redistribution license with every runtime.
+    await cp('src/management/fonts', 'dist/fonts', { recursive: true });
+  },
 });

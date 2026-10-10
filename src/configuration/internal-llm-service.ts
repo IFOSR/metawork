@@ -2,17 +2,32 @@ import type { InternalSettingsAssistantConfig } from './internal-settings-assist
 import type { SecretStore } from './secret-store.js';
 
 export interface InternalLlmDependencies {
-  config: InternalSettingsAssistantConfig | (() => Promise<InternalSettingsAssistantConfig>);
-  secretStore: SecretStore;
+  config?: InternalSettingsAssistantConfig | (() => Promise<InternalSettingsAssistantConfig>);
+  secretStore?: SecretStore;
   fetchImpl?: typeof fetch;
+  /** Production MetaWork installations route fixed business operations through the official service. */
+  officialAi?: (input: {
+    operation: 'responsibility_rewrite' | 'model_summary' | 'capability_explanation';
+    requestId?: string;
+    input: unknown;
+  }) => Promise<unknown>;
 }
 
 /** Shared installation-owned LLM transport; no account Provider or Planner fallback. */
 export class InternalLlmService {
   constructor(private readonly deps: InternalLlmDependencies) {}
 
-  async generate(input: { action: string; system: string; data: unknown }): Promise<unknown> {
+  async generate(input: { action: string; operation?: 'responsibility_rewrite' | 'model_summary' | 'capability_explanation'; system?: string; data: unknown }): Promise<unknown> {
+    if (this.deps.officialAi) {
+      if (!input.operation) throw new InternalLlmError('缺少内置 AI 业务操作');
+      const result = await this.deps.officialAi({ operation: input.operation, input: input.data });
+      // Compatibility envelope for existing local business validators, never an upstream response.
+      return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) } }] };
+    }
     const { action } = input;
+    if (!this.deps.config || !this.deps.secretStore) {
+      throw new InternalLlmError(`${action}服务未配置，原内容未修改。`);
+    }
     const config = typeof this.deps.config === 'function' ? await this.deps.config() : this.deps.config;
     if (!config.enabled) throw new InternalLlmError(`${action}服务未启用，原内容未修改。`);
     try {
@@ -32,7 +47,7 @@ export class InternalLlmService {
               model: config.modelId, temperature: 0, max_tokens: config.maxTokens ?? 2_048,
               ...(config.thinking ? { thinking: { type: config.thinking } } : {}),
               messages: [
-                { role: 'system', content: input.system },
+                { role: 'system', content: input.system ?? 'Return a JSON business result for the supplied data.' },
                 { role: 'user', content: JSON.stringify(input.data) },
               ],
             }),

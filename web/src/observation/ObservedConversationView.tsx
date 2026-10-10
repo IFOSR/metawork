@@ -53,10 +53,14 @@ export const ObservedConversationView = memo(function ObservedConversationView({
   const total = positions.at(-1) ? positions.at(-1)!.top + positions.at(-1)!.height : 0;
   const restored = anchor.current && !anchor.current.bottom
     ? positions.find(row => row.id === anchor.current?.turnId) : null;
-  const visibleTop = viewport.top < 0
+  const requestedTop = viewport.top < 0
     ? restored ? restored.top + (anchor.current?.offset ?? 0) : Math.max(0, total - viewport.height)
     : viewport.top;
-  const visible = positions.filter(row => pinned.has(row.id)
+  // Desktop persists the Turn-relative offset, but measured heights are local
+  // to this document. Mount the anchor even when its estimate is shorter than
+  // the saved offset so it can measure and fetch its complete report body.
+  const visibleTop = Math.max(0, Math.min(requestedTop, total - viewport.height));
+  const visible = positions.filter(row => row.id === restored?.id || pinned.has(row.id)
     || (row.top + row.height >= visibleTop - 700 && row.top <= visibleTop + viewport.height + 700));
   const measure = useCallback((id: string, height: number) => {
     const key = `${conversationId}\0${id}`;
@@ -130,8 +134,11 @@ export const ObservedConversationView = memo(function ObservedConversationView({
     programmaticScroll.current = true;
     const saved = anchor.current;
     const row = saved && positions.find(item => item.id === saved.turnId);
-    const top = !saved || saved.bottom ? Math.max(0, total - canvas.clientHeight)
+    const requestedTop = !saved || saved.bottom ? Math.max(0, total - canvas.clientHeight)
       : row ? Math.max(0, row.top + saved.offset) : Math.max(0, viewport.top);
+    // Clamp the rendered position while preserving the desired anchor: later
+    // body/height updates can restore it, and stale offsets cannot show a void.
+    const top = Math.max(0, Math.min(requestedTop, total - canvas.clientHeight));
     const listTop = list.current ? list.current.getBoundingClientRect().top - canvas.getBoundingClientRect().top + canvas.scrollTop : 0;
     canvas.scrollTop = listTop + top;
     // Use the virtual coordinates until measured rows settle. Reading scrollHeight

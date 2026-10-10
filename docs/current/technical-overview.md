@@ -338,6 +338,11 @@ source fingerprint. The final manual is Planner's authoritative semantic
 routing profile; the Catalog is its machine-readable validation projection.
 User semantics override conflicting generated positioning and preferences, but
 cannot create unknown capabilities or make unsupported intent routable.
+Generated manuals are preserved in full. As of 2026-10-10, neither the former
+24,000-byte single-manual limit nor the 60,000-byte aggregate Planner projection
+limit rejects valid configuration; longer Chinese/model evidence therefore does
+not block activation or the next planning-context read. This is separate from
+the configured model's actual context-window capacity.
 
 Optional model-assisted normalization receives the selected Executor's current
 manual and model facts directly, exposes only
@@ -910,6 +915,22 @@ progress history and ExecutionProjector timeline. Heartbeat, dependency wait,
 capacity wait and blocked states are rendered distinctly from actual Executor
 activity. Projection epoch/revision makes observation changes idempotent across
 reconnects; durable indexed trace/timeline remains readable after the Turn ends. No progress event is Completion Protocol evidence.
+
+When restoring a saved reading position, the virtual conversation list keeps
+the anchor Turn mounted even before its actual height is known. Rendering
+clamps to the current scroll range while retaining the desired Turn-relative
+offset, so delayed full-report loading can restore the position after restart.
+
+Markdown report previews offer original Markdown and derived PDF downloads.
+`GET /api/artifacts/:id/download?format=pdf` reads the complete authorized
+published report and generates A4 pages locally using pdfmake and bundled
+Noto Sans SC fonts (`dist/fonts`, including the OFL license). Chinese text
+remains searchable; headings, lists, tables, code and safe links are retained.
+PNG/JPEG illustrations inside the report's own directory can be embedded;
+external or unsupported images retain captions/links without network fetching.
+Web downloads the PDF directly; Desktop passes the format through its existing
+artifact-ID-only native save bridge. Export does not call official AI, require
+a production license, modify the original artifact, or publish another fact.
 
 Web presentation follows
 `Conversation -> Turn -> one presentation Task -> Subtasks -> Attempts`.
@@ -1696,22 +1717,20 @@ does not license MetaWork as a whole.
 
 ### Internal LLM service (2026-10-05)
 
-The settings AI rewrite action calls the installation-owned SettingsAssistant
-through InternalLlmService. Developer configuration lives in
-`<installRoot>/internal/llm.json`; credentials live in a separate
-`<installRoot>/internal/llm-credentials.json` SecretStore. Both are read on each
-request, independently of Planner and account Provider configuration. The
-installed model uses the existing Provider's actual `deepseek-flash` API ID,
-with a 60-second timeout and 4096-token output budget. The default timeout for
-configurations that omit it is 30 seconds.
-The LLM receives the user's duty text and selected model facts as background,
-and generates structured Chinese mission, task, deliverable, quality and boundary
-content. The server validates the response and renders headings only; it never
-appends model descriptions or canned duties. Failures preserve the user's text
-and report a safe diagnostic. Missing internal credentials require maintenance
-of the installation's internal configuration; public OpenRouter catalog access
-does not supply an LLM credential. Ordinary settings edits and capability
-compilation remain available.
+The settings AI rewrite action calls a fixed official business operation through
+InternalLlmService (ADR-0047). The official service owns model configuration,
+credentials and system prompts. Local Server sends only the operation, request ID
+and business inputs. The official service parses business JSON; the local settings
+consumer validates the fields needed for rendering/activation. As of 2026-10-10,
+official AI uses provider generation defaults without token/thinking overrides,
+quotas, deduplication, concurrency gates or duplicated content/schema checks.
+Account authorization and fixed operation prompts remain. Failures preserve
+source text, and ordinary settings activation remains deterministic.
+Production no longer reads installation `internal/llm.json` or
+`internal/llm-credentials.json`. Those obsolete files are left untouched for
+manual retirement; Planner/Executor Provider credentials are independent and
+must not be removed. Direct transport remains available only through explicit
+development dependency injection, never as an authorization-failure fallback.
 
 The model editor's public-information action retrieves OpenRouter metadata
 without credentials, then uses the same internal service to summarize the
@@ -1772,7 +1791,7 @@ new source drops stale generated assertions, while unchanged persisted guidance
 remains readable. Exact revision resolution and the activation assertion trust
 check are retained.
 
-Only explicit AI actions call the installation-owned InternalLlmService:
+Only explicit AI actions call the official business port via InternalLlmService:
 responsibility rewriting, Agent capability explanation, and OpenRouter model
 information summarization. Activation validates/compiles/persists the revision
 and switches runtime views; Planner binding refresh does not run a prompt.
@@ -1926,3 +1945,20 @@ packaged tools retain priority and empty/relative entries are excluded. Readines
 probes, configuration checks and Executor launches share the resulting Server
 environment. Shell failure falls back without preventing startup. Restart an
 already running Server to pick up this startup fix.
+# Official account authorization
+
+ADR-0047 adds a Server-owned in-memory commercial account session, entitlement
+projection and official service adapter under `src/authorization/`. Web/Desktop
+login is exposed through `/api/official-auth/`; production Gateway admission
+uses the same online entitlement verification. The reference official service
+in `official-server/` runs on huoshan at
+`https://14.103.216.193:9222/`, with persistent data under
+`/root/metawork-offical-server/data/`. Its systemd unit is
+`metawork-official.service`. Official model credentials remain service-side. Routes require the existing local
+Web session or local bearer authentication and validate mutation origins.
+Kernel consumes a normalized fact at decision issuance, durable replay and
+pending launch; the Planner queue and Replan Worker also check that fact. No
+HTTP or commercial credentials enter Kernel. Clean native installs without
+Provider environment variables open the login/settings shell.
+Deployment, limits, privacy, credential retirement and acceptance evidence are
+recorded in [official account operations](official-account-operations.md).

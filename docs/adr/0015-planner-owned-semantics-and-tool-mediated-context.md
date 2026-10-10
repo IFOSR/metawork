@@ -256,7 +256,7 @@ the Skill-style Chinese `CAPABILITY.md` and the machine-readable Routing
 Catalog projection. Those outputs carry the same source fingerprint and may
 not be maintained as independent routing truths.
 
-Planner reads these manuals through the bounded `executorCapabilityManuals`
+Planner reads these manuals through the revision-scoped `executorCapabilityManuals`
 projection returned by `get_planning_context`. The final manual is Planner's
 authoritative semantic routing profile for that Executor, while the Catalog is
 the structured projection used by Planner validation. User semantics take
@@ -265,6 +265,13 @@ prose. A registered capability becomes routable only when the profile also has
 the required structural model and Executor evidence; `disabled` removes it,
 `avoid` preserves fallback eligibility, and unsupported user intent remains
 visible as unresolved rather than becoming false qualification.
+
+2026-10-10 correction: generated manual length must not reject a valid settings
+activation. The former 24,000-byte per-manual and 60,000-byte aggregate projection
+guards are removed. Full manuals, including trailing limitations and user duties,
+remain available without silent truncation; revision identity, stable ordering,
+capability evidence and Kernel authorization are unchanged. These static byte
+guards were not the selected model's actual context-window limits.
 
 Natural-language user guidance is stored as authoritative source text by
 ConfigurationService. Model-assisted normalization is optional: one bounded

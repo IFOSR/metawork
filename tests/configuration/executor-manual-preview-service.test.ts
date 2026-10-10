@@ -207,7 +207,8 @@ describe('Settings activation and previews without a Planner', () => {
     expect(composition).not.toContain('ExecutorManualPlanner');
     expect(composition).not.toContain('executorManualPlanner');
     const preparation = composition.slice(composition.indexOf('prepareConfig:'), composition.indexOf('stageSecrets:'));
-    expect(preparation).not.toContain('await');
+    // Local configuration reads and Codex path validation may await I/O; no semantic model work is allowed.
+    expect(preparation).not.toMatch(/internalLlm|officialAi|settingsAssistant/);
     expect(preparation).not.toMatch(/plannerSupervisor|\.compileAll|\.generate/);
     expect(composition).toContain('new ExecutorManualPreviewService(configurationService)');
   });

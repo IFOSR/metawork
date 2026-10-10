@@ -22,14 +22,12 @@ function setup(content: unknown = generated, finish = 'stop') {
 }
 
 describe('Agent capability description', () => {
-  it('uses actual LLM generation with model evidence and tool boundaries, independently of duties', async () => {
-    const { service, fetchImpl } = setup();
+  it('sends fixed business data without system prompts or provider credentials', async () => {
+    const officialAi = vi.fn(async () => generated);
+    const service = new AgentCapabilityDescriptionService(new InternalLlmService({ officialAi }));
     expect(await service.describe(input)).toEqual(generated);
-    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
-    expect(JSON.parse(body.messages[1].content)).toEqual(input);
-    expect(body.messages[0].content).toContain('仅部分候选具备的能力');
-    expect(body.messages[0].content).toContain('kind=planner');
-    expect(JSON.stringify(input)).not.toContain('核心职责');
+    expect(officialAi).toHaveBeenCalledWith({ operation: 'capability_explanation', input });
+    expect(JSON.stringify(officialAi.mock.calls)).not.toContain('system');
   });
 
   it('caches matching facts, regenerates changed selection and supports explicit refresh', async () => {

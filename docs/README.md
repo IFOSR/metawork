@@ -17,6 +17,10 @@ This directory contains both current technical documentation and historical plan
 
 ## Current Docs
 
+- [历史会话空白修复](plans/2026-10-10-history-viewport-restore-fix.md)：修复 Desktop 重启后长报告滚动位置恢复导致的空白，历史内容无需重建。
+
+- [官方账号服务运行与验收](current/official-account-operations.md)：huoshan 部署、管理入口、凭证停用、隐私与验收证据。
+
 - [Pi 随应用维护与可选执行工具接入方案](plans/2026-10-09-managed-pi-and-optional-tools-design.md)：v0.1.9 本地 arm64 DMG 与自动验收完成，待用户安装验证，尚未发布；Pi 随 MetaWork 维护，Codex 支持自动发现与路径配置，其缺失不阻断应用更新。
 
 - [PDF 处理与执行卡住修复方案](plans/2026-10-06-pdf-processing-and-executor-stall-repair.md)：已完成原生 macOS arm64 实施与验收；补齐 DeepSeek Flash 视觉输入、系统 Pi 的 PDF 能力接入、持续无活动检测与真实进度展示，不限制正常长任务总时长。
@@ -27,7 +31,7 @@ This directory contains both current technical documentation and historical plan
 
 - [自然语言能力优先的任务路由](plans/2026-10-05-description-first-routing.md)：取消泛化标签和关键词打分，保留执行条件校验。
 
-- [内部 LLM 服务](current/internal-llm-service.md)：独立配置、凭证平移、AI 改写及 OpenRouter 路由画像提炼。
+- [内部 LLM 服务](current/internal-llm-service.md)：官方固定业务接口、AI 改写与画像提炼，以及旧研发配置停用边界。
 
 - [Repository Agent Guide](../AGENTS.md): fastest onboarding path, current
   contract versions, module ownership, runtime invariants, entry points, and
@@ -120,7 +124,9 @@ replacing those semantics.
 
 ## Active Delivery
 
-- [一期账号授权与官方内置 AI 最终方案](plans/2026-10-09-account-license-and-managed-internal-ai-design.md)：产品方案已确认、尚未实施。Web/Desktop 登录归属本机 Server，TUI/飞书共享状态；单当前官方账号、无硬件绑定或短租约，活动任务每日后台核验，内置模型配置与密钥仅由官方维护。
+- [一期账号授权与官方内置 AI 最终方案](plans/2026-10-09-account-license-and-managed-internal-ai-design.md)：实施中，官方服务已部署；真实模型联调待配置。Web/Desktop 登录归属本机 Server，TUI/飞书共享状态；单当前官方账号、无硬件绑定或短租约，活动任务每日后台核验，内置模型配置与密钥仅由官方维护。
+
+- [ADR-0047: 官方账号授权与内置 AI](adr/0047-account-license-and-official-ai.md)：一期实现边界、授权核验和官方服务职责。
 
 - [Desktop 接入已有 Web Runtime](plans/2026-10-08-desktop-existing-runtime-adoption.md)：同版本复用与工具补齐、旧版本原地升级、数据保留及联合激活回滚验证。
 
@@ -172,6 +178,12 @@ replacing those semantics.
 - [前端观察架构全盘升级方案](plans/2026-10-02-frontend-observation-architecture-upgrade-design.md)：Web/TUI/Feishu 同账户同权查看与控制、任意端发送/停止/审批、持久仲裁、独立通知路由，以及有界历史、实体仓库和正文虚拟化。[Accepted ADR-0043](adr/0043-explicit-conversation-observation-and-client-read-models.md) 替代 ADR-0036 的来源端独占规则。已完成本地源码与隔离安装验证，运行证据与剩余验收门见[实施记录](plans/2026-10-02-frontend-observation-implementation.md)；用户验收前不推送实施变更。
 
 ## Implementation Plans
+
+- [PDF 下载与能力手册修复试用 DMG](plans/2026-10-10-report-manual-trial-dmg.md)：macOS arm64 内部包 `0.1.9-internal-local20261010b`；用户本地试用，不发布 GitHub。
+
+- [能力手册长度导致激活失败修复](plans/2026-10-10-executor-manual-activation-fix.md)：移除生成手册及 Planner 手册投影的固定字节长度阻断，保留完整内容。
+
+- [报告 Markdown / PDF 下载](plans/2026-10-10-report-md-pdf-download.md)：报告预览提供原文和本地生成的 PDF 两种下载格式，支持中文与分页；Web/Desktop 共用已有产物下载授权。
 
 - [Span 路由增强设计](plans/2026-09-27-span-routing-design.md)、[实施计划](plans/2026-09-27-span-routing-implementation-plan.md)、[设计收尾记录](plans/2026-09-27-span-design-closure.md)与[真实 API 验收](plans/2026-09-27-span-live-acceptance.md)：代码、本地和真实接口验收已完成，包含无客户端恢复、固定 revision、取消/并发边界和双向凭据隔离。真实调用发现并修复字符串 state 协议问题；评分、默认超时回退、单候选跳过和持久重放通过。精确 Dockerfile 镜像构建仍受 Docker Hub 网络阻断。
 

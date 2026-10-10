@@ -206,9 +206,6 @@ import {
   fingerprintProviderCredential,
 } from '../configuration/provider-model-discovery.js';
 import { matchOpenRouterModel, OpenRouterModelCatalog } from '../configuration/openrouter-model-catalog.js';
-import {
-  loadInternalSettingsAssistantConfig,
-} from '../configuration/internal-settings-assistant-config.js';
 import { SettingsAssistant } from '../configuration/settings-assistant.js';
 import { InternalLlmService } from '../configuration/internal-llm-service.js';
 import { ModelRoutingProfileService } from '../configuration/model-routing-profile-service.js';
@@ -236,6 +233,7 @@ import { ResultObjectRepo } from '../storage/result-object-repo.js';
 import { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
 import type { ConversationResultDelivery } from '../session/conversation-session.js';
 import { createBackgroundResultDelivery } from '../gateway/background-result-delivery.js';
+import { DEFAULT_OFFICIAL_SERVICE_URL, OfficialServiceClient, LocalAuthorizationService } from '../authorization/index.js';
 
 function toMutationResult(result: ActivateDraftResult): ConfigurationMutationResult {
   if (result.ok) return { ok: true, revisionId: result.snapshot.revisionId };
@@ -365,6 +363,7 @@ async function startWebMode(options: {
   serviceActivity?: () => { activeTasks: number; tasks: Array<{ id: string; title: string }>; truncated: boolean };
   launchContexts: WebLaunchContextService;
   agentReadiness: AgentInstallationReadinessService;
+  officialAuthorization?: LocalAuthorizationService;
 }): Promise<ManagementServer> {
   const loginCredentials = resolveLoginCredentials(process.env);
   if (loginCredentials.builtInDefault) {
@@ -396,6 +395,7 @@ async function startWebMode(options: {
     attachmentStore: options.attachmentStore,
     artifactQuery: options.artifactQuery,
     agentReadiness: options.agentReadiness,
+    officialAuthorization: options.officialAuthorization,
   });
   await managementServer.start();
   process.stdout.write([
@@ -692,12 +692,19 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     providers: migratedSnapshot.config.providers,
     secretStore,
   });
-  const internalLlmSecrets = createProductionSecretStore({
-    credentialsFile: resolve(paths.root, 'internal/llm-credentials.json'),
+  const officialAuthorization = new LocalAuthorizationService({
+    client: new OfficialServiceClient({
+      baseUrl: process.env.METAWORK_OFFICIAL_SERVER_URL ?? DEFAULT_OFFICIAL_SERVICE_URL,
+    }),
+    hasActiveWork: () => Boolean(accountRuntimeComposition?.accountRuntime.getConfigurationActivationFacts().activeTaskId),
+    hasUnfinishedWork: () => Boolean(accountRuntimeComposition?.accountRuntime.getConfigurationActivationFacts().unfinishedWork.count),
+    hasUnsettledWork: () => {
+      const facts = accountRuntimeComposition?.accountRuntime.getConfigurationActivationFacts();
+      return Boolean(facts?.plannerTurnActive || facts?.pendingWorkRequestCount || facts?.activeLeaseCount || facts?.publicationPending);
+    },
   });
   const internalLlm = new InternalLlmService({
-    config: () => loadInternalSettingsAssistantConfig({ installRoot: paths.root }),
-    secretStore: internalLlmSecrets,
+    officialAi: input => officialAuthorization.callOfficialAi(input.operation, input.input, input.requestId),
   });
   const settingsAssistant = new SettingsAssistant(internalLlm);
   const modelRoutingProfiles = new ModelRoutingProfileService(internalLlm);
@@ -870,6 +877,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   process.env.METACLAW_PLANNER_TUI_SOCKET = plannerHostSocketPath;
   const plannerHost = new PlannerHostBridge({ socketPath: plannerHostSocketPath, logger: console });
   const plannerSupervisor = new PlannerProcessSupervisor({
+    productionAuthorization: () => ({ allowed: officialAuthorization.getStatus().state === 'active' }),
     socketPath: plannerHostSocketPath,
     gatewaySocketPath,
     // Server startup is Workspace-neutral. Planner RPC still needs a cwd
@@ -1016,6 +1024,12 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     db,
     taskEngine,
     resolveWorkspacePath: resolveTaskWorkspacePath,
+    productionAuthorization: () => {
+      const status = officialAuthorization.getStatus();
+      return status.state === 'active'
+        ? { allowed: true }
+        : { allowed: false, reason: status.reason ?? `official authorization state: ${status.state}` };
+    },
     memoryEngine,
     orchestration,
     contextRecaller,
@@ -1953,8 +1967,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       workspaceGatewayRuntime.handle(command, context),
     handleReadOnlyQuery: (command, context) => gatewayReadOnlyQueryHandler(command, context),
     newWorkAdmission: {
-      check: command => {
+      check: async command => {
         if (command.kind === 'create_conversation') return { allowed: true };
+        const status = await officialAuthorization.verifyForProduction();
+        if (status.state !== 'active') return { allowed: false, reason: 'official_authorization_required' };
         if (!stagedConfiguration.plannerBinding) return { allowed: false, reason: 'configuration_invalid' };
         if (!Object.values(configurationRuntimeCoordinator.getSnapshot().config.agentClasses)
           .some(agent => agent.kind === 'executor' && agent.enabled)) {
@@ -2702,11 +2718,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         },
       },
       configurationRuntime: configurationRuntimeCoordinator,
+      officialAuthorization,
     });
     const webOrigin = managementServer?.address ?? 'http://127.0.0.1:8788';
     const composition = createServerComposition({
       startListeners: async () => ({ unixSocketPath: gatewaySocketPath, webOrigin }),
       stopListeners: async () => {
+        const officialLogout = officialAuthorization.dispose();
         // Stop admitting new Turns first, then interrupt in-flight Span calls
         // so shutdown never waits on an external request and no late ranking
         // observation can be admitted afterwards.
@@ -2722,6 +2740,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           gatewayServer.stop(),
           markdownPreviewServer?.stop() ?? Promise.resolve(),
         ]);
+        await officialLogout;
       },
       drain: async () => {
         clearInterval(taskPoolReviewTimer);

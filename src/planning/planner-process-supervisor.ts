@@ -1,3 +1,4 @@
+import { allowsProduction } from '../kernel/production-authorization.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -134,6 +135,7 @@ export interface PlannerProcessController extends PlannerRunner {
 type SpawnFn = typeof spawn;
 
 export interface PlannerProcessSupervisorDeps {
+  productionAuthorization?: () => { allowed: boolean; reason?: string };
   command?: string;
   spawn?: SpawnFn;
   plannerHome?: string;
@@ -299,6 +301,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
 
     try {
       this.assertSessionOpen(sessionId);
+      if (!allowsProduction(this.deps.productionAuthorization?.())) throw new Error('请先在 Web / Desktop 登录 MetaWork 官方账号并核验权益。');
       return await this.runRpc(input.prompt, {
         ...input.context,
         request: { ...input.context.request, sessionId: input.sessionId },

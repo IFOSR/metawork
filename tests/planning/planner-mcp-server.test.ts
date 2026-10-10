@@ -178,7 +178,7 @@ describe('PlannerDataReader', () => {
     expect(JSON.stringify(reader.getPlanningContext())).not.toContain('foreign permission');
   });
 
-  it('projects independent Executor capability manuals with explicit bounded metadata', () => {
+  it('projects independent Executor capability manuals with explicit completeness metadata', () => {
     const { reader } = createHarness('sess-manuals', 'conversation-manuals', [
       {
         agentClassRef: 'codex-engineering',
@@ -208,6 +208,23 @@ describe('PlannerDataReader', () => {
         truncated: false,
       }),
     ]);
+  });
+
+  it('preserves all revision-pinned manuals beyond the former aggregate byte limit', () => {
+    const manuals = ['pi-research', 'codex-engineering'].map(agentClassRef => ({
+      agentClassRef,
+      configurationRevision: 'revision-test',
+      sourceFingerprint: `sha256:${agentClassRef}`,
+      markdown: `# ${agentClassRef}\n${'中文模型能力与执行职责。'.repeat(1200)}\n最后的限制说明。`,
+      tags: { bestFit: ['资料分析'], avoid: ['未经验证的结论'] },
+    }));
+    expect(manuals.reduce((sum, manual) => sum + Buffer.byteLength(manual.markdown), 0)).toBeGreaterThan(60_000);
+    const { reader, db } = createHarness('sess-long-manuals', 'conversation-long-manuals', manuals);
+    try {
+      expect(reader.getPlanningContext().executorCapabilityManuals).toEqual(
+        [manuals[1], manuals[0]].map(manual => ({ ...manual, truncated: false })),
+      );
+    } finally { db.close(); }
   });
 
   it('projects only safe metadata for the current Turn attachments', () => {

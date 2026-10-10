@@ -88,3 +88,10 @@ summarization remain explicit InternalLlmService operations. Missing or slow
 internal LLM configuration can fail those AI actions, but cannot delay normal
 settings saves by triggering automatic generation. There is no fallback to
 Planner credentials or the Planner model.
+
+## 2026-10-09 amendment
+
+[ADR-0047](0047-account-license-and-official-ai.md) adds the official commercial
+authorization fact and recovery fences. It also supersedes production local
+internal-LLM configuration with fixed official business operations. Existing
+deterministic activation and Kernel ownership remain in force.

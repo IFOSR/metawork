@@ -6,8 +6,10 @@ import { WorkspaceCreator } from './components/WorkspaceCreator';
 import { WorkspaceShell } from './components/WorkspaceShell';
 import { ArtifactPreviewDrawer } from './components/ArtifactPreviewDrawer';
 import { useWorkspaceController } from './observation/use-workspace-controller';
+import { OfficialAccountPanel, type OfficialStatus } from './components/OfficialAccountPanel';
 
 export function App() {
+  const [officialStatus, setOfficialStatus] = useState<OfficialStatus | null>(null);
   const {
     themePreference, setThemePreference, authenticated, authError, connected,
     workspaces, activeWorkspaceId, sessions, directoryCursor, directoryLoading,
@@ -31,7 +33,8 @@ export function App() {
   }
   if (!authenticated) return <TokenGate error={authError} onLogin={handleLogin} onTokenAuth={handleAuth} />;
   return (
-    <>
+    <div className="official-app-frame">
+      <OfficialAccountPanel onStatus={setOfficialStatus} />
       <WorkspaceShell
         sessions={sessions}
         hasMoreConversations={directoryCursor !== null}
@@ -55,7 +58,7 @@ export function App() {
         configurationNeeded={configurationRuntime?.workConfigurationReady === false}
         agentReadiness={agentReadiness}
         running={running}
-        blockedReason={composerBlockedReason}
+        blockedReason={officialStatus?.state !== 'active' ? '请登录 MetaWork 官方账号并确认有效权益；历史浏览和取消仍可使用。' : composerBlockedReason}
         previewOpen={previewState.status !== 'closed' || executionDetailOpen}
         previewMaximized={previewMaximized}
         previewDrawer={executionDetailOpen && executionDetail && executionDetailTurn && observationClient && httpRef.current && selectedId ? (
@@ -171,7 +174,7 @@ export function App() {
           onSelect={handleCreateWorkspace}
         />
       )}
-    </>
+    </div>
   );
 }
 function clampPreviewWidth(width: number): number {
@@ -179,4 +182,4 @@ function clampPreviewWidth(width: number): number {
   const max = Math.max(360, Math.min(viewport - 360, 1_200));
   return Math.round(Math.max(320, Math.min(width, max)));
 }
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';

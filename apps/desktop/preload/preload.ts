@@ -21,7 +21,7 @@ if (process.isMainFrame) {
       selectWorkspaceDirectory: () => ipcRenderer.invoke('desktop:select-workspace'),
       selectExecutorFile: () => ipcRenderer.invoke('desktop:select-executor'),
       repairPi: () => ipcRenderer.invoke('desktop:repair-pi'),
-      saveArtifact: id => ipcRenderer.invoke('desktop:save-artifact', id),
+      saveArtifact: (id, format) => ipcRenderer.invoke('desktop:save-artifact', id, format),
       showDownloadedArtifact: id => ipcRenderer.invoke('desktop:reveal-artifact', id),
       readPreferences: () => ipcRenderer.invoke('desktop:preferences'),
       setTheme: theme => ipcRenderer.invoke('desktop:theme', theme),

@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { chmod, lstat, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -6,6 +6,8 @@ import { ConfigurationService } from '../../src/configuration/configuration-serv
 import { diffConfigurations } from '../../src/configuration/configuration-diff.js';
 import { fingerprintExecutorManualSourceText } from '../../src/configuration/executor-manual-source.js';
 import { FileConfigurationRepository } from '../../src/configuration/file-configuration-repository.js';
+import { AgentRuntimeRenderer } from '../../src/configuration/agent-runtime-renderer.js';
+import { buildPlannerConfigurationView } from '../../src/configuration/projections.js';
 
 const roots: string[] = [];
 
@@ -89,6 +91,40 @@ async function serviceFixture() {
 }
 
 describe('ConfigurationService', () => {
+  it('activates and renders a complete Chinese manual larger than 24000 bytes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'metawork-long-manual-'));
+    roots.push(root);
+    const renderer = new AgentRuntimeRenderer(join(root, 'runtime'));
+    const repository = new FileConfigurationRepository(join(root, 'config'));
+    const service = new ConfigurationService({ repository, renderer,
+      createRevisionId: () => 'revision-long-manual', probe: async () => ({ ok: true }) });
+    await service.initialize();
+    const config = completeConfiguration();
+    const notes = {
+      summary: '模型公开资料的详细说明。',
+      strengths: Array.from({ length: 16 }, (_, i) => `优势${i}：${'能够结合上下文解释资料并保留依据。'.repeat(24)}`),
+      limitations: ['限制尾部：公开描述不代表实际执行质量。'],
+      preferredTaskTypes: ['资料分析和总结'],
+      avoidTaskTypes: ['必须实时验证但缺少来源的判断'],
+    };
+    const draft = service.createDraft({ ...config, models: {
+      engineering: { ...config.models.engineering, routingNotes: notes },
+    }, agentClasses: { 'pi-research': config.agentClasses.engineering } }, null);
+    expect(service.validateDraft(draft.revisionId)).toMatchObject({ ok: true });
+    service.compileDraft(draft.revisionId);
+    expect(await service.probeDraft(draft.revisionId)).toEqual({ ok: true });
+    const result = await service.activateDraft(draft.revisionId, null);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('activation failed');
+    const manual = await readFile(join(root, 'runtime', draft.revisionId, 'executors', 'pi-research', 'CAPABILITY.md'), 'utf8');
+    expect(Buffer.byteLength(manual)).toBeGreaterThan(24_000);
+    for (const strength of notes.strengths) expect(manual).toContain(strength);
+    expect(manual).toContain(notes.limitations[0]);
+    expect(manual).toContain('## 路由说明');
+    expect(manual).toBe(buildPlannerConfigurationView(result.snapshot).executorCapabilityManuals?.[0]?.markdown);
+    expect(await renderer.currentRevisionId()).toBe(draft.revisionId);
+  });
+
   it('fails closed when no configuration probe is provided', async () => {
     const root = await mkdtemp(join(tmpdir(), 'anyfusion-configuration-no-probe-'));
     roots.push(root);

@@ -1,3 +1,4 @@
+import { allowsProduction } from '../kernel/production-authorization.js';
 /**
  * Account-scoped Planner Worker for durable Replan Jobs
  * (2026-09-25 Task lifecycle state convergence plan §5).
@@ -66,6 +67,7 @@ export interface GenerationReplanPlannerPort {
 }
 
 export interface GenerationReplanWorkerDeps {
+  productionAuthorization?: () => { allowed: boolean; reason?: string };
   readonly replanRepo: GenerationReplanRequestRepo;
   readonly planner: GenerationReplanPlannerPort;
   findTask(taskId: string): Task | null;
@@ -102,6 +104,7 @@ export class GenerationReplanWorker {
    * plan §5.2.
    */
   async run(): Promise<GenerationReplanWorkerReport> {
+    if (!allowsProduction(this.deps.productionAuthorization?.())) return { claimed: 0, submitted: 0, retried: 0, failed: 0 };
     const nowMs = Date.parse(this.deps.now());
     const leaseCutoff = new Date(
       nowMs - (this.deps.plannerLeaseMs ?? DEFAULT_PLANNER_LEASE_MS),
@@ -119,6 +122,7 @@ export class GenerationReplanWorker {
     let retried = 0;
     let failed = 0;
     for (const job of jobs) {
+      if (!allowsProduction(this.deps.productionAuthorization?.())) break;
       // The claim token fences every later write for this Job: a worker whose
       // lease expired while another worker re-claimed cannot land a second
       // proposal or a second `submitted` transition.

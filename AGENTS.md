@@ -55,6 +55,7 @@ the composition root. Detailed ownership and dependency rules live in
 | Single MetaWork TUI (Gateway-only client) | [`planner/AnyFusion-Pi/packages/coding-agent/src/modes/metawork-tui/`](planner/AnyFusion-Pi/packages/coding-agent/src/modes/metawork-tui/) |
 | Gateway, Feishu, notifications, delivery | [`src/gateway/`](src/gateway/), [`src/integrations/`](src/integrations/), [`src/notifications/`](src/notifications/), [`src/delivery/`](src/delivery/) |
 | Electron Desktop, shared Web platform adapter, signed payload tooling | [`apps/desktop/`](apps/desktop/), [`web/src/platform/`](web/src/platform/), [ADR-0045](docs/adr/0045-desktop-thin-shell-and-local-session.md) |
+| Official account authorization and hosted AI | [`src/authorization/`](src/authorization/), [`official-server/`](official-server/), [ADR-0047](docs/adr/0047-account-license-and-official-ai.md), [operations](docs/current/official-account-operations.md) |
 | Supporting domains | [`src/guidance/`](src/guidance/), [`src/learning/`](src/learning/), [`src/intent/`](src/intent/), [`src/core/`](src/core/) |
 
 Main entry points:

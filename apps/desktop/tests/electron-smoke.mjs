@@ -70,6 +70,30 @@ try {
   const downloadId = await page.evaluate(() => window.metaworkDesktop.saveArtifact('smoke-artifact'));
   assert.equal(await readFile(nativeSavePath, 'utf8'), 'native download fixture');
   await page.evaluate(id => window.metaworkDesktop.showDownloadedArtifact(id), downloadId);
+  const nativePdfPath = join(root, '季度报告.pdf');
+  await app.evaluate(({ BrowserWindow, dialog }, input) => {
+    const ses = BrowserWindow.getAllWindows()[0].webContents.session;
+    const previousFetch = ses.fetch.bind(ses);
+    dialog.showSaveDialog = async (_window, options) => {
+      globalThis.pdfSaveOptions = options;
+      return { canceled: false, filePath: input.nativePdfPath };
+    };
+    ses.fetch = async (url, options) => {
+      if (String(url).endsWith('/api/artifacts/pdf-smoke')) return new Response(JSON.stringify({ artifact: { displayName: '季度报告.md' } }));
+      if (String(url).endsWith('/api/artifacts/pdf-smoke/download?format=pdf')) return new Response('%PDF-1.7\nnative PDF fixture');
+      return previousFetch(url, options);
+    };
+  }, { nativePdfPath });
+  const pdfDownloadId = await page.evaluate(() => window.metaworkDesktop.saveArtifact('pdf-smoke', 'pdf'));
+  assert.equal(await readFile(nativePdfPath, 'utf8'), '%PDF-1.7\nnative PDF fixture');
+  const pdfOptions = await app.evaluate(() => globalThis.pdfSaveOptions);
+  assert.equal(pdfOptions.defaultPath, '季度报告.pdf');
+  assert.deepEqual(pdfOptions.filters, [{ name: 'PDF 文档', extensions: ['pdf'] }]);
+  await page.evaluate(id => window.metaworkDesktop.showDownloadedArtifact(id), pdfDownloadId);
+  await app.evaluate(({ dialog }) => { dialog.showSaveDialog = async () => ({ canceled: true }); });
+  assert.equal(await page.evaluate(() => window.metaworkDesktop.saveArtifact('pdf-smoke', 'pdf')), null);
+  assert.equal(await readFile(nativePdfPath, 'utf8'), '%PDF-1.7\nnative PDF fixture');
+  await assert.rejects(page.evaluate(() => window.metaworkDesktop.saveArtifact('pdf-smoke', 'docx')), /下载请求不可用/);
   await app.evaluate(() => globalThis.restoreNativeSmoke());
   await page.evaluate(() => window.metaworkDesktop.setDraft('smoke-conversation', { text: '草稿保留 test', attachments: [] }));
   await page.reload();

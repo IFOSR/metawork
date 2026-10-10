@@ -24,6 +24,7 @@ import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
 import type { KernelDecisionAction, KernelEvent, KernelSnapshot } from '../kernel/control-kernel.js';
 
 export interface AccountKernelCoordinatorDeps {
+  productionAuthorization?: () => { allowed: boolean; reason?: string };
   kernel: KernelDecider;
   store: KernelWorkflowStore;
   clock: KernelWorkflowClock;
@@ -80,6 +81,7 @@ export class AccountKernelCoordinator implements AccountKernelCoordinator {
   private ensureWorkflow(): DurableKernelWorkflow {
     if (!this.workflow) {
       this.workflow = new DurableKernelWorkflow({
+        productionAuthorization: this.deps.productionAuthorization,
         kernel: this.deps.kernel,
         buildSnapshot: event => {
           const context = this.contexts.get(event.id) ?? this.recoveryContext;

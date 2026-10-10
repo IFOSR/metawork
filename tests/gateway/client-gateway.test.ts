@@ -29,6 +29,24 @@ const envelope: GatewayCommandEnvelope = {
 };
 
 describe('ClientGateway', () => {
+  it.each(['/task resume task_1', '/task unblock task_1', '/task recover task_1 item_1 retry', 'natural language mislabeled as a slash command'])(
+    'checks official rights before productive control %s but keeps cancellation available', async text => {
+      let checked = 0; let submitted = 0;
+      const gateway = new ClientGateway({
+        authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },
+        accountResolver: { resolve: async () => ({ status: 'authorized', accountId: 'local-default' }) },
+        conversationResolver: { resolve: async () => ({ status: 'created', conversationId: 'conv_1' }) },
+        activateAccount: async () => undefined,
+        submitToConversation: async () => { submitted++; return { status: 'accepted' }; },
+        newWorkAdmission: { check: async () => { checked++; return { allowed: false, reason: 'official_authorization_required' }; } },
+      });
+      const result = await gateway.handle({ ...envelope, command: { kind: 'slash_command', text } }, 'local');
+      expect(result).toMatchObject({ status: 'rejected', code: 'official_authorization_required' });
+      expect(checked).toBe(1); expect(submitted).toBe(0);
+      const cancel = await gateway.handle({ ...envelope, requestId: 'cancel_1', idempotencyKey: 'cancel_1', command: { kind: 'slash_command', text: '/task cancel task_1' } }, 'local');
+      expect(cancel).toMatchObject({ status: 'accepted' }); expect(checked).toBe(1); expect(submitted).toBe(1);
+    });
+
   it('returns an authentication error when authentication fails', async () => {
     const gateway = new ClientGateway({
       authenticator: { authenticate: async () => null },

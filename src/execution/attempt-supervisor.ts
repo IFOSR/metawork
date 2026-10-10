@@ -1,3 +1,4 @@
+import { allowsProduction, type ProductionAuthorizationFact } from '../kernel/production-authorization.js';
 import type { KernelDecision, KernelEvent } from '../kernel/control-kernel.js';
 import type {
   KernelDispatchItemRecord,
@@ -45,6 +46,7 @@ export class AttemptSupervisor {
     private readonly maxConcurrentAttempts: number,
     private readonly maxConcurrentAttemptsPerTask = maxConcurrentAttempts,
     private readonly drainTuning: { idleSpinLimit?: number; spinDelayMs?: number } = {},
+    private readonly productionAuthorization?: () => ProductionAuthorizationFact,
   ) {
     if (!Number.isInteger(maxConcurrentAttempts) || maxConcurrentAttempts <= 0) {
       throw new Error('maxConcurrentAttempts must be a positive integer');
@@ -103,7 +105,7 @@ export class AttemptSupervisor {
       const active = [...this.active.values()]
         .filter(item => item.taskId === taskId)
         .map(item => item.promise);
-      if (active.length === 0 && this.repository.listPending(taskId).length === 0) return;
+      if (active.length === 0 && (!allowsProduction(this.productionAuthorization?.()) || this.repository.listPending(taskId).length === 0)) return;
       if (active.length === 0) {
         idleSpins += 1;
         if (idleSpins >= idleSpinLimit) {
@@ -122,6 +124,7 @@ export class AttemptSupervisor {
   }
 
   private kick(taskId: string): void {
+    if (!allowsProduction(this.productionAuthorization?.())) return;
     const slots = Math.min(
       this.maxConcurrentAttempts - this.active.size,
       this.maxConcurrentAttemptsPerTask - this.activeCount(taskId),

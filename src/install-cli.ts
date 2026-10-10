@@ -133,14 +133,14 @@ export async function runNativeInstallCli(
         releaseId: args.releaseId,
         sourceRoot: args.sourceRoot!,
         plannerRoot: args.plannerRoot!,
-        provider: {
+        ...(provider ? { provider: {
           baseUrl: provider.baseUrl,
           apiKey: provider.apiKey,
           modelId: provider.modelId,
           region: provider.region,
           secretReference:
             `${secretScheme}:anyfusion/providers/provider`,
-        },
+        } } : {}),
       }),
     });
     write(`installed ${result.releaseId} with configuration ${result.configurationRevision}`);
@@ -205,8 +205,10 @@ async function resolveInstallProvider(
     isInteractive(): boolean;
     collectProviderConfiguration(defaults: WizardProviderDefaults): Promise<WizardProviderInput>;
   },
-): Promise<InstallerProviderBinding> {
+): Promise<InstallerProviderBinding | undefined> {
   let { providerKey: apiKey, providerUrl: baseUrl, providerModel: modelId } = productEnvironment;
+  // A clean install starts in the login/settings shell without any model credentials.
+  if (!apiKey && !baseUrl) return undefined;
   if (!apiKey || !baseUrl) {
     if (!interaction.isInteractive()) {
       throw new Error(
