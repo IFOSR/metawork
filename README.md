@@ -70,25 +70,21 @@ existing names where changing them would break installations.
 
 ## Release
 
-Local development: **v0.1.9** is an unpublished macOS arm64 acceptance build.
-It keeps Pi managed with MetaWork, adds optional Codex path settings, and prevents
-missing external tools from rolling back application updates. See the
-[implementation and validation record](docs/plans/2026-10-09-managed-pi-and-optional-tools-design.md).
+The current release is **v0.1.14**. It provides the latest unified routing and
+decision-model configuration, manual model-information fallback, visible
+attachment and screenshot messages, and clearer Executor failure, blocked, and
+recovery explanations. The release includes a compressed, self-contained
+macOS Apple Silicon Desktop DMG plus signed arm64 Runtime and Planner archives.
 
-[Latest stable release](https://github.com/IFOSR/metawork/releases/latest) is the
-source of truth for the current installable version. A newer source checkout
-is not a published release.
+- [Download the macOS arm64 DMG](https://github.com/IFOSR/metawork/releases/download/v0.1.14/MetaWork-darwin-arm64.dmg)
+- [View the v0.1.14 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.14)
+- [Download checksums and Runtime/Planner archives](https://github.com/IFOSR/metawork/releases/tag/v0.1.14)
 
-The current internal release is **v0.1.8**. It includes the Server/Web/TUI
-runtime and an Apple Silicon Desktop DMG for company use. The Desktop DMG is
-**not signed with an Apple Developer ID and is not notarized**; it is intentionally
-distributed for the internal macOS fleet. The [release page](https://github.com/IFOSR/metawork/releases/latest)
-is the source of truth for the exact assets and checksums.
-
-This internal release currently provides a macOS Apple Silicon (`arm64`) DMG.
-An Intel (`x64`) Desktop build is not included; Intel users should use the
-Server/Web/TUI installation or wait for an x64 build. Linux and Windows Desktop
-packages are not provided.
+The Desktop DMG is approximately 277 MB, uses an internal ad-hoc signature, and
+is not notarized with an Apple Developer ID. It currently supports macOS Apple
+Silicon (`arm64`) only. Intel (`x64`), Linux, and Windows Desktop packages are
+not included; those users can use the Server/Web/TUI installation when a matching
+Runtime archive is available.
 
 ## Installation
 
@@ -109,7 +105,7 @@ account data. Web is included in the Server package and does not require Desktop
 2. Install Apple's Command Line Tools once if they are not already present:
    run `xcode-select --install` in Terminal and finish the macOS prompt. The
    internal package uses the system Git wrapper for repository operations.
-3. Download [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg)
+3. Download [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/download/v0.1.14/MetaWork-darwin-arm64.dmg)
    from the latest release, open it, and drag **MetaWork.app** to **Applications**.
 4. The first launch may be blocked because this internal DMG is not notarized. In
    Finder, right-click **MetaWork.app** and choose **Open**, then confirm **Open**.

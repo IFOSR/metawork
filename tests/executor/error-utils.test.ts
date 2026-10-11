@@ -124,6 +124,29 @@ describe('formatExecutorError', () => {
 });
 
 describe('normalizeExecutorFailure', () => {
+  it('classifies self-nesting workspace failures before Executor launch', () => {
+    expect(normalizeExecutorFailure(
+      'refusing to import workspace source into itself: /Users/jialundu contains /Users/jialundu/.metawork/plain-import-x',
+    )).toMatchObject({
+      kind: 'configuration',
+      scope: 'task',
+      code: 'workspace_contains_runtime_root',
+      stage: 'workspace_preflight',
+      label: 'Workspace 配置无效',
+    });
+  });
+
+  it('classifies a missing workspace source separately from unknown execution failures', () => {
+    expect(normalizeExecutorFailure(
+      'attempt a1 has no workspace source: dispatch payload is missing its workspacePath',
+    )).toMatchObject({
+      kind: 'configuration',
+      scope: 'task',
+      code: 'workspace_binding_missing',
+      stage: 'workspace_preflight',
+    });
+  });
+
   it('identifies an incomplete model response without asserting a network cause or automatic recovery', () => {
     expect(normalizeExecutorFailure('Stream ended without finish_reason')).toMatchObject({
       kind: 'unknown', scope: 'attempt', code: 'model_response_incomplete',
@@ -133,6 +156,27 @@ describe('normalizeExecutorFailure', () => {
     expect(isRecoverableExecutorFailure('Stream ended without finish_reason')).toBe(false);
     expect(normalizeExecutorFailure('Stream ended without finish_reason', true).kind).toBe('cancelled');
     expect(normalizeExecutorFailure('permission denied: Stream ended without finish_reason').kind).toBe('permission');
+  });
+
+  it('classifies an upstream response stream interruption as a bounded retryable transport failure', () => {
+    const failure = normalizeExecutorFailure('Upstream response stream was interrupted', false, {
+      origin: 'executor',
+      stage: 'attempt',
+      actor: { agentClassRef: 'pi-research', providerRef: 'code-cli', modelRef: 'gpt-6-astra' },
+    });
+
+    expect(failure).toMatchObject({
+      kind: 'network',
+      scope: 'attempt',
+      code: 'upstream_stream_interrupted',
+      retryable: true,
+      attemptStarted: true,
+      externalSideEffect: 'unknown',
+    });
+    expect(failure.label).toContain('上游模型响应流中断，未收到可用结果');
+    expect(failure.userAction).toContain('自动重试一次');
+    expect(formatExecutorError('Upstream response stream was interrupted')).toContain('上游模型响应流中断');
+    expect(isRecoverableExecutorFailure('Upstream response stream was interrupted')).toBe(true);
   });
 
   it('normalizes infrastructure text once at the Adapter boundary', () => {

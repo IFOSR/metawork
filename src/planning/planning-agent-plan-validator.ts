@@ -185,10 +185,6 @@ function validateRouting(
     if (subtask.requiredCapabilities.length === 0) {
       errors.push(`subtask ${subtask.id} requires at least one Routing Capability`);
     }
-    if (subtask.executorBindings.length === 0) {
-      errors.push(`subtask ${subtask.id} requires at least one executor binding`);
-    }
-
     const unknownCapabilities = subtask.requiredCapabilities.filter(capability => !capabilityIds.has(capability));
     for (const capability of unknownCapabilities) {
       errors.push(`subtask ${subtask.id} references unknown Routing Capability: ${capability}`);

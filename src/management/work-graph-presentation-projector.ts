@@ -74,9 +74,15 @@ export interface WorkGraphPresentationRouting {
   spanRouting?: {
     applied: boolean;
     reason: string | null;
+    decisionModel?: {
+      providerDisplayName: string;
+      modelDisplayName: string;
+      modelId: string;
+    };
     candidates: Array<{
       providerDisplayName: string;
       modelDisplayName: string;
+      selected: boolean;
       probability: number;
     }>;
   };
@@ -227,6 +233,7 @@ function routingFor(
       ? {
         applied: audit.spanRouting.applied,
         reason: audit.spanRouting.reason,
+        ...decisionModelIdentity(facts),
         candidates: Object.entries(audit.spanRouting.probabilities ?? {})
           .map(([modelRef, probability]) => {
             const candidateIdentity = resolvePublicRoutingIdentity(configuration, {
@@ -243,6 +250,7 @@ function routingFor(
             return {
               providerDisplayName: candidateIdentity.providerDisplayName,
               modelDisplayName: candidateIdentity.modelDisplayName,
+              selected: modelRef === identityBinding?.modelRef,
               probability,
             };
           })
@@ -265,6 +273,38 @@ function routingFor(
       ...(spanRouting ? { spanRouting } : {}),
     };
   });
+}
+
+function decisionModelIdentity(
+  configuration: ConfigurationSnapshot['config'] | RuntimeConfigurationView,
+): { decisionModel?: { providerDisplayName: string; modelDisplayName: string; modelId: string } } {
+  const facts: ConfigurationSnapshot['config'] = 'config' in configuration
+    ? configuration.config as ConfigurationSnapshot['config']
+    : configuration;
+  const routing = facts.routing?.span;
+  if (!routing) return {};
+  const models = facts.models;
+  const providers = facts.providers;
+  const modelEntry = routing.modelRef && models[routing.modelRef]
+    ? [routing.modelRef, models[routing.modelRef]] as const
+    : Object.entries(models).find(([, model]) => model.modelId === routing.model);
+  if (!modelEntry) {
+    return {
+      decisionModel: {
+        providerDisplayName: routing.providerRef ? providers[routing.providerRef]?.displayName ?? routing.providerRef : '决策模型',
+        modelDisplayName: routing.model,
+        modelId: routing.model,
+      },
+    };
+  }
+  const [, model] = modelEntry;
+  return {
+    decisionModel: {
+      providerDisplayName: providers[model.providerRef]?.displayName ?? model.providerRef,
+      modelDisplayName: model.modelId,
+      modelId: model.modelId,
+    },
+  };
 }
 
 function canonicalGraph(

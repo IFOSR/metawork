@@ -74,6 +74,7 @@ export function buildAccountRuntimeComposition(deps: {
   notifier: NotificationService;
   /** 任务 → 会话工作区解析（恢复/定时请求缺 workspacePath 时兜底）。 */
   resolveWorkspacePath?: (taskId: string) => Promise<string | null>;
+  preflightWorkspacePath?: (path: string) => Promise<string>;
   productionAuthorization?: () => { allowed: boolean; reason?: string };
   /** 用户可见 Workspace 根（进程启动目录），与内部 workspaceStore 是不同依赖。 */
   userWorkspaceRoot?: string;
@@ -181,6 +182,8 @@ export function buildAccountRuntimeComposition(deps: {
     workspaceRepository: workspaceServices.workspaceRepository,
     attemptExecutionRepository: workspaceServices.attemptExecutionRepository,
     conversationTaskSchedulerRepo: repositories.conversationTaskSchedulerRepo,
+    ...(deps.resolveWorkspacePath ? { resolveWorkspacePath: deps.resolveWorkspacePath } : {}),
+    ...(deps.preflightWorkspacePath ? { preflightWorkspacePath: deps.preflightWorkspacePath } : {}),
     ...(userArtifactPublication ? { userArtifactPublication } : {}),
     usageObserver: deps.usageObserver,
     usageSpanOpener: deps.usageSpanOpener,
@@ -225,6 +228,7 @@ export function buildAccountRuntimeComposition(deps: {
     getRuntimeConfiguration: deps.getRuntimeConfiguration,
     taskRuntimeService: taskServices.taskRuntimeService,
     ...(deps.resolveWorkspacePath ? { resolveWorkspacePath: deps.resolveWorkspacePath } : {}),
+    ...(deps.preflightWorkspacePath ? { preflightWorkspacePath: deps.preflightWorkspacePath } : {}),
     ...(deps.productionAuthorization ? { productionAuthorization: deps.productionAuthorization } : {}),
     agentClassService: taskServices.agentClassService,
     workGraphRuntimeService: repositories.workGraphRuntimeService,

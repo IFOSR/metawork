@@ -45,6 +45,10 @@ export function formatExecutorError(raw?: string): string | undefined {
     return '模型服务额度不足（provider 拒绝计费），请充值或切换模型后重试';
   }
 
+  if (isUpstreamResponseStreamInterrupted(normalized)) {
+    return '上游模型响应流中断，未收到可用结果；系统会按恢复策略重试，若仍失败请检查网络和 Provider 服务状态';
+  }
+
   if (isNetworkFailure(normalized)) {
     return '执行器网络连接失败，请检查网络或代理配置';
   }
@@ -87,7 +91,8 @@ export function formatExecutorError(raw?: string): string | undefined {
 
 export function isRecoverableExecutorFailure(raw?: string): boolean {
   if (!raw) return false;
-  return isNetworkFailure(raw)
+  return isUpstreamResponseStreamInterrupted(raw)
+    || isNetworkFailure(raw)
     || /(executor idle timeout|executor max duration exceeded|timed out|timeout|执行器调用超时|执行器空闲超时|执行器历史总时长超限)/i.test(raw)
     || isPermissionFailure(raw);
 }
@@ -134,6 +139,20 @@ export function normalizeExecutorFailure(
   if (rawText && isNullByteFailure(rawText)) {
     return kernelFailure({ kind: 'configuration', scope: 'task', code: 'invalid_task_input', summary, ...passthrough });
   }
+  if (rawText && isUpstreamResponseStreamInterrupted(rawText)) {
+    return kernelFailure({
+      kind: 'network',
+      scope: 'attempt',
+      code: 'upstream_stream_interrupted',
+      summary,
+      label: '上游模型响应流中断，未收到可用结果',
+      retryable: true,
+      attemptStarted: true,
+      externalSideEffect: 'unknown',
+      userAction: '系统会自动重试一次；若仍失败，请检查网络、Provider 服务状态和模型额度后再恢复任务。',
+      ...passthrough,
+    });
+  }
   if (rawText && isNetworkFailure(rawText)) {
     return kernelFailure({ kind: 'network', scope: 'agent_class', code: 'network_failure', summary, ...passthrough });
   }
@@ -150,6 +169,28 @@ export function normalizeExecutorFailure(
   // is valid, the account cannot pay for the request.
   if (isProviderQuotaFailure(rawText)) {
     return kernelFailure({ kind: 'provider_quota', scope: 'agent_class', code: 'provider_quota_exceeded', summary, ...passthrough });
+  }
+  if (/refusing to import workspace source into itself|workspace source into itself|subdirectory of self|into itself/i.test(rawText)) {
+    return kernelFailure({
+      kind: 'configuration',
+      scope: 'task',
+      code: 'workspace_contains_runtime_root',
+      summary: 'Workspace 包含 MetaWork 运行目录，系统已在 Executor 启动前停止任务',
+      label: 'Workspace 配置无效',
+      stage: 'workspace_preflight',
+      ...passthrough,
+    });
+  }
+  if (/has no workspace source|dispatch payload is missing its workspacePath/i.test(rawText)) {
+    return kernelFailure({
+      kind: 'configuration',
+      scope: 'task',
+      code: 'workspace_binding_missing',
+      summary: '任务没有有效 Workspace 绑定，系统未启动 Executor',
+      label: 'Workspace 配置缺失',
+      stage: 'workspace_preflight',
+      ...passthrough,
+    });
   }
   if (/unauthenticated|authentication|invalid api key|unauthorized/i.test(rawText)) {
     return kernelFailure({ kind: 'authentication', scope: 'agent_class', code: 'authentication_failed', summary, ...passthrough });
@@ -356,6 +397,16 @@ function isInternalExecutorProgressNoise(raw: string): boolean {
 
 function isNetworkFailure(raw: string): boolean {
   return /failed to lookup address information|failed to connect to websocket|reconnecting\.\.\.|network is unreachable|temporary failure in name resolution|connection error|connection refused|connection lost|fetch failed|socket hang up|econnreset|执行器网络连接失败/i.test(raw);
+}
+
+/**
+ * A provider can terminate a response stream after the Executor has started
+ * without emitting a conventional network error. Keep this distinct from a
+ * merely incomplete model response: this wording identifies a transport
+ * interruption and is safe for the bounded retry policy.
+ */
+function isUpstreamResponseStreamInterrupted(raw: string): boolean {
+  return /(?:upstream\s+)?response\s+stream\s+(?:was\s+)?interrupted|upstream[^\n]{0,80}\bstream\b[^\n]{0,40}\binterrupted\b/i.test(raw);
 }
 
 export function isPermissionFailure(raw: string): boolean {

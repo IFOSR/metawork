@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FileConversationStore } from '../../src/session/file-conversation-store.js';
 import { FileWorkspaceCatalogStore } from '../../src/storage/file-workspace-catalog-store.js';
-import { WorkspaceDirectoryService } from '../../src/workspace/workspace-directory-service.js';
+import { WorkspaceDirectoryService, WorkspacePreflightError } from '../../src/workspace/workspace-directory-service.js';
 
 const roots: string[] = [];
 
@@ -35,6 +35,39 @@ async function fixture() {
 }
 
 describe('WorkspaceDirectoryService', () => {
+  it('rejects a Workspace that contains the MetaWork runtime root before catalog mutation', async () => {
+    const value = await fixture();
+    const runtimeRoot = join(roots[0]!, '.metawork');
+    await mkdir(runtimeRoot, { recursive: true });
+    const service = new WorkspaceDirectoryService({
+      accountId: 'local-default', workspaceCatalog: value.workspaceCatalog,
+      conversationStore: value.conversationStore, authorize: () => true,
+      runtimeRoot,
+    });
+    await expect(service.selectByPath(roots[0]!, 'local'))
+      .rejects.toMatchObject<Partial<WorkspacePreflightError>>({
+        code: 'workspace_contains_runtime_root',
+        stage: 'workspace_preflight',
+        attemptStarted: false,
+        externalSideEffect: false,
+      });
+    await expect(value.workspaceCatalog.readCatalog()).resolves.toMatchObject({ workspaces: [] });
+  });
+
+  it('rejects the internal workspace-store root and descendants', async () => {
+    const value = await fixture();
+    const internalRoot = join(roots[0]!, 'workspace-store');
+    const nested = join(internalRoot, 'nested');
+    await mkdir(nested, { recursive: true });
+    const service = new WorkspaceDirectoryService({
+      accountId: 'local-default', workspaceCatalog: value.workspaceCatalog,
+      conversationStore: value.conversationStore, authorize: () => true,
+      workspaceStoreRoot: internalRoot,
+    });
+    await expect(service.selectByPath(nested, 'local'))
+      .rejects.toMatchObject({ code: 'workspace_contains_workspace_store' });
+  });
+
   it('uses an indexed page without reading the catalog or activity sources', async () => {
     const value = await fixture();
     const selection = await value.service.selectByPath(value.repo, 'local');

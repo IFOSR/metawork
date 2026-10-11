@@ -5,6 +5,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveMetaWorkPaths } from '../../../src/installation/paths.js';
 import { PRODUCT_ENVIRONMENT, resolveProductEnvironment } from '../../../src/installation/product-environment.js';
+import { compareReleaseVersions } from '../../../src/installation/release-manifest.js';
+import { readReleaseIdentity } from '../../../src/installation/release-identity.js';
 import { DesktopServiceManager } from '../../../src/client/desktop-service-manager.js';
 import { exchangeDesktopSession } from '../../../src/client/desktop-session-client.js';
 import { DesktopPreferenceStore, desktopPreferencePath } from './preferences.js';
@@ -182,6 +184,11 @@ async function connectOnce(): Promise<void> {
         await installation.run('install');
       }
       if (await installation.needsUpgrade()) {
+        const installedIdentity = await readReleaseIdentity(join(installRoot, 'app/current/release-identity.json'));
+        if (installedIdentity && compareReleaseVersions(release.releaseId, installedIdentity.releaseId) < 0) {
+          setState({ phase: 'error', message: '当前 Desktop 版本低于已安装的后台运行时。请退出 MetaWork，安装更新版本的 Desktop 后再打开；原有配置和数据不会受影响。' });
+          return;
+        }
         const previousUpdate = await readDesktopUpdateDiagnostic(installRoot);
         const failed = previousUpdate && previousUpdate.outcome !== 'committed';
         const failure = previousUpdate?.failures[0];
@@ -421,6 +428,8 @@ async function updateApplication(recover = false): Promise<void> {
   } catch (error) {
     if (error instanceof Error && error.message === 'Installed Runtime is newer; download a newer Desktop') {
       dialog.showErrorBox('需要更新桌面应用', '已有后台运行时比这个安装包更新。请下载较新的 Desktop，再接入原有数据。');
+      setState({ phase: 'error', message: '当前 Desktop 版本低于已安装的后台运行时。请退出 MetaWork，安装更新版本的 Desktop 后再打开；原有配置和数据不会受影响。' });
+      return;
     } else {
       dialog.showErrorBox('更新尚未完成', '请确认新版应用签名、配套版本、磁盘空间和应用目录写入权限。已有数据与更新记录会保留；可使用“修复未完成的更新”重试。');
     }

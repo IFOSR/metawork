@@ -124,9 +124,17 @@ export class WebConversationProjector {
     this.normalizeCurrent();
 
     const projectedStatus = turnStatusFromTimeline(timeline);
+    // A blocked Turn may be reopened by an authoritative durable execution
+    // timeline when the Kernel has actually resumed work.  Capacity retries
+    // are system initiated, so requiring an explicit `/task resume` here
+    // leaves the conversation stuck on the old blocker while the Task is
+    // already running.  Keep terminal Turns closed; only active timeline
+    // states can clear a non-terminal blocker.
     const mayAdvanceStatus = this.current.status === 'running'
       || (this.current.status === 'blocked' && projectedStatus !== 'running')
-      || (this.current.status === 'blocked' && timeline.status === 'waiting_retry');
+      || (this.current.status === 'blocked'
+        && projectedStatus === 'running'
+        && ['running', 'waiting_retry'].includes(timeline.status));
     if (projectedStatus && mayAdvanceStatus) {
       this.current.status = projectedStatus;
       this.current.completedAt = projectedStatus === 'running'

@@ -391,6 +391,8 @@ export interface KernelExecutionRuntimeDeps {
    *  does not carry one (timer/recovery requests historically omitted it,
    *  which broke continuation dispatches with a missing workspace source). */
   resolveWorkspacePath?: (taskId: string) => Promise<string | null>;
+  /** Canonical Workspace preflight immediately before an Executor attempt. */
+  preflightWorkspacePath?: (path: string) => Promise<string>;
   agentClassService: AgentClassService;
   workGraphRuntimeService: WorkGraphRuntimeService;
   subtaskRepo: SubtaskRepo;
@@ -1998,6 +2000,12 @@ export class KernelExecutionRuntime {
         request = { ...request, workspacePath: resolved };
       }
     }
+    if (!request.workspacePath) {
+      throw new Error(`attempt ${item.attemptId} has no workspace source: dispatch payload is missing its workspacePath`);
+    }
+    if (this.deps.preflightWorkspacePath) {
+      request = { ...request, workspacePath: await this.deps.preflightWorkspacePath(request.workspacePath) };
+    }
     const existingReceipt = this.deps.attemptReceiptRepo.findByAttemptId(item.attemptId);
     if (
       existingReceipt?.terminalState === 'contract_blocked'
@@ -2081,6 +2089,7 @@ export class KernelExecutionRuntime {
     if (!subtask) throw new Error(`Kernel-authorized Subtask not found: ${item.subtaskId}`);
     const task = this.deps.taskRuntimeService.findTask(item.taskId);
     if (!task) throw new Error(`Kernel-authorized Task not found: ${item.taskId}`);
+    const resumedFromBlocked = task.status === 'blocked';
     for (const resource of input.request.newlyProvidedResources ?? []) {
       this.deps.taskRuntimeService.attachResource(task.id, resource);
     }
@@ -2143,6 +2152,32 @@ export class KernelExecutionRuntime {
       configurationRevision: item.configurationRevision,
       ...display,
     };
+    if (resumedFromBlocked) {
+      this.appendExecutionTrace({
+        phase: 'execution',
+        actor: 'kernel',
+        kind: 'execution_resumed',
+        status: 'running',
+        title: 'Task resumed execution',
+        summary: `容量已恢复，已恢复 ${display.executorDisplayName} 执行。`,
+        details: {
+          taskId: item.taskId,
+          attemptId: item.attemptId,
+          recoveryMode: item.recoveryMode,
+          ...bindingDetails,
+          ...executionEventDetails({
+            display,
+            step: {
+              stepKey: 'execution_resumed',
+              stepLabel: `已恢复执行：${display.executorDisplayName}`,
+            },
+            startedAt: new Date().toISOString(),
+          }),
+        },
+        eventKey: `${item.attemptId}:execution_resumed`,
+        taskId: item.taskId,
+      });
+    }
     this.appendExecutionTrace({
       phase: 'execution',
       actor: 'kernel',
@@ -2532,7 +2567,14 @@ export class KernelExecutionRuntime {
 
   private launchFailureEvent(item: KernelDispatchItemRecord, error: unknown): KernelEvent {
     const summary = error instanceof Error ? error.message : String(error);
+    const structured = error && typeof error === 'object' ? error as {
+      code?: unknown; stage?: unknown; retryable?: unknown; userAction?: unknown;
+    } : {};
     const workspaceSourceMissing = /no workspace source|missing its workspacePath/iu.test(summary);
+    const code = typeof structured.code === 'string'
+      ? structured.code
+      : workspaceSourceMissing ? 'workspace_binding_missing' : 'dispatch_launch_failed';
+    const isPreflight = structured.stage === 'workspace_preflight' || code.startsWith('workspace_');
     return this.eventFromDispatchItem(item, {
       type: 'execution_outcome',
       terminalKind: 'failed',
@@ -2541,10 +2583,20 @@ export class KernelExecutionRuntime {
       attemptKind: item.attemptKind,
       sourceAttemptId: item.sourceAttemptId,
       failure: {
-        kind: workspaceSourceMissing ? 'configuration' : 'infrastructure',
-        scope: workspaceSourceMissing ? 'task' : 'attempt',
-        code: workspaceSourceMissing ? 'workspace_source_missing' : 'dispatch_launch_failed',
+        kind: isPreflight ? 'configuration' : 'infrastructure',
+        scope: isPreflight ? 'task' : 'attempt',
+        code,
         summary,
+        ...(isPreflight ? {
+          label: 'Workspace 配置无效',
+          stage: 'workspace_preflight',
+          retryable: structured.retryable === true,
+          attemptStarted: false,
+          externalSideEffect: false,
+          userAction: typeof structured.userAction === 'string'
+            ? structured.userAction
+            : '请选择具体项目目录后重新提交请求。',
+        } : {}),
       },
     });
   }
@@ -2979,6 +3031,11 @@ export class KernelExecutionRuntime {
           ...(outcome.failure.step ? { failureStep: outcome.failure.step } : {}),
           ...(outcome.failure.provider ? { failureProvider: outcome.failure.provider } : {}),
           ...(outcome.failure.detail ? { failureDetail: outcome.failure.detail } : {}),
+          ...(outcome.failure.stage ? { failureStage: outcome.failure.stage } : {}),
+          ...(outcome.failure.retryable !== undefined ? { failureRetryable: outcome.failure.retryable } : {}),
+          ...(outcome.failure.attemptStarted !== undefined ? { attemptStarted: outcome.failure.attemptStarted } : {}),
+          ...(outcome.failure.externalSideEffect !== undefined ? { externalSideEffect: outcome.failure.externalSideEffect } : {}),
+          ...(outcome.failure.userAction ? { userAction: outcome.failure.userAction } : {}),
           ...(() => {
             const hint = describeAttemptFailure({
               failureCode: outcome.failure.code,
@@ -3236,7 +3293,12 @@ export class KernelExecutionRuntime {
       .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate))
       .at(0);
     if (!failure) return reason;
-    const cause = [failure.code, failure.summary]
+    const interruptedStream = /(?:upstream\s+)?response\s+stream\s+(?:was\s+)?interrupted/i.test(failure.summary);
+    const cause = [
+      interruptedStream ? '上游模型响应流中断，未收到可用结果' : (failure.label ?? failure.code),
+      failure.summary,
+      failure.stage ? `阶段：${failure.stage}` : null,
+    ]
       .filter((part): part is string => Boolean(part && part.trim()))
       .join(': ');
     if (!cause || reason.includes(failure.summary)) return reason;
@@ -3323,6 +3385,24 @@ export class KernelExecutionRuntime {
     if (this.deps.runInTransaction) this.deps.runInTransaction(persistRetry);
     else persistRetry();
     this.recordTaskEvent(taskId, null, 'phase2_execution_waiting_retry', reason, {});
+    this.appendExecutionTrace({
+      phase: 'verification',
+      actor: 'kernel',
+      kind: 'execution_waiting_retry',
+      status: 'blocked',
+      title: '等待自动重试',
+      summary: `上游执行暂时不可用，系统将在 ${resumeAt} 自动重试。`,
+      details: {
+        taskId,
+        subtaskId,
+        attemptId: action.sourceAttemptId,
+        resumeAt,
+        retryable: true,
+      },
+      eventKey: `${decision.id}:waiting_retry`,
+      taskId,
+      traceStatus: 'blocked',
+    });
     await finishExecution([`Execution will retry automatically at ${resumeAt}`]);
   }
 

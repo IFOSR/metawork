@@ -13,6 +13,8 @@ import {
 } from '../../src/routing/span-response-validator.js';
 import {
   SpanEvaluationAbortedError,
+  defaultSpanDecisionClient,
+  isSystemOneDecisionModel,
   SpanRoutingAdvisor,
   type SpanDecisionClient,
 } from '../../src/routing/span-routing-advisor.js';
@@ -352,11 +354,11 @@ describe('Span response validator', () => {
     expect(result).toEqual({ ok: false, reason: 'span_invalid_response' });
   });
 
-  it('rejects an unexpected model identity', () => {
+  it('rejects a missing model identity', () => {
     const result = validateSpanDecisionsResponse({
       request,
       response: {
-        model: 'openai/gpt-4o',
+        model: '',
         answers: { candidates: { type: 'choice', choice: 'c000', probabilities: { c000: 0.5, c001: 0.5 } } },
         usage: { inputTokens: 1, outputTokens: 0 },
       },
@@ -366,6 +368,106 @@ describe('Span response validator', () => {
 });
 
 describe('Span routing advisor', () => {
+  it('selects System One only when the pinned model facts declare decision output', () => {
+    expect(isSystemOneDecisionModel({
+      modelId: 'openai/gpt-5.6-sol',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      outputModalities: ['text'],
+    })).toBe(false);
+    expect(isSystemOneDecisionModel({
+      modelId: 'openai/routing-model',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      outputModalities: ['decisions'],
+    })).toBe(true);
+    expect(isSystemOneDecisionModel({
+      modelId: 'routing-model',
+      baseUrl: 'https://provider.example/v1',
+      outputModalities: ['decisions'],
+    })).toBe(true);
+    expect(isSystemOneDecisionModel({
+      modelId: '/drex/weights/drex-v1.5-Q8_0.gguf',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      description: 'Drex v1.5 通过 /v1/systemone 契约提供服务，与 TypeSafe 的 Jev 共用接口。',
+    })).toBe(true);
+  });
+
+  it('uses the configured System One endpoint for an explicitly Jev-compatible custom Provider', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      model: 'drex-v1.5',
+      answers: { candidates: { type: 'choice', choice: 'c000', probabilities: { c000: 0.8, c001: 0.2 } } },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = defaultSpanDecisionClient(
+        'sk-configured',
+        'https://provider.example/v1',
+      );
+      await client.create({
+        model: 'drex-v1.5',
+        state: { subtask: { title: 'weather' } },
+        questions: { candidates: { type: 'choice' } },
+      }, { signal: new AbortController().signal, timeoutMs: 1_000 });
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://provider.example/v1/systemone',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            model: 'drex-v1.5',
+            state: JSON.stringify({ subtask: { title: 'weather' } }),
+            questions: { candidates: { type: 'choice' } },
+          }),
+        }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('accepts snake_case usage fields returned by local System One servers', () => {
+    const result = validateSpanDecisionsResponse({
+      request: buildRequest(),
+      response: {
+        model: 'drex-v1.5',
+        answers: {
+          candidates: {
+            type: 'choice',
+            choice: 'c000',
+            probabilities: { c000: 0.8, c001: 0.2 },
+          },
+        },
+        usage: { input_tokens: 23, output_tokens: 62 },
+      },
+    });
+    expect(result).toMatchObject({ ok: true, usage: { inputTokens: 23, outputTokens: 62 } });
+  });
+
+  it('uses the user-selected System One model when the advisor resolves Provider/Model settings', async () => {
+    const create = vi.fn(async (request: { model: string }) => ({
+      model: request.model,
+      answers: { candidates: { type: 'choice', choice: 'c000', probabilities: { c000: 0.8, c001: 0.2 } } },
+    }));
+    const instance = new SpanRoutingAdvisor({
+      resolveDecisionModels: async () => [{
+        model: 'nace-ai/drex-v1.5',
+        apiKey: 'sk-selected',
+        baseUrl: 'https://provider.example/v1',
+      }],
+      createClient: () => ({ create }),
+    });
+
+    const result = await instance.evaluate({
+      configurationRevision: 'revision-selected-model',
+      deadlineMs: Date.now() + 3_000,
+      requests: [request({ model: 'legacy-default' })],
+    });
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'nace-ai/drex-v1.5' }),
+      expect.anything(),
+    );
+    expect(result.subtasks[0]).toMatchObject({ status: 'advised' });
+  });
+
   function advisor(client: SpanDecisionClient, apiKey: string | null = 'sk-or-test') {
     return new SpanRoutingAdvisor({
       resolveApiKey: async () => apiKey,

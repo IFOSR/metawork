@@ -256,10 +256,10 @@ function findCompatibilityProblem(
   return null;
 }
 
-/** Internal commit hashes identify builds; their lexical order is not release chronology. */
+/** Internal build suffixes identify builds; their lexical order is not release chronology. */
 export function compareReleaseVersions(left: string, right: string): number {
   const productVersion = (value: string) => value.replace(
-    /^(\d+\.\d+\.\d+)-internal-[a-f0-9]{7,40}$/u, '$1-internal',
+    /^(\d+\.\d+\.\d+)-internal(?:-.+)?$/u, '$1-internal',
   );
   return compareSemanticVersions(productVersion(left), productVersion(right));
 }

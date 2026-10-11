@@ -46,6 +46,7 @@ export function buildSpanSubtaskEvaluationRequest(input: {
    */
   models?: KernelConfigurationView['models'];
   maxCandidates?: number;
+  model?: string;
 }): SpanQuestionBuildResult {
   const maxCandidates = input.maxCandidates ?? SPAN_MAX_CANDIDATES_PER_SUBTASK;
   const entries = input.groups
@@ -148,7 +149,7 @@ export function buildSpanSubtaskEvaluationRequest(input: {
   });
 
   const request: SpanEvaluationRequest = {
-    model: SPAN_MODEL,
+    model: input.model ?? SPAN_MODEL,
     state: {
       subtask: {
         title: bound(redactSensitiveText(input.subtask.title), TITLE_LIMIT),

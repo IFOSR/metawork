@@ -89,10 +89,30 @@ describe('OpenRouterModelCatalog', () => {
     expect(matchOpenRouterModel(snapshot, 'deepseek-flash')).toBeUndefined();
   });
 
+  it('matches local filesystem and quantization suffixes to the public model', () => {
+    const snapshot = parseOpenRouterCatalog({ data: [
+      {
+        id: 'nace-ai/drex-v1.5',
+        name: 'Nace.AI: Drex v1.5',
+        architecture: { output_modalities: ['decisions'] },
+        description: 'A small decision model',
+        pricing: { prompt: '0.00000004', completion: '0' },
+      },
+      { id: 'amazon/nova-lite-v1', name: 'Amazon: Nova Lite', pricing: {} },
+    ] });
+
+    expect(matchOpenRouterModel(snapshot, '/drex/weights/drex-v1.5-Q8_0.gguf')?.modelId)
+      .toBe('nace-ai/drex-v1.5');
+    expect(rankOpenRouterModels(snapshot, '/drex/weights/drex-v1.5-Q8_0.gguf')[0]?.model.modelId)
+      .toBe('nace-ai/drex-v1.5');
+  });
+
   it('returns the last successful snapshot when a refresh fails', async () => {
     let calls = 0;
+    let requestedUrl = '';
     const catalog = new OpenRouterModelCatalog({
-      fetchImpl: async () => {
+      fetchImpl: async input => {
+        requestedUrl = String(input);
         calls += 1;
         if (calls > 1) throw new Error('offline');
         return new Response(JSON.stringify({ data: [{ id: 'demo/model' }] }), {
@@ -107,5 +127,6 @@ describe('OpenRouterModelCatalog', () => {
     expect(first.status).toBe('ready');
     expect(second.status).toBe('ready');
     expect(second.models['demo/model']).toBeDefined();
+    expect(requestedUrl).toContain('output_modalities=text,decisions');
   });
 });

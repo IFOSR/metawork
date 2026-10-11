@@ -55,7 +55,11 @@ import {
   SPAN_ROUTING_SECRET_REFERENCE,
   SPAN_ROUTING_MODEL,
 } from '../configuration/schema.js';
-import { SpanRoutingAdvisor } from '../routing/span-routing-advisor.js';
+import {
+  isSystemOneDecisionModel,
+  SpanRoutingAdvisor,
+} from '../routing/span-routing-advisor.js';
+import { fetchManualModelInformation } from '../configuration/manual-model-information.js';
 import {
   assertSecretReference,
   type SecretReference,
@@ -851,6 +855,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     workspaceCatalog: workspaceCatalogStore,
     conversationStore,
     projection: directoryProjection,
+    runtimeRoot: paths.root,
+    workspaceStoreRoot: accountPaths.workspaceStore,
     authorize: (_path, principalId) => isAuthenticatedWorkspacePrincipalId(principalId),
     createConversationId: () => `conv_${nanoid(12)}`,
     getConversationActivities: conversations => (
@@ -998,10 +1004,74 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     resolveApiKey: async revisionId => {
       const snapshot = await configurationService.getSnapshot(revisionId);
       const span = snapshot.config.routing?.span;
-      if (!span?.enabled || span.apiKeyRef !== SPAN_ROUTING_SECRET_REFERENCE) return null;
+      if (!span?.enabled) return null;
       try {
+        if (span.providerRef && span.modelRef) {
+          const provider = snapshot.config.providers[span.providerRef];
+          const model = snapshot.config.models[span.modelRef];
+          if (!provider || !model || !provider.enabled || !model.enabled || model.providerRef !== span.providerRef) return null;
+          assertSecretReference(provider.apiKeyRef);
+          return (await secretStore.get(provider.apiKeyRef)).trim() || null;
+        }
+        if (span.apiKeyRef !== SPAN_ROUTING_SECRET_REFERENCE) return null;
         return (await secretStore.get(SPAN_ROUTING_SECRET_REFERENCE as SecretReference)).trim() || null;
       } catch { return null; }
+    },
+    resolveBaseUrl: async revisionId => {
+      const snapshot = await configurationService.getSnapshot(revisionId);
+      const span = snapshot.config.routing?.span;
+      if (span?.providerRef && span.modelRef) return snapshot.config.providers[span.providerRef]?.baseUrl ?? null;
+      return 'https://openrouter.ai/api/v1';
+    },
+    resolveDecisionModels: async revisionId => {
+      const snapshot = await configurationService.getSnapshot(revisionId);
+      const span = snapshot.config.routing?.span;
+      if (!span?.enabled) return [];
+      // Keep the pre-Provider OpenRouter setting readable while all new
+      // settings use the same Provider/Model path as agents.
+      if (!span.providerRef || !span.modelRef) {
+        if (span.apiKeyRef !== SPAN_ROUTING_SECRET_REFERENCE) return [];
+        try {
+          const apiKey = (await secretStore.get(SPAN_ROUTING_SECRET_REFERENCE as SecretReference)).trim();
+          return apiKey ? [{
+            model: span.model || SPAN_ROUTING_MODEL,
+            apiKey,
+            baseUrl: 'https://openrouter.ai/api/v1',
+          }] : [];
+        } catch {
+          return [];
+        }
+      }
+      const refs = [span.modelRef, ...(span.fallbackModelRefs ?? [])];
+      const resolved: Array<{
+        model: string;
+        apiKey: string;
+        baseUrl?: string;
+      }> = [];
+      for (const modelRef of refs) {
+        const model = snapshot.config.models[modelRef];
+        const provider = model ? snapshot.config.providers[model.providerRef] : undefined;
+        if (!model || !provider || !provider.enabled || !model.enabled) continue;
+        try {
+          assertSecretReference(provider.apiKeyRef);
+          const apiKey = (await secretStore.get(provider.apiKeyRef)).trim();
+          if (!apiKey) continue;
+          if (!isSystemOneDecisionModel({
+            modelId: model.modelId,
+            baseUrl: provider.baseUrl,
+            outputModalities: model.publicFacts?.outputModalities,
+            description: model.description,
+          })) continue;
+          resolved.push({
+            model: model.modelId,
+            apiKey,
+            baseUrl: provider.baseUrl,
+          });
+        } catch {
+          // An unavailable fallback is omitted; the advisor tries the next one.
+        }
+      }
+      return resolved;
     },
     lifetimeSignal: spanRoutingShutdown.signal,
   });
@@ -1024,6 +1094,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     db,
     taskEngine,
     resolveWorkspacePath: resolveTaskWorkspacePath,
+    preflightWorkspacePath: path => workspaceDirectory.preflightPath(path),
     productionAuthorization: () => {
       const status = officialAuthorization.getStatus();
       return status.state === 'active'
@@ -1122,12 +1193,16 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       if (spanApiKey !== undefined) {
         // Only the credential reference is persisted. A later enable/disable
         // toggle reuses the same reference without re-entering the key.
+        const existingSpan = prepared.routing?.span;
         prepared.routing = {
           ...prepared.routing,
           span: {
-            enabled: prepared.routing?.span?.enabled ?? false,
-            model: SPAN_ROUTING_MODEL,
-            timeoutMs: prepared.routing?.span?.timeoutMs ?? SPAN_ROUTING_DEFAULT_TIMEOUT_MS,
+            enabled: existingSpan?.enabled ?? false,
+            model: existingSpan?.model ?? SPAN_ROUTING_MODEL,
+            ...(existingSpan?.providerRef ? { providerRef: existingSpan.providerRef } : {}),
+            ...(existingSpan?.modelRef ? { modelRef: existingSpan.modelRef } : {}),
+            ...(existingSpan?.fallbackModelRefs ? { fallbackModelRefs: [...existingSpan.fallbackModelRefs] } : {}),
+            timeoutMs: existingSpan?.timeoutMs ?? SPAN_ROUTING_DEFAULT_TIMEOUT_MS,
             apiKeyRef: SPAN_ROUTING_SECRET_REFERENCE,
           },
         };
@@ -2382,6 +2457,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         },
       },
       configQuery: {
+        fetchManualModelInformation,
         getActive: async () => {
           const snapshot = await configurationService.getActiveSnapshot();
           return {

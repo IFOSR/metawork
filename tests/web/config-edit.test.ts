@@ -64,6 +64,9 @@ describe('Span routing advanced settings draft', () => {
     expect(loadSpanRoutingDraft({})).toEqual({
       enabled: false,
       model: 'inception/mercury-decide:free',
+      providerRef: '',
+      modelRef: '',
+      fallbackModelRefs: [],
       timeoutMs: 8_000,
       apiKey: '',
     });
@@ -76,6 +79,9 @@ describe('Span routing advanced settings draft', () => {
     expect(draft).toEqual({
       enabled: true,
       model: 'inception/mercury-decide:free',
+      providerRef: '',
+      modelRef: '',
+      fallbackModelRefs: [],
       timeoutMs: 4_000,
       apiKey: '',
     });
@@ -88,7 +94,7 @@ describe('Span routing advanced settings draft', () => {
 
   it('materializes the fixed model, timeout and the existing credential reference', () => {
     const section = buildSpanRoutingSection(
-      { enabled: true, model: 'inception/mercury-decide:free', timeoutMs: 2_000, apiKey: '' },
+      { enabled: true, model: 'inception/mercury-decide:free', providerRef: '', modelRef: '', fallbackModelRefs: [], timeoutMs: 2_000, apiKey: '' },
       { routing: { span: { enabled: false, apiKeyRef: 'file-secret:anyfusion/internal/routing-span' } } },
     );
     expect(section).toEqual({
@@ -104,7 +110,7 @@ describe('Span routing advanced settings draft', () => {
 
   it('keeps a disabled Span section so the stored key survives a toggle', () => {
     const section = buildSpanRoutingSection(
-      { enabled: false, model: 'inception/mercury-decide:free', timeoutMs: 3_000, apiKey: '' },
+      { enabled: false, model: 'inception/mercury-decide:free', providerRef: '', modelRef: '', fallbackModelRefs: [], timeoutMs: 3_000, apiKey: '' },
       { routing: { span: { enabled: true, model: 'inception/mercury-decide:free', apiKeyRef: 'file-secret:anyfusion/internal/routing-span', timeoutMs: 3_000 } } },
     );
     expect(section).toMatchObject({ span: { enabled: false, apiKeyRef: 'file-secret:anyfusion/internal/routing-span' } });

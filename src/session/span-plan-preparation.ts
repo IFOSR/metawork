@@ -57,6 +57,10 @@ export async function attachSpanRoutingObservation(
   if (proposal.action !== 'plan_work_graph' || !proposal.workGraph) return event;
   const spanConfig = input.runtimeConfiguration?.routing?.span;
   if (!spanConfig?.enabled) return event;
+  // Configuration revisions created before the explicit decision-model field
+  // was introduced can still reach recovery/session code. Keep the observation
+  // identity stable so Kernel validation and the UI never see an empty model.
+  const decisionModel = spanConfig.model || SPAN_MODEL;
 
   const unavailable = unavailableAgentClasses(input.executorStatuses, event.occurredAt);
   const deadLine = now() + spanConfig.timeoutMs;
@@ -112,6 +116,7 @@ export async function attachSpanRoutingObservation(
       groups,
       agentClasses: input.configuration.agentClasses,
       models: input.configuration.models,
+      model: decisionModel,
     });
     if (!built.ok) {
       skippedOrFailed.push(built.reason === 'no_eligible_candidate'
@@ -156,7 +161,7 @@ export async function attachSpanRoutingObservation(
     schemaVersion: SPAN_OBSERVATION_SCHEMA_VERSION,
     policyVersion: SPAN_OBSERVATION_POLICY_VERSION,
     questionVersion: SPAN_QUESTION_VERSION,
-    model: SPAN_MODEL,
+    model: decisionModel,
     eventId: event.id,
     proposalFingerprint: planProposalFingerprint({
       task: proposal.task,

@@ -102,9 +102,15 @@ export interface WorkGraphPresentationProjection {
       spanRouting?: {
         applied: boolean;
         reason: string | null;
+        decisionModel?: {
+          providerDisplayName: string;
+          modelDisplayName: string;
+          modelId: string;
+        };
         candidates: Array<{
           providerDisplayName: string;
           modelDisplayName: string;
+          selected: boolean;
           probability: number;
         }>;
       };

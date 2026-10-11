@@ -101,7 +101,7 @@ function hasRoutingNotes(
   );
 }
 
-type OpenRouterCandidate = {
+export type OpenRouterCandidate = {
   modelId: string;
   displayName?: string;
   description?: string;
@@ -116,16 +116,29 @@ function normalizeModelKey(value: string): string {
 }
 
 function canonicalModelKey(value: string): string {
-  const last = value.trim().toLowerCase().split('/').at(-1) ?? '';
-  return normalizeModelKey(last.replace(/:(?:free|batch|nitro|exact)$/u, ''));
+  const last = value.trim().toLowerCase().split(/[\\/]/u).at(-1) ?? '';
+  return normalizeModelKey(stripLocalModelSuffixes(last));
+}
+
+function stripLocalModelSuffixes(value: string): string {
+  let normalized = value
+    .replace(/\.(?:gguf|safetensors|bin| model)$/iu, '')
+    .replace(/:(?:free|batch|nitro|exact)$/u, '');
+  let previous = '';
+  while (normalized !== previous) {
+    previous = normalized;
+    normalized = normalized.replace(/[-_.](?:q\d+(?:[_-][a-z0-9]+)*|iq\d+(?:[_-][a-z0-9]+)*|(?:fp|bf|int)\d+(?:[_-][a-z0-9]+)*|awq|gptq|exl2)$/iu, '');
+  }
+  return normalized;
 }
 
 function modelTokens(value: string): string[] {
   return normalizeModelKey(value).split('-').filter(token => token.length > 1
-    && !['openai', 'anthropic', 'google', 'meta', 'mistral'].includes(token));
+    && !['openai', 'anthropic', 'google', 'meta', 'mistral', 'gguf', 'safetensors', 'bin'].includes(token)
+    && !/^v?\d+$/u.test(token));
 }
 
-function rankOpenRouterCandidates(
+export function rankOpenRouterCandidates(
   modelId: string,
   discovery: {
     modelIds?: string[];
@@ -155,7 +168,9 @@ function rankOpenRouterCandidates(
       if (overlap === 0) return [];
       const coverage = overlap / Math.max(1, localTokens.size);
       const precision = overlap / Math.max(1, new Set(candidateTokens).size);
-      score = Math.round(52 + 30 * coverage + 12 * precision);
+      // Token overlap is only a suggestion. Keep it below the high-confidence
+      // threshold so generic fragments cannot auto-bind an unrelated model.
+      score = Math.round(50 + 30 * coverage + 12 * precision);
       if (score < 58) return [];
     }
     return [{ modelId: candidateId, ...(metadata ?? {}), score, match }];
@@ -441,6 +456,9 @@ export function SettingsPanel({
   const [spanDraft, setSpanDraft] = useState<SpanRoutingDraft>({
     enabled: false,
     model: 'inception/mercury-decide:free',
+    providerRef: '',
+    modelRef: '',
+    fallbackModelRefs: [],
     timeoutMs: SPAN_ROUTING_DEFAULT_TIMEOUT_MS,
     apiKey: '',
   });
@@ -500,6 +518,8 @@ export function SettingsPanel({
     message: string;
     candidates?: OpenRouterCandidate[];
   }>>({});
+  const [manualModelInformation, setManualModelInformation] = useState<Record<string, string>>({});
+  const [manualModelInformationOpen, setManualModelInformationOpen] = useState<Record<string, boolean>>({});
   const [executorLoading, setExecutorLoading] = useState(false);
   const secretStatusVersion = useRef(0);
   const completionCache = useRef<ConfigurationCompletionResult>();
@@ -522,6 +542,8 @@ export function SettingsPanel({
     setFacts(loadRoutingFacts(config));
     responsibilityRequests.current.clear();
     setResponsibilityFeedback({});
+    setManualModelInformation({});
+    setManualModelInformationOpen({});
     setExpandedProviders(new Set());
     setExpandedAgents(new Set());
   };
@@ -1359,7 +1381,7 @@ export function SettingsPanel({
     setModelInfoLoading(modelRef);
     setModelInfoStatus(current => ({
       ...current,
-      [modelRef]: { status: 'error', message: '正在查询 OpenRouter…' },
+      [modelRef]: { status: 'loading', message: '正在查询 OpenRouter…' },
     }));
     setLoadError(null);
     try {
@@ -1434,6 +1456,51 @@ export function SettingsPanel({
         [modelRef]: { status: 'error', message },
       }));
       setLoadError(`获取模型信息失败：${message}`);
+    } finally {
+      setModelInfoLoading(null);
+    }
+  };
+
+  const applyManualModelInformation = async (modelRef: string): Promise<void> => {
+    const source = manualModelInformation[modelRef]?.trim() ?? '';
+    if (!source) return;
+    const isUrl = /^https?:\/\//iu.test(source);
+    setModelInfoLoading(modelRef);
+    setModelInfoStatus(current => ({
+      ...current,
+      [modelRef]: { status: 'loading', message: isUrl ? '正在读取模型信息链接…' : '正在应用手动模型描述…' },
+    }));
+    try {
+      const result = isUrl
+        ? await http?.fetchManualModelInformation(source)
+        : { sourceUrl: '', description: source };
+      if (!result?.description?.trim()) throw new Error('没有找到可用的模型描述');
+      const description = [result.title, result.description].filter(Boolean).join('\n\n').trim().slice(0, 4_000);
+      const summary = result.description.trim().slice(0, 500);
+      setCatalog(current => {
+        const model = current?.models[modelRef];
+        if (!current || !model) return current;
+        return {
+          ...current,
+          models: {
+            ...current.models,
+            [modelRef]: {
+              ...model,
+              description,
+              routingNotes: { ...(model.routingNotes ?? {}), summary },
+            },
+          },
+        };
+      });
+      setModelInfoStatus(current => ({
+        ...current,
+        [modelRef]: { status: 'success', message: isUrl ? '已读取并应用模型信息，保存后生效。' : '已应用模型描述，保存后生效。' },
+      }));
+    } catch (error) {
+      setModelInfoStatus(current => ({
+        ...current,
+        [modelRef]: { status: 'error', message: error instanceof Error ? error.message : '模型信息读取失败' },
+      }));
     } finally {
       setModelInfoLoading(null);
     }
@@ -2025,9 +2092,9 @@ export function SettingsPanel({
                                         <p className={`model-info-status model-info-status-${modelInfoStatus[option.modelRef]!.status}`} role="status">
                                           {modelInfoStatus[option.modelRef]!.message}
                                         </p>
-                                        {(modelInfoStatus[option.modelRef]!.candidates?.length ?? 0) > 0 && (
+                                        {modelInfoStatus[option.modelRef]!.status !== 'loading' && (
                                           <div className="openrouter-candidate-list" role="list" aria-label="OpenRouter 候选模型">
-                                            {modelInfoStatus[option.modelRef]!.candidates!.map(candidate => (
+                                            {(modelInfoStatus[option.modelRef]!.candidates ?? []).map(candidate => (
                                               <div className="openrouter-candidate" key={candidate.modelId} role="listitem">
                                                 <div>
                                                   <strong>{candidate.displayName ?? candidate.modelId}</strong>
@@ -2046,6 +2113,58 @@ export function SettingsPanel({
                                                 </button>
                                               </div>
                                             ))}
+                                            <div className="openrouter-candidate openrouter-candidate-manual" role="listitem">
+                                              <div>
+                                                <strong>都不是</strong>
+                                                <small>手动补充模型描述或模型信息链接</small>
+                                              </div>
+                                              <button
+                                                type="button"
+                                                className="text-button"
+                                                disabled={loading || executorLoading}
+                                                onClick={() => setManualModelInformationOpen(current => ({
+                                                  ...current,
+                                                  [option.modelRef!]: !current[option.modelRef!],
+                                                }))}
+                                              >
+                                                {manualModelInformationOpen[option.modelRef!] ? '收起输入框' : '填写模型信息'}
+                                              </button>
+                                            </div>
+                                          </div>
+                                        )}
+                                        {manualModelInformationOpen[option.modelRef!] && (
+                                          <div className="manual-model-information" role="dialog" aria-label="手动补充模型信息">
+                                            <div className="manual-model-information-heading">
+                                              <div>
+                                                <strong>手动补充模型信息</strong>
+                                                <span>粘贴模型描述，或粘贴模型信息页面链接。</span>
+                                              </div>
+                                              <span className="state-badge">仅作为路由参考</span>
+                                            </div>
+                                            <textarea
+                                              autoFocus
+                                              className="text-input manual-model-information-input"
+                                              value={manualModelInformation[option.modelRef] ?? ''}
+                                              maxLength={4_000}
+                                              rows={4}
+                                              placeholder="粘贴模型描述，或粘贴模型信息页面链接（HTTPS）"
+                                              disabled={loading || executorLoading || modelInfoLoading === option.modelRef}
+                                              onChange={event => setManualModelInformation(current => ({
+                                                ...current,
+                                                [option.modelRef!]: event.target.value,
+                                              }))}
+                                            />
+                                            <div className="manual-model-information-actions">
+                                              <small>描述最多 4,000 字；链接页面只读取标题和正文文字。</small>
+                                              <button
+                                                type="button"
+                                                className="ghost-button"
+                                                disabled={loading || executorLoading || modelInfoLoading === option.modelRef || !(manualModelInformation[option.modelRef] ?? '').trim()}
+                                                onClick={() => { void applyManualModelInformation(option.modelRef!); }}
+                                              >
+                                                {/^https?:\/\//iu.test((manualModelInformation[option.modelRef] ?? '').trim()) ? '读取链接并应用' : '应用描述'}
+                                              </button>
+                                            </div>
                                           </div>
                                         )}
                                       </>
@@ -2453,6 +2572,8 @@ export function SettingsPanel({
                   </section>
                   <SpanRoutingSettings
                     draft={spanDraft}
+                    models={catalog?.models ?? {}}
+                    providers={catalog?.providers ?? {}}
                     credentialConfigured={spanCredentialConfigured}
                     editingDisabled={editingDisabled}
                     onChange={setSpanDraft}

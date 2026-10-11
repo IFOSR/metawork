@@ -17,6 +17,7 @@ export function App() {
     draft, route, search, setSearch, settingsOpen,
     setSettingsOpen, workspaceCreatorOpen, setWorkspaceCreatorOpen, configurationRuntime, agentReadiness,
     pendingAttachments, handleRemoveAttachment, uploadError, previewState, setPreviewState,
+    uploadingAttachments,
     previewCollapsed, setPreviewCollapsed, previewMaximized, setPreviewMaximized, previewWidth,
     setPreviewWidth, executionDetail, setExecutionDetail, httpRef, observationClient,
     viewportMemory, openTrajectory, openBilling, handleSelectWorkspace, handleCreateWorkspace,
@@ -104,6 +105,7 @@ export function App() {
         onCancelTurn={handleCancelTurn}
         attachments={pendingAttachments.map(metadata => ({ metadata }))}
         uploadError={uploadError}
+        uploading={uploadingAttachments}
         onFilesSelected={files => void handleFilesSelected(files)}
         onRemoveAttachment={handleRemoveAttachment}
       >

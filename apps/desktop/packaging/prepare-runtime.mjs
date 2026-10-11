@@ -122,8 +122,11 @@ try {
     files: await desktopInventory(payload),
   };
   release.signature = { algorithm: 'ed25519', keyId, value: sign(null, Buffer.from(canonical(release)), privateKey).toString('base64') };
-  await writeFile(join(output, 'desktop-release.json'), `${JSON.stringify(release, null, 2)}\n`);
-  await writeFile(join(output, 'trusted-release-keys.json'), `${JSON.stringify(trustedKeys, null, 2)}\n`);
+  // Inventory is intentionally compact. It is signed after parsing, so
+  // whitespace does not change the descriptor's canonical meaning while
+  // avoiding several megabytes of pretty-print overhead in every DMG.
+  await writeFile(join(output, 'desktop-release.json'), `${JSON.stringify(release)}\n`);
+  await writeFile(join(output, 'trusted-release-keys.json'), `${JSON.stringify(trustedKeys)}\n`);
   await verifyDesktopRelease(output, { trustedKeys, arch: process.arch, desktopVersion: pkg.version, allowDevelopment: development });
   process.stdout.write(`Verified Desktop resources: ${output}\n`);
 } catch (error) {

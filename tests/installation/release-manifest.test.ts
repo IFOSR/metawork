@@ -319,6 +319,10 @@ describe('internal release identities', () => {
     expect(decideReleaseCompatibility({ mode: 'update', currentReleaseId: '0.1.8-internal-bc0fb75',
       candidate, requiredCompatibility: candidate.compatibility })).toEqual({ ok: true });
   });
+  it('does not order internal build labels such as local and compressed', () => {
+    expect(compareReleaseVersions('0.1.9-internal-compressed-20261010', '0.1.9-internal-local20261010c')).toBe(0);
+    expect(compareReleaseVersions('0.1.9-internal-local20261010c', '0.1.9-internal-compressed-20261010')).toBe(0);
+  });
   it('preserves product downgrade, stable/prerelease and numbered preview ordering', () => {
     expect(compareReleaseVersions('0.1.8-internal-1e26ed0', '0.1.9-internal-aaaaaaa')).toBeLessThan(0);
     expect(compareReleaseVersions('0.1.8-internal-1e26ed0', '0.1.8')).toBeLessThan(0);

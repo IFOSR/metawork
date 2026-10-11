@@ -1309,20 +1309,21 @@ unsaved key replacements take precedence over the previous saved fingerprint.
 
 ### Span Routing Advisor
 
-The advanced settings section offers one optional external routing advisor:
-`inception/mercury-decide:free` on OpenRouter. Its OpenRouter Key uses the same secret
+The advanced settings section lets the user choose a primary and ordered fallback
+routing model from configured Providers/Models. Only models that explicitly declare
+System One/Jev compatibility are selectable, including Mercury, Jev and Drex v1.5.
+Every MetaWork decision model uses the same System One request and response contract;
+an ordinary Chat Completions model cannot be selected as a decision model. Its key uses the same secret
 flow as a Provider Key — the Server writes it to the account SecretStore under a
 fixed reference in the non-Provider `internal` namespace and the revision stores
 only that reference, so a Provider named `routing-span` can never share the slot.
 Configuration validation accepts only that exact reference and the Server
 re-checks it before reading the secret. Provider references into that internal
-namespace are rejected as well. The section has no Provider or Model
-picker, and a blank Key field keeps the
-stored value. Existing immutable revisions that still name the retired Span
-model are normalized to this fixed Mercury model when read. Startup verifies
-that historical content hash by reversing only the known model substitution;
-other changed content still fails validation. No immutable revision file, hash,
-revision ID or active pointer is rewritten.
+namespace are rejected as well. A blank Key field keeps the stored value.
+Models without confirmed System One capability are excluded from the picker; users
+can add model information and refresh the capability evidence. Existing immutable
+revisions that still name the retired Span model remain readable. No immutable
+revision file, hash, revision ID or active pointer is rewritten.
 
 When enabled, the Server evaluates only the candidates that already passed the
 shared hard filter and attaches a bounded `spanRouting` observation to the
@@ -1349,7 +1350,7 @@ workloads through the real advisor, Kernel and SQLite replay, reports ordering,
 latency and usage, and requires zero extra calls on replay. It requires a valid
 OpenRouter key and local development dependencies. The SDK boundary sends the
 structured state as a JSON string and includes escaping in the request budget.
-Mercury and Jev use the same OpenRouter System One protocol. The default smoke
+Mercury, Jev, Drex and other recognized models use the same System One protocol. The default smoke
 mode only checks System One transport.
 
 Export the Feishu app secret before starting the runtime:

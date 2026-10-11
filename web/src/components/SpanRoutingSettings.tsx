@@ -1,116 +1,115 @@
 import type { SpanRoutingDraft } from '../config-edit';
+import type { SettingsModelEntry, SettingsProviderEntry } from '../settings-model';
 
 export interface SpanRoutingSettingsProps {
   draft: SpanRoutingDraft;
-  /** Server-reported credential state; the plaintext key is never returned. */
+  models: Record<string, SettingsModelEntry>;
+  providers: Record<string, SettingsProviderEntry>;
   credentialConfigured: boolean;
   editingDisabled: boolean;
   onChange(next: SpanRoutingDraft): void;
 }
 
 /**
- * Advanced-settings editor for the optional routing decision model.
- *
- * Presentation only: it edits draft state and hands it to the existing
- * configuration activation flow. It never persists a credential and never shows
- * a stored key. The advisor model is fixed by the backend, so this surface
- * exposes no model or provider picker — the operator only decides whether to
- * enable the advisor and, if so, supplies the OpenRouter credential.
+ * Only models that declare the single supported System One/Jev decision
+ * contract can be selected. Ordinary chat models are executor models, not
+ * MetaWork decision models.
  */
-export function SpanRoutingSettings({
-  draft,
-  credentialConfigured,
-  editingDisabled,
-  onChange,
-}: SpanRoutingSettingsProps) {
+export function selectableDecisionModels(
+  models: Record<string, SettingsModelEntry>,
+  providers: Record<string, SettingsProviderEntry>,
+) {
+  return Object.values(models)
+    .filter(model => model.enabled !== false)
+    .filter(model => providers[model.providerRef]?.enabled !== false)
+    .filter(hasSystemOneDecisionCapability)
+    .sort((left, right) => left.modelId.localeCompare(right.modelId));
+}
+
+export function hasConfirmedDecisionModelCapability(model: SettingsModelEntry): boolean {
+  return hasSystemOneDecisionCapability(model);
+}
+
+function hasSystemOneDecisionCapability(model: SettingsModelEntry): boolean {
+  return model.publicFacts?.outputModalities.some(item => item.toLowerCase() === 'decisions') === true
+    || /(?:\/v1\/systemone|system\s*one|systemone|typesafe[\s\S]{0,80}\bjev\b|\bjev\b[\s\S]{0,80}(?:interface|protocol|接口|契约|共用))/iu.test(
+      `${model.description ?? ''} ${model.routingNotes?.summary ?? ''}`,
+    )
+    || model.modelId === 'inception/mercury-decide:free'
+    || /(?:^|[/:_-])mercury-decide(?:$|[/:_-])/iu.test(model.modelId);
+}
+
+export function SpanRoutingSettings({ draft, models, providers, credentialConfigured, editingDisabled, onChange }: SpanRoutingSettingsProps) {
+  const options = selectableDecisionModels(models, providers);
+  const selected = options.find(model => model.ref === draft.modelRef);
+  const configured = Boolean(draft.providerRef && draft.modelRef && selected);
+  const primaryProviderModels = options.filter(model => model.providerRef === draft.providerRef);
+  const fallbacks = draft.fallbackModelRefs
+    .map(ref => options.find(model => model.ref === ref))
+    .filter((model): model is SettingsModelEntry => Boolean(model));
+
   return (
-    <section className="settings-section" aria-labelledby="decision-model-heading">
+    <section className="settings-section system-routing-settings" aria-labelledby="decision-model-heading">
       <div className="section-heading">
         <div>
-          <div className="settings-eyebrow">DECISION MODEL</div>
-          <h3 id="decision-model-heading">决策模型</h3>
-          <p>
-            一个可选的排序服务：在已经合格的执行模型里挑出更合适的一个。不开启时系统
-            使用内置规则，任务照常执行。
-          </p>
+          <div className="settings-eyebrow">SYSTEM ROUTING</div>
+          <h3 id="decision-model-heading">系统路由</h3>
+          <p>决策模型在 Planner 完成 DAG 后联合选择 AgentClass 和 Model。凭证复用 Provider 配置，设置只影响后续新 Graph。</p>
         </div>
-        <span className={`state-badge${draft.enabled ? '' : ' state-badge-warning'}`}>
-          {draft.enabled ? '已开启' : '未开启'}
-        </span>
+        <span className={`state-badge${configured ? '' : ' state-badge-warning'}`}>{configured ? '可用' : '配置未完成'}</span>
       </div>
-
-      <dl className="decision-model-explainer">
-        <div className="decision-model-point">
-          <dt>它做什么</dt>
-          <dd>
-            执行模型候选先通过可执行性、能力等硬性筛选，再由决策模型做一次软排序，
-            选出更合适的执行模型。它只决定用哪个模型，不改变任务内容、权限或执行结果。
-          </dd>
+      <div className="decision-model-explainer"><p>候选先经过权限、能力、上下文和健康状态检查；只有多个合法候选时才调用主决策模型。单一候选直接使用，不增加等待。</p></div>
+      <div className="system-routing-fields">
+        <label className="settings-field">
+          <span>主决策 Provider</span>
+          <select className="text-input" value={draft.providerRef} disabled={editingDisabled} onChange={event => {
+            const providerRef = event.target.value;
+            const nextModel = options.find(model => model.providerRef === providerRef);
+            onChange({ ...draft, enabled: true, providerRef, modelRef: nextModel?.ref ?? '', model: nextModel?.modelId ?? draft.model });
+          }}>
+            <option value="">选择已配置 Provider</option>
+            {[...new Set(options.map(model => model.providerRef))].map(providerRef => <option key={providerRef} value={providerRef}>{providers[providerRef]?.displayName ?? providerRef}</option>)}
+          </select>
+        </label>
+        <label className="settings-field">
+          <span>主决策 Model</span>
+          <select className="text-input" value={draft.modelRef} disabled={editingDisabled || !draft.providerRef} onChange={event => {
+            const model = models[event.target.value];
+            onChange({ ...draft, enabled: true, modelRef: event.target.value, model: model?.modelId ?? draft.model });
+          }}>
+            <option value="">选择决策 Model</option>
+            {primaryProviderModels.map(model => <option key={model.ref} value={model.ref}>
+              {model.modelId}{hasConfirmedDecisionModelCapability(model) ? '' : ' · 能力待确认'}
+            </option>)}
+          </select>
+          <small>{selected
+            ? `System One/Jev 协议已识别 · ${selected.contextLimit ?? '未知'} 上下文`
+            : '仅显示已声明 System One/Jev 决策协议的模型。普通 Chat 模型不能作为决策模型。'}</small>
+        </label>
+      </div>
+      <div className="system-routing-fallbacks">
+        <div className="settings-field">
+          <span>备选模型（可选）</span>
+          {fallbacks.length === 0 && <small>主模型不可用时按顺序尝试；不填写也可以保存。</small>}
+          {fallbacks.map((model, index) => <div className="system-routing-fallback-row" key={model.ref}><span>{index + 1}. {providers[model.providerRef]?.displayName ?? model.providerRef} / {model.modelId}</span><button type="button" className="ghost-button" disabled={editingDisabled} onClick={() => onChange({ ...draft, fallbackModelRefs: draft.fallbackModelRefs.filter(ref => ref !== model.ref) })}>删除</button></div>)}
+          <select className="text-input" value="" disabled={editingDisabled} onChange={event => {
+            const ref = event.target.value;
+            if (!ref || ref === draft.modelRef || draft.fallbackModelRefs.includes(ref)) return;
+            onChange({ ...draft, fallbackModelRefs: [...draft.fallbackModelRefs, ref] });
+          }}>
+            <option value="">添加备选模型</option>
+            {options.filter(model => model.ref !== draft.modelRef && !draft.fallbackModelRefs.includes(model.ref)).map(model => <option key={model.ref} value={model.ref}>
+              {providers[model.providerRef]?.displayName ?? model.providerRef} / {model.modelId}
+              {hasConfirmedDecisionModelCapability(model) ? '' : ' · 能力待确认'}
+            </option>)}
+          </select>
         </div>
-        <div className="decision-model-point">
-          <dt>开启与关闭</dt>
-          <dd>
-            开启后每次派发任务前都会调用一次决策模型；关闭后改用内置的确定性规则选择
-            执行模型，执行不受影响，已保存的 API Key 也会保留。
-          </dd>
-        </div>
-        <div className="decision-model-point">
-          <dt>发送什么数据</dt>
-          <dd>
-            只把任务摘要和候选模型信息发送到 OpenRouter 用于排序判断，不包含附件内容、
-            完整会话或仓库代码。
-          </dd>
-        </div>
-      </dl>
-
-      <label className="decision-toggle" data-enabled={draft.enabled}>
-        <input
-          type="checkbox"
-          role="switch"
-          checked={draft.enabled}
-          disabled={editingDisabled}
-          onChange={event => onChange({ ...draft, enabled: event.target.checked })}
-        />
-        <span className="decision-toggle-copy">
-          <strong>启用决策模型</strong>
-          <small>
-            {draft.enabled
-              ? '已开启：派发任务前会调用一次决策模型。'
-              : credentialConfigured
-                ? '开启需要填写 OpenRouter API Key；关闭时会保留已保存的 Key。'
-                : '开启需要填写 OpenRouter API Key。'}
-          </small>
-        </span>
+      </div>
+      <label className="settings-field">
+        <span>决策超时（毫秒）</span>
+        <input className="text-input" type="number" min={500} max={10_000} value={draft.timeoutMs} disabled={editingDisabled} onChange={event => onChange({ ...draft, timeoutMs: Number(event.target.value) })} />
+        <small>{configured ? 'Provider 凭证状态由 Provider 卡片管理。' : `没有可用模型时，请先在 Provider 中添加或刷新模型。${credentialConfigured ? '旧版决策凭证仍已保存，可迁移到 Provider。' : ''}`}</small>
       </label>
-
-      {draft.enabled && (
-        <div className="decision-credential">
-          <div className="decision-credential-head">
-            <label htmlFor="span-routing-api-key">OpenRouter API Key</label>
-            <span className={`credential-chip ${credentialConfigured ? 'credential-chip-set' : 'credential-chip-missing'}`}>
-              {credentialConfigured ? '已配置' : '未配置'}
-            </span>
-          </div>
-          <input
-            id="span-routing-api-key"
-            className="text-input"
-            type="password"
-            autoComplete="off"
-            placeholder={credentialConfigured ? '已配置（留空表示保留）' : '粘贴你的 OpenRouter API Key'}
-            value={draft.apiKey}
-            disabled={editingDisabled}
-            onChange={event => onChange({ ...draft, apiKey: event.target.value })}
-          />
-          <small className="decision-credential-note">
-            Key 先保留在草稿中，点击“保存并激活”后由系统安全保存。
-          </small>
-          {!credentialConfigured && (
-            <p className="decision-credential-warning" role="status">
-              还没有可用的 Key：填写后点击页面底部“保存并激活”，决策模型才会生效。
-            </p>
-          )}
-        </div>
-      )}
     </section>
   );
 }

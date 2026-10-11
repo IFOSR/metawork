@@ -75,10 +75,14 @@ export function mergeExecutionTimeline(
     return current;
   }
   const projectedStatus = turnStatusFromTimeline(timeline);
-  const canReopenResume = current.status === 'blocked'
+  // The durable execution timeline is authoritative for an active Task. A
+  // capacity retry can resume a blocked Task without a new user command, so
+  // the conversation must leave the stale blocked projection as soon as the
+  // timeline reports running work. Terminal Turns remain protected below.
+  const canReopenActiveTask = current.status === 'blocked'
     && projectedStatus === 'running'
-    && isExplicitResumeTurn(current.userInput);
-  const status = projectedStatus && (current.status === 'running' || canReopenResume)
+    && ['running', 'waiting_retry'].includes(timeline.status);
+  const status = projectedStatus && (current.status === 'running' || canReopenActiveTask)
     ? projectedStatus
     : current.status;
   return {
@@ -229,7 +233,7 @@ function mergeTraceStatus(
   };
 }
 
-function turnStatusFromTimeline(
+export function turnStatusFromTimeline(
   timeline: ExecutionTimeline,
 ): ConversationTurnProjection['status'] | null {
   if (['created', 'ready', 'running', 'waiting_retry'].includes(timeline.status)) {

@@ -3,8 +3,10 @@ import type { ConversationTurnView } from '../../../src/session/conversation-rea
 import type { HttpClient } from '../api/http';
 import type { WsClient } from '../api/ws';
 import type { ConversationTurnProjection, TurnBillUserView } from '../api/session-types';
+import { turnStatusFromTimeline } from '../conversation-live-turn';
 
-type Presentation = Pick<ConversationTurnProjection, 'traceEvents' | 'executionTimeline' | 'artifacts' | 'turnBilling'>;
+type Presentation = Pick<ConversationTurnProjection, 'traceEvents' | 'executionTimeline' | 'artifacts' | 'turnBilling'>
+  & Partial<Pick<ConversationTurnProjection, 'status' | 'completedAt'>>;
 interface TaskResource {
   targetConversationId: string; turnId: string; taskId: string;
   timeline: ConversationTurnProjection['executionTimeline'];
@@ -72,7 +74,15 @@ export function useTurnPresentation(ws: WsClient, http: HttpClient, conversation
         if (turn.taskId) jobs.push(ws.query<TaskResource>(conversationId,
           { kind: 'get_task_view', conversationId, turnId: turn.id, taskId: turn.taskId }).then(task => {
           if (task.targetConversationId !== conversationId || task.turnId !== turn.id || task.taskId !== turn.taskId) return;
-          commit({ executionTimeline: task.timeline, artifacts: task.artifacts });
+          const projectedStatus = task.timeline ? turnStatusFromTimeline(task.timeline) : null;
+          commit({
+            executionTimeline: task.timeline,
+            artifacts: task.artifacts,
+            ...(projectedStatus ? {
+              status: projectedStatus,
+              completedAt: projectedStatus === 'running' ? null : turn.completedAt,
+            } : {}),
+          });
         }));
         if (turn.interactionKind !== 'system_command') jobs.push(ws.query<{ turnId: string; turnBill: TurnBillUserView }>(conversationId,
           { kind: 'get_query_bill_for_turn', turnId: turn.id }).then(result => {

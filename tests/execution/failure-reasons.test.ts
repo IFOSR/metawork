@@ -17,7 +17,7 @@ describe('describeAttemptFailure', () => {
 
     expect(describeAttemptFailure({
       errorDetail: 'refusing to import workspace source into itself: /x/workspace-store',
-    })).toContain('工作区');
+    })).toContain('Workspace');
 
     expect(describeAttemptFailure({
       failureCode: 'attempt_timeout',
@@ -27,5 +27,12 @@ describe('describeAttemptFailure', () => {
 
   it('returns null for unknown failures', () => {
     expect(describeAttemptFailure({ failureCode: 'other', errorDetail: 'mystery' })).toBeNull();
+  });
+
+  it('explains an interrupted upstream response stream and the safe next action', () => {
+    expect(describeAttemptFailure({
+      failureCode: 'upstream_stream_interrupted',
+      errorDetail: 'Upstream response stream was interrupted',
+    })).toContain('上游模型响应流');
   });
 });

@@ -58,6 +58,11 @@ export interface KernelFailure {
   provider?: KernelFailureProvider;
   /** Last step the Executor reached before failing, when the harness reports it. */
   step?: string;
+  /** Stable execution facts shared by Web, TUI and remote gateways. */
+  retryable?: boolean;
+  attemptStarted?: boolean;
+  externalSideEffect?: boolean | 'unknown';
+  userAction?: string;
 }
 
 export function kernelFailure(input: KernelFailure): KernelFailure {
@@ -70,6 +75,7 @@ export function kernelFailure(input: KernelFailure): KernelFailure {
     ...(input.actor ? { actor: sanitizedActor(input.actor) } : {}),
     ...(input.provider ? { provider: sanitizedProvider(input.provider) } : {}),
     ...(input.step ? { step: singleLine(input.step, 200) } : {}),
+    ...(input.userAction ? { userAction: singleLine(input.userAction, 320) } : {}),
   };
 }
 

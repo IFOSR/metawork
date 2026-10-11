@@ -235,6 +235,7 @@ export interface ConversationTurn {
   id: string;
   sessionId: string;
   userInput: string;
+  attachments?: ConversationAttachment[];
   interactionKind?: 'system_command' | 'ai_turn';
   status: ConversationTurnStatus;
   deliveryStatus?: ResultDeliveryStatus;
@@ -256,6 +257,16 @@ export interface ConversationTurn {
 export interface ConversationTurnProjection
   extends Omit<ConversationTurn, 'status'> {
   status: InteractionTraceStatus;
+}
+
+export interface ConversationAttachment {
+  attachmentId: string;
+  name: string;
+  mime: string;
+  mediaClass: 'image' | 'text' | 'document' | 'archive' | 'binary' | 'unknown';
+  size: number;
+  status: 'available' | 'unavailable';
+  createdAt?: string;
 }
 
 export interface WebSessionRecord {

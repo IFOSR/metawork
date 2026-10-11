@@ -2,10 +2,18 @@ import { isPermissionFailure, isRecoverableExecutorFailure } from '../executor/e
 
 export function isUnknownTaskBlocker(reason?: string): boolean {
   if (!reason) return false;
-  return /unknown_executor_failure|unknown requires explicit recovery|\bunknown\b|结果不确定|无法确认.*副作用|explicit recovery/i.test(reason);
+  return /unknown_executor_failure|unknown requires explicit recovery|\bunknown\b|结果不确定|无法确认.*副作用|automatic recovery cannot prove external effect safety|explicit recovery/i.test(reason);
 }
 
 export function formatBlockedTaskReason(reason: string): string {
+  if (/upstream_stream_interrupted|response stream (?:was )?interrupted/i.test(reason)) {
+    const upstreamDetail = /(?:upstream\s+)?response\s+stream\s+(?:was\s+)?interrupted/i.exec(reason)?.[0];
+    return [
+      'Executor 已启动，但上游模型响应流中断，未收到可用结果',
+      '系统无法确认上次请求是否产生外部影响，需要人工确认后恢复',
+      upstreamDetail ? `上游返回：${upstreamDetail}` : undefined,
+    ].filter(Boolean).join('；');
+  }
   if (isUnknownTaskBlocker(reason)) {
     return `上次执行结果不确定，需要先确认恢复安全性（${reason}）`;
   }

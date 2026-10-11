@@ -53,6 +53,7 @@ export function useWorkspaceController() {
   const [agentReadiness, setAgentReadiness] = useState<AgentReadiness[]>([]);
   const [pendingAttachments, setPendingAttachments] = useState<AttachmentMetadata[]>([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadingAttachments, setUploadingAttachments] = useState<Array<{ name: string; size: number }>>([]);
   const [previewState, setPreviewState] = useState<PreviewDrawerState>({ status: 'closed' });
   const [previewCollapsed, setPreviewCollapsed] = useState(false);
   const [previewMaximized, setPreviewMaximized] = useState(false);
@@ -747,6 +748,7 @@ export function useWorkspaceController() {
         break;
       }
       try {
+        setUploadingAttachments(current => [...current, { name: file.name, size: file.size }]);
         const metadata = await httpRef.current.uploadAttachment(
           uploadTarget,
           file.name,
@@ -760,6 +762,8 @@ export function useWorkspaceController() {
         if (browsedConversationRef.current === uploadTarget) setPendingAttachments(updated.attachments);
       } catch (error) {
         setUploadError(`上传 ${file.name} 失败：${(error as Error).message}`);
+      } finally {
+        setUploadingAttachments(current => current.filter(item => !(item.name === file.name && item.size === file.size)));
       }
     }
   };
@@ -914,6 +918,7 @@ export function useWorkspaceController() {
     draft, route, search, setSearch, settingsOpen,
     setSettingsOpen, workspaceCreatorOpen, setWorkspaceCreatorOpen, configurationRuntime, agentReadiness,
     pendingAttachments, handleRemoveAttachment, uploadError, previewState, setPreviewState,
+    uploadingAttachments,
     previewCollapsed, setPreviewCollapsed, previewMaximized, setPreviewMaximized, previewWidth,
     setPreviewWidth, executionDetail, setExecutionDetail, httpRef, observationClient,
     viewportMemory, openTrajectory, openBilling, handleSelectWorkspace, handleCreateWorkspace,

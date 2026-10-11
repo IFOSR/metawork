@@ -16,6 +16,7 @@ export function Composer({
   blockedReason,
   attachments,
   uploadError,
+  uploading = [],
   onDraftChange,
   onSend,
   onCancel,
@@ -28,6 +29,7 @@ export function Composer({
   blockedReason?: string | null;
   attachments: PendingAttachment[];
   uploadError?: string | null;
+  uploading?: Array<{ name: string; size: number }>;
   onDraftChange: (value: string) => void;
   onSend: (value: string, attachments: Array<{ attachmentId: string }>) => void;
   /** Stops the current Planner/Executor turn instead of queueing a command. */
@@ -124,7 +126,7 @@ export function Composer({
           placeholder={disabled ? '连接就绪并选择会话后即可输入' : '描述目标，MetaWork 会展示完整执行过程…（可拖入、粘贴或点击 📎 添加附件）'}
           rows={2}
         />
-        {(attachments.length > 0 || uploadError) && (
+        {(attachments.length > 0 || uploading.length > 0 || uploadError) && (
           <div className="attachment-strip">
             {attachments.map(entry => (
               <span className="attachment-chip" key={entry.metadata.attachmentId} title={`${entry.metadata.name} · ${entry.metadata.mime}`}>
@@ -136,6 +138,11 @@ export function Composer({
                 >
                   ✕
                 </button>
+              </span>
+            ))}
+            {uploading.map(file => (
+              <span className="attachment-chip attachment-chip-uploading" key={`uploading:${file.name}:${file.size}`}>
+                ⟳ {file.name} · 上传中
               </span>
             ))}
             {uploadError && <span className="attachment-error">{uploadError}</span>}

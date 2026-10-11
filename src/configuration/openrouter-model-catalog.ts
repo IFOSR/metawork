@@ -2,7 +2,10 @@ import type { ModelCapability, ModelPricingMetadata } from './types.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-export const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
+// System One decision models are not returned by OpenRouter's default
+// text-only catalogue. Include the decision modality so models such as
+// `nace-ai/drex-v1.5` can be used for routing-model completion as well.
+export const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models?output_modalities=text,decisions';
 export const OPENROUTER_EXCHANGE_RATE = 7 as const;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
@@ -37,6 +40,8 @@ export interface OpenRouterPublicFacts {
 
 export interface OpenRouterCatalogSnapshot {
   status: 'ready' | 'unavailable';
+  /** Cache compatibility marker; changes when the catalogue query changes. */
+  sourceUrl?: string;
   fetchedAt?: string;
   models: Record<string, OpenRouterModelMetadata>;
   error?: string;
@@ -99,7 +104,10 @@ function scoreOpenRouterModel(
   if (overlap === 0) return undefined;
   const coverage = overlap / Math.max(1, localSet.size);
   const precision = overlap / Math.max(1, new Set(candidateTokens).size);
-  const score = Math.round(52 + 30 * coverage + 12 * precision);
+  // Token overlap is only a suggestion. Keep it below the high-confidence
+  // threshold so generic fragments such as `v1` or `flash` cannot auto-bind a
+  // local model to an unrelated public model.
+  const score = Math.round(50 + 30 * coverage + 12 * precision);
   return score >= 58 ? { model, score, match: 'token-overlap' } : undefined;
 }
 
@@ -112,15 +120,35 @@ function normalizeModelKey(value: string): string {
 }
 
 function canonicalModelKey(value: string): string {
-  const segments = value.trim().toLowerCase().split('/');
+  const segments = value.trim().toLowerCase().split(/[\\/]/u);
   const last = segments.at(-1) ?? '';
-  return normalizeModelKey(last.replace(/:(?:free|batch|nitro|exact)$/u, ''));
+  return normalizeModelKey(stripLocalModelSuffixes(last));
+}
+
+/**
+ * Local OpenAI-compatible servers commonly expose a filesystem path and a
+ * quantization suffix as the model id. Those parts describe the deployment,
+ * not the public model identity, so remove them before matching against the
+ * OpenRouter catalogue.
+ */
+function stripLocalModelSuffixes(value: string): string {
+  let normalized = value
+    .replace(/\.(?:gguf|safetensors|bin| model)$/iu, '')
+    .replace(/:(?:free|batch|nitro|exact)$/u, '');
+  let previous = '';
+  while (normalized !== previous) {
+    previous = normalized;
+    normalized = normalized.replace(/[-_.](?:q\d+(?:[_-][a-z0-9]+)*|iq\d+(?:[_-][a-z0-9]+)*|(?:fp|bf|int)\d+(?:[_-][a-z0-9]+)*|awq|gptq|exl2)$/iu, '');
+  }
+  return normalized;
 }
 
 function modelTokens(value: string): string[] {
   return normalizeModelKey(value)
     .split('-')
-    .filter(token => token.length > 1 && !['openai', 'anthropic', 'google', 'meta', 'mistral'].includes(token));
+    .filter(token => token.length > 1
+      && !['openai', 'anthropic', 'google', 'meta', 'mistral', 'gguf', 'safetensors', 'bin'].includes(token)
+      && !/^v?\d+$/u.test(token));
 }
 
 interface OpenRouterCatalogRow {
@@ -341,6 +369,7 @@ export class OpenRouterModelCatalog {
       const parsed: unknown = JSON.parse(await readFile(cachePath, 'utf8'));
       if (parsed && typeof parsed === 'object'
         && (parsed as { status?: unknown }).status === 'ready'
+        && (parsed as { sourceUrl?: unknown }).sourceUrl === OPENROUTER_MODELS_URL
         && (parsed as { models?: unknown }).models
         && typeof (parsed as { models?: unknown }).models === 'object') {
         this.snapshot = parsed as OpenRouterCatalogSnapshot;
@@ -380,7 +409,10 @@ export class OpenRouterModelCatalog {
       if (Buffer.byteLength(body, 'utf8') > MAX_RESPONSE_BYTES) {
         return { status: 'unavailable', models: {}, error: 'OpenRouter response exceeds the size limit' };
       }
-      return parseOpenRouterCatalog(JSON.parse(body));
+      return {
+        ...parseOpenRouterCatalog(JSON.parse(body)),
+        sourceUrl: OPENROUTER_MODELS_URL,
+      };
     } catch (error) {
       return {
         status: 'unavailable',

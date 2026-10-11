@@ -3,7 +3,7 @@
 [Desktop 无模型安装与内部版本升级修复](plans/2026-10-08-desktop-model-free-installation.md)：
 无模型安装已实现；首次启动不要求填写模型信息。
 [Finder 更新进程修复](plans/2026-10-08-desktop-finder-update-lifecycle.md)
-已修正后台生命周期、内部包签名和更新进度提示；arm64 DMG 已发布到 GitHub v0.1.8。
+已修正后台生命周期、内部包签名和更新进度提示；arm64 DMG 已发布到 GitHub v0.1.14。
 
 MetaWork is the proprietary commercial product represented by this repository.
 AnyFusion references identify the separate open-source upstream, attributed
@@ -21,7 +21,7 @@ This directory contains both current technical documentation and historical plan
 
 - [官方账号服务运行与验收](current/official-account-operations.md)：huoshan 部署、管理入口、凭证停用、隐私与验收证据。
 
-- [Pi 随应用维护与可选执行工具接入方案](plans/2026-10-09-managed-pi-and-optional-tools-design.md)：v0.1.9 本地 arm64 DMG 与自动验收完成，待用户安装验证，尚未发布；Pi 随 MetaWork 维护，Codex 支持自动发现与路径配置，其缺失不阻断应用更新。
+- [Pi 随应用维护与可选执行工具接入方案](plans/2026-10-09-managed-pi-and-optional-tools-design.md)：v0.1.14 arm64 DMG 与自动验收完成并已发布；Pi 随 MetaWork 维护，Codex 支持自动发现与路径配置，其缺失不阻断应用更新。
 
 - [PDF 处理与执行卡住修复方案](plans/2026-10-06-pdf-processing-and-executor-stall-repair.md)：已完成原生 macOS arm64 实施与验收；补齐 DeepSeek Flash 视觉输入、系统 Pi 的 PDF 能力接入、持续无活动检测与真实进度展示，不限制正常长任务总时长。
 
@@ -47,6 +47,7 @@ This directory contains both current technical documentation and historical plan
 
 ## Releases
 
+- [MetaWork v0.1.14 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.14): current macOS arm64 Desktop DMG and signed Runtime/Planner archives.
 - [AnyFusion v1.2.0 Preview](releases/v1.2.0-preview.0.md): public preview highlights, architecture summary, deployment status, and known limitations.
 - [MetaWork v1.2.0 Preview 6](releases/v1.2.0-preview.6.md): historical preview release matrix and build notes.
 - [MetaWork v0.1.7 Internal Release](releases/v0.1.7.md): latest macOS arm64 internal release with host CLI discovery and compact readiness notices; Apple signing/notarization remain pending.
@@ -137,6 +138,7 @@ replacing those semantics.
 - [前端观察与多端统一控制](plans/2026-10-02-frontend-observation-implementation.md)：按 ADR-0043 实施有界读模型、快速切换、跨端同权与独立通知路由；代码仅在本地，尚未完成全部验收。
 
 - [配置生命周期、执行可观测性与准入可靠性方案](plans/2026-10-01-execution-observability-and-configuration-reliability-design.md)：待 Review。统一记录启用态配置校验、画像草稿与 revision 激活边界、Release Workspace 授权、完整 Trace 分页回放、Timeline 公共路由身份、Planner/Kernel 阶段展示和模型价格准入方案；当前尚未实施。
+- [统一智能体与模型路由、决策模型配置及执行错误可观测性设计](plans/2026-10-10-unified-routing-decision-model-and-execution-errors-design.md)：已实施，v0.1.14 已发布。统一定义 Planner/DAG、AgentClass 与 Model 的联合路由、Provider 化决策模型设置、Workspace 自包含检查、附件/截图消息展示，以及按阶段和稳定错误码呈现执行失败。
 - [Navigation performance architecture remediation](plans/2026-09-26-navigation-performance-architecture-remediation.md):
   indexed Workspace directory, Conversation history paging, physical enrichment
   batching, request convergence, segmented snapshot/journal maintenance and

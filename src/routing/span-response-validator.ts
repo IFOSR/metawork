@@ -1,11 +1,4 @@
-import {
-  SPAN_MODEL,
-  type SpanEvaluationRequest,
-  type SpanUsage,
-} from './span-routing-types.js';
-
-/** OpenRouter reports either the public free alias or a dated snapshot. */
-const SPAN_MODEL_VERSION = /^inception\/mercury-decide(?::free|-\d{8})?$/u;
+import { SPAN_MODEL, type SpanEvaluationRequest, type SpanUsage } from './span-routing-types.js';
 
 export type SpanResponseValidationResult =
   | {
@@ -31,7 +24,7 @@ export function validateSpanDecisionsResponse(input: {
   const response = asRecord(input.response);
   if (!response) return { ok: false, reason: 'span_invalid_response' };
   const model = response.model;
-  if (typeof model !== 'string' || !SPAN_MODEL_VERSION.test(model)) {
+  if (typeof model !== 'string' || !model.trim()) {
     return { ok: false, reason: 'span_invalid_response' };
   }
   const answers = asRecord(response.answers);
@@ -98,11 +91,13 @@ function parseUsage(value: unknown): SpanUsage | undefined {
   const record = asRecord(value);
   if (!record) return undefined;
   const usage: SpanUsage = {};
-  for (const [field, key] of [
-    ['inputTokens', 'inputTokens'],
-    ['outputTokens', 'outputTokens'],
-    ['cost', 'cost'],
+  for (const [fields, key] of [
+    [['inputTokens', 'input_tokens'], 'inputTokens'],
+    [['outputTokens', 'output_tokens'], 'outputTokens'],
+    [['cost'], 'cost'],
   ] as const) {
+    const field = fields.find(candidate => record[candidate] !== undefined);
+    if (!field) continue;
     const raw = record[field];
     if (raw === undefined) continue;
     if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0 || raw > 1_000_000_000) {

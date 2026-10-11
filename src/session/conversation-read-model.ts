@@ -56,6 +56,7 @@ export function projectConversationTurn(
     id: event.turnId, conversationId: event.conversationId, requestId: event.requestId,
     revision: 0, firstSequence: event.sequence, lastSequence: event.sequence,
     userInput: '', userInputRef: null, answer: '', answerRef: null,
+    attachments: [],
     resultId: null, certification: null, completeness: null, resultOffset: 0, resultPreviewOmitted: false,
     status: 'running', deliveryStatus: 'none', taskId: null,
     startedAt: event.occurredAt, completedAt: null, interactionKind: 'ai_turn',
@@ -65,6 +66,11 @@ export function projectConversationTurn(
   if (event.kind === 'final_answer' && typeof value.resultId === 'string' && turn.resultId && value.resultId !== turn.resultId) return previous;
   if (event.kind === 'turn_started') {
     if (typeof value.userInput === 'string') turn.userInput = conversationPreview(value.userInput);
+    if (Array.isArray(value.attachments)) {
+      turn.attachments = value.attachments
+        .filter(isConversationAttachment)
+        .map(attachment => ({ ...attachment }));
+    }
     if (value.interactionKind === 'system_command') turn.interactionKind = 'system_command';
   }
   if (event.kind === 'trace_delta') {
@@ -127,6 +133,26 @@ export function projectConversationTurn(
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function isConversationAttachment(value: unknown): value is {
+  attachmentId: string;
+  name: string;
+  mime: string;
+  mediaClass: 'image' | 'text' | 'document' | 'archive' | 'binary' | 'unknown';
+  size: number;
+  status: 'available' | 'unavailable';
+  createdAt?: string;
+} {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  return typeof item.attachmentId === 'string'
+    && typeof item.name === 'string'
+    && typeof item.mime === 'string'
+    && ['image', 'text', 'document', 'archive', 'binary', 'unknown'].includes(String(item.mediaClass))
+    && typeof item.size === 'number' && Number.isSafeInteger(item.size) && item.size >= 0
+    && (item.status === 'available' || item.status === 'unavailable')
+    && (item.createdAt === undefined || typeof item.createdAt === 'string');
 }
 
 function isTurnStatus(value: unknown): value is ConversationTurnView['status'] {

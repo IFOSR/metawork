@@ -119,7 +119,9 @@ const SubtaskSchema = z.object({
   dependencies: z.array(DependencySchema),
   contextRefs: z.array(ContextRefSchema).max(12),
   requiredCapabilities: z.array(z.enum(ROUTING_CAPABILITY_IDS)).min(1),
-  executorBindings: z.array(ExecutorBindingSchema).min(1).max(32),
+  // Planner may omit concrete bindings. Candidate Builder then enumerates all
+  // enabled AgentClasses that satisfy the declared capabilities.
+  executorBindings: z.array(ExecutorBindingSchema).max(32),
   deliveryKind: z.enum(DELIVERY_KIND_VALUES).describe(
     'edit: the subtask primarily delivers workspace/file changes; report: the subtask primarily delivers a report or answer. Both delivery kinds may create ordinary user-space files while executing.',
   ),

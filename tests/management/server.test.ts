@@ -1585,6 +1585,41 @@ describe('ManagementServer WebSocket authentication', () => {
     }
   });
 
+  it('reads manually supplied model information only through the authenticated settings API', async () => {
+    const port = await reservePort();
+    const calls: string[] = [];
+    const server = createManagementServer(port, {
+      configQuery: {
+        fetchManualModelInformation: async sourceUrl => {
+          calls.push(sourceUrl);
+          return { sourceUrl, title: 'Demo model', description: 'Supports tools.' };
+        },
+      },
+    });
+    await server.start();
+    try {
+      const url = `http://127.0.0.1:${port}/api/config/model-manual-information`;
+      expect((await fetch(url, { method: 'POST', body: JSON.stringify({ sourceUrl: 'https://example.com/model' }) })).status).toBe(401);
+      const headers = { authorization: 'Bearer manual-token', 'content-type': 'application/json' };
+      const response = await fetch(url, {
+        method: 'POST', headers,
+        body: JSON.stringify({ sourceUrl: ' https://example.com/model ' }),
+      });
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        sourceUrl: 'https://example.com/model', title: 'Demo model', description: 'Supports tools.',
+      });
+      expect(calls).toEqual(['https://example.com/model']);
+      const invalid = await fetch(url, {
+        method: 'POST', headers,
+        body: JSON.stringify({ sourceUrl: 'x'.repeat(2_001) }),
+      });
+      expect(invalid.status).toBe(400);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it('serves an Executor capability manual preview from the configuration query', async () => {
     const port = await reservePort();
     const server = createManagementServer(port, {

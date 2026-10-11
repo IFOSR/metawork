@@ -15,6 +15,7 @@ export const SPAN_OBSERVATION_POLICY_VERSION = 'span-routing-v1' as const;
  */
 export const SPAN_QUESTION_VERSION = 'span-fit-v5' as const;
 export const SPAN_MODEL = 'inception/mercury-decide:free' as const;
+/** Canonical response contract for user-selected Chat Completions models. */
 
 /** Per-request and per-proposal limits (design §6). */
 export const SPAN_MAX_CANDIDATES_PER_SUBTASK = 32;
@@ -87,7 +88,7 @@ export interface SpanRoutingObservation {
   schemaVersion: typeof SPAN_OBSERVATION_SCHEMA_VERSION;
   policyVersion: typeof SPAN_OBSERVATION_POLICY_VERSION;
   questionVersion: typeof SPAN_QUESTION_VERSION;
-  model: typeof SPAN_MODEL;
+  model: string;
   eventId: string;
   proposalFingerprint: string;
   configurationRevision: string;
@@ -115,7 +116,8 @@ export interface SpanCandidateBinding {
 
 /** Fully bounded Span/System One request plus its question id mapping. */
 export interface SpanEvaluationRequest {
-  model: typeof SPAN_MODEL;
+  /** Provider model identifier selected for this routing decision. */
+  model: string;
   state: Record<string, unknown>;
   questions: Record<string, SpanChoiceQuestion>;
   candidates: SpanCandidateBinding[];

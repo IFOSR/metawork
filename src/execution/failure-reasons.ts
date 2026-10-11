@@ -17,13 +17,16 @@ export function describeAttemptFailure(input: {
     return '工作区清理时遇到文件系统时序问题；已在新版本中增加重试，请重试任务。';
   }
   if (detail.includes('subdirectory of self') || detail.includes('into itself')) {
-    return '任务派发缺少工作区信息（历史缺陷）；请取消当前任务后重新发送请求。';
+    return 'Workspace 包含 MetaWork 运行目录，系统在 Executor 启动前停止了任务；请选择具体项目目录后重新提交。';
   }
   if (detail.includes('has no workspace source')) {
-    return '任务派发缺少工作区信息；请取消当前任务后重新发送请求。';
+    return '任务没有有效 Workspace 绑定，Executor 尚未启动；请选择具体项目目录后重新提交。';
   }
   if (input.failureCode === 'attempt_timeout' || detail.includes('timeout')) {
     return '执行超时；可在配置中调大 attempt 超时后重试。';
+  }
+  if (input.failureCode === 'upstream_stream_interrupted' || /response stream (?:was )?interrupted/i.test(detail)) {
+    return '上游模型响应流在 Executor 已启动后中断，未产生可用结果；系统会按恢复策略重试。若仍失败，请检查网络、Provider 服务状态和模型额度。';
   }
   if (detail.includes('401') || detail.includes('Unauthorized')) {
     return '模型服务拒绝了 API Key；请检查 Provider 密钥是否有效。';

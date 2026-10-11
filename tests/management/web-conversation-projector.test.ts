@@ -250,6 +250,24 @@ describe('WebConversationProjector', () => {
     expect(persisted).toEqual([]);
   });
 
+  it('reopens a blocked Turn when the durable Task resumes through capacity recovery', async () => {
+    const { projector, persisted } = makeProjector();
+    projector.beginTurn({ userInput: 'Run the task', outputFrom: 0 });
+    await projector.applyTrace(makeTrace('blocked', [queryEvent, kernelEvent]));
+
+    await projector.applyTimeline({
+      ...timeline,
+      status: 'running',
+    });
+
+    expect(projector.getSnapshot()).toMatchObject({
+      status: 'running',
+      completedAt: null,
+      executionTimeline: { status: 'running' },
+    });
+    expect(persisted).toEqual([]);
+  });
+
   it('preserves a safe visible diagnostic when submission fails', async () => {
     const { projector, persisted } = makeProjector();
     projector.beginTurn({ userInput: 'Fail safely', outputFrom: 0 });

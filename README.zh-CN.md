@@ -58,21 +58,18 @@ AnyFusion 标识。
 
 ## Release
 
-[最新稳定版](https://github.com/IFOSR/metawork/releases/latest)是当前可安装版本的
-统一发布入口。源码版本领先不代表已发布。
+当前发布版本是 **v0.1.14**，包含统一智能路由与决策模型配置、模型信息手动粘贴
+补足、附件和截图可见展示，以及更清晰的 Executor 错误、阻塞和恢复提示。Release
+同时提供压缩后的 macOS Apple Silicon Desktop DMG，以及签名的 arm64 Runtime 和
+Planner 归档。
 
-本地开发中的 **v0.1.9** 是尚未发布的 macOS arm64 验收版：Pi 随 MetaWork
-维护，Codex 支持可选路径配置，外部工具缺失不再导致应用升级回滚。
-实施与验证进展见[方案记录](docs/plans/2026-10-09-managed-pi-and-optional-tools-design.md)。
+- [下载 macOS arm64 DMG](https://github.com/IFOSR/metawork/releases/download/v0.1.14/MetaWork-darwin-arm64.dmg)
+- [查看 v0.1.14 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.14)
+- [下载校验文件和 Runtime/Planner 归档](https://github.com/IFOSR/metawork/releases/tag/v0.1.14)
 
-当前内部发布版本是 **v0.1.8**，包含 Server/Web/TUI 运行时和供公司内部使用的
-Apple Silicon Desktop DMG。该 Desktop DMG **未使用 Apple Developer ID 签名且未公证**，专门用于公司内部
-macOS 设备。[Release 页面](https://github.com/IFOSR/metawork/releases/latest)
-是实际下载文件和校验值的唯一来源。
-
-当前内部发布只提供 macOS Apple Silicon（`arm64`）DMG，没有 Intel（`x64`）Desktop
-包；Intel 用户请使用 Server/Web/TUI 安装方式，或等待 x64 构建。暂不提供
-Linux/Windows Desktop 安装包。
+Desktop DMG 约 277 MB，使用内部 ad-hoc 签名，未使用 Apple Developer ID 公证，
+当前只支持 macOS Apple Silicon（`arm64`）。暂不提供 Intel（`x64`）、Linux 和
+Windows Desktop 包；这些平台可在有匹配 Runtime 归档时使用 Server/Web/TUI 安装方式。
 
 ## 安装方式
 
@@ -92,7 +89,7 @@ Web 已包含在 Server 安装包中，不需要安装 Desktop。
 1. 在 **苹果菜单 → 关于本机** 确认 Mac 使用 Apple Silicon（M 系列）。
 2. 如果尚未安装 Apple Command Line Tools，先在终端执行 `xcode-select --install`，
    按 macOS 提示完成安装。内部包使用系统 Git wrapper 执行仓库操作。
-3. 从最新 Release 下载 [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg)，
+3. 从 v0.1.14 Release 下载 [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/download/v0.1.14/MetaWork-darwin-arm64.dmg)，
    打开 DMG，把 **MetaWork.app** 拖入“应用程序”。
 4. 由于这是未公证内部 DMG，首次启动可能被 macOS 拦截。在 Finder 中右键
    **MetaWork.app**，选择“打开”，再确认“打开”。如果仍被拦截，进入

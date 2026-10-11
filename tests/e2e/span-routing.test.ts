@@ -5,6 +5,7 @@ import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
 import { DurableKernelWorkflow } from '../../src/kernel/kernel-workflow.js';
 import {
   ControlKernel,
+  type KernelDecision,
   type KernelEvent,
   type KernelSnapshot,
 } from '../../src/kernel/control-kernel.js';
@@ -154,6 +155,49 @@ function seedConfigurationRevision(db: Database.Database): void {
 }
 
 describe('Span routing end-to-end (mock advisor + real SQLite)', () => {
+  it('carries a user-selected System One model through observation, Kernel, and Runtime', async () => {
+    const selectedModel = 'nace-ai/drex-v1.5';
+    const configuration = structuredClone(kernelConfiguration);
+    configuration.spanRouting = { enabled: true, model: selectedModel, timeoutMs: 3_000 };
+    const selectedRuntime = structuredClone(runtimeConfiguration);
+    selectedRuntime.routing.span.model = selectedModel;
+    const evaluator = advisingEvaluator('pi-general');
+    const enriched = await attachSpanRoutingObservation({
+      event: planEvent('event-selected-system-one'),
+      configuration,
+      executorStatuses: [],
+      runtimeConfiguration: selectedRuntime,
+      evaluator,
+    });
+
+    expect(evaluator.evaluate).toHaveBeenCalledTimes(1);
+    expect(evaluator.evaluate.mock.calls[0]?.[0].requests[0]?.request.model).toBe(selectedModel);
+    expect(enriched.spanRouting?.model).toBe(selectedModel);
+
+    const db = new Database(':memory:'); runMigrations(db); seedConfigurationRevision(db);
+    try {
+      const applied: KernelDecision[] = [];
+      const store = new KernelWorkflowRepo(db);
+      const admission = { ...snapshot, kernelConfiguration: configuration };
+      const workflow = new DurableKernelWorkflow({
+        kernel: new ControlKernel(),
+        buildSnapshot: () => admission,
+        store,
+        runtime: { apply: async decision => { applied.push(decision); return null; } },
+        clock: { now: () => '2026-09-27T00:00:00.000Z' },
+      });
+      await workflow.submit(enriched);
+      const decision = applied[0];
+      expect(decision?.action.type).toBe('authorize_task_plan');
+      if (decision?.action.type === 'authorize_task_plan') {
+        expect(decision.action.authorizedBindingsBySubtask.subtask_execute?.map(binding => binding.agentClassRef))
+          .toEqual(['pi-general', 'codex-fast']);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
   it.each([
     ['simple', 'Fix a spelling mistake in a comment', false],
     ['complex', 'Design and implement a concurrent parser with recovery and property tests', false],

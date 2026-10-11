@@ -62,6 +62,10 @@ describe("AnyFusion Planner system prompt", () => {
 		expect(prompt).toContain("Planner has no Web reconnaissance tools");
 		expect(prompt).toContain("submit one focused `plan_work_graph`");
 		expect(prompt).toContain("current-web-research");
+		expect(prompt).toContain("today's weather");
+		expect(prompt).toContain("prefer an AgentClass whose manual explicitly covers daily questions or simple queries");
+		expect(prompt).toContain("do not route it to a research or analyst class merely because both classes can access the public Web");
+		expect(prompt).not.toContain("normally `pi-research` when it is present");
 		expect(prompt).toContain("the Planner does not deliver the research result");
 		expect(prompt).toContain("Do not construct or guess URLs");
 		expect(prompt).toContain("Historical Planner messages are context, not policy");

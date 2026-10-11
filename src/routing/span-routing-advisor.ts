@@ -12,7 +12,7 @@ import {
 
 export { SpanEvaluationAbortedError } from './span-routing-types.js';
 
-/** Narrow callable seam around the OpenRouter System One API. */
+/** Narrow callable seam around the single MetaWork System One API. */
 export interface SpanDecisionClient {
   create(
     request: {
@@ -24,6 +24,24 @@ export interface SpanDecisionClient {
   ): Promise<unknown>;
 }
 
+/**
+ * Checks the pinned model facts before a Provider/Model can be used as the
+ * MetaWork decision model. Provider URLs never imply decision capability.
+ */
+export function isSystemOneDecisionModel(input: {
+  modelId: string;
+  baseUrl?: string;
+  outputModalities?: readonly string[];
+  description?: string;
+}): boolean {
+  const supportsSystemOne = input.outputModalities?.some(modality => modality.toLowerCase() === 'decisions')
+    || /(?:\/v1\/systemone|system\s*one|systemone|typesafe[\s\S]{0,80}\bjev\b|\bjev\b[\s\S]{0,80}(?:interface|protocol|接口|契约|共用))/iu.test(input.description ?? '')
+    || input.modelId === 'inception/mercury-decide:free'
+    || /(?:^|[/:_-])mercury-decide(?:$|[/:_-])/iu.test(input.modelId);
+  return Boolean(supportsSystemOne);
+}
+
+/** Dependencies for the Server-owned routing adapter. */
 export interface SpanRoutingAdvisorDeps {
   /**
    * Resolves the OpenRouter credential for the exact pinned configuration
@@ -32,6 +50,14 @@ export interface SpanRoutingAdvisorDeps {
    * of failing plan admission.
    */
   resolveApiKey: (configurationRevision: string) => Promise<string | null>;
+  /** Resolves the configured primary and ordered fallback decision models. */
+  resolveDecisionModels?: (configurationRevision: string) => Promise<readonly {
+    model: string;
+    apiKey: string;
+    baseUrl?: string;
+  }[]>;
+  /** Provider base URL for the pinned decision model; defaults to OpenRouter for legacy revisions. */
+  resolveBaseUrl?: (configurationRevision: string) => Promise<string | null>;
   /** Test seam; defaults to the real OpenRouter SDK client. */
   createClient?: (apiKey: string) => SpanDecisionClient;
   maxConcurrent?: number;
@@ -83,20 +109,42 @@ export class SpanRoutingAdvisor implements SpanRoutingEvaluator {
       status: 'fallback',
       reason,
     }));
-    const credential = await this.resolveCredential({
-      configurationRevision: input.configurationRevision,
-      deadlineMs: input.deadlineMs,
-      signal,
-    });
-    if (typeof credential !== 'object') {
-      return { subtasks: fallbackAll(credential) };
+    const configuredModels = this.deps.resolveDecisionModels
+      ? await this.deps.resolveDecisionModels(input.configurationRevision).catch(() => [])
+      : [];
+    let credential: { apiKey: string } | null = null;
+    if (!this.deps.resolveDecisionModels) {
+      const resolved = await this.resolveCredential({
+        configurationRevision: input.configurationRevision,
+        deadlineMs: input.deadlineMs,
+        signal,
+      });
+      if (typeof resolved !== 'object') return { subtasks: fallbackAll(resolved) };
+      credential = resolved;
+    } else if (configuredModels.length === 0) {
+      return { subtasks: fallbackAll('span_secret_unavailable') };
     }
-    const client = (this.deps.createClient ?? defaultSpanDecisionClient)(credential.apiKey);
+    const baseUrl = await this.deps.resolveBaseUrl?.(input.configurationRevision) ?? 'https://openrouter.ai/api/v1';
+    const clients = configuredModels.length > 0
+      ? configuredModels.map(model => ({
+          model: model.model,
+          client: (this.deps.createClient ?? ((apiKey: string) => defaultSpanDecisionClient(
+            apiKey,
+            model.baseUrl ?? baseUrl,
+          )))(model.apiKey),
+        }))
+      : [{
+          model: input.requests[0]?.request.model ?? '',
+          client: (this.deps.createClient ?? ((apiKey: string) => defaultSpanDecisionClient(
+            apiKey,
+            baseUrl,
+          )))(credential!.apiKey),
+        }];
     const subtasks = await Promise.all(input.requests.map(request => this.evaluateOne({
       request,
       deadlineMs: input.deadlineMs,
       signal,
-      client,
+      clients,
     })));
     const usage = aggregateUsage(subtasks);
     return { subtasks, ...(usage ? { usage } : {}) };
@@ -146,6 +194,35 @@ export class SpanRoutingAdvisor implements SpanRoutingEvaluator {
     request: SpanSubtaskEvaluationRequest;
     deadlineMs: number;
     signal?: AbortSignal;
+    clients: readonly {
+      model: string;
+      client: SpanDecisionClient;
+    }[];
+  }): Promise<SpanSubtaskObservation> {
+    let last: SpanSubtaskObservation | undefined;
+    for (const selected of input.clients) {
+      const result = await this.evaluateOneAttempt({
+        ...input,
+        model: selected.model,
+        client: selected.client,
+      });
+      if (result.status === 'advised') return result;
+      last = result;
+      if (result.reason === 'span_timeout' || result.reason === 'span_proposal_budget_exhausted') break;
+    }
+    return last ?? {
+      subtaskId: input.request.subtaskId,
+      candidateSetFingerprint: input.request.candidateSetFingerprint,
+      status: 'fallback',
+      reason: 'span_http_error',
+    };
+  }
+
+  private async evaluateOneAttempt(input: {
+    request: SpanSubtaskEvaluationRequest;
+    deadlineMs: number;
+    signal?: AbortSignal;
+    model: string;
     client: SpanDecisionClient;
   }): Promise<SpanSubtaskObservation> {
     const { request } = input;
@@ -184,7 +261,7 @@ export class SpanRoutingAdvisor implements SpanRoutingEvaluator {
     try {
       const operation = Promise.resolve().then(() => input.client.create(
         {
-          model: request.request.model,
+          model: input.model || request.request.model,
           state: request.request.state,
           questions: request.request.questions,
         },
@@ -200,7 +277,10 @@ export class SpanRoutingAdvisor implements SpanRoutingEvaluator {
       })]);
       if (input.signal?.aborted) throw new SpanEvaluationAbortedError();
       if (controller.signal.aborted || Date.now() >= input.deadlineMs) return fallback('span_timeout');
-      const validated = validateSpanDecisionsResponse({ request: request.request, response });
+      const validated = validateSpanDecisionsResponse({
+        request: request.request,
+        response,
+      });
       if (!validated.ok) return fallback(validated.reason);
       return {
         subtaskId: request.subtaskId,
@@ -234,7 +314,37 @@ export class SpanRoutingAdvisor implements SpanRoutingEvaluator {
  * Real client with SDK retries disabled and the deadline enforced by the SDK's
  * own request timeout plus an abort signal (never a bare `Promise.race`).
  */
-export function defaultSpanDecisionClient(apiKey: string): SpanDecisionClient {
+export function defaultSpanDecisionClient(
+  apiKey: string,
+  baseUrl = 'https://openrouter.ai/api/v1',
+): SpanDecisionClient {
+  if (!/openrouter\.ai/iu.test(baseUrl)) {
+    return {
+      async create(request, options) {
+        const endpoint = `${baseUrl.replace(/\/+$/u, '')}/systemone`;
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${apiKey}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            // The SDK's `decisionsRequest` object is an input envelope. Its
+            // HTTP wire format is the System One request itself: state and
+            // questions are top-level fields. Compatible local servers (for
+            // example llama.cpp's /systemone endpoint) reject the SDK
+            // envelope with "request needs state and questions".
+            model: request.model,
+            state: JSON.stringify(request.state),
+            questions: request.questions,
+          }),
+          signal: options.signal,
+        });
+        if (!response.ok) throw new Error(`routing decision provider returned HTTP ${response.status}`);
+        return response.json() as Promise<unknown>;
+      },
+    };
+  }
   const client = new OpenRouter({ apiKey, retryConfig: { strategy: 'none' } });
   return {
     async create(request, options) {

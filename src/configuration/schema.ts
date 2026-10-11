@@ -537,7 +537,10 @@ const GatewayConfigSchema = z.object({
 const RoutingConfigurationSchema = z.object({
   span: z.object({
     enabled: z.boolean(),
-    model: z.literal(SPAN_ROUTING_MODEL),
+    model: z.string().trim().min(1).max(200),
+    providerRef: ReferenceIdSchema.optional(),
+    modelRef: ReferenceIdSchema.optional(),
+    fallbackModelRefs: uniqueArray(ReferenceIdSchema, 'fallback model', 8).optional(),
     // Server-owned, non-Provider reference. Pinning the literal here stops a
     // hand-edited revision from pointing the advisor at another Provider's
     // credential; only Span activation writes this exact reference.

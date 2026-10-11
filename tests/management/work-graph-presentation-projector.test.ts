@@ -139,9 +139,14 @@ describe('WorkGraphPresentationProjector', () => {
         spanRouting: {
           applied: true,
           reason: null,
+          decisionModel: {
+            providerDisplayName: 'OpenAI',
+            modelDisplayName: 'gpt-decision',
+            modelId: 'gpt-decision',
+          },
           candidates: [
-            { providerDisplayName: 'OpenAI', modelDisplayName: 'gpt-coding', probability: 0.9 },
-            { providerDisplayName: 'OpenAI', modelDisplayName: 'gpt-slow', probability: 0.2 },
+            { providerDisplayName: 'OpenAI', modelDisplayName: 'gpt-coding', selected: true, probability: 0.9 },
+            { providerDisplayName: 'OpenAI', modelDisplayName: 'gpt-slow', selected: false, probability: 0.2 },
           ],
         },
       }],
@@ -181,6 +186,7 @@ function configuration(): ConfigurationSnapshot {
       schemaVersion: 2,
       providers: {
         openai: {
+          displayName: 'OpenAI',
           protocol: 'openai-compatible',
           baseUrl: 'https://api.openai.com/v1',
           apiKeyRef: 'file-secret:anyfusion/openai',
@@ -203,6 +209,13 @@ function configuration(): ConfigurationSnapshot {
           reasoning: 'high',
           enabled: true,
         },
+        'decision-model': {
+          providerRef: 'openai',
+          modelId: 'gpt-decision',
+          capabilities: ['structured-output'],
+          reasoning: 'high',
+          enabled: true,
+        },
       },
       harnesses: {
         'codex-harness': {
@@ -221,6 +234,15 @@ function configuration(): ConfigurationSnapshot {
       permissionProfiles: {},
       runtimePolicy: {},
       gateway: {},
+      routing: {
+        span: {
+          enabled: true,
+          model: 'gpt-decision',
+          providerRef: 'openai',
+          modelRef: 'decision-model',
+          timeoutMs: 1_000,
+        },
+      },
     },
   };
 }

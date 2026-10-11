@@ -77,4 +77,112 @@ describe('Conversation turn failure passthrough', () => {
 
     expect(html).not.toContain('unexpected status 403 Forbidden');
   });
+
+  it('shows the execution stage and bounded recovery facts for an interrupted upstream stream', () => {
+    const turn = {
+      ...blockedTurn(),
+      traceEvents: [{
+        id: 'trace_stream_interrupted',
+        sequence: 3,
+        occurredAt: '2026-09-18T07:50:20.000Z',
+        phase: 'execution' as const,
+        actor: 'executor' as const,
+        kind: 'executor_result_observed',
+        status: 'failed' as const,
+        title: 'Executor attempt settled',
+        summary: 'Executor failed; Kernel will decide recovery or retry.',
+        details: {
+          failureCode: 'upstream_stream_interrupted',
+          failureSummary: 'Upstream response stream was interrupted',
+          failureLabel: '上游模型响应流中断，未收到可用结果',
+          failureStage: 'attempt',
+          failureRetryable: true,
+          attemptStarted: true,
+          externalSideEffect: 'unknown',
+          userAction: '系统会自动重试一次',
+        },
+      }],
+    };
+    const html = renderToStaticMarkup(createElement(ConversationTurnView, { turn }));
+
+    expect(html).toContain('上游模型响应流中断');
+    expect(html).toContain('阶段：Executor 调用');
+    expect(html).toContain('恢复：可自动重试');
+    expect(html).toContain('Executor：已启动');
+    expect(html).toContain('副作用：未知');
+    expect(html).toContain('系统会自动重试一次');
+  });
+
+  it('infers the same diagnosis for a historical receipt without new failure fields', () => {
+    const turn = {
+      ...blockedTurn(),
+      traceEvents: [{
+        id: 'trace_historical_stream_interrupted',
+        sequence: 3,
+        occurredAt: '2026-09-18T07:50:20.000Z',
+        phase: 'execution' as const,
+        actor: 'executor' as const,
+        kind: 'executor_result_observed',
+        status: 'failed' as const,
+        title: 'Executor attempt settled',
+        summary: 'Executor failed; Kernel will decide recovery or retry.',
+        details: {
+          failureCode: 'unknown_executor_failure',
+          failureSummary: 'Upstream response stream was interrupted',
+        },
+      }],
+    };
+    const html = renderToStaticMarkup(createElement(ConversationTurnView, { turn }));
+
+    expect(html).toContain('上游模型响应流中断，未收到可用结果');
+    expect(html).toContain('阶段：Executor 调用');
+    expect(html).toContain('恢复：可自动重试');
+  });
+
+  it('labels a retry wake as waiting for automatic retry instead of a manual block', () => {
+    const turn = {
+      ...blockedTurn(),
+      traceEvents: [{
+        id: 'trace_waiting_retry',
+        sequence: 3,
+        occurredAt: '2026-09-18T07:50:20.000Z',
+        phase: 'verification' as const,
+        actor: 'kernel' as const,
+        kind: 'execution_waiting_retry',
+        status: 'blocked' as const,
+        title: '等待自动重试',
+        summary: '上游执行暂时不可用，系统将在稍后自动重试。',
+        details: {},
+      }],
+    };
+    const html = renderToStaticMarkup(createElement(ConversationTurnView, { turn }));
+
+    expect(html).toContain('等待自动重试');
+  });
+
+  it('shows a recovery notice after automatic capacity recovery', () => {
+    const turn = {
+      ...blockedTurn(),
+      status: 'running' as const,
+      completedAt: null,
+      traceEvents: [
+        ...blockedTurn().traceEvents,
+        {
+          id: 'trace_resumed',
+          sequence: 3,
+          occurredAt: '2026-09-18T07:51:00.000Z',
+          phase: 'execution' as const,
+          actor: 'kernel' as const,
+          kind: 'execution_resumed',
+          status: 'running' as const,
+          title: 'Task resumed execution',
+          summary: '容量已恢复，已恢复分析师执行。',
+          details: { taskId: 'task_1' },
+        },
+      ],
+    };
+    const html = renderToStaticMarkup(createElement(ConversationTurnView, { turn }));
+
+    expect(html).toContain('已恢复执行');
+  });
 });

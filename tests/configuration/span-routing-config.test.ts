@@ -152,7 +152,7 @@ describe('Span routing configuration schema', () => {
 
   it('rejects an invalid Span model, timeout, and credential reference', () => {
     for (const span of [
-      { enabled: true, model: 'openai/gpt-4o', timeoutMs: 3_000 },
+      { enabled: true, model: '', timeoutMs: 3_000 },
       { enabled: true, model: 'inception/mercury-decide:free', timeoutMs: 100 },
       { enabled: true, model: 'inception/mercury-decide:free', timeoutMs: 60_000 },
       { enabled: true, model: 'inception/mercury-decide:free', apiKeyRef: 'plaintext-key' },

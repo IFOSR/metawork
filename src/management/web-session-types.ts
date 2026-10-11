@@ -70,6 +70,8 @@ export interface ConversationTurn {
   id: string;
   sessionId: string;
   userInput: string;
+  /** User supplied resources attached to this turn; safe metadata only. */
+  attachments?: ConversationAttachment[];
   interactionKind?: 'system_command' | 'ai_turn';
   status: ConversationTurnStatus;
   /** Optional for legacy records; absent means no result delivery is pending. */
@@ -92,6 +94,16 @@ export interface ConversationTurn {
    * 无金额时携带稳定诊断。由 enrichTurn 按持久事实重新投影，不信任历史存储。
    */
   turnBilling?: TurnBillUserView | null;
+}
+
+export interface ConversationAttachment {
+  attachmentId: string;
+  name: string;
+  mime: string;
+  mediaClass: 'image' | 'text' | 'document' | 'archive' | 'binary' | 'unknown';
+  size: number;
+  status: 'available' | 'unavailable';
+  createdAt?: string;
 }
 
 /** 账单页列表行：Server 投影 + 会话目录联合出的展示模型。 */

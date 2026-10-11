@@ -2013,7 +2013,18 @@ function resolveAuthorizedBindings(
       audit: RoutingResolutionAudit;
     }> = [];
     routing[subtask.id] = [];
-    for (const [bindingIndex, proposed] of subtask.executorBindings.entries()) {
+    const proposedBindings = subtask.executorBindings.length > 0
+      ? subtask.executorBindings
+      : Object.entries(configuration.agentClasses)
+        .filter(([, agentClass]) => agentClass.enabled && agentClass.kind === 'executor')
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([agentClassRef, agentClass]) => ({
+          agentClassRef,
+          modelSelection: agentClass.modelPolicy.mode === 'fixed'
+            ? { mode: 'fixed-by-agent-class' as const }
+            : { mode: 'agent-class-default' as const },
+        }));
+    for (const [bindingIndex, proposed] of proposedBindings.entries()) {
       const agentClass = configuration.agentClasses[proposed.agentClassRef];
       if (!agentClass || !agentClass.enabled || agentClass.kind !== 'executor') {
         errors.push(`subtask ${subtask.id} AgentClass is unavailable: ${proposed.agentClassRef}`);
@@ -2133,6 +2144,7 @@ function bindingsForProposalSubtask(
   // Preserve the authorized order (which may reflect a validated Span
   // observation). Re-sorting by Planner order here would silently discard it.
   const allowed = new Set(subtask.executorBindings.map(binding => binding.agentClassRef));
+  if (allowed.size === 0) return [...bindings];
   return bindings.filter(binding => allowed.has(binding.agentClassRef));
 }
 
@@ -2167,7 +2179,7 @@ function resolveSubtaskSpanProbabilities(input: {
     observation.schemaVersion !== SPAN_OBSERVATION_SCHEMA_VERSION
     || observation.policyVersion !== SPAN_OBSERVATION_POLICY_VERSION
     || observation.questionVersion !== SPAN_QUESTION_VERSION
-    || observation.model !== SPAN_MODEL
+    || observation.model !== (input.configuration.spanRouting?.model ?? SPAN_MODEL)
     || observation.eventId !== event.id
     || observation.configurationRevision !== event.configurationRevision
     || observation.generationId !== event.generationId

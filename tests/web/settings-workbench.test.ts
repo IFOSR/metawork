@@ -457,6 +457,9 @@ describe('Settings workbench model semantics', () => {
     expect(panel).toContain('已配置');
     expect(panel).toContain('更新 API Key');
     expect(panel).toContain('displayName: provider.displayName.trim()');
+    expect(panel).toContain('都不是');
+    expect(panel).toContain('manualModelInformationOpen');
+    expect(panel).toContain('读取链接并应用');
     expect(panel).not.toContain('新增 Provider');
     expect(panel).not.toContain('自定义 Provider');
     expect(panel).not.toContain('SecretStore');

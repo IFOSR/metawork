@@ -4,6 +4,19 @@ import { ArtifactAwareMarkdownContent } from './ArtifactAwareMarkdownContent';
 import { ArtifactLink } from './ArtifactLink';
 import { TurnBillCard } from './TurnBillCard';
 
+function formatAttachmentSize(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function attachmentIcon(mediaClass: string): string {
+  if (mediaClass === 'image') return '🖼';
+  if (mediaClass === 'document') return '▤';
+  if (mediaClass === 'archive') return '🗜';
+  return '📄';
+}
+
 function executionStatusLabel(status: ConversationTurnProjection['status']): string {
   if (status === 'running') return '执行中';
   if (status === 'blocked') return '已阻塞';
@@ -28,6 +41,22 @@ interface TurnFailureFacts {
   label?: string;
   step?: string;
   provider?: string;
+  stage?: string;
+  retryable?: boolean;
+  attemptStarted?: boolean;
+  externalSideEffect?: boolean | 'unknown';
+  userAction?: string;
+}
+
+function failureStageLabel(stage?: string): string | undefined {
+  if (!stage) return undefined;
+  const labels: Record<string, string> = {
+    attempt: 'Executor 调用',
+    workspace_preflight: 'Workspace 预检',
+    dispatch: '任务派发',
+    completion: '结果校验',
+  };
+  return labels[stage] ?? stage;
 }
 
 /**
@@ -38,12 +67,31 @@ function turnFailureFacts(turn: ConversationTurnProjection): TurnFailureFacts | 
   for (const event of [...turn.traceEvents].reverse()) {
     const details = event.details as Record<string, unknown> | undefined;
     if (!details || typeof details.failureSummary !== 'string') continue;
+    const summary = details.failureSummary;
+    const interruptedStream = /(?:upstream\s+)?response\s+stream\s+(?:was\s+)?interrupted/i.test(summary);
+    const storedCode = typeof details.failureCode === 'string' ? details.failureCode : undefined;
     const provider = details.failureProvider as { httpStatus?: unknown; requestId?: unknown } | undefined;
     return {
-      ...(typeof details.failureCode === 'string' ? { code: details.failureCode } : {}),
-      summary: details.failureSummary,
-      ...(typeof details.failureLabel === 'string' ? { label: details.failureLabel } : {}),
+      ...(storedCode
+        ? { code: interruptedStream && storedCode === 'unknown_executor_failure' ? 'upstream_stream_interrupted' : storedCode }
+        : interruptedStream ? { code: 'upstream_stream_interrupted' } : {}),
+      summary,
+      ...(typeof details.failureLabel === 'string'
+        ? { label: details.failureLabel }
+        : interruptedStream
+          ? { label: '上游模型响应流中断，未收到可用结果' }
+          : {}),
       ...(typeof details.failureStep === 'string' ? { step: details.failureStep } : {}),
+      ...(typeof details.failureStage === 'string' ? { stage: details.failureStage } : interruptedStream ? { stage: 'attempt' } : {}),
+      ...(typeof details.failureRetryable === 'boolean' ? { retryable: details.failureRetryable } : interruptedStream ? { retryable: true } : {}),
+      ...(typeof details.attemptStarted === 'boolean' ? { attemptStarted: details.attemptStarted } : interruptedStream ? { attemptStarted: true } : {}),
+      ...(details.externalSideEffect === true || details.externalSideEffect === false || details.externalSideEffect === 'unknown'
+        ? { externalSideEffect: details.externalSideEffect } : interruptedStream ? { externalSideEffect: 'unknown' } : {}),
+      ...(typeof details.userAction === 'string'
+        ? { userAction: details.userAction }
+        : interruptedStream
+          ? { userAction: '系统会自动重试一次；若仍失败，请检查网络、Provider 服务状态和模型额度后再恢复任务。' }
+          : {}),
       ...(provider?.httpStatus !== undefined ? { provider: `HTTP ${String(provider.httpStatus)}` } : {}),
     };
   }
@@ -78,16 +126,54 @@ export function ConversationTurnView({
   const failure = turn.status === 'completed' ? null : turnFailureFacts(turn);
   const resultPending = turn.status === 'completed' && deliveryPending(turn);
   const resultFailed = deliveryFailed(turn);
+  const resumedExecution = turn.status === 'running'
+    && turn.traceEvents.some(event => event.kind === 'execution_resumed');
+  const automaticRetryScheduled = turn.status === 'blocked'
+    && turn.traceEvents.some(event => event.kind === 'execution_waiting_retry');
+  const attachments = Array.isArray(turn.attachments) ? turn.attachments : [];
   return (
     <article className="conversation-turn" data-turn-id={turn.id}>
       <section className="user-message">
         <span>YOU</span>
         <p>{turn.userInput}</p>
+        {attachments.length > 0 && (
+          <div className="message-attachments" aria-label={`附件 ${attachments.length} 个`}>
+            {attachments.map(attachment => {
+              const previewable = attachment.mediaClass === 'image' && attachment.status === 'available';
+              const previewUrl = previewable
+                ? `/api/attachments/${encodeURIComponent(attachment.attachmentId)}?sessionId=${encodeURIComponent(turn.sessionId)}`
+                : undefined;
+              return (
+                <a
+                  className={`message-attachment-card${attachment.status === 'unavailable' ? ' is-unavailable' : ''}`}
+                  href={previewUrl}
+                  target={previewUrl ? '_blank' : undefined}
+                  rel={previewUrl ? 'noreferrer' : undefined}
+                  aria-label={`${attachment.name}，${formatAttachmentSize(attachment.size)}，${attachment.status === 'available' ? '已上传' : '附件不可用'}`}
+                  key={attachment.attachmentId}
+                  onClick={event => { if (!previewUrl) event.preventDefault(); }}
+                >
+                  {previewUrl
+                    ? <img src={previewUrl} alt={`用户上传的截图 ${attachment.name}`} loading="lazy" />
+                    : <span className="message-attachment-icon" aria-hidden="true">{attachmentIcon(attachment.mediaClass)}</span>}
+                  <span className="message-attachment-meta">
+                    <strong>{attachment.name || (attachment.mediaClass === 'image' ? '截图' : '附件')}</strong>
+                    <small>{formatAttachmentSize(attachment.size)} · {attachment.status === 'available' ? '已上传' : '附件不可用'}</small>
+                  </span>
+                </a>
+              );
+            })}
+          </div>
+        )}
       </section>
       {liveExecutionPanel}
       {(!isSystemCommand || hasTaskExecution) && hasTaskExecution && (
         <section className="execution-status-line" data-status={turn.status}>
-          <span>{resultPending
+          <span>{resumedExecution
+            ? '已恢复执行'
+            : automaticRetryScheduled
+            ? '等待自动重试'
+            : resultPending
             ? '执行已完成，正在整理结果'
             : resultFailed ? '执行已完成，结果交付失败' : executionStatusLabel(turn.status)}{stepCount > 0 ? ` · ${stepCount} 步` : ''}</span>
           {onOpenTrajectory && (
@@ -108,10 +194,15 @@ export function ConversationTurnView({
           <span className="execution-failure-facts">
             {[
               failure.code,
+              failure.stage ? `阶段：${failureStageLabel(failure.stage)}` : undefined,
               failure.step ? `步骤：${failure.step}` : undefined,
               failure.provider,
+              failure.retryable !== undefined ? `恢复：${failure.retryable ? '可自动重试' : '需人工处理'}` : undefined,
+              failure.attemptStarted !== undefined ? `Executor：${failure.attemptStarted ? '已启动' : '未启动'}` : undefined,
+              failure.externalSideEffect !== undefined ? `副作用：${failure.externalSideEffect === 'unknown' ? '未知' : failure.externalSideEffect ? '可能有' : '无'}` : undefined,
             ].filter(Boolean).join(' · ')}
           </span>
+          {failure.userAction && <p className="execution-failure-action">下一步：{failure.userAction}</p>}
         </section>
       )}
       {isSystemCommand && turn.finalAnswer && (

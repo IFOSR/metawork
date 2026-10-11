@@ -88,6 +88,7 @@ const MILESTONE_KINDS = new Set([
   'execution_blocked',
   'executor_capacity_unavailable',
   'kernel_decision_applied',
+  'execution_resumed',
 ]);
 
 const MILESTONE_KIND_FRAGMENTS = [
@@ -106,6 +107,7 @@ const CHAT_MILESTONE_KINDS = new Set([
   'executor_result_observed',
   'execution_blocked',
   'executor_capacity_unavailable',
+  'execution_resumed',
 ]);
 
 function milestoneTier(kind: string, text: string): TaskActivityTier {

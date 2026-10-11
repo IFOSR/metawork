@@ -504,6 +504,9 @@ export class ConversationGatewayRuntime {
         await this.deps.recordInputTitle?.(conversation.conversationId, mailboxCommand.command.text);
       }
       const userInput = 'text' in mailboxCommand.command ? redactSensitiveText(mailboxCommand.command.text) : null;
+      const turnAttachments = mailboxCommand.command.kind === 'user_message'
+        ? await this.resolveAttachmentMetadata(conversation.conversationId, mailboxCommand.command)
+        : [];
       if (userInput !== null) this.deps.storeResultContent?.(this.deps.accountId, conversation.conversationId, userInput);
       await this.publish(
         conversation.conversationId,
@@ -515,6 +518,7 @@ export class ConversationGatewayRuntime {
             ...(this.deps.storeResultContent ? { userInputRef: {
               hash: createHash('sha256').update(userInput).digest('hex'), byteLength: Buffer.byteLength(userInput),
             } } : {}) } : {}),
+          ...(turnAttachments.length > 0 ? { attachments: turnAttachments } : {}),
           interactionKind: mailboxCommand.command.kind === 'user_message' ? 'ai_turn' : 'system_command' },
         origin,
       );
@@ -530,10 +534,13 @@ export class ConversationGatewayRuntime {
             : origin?.surface === 'web' ? 'web' : 'tui',
           principalId: mailboxCommand.principalId,
           ...(mailboxCommand.command.kind === 'user_message'
-            ? { attachments: await this.resolveAttachmentViews(
-                conversation.conversationId,
-                mailboxCommand.command,
-              ) }
+            ? { attachments: turnAttachments.map(attachment => ({
+                attachmentId: attachment.attachmentId,
+                name: attachment.name,
+                mime: attachment.mime,
+                size: attachment.size,
+                availability: attachment.status,
+              })) }
             : {}),
         },
       );
@@ -594,6 +601,10 @@ export class ConversationGatewayRuntime {
         ? (error as { code: string }).code
         : reason;
       try {
+        const structuredError = error && typeof error === 'object' ? error as {
+          code?: unknown; stage?: unknown; retryable?: unknown; attemptStarted?: unknown;
+          externalSideEffect?: unknown; userAction?: unknown;
+        } : {};
         await this.publish(
           conversation.conversationId,
           mailboxCommand.requestId,
@@ -602,8 +613,14 @@ export class ConversationGatewayRuntime {
           {
             message: reason,
             ...('code' in (error as object) && typeof (error as { code?: unknown }).code === 'string'
-              ? { code: (error as { code: string }).code }
+            ? { code: (error as { code: string }).code }
               : {}),
+            ...(typeof structuredError.stage === 'string' ? { failureStage: structuredError.stage } : {}),
+            ...(typeof structuredError.retryable === 'boolean' ? { retryable: structuredError.retryable } : {}),
+            ...(typeof structuredError.attemptStarted === 'boolean' ? { attemptStarted: structuredError.attemptStarted } : {}),
+            ...(structuredError.externalSideEffect === true || structuredError.externalSideEffect === false || structuredError.externalSideEffect === 'unknown'
+              ? { externalSideEffect: structuredError.externalSideEffect } : {}),
+            ...(typeof structuredError.userAction === 'string' ? { userAction: structuredError.userAction } : {}),
           },
           origin,
         );
@@ -820,9 +837,38 @@ export class ConversationGatewayRuntime {
     conversationId: string,
     command: Extract<GatewayCommand, { kind: 'user_message' }>,
   ): Promise<PlannerAttachmentView[]> {
+    return (await this.resolveAttachmentMetadata(conversationId, command)).map(metadata => ({
+      attachmentId: metadata.attachmentId,
+      name: metadata.name,
+      mime: metadata.mime,
+      size: metadata.size,
+      availability: metadata.status,
+    }));
+  }
+
+  private async resolveAttachmentMetadata(
+    conversationId: string,
+    command: Extract<GatewayCommand, { kind: 'user_message' }>,
+  ): Promise<Array<{
+    attachmentId: string;
+    name: string;
+    mime: string;
+    mediaClass: 'image' | 'text' | 'document' | 'archive' | 'binary' | 'unknown';
+    size: number;
+    status: 'available' | 'unavailable';
+    createdAt?: string;
+  }>> {
     const store = this.deps.attachments;
     if (!store || command.attachments.length === 0) return [];
-    const views: PlannerAttachmentView[] = [];
+    const views: Array<{
+      attachmentId: string;
+      name: string;
+      mime: string;
+      mediaClass: 'image' | 'text' | 'document' | 'archive' | 'binary' | 'unknown';
+      size: number;
+      status: 'available' | 'unavailable';
+      createdAt?: string;
+    }> = [];
     for (const reference of command.attachments) {
       try {
         const metadata = store.readAttachmentMetadata
@@ -834,8 +880,11 @@ export class ConversationGatewayRuntime {
           attachmentId: reference.attachmentId,
           name: metadata.name,
           mime: metadata.mime,
+          mediaClass: metadata.mediaClass,
           size: metadata.size,
-          availability: metadata.status,
+          status: metadata.status,
+          ...('createdAt' in metadata && typeof metadata.createdAt === 'string'
+            ? { createdAt: metadata.createdAt } : {}),
         });
       } catch {
         // Invalid or missing references remain unavailable to Planner and Kernel.

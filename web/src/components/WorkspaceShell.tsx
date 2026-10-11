@@ -56,6 +56,7 @@ export function WorkspaceShell({
   previewMaximized,
   attachments,
   uploadError,
+  uploading,
   onFilesSelected,
   onRemoveAttachment,
 }: {
@@ -104,6 +105,7 @@ export function WorkspaceShell({
   onCancelTurn: () => void;
   attachments: Array<{ metadata: AttachmentMetadata }>;
   uploadError?: string | null;
+  uploading?: Array<{ name: string; size: number }>;
   onFilesSelected: (files: File[]) => void;
   onRemoveAttachment: (attachmentId: string) => void;
 }) {
@@ -186,6 +188,7 @@ export function WorkspaceShell({
             onCancel={onCancelTurn}
             attachments={attachments}
             uploadError={uploadError}
+            uploading={uploading}
             onFilesSelected={onFilesSelected}
             onRemoveAttachment={onRemoveAttachment}
           />

@@ -1375,6 +1375,50 @@ body {
   min-width: 0;
 }
 
+.manual-model-information {
+  display: grid;
+  gap: 9px;
+  margin: 14px 0 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(145, 210, 165, 0.035);
+}
+
+.manual-model-information-heading,
+.manual-model-information-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.manual-model-information-heading > div {
+  display: grid;
+  gap: 3px;
+}
+
+.manual-model-information-heading span:not(.state-badge),
+.manual-model-information-actions small {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.manual-model-information-input {
+  width: 100%;
+  min-height: 92px;
+  resize: vertical;
+  line-height: 1.55;
+}
+
+@media (max-width: 720px) {
+  .manual-model-information-heading,
+  .manual-model-information-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 .routing-section-note {
   margin: -4px 0 16px;
   color: var(--text-dim);
@@ -3571,6 +3615,23 @@ select {
   margin-top: 0;
   color: var(--accent, #a24d2f);
 }
+
+.routing-span-model {
+  display: grid;
+  gap: 0.1rem;
+  color: var(--text);
+}
+
+.routing-span-model small {
+  margin-top: 0;
+  color: var(--green, #3f9b6d);
+}
+
+.routing-span-candidate-selected {
+  padding: 0.2rem 0.35rem;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent, #a24d2f) 10%, transparent);
+}
 .work-graph-node[data-runnable='true'] { border-color: var(--accent); box-shadow: inset 3px 0 var(--accent); }
 .work-graph-node[data-status='done'] { border-color: color-mix(in srgb, var(--green) 55%, var(--border)); }
 .work-graph-node-topline { justify-content: space-between; align-items: flex-start; }
@@ -3652,6 +3713,66 @@ select {
   margin: 7px 0 0;
   line-height: 1.65;
 }
+
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 11px;
+}
+
+.message-attachment-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 180px;
+  max-width: min(100%, 320px);
+  padding: 7px;
+  border: 1px solid color-mix(in srgb, var(--line-user-message) 78%, transparent);
+  border-radius: 9px;
+  color: inherit;
+  background: color-mix(in srgb, var(--surface-user-message) 65%, #000 35%);
+  text-decoration: none;
+}
+
+.message-attachment-card:hover {
+  border-color: var(--accent);
+}
+
+.message-attachment-card.is-unavailable {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.message-attachment-card img,
+.message-attachment-icon {
+  display: grid;
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--bg-elevated) 80%, transparent);
+  font-size: 22px;
+  object-fit: cover;
+}
+
+.message-attachment-meta {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.message-attachment-meta strong,
+.message-attachment-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-attachment-meta strong { font-size: 11px; }
+.message-attachment-meta small { color: var(--text-dim); font-size: 10px; }
 
 .user-message span {
   color: var(--text-user-message-label);
@@ -7235,6 +7356,11 @@ button:active:not(:disabled) {
   padding: 8px 10px;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.12);
+}
+
+.openrouter-candidate-manual {
+  border: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: rgba(145, 210, 165, 0.04);
 }
 
 .openrouter-candidate > div {

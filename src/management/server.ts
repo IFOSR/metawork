@@ -177,6 +177,11 @@ export interface ResponsibilitySuggestionResponse {
 }
 
 export interface ConfigQuery {
+  fetchManualModelInformation?(sourceUrl: string): Promise<{
+    sourceUrl: string;
+    title?: string;
+    description: string;
+  }>;
   describeAgentCapabilities?(input: AgentCapabilityDescriptionInput, refresh: boolean): Promise<AgentCapabilityDescription>;
   summarizeModelInformation?(catalogModelId: string): Promise<{
     catalogModelId: string;
@@ -617,6 +622,60 @@ export class ManagementServer {
     }
   }
 
+  private async handleAttachmentDownload(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+    clientId: string,
+    attachmentId: string,
+  ): Promise<void> {
+    const store = this.deps.attachmentStore;
+    const conversationId = url.searchParams.get('sessionId') ?? '';
+    if (!store || !conversationId || !attachmentId) {
+      this.sendJson(response, 404, { error: 'attachment_not_found' });
+      return;
+    }
+    const state = this.deps.sessionRuntime.getClientState(clientId);
+    if (conversationId !== state.activeSessionId && !this.deps.conversationGateway) {
+      this.sendJson(response, 403, { error: 'conversation_denied' });
+      return;
+    }
+    try {
+      const gateway = this.deps.conversationGateway;
+      const metadata = gateway
+        ? await gateway.observation.metadata(gateway.accountId, conversationId)
+        : null;
+      if (!metadata && conversationId !== state.activeSessionId) {
+        this.sendJson(response, 403, { error: 'conversation_denied' });
+        return;
+      }
+      const attachment = await store.readAttachment(conversationId, attachmentId);
+      if (!attachment || attachment.metadata.accountId !== (gateway?.accountId ?? attachment.metadata.accountId)
+        || attachment.metadata.conversationId !== conversationId
+        || attachment.metadata.status !== 'available') {
+        this.sendJson(response, 404, { error: 'attachment_not_found' });
+        return;
+      }
+      const filename = encodeURIComponent(attachment.metadata.name).replace(
+        /['()]/gu,
+        character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+      );
+      response.writeHead(200, {
+        'Content-Type': attachment.metadata.mime || 'application/octet-stream',
+        'Content-Length': String(attachment.bytes.byteLength),
+        'Content-Disposition': `inline; filename*=UTF-8''${filename}`,
+        'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      response.end(attachment.bytes);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.sendJson(response, message === 'conversation_denied' ? 403 : 404, {
+        error: message === 'conversation_denied' ? message : 'attachment_not_found',
+      });
+    }
+  }
+
   private async handleLogin(request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (!this.deps.loginCredentials) {
       this.sendJson(response, 503, { error: 'password login disabled' });
@@ -877,6 +936,18 @@ export class ManagementServer {
 
     if (request.method === 'POST' && url.pathname === '/api/attachments') {
       await this.handleAttachmentUpload(request, response, url, clientId);
+      return;
+    }
+
+    const attachmentMatch = /^\/api\/attachments\/([^/]+)$/u.exec(url.pathname);
+    if (request.method === 'GET' && attachmentMatch) {
+      await this.handleAttachmentDownload(
+        request,
+        response,
+        url,
+        clientId,
+        decodeURIComponent(attachmentMatch[1]!),
+      );
       return;
     }
 
@@ -1302,6 +1373,25 @@ export class ManagementServer {
         return;
       }
       this.sendJson(response, 200, await this.deps.configQuery.summarizeModelInformation(catalogModelId));
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/config/model-manual-information') {
+      if (!this.deps.configQuery.fetchManualModelInformation) {
+        this.sendJson(response, 503, { error: 'manual model information unavailable' });
+        return;
+      }
+      const body = await readRequestBody(request);
+      const sourceUrl = typeof body.sourceUrl === 'string' ? body.sourceUrl.trim() : '';
+      if (!sourceUrl || sourceUrl.length > 2_000) {
+        this.sendJson(response, 400, { error: 'sourceUrl is required and must be at most 2000 characters' });
+        return;
+      }
+      try {
+        this.sendJson(response, 200, await this.deps.configQuery.fetchManualModelInformation(sourceUrl));
+      } catch (error) {
+        this.sendJson(response, 422, { error: error instanceof Error ? error.message : String(error) });
+      }
       return;
     }
 
@@ -1867,6 +1957,7 @@ interface RequestBody {
   apiKey?: string;
   /** Transient Span OpenRouter credential; never persisted in the config body. */
   spanApiKey?: string;
+  sourceUrl?: string;
   secrets?: Record<string, string>;
   title?: string;
   path?: string;

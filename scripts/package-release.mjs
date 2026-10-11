@@ -29,8 +29,9 @@
 //   --compat <json>          Override the release compatibility block
 //
 // The caller is responsible for producing a production-only node_modules tree
-// (for example `npm ci --omit=dev`) before packaging; the packaged tree is
-// shipped verbatim into the release tarball.
+// (for example `npm ci --omit=dev`) before packaging. The archive inputs below
+// are an explicit runtime allowlist; the development workspace is never
+// shipped verbatim into a release tarball.
 import { createHash, generateKeyPairSync, sign as ed25519Sign } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
@@ -181,6 +182,54 @@ const waitForExit = promisify((child, callback) => {
   child.on('error', callback);
 });
 
+const runtimeArchiveExcludes = [
+  '.DS_Store',
+  '**/*.map',
+  '**/*.d.ts',
+  '**/test',
+  '**/tests',
+  '**/__tests__',
+  '**/fixtures',
+  '**/examples',
+  '**/.cache',
+  '**/.vite',
+  '**/.turbo',
+];
+
+const plannerArchiveExcludes = [
+  '.git',
+  '.DS_Store',
+  '**/*.map',
+  '**/*.d.ts',
+  'src',
+  'scripts',
+  'test',
+  'tests',
+  'fixtures',
+  'examples',
+  'docs',
+  '**/src',
+  '**/scripts',
+  '**/test',
+  '**/tests',
+  '**/fixtures',
+  '**/examples',
+  '**/docs',
+  '**/.bin',
+  '**/.cache',
+  '**/.vite',
+  '**/.turbo',
+  'node_modules/@biomejs',
+  'node_modules/@types',
+  'node_modules/typescript',
+  'node_modules/vitest',
+  'node_modules/esbuild',
+  'node_modules/tsx',
+  'node_modules/tsgo',
+  'node_modules/shx',
+  'node_modules/husky',
+];
+
 // Copies selected entries into <staging>/<prefix>/ using a streaming tar pipe
 // so the archive carries a single top-level directory (the installer extracts
 // with --strip-components=1), so excludes work on both bsdtar and GNU tar, and
@@ -320,7 +369,7 @@ async function main() {
     stagingRoot,
     prefix: 'metawork',
     entries: ['dist', 'web/dist', 'node_modules', 'package.json'],
-    exclude: ['.DS_Store'],
+    exclude: runtimeArchiveExcludes,
     outputPath: join(options.outDir, runtimeArchiveName),
     platform,
   });
@@ -328,8 +377,19 @@ async function main() {
     sourceRoot: options.plannerRoot,
     stagingRoot,
     prefix: 'planner',
-    entries: ['.'],
-    exclude: ['.git', '.DS_Store'],
+    entries: [
+      'package.json',
+      'packages/coding-agent/package.json',
+      'packages/coding-agent/dist',
+      'packages/ai/package.json',
+      'packages/ai/dist',
+      'packages/agent/package.json',
+      'packages/agent/dist',
+      'packages/tui/package.json',
+      'packages/tui/dist',
+      'node_modules',
+    ],
+    exclude: plannerArchiveExcludes,
     outputPath: join(options.outDir, plannerArchiveName),
     platform,
   });

@@ -141,6 +141,7 @@ describe('milestone tiers (Feishu notification governance)', () => {
       ['executor_result_observed', 'Result observed', 'chat'],
       ['execution_blocked', 'Execution blocked', 'chat'],
       ['executor_capacity_unavailable', 'Capacity unavailable', 'chat'],
+      ['execution_resumed', 'Task resumed execution', 'chat'],
       ['kernel_decision', 'heartbeat_lost: retry scheduled', 'chat'],
     ];
     for (const [kind, title, tier] of cases) {

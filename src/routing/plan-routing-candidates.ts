@@ -90,7 +90,18 @@ export function planSubtaskCandidateGroups(input: {
     ].join('\n'),
   };
   const groups: PlanSubtaskCandidateGroup[] = [];
-  subtask.executorBindings.forEach((proposed, bindingIndex) => {
+  const proposedBindings = subtask.executorBindings.length > 0
+    ? subtask.executorBindings
+    : Object.entries(configuration.agentClasses)
+      .filter(([, agentClass]) => agentClass.enabled && agentClass.kind === 'executor')
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([agentClassRef, agentClass]) => ({
+        agentClassRef,
+        modelSelection: agentClass.modelPolicy.mode === 'fixed'
+          ? { mode: 'fixed-by-agent-class' as const }
+          : { mode: 'agent-class-default' as const },
+      }));
+  proposedBindings.forEach((proposed, bindingIndex) => {
     const agentClass = configuration.agentClasses[proposed.agentClassRef];
     if (!agentClass || !agentClass.enabled || agentClass.kind !== 'executor') {
       groups.push({

@@ -103,6 +103,18 @@ export class HttpClient {
     });
   }
 
+  fetchManualModelInformation(sourceUrl: string): Promise<{
+    sourceUrl: string;
+    title?: string;
+    description: string;
+  }> {
+    return this.request('/api/config/model-manual-information', {
+      method: 'POST',
+      body: JSON.stringify({ sourceUrl }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  }
+
   describeAgentCapabilities(input: {
     kind: 'planner' | 'executor';
     affordances: string[];

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
-import { basename, isAbsolute } from 'node:path';
+import { basename, isAbsolute, relative, sep } from 'node:path';
 import type { ConversationMetadata, ConversationStore } from '../session/conversation-store.js';
 import { updateConversationCatalog } from '../session/conversation-catalog-mutation.js';
 import type { WorkspaceCatalogStore } from './workspace-catalog-store.js';
@@ -20,6 +20,26 @@ import { measureNavigationStageSync } from '../utils/navigation-diagnostics.js';
 export interface WorkspaceSelectionResult {
   readonly workspace: WorkspaceRecord;
   readonly created: boolean;
+}
+
+export type WorkspacePreflightCode =
+  | 'workspace_contains_runtime_root'
+  | 'workspace_contains_workspace_store';
+
+export class WorkspacePreflightError extends Error {
+  readonly stage = 'workspace_preflight' as const;
+  readonly retryable = false as const;
+  readonly attemptStarted = false as const;
+  readonly externalSideEffect = false as const;
+
+  constructor(
+    readonly code: WorkspacePreflightCode,
+    message: string,
+    readonly userAction = '请选择具体项目目录后重新提交请求。',
+  ) {
+    super(message);
+    this.name = 'WorkspacePreflightError';
+  }
 }
 
 export interface WorkspaceSummary extends WorkspaceRecord {}
@@ -42,6 +62,9 @@ export interface WorkspaceDirectoryServiceDeps {
   readonly workspaceCatalog: WorkspaceCatalogStore;
   readonly conversationStore: ConversationStore;
   readonly authorize: (path: string, principalId: string) => Promise<boolean> | boolean;
+  /** Install and internal workspace roots which are never valid user Workspaces. */
+  readonly runtimeRoot?: string;
+  readonly workspaceStoreRoot?: string;
   readonly createWorkspaceId?: () => WorkspaceId;
   readonly createConversationId?: () => string;
   readonly now?: () => string;
@@ -69,9 +92,7 @@ export class WorkspaceDirectoryService {
   }
 
   async selectByPath(path: string, principalId: string): Promise<WorkspaceSelectionResult> {
-    if (!isAbsolute(path)) throw new Error('workspace_path_invalid');
-    const canonicalPath = await realpath(path);
-    if (!(await stat(canonicalPath)).isDirectory()) throw new Error('workspace_path_invalid');
+    const canonicalPath = await this.preflightPath(path);
     if (!(await this.deps.authorize(canonicalPath, principalId))) {
       throw new Error('workspace_unauthorized');
     }
@@ -105,6 +126,36 @@ export class WorkspaceDirectoryService {
       });
       return { workspace, created: true };
     });
+  }
+
+  /** Fast, side-effect-free validation shared by dispatch, retry and recovery. */
+  async preflightPath(path: string): Promise<string> {
+    if (!isAbsolute(path)) throw new Error('workspace_path_invalid');
+    const canonicalPath = await realpath(path).catch(() => { throw new Error('workspace_path_invalid'); });
+    if (!(await stat(canonicalPath)).isDirectory()) throw new Error('workspace_path_invalid');
+    await this.assertWorkspacePreflight(canonicalPath);
+    return canonicalPath;
+  }
+
+  private async assertWorkspacePreflight(canonicalPath: string): Promise<void> {
+    const runtimeRoot = this.deps.runtimeRoot
+      ? await realpath(this.deps.runtimeRoot).catch(() => safeRealpathForComparison(this.deps.runtimeRoot!))
+      : null;
+    if (runtimeRoot && pathsOverlap(canonicalPath, runtimeRoot)) {
+      throw new WorkspacePreflightError(
+        'workspace_contains_runtime_root',
+        `不能使用此目录作为 Workspace：${canonicalPath} 与 MetaWork 运行目录 ${runtimeRoot} 重叠。请选择具体项目目录。`,
+      );
+    }
+    const workspaceStoreRoot = this.deps.workspaceStoreRoot
+      ? await realpath(this.deps.workspaceStoreRoot).catch(() => safeRealpathForComparison(this.deps.workspaceStoreRoot!))
+      : null;
+    if (workspaceStoreRoot && pathsOverlap(canonicalPath, workspaceStoreRoot)) {
+      throw new WorkspacePreflightError(
+        'workspace_contains_workspace_store',
+        `不能使用此目录作为 Workspace：${canonicalPath} 与 MetaWork 内部 Workspace 存储目录重叠。请选择具体项目目录。`,
+      );
+    }
   }
 
   async listWorkspaces(principalId: string): Promise<WorkspaceSummary[]> {
@@ -302,6 +353,20 @@ export class WorkspaceDirectoryService {
       return false;
     }
   }
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+  const relation = relative(left, right);
+  return relation === '' || (!relation.startsWith('..') && !isAbsolute(relation))
+    || relative(right, left) === ''
+    || (!relative(right, left).startsWith('..') && !isAbsolute(relative(right, left)));
+}
+
+function safeRealpathForComparison(path: string): string {
+  // The configured roots are created during Server composition. Normalizing
+  // here also keeps tests and early-startup errors deterministic if a root is
+  // not present yet.
+  return path.endsWith(sep) && path.length > 1 ? path.slice(0, -1) : path;
 }
 
 function decodeCursor(cursor: string | undefined): number {

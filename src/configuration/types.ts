@@ -271,7 +271,13 @@ export interface GatewayConfig {
  */
 export interface SpanRoutingConfiguration {
   enabled: boolean;
-  model: 'inception/mercury-decide:free';
+  /** Provider model ID used by the routing decision adapter. */
+  model: string;
+  /** User-selected Provider/Model references. Legacy revisions may omit both. */
+  providerRef?: string;
+  modelRef?: string;
+  /** Ordered Provider model references used when the primary cannot answer. */
+  fallbackModelRefs?: string[];
   apiKeyRef?: string;
   timeoutMs: number;
 }
@@ -415,6 +421,9 @@ export type KernelConfigurationView = Readonly<{
   spanRouting?: Readonly<{
     enabled: boolean;
     model: string;
+    providerRef?: string;
+    modelRef?: string;
+    fallbackModelRefs?: readonly string[];
     timeoutMs: number;
   }>;
 }>;

@@ -185,6 +185,12 @@ export function buildKernelConfigurationView(
       spanRouting: {
         enabled: snapshot.config.routing.span.enabled,
         model: snapshot.config.routing.span.model,
+        ...(snapshot.config.routing.span.providerRef
+          ? { providerRef: snapshot.config.routing.span.providerRef } : {}),
+        ...(snapshot.config.routing.span.modelRef
+          ? { modelRef: snapshot.config.routing.span.modelRef } : {}),
+        ...(snapshot.config.routing.span.fallbackModelRefs
+          ? { fallbackModelRefs: [...snapshot.config.routing.span.fallbackModelRefs] } : {}),
         timeoutMs: snapshot.config.routing.span.timeoutMs,
       },
     } : {}),

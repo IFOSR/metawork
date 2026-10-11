@@ -15,6 +15,7 @@ export interface ConversationTurnView {
   readonly firstSequence: number;
   readonly lastSequence: number;
   readonly userInput: string;
+  readonly attachments?: readonly ConversationAttachmentView[];
   readonly userInputRef: ConversationContentReference | null;
   readonly answer: string;
   readonly answerRef: ConversationContentReference | null;
@@ -29,6 +30,16 @@ export interface ConversationTurnView {
   readonly startedAt: string;
   readonly completedAt: string | null;
   readonly interactionKind: 'system_command' | 'ai_turn';
+}
+
+export interface ConversationAttachmentView {
+  readonly attachmentId: string;
+  readonly name: string;
+  readonly mime: string;
+  readonly mediaClass: 'image' | 'text' | 'document' | 'archive' | 'binary' | 'unknown';
+  readonly size: number;
+  readonly status: 'available' | 'unavailable';
+  readonly createdAt?: string;
 }
 
 export interface ConversationViewCursor {

@@ -24,7 +24,7 @@ export type AutoModelPolicy = {
 
 export type EditableModelPolicy = FixedModelPolicy | AutoModelPolicy;
 
-/** Fixed Span advisor model; the UI never offers a model/provider picker. */
+/** Legacy default retained for migrations with no configured decision model. */
 export const SPAN_ROUTING_MODEL = 'inception/mercury-decide:free';
 export const SPAN_ROUTING_DEFAULT_TIMEOUT_MS = 8_000;
 export const SPAN_ROUTING_MIN_TIMEOUT_MS = 500;
@@ -32,8 +32,12 @@ export const SPAN_ROUTING_MAX_TIMEOUT_MS = 10_000;
 
 /** Editable Span state; `apiKey` is a transient input and is never persisted. */
 export interface SpanRoutingDraft {
+  /** Kept for revision compatibility; the new UI always saves this as true. */
   enabled: boolean;
   model: string;
+  providerRef: string;
+  modelRef: string;
+  fallbackModelRefs: string[];
   timeoutMs: number;
   apiKey: string;
 }
@@ -48,7 +52,12 @@ export function loadSpanRoutingDraft(
     : SPAN_ROUTING_DEFAULT_TIMEOUT_MS;
   return {
     enabled: span?.enabled === true,
-    model: SPAN_ROUTING_MODEL,
+    model: typeof span?.model === 'string' && span.model.trim() ? span.model : SPAN_ROUTING_MODEL,
+    providerRef: typeof span?.providerRef === 'string' ? span.providerRef : '',
+    modelRef: typeof span?.modelRef === 'string' ? span.modelRef : '',
+    fallbackModelRefs: Array.isArray(span?.fallbackModelRefs)
+      ? span.fallbackModelRefs.filter((value): value is string => typeof value === 'string')
+      : [],
     timeoutMs,
     apiKey: '',
   };
@@ -78,7 +87,10 @@ export function buildSpanRoutingSection(
     span: {
       ...originalSpan,
       enabled: draft.enabled,
-      model: SPAN_ROUTING_MODEL,
+      model: draft.model.trim() || SPAN_ROUTING_MODEL,
+      ...(draft.providerRef.trim() ? { providerRef: draft.providerRef.trim() } : {}),
+      ...(draft.modelRef.trim() ? { modelRef: draft.modelRef.trim() } : {}),
+      ...(draft.fallbackModelRefs.length > 0 ? { fallbackModelRefs: [...draft.fallbackModelRefs] } : {}),
       timeoutMs: clampTimeout(draft.timeoutMs),
       ...(apiKeyRef ? { apiKeyRef } : {}),
     },
