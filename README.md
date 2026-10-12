@@ -146,7 +146,7 @@ on `PATH`. The installer detects Executor CLIs but does not install them.
 Prebuilt archives include native dependencies; npm and native build tools are
 required for source builds, not ordinary prebuilt installation.
 
-macOS, Linux x64 or WSL2 x64, in an interactive terminal:
+macOS Apple Silicon, Linux x64 or WSL2 x64, in an interactive terminal:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh -o metawork-install.sh

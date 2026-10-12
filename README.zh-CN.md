@@ -121,7 +121,7 @@ Server。关闭窗口或退出 Desktop 后，后台服务和任务继续运行�
 Executor CLI，但不会代为安装。预构建包已包含原生依赖；npm 与原生编译工具用于
 源码构建，普通预构建安装不需要编译。
 
-macOS、Linux x64、WSL2 x64，在可输入的交互终端运行：
+macOS Apple Silicon、Linux x64、WSL2 x64，在可输入的交互终端运行：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh -o metawork-install.sh

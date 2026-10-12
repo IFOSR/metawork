@@ -2,8 +2,8 @@
 
 Root, Web and Desktop package/lock versions must match. Prepare release notes,
 CHANGELOG and a release plan before tagging. Published releases are immutable;
-use a new version for future releases. The current published internal release is
-`v0.1.8` (macOS arm64 only).
+use a new version for future releases. The current published release is `v0.1.14`: macOS arm64 Desktop and Runtime,
+plus Linux x64 and Windows x64 Server/Web/TUI Runtime packages.
 
 ## GitHub Actions configuration
 
