@@ -84,7 +84,8 @@ and Planner archives.
 The Desktop DMG is approximately 277 MB, uses an internal ad-hoc signature, and
 is not notarized with an Apple Developer ID. It currently supports macOS Apple
 Silicon (`arm64`) only. The Server/Web/TUI installer supports Linux x64 and
-macOS arm64; Intel macOS and Windows Desktop packages are not included.
+macOS arm64 and Windows x64; Intel macOS and Windows Desktop packages are not
+included.
 
 ## Installation
 
@@ -166,9 +167,9 @@ Both scripts resolve the **latest stable release's signed manifest** and verify
 its Runtime/Planner archives. The setup wizard configures the model provider.
 Linux/WSL2 defaults to file-backed secrets. The release page also contains the
 matching `install.sh` and `install.ps1` files when a platform archive is available.
-The current release provides prebuilt Runtime and Planner archives for Linux x64
-and macOS arm64. The shell installer reports an unsupported architecture instead
-of installing a mismatched archive.
+The current release provides prebuilt Runtime and Planner archives for Linux x64,
+macOS arm64, and Windows x64. The installers report an unsupported architecture
+instead of installing a mismatched archive.
 
 Start Server in one terminal and keep it running:
 

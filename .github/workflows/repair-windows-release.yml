@@ -1,0 +1,100 @@
+name: Repair Windows release asset
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published release tag to complete
+        required: true
+        default: v0.1.14
+      source_commit:
+        description: Exact source commit used by the release
+        required: true
+        default: 1b2543465380b9fdef6af62c3a68a9529232d378
+
+permissions:
+  contents: write
+
+jobs:
+  win32-x64:
+    runs-on: windows-latest
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_commit }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: npm
+
+      - name: Build signed Windows x64 archives
+        shell: pwsh
+        env:
+          METAWORK_RELEASE_SIGNING_KEY: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:METAWORK_RELEASE_SIGNING_KEY) { throw 'METAWORK_RELEASE_SIGNING_KEY is missing' }
+          $version = node -p "require('./package.json').version"
+          $revision = (git rev-parse --short=7 HEAD).Trim()
+          $tag = '${{ inputs.release_tag }}'
+          if ($version -ne $tag.Substring(1)) { throw "Package version $version does not match $tag" }
+          $releaseId = "$version-build-$revision"
+          $keyPath = Join-Path $env:RUNNER_TEMP 'metawork-release-key.pem'
+          $env:METAWORK_RELEASE_SIGNING_KEY | Set-Content -NoNewline -Encoding utf8 $keyPath
+          $output = Join-Path $env:RUNNER_TEMP 'metawork-release'
+          npm run build:release -- `
+            --platform win32 `
+            --arch x64 `
+            --channel stable `
+            --release-id $releaseId `
+            --artifact-base-url "https://github.com/IFOSR/metawork/releases/download/$tag" `
+            --signing-key $keyPath `
+            --out-dir $output
+
+      - name: Verify Windows manifest and archives
+        shell: pwsh
+        env:
+          RELEASE_DIR: ${{ runner.temp }}\metawork-release
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import { createHash, verify } from 'node:crypto';
+          import { readFileSync } from 'node:fs';
+          import { join, basename } from 'node:path';
+          const dir = process.env.RELEASE_DIR;
+          const manifest = JSON.parse(readFileSync(join(dir, 'manifest.win32-x64.json'), 'utf8'));
+          const { signature, ...payload } = manifest;
+          const stable = value => Array.isArray(value) ? `[${value.map(stable).join(',')}]`
+            : value && typeof value === 'object' ? `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, nested]) => `${JSON.stringify(key)}:${stable(nested)}`).join(',')}}`
+            : JSON.stringify(value);
+          const publicKey = `-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAFUfe0iqiIaYSMGiyywur13FpzoXRQBqAZB0gzEi2DE0=\n-----END PUBLIC KEY-----`;
+          if (manifest.platform !== 'win32' || manifest.arch !== 'x64' || signature.keyId !== 'metawork-release-2026-03'
+            || !verify(null, Buffer.from(stable(payload)), publicKey, Buffer.from(signature.value, 'base64'))) throw new Error('manifest verification failed');
+          for (const kind of ['metawork', 'planner']) {
+            const artifact = manifest[kind];
+            const file = join(dir, basename(artifact.url));
+            const bytes = readFileSync(file);
+            if (bytes.length !== artifact.byteSize || createHash('sha256').update(bytes).digest('hex') !== artifact.sha256) throw new Error(`${kind} archive verification failed`);
+          }
+          console.log(`Verified ${manifest.releaseId} win32-x64`);
+          '@ | Set-Content -Encoding utf8 (Join-Path $env:RUNNER_TEMP 'verify-release.mjs')
+          node (Join-Path $env:RUNNER_TEMP 'verify-release.mjs')
+
+      - name: Upload Windows assets to the published release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP 'metawork-release'
+          $files = @(
+            (Join-Path $dir 'manifest.win32-x64.json'),
+            (Get-ChildItem $dir -Filter 'metawork-*.zip').FullName,
+            (Get-ChildItem $dir -Filter 'planner-*.zip').FullName,
+            (Join-Path $env:GITHUB_WORKSPACE 'scripts/install.sh'),
+            (Join-Path $env:GITHUB_WORKSPACE 'scripts/install.ps1')
+          )
+          gh release upload '${{ inputs.release_tag }}' @files
