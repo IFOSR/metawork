@@ -74,7 +74,8 @@ The current release is **v0.1.14**. It provides the latest unified routing and
 decision-model configuration, manual model-information fallback, visible
 attachment and screenshot messages, and clearer Executor failure, blocked, and
 recovery explanations. The release includes a compressed, self-contained
-macOS Apple Silicon Desktop DMG plus signed arm64 Runtime and Planner archives.
+macOS Apple Silicon Desktop DMG plus signed macOS arm64 and Linux x64 Runtime
+and Planner archives.
 
 - [Download the macOS arm64 DMG](https://github.com/IFOSR/metawork/releases/download/v0.1.14/MetaWork-darwin-arm64.dmg)
 - [View the v0.1.14 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.14)
@@ -82,9 +83,8 @@ macOS Apple Silicon Desktop DMG plus signed arm64 Runtime and Planner archives.
 
 The Desktop DMG is approximately 277 MB, uses an internal ad-hoc signature, and
 is not notarized with an Apple Developer ID. It currently supports macOS Apple
-Silicon (`arm64`) only. Intel (`x64`), Linux, and Windows Desktop packages are
-not included; those users can use the Server/Web/TUI installation when a matching
-Runtime archive is available.
+Silicon (`arm64`) only. The Server/Web/TUI installer supports Linux x64 and
+macOS arm64; Intel macOS and Windows Desktop packages are not included.
 
 ## Installation
 
@@ -166,9 +166,9 @@ Both scripts resolve the **latest stable release's signed manifest** and verify
 its Runtime/Planner archives. The setup wizard configures the model provider.
 Linux/WSL2 defaults to file-backed secrets. The release page also contains the
 matching `install.sh` and `install.ps1` files when a platform archive is available.
-The current internal release's prebuilt runtime is Apple Silicon; the shell
-installer reports an unsupported architecture instead of installing a mismatched
-archive.
+The current release provides prebuilt Runtime and Planner archives for Linux x64
+and macOS arm64. The shell installer reports an unsupported architecture instead
+of installing a mismatched archive.
 
 Start Server in one terminal and keep it running:
 

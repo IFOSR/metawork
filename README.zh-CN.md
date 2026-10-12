@@ -60,16 +60,16 @@ AnyFusion 标识。
 
 当前发布版本是 **v0.1.14**，包含统一智能路由与决策模型配置、模型信息手动粘贴
 补足、附件和截图可见展示，以及更清晰的 Executor 错误、阻塞和恢复提示。Release
-同时提供压缩后的 macOS Apple Silicon Desktop DMG，以及签名的 arm64 Runtime 和
-Planner 归档。
+同时提供压缩后的 macOS Apple Silicon Desktop DMG，以及签名的 macOS arm64 和
+Linux x64 Runtime、Planner 归档。
 
 - [下载 macOS arm64 DMG](https://github.com/IFOSR/metawork/releases/download/v0.1.14/MetaWork-darwin-arm64.dmg)
 - [查看 v0.1.14 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.14)
 - [下载校验文件和 Runtime/Planner 归档](https://github.com/IFOSR/metawork/releases/tag/v0.1.14)
 
 Desktop DMG 约 277 MB，使用内部 ad-hoc 签名，未使用 Apple Developer ID 公证，
-当前只支持 macOS Apple Silicon（`arm64`）。暂不提供 Intel（`x64`）、Linux 和
-Windows Desktop 包；这些平台可在有匹配 Runtime 归档时使用 Server/Web/TUI 安装方式。
+当前只支持 macOS Apple Silicon（`arm64`）。Server/Web/TUI 安装器支持 Linux x64
+和 macOS arm64；暂不提供 Intel macOS 和 Windows Desktop 包。
 
 ## 安装方式
 
@@ -140,8 +140,8 @@ irm https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.ps1 -O
 
 两个安装器均获取**最新稳定版的签名 manifest**，校验 Runtime/Planner 归档，并通过
 配置向导设置模型服务。Linux/WSL2 默认使用文件 SecretStore。Release 页面会在对应
-平台归档可用时附带 `install.sh` 和 `install.ps1`。当前内部版的预构建运行时是
-Apple Silicon；Shell 安装器会对不支持的架构明确报错，不会安装不匹配的归档。
+平台归档可用时附带 `install.sh` 和 `install.ps1`。当前版本提供 Linux x64 和
+macOS arm64 预构建运行时；Shell 安装器会对不支持的架构明确报错，不会安装不匹配的归档。
 
 安装后，在一个终端启动 Server 并保持运行：
 
