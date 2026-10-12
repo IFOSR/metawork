@@ -97,4 +97,4 @@ jobs:
             (Join-Path $env:GITHUB_WORKSPACE 'scripts/install.sh'),
             (Join-Path $env:GITHUB_WORKSPACE 'scripts/install.ps1')
           )
-          gh release upload '${{ inputs.release_tag }}' @files
+          gh release upload '${{ inputs.release_tag }}' @files --clobber
