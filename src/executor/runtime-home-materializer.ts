@@ -1,4 +1,5 @@
 import { boundedPathSegment } from '../utils/bounded-path-segment.js';
+import { isPathStrictlyInside } from '../utils/path-containment.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type {
@@ -75,7 +76,7 @@ function resolveInside(root: string, relativePath: string): string {
     throw new Error('runtime home directory must be relative');
   }
   const resolved = resolve(root, relativePath);
-  if (!resolved.startsWith(`${resolve(root)}/`)) {
+  if (!isPathStrictlyInside(root, resolved)) {
     throw new Error('runtime home directory escapes attempt home');
   }
   return resolved;

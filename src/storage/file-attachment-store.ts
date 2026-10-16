@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { mkdir, open, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { isPathStrictlyInside } from '../utils/path-containment.js';
 import { MAX_ATTACHMENT_BYTES } from '../gateway/attachment-store-port.js';
 import {
   AttachmentInputError,
@@ -400,7 +401,7 @@ export class FileAttachmentStore {
 
   private conversationDirectory(conversationId: string): string {
     const path = resolve(this.rootDir, conversationId);
-    if (!path.startsWith(`${this.rootDir}/`)) {
+    if (!isPathStrictlyInside(this.rootDir, path)) {
       throw new Error(`Invalid conversation ID: ${conversationId}`);
     }
     return path;

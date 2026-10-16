@@ -5,6 +5,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, join, relative, sep } from 'node:path';
+import { isPathInside } from '../utils/path-containment.js';
 import { fileURLToPath } from 'node:url';
 import type Database from 'better-sqlite3';
 import type { KernelEvent } from '../kernel/control-kernel.js';
@@ -1091,9 +1092,7 @@ function comparePublicationKeys(
 }
 
 function pathsOverlap(left: string, right: string): boolean {
-  return left === right
-    || left.startsWith(`${right}/`)
-    || right.startsWith(`${left}/`);
+  return isPathInside(left, right) || isPathInside(right, left);
 }
 
 function pathMatchesWorkspaceTarget(path: string, targetPaths: readonly string[]): boolean {
