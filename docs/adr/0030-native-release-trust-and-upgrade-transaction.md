@@ -402,3 +402,55 @@ signed inventory verification before any candidate helper is executed.
 Managed tool recovery is release-matched and uses the existing lock and formal
 Server lifecycle, with verified staging and atomic selection outside immutable
 release directories. It does not create a second data or recovery authority.
+
+## 2026-10-16 Amendment: Windows Directory Pointers And Flush Semantics
+
+The 2026-09-30 amendment described "transactional NTFS release pointers" ahead of
+the implementation. The implemented contract is narrower and no longer requires
+Windows Developer Mode or an elevated terminal:
+
+- **Directory pointers.** The active configuration revision, the current release
+  and the compiled agent runtime are NTFS junctions. A junction is the only
+  directory link an ordinary user can create; the same reader normalization and
+  journal-backed recovery rules as the configuration pointer apply (see the
+  2026-10-16 amendment to ADR-0027). Pointer activation on Windows is therefore
+  not a single atomic rename. The activation journal is the authority that
+  decides between "previous revision retained" and "candidate never activated";
+  recovery never promotes an uncommitted candidate.
+- **Database pointer.** The database revision pointer follows the same split.
+  POSIX keeps `<account>/data/anyfusion.db` as a relative file symlink to
+  `database-revisions/<revision>.db`. Windows makes
+  `<account>/data/database-current` a junction to `database-revisions/<revision>/`
+  and the database file is `<...>/database-current/anyfusion.db`. A hard link was
+  rejected as a substitute because WAL, verified backup, cloned migration and
+  rollback open the revision path directly and `readlink`-based pointer
+  resolution has no hard link equivalent. Stored pointer targets stay relative
+  to the pointer's parent directory on both platforms, so activation journals,
+  lineage comparison, gateway-journal companions and rollback targets keep one
+  format. Two consequences are part of the contract:
+  - WAL for the active database lives inside the active revision directory on
+    Windows, so a switch cannot replay a previous revision's WAL against the
+    candidate. Candidate revisions are produced by the SQLite backup/migration
+    path after `wal_checkpoint(TRUNCATE)` and are published without transient
+    `-wal`/`-shm` companions.
+  - A plain (unrevisioned) account database is converted by
+    `ensureRevisionedDatabasePointer`; because the swap cannot be atomic, the
+    conversion records a `database-pointer-migration.json` journal before it
+    touches the pointer, and `recoverDatabasePointerMigration` finishes or
+    repairs the recorded state. Server startup runs both this recovery and
+    prepared release-activation recovery before opening the database.
+- **Upgrade transaction coverage.** `ReleasePointerTransaction` treats the
+  database member as a platform-specific pointer while the other three stay
+  directory pointers; `SourceNativeInstaller`, `SourceNativeUpdater`,
+  `ensureRevisionedDatabasePointer`, the account-layout migrator, backup,
+  cloned migration and rollback all resolve the active database through the
+  same helpers. POSIX data layout, recovery semantics and the atomic pointer
+  rename are unchanged.
+- **Flush semantics.** File content flushing keeps its existing meaning on every
+  platform through a write-capable handle. Windows cannot flush a read-only file
+  handle and has no directory flush that Node can reach, so directory-entry
+  flushing is POSIX-only. This does not relax any file-level durability
+  requirement and callers keep their fail-closed recovery rules.
+
+The trust contract, quiescence, migration, health check and rollback rules are
+unchanged across platforms.

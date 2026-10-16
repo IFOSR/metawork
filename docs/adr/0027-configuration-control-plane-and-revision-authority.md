@@ -101,3 +101,32 @@ Concrete file, secret, audit, and persistence adapters remain outside core polic
 - The complete configuration schema and AgentClass, Harness, Provider, Model, and Permission Profile shapes.
 - Concrete file layout, activation journal representation, secret-store adapter, or revision garbage-collection algorithm.
 - Provider/Model health policy, Executor transport details, and release upgrade trust.
+
+## Amendment: Directory Pointer Backing On Windows (2026-10-16)
+
+Section 2's "activation replaces that pointer atomically" is a POSIX statement.
+Windows cannot rename over an existing directory junction and forbids creating a
+relative directory symlink without elevation, so the active pointer is backed
+differently there while its durable contract stays identical:
+
+- The pointer is a junction holding the same target that POSIX stores as a
+  relative symlink. `readActiveRevisionId` still validates exactly
+  `revisions/<revision-id>`; the platform layer normalizes the junction's
+  absolute target back to that relative form with POSIX separators.
+- Replacing an already active pointer is one atomic rename on POSIX. On Windows
+  it removes the old link and then renames the new one into place, so the pointer
+  is absent for the duration of the swap.
+- That absence is a recorded intermediate state, not a silent fallback. The
+  prepared activation journal is written before the swap; on recovery a missing
+  pointer with a prepared journal keeps the previous revision authoritative,
+  restores its pointer after re-verifying the revision, and clears the journal.
+  With no previous revision the activation simply stays unactivated and fails
+  closed. The next revision is never activated from a prepared journal.
+- On POSIX this state is unreachable and recovery stays fail-closed exactly as
+  before, so macOS and Linux behavior is unchanged.
+
+File pointers are explicitly out of scope here. A junction cannot address a file
+and a hard link is not a general substitute (WAL, backup and rollback open the
+revision path directly), so the database revision pointer remains owned by
+ADR-0030's upgrade transaction and is tracked by
+`docs/plans/2026-10-16-windows-native-web-isolated-fix.md` (W3).

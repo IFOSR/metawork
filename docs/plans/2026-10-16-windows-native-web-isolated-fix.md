@@ -1,11 +1,12 @@
 # Windows 原生 Web 独立修复计划
 
 - 计划日期：2026-10-16
-- 状态：用户已同意分支隔离与 Windows 本机实施；运行代码尚未修改，Windows 验收待开始。
+- 状态：Windows 平台适配已实施并本机验收 Web/Server 主链路；原生安装事务与
+  数据库文件指针仍为开放设计门（W3），因此尚未完成可安装预发布。
 - 工作分支：`fix/windows-native-web`
 - 起点：`main` 的 `cde31595`（`docs: record v0.1.16 packaged acceptance`）。此处记录分支基线，不代表 Windows 已通过该版本验收。
 - 产品范围：Windows x64 原生 MetaWork Server + 浏览器 Web；不制作 Windows Electron Desktop。
-- 完成日期、交付行为、验收证据、关闭提交：待实际完成后填写；本计划建立不代表修复完成。
+- 完成日期、交付行为、验收证据、关闭提交：见第 6 节"实施记录"；本计划建立不代表修复完成。
 
 ## 1. 目标与实施边界
 
@@ -108,3 +109,167 @@ vendored Planner 及必要依赖；不包含 Windows Electron 壳，不运行 De
 每次验收记录提交号、平台/架构、Node/ABI、安装根、命令、结果及日志位置；Windows-only
 分支无法完成的 macOS/Linux 项须明确保留待验收，不以 Windows 成功或 Docker 成功代替。
 完成时填写实际交付、平台证据、未解决限制、完成日期及关闭提交。
+
+## 6. 实施记录（2026-10-16）
+
+### 6.1 W1 复现（本机实测，非旧包现象）
+
+环境：Windows 10.0.26100、x64、Node v22.19.0（ABI 127）、npm 11.19.0、
+Git 2.56.0.windows.2、安装根位于用户目录之外、无管理员权限、无开发者模式。
+
+| # | 触发点 | 实际错误 | 归属 |
+| --- | --- | --- | --- |
+| 1 | `metawork server start` 首次启动 | `EPERM: operation not permitted, fsync`（AccountLayoutMigrator.writeAtomicJson） | 源码缺陷 |
+| 2 | 启动到配置加载 | `RecoveryBlockedError: active configuration pointer escapes revision storage` | 源码缺陷（junction 绝对目标） |
+| 3 | 配置激活 | `fs.symlink(..., 'dir')` 普通用户 `EPERM` | 源码缺陷 |
+| 4 | 启动到凭据加载 | `non-macOS native installation requires explicit METAWORK_SECRET_STORE=file` | 契约未文档化：应由 Windows launcher 设置 |
+| 5 | `metawork web` | `spawn('start')` 找不到 cmd 内建命令（ENOENT） | 源码缺陷 |
+| 6 | 依赖安装（环境） | better-sqlite3 11.10.0 无 Node 24 预编译包 → node-gyp → 无 Python/VS 失败 | 环境：按 W2 使用 Node 22.x |
+| 7 | 依赖下载（环境） | `github.com` 不可达（release 资产 000），`api.github.com`/`codeload` 可达 → 预编译包与 `pi-pdf` Python 归档无法按默认地址获取 | 环境/发布通道 |
+
+### 6.2 已实施修复
+
+- 新增 `src/platform/durable-fs.ts`：统一文件刷盘与目录刷盘。文件刷盘在 Windows 上用
+  可写句柄（`FlushFileBuffers` 要求写权限），目录刷盘在 Windows 上不可达故仅 POSIX 生效。
+  收敛全部 18 处 `open(...,'r')+sync`／目录 `sync` 调用点（configuration、storage、
+  session、gateway、installation），写句柄调用点保持不变。
+- 新增 `src/platform/fs-links.ts`：目录指针在 POSIX 为相对符号链接、在 Windows 为
+  junction（普通用户可建）；`readDirectoryLinkTarget` 把 junction 的绝对目标归一化回
+  `revisions/<id>` 相对契约（POSIX 分隔符）。已接入配置仓库与账户布局迁移器。
+- `FileConfigurationRepository`：激活用 `replaceDirectoryLink`（POSIX 单次原子 rename；
+  Windows 先移除旧指针再 rename），`readActiveRevisionId` 走归一化读取；`recover()` 新增
+  "prepared journal + 指针缺失"的确定性恢复分支：重新校验并恢复上一 revision，绝不激活未提交
+  revision；无上一 revision 时保持未激活并失败关闭。POSIX 分支保持原失败关闭行为不变。
+- `openBrowser`：Windows 改为 `cmd.exe /d /s /c start "" <url>`，URL 仍以 argv 传入，
+  不拼接 shell 命令串。
+- `metawork server restart`：就绪探测改用 `resolveGatewaySocketPath()`（Windows 为命名管道），
+  不再硬编码 `data/gateway.sock`。
+- **W2 执行器工具解析（命令入口）**：`src/utils/executor-tool-path.ts` 新增平台候选顺序与启动解析：
+  Windows 先找 `.exe`/`.com`，再找 `.cmd`/`.bat`，最后才是裸名字（npm 会在裸名字下写 POSIX sh 脚本）；
+  `resolveExecutorLaunch()` 把 shim 解析为它指向的 Node 入口（npm 的 `.cmd` 与 `sh` shim 都能解析），
+  执行时变成 `node <cli.js> ...`，不经 cmd.exe、不会截断长提示词；只有无法解析入口的 shim 才返回
+  `shellShim=true`，执行器对其 fail closed（仅短探测允许回退）。`commandExistsOnPath()` 改用同一候选顺序，
+  因此安装期 `detectCommand`、readiness 探测与真实执行入口三者一致。接入点：readiness `defaultVersionProbe`、
+  `SpawnLocalCliChildProcessRunner`、Pi/Codex `defaultProbeCommand`、`validateCodexCommand`；
+  缺失工具仍返回 `.missing-tools/<name>`，使探针报 ENOENT（missing）而不是 broken。
+- 文档：ADR-0027、ADR-0030 增补 2026-10-16 修正节（目录指针后备、非原子替换的恢复依据、
+  刷盘语义、文件指针仍开放）；`docs/current/technical-overview.md` 的 Windows 安装与配置
+  章节改为实际契约（不再要求开发者模式）。
+
+### 6.3 Windows 本机验收证据
+
+命令一律使用 Node v22.19.0；安装根为独立测试根（非本机既有安装）：
+
+| 项 | 结果 |
+| --- | --- |
+| `npx tsup` + schema + pi-attempt 产物 | 成功 |
+| `npm run build:web`（`npm ci --prefix web` + vite build） | 成功 |
+| `npx tsc --noEmit` | 通过 |
+| `npx vitest run tests/platform/*.test.ts tests/configuration/file-configuration-repository.test.ts` | 11/11 通过（含 Windows 缺失指针恢复与 `syncFile` 回归用例） |
+| 首次配置激活（junction 创建） | 成功，`config/active` 为 Junction |
+| 连续第二次激活（替换已存在 junction） | 成功，`/api/config` 返回新 revision |
+| `node dist/index.js server start` | `MetaWork Web: http://127.0.0.1:8788`；`MetaWork Server ready: \\.\pipe\metawork-gateway.sock-...` |
+| `GET /`、`/assets/index-*.js`、`/assets/index-*.css`、SPA 深层路由 | 200，静态产物正确 |
+| `GET /api/auth/session` | 200，下发 `anyfusion_web_session` Cookie |
+| `GET /api/workspaces`、`/api/config`、`/api/config/activation-status`、`/api/config/completion`、`/api/config/revisions`、`/api/agents/readiness`、`/api/execution/tasks`、`/api/client/notifications`、`/api/ws/diagnostics` | 全部 200 |
+| `GET /api/workspaces/browse`（默认目录与 `C:\...` 显式路径） | 200，盘符根、面包屑与反斜杠路径正确 |
+| `POST /api/workspaces/select` | `accepted`，Windows canonicalPath 正确落库 |
+| WebSocket `/ws`（Cookie + Origin 原始握手） | `101 Switching Protocols`，收到 `hello` 能力帧 |
+| `node dist/index.js web`（含打开浏览器） | 输出 `#launch=` URL，浏览器进程被拉起 |
+| `node dist/index.js server stop` | 已停止对应 PID |
+
+临时脚手架（一次性配置激活脚本、原始 WS/命名管道探测脚本、npm 日志）只用于本机验收，
+未提交；`dist/`、`web/dist/`、`.tmp/` 未提交。
+
+### 6.4 未完成 / 未验收（不得视为通过）
+
+- **Windows 原生安装的端到端验收尚未在安装器上跑通**：本机没有 staged release 的
+  Planner 产物（需 `planner/AnyFusion-Pi` 构建）与 Provider 凭据，安装器的配置 probe
+  因此无法通过；数据库指针、发布指针、激活 journal、恢复与回滚逻辑已实现并有专项测试
+  （见 6.5），但“安装 → 更新 → 回滚”整链尚未在真实 Windows 安装上逐项签字。
+- **发布隔离（第 4 节）**：未创建 tag/Release，未改造 Windows 构建与预发布流程。
+- **Planner / Pi / Codex Executor 在 Windows 的原生验证**：未开始（需要 staged release 的
+  Planner 产物、Provider 凭据与 bundled Node/Git 决策）。本机没有 Provider 凭据，
+  官方登录也未验证。
+- **macOS/Linux 合并门**：本机无 Docker，未运行 SQLite/POSIX 套件；本机改动对 POSIX 均
+  为等价替换（见 6.5 的等价性说明），但必须回到主线前补齐。
+- **环境阻塞**：`github.com` 在当前网络不可达，`scripts/prepare-pi-pdf.mjs` 与 better-sqlite3
+  预编译包默认地址无法使用（本次用 npmmirror 二进制镜像与 Node 22 预编译包完成本机构建）。
+
+## 7. W3 数据库文件指针设计与实施（2026-10-16，已批准并实现）
+
+选定方案（用户已确认）：**Windows 专用目录 junction 间接层**，复用 W2 已验证的目录指针原语；
+POSIX 布局、权限、符号链接语义与恢复语义完全不变。
+
+- 路径契约：POSIX `<account>/data/anyfusion.db` → `database-revisions/<revision>.db`（相对文件符号链接）；
+  Windows `<account>/data/database-current`（junction）→ `database-revisions/<revision>/`，数据库文件为
+  `<account>/data/database-current/anyfusion.db`。两种平台的 journal 目标均为“相对指针父目录”的路径字符串。
+- 新增模块：`src/installation/database-pointer-paths.ts`（纯路径契约，无 I/O）与
+  `src/installation/database-pointer.ts`（读取/替换指针、兼容性校验、明文库→revision 转换与恢复、
+  `database-pointer-migration.json` journal）。
+- 事务接线：`ReleasePointerTransaction` 的 database 成员走平台指针，其余三者仍为目录指针；
+  `SourceNativeInstaller` / `SourceNativeUpdater` / `ensureRevisionedDatabasePointer` /
+  `AccountLayoutMigrator` / gateway journal 伴随文件 / 回滚目标解析全部改为同一组 helper。
+- WAL：Windows 上活动库的 `-wal`/`-shm` 落在活动 revision 目录内，跨 revision 的 WAL 混用
+  在结构上不可能；候选 revision 由 `wal_checkpoint(TRUNCATE)` 后的 SQLite backup/迁移路径产生，
+  发布前清除残留 `-wal`/`-shm`。
+- 中间态：Windows 无法原子替换 junction，因此“明文库 → revision 指针”的转换先落 journal；
+  `recoverDatabasePointerMigration()` 按 journal 收尾或修复，Server 启动在打开数据库前同时执行
+  该恢复与 prepared release 激活恢复（`recoverInstallationPointers`，POSIX 直接返回）。
+
+### 7.1 POSIX 等价性
+
+以下替换均为“同一语义换实现”，POSIX 分支不引入新状态：
+
+| 位置 | 原实现 | 现实现（POSIX 分支） |
+| --- | --- | --- |
+| 指针读取 | `readlink` | `readDirectoryLinkTarget` / `readDatabasePointerTarget` → `readlink` |
+| 目录指针替换 | `symlink(target,tmp)+rename` | `replaceDirectoryLink` → `symlink(target,tmp,'dir')+rename`（POSIX 忽略 type） |
+| 数据库指针替换 | `symlink(target,tmp)+rename` | `replaceDatabasePointer` → 同上，另加一次目录 fsync |
+| 明文库 → revision | copy + symlink + rename | 同一算法，增加兼容性校验与目录 fsync；journal 在 file 类型平台不写 |
+| 账户布局迁移 | 无条件建库符号链接 | 仅 file 类型平台建链接（directory 类型改为普通库路径，待首次转换） |
+| Server 启动 | 不做指针恢复 | `databasePointerKind()==='directory'` 时才恢复，否则零改动 |
+
+### 7.2 迁移与兼容
+
+不存在已发布的 Windows 安装，因此不提供 `data/anyfusion.db` → `data/database-current/anyfusion.db`
+的跨版本迁移：Windows 上该旧路径只可能来自未发布的本机开发根。正式安装由
+`SourceNativeInstaller` 直接创建 revision + junction；先于指针存在的普通库（例如
+先 `server start` 再安装的根）由 `ensureRevisionedDatabasePointer()` 转换。
+
+### 7.3 W2 执行器工具解析（2026-10-16，本机验证）
+
+问题：本机已安装 `@earendil-works/pi-coding-agent` 1.2.0（`%APPDATA%\npm\pi.cmd`），但
+`/api/agents/readiness` 报 `pi-agent missing / command not found`，且安装期 `detectCommand('pi')` 也为 false。
+根因：解析器只在 PATH 目录里试裸名字（拿到 npm 同时写下的 POSIX sh 脚本 `%APPDATA%\npm\pi`），
+随后用 `execFile` 直接执行它——Windows 无法启动 sh 脚本，ENOENT 被归类为“未安装”。
+
+修复后实测（试用根，release `0.1.16-win-trial-3`）：
+
+```json
+{"agentId":"pi-agent","status":"installed","version":"1.2.0",
+ "path":"C:\\Users\\admin\\AppData\\Roaming\\npm\\pi.cmd","managed":false}
+{"agentId":"codex-cli","status":"missing","detail":"command not found"}
+```
+
+单测：`tests/utils/executor-tool-path.test.ts`（9 项：候选顺序、npm `.cmd` shim 解析为 Node 入口、
+`sh` shim 解析、镜像直启、不可解析 shim 回退、缺失工具保持 ENOENT、POSIX 不改行为）。
+基线对比：`tests/utils + tests/executor + tests/management` 在改动前后失败文件数 22 → 20（无新增失败）。
+
+遗留：无 Provider 凭据时安装器按设计把所有 AgentClass 置为 disabled，因此要在 Web 设置里选择
+Provider 并启用 Pi 执行器后才能真正跑任务；执行器的完整 attempt 链路（worktree/Git/交付）尚未在
+Windows 上跑过真实任务。Planner 仍复用旧安装里同一份 0.80.2 已构建产物（源码重建受 canvas devDep
++ 无 Python/VS + github.com 不可达阻隔）。
+
+### 7.4 本机验证证据（Windows，Node v22.19.0）
+
+- `npx tsc --noEmit` 通过。
+- 新增 `tests/installation/database-pointer.test.ts`（11 项，含 Windows 明文库转换、
+  中断转换恢复、journal 清理、指针往返、兼容性拒绝；POSIX 分支在本机 skip、在 Docker 执行）：
+  与 `tests/platform/*` 一并运行 15/16 通过，唯一失败为既有 `local-endpoint.test.ts` 的
+  POSIX 路径断言（基线同样失败）。
+- 基线对比（`tests/installation tests/configuration tests/platform tests/account`，
+  改动前 vs 改动后，同一 Windows 环境）：**新增失败 0**，改动前失败而改动后通过的测试文件 16 个
+  （均为 fsync/durability 修复的收益）。
+- W2 阶段的 Server/Web 主链路（启动、命名管道、静态资源、会话、WebSocket、目录浏览、
+  连续两次配置激活、`metawork web` 拉起浏览器、`server stop`）保持通过。
