@@ -52,10 +52,6 @@ jobs:
             runner: macos-15
             platform: darwin
             arch: arm64
-          - target: win32-x64
-            runner: windows-latest
-            platform: win32
-            arch: x64
           - target: linux-x64
             runner: ubuntu-24.04
             platform: linux
@@ -320,6 +316,7 @@ jobs:
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
+          METAWORK_RELEASE_TARGETS: darwin-arm64,darwin-x64,linux-x64
         shell: bash
         run: |
           set -euo pipefail

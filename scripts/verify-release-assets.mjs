@@ -69,11 +69,12 @@ function assertArtifact(actual, expected, name) {
 
 export async function verifyReleaseAssets(directory, tag, options = {}) {
   if (!/^v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(tag)) throw new Error('invalid release tag');
+  const targets = options.targets ?? RELEASE_TARGETS;
   const now = options.now ?? Date.now();
   const manifests = [];
   const files = [];
   let identity;
-  for (const target of RELEASE_TARGETS) {
+  for (const target of targets) {
     const name = `manifest.${target}.json`;
     const body = readFileSync(join(directory, name));
     const manifest = JSON.parse(body);
@@ -168,7 +169,11 @@ export async function verifyPublishedRelease(release, baseUrl) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [directory, tag, baseUrl] = process.argv.slice(2);
-  const release = await verifyReleaseAssets(directory, tag, { sourceCommit: process.env.GITHUB_SHA });
+  const targets = process.env.METAWORK_RELEASE_TARGETS?.split(',').map(value => value.trim()).filter(Boolean);
+  const release = await verifyReleaseAssets(directory, tag, {
+    sourceCommit: process.env.GITHUB_SHA,
+    ...(targets?.length ? { targets } : {}),
+  });
   if (baseUrl) await verifyPublishedRelease(release, baseUrl);
   console.log(`Verified ${release.releaseId}: ${release.files.length} assets including both Desktop installers`);
 }

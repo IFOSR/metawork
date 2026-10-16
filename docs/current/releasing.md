@@ -2,7 +2,7 @@
 
 Root, Web and Desktop package/lock versions must match. Prepare release notes,
 CHANGELOG and a release plan before tagging. Published releases are immutable;
-use a new version for future releases. The current published release is `v0.1.14`: macOS arm64 Desktop and Runtime,
+use a new version for future releases. The current published release is `v0.1.17`: macOS Desktop and Runtime,
 plus Linux x64 and Windows x64 Server/Web/TUI Runtime packages.
 
 ## GitHub Actions configuration
@@ -65,6 +65,13 @@ See [dependency acceptance](../../apps/desktop/packaging/DEPENDENCIES.md).
 Runtime manifests contain immutable tag-based artifact URLs, preventing mixed
 downloads during latest promotion. Desktop filenames are
 `MetaWork-darwin-arm64.dmg` and `MetaWork-darwin-x64.dmg` inside an immutable tag.
+
+Windows is built independently so a Windows runner or branch cannot block the
+macOS Desktop release. Push `vVERSION-windows` after the matching stable
+`vVERSION` Release exists; the Windows workflow uploads its signed Runtime and
+Planner archive plus manifest to that stable Release and verifies the complete
+four-target set afterward. The Windows package version remains `VERSION`, while
+the build trigger tag carries the `-windows` suffix.
 
 ## Installation behavior
 

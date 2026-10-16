@@ -3,7 +3,7 @@
 [Desktop 无模型安装与内部版本升级修复](plans/2026-10-08-desktop-model-free-installation.md)：
 无模型安装已实现；首次启动不要求填写模型信息。
 [Finder 更新进程修复](plans/2026-10-08-desktop-finder-update-lifecycle.md)
-已修正后台生命周期、内部包签名和更新进度提示；arm64 DMG 已发布到 GitHub v0.1.14。
+已修正后台生命周期、内部包签名和更新进度提示；v0.1.17 DMG 与 Runtime 已发布到 GitHub。
 
 MetaWork is the proprietary commercial product represented by this repository.
 AnyFusion references identify the separate open-source upstream, attributed
@@ -19,6 +19,7 @@ This directory contains both current technical documentation and historical plan
 
 - [富文档预览](plans/2026-10-15-rich-document-preview.md)：HTML、Word、PPT、Excel 和 PDF 的本地预览、附件入口及 Web/Desktop 验收。
 - [对话表格与图表](plans/2026-10-16-conversation-tables-and-charts.md)：完整 Markdown 表格、离线交互图表、分析师输出约定与浏览器/桌面验收。
+- [任务执行结果、验收与用户状态收敛](plans/2026-10-16-task-execution-user-state-convergence-plan.md)：安全未认证结果的用户决策闭环，以及四态用户状态投影。
 
 - [历史会话空白修复](plans/2026-10-10-history-viewport-restore-fix.md)：修复 Desktop 重启后长报告滚动位置恢复导致的空白，历史内容无需重建。
 
@@ -50,7 +51,7 @@ This directory contains both current technical documentation and historical plan
 
 ## Releases
 
-- [MetaWork v0.1.14 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.14): current macOS arm64 Desktop DMG and signed Runtime/Planner archives.
+- [MetaWork v0.1.17 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.17): current Desktop DMGs and signed Runtime/Planner archives.
 - [AnyFusion v1.2.0 Preview](releases/v1.2.0-preview.0.md): public preview highlights, architecture summary, deployment status, and known limitations.
 - [MetaWork v1.2.0 Preview 6](releases/v1.2.0-preview.6.md): historical preview release matrix and build notes.
 - [MetaWork v0.1.7 Internal Release](releases/v0.1.7.md): latest macOS arm64 internal release with host CLI discovery and compact readiness notices; Apple signing/notarization remain pending.

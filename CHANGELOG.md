@@ -7,6 +7,17 @@ The project follows [Semantic Versioning](https://semver.org/) for public releas
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-10-16
+
+- Converge task presentation on waiting, executing, needs-action and finished;
+  internal `blocked` facts no longer appear as a user-facing state.
+- Preserve safe uncertified PDF/PPT and other file results for explicit user
+  acceptance or a new execution, with deterministic checks before publication.
+- Add the durable `/task accept-result` path and keep failed attempts and
+  result evidence available for recovery and audit.
+- Add official account payment settlement and refund handling, plus installation,
+  configuration and session recovery fixes from the post-v0.1.16 mainline.
+
 ## [0.1.16] - 2026-10-16
 
 - Render conversation GFM tables with readable borders, alignment, horizontal scrolling and authorized artifact links.

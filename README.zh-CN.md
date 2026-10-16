@@ -29,7 +29,7 @@ MetaWork 为 Agent 工作提供统一的商业服务系统，覆盖规划、授�
   Gateway 命令与事件平面；Server 独立常驻，Client 退出不会停止 Runtime。
 - **多端统一观察：** Web、飞书和原生 TUI 可以查看同一批 Task 与会话。
   会话切换读取有界客户端读模型，不需要重放整段历史；TUI 任务面板可以
-  汇总查看执行中、排队中和阻塞中的任务。
+  汇总查看执行中、排队中和需要处理的任务。
 - **可解释路由：** 每个获批 attempt 都固定到一个配置 revision 以及完整的
   Provider、Model、AgentClass、Harness 和 Permission Profile 绑定。
 - **能力驱动路由：** Planner 根据智能体职责和能力证据规划任务；决策模型结合
@@ -58,14 +58,14 @@ AnyFusion 标识。
 
 ## Release
 
-当前发布版本是 **v0.1.14**，包含统一智能路由与决策模型配置、模型信息手动粘贴
-补足、附件和截图可见展示，以及更清晰的 Executor 错误、阻塞和恢复提示。Release
-同时提供压缩后的 macOS Apple Silicon Desktop DMG，以及签名的 macOS arm64、
-Linux x64 和 Windows x64 Runtime、Planner 归档。
+当前发布版本是 **v0.1.17**，包含统一的四态任务界面、安全未认证结果的接受与重试、
+官方账号支付结算、安装恢复修复，以及最新的 Runtime/Web/Desktop 构建。Release
+同时提供 macOS Desktop DMG，以及 macOS arm64、macOS x64、Linux x64 和 Windows x64
+的签名 Runtime、Planner 归档。
 
-- [下载 macOS arm64 DMG](https://github.com/IFOSR/metawork/releases/download/v0.1.14/MetaWork-darwin-arm64.dmg)
-- [查看 v0.1.14 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.14)
-- [下载校验文件和 Runtime/Planner 归档](https://github.com/IFOSR/metawork/releases/tag/v0.1.14)
+- [下载 macOS arm64 DMG](https://github.com/IFOSR/metawork/releases/download/v0.1.17/MetaWork-darwin-arm64.dmg)
+- [查看 v0.1.17 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.17)
+- [下载校验文件和 Runtime/Planner 归档](https://github.com/IFOSR/metawork/releases/tag/v0.1.17)
 
 Desktop DMG 约 277 MB，使用内部 ad-hoc 签名，未使用 Apple Developer ID 公证，
 当前只支持 macOS Apple Silicon（`arm64`）。Server/Web/TUI 安装器支持 Linux x64、
@@ -89,7 +89,7 @@ Web 已包含在 Server 安装包中，不需要安装 Desktop。
 1. 在 **苹果菜单 → 关于本机** 确认 Mac 使用 Apple Silicon（M 系列）。
 2. 如果尚未安装 Apple Command Line Tools，先在终端执行 `xcode-select --install`，
    按 macOS 提示完成安装。内部包使用系统 Git wrapper 执行仓库操作。
-3. 从 v0.1.14 Release 下载 [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/download/v0.1.14/MetaWork-darwin-arm64.dmg)，
+3. 从 v0.1.17 Release 下载 [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/download/v0.1.17/MetaWork-darwin-arm64.dmg)，
    打开 DMG，把 **MetaWork.app** 拖入“应用程序”。
 4. 由于这是未公证内部 DMG，首次启动可能被 macOS 拦截。在 Finder 中右键
    **MetaWork.app**，选择“打开”，再确认“打开”。如果仍被拦截，进入

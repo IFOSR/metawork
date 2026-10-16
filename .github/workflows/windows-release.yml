@@ -1,0 +1,89 @@
+name: Build Windows release
+
+on:
+  push:
+    tags:
+      - 'v*-windows'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: npm
+      - name: Verify Windows tag and package version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_NAME -notmatch '^v(\d+\.\d+\.\d+)-windows$') {
+            throw "Windows release tag must be v<version>-windows"
+          }
+          $version = $Matches[1]
+          $packageVersion = node -p "require('./package.json').version"
+          if ($packageVersion -ne $version) {
+            throw "Windows tag version $version does not match package version $packageVersion"
+          }
+      - name: Write release signing key
+        shell: pwsh
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY }}
+        run: |
+          if (-not $env:RELEASE_SIGNING_KEY) { throw 'METAWORK_RELEASE_SIGNING_KEY is required' }
+          $env:RELEASE_SIGNING_KEY | Out-File -FilePath "$env:RUNNER_TEMP\metawork-release-key.pem" -Encoding utf8 -NoNewline
+      - name: Build and package Windows Runtime
+        shell: pwsh
+        env:
+          METAWORK_RELEASE_SIGNING_KEY: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY }}
+        run: |
+          $version = [regex]::Match($env:GITHUB_REF_NAME, '^v(\d+\.\d+\.\d+)-windows$').Groups[1].Value
+          $releaseId = "$version-build-$($env:GITHUB_SHA.Substring(0, 7))"
+          npm run build:release -- `
+            --platform win32 `
+            --arch x64 `
+            --channel stable `
+            --release-id $releaseId `
+            --artifact-base-url "https://github.com/IFOSR/metawork/releases/download/v$version" `
+            --signing-key "$env:RUNNER_TEMP\metawork-release-key.pem" `
+            --out-dir "$env:RUNNER_TEMP\metawork-release"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metawork-windows-x64
+          path: ${{ runner.temp }}/metawork-release/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: metawork-windows-x64
+          path: release-assets
+      - name: Upload Windows assets to the matching stable Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${VERSION%-windows}"
+          TAG="v${VERSION}"
+          gh release view "$TAG" --repo IFOSR/metawork >/dev/null
+          gh release upload "$TAG" --repo IFOSR/metawork release-assets/* --clobber
+          mkdir downloaded-release
+          gh release download "$TAG" --repo IFOSR/metawork --dir downloaded-release
+          node scripts/verify-release-assets.mjs downloaded-release "$TAG"
+          node scripts/verify-release-assets.mjs downloaded-release "$TAG" "https://github.com/IFOSR/metawork/releases/latest/download"

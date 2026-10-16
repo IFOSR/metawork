@@ -53,6 +53,19 @@ describe('complete latest release gate', () => {
     const release = await verifyReleaseAssets(fixture(absolute), tag, { ...options, sourceCommit: revision });
     expect(release.files).toHaveLength(18);
   });
+  it('accepts a stable release set before the independent Windows upload', async () => {
+    const root = fixture();
+    for (const kind of ['metawork', 'planner']) {
+      rmSync(join(root, `${kind}-${releaseId}-win32-x64.zip`));
+    }
+    rmSync(join(root, 'manifest.win32-x64.json'));
+    const release = await verifyReleaseAssets(root, tag, {
+      ...options,
+      targets: ['darwin-arm64', 'darwin-x64', 'linux-x64'],
+      sourceCommit: revision,
+    });
+    expect(release.files).toHaveLength(15);
+  });
   it('rejects a missing Desktop architecture instead of publishing a partial release', async () => {
     const root = fixture(); rmSync(join(root, 'MetaWork-darwin-x64.dmg'));
     await expect(verifyReleaseAssets(root, tag, options)).rejects.toThrow();
