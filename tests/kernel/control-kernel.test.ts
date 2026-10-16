@@ -199,6 +199,43 @@ const snapshot: KernelSnapshot = {
 };
 
 describe('ControlKernel', () => {
+  it('queues three independent subtasks durably even when physical slots are occupied', () => {
+    const snapshot = dispatchSnapshot();
+    snapshot.availableSlots = 0;
+    snapshot.subtasks = ['a', 'b', 'c'].map(id => ({ ...snapshot.subtasks[0]!, id }));
+    snapshot.frontier = ['a', 'b', 'c'];
+    const decision = new ControlKernel().decide(runtimeEvent({ type: 'dispatch_requested', reason: 'start' }), snapshot);
+    expect(decision.action).toMatchObject({ type: 'dispatch_batch', items: [
+      { subtaskId: 'a' }, { subtaskId: 'b' }, { subtaskId: 'c' },
+    ] });
+  });
+
+  it('preserves an environment probe failure instead of reporting capacity exhaustion', () => {
+    const event = runtimeEvent({ type: 'capacity_signal', available: false,
+      authorizedBinding: codexBinding, bindingFingerprint: authorizedExecutorBindingFingerprint(codexBinding),
+      cycleId: 'cycle', attemptKind: 'primary', attemptPayload: null,
+      failure: { kind: 'configuration', scope: 'agent_class', code: 'executor_probe_failed',
+        summary: 'Executable missing', attemptStarted: false } });
+    const decision = new ControlKernel().decide(event, dispatchSnapshot());
+    expect(decision.action).toMatchObject({ type: 'block_work', subtaskId: 'subtask_1' });
+    expect(decision.reason).toContain('Executable missing');
+  });
+
+  it('counts launches without receipts so fallback cannot loop on the same binding', () => {
+    const event = executionFailure('attempt-no-receipt', codexBinding, 'fallback', 'task_failed');
+    const snapshot = dispatchSnapshot();
+    snapshot.subtasks[0]!.executorBindings = [codexBinding];
+    snapshot.dispatchItems = [{ attemptId: 'attempt-no-receipt', subtaskId: 'subtask_1',
+      status: 'uncertain', order: 0, bindingFingerprint: event.bindingFingerprint }];
+    expect(new ControlKernel().decide(event, snapshot).action.type).toBe('queue_generation_replan');
+  });
+
+  it('keeps an independent retry wake as the driver when there is no runnable work', () => {
+    const snapshot = dispatchSnapshot([], 'awaiting_decision');
+    snapshot.pendingRetrySubtaskIds = ['subtask_1'];
+    expect(new ControlKernel().decide(runtimeEvent({ type: 'dispatch_requested', reason: 'sibling settled' }), snapshot).action.type).toBe('no_op');
+  });
+
   it('blocks dispatch when the Server entitlement fact is closed', () => {
     const decision = new ControlKernel().decide(runtimeEvent({ type: 'dispatch_requested', reason: 'start' }), {
       ...dispatchSnapshot(),
@@ -206,6 +243,27 @@ describe('ControlKernel', () => {
     });
     expect(decision.action).toEqual({ type: 'block_work', taskId: 'task_1', subtaskId: 'subtask_1', preserveSubtaskState: true });
     expect(decision.reason).toContain('expired');
+  });
+
+  it.each([true, false])('rechecks current entitlement on explicit resume (allowed=%s)', allowed => {
+    const state = dispatchSnapshot();
+    state.task = { id: 'task_1', status: 'blocked' };
+    state.productionAuthorization = { allowed, reason: 'official authorization state: logged_out' };
+    state.subtasks = [
+      { ...state.subtasks[0]!, id: 'research', status: 'done' },
+      { ...state.subtasks[0]!, id: 'summary', status: 'ready', dependencies: ['research'] },
+    ];
+    const result = new ControlKernel().decide(runtimeEvent({
+      type: 'task_resume_requested', blockerCategory: 'explicit_resource',
+      sourceInputExcerpt: 'continue after login', newlyProvidedResources: [],
+      idempotencyKey: `resume:authorization:${allowed}`,
+    }), state);
+    if (allowed) {
+      expect(result.action).toMatchObject({ type: 'resume_task', subtaskIds: ['summary'] });
+    } else {
+      expect(result.action).toMatchObject({ type: 'block_work', preserveSubtaskState: true });
+      expect(result.reason).toBe('official authorization state: logged_out');
+    }
   });
   it('uses an Auto AgentClass default as the resolver preference for agent-class-default', () => {
     expect(resolvePreferredModelRef(
@@ -413,6 +471,7 @@ describe('ControlKernel', () => {
       goal: '生成一张产品概念图',
       executor: 'pi-agent',
       deliveryKind: 'edit',
+      fileOutputs: ['images/'],
     });
     const subtask = proposal.workGraph!.subtasks[0]!;
     subtask.contextRefs = [];
@@ -508,6 +567,7 @@ describe('ControlKernel', () => {
       goal: 'Research the latest public web information',
       executor: 'pi-agent',
       deliveryKind: 'report',
+      fileOutputs: [],
     });
     proposal.workGraph!.subtasks[0]!.contextRefs = [];
 
@@ -1081,7 +1141,21 @@ describe('ControlKernel', () => {
     });
   });
 
-  it('authorizes exact workspace continuation when a safe result only lacks the completion marker', () => {
+  it('rejects an old resume card before delivery recovery can be authorized', () => {
+    const snapshot = dispatchSnapshot([], 'awaiting_integration');
+    snapshot.task = { id: 'task_1', status: 'running' };
+    snapshot.deliveryRecoveryPublicationIds = ['publication_1'];
+    for (const fence of [{ expectedGenerationId: 'old-generation' }, { expectedGraphRevision: 99 }]) {
+      const result = new ControlKernel().decide(runtimeEvent({
+        type: 'task_resume_requested', blockerCategory: 'dependency_publication',
+        sourceInputExcerpt: 'continue', newlyProvidedResources: [], idempotencyKey: 'resume:stale', ...fence,
+      }), snapshot);
+      expect(result.action).toEqual({ type: 'no_op' });
+      expect(result.reason).toContain('stale');
+    }
+  });
+
+  it('authorizes metadata correction without business continuation when a safe result only lacks the completion marker', () => {
     const snapshot = dispatchSnapshot([], 'awaiting_decision');
     snapshot.task = { id: 'task_1', status: 'running' };
     snapshot.resumeRecoveryCandidates = [{
@@ -1091,6 +1165,9 @@ describe('ControlKernel', () => {
       bindingFingerprint: codexFingerprint,
       recoveryMode: 'native_session',
       reason: 'completion_marker_missing',
+      correctionFacts: { receiptCount: 1, responseBytes: 20 },
+      attemptPayload: { protocol: 'completion-correction-v2', completionContract: {},
+        violations: [{ code: 'completion_malformed', path: 'marker', message: 'Missing marker' }] },
     }];
 
     const result = new ControlKernel().decide({
@@ -1121,9 +1198,10 @@ describe('ControlKernel', () => {
         sourceAttemptId: 'attempt_uncertified',
         authorizedBinding: codexBinding,
         bindingFingerprint: codexFingerprint,
-        attemptKind: 'continuation',
+        attemptKind: 'contract_correction',
         recoveryMode: 'native_session',
         defaultResourceGrant: [],
+        attemptPayload: snapshot.resumeRecoveryCandidates[0].attemptPayload,
       },
     });
   });
@@ -1138,6 +1216,9 @@ describe('ControlKernel', () => {
       bindingFingerprint: codexFingerprint,
       recoveryMode: 'recovery_packet',
       reason: 'completion_metadata_invalid',
+      correctionFacts: { receiptCount: 1, responseBytes: 20 },
+      attemptPayload: { protocol: 'completion-correction-v2', completionContract: {},
+        violations: [{ code: 'completion_malformed', path: 'marker', message: 'Missing marker' }] },
     } as never];
 
     const result = new ControlKernel().decide({
@@ -1166,6 +1247,37 @@ describe('ControlKernel', () => {
       },
     });
   });
+
+  it.each(['unsupported', 'exhausted', 'oversized', 'missing_payload', 'missing_facts', 'artifact_missing', 'business_continuation'] as const)(
+    'does not bypass metadata correction constraints on explicit resume: %s', mode => {
+      const snapshot = dispatchSnapshot([], 'awaiting_decision');
+      snapshot.task = { id: 'task_1', status: 'running' };
+      const candidate: NonNullable<typeof snapshot.resumeRecoveryCandidates>[number] = {
+        subtaskId: 'subtask_1', sourceAttemptId: 'attempt_uncertified', authorizedBinding: codexBinding,
+        bindingFingerprint: codexFingerprint, recoveryMode: 'recovery_packet', reason: 'completion_marker_missing',
+        correctionFacts: { receiptCount: 1, responseBytes: 20 },
+        attemptPayload: { protocol: 'completion-correction-v2', completionContract: {},
+          violations: [{ code: 'completion_malformed', path: 'marker', message: 'Missing marker' }] },
+      };
+      if (mode === 'unsupported') snapshot.correctionSupportedAgentClasses = [];
+      if (mode === 'exhausted') candidate.correctionFacts!.receiptCount = 2;
+      if (mode === 'oversized') candidate.correctionFacts!.responseBytes = 128 * 1024 + 1;
+      if (mode === 'missing_payload') delete candidate.attemptPayload;
+      if (mode === 'missing_facts') delete candidate.correctionFacts;
+      if (mode === 'artifact_missing') candidate.attemptPayload = { protocol: 'completion-correction-v2',
+        completionContract: {}, violations: [{ code: 'completion_artifact_invalid', path: 'artifacts', message: 'Missing file' }] };
+      if (mode === 'business_continuation') candidate.attemptKind = 'continuation';
+      snapshot.resumeRecoveryCandidates = [candidate];
+      const result = new ControlKernel().decide({
+        schemaVersion: 5, configurationRevision, type: 'task_resume_requested', id: 'resume_metadata',
+        correlationId: 'request_metadata', causationId: null, occurredAt: '2026-07-20T00:00:00.000Z',
+        sessionId: 'session_1', taskId: 'task_1', blockerCategory: 'unknown',
+        sourceInputExcerpt: 'continue', newlyProvidedResources: [], idempotencyKey: 'resume:metadata',
+      }, snapshot);
+      expect(result.action).toEqual({ type: 'no_op' });
+      expect(result.reason).toContain('unavailable or exhausted');
+    },
+  );
 
   it('waits once for preferred infrastructure recovery, then falls back exactly once per remaining class', () => {
     const kernel = new ControlKernel();
@@ -1371,7 +1483,7 @@ describe('ControlKernel', () => {
       workUnitId: 'wu_1',
       authorizedBinding: codexBinding,
       bindingFingerprint: codexFingerprint,
-      contract: { schemaVersion: 2 }, violations: [{ code: 'missing', path: '$.handoffs', message: 'required' }],
+      contract: { schemaVersion: 2 }, violations: [{ code: 'completion_malformed', path: 'marker', message: 'required' }],
       receiptCount: 1, responseBytes: 100,
       resultId: 'result_attempt_1_safe',
       deliverability: 'deliverable',
@@ -1402,7 +1514,7 @@ describe('ControlKernel', () => {
       authorizedBinding: piBinding,
       bindingFingerprint: piFingerprint,
       contract: { schemaVersion: 2 },
-      violations: [{ code: 'missing', path: '$.handoffs', message: 'required' }],
+      violations: [{ code: 'completion_malformed', path: 'marker', message: 'required' }],
       receiptCount: 1,
       responseBytes: 100,
       resultId: 'result_pi_safe',
@@ -1577,6 +1689,24 @@ describe('ControlKernel', () => {
       task: { id: 'task_1', status: 'cancelled' },
       wakeAuthorized: false,
     }).action).toEqual({ type: 'no_op' });
+  });
+
+  it('allows a capacity wake while an independent sibling keeps the Task running', () => {
+    const kernel = new ControlKernel();
+    const timer = runtimeEvent({
+      type: 'timer_tick', occurredAt: '2026-07-20T00:01:00.000Z', wakeKind: 'capacity',
+      sourceDecisionId: 'decision_capacity', scheduledFor: '2026-07-20T00:01:00.000Z', retry: null,
+    });
+    const timerSnapshot: KernelSnapshot = {
+      schemaVersion: 5, type: 'timer', capacityBlockedAt: '2026-07-20T00:00:00.000Z', recheckAfterMs: 60_000,
+      task: { id: 'task_1', status: 'running' }, wakeAuthorized: true,
+      capacityBindings: [codexBinding], executorStatuses: [],
+      nativeContinuationAgentClasses: ['codex-cli'],
+      defaultResourceGrant: [],
+    };
+    expect(kernel.decide(timer, timerSnapshot).action).toMatchObject({
+      type: 'probe_capacity', taskId: 'task_1', subtaskId: 'subtask_1',
+    });
   });
 
   it('requires the exact durable Retry Wake before authorizing continuation', () => {

@@ -42,14 +42,14 @@ describe('Feishu long-task visibility through durable routes', () => {
       } }, { session: port, client: client as never, seenMessageIds: new Set(), cardDeliveryOptions: { updateCooldownMs: 0 } });
       expect(client.sendMarkdownCardToChat.mock.calls.some(([, text]) => text.includes('消息已接收'))).toBe(true);
       for (let step = 1; step <= 20; step++) {
-        delivery.capture({ ...fact, version: `step_${step}`, payload: { title: 'Research', explanation: '正在执行',
+        delivery.capture({ ...fact, version: `step_${step}`, payload: { title: 'Research', explanation: '正在执行', userState: 'executing', userStateReason: '正在执行',
           progressSummary: `查阅来源 ${step}`, canCancel: true, executionGeneration: 'generation' } });
         now += 500; await delivery.drain();
       }
       await delivery.stop(); delivery = makeDelivery();
-      delivery.capture({ ...fact, version: 'recovery', payload: { title: 'Research', explanation: '恢复后继续执行', canCancel: true } });
+      delivery.capture({ ...fact, version: 'recovery', payload: { title: 'Research', explanation: '恢复后继续执行', userState: 'executing', userStateReason: '恢复后继续执行', canCancel: true } });
       now += 2001; await delivery.drain();
-      delivery.capture({ ...fact, version: 'terminal', payload: { title: 'Research', explanation: '任务已完成', canCancel: false } });
+      delivery.capture({ ...fact, version: 'terminal', payload: { title: 'Research', explanation: '任务已完成', userState: 'finished', userStateReason: '任务已完成', canCancel: false } });
       delivery.capture({ ...fact, subjectId: 'turn', category: 'result', version: 'final', payload: { answer: '任务完成报告：调研结论', deliveryStatus: 'ready' } });
       await delivery.drain();
       const sent = client.sendMarkdownCardToChat.mock.calls.map(([, text]) => text);

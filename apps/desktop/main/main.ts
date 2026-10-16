@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, powerMonitor, screen, session, shell, type IpcMainInvokeEvent, type Session } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, session, shell, type IpcMainInvokeEvent, type Session } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { access, appendFile, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -22,6 +22,7 @@ import { authorizeDesktopShellCheck, writeDesktopShellHealth } from '../../../sr
 import { checkDesktopRelease } from './release-check.js';
 import { startupFailureCode } from './startup-diagnostic.js';
 import { claimAutomaticPiRepair } from '../../../src/installation/managed-pi-recovery.js';
+import { chartImagePayload } from './chart-image.js';
 
 app.setName('MetaWork');
 
@@ -174,6 +175,7 @@ async function connectOnce(): Promise<void> {
     if (installation) {
       const release = await installation.verify();
       stage = 'installation';
+      await installation.recoverIncompleteCurrent(release.releaseId);
       recoveryRequired = await pendingDesktopUpdate(installRoot)
         && !(shellCheckChallenge && await authorizeDesktopShellCheck(installRoot, {
           challenge: shellCheckChallenge, applicationPath: resolve(process.resourcesPath, '../..'), releaseId: release.releaseId,
@@ -272,18 +274,68 @@ ipcMain.handle('desktop:select-workspace', async event => {
   owned(event);
   return result.canceled ? null : result.filePaths[0] ?? null;
 });
-ipcMain.handle('desktop:save-artifact', async (event, id: unknown, format: unknown = 'original') => {
+ipcMain.handle('desktop:save-artifact', (event, id: unknown, format: unknown = 'original') => saveDocument(event, id, format));
+ipcMain.handle('desktop:save-attachment', (event, conversationId: unknown, id: unknown) => {
+  owned(event);
+  if (!identifier(conversationId)) throw new Error('下载请求不可用');
+  return saveDocument(event, id, 'original', conversationId);
+});
+ipcMain.handle('desktop:save-chart-image', async (event, title: unknown, dataUrl: unknown) => {
+  owned(event);
+  if (saving) throw new Error('已有保存操作正在进行');
+  const { name, bytes } = chartImagePayload(title, dataUrl);
+  const image = nativeImage.createFromBuffer(bytes);
+  if (image.isEmpty()) throw new Error('图表图片无法读取');
+  const size = image.getSize();
+  if (size.width > 4096 || size.height > 4096 || size.width * size.height > 8_000_000) throw new Error('图表图片尺寸超过上限');
+  // Re-encode pixels: never write renderer-supplied SVG, markup or appended bytes.
+  const png = image.toPNG();
+  saving = true;
+  const saveOrigin = origin;
+  let temporary: string | null = null;
+  try {
+    const result = await dialog.showSaveDialog(window!, { title: '保存图表', defaultPath: name,
+      filters: [{ name: 'PNG 图片', extensions: ['png'] }] });
+    if (result.canceled || !result.filePath) return null;
+    owned(event);
+    temporary = join(dirname(result.filePath), `.metawork-chart-${randomUUID()}`);
+    const file = await open(temporary, 'wx', 0o600);
+    try { await file.writeFile(png); await file.sync(); } finally { await file.close(); }
+    owned(event);
+    if (origin !== saveOrigin) throw new Error('下载会话已变更');
+    await rename(temporary, result.filePath); temporary = null;
+    const id = randomUUID(); downloads.set(id, result.filePath);
+    if (downloads.size > 64) downloads.delete(downloads.keys().next().value!);
+    return id;
+  } finally {
+    saving = false;
+    if (temporary) await rm(temporary, { force: true });
+  }
+});
+
+async function saveDocument(event: IpcMainInvokeEvent, id: unknown, format: unknown, conversationId?: string): Promise<string | null> {
   owned(event);
   if (!identifier(id) || saving || (format !== 'original' && format !== 'pdf')) throw new Error('下载请求不可用');
   saving = true;
   let temporary: string | null = null;
   const downloadOrigin = origin;
   try {
-    const url = `${origin}/api/artifacts/${encodeURIComponent(id)}`;
+    const url = conversationId
+      ? `${origin}/api/attachments/${encodeURIComponent(id)}?sessionId=${encodeURIComponent(conversationId)}`
+      : `${origin}/api/artifacts/${encodeURIComponent(id)}`;
+    const downloadUrl = conversationId ? url : `${url}/download${format === 'pdf' ? '?format=pdf' : ''}`;
     const metaResponse = await webSession.fetch(url, { redirect: 'error', signal: AbortSignal.timeout(10_000) });
-    if (!metaResponse.ok) throw new Error('产物不可用');
-    const body = await metaResponse.json() as { artifact?: { displayName?: string } };
-    const metadata = body.artifact ?? {};
+    if (!metaResponse.ok) throw new Error('文件不可用');
+    let metadata: { displayName?: string };
+    if (conversationId) {
+      try {
+        const name = /filename\*=UTF-8''([^;]+)/iu.exec(metaResponse.headers.get('content-disposition') ?? '')?.[1];
+        metadata = { displayName: name ? decodeURIComponent(name) : 'attachment' };
+      } finally { await metaResponse.body?.cancel(); }
+    } else {
+      const body = await metaResponse.json() as { artifact?: { displayName?: string } };
+      metadata = body.artifact ?? {};
+    }
     const originalName = typeof metadata.displayName === 'string'
       ? metadata.displayName.replace(/[\\/\x00-\x1f]/gu, '_').slice(0, 200) : 'artifact';
     const name = format === 'pdf' ? `${originalName.replace(/\.(?:md|markdown)$/iu, '')}.pdf` : originalName;
@@ -292,7 +344,7 @@ ipcMain.handle('desktop:save-artifact', async (event, id: unknown, format: unkno
       ...(format === 'pdf' ? { filters: [{ name: 'PDF 文档', extensions: ['pdf'] }] } : {}) });
     if (result.canceled || !result.filePath) return null;
     owned(event);
-    const response = await webSession.fetch(`${url}/download${format === 'pdf' ? '?format=pdf' : ''}`, { redirect: 'error', signal: AbortSignal.timeout(120_000) });
+    const response = await webSession.fetch(downloadUrl, { redirect: 'error', signal: AbortSignal.timeout(120_000) });
     if (!response.ok || !response.body) throw new Error('产物下载失败');
     temporary = join(dirname(result.filePath), `.metawork-download-${randomUUID()}`);
     const file = await open(temporary, 'wx', 0o600);
@@ -320,7 +372,7 @@ ipcMain.handle('desktop:save-artifact', async (event, id: unknown, format: unkno
     saving = false;
     if (temporary) await rm(temporary, { force: true });
   }
-});
+}
 ipcMain.handle('desktop:reveal-artifact', (event, id: unknown) => {
   owned(event);
   if (typeof id !== 'string' || !downloads.has(id)) throw new Error('下载记录不可用');

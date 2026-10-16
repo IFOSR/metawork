@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, existsSync, readFileSync, statSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskArtifactRepo } from '../../src/storage/task-artifact-repo.js';
 import {
@@ -121,6 +121,34 @@ describe('UserArtifactPublicationService', () => {
     expect(second.failures).toEqual([]);
     expect(second.projections[0]?.artifactId).toBe(first.projections[0]?.artifactId);
     expect(service.taskArtifactRepo.listByTask('task_repeat00')).toHaveLength(1);
+  });
+
+  it('adopts the verified file after interruption between rename and artifact row insertion', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'anyfusion-user-artifacts-interrupted-'));
+    roots.push(root);
+    const service = createService(root);
+    const input = { accountId: 'local-default', taskId: 'seeded', taskTitle: 'interrupted', generationId: null,
+      subtaskId: null, publicationId: 'publication', integratedWorkspaceRoot: seedIntegratedWorkspace(root),
+      sources: [{ sourceRelativePath: 'report.md' }] };
+    const insert = vi.spyOn(service.taskArtifactRepo, 'insert').mockImplementationOnce(() => {
+      throw new Error('interrupted before artifact row');
+    });
+    const failed = await service.publishIntegratedArtifacts(input);
+    expect(failed.failures).toHaveLength(1);
+    expect(service.taskArtifactRepo.listByTask('seeded')).toHaveLength(0);
+    const target = join(failed.taskDirectory, 'report.md');
+    expect(readFileSync(target, 'utf8')).toBe('# Report\n\nfinal');
+    utimesSync(target, 1, 1);
+    const before = statSync(target);
+    insert.mockRestore();
+    const recovered = new UserArtifactPublicationService({ userWorkspaceRoot: service.userWorkspaceRoot,
+      taskArtifactRepo: service.taskArtifactRepo });
+    const outcome = await recovered.publishIntegratedArtifacts(input);
+    expect(outcome.failures).toEqual([]);
+    expect(statSync(target)).toMatchObject({ ino: before.ino, mtimeMs: before.mtimeMs });
+    expect(service.taskArtifactRepo.listByTask('seeded')).toHaveLength(1);
+    expect((await recovered.publishIntegratedArtifacts(input)).projections[0]?.artifactId)
+      .toBe(outcome.projections[0]?.artifactId);
   });
 
   it('marks the previous record unavailable when a same-name file is republished with new content', async () => {
@@ -250,5 +278,16 @@ describe('UserArtifactPublicationService', () => {
       'utf8',
     )).toBe('# fine');
     expect(service.taskArtifactRepo.listByTask('task_corrupt0')).toHaveLength(1);
+    const previous = outcome.projections[0]!;
+    rmSync(join(workspaceRoot, 'broken.md'), { recursive: true });
+    writeFileSync(join(workspaceRoot, 'broken.md'), '# repaired');
+    const restarted = new UserArtifactPublicationService({ userWorkspaceRoot: join(root, 'startup'), taskArtifactRepo: service.taskArtifactRepo });
+    const retry = await restarted.publishIntegratedArtifacts({ accountId: 'local-default', taskId: 'task_corrupt0',
+      taskTitle: 'corrupt', generationId: null, subtaskId: null, publicationId: null,
+      integratedWorkspaceRoot: workspaceRoot, sources: [{ sourceRelativePath: 'broken.md' }, { sourceRelativePath: 'keep/fine.md' }] });
+    expect(retry.failures).toEqual([]);
+    expect(retry.projections).toContainEqual(previous);
+    expect(service.taskArtifactRepo.listByTask('task_corrupt0')).toHaveLength(2);
+
   });
 });

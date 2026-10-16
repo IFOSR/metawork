@@ -4,7 +4,8 @@
  * Usage: pi --extension ./examples/extensions/rainbow-editor.ts
  */
 
-import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Editor } from "@earendil-works/pi-tui";
 
 // Base colors (coral → yellow → green → teal → blue → purple → pink)
 const COLORS: [number, number, number][] = [
@@ -41,7 +42,7 @@ function colorize(text: string, shinePos: number): string {
 	);
 }
 
-class RainbowEditor extends CustomEditor {
+class RainbowEditor extends Editor {
 	private animationTimer?: ReturnType<typeof setInterval>;
 	private frame = 0;
 
@@ -83,6 +84,6 @@ class RainbowEditor extends CustomEditor {
 
 export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
-		ctx.ui.setEditorComponent((tui, theme, kb) => new RainbowEditor(tui, theme, kb));
+		ctx.ui.setEditorComponent((tui, theme) => new RainbowEditor(tui, theme));
 	});
 }

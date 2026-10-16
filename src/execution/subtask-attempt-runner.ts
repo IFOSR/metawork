@@ -1,8 +1,12 @@
+import { ExecutorProbeError } from './work-unit-claim-service.js';
 import { basename, extname, join, resolve } from 'node:path';
 import { chmod, copyFile, lstat, mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type Database from 'better-sqlite3';
+import { InteractionReferenceError } from '../work-graph/context-ref-eligibility.js';
+import { ExecutionEvidenceIdentityError } from './execution-evidence-port.js';
+import { describeAttemptFailure } from './failure-reasons.js';
 import type { ExecutorProgressEvent } from '../executor/adapter.js';
 import type { ExecutorAdapter } from '../executor/adapter.js';
 import type { HarnessUsageEvent } from '../executor/harness-driver.js';
@@ -77,7 +81,7 @@ import {
   type WorkspacePublicationCompletion,
 } from '../storage/workspace-publication-repo.js';
 import { AttemptTerminalService } from './attempt-terminal-service.js';
-import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
+import { authorizedExecutorBindingFingerprint, type AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import {
   formatExecutorProgress,
   normalizeDependencyMaterializationFailure,
@@ -113,6 +117,7 @@ export type SubtaskAttemptOutcome =
       durationMs: number;
       resultId?: string;
     }
+  | { outcome: 'executor_unavailable'; attemptId: string; failure: KernelFailure }
   | { outcome: 'capacity_unavailable'; attemptId: string; agentClassName: string }
   | {
       outcome: 'contract_failed';
@@ -312,7 +317,7 @@ export class SubtaskAttemptRunner {
     const expectedStatus = attemptKind === 'primary' ? 'ready' : 'awaiting_decision';
     if (
       !task
-      || task.status !== 'running'
+      || !['running', 'blocked'].includes(task.status)
       || !subtask
       || subtask.taskId !== input.taskId
       || subtask.status !== expectedStatus
@@ -333,6 +338,11 @@ export class SubtaskAttemptRunner {
         || attemptKind === 'merge_repair'
         || dispatch.recoveryMode === 'native_session'
       )
+      // An uncertain source dispatch can exist without an immutable receipt:
+      // the executor settled after the terminal fence changed. Kernel resume
+      // has already revalidated the source dispatch identity, so allow the
+      // recovery packet to rebuild from the durable workspace in that case.
+      && sourceReceipt
       && !sameReceiptBinding(sourceReceipt, dispatch)
     ) {
       return {
@@ -346,7 +356,11 @@ export class SubtaskAttemptRunner {
       subtask: { id: subtask.id },
       authorizedBinding: dispatch.authorizedBinding,
       attemptId,
+    }).catch(error => {
+      if (error instanceof ExecutorProbeError) return error;
+      throw error;
     });
+    if (claim instanceof ExecutorProbeError) return { outcome: 'executor_unavailable', attemptId, failure: claim.failure };
     if (!claim) return { outcome: 'capacity_unavailable', attemptId, agentClassName };
 
     const leaseToken = `attempt_lease_${randomUUID()}`;
@@ -564,7 +578,7 @@ export class SubtaskAttemptRunner {
       });
       this.attemptRuntimeRepo.appendProgress(attemptId, {
         kind: 'status',
-        text: 'Executor 已启动，正在准备受控执行上下文',
+        text: '正在准备任务资料，Executor 尚未启动',
       }, startedAt);
       const evidenceToolsAvailable = agentClassName === 'codex-cli' || agentClassName === 'pi-agent';
       const attemptControlHost = this.deps.attemptExecutionBackend.pathMode === 'native'
@@ -1076,6 +1090,7 @@ export class SubtaskAttemptRunner {
           rawResponse,
           completionSchemaVersion: 4,
           warnings: completion.warnings,
+          assessment: completion.assessment,
           resultObjects,
         }, completedAt),
         expectedSubtaskStatus: 'running',
@@ -1147,14 +1162,7 @@ export class SubtaskAttemptRunner {
         });
       }
       finalCheckpointReason = 'success';
-      await this.registerAttemptArtifacts({
-        taskId: task.id,
-        generationId: subtask.generationId,
-        subtaskId: subtask.id,
-        publicationId: `publication_${attemptId}`,
-        delta: workspaceDelta,
-        filesPath: workspace?.filesPath ?? null,
-      });
+
       return {
         outcome: 'completed',
         attemptId,
@@ -1180,7 +1188,20 @@ export class SubtaskAttemptRunner {
             code: dependencyFailure.code,
             summary: `${dependencyFailure.summary} (${dependencyFailure.sourceSubtaskId ?? 'unknown'} -> ${dependencyFailure.targetSubtaskId ?? subtask.id})`,
           })
-        : null;
+        : error instanceof InteractionReferenceError || error instanceof ExecutionEvidenceIdentityError
+          ? kernelFailure({
+              kind: 'unknown',
+              scope: 'task',
+              code: error.code,
+              summary: describeAttemptFailure({ failureCode: error.code })!,
+              detail: message,
+              origin: 'kernel',
+              stage: 'context_preparation',
+              retryable: false,
+              attemptStarted: false,
+              externalSideEffect: false,
+            })
+          : null;
       if (mergeRepair) {
         this.publicationRepo.recordRepairFailure(
           mergeRepair.publicationId,
@@ -1337,7 +1358,11 @@ export class SubtaskAttemptRunner {
       subtask: { id: subtask.id },
       authorizedBinding: dispatch.authorizedBinding,
       attemptId: input.attemptId,
+    }).catch(error => {
+      if (error instanceof ExecutorProbeError) return error;
+      throw error;
     });
+    if (claim instanceof ExecutorProbeError) return { outcome: 'executor_unavailable', attemptId: input.attemptId, failure: claim.failure };
     if (!claim) return { outcome: 'capacity_unavailable', attemptId: input.attemptId, agentClassName };
     const startedAt = new Date().toISOString();
     try {
@@ -1531,6 +1556,9 @@ export class SubtaskAttemptRunner {
       if (!dispatchItem) {
         throw new Error(`authorized dispatch item not found: ${input.attemptId}`);
       }
+      const correctedWorkspace = await this.managedGitWorkspace.ensure({ taskId: task.id,
+        generationId: subtask.generationId, subtaskId: subtask.id }, input.sourceRoot ?? this.deps.sourceRoot);
+      const correctedCommit = await this.managedGitWorkspace.commit(correctedWorkspace, `fix: certify ${subtask.id} result`);
       const landing = this.terminalService.land({
         receipt: buildReceipt({
           attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
@@ -1541,13 +1569,16 @@ export class SubtaskAttemptRunner {
           completionContract: input.completionContract,
         }, completedAt),
         expectedSubtaskStatus: 'running',
-        nextSubtaskStatus: 'done',
+        nextSubtaskStatus: 'awaiting_integration',
         subtaskError: null,
-        subtaskResult: landedBody ?? '',
-        subtaskArtifacts: completion.normalizedArtifacts,
-        subtaskVerification: {
-          warnings: completion.warnings,
-          completionSchemaVersion: 4,
+        publication: {
+          id: `publication_${input.attemptId}`, taskId: task.id, generationId: subtask.generationId,
+          subtaskId: subtask.id, sourceAttemptId: input.attemptId, agentClassName,
+          candidateCommit: correctedCommit.commit,
+          completion: { body: landedBody ?? '', artifacts: completion.normalizedArtifacts,
+            warnings: completion.warnings, handoffs: completion.envelope.handoffs, completionSchemaVersion: 4 },
+          topologyLayer: deriveTopologyLayer(subtask.id, allSubtasks), firstDispatchOrder: dispatchItem.batchOrder,
+          createdAt: completedAt,
         },
         event: {
           schemaVersion: 5,
@@ -1577,14 +1608,7 @@ export class SubtaskAttemptRunner {
           reason: 'Cancellation fence won before correction terminal landing',
         };
       }
-      await this.registerAttemptArtifacts({
-        taskId: task.id,
-        generationId: subtask.generationId,
-        subtaskId: subtask.id,
-        publicationId: null,
-        delta: parseWorkspaceDelta(sourceRuntime.workspaceDelta),
-        filesPath: sourceWorkspace ? join(fileURLToPath(sourceWorkspace.rootUri), 'files') : null,
-      });
+
       return {
         outcome: 'completed', attemptId: input.attemptId, output: landedBody ?? '',
         artifacts: completion.normalizedArtifacts, warnings: completion.warnings,
@@ -1615,7 +1639,13 @@ export class SubtaskAttemptRunner {
   private isStillCurrent(taskId: string, subtaskId: string, attemptId: string, workUnitId: string): boolean {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     const subtask = this.deps.subtaskRepo.findById(subtaskId);
-    return task?.status === 'running'
+    // A Task-level blocker can coexist with an already-authorized sibling
+    // Attempt.  The Attempt owns the terminal result; a later blocker on the
+    // Task must not turn a successful Executor exit into a stale result.  The
+    // previous `running`-only check caused exactly that race: one branch
+    // blocked the Task while another branch was still completing, so the
+    // terminal fence rejected the valid result and left the Subtask stuck.
+    return (task?.status === 'running' || task?.status === 'blocked')
       && subtask?.status === 'running'
       && this.deps.workUnitClaimService.isClaimCurrent(workUnitId, attemptId, 'running');
   }
@@ -1645,6 +1675,7 @@ export class SubtaskAttemptRunner {
       dispatch.taskId !== input.taskId
       || dispatch.subtaskId !== input.subtaskId
       || dispatch.configurationRevision !== input.authorizedBinding.configurationRevision
+      || dispatch.bindingFingerprint !== authorizedExecutorBindingFingerprint(dispatch.authorizedBinding)
       || dispatch.bindingFingerprint !== input.bindingFingerprint
       || !sameAuthorizedBinding(dispatch.authorizedBinding, input.authorizedBinding)
     ) {
@@ -1741,45 +1772,6 @@ export class SubtaskAttemptRunner {
    * executor output area — independent of the git publication ceremony, so
    * correction-path completions register too. Failure-isolated by design.
    */
-  private async registerAttemptArtifacts(input: {
-    taskId: string;
-    generationId: string;
-    subtaskId: string;
-    publicationId: string | null;
-    delta: WorkspaceDelta | null;
-    filesPath: string | null;
-  }): Promise<void> {
-    const service = this.deps.userArtifactPublication;
-    if (!service || !input.delta || !input.filesPath) return;
-    const sources = input.delta.changed
-      .filter(entry => entry.afterHash !== null)
-      .map(entry => ({ sourceRelativePath: entry.path }));
-    if (sources.length === 0) return;
-    try {
-      const task = this.deps.taskRuntimeService.findTask(input.taskId);
-      const outcome = await service.publishIntegratedArtifacts({
-        sessionId: this.sessionId,
-        accountId: this.deps.accountId ?? 'local-default',
-        taskId: input.taskId,
-        taskTitle: task?.title ?? input.taskId,
-        generationId: input.generationId,
-        subtaskId: input.subtaskId,
-        publicationId: input.publicationId,
-        integratedWorkspaceRoot: input.filesPath,
-        sources,
-      });
-      for (const failure of outcome.failures) {
-        console.warn(
-          `attempt artifact registration skipped ${failure.sourceRelativePath}: ${failure.reason}`,
-        );
-      }
-    } catch (error) {
-      console.warn(
-        `attempt artifact registration failed for ${input.subtaskId}: ${(error as Error).message}`,
-      );
-    }
-  }
-
   private persistAttemptResults(input: {
     attemptId: string;
     taskId: string;

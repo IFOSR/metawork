@@ -1,11 +1,6 @@
-import {
-	CustomEditor,
-	type ExtensionAPI,
-	type ExtensionContext,
-	type KeybindingsManager,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component, EditorTheme, TUI } from "@earendil-works/pi-tui";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Editor, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 function fitBorder(
 	left: string,
@@ -117,9 +112,9 @@ export default function (pi: ExtensionAPI) {
 		};
 		void refreshBranch();
 
-		class BorderStatusEditor extends CustomEditor {
-			constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) {
-				super(tui, theme, keybindings, { paddingX: 0 });
+		class BorderStatusEditor extends Editor {
+			constructor(tui: TUI, theme: EditorTheme) {
+				super(tui, theme, { paddingX: 0 });
 				activeTui = tui;
 			}
 
@@ -145,6 +140,6 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
-		ctx.ui.setEditorComponent((tui, theme, keybindings) => new BorderStatusEditor(tui, theme, keybindings));
+		ctx.ui.setEditorComponent((tui, theme) => new BorderStatusEditor(tui, theme));
 	});
 }

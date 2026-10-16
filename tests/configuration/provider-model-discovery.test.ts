@@ -5,6 +5,24 @@ import {
 } from '../../src/configuration/provider-model-discovery.js';
 
 describe('Provider model discovery', () => {
+  it.each(['anthropic', 'openai-responses'] as const)('discovers %s models using the selected protocol', async protocol => {
+    const result = await discoverOpenAiCompatibleModels({
+      protocol, baseUrl: 'https://example.test/proxy/', apiKey: 'test-key',
+      fetchImpl: async (url, init) => {
+        expect(String(url)).toBe(protocol === 'anthropic'
+          ? 'https://example.test/proxy/v1/models' : 'https://example.test/proxy/models');
+        const headers = new Headers(init?.headers);
+        if (protocol === 'anthropic') {
+          expect(headers.get('x-api-key')).toBe('test-key');
+          expect(headers.get('anthropic-version')).toBe('2023-06-01');
+          expect(headers.has('authorization')).toBe(false);
+        } else expect(headers.get('authorization')).toBe('Bearer test-key');
+        return new Response(JSON.stringify({ data: [{ id: 'configured-model' }] }));
+      },
+    });
+    expect(result).toEqual({ status: 'discovered', modelIds: ['configured-model'] });
+  });
+
   it('returns every unique model ID from an OpenAI-compatible data response', async () => {
     const result = await discoverOpenAiCompatibleModels({
       baseUrl: 'https://provider.example/v1',

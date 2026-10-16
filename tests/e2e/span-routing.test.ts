@@ -73,6 +73,7 @@ const workGraph: WorkGraphProposal = {
       { agentClassRef: 'pi-general', modelSelection: { mode: 'agent-class-default' } },
     ],
     deliveryKind: 'edit',
+    fileOutputs: [],
     acceptance: [{ key: 'c1', description: 'Works', requiredEvidence: [] }],
     riskLevel: 'low',
   }],

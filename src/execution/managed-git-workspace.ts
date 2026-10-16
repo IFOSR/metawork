@@ -107,6 +107,23 @@ export class ManagedGitWorkspaceService {
     this.repositoriesPath = join(store.rootPath, 'repositories');
   }
 
+  /** Read a fixed integrated commit even if later publications advance the shared worktree. */
+  async withCommitSnapshot<T>(workspace: ManagedGitWorkspace, commit: string, read: (root: string) => Promise<T>): Promise<T> {
+    if (!/^[0-9a-f]{40,64}$/u.test(commit)) throw new Error('Invalid integration commit');
+    const root = await mkdtemp(join(this.store.rootPath, 'delivery-'));
+    try {
+      await this.withRepositoryOperation(workspace.repositoryPath, async () => {
+        await git(['--git-dir', workspace.repositoryPath, 'worktree', 'add', '--detach', root, commit]);
+      });
+      return await read(root);
+    } finally {
+      await this.withRepositoryOperation(workspace.repositoryPath, async () => {
+        await git(['--git-dir', workspace.repositoryPath, 'worktree', 'remove', '--force', root]).catch(() => undefined);
+      });
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
   async detectSource(sourcePath: string): Promise<{ root: string; commit: string } | null> {
     try {
       const root = await realpath(await git(['-C', sourcePath, 'rev-parse', '--show-toplevel']));

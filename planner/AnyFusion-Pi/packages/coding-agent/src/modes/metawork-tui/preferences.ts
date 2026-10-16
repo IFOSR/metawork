@@ -6,8 +6,8 @@
  */
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 
 export interface MetaWorkTuiPreferences {
 	readonly theme?: string;
@@ -24,8 +24,7 @@ const ALLOWED_KEYS = new Set(["theme"]);
 export function resolvePreferencesPath(env: NodeJS.ProcessEnv): string {
 	const explicit = env.METAWORK_TUI_PREFERENCES?.trim();
 	if (explicit) return explicit;
-	const configHome = env.METAWORK_CONFIG_HOME?.trim()
-		|| join(homedir(), ".config", "metawork");
+	const configHome = env.METAWORK_CONFIG_HOME?.trim() || join(homedir(), ".config", "metawork");
 	return join(configHome, "tui-preferences.json");
 }
 

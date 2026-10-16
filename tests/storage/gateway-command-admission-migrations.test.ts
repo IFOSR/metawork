@@ -41,8 +41,8 @@ describe('schema44 Gateway command admission migration', () => {
   it('creates the agreed account-scoped tables on a fresh database', () => {
     const db = open();
     runMigrations(db);
-    expect(CURRENT_SCHEMA_VERSION).toBe(47);
-    expect(version(db)).toBe(47);
+    expect(CURRENT_SCHEMA_VERSION).toBe(CURRENT_SCHEMA_VERSION);
+    expect(version(db)).toBe(CURRENT_SCHEMA_VERSION);
     expect(db.prepare('PRAGMA table_info(gateway_command_admissions)').all()).toMatchObject([
       { name: 'account_id', type: 'TEXT', notnull: 1, pk: 1 },
       { name: 'idempotency_key', type: 'TEXT', notnull: 1, pk: 2 },
@@ -139,7 +139,7 @@ describe('schema44 Gateway command admission migration', () => {
 
     db.exec('DROP TRIGGER fail_admission_migration');
     runMigrations(db);
-    expect(version(db)).toBe(47);
+    expect(version(db)).toBe(CURRENT_SCHEMA_VERSION);
     expect(facts(db)).toEqual(before);
   });
 
@@ -157,7 +157,7 @@ describe('schema44 Gateway command admission migration', () => {
     expect(facts(db)).toEqual(before);
     db.exec('DROP TRIGGER fail_navigation_migration');
     runMigrations(db);
-    expect(version(db)).toBe(47);
+    expect(version(db)).toBe(CURRENT_SCHEMA_VERSION);
     for (const table of [...navigationTables, ...admissionTables]) {
       expect(tableExists(db, table), table).toBe(true);
     }
@@ -175,7 +175,7 @@ describe('schema44 Gateway command admission migration', () => {
     for (const table of admissionTables) expect(tableExists(db, table)).toBe(false);
     db.exec('DROP TRIGGER fail_admission_migration');
     runMigrations(db);
-    expect(version(db)).toBe(47);
+    expect(version(db)).toBe(CURRENT_SCHEMA_VERSION);
   });
 
   it('uses point and partial indexes without scanning unrelated terminal history', () => {
@@ -241,19 +241,19 @@ describe('schema44 Gateway command admission migration', () => {
       },
     });
     const result = upgrade.prepare({
-      sourcePath, backupPath, clonePath, expectedSourceSchema: 43, expectedTargetSchema: 47,
+      sourcePath, backupPath, clonePath, expectedSourceSchema: 43, expectedTargetSchema: CURRENT_SCHEMA_VERSION,
       sentinelTables: ['tasks', ...navigationTables, ...admissionTables, ...retryWakeTables],
     });
     if (fail) {
       await expect(result).rejects.toThrow('injected schema44 failure');
       expect(existsSync(clonePath)).toBe(false);
     } else {
-      await expect(result).resolves.toMatchObject({ sourceSchemaVersion: 43, candidateSchemaVersion: 47 });
+      await expect(result).resolves.toMatchObject({ sourceSchemaVersion: 43, candidateSchemaVersion: CURRENT_SCHEMA_VERSION });
       const candidate = open(clonePath);
       expect(facts(candidate)).toEqual(before);
       expect(candidate.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
       expect(candidate.pragma('foreign_key_check')).toEqual([]);
-      for (const table of [...admissionTables, ...retryWakeTables, ...observationTables]) {
+      for (const table of [...admissionTables, ...retryWakeTables, ...observationTables, 'workspace_publication_deliveries']) {
         expect(tableExists(candidate, table)).toBe(true);
       }
     }
@@ -283,9 +283,27 @@ function schema43(path?: string): Database.Database {
   const witnessIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'observation_witness_%'").all() as { name: string }[];
   for (const { name } of witnessIndexes) db.exec(`DROP INDEX "${name}"`);
   for (const name of ['kernel_permission_resolution_request', 'permission_pending_page', 'conversation_activity_tasks']) db.exec(`DROP INDEX IF EXISTS "${name}"`);
-  for (const table of [...admissionTables, ...retryWakeTables, ...observationTables]) {
+  for (const table of [...admissionTables, ...retryWakeTables, ...observationTables, 'workspace_publication_deliveries']) {
     db.exec(`DROP TABLE IF EXISTS ${table}`);
   }
+  // Restore the historical global evidence key; keep the captured schema43 hash meaningful.
+  db.exec(`
+    ALTER TABLE subtasks DROP COLUMN file_outputs_json;
+    DROP TABLE task_execution_evidence;
+    CREATE TABLE task_execution_evidence (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          source_id TEXT,
+          title TEXT NOT NULL DEFAULT '',
+          content TEXT NOT NULL,
+          exact_only INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (task_id) REFERENCES tasks(id)
+        );
+    CREATE INDEX idx_task_execution_evidence_task
+          ON task_execution_evidence(task_id, created_at, id);
+  `);
   db.exec('UPDATE schema_version SET version = 43');
   expect(schemaHash(db)).toBe(schema43Hash);
   db.exec(`
@@ -329,6 +347,7 @@ function facts(db: Database.Database, tables?: string[]): Record<string, string[
       name !== 'schema_version'
       && !admissionTables.includes(name)
       && !retryWakeTables.includes(name)
+      && name !== 'workspace_publication_deliveries'
       && !observationTables.includes(name)
     ));
   return Object.fromEntries(names.map(name => [

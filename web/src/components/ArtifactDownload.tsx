@@ -27,7 +27,7 @@ export function ArtifactDownload({ http, artifact }: { http: HttpClient | null; 
   if (artifact.previewKind !== 'markdown') {
     return bridge ? <NativeArtifactSave artifactId={artifact.artifactId} /> : <a
       href={http!.artifactDownloadUrl(artifact.artifactId)} download={artifact.displayName}
-      className="artifact-drawer-download" title="下载原文件" aria-label="下载原文件">⬇</a>;
+      className="artifact-drawer-download" title="下载原文件" aria-label="下载原文件">下载原文件</a>;
   }
 
   const save = async (format: 'original' | 'pdf') => {

@@ -9,6 +9,8 @@ import {
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
+import { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
+import { SqliteResourceLeaseRepository } from '../storage/resource-lease-repo.js';
 
 type AttemptTerminalEvent =
   | (Omit<
@@ -78,6 +80,58 @@ export class AttemptTerminalService {
     this.publications = new WorkspacePublicationRepo(db);
   }
 
+  /** Recover a failed terminal write from durable process-exit and failure facts.
+   * Never certify its output or rewind a Subtask completed by a later attempt.
+   * Returns the original claim identity so startup can finish normal cleanup.
+   */
+  reconcileSettledFailure(attemptId: string, now: string): {
+    attemptId: string; taskId: string; subtaskId: string; workUnitId: string;
+  } | null {
+    return this.db.transaction(() => {
+      const dispatch = this.dispatchItems.find(attemptId);
+      if (!dispatch || dispatch.status !== 'uncertain' || this.receipts.findByAttemptId(attemptId)) return null;
+      const subtask = this.db.prepare('SELECT generation_id FROM subtasks WHERE id = ? AND task_id = ?')
+        .get(dispatch.subtaskId, dispatch.taskId) as { generation_id: string } | undefined;
+      if (subtask?.generation_id !== dispatch.generationId) return null;
+      const runtime = new ExecutorAttemptRuntimeRepo(this.db).find(attemptId);
+      const diagnostics = runtime?.progress.diagnostics as { process?: {
+        startedAt?: string; completedAt?: string; exitCode?: number | null; signal?: string | null;
+      } } | undefined;
+      const process = diagnostics?.process;
+      if (!runtime || runtime.recoverySafety === 'external_non_idempotent'
+        || !process?.startedAt || !process.completedAt
+        || !Number.isFinite(Date.parse(process.completedAt))
+        || (typeof process.exitCode !== 'number' && !process.signal)) return null;
+      const event = this.workflow.findEvent(`event_${attemptId}_execution_outcome`);
+      if (event?.type !== 'execution_outcome' || event.terminalKind !== 'failed' || !event.failure
+        || event.failure.externalSideEffect === true
+        || event.taskId !== dispatch.taskId || event.subtaskId !== dispatch.subtaskId
+        || event.attemptId !== attemptId || event.configurationRevision !== dispatch.configurationRevision
+        || event.bindingFingerprint !== dispatch.bindingFingerprint) return null;
+      if (this.db.prepare(`SELECT 1 FROM attempt_sandboxes WHERE attempt_id = ?
+        AND status IN ('created', 'running', 'paused') LIMIT 1`).get(attemptId)) return null;
+      const owners = this.db.prepare(`SELECT DISTINCT work_unit_id FROM resource_leases
+        WHERE attempt_id = ? AND task_id = ? AND subtask_id = ? AND generation_id = ?`)
+        .all(attemptId, dispatch.taskId, dispatch.subtaskId, dispatch.generationId) as { work_unit_id: string }[];
+      const ownerIds = new Set(owners.map(owner => owner.work_unit_id));
+      if (dispatch.workUnitId) ownerIds.add(dispatch.workUnitId);
+      if (ownerIds.size !== 1) return null;
+      const workUnitId = [...ownerIds][0]!;
+      this.receipts.insert({
+        attemptId, taskId: dispatch.taskId, subtaskId: dispatch.subtaskId, workUnitId,
+        executionId: `reconciled_${attemptId}`, agentClassName: dispatch.authorizedBinding.agentClassRef,
+        startedAt: process.startedAt, completedAt: process.completedAt,
+        terminalState: 'executor_failed', rawResponse: '', completionSchemaVersion: null,
+        parsing: { recoveredFromEventId: event.id },
+        verification: { warnings: ['Recovered failed terminal write; no completion certified.'], violations: [] },
+        errorCode: event.failure.code, errorDetail: event.failure.summary, failure: event.failure,
+      });
+      this.dispatchItems.markTerminal(attemptId, event.failure.summary, now);
+      new SqliteResourceLeaseRepository(this.db).releaseReconciledAttempt(attemptId, now);
+      return { attemptId, taskId: dispatch.taskId, subtaskId: dispatch.subtaskId, workUnitId };
+    }).immediate();
+  }
+
   land(input: AttemptTerminalLanding): AttemptTerminalLandingResult {
     return this.db.transaction(() => {
       const dispatch = this.dispatchItems.find(input.receipt.attemptId);
@@ -127,7 +181,7 @@ export class AttemptTerminalService {
           WHERE id = ? AND task_id = ? AND status = ?
             AND EXISTS (
               SELECT 1 FROM tasks
-              WHERE tasks.id = subtasks.task_id AND tasks.status = 'running'
+              WHERE tasks.id = subtasks.task_id AND tasks.status IN ('running', 'blocked')
             )
         `).run(
           input.nextSubtaskStatus,

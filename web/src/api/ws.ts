@@ -271,7 +271,7 @@ export class WsClient {
   }
 
   control(conversationId: string,
-    command: Extract<ConversationCommand, { kind: 'cancel_task' | 'permission_resolution_v2' }>,
+    command: Extract<ConversationCommand, { kind: 'cancel_turn' | 'cancel_task' | 'permission_resolution_v2' }>,
     accepted: () => void): Promise<{ status: string; reason?: string }> {
     if (this.controls.size >= 16) return Promise.reject(new Error('command_limit'));
     const requestId = `control_${crypto.randomUUID()}`;

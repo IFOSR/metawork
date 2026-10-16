@@ -1,3 +1,4 @@
+import { ExecutorProbeError } from './work-unit-claim-service.js';
 // Execution application service: Session supplies facade callbacks but owns no runtime policy.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync } from 'node:fs';
@@ -135,6 +136,7 @@ function dependencyReadinessFacts(input: {
   const facts: NonNullable<Extract<KernelSnapshot, { type: 'dispatch' }>['dependencyReadiness']> = [];
 
   for (const target of input.subtasks) {
+    if (target.status !== 'ready') continue;
     for (const dependency of target.dependencies) {
       const source = byId.get(dependency.fromSubtaskId);
       if (!source) {
@@ -151,8 +153,8 @@ function dependencyReadinessFacts(input: {
         facts.push({
           sourceSubtaskId: source.id,
           targetSubtaskId: target.id,
-          code: 'pending_publication',
-          terminal: false,
+          code: source.status === 'blocked' || source.status === 'cancelled' ? 'missing_handoff' : 'pending_publication',
+          terminal: source.status === 'blocked' || source.status === 'cancelled',
           detail: `source Subtask status is ${source.status}`,
         });
         continue;
@@ -241,6 +243,16 @@ function resumeRecoveryCandidates(input: {
   const activeSubtaskIds = new Set(input.dispatchItems
     .filter(item => ['pending_launch', 'launching', 'running', 'cancelling'].includes(item.status))
     .map(item => item.subtaskId));
+  // An executor can settle after the Task/Subtask fence has changed. In that
+  // race the dispatch item is durable as `uncertain`, but no receipt exists
+  // and the Subtask may still be `running`. Keep that residue recoverable by
+  // an explicit resume instead of leaving the graph with no legal frontier.
+  const uncertainDispatchBySubtask = new Map(
+    input.dispatchItems
+      .filter(item => item.status === 'uncertain')
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .map(item => [item.subtaskId, item]),
+  );
   const latestReceiptBySubtask = new Map<string, ExecutorAttemptReceipt>();
   for (const receipt of input.receipts) {
     if (!latestReceiptBySubtask.has(receipt.subtaskId)) {
@@ -248,15 +260,52 @@ function resumeRecoveryCandidates(input: {
     }
   }
   const candidates = input.subtasks.flatMap(subtask => {
-    if (
-      !['awaiting_decision', 'blocked'].includes(subtask.status)
-      || activeSubtaskIds.has(subtask.id)
-    ) return [];
+    if (activeSubtaskIds.has(subtask.id)) return [];
     const receipt = latestReceiptBySubtask.get(subtask.id);
+    const uncertainDispatch = uncertainDispatchBySubtask.get(subtask.id);
+    const orphanedDispatch = Boolean(
+      uncertainDispatch
+      && !receipt
+      && subtask.status === 'running'
+      && uncertainDispatch.generationId === subtask.generationId
+      && uncertainDispatch.configurationRevision === input.configurationRevision
+      && uncertainDispatch.bindingFingerprint === authorizedExecutorBindingFingerprint(
+        uncertainDispatch.authorizedBinding,
+      )
+      && subtask.executorBindings.some(binding =>
+        authorizedExecutorBindingFingerprint(binding) === uncertainDispatch.bindingFingerprint
+      ),
+    );
+    if (!['awaiting_decision', 'blocked'].includes(subtask.status) && !orphanedDispatch) return [];
+    if (orphanedDispatch && uncertainDispatch) {
+      if (deriveRecoverySafety(subtask.requiredCapabilities) === 'external_non_idempotent') return [];
+      const workspace = input.workspaceRepository.findByIdentity(
+        uncertainDispatch.taskId,
+        uncertainDispatch.generationId,
+        uncertainDispatch.subtaskId,
+      );
+      if (!workspace || workspace.status !== 'active') return [];
+      try {
+        if (!workspace.rootUri.startsWith('file:') || !existsSync(fileURLToPath(workspace.rootUri))) {
+          return [];
+        }
+      } catch {
+        return [];
+      }
+      return [{
+        subtaskId: subtask.id,
+        sourceAttemptId: uncertainDispatch.attemptId,
+        authorizedBinding: uncertainDispatch.authorizedBinding,
+        bindingFingerprint: uncertainDispatch.bindingFingerprint,
+        // There is no receipt to resume as a native session. The workspace
+        // remains authoritative for files already produced by the attempt.
+        recoveryMode: 'recovery_packet' as const,
+        reason: 'execution_interrupted' as const,
+      }];
+    }
     if (
       !receipt
-      || receipt.terminalState !== 'uncertified_result'
-      || receipt.failure !== null
+      || receipt.generationId !== subtask.generationId
       || receipt.configurationRevision !== input.configurationRevision
       || receipt.bindingFingerprint !== authorizedExecutorBindingFingerprint(
         receipt.authorizedBinding,
@@ -264,19 +313,21 @@ function resumeRecoveryCandidates(input: {
       || !subtask.executorBindings.some(binding =>
         authorizedExecutorBindingFingerprint(binding) === receipt.bindingFingerprint
       )
-      || receipt.verification.violations.length !== 1
     ) return [];
-    const violation = receipt.verification.violations[0]!;
-    const recoveryReason = violation.code === 'completion_malformed' && violation.path === 'marker'
+    const interrupted = receipt.failure !== null && ['executor_failed', 'heartbeat_lost'].includes(receipt.terminalState)
+      && ['network', 'timeout', 'infrastructure', 'heartbeat_lost', 'configuration', 'adapter'].includes(receipt.failure.kind);
+    if (!interrupted && (receipt.terminalState !== 'uncertified_result' || receipt.failure !== null
+      || receipt.verification.violations.length === 0
+      || receipt.attemptKind === 'contract_correction'
+      || receipt.verification.violations.some(item => item.code !== 'completion_malformed' || item.path === 'reportPath'))) return [];
+    const violation = receipt.verification.violations[0];
+    const recoveryReason = interrupted ? 'execution_interrupted' as const : violation?.code === 'completion_malformed' && violation.path === 'marker'
       ? 'completion_marker_missing' as const
-      : violation.code === 'completion_no_change_reason_mismatch'
-        && violation.path === 'noChangeReason'
-        ? 'completion_no_change_reason_mismatch' as const
-        : violation.code === 'completion_malformed' && violation.path === 'report'
+      : violation?.code === 'completion_malformed'
           ? 'completion_metadata_invalid' as const
         : null;
     if (!recoveryReason) return [];
-    const metadataCorrection = recoveryReason === 'completion_metadata_invalid';
+    const metadataCorrection = !interrupted;
     if (
       !metadataCorrection
       && deriveRecoverySafety(subtask.requiredCapabilities) === 'external_non_idempotent'
@@ -305,6 +356,11 @@ function resumeRecoveryCandidates(input: {
       reason: recoveryReason,
       ...(metadataCorrection ? {
         attemptKind: 'contract_correction' as const,
+        correctionFacts: {
+          receiptCount: input.receipts.filter(item => item.subtaskId === subtask.id
+            && item.generationId === subtask.generationId && item.terminalState === 'uncertified_result').length,
+          responseBytes: Buffer.byteLength(receipt.rawResponse, 'utf8'),
+        },
         attemptPayload: {
           protocol: 'completion-correction-v2' as const,
           completionContract: receipt.parsing.completionContract ?? {},
@@ -323,9 +379,15 @@ export function classifyResumeBlocker(
   const normalized = reason?.toLowerCase() ?? '';
   // 启动恢复对“活跃但无 authorized dispatch”的 Subtask 只做 fail-closed 手动阻塞；
   // 描述里的 "authorized" 指 dispatch 授权，而不是缺材料/权限，不能归为 explicit_resource。
+  if (normalized.includes('executor environment unavailable') || normalized.includes('no healthy authorized executor')) return 'availability';
   if (normalized.includes('without authorized dispatch')) return 'manual';
   if (normalized.includes('external effect safety')) return 'manual';
   if (normalized.includes('contract') || normalized.includes('契约')) return 'contract';
+  // This is the Server's known authorization gate, not an unknown Executor
+  // failure. Explicit resume rechecks the current productionAuthorization fact
+  // in Kernel; recognizing the old reason does not grant execution permission.
+  if (normalized.startsWith('official authorization state:')
+    || normalized === 'official_authorization_required') return 'explicit_resource';
   if (/permission|权限|授权|material|材料|explicit.resource/iu.test(normalized)) return 'explicit_resource';
   if (latestFailure?.kind === 'unknown') {
     const classified = normalizeExecutorFailure(latestFailure.summary);
@@ -1178,6 +1240,9 @@ export class KernelExecutionRuntime {
       frontier,
       dependencyReadiness,
       resumeRecoveryCandidates: recoveryCandidates,
+      deliveryRecoveryPublicationIds: this.deps.publicationRepo.unfinishedDeliveries(taskId, activeRevision?.generationId ?? `generation_${taskId}_1`)
+        .filter(item => this.deps.publicationRepo.delivery(item.id)?.status === 'failed').map(item => item.id),
+      pendingRetrySubtaskIds: this.deps.retryWakeRepo?.findBlockingByTask?.(taskId).map(wake => wake.subtaskId) ?? [],
       dispatchItems: dispatchItems.map(item => ({
         attemptId: item.attemptId,
         subtaskId: item.subtaskId,
@@ -1428,6 +1493,11 @@ export class KernelExecutionRuntime {
         !['blocked', 'parked', 'ready', 'running'].includes(task.status)
         && !(task.status === 'created' && action.recovery)
       ) return null;
+      const resumeRevision = this.deps.workGraphRevisionRepo.findActive(action.taskId);
+      if (!resumeRevision || resumeRevision.generationId !== action.generationId || resumeRevision.revision !== action.graphRevision) return null;
+      for (const publicationId of action.deliveryPublicationIds ?? []) {
+        this.deps.publicationRepo.retryDelivery(publicationId, action.taskId, action.generationId, new Date().toISOString());
+      }
       for (const subtaskId of action.subtaskIds) {
         const subtask = this.deps.subtaskRepo.findById(subtaskId);
         if (
@@ -1472,15 +1542,15 @@ export class KernelExecutionRuntime {
       if (action.recovery) {
         const recoverySubtask = this.deps.subtaskRepo.findById(action.recovery.subtaskId);
         if (
-          action.recovery.attemptKind === 'contract_correction'
-          && recoverySubtask?.status === 'blocked'
+          recoverySubtask?.status === 'blocked'
+          || recoverySubtask?.status === 'running'
         ) {
           this.lifecycle.transitionSubtask({
             subtaskId: recoverySubtask.id,
             to: 'awaiting_decision',
             actor: 'kernel-execution-runtime',
-            reason: 'metadata-only completion correction authorized',
-            changes: { error: 'metadata-only completion correction authorized' },
+            reason: 'Kernel authorized continuation from the persisted attempt',
+            changes: { error: null },
           });
         }
         return this.eventFromDecision(decision, {
@@ -1606,24 +1676,65 @@ export class KernelExecutionRuntime {
       return null;
     }
     if (action.type === 'probe_capacity') {
-      const available = await this.deps.workUnitClaimService.probe(
-        action.authorizedBinding,
-      );
+      let failure: import('../core/kernel-failure.js').KernelFailure | undefined;
+      const available = await this.deps.workUnitClaimService.probe(action.authorizedBinding).catch(error => {
+        if (!(error instanceof ExecutorProbeError)) throw error;
+        failure = error.failure;
+        return false;
+      });
       return this.eventFromDecision(decision, {
         type: 'capacity_signal', taskId: action.taskId, subtaskId: action.subtaskId,
         authorizedBinding: action.authorizedBinding,
         bindingFingerprint: action.bindingFingerprint,
         available,
+        ...(failure ? { failure } : {}),
         cycleId: input.executionId,
         attemptKind: 'primary',
         attemptPayload: null,
       });
     }
     if (action.type === 'wait_for_capacity') {
-      await this.blockTask(
-        action.taskId, `capacity unavailable for Subtask ${action.subtaskId}`,
-        input.finishExecution, 'kernel_capacity',
-      );
+      const activeSibling = this.deps.dispatchItemRepo.listByTask(action.taskId).some(item => (
+        item.subtaskId !== action.subtaskId
+        && ['pending_launch', 'launching', 'running', 'cancelling'].includes(item.status)
+      ));
+      const waitingReason = `Subtask ${action.subtaskId} is waiting for an available Executor slot`;
+      this.appendExecutionTrace({
+        phase: 'routing',
+        actor: 'kernel',
+        kind: 'execution_waiting_for_capacity',
+        status: 'running',
+        title: '等待执行资源',
+        summary: activeSibling
+          ? '当前子任务等待执行名额；其他独立子任务继续执行。'
+          : '当前子任务等待执行名额；名额释放后自动继续。',
+        details: {
+          taskId: action.taskId,
+          subtaskId: action.subtaskId,
+          scope: 'subtask',
+          activeSibling,
+          wake: 'capacity_recheck',
+        },
+        eventKey: `${decision.id}:waiting_for_capacity`,
+        taskId: action.taskId,
+      });
+      // Capacity is a normal scheduler wait. Keep the Task at its current
+      // lifecycle when another branch is still active, so one unavailable
+      // slot cannot present the whole Task as blocked. If this is the only
+      // branch, retain the durable Task-level wait for the existing timer
+      // wake and recovery path.
+      if (!activeSibling) {
+        await this.blockTask(
+          action.taskId, waitingReason,
+          input.finishExecution, 'kernel_capacity',
+        );
+      } else {
+        this.recordTaskEvent(action.taskId, action.subtaskId, 'phase2_execution_waiting', waitingReason, {
+          scope: 'subtask',
+          activeSibling: true,
+        });
+        await input.finishExecution(['当前子任务等待执行名额，其他独立子任务继续执行。']);
+      }
       return null;
     }
     if (action.type === 'wait_for_retry') {
@@ -1760,8 +1871,8 @@ export class KernelExecutionRuntime {
     if (action.type === 'block_work') {
       if (
         action.subtaskId
-        && !action.preserveSubtaskState
-        && this.deps.subtaskRepo.findById(action.subtaskId)?.status === 'awaiting_decision'
+        && (this.deps.subtaskRepo.findById(action.subtaskId)?.status === 'ready'
+          || (!action.preserveSubtaskState && this.deps.subtaskRepo.findById(action.subtaskId)?.status === 'awaiting_decision'))
       ) {
         this.lifecycle.transitionSubtask({
           subtaskId: action.subtaskId,
@@ -1775,7 +1886,11 @@ export class KernelExecutionRuntime {
       // delivers that result to the user (marked as unverified) — content
       // checks hold downstream flow, never user delivery.
       this.deliverSafeResultOnBlock(action.taskId, decision.reason);
-      await this.blockTask(action.taskId, decision.reason, input.finishExecution);
+      // A local blocker must not freeze sibling attempts or their completion.
+      // The next Kernel dispatch evaluates the remaining independent frontier.
+      if (!action.subtaskId) {
+        await this.blockTask(action.taskId, decision.reason, input.finishExecution);
+      }
       this.appendExecutionTrace({
         phase: 'verification',
         actor: 'kernel',
@@ -1793,7 +1908,10 @@ export class KernelExecutionRuntime {
         taskId: action.taskId,
         traceStatus: 'blocked',
       });
-      return null;
+      return action.subtaskId ? this.eventFromDecision(decision, {
+        type: 'dispatch_requested', taskId: action.taskId,
+        reason: 'Subtask blocked; evaluate independent work',
+      }) : null;
     }
     if (action.type === 'park_for_replan') {
       const task = this.deps.taskRuntimeService.findTask(action.taskId);
@@ -2106,12 +2224,6 @@ export class KernelExecutionRuntime {
         actor: 'kernel-execution-runtime',
         reason: 'authorized dispatch resumed the parked Task',
       });
-    } else if (task.status === 'blocked') {
-      this.lifecycle.unblockTask({
-        taskId: task.id,
-        actor: 'kernel-execution-runtime',
-        reason: 'authorized dispatch cleared the Task blocker',
-      });
     }
     if (this.deps.taskRuntimeService.findTask(task.id)?.status === 'ready') {
       this.lifecycle.transitionTask({
@@ -2192,6 +2304,7 @@ export class KernelExecutionRuntime {
         recoveryMode: item.recoveryMode,
         subtaskGoal: subtask.goal,
         deliveryKind: subtask.deliveryKind,
+        fileOutputs: subtask.fileOutputs,
         requiredCapabilities: subtask.requiredCapabilities,
         acceptanceCriteria,
         ...bindingDetails,
@@ -2222,6 +2335,7 @@ export class KernelExecutionRuntime {
         recoveryMode: item.recoveryMode,
         subtaskGoal: subtask.goal,
         deliveryKind: subtask.deliveryKind,
+        fileOutputs: subtask.fileOutputs,
         requiredCapabilities: subtask.requiredCapabilities,
         acceptanceCriteria,
         ...bindingDetails,
@@ -2387,6 +2501,14 @@ export class KernelExecutionRuntime {
     }
     this.appendExecutorOutcomeTrace(item, outcome);
 
+    if (outcome.outcome === 'executor_unavailable') {
+      return this.eventFromDispatchItem(item, {
+        type: 'capacity_signal', authorizedBinding: item.authorizedBinding,
+        bindingFingerprint: item.bindingFingerprint, available: false,
+        failure: outcome.failure, cycleId: input.executionId,
+        attemptKind: item.attemptKind, attemptPayload: item.attemptPayload,
+      });
+    }
     if (outcome.outcome === 'capacity_unavailable') {
       this.appendExecutionTrace({
         phase: 'routing',
@@ -2671,6 +2793,8 @@ export class KernelExecutionRuntime {
           schemaVersion: 5,
           configurationRevision,
           type: 'task_resume_requested',
+          expectedGenerationId: request.expectedGenerationId ?? this.deps.workGraphRevisionRepo.findActive(taskId)?.generationId,
+          expectedGraphRevision: request.expectedGraphRevision ?? this.deps.workGraphRevisionRepo.findActive(taskId)?.revision,
           id: `resume_event_${taskId}_${request.kernelDecisionId ?? executionId}`,
           correlationId: request.kernelDecisionId ?? executionId,
           causationId: request.kernelDecisionId ?? null,
@@ -2728,8 +2852,8 @@ export class KernelExecutionRuntime {
       : event.type === 'timer_tick' ? {
           schemaVersion: 5,
           type: 'timer',
-          task: { id: task.id, status: task.status },
-          wakeAuthorized: this.isKernelWakeAuthorized(task, event.wakeKind),
+          task: { id: task.id, status: this.deps.taskRuntimeService.findTask(task.id)?.status ?? task.status },
+          wakeAuthorized: this.isKernelWakeAuthorized(this.deps.taskRuntimeService.findTask(task.id) ?? task, event.wakeKind),
           capacityBlockedAt: null,
           recheckAfterMs: 0,
           capacityBindings: [],
@@ -2851,6 +2975,21 @@ export class KernelExecutionRuntime {
     });
     await this.deps.cancellationCoordinator.recover(taskId);
     this.deps.cancellationCoordinator.settlePartialCancellation(taskId);
+    // Cleanup can remove the last completion blocker after the publication
+    // event was already consumed (including across a Server restart). Ask the
+    // same Kernel to reevaluate completion; never write Task.done here.
+    if (this.deps.taskRuntimeService.findTask(taskId)?.status === 'running') {
+      const subtasks = this.deps.subtaskRepo.listActiveByTask(taskId);
+      if (subtasks.length > 0 && subtasks.every(subtask => subtask.status === 'done')
+        && this.deps.cancellationCoordinator.completionBlockedReasons(taskId, null).length === 0) {
+        await workflow.submit({
+          schemaVersion: 5, configurationRevision, type: 'dispatch_requested',
+          id: `settled_dispatch_${executionId}`, correlationId: executionId, causationId: null,
+          occurredAt: new Date().toISOString(), sessionId: this.sessionId, taskId,
+          reason: 'terminal cleanup released completion blockers',
+        });
+      }
+    }
   }
 
   private async drainPublications(input: {
@@ -2873,7 +3012,7 @@ export class KernelExecutionRuntime {
           await this.attemptSupervisor.drain(input.taskId);
           return;
         }
-        if (outcome.type === 'cancelled') continue;
+        if (outcome.type === 'cancelled' || outcome.type === 'delivery_failed') continue;
         integrated = true;
         this.projectIntegratedPublication(outcome);
       }
@@ -3009,6 +3148,8 @@ export class KernelExecutionRuntime {
         ? 'Executor completed the authorized attempt; Runtime is verifying the result.'
         : isContractResult
           ? 'Executor returned a result that Runtime is certifying for delivery.'
+          : outcome.outcome === 'executor_unavailable'
+            ? outcome.failure.summary
           : outcome.outcome === 'executor_failed'
             ? 'Executor failed; Kernel will decide recovery or retry.'
             : 'Executor attempt became stale or was cancelled.',
@@ -3101,7 +3242,7 @@ export class KernelExecutionRuntime {
   }): Promise<boolean> {
     const task = this.deps.taskRuntimeService.findTask(input.taskId);
     const subtask = this.deps.subtaskRepo.findById(input.subtaskId);
-    if (!task || task.status !== 'blocked' || !subtask || subtask.status !== 'ready') return false;
+    if (!task || !['running', 'blocked'].includes(task.status) || !subtask || subtask.status !== 'ready') return false;
 
     const executionId = `timer_${input.blockedDecisionId}`;
     const request: QueuedExecutionRequest = {
@@ -3172,8 +3313,8 @@ export class KernelExecutionRuntime {
         : event.type === 'timer_tick' ? {
             schemaVersion: 5,
             type: 'timer',
-            task: { id: task.id, status: task.status },
-            wakeAuthorized: this.isKernelWakeAuthorized(task, event.wakeKind),
+            task: { id: task.id, status: this.deps.taskRuntimeService.findTask(task.id)?.status ?? task.status },
+            wakeAuthorized: this.isKernelWakeAuthorized(this.deps.taskRuntimeService.findTask(task.id) ?? task, event.wakeKind),
             capacityBlockedAt: input.blockedAt,
             recheckAfterMs: input.recheckAfterMs,
             capacityBindings: subtask.executorBindings,
@@ -3264,7 +3405,10 @@ export class KernelExecutionRuntime {
     finishExecution: (lines: string[], scheduleNext?: boolean) => Promise<void>,
     dependencyType: import('../core/types.js').Dependency['type'] = 'manual',
   ): Promise<void> {
-    const blockedReason = this.blockReasonWithCause(taskId, reason);
+    const localBlockers = this.deps.subtaskRepo.listByTask?.(taskId)
+      .filter(subtask => subtask.status === 'blocked' && subtask.error)
+      .map(subtask => `${subtask.title}: ${subtask.error}`).slice(0, 4) ?? [];
+    const blockedReason = this.blockReasonWithCause(taskId, [reason, ...localBlockers].join('; '));
     if (this.deps.taskRuntimeService.findTask(taskId)?.status === 'running') {
       this.lifecycle.blockTask({
         taskId,
@@ -3325,32 +3469,11 @@ export class KernelExecutionRuntime {
     if (task.status !== 'running' && task.status !== 'blocked') {
       throw new Error(`Retry Wake target Task is not recoverable: ${taskId}/${task.status}`);
     }
-    if (
-      task.status === 'blocked'
-      && !task.dependencies.some(dependency =>
-        dependency.type === 'kernel_retry' && dependency.status === 'waiting'
-      )
-    ) {
-      throw new Error(`Retry Wake target Task is blocked by a different dependency: ${taskId}`);
-    }
     const revision = this.deps.workGraphRevisionRepo.findActive(taskId);
     const generationId = revision?.generationId ?? subtask.generationId;
     const wakeId = `retry_wake_${decision.id}`;
     const createdAt = new Date().toISOString();
     const persistRetry = () => {
-      if (task.status === 'running') {
-        this.lifecycle.blockTask({
-          taskId,
-          dependency: {
-            taskId,
-            type: 'kernel_retry',
-            description: reason,
-            status: 'waiting',
-          },
-          actor: 'kernel-execution-runtime',
-          reason,
-        });
-      }
       this.deps.retryWakeRepo.arm({
         wakeId,
         taskId,
@@ -3407,12 +3530,11 @@ export class KernelExecutionRuntime {
   }
 
   private isKernelWakeAuthorized(task: import('../core/types.js').Task, wakeKind: Extract<KernelEvent, { type: 'timer_tick' }>['wakeKind']): boolean {
-    const expectedType = wakeKind === 'retry'
-      ? 'kernel_retry'
-      : wakeKind === 'capacity'
+    if (wakeKind === 'retry') return ['running', 'blocked'].includes(task.status);
+    const expectedType = wakeKind === 'capacity'
         ? 'kernel_capacity'
         : 'kernel_availability';
-    return task.status === 'blocked'
+    return ['running', 'blocked'].includes(task.status)
       && task.dependencies.some(dependency => dependency.status === 'waiting' && dependency.type === expectedType);
   }
 

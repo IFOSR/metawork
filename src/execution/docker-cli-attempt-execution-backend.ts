@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { randomUUID } from 'node:crypto';
 import type {
   AttemptExecutionBackend,
   AttemptExecutionRecord,
@@ -11,7 +12,7 @@ const execFileAsync = promisify(execFile);
 const MANAGED_LABEL = 'io.metaclaw.attempt-sandbox';
 
 export interface DockerCommandRunner {
-  run(args: string[]): Promise<string>;
+  run(args: string[], timeoutMs?: number): Promise<string>;
 }
 
 export interface DockerCliAttemptExecutionBackendOptions {
@@ -20,11 +21,12 @@ export interface DockerCliAttemptExecutionBackendOptions {
 }
 
 class DockerCliCommandRunner implements DockerCommandRunner {
-  async run(args: string[]): Promise<string> {
+  async run(args: string[], timeoutMs?: number): Promise<string> {
     const result = await execFileAsync('docker', args, {
       encoding: 'utf8',
       maxBuffer: 8 * 1024 * 1024,
       windowsHide: true,
+      timeout: timeoutMs,
     });
     return `${result.stdout}${result.stderr}`.trim();
   }
@@ -69,6 +71,27 @@ export class DockerCliAttemptExecutionBackend implements AttemptExecutionBackend
     }
   }
 
+  async probeProgram(resolvedImageId: string, command: string): Promise<string> {
+    if (!resolvedImageId.startsWith('sha256:') || !command.trim()) {
+      throw new Error('immutable image and executable are required for program verification');
+    }
+    const name = `metawork-program-probe-${randomUUID()}`;
+    try {
+      const version = await this.runner.run(['run', '--rm', '--name', name,
+        '--read-only', '--network=none', '--cap-drop=ALL', '--security-opt=no-new-privileges:true',
+        '--user=1000:1000', '--pids-limit=64', '--memory=256m', '--cpus=1',
+        '--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=16777216',
+        '--env', 'HOME=/tmp', '--env', 'CODEX_HOME=/tmp/.codex', '--env', 'PI_CODING_AGENT_DIR=/tmp/.pi/agent',
+        '--entrypoint', command, resolvedImageId, '--version'], 15_000);
+      if (!version.trim() || version.length > 4096) throw new Error('invalid Executor program version response');
+      return version.trim();
+    } finally {
+      // A timed-out Docker client may leave its probe alive. It owns no Task
+      // resources; clean up only this randomly named probe container.
+      await this.runner.run(['rm', '--force', name], 15_000).catch(() => undefined);
+    }
+  }
+
   async create(input: CreateAttemptExecutionInput): Promise<AttemptExecutionRecord> {
     this.validateCreateInput(input);
     const currentImageId = await this.resolveImage(input.imageRef);
@@ -108,7 +131,7 @@ export class DockerCliAttemptExecutionBackend implements AttemptExecutionBackend
         '--mount',
         `type=bind,src=${this.engineSourcePath(mount.source)},dst=${mount.target}${mount.mode === 'ro' ? ',readonly' : ''}`,
       ]),
-      input.imageRef,
+      input.resolvedImageId,
       input.command,
       ...input.args,
     ];

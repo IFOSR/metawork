@@ -1,9 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { chmod, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AnyFusionConfigurationV2, ConfigurationSnapshot } from './types.js';
 import { buildExecutorCapabilityManual } from '../routing/executor-capability-manual.js';
+
+type RuntimeRenderConfiguration = Pick<AnyFusionConfigurationV2, 'providers' | 'models' | 'agentClasses'>;
 
 const CURRENT_FILE = 'current';
 
@@ -72,14 +74,14 @@ export class AgentRuntimeRenderer {
     await rename(tmp, join(this.generatedRoot, CURRENT_FILE));
   }
 
-  private async renderPlanner(config: AnyFusionConfigurationV2, root: string): Promise<void> {
+  private async renderPlanner(config: RuntimeRenderConfiguration, root: string): Promise<void> {
     const planner = join(root, 'planner');
     await mkdir(planner, { recursive: true });
     await writeFile(join(planner, 'models.json'), `${JSON.stringify(buildModelsJson(config), null, 2)}\n`, 'utf8');
     await writeFile(join(planner, 'settings.json'), `${JSON.stringify(buildSettingsJson(config, 'planner'), null, 2)}\n`, 'utf8');
   }
 
-  private async renderPi(config: AnyFusionConfigurationV2, root: string): Promise<void> {
+  private async renderPi(config: RuntimeRenderConfiguration, root: string): Promise<void> {
     const agent = join(root, 'pi-home', '.pi', 'agent');
     await mkdir(agent, { recursive: true });
     await writeFile(join(agent, 'models.json'), `${JSON.stringify(buildModelsJson(config), null, 2)}\n`, 'utf8');
@@ -87,7 +89,7 @@ export class AgentRuntimeRenderer {
     await writeFile(join(agent, 'settings.json'), `${JSON.stringify(sharedSettings, null, 2)}\n`, 'utf8');
   }
 
-  private async renderCodex(config: AnyFusionConfigurationV2, root: string): Promise<void> {
+  private async renderCodex(config: RuntimeRenderConfiguration, root: string): Promise<void> {
     const codex = join(root, 'codex');
     await mkdir(codex, { recursive: true });
     await writeFile(join(codex, 'config.toml'), buildCodexConfigToml(config), 'utf8');
@@ -115,12 +117,12 @@ export class AgentRuntimeRenderer {
   }
 }
 
-function enabledProviders(config: AnyFusionConfigurationV2): Array<[string, AnyFusionConfigurationV2['providers'][string]]> {
+function enabledProviders(config: RuntimeRenderConfiguration): Array<[string, AnyFusionConfigurationV2['providers'][string]]> {
   return Object.entries(config.providers)
-    .filter(([, provider]) => provider.enabled && provider.protocol === 'openai-compatible');
+    .filter(([, provider]) => provider.enabled);
 }
 
-function enabledModelsFor(config: AnyFusionConfigurationV2, providerRef: string) {
+function enabledModelsFor(config: RuntimeRenderConfiguration, providerRef: string) {
   return Object.entries(config.models)
     .filter(([, model]) => model.enabled && model.providerRef === providerRef);
 }
@@ -141,7 +143,7 @@ function buildPlannerModelEntry(
   };
   // Pi auto-detects Z.ai/GLM's `thinking` protocol from the endpoint. An
   // explicit OpenAI `reasoning_effort` override breaks GLM tool-call turns.
-  if (!isZaiCompatibleBaseUrl(provider.baseUrl)) {
+  if (provider.protocol === 'openai-compatible' && !isZaiCompatibleBaseUrl(provider.baseUrl)) {
     entry.compat = {
       supportsReasoningEffort: model.reasoning === 'high' || model.reasoning === 'medium',
     };
@@ -149,24 +151,26 @@ function buildPlannerModelEntry(
   return entry;
 }
 
-function apiKeyVariable(providerRef: string, providerCount: number): string {
+function apiKeyVariable(
+  providerRef: string,
+  providerCount: number,
+  protocol: AnyFusionConfigurationV2['providers'][string]['protocol'],
+): string {
+  const prefix = protocol === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
   return providerCount === 1
-    ? '$OPENAI_API_KEY'
-    : `$OPENAI_API_KEY__${providerRef.toUpperCase().replace(/[^A-Z0-9_]/g, '_')}`;
+    ? `$${prefix}`
+    : `$${prefix}__${providerRef.toUpperCase().replace(/[^A-Z0-9_]/g, '_')}`;
 }
 
-export function buildModelsJson(config: AnyFusionConfigurationV2): Record<string, unknown> {
+export function buildModelsJson(config: RuntimeRenderConfiguration): Record<string, unknown> {
   const providers = enabledProviders(config);
   const providerEntries: Record<string, unknown> = {};
   for (const [ref, provider] of providers) {
     providerEntries[ref] = {
       baseUrl: provider.baseUrl,
-      // openai-compatible 即 OpenAI Chat Completions 兼容端点；不能写死
-      // openai-responses —— GLM/DeepSeek 等服务商没有 /responses 路径，
-      // 会得到 404 Not Found（见 docs/current/query-billing-operations.md 之外的
-      // 运行事故：custom-provider-4 API error (404)）。
-      api: 'openai-completions',
-      apiKey: apiKeyVariable(ref, providers.length),
+      api: provider.protocol === 'anthropic' ? 'anthropic-messages'
+        : provider.protocol === 'openai-responses' ? 'openai-responses' : 'openai-completions',
+      apiKey: apiKeyVariable(ref, providers.length, provider.protocol),
       models: enabledModelsFor(config, ref)
         .map(([, model]) => buildPlannerModelEntry(provider, model)),
     };
@@ -174,7 +178,7 @@ export function buildModelsJson(config: AnyFusionConfigurationV2): Record<string
   return { providers: providerEntries };
 }
 
-function resolveModelRef(config: AnyFusionConfigurationV2, agentClassId: string): string | null {
+function resolveModelRef(config: RuntimeRenderConfiguration, agentClassId: string): string | null {
   const agentClass = config.agentClasses[agentClassId];
   if (!agentClass) return null;
   const policy = agentClass.modelPolicy;
@@ -182,7 +186,7 @@ function resolveModelRef(config: AnyFusionConfigurationV2, agentClassId: string)
   return policy.defaultModelRef ?? policy.allowedModelRefs[0] ?? null;
 }
 
-export function buildSettingsJson(config: AnyFusionConfigurationV2, agentClassId: string): Record<string, unknown> {
+export function buildSettingsJson(config: RuntimeRenderConfiguration, agentClassId: string): Record<string, unknown> {
   const providers = enabledProviders(config);
   const defaultModelRef = resolveModelRef(config, agentClassId);
   const defaultModel = defaultModelRef ? config.models[defaultModelRef] : null;
@@ -200,8 +204,8 @@ export function buildSettingsJson(config: AnyFusionConfigurationV2, agentClassId
   };
 }
 
-function buildCodexConfigToml(config: AnyFusionConfigurationV2): string {
-  const providers = enabledProviders(config);
+function buildCodexConfigToml(config: RuntimeRenderConfiguration): string {
+  const providers = enabledProviders(config).filter(([, provider]) => provider.protocol !== 'anthropic');
   const lines = [
     'model_reasoning_effort = "high"',
     'preferred_auth_method = "apikey"',
@@ -260,4 +264,15 @@ export function resolveRevisionRuntimeHome(
   if (!revisionId) return undefined;
   const path = join(generatedRoot, revisionId, subdir);
   return existsSync(path) ? path : undefined;
+}
+
+/** Expected bytes come from the authorized revision, never from a mutable current pointer. */
+export function executorRuntimeFileHashes(config: RuntimeRenderConfiguration, driverId: string): Readonly<Record<string, string>> {
+  const { defaultProvider, defaultModel, enabledModels, ...settings } = buildSettingsJson(config, '');
+  const files: Record<string, string> = driverId === 'pi-cli' ? {
+    '.pi/agent/models.json': `${JSON.stringify(buildModelsJson(config), null, 2)}\n`,
+    '.pi/agent/settings.json': `${JSON.stringify(settings, null, 2)}\n`,
+  } : driverId === 'codex-cli' ? { 'config.toml': buildCodexConfigToml(config) } : {};
+  return Object.freeze(Object.fromEntries(Object.entries(files).map(([path, content]) =>
+    [path, createHash('sha256').update(content).digest('hex')])));
 }

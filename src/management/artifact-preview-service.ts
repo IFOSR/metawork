@@ -11,6 +11,7 @@
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { documentPreviewFormat, MAX_DOCUMENT_PREVIEW_BYTES } from '../delivery/document-preview-format.js';
 import {
   USER_ARTIFACTS_DIRECTORY,
   resolvePreviewKind,
@@ -93,7 +94,7 @@ export class ArtifactPreviewService {
     if (!loaded.ok) return loaded;
     const { record: data, projection } = loaded;
     if (data.status !== 'published') return { ok: false, reason: 'unavailable' };
-    if (!['markdown', 'text', 'code', 'image'].includes(projection.previewKind)) {
+    if (!projection.documentFormat && !['markdown', 'text', 'code', 'image'].includes(projection.previewKind)) {
       return { ok: false, reason: 'unsupported' };
     }
     let safePath: string;
@@ -102,7 +103,7 @@ export class ArtifactPreviewService {
     } catch {
       return { ok: false, reason: 'unavailable' };
     }
-    const sizeLimit = IMAGE_PREVIEW_KINDS.has(projection.previewKind)
+    const sizeLimit = projection.documentFormat ? MAX_DOCUMENT_PREVIEW_BYTES : IMAGE_PREVIEW_KINDS.has(projection.previewKind)
       ? MAX_IMAGE_PREVIEW_BYTES
       : MAX_PREVIEW_BYTES;
     if (projection.byteLength > sizeLimit) {
@@ -112,7 +113,7 @@ export class ArtifactPreviewService {
     if (!stat.isFile() || stat.size > sizeLimit) {
       return { ok: false, reason: 'unavailable' };
     }
-    if (IMAGE_PREVIEW_KINDS.has(projection.previewKind)) {
+    if (projection.documentFormat || IMAGE_PREVIEW_KINDS.has(projection.previewKind)) {
       const bytes = await readFile(safePath);
       return {
         ok: true,
@@ -171,6 +172,7 @@ export class ArtifactPreviewService {
       return { ok: false, reason: 'unauthorized' };
     }
     const previewKind = resolvePreviewKind(record.previewKind, record.mediaType);
+    const documentFormat = documentPreviewFormat(record.relativePath, record.mediaType);
     return {
       ok: true,
       record,
@@ -182,8 +184,9 @@ export class ArtifactPreviewService {
         relativePath: record.relativePath,
         mediaType: record.mediaType,
         previewKind,
+        ...(documentFormat ? { documentFormat } : {}),
         previewable: record.status === 'published'
-          && ['markdown', 'text', 'code', 'image'].includes(previewKind),
+          && (Boolean(documentFormat) || ['markdown', 'text', 'code', 'image'].includes(previewKind)),
         byteLength: record.byteLength,
         contentHash: record.contentHash,
         publishedAt: record.createdAt,

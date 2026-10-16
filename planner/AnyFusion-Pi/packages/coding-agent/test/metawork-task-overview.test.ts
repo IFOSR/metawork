@@ -12,7 +12,18 @@ const summary = (id: string, workspaceId = "ws"): MetaWorkConversationSummary =>
 	activity: { state: "executing", taskId: null, updatedAt: "" },
 });
 const activity = (id: string, phase = "executing", nextCursor: string | null = null): ConversationActivityView => ({
-	tasks: [{ taskId: id, title: id, phase, executionGeneration: "g", explanation: "", canCancel: true }],
+	tasks: [
+		{
+			taskId: id,
+			title: id,
+			phase,
+			userState: phase === "blocked" ? "needs_action" : phase === "queued" ? "waiting" : "executing",
+			userStateReason: "来自 TaskView 的状态说明",
+			executionGeneration: "g",
+			explanation: "",
+			canCancel: true,
+		},
+	],
 	pendingInteractions: [],
 	nextCursor,
 });

@@ -7,12 +7,9 @@ import {
 	Text,
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
-import type {
-	MetaWorkConversationSummary,
-	MetaWorkWorkspaceProjection,
-} from "../model.ts";
-import { theme } from "../../interactive/theme/theme.ts";
 import { DynamicBorder } from "../../interactive/components/dynamic-border.ts";
+import { theme } from "../../interactive/theme/theme.ts";
+import type { MetaWorkConversationSummary, MetaWorkWorkspaceProjection } from "../model.ts";
 
 export interface MetaWorkConversationSelectorActions {
 	readonly attach: (conversationId: string) => void;
@@ -46,7 +43,7 @@ export class MetaWorkConversationSelector extends Container implements Focusable
 		this.actions = actions;
 		this.summaries = [...summaries];
 		this.filtered = [...summaries];
-		this.searchInput.onSubmit = value => {
+		this.searchInput.onSubmit = (value) => {
 			this.applySearch(value);
 			const selected = this.filtered[this.selectedIndex];
 			if (selected) this.actions.attach(selected.conversationId);
@@ -138,19 +135,18 @@ export class MetaWorkConversationSelector extends Container implements Focusable
 
 	private move(delta: number): void {
 		if (this.filtered.length === 0) return;
-		this.selectedIndex = (
-			this.selectedIndex + delta + this.filtered.length
-		) % this.filtered.length;
+		this.selectedIndex = (this.selectedIndex + delta + this.filtered.length) % this.filtered.length;
 		this.refresh();
 	}
 
 	private applySearch(query: string): void {
 		const normalized = query.trim().toLocaleLowerCase();
 		this.filtered = normalized
-			? this.summaries.filter(item => (
-					item.title.toLocaleLowerCase().includes(normalized)
-					|| item.preview.toLocaleLowerCase().includes(normalized)
-				))
+			? this.summaries.filter(
+					(item) =>
+						item.title.toLocaleLowerCase().includes(normalized) ||
+						item.preview.toLocaleLowerCase().includes(normalized),
+				)
 			: [...this.summaries];
 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filtered.length - 1));
 		this.refresh();
@@ -158,23 +154,22 @@ export class MetaWorkConversationSelector extends Container implements Focusable
 
 	private refresh(): void {
 		const workspaceName = this.workspace?.displayName ?? "Workspace";
-		const availability = this.workspace?.availability === "unavailable"
-			? theme.fg("warning", "unavailable")
-			: theme.fg("success", "available");
+		const availability =
+			this.workspace?.availability === "unavailable"
+				? theme.fg("warning", "unavailable")
+				: theme.fg("success", "available");
 		this.title.setText(`${theme.bold(workspaceName)}  ${availability}`);
-		this.hint.setText(theme.fg(
-			"muted",
-			this.searching
-				? "输入关键词搜索当前 Workspace，Enter 打开，Esc 返回"
-				: `↑/↓ 选择  Enter 打开  / 搜索  n 新建  r 刷新${this.hasMore ? "  PgDn 加载更多" : ""}  Esc 返回`,
-		));
+		this.hint.setText(
+			theme.fg(
+				"muted",
+				this.searching
+					? "输入关键词搜索当前 Workspace，Enter 打开，Esc 返回"
+					: `↑/↓ 选择  Enter 打开  / 搜索  n 新建  r 刷新${this.hasMore ? "  PgDn 加载更多" : ""}  Esc 返回`,
+			),
+		);
 		this.list.clear();
 		if (this.filtered.length === 0) {
-			this.list.addChild(new Text(
-				theme.fg("muted", "当前 Workspace 还没有 Conversation，按 n 新建。"),
-				0,
-				0,
-			));
+			this.list.addChild(new Text(theme.fg("muted", "当前 Workspace 还没有 Conversation，按 n 新建。"), 0, 0));
 			return;
 		}
 		const start = Math.max(0, this.selectedIndex - 7);
@@ -185,18 +180,16 @@ export class MetaWorkConversationSelector extends Container implements Focusable
 			const activity = activityLabel(item.activity.state);
 			const age = relativeTime(item.updatedAt);
 			const title = truncateToWidth(item.title || "New conversation", 72, "…");
-			this.list.addChild(new Text(
-				`${marker} ${selected ? theme.bold(title) : title}`
-					+ `  ${theme.fg(activity.color, activity.label)} · ${age}`,
-				0,
-				0,
-			));
+			this.list.addChild(
+				new Text(
+					`${marker} ${selected ? theme.bold(title) : title}` +
+						`  ${theme.fg(activity.color, activity.label)} · ${age}`,
+					0,
+					0,
+				),
+			);
 			if (item.preview && item.preview !== item.title) {
-				this.list.addChild(new Text(
-					theme.fg("muted", `    ${truncateToWidth(item.preview, 88, "…")}`),
-					0,
-					0,
-				));
+				this.list.addChild(new Text(theme.fg("muted", `    ${truncateToWidth(item.preview, 88, "…")}`), 0, 0));
 			}
 		}
 	}
@@ -207,12 +200,18 @@ function activityLabel(state: MetaWorkConversationSummary["activity"]["state"]):
 	color: "muted" | "accent" | "warning" | "error" | "success";
 } {
 	switch (state) {
-		case "planning": return { label: "规划中", color: "accent" };
-		case "queued": return { label: "排队中", color: "warning" };
-		case "executing": return { label: "执行中", color: "success" };
-		case "waiting": return { label: "等待中", color: "warning" };
-		case "blocked": return { label: "已阻塞", color: "error" };
-		default: return { label: "空闲", color: "muted" };
+		case "planning":
+			return { label: "规划中", color: "accent" };
+		case "queued":
+			return { label: "排队中", color: "warning" };
+		case "executing":
+			return { label: "执行中", color: "success" };
+		case "waiting":
+			return { label: "等待中", color: "warning" };
+		case "blocked":
+			return { label: "需要处理", color: "error" };
+		default:
+			return { label: "空闲", color: "muted" };
 	}
 }
 

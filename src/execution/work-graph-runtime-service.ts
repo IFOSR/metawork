@@ -205,6 +205,7 @@ export class WorkGraphRuntimeService {
       requiredCapabilities: proposal.requiredCapabilities,
       executorBindings: authorizedBindingsBySubtask[proposal.id]!,
       deliveryKind: proposal.deliveryKind,
+      fileOutputs: proposal.fileOutputs,
       acceptance: proposal.acceptance,
       riskLevel: proposal.riskLevel,
       result: '',
@@ -270,6 +271,7 @@ function subtaskToProposal(subtask: Subtask): SubtaskProposal {
       },
     })),
     deliveryKind: subtask.deliveryKind,
+    fileOutputs: subtask.fileOutputs,
     acceptance: subtask.acceptance,
     riskLevel: subtask.riskLevel,
   };

@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { desktopInventory, verifyDesktopRelease } from '../dist/release-tools.mjs';
+import { prepareNodeRuntime } from '../../../scripts/prepare-node-runtime.mjs';
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) {
@@ -77,8 +78,10 @@ try {
   // Electron Builder omits dot-file placeholders while copying extraResources.
   await removeArchiveMarkers(payload);
   const toolRoot = join(payload, 'metawork', 'desktop-tools');
+  await mkdir(toolRoot, { recursive: true });
   for (const [name, root] of [['node', nodeRoot], ['git', gitRoot], ['executor', executorRoot]]) {
-    await cp(root, join(toolRoot, name), { recursive: true, dereference: true });
+    if (name === 'node') await prepareNodeRuntime(root, join(toolRoot, name));
+    else await cp(root, join(toolRoot, name), { recursive: true, dereference: true });
     const inventory = await desktopInventory(join(toolRoot, name));
     if (!Object.keys(inventory).some(path => /(?:^|\/)(?:licen[sc]e|copying|notice)[^/]*$/iu.test(path))) throw new Error(`Missing ${name} license notices`);
   }

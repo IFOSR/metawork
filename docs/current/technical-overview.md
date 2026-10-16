@@ -1,5 +1,45 @@
 # MetaWork
 
+Explicit file delivery (2026-10-15, ADR-0032): new Planner proposals require
+`fileOutputs` per Subtask. Empty arrays request inline answers/action receipts or
+Git edits without downloadable documents. Safe relative filenames or dedicated
+directory prefixes select file deliveries; every entry must match an existing
+regular file. Existing requested files need not be rewritten. Runtime excludes other files from artifacts/handoffs and
+retains safe text when required files are missing. Planner and Executor must not
+create unsolicited proof reports. SQLite 49→50 adds nullable `file_outputs_json`;
+NULL preserves only historical authorizations, while new proposal omission is
+rejected. See the reliability technical design's file-delivery closure matrix.
+
+Recovered completion (2026-10-14): current publication order, explicit entitlement
+revalidation, evidence-based failed-attempt cleanup, and a final Kernel completion
+observation close the recovered-task path. Completed branches are reused; an old
+failed Attempt is never rewritten as successful. See the [task blocking and status simplification plan](../plans/2026-10-15-task-execution-reliability-unified-plan.md) and
+[ADR-0023](../adr/0023-durable-kernel-workflow-recovery-and-availability.md).
+
+Blocked-task interaction (2026-10-14): Web keeps submission and task queries
+available during execution and after blocking. Cancellation eligibility is not
+an execution-status signal. TaskView userState/userStateReason drive activity display; explicit
+retry uses the existing `/task resume` Gateway command, while live or uncertain
+residue continues to hold the Conversation execution slot under ADR-0037.
+See [implementation record](../plans/2026-10-14-blocked-task-interaction-fix.md).
+
+Same-Conversation history reuse (2026-10-13, ADR-0038): schema 48 keys execution
+evidence by `(task_id, id)`, preserving existing IDs through a transactional
+47→48 migration. New and existing Tasks may reuse explicitly selected
+interactions from the trusted current session. Admission and preparation share
+source checks; preparation repairs missing Task associations on recovered
+graphs. Assistant references remain exact-only. Missing/unauthorized sources
+and identity conflicts report `context_preparation` before Executor launch,
+with recovery still owned by Kernel. Source tests, build and an isolated
+incident-database check passed. The local Desktop/Server is now updated to
+`0.1.14-internal-evidence-fix-20261013`; real multi-turn acceptance confirms
+history reuse, while file delivery still fails because three Pi attempts made
+no tool calls or workspace changes yet reached done. That separate execution
+and completion-verification problem is addressed in source by the 2026-10-15
+reliability implementation; the user's installed release has not been replaced
+or revalidated as part of that change.
+See [validation and installation status](../plans/2026-10-13-shared-interaction-evidence-fix.md).
+
 Managed Pi and optional tools (2026-10-09): Desktop uses its release-managed Pi
 Executor entrypoint, independent of the user's global Pi. Codex paths are
 validated and activated through the existing strict-idle settings transaction;
@@ -37,9 +77,9 @@ MetaWork is a local AI Task OS for agentic work. It turns natural-language reque
 
 It is built for teams who need agents to do more than answer the current turn. MetaWork gives long-running AI work a task state machine, memory boundary, unified ControlKernel decision plane, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
 
-> Current implementation baseline (2026-09-30): PlanningAgentPlan v8, Work
+> Current implementation baseline (2026-10-15): PlanningAgentPlan v8, Work
 > Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
-> and SQLite schema v47 with transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47 upgrade support.
+> and SQLite schema v50 with transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50 upgrade support.
 > Schema v39/v40 adds the Query usage/billing facts (Query attribution contexts,
 > metering spans/observations, immutable price versions, cost entries, per-Query
 > bills and lines, the consumption outbox/receipts and bill adjustments) that
@@ -72,7 +112,7 @@ implementation is deferred to a separate roadmap.
 
 ### Navigation And Observation Status (2026-10-03)
 
-The source schema is 47. Web and the single native TUI browse indexed metadata
+The source schema is 48. Web and the single native TUI browse indexed metadata
 and a bounded Conversation read model, independently of execution attachment.
 A baseline contains at most 20 recent Turn summaries within 256 KiB; long
 bodies, history pages, trace, Task details and billing load separately. An
@@ -115,7 +155,7 @@ measured budgets, performance and limitations are in the
 [implementation record](../plans/2026-10-02-frontend-observation-implementation.md).
 
 The native TUI Dashboard now shows Workspace task summaries (execution, queue,
-blocking and other canonical TaskView phases). F6 focuses the list, arrows select,
+waiting, executing, needs_action and finished TaskView states). F6 focuses the list, arrows select,
 Enter opens the Task's original Turn, and Esc returns to the editor. Wide terminals
 also support clicking; compact terminals use the same list in an overlay. The left
 pane retains execution details and Turn billing. Activity reads refresh the loaded
@@ -283,6 +323,12 @@ the Account/Conversation/Workspace binding and SHA-256 again at attempt start,
 then materializes the original file under the attempt-local `inputs/`
 directory. Web click, drop and clipboard-file paste share the same upload
 path; ordinary text paste remains textarea input.
+
+Historical artifacts and attachments include a prompt `readPath` relative to
+the Executor working directory, such as `../inputs/input-01.pptx`. The input
+directory is separate from the output working directory. Missing selected
+files are reported; the Executor must not search the disk or other Tasks to
+guess replacements. Container prompts use container-relative paths.
 
 Document parsing is Executor-owned. The default engineering Executor
 advertises the `document-processing` Routing Capability and processes
@@ -869,21 +915,24 @@ Conversation.
 
 `metawork web` registers its startup directory in a short-lived single-use
 Server launch context. The URL contains only an opaque launch-hint fragment and
-never contains a Workspace path. After explicit login, the Browser applies the
-hint through the ordinary authorized Workspace selection path. HTTP snapshots,
+never contains a Workspace path. The Browser automatically creates its local
+process Cookie session before applying the hint through the ordinary authorized
+Workspace selection path. HTTP snapshots,
 observation baselines, and live
 `workspace_changed` events expose the Server-confirmed canonical Workspace to
 the existing Web interface without narrowing its richer projections.
 
 The Web surface binds only to `127.0.0.1`. Normal startup opens a short-lived,
 single-use launch-hint fragment that cannot authenticate the Browser and is
-removed from the address bar after resolution. Login remains explicit; a valid
-login creates the HttpOnly, SameSite=Strict process-local session cookie.
+removed from the address bar after resolution. The local Cookie session only
+binds transport and client state; official account login and entitlement
+verification remain the only user-facing account boundary. The session uses an
+HttpOnly, SameSite=Strict process-local Cookie.
 `metawork web --no-open` prints a manual fallback token for SSH and
 port-forwarded use. WebSocket
 upgrades require the session cookie and an allowed loopback Origin before the
-protocol switches; stale cookies return the browser to the fallback gate
-instead of reconnecting indefinitely.
+protocol switches; stale cookies trigger a fresh local transport session instead
+of returning the browser to a password gate.
 
 The Web surface is a persistent Conversation workspace. A fixed history rail
 selects bounded Conversation projections. Browser stores keep focus, drafts and
@@ -920,6 +969,48 @@ When restoring a saved reading position, the virtual conversation list keeps
 the anchor Turn mounted even before its actual height is known. Rendering
 clamps to the current scroll range while retaining the desired Turn-relative
 offset, so delayed full-report loading can restore the position after restart.
+
+Conversation replies and Markdown previews share whole-document parsing. File
+references become authorized buttons in rendered text nodes without splitting
+tables, links or fenced code. GFM tables have visible borders, header styling,
+column alignment and keyboard-accessible horizontal scrolling.
+
+Fenced `chart` (or `metawork-chart`) JSON v1 renders line, bar, area and pie
+charts with local lazy-loaded ECharts SVG modules. The exact schema lives in
+`web/src/charts/chart-spec.ts`: title, labels, named numeric/null series and
+optional unit/source/xLabel. Limits are 200 labels, 8 series, 64,000 characters
+per chart and 12 rendered charts per body. Invalid specifications retain a
+readable source fallback; raw ECharts options, scripts and resource fetching
+are unsupported. Legends are keyboard-operable and every chart exposes its
+underlying data table. Browser export saves SVG; Desktop rasterizes the local
+SVG and invokes a bounded PNG save operation with a native destination dialog.
+Main validates the PNG header/dimensions, decodes and re-encodes pixels, then
+uses an atomic write (8 MB encoded input, 4096 pixels per side, 8 million pixels).
+The shared Executor prompt teaches the schema and data provenance requirements;
+charts remain inline answers with no extra Planner fileOutputs or capabilities.
+TUI/Feishu and PDF export retain chart data as fenced text, plus the prose
+conclusion; they do not gain interactive chart rendering from this change.
+
+The same drawer also renders HTML, DOCX, PPTX, XLSX/XLS/CSV and PDF locally.
+Word retains page layout, tables and embedded images; PowerPoint and PDF offer
+page navigation, and Excel exposes worksheet selection, merged cells, styles,
+formatted values and cached formula results. HTML displays in a script-free
+inner sandbox with inline styles and embedded images; bounded PNG/JPEG siblings
+use `/api/artifacts/:id/preview-image` and the existing report-directory checks.
+External resources are not fetched. Rich preview input is capped at 32 MiB;
+Office ZIP expansion is bounded, and sheets display up to 1000 rows/100 columns
+with an explicit truncation notice. Original downloads remain available.
+Legacy binary DOC/PPT require conversion to DOCX/PPTX for in-app preview.
+
+`documentFormat` is derived from safe filename/MIME metadata at projection time,
+so old octet-stream artifacts can be previewed without rewriting SQLite facts.
+Uploaded attachments use the same drawer and their existing Conversation-owned
+read endpoint. Browser renderers are lazy-loaded in an opaque-origin iframe;
+they cannot access the parent DOM, credentials, APIs or native bridge. Only
+public static assets expose CORS for the sandbox; file/API responses do not.
+Desktop saves attachments through a narrow Conversation/Attachment-ID IPC
+operation and the existing authorized streaming/atomic-save flow. Third-party
+licenses are emitted into the Web build by `web/scripts/third-party-notices.mjs`.
 
 Markdown report previews offer original Markdown and derived PDF downloads.
 `GET /api/artifacts/:id/download?format=pdf` reads the complete authorized
@@ -1040,9 +1131,8 @@ explicit ownership. The canonical Task/Subtask/Attempt lifecycle vocabulary,
 its transition table and the raw-status mapping functions live in
 `src/task/task-lifecycle.ts`; the read-only `TaskView` projection lives in
 `src/task/task-view.ts`. Presentation surfaces render
-`TaskView.phase` (`queued`, `executing`, `retrying`, `waiting_for_plan`,
-`waiting_for_user`, `publishing`, `recovery_required`, `blocked`, `completed`,
-`failed`, `cancelled`) and never interpret raw `tasks.status`,
+`TaskView.userState` (`waiting`, `executing`, `needs_action`, `finished`) and
+`userStateReason`; internal phases remain available in details. Surfaces never interpret raw `tasks.status`,
 `kernel_dispatch_items.status`, `work_units.state` or
 `kernel_decision_applications.status`. The Gateway exposes the same projection
 additively as `GatewayTaskViewSnapshot.lifecycle`.
@@ -1345,6 +1435,12 @@ user billing stage. The Server caps physical requests at two and queued requests
 at 128, removes expired waiters and rejects late responses. A transport ignoring
 abort retains its physical slot until it settles.
 
+The local per-Subtask request budget is 128 KiB of serialized bytes, including
+escaped state and candidate metadata (increased from 32 KiB on 2026-10-15).
+It is independent of the Provider model's token context window. Candidate
+and proposal count limits still apply; oversized inputs fall back without
+silently removing eligible candidates.
+
 `npm run smoke:span-routing -- --integration` exercises four representative
 workloads through the real advisor, Kernel and SQLite replay, reports ordering,
 latency and usage, and requires zero extra calls on replay. It requires a valid
@@ -1553,11 +1649,11 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 MetaWork can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The source uses SQLite schema v47 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47 upgrades; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers; v45 adds durable Retry Wake continuation facts for timeout recovery; v46 adds the indexed latest Task-creation timestamp used to order Conversation history; v47 adds body-separated Conversation entities, projection checkpoints/tail/staging rebuild, activity invalidation and witness indexes, trace/content-search indexes, client navigation, durable approval acceptance/application and notification routes/outbox. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The source uses SQLite schema v49 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50 upgrades; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers; v45 adds durable Retry Wake continuation facts for timeout recovery; v46 adds the indexed latest Task-creation timestamp used to order Conversation history; v47 adds body-separated Conversation entities, projection checkpoints/tail/staging rebuild, activity invalidation and witness indexes, trace/content-search indexes, client navigation, durable approval acceptance/application and notification routes/outbox. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Historical Artifact refs are validated against Account/Conversation/Workspace ownership, publication status, regular-file safety and content hash, then copied to attempt-local `inputs/` with stable `input-XX-*` names. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; image-capable adapters consume only the materialized input directory.
 
-Every Executor response is assessed by Completion Protocol v4 on result deliverability, completion certification and safety disposition. A safe body may be delivered as `partial` and `uncertified` when metadata is missing or malformed, or when a physical transport boundary requires chunking; it cannot certify the Subtask or release downstream work. Runtime stores raw stream, business body and safe projection as immutable Result Objects, streams the safe projection through `result_delivery_available` / `result_chunk` / `result_completed`, and uses edge-scoped ResultReferences for authorized downstream reads. Ordinary Workspace and user-space file operations are allowed for Executor work, including report research caches and intermediate output; system-control access, credentials, privilege changes, devices, Docker control-plane access and unsafe ResultReference access remain fail-closed. Certified results persist the terminal receipt and candidate commit, then enter `awaiting_integration`; publication later atomically publishes authorized handoffs, artifacts, workspace state and `done`. Correction repairs metadata only and never discards a safe body or repeats the business task.
+Every Executor response is assessed by Completion Protocol v4 on result deliverability, completion certification and safety disposition. A safe body may be delivered as `partial` and `uncertified` when metadata is missing or malformed, or when a physical transport boundary requires chunking; it cannot certify the Subtask or release downstream work. Runtime stores raw stream, business body and safe projection as immutable Result Objects, streams the safe projection through `result_delivery_available` / `result_chunk` / `result_completed`, and uses edge-scoped ResultReferences for authorized downstream reads. Ordinary Workspace and user-space file operations are allowed for Executor work, including report research caches and intermediate output; system-control access, credentials, privilege changes, devices, Docker control-plane access and unsafe ResultReference access remain fail-closed. Certified results persist the terminal receipt and candidate commit, then enter `awaiting_integration`; publication records Git integration and pending delivery atomically, copies files from the fixed integration commit, records delivery success/failure, and only then atomically publishes authorized handoffs, workspace state and `done`. Correction repairs metadata only and never discards a safe body or repeats the business task.
 
 Image generation and editing nodes require `deliveryKind: edit`. Certification
 requires at least one changed PNG, JPEG, WebP, or GIF whose extension and
@@ -1963,3 +2059,40 @@ HTTP or commercial credentials enter Kernel. Clean native installs without
 Provider environment variables open the login/settings shell.
 Deployment, limits, privacy, credential retirement and acceptance evidence are
 recorded in [official account operations](official-account-operations.md).
+
+### Provider 显式协议（2026-10-13）
+
+新增/编辑 Provider 必须保留 API 协议：`openai-compatible` 仍表示 Chat
+Completions，`openai-responses` 表示 Responses，`anthropic` 表示原生 Messages。
+配置层为 Pi/Planner 生成对应 adapter，通过既有私有环境引用注入凭据；不按
+模型名称猜测协议。Anthropic 地址填写服务根地址（SDK 追加 `/v1/messages`），
+OpenAI 地址填写 API 基础地址（一般含 `/v1`）。Codex 使用既有 Responses
+adapter，配置验证拒绝 Codex/Anthropic 绑定；独立图像 Runner 继续使用 Images API。
+连接去重包含协议、标准化 URL 和完整凭据身份。模型目录探测使用对应认证头；
+保存仍经统一 revision/strict-idle 激活，不把目录获取或配置生效视为真实任务验收。
+
+### Task execution reliability implementation (2026-10-15)
+
+The primary display contract is Task Domain `userState` / `userStateReason`:
+waiting, executing, needs_action, finished. Internal phases and cancellation
+eligibility remain separate facts. Web, Gateway, TUI and Feishu consume this
+projection; historic cached activity lacking it is invalidated for rebuild.
+
+Schema 49 adds `workspace_publication_deliveries`. Failed delivery remains
+queryable and requires `/task resume`; pending or interrupted finalization replays
+without another Executor. The command accepts optional `--generation` and
+`--revision` fences supplied by cards; manual commands capture current identity.
+Missing/invalid completion metadata never synthesizes certified completion.
+Configuration and adapter failures do not enter capacity or automatic retry loops.
+
+Managed local and container launches save protected runtime manifests. Container
+program verification runs `--version` in the resolved immutable image with an
+isolated temporary home, no network, Task mounts or credentials; failure blocks
+business execution. The business container uses that image ID, preventing a tag
+change between inspection and creation from substituting a different image.
+Host-installed CLI availability is not used to infer container availability.
+
+Source validation, native CLI protocol probes, browser/TUI tests, Desktop shell,
+Docker and installed-package acceptance are recorded independently in the
+[reliability technical design](../plans/2026-10-15-task-execution-reliability-technical-design.md).
+A successful source build is not an installed commercial-release acceptance.

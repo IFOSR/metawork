@@ -85,7 +85,7 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
       attemptReceiptRepo: { listByTask: vi.fn().mockReturnValue([]) },
       workGraphRevisionRepo: { findActive: vi.fn().mockReturnValue(null) },
       dispatchItemRepo: { listByTask: vi.fn().mockReturnValue([]) },
-      publicationRepo: { hasBlockingResidue: vi.fn().mockReturnValue(false) },
+      publicationRepo: { unfinishedDeliveries: vi.fn().mockReturnValue([]), hasBlockingResidue: vi.fn().mockReturnValue(false) },
       cancellationCoordinator: {
         findCleanupTaskId: vi.fn().mockReturnValue(null),
         completionBlockedReasons: vi.fn().mockReturnValue([]),

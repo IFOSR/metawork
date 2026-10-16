@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildExecutorContextPrompt } from '../../src/executor/prompt-builder.js';
 import type { ExecutorInput } from '../../src/executor/adapter.js';
 import { COMPLETION_MARKER_V4 } from '../../src/execution/completion-protocol.js';
+import { parseChartSpec } from '../../web/src/charts/chart-spec';
 
 function input(): ExecutorInput {
   return {
@@ -39,6 +40,49 @@ function input(): ExecutorInput {
 }
 
 describe('Subtask execution prompt layering', () => {
+  it('teaches a renderable inline chart without requesting files or inventing data', () => {
+    const request = input(); request.context.currentSubtask.fileOutputs = [];
+    const prompt = buildExecutorContextPrompt(request);
+    const example = prompt.match(/```chart\n([^]*?)\n```/u)?.[1];
+    expect(parseChartSpec(example!)).toMatchObject({ ok: true });
+    expect(prompt).toContain('Never invent values');
+    expect(prompt).toContain('null means missing, never zero');
+    expect(prompt).toContain('not file deliverables');
+    expect(prompt).toContain('No file delivery is requested.');
+  });
+  it('instructs no-file actions to return inline receipts while preserving explicit document delivery', () => {
+    const action = input();
+    action.context.currentSubtask.goal = '打开浏览器进入百度。';
+    action.context.currentSubtask.fileOutputs = [];
+    expect(buildExecutorContextPrompt(action)).toContain('No file delivery is requested.');
+    expect(buildExecutorContextPrompt(action)).toContain('Do not create any extra report or evidence files.');
+    action.context.currentSubtask.fileOutputs = ['deck.pptx'];
+    expect(buildExecutorContextPrompt(action)).toContain('Planner-declared fileOutputs: ["deck.pptx"]');
+    expect(buildExecutorContextPrompt(action)).toContain('Produce every declared file output, or verify an existing file');
+    expect(buildExecutorContextPrompt(action)).not.toContain('No file delivery is requested.');
+  });
+  it.each([
+    ['/task/files', '/task/inputs'],
+    ['C:\\task\\files', 'C:\\task\\inputs'],
+  ])('locates selected inputs from the actual workspace %s', (workspacePath, inputsPath) => {
+    const selected = input();
+    selected.executionBinding = {
+      ...selected.context.identity, generationId: 'generation', leaseToken: 'lease',
+      idempotencyKey: 'key', workspaceId: 'workspace', workspacePath,
+      inputsPath, sourcePath: '/source', handoffsPath: '/handoffs', controlNetwork: 'control',
+    };
+    selected.context.selectedAttachments = [{
+      attachmentId: 'attachment', ref: { kind: 'attachment', attachmentId: 'attachment' },
+      displayName: '附件.txt', relativeInputPath: 'input-02-附件.txt',
+      mediaType: 'text/plain', contentHash: 'hash',
+    }];
+    const prompt = buildExecutorContextPrompt(selected);
+    expect(prompt).toContain('"readPath": "../inputs/01-generated-image.jpg"');
+    expect(prompt).toContain('"readPath": "../inputs/input-02-附件.txt"');
+    expect(prompt).toContain('NOT the working directory');
+    expect(prompt).toContain('Do not search the whole disk');
+  });
+
   it('mandates web_search as the primary web channel with bash curl only as fallback', () => {
     const prompt = buildExecutorContextPrompt(input());
     expect(prompt).toContain('web_search');

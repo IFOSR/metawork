@@ -59,6 +59,7 @@ export function WorkspaceShell({
   uploading,
   onFilesSelected,
   onRemoveAttachment,
+  onOpenAttachment,
 }: {
   sessions: WebSessionMetadata[];
   hasMoreConversations?: boolean;
@@ -108,6 +109,7 @@ export function WorkspaceShell({
   uploading?: Array<{ name: string; size: number }>;
   onFilesSelected: (files: File[]) => void;
   onRemoveAttachment: (attachmentId: string) => void;
+  onOpenAttachment?: (conversationId: string, attachment: AttachmentMetadata) => void;
 }) {
   const [sidebarHidden, setSidebarHidden] = useState(() => Boolean(desktopBridge() && window.matchMedia('(max-width: 1000px)').matches));
   useEffect(() => {
@@ -187,6 +189,7 @@ export function WorkspaceShell({
             onSend={onSend}
             onCancel={onCancelTurn}
             attachments={attachments}
+            onOpenAttachment={onOpenAttachment}
             uploadError={uploadError}
             uploading={uploading}
             onFilesSelected={onFilesSelected}

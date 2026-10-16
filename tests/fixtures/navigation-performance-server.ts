@@ -28,7 +28,6 @@ import { ManagementServer } from '../../src/management/server.js';
 import { WebAuthService } from '../../src/management/web-auth.js';
 import { WebLaunchContextService } from '../../src/management/web-launch-context.js';
 import { WorkspaceDirectoryBrowser } from '../../src/management/workspace-directory-browser.js';
-import { resolveLoginCredentials } from '../../src/management/login-credentials.js';
 import type { ConversationMetadata } from '../../src/session/conversation-store.js';
 import type { GatewayCommandEnvelope } from '../../src/gateway/client-protocol.js';
 import type { ConversationTurn } from '../../src/management/web-session-types.js';
@@ -210,7 +209,6 @@ export async function createNavigationPerformanceFixture(webDistDir = resolve('w
     port, webDistDir, token: auth.manualAccessToken, webAuth: auth,
     runningRevisionId: 'fixture-only', sessionRuntime: runtime,
     launchContexts: new WebLaunchContextService(), workspaceDirectoryBrowser: new WorkspaceDirectoryBrowser(),
-    loginCredentials: resolveLoginCredentials({ ANYFUSION_WEB_USERNAME: 'admin', ANYFUSION_WEB_PASSWORD: 'test-password' }),
     agentReadiness: new AgentInstallationReadinessService({
       probe: async () => ({ kind: 'exit', code: 0, stdout: 'fixture navigation only', stderr: '' }),
     }),

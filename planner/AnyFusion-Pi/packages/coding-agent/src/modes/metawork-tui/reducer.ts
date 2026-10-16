@@ -14,14 +14,10 @@
  */
 
 import { createHash } from "node:crypto";
-import type {
-	GatewayCommandReceipt,
-	GatewayEventEnvelope,
-	GatewayReplay,
-} from "../../anyfusion/gateway-protocol.ts";
+import type { GatewayCommandReceipt, GatewayEventEnvelope, GatewayReplay } from "../../anyfusion/gateway-protocol.ts";
 import {
-	METAWORK_CLIENT_LIMITS,
 	emptyConversationProjection,
+	METAWORK_CLIENT_LIMITS,
 	type MetaWorkClientState,
 	type MetaWorkCompletionState,
 	type MetaWorkConversationProjection,
@@ -37,22 +33,18 @@ import {
 	asRecord,
 	asString,
 	asStringArray,
+	type NormalizedCompletion,
 	normalizeCompletion,
 	normalizeHistoryPage,
 	normalizeResultMetadata,
-	normalizeTaskView,
-	normalizeTurnBillView,
 	normalizeTaskUsageSummary,
+	normalizeTaskView,
 	normalizeTraceEvents,
+	normalizeTurnBillView,
 	sanitizeDisplayText,
-	type NormalizedCompletion,
 } from "./protocol-adapter.ts";
 
-const TERMINAL_TURN_STATUSES: readonly MetaWorkTurnStatus[] = [
-	"completed",
-	"failed",
-	"cancelled",
-];
+const TERMINAL_TURN_STATUSES: readonly MetaWorkTurnStatus[] = ["completed", "failed", "cancelled"];
 
 const KNOWN_EVENT_KINDS = new Set([
 	"conversation_snapshot",
@@ -89,20 +81,13 @@ const WORKSPACE_EVENT_KINDS = new Set([
 	"workspace_availability_changed",
 ]);
 
-const CONNECTION_STREAM_EVENT_KINDS = new Set([
-	"command_completion",
-	"task_view_snapshot",
-	"usage_billing_projection",
-]);
+const CONNECTION_STREAM_EVENT_KINDS = new Set(["command_completion", "task_view_snapshot", "usage_billing_projection"]);
 
 // ---------------------------------------------------------------------------
 // 入口：事件、回放、回执
 // ---------------------------------------------------------------------------
 
-export function reduceGatewayEvent(
-	state: MetaWorkClientState,
-	event: GatewayEventEnvelope,
-): MetaWorkClientState {
+export function reduceGatewayEvent(state: MetaWorkClientState, event: GatewayEventEnvelope): MetaWorkClientState {
 	// 不变量 2：eventId 幂等。
 	if (state.seenEventIds.includes(event.eventId)) return state;
 
@@ -110,7 +95,7 @@ export function reduceGatewayEvent(
 	const streamSequence = state.streamSequences[event.conversationId] ?? 0;
 	if (event.sequence <= streamSequence) return state;
 
-	let next: MetaWorkClientState = {
+	const next: MetaWorkClientState = {
 		...state,
 		streamSequences: {
 			...state.streamSequences,
@@ -143,8 +128,7 @@ export function applyGatewayReplay(
 	replay: GatewayReplay,
 ): MetaWorkClientState {
 	let next = state;
-	const ordered = [...replay.snapshot, ...replay.deltas]
-		.sort((left, right) => left.sequence - right.sequence);
+	const ordered = [...replay.snapshot, ...replay.deltas].sort((left, right) => left.sequence - right.sequence);
 	for (const event of ordered) {
 		next = reduceGatewayEvent(next, event);
 	}
@@ -172,10 +156,7 @@ export function applyGatewayReplay(
 }
 
 /** 命令回执只更新受理状态，不推断 Task 已运行。 */
-export function reduceReceipt(
-	state: MetaWorkClientState,
-	receipt: GatewayCommandReceipt,
-): MetaWorkClientState {
+export function reduceReceipt(state: MetaWorkClientState, receipt: GatewayCommandReceipt): MetaWorkClientState {
 	const pending = state.pendingSubmissions[receipt.requestId];
 	if (!pending) return state;
 	const stateByStatus: Record<GatewayCommandReceipt["status"], MetaWorkPendingSubmission["state"]> = {
@@ -215,8 +196,8 @@ export function queueSubmission(
 	};
 	const entries = Object.values(submissions).sort((left, right) => left.queuedAt - right.queuedAt);
 	while (entries.length > METAWORK_CLIENT_LIMITS.pendingSubmissions) {
-		const terminal = entries.find(entry =>
-			entry.state === "accepted" || entry.state === "duplicate" || entry.state === "rejected"
+		const terminal = entries.find(
+			(entry) => entry.state === "accepted" || entry.state === "duplicate" || entry.state === "rejected",
 		);
 		const victim = terminal ?? entries[0]!;
 		delete submissions[victim.requestId];
@@ -254,10 +235,7 @@ export function pushClientNotice(
 	return addNotice(state, kind, text);
 }
 
-export function selectConversation(
-	state: MetaWorkClientState,
-	conversationId: string | null,
-): MetaWorkClientState {
+export function selectConversation(state: MetaWorkClientState, conversationId: string | null): MetaWorkClientState {
 	if (state.selectedConversationId === conversationId) return state;
 	let conversations = state.conversations;
 	if (conversationId && !conversations[conversationId]) {
@@ -272,10 +250,7 @@ export function selectConversation(
 }
 
 /** Reset only the disposable read model; drafts and admission receipts survive. */
-export function resetConversationProjection(
-	state: MetaWorkClientState,
-	conversationId: string,
-): MetaWorkClientState {
+export function resetConversationProjection(state: MetaWorkClientState, conversationId: string): MetaWorkClientState {
 	if (!state.conversations[conversationId]) return state;
 	const selectedTurnIds = { ...state.ui.selectedTurnIds };
 	const completions = { ...state.completions };
@@ -299,11 +274,7 @@ export function resetConversationProjection(
 	};
 }
 
-export function setDraft(
-	state: MetaWorkClientState,
-	conversationId: string,
-	text: string,
-): MetaWorkClientState {
+export function setDraft(state: MetaWorkClientState, conversationId: string, text: string): MetaWorkClientState {
 	return {
 		...state,
 		ui: { ...state.ui, drafts: { ...state.ui.drafts, [conversationId]: text } },
@@ -311,11 +282,7 @@ export function setDraft(
 }
 
 /** 显式选择历史 Turn；到达新进展不得隐式改变它。 */
-export function selectTurn(
-	state: MetaWorkClientState,
-	conversationId: string,
-	turnId: string,
-): MetaWorkClientState {
+export function selectTurn(state: MetaWorkClientState, conversationId: string, turnId: string): MetaWorkClientState {
 	return {
 		...state,
 		ui: {
@@ -410,7 +377,11 @@ function reduceConnectionStreamEvent(
 	// task_view_snapshot
 	const view = normalizeTaskView(payload);
 	if (!view) return state;
-	const conversations = ensureConversation(state.conversations, view.targetConversationId, state.selectedConversationId);
+	const conversations = ensureConversation(
+		state.conversations,
+		view.targetConversationId,
+		state.selectedConversationId,
+	);
 	const conversation = conversations[view.targetConversationId]!;
 	let turn = conversation.turns[view.turnId] ?? newTurn(view.turnId, null, "ai_turn", 0);
 	if (turn.taskId && turn.taskId !== view.taskId) return state;
@@ -432,27 +403,28 @@ function reduceConnectionStreamEvent(
 			attempts: view.attempts[subtask.id] ?? [],
 		};
 	}
-	const result: MetaWorkResultProjection | null = turn.result
-		?? (view.result
+	const result: MetaWorkResultProjection | null =
+		turn.result ??
+		(view.result
 			? {
-				resultId: view.result.resultId,
-				content: "",
-				contentHash: "",
-				byteLength: 0,
+					resultId: view.result.resultId,
+					content: "",
+					contentHash: "",
+					byteLength: 0,
 					certification: view.result.certification,
 					verification: "available",
-			}
+				}
 			: null);
 	turn = {
 		...turn,
 		taskId: view.taskId,
 		taskTitle: view.title,
 		taskStatus: view.status,
-		// 展示层消费统一投影的 phase；旧 Server 无 lifecycle 时回退到原始状态。
-		taskPhase: view.lifecycle?.phase ?? turn.taskPhase ?? view.status,
+		// 主状态由 Task Domain 投影；缺少新字段时等待同步。
+		taskPhase: view.lifecycle?.userState ?? turn.taskPhase,
 		taskNextAction: view.lifecycle?.nextAuthorizedAction ?? turn.taskNextAction,
 		routing: view.routing,
-		progressSummary: view.progressSummary ?? turn.progressSummary,
+		progressSummary: view.lifecycle?.userStateReason ?? view.progressSummary ?? turn.progressSummary,
 		schedulingReason: view.schedulingReason,
 		taskStartedAt: view.startedAt ?? turn.taskStartedAt,
 		taskCompletedAt: view.completedAt ?? turn.taskCompletedAt,
@@ -460,10 +432,10 @@ function reduceConnectionStreamEvent(
 		subtasks,
 		permission: view.pendingPermission
 			? {
-				requestId: view.pendingPermission.requestId,
-				summary: view.pendingPermission.summary ?? "",
-				status: view.pendingPermission.status,
-			}
+					requestId: view.pendingPermission.requestId,
+					summary: view.pendingPermission.summary ?? "",
+					status: view.pendingPermission.status,
+				}
 			: null,
 		artifacts: mergeArtifacts(turn.artifacts, view.artifacts),
 		result,
@@ -476,10 +448,7 @@ function reduceConnectionStreamEvent(
 			: [...conversation.turnOrder, view.turnId],
 		taskViewWatermarks: {
 			...conversation.taskViewWatermarks,
-			[view.turnId]: Math.max(
-				conversation.taskViewWatermarks[view.turnId] ?? 0,
-				view.asOfSequence,
-			),
+			[view.turnId]: Math.max(conversation.taskViewWatermarks[view.turnId] ?? 0, view.asOfSequence),
 		},
 	};
 	return {
@@ -530,15 +499,10 @@ function reduceWorkspaceEvent(
 	}
 }
 
-function reduceAttachedWorkspace(
-	state: MetaWorkClientState,
-	payload: Record<string, unknown>,
-): MetaWorkClientState {
+function reduceAttachedWorkspace(state: MetaWorkClientState, payload: Record<string, unknown>): MetaWorkClientState {
 	const workspace = asRecord(payload.workspace);
 	// WorkspaceRecord 使用 canonicalPath；Conversation workspace 投影使用 path。
-	const workspacePath = workspace
-		? asString(workspace.canonicalPath) ?? asString(workspace.path)
-		: null;
+	const workspacePath = workspace ? (asString(workspace.canonicalPath) ?? asString(workspace.path)) : null;
 	if (workspace && workspacePath) {
 		const path = workspacePath;
 		return {
@@ -554,88 +518,83 @@ function reduceAttachedWorkspace(
 	return state;
 }
 
-function reduceWorkspaceDirectory(
-	state: MetaWorkClientState,
-	payload: Record<string, unknown>,
-): MetaWorkClientState {
+function reduceWorkspaceDirectory(state: MetaWorkClientState, payload: Record<string, unknown>): MetaWorkClientState {
 	const workspace = asRecord(payload.workspace);
-	const path = workspace
-		? asString(workspace.canonicalPath) ?? asString(workspace.path)
-		: null;
+	const path = workspace ? (asString(workspace.canonicalPath) ?? asString(workspace.path)) : null;
 	const id = asString(payload.workspaceId) ?? (workspace ? asString(workspace.id) : null);
 	const requestedCursor = asString(payload.requestedCursor);
 	const query = asString(payload.query) ?? "";
 	if ("requestedCursor" in payload) {
-		if ((state.activeWorkspace && id !== state.activeWorkspace.id)
-			|| query !== (state.conversationDirectoryQuery ?? "")) return state;
+		if (
+			(state.activeWorkspace && id !== state.activeWorkspace.id) ||
+			query !== (state.conversationDirectoryQuery ?? "")
+		)
+			return state;
 		if (requestedCursor && requestedCursor !== state.conversationDirectoryCursor) return state;
 	}
 	const activeWorkspace = path
 		? {
-			id: id ?? state.activeWorkspace?.id ?? "",
-			displayName: asString(workspace?.displayName) ?? basename(path),
-			path,
-			availability: workspace?.availability === "unavailable" ? "unavailable" as const : "available" as const,
-		}
+				id: id ?? state.activeWorkspace?.id ?? "",
+				displayName: asString(workspace?.displayName) ?? basename(path),
+				path,
+				availability: workspace?.availability === "unavailable" ? ("unavailable" as const) : ("available" as const),
+			}
 		: state.activeWorkspace;
 	const page = asRecord(payload.page);
-	const items = page && Array.isArray(page.items)
-		? page.items
-			.map(normalizeConversationSummary)
-			.filter((item): item is NonNullable<typeof item> => item !== null)
-		: [];
+	const items =
+		page && Array.isArray(page.items)
+			? page.items
+					.map(normalizeConversationSummary)
+					.filter((item): item is NonNullable<typeof item> => item !== null)
+			: [];
 	return {
 		...state,
 		activeWorkspace,
-		conversationSummaries: sortConversationSummaries(requestedCursor
-			? [...new Map([...state.conversationSummaries, ...items].map(item => [item.conversationId, item])).values()]
-			: items),
+		conversationSummaries: sortConversationSummaries(
+			requestedCursor
+				? [
+						...new Map(
+							[...state.conversationSummaries, ...items].map((item) => [item.conversationId, item]),
+						).values(),
+					]
+				: items,
+		),
 		conversationDirectoryCursor: page ? asString(page.nextCursor) : null,
 		conversationDirectoryQuery: query,
 	};
 }
 
-function reduceConversationUpsert(
-	state: MetaWorkClientState,
-	payload: Record<string, unknown>,
-): MetaWorkClientState {
+function reduceConversationUpsert(state: MetaWorkClientState, payload: Record<string, unknown>): MetaWorkClientState {
 	const summary = normalizeConversationSummary(payload.conversation);
 	if (!summary) return state;
 	return {
 		...state,
 		conversationSummaries: sortConversationSummaries([
-			...state.conversationSummaries.filter(item => item.conversationId !== summary.conversationId),
+			...state.conversationSummaries.filter((item) => item.conversationId !== summary.conversationId),
 			summary,
 		]),
 	};
 }
 
-function reduceConversationRemoved(
-	state: MetaWorkClientState,
-	payload: Record<string, unknown>,
-): MetaWorkClientState {
+function reduceConversationRemoved(state: MetaWorkClientState, payload: Record<string, unknown>): MetaWorkClientState {
 	const conversationId = asString(payload.conversationId);
 	if (!conversationId) return state;
 	return {
 		...state,
-		conversationSummaries: state.conversationSummaries
-			.filter(item => item.conversationId !== conversationId),
+		conversationSummaries: state.conversationSummaries.filter((item) => item.conversationId !== conversationId),
 	};
 }
 
-function reduceConversationActivity(
-	state: MetaWorkClientState,
-	payload: Record<string, unknown>,
-): MetaWorkClientState {
+function reduceConversationActivity(state: MetaWorkClientState, payload: Record<string, unknown>): MetaWorkClientState {
 	const conversationId = asString(payload.conversationId);
 	const activity = normalizeActivity(payload.activity);
 	if (!conversationId || !activity) return state;
 	return {
 		...state,
 		conversationSummaries: sortConversationSummaries(
-			state.conversationSummaries.map(item => (
-				item.conversationId === conversationId ? { ...item, activity } : item
-			)),
+			state.conversationSummaries.map((item) =>
+				item.conversationId === conversationId ? { ...item, activity } : item,
+			),
 		),
 	};
 }
@@ -676,15 +635,18 @@ function normalizeConversationSummary(value: unknown): MetaWorkClientState["conv
 	};
 }
 
-function normalizeActivity(
-	value: unknown,
-): MetaWorkClientState["conversationSummaries"][number]["activity"] | null {
+function normalizeActivity(value: unknown): MetaWorkClientState["conversationSummaries"][number]["activity"] | null {
 	const activity = asRecord(value);
 	const state = activity ? asString(activity.state) : null;
 	if (
-		state !== "idle" && state !== "planning" && state !== "executing"
-		&& state !== "waiting" && state !== "blocked" && state !== "queued"
-	) return null;
+		state !== "idle" &&
+		state !== "planning" &&
+		state !== "executing" &&
+		state !== "waiting" &&
+		state !== "blocked" &&
+		state !== "queued"
+	)
+		return null;
 	return {
 		state,
 		taskId: asString(activity?.taskId),
@@ -692,11 +654,13 @@ function normalizeActivity(
 	};
 }
 
-function sortConversationSummaries<T extends {
-	activity: { state: string };
-	updatedAt: string;
-	conversationId: string;
-}>(items: T[]): T[] {
+function sortConversationSummaries<
+	T extends {
+		activity: { state: string };
+		updatedAt: string;
+		conversationId: string;
+	},
+>(items: T[]): T[] {
 	const priority: Record<string, number> = {
 		blocked: 5,
 		executing: 4,
@@ -705,11 +669,12 @@ function sortConversationSummaries<T extends {
 		planning: 2,
 		idle: 1,
 	};
-	return [...items].sort((left, right) => (
-		(priority[right.activity.state] ?? 0) - (priority[left.activity.state] ?? 0)
-		|| right.updatedAt.localeCompare(left.updatedAt)
-		|| left.conversationId.localeCompare(right.conversationId)
-	));
+	return [...items].sort(
+		(left, right) =>
+			(priority[right.activity.state] ?? 0) - (priority[left.activity.state] ?? 0) ||
+			right.updatedAt.localeCompare(left.updatedAt) ||
+			left.conversationId.localeCompare(right.conversationId),
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -730,13 +695,12 @@ function reduceConversationEvent(
 
 	// 不变量 6：Task 快照水位之前的缓冲事件不重复应用。
 	const watermark = event.turnId ? conversation.taskViewWatermarks[event.turnId] : undefined;
-	const snapshotCovered = watermark !== undefined
-		&& event.sequence <= watermark
-		&& (event.kind === "task_projection"
-			|| event.kind === "execution_delta"
-			|| event.kind === "permission_request");
+	const snapshotCovered =
+		watermark !== undefined &&
+		event.sequence <= watermark &&
+		(event.kind === "task_projection" || event.kind === "execution_delta" || event.kind === "permission_request");
 
-	let next: MetaWorkClientState = {
+	const next: MetaWorkClientState = {
 		...state,
 		conversations: { ...conversations, [conversationId]: conversation },
 	};
@@ -814,9 +778,10 @@ function reduceHistoryPage(
 				answer: existing.answer || record.finalAnswer || "",
 				taskId: existing.taskId ?? record.taskId,
 				startedAt: existing.startedAt ?? record.startedAt,
-				status: existing.taskId && record.taskId && existing.taskId !== record.taskId
-					? existing.status
-					: monotonicStatus(existing.status, record.status),
+				status:
+					existing.taskId && record.taskId && existing.taskId !== record.taskId
+						? existing.status
+						: monotonicStatus(existing.status, record.status),
 			};
 			continue;
 		}
@@ -849,28 +814,40 @@ function reduceHistoryPage(
 	}
 	// Merge page order around shared IDs. A refreshed newest page may append
 	// Turns, whereas a previous page prepends them; neither reverses cached facts.
-	const pageOrder = chronological.map(record => record.id);
+	const pageOrder = chronological.map((record) => record.id);
 	for (const [index, id] of pageOrder.entries()) {
 		if (order.includes(id)) continue;
-		const next = pageOrder.slice(index + 1).find(candidate => order.includes(candidate));
-		const previous = pageOrder.slice(0, index).reverse().find(candidate => order.includes(candidate));
+		const next = pageOrder.slice(index + 1).find((candidate) => order.includes(candidate));
+		const previous = pageOrder
+			.slice(0, index)
+			.reverse()
+			.find((candidate) => order.includes(candidate));
 		const startedAt = Date.parse(turns[id]?.startedAt ?? "");
-		const newer = order.findIndex(candidate => Date.parse(turns[candidate]?.startedAt ?? "") > startedAt);
-		const position = next ? order.indexOf(next)
-			: previous ? order.indexOf(previous) + 1
-				: page.previousCursor !== null ? 0
-					: newer >= 0 ? newer : order.length;
+		const newer = order.findIndex((candidate) => Date.parse(turns[candidate]?.startedAt ?? "") > startedAt);
+		const position = next
+			? order.indexOf(next)
+			: previous
+				? order.indexOf(previous) + 1
+				: page.previousCursor !== null
+					? 0
+					: newer >= 0
+						? newer
+						: order.length;
 		order.splice(position, 0, id);
 	}
-	return updateConversation(state, conversation.conversationId, sortTurnOrder({
-		...conversation,
-		historyTransfer: null,
-		turns,
-		turnOrder: order,
-		historyTurnIds: [...historyTurnIds],
-		historyCursor: page.nextCursor,
-		historyExhausted: page.nextCursor === null,
-	}));
+	return updateConversation(
+		state,
+		conversation.conversationId,
+		sortTurnOrder({
+			...conversation,
+			historyTransfer: null,
+			turns,
+			turnOrder: order,
+			historyTurnIds: [...historyTurnIds],
+			historyCursor: page.nextCursor,
+			historyExhausted: page.nextCursor === null,
+		}),
+	);
 }
 
 function reduceHistoryTransfer(
@@ -879,25 +856,54 @@ function reduceHistoryTransfer(
 	payload: Record<string, unknown>,
 ): MetaWorkClientState {
 	const transfer = asRecord(payload.transfer);
-	const fail = () => addNotice(updateConversation(state, conversation.conversationId, {
-		...conversation, historyTransfer: null,
-	}), "error", "History transfer incomplete or invalid; reload this page.");
+	const fail = () =>
+		addNotice(
+			updateConversation(state, conversation.conversationId, {
+				...conversation,
+				historyTransfer: null,
+			}),
+			"error",
+			"History transfer incomplete or invalid; reload this page.",
+		);
 	if (!transfer) return fail();
 	const { id, index, count, byteLength, hash, data } = transfer;
-	if (typeof id !== "string" || id.length > 160
-		|| typeof index !== "number" || !Number.isSafeInteger(index)
-		|| typeof count !== "number" || !Number.isSafeInteger(count) || count < 1 || count > 128
-		|| index < 0 || index >= count
-		|| typeof byteLength !== "number" || !Number.isSafeInteger(byteLength) || byteLength < 1 || byteLength > 4 * 1024 * 1024
-		|| typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash)
-		|| typeof data !== "string" || data.length > 48 * 1024 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return fail();
+	if (
+		typeof id !== "string" ||
+		id.length > 160 ||
+		typeof index !== "number" ||
+		!Number.isSafeInteger(index) ||
+		typeof count !== "number" ||
+		!Number.isSafeInteger(count) ||
+		count < 1 ||
+		count > 128 ||
+		index < 0 ||
+		index >= count ||
+		typeof byteLength !== "number" ||
+		!Number.isSafeInteger(byteLength) ||
+		byteLength < 1 ||
+		byteLength > 4 * 1024 * 1024 ||
+		typeof hash !== "string" ||
+		!/^[a-f0-9]{64}$/.test(hash) ||
+		typeof data !== "string" ||
+		data.length > 48 * 1024 ||
+		!/^[A-Za-z0-9+/]*={0,2}$/.test(data)
+	)
+		return fail();
 	const pending = index === 0 ? { id, count, byteLength, hash, parts: [] as string[] } : conversation.historyTransfer;
-	if (!pending || pending.id !== id || pending.count !== count || pending.byteLength !== byteLength
-		|| pending.hash !== hash || pending.parts.length !== index) return fail();
+	if (
+		!pending ||
+		pending.id !== id ||
+		pending.count !== count ||
+		pending.byteLength !== byteLength ||
+		pending.hash !== hash ||
+		pending.parts.length !== index
+	)
+		return fail();
 	const parts = [...pending.parts, data];
 	if (parts.length < count) {
 		return updateConversation(state, conversation.conversationId, {
-			...conversation, historyTransfer: { ...pending, parts },
+			...conversation,
+			historyTransfer: { ...pending, parts },
 		});
 	}
 	const body = Buffer.from(parts.join(""), "base64");
@@ -922,26 +928,26 @@ function reduceTurnStarted(
 	const existing = conversation.turns[turnId];
 	// 不变量 4：不重开已结束 Turn。
 	if (existing && TERMINAL_TURN_STATUSES.includes(existing.status)) return state;
-	const kind = payload.commandKind === "user_message" ? "ai_turn" as const : "system_command" as const;
+	const kind = payload.commandKind === "user_message" ? ("ai_turn" as const) : ("system_command" as const);
 	const turn: MetaWorkTurnProjection = existing ?? {
 		...newTurn(turnId, event.requestId, kind, event.sequence),
 		startedAt: event.occurredAt,
 	};
 	const submission = event.requestId ? state.pendingSubmissions[event.requestId]?.envelope : undefined;
 	const command = submission?.command;
-	const matchingScope = submission?.scope.kind === "conversation"
-		&& (submission.scope.selection.mode === "new"
-			|| (submission.scope.selection.mode === "attach"
-				&& submission.scope.selection.conversationId === conversation.conversationId));
-	const userInput = matchingScope && (command?.kind === "user_message" || command?.kind === "slash_command")
-		? sanitizeDisplayText(command.text)
-		: turn.userInput;
+	const matchingScope =
+		submission?.scope.kind === "conversation" &&
+		(submission.scope.selection.mode === "new" ||
+			(submission.scope.selection.mode === "attach" &&
+				submission.scope.selection.conversationId === conversation.conversationId));
+	const userInput =
+		matchingScope && (command?.kind === "user_message" || command?.kind === "slash_command")
+			? sanitizeDisplayText(command.text)
+			: turn.userInput;
 	return updateConversation(state, conversation.conversationId, {
 		...conversation,
 		turns: { ...conversation.turns, [turnId]: { ...turn, userInput: turn.userInput || userInput } },
-		turnOrder: conversation.turnOrder.includes(turnId)
-			? conversation.turnOrder
-			: [...conversation.turnOrder, turnId],
+		turnOrder: conversation.turnOrder.includes(turnId) ? conversation.turnOrder : [...conversation.turnOrder, turnId],
 	});
 }
 
@@ -974,7 +980,7 @@ function reduceTraceDelta(
 	const trace = [...turn.trace];
 	for (const item of normalizeTraceEvents(payload)) {
 		// 不变量 2：eventKey 只用于同 Turn 内的领域进展去重。
-		if (item.eventKey && trace.some(existingItem => existingItem.eventKey === item.eventKey)) {
+		if (item.eventKey && trace.some((existingItem) => existingItem.eventKey === item.eventKey)) {
 			continue;
 		}
 		trace.push({
@@ -1037,7 +1043,7 @@ function reduceExecutionDelta(
 				status: asString(payload.status) ?? current?.status ?? "running",
 				progress: asString(payload.progress) ?? current?.progress ?? "",
 				executor: asString(payload.executor) ?? current?.executor ?? null,
-				heartbeatAt: payload.heartbeat === true ? event.occurredAt : current?.heartbeatAt ?? null,
+				heartbeatAt: payload.heartbeat === true ? event.occurredAt : (current?.heartbeatAt ?? null),
 			},
 		},
 	});
@@ -1083,15 +1089,17 @@ function reduceArtifact(
 	const turn = conversation.turns[turnId] ?? newTurn(turnId, event.requestId, "ai_turn", event.sequence);
 	return updateTurn(state, conversation, {
 		...turn,
-		artifacts: mergeArtifacts(turn.artifacts, [{
-			artifactId,
-			displayName: asString(artifactRecord.displayName) ?? "",
-			relativePath: asString(artifactRecord.relativePath) ?? "",
-			mediaType: asString(artifactRecord.mediaType) ?? "",
-			previewable: artifactRecord.previewable === true,
-			byteLength: asNumber(artifactRecord.byteLength) ?? 0,
-			publishedAt: asString(artifactRecord.publishedAt) ?? "",
-		}]),
+		artifacts: mergeArtifacts(turn.artifacts, [
+			{
+				artifactId,
+				displayName: asString(artifactRecord.displayName) ?? "",
+				relativePath: asString(artifactRecord.relativePath) ?? "",
+				mediaType: asString(artifactRecord.mediaType) ?? "",
+				previewable: artifactRecord.previewable === true,
+				byteLength: asNumber(artifactRecord.byteLength) ?? 0,
+				publishedAt: asString(artifactRecord.publishedAt) ?? "",
+			},
+		]),
 	});
 }
 
@@ -1107,15 +1115,17 @@ function reduceResultAvailable(
 	if (!metadata) return state;
 	const turn = conversation.turns[turnId];
 	const current = turn?.result ?? conversation.pendingResults[turnId];
-	const result: MetaWorkResultProjection = current?.resultId === metadata.resultId
-		&& current.verification !== "available" ? current : {
-			resultId: metadata.resultId,
-			content: "",
-			contentHash: metadata.contentHash,
-			byteLength: metadata.byteLength,
-			certification: metadata.certification,
-			verification: "streaming",
-		};
+	const result: MetaWorkResultProjection =
+		current?.resultId === metadata.resultId && current.verification !== "available"
+			? current
+			: {
+					resultId: metadata.resultId,
+					content: "",
+					contentHash: metadata.contentHash,
+					byteLength: metadata.byteLength,
+					certification: metadata.certification,
+					verification: "streaming",
+				};
 	return storeResult(state, conversation, turnId, result);
 }
 
@@ -1160,9 +1170,7 @@ function reduceResultCompleted(
 		contentHash,
 		byteLength,
 		certification: metadata.certification,
-		verification: verified
-			? metadata.certification
-			: "failed",
+		verification: verified ? metadata.certification : "failed",
 	};
 	return storeResult(state, conversation, turnId, completed);
 }
@@ -1180,9 +1188,7 @@ function reduceFinalAnswer(
 	const turn = pending ? mergePendingResult(base, pending) : base;
 	const resultId = asString(payload.resultId);
 	const lines = asStringArray(payload.lines);
-	const status = payload.backgroundWorkPending === true
-		? turn.status
-		: monotonicStatus(turn.status, "completed");
+	const status = payload.backgroundWorkPending === true ? turn.status : monotonicStatus(turn.status, "completed");
 	if (turn.result && resultId === turn.result.resultId) {
 		// 结果流已交付：final_answer 只固定终态，不重复追加正文。
 		return updateTurn(state, conversation, {
@@ -1197,9 +1203,7 @@ function reduceFinalAnswer(
 		status,
 		stage: "delivery",
 		answer: turn.answer || answer,
-		answerSources: turn.answer
-			? turn.answerSources
-			: [...turn.answerSources, "final_answer"],
+		answerSources: turn.answer ? turn.answerSources : [...turn.answerSources, "final_answer"],
 	});
 }
 
@@ -1261,10 +1265,8 @@ function newTurn(
 /** 不变量 5：终态单调；blocked 可进入终态，但任何终态不得回到 running。 */
 function monotonicStatus(current: MetaWorkTurnStatus, next: string): MetaWorkTurnStatus {
 	if (TERMINAL_TURN_STATUSES.includes(current)) return current;
-	if (
-		next !== "running" && next !== "completed" && next !== "failed"
-		&& next !== "blocked" && next !== "cancelled"
-	) return current;
+	if (next !== "running" && next !== "completed" && next !== "failed" && next !== "blocked" && next !== "cancelled")
+		return current;
 	if (current === "blocked" && next === "running") return current;
 	return next;
 }
@@ -1309,7 +1311,7 @@ function ensureConversation(
 	// 有界缓存：淘汰非选中 Conversation（插入序最旧者）。
 	const keys = Object.keys(next);
 	while (keys.length > METAWORK_CLIENT_LIMITS.conversationCache) {
-		const victim = keys.find(key => key !== selectedConversationId && key !== conversationId);
+		const victim = keys.find((key) => key !== selectedConversationId && key !== conversationId);
 		if (!victim) break;
 		delete next[victim];
 		keys.splice(keys.indexOf(victim), 1);
@@ -1322,8 +1324,7 @@ function updateConversation(
 	conversationId: string,
 	conversation: MetaWorkConversationProjection,
 ): MetaWorkClientState {
-	const ready = Object.entries(conversation.pendingResults)
-		.filter(([turnId]) => conversation.turns[turnId]);
+	const ready = Object.entries(conversation.pendingResults).filter(([turnId]) => conversation.turns[turnId]);
 	if (ready.length) {
 		const turns = { ...conversation.turns };
 		const pendingResults = { ...conversation.pendingResults };
@@ -1349,10 +1350,7 @@ function updateConversation(
 	};
 }
 
-function mergePendingResult(
-	turn: MetaWorkTurnProjection,
-	result: MetaWorkResultProjection,
-): MetaWorkTurnProjection {
+function mergePendingResult(turn: MetaWorkTurnProjection, result: MetaWorkResultProjection): MetaWorkTurnProjection {
 	return {
 		...turn,
 		stage: TERMINAL_TURN_STATUSES.includes(turn.status) ? turn.stage : "delivery",
@@ -1380,10 +1378,11 @@ function storeResult(
 	result: MetaWorkResultProjection,
 ): MetaWorkClientState {
 	const turn = conversation.turns[turnId];
-	if (turn) return updateTurn(state, conversation, {
-		...mergePendingResult(turn, result),
-		answer: result.content || turn.answer,
-	});
+	if (turn)
+		return updateTurn(state, conversation, {
+			...mergePendingResult(turn, result),
+			answer: result.content || turn.answer,
+		});
 	return updateConversation(state, conversation.conversationId, {
 		...conversation,
 		pendingResults: trimPendingResults({ ...conversation.pendingResults, [turnId]: result }),
@@ -1398,21 +1397,23 @@ function updateTurn(
 	const order = conversation.turnOrder.includes(turn.id)
 		? conversation.turnOrder
 		: [...conversation.turnOrder, turn.id];
-	return updateConversation(state, conversation.conversationId, sortTurnOrder({
-		...conversation,
-		turns: { ...conversation.turns, [turn.id]: { ...turn, lastTaskSequence: conversation.cursor } },
-		turnOrder: order,
-	}));
+	return updateConversation(
+		state,
+		conversation.conversationId,
+		sortTurnOrder({
+			...conversation,
+			turns: { ...conversation.turns, [turn.id]: { ...turn, lastTaskSequence: conversation.cursor } },
+			turnOrder: order,
+		}),
+	);
 }
 
 /** Turn 有界缓存：淘汰最旧的非选中终态 Turn（可经历史分页重新加载）。 */
-function sortTurnOrder(
-	conversation: MetaWorkConversationProjection,
-): MetaWorkConversationProjection {
+function sortTurnOrder(conversation: MetaWorkConversationProjection): MetaWorkConversationProjection {
 	if (conversation.turnOrder.length <= METAWORK_CLIENT_LIMITS.turnsPerConversation) {
 		return conversation;
 	}
-	const evictable = conversation.turnOrder.find(turnId => {
+	const evictable = conversation.turnOrder.find((turnId) => {
 		const turn = conversation.turns[turnId];
 		return turn && TERMINAL_TURN_STATUSES.includes(turn.status);
 	});
@@ -1422,7 +1423,7 @@ function sortTurnOrder(
 	return {
 		...conversation,
 		turns,
-		turnOrder: conversation.turnOrder.filter(turnId => turnId !== evictable),
+		turnOrder: conversation.turnOrder.filter((turnId) => turnId !== evictable),
 	};
 }
 
@@ -1430,7 +1431,7 @@ function mergeArtifacts(
 	existing: MetaWorkTurnProjection["artifacts"],
 	incoming: MetaWorkTurnProjection["artifacts"],
 ): MetaWorkTurnProjection["artifacts"] {
-	const merged = new Map(existing.map(artifact => [artifact.artifactId, artifact]));
+	const merged = new Map(existing.map((artifact) => [artifact.artifactId, artifact]));
 	for (const artifact of incoming) merged.set(artifact.artifactId, artifact);
 	return [...merged.values()];
 }
@@ -1447,8 +1448,7 @@ function addNotice(
 ): MetaWorkClientState {
 	return {
 		...state,
-		notices: [...state.notices, { kind, text: sanitizeDisplayText(text) }]
-			.slice(-METAWORK_CLIENT_LIMITS.notices),
+		notices: [...state.notices, { kind, text: sanitizeDisplayText(text) }].slice(-METAWORK_CLIENT_LIMITS.notices),
 	};
 }
 

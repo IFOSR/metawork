@@ -19,10 +19,6 @@ import {
   WorkspaceDirectoryBrowser,
 } from '../../src/management/workspace-directory-browser.js';
 import { FileAttachmentStore } from '../../src/storage/file-attachment-store.js';
-import {
-  resolveLoginCredentials,
-  type LoginCredentials,
-} from '../../src/management/login-credentials.js';
 import type { WebSessionRecordProjection } from '../../src/management/web-session-types.js';
 import type { AgentReadiness } from '../../src/management/agent-installation-readiness-service.js';
 import { WebGatewayAdmissionError } from '../../src/management/web-gateway-session-runtime.js';
@@ -430,7 +426,8 @@ describe('ManagementServer WebSocket authentication', () => {
       expect(server.address).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
       expect(server.address).not.toBe('http://127.0.0.1:0');
       const response = await fetch(`${server.address}/api/auth/session`);
-      expect(response.status).toBe(401);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('set-cookie')).toContain('anyfusion_web_session=');
     } finally {
       await server.stop();
     }
@@ -755,64 +752,9 @@ describe('ManagementServer WebSocket authentication', () => {
     }
   });
 
-  it('logs in with username and password, locks after repeated failures', async () => {
+  it('removes the legacy password login endpoint', async () => {
     const port = await reservePort();
-    const server = createManagementServer(port, {
-      loginCredentials: resolveLoginCredentials({
-        ANYFUSION_WEB_USERNAME: 'admin',
-        ANYFUSION_WEB_PASSWORD: 'test-password',
-      }),
-    });
-    await server.start();
-
-    try {
-      const loginUrl = `http://127.0.0.1:${port}/api/auth/login`;
-      const login = (username: string, password: string) => fetch(loginUrl, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          origin: `http://127.0.0.1:${port}`,
-        },
-        body: JSON.stringify({ username, password }),
-      });
-
-      const bad = await login('admin', 'wrong');
-      expect(bad.status).toBe(401);
-
-      const missing = await login('admin', '');
-      expect(missing.status).toBe(400);
-
-      const ok = await login('admin', 'test-password');
-      expect(ok.status).toBe(200);
-      const cookie = ok.headers.get('set-cookie')!.split(';', 1)[0]!;
-      expect(cookie).toContain('anyfusion_web_session=');
-
-      // 会话 cookie 可访问受保护端点。
-      const guarded = await fetch(`http://127.0.0.1:${port}/api/workspaces`, {
-        headers: { cookie },
-      });
-      expect(guarded.status).toBe(200);
-      const authSession = await fetch(`http://127.0.0.1:${port}/api/auth/session`, {
-        headers: { cookie },
-      });
-      await expect(authSession.json()).resolves.toEqual({
-        authenticated: true,
-      });
-
-      // 连续失败 5 次后锁定（第 6 次即使密码正确也 429）。
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        await login('admin', 'wrong');
-      }
-      const locked = await login('admin', 'test-password');
-      expect(locked.status).toBe(429);
-    } finally {
-      await server.stop();
-    }
-  });
-
-  it('returns 503 when password login credentials are not configured', async () => {
-    const port = await reservePort();
-    const server = createManagementServer(port, { loginCredentials: undefined });
+    const server = createManagementServer(port);
     await server.start();
 
     try {
@@ -822,9 +764,12 @@ describe('ManagementServer WebSocket authentication', () => {
           'content-type': 'application/json',
           origin: `http://127.0.0.1:${port}`,
         },
-        body: JSON.stringify({ username: 'admin', password: 'whatever' }),
+        body: JSON.stringify({ username: 'admin', password: '123456' }),
       });
-      expect(response.status).toBe(503);
+      expect(response.status).toBe(410);
+      await expect(response.json()).resolves.toEqual({
+        error: 'password login removed; use the official account login in MetaWork',
+      });
     } finally {
       await server.stop();
     }
@@ -1176,16 +1121,11 @@ describe('ManagementServer WebSocket authentication', () => {
       // 启动提示 token 不再能换取会话。
       expect(bootstrap.status).toBe(401);
 
-      const login = await fetch(`http://127.0.0.1:${port}/api/auth/login`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          origin: `http://127.0.0.1:${port}`,
-        },
-        body: JSON.stringify({ username: 'admin', password: 'test-password' }),
+      const sessionResponse = await fetch(`http://127.0.0.1:${port}/api/auth/session`, {
+        headers: { origin: `http://127.0.0.1:${port}` },
       });
-      expect(login.status).toBe(200);
-      const cookie = login.headers.get('set-cookie')!.split(';', 1)[0]!;
+      expect(sessionResponse.status).toBe(200);
+      const cookie = sessionResponse.headers.get('set-cookie')!.split(';', 1)[0]!;
       const session = await fetch(`http://127.0.0.1:${port}/api/auth/session`, {
         headers: { cookie },
       });
@@ -2340,7 +2280,6 @@ interface ManagementServerTestOverrides {
   readonly sessionRuntime?: ManagementWebSessionRuntime;
   readonly executionQuery?: { listTasks(): unknown[]; projectTimeline(taskId: string): unknown };
   readonly configQuery?: Partial<ConfigQuery>;
-  readonly loginCredentials?: LoginCredentials;
   readonly attachmentStore?: FileAttachmentStore;
   readonly artifactQuery?: import('../../src/management/artifact-preview-service.js').ArtifactPreviewService;
   readonly launchContexts?: WebLaunchContextService;
@@ -2376,12 +2315,6 @@ function createManagementServer(
     sessionRuntime: overrides.sessionRuntime ?? createSessionRuntime(),
     attachmentStore: overrides.attachmentStore,
     artifactQuery: overrides.artifactQuery,
-    loginCredentials: 'loginCredentials' in overrides
-      ? overrides.loginCredentials
-      : resolveLoginCredentials({
-        ANYFUSION_WEB_USERNAME: 'admin',
-        ANYFUSION_WEB_PASSWORD: 'test-password',
-      }),
     executionQuery: overrides.executionQuery ?? {
       listTasks: () => [],
       projectTimeline: () => null,

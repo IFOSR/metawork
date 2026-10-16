@@ -47,19 +47,21 @@ const DENIED_FLAGS = new Set([
 	"--no-approve",
 ]);
 
-export function buildPlannerProviderTimeoutOverrides(outerTimeoutValue: string | undefined): {
-	httpIdleTimeoutMs: number;
-	websocketConnectTimeoutMs: number;
-	retry: {
-		enabled: false;
-		maxRetries: 0;
-		provider: {
-			timeoutMs: number;
-			maxRetries: 0;
-			maxRetryDelayMs: number;
-		};
-	};
-} | undefined {
+export function buildPlannerProviderTimeoutOverrides(outerTimeoutValue: string | undefined):
+	| {
+			httpIdleTimeoutMs: number;
+			websocketConnectTimeoutMs: number;
+			retry: {
+				enabled: false;
+				maxRetries: 0;
+				provider: {
+					timeoutMs: number;
+					maxRetries: 0;
+					maxRetryDelayMs: number;
+				};
+			};
+	  }
+	| undefined {
 	const parsedTimeout = Number(outerTimeoutValue);
 	if (!Number.isFinite(parsedTimeout) || parsedTimeout <= 0) return undefined;
 
@@ -103,18 +105,21 @@ export function validatePlannerInvocation(args: readonly string[]): string[] {
 }
 
 /** Apply the non-negotiable Planner resource policy to parsed CLI options. */
-export function applyPlannerResourcePolicy(parsed: {
-	noTools?: boolean;
-	noBuiltinTools?: boolean;
-	tools?: string[];
-	excludeTools?: string[];
-	noExtensions?: boolean;
-	noSkills?: boolean;
-	noPromptTemplates?: boolean;
-	noThemes?: boolean;
-}, options: {
-	semanticRpc?: boolean;
-} = {}): void {
+export function applyPlannerResourcePolicy(
+	parsed: {
+		noTools?: boolean;
+		noBuiltinTools?: boolean;
+		tools?: string[];
+		excludeTools?: string[];
+		noExtensions?: boolean;
+		noSkills?: boolean;
+		noPromptTemplates?: boolean;
+		noThemes?: boolean;
+	},
+	options: {
+		semanticRpc?: boolean;
+	} = {},
+): void {
 	const activeTools = options.semanticRpc
 		? [PLANNER_PROPOSAL_TOOL_NAME, ...PLANNER_MCP_TOOL_NAMES]
 		: PLANNER_ACTIVE_TOOL_NAMES;
@@ -214,9 +219,7 @@ export function redactPlannerImageData(value: unknown): unknown {
 	const record = value as Record<string, unknown>;
 	const copy: Record<string, unknown> = {};
 	for (const [key, entry] of Object.entries(record)) {
-		copy[key] = record.type === "image" && key === "data"
-			? ""
-			: redactPlannerImageData(entry);
+		copy[key] = record.type === "image" && key === "data" ? "" : redactPlannerImageData(entry);
 	}
 	return copy;
 }

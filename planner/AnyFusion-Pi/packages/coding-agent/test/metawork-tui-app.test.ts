@@ -1,3 +1,4 @@
+/** biome-ignore-all lint/complexity/useLiteralKeys: Indexed access lets tests inspect private UI components without making them public. */
 /**
  * MetaWork TUI 应用、编辑器与权限面板交互测试（统一 TUI 设计 §8.4、§8.5、§15.2）。
  */
@@ -478,11 +479,35 @@ describe("workspace task switching through the terminal", () => {
 			terminal.columns = columns;
 			const ui = new TUI(terminal);
 			const { gateway, observed, emit } = fakeGateway();
-			const tasks = [
-				{ conversationId: "a", taskId: "a1", phase: "executing" },
-				{ conversationId: "b", taskId: "b1", phase: "executing" },
-				{ conversationId: "b", taskId: "b2", phase: "queued" },
-				{ conversationId: "c", taskId: "c1", phase: "blocked" },
+			const tasks: Array<{
+				conversationId: string;
+				taskId: string;
+				phase: string;
+				userState: "executing" | "waiting" | "needs_action";
+				userStateReason: string;
+			}> = [
+				{
+					conversationId: "a",
+					taskId: "a1",
+					phase: "executing",
+					userState: "executing",
+					userStateReason: "执行中",
+				},
+				{
+					conversationId: "b",
+					taskId: "b1",
+					phase: "executing",
+					userState: "executing",
+					userStateReason: "执行中",
+				},
+				{ conversationId: "b", taskId: "b2", phase: "queued", userState: "waiting", userStateReason: "等待中" },
+				{
+					conversationId: "c",
+					taskId: "c1",
+					phase: "blocked",
+					userState: "needs_action",
+					userStateReason: "需要处理",
+				},
 			];
 			const activity = (id: string) => ({
 				tasks: tasks

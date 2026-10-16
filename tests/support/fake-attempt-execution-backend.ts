@@ -33,6 +33,7 @@ export class FakeAttemptExecutionBackend implements AttemptExecutionBackend {
   constructor(private readonly responder: FakeAttemptExecutionResponder = () => ({})) {}
 
   readonly resolveImage = vi.fn(async (_imageRef: string) => `sha256:${'a'.repeat(64)}`);
+  readonly probeProgram = vi.fn(async (_imageId: string, _command: string) => 'test-executor 1.0');
 
   readonly create = vi.fn(async (input: CreateAttemptExecutionInput) => {
     const containerId = `fake-execution-${input.attemptId}`;

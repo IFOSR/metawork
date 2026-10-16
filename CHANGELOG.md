@@ -7,6 +7,39 @@ The project follows [Semantic Versioning](https://semver.org/) for public releas
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-10-16
+
+- Render conversation GFM tables with readable borders, alignment, horizontal scrolling and authorized artifact links.
+- Add validated local line, bar, area and pie charts with accessible data tables, missing/negative value handling, legends, tooltips, theme support and SVG export.
+- Add native Desktop PNG chart saving with strict image validation and atomic file writes.
+- Add local HTML, Word, PowerPoint, Excel, CSV and PDF rich-document previews.
+- Complete task execution reliability, file delivery and routing validation improvements included in this release.
+
+- Require explicit Planner file deliveries; inline answers and external actions
+  no longer publish unsolicited report files. Validate required output presence,
+  preserve Git edits, and persist declarations with SQLite schema 50.
+
+- Preview HTML, DOCX, PPTX, XLSX/XLS/CSV and PDF locally in the document drawer,
+  including historical artifacts and uploaded attachments. Add slide/page and
+  worksheet navigation, sandbox isolation and native Desktop attachment saves.
+
+- Unify task activity into waiting, executing, needs-action and finished states.
+- Verify managed Executor bindings and generated configuration before launch.
+- Probe container executables inside their immutable image and launch by image ID.
+- Keep independent work progressing after local capacity waits or adapter failures.
+- Preserve safe uncertified output without manufacturing completion; metadata
+  correction now follows the same publication boundary as primary execution.
+- Persist Git integration and user delivery separately (SQLite schema 49). Resume
+  retries failed delivery without repeating Executor work and rejects stale cards.
+- Prevent long resource paths from colliding in execution evidence identities.
+
+
+## [0.1.15] - Internal validation release
+
+- Preserve valid sibling Executor completions when another Subtask is waiting or blocked.
+- Keep Executor probe failures separate from ordinary capacity waits.
+- Scope capacity waits to the affected Subtask while independent work continues.
+
 ## [0.1.9] - Local acceptance candidate (not published)
 
 - Keep Pi Executor managed with the application; optional Codex has executable

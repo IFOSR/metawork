@@ -1,7 +1,7 @@
 # MetaWork macOS DMG 压缩方案（Review）
 
 - 日期：2026-10-10
-- 状态：已 review，建议按本方案调整；尚未实施
+- 状态：阶段 A/B/D 已于 2026-10-10 实施；2026-10-16 打包回退修复与本地候选验收完成；阶段 C/Bootstrap 未实施
 - 适用版本：当前 `0.1.9` arm64 release 样本
 - 目标：在不破坏安装、首次启动、Runtime/Planner、更新、恢复和安全校验的前提下，降低下载体积和安装体积
 
@@ -244,3 +244,47 @@ releaseId：0.1.9-internal-compressed-20261010
 - `npm run build:desktop`、`npm run lint:desktop` 和 `git diff --check` 通过。
 
 该产物是 internal/ad-hoc signed build，因为当前工作树存在用户已有未提交改动且本机没有 Developer ID identity；它可用于本地安装验证，不应当作为正式发布或 notarized DMG。阶段 C 和 100 MB Bootstrap 仍需独立设计和验收后再实施。
+
+## 10. 打包体积回退修复（2026-10-16）
+
+### 原因与修复
+
+2026-10-15 的 file-delivery 候选 DMG 达到 `449,214,937` bytes。阶段 A 的最小 Node 脚本虽然存在，但只是可选的手动准备步骤；`prepare-runtime.mjs` 仍递归复制整个 `--node-root`。后续使用混有全局 Codex、Lark CLI、npm/corepack 和头文件的输入目录时，精简规则被绕过，Node 目录原始文件总大小回升到 `564,651,185` bytes。这是打包流程回退。
+
+本次把 `prepareNodeRuntime` 提取为可复用函数，由 Desktop 正常准备流程直接调用：无论输入目录包含什么，只提取自包含的 macOS `bin/node`、`LICENSE` 和可选 `README.md`，然后进行 probes、inventory 和签名。Git/Pi 仍保留完整运行依赖，PDF 与富文档预览资源继续离线随包提供。输出目录已存在时拒绝覆盖，输入目录不会被删除或修改。
+
+新回归测试使用混有 Codex、Lark、npm、headers 和无关 share 资源的输入，验证产出 allowlist、可执行权限、许可证、输入不变、已有输出保护和目录重叠拒绝。本次真实构建也故意传入原有污染目录 `.tmp/internal-desktop-tools/node`，验证精简规则已在正常打包入口生效。
+
+### 产物与比对
+
+| 项目 | 回退候选 | 修复候选 |
+| --- | ---: | ---: |
+| DMG | 449,214,937 B | 292,013,072 B |
+| Node 文件总大小 | 564,651,185 B | 113,113,734 B |
+| payload 文件数 | 38,768 | 33,925 |
+
+DMG 减少 `157,201,865` bytes（约 35.0%），新包为 292.0 MB / 278.5 MiB。新包与 2026-10-10 的压缩候选体积相近，包含最新 file-delivery 与文档预览功能。
+
+产物：`Release/MetaWork-0.1.15-internal-file-delivery-slim-20261016-darwin-arm64.dmg`。
+
+SHA-256：`5dd66486512f85904ff31134d8e2c8b211b3e36a3013e325c946fd6a547dc28b`。
+
+releaseId：`0.1.15-internal-file-delivery-slim-20261016`。
+
+逐文件比对：Node 二进制哈希不变；Node 目录之外没有新增或删除文件，业务代码、Web、Planner、Pi、PDF 源文件和依赖哈希保持一致。仅 130 个 Python 字节码缓存因重新执行 probe 而变化。
+
+### 验证记录
+
+- 发布测试 5 个文件 / 23 项、Desktop 测试 7 个文件 / 17 项通过；根项目与 Desktop 类型检查通过。
+- 正常准备流程中的 Node ABI 127、SQLite、Git、Pi、PDF Python 导入 probe 通过。`otool -L` 确认 Node 只依赖 macOS 系统库。
+- 实际 DMG 的 `hdiutil verify` 通过；只读挂载后校验签名 descriptor 和全部 33,925 个文件，通过。应用顶层 `codesign --verify --strict` 通过。
+- 包内 Node/Pi 在受限 PATH 下通过 openai-compatible、openai-responses、anthropic 三种接口的真实 CLI 执行测试，覆盖直接调用与 MetaWork 调用的文件读写、命令、网络和结果通道。模型端使用本地确定性服务，不计作真实账户模型测试。
+- 精确复制已挂载应用后，通过 LaunchServices/Finder 从 0.1.8 实际历史 Runtime 升级，覆盖历史中断记录、失效 helper、已启用但缺失的外部 Codex、配置和数据库保留、两次重启及退出后的 Server 存活。
+- 只读挂载的实际应用通过干净安装、认证 Web、空模型设置保存、失败 probe 保留状态、首次设置激活无需重启、Word/PPT/Excel/PDF 预览和沙箱隔离、菜单及 Server 退出存活验证。
+- 外部 Codex 选择及损坏 managed Pi 自动恢复通过。首轮故障注入在应用存活时修改 Pi，可能与首次连接的完整性扫描竞争，并在修复过程中关闭应用，导致一次自动修复机会耗尽；测试改为先退出、再损坏、再启动，以严格验证下一次启动的恢复行为，重跑完整 smoke 通过。该调整仅修改测试，不修改产品恢复策略，也不把此结果解释为任意强杀时序均已覆盖。
+
+完成日期：2026-10-16。验证记录位于 `Release/file-delivery-slim-20261016-evidence/`，包含完整 smoke、升级日志、逐文件比对和挂载校验摘要。
+
+边界：这是 arm64 internal/ad-hoc 候选，未执行 Developer ID、公证、x64 或正式 clean-machine 发布验收。额外的 `codesign --deep --strict` 会在 Electron 嵌套组件的既有签名上失败，旧 file-delivery 候选也有同类问题；本次未改动 Electron 或其签名策略，不把顶层 seal 通过描述为完整 Apple 发布签名通过。阶段 C/Bootstrap 不属于本次修复。
+
+收尾提交：尚未创建；修改和验证产物保留在工作区，没有将用户已有未提交修改混入提交。

@@ -18,7 +18,8 @@ const STATUS_LABEL: Record<string, string> = {
   running: '进行中',
   done: '完成',
   failed: '失败',
-  blocked: '阻塞',
+  blocked: '需要处理',
+  waiting: '等待中', executing: '执行中', needs_action: '需要处理', finished: '已结束',
 };
 
 export function ExecutionTimelineView({ timeline }: ExecutionTimelineViewProps) {
@@ -34,7 +35,7 @@ export function ExecutionTimelineView({ timeline }: ExecutionTimelineViewProps) 
     <aside className="timeline-pane">
       <div className="timeline-header">
         <span className="timeline-title">{timeline.title}</span>
-        <span className="timeline-status">{STATUS_LABEL[timeline.status] ?? timeline.status}</span>
+        <span className="timeline-status" title={timeline.userStateReason}>{STATUS_LABEL[timeline.userState] ?? timeline.userState}</span>
       </div>
       <ol className="stages">
         {timeline.stages.map(stage => (

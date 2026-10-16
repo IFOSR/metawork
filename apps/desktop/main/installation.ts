@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { access, readFile, realpath } from 'node:fs/promises';
+import { access, lstat, readFile, realpath, rm, symlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { verifyDesktopRelease, type DesktopRelease } from '../../../src/installation/desktop-release.js';
 import { readReleaseIdentity } from '../../../src/installation/release-identity.js';
@@ -23,6 +23,27 @@ export class DesktopInstallation {
     return access(join(this.root, 'app/current/release-identity.json')).then(() => true, error => {
       if (error.code === 'ENOENT') return false; throw error;
     });
+  }
+  /** Remove or adopt a stale first-install pointer before the clean installer runs. */
+  async recoverIncompleteCurrent(releaseId: string): Promise<void> {
+    const current = join(this.root, 'app/current');
+    const entry = await lstat(current).catch(error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!entry) return;
+    const identityPresent = await access(join(current, 'release-identity.json')).then(() => true, error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    });
+    if (identityPresent) return;
+    if (!entry.isSymbolicLink()) {
+      throw new Error('Incomplete installed runtime is not a replaceable pointer');
+    }
+    const expected = join(this.root, 'app/releases', releaseId);
+    const expectedIdentity = (await readReleaseIdentity(join(expected, 'release-identity.json')))?.releaseId === releaseId;
+    await rm(current);
+    if (expectedIdentity) await symlink(join('releases', releaseId), current);
   }
   async needsUpgrade(): Promise<boolean> {
     const release = await this.verify();

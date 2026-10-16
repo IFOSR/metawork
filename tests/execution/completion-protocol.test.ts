@@ -69,6 +69,83 @@ afterEach(() => {
 });
 
 describe('Completion Protocol result-first assessment', () => {
+  it('preserves inline table and chart data without manufacturing artifacts', () => {
+    const body = '| 季度 | 收入 |\n| --- | ---: |\n| Q1 | 120 |\n\n```chart\n'
+      + JSON.stringify({ version: 1, type: 'bar', title: '收入', labels: ['Q1'], series: [{ name: '收入', values: [120] }], unit: '万元' })
+      + '\n```\n\n收入为 120 万元。';
+    expect(validate({ current: subtask({ fileOutputs: [] }), rawResponse: response(report(), body) }))
+      .toMatchObject({ ok: true, body, normalizedArtifacts: [], assessment: { certification: { status: 'certified' } } });
+  });
+  it.each(['report', 'edit'] as const)('never delivers unsolicited files for an explicit no-file %s contract', deliveryKind => {
+    const workspaceRoot = root();
+    writeFileSync(join(workspaceRoot, 'browser_launch_report.md'), '# unnecessary');
+    const result = validate({ current: subtask({ deliveryKind, fileOutputs: [] }), workspaceRoot,
+      workspaceDelta: delta([{ path: 'browser_launch_report.md', beforeHash: null, afterHash: 'h' }]),
+    });
+    expect(result).toMatchObject({ ok: true, normalizedArtifacts: [], assessment: {
+      certification: { status: 'certified' }, safety: { status: 'safe' },
+    } });
+  });
+
+  it('delivers only declared produced files and directory children, not scratch files or similar prefixes', () => {
+    const workspaceRoot = root();
+    mkdirSync(join(workspaceRoot, 'slides'));
+    mkdirSync(join(workspaceRoot, 'slides-old'));
+    const paths = ['deck.pptx', 'slides/preview.png', 'slides-old/private.txt', 'build.py', 'report.md'];
+    for (const path of paths) writeFileSync(join(workspaceRoot, path), 'fixture');
+    const result = validate({ current: subtask({ fileOutputs: ['deck.pptx', 'slides/'] }), workspaceRoot,
+      workspaceDelta: delta(paths.map(path => ({ path, beforeHash: null, afterHash: 'h' }))),
+    });
+    expect(result).toMatchObject({ ok: true, normalizedArtifacts: [
+      join(realpathSync(workspaceRoot), 'deck.pptx'), join(realpathSync(workspaceRoot), 'slides/preview.png'),
+    ], assessment: { certification: { status: 'certified' } } });
+  });
+
+  it.each(['answer.md', 'deliverables/'])('keeps safe text uncertified when declared output %s is missing', output => {
+    const result = validate({ current: subtask({ fileOutputs: [output] }) });
+    expect(result).toMatchObject({ ok: true, body: 'Completed cleanly.', normalizedArtifacts: [], assessment: {
+      deliverability: { status: 'deliverable' }, safety: { status: 'safe' },
+      certification: { status: 'uncertified', violations: [expect.objectContaining({ code: 'completion_file_output_missing' })] },
+    } });
+  });
+
+  it('delivers an explicitly requested existing file without requiring a pointless rewrite', () => {
+    const workspaceRoot = root();
+    writeFileSync(join(workspaceRoot, 'answer.md'), 'old');
+    const result = validate({ current: subtask({ fileOutputs: ['answer.md'] }), workspaceRoot });
+    expect(result).toMatchObject({ ok: true, normalizedArtifacts: [join(realpathSync(workspaceRoot), 'answer.md')],
+      assessment: { certification: { status: 'certified' } } });
+  });
+
+  it('can use an explicitly requested existing report as the body without rewriting it', () => {
+    const workspaceRoot = root();
+    writeFileSync(join(workspaceRoot, 'answer.md'), '# Existing requested report');
+    const result = validate({ current: subtask({ fileOutputs: ['answer.md'] }), workspaceRoot,
+      rawResponse: `${COMPLETION_MARKER_V4}\n${JSON.stringify(report({ reportPath: 'answer.md' }))}` });
+    expect(result).toMatchObject({ ok: true, body: '# Existing requested report',
+      assessment: { certification: { status: 'certified' } } });
+  });
+
+  it('delivers existing files in an explicitly declared directory without searching sibling directories', () => {
+    const workspaceRoot = root();
+    mkdirSync(join(workspaceRoot, 'site'));
+    writeFileSync(join(workspaceRoot, 'site/index.html'), 'existing site');
+    writeFileSync(join(workspaceRoot, 'private.txt'), 'not requested');
+    const result = validate({ current: subtask({ fileOutputs: ['site/'] }), workspaceRoot });
+    expect(result).toMatchObject({ ok: true, normalizedArtifacts: [join(realpathSync(workspaceRoot), 'site/index.html')],
+      assessment: { certification: { status: 'certified' } } });
+  });
+
+  it('fails certification instead of silently truncating a declared directory inspection', () => {
+    const workspaceRoot = root();
+    mkdirSync(join(workspaceRoot, 'data'));
+    for (let i = 0; i < 1001; i++) writeFileSync(join(workspaceRoot, `data/${i}.txt`), 'data');
+    const result = validate({ current: subtask({ fileOutputs: ['data/'] }), workspaceRoot });
+    expect(result).toMatchObject({ ok: true, body: 'Completed cleanly.', assessment: { certification: {
+      status: 'uncertified', violations: expect.arrayContaining([expect.objectContaining({ code: 'completion_file_output_limit' })]),
+    } } });
+  });
+
   it('injects authoritative identities, acceptance keys, and handoff identities', () => {
     const current = subtask({
       id: 'bound-subtask',
@@ -116,9 +193,8 @@ describe('Completion Protocol result-first assessment', () => {
     ]) {
       const result = validate({ rawResponse: response(payload) });
       expect(result.ok).toBe(true);
-      // Forged/extra fields are dropped by the strict report schema; the
-      // runtime owns identities. This is format noise, not content failure.
-      expect(result.assessment.certification.status).toBe('certified');
+      // Invalid metadata must not manufacture an authorized completion.
+      expect(result.assessment.certification.status).toBe('uncertified');
     }
   });
 
@@ -285,6 +361,15 @@ describe('Completion Protocol result-first assessment', () => {
     });
   });
 
+  it('holds downstream when a declared artifact handoff has no files, without hiding the body', () => {
+    const result = validate({ outgoingHandoffs: [{ toSubtaskId: 'consumer',
+      requiredItems: [{ key: 'report', type: 'artifact', description: 'declared report file' }] }] });
+    expect(result).toMatchObject({ ok: true, body: 'Completed cleanly.', assessment: {
+      deliverability: { status: 'deliverable' }, certification: { status: 'uncertified',
+        violations: [expect.objectContaining({ code: 'completion_handoff_mismatch' })] },
+    } });
+  });
+
   it('keeps report delivery quiet when the workspace truly did not change', () => {
     const workspaceRoot = root();
     const result = validate({
@@ -327,8 +412,8 @@ describe('Completion Protocol result-first assessment', () => {
     });
     expect(result.ok).toBe(true);
     expect(result.assessment.deliverability.status).toBe('deliverable');
-    // Format gaps certify as warnings — the trailer is a hint channel.
-    expect(result.assessment.certification.status).toBe('certified');
+    // Missing completion facts remain correctable without hiding the safe result.
+    expect(result.assessment.certification.status).toBe('uncertified');
     expect(result.warnings).toEqual(expect.arrayContaining([
       expect.stringContaining('completion body is empty'),
     ]));
@@ -343,7 +428,7 @@ describe('Completion Protocol result-first assessment', () => {
       workspaceRoot,
       workspaceDelta: delta([{ path: 'report.md', beforeHash: null, afterHash: 'h1' }]),
     });
-    expect(result.assessment.certification.status).toBe('certified');
+    expect(result.assessment.certification.status).toBe('uncertified');
     expect(result.warnings).toEqual(expect.arrayContaining([
       expect.stringContaining('reportPath'),
     ]));
@@ -415,7 +500,7 @@ describe('Completion Protocol result-first assessment', () => {
   it('allows a zero-delta edit only with a non-empty no-change reason', () => {
     const current = subtask({ deliveryKind: 'edit' });
     const rejected = validate({ current });
-    // Format semantics: recorded as a warning, never gates certification.
+    expect(rejected.assessment.certification.status).toBe('uncertified');
     expect(rejected.warnings.join('\n')).toContain('no-change reason');
     expect(validate({
       current,
@@ -435,11 +520,11 @@ describe('Completion Protocol result-first assessment', () => {
     expect(result.warnings.join('\n')).toContain('noChangeReason');
   });
 
-  it('warns (never blocks) for missing, malformed, or truncated workspace deltas', () => {
+  it('preserves safe text but holds certification for missing, malformed, or truncated deltas', () => {
     for (const workspaceDelta of [null, {}, delta([], { baselineTruncated: true }), delta([], { finalTruncated: true })]) {
       const result = validate({ workspaceDelta });
       expect(result.ok).toBe(true);
-      expect(result.assessment.certification.status).toBe('certified');
+      expect(result.assessment.certification.status).toBe('uncertified');
       expect(result.warnings.join('\n')).toContain('workspace delta');
     }
   });
@@ -516,7 +601,7 @@ describe('result-first gate model (2026-09-06 redesign)', () => {
     });
   });
 
-  it('treats format violations as warnings: certified, never uncertified', () => {
+  it('preserves safe text but does not certify missing or malformed metadata', () => {
     const formatBroken = [
       `报告。\n\n${COMPLETION_MARKER_V4}\n{"evidence": [}`,        // broken JSON
       `报告。\n\n${COMPLETION_MARKER_V4}\n{"evidence":[],"noChangeReason":null,"reportPath":null}`, // empty evidence + null reportPath
@@ -525,7 +610,7 @@ describe('result-first gate model (2026-09-06 redesign)', () => {
     for (const raw of formatBroken) {
       const result = validate({ rawResponse: raw });
       expect(result.ok, raw).toBe(true);
-      expect(result.assessment.certification.status, raw).toBe('certified');
+      expect(result.assessment.certification.status, raw).toBe('uncertified');
       expect(result.assessment.deliverability.status, raw).toBe('deliverable');
     }
   });

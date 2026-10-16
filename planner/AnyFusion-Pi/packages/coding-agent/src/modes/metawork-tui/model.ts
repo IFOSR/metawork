@@ -143,8 +143,8 @@ export interface MetaWorkTurnProjection {
 	readonly taskTitle?: string;
 	readonly taskStatus?: string;
 	/**
-	 * 用户可见 Task 阶段；展示层必须优先消费它，taskStatus 只作历史回退。
-	 * 来自 `task_view_snapshot.lifecycle.phase`（task lifecycle 收敛 §7）。
+	 * 用户可见 Task 四态；展示层只消费服务端投影。
+	 * 来自 `task_view_snapshot.lifecycle.userState`（task lifecycle 收敛 §7）。
 	 */
 	readonly taskPhase?: string;
 	readonly taskNextAction?: string;

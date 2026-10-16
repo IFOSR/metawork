@@ -53,6 +53,8 @@ export interface AttemptExecutionBackend {
   readonly kind?: AttemptExecutionBackendKind;
   readonly pathMode?: AttemptExecutionPathMode;
   resolveImage(imageRef: string): Promise<string>;
+  /** Read-only executable probe in the immutable image; no Task data or credentials. */
+  probeProgram?(resolvedImageId: string, command: string): Promise<string>;
   probeControlNetwork?(controlNetwork: string): Promise<void>;
   create(input: CreateAttemptExecutionInput): Promise<AttemptExecutionRecord>;
   start(containerId: string): Promise<void>;

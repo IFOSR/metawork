@@ -103,6 +103,7 @@ function subtask(overrides: Partial<SubtaskProposal> = {}): SubtaskProposal {
     requiredCapabilities: ['workspace-engineering'],
     executorBindings: [binding()],
     deliveryKind: 'edit',
+    fileOutputs: [],
     acceptance: [{ key: 'tests_pass', description: 'tests pass', requiredEvidence: ['test result'] }],
     riskLevel: 'low',
     ...overrides,
@@ -234,6 +235,7 @@ describe('validatePlanningAgentPlan', () => {
         reason: '使用图片模型生成图片',
       })],
       deliveryKind: 'edit',
+      fileOutputs: ['images/'],
     });
     expect(validatePlanningAgentPlan(plan([imageTask]), configuration))
       .toEqual({ valid: true, errors: [] });
@@ -255,6 +257,7 @@ describe('validatePlanningAgentPlan', () => {
         mode: 'agent-class-default',
       })],
       deliveryKind: 'edit',
+      fileOutputs: ['images/'],
     });
 
     expect(validatePlanningAgentPlan(plan([imageTask]), configuration))

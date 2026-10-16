@@ -225,3 +225,42 @@ produced by the Server-side Span advisor before the event was enqueued.
 authorization fact and recovery fences. It also supersedes production local
 internal-LLM configuration with fixed official business operations. Existing
 deterministic activation and Kernel ownership remain in force.
+
+## 2026-10-14 recovery completion clarification
+
+Explicit resume recognizes the Server's official-authorization blocker as the
+existing explicit-resource category. Kernel still checks the current production
+authorization fact before issuing or replaying productive actions; logging in
+alone does not resume manual blocks.
+
+Startup may recover a missing failed receipt when an uncertain dispatch has a
+matching durable failure event and trusted process-exit diagnostics, no live
+execution backend, a matching generation, and a single recorded resource owner.
+External non-idempotent uncertainty is excluded. This records `executor_failed`,
+never certifies the old output, and leaves the Subtask's current result untouched.
+Receipt, terminal dispatch and lease release commit together; existing claim
+reconciliation finishes independently.
+
+An uncertain retry-wait application whose target is already terminal and whose
+wake was never created has no remaining retry effect to apply. Its postcondition
+inspection retires it without scheduling the finished work again. After cleanup,
+a running Task whose active Subtasks are all done and whose residue is clear
+emits an ordinary dispatch observation for Kernel completion evaluation. Runtime
+does not set Task completion itself or silently clear other blockers.
+
+### Task execution reliability amendment (2026-10-15)
+
+The existing `/task resume` route remains the user recovery entrance. Commands
+capture Task generation and graph revision; UI cards also supply their observed
+identity using `--generation` and `--revision`. Kernel rejects stale observations,
+and Runtime rechecks the authorized revision before applying a resume. Existing
+Gateway request admission supplies duplicate-request protection.
+
+Failed user delivery is a Publication fact, not an Executor failure. Kernel
+resumes those publications with no Subtask reset; Runtime retries delivery only.
+Safe output missing completion metadata stays visible and uncertified. A missing
+marker or malformed report can authorize one response-only metadata correction;
+missing handoff/artifact/workspace facts cannot be repaired by rewriting metadata.
+An exhausted correction never becomes an automatic business continuation.
+Configuration and adapter failures require explicit recovery; independent branches
+continue through the original dispatch loop.

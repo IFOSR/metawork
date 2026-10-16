@@ -225,6 +225,7 @@ export interface ArtifactProjection {
   relativePath: string;
   mediaType: string;
   previewKind: 'markdown' | 'text' | 'code' | 'image' | 'unsupported';
+  documentFormat?: import('../../../src/delivery/document-preview-format').DocumentPreviewFormat;
   previewable: boolean;
   byteLength: number;
   contentHash: string;

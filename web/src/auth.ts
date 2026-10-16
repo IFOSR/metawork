@@ -58,22 +58,6 @@ export async function exchangeWebCredential(
   return response.json() as Promise<WebAuthSession>;
 }
 
-export async function loginWithPassword(
-  username: string,
-  password: string,
-  fetchImpl: FetchLike = fetch,
-): Promise<boolean> {
-  const response = await fetchImpl('/api/auth/login', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  });
-  if (response.status === 401 || response.status === 429) return false;
-  if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-  return true;
-}
-
 export async function hasWebSession(fetchImpl: FetchLike = fetch): Promise<WebAuthSession | null> {
   const response = await fetchImpl('/api/auth/session', {
     credentials: 'same-origin',

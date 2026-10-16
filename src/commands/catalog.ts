@@ -32,6 +32,8 @@ export type CommandDirective =
     }
   | {
       kind: 'resume-task';
+      expectedGenerationId?: string;
+      expectedGraphRevision?: number;
       taskId: string;
       mode: 'resume-parked' | 'resume-blocked';
       newlyProvidedResources?: string[];

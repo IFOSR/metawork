@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -54,4 +54,22 @@ it('provisions matching native installations without reinstalling their account 
     join(desktopSupportRoot(root, 'desktop-current'), 'desktop-tools/node/bin/node')));
   expect(run).toHaveBeenCalledOnce();
   expect(await readFile(join(releaseRoot, 'release-identity.json'), 'utf8')).toBe(identity);
+});
+
+it('recovers a stale incomplete current pointer without deleting the immutable release', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'desktop-incomplete-current-'));
+  roots.push(root);
+  const releaseId = 'desktop-current';
+  const expected = join(root, 'app/releases', releaseId);
+  const staged = join(root, 'app/releases/staged-incomplete');
+  await mkdir(expected, { recursive: true });
+  await writeFile(join(expected, 'release-identity.json'), JSON.stringify({ version: 1, releaseId, gatewayProtocolVersion: 2 }));
+  await mkdir(staged, { recursive: true });
+  await symlink('releases/staged-incomplete', join(root, 'app/current'));
+  const installation = new DesktopInstallation(join(root, 'resources'), root, '0.1.5');
+
+  await installation.recoverIncompleteCurrent(releaseId);
+
+  await expect(readFile(join(root, 'app/current/release-identity.json'), 'utf8')).resolves.toContain(releaseId);
+  await expect(access(staged)).resolves.toBeUndefined();
 });

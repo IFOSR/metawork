@@ -1,13 +1,21 @@
 import { useState } from 'react';
 import { desktopBridge } from './services';
 
-export function NativeArtifactSave({ artifactId }: { artifactId: string }) {
+export function NativeArtifactSave({ artifactId, attachment }: {
+  artifactId?: string; attachment?: { conversationId: string; attachmentId: string };
+}) {
   const [busy, setBusy] = useState(false);
   const [download, setDownload] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const save = async () => {
     setBusy(true); setError(null);
-    try { setDownload(await desktopBridge()!.saveArtifact(artifactId)); }
+    try {
+      const bridge = desktopBridge()!;
+      if (attachment) {
+        if (!bridge.saveAttachment) { setError('请更新桌面应用后保存附件。'); return; }
+        setDownload(await bridge.saveAttachment(attachment.conversationId, attachment.attachmentId));
+      } else setDownload(await bridge.saveArtifact(artifactId!));
+    }
     catch { setError('保存失败，请重试。'); }
     finally { setBusy(false); }
   };

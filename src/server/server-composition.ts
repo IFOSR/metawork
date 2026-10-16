@@ -180,7 +180,6 @@ import { GATEWAY_TASK_VIEW_QUERY_VERSION } from '../gateway/task-view.js';
 import { WorkGraphPresentationProjector } from '../management/work-graph-presentation-projector.js';
 import { WebAuthService } from '../management/web-auth.js';
 import { WebLaunchContextService } from '../management/web-launch-context.js';
-import { resolveLoginCredentials } from '../management/login-credentials.js';
 import { FileConversationPresentationStore } from '../storage/file-conversation-presentation-store.js';
 import { SqliteConversationHistoryRepo } from '../storage/conversation-history-repo.js';
 import { SqliteConversationMetadataIndex } from '../storage/conversation-metadata-index-repo.js';
@@ -207,6 +206,7 @@ import { knownModelCapabilities, MODEL_CAPABILITY_CATALOG } from '../configurati
 import {
   buildProviderCompletionCatalog,
   discoverOpenAiCompatibleModels,
+  providerModelListRequest,
   fingerprintProviderCredential,
 } from '../configuration/provider-model-discovery.js';
 import { matchOpenRouterModel, OpenRouterModelCatalog } from '../configuration/openrouter-model-catalog.js';
@@ -369,13 +369,6 @@ async function startWebMode(options: {
   agentReadiness: AgentInstallationReadinessService;
   officialAuthorization?: LocalAuthorizationService;
 }): Promise<ManagementServer> {
-  const loginCredentials = resolveLoginCredentials(process.env);
-  if (loginCredentials.builtInDefault) {
-    process.stdout.write(
-      'MetaWork Web 正在使用内置登录凭据 admin / 123456；'
-      + '请通过 ANYFUSION_WEB_USERNAME 与 ANYFUSION_WEB_PASSWORD(_HASH) 修改。\n',
-    );
-  }
   const webDistDir = process.env.ANYFUSION_WEB_DIST
     ? resolve(process.env.ANYFUSION_WEB_DIST)
     : resolve(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'dist');
@@ -395,7 +388,6 @@ async function startWebMode(options: {
     executionQuery: options.executionQuery,
     configQuery: options.configQuery,
     configurationRuntime: options.configurationRuntime,
-    loginCredentials,
     attachmentStore: options.attachmentStore,
     artifactQuery: options.artifactQuery,
     agentReadiness: options.agentReadiness,
@@ -1546,6 +1538,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   ) => {
     const taskId = task.id;
     return projectTaskView({
+        ...new SqliteTaskActivityFacts(db).read(task, permissionRequestId ? { requestId: permissionRequestId } : null),
         task: { id: task.id, status: task.status, updatedAt: task.updatedAt },
         subtasks: new SubtaskRepo(db).listByTask(taskId)
           .map(subtask => ({ id: subtask.id, status: subtask.status })),
@@ -1648,8 +1641,12 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     const progress = new SqliteConversationActivitySource(db).latestProgress(task.id, generation);
     return { taskId: task.id, title: task.title,
       executionGeneration: generation,
+      graphRevision: accountRuntimeComposition.runtimePort.queries.findActiveWorkGraphRevision(task.id)?.revision,
       ...(progress ? { progressSummary: redactSensitiveText(progress).slice(0, 1024) } : {}),
-      phase: view.phase, explanation: view.explanation, canCancel: !isTerminalTaskLifecycle(view.lifecycle) };
+      phase: view.phase, explanation: view.explanation,
+      userState: view.userState, userStateReason: view.userStateReason,
+      executionSettling: view.activeAttempt?.lifecycle === 'settling',
+      canCancel: !isTerminalTaskLifecycle(view.lifecycle) };
   });
   const activityProjectionTimer = setInterval(() => {
     try {
@@ -1685,6 +1682,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         tasks: page.tasks.map(task => activityProjection.read(task.id) ?? {
           taskId: task.id, title: task.title, executionGeneration: '',
           phase: 'preparing', explanation: '正在同步任务进度…', canCancel: false,
+          userState: projectTaskView(new SqliteTaskActivityFacts(db).read(task, null)).userState,
+          userStateReason: '正在同步任务进度…',
         }),
         nextCursor: page.nextCursor,
         pendingNextCursor: requests.length > 8 ? requests[7]!.permissionRequestId : null,
@@ -1721,6 +1720,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     }
   }
   const executionProjector = new ExecutionProjector({
+    taskView: task => projectTaskView(new SqliteTaskActivityFacts(db).read({ ...task, updatedAt: null }, null)),
     subtaskRepo: new SubtaskRepo(db),
     receiptRepo: new ExecutorAttemptReceiptRepo(db),
     decisionRepo: new KernelDecisionRepo(db),
@@ -1955,6 +1955,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         lifecycle: {
           lifecycle: lifecycleProjection.lifecycle,
           phase: lifecycleProjection.phase,
+          userState: lifecycleProjection.userState, userStateReason: lifecycleProjection.userStateReason,
           activeAttempt: lifecycleProjection.activeAttempt
             ? {
                 attemptId: lifecycleProjection.activeAttempt.attemptId,
@@ -2613,12 +2614,14 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         },
         discoverProviderModels: async input => {
           const baseUrl = input.baseUrl.trim();
+          let protocol = input.protocol;
           let apiKey = input.apiKey?.trim() ?? '';
           if (!apiKey && input.providerRef) {
             try {
               const snapshot = await configurationService.getActiveSnapshot();
               const provider = snapshot.config.providers[input.providerRef];
               if (provider) {
+                protocol ??= provider.protocol;
                 assertSecretReference(provider.apiKeyRef);
                 apiKey = (await secretStore.get(provider.apiKeyRef)).trim();
               }
@@ -2662,7 +2665,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             };
           }
           if (!apiKey) return { status: 'unavailable' as const, modelIds: [], capabilities: {} };
-          const discovery = await discoverOpenAiCompatibleModels({ baseUrl, apiKey });
+          const discovery = await discoverOpenAiCompatibleModels({ baseUrl, apiKey, protocol });
           // OpenRouter 的公开目录不需要登录；它只用于补充任意 Provider
           // 返回的同名模型事实，只有 OpenRouter Provider 才把目录模型全部列出。
           const openRouterCatalog = await openRouterModelCatalog.getSnapshot();
@@ -2766,12 +2769,12 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           }
           if (!apiKey) return { configured: false, valid: null };
           let baseUrl = requestedBaseUrl?.trim() ?? '';
+          let protocol: import('../configuration/types.js').ProviderProtocol | undefined;
           try {
-            if (!baseUrl) {
-              const active = await configurationService.getActiveSnapshot();
-              const config = active.config as { providers?: Record<string, { baseUrl?: string }> };
-              baseUrl = String(config.providers?.[providerRef]?.baseUrl ?? '');
-            }
+            const active = await configurationService.getActiveSnapshot();
+            const provider = active.config.providers[providerRef];
+            protocol = provider?.protocol;
+            if (!baseUrl) baseUrl = provider?.baseUrl ?? '';
           } catch {
             baseUrl = '';
           }
@@ -2779,8 +2782,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           try {
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), 8_000);
-            const response = await fetch(`${baseUrl.replace(/\/+$/u, '')}/models`, {
-              headers: { Authorization: `Bearer ${apiKey}` },
+            const request = providerModelListRequest(baseUrl, apiKey, protocol);
+            const response = await fetch(request.url, {
+              headers: request.headers,
               signal: controller.signal,
             });
             clearTimeout(timer);

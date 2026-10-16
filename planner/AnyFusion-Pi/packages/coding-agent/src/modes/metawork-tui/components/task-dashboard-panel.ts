@@ -20,21 +20,10 @@ export interface TaskDashboardActions {
 	changed(): void;
 }
 const LABELS: Record<string, string> = {
-	retrying: "重试中",
-	recovery_required: "需要恢复",
+	waiting: "等待中",
 	executing: "执行中",
-	queued: "排队",
-	blocked: "阻塞",
-	waiting: "等待",
-	planning: "规划中",
-	ready: "就绪",
-	waiting_for_plan: "等待规划",
-	waiting_for_user: "等待确认",
-	recovering: "恢复中",
-	publishing: "发布中",
-	completed: "已完成",
-	failed: "失败",
-	cancelled: "已取消",
+	needs_action: "需要处理",
+	finished: "已结束",
 };
 
 export class MetaWorkTaskDashboard implements Component, Focusable {
@@ -59,7 +48,7 @@ export class MetaWorkTaskDashboard implements Component, Focusable {
 				key: `${row.conversationId}\0${row.taskId}`,
 				title: row.title,
 				subtitle: row.conversationTitle,
-				phase: row.phase,
+				phase: row.userState,
 				current: state.selectedConversationId === row.conversationId && state.selectedTaskId === row.taskId,
 				run: () => this.actions?.open(row),
 			})),
@@ -129,7 +118,7 @@ export class MetaWorkTaskDashboard implements Component, Focusable {
 		if (!entries.some((row) => row.key === this.selectedKey))
 			this.selectedKey = entries.find((row) => row.current)?.key ?? entries[0]?.key ?? null;
 		const counts = new Map<string, number>();
-		for (const row of state.rows) counts.set(row.phase, (counts.get(row.phase) ?? 0) + 1);
+		for (const row of state.rows) counts.set(row.userState, (counts.get(row.userState) ?? 0) + 1);
 		const lines = [
 			theme.fg("accent", theme.bold("Task Dashboard")),
 			theme.fg("dim", "当前 Workspace · 已加载任务"),

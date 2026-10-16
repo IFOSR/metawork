@@ -69,7 +69,7 @@ export interface SubtaskExecutionContext {
   taskBackground: { id: string; title: string; goal: string; instruction: 'background_only' };
   currentSubtask: Pick<
     Subtask,
-    'id' | 'title' | 'goal' | 'deliveryKind' | 'requiredCapabilities' | 'acceptance'
+    'id' | 'title' | 'goal' | 'deliveryKind' | 'fileOutputs' | 'requiredCapabilities' | 'acceptance'
   >;
   incomingHandoffs: PersistedSubtaskHandoff[];
   outgoingHandoffRequirements: Array<{ toSubtaskId: string; requiredItems: WorkGraphRequiredItem[] }>;
@@ -207,6 +207,7 @@ export class SubtaskExecutionContextBuilder {
           title: input.subtask.title,
           goal: input.subtask.goal,
           deliveryKind: input.subtask.deliveryKind,
+          fileOutputs: input.subtask.fileOutputs,
           requiredCapabilities: input.subtask.requiredCapabilities,
           acceptance: input.subtask.acceptance,
           ...input.currentSubtaskOverride,
@@ -478,42 +479,17 @@ export class SubtaskExecutionContextBuilder {
       title = row.title;
       content = row.content;
     } else if (ref.kind === 'interaction') {
-      evidenceId = createEvidenceId(`${ref.side}_interaction`, ref.interactionId);
-      const materialized = this.evidenceRepo.findForTask(task.id, evidenceId);
-      if (materialized) {
-        title = materialized.title;
-        content = materialized.content;
-        exactOnly = ref.side === 'assistant';
-      } else {
-      const row = this.db.prepare(`
-        SELECT id, task_id, session_id, user_input, system_output, created_at
-        FROM interactions WHERE id = ?
-      `).get(ref.interactionId) as {
-        id: string;
-        task_id: string | null;
-        session_id: string | null;
-        user_input: string;
-        system_output: string;
-        created_at: string;
-      } | undefined;
-      if (!row || row.task_id !== task.id || row.session_id !== sessionId) {
-        throw new Error(`interaction_not_authorized: ${ref.interactionId}`);
-      }
-      evidenceId = createEvidenceId(`${ref.side}_interaction`, row.id);
-      title = `${ref.side} interaction ${row.id}`;
-      content = ref.side === 'user' ? row.user_input : row.system_output;
-      exactOnly = ref.side === 'assistant';
-      this.evidenceRepo.upsert({
-        id: evidenceId,
+      // Revalidate the selected source and repair a missing task association on recovery.
+      evidenceId = this.evidenceRepo.materializeInteraction({
         taskId: task.id,
-        kind: ref.side === 'assistant' ? 'assistant_ref' : 'user_input',
-        sourceId: row.id,
-        title,
-        content,
-        exactOnly,
-        createdAt: row.created_at,
+        sessionId,
+        interactionId: ref.interactionId,
+        side: ref.side,
       });
-      }
+      const materialized = this.evidenceRepo.findForTask(task.id, evidenceId)!;
+      title = materialized.title;
+      content = materialized.content;
+      exactOnly = ref.side === 'assistant';
     } else {
       throw new Error(`context_ref_not_supported: ${ref.kind}`);
     }

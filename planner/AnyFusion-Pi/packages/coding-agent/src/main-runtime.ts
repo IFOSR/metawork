@@ -37,10 +37,7 @@ import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/mod
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
-import {
-	getMissingSessionCwdIssue,
-	MissingSessionCwdError,
-} from "./core/session-cwd.ts";
+import { getMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
@@ -538,15 +535,17 @@ export async function main(args: string[], _options?: MainOptions) {
 		process.exit(0);
 	}
 
-	let appMode = resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
+	const appMode = resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
 	if (appMode === "interactive") {
 		// ADR-0041：本 fork 的独立交互 Agent TUI 已退役。MetaWork 的终端界面是
 		// Gateway Client（`metawork tui`）；这里明确失败，绝不隐式启动本地 Agent。
-		console.error(chalk.red(
-			"Error: the standalone interactive agent UI is retired in this build.\n"
-			+ "Use `metawork tui` (MetaWork Gateway client) for terminal interaction,\n"
-			+ "or run this binary with --mode rpc / --mode json / print mode.",
-		));
+		console.error(
+			chalk.red(
+				"Error: the standalone interactive agent UI is retired in this build.\n" +
+					"Use `metawork tui` (MetaWork Gateway client) for terminal interaction,\n" +
+					"or run this binary with --mode rpc / --mode json / print mode.",
+			),
+		);
 		process.exitCode = 1;
 		return;
 	}
@@ -564,7 +563,7 @@ export async function main(args: string[], _options?: MainOptions) {
 	validateSessionIdFlags(parsed);
 
 	// Run migrations (pass cwd for project-local migrations)
-	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(cwd);
+	const { deprecationWarnings } = runMigrations(cwd);
 	time("runMigrations");
 
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir);
@@ -580,7 +579,7 @@ export async function main(args: string[], _options?: MainOptions) {
 		(parsed.sessionDir ? normalizePath(parsed.sessionDir) : undefined) ??
 		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
 		startupSettingsManager.getSessionDir();
-	let sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
+	const sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
 		console.error(chalk.red(new MissingSessionCwdError(missingSessionCwdIssue).message));
@@ -605,10 +604,6 @@ export async function main(args: string[], _options?: MainOptions) {
 				schemaPath: process.env.ANYFUSION_PLANNER_SCHEMA_PATH,
 			});
 	if (plannerBootstrap) parsed.systemPrompt = plannerBootstrap.systemPrompt;
-	const autoTrustOnReloadCwd =
-		parsed.projectTrustOverride === undefined && !hasTrustRequiringProjectResources(sessionCwd)
-			? sessionCwd
-			: undefined;
 	const trustPromptMode: AppMode = parsed.help || parsed.listModels !== undefined ? "print" : appMode;
 	const projectTrustByCwd = new Map<string, boolean>();
 
@@ -637,9 +632,7 @@ export async function main(args: string[], _options?: MainOptions) {
 				(!hasTrustRequiringResources || trustStore.get(cwd) === true));
 		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
 		if (appMode === "rpc" && process.env.ANYFUSION_PLANNER_TURN_PURPOSE) {
-			const timeoutOverrides = buildPlannerProviderTimeoutOverrides(
-				process.env.ANYFUSION_PLANNER_RPC_TIMEOUT_MS,
-			);
+			const timeoutOverrides = buildPlannerProviderTimeoutOverrides(process.env.ANYFUSION_PLANNER_RPC_TIMEOUT_MS);
 			if (timeoutOverrides) runtimeSettingsManager.applyOverrides(timeoutOverrides);
 		}
 		const services = await createAgentSessionServices({
@@ -755,7 +748,7 @@ export async function main(args: string[], _options?: MainOptions) {
 		sessionManager,
 	});
 	time("createAgentSessionRuntime");
-	const { services, session, modelFallbackMessage } = runtime;
+	const { services, session } = runtime;
 	const { settingsManager, modelRegistry, resourceLoader } = services;
 	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());

@@ -15,6 +15,8 @@ import { builtinCodexAgentClass } from '../support/builtin-agent-classes.js';
 import { WorkspacePublicationRepo } from '../../src/storage/workspace-publication-repo.js';
 import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
 import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
+import { ExecutorAttemptRuntimeRepo } from '../../src/storage/executor-attempt-runtime-repo.js';
+import { SqliteResourceLeaseRepository } from '../../src/storage/resource-lease-repo.js';
 
 const authorizedBinding: AuthorizedExecutorBinding = {
   agentClassRef: 'codex-cli',
@@ -178,6 +180,61 @@ function outcomeEvent(now: string): KernelEvent {
 }
 
 describe('AttemptTerminalService', () => {
+  function settledFailureFixture() {
+    const fixture = setup('real');
+    const { db, now, dispatch, workflow } = fixture;
+    dispatch.markUncertain('attempt-terminal', 'terminal landing failed', now);
+    const runtime = new ExecutorAttemptRuntimeRepo(db);
+    runtime.start({ attemptId: 'attempt-terminal', sourceAttemptId: null,
+      workspaceRoot: '/tmp/terminal', recoverySafety: 'read_only', now });
+    runtime.recordDiagnostics('attempt-terminal', { process: {
+      startedAt: now, completedAt: now, exitCode: 0,
+    } }, now);
+    const event = outcomeEvent(now);
+    workflow.enqueue({ ...event, configurationRevision: authorizedBinding.configurationRevision,
+      authorizedBinding, bindingFingerprint } as KernelEvent, now);
+    const leases = new SqliteResourceLeaseRepository(db);
+    leases.claim({ taskId: 'task-terminal', generationId: 'generation-terminal',
+      subtaskId: 'subtask-terminal', attemptId: 'attempt-terminal', workUnitId: 'work-unit-terminal',
+      leaseToken: 'terminal-lease', now, expiresAt: '2026-07-28T00:01:00.000Z',
+      claims: [{ partition: { kind: 'path', mountId: 'workspace', normalizedRelativePath: 'files' }, access: 'write' }] });
+    return { ...fixture, runtime, leases };
+  }
+
+  it('recovers a failed terminal write without changing the later successful Subtask', () => {
+    const f = settledFailureFixture();
+    f.db.prepare("UPDATE subtasks SET status='done', result='replacement result' WHERE id='subtask-terminal'").run();
+    expect(f.service.reconcileSettledFailure('attempt-terminal', f.now)).toMatchObject({ workUnitId: 'work-unit-terminal' });
+    expect(f.receipts.findByAttemptId('attempt-terminal')).toMatchObject({
+      terminalState: 'executor_failed', rawResponse: '', completionSchemaVersion: null,
+    });
+    expect(f.subtasks.findById('subtask-terminal')).toMatchObject({ status: 'done', result: 'replacement result' });
+    expect(f.dispatch.find('attempt-terminal')?.status).toBe('terminal');
+    expect(f.leases.findActive(f.now)).toHaveLength(0);
+    expect(f.service.reconcileSettledFailure('attempt-terminal', f.now)).toBeNull();
+  });
+
+  it.each(['no_exit', 'external_effect', 'wrong_binding'])(
+    'retains uncertainty and leases when settled-failure proof is invalid: %s', reason => {
+      const f = settledFailureFixture();
+      if (reason === 'no_exit') f.runtime.recordDiagnostics('attempt-terminal', { process: { startedAt: f.now } }, f.now);
+      if (reason === 'external_effect') f.db.prepare("UPDATE executor_attempt_runtime SET recovery_safety='external_non_idempotent'").run();
+      if (reason === 'wrong_binding') f.db.prepare("UPDATE kernel_dispatch_items SET binding_fingerprint='different'").run();
+      expect(f.service.reconcileSettledFailure('attempt-terminal', f.now)).toBeNull();
+      expect(f.receipts.findByAttemptId('attempt-terminal')).toBeNull();
+      expect(f.dispatch.find('attempt-terminal')?.status).toBe('uncertain');
+      expect(f.leases.findActive(f.now)).toHaveLength(1);
+    },
+  );
+
+  it('rolls back recovered receipt and dispatch if resource cleanup fails', () => {
+    const f = settledFailureFixture();
+    f.db.exec("CREATE TRIGGER reject_release BEFORE UPDATE ON resource_leases BEGIN SELECT RAISE(ABORT, 'cleanup failed'); END");
+    expect(() => f.service.reconcileSettledFailure('attempt-terminal', f.now)).toThrow('cleanup failed');
+    expect(f.receipts.findByAttemptId('attempt-terminal')).toBeNull();
+    expect(f.dispatch.find('attempt-terminal')?.status).toBe('uncertain');
+  });
+
   it('rolls back receipt, Subtask, dispatch and outcome inbox together when landing fails', () => {
     const setupResult = setup('real');
     setupResult.db.exec(`
@@ -224,8 +281,9 @@ describe('AttemptTerminalService', () => {
     expect(setupResult.workflow.findEvent('event_attempt-terminal_execution_outcome')).toBeNull();
   });
 
-  it('resolves a reconciled uncertain dispatch when its immutable terminal facts are known', () => {
+  it.each(['running', 'blocked'] as const)('lands terminal facts while Task is %s, including a sibling blocker', taskStatus => {
     const setupResult = setup();
+    setupResult.db.prepare('UPDATE tasks SET status = ? WHERE id = ?').run(taskStatus, 'task-terminal');
     setupResult.dispatch.markUncertain(
       'attempt-terminal',
       'controller restarted after receipt',

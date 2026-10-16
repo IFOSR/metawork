@@ -62,7 +62,13 @@ export class LocalAuthorizationService {
 
   async login(email: string, password: string): Promise<OfficialAuthorizationProjection> {
     if (this.disposed) throw new OfficialAuthorizationError('Server 已停止', 'session_invalid');
-    if (this.token || this.loginPending || this.options.hasUnsettledWork?.()) {
+    // A fresh Server process has no in-memory token, but it may be recovering
+    // local Tasks that were active before the process restart. Requiring an
+    // existing token in that state creates a deadlock: login is needed to
+    // recover the work, while unsettled work was previously used to reject
+    // login. Once a session is established, switching accounts remains
+    // blocked by the token guard and the unfinished-work ownership check.
+    if (this.token || this.loginPending) {
       throw new OfficialAuthorizationError('请先退出当前账号，并等待活动工作安全收尾。', 'already_logged_in');
     }
     const generation = ++this.generation;

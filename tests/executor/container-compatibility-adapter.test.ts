@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { authorizedExecutorBindingFingerprint } from '../../src/core/authorized-executor-binding.js';
 import type { RuntimePrivateConfigurationBinding } from '../../src/configuration/types.js';
 import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
 import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
@@ -13,6 +17,42 @@ import {
 import type { HarnessDriver } from '../../src/executor/harness-driver.js';
 
 describe('ContainerCompatibilityAdapter', () => {
+  it.each(['verified', 'unavailable'] as const)('requires an in-image program probe before managed business execution: %s', async mode => {
+    const root = mkdtempSync(join(tmpdir(), 'container-manifest-'));
+    try {
+      mkdirSync(join(root, 'home'));
+      const driver = harnessDriver('selected-container-driver');
+      vi.mocked(driver.materializeHome).mockResolvedValue({ homePath: join(root, 'home'), environment: {} });
+      const { backend, create } = backendPort();
+      backend.probeProgram = vi.fn(async () => {
+        if (mode === 'unavailable') throw new Error('image executable missing');
+        return 'pi 1.2.0';
+      });
+      const authorized = authorizedBinding();
+      const runtime: RuntimePrivateConfigurationBinding = { revisionId: authorized.configurationRevision,
+        bindingFingerprint: authorizedExecutorBindingFingerprint(authorized),
+        environment: { OPENAI_BASE_URL: 'https://test.invalid/v1', OPENAI_MODEL: 'deepseek-v4-pro', OPENAI_API_KEY: 'secret-test-only' },
+        manifest: { driverId: driver.id, protocol: 'openai-compatible', baseUrl: 'https://test.invalid/v1',
+          modelId: 'deepseek-v4-pro', permissionProfileRef: authorized.permissionProfileRef, runtimeFileHashes: {} } };
+      const adapter = new ContainerCompatibilityAdapter({ agentClassId: authorized.agentClassRef, driver,
+        runtimeBinding: runtime, authorizedBinding: authorized, modelId: 'deepseek-v4-pro', attemptsRoot: root,
+        imageRef: 'executor:mutable-tag', backend });
+      const result = await adapter.execute(executorInput('attempt-1'));
+      expect(backend.probeProgram).toHaveBeenCalledWith('sha256:selected', 'selected-driver-command');
+      if (mode === 'unavailable') {
+        expect(result.success).toBe(false);
+        expect(create).not.toHaveBeenCalled();
+      } else {
+        expect(result.success).toBe(true);
+        expect(create).toHaveBeenCalledOnce();
+        const text = readFileSync(join(root, 'runtime-manifest.json'), 'utf8');
+        expect(JSON.parse(text)).toMatchObject({ version: 'pi 1.2.0', imageId: 'sha256:selected',
+          bindingFingerprint: runtime.bindingFingerprint, workspacePath: '/workspace', inputsPath: '/inputs' });
+        expect(text).not.toContain('secret-test-only');
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('runs an arbitrary AgentClass through the explicitly selected Harness driver', async () => {
     const driver = harnessDriver('selected-container-driver');
     const { backend, create } = backendPort();
@@ -20,7 +60,7 @@ describe('ContainerCompatibilityAdapter', () => {
       agentClassId: 'arbitrary-agent-class',
       driver,
       runtimeBinding: runtimeBinding(),
-      authorizedBinding: authorizedBinding(),
+      authorizedBinding: { ...authorizedBinding(), agentClassRef: 'arbitrary-agent-class' },
       modelId: 'deepseek-v4-pro',
       attemptsRoot: '/runtime/attempts',
       imageRef: 'anyfusion/executor:selected',
@@ -50,6 +90,9 @@ describe('ContainerCompatibilityAdapter', () => {
       modelId: 'deepseek-v4-pro',
       executionTarget: 'container',
     }));
+    const prompt = vi.mocked(driver.buildLaunch).mock.calls[0]![0].prompt;
+    expect(prompt).toContain('Input directory relative to the working directory: "../inputs"');
+    expect(prompt).not.toContain('/host/inputs');
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       attemptId: 'attempt-1',
       imageRef: 'anyfusion/executor:selected',
@@ -94,7 +137,7 @@ describe('ContainerCompatibilityAdapter', () => {
       agentClassId: 'codex-cli',
       driver,
       runtimeBinding: runtimeBinding(),
-      authorizedBinding: authorizedBinding(),
+      authorizedBinding: { ...authorizedBinding(), agentClassRef: 'codex-cli' },
       modelId: 'deepseek-v4-pro',
       attemptsRoot: '/runtime/attempts',
       imageRef: 'anyfusion/executor:custom',
@@ -124,7 +167,7 @@ describe('ContainerCompatibilityAdapter', () => {
       agentClassId: 'pi-agent',
       driver,
       runtimeBinding: runtimeBinding(),
-      authorizedBinding: authorizedBinding(),
+      authorizedBinding: { ...authorizedBinding(), agentClassRef: 'pi-agent' },
       modelId: 'deepseek-v4-pro',
       attemptsRoot: '/runtime/attempts',
       imageRef: 'anyfusion/executor:selected',
@@ -162,7 +205,7 @@ describe('ContainerCompatibilityAdapter', () => {
       agentClassId: 'shared-agent-class',
       driver,
       runtimeBinding: runtimeBinding(),
-      authorizedBinding: authorizedBinding(),
+      authorizedBinding: { ...authorizedBinding(), agentClassRef: 'shared-agent-class' },
       modelId: 'deepseek-v4-pro',
       attemptsRoot: '/runtime/attempts',
       imageRef: 'anyfusion/executor:selected',
@@ -182,14 +225,16 @@ describe('ContainerCompatibilityAdapter', () => {
     await Promise.all([first, second]);
   });
 
-  it('probes both the selected Harness driver and explicit container image', async () => {
+  it('probes the selected executable inside the image even if it is absent on the host', async () => {
     const driver = harnessDriver('selected-container-driver');
+    vi.mocked(driver.probe).mockResolvedValue({ available: false, detail: 'not installed on host' });
     const { backend, resolveImage } = backendPort();
+    backend.probeProgram = vi.fn(async () => 'pi 1.2.0');
     const adapter = new ContainerCompatibilityAdapter({
       agentClassId: 'agent-class-with-no-name-contract',
       driver,
       runtimeBinding: runtimeBinding(),
-      authorizedBinding: authorizedBinding(),
+      authorizedBinding: { ...authorizedBinding(), agentClassRef: 'agent-class-with-no-name-contract' },
       modelId: 'deepseek-v4-pro',
       attemptsRoot: '/runtime/attempts',
       imageRef: 'anyfusion/executor:selected',
@@ -198,7 +243,8 @@ describe('ContainerCompatibilityAdapter', () => {
 
     const result = await adapter.probe();
 
-    expect(driver.probe).toHaveBeenCalledTimes(1);
+    expect(driver.probe).not.toHaveBeenCalled();
+    expect(backend.probeProgram).toHaveBeenCalledWith('sha256:selected', 'selected-driver-command');
     expect(resolveImage).toHaveBeenCalledWith('anyfusion/executor:selected');
     expect(result).toEqual({ available: true, failure: null });
   });

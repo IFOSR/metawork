@@ -1,4 +1,4 @@
-import type { Dispatcher } from "undici";
+import type { Dispatcher, RequestInit } from "undici";
 import { describe, expect, it, vi } from "vitest";
 import { createPlannerWebTools } from "../src/anyfusion/planner-web-tools.ts";
 
@@ -251,7 +251,7 @@ describe("AnyFusion Planner Web tools", () => {
 
 	it("searches the fixed public endpoint and returns source metadata", async () => {
 		const fetch = vi.fn(
-			async () =>
+			async (_input: string | URL) =>
 				new Response(
 					'<ol id="b_results">' +
 						'<li class="b_algo"><h2><a href="https://example.com/news">' +

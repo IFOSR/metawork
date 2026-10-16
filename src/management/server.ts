@@ -1,3 +1,4 @@
+import type { ProviderProtocol } from '../configuration/types.js';
 import { OfficialAuthorizationError } from '../authorization/types.js';
 import type { DesktopSessionService } from './desktop-session.js';
 import type { ClientNotificationPage } from '../gateway/client-notification-feed.js';
@@ -26,9 +27,6 @@ import type { ConfigurationCompletionResult } from '../configuration/configurati
 import type { OpenRouterPublicFacts } from '../configuration/openrouter-model-catalog.js';
 import { AgentCapabilityDescriptionInputSchema, type AgentCapabilityDescriptionInput, type AgentCapabilityDescription } from '../configuration/agent-capability-description.js';
 import type { AgentReadiness } from './agent-installation-readiness-service.js';
-import { verifyLogin } from './login-credentials.js';
-import { LoginThrottle } from './web-auth.js';
-import type { LoginCredentials } from './login-credentials.js';
 import type { WebAuthService } from './web-auth.js';
 import type { WebLaunchContextService } from './web-launch-context.js';
 import type { WorkspaceDirectoryBrowser } from './workspace-directory-browser.js';
@@ -215,7 +213,7 @@ export interface ConfigQuery {
   getCompletion?(): Promise<ConfigurationCompletionResult>;
   /** 用表单中的 baseUrl/apiKey（或已存密钥）现场探测 Provider 模型列表；不落库。 */
   discoverProviderModels?(
-    input: { baseUrl: string; apiKey?: string; providerRef?: string },
+    input: { baseUrl: string; apiKey?: string; providerRef?: string; protocol?: ProviderProtocol },
   ): Promise<ProviderModelDiscoveryResponse>;
   getExecutorCapabilityManual?(
     agentClassRef: string,
@@ -285,9 +283,6 @@ export interface ManagementServerDeps {
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
   configurationRuntime?: ConfigurationRuntimeStatusSource;
-  /** 账密登录凭据；未提供时登录端点返回 503。 */
-  loginCredentials?: LoginCredentials;
-  loginThrottle?: LoginThrottle;
   /** 启动目录提示；仅由未鉴权的 /api/auth/launch-context 读取。 */
   launchContexts: WebLaunchContextService;
   /** 本机 Agent 安装状态；缺省时保留无 Agent 检测的测试/嵌入模式。 */
@@ -663,7 +658,8 @@ export class ManagementServer {
       response.writeHead(200, {
         'Content-Type': attachment.metadata.mime || 'application/octet-stream',
         'Content-Length': String(attachment.bytes.byteLength),
-        'Content-Disposition': `inline; filename*=UTF-8''${filename}`,
+        'Content-Disposition': `${/^image\/(?:png|jpeg|gif|webp)$/u.test(attachment.metadata.mime) ? 'inline' : 'attachment'}; filename*=UTF-8''${filename}`,
+        'Content-Security-Policy': "sandbox; default-src 'none'",
         'Cache-Control': 'private, no-store',
         'X-Content-Type-Options': 'nosniff',
       });
@@ -674,42 +670,6 @@ export class ManagementServer {
         error: message === 'conversation_denied' ? message : 'attachment_not_found',
       });
     }
-  }
-
-  private async handleLogin(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    if (!this.deps.loginCredentials) {
-      this.sendJson(response, 503, { error: 'password login disabled' });
-      return;
-    }
-    if (!this.isAllowedWebSocketOrigin(request.headers.origin)) {
-      this.sendJson(response, 403, { error: 'forbidden_origin' });
-      return;
-    }
-    const throttle = this.deps.loginThrottle ??= new LoginThrottle();
-    const clientKey = clientAddressOf(request);
-    if (throttle.isLocked(clientKey)) {
-      this.sendJson(response, 429, { error: 'too many attempts; try again later' });
-      return;
-    }
-    const body = await readRequestBody(request);
-    const username = typeof body.username === 'string' ? body.username : '';
-    const password = typeof body.password === 'string' ? body.password : '';
-    if (!username || !password) {
-      this.sendJson(response, 400, { error: 'username and password are required' });
-      return;
-    }
-    if (!verifyLogin(username, password, this.deps.loginCredentials)) {
-      throttle.registerFailure(clientKey);
-      this.sendJson(response, 401, { error: 'invalid username or password' });
-      return;
-    }
-    throttle.registerSuccess(clientKey);
-    const session = this.deps.webAuth.createSession();
-    response.writeHead(200, {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Set-Cookie': this.deps.webAuth.sessionCookie(session.sessionToken),
-    });
-    response.end(`${JSON.stringify({ authenticated: true })}\n`);
   }
 
   private isAllowedWebSocketOrigin(origin: string | undefined): boolean {
@@ -863,16 +823,19 @@ export class ManagementServer {
     }
 
     if (request.method === 'POST' && url.pathname === '/api/auth/login') {
-      await this.handleLogin(request, response);
+      this.sendJson(response, 410, {
+        error: 'password login removed; use the official account login in MetaWork',
+      });
       return;
     }
 
     if (request.method === 'GET' && url.pathname === '/api/auth/session') {
-      const session = this.deps.webAuth.getSession(request.headers.cookie);
-      if (!session) {
-        this.sendJson(response, 401, { error: 'unauthorized' });
-        return;
-      }
+      // The local Web session is a transport session, not the user's account.
+      // Establish it automatically so the official subscription account is the
+      // only user-facing login boundary.
+      const existing = this.deps.webAuth.getSession(request.headers.cookie);
+      const created = existing ? null : this.deps.webAuth.createSession();
+      if (created) response.setHeader('Set-Cookie', this.deps.webAuth.sessionCookie(created.sessionToken));
       this.sendJson(response, 200, {
         authenticated: true,
       });
@@ -953,6 +916,15 @@ export class ManagementServer {
 
     const artifactPreviewMatch = /^\/api\/artifacts\/([^/]+)\/preview$/u.exec(url.pathname);    if (request.method === 'GET' && artifactPreviewMatch) {
       await this.handleArtifactPreview(response, decodeURIComponent(artifactPreviewMatch[1]!));
+      return;
+    }
+
+    const artifactImageMatch = /^\/api\/artifacts\/([^/]+)\/preview-image$/u.exec(url.pathname);
+    if (request.method === 'GET' && artifactImageMatch) {
+      const reference = url.searchParams.get('reference') ?? '';
+      const content = reference.length <= 2048
+        ? await this.deps.artifactQuery?.readReportImage(decodeURIComponent(artifactImageMatch[1]!), reference) : undefined;
+      this.sendJson(response, 200, { content: content && content.length <= 3 * 1024 * 1024 ? content : null });
       return;
     }
 
@@ -1326,6 +1298,12 @@ export class ManagementServer {
       const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '';
       const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
       const providerRef = typeof body.providerRef === 'string' ? body.providerRef.trim() : '';
+      const protocol = body.protocol;
+      if (protocol !== undefined && protocol !== 'openai-compatible'
+        && protocol !== 'openai-responses' && protocol !== 'anthropic') {
+        this.sendJson(response, 400, { error: 'Unsupported Provider protocol' });
+        return;
+      }
       const isPublicOpenRouter = /openrouter\.ai/iu.test(baseUrl);
       if (!baseUrl || (!apiKey && !providerRef && !isPublicOpenRouter)) {
         this.sendJson(response, 400, {
@@ -1338,6 +1316,7 @@ export class ManagementServer {
         200,
         await this.deps.configQuery.discoverProviderModels({
           baseUrl,
+          ...(protocol ? { protocol } : {}),
           ...(apiKey ? { apiKey } : {}),
           ...(providerRef ? { providerRef } : {}),
         }),
@@ -1864,6 +1843,9 @@ export class ManagementServer {
     response.writeHead(200, {
       'Content-Type': type,
       'Cache-Control': 'no-cache',
+      // Public compiled assets are also loaded by the opaque-origin document
+      // sandbox. API/file responses never receive this CORS grant.
+      'Access-Control-Allow-Origin': '*',
     });
     createReadStream(filePath).pipe(response);
   }
@@ -1941,6 +1923,7 @@ export class ManagementServer {
 }
 
 interface RequestBody {
+  protocol?: unknown;
   change?: unknown;
   token?: string;
   email?: string;
@@ -2055,10 +2038,6 @@ interface WebSocketDiagnostic {
   status: number;
   reason: 'ready' | 'forbidden_origin' | 'unauthorized';
   message: string;
-}
-
-function clientAddressOf(request: IncomingMessage): string {
-  return request.socket.remoteAddress ?? 'unknown';
 }
 
 function readRequestBody(request: IncomingMessage): Promise<RequestBody> {

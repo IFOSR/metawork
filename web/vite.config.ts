@@ -28,5 +28,6 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    rollupOptions: { input: ['index.html', 'document-preview.html'] },
   },
 });

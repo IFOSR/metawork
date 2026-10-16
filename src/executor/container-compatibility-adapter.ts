@@ -1,3 +1,7 @@
+import { verifyExecutorRuntimeHome } from './runtime-binding-verification.js';
+import { createHash } from 'node:crypto';
+import { writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import type { RuntimePrivateConfigurationBinding } from '../configuration/types.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { ExecutorResult } from '../core/types.js';
@@ -88,6 +92,12 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
           ? { executorAffordances: this.executorAffordances }
           : {}),
       });
+      await verifyExecutorRuntimeHome({ runtimeBinding: this.runtimeBinding, authorizedBinding: this.authorizedBinding,
+        driverId: this.driver.id, modelId: this.modelId, homePath: runtimeHome.homePath });
+      if (input.context.identity.attemptId !== binding.attemptId || input.context.identity.taskId !== binding.taskId
+        || input.context.identity.subtaskId !== binding.subtaskId || this.name !== this.authorizedBinding.agentClassRef) {
+        throw new Error('Executor execution identity mismatch');
+      }
       const launch = this.driver.buildLaunch({
         prompt: buildExecutorContextPrompt(containerExecutorInput(input)),
         cwd: '/workspace',
@@ -100,6 +110,21 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
           : {}),
       });
       const resolvedImageId = await this.backend.resolveImage(this.imageRef);
+      if (this.runtimeBinding.manifest) {
+        if (!this.backend.probeProgram) throw new Error('Container backend cannot verify the Executor program');
+        const version = await this.backend.probeProgram(resolvedImageId, launch.command);
+        if (!version.trim()) throw new Error('Executor program version is missing');
+        await writeFile(join(dirname(runtimeHome.homePath), 'runtime-manifest.json'), JSON.stringify({
+          ...this.runtimeBinding.manifest, attemptId: binding.attemptId,
+          bindingFingerprint: this.runtimeBinding.bindingFingerprint, configurationRevision: this.runtimeBinding.revisionId,
+          program: launch.command, version, imageId: resolvedImageId,
+          tools: this.executorAffordances ?? [], workspacePath: '/workspace', inputsPath: '/inputs',
+          sourcePath: '/source', handoffsPath: '/handoffs', networkBoundary: binding.controlNetwork,
+          egressMode: this.egressMode, requiredCapabilities: input.context.currentSubtask.requiredCapabilities,
+          contextHash: createHash('sha256').update(JSON.stringify(input.context)).digest('hex'),
+          environmentKeys: Object.keys(this.runtimeBinding.environment ?? {}).sort(),
+        }, null, 2), { mode: 0o600 });
+      }
       const record = await this.backend.create({
         attemptId: binding.attemptId,
         taskId: binding.taskId,
@@ -236,17 +261,14 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
     try {
       this.requireContainerBackend();
       if (!this.imageRef.trim()) throw new Error('container image reference is required');
-      const harness = await this.driver.probe();
-      if (!harness.available) {
-        return {
-          available: false,
-          failure: normalizeExecutorFailure(
-            harness.detail?.trim() || `Harness driver is unavailable: ${this.driver.id}`,
-          ),
-        };
-      }
       try {
-        await this.backend.resolveImage(this.imageRef);
+        const imageId = await this.backend.resolveImage(this.imageRef);
+        if (!this.backend.probeProgram) throw new Error('Container backend cannot verify the Executor program');
+        const launch = this.driver.buildLaunch({ prompt: '', cwd: '/workspace', runtimeHomePath: '/runtime-home',
+          executionTarget: 'container', providerRef: this.authorizedBinding.providerRef, modelId: this.modelId });
+        if (!(await this.backend.probeProgram(imageId, launch.command)).trim()) {
+          throw new Error('Executor program version is missing');
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
@@ -319,6 +341,7 @@ function containerExecutorInput(input: ExecutorInput): ExecutorInput {
   const binding = input.executionBinding!;
   return {
     ...input,
+    executionBinding: { ...binding, workspacePath: '/workspace', inputsPath: '/inputs' },
     context: {
       ...input.context,
       workspaceContext: {

@@ -8,7 +8,7 @@
  */
 
 import type Database from 'better-sqlite3';
-import { WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
+import { ExecutorProbeError, WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
 import { ExecutorRecoveryRefreshService } from '../execution/executor-recovery-refresh-service.js';
 import { KernelExecutorStatusProjector } from '../execution/kernel-executor-status-projector.js';
 import type { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
@@ -46,7 +46,12 @@ export function buildAccountCoordinatorServices(deps: {
           failure: result.failure,
         });
       }
-      return result.available;
+      if (!result.available) throw new ExecutorProbeError({
+        ...(result.failure ?? { kind: 'configuration', scope: 'agent_class',
+          code: 'executor_probe_failed', summary: 'Executor environment probe failed' }),
+        stage: 'executor_probe', attemptStarted: false, externalSideEffect: false,
+      });
+      return true;
     },
   );
 

@@ -119,6 +119,7 @@ describe('Conversation historical artifact continuation', () => {
               modelSelection: { mode: 'agent-class-default' },
             }],
             deliveryKind: 'edit',
+            fileOutputs: ['images/'],
             acceptance: [{
               key: 'image_exists',
               description: '生成有效的编辑后图片',

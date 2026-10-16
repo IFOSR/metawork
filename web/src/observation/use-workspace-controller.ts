@@ -3,9 +3,10 @@ import { HttpClient } from '../api/http';
 import type { ArtifactProjection, AttachmentMetadata, ConversationWorkspaceProjection, ConversationTurnProjection, WebSessionActivationResult, WebSessionMetadata, WorkspaceSummary } from '../api/session-types';
 import type { AgentReadiness, ConfigurationRuntimeState } from '../api/types';
 import { WsClient } from '../api/ws';
-import { establishWebSession, exchangeWebCredential, loginWithPassword, resolveWebLaunchSuggestion, type WebLaunchSuggestion } from '../auth';
+import { establishWebSession, resolveWebLaunchSuggestion, type WebLaunchSuggestion } from '../auth';
 import { type ConversationViewportMemory } from './ObservedConversationView';
 import { useConversationWindow, useConversationActivity, useConversationTurn } from './use-conversation';
+import { conversationHasOngoingWork, taskHasOngoingWork, turnHasOngoingWork } from './task-activity';
 import { turnProjection } from './turn-projection';
 import { selectInitialSessionId } from '../session-selection';
 import { type PreviewDrawerState } from '../components/ArtifactPreviewDrawer';
@@ -175,9 +176,16 @@ export function useWorkspaceController() {
         });
         return;
       }
-      setAuthenticated(false);
       setConnected(false);
-      setAuthError('Web 会话已失效。请重新启动 Web 或输入 --no-open 显示的 token。');
+      void establishWebSession().then(session => {
+        if (!startupLifetime.current()) return;
+        setAuthenticated(Boolean(session));
+        setAuthError(session ? null : '无法建立本机 Web 会话，请刷新页面重试。');
+      }).catch(error => {
+        if (!startupLifetime.current()) return;
+        setAuthenticated(false);
+        setAuthError((error as Error).message);
+      });
     };
     const http = new HttpClient(handleUnauthorized);
     httpRef.current = http;
@@ -602,6 +610,22 @@ export function useWorkspaceController() {
           : current
       )));
   };
+  const handleOpenAttachment = (conversationId: string, attachment: import('../api/session-types').ConversationAttachment) => {
+    const http = httpRef.current;
+    if (!http) return;
+    const generation = observationClient?.conversations.currentGeneration();
+    const id = `attachment:${conversationId}:${attachment.attachmentId}`;
+    setPreviewCollapsed(false);
+    setExecutionDetail(null);
+    setPreviewState({ status: 'loading', artifactId: id });
+    const currentRequest = (current: PreviewDrawerState) => httpRef.current === http
+      && generation === observationClient?.conversations.currentGeneration()
+      && current.status === 'loading' && current.artifactId === id;
+    void http.getAttachmentPreview(conversationId, attachment)
+      .then(result => setPreviewState(current => currentRequest(current) ? { status: 'ready', ...result } : current))
+      .catch(error => setPreviewState(current => currentRequest(current)
+        ? { status: 'error', artifactId: id, message: (error as Error).message } : current));
+  };
   useEffect(() => {
     if (!authenticated || !observationClient || !httpRef.current || !route?.artifactId || route.conversationId !== observedId) return;
     const artifactId = route.artifactId;
@@ -783,32 +807,6 @@ export function useWorkspaceController() {
       setActivationNotice(`清空失败：${(error as Error).message}`);
     }
   };
-  const handleAuth = async (token: string): Promise<boolean> => {
-    try {
-      const session = await exchangeWebCredential(token);
-      setAuthError(session ? null : 'token 无效或已过期。');
-      if (session) {
-        setAuthenticated(true);
-      }
-      return Boolean(session);
-    } catch (error) {
-      setAuthError((error as Error).message);
-      return false;
-    }
-  };
-  const handleLogin = async (username: string, password: string): Promise<boolean> => {
-    try {
-      const ok = await loginWithPassword(username, password);
-      setAuthError(ok ? null : '用户名或密码错误，或尝试次数过多，请稍后再试。');
-      if (ok) {
-        setAuthenticated(true);
-      }
-      return ok;
-    } catch (error) {
-      setAuthError((error as Error).message);
-      return false;
-    }
-  };
   const handleDraftChange = (text: string) => {
     const id = browsedConversationRef.current; if (!id) return;
     try { drafts.current.set(id, { draft: text, attachments: pendingAttachments }); setDraft(text); }
@@ -858,27 +856,51 @@ export function useWorkspaceController() {
   const handleCancelTurn = () => {
     const target = browsedConversationRef.current;
     const source = wsRef.current?.conversations;
-    const turnId = target && source ? [...source.window(target).ids].reverse().find(id => source.turn(target, id)?.status === 'running') : null;
-    if (target && source && !turnId) {
-      const active = source.activity(target).tasks.filter(task => task.canCancel && task.phase !== 'queued');
-      if (active.length === 1) {
-        const task = active[0]!;
-        setActivationNotice('已请求停止当前任务。');
-        void wsRef.current?.control(target, { kind: 'cancel_task', taskId: task.taskId,
-          expectedExecutionGeneration: task.executionGeneration }, () => undefined).then(result => {
-          if (browsedConversationRef.current === target) setActivationNotice(result.status === 'completed'
-            ? '停止请求已处理。' : `操作未完成：${result.reason ?? '请刷新状态后重试。'}`);
-        }).catch(error => {
-          if (browsedConversationRef.current === target) setActivationNotice((error as Error).message);
-        });
-        return;
-      }
+    const ids = target && source ? [...source.window(target).ids] : [];
+    const activity = target && source ? source.activity(target).tasks : [];
+    const turnId = ids.slice().reverse().find(id => turnHasOngoingWork(activity, source?.turn(target!, id) ?? null)) ?? null;
+    const cancellable = activity.filter(task => task.canCancel && taskHasOngoingWork(task));
+    // A Turn can hand off to an Executor before its Planner trace is closed.
+    // Prefer the running Task attached to the latest observed Turn. Blocked
+    // and queued Tasks have their own controls; Stop must not cancel an old
+    // blocked Task instead of the work that is currently executing.
+    const attachedTaskId = target && source
+      ? ids.slice().reverse()
+        .map(id => source.turn(target, id)?.taskId ?? null)
+        .find(taskId => taskId && cancellable.some(task => task.taskId === taskId)) ?? null
+      : null;
+    const tasks = attachedTaskId
+      ? cancellable.filter(task => task.taskId === attachedTaskId)
+      : cancellable;
+    if (target && wsRef.current && (tasks.length > 0 || turnId)) {
+      const requests = tasks.map(task => wsRef.current!.control(target, {
+        kind: 'cancel_task', taskId: task.taskId,
+        expectedExecutionGeneration: task.executionGeneration,
+      }, () => undefined));
+      // A Planner trace can still be running while its Task is already
+      // executing. Send both controls so stopping the Executor also aborts a
+      // Planner that has not closed its turn yet.
+      if (turnId) requests.push(wsRef.current.control(target, { kind: 'cancel_turn', turnId }, () => undefined));
+      setActivationNotice(tasks.length === 0
+        ? '已请求停止当前轮。'
+        : tasks.length === 1
+          ? '已请求停止当前任务。'
+          : `已请求停止 ${tasks.length} 个任务。`);
+      void Promise.allSettled(requests).then(results => {
+        if (browsedConversationRef.current !== target) return;
+        const failed = results.find(result => result.status === 'rejected')
+          ?? results.find(result => result.status === 'fulfilled' && result.value.status !== 'completed');
+        if (!failed) setActivationNotice('停止请求已处理。');
+        else if (failed.status === 'rejected') setActivationNotice((failed.reason as Error)?.message ?? '停止请求未完成。');
+        else setActivationNotice(`操作未完成：${failed.value.reason ?? '请刷新状态后重试。'}`);
+      });
+      return;
     }
-    if (!target || !turnId || !wsRef.current?.sendCommand(target, { kind: 'cancel_turn', turnId })) {
+    if (!target || !wsRef.current) {
       setActivationNotice('WebSocket 尚未连接，无法停止当前轮。');
       return;
     }
-    setActivationNotice('已请求停止当前轮。');
+    setActivationNotice('当前没有可定位的运行任务，请刷新状态后重试。');
   };
   const activeWorkspace = workspaces.find(workspace => workspace.id === activeWorkspaceId) ?? null;
   const activeConversationInWorkspace = activeSessionId
@@ -891,7 +913,7 @@ export function useWorkspaceController() {
   const latestTurn = latestObservedTurn ? turnProjection(latestObservedTurn) : null;
   const selectedTrajectoryTurn = trajectoryObservedTurn ? turnProjection(trajectoryObservedTurn) : latestTurn;
   const selectedBillingTurn = billingObservedTurn ? turnProjection(billingObservedTurn) : latestTurn;
-  const running = observedActivity.tasks.some(task => task.canCancel) || latestTurn?.status === 'running';
+  const running = conversationHasOngoingWork(observedActivity.tasks, latestTurn);
   const requiredBlock = requiredAgentBlock(agentReadiness);
   const configurationNeeded = configurationRuntime?.workConfigurationReady === false;
   const composerDisabled = !selectedId || !connected || requiredBlock.blocked || configurationNeeded;
@@ -922,9 +944,9 @@ export function useWorkspaceController() {
     previewCollapsed, setPreviewCollapsed, previewMaximized, setPreviewMaximized, previewWidth,
     setPreviewWidth, executionDetail, setExecutionDetail, httpRef, observationClient,
     viewportMemory, openTrajectory, openBilling, handleSelectWorkspace, handleCreateWorkspace,
-    handleOpenArtifact, handleLoadMoreConversations, handleSelectSession, handleNewSession, handleRefreshAgentReadiness,
-    handleOpenAgentSettings, handleDeleteSession, handleFilesSelected, handleClearSessions, handleAuth,
-    handleLogin, activeWorkspace, selectedId, selectedMetadata, selectedTrajectoryTurn,
+    handleOpenArtifact, handleOpenAttachment, handleLoadMoreConversations, handleSelectSession, handleNewSession, handleRefreshAgentReadiness,
+    handleOpenAgentSettings, handleDeleteSession, handleFilesSelected, handleClearSessions,
+    activeWorkspace, selectedId, selectedMetadata, selectedTrajectoryTurn,
     selectedBillingTurn, running, requiredBlock, composerDisabled, composerBlockedReason,
     handleDraftChange, handleSend, handleCancelTurn, executionDetailTurn, executionDetailOpen,
     failedInput: Boolean(failedInput), handleRestoreFailedInput,

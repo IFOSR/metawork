@@ -49,6 +49,20 @@ afterEach(() => {
 });
 
 describe('AccountStartupRecoveryService production composition', () => {
+  it('finishes an already published Task after cleanup without relaunching an Executor', async () => {
+    const fixture = createFixture('completion-after-cleanup');
+    const task = createRunningTask(fixture, 'Deliver the completed research');
+    fixture.db.prepare("UPDATE subtasks SET status='done', result='Published research result' WHERE task_id=?").run(task.id);
+    seedTaskOriginDecision(fixture.db, task.id, 'conversation-origin');
+    await fixture.composition.accountRuntime.initialize();
+    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('done');
+    expect(new KernelDispatchItemRepo(fixture.db).listByTask(task.id)).toHaveLength(0);
+    const decisions = fixture.composition.accountRuntime.kernelServices.kernelDecisionRepo.listByTask(task.id);
+    expect(decisions.some(record => record.action === 'complete_task')).toBe(true);
+    await fixture.composition.accountRuntime.reviewTaskPoolOnTimer();
+    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('done');
+  });
+
   it('routes both system replan callbacks to the injected adapter with the durable owner', async () => {
     const binder = createAccountConversationExecutionBinder();
     const recoveryReplan = vi.fn(async () => null);
@@ -943,6 +957,7 @@ function createFixture(
     resultsRoot: join(root, 'results'),
     generatedRuntimeRoot,
     sourceRoot,
+    resolveWorkspacePath: async () => sourceRoot,
     sessionId: 'bootstrap-session',
     stagedConfiguration: staged,
     plannerBinding: staged.plannerBinding,

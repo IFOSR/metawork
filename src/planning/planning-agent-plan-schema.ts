@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ROUTING_CAPABILITY_IDS } from '../routing/types.js';
+import { isValidFileOutput } from '../work-graph/file-outputs.js';
 
 export const PLANNER_SOURCE = 'anyfusion-planner';
 
@@ -124,6 +125,9 @@ const SubtaskSchema = z.object({
   executorBindings: z.array(ExecutorBindingSchema).max(32),
   deliveryKind: z.enum(DELIVERY_KIND_VALUES).describe(
     'edit: the subtask primarily delivers workspace/file changes; report: the subtask primarily delivers a report or answer. Both delivery kinds may create ordinary user-space files while executing.',
+  ),
+  fileOutputs: z.array(z.string().min(1).max(500).refine(isValidFileOutput, 'Use a safe workspace-relative file path or dedicated directory ending in /')).max(100).describe(
+    'Required final file deliveries only. Use [] for answers, external actions and code edits without downloadable files. Otherwise list relative file paths, or dedicated output directories ending in /. Never add a report/log file just to prove an action. Every entry must have an existing regular file; temporary files outside these paths are not delivered.',
   ),
   acceptance: z.array(AcceptanceSchema).min(1).max(12),
   riskLevel: z.enum(RISK_LEVEL_VALUES),

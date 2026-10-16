@@ -144,6 +144,8 @@ export type KernelEvent =
     })
   | (KernelEventEnvelope & {
       type: 'task_resume_requested';
+      expectedGenerationId?: string;
+      expectedGraphRevision?: number;
       blockerCategory: KernelResumeBlockerCategory;
       sourceInputExcerpt: string;
       newlyProvidedResources: string[];
@@ -151,6 +153,7 @@ export type KernelEvent =
     })
   | (KernelEventEnvelope & {
       type: 'capacity_signal';
+      failure?: KernelFailure;
       authorizedBinding: AuthorizedExecutorBinding;
       bindingFingerprint: string;
       available: boolean;
@@ -356,9 +359,11 @@ export interface KernelResumeRecoveryCandidate {
   reason:
     | 'completion_marker_missing'
     | 'completion_no_change_reason_mismatch'
-    | 'completion_metadata_invalid';
+    | 'completion_metadata_invalid'
+    | 'execution_interrupted';
   attemptKind?: 'continuation' | 'contract_correction';
   attemptPayload?: KernelAttemptPayload;
+  correctionFacts?: { receiptCount: number; responseBytes: number };
 }
 
 export type KernelSnapshot = { productionAuthorization?: ProductionAuthorizationFact } & (
@@ -392,6 +397,8 @@ export type KernelSnapshot = { productionAuthorization?: ProductionAuthorization
       frontier: string[];
       dependencyReadiness?: KernelDependencyReadinessFact[];
       resumeRecoveryCandidates?: KernelResumeRecoveryCandidate[];
+      deliveryRecoveryPublicationIds?: string[];
+      pendingRetrySubtaskIds?: string[];
       dispatchItems: KernelDispatchItemFact[];
       maxConcurrentAttempts: number;
       availableSlots: number;
@@ -548,6 +555,7 @@ export type KernelDecisionAction =
       generationId: string;
       graphRevision: number;
       subtaskIds: string[];
+      deliveryPublicationIds?: string[];
       blockerCategory: KernelResumeBlockerCategory;
       recovery?: {
         subtaskId: string;
@@ -1059,7 +1067,11 @@ export class ControlKernel {
     if (subtasks.length === 0) {
       const dependencyReadiness = snapshot.dependencyReadiness ?? [];
       const pendingDependencies = dependencyReadiness.filter(fact => !fact.terminal);
-      if (pendingDependencies.length > 0) {
+      if (pendingDependencies.length > 0 && (
+        snapshot.dispatchItems.some(item => isPendingOrActiveDispatch(item.status))
+        || snapshot.subtasks.some(item => item.status === 'awaiting_integration')
+        || (snapshot.pendingRetrySubtaskIds?.length ?? 0) > 0
+      )) {
         const first = pendingDependencies[0]!;
         return decision(
           event,
@@ -1067,7 +1079,8 @@ export class ControlKernel {
           `dependency publication pending: ${first.sourceSubtaskId} -> ${first.targetSubtaskId}; ${first.detail}`,
         );
       }
-      const terminalDependencyFailure = dependencyReadiness.find(fact => fact.terminal && fact.code !== 'ready');
+      const terminalDependencyFailure = dependencyReadiness.find(fact => fact.terminal && fact.code !== 'ready'
+        && !snapshot.subtasks.some(item => item.id === fact.targetSubtaskId && ['blocked', 'done', 'cancelled'].includes(item.status)));
       if (terminalDependencyFailure) {
         return decision(
           event,
@@ -1110,13 +1123,16 @@ export class ControlKernel {
         || snapshot.subtasks.some(item => item.status === 'running' || item.status === 'awaiting_integration')) {
         return decision(event, { type: 'no_op' }, 'work is already executing or awaiting publication');
       }
+      if (snapshot.pendingRetrySubtaskIds?.length) {
+        return decision(event, { type: 'no_op' }, 'unfinished work has a durable retry wake');
+      }
       return decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: null }, 'no runnable Subtask while work remains');
     }
     const items = dispatchBatchItems(event, snapshot, subtasks);
     if (items.length === 0) {
       return decision(event, {
-        type: 'wait_for_capacity', taskId: event.taskId, subtaskId: subtasks[0]!.id,
-      }, 'all runnable Subtasks lack an available authorized AgentClass');
+        type: 'block_work', taskId: event.taskId, subtaskId: subtasks[0]!.id,
+      }, 'no healthy authorized Executor is available for this Subtask');
     }
     return decision(event, { type: 'dispatch_batch', taskId: event.taskId, items }, 'dispatch batch authorized');
   }
@@ -1133,12 +1149,21 @@ export class ControlKernel {
     ) {
       return decision(event, { type: 'no_op' }, 'resume target is not an active recoverable Task');
     }
+    if ((event.expectedGenerationId !== undefined && event.expectedGenerationId !== snapshot.generationId)
+      || (event.expectedGraphRevision !== undefined && event.expectedGraphRevision !== snapshot.graphRevision)) {
+      return decision(event, { type: 'no_op' }, 'resume request targets a stale generation or graph revision');
+    }
     if (snapshot.graphState !== 'ready') {
       return decision(
         event,
         { type: 'park_for_replan', taskId: event.taskId },
         `work graph is ${snapshot.graphState}; replanning is required`,
       );
+    }
+    if (snapshot.deliveryRecoveryPublicationIds?.length) {
+      return decision(event, { type: 'resume_task', taskId: event.taskId, generationId: snapshot.generationId,
+        graphRevision: snapshot.graphRevision, subtaskIds: [], blockerCategory: event.blockerCategory,
+        deliveryPublicationIds: snapshot.deliveryRecoveryPublicationIds }, 'resume user delivery without repeating Executor work');
     }
     if (event.blockerCategory === 'dependency_publication') {
       const pending = (snapshot.dependencyReadiness ?? []).find(fact => !fact.terminal);
@@ -1152,7 +1177,14 @@ export class ControlKernel {
     }
     const recovery = (snapshot.resumeRecoveryCandidates ?? []).find(candidate => {
       const subtask = snapshot.subtasks.find(item => item.id === candidate.subtaskId);
-      return (subtask?.status === 'awaiting_decision' || subtask?.status === 'blocked')
+      const hasUncertainDispatch = snapshot.dispatchItems.some(item =>
+        item.subtaskId === candidate.subtaskId && item.status === 'uncertain',
+      );
+      return (
+        subtask?.status === 'awaiting_decision'
+        || subtask?.status === 'blocked'
+        || (subtask?.status === 'running' && hasUncertainDispatch)
+      )
         && candidate.bindingFingerprint === authorizedExecutorBindingFingerprint(
           candidate.authorizedBinding,
         )
@@ -1169,9 +1201,28 @@ export class ControlKernel {
       && !['manual', 'material', 'contract'].includes(event.blockerCategory)
     ) {
       const recoveryAttemptKind = recovery.attemptKind
-        ?? (recovery.reason === 'completion_metadata_invalid'
+        ?? (['completion_metadata_invalid', 'completion_marker_missing'].includes(recovery.reason)
           ? 'contract_correction'
           : 'continuation');
+      const metadataRecovery = ['completion_metadata_invalid', 'completion_marker_missing'].includes(recovery.reason);
+      if (metadataRecovery || recoveryAttemptKind === 'contract_correction') {
+        const payload = recovery.attemptPayload;
+        if (recoveryAttemptKind !== 'contract_correction'
+          || !snapshot.correctionSupportedAgentClasses.includes(recovery.authorizedBinding.agentClassRef)
+          || recovery.correctionFacts?.receiptCount !== 1
+          || !Number.isFinite(recovery.correctionFacts.responseBytes)
+          || recovery.correctionFacts.responseBytes < 0
+          || recovery.correctionFacts.responseBytes > MAX_CORRECTION_INPUT_BYTES
+          || payload?.protocol !== 'completion-correction-v2'
+          || payload.violations.length === 0
+          || payload.violations.some(item => item.code !== 'completion_malformed' || item.path === 'reportPath')
+          || snapshot.attempts.some(attempt => attempt.sourceAttemptId === recovery.sourceAttemptId
+            && attempt.attemptKind === 'contract_correction')) {
+          return decision(event, { type: 'no_op' }, 'metadata correction is unavailable or exhausted');
+        }
+      } else if (snapshot.recoverySafety === 'external_non_idempotent') {
+        return decision(event, { type: 'no_op' }, 'explicit resume cannot prove external effect safety');
+      }
       return decision(event, {
         type: 'resume_task',
         taskId: event.taskId,
@@ -1235,7 +1286,7 @@ export class ControlKernel {
       !event.taskId
       || !snapshot.task
       || snapshot.task.id !== event.taskId
-      || snapshot.task.status !== 'blocked'
+      || !['running', 'blocked'].includes(snapshot.task.status)
       || !deferred
       || deferred.taskId !== event.taskId
       || deferred.proposalSource !== 'replan'
@@ -1276,6 +1327,10 @@ export class ControlKernel {
   private decideCapacity(event: Extract<KernelEvent, { type: 'capacity_signal' }>, snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>): KernelDecision {
     const subtask = snapshot.subtasks.find(item => item.id === event.subtaskId) ?? selectDispatchableSubtasks(snapshot)[0];
     if (!event.taskId || !subtask) return decision(event, { type: 'block_work', taskId: event.taskId ?? '', subtaskId: event.subtaskId ?? null }, 'capacity signal has no ready work');
+    if (event.failure) {
+      return decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: subtask.id },
+        `Executor environment unavailable: ${event.failure.summary}`);
+    }
     if (event.attemptKind === 'contract_correction') {
       return event.available
         ? decision(event, singleDispatchBatch(
@@ -1350,6 +1405,7 @@ export class ControlKernel {
     }
     if (
       failure.code === 'workspace_source_missing'
+      || failure.code === 'workspace_binding_missing'
       || failure.code === 'dispatch_context_invalid'
     ) {
       return decision(
@@ -1364,17 +1420,22 @@ export class ControlKernel {
     if (!snapshot.automaticRecoveryAllowed || snapshot.recoverySafety === 'external_non_idempotent') {
       return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, 'automatic recovery cannot prove external effect safety');
     }
-    if (failure.kind === 'permission' || failure.kind === 'unknown' || failure.kind === 'stale' || failure.kind === 'cancelled') {
+    if (failure.kind === 'configuration' || failure.kind === 'adapter' || failure.kind === 'permission' || failure.kind === 'unknown' || failure.kind === 'stale' || failure.kind === 'cancelled') {
       return decision(event, { type: 'block_work', taskId, subtaskId: subtask.id }, `${failure.kind} requires explicit recovery`);
     }
     const retryable = ['network', 'timeout', 'infrastructure', 'heartbeat_lost'].includes(failure.kind);
     const isPreferred = authorizedExecutorBindingFingerprint(subtask.executorBindings[0]!)
       === event.bindingFingerprint;
-    const bindingAttempts = snapshot.attempts.filter(attempt =>
-      attempt.subtaskId === subtask.id
-      && attempt.bindingFingerprint === event.bindingFingerprint
-      && attempt.attemptKind !== 'contract_correction'
-    ).length;
+    const bindingAttempts = new Set([
+      event.attemptId,
+      ...snapshot.attempts.filter(attempt =>
+        attempt.subtaskId === subtask.id && attempt.bindingFingerprint === event.bindingFingerprint
+        && attempt.attemptKind !== 'contract_correction'
+      ).map(attempt => attempt.attemptId),
+      ...snapshot.dispatchItems.filter(item =>
+        item.subtaskId === subtask.id && item.bindingFingerprint === event.bindingFingerprint
+      ).map(item => item.attemptId),
+    ]).size;
     if (retryable && isPreferred && bindingAttempts <= 1) {
       const delayMs = failure.kind === 'network' ? 5_000 : 30_000;
       return decision(event, {
@@ -1401,9 +1462,13 @@ export class ControlKernel {
     snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>,
     subtask: KernelSubtaskFact,
   ): KernelDecision {
-    const attempted = new Set(snapshot.attempts
-      .filter(attempt => attempt.subtaskId === subtask.id && attempt.attemptKind !== 'contract_correction')
-      .map(attempt => attempt.bindingFingerprint));
+    const attempted = new Set([event.bindingFingerprint,
+      ...snapshot.attempts
+        .filter(attempt => attempt.subtaskId === subtask.id && attempt.attemptKind !== 'contract_correction')
+        .map(attempt => attempt.bindingFingerprint),
+      ...snapshot.dispatchItems.filter(item => item.subtaskId === subtask.id)
+        .map(item => item.bindingFingerprint),
+    ]);
     const binding = nextUsableBinding(subtask, snapshot, event.occurredAt, attempted);
     if (binding) {
       return decision(event, singleDispatchBatch(
@@ -1540,7 +1605,9 @@ export class ControlKernel {
   private decideContractFailure(event: Extract<KernelEvent, { type: 'handoff_contract_failed' }>, snapshot: Extract<KernelSnapshot, { type: 'dispatch' }>): KernelDecision {
     if (!event.taskId || !event.subtaskId) return decision(event, { type: 'block_work', taskId: event.taskId ?? '', subtaskId: event.subtaskId ?? null }, 'contract failure identity is incomplete');
     if (
-      event.receiptCount !== 1
+      event.violations.some(violation => violation.code !== 'completion_malformed'
+        || violation.path === 'reportPath')
+      || event.receiptCount !== 1
       || event.responseBytes > MAX_CORRECTION_INPUT_BYTES
       || !snapshot.correctionSupportedAgentClasses.includes(event.authorizedBinding.agentClassRef)
     ) {
@@ -1579,7 +1646,9 @@ export class ControlKernel {
       return this.decideDispatch(event, snapshot);
     }
     if (
-      event.receiptCount !== 1
+      event.violations.some(violation => violation.code !== 'completion_malformed'
+        || violation.path === 'reportPath')
+      || event.receiptCount !== 1
       || event.responseBytes > MAX_CORRECTION_INPUT_BYTES
       || !snapshot.correctionSupportedAgentClasses.includes(event.authorizedBinding.agentClassRef)
     ) {
@@ -1673,7 +1742,7 @@ export class ControlKernel {
         || !event.subtaskId
         || !snapshot.task
         || snapshot.task.id !== event.taskId
-        || snapshot.task.status !== 'blocked'
+        || !['running', 'blocked'].includes(snapshot.task.status)
         || !snapshot.wakeAuthorized
       ) {
         return decision(event, {
@@ -1701,7 +1770,7 @@ export class ControlKernel {
       !event.taskId
       || !snapshot.task
       || snapshot.task.id !== event.taskId
-      || snapshot.task.status !== 'blocked'
+      || !['running', 'blocked'].includes(snapshot.task.status)
       || !snapshot.wakeAuthorized
     ) {
       return decision(event, { type: 'no_op' }, 'timer wake is stale or no longer authorized by Task state');
@@ -2241,7 +2310,7 @@ function selectDispatchableSubtasks(
     .filter(item => isPendingOrActiveDispatch(item.status))
     .map(item => item.subtaskId));
   const conflictingSubtaskIds = new Set(snapshot.resourceConflictSubtaskIds);
-  const slotCount = Math.max(0, Math.min(snapshot.availableSlots, snapshot.maxConcurrentAttempts));
+  const slotCount = Math.min(4, snapshot.maxConcurrentAttempts);
   return snapshot.frontier
     .map(id => snapshot.subtasks.find(item => item.id === id && item.status === 'ready'))
     .filter((subtask): subtask is KernelSubtaskFact => Boolean(

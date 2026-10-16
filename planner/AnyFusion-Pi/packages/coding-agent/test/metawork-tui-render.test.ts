@@ -285,6 +285,13 @@ describe("metawork-tui task dashboard", () => {
 				conversationTitle: `会话${index}`,
 				executionGeneration: "g",
 				phase,
+				userState:
+					phase === "queued"
+						? ("waiting" as const)
+						: phase === "blocked"
+							? ("needs_action" as const)
+							: ("executing" as const),
+				userStateReason: "来自服务端",
 				explanation: "",
 				canCancel: true,
 			})),
@@ -297,7 +304,7 @@ describe("metawork-tui task dashboard", () => {
 			hasMoreConversations: false,
 		}));
 		const text = plain(dashboard.render(80)).join("\n");
-		expect(text).toContain("执行中 2 · 排队 1 · 阻塞 1");
+		expect(text).toContain("执行中 2 · 等待中 1 · 需要处理 1");
 		expect(text).toContain("任务3");
 		expect(text).toContain("会话2");
 		expect(text).not.toMatch(/Subtasks|账单|运行时长/);

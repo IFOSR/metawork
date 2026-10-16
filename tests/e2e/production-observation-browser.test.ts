@@ -15,8 +15,7 @@ e2e('production Server observation browser acceptance', () => {
           if(String(args[0]).includes('/api/workspaces'))window.__requests.push({url:String(args[0]),status:response.status,body:await response.clone().text()});
           return response;};` });
       await waitForExpression(browser.cdp, `location.origin === 'http://127.0.0.1:${server.port}' && document.readyState === 'complete'`);
-      await browser.cdp.evaluate(`fetch('/api/auth/login', {method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({username:'acceptance',password:'fixture-password'})}).then(r=>{if(!r.ok)throw new Error('login '+r.status)})`);
+      await browser.cdp.evaluate(`fetch('/api/auth/session').then(r=>{if(!r.ok)throw new Error('session '+r.status)})`);
       await browser.cdp.send('Page.reload');
       await waitForExpression(browser.cdp, `Boolean(document.querySelector('#workspace-select option[value=\"workspace_acceptance\"]'))`);
       await browser.cdp.evaluate(`(() => {const select=document.querySelector('#workspace-select');

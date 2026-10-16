@@ -2,9 +2,6 @@ import { generateToken, tokenMatches } from './token.js';
 
 export const WEB_SESSION_COOKIE = 'anyfusion_web_session';
 
-const MAX_LOGIN_FAILURES = 5;
-const LOCKOUT_MS = 30_000;
-
 export interface WebAuthServiceOptions {
   manualAccessToken?: string;
   createSessionToken?: () => string;
@@ -16,40 +13,6 @@ export interface WebAuthSessionState {
 
 export interface WebAuthExchangeResult extends WebAuthSessionState {
   readonly sessionToken: string;
-}
-
-/** 内存级登录防爆破：同 IP 连续失败 5 次锁定 30 秒。 */
-export class LoginThrottle {
-  private readonly failures = new Map<string, { count: number; lockedUntil: number }>();
-  private readonly now: () => number;
-
-  constructor(now: () => number = Date.now) {
-    this.now = now;
-  }
-
-  isLocked(key: string): boolean {
-    const entry = this.failures.get(key);
-    if (!entry) return false;
-    if (entry.lockedUntil > this.now()) return true;
-    if (entry.lockedUntil !== 0 && entry.lockedUntil <= this.now()) {
-      this.failures.delete(key);
-    }
-    return false;
-  }
-
-  registerFailure(key: string): void {
-    const entry = this.failures.get(key) ?? { count: 0, lockedUntil: 0 };
-    entry.count += 1;
-    if (entry.count >= MAX_LOGIN_FAILURES) {
-      entry.lockedUntil = this.now() + LOCKOUT_MS;
-      entry.count = 0;
-    }
-    this.failures.set(key, entry);
-  }
-
-  registerSuccess(key: string): void {
-    this.failures.delete(key);
-  }
 }
 
 export class WebAuthService {

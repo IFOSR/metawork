@@ -78,10 +78,26 @@ function createFixture(options: {
     },
     userWorkspaceRoot,
   });
-  return { root, userWorkspaceRoot, taskDirectory, service };
+  return { root, userWorkspaceRoot, taskDirectory, service, records };
 }
 
 describe('ArtifactPreviewService', () => {
+  it.each(['html', 'docx', 'pptx', 'xlsx', 'xls', 'csv', 'pdf'])('previews historical %s files without republishing or exposing paths', async extension => {
+    const { service, records, taskDirectory } = createFixture({});
+    const name = `历史文件.${extension}`;
+    const bytes = Buffer.from('opaque preview bytes');
+    writeFileSync(join(taskDirectory, name), bytes);
+    records.rich = recordFixture({ displayName: name, relativePath: name, publishedPath: join(taskDirectory, name),
+      mediaType: 'application/octet-stream', previewKind: 'unsupported', byteLength: bytes.length });
+    const result = await service.readPreview('rich');
+    expect(result).toMatchObject({ ok: true, artifact: { documentFormat: extension, previewable: true },
+      content: `data:application/octet-stream;base64,${bytes.toString('base64')}` });
+    expect(JSON.stringify(result)).not.toContain(taskDirectory);
+    records.rich!.byteLength = 33 * 1024 * 1024;
+    expect(await service.readPreview('rich')).toEqual({ ok: false, reason: 'unsupported' });
+    expect(await service.resolveDownload('rich')).toMatchObject({ ok: true });
+  });
+
   it('reads report illustrations only inside the authorized report directory', async () => {
     const { service, root, taskDirectory } = createFixture({});
     const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');

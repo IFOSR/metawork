@@ -17,6 +17,32 @@ class FakeRunner implements DockerCommandRunner {
 }
 
 describe('DockerCliAttemptExecutionBackend', () => {
+  test('probes the immutable image without Task mounts, credentials or network and cleans up on failure', async () => {
+    const calls: string[][] = [];
+    let fail = false;
+    const backend = new DockerCliAttemptExecutionBackend({ run: async (args, timeoutMs) => {
+      calls.push(args);
+      expect(timeoutMs).toBe(15_000);
+      if (args[0] === 'run') {
+        if (fail) throw new Error('probe timeout');
+        return 'pi 1.2.0';
+      }
+      return '';
+    } });
+    expect(await backend.probeProgram('sha256:image', 'pi')).toBe('pi 1.2.0');
+    const probe = calls[0]!;
+    expect(probe).toContain('--network=none');
+    expect(probe).toContain('--read-only');
+    expect(probe.slice(-4)).toEqual(['--entrypoint', 'pi', 'sha256:image', '--version']);
+    expect(probe).not.toContain('--mount');
+    expect(probe.filter((_, index) => probe[index - 1] === '--env'))
+      .toEqual(['HOME=/tmp', 'CODEX_HOME=/tmp/.codex', 'PI_CODING_AGENT_DIR=/tmp/.pi/agent']);
+    expect(calls[1]).toEqual(['rm', '--force', probe[probe.indexOf('--name') + 1]]);
+    fail = true;
+    await expect(backend.probeProgram('sha256:image', 'pi')).rejects.toThrow('probe timeout');
+    expect(calls[3]?.slice(0, 2)).toEqual(['rm', '--force']);
+  });
+
   test('creates a constrained per-attempt container without Docker endpoints', async () => {
     const runner = new FakeRunner();
     const adapter = new DockerCliAttemptExecutionBackend(runner);
@@ -35,6 +61,8 @@ describe('DockerCliAttemptExecutionBackend', () => {
     expect(create).toContain('--read-only');
     expect(create).toContain('--cap-drop=ALL');
     expect(create).toContain('--security-opt=no-new-privileges:true');
+    expect(create).toContain('sha256:image');
+    expect(create).not.toContain('executor:phase5');
     expect(create.some(arg => arg.includes('docker.sock'))).toBe(false);
   });
 

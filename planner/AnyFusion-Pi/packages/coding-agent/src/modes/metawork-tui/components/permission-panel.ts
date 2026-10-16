@@ -6,15 +6,9 @@
  * 普通输入中的 a/x/c 永远不是业务命令。
  */
 
-import {
-	Container,
-	type Focusable,
-	Spacer,
-	Text,
-	type TUI,
-} from "@earendil-works/pi-tui";
-import { theme } from "../../interactive/theme/theme.ts";
+import { Container, type Focusable, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { DynamicBorder } from "../../interactive/components/dynamic-border.ts";
+import { theme } from "../../interactive/theme/theme.ts";
 import type { MetaWorkPermissionProjection } from "../model.ts";
 
 export interface MetaWorkPermissionPanelActions {
@@ -33,11 +27,7 @@ export class MetaWorkPermissionPanel extends Container implements Focusable {
 	private readonly ui: TUI;
 	private readonly actions: MetaWorkPermissionPanelActions;
 
-	constructor(
-		ui: TUI,
-		permission: MetaWorkPermissionProjection,
-		actions: MetaWorkPermissionPanelActions,
-	) {
+	constructor(ui: TUI, permission: MetaWorkPermissionProjection, actions: MetaWorkPermissionPanelActions) {
 		super();
 		this.ui = ui;
 		this.actions = actions;
@@ -95,13 +85,14 @@ export class MetaWorkPermissionPanel extends Container implements Focusable {
 	private refresh(): void {
 		this.title.setText(theme.fg("warning", theme.bold("权限请求")));
 		this.summary.setText(theme.fg("text", this.permission.summary || "需要用户授权"));
-		const statusLabel = this.status === "pending"
-			? "a 允许 · x 拒绝 · Esc 关闭"
-			: this.status === "submitting"
-				? "正在提交决议…"
-				: this.status === "resolved"
-					? "该请求已处理"
-					: "该请求已过期 · 请刷新事实";
+		const statusLabel =
+			this.status === "pending"
+				? "a 允许 · x 拒绝 · Esc 关闭"
+				: this.status === "submitting"
+					? "正在提交决议…"
+					: this.status === "resolved"
+						? "该请求已处理"
+						: "该请求已过期 · 请刷新事实";
 		this.hint.setText(theme.fg(this.status === "pending" ? "dim" : "warning", statusLabel));
 		this.ui.requestRender();
 	}

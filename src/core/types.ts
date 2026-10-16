@@ -121,6 +121,8 @@ export interface Subtask {
   requiredCapabilities: string[];
   executorBindings: AuthorizedExecutorBinding[];
   deliveryKind: 'edit' | 'report';
+  /** Planner-declared file delivery; absent only on pre-schema-50 authorizations. */
+  fileOutputs?: string[];
   acceptance: WorkGraphAcceptanceCriterion[];
   riskLevel: AgentClassRiskLevel;
   result: string;

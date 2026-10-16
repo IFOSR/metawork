@@ -33,6 +33,42 @@ function render(overrides: Record<string, unknown> = {}): string {
 }
 
 describe('Artifact preview controls', () => {
+  it('isolates rich documents in a sandbox with no same-origin privileges and retains download', () => {
+    const html = render({ http: { artifactDownloadUrl: () => '/api/artifacts/ppt-id/download' },
+      state: { status: 'ready', content: 'data:application/octet-stream;base64,AA==', artifact: {
+        artifactId: 'ppt-id', displayName: '销售方案.pptx', relativePath: '销售方案.pptx',
+        mediaType: 'application/octet-stream', byteLength: 32000,
+        previewable: true, previewKind: 'unsupported', documentFormat: 'pptx',
+      } } });
+    expect(html).toContain('sandbox="allow-scripts"');
+    expect(html).not.toContain('allow-same-origin');
+    expect(html).toContain('销售方案.pptx 预览');
+    expect(html).toContain('下载原文件');
+  });
+
+  it('shows PPT file details and the original download even without preview support', () => {
+    const html = render({
+      http: { artifactDownloadUrl: () => '/api/artifacts/ppt-id/download' },
+      state: { status: 'ready', content: '', artifact: {
+        artifactId: 'ppt-id', displayName: '销售方案.pptx', relativePath: '销售方案.pptx',
+        mediaType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        byteLength: 32000, previewable: false, previewKind: 'unsupported',
+      } },
+    });
+    expect(html).toContain('销售方案.pptx');
+    expect(html).toContain('下载原文件');
+    expect(html).toContain('/api/artifacts/ppt-id/download');
+    expect(html).toContain('PowerPoint、Keynote 或 WPS');
+    expect(html).not.toContain('正在打开文档');
+  });
+
+  it('stops announcing loading when opening the file fails', () => {
+    const html = render({ state: { status: 'error', artifactId: 'missing', message: 'not_found' } });
+    expect(html).toContain('无法打开预览');
+    expect(html).toContain('找不到该产物');
+    expect(html).not.toContain('正在打开文档');
+  });
+
   it('offers a maximize control that toggles back to the default width', () => {
     const normal = render({ onToggleMaximize: vi.fn() });
     expect(normal).toContain('最大化预览');

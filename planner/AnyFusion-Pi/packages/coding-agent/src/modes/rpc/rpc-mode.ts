@@ -12,10 +12,7 @@
  */
 
 import * as crypto from "node:crypto";
-import {
-	plannerRpcCommandError,
-	redactPlannerImageData,
-} from "../../anyfusion/planner-policy.ts";
+import { plannerRpcCommandError, redactPlannerImageData } from "../../anyfusion/planner-policy.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type {
 	ExtensionUIContext,
@@ -65,9 +62,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	};
 
 	const outputPlannerEvent = (event: object): void => {
-		output(process.env.ANYFUSION_PLANNER_TURN_PURPOSE
-			? redactPlannerImageData(event)
-			: event);
+		output(process.env.ANYFUSION_PLANNER_TURN_PURPOSE ? redactPlannerImageData(event) : event);
 	};
 
 	const success = <T extends RpcCommand["type"]>(

@@ -152,7 +152,7 @@ describe('ConversationInputMailbox', () => {
     expect(mailbox.isIdle).toBe(true);
   });
 
-  it('executes control slash commands immediately while a turn is active', async () => {
+  it.each(['/task clear all', '/task dashboard'])('executes %s immediately while a turn is active', async text => {
     const executed: string[] = [];
     let releaseActive!: () => void;
     const mailbox = new ConversationInputMailbox({
@@ -174,7 +174,7 @@ describe('ConversationInputMailbox', () => {
     const control: MailboxCommand = {
       requestId: 'req_control',
       idempotencyKey: 'idem_control',
-      command: { kind: 'slash_command', text: '/task clear all' },
+      command: { kind: 'slash_command', text },
     };
     expect(mailbox.submit(control).status).toBe('accepted');
     // The control command runs even though the active turn never finished.

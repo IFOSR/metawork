@@ -21,7 +21,8 @@ export const SPAN_MODEL = 'inception/mercury-decide:free' as const;
 export const SPAN_MAX_CANDIDATES_PER_SUBTASK = 32;
 export const SPAN_MAX_EVALUATED_SUBTASKS = 16;
 export const SPAN_MAX_CANDIDATES_PER_PROPOSAL = 128;
-export const SPAN_MAX_REQUEST_BYTES = 32 * 1024;
+// Local serialized request budget, not the Provider model's token context window.
+export const SPAN_MAX_REQUEST_BYTES = 128 * 1024;
 export const SPAN_MAX_OBSERVATION_BYTES = 128 * 1024;
 export const SPAN_MAX_CONCURRENT_REQUESTS = 2;
 export const SPAN_MAX_QUEUED_REQUESTS = 128;

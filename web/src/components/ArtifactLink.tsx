@@ -37,7 +37,7 @@ export function ArtifactReferenceLink({
       className="artifact-reference-link"
       data-artifact-reference={artifact.artifactId}
       onClick={() => onOpen(artifact)}
-      title={`打开预览：${artifact.displayName}`}
+      title={`${artifact.previewable ? '打开预览' : '查看文件'}：${artifact.displayName}`}
     >
       <span aria-hidden>↗</span>
       <span>{artifact.displayName}</span>

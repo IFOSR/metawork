@@ -1,0 +1,19 @@
+:root { font-family: system-ui, -apple-system, sans-serif; color: #263244; background: #e9edf2; color-scheme: light; }
+body { margin: 0; }
+#status { padding: 10px 16px; font-size: 13px; overflow-wrap: anywhere; background: #f8fafc; }
+#status[role='alert'] { color: #9d2020; padding: 24px; }
+#controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 14px; padding: 8px; position: sticky; top: 0; z-index: 10; background: #f8fafc; border-bottom: 1px solid #d5dce5; }
+#controls:empty { display: none; }
+button, select { font: inherit; border: 1px solid #b6c1cf; border-radius: 6px; padding: 8px 12px; background: white; color: #263244; max-width: 100%; }
+button { cursor: pointer; } button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, select:focus-visible { outline: 3px solid #3676d9; outline-offset: 2px; }
+#document { padding: 12px; overflow: auto; }
+#document canvas { display: block; max-width: 100%; height: auto; margin: 0 auto; background: white; }
+#document.html-document { padding: 0; height: calc(100vh - 42px); }
+.html-document iframe { width: 100%; height: 100%; border: 0; background: white; }
+#document .docx-wrapper { padding: 12px; }
+#document .docx-wrapper > section.docx { margin-bottom: 16px; }
+.spreadsheet-document table { border-collapse: collapse; background: white; font: 13px system-ui, sans-serif; }
+.spreadsheet-document th, .spreadsheet-document td { border: 1px solid #d8dee6; padding: 6px 10px; min-width: 50px; max-width: 600px; overflow-wrap: anywhere; }
+.spreadsheet-document th { background: #eef2f6; font-weight: 500; position: sticky; left: 0; }
+.spreadsheet-document thead th { top: 0; }

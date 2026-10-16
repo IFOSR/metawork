@@ -41,8 +41,8 @@ export async function startProductionObservationServer(options: { installed?: bo
   } } }));
   await prepareSmokeConfiguration({ installRoot: root, configHome, executorCommand: 'codex',
     executorTimeoutSeconds: 60, executorMaxDurationSeconds: 60 });
-  await mkdir(join(root, 'workspace'));
-  const workspace = await realpath(join(root, 'workspace'));
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'mw-observation-workspace-'));
+  const workspace = await realpath(workspaceRoot);
   const catalog = new FileWorkspaceCatalogStore(account.workspaceCatalog);
   await catalog.initialize();
   const now = new Date().toISOString();
@@ -71,8 +71,7 @@ export async function startProductionObservationServer(options: { installed?: bo
   await store.writeCatalog({ version: 3, conversations: metadata });
   db.close();
   const env = { ...process.env, METAWORK_INSTALL_ROOT: root, METAWORK_WEB_PORT: '0', METAWORK_NAVIGATION_DIAGNOSTICS: '1', METAWORK_SECRET_STORE: 'file',
-    ANYFUSION_WEB_DIST: join(applicationRoot, 'web/dist'), ANYFUSION_WEB_USERNAME: 'acceptance',
-    ANYFUSION_WEB_PASSWORD: 'fixture-password', METAWORK_CONFIG_HOME: configHome };
+    ANYFUSION_WEB_DIST: join(applicationRoot, 'web/dist'), METAWORK_CONFIG_HOME: configHome };
   delete env.ANYFUSION_INSTALL_ROOT;
   const child = spawn(process.execPath, [join(applicationRoot, 'dist/index.js'), 'server', 'start'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '';
@@ -108,6 +107,7 @@ export async function startProductionObservationServer(options: { installed?: bo
     }
     await unlock(root);
     await rm(root, { recursive: true, force: true });
+    await rm(workspaceRoot, { recursive: true, force: true });
   }
   try {
     for (let attempt = 0; attempt < 300; attempt++) {

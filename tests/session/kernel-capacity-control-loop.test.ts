@@ -15,16 +15,14 @@ import { KernelExecutorStatusProjector } from '../../src/execution/kernel-execut
 import { KernelExecutorStatusRepo } from '../../src/storage/kernel-executor-status-repo.js';
 
 describe('Kernel capacity control loop', () => {
-  it('exhausts authorized candidates, persists wait_for_capacity, and resumes only from a timer event', async () => {
+  it('classifies an Executor image probe failure as a local blocker instead of capacity wait', async () => {
     const db = new Database(':memory:');
     runMigrations(db);
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-kernel-capacity');
-    const available = { value: false };
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'capacity recovered' }));
     attemptExecutionBackend.resolveImage.mockImplementation(async () => {
-      if (!available.value) throw new Error('image unavailable');
-      return `sha256:${'a'.repeat(64)}`;
+      throw new Error('image unavailable');
     });
     const plan = workGraphPlan({ goal: 'run after capacity recovers', deliveryKind: 'report' });
     const config: Config = {
@@ -66,7 +64,7 @@ describe('Kernel capacity control loop', () => {
     expect(task.status).toBe('blocked');
     expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
     expect(db.prepare(`SELECT action FROM kernel_decisions WHERE task_id = ? ORDER BY rowid`).all(task.id))
-      .toEqual(expect.arrayContaining([{ action: 'wait_for_capacity' }]));
+      .toEqual(expect.arrayContaining([{ action: 'block_work' }]));
     expect(new KernelExecutorStatusProjector(new KernelExecutorStatusRepo(db)).list('revision-test')
       .find(item => item.agentClassName === 'codex-cli')).toMatchObject({
       classHealth: 'error',
@@ -75,19 +73,6 @@ describe('Kernel capacity control loop', () => {
       })],
     });
 
-    available.value = true;
-    await session.submit('/executor refresh codex-cli', {
-      awaitAsyncWork: true,
-    });
-    expect(new KernelExecutorStatusRepo(db).list('revision-test')
-      .find(item => item.agentClassName === 'codex-cli')?.classHealth).toBe('healthy');
-
-    const handled = await session.maybeReconcileBlockedTasksOnTimer(Date.now() + 10_000);
-
-    expect(handled).toBe(true);
-    expect(taskRepo.findById(task.id)?.status).toBe('done');
-    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
-    expect(db.prepare(`SELECT action FROM kernel_decisions WHERE task_id = ? ORDER BY rowid`).all(task.id))
-      .toEqual(expect.arrayContaining([{ action: 'probe_capacity' }, { action: 'dispatch_batch' }, { action: 'complete_task' }]));
+    expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
   });
 });

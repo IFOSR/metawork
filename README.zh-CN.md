@@ -97,8 +97,8 @@ Web 已包含在 Server 安装包中，不需要安装 Desktop。
 5. 首次启动不要求填写模型凭据。如果 Desktop 与本地 Runtime 的发布标识不一致，
    页面会显示 **完成更新并重启**。只点击一次并等待；页面会显示更新进度，并提示
    不要重复点击或重新打开应用。已有凭据、对话和工作数据会保留。
-6. Runtime 完成一次更新后会打开 Web 工作区；模型可稍后在设置中配置，然后完成
-   首次登录并选择 Workspace。
+6. Runtime 完成一次更新后会打开 Web 工作区；模型可稍后在设置中配置，然后登录
+   官方订阅账号并选择 Workspace。
 
 安装包包含 Node、Pi Executor、Server/Web 与 Planner；macOS Command Line Tools 提供
 仓库操作所需的系统 Git，Codex 为可选项。默认安装目录为 `~/.metawork`。已有安装的
@@ -153,7 +153,7 @@ metawork server start
 在另一个终端按需选择客户端：
 
 ```bash
-metawork web                    # 浏览器；账号 admin，密码 123456
+metawork web                    # 打开本机 Web 工作区
 metawork tui                    # 原生终端界面
 metawork server setup-feishu    # 可选：配置飞书应用
 ```

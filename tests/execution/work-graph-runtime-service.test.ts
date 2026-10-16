@@ -10,6 +10,10 @@ import { TaskEventRepo } from '../../src/storage/task-event-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
 import { TaskExecutionEvidenceRepo } from '../../src/execution/execution-evidence-port.js';
+import { SubtaskExecutionContextBuilder } from '../../src/execution/subtask-execution-context.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const now = '2026-07-16T00:00:00.000Z';
 const configurationRevision = 'configuration_revision_1';
@@ -99,6 +103,52 @@ describe('WorkGraphRuntimeService', () => {
       new TaskExecutionEvidenceRepo(db),
     );
   }
+
+  it('applies follow-up graphs sharing an interaction and rebuilds their selected context on recovery', () => {
+    const db = createDb();
+    const root = mkdtempSync(join(tmpdir(), 'metawork-followup-graphs-'));
+    try {
+      new TaskRepo(db).insert(task('source_task'));
+      db.prepare(`INSERT INTO interactions (id, task_id, session_id, user_input, system_output, created_at)
+        VALUES ('shared_source', 'source_task', 'session_test', 'test number 314159', '', ?)`)
+        .run(now);
+      const evidenceId = 'evidence_user_interaction_shared_source';
+      for (const id of ['followup_b', 'followup_c']) {
+        const target = task(id);
+        new TaskRepo(db).insert(target);
+        seedKernelDecision(db, `decision_${id}`, id);
+        const selected = graph(id);
+        selected.subtasks[0]!.contextRefs = [{ kind: 'interaction', interactionId: 'shared_source', side: 'user' }];
+        expect(service(db).apply({
+          task: target, userPrompt: 'Use the previous number', sessionId: 'session_test',
+          authorizedWorkGraph: selected, authorizedBindingsBySubtask: authorizedBindingsBySubtask(),
+          authorization: { decisionId: `decision_${id}`, generationId: `generation_${id}`,
+            revision: 1, source: 'initial', automaticReplan: false },
+        }).outcome).toBe('applied');
+        expect(new TaskExecutionEvidenceRepo(db).findForTask(id, evidenceId)?.content).toBe('test number 314159');
+      }
+      // Schema 47 could persist the second graph while retaining only B's association.
+      db.prepare('DELETE FROM task_execution_evidence WHERE task_id = ? AND id = ?').run('followup_c', evidenceId);
+      for (const id of ['followup_c', 'followup_b', 'followup_c']) {
+        const target = new TaskRepo(db).findById(id)!;
+        const recovered = service(db).apply({ task: target, userPrompt: 'Continue', authorizedWorkGraph: null });
+        expect(recovered.outcome).toBe('recovered');
+        if (recovered.outcome !== 'recovered') throw new Error('expected persisted graph');
+        const prepared = new SubtaskExecutionContextBuilder(db, { resultRoot: root }).build({
+          task: target, subtask: recovered.subtasks[0]!, allSubtasks: recovered.subtasks,
+          executionId: 'execution', attemptId: `attempt_${id}`, workUnitId: 'unit', sessionId: 'session_test',
+          workspaceContext: { allowFilesystem: false, workingDirectory: root, targetPaths: [] }, evidenceToolsAvailable: true,
+        });
+        expect(prepared.context.selectedEvidence[0]?.content).toBe('test number 314159');
+        prepared.evidenceCapability.revoke();
+        prepared.resultReferenceCapability.revoke();
+      }
+      expect(db.prepare('SELECT COUNT(*) AS count FROM task_execution_evidence WHERE id = ?').get(evidenceId)).toEqual({ count: 2 });
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it('materializes only the full Kernel-authorized bindings for a v7 graph revision', () => {
     const db = createDb();

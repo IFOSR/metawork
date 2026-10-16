@@ -1350,6 +1350,12 @@ export class ConversationSession {
         await this.submitUserInput(command.text, options);
         return;
       case 'slash_command':
+        if (/^\/task\s+(?:dashboard|show|list)(?:\s|$)/iu.test(command.text.trim())) {
+          // A concurrent read must not replace the active turn's cancellation
+          // controller or trace, as submitUserInput would do.
+          await this.handleCommand(command.text.trim(), options.principalId ?? 'unknown');
+          return;
+        }
         if (/^\/status(?:\s|$)/u.test(command.text.trim())) {
           // L5: instant status snapshot — answered locally from the live
           // interaction trace, never routed to the Planner (works mid-turn).
@@ -2093,6 +2099,8 @@ export class ConversationSession {
         recoveryItemId?: string;
         resolution?: string;
         mode?: 'resume-parked' | 'resume-blocked';
+      expectedGenerationId?: string;
+      expectedGraphRevision?: number;
         newlyProvidedResources?: string[];
         blockedReason?: string;
       };
@@ -2118,6 +2126,8 @@ export class ConversationSession {
     userInput: string,
     directive: {
       mode?: 'resume-parked' | 'resume-blocked';
+      expectedGenerationId?: string;
+      expectedGraphRevision?: number;
       newlyProvidedResources?: string[];
       blockedReason?: string;
     },
@@ -2130,6 +2140,8 @@ export class ConversationSession {
     const started = taskExecutionApplicationService.prepareTaskExecution(resumedTask.id, {
       userPrompt: resumedTask.goal,
       contextTaskId: resumedTask.id,
+      expectedGenerationId: directive.expectedGenerationId,
+      expectedGraphRevision: directive.expectedGraphRevision,
       executionMode: directive.mode ?? 'resume-parked',
       schedulingReason: directive.mode === 'resume-blocked' ? '解除阻塞' : '恢复已暂停任务',
       newlyProvidedResources: directive.newlyProvidedResources,
@@ -2149,7 +2161,7 @@ export class ConversationSession {
       this.appendOutput(`任务 #${taskId} 恢复请求未产生权威 Kernel 决策`);
       return;
     }
-    this.appendOutput(formatTaskResumeDecision(taskId, decision));
+    this.appendOutput(formatTaskResumeDecision(taskId, decision, resumedTask.status));
     if (decision.action.type !== 'resume_task') await started.completion;
   }
 
@@ -2677,6 +2689,7 @@ export class ConversationSession {
       },
       taskExecutionCallbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
+        appendExecutionTrace: input => this.appendExecutionTrace(input),
         appendGuidance: (scene, suggestion) => this.appendGuidance(scene, suggestion),
         refreshRuntimeState: () => this.refreshRuntimeState(),
         startBackgroundExecution: (taskId, work) => this.startBackgroundExecution(taskId, work),

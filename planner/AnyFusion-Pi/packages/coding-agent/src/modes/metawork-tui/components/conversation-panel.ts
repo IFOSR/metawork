@@ -35,8 +35,15 @@ const STATUS_LABELS: Record<MetaWorkTurnStatus, string> = {
 	running: "进行中",
 	completed: "已完成",
 	failed: "失败",
-	blocked: "阻塞",
+	blocked: "需要处理",
 	cancelled: "已取消",
+};
+
+const TASK_STATE_LABELS: Record<string, string> = {
+	waiting: "等待中",
+	executing: "执行中",
+	needs_action: "需要处理",
+	finished: "已结束",
 };
 
 const STATUS_COLORS: Record<MetaWorkTurnStatus, "success" | "error" | "warning" | "dim" | "accent"> = {
@@ -121,7 +128,7 @@ export class MetaWorkConversationPanel implements Component {
 			truncateToWidth(
 				`${selected ? theme.fg("accent", "▸") : " "} ` +
 					`${theme.fg("accent", theme.bold(role))}` +
-					` ${theme.fg(STATUS_COLORS[turn.status], turnStatusLabel(turn.status))}` +
+					` ${theme.fg(STATUS_COLORS[turn.status], turn.taskId ? (TASK_STATE_LABELS[turn.taskPhase ?? ""] ?? "同步中") : turnStatusLabel(turn.status))}` +
 					` ${theme.fg("dim", `${turn.id} · ${stageLabel(turn.stage)}`)}`,
 				width,
 			),
@@ -183,7 +190,7 @@ export class MetaWorkConversationPanel implements Component {
 				truncateToWidth(theme.fg("dim", `  已折叠 ${turn.trace.length - visibleTrace.length} 条过程`), width),
 			);
 		}
-		if (visibleTrace.length === 0 && turn.status === "running") {
+		if (visibleTrace.length === 0 && (turn.taskId ? turn.taskPhase === "executing" : turn.status === "running")) {
 			lines.push(truncateToWidth(theme.fg("dim", "  等待进展…"), width));
 		}
 		const subtasks = Object.values(turn.subtasks);

@@ -28,6 +28,14 @@ import type {
   WebSessionRecord,
   WorkspaceSummary,
 } from './session-types';
+import { documentPreviewFormat, MAX_DOCUMENT_PREVIEW_BYTES } from '../../../src/delivery/document-preview-format';
+import type { ConversationAttachment } from './session-types';
+
+class HttpError extends Error {
+  constructor(readonly status: number, readonly body: string) {
+    super(`HTTP ${status}: ${body}`);
+  }
+}
 
 export class HttpClient {
   constructor(private readonly onUnauthorized?: () => void) {}
@@ -44,7 +52,7 @@ export class HttpClient {
     if (!response.ok) {
       const body = await response.text();
       if (response.status === 401) this.onUnauthorized?.();
-      throw new Error(`HTTP ${response.status}: ${body}`);
+      throw new HttpError(response.status, body);
     }
     if (response.status === 204) return undefined as T;
     return response.json() as Promise<T>;
@@ -84,6 +92,7 @@ export class HttpClient {
   }
 
   discoverProviderModels(input: {
+    protocol?: import('../../../src/configuration/types').ProviderProtocol;
     baseUrl: string;
     apiKey?: string;
     providerRef?: string;
@@ -332,16 +341,68 @@ export class HttpClient {
     return this.request(`/api/artifacts/${encodeURIComponent(artifactId)}`);
   }
 
-  getArtifactPreview(artifactId: string): Promise<{
+  async getArtifactPreview(artifactId: string): Promise<{
     artifact: ArtifactProjection;
     content: string;
     renderedHtml?: string;
   }> {
-    return this.request(`/api/artifacts/${encodeURIComponent(artifactId)}/preview`);
+    // File availability and preview support are separate. Keep authorized
+    // metadata so unsupported formats can still offer the original download.
+    const { artifact } = await this.getArtifact(artifactId);
+    if (!artifact.previewable || (artifact.previewKind === 'unsupported' && !artifact.documentFormat)) {
+      return { artifact, content: '' };
+    }
+    try {
+      return await this.request(`/api/artifacts/${encodeURIComponent(artifactId)}/preview`);
+    } catch (error) {
+      // Supported formats may still exceed the Server's preview size limit.
+      if (error instanceof HttpError && error.status === 415) {
+        return { artifact: { ...artifact, previewable: false }, content: '' };
+      }
+      throw error;
+    }
   }
 
   artifactDownloadUrl(artifactId: string, format: 'original' | 'pdf' = 'original'): string {
     return `/api/artifacts/${encodeURIComponent(artifactId)}/download${format === 'pdf' ? '?format=pdf' : ''}`;
+  }
+
+  attachmentDownloadUrl(conversationId: string, attachmentId: string): string {
+    return `/api/attachments/${encodeURIComponent(attachmentId)}?sessionId=${encodeURIComponent(conversationId)}`;
+  }
+
+  async getAttachmentPreview(conversationId: string, attachment: ConversationAttachment): Promise<{
+    artifact: ArtifactProjection; content: string; downloadUrl: string;
+    attachmentSource: { conversationId: string; attachmentId: string };
+  }> {
+    const format = documentPreviewFormat(attachment.name, attachment.mime);
+    const image = attachment.mediaClass === 'image';
+    const text = attachment.mediaClass === 'text';
+    const artifact: ArtifactProjection = {
+      // A local drawer identity only; never sent to artifact APIs or persisted.
+      artifactId: `attachment:${conversationId}:${attachment.attachmentId}`, taskId: '', publicationId: null,
+      displayName: attachment.name, relativePath: attachment.name, mediaType: attachment.mime,
+      previewKind: image ? 'image' : text ? 'text' : 'unsupported',
+      ...(format ? { documentFormat: format } : {}),
+      previewable: attachment.status === 'available' && Boolean(format || image || text) && attachment.size <= MAX_DOCUMENT_PREVIEW_BYTES,
+      byteLength: attachment.size, contentHash: '', publishedAt: attachment.createdAt ?? '',
+    };
+    if (attachment.status !== 'available') throw new Error('unavailable');
+    const downloadUrl = this.attachmentDownloadUrl(conversationId, attachment.attachmentId);
+    const source = { downloadUrl, attachmentSource: { conversationId, attachmentId: attachment.attachmentId } };
+    if (!artifact.previewable) return { artifact, content: '', ...source };
+    const response = await fetch(downloadUrl, { credentials: 'same-origin' });
+    if (response.status === 401) this.onUnauthorized?.();
+    if (!response.ok) throw new HttpError(response.status, '附件不可用');
+    if (Number(response.headers.get('content-length')) > MAX_DOCUMENT_PREVIEW_BYTES) {
+      await response.body?.cancel(); return { artifact: { ...artifact, previewable: false }, content: '', ...source };
+    }
+    const blob = await response.blob();
+    if (blob.size > MAX_DOCUMENT_PREVIEW_BYTES) return { artifact: { ...artifact, previewable: false }, content: '', ...source };
+    const content = text && !format ? await blob.text() : await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(blob);
+    });
+    return { artifact, content, ...source };
   }
 
   async downloadArtifactPdf(artifactId: string): Promise<Blob> {

@@ -1,3 +1,4 @@
+import type { ProviderProtocol } from '../../src/configuration/types';
 export type ConfigurationFieldState =
   | '已自动发现'
   | '已从 Provider 补全'
@@ -6,6 +7,7 @@ export type ConfigurationFieldState =
   | '缺失';
 
 export interface SettingsProviderEntry {
+  protocol?: ProviderProtocol;
   providerRef: string;
   displayName: string;
   baseUrl: string;

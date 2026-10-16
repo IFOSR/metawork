@@ -22,6 +22,7 @@ export function Composer({
   onCancel,
   onFilesSelected,
   onRemoveAttachment,
+  onOpenAttachment,
 }: {
   draft: string;
   disabled: boolean;
@@ -36,6 +37,7 @@ export function Composer({
   onCancel: () => void;
   onFilesSelected: (files: File[]) => void;
   onRemoveAttachment: (attachmentId: string) => void;
+  onOpenAttachment?: (conversationId: string, attachment: AttachmentMetadata) => void;
 }) {
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -45,7 +47,7 @@ export function Composer({
 
   const submit = () => {
     const value = draft.trim();
-    if (!value || disabled || running) return;
+    if (!value || disabled) return;
     onSend(value, attachments.map(entry => ({ attachmentId: entry.metadata.attachmentId })));
   };
 
@@ -130,7 +132,10 @@ export function Composer({
           <div className="attachment-strip">
             {attachments.map(entry => (
               <span className="attachment-chip" key={entry.metadata.attachmentId} title={`${entry.metadata.name} · ${entry.metadata.mime}`}>
-                {entry.metadata.mediaClass === 'image' ? '🖼' : entry.metadata.mediaClass === 'document' ? '▤' : '📄'} {entry.metadata.name}
+                <button type="button" className="attachment-preview-button" title={`预览 ${entry.metadata.name}`}
+                  onClick={() => onOpenAttachment?.(entry.metadata.conversationId, entry.metadata)}>
+                  {entry.metadata.mediaClass === 'image' ? '🖼' : entry.metadata.mediaClass === 'document' ? '▤' : '📄'} {entry.metadata.name}
+                </button>
                 <button
                   type="button"
                   aria-label={`移除附件 ${entry.metadata.name}`}
@@ -187,8 +192,8 @@ export function Composer({
                 ⏹ 停止
               </button>
             )}
-            <button type="submit" disabled={disabled || running || !draft.trim()}>
-              {running ? '执行中' : '发送'}
+            <button type="submit" disabled={disabled || !draft.trim()}>
+              发送
             </button>
           </div>
         </div>

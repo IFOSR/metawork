@@ -1,3 +1,4 @@
+import { existsSync, realpathSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -59,7 +60,8 @@ export interface CancelledWorkspacePublication {
 export type WorkspacePublicationOutcome =
   | IntegratedWorkspacePublication
   | ConflictedWorkspacePublication
-  | CancelledWorkspacePublication;
+  | CancelledWorkspacePublication
+  | { type: 'delivery_failed'; publicationId: string; taskId: string; subtaskId: string };
 
 export interface WorkspacePublicationWorkerDeps {
   db: Database.Database;
@@ -132,7 +134,17 @@ export class WorkspacePublicationWorker {
       this.reconciledGenerations.add(key);
       this.publications.recoverApplying(taskId, generationId, new Date().toISOString());
     }
-    await this.reconcileIntegratedArtifacts(taskId, generationId);
+    // A graph replan cancels the old revision's Subtasks before the new
+    // revision is materialized.  A parked publication can otherwise remain in
+    // the serial ordering queue forever: it is selected before the new
+    // revision's pending publication, but the parked branch deliberately does
+    // not try to publish it.  Converge that stale durable fact at the
+    // publication boundary rather than relying on a later Task cancellation.
+    this.cancelSupersededPublications(taskId, generationId);
+    for (const publication of this.publications.unfinishedDeliveries(taskId, generationId)) {
+      if (this.publications.delivery(publication.id)?.status === 'failed') continue;
+      outcomes.push(await this.deliverIntegrated(publication));
+    }
     while (true) {
       const publication = this.publications.findNextBlocking(taskId, generationId);
       if (!publication) break;
@@ -151,6 +163,36 @@ export class WorkspacePublicationWorker {
       if (outcome.type === 'conflicted') break;
     }
     return outcomes;
+  }
+
+  private cancelSupersededPublications(taskId: string, generationId: string): void {
+    const activeSubtaskRecords = this.deps.subtaskRepo.listActiveByTask(taskId);
+    // Do not infer supersession from a transiently missing active revision. A
+    // publication drain can be replayed while graph materialization is still
+    // converging; cancellation is safe only when the active graph is known.
+    if (activeSubtaskRecords.length === 0) return;
+    const activeSubtasks = new Map(
+      activeSubtaskRecords.map(subtask => [subtask.id, subtask] as const),
+    );
+    const staleSubtaskIds = this.publications
+      .listByTask(taskId)
+      .filter(publication => (
+        publication.generationId === generationId
+        && ['pending', 'conflicted', 'parked'].includes(publication.status)
+      ))
+      .filter(publication => {
+        const subtask = activeSubtasks.get(publication.subtaskId);
+        return !subtask || subtask.status === 'cancelled';
+      })
+      .map(publication => publication.subtaskId);
+    if (staleSubtaskIds.length === 0) return;
+    this.publications.requestCancellation({
+      taskId,
+      generationId,
+      subtaskIds: [...new Set(staleSubtaskIds)],
+      decisionId: `publication_superseded_${taskId}_${generationId}`,
+      now: new Date().toISOString(),
+    });
   }
 
   private async requeueStaleBaselineConflict(
@@ -223,13 +265,32 @@ export class WorkspacePublicationWorker {
     const subtasks = this.deps.subtaskRepo.listActiveByTask(publication.taskId);
     const candidates = subtasks.length > 0
       ? subtasks
-      : this.deps.subtaskRepo.listByTask(publication.taskId)
-        .filter(subtask => subtask.generationId === publication.generationId);
+        : this.deps.subtaskRepo.listByTask(publication.taskId)
+          .filter(subtask => subtask.generationId === publication.generationId);
+    const currentPublications = new Map(
+      this.publications
+        .listByTask(publication.taskId)
+        .filter(candidate => candidate.generationId === publication.generationId)
+        .map(candidate => [candidate.subtaskId, candidate] as const),
+    );
     const orders = new Map<string, number>();
     for (const item of this.deps.dispatchItemRepo.listByTask(publication.taskId)) {
       if (item.generationId !== publication.generationId) continue;
+      // A recovered Subtask can have an old uncertain/terminal dispatch with a
+      // smaller batch order than its new continuation. Once a publication has
+      // been created, its own order is authoritative for merge sequencing;
+      // stale attempts must not hold that publication (or its siblings) in a
+      // permanent ordering cycle.
+      if (currentPublications.has(item.subtaskId)) continue;
+      if (!['pending_launch', 'launching', 'running', 'cancelling'].includes(item.status)) continue;
       const current = orders.get(item.subtaskId);
       if (current === undefined || item.batchOrder < current) orders.set(item.subtaskId, item.batchOrder);
+    }
+    for (const candidate of currentPublications.values()) {
+      const current = orders.get(candidate.subtaskId);
+      if (current === undefined || candidate.firstDispatchOrder < current) {
+        orders.set(candidate.subtaskId, candidate.firstDispatchOrder);
+      }
     }
     const layers = deriveTopologyLayers(candidates);
     const target = [
@@ -238,7 +299,8 @@ export class WorkspacePublicationWorker {
       publication.subtaskId,
     ] as const;
     return candidates.every(subtask => {
-      if (subtask.id === publication.subtaskId || ['done', 'cancelled'].includes(subtask.status)) return true;
+      if (subtask.id === publication.subtaskId || ['done', 'cancelled', 'blocked', 'awaiting_decision'].includes(subtask.status)) return true;
+      if (currentPublications.get(subtask.id)?.status === 'integrated') return true;
       const key = [
         layers.get(subtask.id) ?? 0,
         orders.get(subtask.id) ?? Number.MAX_SAFE_INTEGER,
@@ -495,6 +557,73 @@ export class WorkspacePublicationWorker {
           errorSummary: null,
           createdAt: now,
         });
+        this.publications.markIntegrated(publication.id, merged.integrationCommit, now);
+        this.publications.beginDelivery(publication.id, now);
+      }).immediate();
+      if (cancelled) {
+        return {
+          type: 'cancelled',
+          publicationId: publication.id,
+          taskId: publication.taskId,
+          subtaskId: publication.subtaskId,
+          observedIntegrationCommit: merged.integrationCommit,
+        };
+      }
+      return await this.deliverIntegrated(this.publications.find(publication.id)!);
+    } catch (error) {
+      if (this.publications.find(publication.id)?.status !== 'integrated') this.publications.markPending(
+        publication.id, error instanceof Error ? error.message : String(error), new Date().toISOString());
+      throw error;
+    } finally {
+      this.deps.resourceLeaseService.release(publicationAttemptId, leaseToken);
+    }
+  }
+
+  private async deliverIntegrated(publication: WorkspacePublicationRecord): Promise<WorkspacePublicationOutcome> {
+    const cancelled = (): boolean => this.deps.taskRuntimeService.findTask(publication.taskId)?.status === 'cancelled'
+      || this.deps.subtaskRepo.findById(publication.subtaskId)?.status === 'cancelled';
+    const cancellation = (): CancelledWorkspacePublication => ({ type: 'cancelled', publicationId: publication.id,
+      taskId: publication.taskId, subtaskId: publication.subtaskId, observedIntegrationCommit: publication.integrationCommit });
+    if (cancelled()) return cancellation();
+    const integrationWorkspace = await this.git.ensure({ taskId: publication.taskId, generationId: publication.generationId,
+      subtaskId: '__integration__' }, this.deps.sourceRoot);
+    let delivery = this.publications.delivery(publication.id)!;
+    if (delivery.status !== 'succeeded') {
+      let projections = delivery.projections;
+      let failures: Array<{ sourceRelativePath: string; reason: string }> = [];
+      try {
+        const sources = this.artifactSources(publication, integrationWorkspace);
+        if (sources.length && !this.deps.userArtifactPublication) {
+          throw new Error('User artifact publication service is unavailable');
+        }
+        if (sources.length && this.deps.userArtifactPublication) {
+          const service = this.deps.userArtifactPublication;
+          const result = await this.git.withCommitSnapshot(integrationWorkspace, publication.integrationCommit!, async root => service.publishIntegratedArtifacts({
+            sessionId: this.sessionId, accountId: this.deps.accountId ?? 'local-default', taskId: publication.taskId,
+            taskTitle: this.deps.taskRuntimeService.findTask(publication.taskId)?.title ?? publication.taskId,
+            generationId: publication.generationId, subtaskId: publication.subtaskId, publicationId: publication.id,
+            integratedWorkspaceRoot: root,
+            userWorkspaceRoot: await this.deps.resolveUserWorkspaceRoot?.(this.sessionId) ?? undefined, sources,
+          }));
+          projections = result.projections;
+          failures = result.failures;
+        }
+      } catch (error) {
+        failures = [{ sourceRelativePath: '', reason: error instanceof Error ? error.message : String(error) }];
+      }
+      this.publications.settleDelivery(publication.id, projections, failures, new Date().toISOString());
+      delivery = this.publications.delivery(publication.id)!;
+    }
+    if (cancelled()) return cancellation();
+    if (delivery.status !== 'succeeded') return { type: 'delivery_failed', publicationId: publication.id,
+      taskId: publication.taskId, subtaskId: publication.subtaskId };
+    const receipt = this.deps.attemptReceiptRepo.findByAttemptId(publication.sourceAttemptId);
+    if (!receipt) throw new Error(`missing publication receipt ${publication.sourceAttemptId}`);
+    const safeProjection = this.findSafeProjection(publication, receipt);
+    const workspace = this.deps.workspaceRepository.findByIdentity(publication.taskId, publication.generationId, publication.subtaskId);
+    const now = new Date().toISOString();
+    this.deps.db.transaction(() => {
+      if (cancelled()) return;
         for (const handoff of publication.originalCompletion.handoffs) {
           if (!safeProjection) {
             throw new Error(
@@ -519,10 +648,8 @@ export class WorkspacePublicationWorker {
             now,
           );
         }
-        // Declaration-independent materialization: the Work Graph edge itself
-        // is the handoff authorization. Any outgoing edge left without a
-        // handoff row (undeclared by the executor) is materialized from the
-        // source's safe projection instead of hard-blocking downstream.
+        // Text edges can reference the safe body. Declared artifacts must
+        // retain their verified paths and cannot be replaced by prose.
         this.materializeEdgeHandoffs(publication, safeProjection, now);
         this.lifecycle.transitionSubtask({
           subtaskId: publication.subtaskId,
@@ -539,7 +666,6 @@ export class WorkspacePublicationWorker {
             error: null,
           },
         });
-        this.publications.markIntegrated(publication.id, merged.integrationCommit, now);
         if (workspace) {
           this.deps.workspaceRepository.upsert({
             ...workspace,
@@ -547,107 +673,19 @@ export class WorkspacePublicationWorker {
             updatedAt: now,
           });
         }
-      }).immediate();
-      if (cancelled) {
-        return {
-          type: 'cancelled',
-          publicationId: publication.id,
-          taskId: publication.taskId,
-          subtaskId: publication.subtaskId,
-          observedIntegrationCommit: merged.integrationCommit,
-        };
-      }
-      // Git publication 成功后才把已验证 artifact 发布为用户可见产物；
-      // 用户产物发布失败只降级为 warning，不影响 durable publication 事实。
-      const userArtifacts = await this.publishUserArtifacts(publication, integrationWorkspace);
-      return {
-        type: 'integrated',
-        publicationId: publication.id,
-        taskId: publication.taskId,
-        subtaskId: publication.subtaskId,
-        sourceAttemptId: publication.sourceAttemptId,
-        agentClassName: publication.agentClassName,
-        integrationCommit: merged.integrationCommit,
-        resultId: safeProjection?.resultId ?? null,
-        output: publication.originalCompletion.body,
-        warnings: publication.originalCompletion.warnings,
-        userArtifacts,
-      };
-    } catch (error) {
-      this.publications.markPending(
-        publication.id,
-        error instanceof Error ? error.message : String(error),
-        new Date().toISOString(),
-      );
-      throw error;
-    } finally {
-      this.deps.resourceLeaseService.release(publicationAttemptId, leaseToken);
-    }
-  }
-
-  private async publishUserArtifacts(
-    publication: WorkspacePublicationRecord,
-    integrationWorkspace: Awaited<ReturnType<ManagedGitWorkspaceService['ensure']>>,
-  ): Promise<ArtifactProjection[]> {
-    const service = this.deps.userArtifactPublication;
-    if (!service) return [];
-    const sources = this.artifactSources(publication, integrationWorkspace);
-    if (sources.length === 0) return [];
-    const task = this.deps.taskRuntimeService.findTask(publication.taskId);
-    try {
-      const outcome = await service.publishIntegratedArtifacts({
-        sessionId: this.sessionId,
-        accountId: this.deps.accountId ?? 'local-default',
-        taskId: publication.taskId,
-        taskTitle: task?.title ?? publication.taskId,
-        generationId: publication.generationId,
-        subtaskId: publication.subtaskId,
-        publicationId: publication.id,
-        integratedWorkspaceRoot: integrationWorkspace.filesPath,
-        userWorkspaceRoot: await this.deps.resolveUserWorkspaceRoot?.(this.sessionId)
-          ?? undefined,
-        sources,
-      });
-      for (const failure of outcome.failures) {
-        console.warn(
-          `user artifact publication skipped ${failure.sourceRelativePath}: ${failure.reason}`,
-        );
-      }
-      return outcome.projections;
-    } catch (error) {
-      console.warn(
-        `user artifact publication failed for ${publication.id}:`
-        + ` ${(error as Error).message}`,
-      );
-      return [];
-    }
-  }
-
-  private async reconcileIntegratedArtifacts(
-    taskId: string,
-    generationId: string,
-  ): Promise<void> {
-    if (!this.deps.userArtifactPublication) return;
-    const publications = this.publications.listIntegratedByTaskIds([taskId])
-      .filter(publication => (
-        publication.generationId === generationId
-        && publication.originalCompletion.artifacts.length > 0
-      ));
-    if (publications.length === 0) return;
-    const integrationWorkspace = await this.git.ensure({
-      taskId,
-      generationId,
-      subtaskId: '__integration__',
-    }, this.deps.sourceRoot);
-    for (const publication of publications) {
-      await this.publishUserArtifacts(publication, integrationWorkspace);
-    }
+    }).immediate();
+    if (cancelled()) return cancellation();
+    return { type: 'integrated', publicationId: publication.id, taskId: publication.taskId, subtaskId: publication.subtaskId,
+      sourceAttemptId: publication.sourceAttemptId, agentClassName: publication.agentClassName,
+      integrationCommit: publication.integrationCommit!, resultId: safeProjection?.resultId ?? null,
+      output: publication.originalCompletion.body, warnings: publication.originalCompletion.warnings,
+      userArtifacts: delivery.projections };
   }
 
   /**
    * Materialize handoff rows for every outgoing Work Graph edge that has
-   * none. The edge is the authorization; the executor's completion envelope
-   * is only an optional metadata channel and never gates data flow.
+   * none. Only text requirements can be satisfied by the safe body;
+   * artifact requirements are checked before delivery settlement.
    */
   private materializeEdgeHandoffs(
     publication: WorkspacePublicationRecord,
@@ -746,6 +784,18 @@ export class WorkspacePublicationWorker {
     publication: WorkspacePublicationRecord,
     integrationWorkspace: Awaited<ReturnType<ManagedGitWorkspaceService['ensure']>>,
   ): Array<{ sourceRelativePath: string }> {
+    for (const target of this.deps.subtaskRepo.listByTask(publication.taskId)) {
+      if (target.generationId !== publication.generationId || target.status === 'cancelled') continue;
+      for (const edge of target.dependencies.filter(item => item.fromSubtaskId === publication.subtaskId)) {
+        for (const required of edge.requiredItems.filter(item => item.type === 'artifact')) {
+          const item = publication.originalCompletion.handoffs.find(handoff => handoff.toSubtaskId === target.id)
+            ?.items.find(handoff => handoff.key === required.key);
+          if (!item || item.type !== 'artifact' || item.paths.length === 0) {
+            throw new Error(`Missing declared artifact handoff: ${target.id}/${required.key}`);
+          }
+        }
+      }
+    }
     const sourceWorkspace = this.deps.workspaceRepository.findByIdentity(
       publication.taskId,
       publication.generationId,
@@ -755,11 +805,11 @@ export class WorkspacePublicationWorker {
       ? join(fileURLToPath(sourceWorkspace.rootUri), 'files')
       : null;
     return publication.originalCompletion.artifacts.flatMap(path => {
-      if (typeof path !== 'string' || path.trim().length === 0) return [];
+      if (typeof path !== 'string' || path.trim().length === 0) throw new Error('Invalid publication artifact path');
       if (!isAbsolute(path)) return [{ sourceRelativePath: path }];
       for (const root of [sourceFilesRoot, integrationWorkspace.filesPath]) {
         if (!root) continue;
-        const candidate = relative(root, path);
+        const candidate = relative(existsSync(root) ? realpathSync(root) : root, path);
         if (
           candidate
           && !candidate.startsWith('..')
@@ -769,7 +819,7 @@ export class WorkspacePublicationWorker {
           return [{ sourceRelativePath: candidate.split(sep).join('/') }];
         }
       }
-      return [];
+      throw new Error('Publication artifact is outside its authorized workspace');
     });
   }
 

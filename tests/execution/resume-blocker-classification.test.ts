@@ -35,6 +35,20 @@ describe('classifyResumeBlocker', () => {
     expect(classifyResumeBlocker('等待用户授权后继续')).toBe('explicit_resource');
   });
 
+  it.each(['logged_out', 'expired', 'unavailable'])(
+    'recognizes the official %s gate before a historical network failure', state => {
+      expect(classifyResumeBlocker(`official authorization state: ${state}`, {
+        kind: 'unknown', scope: 'attempt', code: 'unknown_executor_failure',
+        summary: 'Connection error.',
+      })).toBe('explicit_resource');
+    },
+  );
+
+  it('recognizes the authorization gate fallback without broadening unknown blockers', () => {
+    expect(classifyResumeBlocker('official_authorization_required')).toBe('explicit_resource');
+    expect(classifyResumeBlocker('unrecognized authorization failure')).toBe('unknown');
+  });
+
   it('keeps the dependency-publication classification', () => {
     expect(classifyResumeBlocker('waiting for dependency publication')).toBe('dependency_publication');
   });

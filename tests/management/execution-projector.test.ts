@@ -97,7 +97,7 @@ describe('ExecutionProjector', () => {
     expect(planning.proposal?.dependencies).toEqual([['sub_1', 'sub_2']]);
   });
 
-  it('projects a blocked Task with a waiting Kernel retry as waiting_retry', () => {
+  it('does not invent an automatic retry from a legacy Task dependency without a durable wake', () => {
     const timeline = makeProjector().project(makeTask({
       status: 'blocked',
       dependencies: [{
@@ -108,7 +108,7 @@ describe('ExecutionProjector', () => {
       }],
     }));
 
-    expect(timeline.status).toBe('waiting_retry');
+    expect(timeline.status).toBe('blocked');
   });
 
   it('有 decisions 时 authorization done', () => {

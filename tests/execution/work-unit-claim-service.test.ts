@@ -236,10 +236,10 @@ describe('WorkUnitClaimService', () => {
         ...authorizedBinding,
         agentClassRef: 'first-executor',
       },
-    });
+    }).catch(error => error);
 
     expect(probe.mock.calls.map(call => call[0].agentClassRef)).toEqual(['first-executor']);
-    expect(claim).toBeNull();
+    expect(claim).toMatchObject({ name: 'ExecutorProbeError', failure: { attemptStarted: false } });
     expect(repo.findAll()).toEqual([
       expect.objectContaining({ agentClassName: 'first-executor', state: 'failed' }),
     ]);
@@ -287,9 +287,9 @@ describe('WorkUnitClaimService', () => {
         ...authorizedBinding,
         agentClassRef: 'first-executor',
       },
-    });
+    }).catch(error => error);
 
-    expect(claim).toBeNull();
+    expect(claim).toMatchObject({ name: 'ExecutorProbeError', failure: { attemptStarted: false } });
     expect(repo.findAll().filter(unit => unit.agentClassKind === 'executor').map(unit => unit.state))
       .toEqual(['failed']);
   });
@@ -311,9 +311,9 @@ describe('WorkUnitClaimService', () => {
         id: 'subtask_1',
       },
       authorizedBinding,
-    });
+    }).catch(error => error);
 
-    expect(claim).toBeNull();
+    expect(claim).toMatchObject({ name: 'ExecutorProbeError', failure: { attemptStarted: false } });
     const failed = repo.findAll().find(unit => unit.state === 'failed');
     expect(failed).toBeDefined();
     expect(repo.listEvents(failed!.id).at(-1)).toMatchObject({

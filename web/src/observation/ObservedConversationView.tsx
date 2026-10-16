@@ -20,12 +20,13 @@ export interface ConversationViewportMemory {
 }
 
 /** Visible rows subscribe individually; the list only observes membership and freshness. */
-export const ObservedConversationView = memo(function ObservedConversationView({ conversationId, ws, http, memory, initialTurnId, initialTaskId, onOpenTrajectory, onOpenBilling, onOpenArtifact, onOpenSubtaskDetail }: {
+export const ObservedConversationView = memo(function ObservedConversationView({ conversationId, ws, http, memory, initialTurnId, initialTaskId, onOpenTrajectory, onOpenBilling, onOpenArtifact, onOpenAttachment, onOpenSubtaskDetail }: {
   conversationId: string; ws: WsClient; http: HttpClient; memory: ConversationViewportMemory;
   initialTurnId?: string;
   initialTaskId?: string;
   onOpenTrajectory(turnId: string): void; onOpenBilling(turnId: string): void;
   onOpenArtifact(artifact: ArtifactProjection): void;
+  onOpenAttachment?: (conversationId: string, attachment: import('../api/session-types').ConversationAttachment) => void;
   onOpenSubtaskDetail(turn: ConversationTurnProjection, subtaskId: string, title: string): void;
 }) {
   const store = ws.conversations;
@@ -208,7 +209,7 @@ export const ObservedConversationView = memo(function ObservedConversationView({
       <ObservedTurn id={row.id} conversationId={conversationId} store={store} ws={ws}
         latest={row.id === window.ids.at(-1)}
         http={http} measure={measure} onOpenTrajectory={onOpenTrajectory} onOpenBilling={onOpenBilling}
-        onOpenArtifact={onOpenArtifact} onOpenSubtaskDetail={onOpenSubtaskDetail} />
+        onOpenArtifact={onOpenArtifact} onOpenAttachment={onOpenAttachment} onOpenSubtaskDetail={onOpenSubtaskDetail} />
     </Fragment>)}
     <div style={{ height: Math.max(0, total - (visible.at(-1) ? visible.at(-1)!.top + visible.at(-1)!.height : 0)) }} aria-hidden />
     </div>
@@ -219,9 +220,10 @@ export const ObservedConversationView = memo(function ObservedConversationView({
   </div>;
 });
 
-const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, http, ws, latest, measure, onOpenTrajectory, onOpenBilling, onOpenArtifact, onOpenSubtaskDetail }: {
+const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, http, ws, latest, measure, onOpenTrajectory, onOpenBilling, onOpenArtifact, onOpenAttachment, onOpenSubtaskDetail }: {
   store: ConversationEntityStore; conversationId: string; id: string; http: HttpClient; ws: WsClient; latest: boolean;
   onOpenArtifact(artifact: ArtifactProjection): void;
+  onOpenAttachment?: (conversationId: string, attachment: import('../api/session-types').ConversationAttachment) => void;
   onOpenSubtaskDetail(turn: ConversationTurnProjection, subtaskId: string, title: string): void;
   measure(id: string, height: number): void; onOpenTrajectory(id: string): void; onOpenBilling(id: string): void;
 }) {
@@ -247,7 +249,7 @@ const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, htt
   if (!turn || !projection) return null;
   return <div ref={root} data-observed-turn={id}>
     <ConversationTurnView turn={projection} onOpenTrajectory={onOpenTrajectory} onOpenBilling={onOpenBilling}
-      onOpenArtifact={onOpenArtifact}
+      onOpenArtifact={onOpenArtifact} onOpenAttachment={onOpenAttachment}
       liveExecutionPanel={showExecution ? (plannerActivity(projection)
         ? <LivePlanningPanel turn={projection} />
         : <LiveExecutionPanel turn={projection} onSelectSubtask={(subtaskId, title) => onOpenSubtaskDetail(projection, subtaskId, title)} />) : undefined} />

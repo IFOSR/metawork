@@ -572,7 +572,8 @@ export class ConversationGatewayRuntime {
           delivery.content, delivery.certification, delivery.completeness, delivery.resultId, origin,
         );
       }
-      const backgroundWorkPending = conversation.hasBackgroundWork();
+      // A query/control reply is complete even while another Task continues.
+      const backgroundWorkPending = !isControlCommand(mailboxCommand) && conversation.hasBackgroundWork();
       const result = await this.publishResultDelivery(
         conversation.conversationId,
         mailboxCommand.requestId,

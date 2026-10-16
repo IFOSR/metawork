@@ -170,6 +170,7 @@ function createFakeGateway(
 
 function stateWithConversation(controller: MetaWorkTuiController): void {
 	// 通过事件建立 Workspace 与 Conversation 目录。
+	// biome-ignore lint/complexity/useLiteralKeys: Test fixture injects a private transport event without exposing it as public API.
 	controller["handleEvent"](
 		event("workspace_stream", 1, "workspace_directory_snapshot", {
 			workspaceId: "ws_1",
@@ -611,8 +612,8 @@ describe("metawork-tui controller", () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		const requestId =
 			gateway.submitted.at(-1)?.envelope.requestId ??
-			controller["getView"]().client.completionRequests.conv_1?.requestId;
-		const knownRequestId = controller["getView"]().client.completionRequests.conv_1?.requestId ?? requestId!;
+			controller.getView().client.completionRequests.conv_1?.requestId;
+		const knownRequestId = controller.getView().client.completionRequests.conv_1?.requestId ?? requestId!;
 		// 旧 requestId 的响应必须被丢弃。
 		gateway.emit(
 			event("client_connection_x", 1, "command_completion", {

@@ -4,6 +4,7 @@ import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { QueuedExecutionRequest } from './session-helpers.js';
 import type { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
 import type { SessionPresentationService } from './session-presentation-service.js';
+import type { ExecutionTraceAppendInput } from '../execution/execution-trace.js';
 import { isUnknownTaskBlocker } from '../task/task-blocker-guidance.js';
 
 export interface SessionTaskExecutionApplicationDeps {
@@ -12,6 +13,7 @@ export interface SessionTaskExecutionApplicationDeps {
   presentation: SessionPresentationService;
   callbacks: {
     appendOutput(...lines: string[]): void;
+    appendExecutionTrace?(input: ExecutionTraceAppendInput): void;
     appendGuidance(scene: string, suggestion: { taskId: string; recommendedAction: string; reasons: string[] }): void;
     refreshRuntimeState(): void;
     startBackgroundExecution(taskId: string, launch: () => Promise<void>): Promise<void>;
@@ -23,15 +25,19 @@ export interface TaskExecutionStart {
   completion: Promise<void>;
 }
 
-export function formatTaskResumeDecision(taskId: string, decision: KernelDecision): string {
+export function formatTaskResumeDecision(
+  taskId: string,
+  decision: KernelDecision,
+  taskStatus?: Task['status'],
+): string {
   if (decision.action.type === 'resume_task') {
     return `任务 #${taskId} 已获 Kernel 授权，等待执行调度；实际启动状态请查看执行轨迹`;
   }
-  const explanation = resumeDecisionExplanation(decision);
+  const explanation = resumeDecisionExplanation(decision, taskStatus);
   return `任务 #${taskId} 未重新执行：${explanation}（Kernel: ${decision.reason}）`;
 }
 
-function resumeDecisionExplanation(decision: KernelDecision): string {
+function resumeDecisionExplanation(decision: KernelDecision, taskStatus?: Task['status']): string {
   if (decision.reason === 'running Task has no exact recoverable Subtask') {
     return '当前任务没有可安全恢复的精确 Subtask，未启动新的 Executor';
   }
@@ -39,7 +45,12 @@ function resumeDecisionExplanation(decision: KernelDecision): string {
     return '当前任务没有可恢复的 Subtask，未启动新的 Executor';
   }
   if (decision.reason === 'resume target is not an active recoverable Task') {
-    return '目标任务不处于可恢复状态，未启动新的 Executor';
+    const terminalState = taskStatus === 'cancelled'
+      ? '该任务已经取消，不能继续恢复'
+      : taskStatus && ['done', 'failed', 'archived'].includes(taskStatus)
+        ? `该任务已经处于终态（${taskStatus}），不能继续恢复`
+        : '该任务已经不处于可恢复状态，不能继续恢复';
+    return `目标任务不处于可恢复状态，未启动新的 Executor。${terminalState}；如果还需要执行，请新建任务`;
   }
   if (
     decision.action.type === 'block_work'
@@ -86,6 +97,38 @@ export class SessionTaskExecutionApplicationService {
         decisionSettled = true;
         if (value.action.type === 'resume_task' || value.action.type === 'park_for_replan') {
           this.appendExecutionGuidance(task, request);
+        }
+        // Planner-authorized task controls run in the background. Their
+        // initial Kernel decision used to stay inside this promise, leaving
+        // the user-facing Turn in "preparing" forever when the Kernel
+        // correctly returned no_op (for example, a cancelled Task cannot be
+        // resumed). Publish the authoritative outcome and close the trace.
+        if (
+          request.kernelDecisionId
+          && (request.executionMode === 'resume-blocked' || request.executionMode === 'resume-parked')
+          && value.action.type !== 'resume_task'
+        ) {
+          const message = formatTaskResumeDecision(task.id, value, task.status);
+          this.deps.callbacks.appendOutput(message);
+          this.deps.callbacks.appendExecutionTrace?.({
+            phase: 'delivery',
+            actor: 'runtime',
+            kind: 'resume_not_executed',
+            status: 'completed',
+            title: 'Task resume completed without execution',
+            summary: message,
+            details: {
+              taskId: task.id,
+              decisionId: value.id,
+              action: value.action.type,
+              reason: value.reason,
+              executorStarted: false,
+            },
+            eventKey: `${value.id}:resume_not_executed`,
+            taskId: task.id,
+            traceStatus: 'completed',
+          });
+          this.deps.callbacks.refreshRuntimeState();
         }
         resolveDecision(value);
       },

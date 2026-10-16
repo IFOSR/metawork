@@ -97,6 +97,23 @@ function makeSession(
 }
 
 describe('ConversationSession', () => {
+  it.each(['/task dashboard', '/task show ppt-task', '/task list'])('reads %s without replacing the active turn or its cancellation controller', async text => {
+    const trace = new InteractionTraceStream('conv');
+    const commands: string[] = [];
+    const session = new ConversationSession({
+      conversationId: 'conv', plannerSessionId: 'planner', runtimePort: makePort('local-default'),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }), interactionTraceStream: trace,
+      handleCommand: async input => { commands.push(input); return false; },
+    });
+    trace.beginTurn({ turnId: 'active-turn', userInput: 'build a PPT' });
+    const controller = Reflect.get(session, 'turnCancellation');
+    await session.executeGatewayCommand({ kind: 'slash_command', text });
+    expect(commands).toEqual([text]);
+    expect(trace.getSnapshot()?.turnId).toBe('active-turn');
+    expect(trace.getSnapshot()?.status).toBe('running');
+    expect(Reflect.get(session, 'turnCancellation')).toBe(controller);
+    await session.dispose();
+  });
   it('delivers results produced after an asynchronous resume command returns', async () => {
     const release = deferred<void>();
     const delivered: unknown[] = [];

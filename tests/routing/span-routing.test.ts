@@ -120,6 +120,27 @@ function buildRequest(): SpanEvaluationRequest {
 }
 
 describe('Span question builder', () => {
+  it.each([7, 32])('budgets rich Chinese metadata for %i candidates without dropping candidates', count => {
+    const classes = agentClasses();
+    classes['codex-fast']!.responsibility = '核实公开事实并生成演示文稿'.repeat(80);
+    const candidates = groups()[1]!;
+    candidates.eligible = Array.from({ length: count }, (_, index) => ({
+      ...candidates.eligible[0]!, modelRef: `model-${index}`, modelId: `model-${index}`,
+      description: '适合研究分析和复杂文档编辑任务'.repeat(120),
+    }));
+    const built = buildSpanSubtaskEvaluationRequest({ subtask: subtask(), groups: [candidates], agentClasses: classes });
+    if (count === 32) {
+      expect(built).toEqual({ ok: false, reason: 'span_input_too_large' });
+    } else {
+      expect(built.ok).toBe(true);
+      if (!built.ok) return;
+      expect(built.request.candidates).toHaveLength(count);
+      const bytes = Buffer.byteLength(JSON.stringify({ ...built.request, state: JSON.stringify(built.request.state) }));
+      expect(bytes).toBeGreaterThan(32 * 1024);
+      expect(bytes).toBeLessThanOrEqual(128 * 1024);
+    }
+  });
+
   it('assigns canonical question ids independently of group order', () => {
     const forward = buildSpanSubtaskEvaluationRequest({
       subtask: subtask(), groups: groups(), agentClasses: agentClasses(),
