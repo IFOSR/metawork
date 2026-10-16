@@ -198,7 +198,8 @@ export class WorkspaceConversationMigrator {
     if (
       journal.version !== 1
       || journal.state !== 'prepared'
-      || !stageRoot.startsWith(`${this.workspaceCatalogRoot}/.migration-`)
+      || dirname(stageRoot) !== resolve(this.workspaceCatalogRoot)
+      || !basename(stageRoot).startsWith('.migration-')
     ) {
       throw new Error('Invalid Workspace migration journal');
     }

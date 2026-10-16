@@ -6,6 +6,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { WorkspaceHandle, WorkspaceIdentity, WorkspaceStore } from './workspace-store.js';
 import { boundedPathSegment } from '../utils/bounded-path-segment.js';
+import { isPathInside } from '../utils/path-containment.js';
 
 const execFileAsync = promisify(execFile);
 const PLAIN_SOURCE_EXCLUDED_TOP_LEVEL = new Set([
@@ -534,7 +535,7 @@ export class ManagedGitWorkspaceService {
     // clear error instead of Node cp's EINVAL on recursive self-copy.
     const realSource = await realpath(sourceRoot).catch(() => sourceRoot);
     const realImportParent = await realpath(dirname(importRoot)).catch(() => dirname(importRoot));
-    if (realSource === realImportParent || realImportParent.startsWith(`${realSource}/`)) {
+    if (realSource === realImportParent || isPathInside(realSource, realImportParent)) {
       throw new Error(
         `refusing to import workspace source into itself: ${sourceRoot} contains ${importRoot}`,
       );
