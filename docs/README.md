@@ -136,6 +136,7 @@ replacing those semantics.
 ## Local Implementation Pending Validation
 
 - [长期记忆接入 TDAI](plans/2026-10-22-memory-system-tdai-integration-design.md)：记忆引擎接入、沉淀调度、证据投递与设置页管理面已完成源码实施与本地端到端验证（真实引擎回路 + 用户旅程用例）；等待真实账号的体感验收。
+- [Windows 原生 Web 独立修复计划](plans/2026-10-16-windows-native-web-isolated-fix.md)：用户已同意在 `fix/windows-native-web` 分支进行 Windows 本机修复；范围为原生 Server + 浏览器 Web，不制作 Windows Desktop。运行代码尚未修改，采用独立预发布，合入主线前须通过 macOS/Linux 回归。
 
 - [轨迹页执行计划内嵌 DAG](plans/2026-10-03-work-graph-inline-dag.md)：卡片内展示真实依赖箭头、并行分支与汇合，节点选择联动详情，支持移动端滚动；本地实现并验证，未部署。
 - [TUI Workspace task dashboard and switching](plans/2026-10-03-tui-workspace-task-dashboard.md): workspace task overview, task-to-Turn navigation and independent drafts; local only pending user validation.

@@ -1,5 +1,12 @@
 # MetaWork Windows 原生安装器修复方案（完整版）
 
+> **状态：历史排障记录，实施方案已被替代（2026-10-16）。**
+> Windows 原生 Server + 浏览器 Web 的当前实施边界、修复约束与验收要求见
+> [Windows 原生 Web 独立修复计划](2026-10-16-windows-native-web-isolated-fix.md)。
+> 本文保留历史现象与临时补丁记录，不能直接按后文代码示例实施。
+> 特别是统一 shell 启动、数据库链接改硬链接/复制、先删指针再 rename、
+> 跳过全部文件 fsync 等建议，均未通过当前源码与恢复契约审查。
+
 > 最终目标（验收标准）：
 > 1. 用户执行 **一条命令**（`.\metawork-install.ps1`）即完成安装；
 > 2. 安装后用户直接执行 **`metawork server start`** 即启动成功（输出 `MetaWork Server ready`）。
