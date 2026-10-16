@@ -26,6 +26,7 @@ import type {
   PlannerRunProgressPayload,
 } from './planner-progress.js';
 import { buildPlannerMcpLaunchEnv } from './planner-mcp-launch-env.js';
+import { resolveExecutorLaunch } from '../utils/executor-tool-path.js';
 import { materializePlannerRuntimeHome } from './planner-runtime-home.js';
 import {
   PlannerRunError,
@@ -1006,9 +1007,20 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     const schemaPath = this.deps.schemaPath
       ?? process.env.ANYFUSION_PLANNER_SCHEMA_PATH
       ?? process.env.METACLAW_PLANNER_SCHEMA_PATH;
+    // The vendored Planner ships as a `.js` entry. POSIX starts it through its
+    // shebang; Windows cannot execute a `.js` file directly (EFTYPE), so the
+    // launch is resolved to `node <entry>` there. Never a shell: Planner argv
+    // carries the turn's prompt and must not be rewritten by cmd.exe.
+    const plannerLaunch = resolveExecutorLaunch(command);
+    if (plannerLaunch.shellShim) {
+      throw new Error(
+        `Planner command ${command} is an unresolvable Windows script shim;`
+        + ' set METACLAW_PLANNER_COMMAND to the Planner JavaScript entry',
+      );
+    }
     return {
-      command,
-      args,
+      command: plannerLaunch.executable,
+      args: [...plannerLaunch.prefixArgs, ...args],
       cwd,
       sessionDir,
       env: {
