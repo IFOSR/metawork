@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { access, mkdir, open, readFile, readdir, rename, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { isPathStrictlyInside } from '../utils/path-containment.js';
+import { syncDirectory } from '../platform/durable-fs.js';
 import type { ConversationTurn } from '../management/web-session-types.js';
 import { boundWebSessionTurns } from '../management/web-session-types.js';
 import { isValidConversationId } from '../session/conversation-types.js';
@@ -163,7 +165,7 @@ export class FileConversationPresentationStore implements ConversationPresentati
       throw new Error(`Invalid Conversation ID: ${conversationId}`);
     }
     const path = resolve(this.recordsDir, `${conversationId}.json`);
-    if (!path.startsWith(`${this.recordsDir}/`)) {
+    if (!isPathStrictlyInside(this.recordsDir, path)) {
       throw new Error(`Invalid Conversation ID: ${conversationId}`);
     }
     return path;
@@ -238,18 +240,6 @@ async function atomicWriteJson(path: string, value: unknown): Promise<void> {
     await handle?.close().catch(() => undefined);
     await unlink(temporaryPath).catch(() => undefined);
     throw error;
-  }
-}
-
-// Windows cannot fsync read-only handles or directories (FlushFileBuffers
-// needs GENERIC_WRITE); NTFS journaling already covers the rename.
-async function syncDirectory(path: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  const handle = await open(path, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
   }
 }
 
