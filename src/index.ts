@@ -9,6 +9,8 @@ import { runGatewayPairingCommand } from './gateway/pairing-cli.js';
 import { runTaskStateReconciler } from './execution/task-state-reconciler.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from './account/account-id.js';
 import { resolveAccountPaths } from './account/account-paths.js';
+import { resolveGatewaySocketPath } from './gateway/gateway-paths.js';
+import { resolveMetaclawDir } from './utils/paths.js';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
@@ -81,9 +83,12 @@ async function restartServerWithCurrentRelease(): Promise<void> {
     detached: true,
   });
   child.unref();
+  // The gateway endpoint is a unix socket on POSIX and a named pipe on Windows,
+  // so the readiness probe must ask for the resolved endpoint, not a file path.
+  const gatewaySocketPath = resolveGatewaySocketPath(resolveMetaclawDir());
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
-    if (existsSync(join(paths.data, 'gateway.sock'))) {
+    if (existsSync(gatewaySocketPath)) {
       process.stdout.write('MetaWork Server 已启动。\n');
       return;
     }
