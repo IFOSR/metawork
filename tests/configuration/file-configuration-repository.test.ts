@@ -58,10 +58,14 @@ describe('FileConfigurationRepository', () => {
     expect((await repository.getActiveSnapshot()).revisionId).toBe('revision-1');
     expect(await readFile(join(root, 'config', 'active', 'config.yaml'), 'utf8'))
       .toContain('schemaVersion: 2');
-    expect((await stat(join(root, 'config', 'revisions', 'revision-1'))).mode & 0o777)
-      .toBe(0o555);
-    expect((await stat(join(root, 'config', 'revisions', 'revision-1', 'config.yaml'))).mode & 0o777)
-      .toBe(0o444);
+    // Windows has no POSIX permission bits: `makeImmutable` only clears the
+    // directory write bit, so the mode assertions are POSIX-only.
+    if (process.platform !== 'win32') {
+      expect((await stat(join(root, 'config', 'revisions', 'revision-1'))).mode & 0o777)
+        .toBe(0o555);
+      expect((await stat(join(root, 'config', 'revisions', 'revision-1', 'config.yaml'))).mode & 0o777)
+        .toBe(0o444);
+    }
     await expect(repository.writeRevision({
       revisionId: 'revision-1',
       contentHash: 'hash-1',
@@ -132,6 +136,41 @@ describe('FileConfigurationRepository', () => {
       activeRevisionId: 'revision-2',
     });
     expect((await repository.journal.read())?.phase).toBe('committed');
+  });
+
+  it('keeps the previous revision when a pointer vanishes mid-activation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-config-missing-pointer-'));
+    roots.push(root);
+    const repository = new FileConfigurationRepository(join(root, 'config'));
+    await repository.initialize();
+    for (const revisionId of ['revision-1', 'revision-2']) {
+      await repository.writeRevision({
+        revisionId,
+        contentHash: revisionId,
+        files: { 'config.yaml': dump(config(), { noRefs: true, sortKeys: true }) },
+      });
+    }
+    await repository.activateRevision('revision-1', null, 'activation-1');
+    await repository.journal.writePrepared({
+      transactionId: 'activation-2',
+      previousRevisionId: 'revision-1',
+      nextRevisionId: 'revision-2',
+    });
+    // Platforms without atomic pointer replacement remove the old pointer before
+    // installing the new one, so a crash in that window leaves no pointer at all.
+    await rm(join(root, 'config', 'active'));
+
+    if (process.platform === 'win32') {
+      expect(await repository.recover()).toEqual({
+        status: 'recovered',
+        activeRevisionId: 'revision-1',
+      });
+      expect((await repository.getActiveSnapshot()).revisionId).toBe('revision-1');
+      return;
+    }
+    // POSIX replaces the pointer with one rename, so a missing pointer is not a
+    // state this platform's activation can produce and stays recovery-blocked.
+    await expect(repository.recover()).rejects.toBeInstanceOf(RecoveryBlockedError);
   });
 
   it('enters recovery-blocked for missing or hash-mismatched active revisions', async () => {
