@@ -2,6 +2,7 @@ import { verifyExecutorRuntimeHome } from './runtime-binding-verification.js';
 import { writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { resolveExecutorLaunch } from '../utils/executor-tool-path.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { OperationActivityMonitor, type OperationHealth } from './operation-activity-monitor.js';
 import type { RuntimePrivateConfigurationBinding } from '../configuration/types.js';
@@ -476,9 +477,19 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       return Promise.reject(new Error(`local CLI attempt is already running: ${input.attemptId}`));
     }
 
+    const launch = resolveExecutorLaunch(input.command);
+    // A script shim whose Node entry cannot be recovered would have to run
+    // through cmd.exe, which rewrites long argument lists; an attempt prompt
+    // must never be handed to a shell.
+    if (launch.shellShim) {
+      return Promise.reject(new Error(
+        `cannot start local CLI ${input.command}: unresolved Windows script shim.`
+        + ' Install an executable entry or point METAWORK_MANAGED_PI at one.',
+      ));
+    }
+
     return new Promise(resolve => {
-      const child = this.spawnProcess(input.command, input.args, {
-        cwd: input.cwd,
+      const child = this.spawnProcess(launch.executable, [...launch.prefixArgs, ...input.args], {        cwd: input.cwd,
         env: {
           ...safeHostEnvironment(this.hostEnvironment),
           ...input.environment,

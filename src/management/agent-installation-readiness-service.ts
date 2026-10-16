@@ -2,6 +2,10 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { safeHostEnvironment } from '../executor/harness-driver.js';
+import {
+  executorLaunchArgv,
+  resolveExecutorLaunch,
+} from '../utils/executor-tool-path.js';
 import { resolveAgentDisplayName } from '../configuration/user-facing-names.js';
 import {
   AGENT_INSTALLATION_CATALOG,
@@ -197,7 +201,10 @@ export async function defaultVersionProbe(
   timeoutMs: number,
 ): Promise<VersionProbeResult> {
   try {
-    const result = await execFileAsync(command, [...args], {
+    // A Windows script shim is started through its Node entry; only an
+    // unrecoverable shim falls back to a shell, which is safe for a short probe.
+    const launch = executorLaunchArgv(resolveExecutorLaunch(command), args);
+    const result = await execFileAsync(launch.command, launch.args, {
       env: safeHostEnvironment(process.env),
       timeout: timeoutMs,
       maxBuffer: 16 * 1024,
