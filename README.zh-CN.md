@@ -61,7 +61,9 @@ AnyFusion 标识。
 当前发布版本是 **v0.1.17**，包含统一的四态任务界面、安全未认证结果的接受与重试、
 官方账号支付结算、安装恢复修复，以及最新的 Runtime/Web/Desktop 构建。Release
 同时提供 macOS arm64 Desktop DMG，以及 macOS arm64、macOS x64 和 Linux x64 的签名
-Runtime、Planner 归档。Windows 将通过独立的 `v0.1.17-windows` tag 后续发布。
+Runtime、Planner 归档。Desktop 仅支持 Apple Silicon；macOS x64 和 Linux x64 请使用
+Server 安装包提供的 Web、TUI 或飞书客户端。Windows 将通过独立的
+`v0.1.17-windows` tag 后续发布。
 
 - [下载 macOS arm64 DMG](https://github.com/IFOSR/metawork/releases/download/v0.1.17/MetaWork-darwin-arm64.dmg)
 - [查看 v0.1.17 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.17)
@@ -78,7 +80,7 @@ Web 已包含在 Server 安装包中，不需要安装 Desktop。
 
 | 希望使用的界面 | 安装内容 | 入口 |
 | --- | --- | --- |
-| macOS 桌面应用 | 对应 Mac 架构的 Desktop DMG | 打开 MetaWork.app |
+| macOS Apple Silicon 桌面应用 | Desktop DMG | 打开 MetaWork.app |
 | 浏览器 | 原生 Server 安装包 | 启动 Server，再执行 `metawork web` |
 | 终端 TUI | 同一 Server 安装包 | 启动 Server，再执行 `metawork tui` |
 | 飞书 | 同一 Server 安装包，再配置飞书应用 | `metawork server setup-feishu` |

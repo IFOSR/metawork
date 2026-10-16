@@ -75,7 +75,9 @@ surface, safe uncertified-result acceptance and retry, official account payment
 settlement, installation recovery fixes, and the latest Runtime/Web/Desktop
 builds. The internal release includes a self-contained macOS arm64 Desktop DMG
 plus signed Runtime and Planner archives for macOS arm64, macOS x64 and Linux
-x64. Windows is intentionally deferred to the separate `v0.1.17-windows` tag.
+x64. Desktop is available only on Apple Silicon; macOS x64 and Linux x64 use
+the Web, TUI or Feishu clients with the Server package. Windows is intentionally
+deferred to the separate `v0.1.17-windows` tag.
 
 - [Download the macOS arm64 DMG](https://github.com/IFOSR/metawork/releases/download/v0.1.17/MetaWork-darwin-arm64.dmg)
 - [View the v0.1.17 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.17)
@@ -93,7 +95,7 @@ account data. Web is included in the Server package and does not require Desktop
 
 | Preferred interface | Install | Open |
 | --- | --- | --- |
-| macOS Desktop | Desktop DMG | MetaWork.app |
+| macOS Apple Silicon Desktop | Desktop DMG | MetaWork.app |
 | Browser | Native Server package | Start Server, then `metawork web` |
 | Terminal UI | Same Server package | Start Server, then `metawork tui` |
 | Feishu | Same Server package and Feishu app configuration | `metawork server setup-feishu` |
