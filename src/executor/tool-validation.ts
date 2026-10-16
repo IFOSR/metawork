@@ -1,7 +1,12 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { isAbsolute } from 'node:path';
-import { executableFile, resolveExecutorTool } from '../utils/executor-tool-path.js';
+import {
+  executableFile,
+  executorLaunchArgv,
+  resolveExecutorLaunch,
+  resolveExecutorTool,
+} from '../utils/executor-tool-path.js';
 import { safeHostEnvironment } from './harness-driver.js';
 
 /** Bounded local protocol probe; never invokes a model or interprets a shell command. */
@@ -11,9 +16,13 @@ export async function validateCodexCommand(command: string): Promise<void> {
   }
   const path = resolveExecutorTool(command);
   if (!executableFile(path)) throw new Error('找不到可执行的 Codex，请选择程序文件或先安装 Codex。');
-  const run = (args: string[]) => promisify(execFile)(path, args, {
-    env: safeHostEnvironment(process.env), timeout: 5000, maxBuffer: 64 * 1024,
-  });
+  const launch = resolveExecutorLaunch(path);
+  const run = (args: string[]) => {
+    const argv = executorLaunchArgv(launch, args);
+    return promisify(execFile)(argv.command, argv.args, {
+      env: safeHostEnvironment(process.env), timeout: 5000, maxBuffer: 64 * 1024,
+    });
+  };
   try {
     const version = await run(['--version']);
     if (!/^codex(?:-cli)?\s+\d/imu.test(version.stdout)) throw new Error('identity');

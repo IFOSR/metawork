@@ -1,6 +1,10 @@
 import { access } from 'node:fs/promises';
 import { delimiter, isAbsolute, join } from 'node:path';
-import { executableFile, resolveExecutorTool } from '../utils/executor-tool-path.js';
+import {
+  executableFile,
+  resolveCommandInDirectory,
+  resolveExecutorTool,
+} from '../utils/executor-tool-path.js';
 import type {
   CompiledConfigurationRevision,
   ConfigurationProbeResult,
@@ -90,5 +94,9 @@ export async function commandExistsOnPath(
 ): Promise<boolean> {
   if (isAbsolute(command)) return executableFile(command);
   if (command.includes('/') || command.includes('\\')) return false;
-  return searchPath.split(delimiter).some(directory => isAbsolute(directory) && executableFile(join(directory, command)));
+  // Same resolution order the executor uses, so an installation that probes a
+  // command can also start it (Windows prefers `pi.exe`/`pi.cmd` over the POSIX
+  // shim npm writes under the bare name).
+  return searchPath.split(delimiter)
+    .some(directory => isAbsolute(directory) && resolveCommandInDirectory(directory, command) !== null);
 }

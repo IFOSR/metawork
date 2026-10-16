@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { executorLaunchArgv, resolveExecutorLaunch } from '../utils/executor-tool-path.js';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { chmod, copyFile, mkdir, writeFile } from 'node:fs/promises';
@@ -656,7 +657,8 @@ function assistantTerminalError(message: Record<string, unknown>): string | null
 
 async function defaultProbeCommand(command: string, args: readonly string[]) {
   try {
-    const result = await execFileAsync(command, [...args], {
+    const launch = executorLaunchArgv(resolveExecutorLaunch(command), args);
+    const result = await execFileAsync(launch.command, launch.args, {
       env: { ...safeHostEnvironment(process.env), PYTHONDONTWRITEBYTECODE: '1' },
       timeout: 5000, maxBuffer: 64 * 1024,
     });
