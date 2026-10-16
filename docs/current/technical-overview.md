@@ -625,8 +625,38 @@ AnyFusion-Pi checkout is preserved and built without being overwritten.
 ## Windows Install
 
 The native Windows x64 release uses Node named pipes for the local Gateway and
-Planner Host. Windows Developer Mode (or an elevated terminal) is required for
-the transactional NTFS release pointers. WSL2 remains a supported Linux
+Planner Host. Directory pointers (the active configuration revision, the current
+release and the compiled agent runtime) are NTFS junctions, the only directory
+link an ordinary user can create: no administrator rights and no Developer Mode
+are required for them. A junction stores an absolute target, so every reader
+normalizes it back to the relative pointer contract before validating it, and
+`active` still resolves as
+`accounts/local-default/config/active -> revisions/<revision-id>/`.
+
+Windows cannot rename over an existing junction, so replacing an already active
+pointer removes the old link before installing the new one. The pointer is
+missing for that window; the prepared activation journal written before the
+swap makes the previous revision authoritative again on recovery, and Server
+startup resolves a prepared release activation before opening the database. See
+[ADR-0027](../adr/0027-configuration-control-plane-and-revision-authority.md)
+and the 2026-10-16 amendment to
+[ADR-0030](../adr/0030-native-release-trust-and-upgrade-transaction.md).
+
+The database pointer follows the same split: on Windows
+`<account>/data/database-current` is a junction to
+`database-revisions/<revision>/` and the database file is
+`<...>/database-current/anyfusion.db`; on POSIX it stays
+`<account>/data/anyfusion.db` as a relative file symlink. A plain account
+database is converted behind a recorded `database-pointer-migration.json`
+journal, and startup finishes or repairs an interrupted conversion before the
+database is opened.
+
+File content durability is unchanged on Windows (`FlushFileBuffers` through a
+write-capable handle). Windows has no directory flush that Node can reach, so
+directory-entry flushing is POSIX-only and the rename ordering is the strongest
+guarantee available there.
+
+WSL2 remains a supported Linux
 compatibility path when native Windows executor tooling is unavailable.
 
 Install WSL2 from PowerShell:
@@ -1381,7 +1411,8 @@ active pointer is:
   -> revisions/<revision-id>/
 ```
 
-Do not edit immutable revision files in place. Production Provider credentials
+On POSIX `active` is a relative directory symlink; on Windows it is a junction
+with the same resolved target. Do not edit immutable revision files in place. Production Provider credentials
 resolve through the existing account SecretStore seam backed by
 `~/.metawork/credentials.json` by default, or
 `<install-root>/credentials.json` when the MetaWork root is overridden. Web
