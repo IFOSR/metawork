@@ -68,6 +68,8 @@ describe('release build entry points', () => {
     expect(workflow).toContain('release_id');
     expect(workflow).toContain('--release-id');
     expect(workflow).toContain('v${VERSION}');
+    expect(workflow).toContain("- '!v*-windows'");
+    expect(workflow).not.toContain('Build and package Windows release');
     expect(workflow).toContain('--channel stable');
     expect(workflow).not.toContain('--prerelease');
     expect(workflow).not.toContain("if: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY != '' }}");

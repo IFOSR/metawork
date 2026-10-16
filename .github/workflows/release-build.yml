@@ -5,6 +5,7 @@ on:
   push:
     tags:
       - 'v*'
+      - '!v*-windows'
 
 permissions:
   contents: write
@@ -99,24 +100,6 @@ jobs:
             --artifact-base-url "https://github.com/IFOSR/metawork/releases/download/v$(node -p "require('./package.json').version")" \
             --signing-key "$RUNNER_TEMP/metawork-release-key.pem" \
             --out-dir "$RUNNER_TEMP/metawork-release"
-
-      - name: Build and package Windows release
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          METAWORK_RELEASE_SIGNING_KEY: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY }}
-        run: |
-          if (-not $env:METAWORK_RELEASE_SIGNING_KEY) {
-            throw 'METAWORK_RELEASE_SIGNING_KEY is required for published artifacts'
-          }
-          npm run build:release -- `
-            --platform ${{ matrix.platform }} `
-            --arch ${{ matrix.arch }} `
-            --channel stable `
-            --release-id ${{ steps.release.outputs.release_id }} `
-            --artifact-base-url "https://github.com/IFOSR/metawork/releases/download/v$(node -p "require('./package.json').version")" `
-            --signing-key "$env:RUNNER_TEMP\metawork-release-key.pem" `
-            --out-dir "$env:RUNNER_TEMP\metawork-release"
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
