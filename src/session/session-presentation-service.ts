@@ -42,7 +42,7 @@ export interface ExecutorRegisterWizardSummaryInput {
 const CLEAR_SCOPE_LABELS: Record<TaskClearScope, string> = {
   all: '所有未完成任务',
   parked: '挂起任务',
-  blocked: '阻塞任务',
+  blocked: '需要处理',
 };
 
 export type {
@@ -196,14 +196,14 @@ export class SessionPresentationService {
   }): string {
     if (input.scope === 'blocked') {
       if (input.blockedTasks.length === 0) {
-        return '当前没有阻塞任务。';
+        return '当前没有需要处理的任务。';
       }
 
       return [
-        `当前有 ${input.blockedTasks.length} 个阻塞任务：`,
+        `当前有 ${input.blockedTasks.length} 个需要处理的任务：`,
         ...input.blockedTasks.map(task => [
-          `  #${task.id} [BLOCKED] ${task.title}`,
-          `    → 阻塞原因：${formatBlockedTaskReason(task.blockReason)}`,
+          `  #${task.id} [NEEDS_ACTION] ${task.title}`,
+          `    → 原因：${formatBlockedTaskReason(task.blockReason)}`,
           `    → 建议动作：${formatBlockedTaskNextStep(task.id, task.blockReason)}`,
         ].join('\n')),
       ].join('\n');
@@ -221,7 +221,7 @@ export class SessionPresentationService {
 
       const lines = [
         '当前没有正在执行的任务。',
-        `  总览：待执行 ${input.activeTasks.filter(task => task.status === 'ready' || task.status === 'created').length} / 挂起 ${input.activeTasks.filter(task => task.status === 'parked').length} / 阻塞 ${input.activeTasks.filter(task => task.status === 'blocked').length}`,
+        `  总览：待执行 ${input.activeTasks.filter(task => task.status === 'ready' || task.status === 'created').length} / 挂起 ${input.activeTasks.filter(task => task.status === 'parked').length} / 需要处理 ${input.activeTasks.filter(task => task.status === 'blocked').length}`,
       ];
       if (input.latestDone) {
         lines.push(`  最近完成：#${input.latestDone.id} ${input.latestDone.title}`);
@@ -234,11 +234,11 @@ export class SessionPresentationService {
 
     const lines = [
       '当前任务状态：',
-      `  总览：活跃 ${input.dashboard.summary.active} / 阻塞 ${input.dashboard.summary.blocked} / 挂起 ${input.dashboard.summary.parked} / 已完成 ${input.dashboard.summary.done}`,
+      `  总览：活跃 ${input.dashboard.summary.active} / 需要处理 ${input.dashboard.summary.blocked} / 挂起 ${input.dashboard.summary.parked} / 已完成 ${input.dashboard.summary.done}`,
     ];
 
     if (input.dashboard.blockedTasks.length > 0) {
-      lines.push('  阻塞任务：');
+      lines.push('  需要处理：');
       lines.push(...input.dashboard.blockedTasks.map(task => `    #${task.id} ${task.title}，原因：${task.blockReason}`));
     }
 
@@ -288,19 +288,19 @@ export class SessionPresentationService {
     const lines = [
       '',
       '┌─ 任务池看护提醒 ─────────────────────────────────┐',
-      `│ 当前不可自动执行：阻塞 ${blockedTasks.length} / 挂起 ${parkedTasks.length}`,
+      `│ 当前不可自动执行：需要处理 ${blockedTasks.length} / 挂起 ${parkedTasks.length}`,
     ];
 
     if (blockedTasks.length > 0) {
-      lines.push('│ 阻塞任务：');
+      lines.push('│ 需要处理：');
       for (const task of blockedTasks.slice(0, this.queueLimit)) {
-        const reason = getWaitingBlockReason(task) || '等待解除阻塞';
+        const reason = getWaitingBlockReason(task) || '等待处理';
         lines.push(`│   #${task.id} ${task.title}`);
         lines.push(`│     原因：${formatBlockedTaskReason(reason)}`);
         lines.push(`│     还差：${formatBlockedTaskNextStep(task.id, reason)}`);
       }
       if (blockedTasks.length > this.queueLimit) {
-        lines.push(`│   ... 还有 ${blockedTasks.length - this.queueLimit} 个阻塞任务`);
+        lines.push(`│   ... 还有 ${blockedTasks.length - this.queueLimit} 个需要处理的任务`);
       }
     }
 
@@ -322,7 +322,7 @@ export class SessionPresentationService {
   }
 
   formatBlockedExecutionGuidance(task: Task, newlyProvidedResources: string[] | undefined): GuidanceSuggestion {
-    const reasons = ['阻塞已解除，任务重新具备执行条件'];
+    const reasons = ['处理条件已满足，任务重新具备执行条件'];
     if (newlyProvidedResources && newlyProvidedResources.length > 0) {
       reasons.push(`已补充 ${newlyProvidedResources.length} 份新材料`);
     }
@@ -386,7 +386,7 @@ export class SessionPresentationService {
       } else if (item.task.status === 'parked') {
         executionOrder = '挂起待恢复';
       } else if (item.task.status === 'blocked') {
-        executionOrder = '阻塞待解除';
+        executionOrder = '需要处理';
       }
 
       return {
@@ -405,7 +405,7 @@ export class SessionPresentationService {
       '',
       '┌─ 任务队列前五 ───────────────────────────────────┐',
       `│ 触发：${input.trigger}`,
-      `│ 总览：执行中 ${input.runtimeState.runningTaskId ? 1 : 0} / 待执行 ${input.runtimeState.readyTaskIds.length} / 挂起 ${input.runtimeState.parkedTaskIds.length} / 阻塞 ${input.runtimeState.blockedTaskIds.length}`,
+      `│ 总览：执行中 ${input.runtimeState.runningTaskId ? 1 : 0} / 待执行 ${input.runtimeState.readyTaskIds.length} / 挂起 ${input.runtimeState.parkedTaskIds.length} / 需要处理 ${input.runtimeState.blockedTaskIds.length}`,
       ...input.entries.map((entry, index) => this.formatTaskQueueSnapshotEntry(entry, index + 1)),
       '└──────────────────────────────────────────────────┘',
     ];
@@ -425,19 +425,19 @@ export class SessionPresentationService {
   }
 
   buildVerificationFailureHint(taskId: string): string {
-    return `→ 任务 #${taskId} 已转为阻塞；请补充缺失的测试证据、产物或验收材料后执行 /task unblock ${taskId}，或直接说“继续完成刚才的任务”`;
+    return `→ 任务 #${taskId} 需要处理；请补充缺失的测试证据、产物或验收材料后执行 /task resume ${taskId}，或直接说“继续完成刚才的任务”`;
   }
 
   buildRecoverableFailureHint(taskId: string, errorMessage: string): string {
     if (isPermissionFailure(errorMessage)) {
-      return `→ 任务 #${taskId} 已转为阻塞，请先确认相关目录权限或系统授权；确认后执行 /task unblock ${taskId}，或直接说“已授权，继续刚才那个任务”`;
+      return `→ 任务 #${taskId} 需要处理，请先确认相关目录权限或系统授权；确认后执行 /task resume ${taskId}，或直接说“已授权，继续刚才那个任务”`;
     }
 
     if (/执行器空闲超时|executor idle timeout/i.test(errorMessage)) {
-      return `→ 任务 #${taskId} 已转为阻塞；执行器长时间没有输出或状态变化，可能卡住。请检查执行器是否仍在正常推进，必要时补充信息后执行 /task unblock ${taskId} 继续`;
+      return `→ 任务 #${taskId} 需要处理；执行器长时间没有输出或状态变化，请检查执行器是否仍在正常推进，必要时补充信息后执行 /task resume ${taskId} 继续`;
     }
 
-    return `→ 任务 #${taskId} 已转为阻塞，排除问题后执行 /task unblock ${taskId} 继续`;
+    return `→ 任务 #${taskId} 需要处理，排除问题后执行 /task resume ${taskId} 继续`;
   }
 
   private buildResumeGuidanceReasons(task: Task): string[] {
@@ -491,7 +491,7 @@ export class SessionPresentationService {
     }
     if (task.status === 'blocked') {
       const reason = task.dependencies.find(dependency => dependency.status === 'waiting')?.description
-        || '等待解除阻塞';
+        || '等待处理';
       return formatBlockedTaskReason(reason);
     }
     if (task.prioritySignals.semanticPriorityReason) {
@@ -506,7 +506,7 @@ export class SessionPresentationService {
       : entry.task.status === 'parked'
         ? '挂起'
         : entry.task.status === 'blocked'
-          ? '阻塞'
+          ? '需要处理'
           : entry.task.status === 'ready'
             ? '待执行'
             : '已创建';

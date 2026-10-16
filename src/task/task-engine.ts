@@ -201,7 +201,7 @@ export class TaskEngine {
     const task = this.taskRepo.findById(taskId);
     if (!task) throw new Error(`任务不存在: ${taskId}`);
     if (task.status !== 'blocked') {
-      throw new Error(`只能解除 BLOCKED 状态的任务，当前状态: ${task.status}`);
+      throw new Error(`只能继续处理需要处理的任务，当前状态: ${task.status}`);
     }
 
     // 标记所有依赖为已解决

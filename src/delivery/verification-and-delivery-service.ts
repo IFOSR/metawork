@@ -316,7 +316,7 @@ export class VerificationAndDeliveryService {
       '这是针对旧任务的答案：',
       `任务：#${input.task.id} ${input.task.title}`,
       `触发方式：${this.formatRecoveryTriggerForInline(recoveryTrigger)}`,
-      `原阻塞原因：${recoveryTrigger?.blockedReason || this.getWaitingBlockReason(input.task) || '未知原因'}`,
+      `原待处理原因：${recoveryTrigger?.blockedReason || this.getWaitingBlockReason(input.task) || '未知原因'}`,
     );
 
     if (recoveryTrigger?.triggerReason) {
@@ -431,7 +431,7 @@ export class VerificationAndDeliveryService {
     }
 
     if (trigger.kind === 'timer-recheck') return '后台定时检查恢复';
-    if (trigger.kind === 'user-query-unblocked') return '你刚才的补充信息解除阻塞';
+    if (trigger.kind === 'user-query-unblocked') return '你刚才的补充信息允许继续处理';
     if (trigger.kind === 'natural-language-resume') return '你刚才用自然语言要求继续旧阻塞任务';
     if (trigger.kind === 'explicit-task-command') return '你刚才显式解除/继续旧阻塞任务';
     if (trigger.kind === 'proposal') return '你接受了恢复旧阻塞任务的建议';
@@ -458,7 +458,7 @@ function formatBlockedRecoveryCompletedText(input: TaskCompletionDeliveryInput):
     '',
     `任务：#${input.taskId} ${input.title}`,
     `触发方式：${formatRecoveryTriggerText(recoveryTrigger, input.origin)}`,
-    `原阻塞原因：${recoveryTrigger?.blockedReason || '未知原因'}`,
+    `原待处理原因：${recoveryTrigger?.blockedReason || '未知原因'}`,
   ];
   if (recoveryTrigger?.triggerReason) {
     lines.push(`恢复原因：${recoveryTrigger.triggerReason}`);
@@ -486,7 +486,7 @@ function formatRecoveryTriggerText(
     return origin === 'system' ? '后台恢复' : '用户触发恢复';
   }
   if (trigger.kind === 'timer-recheck') return '后台恢复';
-  if (trigger.kind === 'user-query-unblocked') return '用户新 query 解除阻塞';
+  if (trigger.kind === 'user-query-unblocked') return '用户新 query 允许继续处理';
   if (trigger.kind === 'natural-language-resume') return '用户自然语言恢复旧阻塞任务';
   if (trigger.kind === 'explicit-task-command') return '用户显式命令恢复旧阻塞任务';
   if (trigger.kind === 'proposal') return '用户接受恢复建议';

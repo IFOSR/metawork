@@ -62,6 +62,14 @@ export interface TaskViewResultFact {
   readonly certification: 'certified' | 'uncertified';
 }
 
+export interface TaskViewPendingDecisionFact {
+  readonly owner: 'kernel' | 'user' | 'recovery';
+  readonly reason: 'uncertified_result' | 'missing_material' | 'permission' | 'uncertain_application' | 'recovery';
+  readonly resultId: string | null;
+  readonly attemptId: string | null;
+  readonly actions: readonly ('accept_result' | 'retry_attempt' | 'resolve_recovery')[];
+}
+
 export interface TaskViewFacts {
   readonly task: {
     readonly id: string;
@@ -103,6 +111,8 @@ export interface TaskViewFacts {
   readonly capacityWaiting?: boolean;
   readonly deliveryState?: 'pending' | 'failed' | null;
   readonly result: TaskViewResultFact | null;
+  /** A durable user decision derived from a safe result or recovery fact. */
+  readonly pendingDecision?: TaskViewPendingDecisionFact | null;
 }
 
 import type { TaskUserState } from './task-user-state.js';
@@ -139,6 +149,7 @@ export interface TaskView {
    * right entry point instead of a generic message.
    */
   readonly recoveryDiagnosis: TaskViewRecoveryDiagnosis | null;
+  readonly pendingDecision: TaskViewPendingDecisionFact | null;
   /** Why the phase is what it is, in user-facing terms. */
   readonly explanation: string;
   readonly result: TaskViewResultFact | null;
@@ -158,6 +169,8 @@ export type TaskAction =
   | 'resolve_uncertain_application'
   | 'await_publication'
   | 'await_user_input'
+  | 'accept_result'
+  | 'retry_attempt'
   | 'await_conversation_slot'
   | 'explicit_resume_required'
   | 'none';
@@ -247,14 +260,18 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
     : activeAttempt || automaticPublication || facts.deliveryState === 'pending' ? 'executing'
       : facts.capacityWaiting || queuedAttempts.length > 0 || (facts.retryWakeAt && !facts.retryWakeRecoveryRequired)
         || (replanJob && replanJob.status !== 'waiting_for_availability') || lifecycle === 'queued' ? 'waiting'
-        : 'needs_action';
+      : 'needs_action';
+  const pendingDecision = facts.pendingDecision
+    ?? derivePendingDecision(facts);
   const explanation = facts.capacityWaiting || (phase === 'queued' && queuedAttempts.length > 0)
     ? '等待执行名额；名额释放后系统会自动继续。'
     : explain({ phase, lifecycle, blockingResidue, recoveryDiagnosis });
   const userStateReason = (userState === 'finished'
     ? explain({ phase: lifecycle as 'completed' | 'failed' | 'cancelled', lifecycle, blockingResidue, recoveryDiagnosis })
-    : userState === 'needs_action' && (facts.deliveryState === 'failed' || recoveryDiagnosis === 'no_authorized_driver')
-      ? (facts.deliveryState === 'failed' ? '文件交付失败，请继续未完成部分；已完成的执行不会重跑。' : '没有找到可以继续任务的执行记录。请继续未完成部分。')
+    : userState === 'needs_action' && (pendingDecision?.reason === 'uncertified_result' || facts.deliveryState === 'failed' || recoveryDiagnosis === 'no_authorized_driver')
+      ? (pendingDecision?.reason === 'uncertified_result'
+        ? '结果已安全保存，但完成验收还缺少执行说明。请接受并交付，或重新执行。'
+        : facts.deliveryState === 'failed' ? '文件交付失败，请继续未完成部分；已完成的执行不会重跑。' : '没有找到可以继续任务的执行记录。请继续未完成部分。')
       : explanation)
     + (activeAttempt && facts.subtasks.some(subtask => subtask.status === 'blocked')
       ? ' 另有子任务需要处理，独立工作继续。' : '');
@@ -282,8 +299,10 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
     currentReplanJob: replanJob,
     currentRecovery: recovery,
     blockingResidue,
-    nextAuthorizedAction: nextAuthorizedAction(phase, phase === 'recovery_required' ? recoveryDiagnosis : null),
+    nextAuthorizedAction: nextAuthorizedAction(phase, phase === 'recovery_required' ? recoveryDiagnosis : null,
+      isTerminalTaskLifecycle(lifecycle) ? null : pendingDecision),
     recoveryDiagnosis,
+    pendingDecision: pendingDecision ?? null,
     explanation: phase === 'queued' && queuedAttempts.length > 0
       ? '等待执行名额；名额释放后系统会自动继续。'
       : explain({ phase, lifecycle, blockingResidue, recoveryDiagnosis })
@@ -385,7 +404,9 @@ function derivePhase(input: {
 function nextAuthorizedAction(
   phase: TaskUserFacingPhase,
   diagnosis: TaskViewRecoveryDiagnosis | null,
+  pendingDecision: TaskViewPendingDecisionFact | null | undefined,
 ): TaskAction {
+  if (pendingDecision?.reason === 'uncertified_result') return 'accept_result';
   switch (phase) {
     case 'executing':
       return 'await_attempt_settlement';
@@ -410,6 +431,20 @@ function nextAuthorizedAction(
     case 'cancelled':
       return 'none';
   }
+}
+
+function derivePendingDecision(facts: TaskViewFacts): TaskViewPendingDecisionFact | null {
+  const receipt = [...facts.receipts]
+    .sort((left, right) => right.completedAt.localeCompare(left.completedAt))[0];
+  if (!receipt || receipt.terminalState !== 'uncertified_result') return null;
+  const resultId = facts.result?.resultId ?? null;
+  return {
+    owner: 'user',
+    reason: 'uncertified_result',
+    resultId,
+    attemptId: receipt.attemptId,
+    actions: ['accept_result', 'retry_attempt'],
+  };
 }
 
 function explain(input: {
@@ -438,8 +473,8 @@ function explain(input: {
       return 'The Task is admitted and waiting for a Conversation slot.';
     case 'blocked':
       return input.blockingResidue.length > 0
-        ? `The Task is blocked by: ${input.blockingResidue.join(', ')}.`
-        : 'The Task is blocked and requires an explicit resume.';
+        ? `任务需要处理：${input.blockingResidue.join('、')}。请查看原因并继续。`
+        : '任务需要处理，请选择继续或重新执行。';
     case 'completed':
       return 'The Task completed and its certification and publication are clear.';
     case 'failed':

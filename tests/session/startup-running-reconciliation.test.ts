@@ -87,7 +87,7 @@ describe('session startup running-task reconciliation', () => {
     expect(attemptExecutionBackend.listManaged).not.toHaveBeenCalled();
     expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
     expect(taskRepo.findById(runningTask.id)?.status).toBe('blocked');
-    expect(snapshot.output.join('\n')).toContain(`检测到上次异常退出，任务 #${runningTask.id} 已安全阻塞`);
+    expect(snapshot.output.join('\n')).toContain(`检测到上次异常退出，任务 #${runningTask.id} 需要处理`);
     expect(db.prepare("SELECT action FROM kernel_decisions WHERE task_id = ?").get(runningTask.id))
       .toBeUndefined();
   });
@@ -144,7 +144,7 @@ describe('session startup running-task reconciliation', () => {
       claimedAttemptId: 'attempt-recovery-blocked',
     });
     expect(taskRepo.findById(runningTask.id)?.status).toBe('blocked');
-    expect(session.getSnapshot().output.join('\n')).toContain('恢复阻塞');
+    expect(session.getSnapshot().output.join('\n')).toContain('恢复任务');
   });
 
   it('does not release a reconciled claim or lease before terminal facts are durably sealed', async () => {
@@ -268,7 +268,7 @@ describe('session startup running-task reconciliation', () => {
     expect(activeLeases.every(lease => lease.attemptId === attemptId && lease.releasedAt === null)).toBe(true);
     expect(dispatch.find(attemptId)?.status).toBe('running');
     expect(taskRepo.findById(runningTask.id)?.status).toBe('blocked');
-    expect(session.getSnapshot().output.join('\n')).toContain('恢复阻塞');
+    expect(session.getSnapshot().output.join('\n')).toContain('恢复任务');
   });
 
   it('lands one startup heartbeat outcome with the persisted fallback provenance', async () => {

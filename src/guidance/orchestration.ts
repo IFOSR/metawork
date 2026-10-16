@@ -91,8 +91,8 @@ export class OrchestrationEngine {
       suggestions.push({
         taskId: task.id,
         type: 'unblock_reminder',
-        reasons: [`任务被阻塞: ${task.blockReason}`],
-        recommendedAction: '检查并解除阻塞',
+        reasons: [`任务需要处理: ${task.blockReason}`],
+        recommendedAction: '检查原因并继续处理',
         generatedAt: new Date().toISOString(),
       });
     }
@@ -184,7 +184,7 @@ export class OrchestrationEngine {
         ? `语义优先级：${task.prioritySignals.semanticPriorityReason}`
         : '截止时间临近');
     if (score.downstreamImpact >= 8)
-      reasons.push('阻塞了其他任务');
+      reasons.push('影响了其他任务，需要处理');
     if (score.staleness >= 5) {
       const hours = dayjs().diff(dayjs(task.updatedAt), 'hour');
       reasons.push(`已搁置 ${hours} 小时`);

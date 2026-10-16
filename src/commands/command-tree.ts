@@ -12,6 +12,7 @@ import {
 } from './catalog.js';
 import {
   acceptPartialResult,
+  acceptResult,
   blockTask,
   cancelSubtasks,
   cancelTask,
@@ -185,7 +186,7 @@ function taskNodes(): CommandNode[] {
 
   return [
     action({
-      name: 'dashboard', summary: '显示任务盘面', effect: '读取任务统计、优先任务和阻塞任务并展示盘面。',
+      name: 'dashboard', summary: '显示任务盘面', effect: '读取任务统计、优先任务和需要处理的任务并展示盘面。',
       usage: '/task dashboard', run: showDashboard,
     }),
     action({
@@ -211,8 +212,8 @@ function taskNodes(): CommandNode[] {
       arguments: [taskReference('要恢复的任务', ['running', 'parked', 'blocked'])],
       options: [option('--generation', '执行代际', text('generation', '执行代际')),
         option('--revision', '任务图版本', text('revision', '任务图版本'))], run: resumeTask }),
-    operation('block', '阻塞任务', ['running'], blockTask, [rest('reason', '阻塞原因')]),
-    operation('unblock', '解除阻塞任务', ['blocked'], unblockTask, [variadic('resources', '新增资源', true)]),
+    operation('block', '标记为需要处理（兼容命令）', ['running'], blockTask, [rest('reason', '处理原因')]),
+    operation('unblock', '继续处理任务（兼容命令）', ['blocked'], unblockTask, [variadic('resources', '新增资源', true)]),
     operation('cancel', '取消任务', ['created', 'ready', 'running', 'parked', 'blocked'], cancelTask),
     action({
       name: 'subtask-cancel',
@@ -232,6 +233,14 @@ function taskNodes(): CommandNode[] {
       usage: '/task accept-partial <taskId>',
       arguments: [taskReference('要接受部分结果的任务', ['blocked'])],
       run: acceptPartialResult,
+    }),
+    action({
+      name: 'accept-result',
+      summary: '接受已生成但尚未认证的结果并交付',
+      effect: '重新执行确定性结果检查；通过后发布当前结果，不重跑 Executor。',
+      usage: '/task accept-result <taskId>',
+      arguments: [taskReference('要接受结果的任务', ['blocked', 'parked', 'running'])],
+      run: acceptResult,
     }),
     action({
       name: 'recovery', summary: '查看任务恢复项', effect: '只读查看 uncertain/failed application 和外部副作用。',

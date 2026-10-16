@@ -430,6 +430,7 @@ export type KernelSnapshot = { productionAuthorization?: ProductionAuthorization
       subtasks: KernelCancellationSubtaskFact[];
       completionBlockedReasons: string[];
       partialCancellation: boolean;
+      uncertifiedResult?: { subtaskId: string; attemptId: string; resultId: string } | null;
     }
   | {
       schemaVersion: 5;
@@ -659,6 +660,13 @@ export type KernelDecisionAction =
       cancelledSubtaskIds: string[];
     }
   | {
+      type: 'accept_uncertified_result';
+      taskId: string;
+      subtaskId: string;
+      attemptId: string;
+      resultId: string;
+    }
+  | {
       type: 'request_merge_replan';
       taskId: string;
       subtaskId: string;
@@ -671,6 +679,13 @@ export type KernelDecisionAction =
       taskId: string;
       subtaskId: string | null;
       preserveSubtaskState?: boolean;
+    }
+  /** Safe output exists, but completion evidence is a user decision. */
+  | {
+      type: 'await_user_decision';
+      taskId: string;
+      subtaskId: string;
+      reason: 'uncertified_result' | 'missing_material' | 'recovery';
     }
   | { type: 'park_for_replan'; taskId: string }
   | { type: 'complete_task'; taskId: string }
@@ -1514,6 +1529,15 @@ export class ControlKernel {
     if (!snapshot.generationId || snapshot.graphRevision === null) {
       return decision(event, { type: 'reject_request' }, 'active Work Graph generation is missing');
     }
+    if (event.type === 'partial_result_acceptance_requested' && snapshot.uncertifiedResult && !snapshot.partialCancellation) {
+      return decision(event, {
+        type: 'accept_uncertified_result',
+        taskId: event.taskId,
+        subtaskId: snapshot.uncertifiedResult.subtaskId,
+        attemptId: snapshot.uncertifiedResult.attemptId,
+        resultId: snapshot.uncertifiedResult.resultId,
+      }, 'explicit acceptance of the safe uncertified result authorized');
+    }
     if (event.type === 'subtasks_cancel_requested') {
       const closure = deriveCancellationClosure(
         {
@@ -1645,6 +1669,24 @@ export class ControlKernel {
     if (event.certification === 'certified') {
       return this.decideDispatch(event, snapshot);
     }
+    const deterministicDeliveryFailure = event.violations.some(violation => [
+      'completion_file_output_missing',
+      'completion_artifact_invalid',
+      'completion_workspace_delta_uncertain',
+      'completion_file_output_limit',
+    ].includes(violation.code));
+    if (deterministicDeliveryFailure) {
+      return decision(
+        event,
+        {
+          type: 'block_work',
+          taskId: event.taskId,
+          subtaskId: event.subtaskId,
+          preserveSubtaskState: true,
+        },
+        'result delivery failed deterministic output checks; no complete deliverable is available',
+      );
+    }
     if (
       event.violations.some(violation => violation.code !== 'completion_malformed'
         || violation.path === 'reportPath')
@@ -1655,12 +1697,12 @@ export class ControlKernel {
       return decision(
         event,
         {
-          type: 'block_work',
+          type: 'await_user_decision',
           taskId: event.taskId,
           subtaskId: event.subtaskId,
-          preserveSubtaskState: true,
+          reason: 'uncertified_result',
         },
-        'metadata correction is unavailable or exhausted; safe result remains uncertified and requires explicit resolution',
+        'safe result remains uncertified; user may accept and deliver it or retry the Attempt',
       );
     }
     return decision(event, singleDispatchBatch(

@@ -124,15 +124,14 @@ describe('blocked task user journey', () => {
 
     await session.submit(`/task recovery ${blockedTask.id}`, { awaitAsyncWork: true });
     output = session.getSnapshot().output.join('\n');
-    expect(output).toContain(`任务 #${blockedTask.id} 当前仍为 BLOCKED`);
+    expect(output).toContain(`任务 #${blockedTask.id} 仍需要处理`);
     expect(output).toContain('没有可供 /task recover 使用的恢复项');
-    expect(output).toContain('这不表示阻塞已解除');
-    expect(output).toContain('不会自动重试');
+    expect(output).toContain('系统不会在无法确认外部副作用时自动重试');
 
     await session.submit('当前有没有被阻塞的任务？', { awaitAsyncWork: true });
     output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('当前有 1 个阻塞任务');
-    expect(output).toContain(`#${blockedTask.id} [BLOCKED] ${blockedTask.title}`);
+    expect(output).toContain('当前有 1 个需要处理的任务');
+    expect(output).toContain(`#${blockedTask.id} [NEEDS_ACTION] ${blockedTask.title}`);
     expect(output).toContain('材料齐全不等于可以安全恢复');
     expect(output).toContain(`/task recovery ${blockedTask.id}`);
 

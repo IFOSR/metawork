@@ -1221,7 +1221,7 @@ export class MetaclawSession {
       const dashboard = this.deps.orchestration.getDashboard();
       this.output = [
         '┌─ Metaclaw v1.0 ─────────────────────────────────┐',
-        `│ 你有 ${dashboard.summary.active} 个活跃任务，${dashboard.summary.blocked} 个 Blocked。`,
+        `│ 你有 ${dashboard.summary.active} 个活跃任务，${dashboard.summary.blocked} 个需要处理。`,
       ];
 
       if (dashboard.priorityTask) {
@@ -1243,7 +1243,7 @@ export class MetaclawSession {
     if (recoveredRunningTasks.length > 0) {
       for (const task of recoveredRunningTasks) {
         this.output.push(
-          `→ 检测到上次异常退出，任务 #${task.id} 已安全阻塞`,
+          `→ 检测到上次异常退出，任务 #${task.id} 需要处理`,
           `→ 可执行 /task resume ${task.id} 提交显式恢复请求`,
         );
       }
@@ -1259,7 +1259,7 @@ export class MetaclawSession {
       ? this.recoverDurableStartup().then(async recovered => {
           for (const task of recovered) {
             this.appendOutput(
-              `→ 检测到上次异常退出，任务 #${task.id} 已安全阻塞（由 Kernel 持久恢复收敛）`,
+              `→ 检测到上次异常退出，任务 #${task.id} 需要处理（由 Kernel 持久恢复收敛）`,
               `→ 可执行 /task recovery ${task.id} 查看不确定项`,
             );
           }
@@ -2390,15 +2390,15 @@ export class MetaclawSession {
           expectedGenerationId: directive.expectedGenerationId,
           expectedGraphRevision: directive.expectedGraphRevision,
           executionMode: directive.mode,
-          schedulingReason: directive.mode === 'resume-blocked' ? '解除阻塞' : '恢复已暂停任务',
+          schedulingReason: directive.mode === 'resume-blocked' ? '继续处理' : '恢复已暂停任务',
           newlyProvidedResources: directive.newlyProvidedResources,
           recoveryTrigger: directive.mode === 'resume-blocked'
             ? this.buildRecoveryTrigger(resumedTask, {
                 kind: 'explicit-task-command',
                 blockedReason: directive.blockedReason,
                 triggerReason: directive.newlyProvidedResources?.length
-                  ? '显式解除阻塞并补充材料'
-                  : '显式解除阻塞',
+                  ? '显式继续处理并补充材料'
+                  : '显式继续处理',
                 sourceInput: userInput,
                 newlyProvidedResources: directive.newlyProvidedResources,
               })
@@ -2888,11 +2888,11 @@ export class MetaclawSession {
             dependency: {
               taskId: task.id,
               type: 'manual',
-              description: `startup recovery blocked: ${recoveryBlockedReason}`,
+              description: `startup recovery requires handling: ${recoveryBlockedReason}`,
               status: 'waiting',
             },
             actor: 'account-startup-recovery',
-            reason: `startup recovery blocked: ${recoveryBlockedReason}`,
+            reason: `startup recovery requires handling: ${recoveryBlockedReason}`,
           });
         } catch {
           // Keep the in-memory recovery fence even if persistence is unavailable.
@@ -2901,7 +2901,7 @@ export class MetaclawSession {
         if (current) blocked.push(current);
       }
       this.appendOutput(
-        `恢复阻塞：无法安全对账 Docker、Git 或持久状态（${recoveryBlockedReason}）。`,
+        `恢复任务：无法安全对账 Docker、Git 或持久状态（${recoveryBlockedReason}）。`,
         '已保留现有执行后端实例、WorkUnit claim 与 resource lease；恢复对账成功前不会启动 attempt。',
       );
       return blocked;
@@ -3024,7 +3024,7 @@ export class MetaclawSession {
         if (current) blocked.push(current);
       }
       this.appendOutput(
-        `恢复阻塞：无法安全封口 attempt terminal 事实（${reason}）。`,
+        `恢复任务：无法安全封口 attempt terminal 事实（${reason}）。`,
         '已保留尚未安全封口的 WorkUnit claim 与 resource lease；修复持久状态后可重试启动恢复。',
       );
       return blocked;

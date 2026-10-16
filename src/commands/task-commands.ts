@@ -28,7 +28,7 @@ const CLEAR_SCOPE_STATUSES: Record<TaskClearScope, TaskStatus[]> = {
 const CLEAR_SCOPE_LABELS: Record<TaskClearScope, string> = {
   all: '所有未完成任务',
   parked: '挂起任务',
-  blocked: '阻塞任务',
+  blocked: '需要处理',
 };
 
 function parseClearScope(value: string | undefined): TaskClearScope | null {
@@ -94,14 +94,15 @@ function formatTaskLine(task: {
   lastInterruptionReason: string;
   dependencies: Array<{ status: string; description: string }>;
 }) {
-  const lines = [`  #${task.id} [${task.status.toUpperCase()}] ${task.title}`];
+  const displayStatus = task.status === 'blocked' ? 'NEEDS_ACTION' : task.status.toUpperCase();
+  const lines = [`  #${task.id} [${displayStatus}] ${task.title}`];
 
   if (task.status === 'running' || task.status === 'ready') {
     lines.push(`    → 原因：${task.lastSchedulingReason || '等待调度'}`);
   } else if (task.status === 'parked') {
     lines.push(`    → 原因：${task.lastInterruptionReason || '等待恢复'}`);
   } else if (task.status === 'blocked') {
-    lines.push(`    → 阻塞：${formatBlockedTaskReason(task.dependencies.find(dep => dep.status === 'waiting')?.description || '未知原因')}`);
+    lines.push(`    → 原因：${formatBlockedTaskReason(task.dependencies.find(dep => dep.status === 'waiting')?.description || '未知原因')}`);
   }
 
   return lines.join('\n');
@@ -115,7 +116,7 @@ function buildStatusExplanation(task: {
 }): string {
   if (task.status === 'blocked') {
     return formatBlockedTaskReason(
-      task.dependencies.find(dep => dep.status === 'waiting')?.description || '等待解除阻塞',
+      task.dependencies.find(dep => dep.status === 'waiting')?.description || '等待处理',
     );
   }
 
@@ -147,7 +148,7 @@ function buildLatestNextStep(task: {
 
   if (task.status === 'blocked') {
     const blocker = task.dependencies.find(dep => dep.status === 'waiting')?.description;
-    return blocker ? formatBlockedTaskNextStep(task.id, blocker) : '先确认阻塞条件';
+    return blocker ? formatBlockedTaskNextStep(task.id, blocker) : '先确认需要处理的条件';
   }
 
   if (task.status === 'done') {
@@ -170,12 +171,12 @@ function buildRecoveryAction(task: {
     }
     const hasLinks = (task.resources ?? []).some(resource => isWebLink(resource));
     if (task.materialSummary?.status === 'ready') {
-      return `现有材料已具备可读内容，可直接执行 /task unblock ${task.id}；如仍不够，再补充材料：/task unblock ${task.id} [材料路径]`;
+      return `现有材料已具备可读内容，可直接执行 /task resume ${task.id}；如仍不够，再补充材料：/task resume ${task.id} [材料路径]`;
     }
     if (hasLinks) {
-      return `若现有链接信息已足够，直接执行 /task unblock ${task.id}；如需补材料：/task unblock ${task.id} [材料路径]`;
+      return `若现有链接信息已足够，直接执行 /task resume ${task.id}；如需补材料：/task resume ${task.id} [材料路径]`;
     }
-    return `/task unblock ${task.id} [材料路径]`;
+    return `/task resume ${task.id} [材料路径]`;
   }
 
   if (task.status === 'parked') {
@@ -216,7 +217,7 @@ export async function listTasks(args: ResolvedCommandArgs, context: CommandConte
     { title: '当前执行', tasks: repo.findByStatus('running') },
     { title: '待执行', tasks: repo.findByStatus('ready') },
     { title: '已挂起', tasks: repo.findByStatus('parked') },
-    { title: '已阻塞', tasks: repo.findByStatus('blocked') },
+    { title: '需要处理', tasks: repo.findByStatus('blocked') },
     { title: '已完成', tasks: repo.findByStatus('done') },
   ].filter(group => group.tasks.length > 0);
 
@@ -281,7 +282,7 @@ export async function showTask(args: ResolvedCommandArgs, context: CommandContex
     `上次做到: ${lastProgress}`,
     `最新结果摘要: ${latestResult}`,
     `最新下一步: ${latestNextStep}`,
-    `当前阻塞: ${blocker}`,
+    `待处理原因: ${blocker}`,
     `材料概览: ${materialSummary.overview}`,
     `材料状态: ${materialSummary.sufficiency}`,
     `关联材料: ${task.resources.join(', ') || '无'}`,
@@ -373,7 +374,7 @@ export async function blockTask(args: ResolvedCommandArgs, context: CommandConte
       status: 'waiting',
     });
     if (wasRunning) context.activeExecutions?.abortTask(taskId);
-    return { type: 'text', content: `任务 #${taskId} 已标记为阻塞: ${reason}` };
+    return { type: 'text', content: `任务 #${taskId} 已标记为需要处理: ${reason}` };
   } catch (error) {
     return { type: 'text', content: `操作失败: ${(error as Error).message}` };
   }
@@ -474,6 +475,22 @@ export async function acceptPartialResult(
       type: 'text',
       content: `任务 #${taskId} 已显式接受部分结果；取消节点 ${receipt.affectedSubtaskIds.length} 个`,
     };
+  } catch (error) {
+    return { type: 'text', content: `操作失败: ${(error as Error).message}` };
+  }
+}
+
+export async function acceptResult(
+  args: ResolvedCommandArgs,
+  context: CommandContext,
+): Promise<CommandResult> {
+  const taskId = stringArg(args, 'taskId');
+  if (!context.taskEngine.getTaskRepo().findById(taskId)) {
+    return { type: 'text', content: `任务不存在: ${taskId}` };
+  }
+  try {
+    await context.taskControl.acceptPartialResult(taskId);
+    return { type: 'text', content: `任务 #${taskId} 已接受当前结果，正在执行交付前检查。` };
   } catch (error) {
     return { type: 'text', content: `操作失败: ${(error as Error).message}` };
   }

@@ -221,7 +221,7 @@ describe('Round 3 task boundary acceptance', () => {
     await session.submit('清空阻塞的任务', { awaitAsyncWork: true });
 
     const snapshot = session.getSnapshot().output.join('\n');
-    expect(snapshot).toContain('已清空阻塞任务：取消 1 个任务');
+    expect(snapshot).toContain('已清空需要处理：取消 1 个任务');
     expect(snapshot).toContain(blockedTask.id);
     expect(taskRepo.findById(blockedTask.id)?.status).toBe('cancelled');
     expect(taskRepo.findById(readyTask.id)?.status).toBe('ready');
@@ -267,8 +267,8 @@ describe('Round 3 task boundary acceptance', () => {
     await session.submit('当前有没有被阻塞的任务？', { awaitAsyncWork: true });
 
     const snapshot = session.getSnapshot().output.join('\n');
-    expect(snapshot).toContain('当前有 1 个阻塞任务');
-    expect(snapshot).toContain(`#${blockedTask.id} [BLOCKED] 飞书客户端接入`);
+    expect(snapshot).toContain('当前有 1 个需要处理的任务');
+    expect(snapshot).toContain(`#${blockedTask.id} [NEEDS_ACTION] 飞书客户端接入`);
     expect(snapshot).toContain('执行器网络连接失败，请检查网络或代理配置');
     expect(taskRepo.findById(blockedTask.id)?.status).toBe('blocked');
     expect(taskRepo.findAll()).toHaveLength(1);
@@ -303,7 +303,7 @@ describe('Round 3 task boundary acceptance', () => {
     await session.submit('检查一下有没有 blocked 任务', { awaitAsyncWork: true });
 
     const snapshot = session.getSnapshot().output.join('\n');
-    expect(snapshot).toContain('当前没有阻塞任务。');
+    expect(snapshot).toContain('当前没有需要处理的任务。');
     expect(taskRepo.findAll()).toHaveLength(0);
     expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
   });

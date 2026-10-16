@@ -138,6 +138,8 @@ export class SessionKernelRuntime {
         this.deps.callbacks.refreshRuntimeState();
         return null;
       }
+      case 'await_user_decision':
+        throw new Error('await_user_decision must be applied by the execution Runtime');
       case 'park_for_replan': {
         const task = this.deps.taskRuntimeService.findTask(decision.action.taskId);
         if (task && task.status !== 'parked') {
@@ -164,6 +166,7 @@ export class SessionKernelRuntime {
       case 'cancel_task':
       case 'cancel_subtasks':
       case 'accept_partial_result':
+      case 'accept_uncertified_result':
       case 'resolve_recovery':
       case 'grant_capability':
       case 'deny_capability':
@@ -311,7 +314,7 @@ export class SessionKernelRuntime {
               .map(dependency => dependency.description)
               .filter(Boolean)
               .join('；') || '未知原因',
-            triggerReason: /^\/task\s+/iu.test(userInput) ? '显式解除阻塞' : '自然语言确认阻塞已解除',
+            triggerReason: /^\/task\s+/iu.test(userInput) ? '显式继续处理' : '自然语言确认可以继续',
             sourceInputExcerpt: userInput.replace(/\s+/g, ' ').trim().slice(0, 80),
           }
         : undefined,

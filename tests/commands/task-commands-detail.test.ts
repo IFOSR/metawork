@@ -145,7 +145,7 @@ describe('showTask detail view', () => {
     expect(result.content).toContain('当前状态');
     expect(result.content).toContain('最新结果摘要');
     expect(result.content).toContain('最新下一步');
-    expect(result.content).toContain('当前阻塞');
+    expect(result.content).toContain('待处理原因');
     expect(result.content).toContain('关联材料');
     expect(result.content).toContain('等待客户补充证据文件');
     expect(result.content).toContain('/tmp/evidence-a.pdf');

@@ -45,7 +45,7 @@ export class GuidancePolicyEngine {
             taskLookup,
             actionType: 'unblock_and_resume',
             confidence: 0.82,
-            reasons: ['检测到新的输入材料，可重新判断是否解除阻塞'],
+            reasons: ['检测到新的输入材料，可重新判断是否继续处理'],
             recommendedAction: `建议检查并恢复任务 #${signal.taskId}: ${this.getTaskLabel(signal.taskId, taskLookup)}`,
           }),
         );

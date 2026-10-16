@@ -2143,13 +2143,13 @@ export class ConversationSession {
       expectedGenerationId: directive.expectedGenerationId,
       expectedGraphRevision: directive.expectedGraphRevision,
       executionMode: directive.mode ?? 'resume-parked',
-      schedulingReason: directive.mode === 'resume-blocked' ? '解除阻塞' : '恢复已暂停任务',
+      schedulingReason: directive.mode === 'resume-blocked' ? '继续处理' : '恢复已暂停任务',
       newlyProvidedResources: directive.newlyProvidedResources,
       recoveryTrigger: directive.mode === 'resume-blocked'
         ? this.buildRecoveryTrigger(resumedTask, {
             kind: 'explicit-task-command',
             blockedReason: directive.blockedReason,
-            triggerReason: directive.newlyProvidedResources?.length ? '显式解除阻塞并补充材料' : '显式解除阻塞',
+            triggerReason: directive.newlyProvidedResources?.length ? '显式继续处理并补充材料' : '显式继续处理',
             sourceInput: userInput,
             newlyProvidedResources: directive.newlyProvidedResources,
           })

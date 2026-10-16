@@ -44,6 +44,39 @@ describe('KernelExecutionRuntime executor recovery', () => {
     expect(projection.blockReasonWithCause('task', 'blocked')).not.toContain('old failure');
   });
 
+  it('keeps an awaiting-decision Subtask error when a follow-up dispatch has no frontier', async () => {
+    const blockTask = vi.fn();
+    const finishExecution = vi.fn().mockResolvedValue(undefined);
+    const runtime = new KernelExecutionRuntime({
+      taskRuntimeService: {
+        findTask: vi.fn().mockReturnValue({ id: 'task-contract', status: 'running' }),
+        blockTask,
+      },
+      subtaskRepo: {
+        listByTask: vi.fn().mockReturnValue([{
+          id: 'subtask-contract',
+          taskId: 'task-contract',
+          title: '生成报告文件',
+          status: 'awaiting_decision',
+          error: 'completion_acceptance_mismatch:acceptance evidence is missing',
+        }]),
+        findById: vi.fn(),
+      },
+      taskEventRepo: { insert: vi.fn() },
+      callbacks: { appendOutput: vi.fn() },
+      dispatchItemRepo: {},
+      maxConcurrentAttempts: 4,
+    } as never);
+
+    await (runtime as unknown as {
+      blockTask(taskId: string, reason: string, finish: (lines: string[]) => Promise<void>): Promise<void>;
+    }).blockTask('task-contract', 'no runnable Subtask while work remains', finishExecution);
+
+    expect(blockTask).toHaveBeenCalledWith('task-contract', expect.objectContaining({
+      description: expect.stringContaining('completion_acceptance_mismatch:acceptance evidence is missing'),
+    }));
+  });
+
   it('preserves the execution Task identity when projecting a no_op decision', async () => {
     const trace = new InteractionTraceStream('conversation-no-op');
     trace.beginTurn({ turnId: 'turn-no-op', userInput: 'Run the task' });
@@ -696,7 +729,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
       actor: 'kernel',
       kind: 'execution_blocked',
       status: 'blocked',
-      title: 'Execution blocked',
+      title: 'Execution needs attention',
       summary: reason,
       details: {
         decisionId: 'decision-block-work',

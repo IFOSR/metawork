@@ -194,6 +194,25 @@ describe('unified TaskView projection', () => {
     expect(view.result?.certification).toBe('certified');
   });
 
+  it('projects a safe uncertified result as user action with accept and retry choices', () => {
+    const view = projectTaskView(facts({
+      task: { id: 'task_1', status: 'parked', updatedAt: NOW },
+      subtasks: [{ id: 'task_1_execute', status: 'awaiting_decision' }],
+      dispatches: [{
+        attemptId: 'attempt_1', subtaskId: 'task_1_execute', status: 'terminal', attemptKind: 'primary',
+        createdAt: NOW, updatedAt: NOW,
+      }],
+      receipts: [{
+        attemptId: 'attempt_1', terminalState: 'uncertified_result', failure: null, completedAt: NOW,
+      }],
+      result: { resultId: 'result_1', completeness: 'complete', certification: 'uncertified' },
+    }));
+    expect(view.userState).toBe('needs_action');
+    expect(view.userStateReason).toContain('接受并交付');
+    expect(view.nextAuthorizedAction).toBe('accept_result');
+    expect(view.pendingDecision?.actions).toEqual(['accept_result', 'retry_attempt']);
+  });
+
   it('requires an authorized driver before claiming the Task is waiting for a plan', () => {
     // Review fix 6: the previous fallback turned "false executing" into "false
     // waiting_for_plan" for a running Task with no Attempt and no Replan Job.

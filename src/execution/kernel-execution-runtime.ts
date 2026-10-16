@@ -932,6 +932,56 @@ export class KernelExecutionRuntime {
             };
             return null;
           }
+          if (decision.action.type === 'accept_uncertified_result') {
+            const action = decision.action;
+            const uncertifiedReceipt = this.deps.attemptReceiptRepo.findByAttemptId(action.attemptId);
+            const object = this.deps.resultObjectRepo.findObject(action.resultId);
+            const task = this.deps.taskRuntimeService.findTask(action.taskId);
+            const subtask = this.deps.subtaskRepo.findById(action.subtaskId);
+            const revision = this.deps.workGraphRevisionRepo.findActive(action.taskId);
+            if (!uncertifiedReceipt || uncertifiedReceipt.taskId !== action.taskId || uncertifiedReceipt.subtaskId !== action.subtaskId
+              || uncertifiedReceipt.terminalState !== 'uncertified_result' || !object
+              || object.kind !== 'safe_projection' || object.completeness === 'incomplete'
+              || object.taskId !== action.taskId || object.sourceSubtaskId !== action.subtaskId
+              || object.attemptId !== action.attemptId || !task || !subtask || !revision) {
+              controlError = 'safe uncertified result failed deterministic acceptance checks';
+              return null;
+            }
+            if (subtask.status !== 'done') {
+              this.lifecycle.transitionSubtask({
+                subtaskId: subtask.id,
+                to: 'done',
+                actor: 'kernel-execution-runtime',
+                reason: 'user accepted the safe uncertified result for delivery',
+                changes: { error: null },
+              });
+            }
+            const accepted = this.deps.subtaskRepo.findById(action.subtaskId)!;
+            await this.completeTask({
+              taskId: action.taskId,
+              decisionId: decision.id,
+              executionId: `accepted_${decision.id}`,
+              request: {
+                userPrompt: task.goal,
+                contextTaskId: task.id,
+                executionMode: 'follow-up',
+                origin: 'user',
+                schedulingReason: 'explicit acceptance of safe result',
+              },
+              subtasks: [accepted],
+              completionKind: 'full',
+              revisionCompletion: {
+                revision: revision.revision,
+                completionKind: 'full',
+              },
+              finishExecution: async lines => {
+                this.deps.callbacks.appendOutput(...lines);
+                this.deps.callbacks.refreshRuntimeState();
+              },
+            });
+            receipt = { taskId: action.taskId, affectedSubtaskIds: [], cleanupAttemptIds: [] };
+            return null;
+          }
           if (decision.action.type === 'reject_request' || decision.action.type === 'block_work') {
             controlError = decision.reason;
             return null;
@@ -949,6 +999,7 @@ export class KernelExecutionRuntime {
         'cancel_task',
         'cancel_subtasks',
         'accept_partial_result',
+        'accept_uncertified_result',
         'reject_request',
         'block_work',
         'no_op',
@@ -1896,7 +1947,7 @@ export class KernelExecutionRuntime {
         actor: 'kernel',
         kind: 'execution_blocked',
         status: 'blocked',
-        title: 'Execution blocked',
+        title: 'Execution needs attention',
         summary: decision.reason,
         details: {
           decisionId: decision.id,
@@ -1912,6 +1963,34 @@ export class KernelExecutionRuntime {
         type: 'dispatch_requested', taskId: action.taskId,
         reason: 'Subtask blocked; evaluate independent work',
       }) : null;
+    }
+    if (action.type === 'await_user_decision') {
+      const task = this.deps.taskRuntimeService.findTask(action.taskId);
+      const subtask = this.deps.subtaskRepo.findById(action.subtaskId);
+      if (subtask && !['done', 'cancelled'].includes(subtask.status)) {
+        this.lifecycle.transitionSubtask({
+          subtaskId: subtask.id,
+          to: 'awaiting_decision',
+          actor: 'kernel-execution-runtime',
+          reason: decision.reason,
+          changes: { error: '结果已生成，等待用户选择接受并交付或重新执行' },
+        });
+      }
+      if (task && task.status === 'running') {
+        this.lifecycle.transitionTask({
+          taskId: task.id,
+          to: 'parked',
+          actor: 'kernel-execution-runtime',
+          reason: decision.reason,
+        });
+      }
+      this.deps.callbacks.appendOutput(
+        '',
+        '',
+        '结果已安全保存，完成验收待处理。请选择接受并交付或重新执行。',
+      );
+      this.deps.callbacks.refreshRuntimeState();
+      return null;
     }
     if (action.type === 'park_for_replan') {
       const task = this.deps.taskRuntimeService.findTask(action.taskId);
@@ -2938,7 +3017,7 @@ export class KernelExecutionRuntime {
       acceptedActions: [
         'resume_task', 'dispatch_batch', 'probe_capacity', 'wait_for_capacity', 'wait_for_retry',
         'supersede_retry_wake', 'recover_retry_wake',
-        'block_work', 'park_for_replan', 'complete_task', 'request_replan', 'schedule_replan',
+        'block_work', 'await_user_decision', 'park_for_replan', 'complete_task', 'request_replan', 'schedule_replan',
         'queue_generation_replan',
         'request_merge_replan',
         'authorize_task_plan', 'defer_task_plan_for_availability', 'no_op',
@@ -3351,7 +3430,7 @@ export class KernelExecutionRuntime {
       acceptedActions: [
         'dispatch_batch', 'probe_capacity', 'wait_for_capacity', 'wait_for_retry',
         'supersede_retry_wake', 'recover_retry_wake',
-        'block_work', 'park_for_replan', 'complete_task', 'request_replan', 'schedule_replan',
+        'block_work', 'await_user_decision', 'park_for_replan', 'complete_task', 'request_replan', 'schedule_replan',
         'queue_generation_replan',
         'request_merge_replan',
         'authorize_task_plan', 'defer_task_plan_for_availability', 'no_op',
@@ -3392,7 +3471,7 @@ export class KernelExecutionRuntime {
       this.deps.callbacks.appendOutput(
         content,
         '',
-        `未认证部分输出（${reason}），仅供人工参考，不代表任务完成；任务保持阻塞。`,
+        `未认证部分输出（${reason}），仅供人工参考，不代表任务完成；结果需要处理。`,
       );
     } catch {
       // Delivery-on-block is best-effort and must never mask the block itself.
@@ -3406,7 +3485,13 @@ export class KernelExecutionRuntime {
     dependencyType: import('../core/types.js').Dependency['type'] = 'manual',
   ): Promise<void> {
     const localBlockers = this.deps.subtaskRepo.listByTask?.(taskId)
-      .filter(subtask => subtask.status === 'blocked' && subtask.error)
+      // An uncertified result is deliberately kept in `awaiting_decision` so
+      // the Kernel can offer an exact recovery path. Preserve its error when
+      // the follow-up dispatch has no runnable frontier; otherwise the Task
+      // would be rewritten with only the generic frontier message.
+      .filter(subtask => (
+        subtask.status === 'blocked' || subtask.status === 'awaiting_decision'
+      ) && subtask.error)
       .map(subtask => `${subtask.title}: ${subtask.error}`).slice(0, 4) ?? [];
     const blockedReason = this.blockReasonWithCause(taskId, [reason, ...localBlockers].join('; '));
     if (this.deps.taskRuntimeService.findTask(taskId)?.status === 'running') {
@@ -3423,7 +3508,7 @@ export class KernelExecutionRuntime {
       });
     }
     this.recordTaskEvent(taskId, null, 'phase2_execution_blocked', blockedReason, {});
-    await finishExecution([`Execution blocked: ${blockedReason}`]);
+    await finishExecution([`Execution needs attention: ${blockedReason}`]);
   }
 
   /**

@@ -56,7 +56,7 @@ export function planTaskExecution(task: Task, userPrompt: string): TaskExecution
     case 'blocked':
       return {
         mode: 'blocked',
-        error: '当前任务已阻塞，请先解除阻塞再继续。',
+        error: '当前任务需要处理，请先完成处理再继续。',
       };
     case 'done':
     case 'archived':

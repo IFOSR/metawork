@@ -98,6 +98,15 @@ export class TaskCancellationCoordinator {
         task?.status !== 'cancelled'
         && subtasks.some(subtask => subtask.status === 'cancelled'),
       ),
+      uncertifiedResult: (() => {
+        const row = this.deps.db.prepare(`SELECT attempt_id AS attemptId, subtask_id AS subtaskId,
+          json_extract(parsing_json, '$.resultObjects.safeProjectionId') AS resultId
+          FROM executor_attempt_receipts WHERE task_id = ? AND terminal_state = 'uncertified_result'
+          ORDER BY completed_at DESC LIMIT 1`).get(taskId) as {
+            attemptId: string; subtaskId: string; resultId: string | null;
+          } | undefined;
+        return row?.resultId ? { ...row, resultId: row.resultId } : null;
+      })(),
     };
   }
 

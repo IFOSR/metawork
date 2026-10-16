@@ -89,7 +89,7 @@ describe('Round 2 guidance acceptance', () => {
 
     expect(firstOutput).toContain('💡 提醒');
     expect(firstOutput).toContain(task.id);
-    expect(firstOutput).toContain('检查并解除阻塞');
+    expect(firstOutput).toContain('检查原因并继续处理');
 
     const outputSizeAfterFirstReminder = session.getSnapshot().output.length;
     session.maybeEmitIdleGuidance(10_000);

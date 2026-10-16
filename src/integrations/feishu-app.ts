@@ -4322,7 +4322,7 @@ function isExecutorFailureLine(line: string): boolean {
 }
 
 function isTaskBlockedAfterFailureLine(line: string): boolean {
-  return /^→\s+任务\s+#task_[^\s]+\s+已转为阻塞/.test(line);
+  return /^→\s+任务\s+#task_[^\s]+\s+(?:已转为阻塞|需要处理)/.test(line);
 }
 
 function normalizeFeishuProgressContextStep(line: string): string | null {

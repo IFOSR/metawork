@@ -26,25 +26,25 @@ export function formatBlockedTaskNextStep(taskId: string, reason: string): strin
   }
 
   if (/材料|文件|链接|文档|资料|补充|缺少|等待/i.test(reason)) {
-    return `补充材料/文件/链接后，再执行 /task unblock ${taskId}`;
+    return `补充材料/文件/链接后，再执行 /task resume ${taskId}`;
   }
 
   if (isPermissionFailure(reason) || /授权|权限/i.test(reason)) {
-    return `确认权限/授权后，再执行 /task unblock ${taskId}`;
+    return `确认权限/授权后，再执行 /task resume ${taskId}`;
   }
 
   if (isRecoverableExecutorFailure(reason)) {
     return '等待执行器或网络恢复；系统会按恢复策略重试';
   }
 
-  return `确认阻塞条件已解除后执行 /task unblock ${taskId}`;
+  return `确认处理条件已满足后执行 /task resume ${taskId}`;
 }
 
 export function formatBlockedTaskRecoveryAction(taskId: string, reason: string): string {
   if (isUnknownTaskBlocker(reason)) {
     return `材料齐全不等于可以安全恢复；先执行 /task recovery ${taskId} 查看恢复项；没有恢复项时，不能安全地直接重试`;
   }
-  return `/task unblock ${taskId}`;
+  return `/task resume ${taskId}`;
 }
 
 export function formatEmptyTaskRecovery(
@@ -57,10 +57,10 @@ export function formatEmptyTaskRecovery(
 
   const reason = input.blockerReason!;
   return [
-    `任务 #${taskId} 当前仍为 BLOCKED`,
-    `阻塞原因：${formatBlockedTaskReason(reason)}`,
+    `任务 #${taskId} 仍需要处理`,
+    `待处理原因：${formatBlockedTaskReason(reason)}`,
     '没有可供 /task recover 使用的恢复项。',
-    '这不表示阻塞已解除，也不表示上次 Executor 没有产生副作用；系统因此不会自动重试。',
+    '系统不会在无法确认外部副作用时自动重试。',
     `下一步：人工核对外部系统和工作区；确认没有副作用后可执行 /task cancel ${taskId}，再重新提交需求；如果已产生结果，请基于结果创建 follow-up 任务。`,
   ].join('\n');
 }

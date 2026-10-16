@@ -1475,7 +1475,7 @@ describe('ControlKernel', () => {
     expect(kernel.decide(fallbackFailure, exhausted).action).toEqual({ type: 'park_for_replan', taskId: 'task_1' });
   });
 
-  it('authorizes one metadata correction and then blocks when correction is exhausted', () => {
+  it('authorizes one metadata correction and then requests user resolution when correction is exhausted', () => {
     const kernel = new ControlKernel();
     const first = runtimeEvent({
       type: 'execution_result_observed',
@@ -1499,14 +1499,14 @@ describe('ControlKernel', () => {
       })],
     });
     expect(kernel.decide({ ...first, id: 'contract_2', receiptCount: 2 }, dispatchSnapshot([], 'awaiting_decision')).action).toEqual({
-      type: 'block_work',
+      type: 'await_user_decision',
       taskId: 'task_1',
       subtaskId: 'subtask_1',
-      preserveSubtaskState: true,
+      reason: 'uncertified_result',
     });
   });
 
-  it('blocks a safe result when its AgentClass does not support response-only correction', () => {
+  it('requests user resolution when a safe result cannot be corrected automatically', () => {
     const event = runtimeEvent({
       type: 'execution_result_observed',
       attemptId: 'attempt_pi',
@@ -1527,10 +1527,10 @@ describe('ControlKernel', () => {
       event,
       dispatchSnapshot([], 'awaiting_decision'),
     ).action).toEqual({
-      type: 'block_work',
+      type: 'await_user_decision',
       taskId: 'task_1',
       subtaskId: 'subtask_1',
-      preserveSubtaskState: true,
+      reason: 'uncertified_result',
     });
   });
 

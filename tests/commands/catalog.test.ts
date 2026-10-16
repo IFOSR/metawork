@@ -246,6 +246,7 @@ describe('CommandCatalog', () => {
 /task cancel
 /task subtask-cancel
 /task accept-partial
+/task accept-result
 /task attach
 /task history
 /task recovery

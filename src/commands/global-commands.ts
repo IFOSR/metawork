@@ -12,7 +12,7 @@ export async function showDashboard(_args: ResolvedCommandArgs, context: Command
 
   const lines = [
     '┌─ Metaclaw 任务盘面 ─────────────────────────────┐',
-    `│ 活跃: ${dashboard.summary.active}  阻塞: ${dashboard.summary.blocked}  暂停: ${dashboard.summary.parked}  完成: ${dashboard.summary.done}`,
+    `│ 活跃: ${dashboard.summary.active}  需要处理: ${dashboard.summary.blocked}  暂停: ${dashboard.summary.parked}  完成: ${dashboard.summary.done}`,
     '│',
   ];
 
@@ -24,7 +24,7 @@ export async function showDashboard(_args: ResolvedCommandArgs, context: Command
   }
 
   if (dashboard.blockedTasks.length > 0) {
-    lines.push('│ 当前卡住：');
+    lines.push('│ 需要处理：');
     dashboard.blockedTasks.forEach(t => {
       lines.push(`│   #${t.id} ${t.title}`);
       lines.push(`│     → ${t.blockReason}`);
@@ -65,7 +65,7 @@ export async function attachTaskResources(
   if (targetTask.status === 'blocked') {
     return {
       type: 'text',
-      content: `${summaryLine}\n任务 #${taskId} 当前仍为 BLOCKED，可继续执行 /task unblock ${taskId}`,
+      content: `${summaryLine}\n任务 #${taskId} 仍需要处理，可继续执行 /task resume ${taskId}`,
     };
   }
 
