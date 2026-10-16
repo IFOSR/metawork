@@ -2,15 +2,13 @@
 // transaction records its phase progression so a crash can be resumed or rolled
 // back without guessing which files or database pointers were already switched.
 import {
-  closeSync,
   existsSync,
-  fsyncSync,
   mkdirSync,
-  openSync,
   readFileSync,
   renameSync,
   writeFileSync,
 } from 'node:fs';
+import { syncDirectorySync, syncFileSync } from '../platform/durable-fs.js';
 import { dirname } from 'node:path';
 export type InstallPhase =
   | 'preflight'
@@ -91,19 +89,9 @@ export class UpgradeJournal {
       `${JSON.stringify({ schemaVersion: 1, records: this.records }, null, 2)}\n`,
       { encoding: 'utf8', mode: 0o600 },
     );
-    const file = openSync(temporaryPath, 'r');
-    try {
-      fsyncSync(file);
-    } finally {
-      closeSync(file);
-    }
+    syncFileSync(temporaryPath);
     renameSync(temporaryPath, this.journalPath);
-    const directory = openSync(parent, 'r');
-    try {
-      fsyncSync(directory);
-    } finally {
-      closeSync(directory);
-    }
+    syncDirectorySync(parent);
   }
 }
 

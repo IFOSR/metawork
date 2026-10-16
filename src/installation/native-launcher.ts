@@ -3,13 +3,13 @@ import {
   chmod,
   lstat,
   mkdir,
-  open,
   readFile,
   rename,
   rm,
   writeFile,
 } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { syncDirectory, syncFile } from '../platform/durable-fs.js';
 
 const MANAGED_MARKER = '# MetaWork managed launcher';
 const LEGACY_MANAGED_MARKER = '# AnyFusion managed launcher';
@@ -39,20 +39,10 @@ export async function installNativeLauncher(
     encoding: 'utf8',
     mode: 0o755,
   });
-  const handle = await open(temporary, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
+  await syncFile(temporary);
   await rename(temporary, path);
   await chmod(path, 0o755);
-  const directory = await open(dirname(path), 'r');
-  try {
-    await directory.sync();
-  } finally {
-    await directory.close();
-  }
+  await syncDirectory(dirname(path));
 }
 
 export async function removeManagedLauncher(path: string): Promise<void> {

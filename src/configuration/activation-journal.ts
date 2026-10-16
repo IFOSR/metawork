@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { syncDirectory, syncFile } from '../platform/durable-fs.js';
 
 export interface ActivationJournalIdentity {
   transactionId: string;
@@ -61,23 +62,5 @@ export class ActivationJournalStore {
     await syncFile(temporaryPath);
     await rename(temporaryPath, this.path);
     await syncDirectory(directory);
-  }
-}
-
-async function syncFile(path: string): Promise<void> {
-  const handle = await open(path, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  const handle = await open(path, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
   }
 }

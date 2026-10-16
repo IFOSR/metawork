@@ -1,5 +1,6 @@
 import { mkdir, open, readFile, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { syncDirectory } from '../platform/durable-fs.js';
 
 export interface DesktopActivationRecord {
   schemaVersion: 1;
@@ -73,7 +74,6 @@ export class DesktopActivation {
     const handle = await open(temporary, 'w', 0o600);
     try { await handle.writeFile(JSON.stringify(record)); await handle.sync(); } finally { await handle.close(); }
     await rename(temporary, this.journalPath);
-    const directory = await open(dirname(this.journalPath), 'r');
-    try { await directory.sync(); } finally { await directory.close(); }
+    await syncDirectory(dirname(this.journalPath));
   }
 }

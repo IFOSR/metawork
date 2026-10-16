@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, opendir, readFile, rename, unlink } from 'node:fs/promises';
 import type { Dir } from 'node:fs';
 import { resolve } from 'node:path';
+import { syncDirectory } from '../platform/durable-fs.js';
+import { isPathInside } from '../utils/path-containment.js';
 import { isValidAccountId } from '../account/account-id.js';
 import { isValidConversationId } from '../session/conversation-types.js';
 import type { EventJournal, TracePage } from './event-journal.js';
@@ -256,7 +258,7 @@ export class SegmentedEventJournal implements EventJournal {
   async close(): Promise<void> {
     // The owner stops the maintenance timer before closing the journal.
     await Promise.all([...operations.entries()]
-      .filter(([key]) => key.startsWith(`${resolve(this.root)}/`)).map(([, pending]) => pending.catch(() => undefined)));
+      .filter(([key]) => isPathInside(this.root, key)).map(([, pending]) => pending.catch(() => undefined)));
     for (const directory of this.cleanupDirectories.values()) await directory.close();
     this.cleanupDirectories.clear();
   }
@@ -386,8 +388,7 @@ export class SegmentedEventJournal implements EventJournal {
     try { await handle.writeFile(body); await handle.sync(); }
     finally { await handle.close(); }
     await rename(temporary, path);
-    const dir = await open(directory, 'r');
-    try { await dir.sync(); } finally { await dir.close(); }
+    await syncDirectory(directory);
     return { id, firstSequence: events[0]!.sequence, lastSequence: events.at(-1)!.sequence, byteLength };
   }
 

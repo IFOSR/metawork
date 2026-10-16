@@ -13,7 +13,9 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { syncDirectory } from '../platform/durable-fs.js';
 import { measureNavigationStage } from '../utils/navigation-diagnostics.js';
+import { isPathStrictlyInside } from '../utils/path-containment.js';
 import { isValidConversationId } from './conversation-types.js';
 import type { ConversationHistoryStore, ConversationHistoryRequest } from './conversation-history-store.js';
 import {
@@ -252,7 +254,7 @@ export class FileConversationStore implements ConversationStore {
       throw new Error(`Invalid conversation id: ${conversationId}`);
     }
     const path = resolve(this.recordsDir, `${conversationId}.json`);
-    if (!path.startsWith(`${this.recordsDir}/`)) {
+    if (!isPathStrictlyInside(this.recordsDir, path)) {
       throw new Error(`Invalid conversation id: ${conversationId}`);
     }
     return path;
@@ -284,8 +286,7 @@ async function atomicWriteJson(path: string, value: unknown): Promise<void> {
     await handle.close();
     handle = undefined;
     await rename(temporaryPath, path);
-    const directory = await open(dirname(path), 'r');
-    try { await directory.sync(); } finally { await directory.close(); }
+    await syncDirectory(dirname(path));
   } catch (error) {
     await handle?.close().catch(() => undefined);
     await unlink(temporaryPath).catch(() => undefined);

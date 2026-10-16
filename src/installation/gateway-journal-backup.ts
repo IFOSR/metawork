@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { link, lstat, mkdir, open, realpath, rename, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { syncDirectory } from '../platform/durable-fs.js';
 import { isValidAccountId } from '../account/account-id.js';
 import { isValidConversationId } from '../session/conversation-types.js';
 
@@ -235,11 +236,6 @@ async function ensureRelativeDirectories(root: string, path: string): Promise<vo
     current = join(current, part);
     await ensureDirectory(current);
   }
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  const handle = await open(path, 'r');
-  try { await handle.sync(); } finally { await handle.close(); }
 }
 
 async function exists(path: string): Promise<boolean> {

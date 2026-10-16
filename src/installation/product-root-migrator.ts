@@ -5,7 +5,6 @@ import {
   cp,
   lstat,
   mkdir,
-  open,
   readFile,
   readdir,
   readlink,
@@ -15,6 +14,7 @@ import {
 } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative } from 'node:path';
+import { syncFile } from '../platform/durable-fs.js';
 import { isInstanceRunning } from '../management/lock.js';
 import {
   assertLauncherAvailable,
@@ -347,12 +347,7 @@ async function writeAtomicJson(path: string, value: unknown): Promise<void> {
     encoding: 'utf8',
     mode: 0o600,
   });
-  const handle = await open(temporary, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
+  await syncFile(temporary);
   await rename(temporary, path);
 }
 
