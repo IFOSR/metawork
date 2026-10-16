@@ -91,18 +91,24 @@ export class UpgradeJournal {
       `${JSON.stringify({ schemaVersion: 1, records: this.records }, null, 2)}\n`,
       { encoding: 'utf8', mode: 0o600 },
     );
-    const file = openSync(temporaryPath, 'r');
-    try {
-      fsyncSync(file);
-    } finally {
-      closeSync(file);
+    // Windows cannot fsync read-only handles or directories (FlushFileBuffers
+    // needs GENERIC_WRITE); NTFS journaling already covers the rename.
+    if (process.platform !== 'win32') {
+      const file = openSync(temporaryPath, 'r');
+      try {
+        fsyncSync(file);
+      } finally {
+        closeSync(file);
+      }
     }
     renameSync(temporaryPath, this.journalPath);
-    const directory = openSync(parent, 'r');
-    try {
-      fsyncSync(directory);
-    } finally {
-      closeSync(directory);
+    if (process.platform !== 'win32') {
+      const directory = openSync(parent, 'r');
+      try {
+        fsyncSync(directory);
+      } finally {
+        closeSync(directory);
+      }
     }
   }
 }

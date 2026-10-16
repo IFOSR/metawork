@@ -386,8 +386,11 @@ export class SegmentedEventJournal implements EventJournal {
     try { await handle.writeFile(body); await handle.sync(); }
     finally { await handle.close(); }
     await rename(temporary, path);
-    const dir = await open(directory, 'r');
-    try { await dir.sync(); } finally { await dir.close(); }
+    // Windows cannot fsync directories (FlushFileBuffers needs GENERIC_WRITE).
+    if (process.platform !== 'win32') {
+      const dir = await open(directory, 'r');
+      try { await dir.sync(); } finally { await dir.close(); }
+    }
     return { id, firstSequence: events[0]!.sequence, lastSequence: events.at(-1)!.sequence, byteLength };
   }
 

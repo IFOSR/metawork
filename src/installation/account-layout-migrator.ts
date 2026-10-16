@@ -465,18 +465,24 @@ async function writeAtomicJson(path: string, value: unknown): Promise<void> {
     encoding: 'utf8',
     mode: 0o600,
   });
-  const handle = await open(temporary, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
+  // Windows cannot fsync directories or read-only handles (FlushFileBuffers
+  // needs GENERIC_WRITE); NTFS journaling already covers the rename.
+  if (process.platform !== 'win32') {
+    const handle = await open(temporary, 'r');
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
   }
   await rename(temporary, path);
-  const directory = await open(parent, 'r');
-  try {
-    await directory.sync();
-  } finally {
-    await directory.close();
+  if (process.platform !== 'win32') {
+    const directory = await open(parent, 'r');
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
   }
 }
 

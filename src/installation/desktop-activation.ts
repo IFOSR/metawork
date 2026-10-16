@@ -73,7 +73,10 @@ export class DesktopActivation {
     const handle = await open(temporary, 'w', 0o600);
     try { await handle.writeFile(JSON.stringify(record)); await handle.sync(); } finally { await handle.close(); }
     await rename(temporary, this.journalPath);
-    const directory = await open(dirname(this.journalPath), 'r');
-    try { await directory.sync(); } finally { await directory.close(); }
+    // Windows cannot fsync directories (FlushFileBuffers needs GENERIC_WRITE).
+    if (process.platform !== 'win32') {
+      const directory = await open(dirname(this.journalPath), 'r');
+      try { await directory.sync(); } finally { await directory.close(); }
+    }
   }
 }

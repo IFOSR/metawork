@@ -347,11 +347,14 @@ async function writeAtomicJson(path: string, value: unknown): Promise<void> {
     encoding: 'utf8',
     mode: 0o600,
   });
-  const handle = await open(temporary, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
+  // Windows cannot fsync read-only handles (FlushFileBuffers needs GENERIC_WRITE).
+  if (process.platform !== 'win32') {
+    const handle = await open(temporary, 'r');
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
   }
   await rename(temporary, path);
 }

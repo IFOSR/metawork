@@ -230,7 +230,10 @@ async function atomicWriteJson(path: string, value: unknown): Promise<void> {
   }
 }
 
+// Windows cannot fsync read-only handles or directories (FlushFileBuffers
+// needs GENERIC_WRITE); NTFS journaling already covers the rename.
 async function syncDirectory(path: string): Promise<void> {
+  if (process.platform === 'win32') return;
   const handle = await open(path, 'r');
   try {
     await handle.sync();

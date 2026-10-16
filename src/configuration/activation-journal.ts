@@ -64,7 +64,10 @@ export class ActivationJournalStore {
   }
 }
 
+// Windows cannot fsync read-only handles or directories (FlushFileBuffers
+// needs GENERIC_WRITE); NTFS journaling already covers the rename.
 async function syncFile(path: string): Promise<void> {
+  if (process.platform === 'win32') return;
   const handle = await open(path, 'r');
   try {
     await handle.sync();
@@ -74,6 +77,7 @@ async function syncFile(path: string): Promise<void> {
 }
 
 async function syncDirectory(path: string): Promise<void> {
+  if (process.platform === 'win32') return;
   const handle = await open(path, 'r');
   try {
     await handle.sync();

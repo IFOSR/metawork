@@ -284,8 +284,11 @@ async function atomicWriteJson(path: string, value: unknown): Promise<void> {
     await handle.close();
     handle = undefined;
     await rename(temporaryPath, path);
-    const directory = await open(dirname(path), 'r');
-    try { await directory.sync(); } finally { await directory.close(); }
+    // Windows cannot fsync directories (FlushFileBuffers needs GENERIC_WRITE).
+    if (process.platform !== 'win32') {
+      const directory = await open(dirname(path), 'r');
+      try { await directory.sync(); } finally { await directory.close(); }
+    }
   } catch (error) {
     await handle?.close().catch(() => undefined);
     await unlink(temporaryPath).catch(() => undefined);

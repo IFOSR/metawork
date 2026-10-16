@@ -1,17 +1,27 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { OfficialServiceClient } from '../../src/authorization/official-service-client.js';
 import { LocalAuthorizationService } from '../../src/authorization/local-authorization-service.js';
-import { OfficialAuthorizationError } from '../../src/authorization/types.js';
+import { OfficialAuthorizationError, type OfficialOrderPaymentResult, type OfficialPaymentView, type OfficialOrderView } from '../../src/authorization/types.js';
 
 const epoch = Date.parse('2026-10-09T00:00:00Z');
 const day = 86400000;
 function entitlement(offset = 0) {
   return { status: 'trial' as const, plan: 'trial' as const, effectiveAt: new Date(epoch).toISOString(), expiresAt: new Date(epoch + 7 * day).toISOString(), revision: 1, serverTime: new Date(epoch + offset).toISOString() };
 }
+function paymentRow(status: OfficialPaymentView['status'] = 'pending'): OfficialPaymentView {
+  return { hubOrderNo: 'a'.repeat(32), attempt: 1, status, amountCents: 990, qrCodeUrl: null, expiresAt: null, paidAt: null, channelOrderNo: null };
+}
+function orderRow(status = 'pending_payment', payment: OfficialPaymentView | null = null): OfficialOrderView {
+  return { orderId: 'ord_1', plan: 'monthly', amountCny: '9.90', currency: 'CNY', status, createdAt: new Date(epoch).toISOString(), payment };
+}
 function client() {
   return {
     login: vi.fn(async (email: string) => ({ sessionToken: 'private-session', account: { accountId: email, email }, entitlement: entitlement() })),
     logout: vi.fn(async () => undefined), verifyEntitlement: vi.fn(async () => entitlement()),
     register: vi.fn(async () => undefined), createOrder: vi.fn(async () => ({})), getPlans: vi.fn(async () => ({ plans: [] })),
+    payOrder: vi.fn(async (): Promise<OfficialOrderPaymentResult> => ({ order: orderRow(), payment: paymentRow() })),
+    getOrder: vi.fn(async (): Promise<OfficialOrderPaymentResult> => ({ order: orderRow(), payment: paymentRow() })),
+    listOrders: vi.fn(async () => ({ orders: [] as OfficialOrderView[] })),
     ai: vi.fn(async () => ({ operation: 'responsibility_rewrite' as const, result: { mission: '测试' }, entitlement: entitlement() })),
   };
 }
@@ -85,5 +95,48 @@ describe('memory-only official authorization', () => {
     expect(api.verifyEntitlement).not.toHaveBeenCalled();
     api.ai.mockRejectedValueOnce(new OfficialAuthorizationError('revoked', 'entitlement_inactive'));
     await expect(auth.callOfficialAi('responsibility_rewrite', {})).rejects.toThrow(); expect(auth.getStatus().state).toBe('revoked');
+  });
+});
+
+describe('official payment passthrough', () => {
+  it('fences a late payOrder response after logout instead of accepting payment state', async () => {
+    const api = client(); const auth = service({ client: api }); await auth.login('a@example.com', 'password');
+    let finish!: (value: OfficialOrderPaymentResult) => void;
+    api.payOrder.mockImplementation(() => new Promise<OfficialOrderPaymentResult>(resolve => { finish = resolve; }));
+    const pending = auth.payOrder('ord_1');
+    await auth.logout();
+    finish({ order: orderRow('paid', paymentRow('paid')), payment: paymentRow('paid') });
+    await expect(pending).rejects.toMatchObject({ code: 'session_invalid' });
+    expect(auth.getStatus().state).toBe('logged_out');
+  });
+  it('verifies production online as soon as a refreshed order reports paid, and not on unpaid polls', async () => {
+    const api = client(); const auth = service({ client: api }); await auth.login('a@example.com', 'password');
+    api.getOrder.mockResolvedValueOnce({ order: orderRow('paid', paymentRow('paid')), payment: paymentRow('paid') });
+    expect((await auth.refreshOrder('ord_1')).order.status).toBe('paid');
+    expect(api.verifyEntitlement).toHaveBeenCalledTimes(1);
+    api.getOrder.mockResolvedValueOnce({ order: orderRow('pending_payment', paymentRow('pending')), payment: paymentRow('pending') });
+    await auth.refreshOrder('ord_1');
+    expect(api.verifyEntitlement).toHaveBeenCalledTimes(1);
+  });
+  it('keeps payment surfaces unavailable when the client reports unconfigured service', async () => {
+    const api = client();
+    api.payOrder.mockRejectedValue(new OfficialAuthorizationError('未配置', 'payment_unavailable'));
+    const auth = service({ client: api }); await auth.login('a@example.com', 'password');
+    await expect(auth.payOrder('ord_1')).rejects.toMatchObject({ code: 'payment_unavailable' });
+    expect(auth.getStatus().state).toBe('active'); // payment failures never change the entitlement state
+  });
+});
+
+describe('official service client payment error mapping', () => {
+  function clientWith(code: string, status: number) {
+    return new OfficialServiceClient({ baseUrl: 'https://official.test', fetchImpl: (async () => new Response(JSON.stringify({ code }), { status })) });
+  }
+  it('maps hub failure codes onto the typed payment contract', async () => {
+    await expect(clientWith('payment_hub_busy', 429).payOrder('t', 'ord_1')).rejects.toMatchObject({ code: 'payment_unavailable' });
+    await expect(clientWith('payment_unavailable', 503).payOrder('t', 'ord_1')).rejects.toMatchObject({ code: 'payment_unavailable' });
+    await expect(clientWith('OPC_PAY_CHANNEL_UNAVAILABLE', 503).payOrder('t', 'ord_1')).rejects.toMatchObject({ code: 'payment_unavailable' });
+    await expect(clientWith('payment_order_expired', 400).payOrder('t', 'ord_1')).rejects.toMatchObject({ code: 'request_rejected' });
+    await expect(clientWith('payment_order_state_conflict', 409).payOrder('t', 'ord_1')).rejects.toMatchObject({ code: 'request_rejected' });
+    await expect(clientWith('order_not_payable', 400).payOrder('t', 'ord_1')).rejects.toMatchObject({ code: 'request_rejected' });
   });
 });

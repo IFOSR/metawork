@@ -1,4 +1,5 @@
 import { LocalAuthorizationService } from '../../src/authorization/local-authorization-service.js';
+import { OfficialAuthorizationError } from '../../src/authorization/types.js';
 import { DesktopSessionService } from '../../src/management/desktop-session.js';
 import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
@@ -99,6 +100,45 @@ describe('official account local authentication boundary', () => {
       expect(result.status).toBe(200);
       const projection = await result.text();
       expect(projection).toContain('active'); expect(projection).not.toContain('private-official-session'); expect(projection).not.toContain('private-password');
+    } finally { await server.stop(); await auth.dispose(); }
+  });
+
+  it('exposes the payment passthrough routes behind the same local boundary and error mapping', async () => {
+    const port = await reservePort();
+    const origin = `http://127.0.0.1:${port}`;
+    const fact = { status: 'active' as const, plan: 'internal_perpetual' as const, effectiveAt: new Date().toISOString(), expiresAt: null, revision: 1, serverTime: new Date().toISOString() };
+    const payment = { hubOrderNo: 'a'.repeat(32), attempt: 1, status: 'pending' as const, amountCents: 990, qrCodeUrl: 'weixin://wxpay/bizpayurl?pr=test', expiresAt: null, paidAt: null, channelOrderNo: null };
+    const order = { orderId: 'ord_1', plan: 'monthly' as const, amountCny: '9.90', currency: 'CNY', status: 'pending_payment', createdAt: new Date().toISOString(), payment };
+    let pays = 0;
+    const auth = new LocalAuthorizationService({ client: {
+      login: async () => ({ sessionToken: 'private-official-session', account: { accountId: 'a', email: 'a@example.com' }, entitlement: fact }),
+      logout: async () => {}, register: async () => {}, verifyEntitlement: async () => fact,
+      getPlans: async () => ({ plans: [] }), createOrder: async () => ({}),
+      payOrder: async () => {
+        pays++;
+        if (pays > 1) throw new OfficialAuthorizationError('支付服务暂时不可用，请稍后重试。', 'payment_unavailable');
+        return { order, payment };
+      },
+      getOrder: async () => ({ order, payment }),
+      listOrders: async () => ({ orders: [order] }),
+      ai: async () => ({ operation: 'model_summary' as const, result: {}, entitlement: fact }),
+    } });
+    const server = createManagementServer(port, { officialAuthorization: auth });
+    await server.start();
+    try {
+      const headers = { authorization: 'Bearer manual-token', 'content-type': 'application/json', origin };
+      expect((await fetch(`${origin}/api/official-auth/orders/ord_1/pay`, { method: 'POST', headers: { ...headers, origin: 'https://untrusted.example' }, body: '{}' })).status).toBe(403);
+      expect((await fetch(`${origin}/api/official-auth/orders`, { headers: { origin } })).status).toBe(401);
+      expect((await fetch(`${origin}/api/official-auth/login`, { method: 'POST', headers, body: JSON.stringify({ email: 'a@example.com', password: 'private-password' }) })).status).toBe(200);
+      expect((await fetch(`${origin}/api/official-auth/orders/ord_1`, { headers })).status).toBe(200);
+      expect((await fetch(`${origin}/api/official-auth/orders/ord_1/pay`, { method: 'POST', headers, body: '{}' })).status).toBe(200);
+      const list = await fetch(`${origin}/api/official-auth/orders`, { headers });
+      expect(list.status).toBe(200);
+      expect(await list.json()).toEqual({ orders: [order] });
+      const unavailable = await fetch(`${origin}/api/official-auth/orders/ord_1/pay`, { method: 'POST', headers, body: '{}' });
+      expect(unavailable.status).toBe(503);
+      expect(await unavailable.json()).toMatchObject({ error: 'payment_unavailable' });
+      expect(pays).toBe(2);
     } finally { await server.stop(); await auth.dispose(); }
   });
 });

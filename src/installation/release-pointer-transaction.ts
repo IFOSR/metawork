@@ -122,11 +122,14 @@ export class ReleasePointerTransaction {
       encoding: 'utf8',
       mode: 0o600,
     });
-    const handle = await open(temporary, 'r');
-    try {
-      await handle.sync();
-    } finally {
-      await handle.close();
+    // Windows cannot fsync read-only handles (FlushFileBuffers needs GENERIC_WRITE).
+    if (process.platform !== 'win32') {
+      const handle = await open(temporary, 'r');
+      try {
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
     }
     await rename(temporary, path);
     await syncDirectory(parent);
@@ -227,7 +230,9 @@ async function replaceSymlink(path: string, target: string): Promise<void> {
   }
 }
 
+// Windows cannot fsync directories (FlushFileBuffers needs GENERIC_WRITE).
 async function syncDirectory(path: string): Promise<void> {
+  if (process.platform === 'win32') return;
   const handle = await open(path, 'r');
   try {
     await handle.sync();

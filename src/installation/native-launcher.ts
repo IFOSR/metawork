@@ -39,19 +39,25 @@ export async function installNativeLauncher(
     encoding: 'utf8',
     mode: 0o755,
   });
-  const handle = await open(temporary, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
+  // Windows cannot fsync directories or read-only handles (FlushFileBuffers
+  // needs GENERIC_WRITE); NTFS journaling already covers the rename.
+  if (process.platform !== 'win32') {
+    const handle = await open(temporary, 'r');
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
   }
   await rename(temporary, path);
   await chmod(path, 0o755);
-  const directory = await open(dirname(path), 'r');
-  try {
-    await directory.sync();
-  } finally {
-    await directory.close();
+  if (process.platform !== 'win32') {
+    const directory = await open(dirname(path), 'r');
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
   }
 }
 
