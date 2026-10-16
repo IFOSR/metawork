@@ -7,10 +7,8 @@ import {
   cp,
   lstat,
   mkdir,
-  readlink,
   rename,
   rm,
-  symlink,
 } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import Database from 'better-sqlite3';
@@ -25,6 +23,13 @@ import type { AnyFusionConfigurationV2 } from '../configuration/types.js';
 import { runMigrations } from '../storage/migrations.js';
 import type { AnyFusionPaths } from './paths.js';
 import { resolveReleasePaths } from './paths.js';
+import {
+  clearDatabaseRevisionCompanions,
+  databaseRevisionFile,
+  databaseRevisionTarget,
+  replaceDatabasePointer,
+} from './database-pointer.js';
+import { readDirectoryLinkTarget, replaceDirectoryLink } from '../platform/fs-links.js';
 import {
   assertLauncherAvailable,
   installNativeLauncher,
@@ -78,9 +83,9 @@ export class SourceNativeInstaller {
     const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
     const release = resolveReleasePaths(paths.root, input.releaseId);
     const configurationRevision = `install-${input.releaseId}`;
-    const databaseRevision = join(
+    const databaseRevision = databaseRevisionFile(
       accountPaths.databaseRevisions,
-      `${input.releaseId}-${configurationRevision}.db`,
+      `${input.releaseId}-${configurationRevision}`,
     );
     const repository = new FileConfigurationRepository(accountPaths.config);
     const service = new ConfigurationService({
@@ -148,22 +153,23 @@ export class SourceNativeInstaller {
       });
       compiledRuntimeRoot = compiledRuntime.rootPath;
       await createFreshDatabase(databaseRevision);
+      await clearDatabaseRevisionCompanions(databaseRevision);
 
       for (const launcherPath of launcherPaths) {
         await installNativeLauncher(launcherPath, paths.root);
         installedLaunchers.push(launcherPath);
       }
-      await replaceRelativeSymlink(
+      await replaceDirectoryPointer(
         accountPaths.generatedCurrent,
         relative(dirname(accountPaths.generatedCurrent), compiledRuntime.rootPath),
       );
       switched.push(accountPaths.generatedCurrent);
-      await replaceRelativeSymlink(
-        accountPaths.database,
-        relative(dirname(accountPaths.database), databaseRevision),
+      await replaceDatabasePointer(
+        accountPaths.databasePointer,
+        databaseRevisionTarget(`${input.releaseId}-${configurationRevision}`),
       );
-      switched.push(accountPaths.database);
-      await replaceRelativeSymlink(
+      switched.push(accountPaths.databasePointer);
+      await replaceDirectoryPointer(
         paths.appCurrent,
         relative(dirname(paths.appCurrent), release.releaseRoot),
       );
@@ -243,7 +249,7 @@ async function assertReleaseRootReplaceable(
 ): Promise<void> {
   const existing = await lstat(releaseRoot).then(() => true, () => false);
   if (!existing) return;
-  const activeTarget = await readlink(appCurrentPointer).catch(() => null);
+  const activeTarget = await readDirectoryLinkTarget(appCurrentPointer).catch(() => null);
   if (
     activeTarget !== null
     && resolve(dirname(appCurrentPointer), activeTarget) === resolve(releaseRoot)
@@ -449,11 +455,9 @@ async function createFreshDatabase(path: string): Promise<void> {
   await chmod(path, 0o600);
 }
 
-async function replaceRelativeSymlink(path: string, target: string): Promise<void> {
+async function replaceDirectoryPointer(path: string, target: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.next-${randomUUID()}`;
-  await symlink(target, temporary);
-  await rename(temporary, path);
+  await replaceDirectoryLink(path, target);
 }
 
 async function assertInstallTargetIsClean(
@@ -465,6 +469,7 @@ async function assertInstallTargetIsClean(
   for (const path of [
     paths.appCurrent,
     accountPaths.generatedCurrent,
+    accountPaths.databasePointer,
     accountPaths.database,
     releaseRoot,
     join(accountPaths.configRevisions, configurationRevision),

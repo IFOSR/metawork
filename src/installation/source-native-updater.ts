@@ -4,10 +4,8 @@ import {
   lstat,
   mkdir,
   readdir,
-  readlink,
   rename,
   rm,
-  symlink,
 } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import Database from 'better-sqlite3';
@@ -19,7 +17,20 @@ import { createProductionConfigurationProbe } from '../configuration/production-
 import { FileConfigurationRepository } from '../configuration/file-configuration-repository.js';
 import { migrateLegacyProviderCredentials } from '../configuration/provider-credential-migration.js';
 import type { CredentialsFileSecretStore } from '../configuration/credentials-file-secret-store.js';
+import { readDirectoryLinkTarget } from '../platform/fs-links.js';
 import { CURRENT_SCHEMA_VERSION, runMigrations } from '../storage/migrations.js';
+import {
+  assertCompatibleDatabase,
+  clearDatabaseRevisionCompanions,
+  databasePointerKind,
+  databaseRevisionFile,
+  databaseRevisionTarget,
+  ensureRevisionedDatabasePointer,
+  isSupportedDatabaseSchema,
+  readDatabasePointerTarget,
+  recoverDatabasePointerMigration,
+  resolveDatabasePointerFile,
+} from './database-pointer.js';
 import { DatabaseUpgradeTransaction } from './database-upgrade-transaction.js';
 import type { AnyFusionPaths } from './paths.js';
 import { resolveReleasePaths } from './paths.js';
@@ -48,6 +59,25 @@ export interface SourceNativeUpdateResult {
   outcome: 'committed';
   upgradeId: string;
   journalPath: string;
+}
+
+/**
+ * Startup recovery for the states only a platform without atomic pointer
+ * replacement can reach: a half-finished database pointer conversion and a
+ * prepared release activation whose pointer swap was interrupted. POSIX cannot
+ * reach either state, so its startup behavior is unchanged.
+ */
+export async function recoverInstallationPointers(input: {
+  paths: AnyFusionPaths;
+  accountPaths: AccountPaths;
+}): Promise<void> {
+  if (databasePointerKind() !== 'directory') return;
+  await recoverDatabasePointerMigration(input.accountPaths);
+  await recoverPreparedReleaseActivations(
+    input.paths.upgradeJournals,
+    releasePointerPaths(input.paths, input.accountPaths),
+    (journal, path) => restoreActivationJournal(input.accountPaths, journal, activationId(path)),
+  );
 }
 
 export class SourceNativeUpdater {
@@ -127,7 +157,7 @@ export class SourceNativeUpdater {
       if (!isSupportedDatabaseSchema(sourceSchema)) {
         throw new Error(`unsupported update source schema: ${sourceSchema}`);
       }
-      const candidateDatabase = join(accountPaths.databaseRevisions, `${upgradeId}.db`);
+      const candidateDatabase = databaseRevisionFile(accountPaths.databaseRevisions, upgradeId);
       const backupDatabase = join(accountPaths.backups, upgradeId, 'anyfusion.db');
       const migrationContext = sourceSchema === 30
         ? createMigrationContextFromSnapshot(snapshot)
@@ -152,6 +182,7 @@ export class SourceNativeUpdater {
         sentinelTables: ['schema_version'],
       });
       await chmod(candidateDatabase, 0o600);
+      await clearDatabaseRevisionCompanions(candidateDatabase);
       await backupGatewayJournal({
         databasePath: accountPaths.database,
         journalRoot: join(accountPaths.gateway, 'events'),
@@ -159,9 +190,9 @@ export class SourceNativeUpdater {
       });
 
       const candidateTargets: Record<ReleasePointerName, string> = {
-        database: relative(dirname(accountPaths.database), candidateDatabase),
-        configuration: await readlink(pointerPaths.configuration),
-        generated: await readlink(pointerPaths.generated),
+        database: databaseRevisionTarget(upgradeId),
+        configuration: await readDirectoryLinkTarget(pointerPaths.configuration),
+        generated: await readDirectoryLinkTarget(pointerPaths.generated),
         application: relative(dirname(paths.appCurrent), release.releaseRoot),
       };
       const journalPath = join(paths.upgradeJournals, `${upgradeId}-activation.json`);
@@ -254,7 +285,7 @@ export class SourceNativeUpdater {
         detectCommand: this.dependencies.detectCommand,
       });
       const upgradeId = `rollback-${releaseId}-${randomUUID()}`;
-      const currentRevision = basename(await readlink(pointerPaths.configuration));
+      const currentRevision = basename(await readDirectoryLinkTarget(pointerPaths.configuration));
       const service = new ConfigurationService({
         repository,
         createRevisionId: () => upgradeId,
@@ -320,7 +351,7 @@ export class SourceNativeUpdater {
               `rollback configuration probe failed: ${(probeResult.issues ?? []).join('; ')}`,
             );
           }
-          verifyCompatibleDatabase(accountPaths.database);
+          assertCompatibleDatabase(accountPaths.database);
         },
       });
       // The current config transaction is already recovered and verified. Retire
@@ -350,7 +381,10 @@ async function restoreActivationJournal(
   upgradeId: string,
 ): Promise<void> {
   await restoreGatewayJournal({
-    databasePath: resolve(dirname(accountPaths.database), journal.previousTargets.database),
+    databasePath: resolveDatabasePointerFile(
+      accountPaths.databasePointer,
+      journal.previousTargets.database,
+    ),
     journalRoot: join(accountPaths.gateway, 'events'),
     backupRoot: join(accountPaths.backups, upgradeId, 'gateway-events'),
   });
@@ -375,8 +409,8 @@ async function findCurrentActivation(
   }
   const sameTarget = (name: ReleasePointerName, left: string, right: string) =>
     resolve(dirname(paths[name]), left) === resolve(dirname(paths[name]), right);
-  const currentDatabase = await readlink(paths.database);
-  const currentApplication = await readlink(paths.application);
+  const currentDatabase = await readDatabasePointerTarget(paths.database);
+  const currentApplication = await readDirectoryLinkTarget(paths.application);
   // A rollback can revisit an app/DB pair. Only the unconsumed activation owns
   // its current checkpoint. Config/generated pointers may advance independently.
   const candidates = activations.filter(entry =>
@@ -400,8 +434,8 @@ async function recoverConfiguration(
 ): Promise<void> {
   const journal = await repository.journal.read();
   if (journal?.phase === 'committed' && activation) {
-    const configuration = await readlink(paths.configuration);
-    const generated = await readlink(paths.generated);
+    const configuration = await readDirectoryLinkTarget(paths.configuration);
+    const generated = await readDirectoryLinkTarget(paths.generated);
     const { previousTargets, candidateTargets } = activation.journal;
     // A committed release rollback supersedes the prior config-only journal.
     // Do not discard pending or independently advanced configuration activations.
@@ -421,44 +455,11 @@ function releasePointerPaths(
   accountPaths: AccountPaths,
 ): Record<ReleasePointerName, string> {
   return {
-    database: accountPaths.database,
+    database: accountPaths.databasePointer,
     configuration: accountPaths.configActive,
     generated: accountPaths.generatedCurrent,
     application: paths.appCurrent,
   };
-}
-
-async function ensureRevisionedDatabasePointer(accountPaths: AccountPaths): Promise<void> {
-  const info = await lstat(accountPaths.database);
-  if (info.isSymbolicLink()) return;
-  if (!info.isFile()) {
-    throw new Error(`account database is not a file or symlink: ${accountPaths.database}`);
-  }
-  verifyCompatibleDatabase(accountPaths.database);
-  await mkdir(accountPaths.databaseRevisions, { recursive: true, mode: 0o700 });
-  const baseline = join(
-    accountPaths.databaseRevisions,
-    `pre-revision-pointer-${randomUUID()}.db`,
-  );
-  await backupSqliteDatabase(accountPaths.database, baseline);
-  await chmod(baseline, 0o600);
-  verifyCompatibleDatabase(baseline);
-  const temporary = `${accountPaths.database}.next-${randomUUID()}`;
-  await symlink(relative(dirname(accountPaths.database), baseline), temporary);
-  await rename(temporary, accountPaths.database);
-}
-
-async function backupSqliteDatabase(sourcePath: string, targetPath: string): Promise<void> {
-  await rm(targetPath, { force: true });
-  const source = new Database(sourcePath, {
-    readonly: true,
-    fileMustExist: true,
-  });
-  try {
-    await source.backup(targetPath);
-  } finally {
-    source.close();
-  }
 }
 
 function readSchemaVersion(path: string): number {
@@ -495,32 +496,4 @@ function verifyActiveDatabase(path: string): void {
   } finally {
     db.close();
   }
-}
-
-function verifyCompatibleDatabase(path: string): void {
-  const db = new Database(path, { readonly: true, fileMustExist: true });
-  try {
-    const version = db.prepare('SELECT version FROM schema_version').get() as {
-      version: number;
-    } | undefined;
-    if (!isSupportedDatabaseSchema(version?.version)) {
-      throw new Error(`rollback database schema is incompatible: ${version?.version ?? 'missing'}`);
-    }
-    const integrity = db.pragma('integrity_check') as Array<{ integrity_check: string }>;
-    if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') {
-      throw new Error('rollback database integrity check failed');
-    }
-    if ((db.pragma('foreign_key_check') as unknown[]).length > 0) {
-      throw new Error('rollback database foreign key check failed');
-    }
-  } finally {
-    db.close();
-  }
-}
-
-function isSupportedDatabaseSchema(version: number | undefined): boolean {
-  return version !== undefined
-    && Number.isInteger(version)
-    && version >= 30
-    && version <= CURRENT_SCHEMA_VERSION;
 }

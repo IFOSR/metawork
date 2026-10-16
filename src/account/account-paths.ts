@@ -10,6 +10,7 @@
 
 import { resolve } from 'node:path';
 import { resolveMetaWorkPaths } from '../installation/paths.js';
+import { resolveAccountDatabasePaths } from '../installation/database-pointer-paths.js';
 import { isValidAccountId } from './account-id.js';
 
 export interface AccountPaths {
@@ -24,6 +25,8 @@ export interface AccountPaths {
   readonly generatedCurrent: string;
   readonly plannerRuntime: string;
   readonly data: string;
+  /** Pointer that selects the active database revision (symlink, or junction on Windows). */
+  readonly databasePointer: string;
   readonly database: string;
   readonly databaseRevisions: string;
   readonly backups: string;
@@ -47,6 +50,7 @@ export function resolveAccountPaths(accountId: string, installRoot?: string): Ac
   const config = resolve(root, 'config');
   const data = resolve(root, 'data');
   const planner = resolve(root, 'planner');
+  const database = resolveAccountDatabasePaths(data);
   return {
     root,
     accountJson: resolve(root, 'account.json'),
@@ -59,7 +63,8 @@ export function resolveAccountPaths(accountId: string, installRoot?: string): Ac
     generatedCurrent: resolve(root, 'generated', 'current'),
     plannerRuntime: resolve(planner, 'runtime'),
     data,
-    database: resolve(data, 'anyfusion.db'),
+    databasePointer: database.pointer,
+    database: database.file,
     databaseRevisions: resolve(data, 'database-revisions'),
     backups: resolve(data, 'backups'),
     plannerSessions: resolve(planner, 'sessions'),

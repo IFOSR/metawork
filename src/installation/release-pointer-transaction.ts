@@ -1,16 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import {
   mkdir,
-  open,
   readFile,
   readdir,
-  readlink,
   rename,
   rm,
-  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { syncDirectory, syncFile } from '../platform/durable-fs.js';
+import { readDirectoryLinkTarget, replaceDirectoryLink } from '../platform/fs-links.js';
+import {
+  readDatabasePointerTarget,
+  replaceDatabasePointer,
+} from './database-pointer.js';
 
 export type ReleasePointerName =
   | 'database'
@@ -51,7 +54,7 @@ export class ReleasePointerTransaction {
     await this.writeJournal(journal);
     try {
       for (const name of SWITCH_ORDER) {
-        await replaceSymlink(this.dependencies.paths[name], candidateTargets[name]);
+        await replacePointer(name, this.dependencies.paths[name], candidateTargets[name]);
         switched.push(name);
         await this.dependencies.afterSwitch?.(name);
       }
@@ -73,7 +76,7 @@ export class ReleasePointerTransaction {
       const rollbackErrors: unknown[] = [];
       for (const name of switched.reverse()) {
         try {
-          await replaceSymlink(this.dependencies.paths[name], previousTargets[name]);
+          await replacePointer(name, this.dependencies.paths[name], previousTargets[name]);
         } catch (rollbackError) {
           rollbackErrors.push(rollbackError);
         }
@@ -98,7 +101,7 @@ export class ReleasePointerTransaction {
     if (journal.phase === 'prepared') {
       await this.dependencies.beforeRollback?.(journal);
       for (const name of SWITCH_ORDER) {
-        await replaceSymlink(this.dependencies.paths[name], journal.previousTargets[name]);
+        await replacePointer(name, this.dependencies.paths[name], journal.previousTargets[name]);
       }
       await this.clearJournal();
       return { status: 'rolled_back' };
@@ -122,12 +125,7 @@ export class ReleasePointerTransaction {
       encoding: 'utf8',
       mode: 0o600,
     });
-    const handle = await open(temporary, 'r');
-    try {
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
+    await syncFile(temporary);
     await rename(temporary, path);
     await syncDirectory(parent);
   }
@@ -208,32 +206,33 @@ async function readTargets(
   paths: Record<ReleasePointerName, string>,
 ): Promise<Record<ReleasePointerName, string>> {
   const entries = await Promise.all(
-    SWITCH_ORDER.map(async name => [name, await readlink(paths[name])] as const),
+    SWITCH_ORDER.map(async name => [name, await readPointer(name, paths[name])] as const),
   );
   return Object.fromEntries(entries) as Record<ReleasePointerName, string>;
 }
 
-async function replaceSymlink(path: string, target: string): Promise<void> {
-  const parent = dirname(path);
-  await mkdir(parent, { recursive: true, mode: 0o700 });
-  const temporary = `${path}.next-${randomUUID()}`;
-  await symlink(target, temporary);
-  try {
-    await rename(temporary, path);
-    await syncDirectory(parent);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
+async function readPointer(name: ReleasePointerName, path: string): Promise<string> {
+  return name === 'database'
+    ? readDatabasePointerTarget(path)
+    : readDirectoryLinkTarget(path);
 }
 
-async function syncDirectory(path: string): Promise<void> {
-  const handle = await open(path, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
+/**
+ * The database pointer is a file symlink on POSIX and a directory junction on
+ * Windows; the other three members are always directory pointers.
+ */
+async function replacePointer(
+  name: ReleasePointerName,
+  path: string,
+  target: string,
+): Promise<void> {
+  if (name === 'database') {
+    await replaceDatabasePointer(path, target);
+    return;
   }
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  await replaceDirectoryLink(path, target);
+  await syncDirectory(dirname(path));
 }
 
 function assertSamePaths(

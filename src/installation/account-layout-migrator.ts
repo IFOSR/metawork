@@ -12,16 +12,20 @@ import {
   cp,
   lstat,
   mkdir,
-  open,
   readFile,
   readdir,
-  readlink,
   rename,
   rm,
   symlink,
   writeFile,
 } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
+import { syncDirectory, syncFile } from '../platform/durable-fs.js';
+import { createDirectoryLink, readDirectoryLinkTarget } from '../platform/fs-links.js';
+import {
+  DATABASE_FILE_NAME,
+  databasePointerKind,
+} from './database-pointer-paths.js';
 import Database from 'better-sqlite3';
 import { FileAccountRepository } from '../account/file-account-repository.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
@@ -213,14 +217,24 @@ export class AccountLayoutMigrator {
       await mkdir(dir, { recursive: true, mode: 0o700 });
     }
 
-    const stagedDatabase = join(
-      accountPaths.databaseRevisions.replace(accountPaths.root, stageRoot),
-      'legacy-migration.db',
-    );
+    const stagedDataRoot = accountPaths.data.replace(accountPaths.root, stageRoot);
+    const stagedDatabase = databasePointerKind() === 'directory'
+      // Windows keeps the account database at its plain location until a revision
+      // pointer is first needed; a junction inside the staging tree would not
+      // survive the tree rename (its target is absolute) and would break the
+      // layout manifest hash.
+      ? join(stagedDataRoot, 'database-current', DATABASE_FILE_NAME)
+      : join(stagedDataRoot, 'database-revisions', 'legacy-migration.db');
     if (await this.pathExists(paths.database)) {
+      await mkdir(dirname(stagedDatabase), { recursive: true, mode: 0o700 });
       await this.backupSqliteDatabase(paths.database, stagedDatabase);
       this.assertSqliteIntegrity(stagedDatabase);
-      await symlink(join('database-revisions', basename(stagedDatabase)), accountPaths.database.replace(accountPaths.root, stageRoot));
+      if (databasePointerKind() === 'file') {
+        await symlink(
+          join('database-revisions', basename(stagedDatabase)),
+          accountPaths.database.replace(accountPaths.root, stageRoot),
+        );
+      }
     }
 
     await this.copyDirectoryIfExists(
@@ -278,7 +292,7 @@ export class AccountLayoutMigrator {
     const sourceActive = join(sourceConfigRoot, 'active');
     let target: string;
     try {
-      target = await readlink(sourceActive);
+      target = await readDirectoryLinkTarget(sourceActive);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT'
         || (error as NodeJS.ErrnoException).code === 'EINVAL') {
@@ -288,7 +302,7 @@ export class AccountLayoutMigrator {
     }
     const targetActive = join(targetConfigRoot, 'active');
     await rm(targetActive, { recursive: true, force: true });
-    await symlink(join('revisions', basename(target)), targetActive, 'dir');
+    await createDirectoryLink(targetActive, join('revisions', basename(target)));
   }
 
   private async assertLegacyDatabaseIntegrity(databasePath: string): Promise<void> {
@@ -437,7 +451,7 @@ async function collectManifest(root: string): Promise<LayoutManifest> {
         entries.push({
           path: entryRelativePath,
           kind: 'symlink',
-          target: await readlink(entryPath),
+          target: await readDirectoryLinkTarget(entryPath),
         });
       } else if (entry.isDirectory()) {
         entries.push({ path: entryRelativePath, kind: 'directory' });
@@ -465,19 +479,9 @@ async function writeAtomicJson(path: string, value: unknown): Promise<void> {
     encoding: 'utf8',
     mode: 0o600,
   });
-  const handle = await open(temporary, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
+  await syncFile(temporary);
   await rename(temporary, path);
-  const directory = await open(parent, 'r');
-  try {
-    await directory.sync();
-  } finally {
-    await directory.close();
-  }
+  await syncDirectory(parent);
 }
 
 function hashManifest(manifest: LayoutManifest): string {

@@ -66,6 +66,7 @@ import {
   type SecretStore,
 } from '../configuration/secret-store.js';
 import { resolveMetaWorkPaths } from '../installation/paths.js';
+import { databasePointerKind } from '../installation/database-pointer-paths.js';
 import { AccountLayoutMigrator } from '../installation/account-layout-migrator.js';
 import { resolveAccountPaths } from '../account/account-paths.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
@@ -637,6 +638,15 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
 
   // ADR-0031: 账户数据根——迁移并激活 local-default 账户，运行时使用账户作用域数据。
   await new AccountLayoutMigrator({ paths }).migrate();
+  // ADR-0030 (2026-10-16): a platform that cannot replace a directory pointer
+  // with one atomic rename can leave a prepared release activation or a
+  // half-finished database pointer conversion behind. Resolve both before the
+  // configuration pointer or the database handle is opened. POSIX cannot reach
+  // either state, so its startup path is unchanged.
+  if (databasePointerKind() === 'directory') {
+    const { recoverInstallationPointers } = await import('../installation/source-native-updater.js');
+    await recoverInstallationPointers({ paths, accountPaths });
+  }
   // Planner RPC runs from an account-owned directory. This keeps Server
   // startup independent of the shell directory and guarantees the cwd exists
   // before the first configuration or recovery turn.

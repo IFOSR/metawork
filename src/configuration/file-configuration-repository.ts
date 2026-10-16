@@ -3,17 +3,20 @@ import {
   chmod,
   lstat,
   mkdir,
-  open,
   readFile,
   readdir,
-  readlink,
   rename,
   rm,
-  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { load } from 'js-yaml';
+import { syncDirectory, syncFile } from '../platform/durable-fs.js';
+import {
+  directoryLinkReplacementIsAtomic,
+  readDirectoryLinkTarget,
+  replaceDirectoryLink,
+} from '../platform/fs-links.js';
 import {
   ActivationJournalStore,
   type ActivationJournalIdentity,
@@ -168,9 +171,7 @@ export class FileConfigurationRepository {
 
   async replaceActivePointer(revisionId: string): Promise<void> {
     assertRevisionId(revisionId);
-    const temporaryPath = join(this.rootPath, `.active-${randomUUID()}`);
-    await symlink(join('revisions', revisionId), temporaryPath, 'dir');
-    await rename(temporaryPath, this.activePath);
+    await replaceDirectoryLink(this.activePath, join('revisions', revisionId));
     await syncDirectory(this.rootPath);
   }
 
@@ -212,6 +213,21 @@ export class FileConfigurationRepository {
         await this.journal.writeCommitted(journal);
         return { status: 'recovered', activeRevisionId };
       }
+      // Windows cannot rename over an existing junction, so replaceActivePointer
+      // removes the old pointer before installing the new one. A crash in that
+      // window leaves no pointer at all. The prepared journal was written before
+      // the swap, so the previous revision is still the only committed one; keep
+      // it authoritative instead of activating an uncommitted revision.
+      if (activeRevisionId === null && !directoryLinkReplacementIsAtomic) {
+        if (journal.previousRevisionId !== null) {
+          await this.assertActiveHealthy(journal.previousRevisionId);
+          await this.replaceActivePointer(journal.previousRevisionId);
+        }
+        await this.journal.clear();
+        return journal.previousRevisionId === null
+          ? { status: 'empty', activeRevisionId: null }
+          : { status: 'recovered', activeRevisionId: journal.previousRevisionId };
+      }
       throw new RecoveryBlockedError('prepared activation journal does not match active pointer');
     }
 
@@ -246,7 +262,7 @@ export class FileConfigurationRepository {
   }
 
   private async readActiveRevisionId(): Promise<string | null> {
-    const target = await readlink(this.activePath).catch((error: NodeJS.ErrnoException) => {
+    const target = await readDirectoryLinkTarget(this.activePath).catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return null;
       throw new RecoveryBlockedError('active configuration pointer is not a symlink');
     });
@@ -310,24 +326,6 @@ async function pathExists(path: string): Promise<boolean> {
     if (error.code === 'ENOENT') return false;
     throw error;
   });
-}
-
-async function syncFile(path: string): Promise<void> {
-  const handle = await open(path, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  const handle = await open(path, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
 }
 
 function errorMessage(error: unknown): string {
