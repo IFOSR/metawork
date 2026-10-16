@@ -60,8 +60,8 @@ AnyFusion 标识。
 
 当前发布版本是 **v0.1.17**，包含统一的四态任务界面、安全未认证结果的接受与重试、
 官方账号支付结算、安装恢复修复，以及最新的 Runtime/Web/Desktop 构建。Release
-同时提供 macOS Desktop DMG，以及 macOS arm64、macOS x64、Linux x64 和 Windows x64
-的签名 Runtime、Planner 归档。
+同时提供 macOS arm64 Desktop DMG，以及 macOS arm64、macOS x64 和 Linux x64 的签名
+Runtime、Planner 归档。Windows 将通过独立的 `v0.1.17-windows` tag 后续发布。
 
 - [下载 macOS arm64 DMG](https://github.com/IFOSR/metawork/releases/download/v0.1.17/MetaWork-darwin-arm64.dmg)
 - [查看 v0.1.17 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.17)
@@ -69,7 +69,7 @@ AnyFusion 标识。
 
 Desktop DMG 约 277 MB，使用内部 ad-hoc 签名，未使用 Apple Developer ID 公证，
 当前只支持 macOS Apple Silicon（`arm64`）。Server/Web/TUI 安装器支持 Linux x64、
-macOS arm64 和 Windows x64；暂不提供 Intel macOS 和 Windows Desktop 包。
+macOS arm64 和 macOS x64；本次 internal release 暂不包含 Windows。
 
 ## 安装方式
 

@@ -73,9 +73,9 @@ existing names where changing them would break installations.
 The current release is **v0.1.17**. It includes the unified four-state task
 surface, safe uncertified-result acceptance and retry, official account payment
 settlement, installation recovery fixes, and the latest Runtime/Web/Desktop
-builds. The release includes a self-contained macOS Desktop DMG plus signed
-Runtime and Planner archives for macOS arm64, macOS x64, Linux x64 and Windows
-x64.
+builds. The internal release includes a self-contained macOS arm64 Desktop DMG
+plus signed Runtime and Planner archives for macOS arm64, macOS x64 and Linux
+x64. Windows is intentionally deferred to the separate `v0.1.17-windows` tag.
 
 - [Download the macOS arm64 DMG](https://github.com/IFOSR/metawork/releases/download/v0.1.17/MetaWork-darwin-arm64.dmg)
 - [View the v0.1.17 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.17)
@@ -83,9 +83,8 @@ x64.
 
 The Desktop DMG is approximately 277 MB, uses an internal ad-hoc signature, and
 is not notarized with an Apple Developer ID. It currently supports macOS Apple
-Silicon (`arm64`) only. The Server/Web/TUI installer supports Linux x64 and
-macOS arm64 and Windows x64; Intel macOS and Windows Desktop packages are not
-included.
+Silicon (`arm64`) only. The Server/Web/TUI installer supports Linux x64,
+macOS arm64 and macOS x64. Windows is not included in this internal release.
 
 ## Installation
 
