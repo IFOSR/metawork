@@ -7,11 +7,11 @@ import { build } from 'esbuild';
 import { createReportPdf } from '../../src/management/report-pdf.js';
 
 const desktopRequire = createRequire(new URL('../../apps/desktop/package.json', import.meta.url));
-const { chromium } = desktopRequire('playwright-core') as typeof import('../../apps/desktop/node_modules/playwright-core');
 const e2e = process.env.RUN_BROWSER_E2E === '1' ? describe : describe.skip;
 
 e2e('report download browser flow', () => {
   it('downloads both formats, retries errors, and preserves native save/cancel/reveal behavior', async () => {
+    const { chromium } = desktopRequire('playwright-core') as typeof import('../../apps/desktop/node_modules/playwright-core');
     const root = resolve('.');
     const source = '# 季度研究报告\n\n中文正文与 **重点结论**。\n\n| 指标 | 数值 |\n|---|---|\n| 收入 | 100 |';
     const compiled = await build({

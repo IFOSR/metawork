@@ -8,10 +8,10 @@ import { richDocumentFiles } from '../fixtures/rich-document-files.js';
 import { resolveAccountPaths } from '../../src/account/account-paths.js';
 import { TaskArtifactRepo, hashContent } from '../../src/storage/task-artifact-repo.js';
 const desktopRequire = createRequire(new URL('../../apps/desktop/package.json', import.meta.url));
-const { chromium } = desktopRequire('playwright-core') as typeof import('../../apps/desktop/node_modules/playwright-core');
 
 describe.runIf(process.env.RUN_BROWSER_E2E === '1')('Rich document preview through production Server', () => {
   it('renders historical files, isolates HTML, navigates slides/sheets and previews uploaded attachments', async () => {
+    const { chromium } = desktopRequire('playwright-core') as typeof import('../../apps/desktop/node_modules/playwright-core');
     const server = await startProductionObservationServer();
     const db = new Database(resolveAccountPaths('local-default', server.root).database);
     const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });

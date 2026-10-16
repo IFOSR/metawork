@@ -13,7 +13,6 @@ import { ConversationReadProjector } from '../../src/session/conversation-read-p
 import { SqliteConversationReadModel } from '../../src/storage/conversation-read-model-repo.js';
 
 const desktopRequire = createRequire(new URL('../../apps/desktop/package.json', import.meta.url));
-const { chromium } = desktopRequire('playwright-core') as typeof import('../../apps/desktop/node_modules/playwright-core');
 const fence = (spec: unknown) => `\n\n\`\`\`chart\n${JSON.stringify(spec)}\n\`\`\`\n`;
 const common = { version: 1, labels: ['一季度', '二季度', '三季度', 'Q4 & <预>'], unit: '万元', source: '验收数据 sales.csv（非实际经营数据）', xLabel: '季度' };
 const series = [{ name: '收入', values: [120, 150, null, 190] }, { name: '利润', values: [-10, 20, 30, 45] }];
@@ -30,6 +29,7 @@ const answer = '## 季度经营分析（测试数据）\n\n| 季度 | 收入 | �
 
 describe.runIf(process.env.RUN_BROWSER_E2E === '1')('Conversation tables and charts through production Server', () => {
   it('renders persisted content, safe artifact references and offline interactive charts across themes and widths', async () => {
+    const { chromium } = desktopRequire('playwright-core') as typeof import('../../apps/desktop/node_modules/playwright-core');
     const server = await startProductionObservationServer();
     const db = new Database(resolveAccountPaths('local-default', server.root).database);
     const browser = await chromium.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
