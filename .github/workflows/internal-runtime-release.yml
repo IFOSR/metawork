@@ -1,0 +1,123 @@
+name: Build internal Runtime release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Stable release tag to populate
+        required: true
+        default: v0.1.17
+      source_ref:
+        description: Exact source ref to build
+        required: true
+        default: main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: internal-runtime-release-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-x64
+            runner: macos-15-intel
+            platform: darwin
+            arch: x64
+          - target: darwin-arm64
+            runner: macos-15
+            platform: darwin
+            arch: arm64
+          - target: linux-x64
+            runner: ubuntu-24.04
+            platform: linux
+            arch: x64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.3
+          cache: npm
+      - name: Verify release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          test "$version" = "${RELEASE_TAG#v}"
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+      - name: Write Runtime signing key
+        shell: bash
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_SIGNING_KEY"
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/metawork-release-key.pem"
+      - name: Build and package Runtime
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          release_id="${version}-build-${GITHUB_SHA:0:7}"
+          npm run build:release -- \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --channel stable \
+            --release-id "$release_id" \
+            --artifact-base-url "https://github.com/IFOSR/metawork/releases/download/$RELEASE_TAG" \
+            --signing-key "$RUNNER_TEMP/metawork-release-key.pem" \
+            --out-dir "$RUNNER_TEMP/metawork-release"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metawork-${{ matrix.target }}
+          path: ${{ runner.temp }}/metawork-release/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: metawork-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify and upload Runtime assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          cp scripts/install.sh scripts/install.ps1 release-assets/
+          node --input-type=module <<'NODE'
+          import { verifyReleaseAssets } from './scripts/verify-release-assets.mjs';
+          const release = await verifyReleaseAssets('release-assets', process.env.RELEASE_TAG, {
+            targets: ['darwin-arm64', 'darwin-x64', 'linux-x64'],
+            requireDesktop: false,
+            sourceCommit: process.env.GITHUB_SHA,
+          });
+          console.log(`Verified ${release.releaseId}: ${release.files.length} Runtime assets`);
+          NODE
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" release-assets/* --clobber
