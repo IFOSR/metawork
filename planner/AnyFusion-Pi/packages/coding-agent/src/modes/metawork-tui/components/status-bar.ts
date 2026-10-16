@@ -62,41 +62,41 @@ export class MetaWorkHeader implements Component {
 	render(width: number): string[] {
 		const state = this.getState();
 		const workspace = state.workspaceDisplayName ?? state.workspacePath ?? "未设置";
-		const workspaceLabel = state.workspaceAvailability === "unavailable"
-			? `${workspace}（不可用）`
-			: workspace;
-		const conversation = state.conversationTitle
-			?? (state.conversationId ? state.conversationId : "未选择");
+		const workspaceLabel = state.workspaceAvailability === "unavailable" ? `${workspace}（不可用）` : workspace;
+		const conversation = state.conversationTitle ?? (state.conversationId ? state.conversationId : "未选择");
 		const navigation = state.navigationPending ? " · 切换中" : "";
 		const connection = connectionLabel(state.connection);
-		const connectionText = state.connection === "ready"
-			? theme.fg("success", connection)
-			: theme.fg("warning", connection);
+		const connectionText =
+			state.connection === "ready" ? theme.fg("success", connection) : theme.fg("warning", connection);
 
 		const lines = [
 			truncateToWidth(
-				`${theme.fg("accent", theme.bold("MetaWork"))}`
-					+ `  ${theme.fg("dim", "Workspace:")} ${theme.fg("text", workspaceLabel)}`
-					+ `  ${theme.fg("dim", "Conversation:")} ${theme.fg("text", conversation)}${navigation}`,
+				`${theme.fg("accent", theme.bold("MetaWork"))}` +
+					`  ${theme.fg("dim", "Workspace:")} ${theme.fg("text", workspaceLabel)}` +
+					`  ${theme.fg("dim", "Conversation:")} ${theme.fg("text", conversation)}${navigation}`,
 				width,
 			),
 			truncateToWidth(
-				`${theme.fg("dim", "连接:")} ${connectionText}`
-					+ `  ${theme.fg("dim", "选中 Turn:")} ${state.selectedTurnId
-						? `${theme.fg("text", state.selectedTurnId)}`
-							+ `${state.selectedTurnStatus ? theme.fg("dim", ` · ${state.selectedTurnStatus}`) : ""}`
-						: theme.fg("dim", "暂无信息")}`,
+				`${theme.fg("dim", "连接:")} ${connectionText}` +
+					`  ${theme.fg("dim", "选中 Turn:")} ${
+						state.selectedTurnId
+							? `${theme.fg("text", state.selectedTurnId)}` +
+								`${state.selectedTurnStatus ? theme.fg("dim", ` · ${state.selectedTurnStatus}`) : ""}`
+							: theme.fg("dim", "暂无信息")
+					}`,
 				width,
 			),
 		];
 		if (state.serverCapabilitiesMissing.length > 0) {
-			lines.push(truncateToWidth(
-				theme.fg(
-					"warning",
-					`Server 缺少能力: ${state.serverCapabilitiesMissing.join(", ")} · 请升级 Server 后重试`,
+			lines.push(
+				truncateToWidth(
+					theme.fg(
+						"warning",
+						`Server 缺少能力: ${state.serverCapabilitiesMissing.join(", ")} · 请升级 Server 后重试`,
+					),
+					width,
 				),
-				width,
-			));
+			);
 		}
 		return lines;
 	}
@@ -121,12 +121,14 @@ export class MetaWorkActionBar implements Component {
 		if (state.cancelResult) operation.push(state.cancelResult);
 		if (state.silence) operation.push(`已静默 ${state.silence}（仅表示未收到更新）`);
 		if (state.operation) operation.push(state.operation);
-		lines.push(truncateToWidth(
-			operation.length > 0
-				? theme.fg("text", operation.join(" · "))
-				: theme.fg("dim", state.commandHint ?? "Enter 提交 · F1 帮助 · F6 Task 面板 · /cancel 取消当前 Turn"),
-			width,
-		));
+		lines.push(
+			truncateToWidth(
+				operation.length > 0
+					? theme.fg("text", operation.join(" · "))
+					: theme.fg("dim", state.commandHint ?? "Enter 提交 · F1 帮助 · F6 Task 面板 · /cancel 取消当前 Turn"),
+				width,
+			),
+		);
 
 		const hints: string[] = [`焦点: ${state.focus}`, "滚轮 / PgUp/PgDn 滚动"];
 		if (state.permissionSummary) {

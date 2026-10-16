@@ -94,7 +94,7 @@ describe('runtime progress activity projection', () => {
         attempts: { 'attempt-task-1': { authorizedBinding: binding, bindingFingerprint: 'sha256:abc' } } }, '2026-10-03T00:00:00Z');
       const reader = new SqliteTaskActivityFacts(db);
       const task = { id: 'task-1', status: 'running' as const, updatedAt: '' };
-      expect(projectTaskView(reader.read(task, null)).phase).toBe('executing');
+      expect(projectTaskView(reader.read(task, null)).userState).toBe('waiting');
       db.prepare("UPDATE kernel_dispatch_items SET status = 'terminal' WHERE task_id = ?").run(task.id);
       const insert = db.prepare(`INSERT INTO kernel_dispatch_items
         SELECT 'old-' || ?, decision_id, batch_order, task_id, generation_id, subtask_id, agent_class_name,

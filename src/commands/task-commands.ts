@@ -1,5 +1,7 @@
+import { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import {
   optionalStringArg,
+  optionArg,
   stringArg,
   stringListArg,
   type CommandContext,
@@ -334,12 +336,21 @@ export async function resumeTask(args: ResolvedCommandArgs, context: CommandCont
     return { type: 'text', content: `任务不存在: ${taskId}` };
   }
 
+  const revision = new WorkGraphRevisionRepo(context.db).findActive(taskId);
+  const expectedGenerationId = optionArg(args, '--generation') ?? revision?.generationId;
+  const revisionOption = optionArg(args, '--revision');
+  const expectedGraphRevision = revisionOption === undefined ? revision?.revision : Number(revisionOption);
+  if (expectedGraphRevision !== undefined && (!Number.isSafeInteger(expectedGraphRevision) || expectedGraphRevision < 1)) {
+    return { type: 'text', content: '任务图版本无效，请刷新任务后重试。' };
+  }
   return {
     type: 'directive',
     content: `任务 #${taskId} 已提交恢复请求`,
     directive: {
       kind: 'resume-task',
       taskId,
+      expectedGenerationId,
+      expectedGraphRevision,
       mode: task.status === 'blocked' ? 'resume-blocked' : 'resume-parked',
     },
   };

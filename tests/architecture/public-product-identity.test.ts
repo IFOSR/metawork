@@ -61,7 +61,6 @@ describe('public product identity', () => {
       'src/session/conversation-session.ts',
       'src/account/account-startup-recovery-service.ts',
       'src/storage/database.ts',
-      'web/src/components/TokenGate.tsx',
     ];
     const content = (await Promise.all(paths.map(path => readFile(new URL(path, root), 'utf8'))))
       .join('\n');

@@ -41,6 +41,7 @@ import {
 } from '../task/task-lifecycle-transition-port.js';
 import { reconcileUncertainCancellations } from '../execution/cancellation-reconciliation.js';
 import { TaskResidueReader } from '../execution/task-residue-reader.js';
+import { AttemptTerminalService } from '../execution/attempt-terminal-service.js';
 import type { QueuedTaskPayload } from '../storage/conversation-task-scheduler-repo.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { QueryUsageLifecycle } from '../metering/query-lifecycle.js';
@@ -224,6 +225,12 @@ export class AccountStartupRecoveryService {
   async recover(): Promise<void> {
     await this.loadRecoveryConfigurations();
     const now = new Date().toISOString();
+    const terminals = new AttemptTerminalService(this.deps.db);
+    for (const item of this.deps.runtimeExecutionServices.dispatchItemRepo.listBlocking()) {
+      const settled = terminals.reconcileSettledFailure(item.attemptId, now);
+      if (!settled) continue;
+      this.deps.coordinatorServices.workUnitClaimService.releaseReconciledClaim(settled);
+    }
     const backendLossAttemptIds = new Set<string>();
     const claimedOrphans = this.deps.coordinatorServices.workUnitClaimService.listOrphanedClaims();
     const dispatchItems = this.deps.runtimeExecutionServices.dispatchItemRepo;
@@ -746,6 +753,9 @@ export class AccountStartupRecoveryService {
     const publications = this.deps.db.prepare(`
       SELECT DISTINCT task_id FROM workspace_publications
       WHERE status IN ('pending', 'applying', 'conflicted', 'cancelling', 'uncertain')
+        OR (status = 'integrated' AND EXISTS (SELECT 1 FROM workspace_publication_deliveries d
+          JOIN subtasks s ON s.id = workspace_publications.subtask_id
+          WHERE d.publication_id = workspace_publications.id AND d.status <> 'failed' AND s.status = 'awaiting_integration'))
     `).all() as Array<{ task_id: string }>;
     for (const publication of publications) taskIds.add(publication.task_id);
     return [...taskIds].sort();

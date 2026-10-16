@@ -1,7 +1,6 @@
 import { ObservedConversationView } from './observation/ObservedConversationView';
 import { ObservedExecutionDetail, ObservedTurnDetails } from './observation/ObservedTurnDetails';
 import { SettingsPanel } from './components/SettingsPanel';
-import { TokenGate } from './components/TokenGate';
 import { WorkspaceCreator } from './components/WorkspaceCreator';
 import { WorkspaceShell } from './components/WorkspaceShell';
 import { ArtifactPreviewDrawer } from './components/ArtifactPreviewDrawer';
@@ -21,18 +20,27 @@ export function App() {
     previewCollapsed, setPreviewCollapsed, previewMaximized, setPreviewMaximized, previewWidth,
     setPreviewWidth, executionDetail, setExecutionDetail, httpRef, observationClient,
     viewportMemory, openTrajectory, openBilling, handleSelectWorkspace, handleCreateWorkspace,
-    handleOpenArtifact, handleLoadMoreConversations, handleSelectSession, handleNewSession, handleRefreshAgentReadiness,
-    handleOpenAgentSettings, handleDeleteSession, handleFilesSelected, handleClearSessions, handleAuth,
-    handleLogin, activeWorkspace, selectedId, selectedMetadata, selectedTrajectoryTurn,
+    handleOpenArtifact, handleOpenAttachment, handleLoadMoreConversations, handleSelectSession, handleNewSession, handleRefreshAgentReadiness,
+    handleOpenAgentSettings, handleDeleteSession, handleFilesSelected, handleClearSessions,
+    activeWorkspace, selectedId, selectedMetadata, selectedTrajectoryTurn,
     selectedBillingTurn, running, requiredBlock, composerDisabled, composerBlockedReason,
     handleDraftChange, handleSend, handleCancelTurn, executionDetailTurn, executionDetailOpen,
     failedInput, handleRestoreFailedInput,
   } = useWorkspaceController();
   useEffect(() => { document.title = activeWorkspace ? `MetaWork · ${activeWorkspace.displayName}` : 'MetaWork'; }, [activeWorkspace]);
   if (authenticated === null) {
-    return <div className="token-gate"><div className="token-gate-card">正在连接 MetaWork…</div></div>;
+    return <div className="session-gate"><div className="session-gate-card">正在连接 MetaWork…</div></div>;
   }
-  if (!authenticated) return <TokenGate error={authError} onLogin={handleLogin} onTokenAuth={handleAuth} />;
+  if (!authenticated) {
+    return (
+      <div className="session-gate">
+        <div className="session-gate-card">
+          <h1>MetaWork</h1>
+          <p>{authError ?? '正在建立本机会话，请刷新页面重试。'}</p>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="official-app-frame">
       <OfficialAccountPanel onStatus={setOfficialStatus} />
@@ -104,6 +112,7 @@ export function App() {
         onSend={handleSend}
         onCancelTurn={handleCancelTurn}
         attachments={pendingAttachments.map(metadata => ({ metadata }))}
+        onOpenAttachment={handleOpenAttachment}
         uploadError={uploadError}
         uploading={uploadingAttachments}
         onFilesSelected={files => void handleFilesSelected(files)}
@@ -145,6 +154,7 @@ export function App() {
               onOpenTrajectory={openTrajectory}
               onOpenBilling={openBilling}
               onOpenArtifact={handleOpenArtifact}
+              onOpenAttachment={handleOpenAttachment}
               onOpenSubtaskDetail={(turn, subtaskId, subtaskTitle) => setExecutionDetail({ turn, turnId: turn.id, subtaskId, subtaskTitle })}
             />
           )

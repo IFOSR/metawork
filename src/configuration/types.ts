@@ -8,7 +8,7 @@ import type { OpenRouterPublicFacts } from './openrouter-model-catalog.js';
 
 export type ConfigurationRevisionId = string;
 
-export type ProviderProtocol = 'openai-compatible' | 'anthropic';
+export type ProviderProtocol = 'openai-compatible' | 'openai-responses' | 'anthropic';
 
 export interface ProviderDefinition {
   displayName?: string;
@@ -443,7 +443,17 @@ export type RuntimeConfigurationView = Readonly<{
   routing?: RoutingConfiguration;
 }>;
 
+export interface ExecutorRuntimeConfigurationManifest {
+  readonly driverId: string;
+  readonly protocol: ProviderDefinition['protocol'];
+  readonly baseUrl: string;
+  readonly modelId: string;
+  readonly permissionProfileRef: string;
+  readonly runtimeFileHashes: Readonly<Record<string, string>>;
+}
+
 export type RuntimePrivateConfigurationBinding = Readonly<{
+  manifest?: ExecutorRuntimeConfigurationManifest;
   revisionId: ConfigurationRevisionId;
   bindingFingerprint: string;
   environment?: Readonly<Record<string, string>>;

@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
+import type { ProviderProtocol } from './types.js';
 
 export type ProviderModelDiscoveryResult =
   | { status: 'discovered'; modelIds: string[] }
   | { status: 'unavailable'; modelIds: [] };
 
 interface ProviderDefinition {
+  protocol?: ProviderProtocol;
   baseUrl: string;
   apiKeyRef: string;
 }
@@ -27,7 +29,15 @@ const MAX_RESPONSE_BYTES = 1_000_000;
 const MAX_MODEL_COUNT = 512;
 const MAX_MODEL_ID_LENGTH = 256;
 
+export function providerModelListRequest(baseUrl: string, apiKey: string, protocol?: ProviderProtocol): { url: string; headers: Record<string, string> } {
+  const base = baseUrl.replace(/\/+$/u, '');
+  return protocol === 'anthropic'
+    ? { url: `${base}/v1/models`, headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' } }
+    : { url: `${base}/models`, headers: { Authorization: `Bearer ${apiKey}` } };
+}
+
 export async function discoverOpenAiCompatibleModels(input: {
+  protocol?: ProviderProtocol;
   baseUrl: string;
   apiKey: string;
   fetchImpl?: typeof fetch;
@@ -36,10 +46,11 @@ export async function discoverOpenAiCompatibleModels(input: {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), input.timeoutMs ?? 8_000);
   try {
+    const request = providerModelListRequest(input.baseUrl, input.apiKey, input.protocol);
     const response = await (input.fetchImpl ?? fetch)(
-      `${input.baseUrl.replace(/\/+$/u, '')}/models`,
+      request.url,
       {
-        headers: { Authorization: `Bearer ${input.apiKey}` },
+        headers: request.headers,
         signal: controller.signal,
       },
     );
@@ -87,6 +98,7 @@ export async function buildProviderCompletionCatalog(input: {
     }
     const discovery = apiKey
       ? await discoverOpenAiCompatibleModels({
+        protocol: provider.protocol,
         baseUrl: provider.baseUrl,
         apiKey,
         fetchImpl: input.fetchImpl,

@@ -157,7 +157,7 @@ export class FeishuConversationRouting {
       }
       if (follow[1] === '/tasks') {
         const page = await this.deps.observation.activity(this.deps.accountId, conversationId, follow[2]);
-        return receipt([...page.tasks.map(task => `${task.title}：${task.explanation}\n${task.canCancel
+        return receipt([...page.tasks.map(task => `${task.title}：${task.userStateReason}\n${task.canCancel
           ? `/stop-task ${task.taskId} ${task.executionGeneration} ${conversationId}` : ''}`),
           ...(page.nextCursor ? [`下一页：/tasks ${page.nextCursor}`] : []),
           ...(!page.tasks.length ? ['当前会话没有活动任务。'] : [])]);

@@ -103,6 +103,45 @@ Harness.
 
 ## Consequences
 
+### 2026-10-15 amendment: explicit file delivery
+
+The reliability plan's no-unsolicited-documents goal requires a minimal additive
+contract: new PlanningAgentPlan v8 / Work Graph v7 proposals must declare each
+Subtask's `fileOutputs` array. Empty means inline answer/action receipt or Git
+changes without downloadable artifacts. Entries are safe relative filenames or
+dedicated directory prefixes ending in `/`; no roots, traversal or globbing.
+Planner owns the semantic choice. Artifact-producing dependency sources and
+image tasks must declare nonempty outputs. Runtime performs only path matching
+and presence checks against the authorized workspace. Every entry must
+match an existing regular file, and only matching files become user artifacts and
+artifact handoffs. Already-existing requested files need not be rewritten;
+explicit directory inspection is bounded to 1,000 entries and fails certification
+instead of silently truncating. Missing declared outputs are uncertified delivery facts, not
+metadata formatting failures; safe text remains visible. Scratch files do not
+become deliverables. Ordinary file tools and Git publication remain available.
+
+Planner and Executor instructions must not turn pure answers/actions or code
+changes into extra report documents. `report` describes a result channel, not a
+file requirement. Inline action receipts retain completion evidence without an
+extra MD/TXT file. This is neither a Runtime semantic classifier nor a blanket
+ban on report tasks producing explicitly requested documents.
+
+SQLite schema 50 adds nullable `subtasks.file_outputs_json`. This amendment
+explicitly permits absent declarations **only on already-authorized historical
+graphs**, preserving their existing workspace-delta delivery and immutable
+receipts during recovery. Migration does not invent intent for old plans or
+rewrite Kernel ledgers. New proposal validation rejects absent/null declarations;
+there is no automatic fallback for new plans. The optional historical TypeScript
+field is not a default available to the Planner. Schema 49→50 is transactional,
+and fresh databases include the column. These are additive contract fields;
+the existing top-level protocol identities remain v8/v7.
+
+Acceptance must include the negative case of an Executor producing an unsolicited
+file for a no-file plan, explicit document delivery, missing outputs, path safety,
+Git edits without report artifacts, dependency handoffs, and durable delivery
+failure/restart without repeating an external action. Live-model checks validate
+Planner and Executor adherence separately from deterministic runtime fixtures.
+
 - Users receive safe Harness results instead of losing them to metadata errors.
 - Completion certification and downstream release remain auditable and
   fail-closed where they matter.

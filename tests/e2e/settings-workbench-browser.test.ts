@@ -15,6 +15,48 @@ const runBrowserE2e = process.env.RUN_BROWSER_E2E === '1';
 const e2e = runBrowserE2e ? describe : describe.skip;
 
 e2e('Settings workbench browser flow', () => {
+  it('persists the chosen protocol when adding a Provider', async () => {
+    const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
+    const server = await startMockServer(join(root, 'web', 'dist'));
+    const profile = await mkdtemp(join(tmpdir(), 'settings-protocol-'));
+    const chrome = spawn(chromePath, ['--headless=new', '--disable-gpu', '--no-first-run',
+      '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
+      `http://127.0.0.1:${server.port}/`], { stdio: 'ignore' });
+    try {
+      const target = await waitForPageTarget(await waitForDebuggingPort(profile));
+      const cdp = await CdpClient.connect(target.webSocketDebuggerUrl);
+      try {
+        await waitForExpression(cdp, `Boolean(document.querySelector('.sidebar-settings'))`);
+        await cdp.evaluate(`document.querySelector('.sidebar-settings').click()`);
+        await waitForExpression(cdp, `document.querySelectorAll('.provider-card').length > 0`);
+        await cdp.evaluate(`[...document.querySelectorAll('button')].find(b => b.textContent.trim() === '新增模型').click()`);
+        await waitForExpression(cdp, `Boolean(document.querySelector('.model-connection-dialog select'))`);
+        expect(await cdp.evaluate(`[...document.querySelectorAll('.model-connection-dialog option')].map(o => o.textContent)`))
+          .toEqual(['OpenAI Chat Completions', 'OpenAI Responses', 'Anthropic Messages']);
+        await cdp.evaluate(`(() => {
+          const inputs = document.querySelectorAll('.model-connection-dialog input');
+          ['Responses test', 'https://responses.example/v1', 'test-only-key'].forEach((value, index) => {
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(inputs[index], value);
+            inputs[index].dispatchEvent(new Event('input', { bubbles: true }));
+          });
+          const select = document.querySelector('.model-connection-dialog select');
+          select.value = 'openai-responses';
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+        })()`);
+        await cdp.evaluate(`document.querySelector('.model-connection-dialog .primary-button').click()`);
+        await waitForExpression(cdp, `!document.querySelector('.model-connection-dialog')`);
+        await cdp.evaluate(`[...document.querySelectorAll('button')].find(b => b.textContent.trim() === '保存并激活').click()`);
+        await waitForExpression(cdp, `document.body.innerText.includes('配置已热激活')`);
+        const providers = (server.getActivationPayload() as { config: { providers: Record<string, { displayName?: string; protocol: string }> } }).config.providers;
+        expect(Object.values(providers).find(p => p.displayName === 'Responses test')?.protocol).toBe('openai-responses');
+        expect(providers['code-cli'].protocol).toBe('openai-compatible');
+      } finally { cdp.close(); }
+    } finally {
+      chrome.kill('SIGTERM'); await server.close();
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }, 30_000);
+
   it('finishes activation without another public catalog request', async () => {
     const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
     const server = await startMockServer(join(root, 'web', 'dist'));

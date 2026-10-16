@@ -1,0 +1,7 @@
+lines: 9
+nonempty_lines: 8
+longest_line: #3 (57 chars)
+top_words:
+  01: 9
+  09: 9
+  05: 8

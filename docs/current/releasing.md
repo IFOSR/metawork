@@ -29,6 +29,11 @@ Include complete libraries, Git templates/libexec, package dependencies and
 licenses. Dereference symlinks when creating the archive. Node must be 22.x/ABI
 127 and match the native runner. Homebrew links, host `/usr/bin/git`, credentials
 and tools requiring downloads on the user's machine are not valid inputs.
+Desktop preparation automatically applies the minimal Node allowlist before
+inventory/signing: `bin/node`, `LICENSE` and optional `README.md`. Unlike Git
+and Executor dependency closures, Node global packages, npm/corepack, headers
+and unrelated distribution resources are excluded even if the input archive
+contains them. The supported macOS executable must depend only on system libraries.
 See [dependency acceptance](../../apps/desktop/packaging/DEPENDENCIES.md).
 
 ## Build and publish

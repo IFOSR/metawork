@@ -1,15 +1,18 @@
 import {
   closeSync,
   existsSync,
+  lstatSync,
+  opendirSync,
   openSync,
   readFileSync,
   readSync,
   realpathSync,
   statSync,
 } from 'node:fs';
-import { extname, resolve, sep } from 'node:path';
+import { extname, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import type { Subtask } from '../core/types.js';
+import { isValidFileOutput, matchesFileOutput } from '../work-graph/file-outputs.js';
 import type { WorkGraphRequiredItem } from '../work-graph/index.js';
 import { parseWorkspaceDelta, type WorkspaceDelta } from './workspace-change-tracker.js';
 
@@ -80,6 +83,8 @@ type FailedEnvelopeV3 = z.infer<typeof FailedEnvelopeSchema>;
 export type CompletionContractErrorCode =
   | 'completion_acceptance_mismatch'
   | 'completion_artifact_invalid'
+  | 'completion_file_output_missing'
+  | 'completion_file_output_limit'
   | 'completion_budget_exceeded'
   | 'completion_handoff_mismatch'
   | 'completion_malformed'
@@ -150,15 +155,17 @@ type ParsedCompletionReportResult =
   | Extract<CompletionProtocolResult, { ok: false }>;
 type CompletionProtocolFailure = Extract<CompletionProtocolResult, { ok: false }>;
 
-/**
- * Content-level violations hold certification (downstream does not consume an
- * unverified result) while the user still receives the deliverable.
- * Everything else — marker/report shape, evidence shape, budgets, delta
- * trivia — is format: recorded as warnings, never gates anything.
- */
+/** Structural completion facts gate downstream use, never visibility of safe text. */
 const CONTENT_VIOLATION_CODES = new Set<CompletionContractErrorCode>([
   'completion_subtask_mismatch',
   'completion_acceptance_mismatch',
+  'completion_malformed',
+  'completion_handoff_mismatch',
+  'completion_workspace_delta_uncertain',
+  'completion_artifact_invalid',
+  'completion_file_output_missing',
+  'completion_file_output_limit',
+  'completion_no_change_reason_mismatch',
 ]);
 
 function isContentViolation(violation: CompletionContractViolation): boolean {
@@ -172,8 +179,8 @@ const MAX_REPORT_PATH_BYTES = 8 * 1024 * 1024;
 /**
  * Deterministic body resolution (contract v4):
  * 1. Markdown before the marker wins.
- * 2. Otherwise the trailer's reportPath — a file this attempt produced in
- *    the output area (proved by the workspace delta) — is the body.
+ * 2. Otherwise the trailer's reportPath — a file this attempt produced, or an
+ *    existing file explicitly declared by Planner — is the body.
  * Everything else is a correctable format violation, never a safety
  * quarantine.
  */
@@ -183,16 +190,19 @@ function resolveCompletionBody(
   workspaceRoot: string,
   delta: WorkspaceDelta | null,
   violations: CompletionContractViolation[],
+  fileOutputs?: readonly string[],
 ): { body: string; resolved: boolean } {
   if (body) return { body, resolved: false };
   const reportPath = report && !('failure' in report) ? (report.reportPath ?? undefined) : undefined;
   if (!reportPath) return { body, resolved: false };
   const produced = delta?.changed.some(entry => entry.path === reportPath && entry.afterHash !== null);
-  if (!produced) {
+  const declared = isValidFileOutput(reportPath)
+    && fileOutputs?.some(output => isValidFileOutput(output) && matchesFileOutput(reportPath, output));
+  if (!produced && !declared) {
     violations.push(contractViolation(
       'completion_malformed',
       'reportPath',
-      'reportPath must reference a file produced or changed by this attempt',
+      'reportPath must reference a produced file or an existing Planner-declared file',
     ));
     return { body, resolved: false };
   }
@@ -241,6 +251,7 @@ export function validateCompletionProtocol(input: {
     input.workspaceRoot,
     parseWorkspaceDelta(input.workspaceDelta),
     bodyViolations,
+    input.subtask.fileOutputs,
   );
   const parsedViolations = [
     ...parsed.violations.filter(violation => !(
@@ -261,26 +272,11 @@ export function validateCompletionProtocol(input: {
     safety: { status: 'safe' as const, violations: safetyViolations },
   };
   if (!parsed.report) {
-    // Format-only failure (unparseable/absent trailer): the result stays
-    // certified and flows; the trailer is a hint channel, never a gate.
-    // A minimal completed envelope is synthesized from runtime-owned facts
-    // (delta-derived artifacts, graph-edge handoffs upstream).
+    // Safe text remains visible, but absent metadata cannot authorize downstream work.
     return {
-      ok: true,
-      body,
-      envelope: materializeCompletionEnvelope(
-        { evidence: [], noChangeReason: null },
-        input.subtask,
-        input.outgoingHandoffs,
-        [],
-      ),
-      normalizedArtifacts: [],
+      ok: true, body, envelope: null, normalizedArtifacts: [],
       warnings: metadataViolations.map(formatViolation),
-      assessment: {
-        ...assessmentBase,
-        result: { kind: body ? 'complete' : 'partial' },
-        certification: { status: 'certified', violations: [] },
-      },
+      assessment: assessmentBase,
     };
   }
   if ('failure' in parsed.report) {
@@ -361,10 +357,8 @@ export function validateCompletionProtocol(input: {
       },
     };
   }
-  // Result-first gate model: format violations are warnings (never gate);
-  // only content-level violations (identity, acceptance) hold certification.
+  // Safe output stays visible; incomplete structural facts hold certification.
   const contentViolations = sortedViolations.filter(isContentViolation);
-  const formatViolations = sortedViolations.filter(item => !isContentViolation(item));
   return {
     ok: true,
     body,
@@ -440,7 +434,6 @@ function parseCompletion(rawResponse: string): ParsedCompletionReportResult {
     const closing = normalized.indexOf(BUNDLED_MARKER_SUFFIX, bundledIndex + BUNDLED_MARKER_PREFIX.length);
     if (closing < 0) break;
     const inner = normalized.slice(bundledIndex + BUNDLED_MARKER_PREFIX.length, closing).trim();
-    const whole = normalized.slice(bundledIndex, closing + BUNDLED_MARKER_SUFFIX.length);
     normalized = normalized.slice(0, bundledIndex) + marker + '\n' + inner + normalized.slice(closing + BUNDLED_MARKER_SUFFIX.length);
     bundledCount += 1;
     searchFrom = bundledIndex + marker.length + inner.length + 2;
@@ -461,11 +454,8 @@ function parseCompletion(rawResponse: string): ParsedCompletionReportResult {
     return { ok: true, body, report: null, violations };
   }
   const rawReport = markerIndex >= 0 ? normalized.slice(markerIndex + marker.length).trimStart() : '';
-  const totalMarkers = bundledCount > 0
-    ? rawResponse.match(new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))?.length ?? 0
-    : normalizedMatches.length;
-  if (totalMarkers !== 1) {
-    violations.push(contractViolation('completion_malformed', 'marker', `expected exactly one final completion marker, received ${totalMarkers + bundledCount}`));
+  if (normalizedMatches.length !== 1) {
+    violations.push(contractViolation('completion_malformed', 'marker', `expected exactly one final completion marker, received ${normalizedMatches.length}`));
   }
   if (!rawReport.trim()) {
     violations.push(contractViolation('completion_malformed', 'report', 'completion report is empty'));
@@ -545,6 +535,9 @@ function validateAcceptance(
   for (const [index, item] of envelope.acceptanceEvidence.entries()) {
     if (actual.has(item.key)) violations.push(contractViolation('completion_acceptance_mismatch', `acceptanceEvidence.${index}.key`, `duplicate acceptance key ${item.key}`));
     actual.add(item.key);
+    if (item.evidence.length === 0) {
+      violations.push(contractViolation('completion_acceptance_mismatch', `acceptanceEvidence.${index}.evidence`, 'authorized acceptance requires evidence'));
+    }
     for (const [evidenceIndex, evidence] of item.evidence.entries()) {
       const text = typeof evidence === 'string'
         ? evidence
@@ -581,6 +574,10 @@ function validateHandoffs(
     for (const [itemIndex, item] of handoff.items.entries()) {
       if (actualItems.has(item.key)) violations.push(contractViolation('completion_handoff_mismatch', `handoffs.${handoffIndex}.items.${itemIndex}.key`, `duplicate handoff item ${item.key}`));
       actualItems.set(item.key, item.type);
+      if ((item.type === 'artifact' && item.paths.length === 0)
+        || (item.type === 'text' && !item.value.trim())) {
+        violations.push(contractViolation('completion_handoff_mismatch', `handoffs.${handoffIndex}.items.${itemIndex}`, 'required handoff has no readable result'));
+      }
     }
     if (!sameMap(expectedItems, actualItems)) {
       violations.push(contractViolation('completion_handoff_mismatch', `handoffs.${handoffIndex}.items`, `handoff items must exactly match contract for ${handoff.toSubtaskId}`));
@@ -623,9 +620,13 @@ function validateWorkspaceDelivery(
     }
   }
 
-  // The executor output area is the single source of truth for artifacts —
-  // for every delivery kind, including report. Declarations in the completion
-  // report are optional hints and never gate registration.
+  // Only Planner-selected outputs become file deliveries. An absent contract
+  // belongs to an already-authorized historical graph (schema 49 or earlier).
+  const outputs = subtask.fileOutputs;
+  if (outputs?.some(path => !isValidFileOutput(path))) {
+    violations.push(contractViolation('completion_artifact_invalid', 'fileOutputs', 'invalid authorized file output path'));
+    return [];
+  }
 
   if (!existsSync(workspaceRoot)) {
     violations.push(contractViolation('completion_artifact_invalid', 'workspaceRoot', 'workspace root does not exist'));
@@ -633,8 +634,45 @@ function validateWorkspaceDelivery(
   }
   const realRoot = realpathSync(workspaceRoot);
   const artifacts: string[] = [];
-  for (const [index, change] of delta.changed.entries()) {
-    if (change.afterHash === null) continue;
+  const deliveredPaths: string[] = [];
+  const changedFiles = delta.changed.filter(change => change.afterHash !== null).map(change => change.path);
+  // A declared file may already exist (for example a no-change edit or a
+  // request to deliver an existing result). Presence, not rewriting, is required.
+  const candidates = new Set(changedFiles);
+  let visited = 0;
+  const collectDeclared = (path: string): void => {
+    if (++visited > 1000) return;
+    const absolute = resolve(workspaceRoot, path);
+    if (!existsSync(absolute)) return;
+    const real = realpathSync(absolute);
+    if (!isWithin(realRoot, real) || lstatSync(absolute).isSymbolicLink()) {
+      violations.push(contractViolation('completion_artifact_invalid', 'fileOutputs', `declared output escapes the workspace or is a symlink: ${path}`));
+      return;
+    }
+    if (lstatSync(absolute).isFile()) { candidates.add(path); return; }
+    const directory = opendirSync(absolute);
+    try {
+      for (let entry = directory.readSync(); entry && visited <= 1000; entry = directory.readSync()) {
+        const child = relative(workspaceRoot, resolve(absolute, entry.name)).split(sep).join('/');
+        if (!isValidFileOutput(child)) { visited++; continue; }
+        collectDeclared(child);
+      }
+    } finally { directory.closeSync(); }
+  };
+  for (const output of outputs ?? []) {
+    try {
+      const candidate = resolve(workspaceRoot, output);
+      if (existsSync(candidate) && (output.endsWith('/') || !lstatSync(candidate).isDirectory())) {
+        collectDeclared(output.endsWith('/') ? output.slice(0, -1) : output);
+      }
+    } catch {
+      violations.push(contractViolation('completion_file_output_missing', 'fileOutputs', `declared output cannot be inspected: ${output}`));
+    }
+  }
+  if (visited > 1000) violations.push(contractViolation('completion_file_output_limit', 'fileOutputs',
+    'declared output directories exceed the bounded 1000-entry inspection limit'));
+  for (const [index, path] of [...candidates].entries()) {
+    const change = { path };
     const candidate = resolve(workspaceRoot, change.path);
     if (!existsSync(candidate)) {
       violations.push(contractViolation(
@@ -653,7 +691,20 @@ function validateWorkspaceDelivery(
       ));
       continue;
     }
+    if (outputs !== undefined && !outputs.some(output => matchesFileOutput(change.path, output))) continue;
+    if (!lstatSync(candidate).isFile()) {
+      violations.push(contractViolation('completion_artifact_invalid', `workspaceDelta.changed.${index}.path`,
+        'file delivery must be a regular file, not a directory or symlink'));
+      continue;
+    }
     artifacts.push(real);
+    deliveredPaths.push(change.path);
+  }
+  for (const [index, output] of (outputs ?? []).entries()) {
+    if (!deliveredPaths.some(path => matchesFileOutput(path, output))) {
+      violations.push(contractViolation('completion_file_output_missing', `fileOutputs.${index}`,
+        `declared file output is missing: ${output}`));
+    }
   }
   validateImageArtifactContract(subtask, artifacts, violations);
   return artifacts;

@@ -1,9 +1,18 @@
+import type { KernelFailure } from '../core/kernel-failure.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { Subtask, WorkUnit } from '../core/types.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import { generateInteractionId } from '../utils/id.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { truncateText } from '../utils/truncate-text.js';
+
+/** A failed environment check is not a capacity shortage. */
+export class ExecutorProbeError extends Error {
+  constructor(readonly failure: KernelFailure) {
+    super(failure.summary);
+    this.name = 'ExecutorProbeError';
+  }
+}
 
 export interface WorkUnitClaim {
   workUnit: WorkUnit;
@@ -187,11 +196,13 @@ export class WorkUnitClaimService {
     });
     this.recordEvent(id, null, null, null, 'probe_started', 'starting');
     let available = false;
+    let probeFailure: KernelFailure | null = null;
     let failureReason = `executor probe returned unavailable: ${agentClassName}`;
     try {
       available = await this.probeExecutor(authorizedBinding, mode);
     } catch (error) {
       available = false;
+      probeFailure = error instanceof ExecutorProbeError ? error.failure : null;
       const detail = error instanceof Error ? error.message : String(error);
       failureReason = truncateText(
         redactSensitiveText(`executor probe failed: ${agentClassName}: ${detail}`),
@@ -201,7 +212,10 @@ export class WorkUnitClaimService {
     if (!available) {
       this.workUnitRepo.updateState(id, 'failed', { heartbeatAt: new Date().toISOString() });
       this.recordEvent(id, null, null, null, 'probe_failed', 'failed', failureReason);
-      return null;
+      throw new ExecutorProbeError(probeFailure ?? {
+        kind: 'configuration', scope: 'agent_class', code: 'executor_probe_failed',
+        summary: failureReason, stage: 'executor_probe', attemptStarted: false, externalSideEffect: false,
+      });
     }
     this.workUnitRepo.updateState(id, 'idle', { heartbeatAt: new Date().toISOString() });
     this.recordEvent(id, null, null, null, 'probe_succeeded', 'idle', `executor probe succeeded: ${agentClassName}`);

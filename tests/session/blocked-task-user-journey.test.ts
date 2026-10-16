@@ -120,7 +120,7 @@ describe('blocked task user journey', () => {
     expect(blockedDescription).toContain('unknown requires explicit recovery');
     expect(blockedDescription).toContain('unknown_executor_failure');
     let output = session.getSnapshot().output.join('\n');
-    expect(output).toContain('Execution blocked: unknown requires explicit recovery');
+    expect(output).toContain('unknown requires explicit recovery');
 
     await session.submit(`/task recovery ${blockedTask.id}`, { awaitAsyncWork: true });
     output = session.getSnapshot().output.join('\n');

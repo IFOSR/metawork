@@ -74,12 +74,12 @@ Workspace path never enters the URL, and the token cannot create a session:
 POST /api/auth/launch-context { token }  ->  { workspaceHint, conversationId? }
 ```
 
-The Browser resolves that hint before login and applies it only after
-authenticating, through the ordinary authorized `select_workspace` command. Web
-login is always explicit: a valid session cookie skips the login page, and
-`admin` / `123456` is the fixed built-in credential unless
-`ANYFUSION_WEB_USERNAME` and `ANYFUSION_WEB_PASSWORD(_HASH)` override it. The
-Server never generates or rotates a login password.
+The Browser resolves that hint before applying it through the ordinary
+authorized `select_workspace` command. The local Web transport session is
+created automatically by
+`GET /api/auth/session`; it is only a process-local Cookie used to bind
+WebSocket and client state. It is not the user identity. Official account login
+and entitlement verification remain the only user-facing account boundary.
 
 A Client may create a Workspace without leaving the Web surface by browsing a
 local directory:

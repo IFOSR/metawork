@@ -61,6 +61,62 @@ describe('SessionTaskExecutionApplicationService', () => {
     );
   });
 
+  it('closes a Planner-authorized resume when the target was cancelled', async () => {
+    const decision: KernelDecision = {
+      id: 'decision_cancelled_resume',
+      schemaVersion: 5,
+      eventId: 'resume_event_cancelled_task',
+      correlationId: 'exec_cancelled',
+      causationId: null,
+      configurationRevision: 'revision-test',
+      action: { type: 'no_op' },
+      reason: 'resume target is not an active recoverable Task',
+    };
+    const output: string[] = [];
+    const traces: unknown[] = [];
+    const refreshRuntimeState = vi.fn();
+    const launch = vi.fn(async (prepared: {
+      onInitialDecision?: (value: KernelDecision) => void;
+    }) => {
+      prepared.onInitialDecision?.(decision);
+    });
+    const service = new SessionTaskExecutionApplicationService({
+      taskRuntimeService: { findTask: () => ({ id: 'task_cancelled', status: 'cancelled' }) } as never,
+      kernelExecutionRuntime: {
+        prepareExecution: (input: unknown) => input,
+        execute: launch,
+      } as never,
+      presentation: {} as never,
+      callbacks: {
+        appendOutput: (...lines: string[]) => output.push(...lines),
+        appendExecutionTrace: input => traces.push(input),
+        appendGuidance: vi.fn(),
+        refreshRuntimeState,
+        startBackgroundExecution: (_taskId, work) => work(),
+      },
+    });
+
+    const started = service.prepareTaskExecution('task_cancelled', {
+      userPrompt: '继续刚才的任务',
+      contextTaskId: 'task_cancelled',
+      executionMode: 'resume-parked',
+      kernelDecisionId: 'decision_control_authorized',
+    });
+    await started.completion;
+
+    expect(output).toEqual([
+      '任务 #task_cancelled 未重新执行：目标任务不处于可恢复状态，未启动新的 Executor。'
+        + '该任务已经取消，不能继续恢复；如果还需要执行，请新建任务（Kernel: resume target is not an active recoverable Task）',
+    ]);
+    expect(traces).toEqual([expect.objectContaining({
+      kind: 'resume_not_executed',
+      traceStatus: 'completed',
+      taskId: 'task_cancelled',
+    })]);
+    expect(refreshRuntimeState).toHaveBeenCalledOnce();
+    expect(launch).toHaveBeenCalledOnce();
+  });
+
   it('reports resume authorization without claiming an Executor has started', () => {
     expect(formatTaskResumeDecision('task_1', {
       id: 'decision_resume',

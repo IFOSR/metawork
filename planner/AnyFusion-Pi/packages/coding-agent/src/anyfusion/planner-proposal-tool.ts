@@ -117,8 +117,7 @@ export function createExecutorManualProposalTool(): ToolDefinition {
 	return defineTool({
 		name: MANUAL_TOOL_NAME,
 		label: "Submit Executor capability manual",
-		description:
-			"Submit the Planner's semantic interpretation of user guidance for one Executor AgentClass.",
+		description: "Submit the Planner's semantic interpretation of user guidance for one Executor AgentClass.",
 		promptSnippet: "Submit the normalized Executor capability manual guidance",
 		promptGuidelines: [
 			"Use only for an Executor capability manual configuration turn.",
@@ -128,49 +127,61 @@ export function createExecutorManualProposalTool(): ToolDefinition {
 			"Do not add assertions for adjacent capabilities or task types that the user did not explicitly address.",
 			"Submit exactly one selected Executor AgentClass.",
 		],
-		parameters: Type.Object({
-			agentClassRef: Type.String({ minLength: 1, maxLength: 64 }),
-			userProfile: Type.Object({
-				sourceText: Type.String({ maxLength: 8_000 }),
-				assertions: Type.Array(Type.Object({
-					topic: Type.Union([
-						Type.Literal("mission"),
-						Type.Literal("strength"),
-						Type.Literal("limitation"),
-						Type.Literal("preferred-task"),
-						Type.Literal("avoid-task"),
-						Type.Literal("model-contribution"),
-						Type.Literal("capability-policy"),
-						Type.Literal("delivery"),
-					]),
-					text: Type.String({ minLength: 1, maxLength: 500 }),
-					target: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
-					modelRef: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
-					modelCapability: Type.Optional(Type.Union([
-						Type.Literal("coding"),
-						Type.Literal("image-editing"),
-						Type.Literal("image-generation"),
-						Type.Literal("long-context"),
-						Type.Literal("planning"),
-						Type.Literal("structured-output"),
-						Type.Literal("tools"),
-						Type.Literal("vision"),
-					])),
-					routingCapability: Type.Optional(Type.Union([
-						Type.Literal("current-web-research"),
-						Type.Literal("image-editing"),
-						Type.Literal("image-generation"),
-						Type.Literal("workspace-engineering"),
-					])),
-					disposition: Type.Optional(Type.Union([
-						Type.Literal("preferred"),
-						Type.Literal("allowed"),
-						Type.Literal("avoid"),
-						Type.Literal("disabled"),
-					])),
-				}), { maxItems: 64 }),
-			}),
-		}, { additionalProperties: false }),
+		parameters: Type.Object(
+			{
+				agentClassRef: Type.String({ minLength: 1, maxLength: 64 }),
+				userProfile: Type.Object({
+					sourceText: Type.String({ maxLength: 8_000 }),
+					assertions: Type.Array(
+						Type.Object({
+							topic: Type.Union([
+								Type.Literal("mission"),
+								Type.Literal("strength"),
+								Type.Literal("limitation"),
+								Type.Literal("preferred-task"),
+								Type.Literal("avoid-task"),
+								Type.Literal("model-contribution"),
+								Type.Literal("capability-policy"),
+								Type.Literal("delivery"),
+							]),
+							text: Type.String({ minLength: 1, maxLength: 500 }),
+							target: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+							modelRef: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
+							modelCapability: Type.Optional(
+								Type.Union([
+									Type.Literal("coding"),
+									Type.Literal("image-editing"),
+									Type.Literal("image-generation"),
+									Type.Literal("long-context"),
+									Type.Literal("planning"),
+									Type.Literal("structured-output"),
+									Type.Literal("tools"),
+									Type.Literal("vision"),
+								]),
+							),
+							routingCapability: Type.Optional(
+								Type.Union([
+									Type.Literal("current-web-research"),
+									Type.Literal("image-editing"),
+									Type.Literal("image-generation"),
+									Type.Literal("workspace-engineering"),
+								]),
+							),
+							disposition: Type.Optional(
+								Type.Union([
+									Type.Literal("preferred"),
+									Type.Literal("allowed"),
+									Type.Literal("avoid"),
+									Type.Literal("disabled"),
+								]),
+							),
+						}),
+						{ maxItems: 64 },
+					),
+				}),
+			},
+			{ additionalProperties: false },
+		),
 		executionMode: "sequential",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const runtime = deriveRuntimeContext(ctx.sessionManager.getBranch(), ctx.mode);
@@ -235,11 +246,12 @@ function deriveRuntimeContext(
 	const entry = latestUserEntry(entries);
 	const userInput = extractUserText(entry);
 	if (!userInput.trim()) throw new Error("Current Planner turn does not contain user input");
-	const purpose = process.env.ANYFUSION_PLANNER_TURN_PURPOSE === "validation"
-		? "validation"
-		: process.env.ANYFUSION_PLANNER_TURN_PURPOSE === "configuration"
-			? "configuration"
-			: "kernel";
+	const purpose =
+		process.env.ANYFUSION_PLANNER_TURN_PURPOSE === "validation"
+			? "validation"
+			: process.env.ANYFUSION_PLANNER_TURN_PURPOSE === "configuration"
+				? "configuration"
+				: "kernel";
 	return {
 		sessionId: requiredEnv("ANYFUSION_PLANNER_SESSION_ID", "METACLAW_PLANNER_SESSION_ID"),
 		turnId: `turn_${entry.id}`,

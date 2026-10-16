@@ -99,8 +99,8 @@ describe("AnyFusion Planner policy", () => {
 		expect(parsed.tools).not.toContain("grep");
 		expect(parsed.tools).not.toContain("find");
 		expect(parsed.tools).not.toContain("ls");
-	expect(parsed.tools).not.toContain("web_fetch");
-	expect(parsed.tools).not.toContain("web_search");
+		expect(parsed.tools).not.toContain("web_fetch");
+		expect(parsed.tools).not.toContain("web_search");
 		expect(parsed.tools).not.toContain("bash");
 		expect(parsed.tools).not.toContain("edit");
 		expect(parsed.tools).not.toContain("write");
@@ -111,26 +111,34 @@ describe("AnyFusion Planner policy", () => {
 	it("redacts image payloads from semantic RPC event echoes", () => {
 		const event = {
 			type: "agent_end",
-			messages: [{
-				role: "user",
-				content: [{
-					type: "image",
-					data: "a".repeat(32),
-					mimeType: "image/jpeg",
-				}],
-			}],
+			messages: [
+				{
+					role: "user",
+					content: [
+						{
+							type: "image",
+							data: "a".repeat(32),
+							mimeType: "image/jpeg",
+						},
+					],
+				},
+			],
 		};
 
 		expect(redactPlannerImageData(event)).toEqual({
 			type: "agent_end",
-			messages: [{
-				role: "user",
-				content: [{
-					type: "image",
-					data: "",
-					mimeType: "image/jpeg",
-				}],
-			}],
+			messages: [
+				{
+					role: "user",
+					content: [
+						{
+							type: "image",
+							data: "",
+							mimeType: "image/jpeg",
+						},
+					],
+				},
+			],
 		});
 	});
 });

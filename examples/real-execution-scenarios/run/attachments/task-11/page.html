@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>商品列表</title>
+<style>
+  body { font-family: sans-serif; margin: 2rem; }
+  table { border-collapse: collapse; }
+  td, th { border: 1px solid #999; padding: 4px 12px; }
+</style>
+</head>
+<body>
+<h1>商品列表</h1>
+<table id="items">
+  <thead><tr><th>SKU</th><th>名称</th><th>数量</th></tr></thead>
+  <tbody></tbody>
+</table>
+<nav id="pager"></nav>
+<script>
+  const PAGES = {
+    1: [
+      { sku: 'S-101', name: '红富士苹果', qty: 30 },
+      { sku: 'S-102', name: '赣南脐橙', qty: 22 },
+      { sku: 'S-103', name: '海南香蕉', qty: 45 },
+    ],
+    2: [
+      { sku: 'S-104', name: '智利车厘子', qty: 8 },
+      { sku: 'S-105', name: '泰国椰青', qty: 15 },
+      { sku: 'S-106', name: '新疆葡萄干', qty: 60 },
+    ],
+    3: [
+      { sku: 'S-107', name: '东北黑木耳', qty: 12 },
+      { sku: 'S-108', name: '云南普洱茶', qty: 5 },
+    ],
+  };
+  const TOTAL = 3;
+  const raw = parseInt(new URLSearchParams(location.search).get('page') || '1', 10);
+  const page = Math.min(Math.max(Number.isNaN(raw) ? 1 : raw, 1), TOTAL);
+  const tbody = document.querySelector('#items tbody');
+  for (const it of PAGES[page]) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${it.sku}</td><td>${it.name}</td><td>${it.qty}</td>`;
+    tbody.appendChild(tr);
+  }
+  const links = [];
+  if (page > 1) links.push(`<a href="page.html?page=${page - 1}">上一页</a>`);
+  links.push(`第 ${page} / ${TOTAL} 页`);
+  if (page < TOTAL) links.push(`<a href="page.html?page=${page + 1}">下一页</a>`);
+  document.getElementById('pager').innerHTML = links.join(' | ');
+</script>
+</body>
+</html>

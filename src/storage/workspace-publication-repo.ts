@@ -113,6 +113,44 @@ interface WorkspaceMergeAttemptRow {
 export class WorkspacePublicationRepo {
   constructor(private readonly db: Database.Database) {}
 
+  beginDelivery(id: string, now: string): void {
+    this.db.prepare(`INSERT INTO workspace_publication_deliveries(publication_id, status, updated_at)
+      VALUES (?, 'pending', ?) ON CONFLICT(publication_id) DO NOTHING`).run(id, now);
+  }
+
+  delivery(id: string): { status: 'pending' | 'failed' | 'succeeded'; projections: import('../delivery/user-artifact-types.js').ArtifactProjection[]; failures: Array<{ sourceRelativePath: string; reason: string }> } | null {
+    const row = this.db.prepare('SELECT * FROM workspace_publication_deliveries WHERE publication_id = ?').get(id) as
+      { status: 'pending' | 'failed' | 'succeeded'; projections_json: string; failures_json: string } | undefined;
+    return row ? { status: row.status, projections: JSON.parse(row.projections_json), failures: JSON.parse(row.failures_json) } : null;
+  }
+
+  settleDelivery(id: string, projections: import('../delivery/user-artifact-types.js').ArtifactProjection[], failures: Array<{ sourceRelativePath: string; reason: string }>, now: string): void {
+    this.db.transaction(() => {
+      const changed = this.db.prepare(`UPDATE workspace_publication_deliveries SET status = ?, projections_json = ?, failures_json = ?, updated_at = ?
+        WHERE publication_id = ? AND status = 'pending'`)
+        .run(failures.length ? 'failed' : 'succeeded', JSON.stringify(projections), JSON.stringify(failures), now, id).changes;
+      if (changed) this.db.prepare('UPDATE workspace_publications SET updated_at = ? WHERE id = ?').run(now, id);
+    }).immediate();
+  }
+
+  retryDelivery(id: string, taskId: string, generationId: string, now: string): void {
+    this.db.transaction(() => {
+      const changed = this.db.prepare(`UPDATE workspace_publication_deliveries SET status = 'pending', updated_at = ?
+        WHERE publication_id = ? AND status = 'failed' AND EXISTS (SELECT 1 FROM workspace_publications p
+          JOIN tasks t ON t.id = p.task_id JOIN subtasks s ON s.id = p.subtask_id
+          WHERE p.id = publication_id AND p.task_id = ? AND p.generation_id = ?
+          AND p.status = 'integrated' AND s.status = 'awaiting_integration' AND t.status NOT IN ('done', 'archived', 'cancelled'))`)
+        .run(now, id, taskId, generationId).changes;
+      if (changed) this.db.prepare('UPDATE workspace_publications SET updated_at = ? WHERE id = ?').run(now, id);
+    }).immediate();
+  }
+
+  unfinishedDeliveries(taskId: string, generationId: string): WorkspacePublicationRecord[] {
+    return (this.db.prepare(`SELECT p.* FROM workspace_publications p JOIN workspace_publication_deliveries d ON d.publication_id = p.id
+      JOIN subtasks s ON s.id = p.subtask_id WHERE p.task_id = ? AND p.generation_id = ? AND p.status = 'integrated'
+      AND s.status = 'awaiting_integration' ORDER BY p.topology_layer, p.first_dispatch_order, p.id`).all(taskId, generationId) as PublicationRow[]).map(rowToPublication);
+  }
+
   insertCandidate(input: {
     id: string;
     taskId: string;
@@ -392,7 +430,9 @@ export class WorkspacePublicationRepo {
     return Boolean(this.db.prepare(`
       SELECT 1 FROM workspace_publications
       WHERE task_id = ?${generationFilter}
-        AND status IN ('pending', 'applying', 'conflicted', 'cancelling', 'uncertain')
+        AND (status IN ('pending', 'applying', 'conflicted', 'cancelling', 'uncertain')
+          OR (status = 'integrated' AND EXISTS (SELECT 1 FROM workspace_publication_deliveries d
+            JOIN subtasks s ON s.id = workspace_publications.subtask_id WHERE d.publication_id = workspace_publications.id AND s.status = 'awaiting_integration')))
       LIMIT 1
     `).get(taskId, ...(generationId ? [generationId] : [])));
   }
@@ -401,6 +441,7 @@ export class WorkspacePublicationRepo {
     return Boolean(this.db.prepare(`
       SELECT 1 FROM workspace_publications
       WHERE status IN ('pending', 'applying', 'conflicted', 'cancelling', 'uncertain')
+        OR (status = 'integrated' AND EXISTS (SELECT 1 FROM workspace_publication_deliveries d JOIN subtasks s ON s.id = workspace_publications.subtask_id WHERE d.publication_id = workspace_publications.id AND s.status = 'awaiting_integration'))
       LIMIT 1
     `).get());
   }

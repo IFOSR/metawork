@@ -85,8 +85,6 @@ if [[ -f "$METAWORK_INSTALL_ROOT/app/current/release-identity.json" ]]; then
   export METAWORK_RELEASE_ID="\$("$METAWORK_NODE_EXECUTABLE" -p 'require(process.argv[1]).releaseId' "$METAWORK_INSTALL_ROOT/app/current/release-identity.json")"
 fi
 export METACLAW_EXECUTOR_BACKEND=worktree
-export ANYFUSION_WEB_USERNAME="\${ANYFUSION_WEB_USERNAME:-admin}"
-export ANYFUSION_WEB_PASSWORD="\${ANYFUSION_WEB_PASSWORD:-123456}"
 # The Server is Workspace-neutral. Planner RPC receives its Runtime-owned
 # safety root from the Server composition; the Client passes the user's
 # Workspace as a separate, explicit hint.
@@ -114,10 +112,6 @@ if not defined METAWORK_INSTALL_ROOT set "METAWORK_INSTALL_ROOT=${root}"
 set "ANYFUSION_INSTALL_ROOT=%METAWORK_INSTALL_ROOT%"
 set "METACLAW_EXECUTOR_BACKEND=worktree"
 set "METAWORK_SECRET_STORE=file"
-set "ANYFUSION_WEB_USERNAME=%ANYFUSION_WEB_USERNAME%"
-if not defined ANYFUSION_WEB_USERNAME set "ANYFUSION_WEB_USERNAME=admin"
-set "ANYFUSION_WEB_PASSWORD=%ANYFUSION_WEB_PASSWORD%"
-if not defined ANYFUSION_WEB_PASSWORD set "ANYFUSION_WEB_PASSWORD=123456"
 set "ANYFUSION_PLANNER_WORKSPACE="
 set "METACLAW_PLANNER_WORKDIR="
 set "ANYFUSION_PI_SOURCE_ROOT=%METAWORK_INSTALL_ROOT%\\app\\current\\planner"

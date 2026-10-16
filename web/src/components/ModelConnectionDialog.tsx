@@ -1,6 +1,9 @@
+import type { ProviderProtocol } from '../../../src/configuration/types';
+import { ProviderProtocolSelect } from './ProviderProtocolSelect';
 import { useEffect, useState } from 'react';
 
 export interface NewModelConnectionDraft {
+  protocol: ProviderProtocol;
   displayName: string;
   baseUrl: string;
   apiKey: string;
@@ -14,6 +17,7 @@ interface ModelConnectionDialogProps {
 }
 
 const EMPTY_DRAFT: NewModelConnectionDraft = {
+  protocol: 'openai-compatible',
   displayName: '',
   baseUrl: '',
   apiKey: '',
@@ -44,6 +48,7 @@ export function ModelConnectionDialog({
 
   const confirm = () => {
     const next = {
+      protocol: draft.protocol,
       displayName: draft.displayName.trim(),
       baseUrl: draft.baseUrl.trim(),
       apiKey: draft.apiKey.trim(),
@@ -89,6 +94,7 @@ export function ModelConnectionDialog({
               autoFocus
             />
           </label>
+          <ProviderProtocolSelect value={draft.protocol} onChange={value => update('protocol', value)} disabled={disabled} />
           <label className="settings-field">
             <span>API URL</span>
             <input

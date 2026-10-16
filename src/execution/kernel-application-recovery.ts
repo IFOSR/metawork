@@ -248,10 +248,14 @@ function inspectRetryWait(
   if (action.type !== 'wait_for_retry') {
     return { family: 'task_transition', verdict: 'unresolved', reason: 'unexpected action' };
   }
-  const blocked = facts.task?.status === 'blocked'
-    && facts.task.dependencies.some(dependency =>
-      dependency.type === 'kernel_retry' && dependency.status === 'waiting'
-    );
+  const target = facts.subtasks.find(subtask => subtask.id === action.subtaskId);
+  if (target && ['done', 'cancelled'].includes(target.status) && !facts.retryWake) {
+    return {
+      family: 'task_transition', verdict: 'applied',
+      reason: 'the retry target is terminal and no Retry Wake was created; no retry remains to apply',
+    };
+  }
+  const blocked = facts.task !== null && ['running', 'blocked'].includes(facts.task.status);
   const wake = facts.retryWake;
   if (
     blocked
@@ -620,6 +624,9 @@ function inspectCapacityWait(
   facts: ApplicationPostconditionFacts,
 ): ApplicationPostconditionInspection {
   const task = facts.task;
+  if (facts.dispatchItems.some(item => ['pending_launch', 'launching', 'running', 'cancelling'].includes(item.status))) {
+    return { family: 'task_transition', verdict: 'applied', reason: 'authorized dispatch retains the capacity wait; sibling execution remains live' };
+  }
   if (task?.status === 'blocked') {
     return {
       family: 'task_transition',

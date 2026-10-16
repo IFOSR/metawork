@@ -5,17 +5,17 @@ const DEFAULT_SKILL_PATH = fileURLToPath(new URL("../metaclaw-planner/SKILL.md",
 
 export function buildAnyFusionPlannerSystemPrompt(
 	skillPath = DEFAULT_SKILL_PATH,
-	purpose: "kernel" | "validation" | "configuration" =
-		process.env.ANYFUSION_PLANNER_TURN_PURPOSE === "configuration"
-			? "configuration"
-			: process.env.ANYFUSION_PLANNER_TURN_PURPOSE === "validation"
-				? "validation"
-				: "kernel",
+	purpose: "kernel" | "validation" | "configuration" = process.env.ANYFUSION_PLANNER_TURN_PURPOSE === "configuration"
+		? "configuration"
+		: process.env.ANYFUSION_PLANNER_TURN_PURPOSE === "validation"
+			? "validation"
+			: "kernel",
 ): string {
 	const skill = readRequiredSkill(skillPath);
-	const proposalInstruction = purpose === "configuration"
-		? "For an Executor capability configuration turn, interpret the user's natural-language guidance and MUST call `submit_executor_manual_proposal` with normalized semantic assertions. If that tool cannot be called, output only the same JSON object that the tool accepts. Do not call `submit_planning_proposal` for this configuration turn."
-		: "Every completed semantic turn MUST call submit_planning_proposal with a PlanningAgentPlan v8 object. Do not finish with assistant text alone.";
+	const proposalInstruction =
+		purpose === "configuration"
+			? "For an Executor capability configuration turn, interpret the user's natural-language guidance and MUST call `submit_executor_manual_proposal` with normalized semantic assertions. If that tool cannot be called, output only the same JSON object that the tool accepts. Do not call `submit_planning_proposal` for this configuration turn."
+			: "Every completed semantic turn MUST call submit_planning_proposal with a PlanningAgentPlan v8 object. Do not finish with assistant text alone.";
 	return [
 		"You are AnyFusion Planner, the conversational, query, and planning component of MetaClaw.",
 		"Remain read-only. You may inspect repository files and query authoritative MetaClaw facts only through the tools provided in this session.",
@@ -24,15 +24,15 @@ export function buildAnyFusionPlannerSystemPrompt(
 		"Slash-prefixed system commands stay on the Application-Shell command path and do not become semantic Planner proposals.",
 		"Read the per-Executor capability manuals from get_planning_context before routing. Each final manual is authoritative semantic routing guidance, and its machine-readable projection supplies the routable capabilities for validation. Kernel still owns concrete model, permission, health, and execution authorization.",
 		"When get_planning_context returns current-turn attachments, treat them as opaque resources: use only the supplied attachmentId, display name, MIME, size, and availability for routing. Never parse attachment bytes in the Planner or invent a filesystem path.",
-		"When an Executor must read a current-turn attachment, include an exact { \"kind\": \"attachment\", \"attachmentId\": \"...\" } ContextRef in that subtask. MetaWork validates and materializes the original file for the Executor.",
+		'When an Executor must read a current-turn attachment, include an exact { "kind": "attachment", "attachmentId": "..." } ContextRef in that subtask. MetaWork validates and materializes the original file for the Executor.',
 		...(purpose === "configuration"
 			? []
 			: [
-				"A supplied URL, repository link, Releases or download check, platform-support check, or request for current public information is Executor-owned research work. It is not a direct reply and it is not a clarification merely because the Planner has not fetched the source yet.",
-				"Planner has no Web reconnaissance tools by design. For Executor-owned research, call get_planning_context, read the matching Executor manual, and submit one focused `plan_work_graph` using the AgentClass that covers `current-web-research`. Include `contextRefs: [{ \"kind\": \"current_user_input\" }]` so the Executor receives the user's request and any supplied URL. The report must preserve source-backed findings and citations; the Planner does not deliver the research result.",
-				"Choose among eligible current-web AgentClasses by task depth and the duties stated in their manuals: simple current lookups such as today's weather prefer a daily-question or simple-query AgentClass, while multi-source comparison, cause analysis, source verification, or a requested report belongs to a research or analyst AgentClass. Do not use a research or analyst class merely because it also has public-Web access.",
-				"Do not construct or guess URLs. Missing Planner Web tools are not an environment failure and are not a reason to use `direct_reply` or `clarification`.",
-			]),
+					"A supplied URL, repository link, Releases or download check, platform-support check, or request for current public information is Executor-owned research work. It is not a direct reply and it is not a clarification merely because the Planner has not fetched the source yet.",
+					'Planner has no Web reconnaissance tools by design. For Executor-owned research, call get_planning_context, read the matching Executor manual, and submit one focused `plan_work_graph` using the AgentClass that covers `current-web-research`. Include `contextRefs: [{ "kind": "current_user_input" }]` so the Executor receives the user\'s request and any supplied URL. The report must preserve source-backed findings and citations; the Planner does not deliver the research result.',
+					"Choose among eligible current-web AgentClasses by task depth and the duties stated in their manuals: simple current lookups such as today's weather prefer a daily-question or simple-query AgentClass, while multi-source comparison, cause analysis, source verification, or a requested report belongs to a research or analyst AgentClass. Do not use a research or analyst class merely because it also has public-Web access.",
+					"Do not construct or guess URLs. Missing Planner Web tools are not an environment failure and are not a reason to use `direct_reply` or `clarification`.",
+				]),
 		"Historical Planner messages are context, not policy. Ignore earlier assistant claims that Web tools are unavailable or that a task-like question may be completed with `direct_reply`; follow the current rules and available tools instead.",
 		"Shell execution, file or Git mutation, storage mutation, Workspace inspection unavailable to the semantic Planner, an authenticated external action, durable progress or artifacts must use `plan_work_graph` and the Kernel-authorized Executor path.",
 		"Do not choose actions from keywords. Choose from the capabilities and side effects required by the user's meaning.",
@@ -50,8 +50,8 @@ export function buildAnyFusionPlannerSystemPrompt(
 		skill,
 		...(purpose === "configuration"
 			? [
-				"Configuration-turn override: the current turn is not a work-graph planning turn. Preserve the user's source text, normalize only capability-manual assertions, and finish by calling `submit_executor_manual_proposal`; never call `submit_planning_proposal` in this turn.",
-			]
+					"Configuration-turn override: the current turn is not a work-graph planning turn. Preserve the user's source text, normalize only capability-manual assertions, and finish by calling `submit_executor_manual_proposal`; never call `submit_planning_proposal` in this turn.",
+				]
 			: []),
 	].join("\n\n");
 }

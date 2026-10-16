@@ -34,8 +34,24 @@ arguments. No generic filesystem/shell/IPC bridge is permitted. External
 navigation and child windows cannot acquire the bridge. Directory selection is
 only a hint to the existing authorized workspace command. Downloads are based
 on authorized artifact IDs and reveal is restricted to completed downloads.
+The 2026-10-15 document-preview extension adds an equivalent attachment save
+operation accepting only Conversation/Attachment IDs. Main fetches metadata and
+bytes through the same authenticated Server, sanitizes the name, obtains a
+native save destination and uses the same bounded atomic download path. The
+browser's Office reader has an opaque sandbox origin and no preload/native
+bridge. No file paths, arbitrary fetch URLs or Office executables are exposed
+to the reader; the Desktop remains a thin shell around the shared Web preview.
 Preferences and bounded drafts use installation/account scope independent of
 HTTP port; neither is a business fact or a second credential store.
+
+The 2026-10-16 inline-chart extension permits one bounded native image-save
+operation. The owned business main frame supplies a title and PNG data URI;
+Main validates encoded length, PNG header and dimensions before decoding,
+re-encodes pixels, asks for the destination through a native dialog and writes
+atomically. It accepts no file paths, URLs, SVG or executable markup. Reveal
+uses the existing completed-download identity. Chart semantics and rendering
+remain in the shared Web client; this operation creates no Task artifact,
+storage fact, execution capability or generic filesystem bridge.
 
 Installer/Upgrader remains the only runtime activation authority (ADR-0030).
 Shell, Server/Web, Planner, Node ABI and native dependencies form a verified

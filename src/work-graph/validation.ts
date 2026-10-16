@@ -1,4 +1,5 @@
 import type { ContextRef, WorkGraphProposal, WorkGraphSubtask } from './types.js';
+import { isValidFileOutput } from './file-outputs.js';
 
 export const WORK_GRAPH_KEY_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 
@@ -16,6 +17,7 @@ export type WorkGraphViolationCode =
   | 'empty_subtask_id'
   | 'empty_work_graph'
   | 'evidence_requirements_count_invalid'
+  | 'file_outputs_invalid'
   | 'invalid_key'
   | 'mergeable_same_agent_chain'
   | 'missing_entry_node'
@@ -68,6 +70,11 @@ export function validateWorkGraph(graph: Pick<WorkGraphProposal, 'subtasks'>): W
         violations.push(violation('unknown_dependency', [subtask.id, dependencyId], path, `subtask ${subtask.id} depends on unknown subtask ${dependencyId}`));
       } else {
         known.push(dependencyId);
+        if (dependency.requiredItems.some(item => item.type === 'artifact')
+          && subtasksById.get(dependencyId)?.fileOutputs?.length === 0) {
+          violations.push(violation('file_outputs_invalid', [dependencyId, subtask.id], path,
+            'artifact handoff requires fileOutputs on the producing subtask'));
+        }
       }
     }
     dependencyGraph.set(subtask.id, known);
@@ -111,6 +118,16 @@ function validateSubtaskContract(
   violations: WorkGraphViolation[],
 ): void {
   const base = `subtasks.${index}`;
+  if (subtask.fileOutputs !== undefined) {
+    const outputs = subtask.fileOutputs;
+    if (outputs.length > 100 || outputs.some(path => !isValidFileOutput(path))
+      || new Set(outputs).size !== outputs.length
+      || (outputs.length === 0 && subtask.requiredCapabilities.some(capability =>
+        capability === 'image-generation' || capability === 'image-editing'))) {
+      violations.push(violation('file_outputs_invalid', [subtask.id], `${base}.fileOutputs`,
+        'fileOutputs must contain unique safe relative paths; image tasks require file delivery'));
+    }
+  }
   if (subtask.contextRefs.length > 12) {
     violations.push(violation('too_many_context_refs', [subtask.id], `${base}.contextRefs`, `subtask ${subtask.id} has more than 12 context refs`));
   }

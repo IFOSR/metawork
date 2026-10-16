@@ -64,7 +64,9 @@ describe("AnyFusion Planner system prompt", () => {
 		expect(prompt).toContain("current-web-research");
 		expect(prompt).toContain("today's weather");
 		expect(prompt).toContain("prefer an AgentClass whose manual explicitly covers daily questions or simple queries");
-		expect(prompt).toContain("do not route it to a research or analyst class merely because both classes can access the public Web");
+		expect(prompt).toContain(
+			"do not route it to a research or analyst class merely because both classes can access the public Web",
+		);
 		expect(prompt).not.toContain("normally `pi-research` when it is present");
 		expect(prompt).toContain("the Planner does not deliver the research result");
 		expect(prompt).toContain("Do not construct or guess URLs");
@@ -76,6 +78,11 @@ describe("AnyFusion Planner system prompt", () => {
 		expect(prompt).toContain("authenticated external action");
 		expect(prompt).toContain("durable progress or artifacts");
 		expect(prompt).toContain("Do not choose actions from keywords");
+		expect(prompt).toContain("Every subtask must explicitly declare `fileOutputs`");
+		expect(prompt).toContain("`report` does not mean a Markdown file is required");
+		expect(prompt).toContain(
+			"Do not invent a separate browser-control capability requirement for launching an application",
+		);
 	});
 
 	it("uses the Executor manual proposal tool for configuration turns", () => {

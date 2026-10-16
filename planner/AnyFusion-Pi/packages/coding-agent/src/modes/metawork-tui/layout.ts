@@ -46,11 +46,7 @@ export function computeMetaWorkLayout(columns: number, rows: number): MetaWorkLa
 
 	const showHeader = safeRows >= 14 && safeColumns >= 60;
 	const actionBarRows = safeRows >= 6 ? 2 : 1;
-	const editorRows = clamp(
-		Math.round(safeRows * 0.18),
-		EDITOR_MIN_ROWS,
-		EDITOR_MAX_ROWS,
-	);
+	const editorRows = clamp(Math.round(safeRows * 0.18), EDITOR_MIN_ROWS, EDITOR_MAX_ROWS);
 	const maxVisibleTurns = Math.max(3, Math.floor((safeRows - editorRows - actionBarRows - 4) / 6));
 
 	if (safeColumns < MIN_COLUMNS || safeRows < MIN_ROWS) {
@@ -71,9 +67,7 @@ export function computeMetaWorkLayout(columns: number, rows: number): MetaWorkLa
 	}
 
 	if (safeColumns >= INLINE_TASK_PANEL_MIN_COLUMNS) {
-		const variant: MetaWorkLayoutVariant = safeColumns >= WIDE_LAYOUT_MIN_COLUMNS
-			? "wide"
-			: "standard";
+		const variant: MetaWorkLayoutVariant = safeColumns >= WIDE_LAYOUT_MIN_COLUMNS ? "wide" : "standard";
 		const taskPanelWidth = clamp(
 			Math.round(safeColumns * (variant === "wide" ? 0.28 : 0.3)),
 			TASK_PANEL_MIN_WIDTH,
@@ -111,11 +105,7 @@ export function computeMetaWorkLayout(columns: number, rows: number): MetaWorkLa
 }
 
 /** 格式化任务时长；缺服务端开始时间时不补零、不猜测。 */
-export function formatTaskDuration(
-	startedAt: string | null,
-	completedAt: string | null,
-	nowMs: number,
-): string | null {
+export function formatTaskDuration(startedAt: string | null, completedAt: string | null, nowMs: number): string | null {
 	if (!startedAt) return null;
 	const started = Date.parse(startedAt);
 	if (!Number.isFinite(started)) return null;

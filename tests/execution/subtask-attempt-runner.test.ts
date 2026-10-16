@@ -331,6 +331,72 @@ function validResponse(): string {
 }
 
 describe('SubtaskAttemptRunner', () => {
+  it('commits a successful authorized Attempt while a sibling has blocked the Task', async () => {
+    const fixture = setup(validResponse());
+    try {
+      // A Task-level blocker describes another branch. It must not invalidate
+      // this already-authorized Attempt or turn its valid completion into a
+      // stale result.
+      fixture.db.prepare(`UPDATE tasks SET status = 'blocked' WHERE id = 'task_phase2'`).run();
+      authorizeRunningAttempt(fixture, 'attempt_blocked_task_completion');
+
+      const result = await fixture.runner.run({
+        attemptId: 'attempt_blocked_task_completion',
+        executionId: 'exec_blocked_task_completion',
+        taskId: 'task_phase2',
+        subtaskId: fixture.a.id,
+        ...attemptIdentity(),
+        executionMode: 'fresh',
+        defaultResourceGrant: fixture.defaultResourceGrant,
+      });
+
+      expect(result.outcome).toBe('completed');
+      expect(fixture.subtaskRepo.findById(fixture.a.id)?.status).toBe('awaiting_integration');
+      expect(fixture.db.prepare(`
+        SELECT terminal_state, error_code FROM executor_attempt_receipts
+        WHERE attempt_id = 'attempt_blocked_task_completion'
+      `).get()).toEqual({ terminal_state: 'completed', error_code: null });
+      expect(fixture.dispatchItems.find('attempt_blocked_task_completion')?.status).toBe('terminal');
+    } finally {
+      fixture.db.close();
+    }
+  });
+
+  it.each([
+    ['missing', 'session_1', 'interaction_source_missing'],
+    ['source', 'another-session', 'interaction_not_authorized'],
+  ])('reports %s context preparation failure before invoking the executor', async (interactionId, sessionId, code) => {
+    const fixture = setup(validResponse());
+    try {
+      fixture.db.prepare(`INSERT INTO interactions
+        (id, task_id, session_id, user_input, system_output, created_at)
+        VALUES ('source', 'task_phase2', ?, 'private test content', '', ?)`)
+        .run(sessionId, '2026-10-13T00:00:00.000Z');
+      fixture.a.contextRefs = [{ kind: 'interaction', interactionId, side: 'user' }];
+      fixture.subtaskRepo.upsert(fixture.a);
+      const result = await fixture.runner.run({
+        attemptId: 'attempt_context_failure', executionId: 'exec_1', taskId: 'task_phase2',
+        subtaskId: fixture.a.id, ...attemptIdentity(), executionMode: 'fresh',
+        defaultResourceGrant: fixture.defaultResourceGrant,
+      });
+      expect(result).toMatchObject({
+        outcome: 'executor_failed', failure: {
+          code, stage: 'context_preparation', attemptStarted: false,
+          externalSideEffect: false, retryable: false,
+          summary: expect.stringContaining('准备任务资料失败'),
+        },
+      });
+      expect(fixture.executionRuntime.run).not.toHaveBeenCalled();
+      expect(fixture.executionRuntime.runResponseOnly).not.toHaveBeenCalled();
+      expect(fixture.db.prepare(`SELECT error_code, error_detail FROM executor_attempt_receipts
+        WHERE attempt_id = 'attempt_context_failure'`).get()).toEqual({
+        error_code: code, error_detail: expect.stringContaining('Executor 尚未启动'),
+      });
+      expect(JSON.stringify(result)).not.toContain('private test content');
+      expect(fixture.workUnitRepo.findById('executor-codex')?.claimedTaskId).toBeNull();
+    } finally { fixture.db.close(); }
+  });
+
   it('does not launch an Executor after cancellation during workspace preparation', async () => {
     const fixture = setup('late result');
     const original = fixture.workspaceStore.createCheckpoint.bind(fixture.workspaceStore);
@@ -415,12 +481,11 @@ describe('SubtaskAttemptRunner', () => {
     expect(setupResult.executionRuntime.resolvePermissionProfile).toHaveBeenCalledWith(binding);
   });
 
-  it('completes directly when the body is empty but the report file exists (format never gates)', async () => {
-    // Result-first redesign: an empty trailer body with a produced report
-    // file certifies as a warning; artifacts register; no correction loop.
+  it('resolves the explicitly declared report body and defers file copying until publication', async () => {
     const trailer = `${COMPLETION_MARKER_V4}\n${JSON.stringify({
       evidence: ['verified'],
       noChangeReason: null,
+      reportPath: 'report.md',
     })}`;
     const setupResult = setup(trailer);
     setupResult.executionRuntime.run.mockImplementationOnce(async input => {
@@ -447,12 +512,7 @@ describe('SubtaskAttemptRunner', () => {
 
     expect(outcome).toMatchObject({ outcome: 'completed' });
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)?.status).toBe('awaiting_integration');
-    expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).toHaveBeenCalledWith(
-      expect.objectContaining({
-        taskId: 'task_phase2',
-        sources: [expect.objectContaining({ sourceRelativePath: 'report.md' })],
-      }),
-    );
+    expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).not.toHaveBeenCalled();
   });
 
   it('atomically records a candidate receipt without publishing handoffs before integration', async () => {
@@ -557,17 +617,15 @@ describe('SubtaskAttemptRunner', () => {
       ...attemptIdentity(), executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
     expect(outcome).toMatchObject({
-      // Redesigned gate model: missing metadata is format noise; the result
-      // completes and flows.
-      outcome: 'completed',
+      outcome: 'contract_failed',
       output: 'plain response without envelope',
     });
-    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'awaiting_integration', result: '' });
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'awaiting_decision', result: '' });
     expect(setupResult.db.prepare(`
       SELECT terminal_state, raw_response, parsing_json
       FROM executor_attempt_receipts
     `).get()).toMatchObject({
-      terminal_state: 'completed',
+      terminal_state: 'uncertified_result',
       raw_response: '',
       parsing_json: expect.stringContaining('"safeProjectionId":"result_attempt_1_safe"'),
     });
@@ -576,9 +634,9 @@ describe('SubtaskAttemptRunner', () => {
       FROM result_objects
       ORDER BY result_id
     `).all()).toEqual([
-      { result_id: 'result_attempt_1_business', kind: 'business_result', completeness: 'complete' },
-      { result_id: 'result_attempt_1_raw', kind: 'raw_attempt_output', completeness: 'complete' },
-      { result_id: 'result_attempt_1_safe', kind: 'safe_projection', completeness: 'complete' },
+      { result_id: 'result_attempt_1_business', kind: 'business_result', completeness: 'partial' },
+      { result_id: 'result_attempt_1_raw', kind: 'raw_attempt_output', completeness: 'partial' },
+      { result_id: 'result_attempt_1_safe', kind: 'safe_projection', completeness: 'partial' },
     ]);
     expect(setupResult.db.prepare('SELECT COUNT(*) AS count FROM subtask_handoffs').get()).toEqual({ count: 0 });
     expect(setupResult.taskRuntimeService.findTask('task_phase2')).toMatchObject({ status: 'running' });
@@ -590,6 +648,7 @@ describe('SubtaskAttemptRunner', () => {
       WHERE work_unit_id = 'executor-codex' AND event_type IN ('waiting', 'released')
       ORDER BY rowid
     `).all()).toEqual([
+      { event_type: 'waiting', state: 'waiting', attempt_id: outcome.attemptId },
       { event_type: 'released', state: 'idle', attempt_id: outcome.attemptId },
     ]);
   });
@@ -1081,9 +1140,7 @@ describe('SubtaskAttemptRunner', () => {
     });
   });
 
-  it('completes an edit delivery with workspace changes and registers them', async () => {
-    // Redesigned gate model: a trailer-less edit source completes directly;
-    // the produced file registers as an attempt artifact.
+  it('keeps trailerless edits uncertified without copying files', async () => {
     const setupResult = setup(validResponse());
     setupResult.subtaskRepo.upsert({
       ...setupResult.a,
@@ -1118,15 +1175,11 @@ describe('SubtaskAttemptRunner', () => {
     });
 
     expect(source).toMatchObject({
-      outcome: 'completed',
+      outcome: 'contract_failed',
       output: 'Report created without a completion marker.',
     });
-    expect(setupResult.subtaskRepo.findById(setupResult.a.id)?.status).toBe('awaiting_integration');
-    expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sources: [expect.objectContaining({ sourceRelativePath: 'report.html' })],
-      }),
-    );
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)?.status).toBe('awaiting_decision');
+    expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).not.toHaveBeenCalled();
   });
 
   it('does not start a stale fallback after the Task was cancelled', async () => {
@@ -1152,12 +1205,7 @@ describe('SubtaskAttemptRunner', () => {
       attemptId: 'attempt_primary', executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
       ...attemptIdentity(), executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
     });
-    // Redesigned gate model: a trailer-less primary completes. Park the
-    // subtask into awaiting_decision to emulate a content-gated source for
-    // the correction round-trip below.
-    expect(first.outcome).toBe('completed');
-    setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'awaiting_decision', { error: 'content gate fixture' });
-    setupResult.workUnitRepo.updateState('executor-codex', 'idle');
+    expect(first.outcome).toBe('contract_failed');
     setupResult.executionRuntime.runResponseOnly.mockResolvedValue({
       success: true,
       output: `REWRITTEN_BODY_MUST_BE_IGNORED\n\n${COMPLETION_MARKER_V4}\n${JSON.stringify({
@@ -1189,12 +1237,12 @@ describe('SubtaskAttemptRunner', () => {
     expect(setupResult.db.prepare(`
       SELECT attempt_id, terminal_state, raw_response FROM executor_attempt_receipts ORDER BY completed_at, attempt_id
     `).all()).toEqual(expect.arrayContaining([
-      { attempt_id: 'attempt_primary', terminal_state: 'completed', raw_response: '' },
+      { attempt_id: 'attempt_primary', terminal_state: 'uncertified_result', raw_response: '' },
       { attempt_id: 'attempt_correction', terminal_state: 'completed', raw_response: '' },
     ]));
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
-      status: 'done',
-      result: originalBody,
+      status: 'awaiting_integration',
+      result: '',
     });
     const correctionReceipt = setupResult.db.prepare(`
       SELECT parsing_json FROM executor_attempt_receipts WHERE attempt_id = 'attempt_correction'
@@ -1230,12 +1278,7 @@ describe('SubtaskAttemptRunner', () => {
       executionMode: 'fresh',
       defaultResourceGrant: setupResult.defaultResourceGrant,
     });
-    // Redesigned gate model: a trailer-less primary completes. Park the
-    // subtask into awaiting_decision to emulate a content-gated source for
-    // the correction round-trip below.
-    expect(first.outcome).toBe('completed');
-    setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'awaiting_decision', { error: 'content gate fixture' });
-    setupResult.workUnitRepo.updateState('executor-codex', 'idle');
+    expect(first.outcome).toBe('contract_failed');
 
     const corrected = await setupResult.runner.runCorrection({
       attemptId: 'attempt_correction_other_model',
@@ -1267,11 +1310,7 @@ describe('SubtaskAttemptRunner', () => {
       executionMode: 'fresh',
       defaultResourceGrant: setupResult.defaultResourceGrant,
     });
-    // Redesigned gate model: trailer-less source completes; park the subtask
-    // to keep the continuation dispatch authorized.
-    expect(first.outcome).toBe('completed');
-    setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'awaiting_decision', { error: 'gate fixture' });
-    setupResult.workUnitRepo.updateState('executor-codex', 'idle');
+    expect(first.outcome).toBe('contract_failed');
 
     const continued = await setupResult.runner.run({
       attemptId: 'attempt_continuation_other_model',
@@ -1527,8 +1566,8 @@ describe('SubtaskAttemptRunner', () => {
   });
 });
 
-describe('attempt artifact registration (publication-independent)', () => {
-  it('registers output-area files as artifacts on primary completion', async () => {
+describe('attempt artifact candidates (publication required)', () => {
+  it('persists the candidate without premature file copying', async () => {
     const setupResult = setup(validResponse());
     setupResult.executionRuntime.run.mockImplementationOnce(async input => {
       writeFileSync(
@@ -1546,16 +1585,10 @@ describe('attempt artifact registration (publication-independent)', () => {
       defaultResourceGrant: setupResult.defaultResourceGrant,
     });
     expect(outcome).toMatchObject({ outcome: 'completed' });
-    expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).toHaveBeenCalledWith(
-      expect.objectContaining({
-        taskId: 'task_phase2',
-        subtaskId: setupResult.a.id,
-        sources: [expect.objectContaining({ sourceRelativePath: 'report.md' })],
-      }),
-    );
+    expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).not.toHaveBeenCalled();
   });
 
-  it('registers artifacts on the correction path too', async () => {
+  it('persists a corrected candidate without premature file copying', async () => {
     const setupResult = setup(validResponse());
     // primary fails contract, correction succeeds — registration must still happen
     setupResult.executionRuntime.run.mockImplementationOnce(async input => {
@@ -1574,12 +1607,7 @@ describe('attempt artifact registration (publication-independent)', () => {
       subtaskId: setupResult.a.id, ...attemptIdentity(), executionMode: 'fresh',
       defaultResourceGrant: setupResult.defaultResourceGrant,
     });
-    // Redesigned gate model: a trailer-less primary completes. Park the
-    // subtask into awaiting_decision to emulate a content-gated source for
-    // the correction round-trip below.
-    expect(first.outcome).toBe('completed');
-    setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'awaiting_decision', { error: 'content gate fixture' });
-    setupResult.workUnitRepo.updateState('executor-codex', 'idle');
+    expect(first.outcome).toBe('contract_failed');
     setupResult.executionRuntime.runResponseOnly.mockResolvedValue({
       success: true,
       output: `${COMPLETION_MARKER_V4}\n${JSON.stringify({ evidence: ['fixed'], noChangeReason: null })}`,
@@ -1591,12 +1619,7 @@ describe('attempt artifact registration (publication-independent)', () => {
       completionContract: { marker: '<!-- metaclaw:completion:v4 -->', schemaVersion: 4 }, violations: [],
     });
     expect(corrected).toMatchObject({ outcome: 'completed' });
-    expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).toHaveBeenCalledWith(
-      expect.objectContaining({
-        taskId: 'task_phase2',
-        sources: [expect.objectContaining({ sourceRelativePath: 'report.md' })],
-      }),
-    );
+    expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).not.toHaveBeenCalled();
   });
 });
 
@@ -1628,13 +1651,9 @@ describe('R6 anti-regression invariant: format failures never withhold results',
       defaultResourceGrant: setupResult.defaultResourceGrant,
     });
 
-    expect(outcome).toMatchObject({ outcome: 'completed' });
+    expect(outcome).toMatchObject({ outcome: 'contract_failed' });
     expect((outcome as { output?: string }).output).toContain('肉制品市场方案正文');
-    expect(setupResult.subtaskRepo.findById(setupResult.a.id)?.status).toBe('awaiting_integration');
-    expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sources: [expect.objectContaining({ sourceRelativePath: '方案.md' })],
-      }),
-    );
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)?.status).toBe('awaiting_decision');
+    expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).not.toHaveBeenCalled();
   });
 });

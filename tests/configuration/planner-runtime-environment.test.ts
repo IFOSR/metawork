@@ -26,6 +26,7 @@ describe('resolvePlannerRuntimeEnvironment', () => {
     expect(result).toEqual({
       OPENAI_BASE_URL: 'https://api.deepseek.example/v1',
       OPENAI_API_KEY: 'deepseek-secret',
+      ANTHROPIC_API_KEY: 'deepseek-secret',
       OPENAI_API_KEY__DEEPSEEK: 'deepseek-secret',
       OPENAI_MODEL: 'deepseek-v4-pro',
     });

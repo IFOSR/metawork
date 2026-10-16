@@ -23,6 +23,8 @@ import { SessionStateRepo } from '../storage/session-state-repo.js';
 import { TaskRuntimeService } from '../task/task-runtime-service.js';
 import { ExecutionRuntime, ExecutorRegistry } from '../execution/execution-runtime.js';
 import { ExecutorRecoveryRefreshService } from '../execution/executor-recovery-refresh-service.js';
+import { UserArtifactPublicationService } from '../delivery/user-artifact-publication-service.js';
+import { TaskArtifactRepo } from '../storage/task-artifact-repo.js';
 import { VerificationAndDeliveryService } from '../delivery/verification-and-delivery-service.js';
 import { AgentClassService } from '../executor/agent-class-service.js';
 import { ExecutionProgressService } from '../execution/execution-progress-service.js';
@@ -186,6 +188,7 @@ export interface MetaclawSessionDeps {
   notifier?: NotificationService;
   sourceRoot?: string;
   resultsRoot?: string;
+  userArtifactPublication?: UserArtifactPublicationService;
   attemptExecutionBackend?: AttemptExecutionBackend;
   plannerHost?: PlannerHostRegistrar;
   plannerSupervisor?: PlannerProcessController;
@@ -577,6 +580,10 @@ export class MetaclawSession {
     const cancellationCoordinator = runtimeExecutionServices.cancellationCoordinator;
     this.attemptRunner = runtimeExecutionServices.attemptRunner;
     const kernelExecutionServices = deps.accountKernelExecutionServices ?? buildAccountKernelExecutionServices({
+      userArtifactPublication: deps.userArtifactPublication ?? new UserArtifactPublicationService({
+        userWorkspaceRoot: sourceRoot, taskArtifactRepo: new TaskArtifactRepo(deps.db),
+      }),
+      resolveWorkspacePath: async () => sourceRoot,
       db: deps.db,
       sessionId: deps.sessionId,
       legacyCompatibility: true,
@@ -636,6 +643,7 @@ export class MetaclawSession {
       },
       taskExecutionCallbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
+        appendExecutionTrace: input => this.appendExecutionTrace(input),
         appendGuidance: (scene, suggestion) => this.appendGuidance(scene, suggestion),
         refreshRuntimeState: () => this.refreshRuntimeState(),
         startBackgroundExecution: (taskId, work) => this.startBackgroundExecution(taskId, work),
@@ -2379,6 +2387,8 @@ export class MetaclawSession {
         const started = this.prepareTaskExecution(resumedTask.id, {
           userPrompt: resumedTask.goal,
           contextTaskId: resumedTask.id,
+          expectedGenerationId: directive.expectedGenerationId,
+          expectedGraphRevision: directive.expectedGraphRevision,
           executionMode: directive.mode,
           schedulingReason: directive.mode === 'resume-blocked' ? '解除阻塞' : '恢复已暂停任务',
           newlyProvidedResources: directive.newlyProvidedResources,
@@ -2399,7 +2409,7 @@ export class MetaclawSession {
           await started.completion;
           this.appendOutput(`任务 #${resumedTask.id} 恢复请求未产生权威 Kernel 决策`);
         } else {
-          this.appendOutput(formatTaskResumeDecision(resumedTask.id, decision));
+          this.appendOutput(formatTaskResumeDecision(resumedTask.id, decision, resumedTask.status));
           if (decision.action.type !== 'resume_task') await started.completion;
         }
       }

@@ -469,6 +469,8 @@ function sanitizeExecutionTimeline(
     taskId: sanitizeInteractionTraceText(timeline.taskId, 160),
     title: sanitizeInteractionTraceText(timeline.title, 500),
     status: sanitizeInteractionTraceText(timeline.status, 80),
+    userState: timeline.userState,
+    userStateReason: sanitizeInteractionTraceText(timeline.userStateReason ?? '', 1000),
     stages: timeline.stages.map(sanitizeTimelineStage),
   };
 }

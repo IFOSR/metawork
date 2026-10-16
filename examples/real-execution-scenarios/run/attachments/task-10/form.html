@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>订单查询</title>
+<style>
+  body { font-family: sans-serif; margin: 2rem; }
+  #result { margin-top: 1rem; padding: 8px 12px; background: #f4f4f4; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<h1>订单状态查询</h1>
+<form id="query">
+  <input id="order-id" placeholder="请输入订单号" />
+  <button type="submit">查询</button>
+</form>
+<div id="result">（尚未查询）</div>
+<script>
+  const ORDERS = {
+    '8001': { status: '已发货', carrier: '顺丰', eta: '2026-02-18' },
+    '8002': { status: '处理中', carrier: '—', eta: '—' },
+    '8003': { status: '已取消', carrier: '—', eta: '—' },
+  };
+  document.getElementById('query').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const id = document.getElementById('order-id').value.trim();
+    const box = document.getElementById('result');
+    const o = ORDERS[id];
+    if (!o) { box.textContent = `订单 ${id}：不存在`; return; }
+    box.textContent = `订单 ${id}：${o.status} / 承运 ${o.carrier} / 预计送达 ${o.eta}`;
+  });
+</script>
+</body>
+</html>

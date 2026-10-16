@@ -6,11 +6,11 @@ import { build } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 
 const desktopRequire = createRequire(new URL('../../apps/desktop/package.json', import.meta.url));
-const { chromium } = desktopRequire('playwright-core') as typeof import('../../apps/desktop/node_modules/playwright-core');
 const e2e = process.env.RUN_BROWSER_E2E === '1' ? describe : describe.skip;
 
 e2e('conversation viewport restoration', () => {
   it('loads a long report after restart with a saved offset but no measured heights', async () => {
+    const { chromium } = desktopRequire('playwright-core') as typeof import('../../apps/desktop/node_modules/playwright-core');
     const bundle = await build({
       stdin: { resolveDir: resolve('.'), sourcefile: 'viewport-restore.tsx', loader: 'tsx', contents: `
         import React from 'react';

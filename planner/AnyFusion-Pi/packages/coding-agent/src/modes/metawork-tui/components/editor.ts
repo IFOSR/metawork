@@ -11,7 +11,7 @@
  * 权限批准/拒绝只在权限面板获得焦点后有效，普通输入中的 a/x/c 永远不是业务命令。
  */
 
-import { Editor, type EditorOptions, type EditorTheme, matchesKey as matchesTerminalKey, type TUI } from "@earendil-works/pi-tui";
+import { Editor, matchesKey as matchesTerminalKey } from "@earendil-works/pi-tui";
 
 export const METAWORK_TUI_KEYS = {
 	help: ["\x1bOP", "\x1b[11~"],
@@ -42,10 +42,6 @@ export interface MetaWorkEditorActions {
 
 export class MetaWorkEditor extends Editor {
 	private actions: MetaWorkEditorActions | null = null;
-
-	constructor(ui: TUI, editorTheme: EditorTheme, options?: EditorOptions) {
-		super(ui, editorTheme, options);
-	}
 
 	setActions(actions: MetaWorkEditorActions): void {
 		this.actions = actions;

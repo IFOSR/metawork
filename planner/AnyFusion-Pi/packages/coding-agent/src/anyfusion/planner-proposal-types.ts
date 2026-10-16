@@ -10,12 +10,32 @@ export type ExecutorManualProposalResult =
 			userProfile: {
 				sourceText: string;
 				assertions: Array<{
-					topic: "mission" | "strength" | "limitation" | "preferred-task" | "avoid-task" | "model-contribution" | "capability-policy" | "delivery";
+					topic:
+						| "mission"
+						| "strength"
+						| "limitation"
+						| "preferred-task"
+						| "avoid-task"
+						| "model-contribution"
+						| "capability-policy"
+						| "delivery";
 					text: string;
 					target?: string;
 					modelRef?: string;
-					modelCapability?: "coding" | "image-editing" | "image-generation" | "long-context" | "planning" | "structured-output" | "tools" | "vision";
-					routingCapability?: "current-web-research" | "image-editing" | "image-generation" | "workspace-engineering";
+					modelCapability?:
+						| "coding"
+						| "image-editing"
+						| "image-generation"
+						| "long-context"
+						| "planning"
+						| "structured-output"
+						| "tools"
+						| "vision";
+					routingCapability?:
+						| "current-web-research"
+						| "image-editing"
+						| "image-generation"
+						| "workspace-engineering";
 					disposition?: "preferred" | "allowed" | "avoid" | "disabled";
 				}>;
 			};

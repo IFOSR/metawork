@@ -754,4 +754,16 @@ describe('application postcondition inspection', () => {
       application: app({ type: 'recover_workspace_attempt', taskId, subtaskId: 'subtask-a', workspaceId: 'ws', checkpointId: null, lostAttemptId: 'attempt-1', attemptKind: 'primary', recoveryMode: 'fresh', defaultResourceGrant: [] }),
     }))).toMatchObject({ verdict: 'not_managed' });
   });
+
+  it('retires an uncreated retry after its target completed, without recreating the wake', () => {
+    const retry = app({ type: 'wait_for_retry', taskId, subtaskId: 'subtask-a',
+      resumeAt: '2026-09-25T00:10:00.000Z', authorizedBinding: binding(), bindingFingerprint: 'fp',
+      sourceAttemptId: 'attempt-1' });
+    expect(inspectApplicationPostcondition(facts({ application: retry,
+      subtasks: [{ id: 'subtask-a', status: 'done' }], retryWake: null,
+    }))).toMatchObject({ verdict: 'applied' });
+    expect(inspectApplicationPostcondition(facts({ application: retry,
+      subtasks: [{ id: 'other', status: 'done' }], retryWake: null,
+    }))).toMatchObject({ verdict: 'retry_safe' });
+  });
 });

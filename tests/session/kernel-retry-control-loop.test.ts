@@ -63,8 +63,8 @@ describe('Kernel durable retry control loop', () => {
     await session.submit('continue after a transient network failure', { awaitAsyncWork: true });
 
     const [task] = taskRepo.findAll();
-    expect(task.status).toBe('blocked');
-    expect(task.dependencies[0]).toMatchObject({ type: 'kernel_retry', status: 'waiting' });
+    expect(task.status).toBe('running');
+    expect(task.dependencies).toEqual([]);
     expect(db.prepare(`SELECT action FROM kernel_decisions WHERE task_id = ? ORDER BY rowid`).all(task.id))
       .toEqual(expect.arrayContaining([{ action: 'wait_for_retry' }]));
 

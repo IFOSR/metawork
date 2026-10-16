@@ -65,6 +65,8 @@ export interface SubtaskCard {
 }
 
 export interface ExecutionTimeline {
+  userState: 'waiting' | 'executing' | 'needs_action' | 'finished';
+  userStateReason: string;
   taskId: string;
   title: string;
   status: string;

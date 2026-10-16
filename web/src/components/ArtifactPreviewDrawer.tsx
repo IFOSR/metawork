@@ -5,6 +5,9 @@ import { formatBytes } from './ArtifactLink';
 import { MarkdownContent } from './MarkdownContent';
 import { BudgetedImage } from './BudgetedImage';
 import { ArtifactDownload } from './ArtifactDownload';
+import { RichDocumentPreview } from './RichDocumentPreview';
+import { NativeArtifactSave } from '../platform/native-artifact-save';
+import { desktopBridge } from '../platform/services';
 
 export type PreviewDrawerState =
   | { status: 'closed' }
@@ -15,6 +18,8 @@ export type PreviewDrawerState =
     artifact: ArtifactProjection;
     content: string;
     renderedHtml?: string;
+    downloadUrl?: string;
+    attachmentSource?: { conversationId: string; attachmentId: string };
   };
 
 const FAILURE_MESSAGES: Record<string, string> = {
@@ -56,7 +61,7 @@ export function ArtifactPreviewDrawer({
         <strong>
           {state.status === 'ready'
             ? state.artifact.displayName
-            : '正在打开文档…'}
+            : state.status === 'error' ? '无法打开预览' : '正在打开文档…'}
         </strong>
         {state.status === 'ready' && (
           <small>{state.artifact.relativePath} · {formatBytes(state.artifact.byteLength)}</small>
@@ -84,7 +89,10 @@ export function ArtifactPreviewDrawer({
                 {maximized ? '⤡' : '⤢'}
               </button>
             )}
-            <ArtifactDownload key={state.artifact.artifactId} http={http} artifact={state.artifact} />
+            {state.attachmentSource && desktopBridge() ? <NativeArtifactSave key={state.artifact.artifactId} attachment={state.attachmentSource} />
+              : state.downloadUrl ? <a href={state.downloadUrl} download={state.artifact.displayName}
+              className="artifact-drawer-download">下载原文件</a>
+              : <ArtifactDownload key={state.artifact.artifactId} http={http} artifact={state.artifact} />}
           </>
         )}
         <button
@@ -169,10 +177,14 @@ function DrawerBody({ state }: { state: PreviewDrawerState }) {
   }
   if (state.status !== 'ready') return null;
 
-  if (!state.artifact.previewable || state.artifact.previewKind === 'unsupported') {
+  if (!state.artifact.previewable || (state.artifact.previewKind === 'unsupported' && !state.artifact.documentFormat)) {
     return (
       <div className="artifact-preview-unsupported">
-        <p>该文件类型不支持同源预览。</p>
+        <p>此文件暂不支持在 MetaWork 内预览，请使用上方的下载或另存为按钮保存原文件。</p>
+        {/\.pptx?$/iu.test(state.artifact.displayName) && (
+          <p>保存后可使用 PowerPoint、Keynote 或 WPS 打开。</p>
+        )}
+        {/\.(?:doc|ppt)$/iu.test(state.artifact.displayName) && <p>转换为 DOCX 或 PPTX 后可直接预览。</p>}
         <dl>
           <dt>文件</dt><dd>{state.artifact.displayName}</dd>
           <dt>路径</dt><dd>{state.artifact.relativePath}</dd>
@@ -181,6 +193,11 @@ function DrawerBody({ state }: { state: PreviewDrawerState }) {
         </dl>
       </div>
     );
+  }
+  if (state.artifact.documentFormat) {
+    return <RichDocumentPreview key={state.artifact.artifactId} format={state.artifact.documentFormat}
+      content={state.content} name={state.artifact.displayName}
+      artifactId={state.attachmentSource ? undefined : state.artifact.artifactId} />;
   }
   if (state.renderedHtml) {
     // 服务端安全渲染结果；与 MarkdownContent 同级信任边界。

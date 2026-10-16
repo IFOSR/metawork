@@ -35,6 +35,7 @@ const PLANNER_PHASE_KINDS = new Set([
   'planner_completed',
   'turn_cancel_requested',
   'turn_cancelled',
+  'resume_not_executed',
 ]);
 
 function isPlannerEvent(event: InteractionTraceEvent): boolean {
@@ -91,6 +92,7 @@ export function plannerActivity(turn: ConversationTurnProjection): PlannerActivi
 
 function plannerState(event: InteractionTraceEvent): PlannerActivity['state'] {
   if (event.kind === 'turn_cancelled' || event.kind === 'turn_cancel_requested') return 'cancelled';
+  if (event.kind === 'resume_not_executed') return 'ready';
   if (event.kind === 'planner_failed') return 'failed';
   if (event.kind === 'planner_agent_completed' || event.kind === 'planner_completed') return 'ready';
   return 'running';
@@ -125,6 +127,8 @@ function stepLabelFor(event: InteractionTraceEvent): string {
       return '正在取消本轮…';
     case 'turn_cancelled':
       return '本轮已取消。';
+    case 'resume_not_executed':
+      return event.summary || '任务未重新执行。';
     case 'planner_failed':
       return 'Planner 执行失败。';
     default:

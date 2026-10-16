@@ -2,7 +2,31 @@ import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 import { installObservationSchema } from './observation-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 47;
+export const CURRENT_SCHEMA_VERSION = 50;
+
+const PUBLICATION_DELIVERY_SQL = `
+  CREATE TABLE IF NOT EXISTS workspace_publication_deliveries (
+    publication_id TEXT PRIMARY KEY REFERENCES workspace_publications(id),
+    status TEXT NOT NULL CHECK(status IN ('pending', 'failed', 'succeeded')),
+    projections_json TEXT NOT NULL DEFAULT '[]',
+    failures_json TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS workspace_publication_delivery_status ON workspace_publication_deliveries(status, publication_id);
+`;
+
+const TASK_EXECUTION_EVIDENCE_COLUMNS = `
+  id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  source_id TEXT,
+  title TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL,
+  exact_only INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (task_id, id),
+  FOREIGN KEY (task_id) REFERENCES tasks(id)
+`;
 
 const GATEWAY_COMMAND_ADMISSION_SQL = `
   CREATE TABLE IF NOT EXISTS gateway_command_admissions (
@@ -544,6 +568,7 @@ CREATE TABLE subtasks (
           required_capabilities_json TEXT NOT NULL,
           executor_bindings_json TEXT NOT NULL,
           delivery_kind TEXT NOT NULL DEFAULT 'report' CHECK(delivery_kind IN ('edit', 'report')),
+          file_outputs_json TEXT,
           acceptance_json TEXT NOT NULL DEFAULT '[]',
           risk_level TEXT NOT NULL DEFAULT 'medium',
           result TEXT NOT NULL DEFAULT '',
@@ -640,15 +665,7 @@ CREATE INDEX idx_result_references_target
           ON result_references(account_id, task_id, target_subtask_id, created_at);
 
 CREATE TABLE task_execution_evidence (
-          id TEXT PRIMARY KEY,
-          task_id TEXT NOT NULL,
-          kind TEXT NOT NULL,
-          source_id TEXT,
-          title TEXT NOT NULL DEFAULT '',
-          content TEXT NOT NULL,
-          exact_only INTEGER NOT NULL DEFAULT 0,
-          created_at TEXT NOT NULL,
-          FOREIGN KEY (task_id) REFERENCES tasks(id)
+          ${TASK_EXECUTION_EVIDENCE_COLUMNS}
         );
 
 CREATE TABLE kernel_decisions (
@@ -1543,6 +1560,47 @@ export function runMigrations(
       const changed = db.prepare('UPDATE schema_version SET version = 47 WHERE version = 46').run();
       if (changed.changes !== 1) throw new Error('schema version changed during 46 to 47 migration');
     })();
+    version = 47;
+  }
+  if (version === 47) {
+    db.transaction(() => {
+      db.exec(`CREATE TABLE task_execution_evidence_v48 (${TASK_EXECUTION_EVIDENCE_COLUMNS})`);
+      if (tableExists(db, 'task_execution_evidence')) {
+        db.exec(`
+          INSERT INTO task_execution_evidence_v48
+            (id, task_id, kind, source_id, title, content, exact_only, created_at)
+          SELECT id, task_id, kind, source_id, title, content, exact_only, created_at
+          FROM task_execution_evidence;
+          DROP TABLE task_execution_evidence;
+        `);
+      }
+      db.exec(`
+        ALTER TABLE task_execution_evidence_v48 RENAME TO task_execution_evidence;
+        CREATE INDEX idx_task_execution_evidence_task
+          ON task_execution_evidence(task_id, created_at, id);
+      `);
+      const changed = db.prepare('UPDATE schema_version SET version = 48 WHERE version = 47').run();
+      if (changed.changes !== 1) throw new Error('schema version changed during 47 to 48 migration');
+    })();
+    version = 48;
+  }
+  if (version === 48) {
+    db.transaction(() => {
+      db.exec(PUBLICATION_DELIVERY_SQL);
+      const changed = db.prepare('UPDATE schema_version SET version = 49 WHERE version = 48').run();
+      if (changed.changes !== 1) throw new Error('schema version changed during 48 to 49 migration');
+    })();
+    version = 49;
+  }
+  if (version === 49) {
+    db.transaction(() => {
+      // NULL preserves already-authorized historical delivery; new plans must declare an array.
+      if (!columnsOf(db, 'subtasks').includes('file_outputs_json')) {
+        db.exec('ALTER TABLE subtasks ADD COLUMN file_outputs_json TEXT');
+      }
+      const changed = db.prepare('UPDATE schema_version SET version = 50 WHERE version = 49').run();
+      if (changed.changes !== 1) throw new Error('schema version changed during 49 to 50 migration');
+    })();
   }
   // Current-schema databases may have been created before a new projection
   // invalidation trigger was introduced. Reinstalling the idempotent trigger
@@ -1560,7 +1618,7 @@ function runBaseMigrations(
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
     ).all() as Array<{ version: number }>;
-    if (versions.length === 1 && [42, 43, 44, 45, 46, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
+    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 41) {
@@ -1704,6 +1762,7 @@ function runBaseMigrations(
   db.transaction(() => {
     db.exec('CREATE TABLE schema_version (version INTEGER PRIMARY KEY)');
     db.exec(CURRENT_SCHEMA_SQL);
+    db.exec(PUBLICATION_DELIVERY_SQL);
     db.exec(RETRY_WAKE_SQL);
     db.exec(NAVIGATION_PROJECTION_SQL);
     installObservationSchema(db);

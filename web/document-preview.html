@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data: blob:; font-src data: blob:; worker-src blob:; connect-src 'none'; base-uri 'none'; form-action 'none'" />
+  <title>文档预览</title>
+</head>
+<body>
+  <div id="status" role="status">正在打开文档…</div>
+  <nav id="controls" aria-label="文档阅读工具"></nav>
+  <main id="document" aria-label="文档内容"></main>
+  <script type="module" src="/src/preview/document-viewer.ts"></script>
+</body>
+</html>

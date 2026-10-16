@@ -313,6 +313,21 @@ describe('ConversationGatewayRuntime', () => {
     });
   });
 
+  it('completes the Dashboard reply while the original task is still running', async () => {
+    const fixture = createFixture(async (_conversationId, _command, session) => {
+      session.backgroundWorkPending = true;
+      session.output.push('任务盘面：一个任务执行中');
+    });
+    const events = fixture.capture('conv_1');
+    const receipt = await fixture.submit('conv_1', 'req_dashboard', 'idem_dashboard', {
+      kind: 'slash_command', text: '/task dashboard',
+    });
+    await expect(receipt.completion).resolves.toEqual({ status: 'completed' });
+    const answer = events.find(event => event.kind === 'final_answer')?.payload;
+    expect(answer).toMatchObject({ lines: ['任务盘面：一个任务执行中'] });
+    expect(answer).not.toHaveProperty('backgroundWorkPending');
+  });
+
   it('keeps a denied resume command result authoritative alongside an uncertified partial result', async () => {
     const explanation = '任务未重新执行：Kernel 未授权恢复，未启动新的 Executor';
     const fixture = createFixture(async (_conversationId, _command, session) => {

@@ -41,7 +41,7 @@ describe('Composer stop control', () => {
         onRemoveAttachment: () => undefined,
       }),
     );
-    expect(render(turn)).toContain('执行中');
+    expect(render(turn)).toContain('<button type="submit">发送</button>');
     expect(render(turn)).toContain('stop-button');
 
     const cancelled = mergeTraceDelta(turn, turn.id, [], 'cancelled', '2026-09-21T00:01:00.000Z');
@@ -70,7 +70,9 @@ describe('Composer stop control', () => {
     expect(ws).toContain("selection: { mode: 'attach', conversationId }");
 
     const app = await Promise.all(['App.tsx', 'observation/use-workspace-controller.ts'].map(path => readFile(new URL(path, root), 'utf8'))).then(parts => parts.join('\n'));
-    expect(app).toContain("sendCommand(target, { kind: 'cancel_turn', turnId })");
+    expect(app).toContain("control(target, { kind: 'cancel_turn', turnId }");
+    expect(app).toContain('task.canCancel');
+    expect(app).toContain('taskHasOngoingWork(task)');
     expect(app).toContain('onCancelTurn');
   });
 });

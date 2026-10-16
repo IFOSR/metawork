@@ -63,7 +63,8 @@
             ]
           }
         ],
-        "riskLevel": "low"
+        "riskLevel": "low",
+        "fileOutputs": []
       }
     ]
   },

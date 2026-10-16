@@ -9,8 +9,8 @@
  * - ctrl+c, ctrl+d, etc. work in both modes
  */
 
-import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Editor, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 // Normal mode key mappings: key -> escape sequence (or null for mode switch)
 const NORMAL_KEYS: Record<string, string | null> = {
@@ -25,7 +25,7 @@ const NORMAL_KEYS: Record<string, string | null> = {
 	a: null, // append (insert + right)
 };
 
-class ModalEditor extends CustomEditor {
+class ModalEditor extends Editor {
 	private mode: "normal" | "insert" = "insert";
 
 	handleInput(data: string): void {
@@ -80,6 +80,6 @@ class ModalEditor extends CustomEditor {
 
 export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
-		ctx.ui.setEditorComponent((tui, theme, kb) => new ModalEditor(tui, theme, kb));
+		ctx.ui.setEditorComponent((tui, theme) => new ModalEditor(tui, theme));
 	});
 }

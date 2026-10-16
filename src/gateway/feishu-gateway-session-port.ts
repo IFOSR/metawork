@@ -347,18 +347,23 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       // Stable command text keeps progress cards editable through the shared card machine.
       approval.push(`/stop-task ${job.fact.taskId} ${payload.executionGeneration} ${job.route.conversationId}`);
     }
+    if (payload.userState === 'needs_action' && job.fact.taskId
+      && typeof payload.executionGeneration === 'string' && Number.isInteger(payload.graphRevision)) {
+      issue('继续未完成部分', { kind: 'slash_command',
+        text: `/task resume ${job.fact.taskId} --generation ${payload.executionGeneration} --revision ${payload.graphRevision}` });
+    }
     const delivery: FeishuGatewayDelivery = {
       senderId: destination.senderId, chatId: destination.chatId, threadId: destination.threadId, chatType: destination.chatType,
       kind: job.fact.category === 'result' ? 'final' : 'progress',
       reply: { lines: [`${stringValue(payload.title) ?? label} · ${job.route.conversationId}`,
-        ...(stringValue(payload.explanation) ? [String(payload.explanation)] : []), ...approval, ...(body ? [body] : []),
+        ...(stringValue(payload.userStateReason) ? [String(payload.userStateReason)] : []), ...approval, ...(body ? [body] : []),
         ...(stringValue(payload.progressSummary) ? [String(payload.progressSummary)] : []),
         ...(reference && reference.byteLength > 16 * 1024 * 1024
           ? [`结果较长，可分段读取完整正文：/read ${job.route.conversationId} ${reference.hash} 0`] : []),
         ...(bill ? [formatFeishuBillingSummary(bill)] : [])],
         ...(actions.length ? { actions } : {}),
         ...(job.fact.category === 'progress' ? { cardUpdateKey: `notification:${job.route.accountId}:${job.route.id}:${job.fact.subjectId}`,
-          terminal: payload.canCancel === false } : {}),
+          terminal: payload.userState === 'finished' } : {}),
         ...(job.fact.category === 'result' ? { artifacts: this.taskArtifactsFor(job.fact.taskId) } : {}) },
     };
     await Promise.all([...this.deliveryListeners].map(listener => listener(delivery)));

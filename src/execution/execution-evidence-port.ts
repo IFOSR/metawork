@@ -1,7 +1,18 @@
+import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { TaskEventRecorder } from '../storage/task-event-recorder.js';
 import { generateInteractionId } from '../utils/id.js';
+import { readAuthorizedInteraction } from '../work-graph/context-ref-eligibility.js';
+
+export class ExecutionEvidenceIdentityError extends Error {
+  readonly code = 'evidence_identity_conflict';
+
+  constructor(evidenceId: string) {
+    super(`evidence_identity_conflict: ${evidenceId}`);
+    this.name = 'ExecutionEvidenceIdentityError';
+  }
+}
 
 export type ExecutionEvidenceKind = 'user_input' | 'task_resource' | 'task_evidence' | 'preference' | 'assistant_ref';
 
@@ -65,13 +76,16 @@ export class TaskExecutionEvidenceRepo {
     exactOnly?: boolean;
     createdAt?: string;
   }): void {
-    this.db.prepare(`
+    const result = this.db.prepare(`
       INSERT INTO task_execution_evidence (
         id, task_id, kind, source_id, title, content, exact_only, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
+      ON CONFLICT(task_id, id) DO UPDATE SET
         title = excluded.title,
         content = excluded.content
+      WHERE task_execution_evidence.kind = excluded.kind
+        AND task_execution_evidence.source_id IS excluded.source_id
+        AND task_execution_evidence.exact_only = excluded.exact_only
     `).run(
       input.id,
       input.taskId,
@@ -82,6 +96,7 @@ export class TaskExecutionEvidenceRepo {
       input.exactOnly ? 1 : 0,
       input.createdAt ?? new Date().toISOString(),
     );
+    if (result.changes !== 1) throw new ExecutionEvidenceIdentityError(input.id);
   }
 
   findForTask(taskId: string, evidenceId: string): EvidenceRow | null {
@@ -134,16 +149,7 @@ export class TaskExecutionEvidenceRepo {
     interactionId: string;
     side: 'user' | 'assistant';
   }): string {
-    const row = this.db.prepare(`
-      SELECT id, user_input, system_output, created_at
-      FROM interactions WHERE id = ? AND session_id = ?
-    `).get(input.interactionId, input.sessionId) as {
-      id: string;
-      user_input: string;
-      system_output: string;
-      created_at: string;
-    } | undefined;
-    if (!row) throw new Error(`interaction_not_authorized: ${input.interactionId}`);
+    const row = readAuthorizedInteraction({ ...input, db: this.db });
     const evidenceId = createEvidenceId(`${input.side}_interaction`, row.id);
     this.upsert({
       id: evidenceId,
@@ -263,5 +269,7 @@ function decodeCursor(cursor: string | undefined): number {
 }
 
 export function createEvidenceId(kind: string, sourceId: string): string {
+  // Resource paths may share a long directory prefix; truncating them aliases distinct files.
+  if (kind === 'task_resource') return `evidence_${kind}_${createHash('sha256').update(sourceId).digest('hex')}`;
   return `evidence_${kind}_${sourceId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) || generateInteractionId()}`;
 }

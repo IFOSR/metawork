@@ -63,7 +63,10 @@ export interface ConversationTaskSummary {
 	readonly taskId: string;
 	readonly title: string;
 	readonly executionGeneration: string;
+	readonly graphRevision?: number;
 	readonly phase: string;
+	readonly userState: "waiting" | "executing" | "needs_action" | "finished";
+	readonly userStateReason: string;
 	readonly explanation: string;
 	readonly progressSummary?: string;
 	readonly canCancel: boolean;

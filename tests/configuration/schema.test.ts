@@ -118,6 +118,20 @@ function completeConfiguration() {
 }
 
 describe('AnyFusion configuration schema v2', () => {
+  it.each(['openai-compatible', 'openai-responses'] as const)('accepts explicit %s Provider protocol', protocol => {
+    const config = completeConfiguration();
+    config.providers.openai.protocol = protocol;
+    expect(AnyFusionConfigurationV2Schema.safeParse(config).success).toBe(true);
+  });
+
+  it('rejects Anthropic Messages for an enabled Codex binding before activation', () => {
+    const config = completeConfiguration();
+    config.providers.openai.protocol = 'anthropic';
+    const result = AnyFusionConfigurationV2Schema.safeParse(config);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues.some(issue => issue.message.includes('Codex does not support Anthropic'))).toBe(true);
+  });
+
   it('accepts system-managed Provider and Model metadata', () => {
     const config = completeConfiguration();
     const parsed = AnyFusionConfigurationV2Schema.parse({

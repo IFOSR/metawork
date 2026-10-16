@@ -8,9 +8,38 @@ import { hashContent } from '../storage/task-artifact-repo.js';
 
 interface InteractionReferenceRow {
   id: string;
-  task_id: string | null;
   session_id: string | null;
+  user_input: string;
   system_output: string;
+  created_at: string;
+}
+
+export class InteractionReferenceError extends Error {
+  constructor(readonly code: 'interaction_source_missing' | 'interaction_not_authorized' | 'interaction_content_unavailable', interactionId: string) {
+    super(`${code}: ${interactionId}`);
+    this.name = 'InteractionReferenceError';
+  }
+}
+
+/** The account database and trusted session scope are supplied by the application. */
+export function readAuthorizedInteraction(input: {
+  db: Database.Database;
+  sessionId: string;
+  interactionId: string;
+  side: 'user' | 'assistant';
+}): InteractionReferenceRow {
+  const row = input.db.prepare(`
+    SELECT id, session_id, user_input, system_output, created_at
+    FROM interactions WHERE id = ?
+  `).get(input.interactionId) as InteractionReferenceRow | undefined;
+  if (!row) throw new InteractionReferenceError('interaction_source_missing', input.interactionId);
+  if (row.session_id !== input.sessionId) {
+    throw new InteractionReferenceError('interaction_not_authorized', input.interactionId);
+  }
+  if (input.side === 'assistant' && !row.system_output.trim()) {
+    throw new InteractionReferenceError('interaction_content_unavailable', input.interactionId);
+  }
+  return row;
 }
 
 export function buildEligibleContextRefKeys(input: {
@@ -92,14 +121,16 @@ export function isEligibleInteractionRef(input: {
   targetTaskId: string | null;
   userInput: string;
 }): boolean {
-  const row = input.db.prepare(`
-    SELECT id, task_id, session_id, system_output
-    FROM interactions WHERE id = ?
-  `).get(input.ref.interactionId) as InteractionReferenceRow | undefined;
-  if (!row || row.session_id !== input.sessionId) return false;
-  if (input.targetTaskId && row.task_id !== input.targetTaskId) return false;
-  if (input.ref.side === 'user') return true;
-  return row.system_output.trim().length > 0;
+  try {
+    readAuthorizedInteraction({
+      db: input.db, sessionId: input.sessionId,
+      interactionId: input.ref.interactionId, side: input.ref.side,
+    });
+    return true;
+  } catch (error) {
+    if (error instanceof InteractionReferenceError) return false;
+    throw error;
+  }
 }
 
 function isEligibleArtifactRef(input: {

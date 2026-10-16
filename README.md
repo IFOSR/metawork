@@ -180,7 +180,7 @@ metawork server start
 In another terminal, choose your client:
 
 ```bash
-metawork web                    # browser login: admin / 123456
+metawork web                    # opens the local Web workspace
 metawork tui                    # native terminal UI
 metawork server setup-feishu    # optional Feishu app setup
 ```

@@ -229,7 +229,179 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
     }
   });
 
-  it('keeps an observed integration commit as audit only when cancellation wins before publication', async () => {
+  it('does not let a stale dispatch order deadlock recovered publications', async () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+    const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/publication-recovery-order');
+    const taskRuntime = new TaskRuntimeService({ taskEngine, taskRepo: new TaskRepo(db) });
+    const task = taskEngine.create({
+      id: 'task-publication-recovery-order',
+      title: 'Recovered publication order',
+      goal: 'Publish recovered branches',
+    });
+    taskEngine.transition(task.id, 'ready');
+    taskEngine.transition(task.id, 'running');
+    insertConfigurationRevision(db, configurationRevision);
+    activateGraphRevision(db, task.id, 'generation-publication-recovery-order', configurationRevision);
+    const subtasks = new SubtaskRepo(db);
+    subtasks.upsert({
+      id: 'recovered-stale',
+      taskId: task.id,
+      graphRevision: 1,
+      generationId: 'generation-publication-recovery-order',
+      title: 'Superseded publication',
+      goal: 'Must not block the replacement revision',
+      status: 'cancelled',
+      dependencies: [],
+      contextRefs: [],
+      requiredCapabilities: ['workspace-engineering'],
+      executorBindings: [publicationBinding],
+      deliveryKind: 'report',
+      acceptance: [],
+      riskLevel: 'low',
+      result: '',
+      artifacts: [],
+      verification: { warnings: [], completionSchemaVersion: null },
+      error: 'superseded by graph revision 2',
+      createdAt: now,
+      updatedAt: now,
+    });
+    for (const [id, status] of [
+      ['recovered-early', 'awaiting_integration' as const],
+      ['recovered-late', 'awaiting_integration' as const],
+    ] as const) {
+      subtasks.upsert({
+        id,
+        taskId: task.id,
+        graphRevision: 1,
+        generationId: 'generation-publication-recovery-order',
+        title: id,
+        goal: 'Publish branch',
+        status,
+        dependencies: [],
+        contextRefs: [],
+        requiredCapabilities: ['workspace-engineering'],
+        executorBindings: [publicationBinding],
+        deliveryKind: 'report',
+        acceptance: [],
+        riskLevel: 'low',
+        result: '',
+        artifacts: [],
+        verification: { warnings: [], completionSchemaVersion: null },
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    const publications = new WorkspacePublicationRepo(db);
+    publications.insertCandidate({
+      id: 'publication-recovered-stale',
+      taskId: task.id,
+      generationId: 'generation-publication-recovery-order',
+      subtaskId: 'recovered-stale',
+      sourceAttemptId: 'attempt-recovered-stale',
+      agentClassName: 'codex-cli',
+      candidateCommit: 'candidate-recovered-stale',
+      completion: {
+        body: 'superseded result',
+        artifacts: [],
+        warnings: [],
+        handoffs: [],
+        completionSchemaVersion: 4,
+      },
+      topologyLayer: 0,
+      firstDispatchOrder: 0,
+      createdAt: now,
+    });
+    db.prepare(`UPDATE workspace_publications SET status = 'parked' WHERE id = ?`)
+      .run('publication-recovered-stale');
+    for (const [subtaskId, attemptId, order] of [
+      ['recovered-early', 'attempt-recovered-early', 10],
+      ['recovered-late', 'attempt-recovered-late', 11],
+    ] as const) {
+      publications.insertCandidate({
+        id: `publication-${subtaskId}`,
+        taskId: task.id,
+        generationId: 'generation-publication-recovery-order',
+        subtaskId,
+        sourceAttemptId: attemptId,
+        agentClassName: 'codex-cli',
+        candidateCommit: `candidate-${subtaskId}`,
+        completion: {
+          body: `${subtaskId} result`,
+          artifacts: [],
+          warnings: [],
+          handoffs: [],
+          completionSchemaVersion: 4,
+        },
+        topologyLayer: 0,
+        firstDispatchOrder: order,
+        createdAt: now,
+      });
+    }
+    const worker = new WorkspacePublicationWorker({
+      db,
+      sessionId: 'session-publication-recovery-order',
+      accountId: 'local-default',
+      resultRoot: '/tmp/publication-recovery-order-results',
+      sourceRoot: '/tmp/source',
+      workspaceStore: { rootPath: '/tmp/workspace-publication-recovery-order' } as never,
+      workspaceRepository: { findByIdentity: vi.fn().mockReturnValue(null) } as never,
+      subtaskRepo: subtasks,
+      attemptReceiptRepo: {
+        findByAttemptId: vi.fn((attemptId: string) => ({
+          attemptId,
+          taskId: task.id,
+          subtaskId: attemptId.replace('attempt-', ''),
+          generationId: 'generation-publication-recovery-order',
+          workUnitId: `work-${attemptId}`,
+          configurationRevision,
+          authorizedBinding: publicationBinding,
+          bindingFingerprint: `binding-${attemptId}`,
+        })),
+      } as never,
+      resourceLeaseService: {
+        claim: vi.fn().mockReturnValue({ type: 'claimed', leases: [] }),
+        release: vi.fn(),
+      } as never,
+      // The old attempt for recovered-early had batch order 0. It is terminal
+      // and has already been replaced by the publication at order 10.
+      dispatchItemRepo: {
+        listByTask: vi.fn().mockReturnValue([{
+          subtaskId: 'recovered-early',
+          generationId: 'generation-publication-recovery-order',
+          batchOrder: 0,
+          status: 'uncertain',
+        }]),
+      } as never,
+      taskRuntimeService: taskRuntime,
+    });
+    Object.defineProperty(worker, 'git', {
+      value: {
+        withCommitSnapshot: async (workspace: { filesPath: string }, _commit: string, read: (root: string) => Promise<unknown>) => read(workspace.filesPath),
+        ensure: vi.fn().mockResolvedValue({ id: 'integration-workspace' }),
+        describeCandidate: vi.fn().mockResolvedValue({ changedPaths: [], filePolicy: {} }),
+        mergeCandidate: vi.fn().mockResolvedValue({
+          type: 'integrated',
+          baseCommit: 'base',
+          oursCommit: 'ours',
+          theirsCommit: 'theirs',
+          integrationCommit: 'integration-commit',
+          filePolicy: {},
+        }),
+      },
+    });
+
+    const outcomes = await worker.drain(task.id, 'generation-publication-recovery-order');
+
+    expect(outcomes.map(outcome => outcome.type)).toEqual(['integrated', 'integrated']);
+    expect(publications.find('publication-recovered-stale')?.status).toBe('cancelled');
+    expect(publications.find('publication-recovered-early')?.status).toBe('integrated');
+    expect(publications.find('publication-recovered-late')?.status).toBe('integrated');
+  });
+
+  it.each(['merge', 'delivery'] as const)('does not finish or release handoffs when cancellation wins during %s', async stage => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
@@ -296,6 +468,11 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
       createdAt: now,
     });
     const release = vi.fn();
+    const cancel = () => {
+      publications.requestCancellation({ taskId: task.id, generationId: 'generation-publication-cancel',
+        subtaskIds: ['subtask-publication-cancel'], decisionId: 'decision-cancel-race', now });
+      taskEngine.cancel(task.id, `cancel during ${stage}`);
+    };
     const worker = new WorkspacePublicationWorker({
       db,
       sessionId: 'session-publication-cancel',
@@ -326,23 +503,21 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
         listByTask: vi.fn().mockReturnValue([]),
       } as never,
       taskRuntimeService: taskRuntime,
+      userArtifactPublication: { publishIntegratedArtifacts: vi.fn(async () => {
+        cancel();
+        return { projections: [], failures: [] };
+      }) } as never,
     });
     Object.defineProperty(worker, 'git', {
       value: {
+        withCommitSnapshot: async (workspace: { filesPath: string }, _commit: string, read: (root: string) => Promise<unknown>) => read(workspace.filesPath),
         ensure: vi.fn().mockResolvedValue({ id: 'integration-workspace' }),
         describeCandidate: vi.fn().mockResolvedValue({
           changedPaths: [],
           filePolicy: {},
         }),
         mergeCandidate: vi.fn(async () => {
-          publications.requestCancellation({
-            taskId: task.id,
-            generationId: 'generation-publication-cancel',
-            subtaskIds: ['subtask-publication-cancel'],
-            decisionId: 'decision-cancel-race',
-            now,
-          });
-          taskEngine.cancel(task.id, 'cancel during merge');
+          if (stage === 'merge') cancel();
           return {
             type: 'integrated',
             baseCommit: 'base',
@@ -365,9 +540,8 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
       observedIntegrationCommit: 'observed-integration-commit',
     }]);
     expect(publications.find('publication-cancel-race')).toMatchObject({
-      status: 'cancelled',
-      integrationCommit: null,
-      observedIntegrationCommit: 'observed-integration-commit',
+      status: stage === 'merge' ? 'cancelled' : 'integrated',
+      integrationCommit: stage === 'merge' ? null : 'observed-integration-commit',
     });
     expect(subtasks.findById('subtask-publication-cancel')).toMatchObject({
       status: 'awaiting_integration',
@@ -491,6 +665,7 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
     });
     Object.defineProperty(worker, 'git', {
       value: {
+        withCommitSnapshot: async (workspace: { filesPath: string }, _commit: string, read: (root: string) => Promise<unknown>) => read(workspace.filesPath),
         ensure: vi.fn().mockResolvedValue({ id: 'integration-workspace' }),
         describeCandidate: vi.fn().mockResolvedValue({
           baseCommit: 'base',
@@ -641,6 +816,7 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
     });
     Object.defineProperty(worker, 'git', {
       value: {
+        withCommitSnapshot: async (workspace: { filesPath: string }, _commit: string, read: (root: string) => Promise<unknown>) => read(workspace.filesPath),
         ensure: vi.fn().mockResolvedValue({
           id: 'integration-workspace',
           rootPath: '/managed/integration-workspace',
@@ -698,7 +874,7 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
       status: 'done',
       artifacts: [artifactPath],
     });
-    expect(publishIntegratedArtifacts).toHaveBeenCalledTimes(2);
+    expect(publishIntegratedArtifacts).toHaveBeenCalledTimes(1);
     expect(publishIntegratedArtifacts).toHaveBeenLastCalledWith(expect.objectContaining({
       integratedWorkspaceRoot: '/managed/integration-workspace/files',
       sources: [{ sourceRelativePath: 'reports/result.html' }],
@@ -707,10 +883,7 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
 });
 
 describe('WorkspacePublicationWorker edge-authoritative handoffs', () => {
-  it('materializes a default result_reference handoff from the graph edge when the completion declares none', async () => {
-    // Declaration-independent materialization: the Work Graph edge itself is
-    // the handoff authorization. The executor's completion envelope no longer
-    // decides whether the downstream subtask can read the upstream result.
+  it.each(['text', 'artifact'] as const)('materializes only text from the safe body when an undeclared edge requires %s', async requiredType => {
     const resultRoot = mkdtempSync(join(tmpdir(), 'metawork-publication-synth-'));
     try {
       const db = new Database(':memory:');
@@ -764,7 +937,7 @@ describe('WorkspacePublicationWorker edge-authoritative handoffs', () => {
         status: 'ready',
         dependencies: [{
           fromSubtaskId: 'source-synth',
-          requiredItems: [{ key: 'findings', type: 'text', description: 'Research findings' }],
+          requiredItems: [{ key: 'findings', type: requiredType, description: 'Research findings' }],
         }],
       });
       const result = new ResultObjectRepo(db, resultRoot).putObject({
@@ -793,7 +966,7 @@ describe('WorkspacePublicationWorker edge-authoritative handoffs', () => {
           body: 'research findings body',
           artifacts: [],
           warnings: [],
-          handoffs: [], // nothing declared — the edge must still materialize
+          handoffs: [],
           completionSchemaVersion: 4,
         },
         topologyLayer: 0,
@@ -852,6 +1025,15 @@ describe('WorkspacePublicationWorker edge-authoritative handoffs', () => {
 
       const outcomes = await worker.drain(task.id, 'generation-synth');
 
+      if (requiredType === 'artifact') {
+        expect(outcomes).toEqual([expect.objectContaining({ type: 'delivery_failed' })]);
+        expect(publications.delivery('publication-synth')).toMatchObject({ status: 'failed',
+          failures: [{ sourceRelativePath: '', reason: expect.stringContaining('Missing declared artifact handoff') }] });
+        expect(new SubtaskHandoffRepo(db).listIncoming(task.id, 'target-synth')).toEqual([]);
+        expect(subtasks.findById('source-synth')?.status).toBe('awaiting_integration');
+        db.close();
+        return;
+      }
       expect(outcomes).toEqual([expect.objectContaining({ type: 'integrated' })]);
       const handoff = new SubtaskHandoffRepo(db).listIncoming(task.id, 'target-synth')[0];
       expect(handoff).toBeDefined();

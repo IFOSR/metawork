@@ -133,12 +133,28 @@ describe('Feishu shared read model and durable delivery adapter', () => {
   it('reuses one progress card and finishes it from the Task projection', async () => {
     const { port, job, deliver } = fixture();
     await port.deliverNotification({ ...job, fact: { ...job.fact, category: 'progress', subjectId: 'task', payload: {
-      title: 'Research', explanation: '执行中', progressSummary: '正在查阅来源', canCancel: true, executionGeneration: 'generation' } } });
-    await port.deliverNotification({ ...job, fact: { ...job.fact, category: 'progress', subjectId: 'task', payload: { title: 'Research', explanation: '已完成', canCancel: false } } });
+      title: 'Research', userState: 'executing', userStateReason: '执行中', progressSummary: '正在查阅来源', canCancel: true, executionGeneration: 'generation' } } });
+    await port.deliverNotification({ ...job, fact: { ...job.fact, category: 'progress', subjectId: 'task', payload: { title: 'Research', userState: 'finished', userStateReason: '已完成', canCancel: false } } });
     const first = deliver.mock.calls[0]![0]; const last = deliver.mock.calls[1]![0];
     expect(first.reply.cardUpdateKey).toBe(last.reply.cardUpdateKey);
     expect(first.reply.lines).toContain('/stop-task task generation conversation'); expect(last.reply.terminal).toBe(true);
   });
+  it('keeps a needs-action card live despite canCancel=false and pins resume to its observed graph', async () => {
+    const { port, job, deliver, actions } = fixture();
+    await port.deliverNotification({ ...job, fact: { ...job.fact, category: 'progress', subjectId: 'task', payload: {
+      title: 'Delivery', userState: 'needs_action', userStateReason: '文件交付失败', canCancel: false,
+      executionGeneration: 'generation-old', graphRevision: 4,
+    } } });
+    const reply = deliver.mock.calls[0]![0].reply;
+    expect(reply.terminal).toBe(false);
+    expect(reply.lines).toContain('文件交付失败');
+    const action = reply.actions!.find(item => item.label === '继续未完成部分')!;
+    expect(actions.resolve(action.value.cursor, { accountId: 'account', principalId: 'feishu:tenant:sender',
+      chatId: 'chat', threadId: 'thread' })).toMatchObject({ conversationId: 'conversation', command: {
+      kind: 'slash_command', text: '/task resume task --generation generation-old --revision 4',
+    } });
+  });
+
   it('withholds one-click approval for truncated details while providing the full-detail command', async () => {
     const { port, job, deliver } = fixture();
     await port.deliverNotification({ ...job, fact: { ...job.fact, category: 'approval', payload: {

@@ -48,6 +48,7 @@ export function singleSubtaskWorkGraph(input: {
   title?: string;
   executor?: string;
   deliveryKind?: SubtaskProposal['deliveryKind'];
+  fileOutputs?: string[];
   acceptance?: string[];
   riskLevel?: SubtaskProposal['riskLevel'];
   contextRefs?: ContextRef[];
@@ -70,6 +71,7 @@ export function singleSubtaskWorkGraph(input: {
         modelSelection: { mode: 'fixed-by-agent-class' },
       }],
       deliveryKind,
+      fileOutputs: input.fileOutputs ?? [],
       acceptance: (input.acceptance ?? ['Satisfy the user request and report verification or remaining risk.'])
         .map((description, index) => ({
           key: `criterion_${index + 1}`,
@@ -91,6 +93,7 @@ export function workGraphPlan(input: {
   matchedBoundary?: string[];
   includeRecentConversationContext?: boolean;
   deliveryKind?: SubtaskProposal['deliveryKind'];
+  fileOutputs?: string[];
   priority?: PlanningAgentPlan['task']['priority'];
   contextRefs?: ContextRef[];
   overrides?: Partial<PlanningAgentPlan>;
@@ -116,6 +119,7 @@ export function workGraphPlan(input: {
       title: input.title,
       executor,
       deliveryKind,
+      fileOutputs: input.fileOutputs,
       contextRefs: input.contextRefs,
     }),
     ...input.overrides,

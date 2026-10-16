@@ -94,6 +94,37 @@ try {
   assert.equal(await page.evaluate(() => window.metaworkDesktop.saveArtifact('pdf-smoke', 'pdf')), null);
   assert.equal(await readFile(nativePdfPath, 'utf8'), '%PDF-1.7\nnative PDF fixture');
   await assert.rejects(page.evaluate(() => window.metaworkDesktop.saveArtifact('pdf-smoke', 'docx')), /下载请求不可用/);
+  const attachmentPath = join(root, '中文附件.docx');
+  await app.evaluate(({ BrowserWindow, dialog }, path) => {
+    const ses = BrowserWindow.getAllWindows()[0].webContents.session;
+    const previousFetch = ses.fetch.bind(ses);
+    dialog.showSaveDialog = async (_window, options) => {
+      globalThis.attachmentSaveName = options.defaultPath;
+      return { canceled: false, filePath: path };
+    };
+    ses.fetch = async (url, options) => String(url).endsWith('/api/attachments/attachment-smoke?sessionId=conversation-smoke')
+      ? new Response('native attachment fixture', { headers: { 'Content-Disposition': "attachment; filename*=UTF-8''" + encodeURIComponent('中文附件.docx') } })
+      : previousFetch(url, options);
+  }, attachmentPath);
+  await page.evaluate(() => window.metaworkDesktop.saveAttachment('conversation-smoke', 'attachment-smoke'));
+  assert.equal(await readFile(attachmentPath, 'utf8'), 'native attachment fixture');
+  assert.equal(await app.evaluate(() => globalThis.attachmentSaveName), '中文附件.docx');
+  await assert.rejects(page.evaluate(() => window.metaworkDesktop.saveAttachment('../escape', 'attachment-smoke')), /下载请求不可用/);
+  const chartPath = join(root, '季度趋势.png');
+  await app.evaluate(({ dialog }, filePath) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath }); }, chartPath);
+  const chartDownload = await page.evaluate(async () => {
+    const canvas = document.createElement('canvas'); canvas.width = 100; canvas.height = 60;
+    canvas.getContext('2d').fillRect(10, 10, 60, 30);
+    return window.metaworkDesktop.saveChartImage('季度趋势', canvas.toDataURL('image/png'));
+  });
+  assert.ok(chartDownload);
+  assert.equal((await readFile(chartPath)).subarray(1, 4).toString(), 'PNG');
+  await assert.rejects(page.evaluate(() => window.metaworkDesktop.saveChartImage('bad', 'data:image/svg+xml,<svg/>')), /图表图片格式不可用/);
+  await app.evaluate(({ dialog }) => { dialog.showSaveDialog = async () => ({ canceled: true }); });
+  assert.equal(await page.evaluate(() => {
+    const canvas = document.createElement('canvas'); canvas.width = 1; canvas.height = 1;
+    return window.metaworkDesktop.saveChartImage('取消', canvas.toDataURL('image/png'));
+  }), null);
   await app.evaluate(() => globalThis.restoreNativeSmoke());
   await page.evaluate(() => window.metaworkDesktop.setDraft('smoke-conversation', { text: '草稿保留 test', attachments: [] }));
   await page.reload();

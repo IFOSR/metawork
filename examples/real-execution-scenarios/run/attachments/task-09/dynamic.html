@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>库存动态页</title>
+<style>
+  body { font-family: sans-serif; margin: 2rem; }
+  table { border-collapse: collapse; }
+  td, th { border: 1px solid #999; padding: 4px 12px; }
+  #hint { color: #b00; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<h1>当前库存</h1>
+<table id="stock">
+  <thead><tr><th>SKU</th><th>名称</th><th>库存</th><th>价格</th></tr></thead>
+  <tbody></tbody>
+</table>
+<div id="hint">提示：本页数据由 JS 在加载约 500ms 后渲染，直接抓取 HTML 拿不到行数据。</div>
+<script>
+  const PRODUCTS = [
+    { sku: 'P-001', name: '机械键盘', stock: 12, price: 299 },
+    { sku: 'P-002', name: '无线鼠标', stock: 0, price: 129.5 },
+    { sku: 'P-003', name: '显示器支架', stock: 7, price: 159 },
+    { sku: 'P-004', name: 'USB-C 扩展坞', stock: 3, price: 428 },
+    { sku: 'P-005', name: '笔记本支架', stock: 25, price: 89.9 },
+  ];
+  setTimeout(() => {
+    const tbody = document.querySelector('#stock tbody');
+    for (const p of PRODUCTS) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${p.sku}</td><td>${p.name}</td><td>${p.stock}</td><td>${p.price}</td>`;
+      tbody.appendChild(tr);
+    }
+    document.title = '库存动态页（已渲染）';
+  }, 500);
+</script>
+</body>
+</html>

@@ -6,7 +6,13 @@
  * 绝不打印原始数据。
  */
 
-import type { MetaWorkAttemptProjection, MetaWorkRoutingProjection, MetaWorkBillStageUsage, MetaWorkTurnBillView, MetaWorkTaskUsageSummary } from "./model.ts";
+import type {
+	MetaWorkAttemptProjection,
+	MetaWorkBillStageUsage,
+	MetaWorkRoutingProjection,
+	MetaWorkTaskUsageSummary,
+	MetaWorkTurnBillView,
+} from "./model.ts";
 
 /**
  * 剥离 C0/C1 控制字符与完整 CSI/OSC/DCS 转义序列（保留换行与 Tab）。
@@ -22,7 +28,7 @@ export function sanitizeDisplayText(value: string): string {
 		if (code === 0x1b) {
 			index += width;
 			const introducer = value[index];
-			if (introducer === "[" ) {
+			if (introducer === "[") {
 				// CSI：参数/中间字节后到 0x40–0x7e 的最终字节结束。
 				index += 1;
 				while (index < value.length) {
@@ -32,7 +38,13 @@ export function sanitizeDisplayText(value: string): string {
 				}
 				continue;
 			}
-			if (introducer === "]" || introducer === "P" || introducer === "X" || introducer === "^" || introducer === "_") {
+			if (
+				introducer === "]" ||
+				introducer === "P" ||
+				introducer === "X" ||
+				introducer === "^" ||
+				introducer === "_"
+			) {
 				// OSC/DCS/SOS/PM/APC：以 BEL 或 ST（ESC \）结束。
 				index += 1;
 				while (index < value.length) {
@@ -71,7 +83,7 @@ export function sanitizeDisplayText(value: string): string {
 
 export function asRecord(value: unknown): Record<string, unknown> | null {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
-		? value as Record<string, unknown>
+		? (value as Record<string, unknown>)
 		: null;
 }
 
@@ -138,10 +150,10 @@ export function normalizeTurnBillView(value: unknown): MetaWorkTurnBillView | nu
 	if (!isBillUserStatus(userStatus)) return null;
 	if (typeof item.headline !== "string") return null;
 	const stageBreakdown = Array.isArray(item.stageBreakdown)
-		? item.stageBreakdown.flatMap(entry => {
-			const usage = normalizeStageUsage(entry);
-			return usage ? [usage] : [];
-		})
+		? item.stageBreakdown.flatMap((entry) => {
+				const usage = normalizeStageUsage(entry);
+				return usage ? [usage] : [];
+			})
 		: [];
 	return {
 		userStatus,
@@ -158,8 +170,13 @@ export function normalizeTurnBillView(value: unknown): MetaWorkTurnBillView | nu
 export function normalizeTaskUsageSummary(value: unknown): MetaWorkTaskUsageSummary | null {
 	const item = asRecord(value);
 	if (!item || typeof item.taskId !== "string") return null;
-	const fields = ["finalizedMicroCoin", "pendingReconciliationMicroCoin", "inFlightMicroCoin", "confirmedDeductedMicroCoin"];
-	if (!fields.every(field => typeof item[field] === "string" && /^\d+$/.test(item[field] as string))) return null;
+	const fields = [
+		"finalizedMicroCoin",
+		"pendingReconciliationMicroCoin",
+		"inFlightMicroCoin",
+		"confirmedDeductedMicroCoin",
+	];
+	if (!fields.every((field) => typeof item[field] === "string" && /^\d+$/.test(item[field] as string))) return null;
 	return {
 		taskId: item.taskId,
 		finalizedMicroCoin: item.finalizedMicroCoin as string,
@@ -219,9 +236,7 @@ export interface NormalizedResultMetadata {
 	readonly certification: "certified" | "uncertified";
 }
 
-export function normalizeResultMetadata(
-	payload: Record<string, unknown>,
-): NormalizedResultMetadata | null {
+export function normalizeResultMetadata(payload: Record<string, unknown>): NormalizedResultMetadata | null {
 	const resultId = asString(payload.resultId);
 	if (!resultId) return null;
 	const completeness = payload.completeness;
@@ -230,9 +245,7 @@ export function normalizeResultMetadata(
 		resultId,
 		contentHash: asString(payload.contentHash) ?? "",
 		byteLength: asNumber(payload.byteLength) ?? 0,
-		completeness: completeness === "partial" || completeness === "incomplete"
-			? completeness
-			: "complete",
+		completeness: completeness === "partial" || completeness === "incomplete" ? completeness : "complete",
 		certification: certification === "uncertified" ? "uncertified" : "certified",
 	};
 }
@@ -252,9 +265,7 @@ export interface NormalizedHistoryPage {
 	readonly nextCursor: string | null;
 }
 
-export function normalizeHistoryPage(
-	payload: Record<string, unknown>,
-): NormalizedHistoryPage | null {
+export function normalizeHistoryPage(payload: Record<string, unknown>): NormalizedHistoryPage | null {
 	if (!Array.isArray(payload.turns)) return null;
 	const turns: NormalizedHistoryTurn[] = [];
 	for (const raw of payload.turns) {
@@ -264,9 +275,13 @@ export function normalizeHistoryPage(
 		const status = asString(item.status);
 		if (!id) continue;
 		if (
-			status !== "completed" && status !== "failed"
-			&& status !== "blocked" && status !== "cancelled" && status !== "running"
-		) continue;
+			status !== "completed" &&
+			status !== "failed" &&
+			status !== "blocked" &&
+			status !== "cancelled" &&
+			status !== "running"
+		)
+			continue;
 		turns.push({
 			id,
 			startedAt: asString(item.startedAt),
@@ -297,17 +312,12 @@ export interface NormalizedCompletion {
 	readonly error: string | null;
 }
 
-export function normalizeCompletion(
-	payload: Record<string, unknown>,
-): NormalizedCompletion | null {
+export function normalizeCompletion(payload: Record<string, unknown>): NormalizedCompletion | null {
 	if (payload.queryVersion !== "command_completion_v1") return null;
 	const requestId = asString(payload.requestId);
 	if (!requestId) return null;
 	const state = payload.state;
-	if (
-		state !== "inactive" && state !== "incomplete"
-		&& state !== "executable" && state !== "invalid"
-	) return null;
+	if (state !== "inactive" && state !== "incomplete" && state !== "executable" && state !== "invalid") return null;
 	const suggestions: NormalizedCompletion["suggestions"] = [];
 	if (Array.isArray(payload.suggestions)) {
 		for (const raw of payload.suggestions.slice(0, 50)) {
@@ -346,11 +356,13 @@ export interface NormalizedTaskView {
 	readonly status: string;
 	/**
 	 * 统一只读生命周期投影（task lifecycle 收敛 §7）。旧 Server 不返回时
-	 * 为 null，展示层回退到 status。
+	 * 为 null，展示层等待服务端状态。
 	 */
 	readonly lifecycle: {
 		readonly lifecycle: string;
 		readonly phase: string;
+		readonly userState: string | null;
+		readonly userStateReason: string | null;
 		readonly nextAuthorizedAction: string;
 		readonly explanation: string;
 		readonly activeAttempt: {
@@ -397,9 +409,7 @@ export interface NormalizedTaskView {
 	readonly asOfSequence: number;
 }
 
-export function normalizeTaskView(
-	payload: Record<string, unknown>,
-): NormalizedTaskView | null {
+export function normalizeTaskView(payload: Record<string, unknown>): NormalizedTaskView | null {
 	if (payload.queryVersion !== "task_view_v1") return null;
 	const requestId = asString(payload.requestId);
 	const targetConversationId = asString(payload.targetConversationId);
@@ -425,12 +435,14 @@ export function normalizeTaskView(
 		}
 	}
 	const routingRecord = asRecord(payload.routing);
-	const routing = routingRecord ? {
-		executor: asString(routingRecord.executor),
-		provider: asString(routingRecord.provider),
-		model: asString(routingRecord.model),
-		harness: asString(routingRecord.harness),
-	} : null;
+	const routing = routingRecord
+		? {
+				executor: asString(routingRecord.executor),
+				provider: asString(routingRecord.provider),
+				model: asString(routingRecord.model),
+				harness: asString(routingRecord.harness),
+			}
+		: null;
 	const attempts: NormalizedTaskView["attempts"] = {};
 	const timeline = asRecord(payload.timeline);
 	if (timeline?.taskId === taskId && Array.isArray(timeline.stages)) {
@@ -440,18 +452,22 @@ export function normalizeTaskView(
 			for (const rawSubtask of stage.subtasks) {
 				const subtask = asRecord(rawSubtask);
 				const id = asString(subtask?.id);
-				if (!id || !subtasks.some(item => item.id === id) || !Array.isArray(subtask?.attempts)) continue;
-				attempts[id] = subtask.attempts.slice(-20).flatMap(raw => {
+				if (!id || !subtasks.some((item) => item.id === id) || !Array.isArray(subtask?.attempts)) continue;
+				attempts[id] = subtask.attempts.slice(-20).flatMap((raw) => {
 					const attempt = asRecord(raw);
 					const attemptId = asString(attempt?.attemptId);
-					return attempt && attemptId ? [{
-						attemptId,
-						label: asString(attempt.attemptLabel) ?? attemptId,
-						status: asString(attempt.displayStatus) ?? asString(attempt.status) ?? "",
-						startedAt: asString(attempt.startedAt),
-						updatedAt: asString(attempt.updatedAt),
-						result: (asString(attempt.result) ?? "").slice(0, 500),
-					}] : [];
+					return attempt && attemptId
+						? [
+								{
+									attemptId,
+									label: asString(attempt.attemptLabel) ?? attemptId,
+									status: asString(attempt.displayStatus) ?? asString(attempt.status) ?? "",
+									startedAt: asString(attempt.startedAt),
+									updatedAt: asString(attempt.updatedAt),
+									result: (asString(attempt.result) ?? "").slice(0, 500),
+								},
+							]
+						: [];
 				});
 			}
 		}
@@ -462,10 +478,8 @@ export function normalizeTaskView(
 		const permissionRequestId = asString(permission.requestId);
 		const permissionStatus = permission.status;
 		if (
-			permissionRequestId
-			&& (permissionStatus === "pending"
-				|| permissionStatus === "resolved"
-				|| permissionStatus === "expired")
+			permissionRequestId &&
+			(permissionStatus === "pending" || permissionStatus === "resolved" || permissionStatus === "expired")
 		) {
 			pendingPermission = {
 				requestId: permissionRequestId,
@@ -492,26 +506,31 @@ export function normalizeTaskView(
 		}
 	}
 	const lifecycleRecord = asRecord(payload.lifecycle);
-	const lifecycle: NormalizedTaskView["lifecycle"] = (
+	const lifecycle: NormalizedTaskView["lifecycle"] =
 		lifecycleRecord && asString(lifecycleRecord.phase)
-	) ? {
-		lifecycle: asString(lifecycleRecord.lifecycle) ?? "",
-		phase: asString(lifecycleRecord.phase)!,
-		nextAuthorizedAction: asString(lifecycleRecord.nextAuthorizedAction) ?? "",
-		explanation: asString(lifecycleRecord.explanation) ?? "",
-		activeAttempt: (() => {
-			const attempt = asRecord(lifecycleRecord.activeAttempt);
-			const attemptId = asString(attempt?.attemptId);
-			return attempt && attemptId ? {
-				attemptId,
-				subtaskId: asString(attempt.subtaskId) ?? "",
-				kind: asString(attempt.kind) ?? "",
-				ordinal: asNumber(attempt.ordinal) ?? 0,
-				lifecycle: asString(attempt.lifecycle) ?? "",
-				outcome: asString(attempt.outcome),
-			} : null;
-		})(),
-	} : null;
+			? {
+					lifecycle: asString(lifecycleRecord.lifecycle) ?? "",
+					phase: asString(lifecycleRecord.phase)!,
+					userState: asString(lifecycleRecord.userState),
+					userStateReason: asString(lifecycleRecord.userStateReason),
+					nextAuthorizedAction: asString(lifecycleRecord.nextAuthorizedAction) ?? "",
+					explanation: asString(lifecycleRecord.explanation) ?? "",
+					activeAttempt: (() => {
+						const attempt = asRecord(lifecycleRecord.activeAttempt);
+						const attemptId = asString(attempt?.attemptId);
+						return attempt && attemptId
+							? {
+									attemptId,
+									subtaskId: asString(attempt.subtaskId) ?? "",
+									kind: asString(attempt.kind) ?? "",
+									ordinal: asNumber(attempt.ordinal) ?? 0,
+									lifecycle: asString(attempt.lifecycle) ?? "",
+									outcome: asString(attempt.outcome),
+								}
+							: null;
+					})(),
+				}
+			: null;
 	let result: NormalizedTaskView["result"] = null;
 	const resultRecord = asRecord(payload.result);
 	if (resultRecord) {
@@ -520,12 +539,8 @@ export function normalizeTaskView(
 			const completeness = resultRecord.completeness;
 			result = {
 				resultId,
-				completeness: completeness === "partial" || completeness === "incomplete"
-					? completeness
-					: "complete",
-				certification: resultRecord.certification === "uncertified"
-					? "uncertified"
-					: "certified",
+				completeness: completeness === "partial" || completeness === "incomplete" ? completeness : "complete",
+				certification: resultRecord.certification === "uncertified" ? "uncertified" : "certified",
 			};
 		}
 	}

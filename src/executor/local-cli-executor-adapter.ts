@@ -1,8 +1,11 @@
+import { verifyExecutorRuntimeHome } from './runtime-binding-verification.js';
+import { writeFile } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { OperationActivityMonitor, type OperationHealth } from './operation-activity-monitor.js';
 import type { RuntimePrivateConfigurationBinding } from '../configuration/types.js';
-import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
+import { authorizedExecutorBindingFingerprint, type AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { ExecutorResult } from '../core/types.js';
 import type { ExecutorAdapter, ExecutorInput, ExecutorProbeResult } from './adapter.js';
 import { normalizeExecutorFailure, type ExecutorFailureContext } from './error-utils.js';
@@ -124,6 +127,17 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
       );
     }
 
+    const fingerprint = authorizedExecutorBindingFingerprint(this.authorizedBinding);
+    if (this.runtimeBinding.bindingFingerprint !== fingerprint
+      || this.runtimeBinding.revisionId !== this.authorizedBinding.configurationRevision
+      || this.name !== this.authorizedBinding.agentClassRef
+      || (executionBinding.authorization && (
+        executionBinding.authorization.bindingFingerprint !== fingerprint
+        || authorizedExecutorBindingFingerprint({ ...executionBinding.authorization, permissionProfileRef: executionBinding.authorization.permissionProfileRef ?? '' }) !== fingerprint
+      ))) {
+      return configurationFailure('Executor authorization binding mismatch', 'executor_binding_mismatch', startedAt);
+    }
+
     const cancellation = { cancelled: false };
     this.activeAttempts.set(executionBinding.attemptId, cancellation);
     try {
@@ -150,6 +164,30 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           ? { requiredCapabilities: input.context.currentSubtask.requiredCapabilities }
           : {}),
       });
+      await this.verifyRuntimeHome(runtimeHome.homePath);
+      if (launch.cwd !== executionBinding.workspacePath
+        || input.context.identity.attemptId !== executionBinding.attemptId
+        || input.context.workspaceContext.workingDirectory !== executionBinding.workspacePath) {
+        return configurationFailure('Executor workspace or attempt binding mismatch', 'executor_workspace_mismatch', startedAt);
+      }
+      if (this.runtimeBinding.manifest) {
+        const probe = await this.driver.probe();
+        if (!probe.available) return configurationFailure('Executor program verification failed', 'executor_program_unavailable', startedAt);
+        const manifest = {
+          attemptId: executionBinding.attemptId, bindingFingerprint: fingerprint,
+          configurationRevision: this.runtimeBinding.revisionId,
+          ...this.runtimeBinding.manifest, program: launch.command, version: probe.detail ?? null,
+          tools: this.executorAffordances ?? [], workspacePath: launch.cwd, inputsPath: executionBinding.inputsPath,
+          requiredCapabilities: input.context.currentSubtask.requiredCapabilities,
+          sourcePath: executionBinding.sourcePath, handoffsPath: executionBinding.handoffsPath,
+          networkBoundary: executionBinding.controlNetwork,
+          contextHash: createHash('sha256').update(JSON.stringify(input.context)).digest('hex'),
+          environmentKeys: Object.keys(this.runtimeBinding.environment ?? {}).sort(),
+        };
+        await writeFile(join(dirname(runtimeHome.homePath), 'runtime-manifest.json'),
+          JSON.stringify(manifest, null, 2), { mode: 0o600 });
+      }
+      if (cancellation.cancelled) return cancelledResult(startedAt);
       let streamedOutput: string | null = null;
       let lastStep: string | undefined;
       const operationCheckpoints = new Map<string, string>();
@@ -292,6 +330,11 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
     };
   }
 
+  private async verifyRuntimeHome(homePath: string): Promise<void> {
+    await verifyExecutorRuntimeHome({ runtimeBinding: this.runtimeBinding, authorizedBinding: this.authorizedBinding,
+      driverId: this.driver.id, modelId: this.modelId, homePath });
+  }
+
   async executeResponseOnly(input: {
     attemptId?: string;
     prompt: string;
@@ -325,6 +368,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         modelId: this.modelId,
         responseOnly: true,
       });
+      await this.verifyRuntimeHome(runtimeHome.homePath);
       const rawResult = await this.processRunner.run({
         attemptId,
         command: launch.command,

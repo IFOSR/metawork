@@ -81,14 +81,8 @@ export class PiCliDriver implements HarnessDriver {
 
   async probe(): Promise<HarnessProbeResult> {
     const result = await this.runProbe(this.command, ['--version']);
-    if (result.code === 0 && existsSync(this.pdfExtensionRoot)) {
-      const pdf = await this.runProbe(join(this.pdfExtensionRoot,
-        process.platform === 'win32' ? 'python/python.exe' : 'python/bin/python3'), [
-        '-I', '-c', 'import sys;sys.path.insert(0,sys.argv[1]);import pypdf,pdfplumber,pypdfium2,PIL',
-        join(this.pdfExtensionRoot, 'site-packages'),
-      ]);
-      if (pdf.code !== 0) return { available: false, detail: 'Pi PDF installation is incomplete: ' + pdf.stderr.trim() };
-    }
+    // Optional PDF tooling validates its Python dependencies when a pdf_* tool
+    // is actually invoked. It must not gate every Pi research/coding attempt.
     return result.code === 0
       ? { available: true, detail: result.stdout.trim() }
       : { available: false, detail: result.stderr.trim() || `pi exited with ${result.code}` };
@@ -321,8 +315,8 @@ export class PiCliDriver implements HarnessDriver {
         + join(this.generatedRuntimeRoot, revisionId, 'pi-home'),
       );
     }
-    const templateDir = this.explicitHomeTemplateDir
-      ?? revisionHome
+    const templateDir = revisionHome
+      ?? this.explicitHomeTemplateDir
       ?? this.fallbackHomeTemplateDir;
     if (!templateDir) return;
     const sourceDir = join(templateDir, '.pi', 'agent');
@@ -571,11 +565,13 @@ async function defaultProbeCommand(command: string, args: readonly string[]) {
     });
     return { code: 0, stdout: result.stdout, stderr: result.stderr };
   } catch (error) {
-    const failure = error as { code?: number; stdout?: string; stderr?: string };
+    const failure = error as { code?: number | string; signal?: string; killed?: boolean; message?: string; stdout?: string; stderr?: string };
     return {
       code: typeof failure.code === 'number' ? failure.code : 1,
       stdout: failure.stdout ?? '',
-      stderr: failure.stderr ?? '',
+      stderr: redactSensitiveText(failure.stderr?.trim() || (failure.killed
+        ? `Pi probe timed out after 5000ms (signal=${failure.signal ?? 'unknown'})`
+        : failure.message ?? `Pi probe failed (code=${failure.code ?? 'unknown'}, signal=${failure.signal ?? 'none'})`)),
     };
   }
 }

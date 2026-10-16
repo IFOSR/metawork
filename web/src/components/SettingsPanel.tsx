@@ -1,3 +1,5 @@
+import { ProviderProtocolSelect } from './ProviderProtocolSelect';
+import type { ProviderProtocol } from '../../../src/configuration/types';
 import { ModelCapabilityDetails } from './ModelCapabilityDetails';
 import { ExecutorTools } from './ExecutorTools';
 import { sameAiText, aiActionError, type ResponsibilityRewriteFeedback } from './AiActionStatus';
@@ -198,6 +200,7 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
           ?? preset?.displayName
           ?? resolveProviderDisplayName(providerRef),
         baseUrl,
+        protocol: (provider.protocol ?? 'openai-compatible') as ProviderProtocol,
         modelIds: [...new Set([
           ...(completed?.modelIds ?? []),
           ...(preset?.modelIds ?? []),
@@ -222,6 +225,7 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
     providers[providerRef] = {
       providerRef,
       displayName: completed.displayName,
+      protocol: 'openai-compatible',
       baseUrl,
       modelIds: completed.modelIds,
       apiKey: '',
@@ -820,7 +824,7 @@ export function SettingsPanel({
       const originalProvider = asRecord(originalProviders[provider.providerRef]);
       providers[provider.providerRef] = {
         ...originalProvider,
-        protocol: originalProvider.protocol ?? 'openai-compatible',
+        protocol: provider.protocol ?? 'openai-compatible',
         displayName: provider.displayName.trim(),
         baseUrl: provider.baseUrl.trim(),
         apiKeyRef: resolveProviderSecretReferenceFromConfiguration(
@@ -1088,6 +1092,7 @@ export function SettingsPanel({
     const credentialFingerprint = await fingerprintProviderCredential(connection.apiKey);
     const identity = await currentProviderIdentityKey({
       baseUrl: connection.baseUrl,
+      protocol: connection.protocol,
       apiKey: connection.apiKey,
       credentialFingerprint,
     });
@@ -1098,7 +1103,7 @@ export function SettingsPanel({
     if (duplicate) {
       setExpandedProviders(current => new Set(current).add(duplicate.providerRef));
       setModelDialogOpen(false);
-      setLoadError(`该 Base URL 和 API Key 已存在于「${duplicate.displayName || duplicate.providerRef}」，已展开现有 Provider。`);
+      setLoadError(`该协议、Base URL 和 API Key 已存在于「${duplicate.displayName || duplicate.providerRef}」，已展开现有 Provider。`);
       return;
     }
     let index = Object.keys(catalog?.providers ?? {}).length + 1;
@@ -1111,6 +1116,7 @@ export function SettingsPanel({
       providerRef,
       displayName: connection.displayName,
       baseUrl: connection.baseUrl,
+      protocol: connection.protocol,
       modelIds: [],
       apiKey: connection.apiKey,
       maskedApiKey: maskApiKey(connection.apiKey),
@@ -1675,6 +1681,7 @@ export function SettingsPanel({
     try {
       const result = await http.discoverProviderModels({
         baseUrl: provider.baseUrl,
+        protocol: provider.protocol,
         ...(provider.apiKey.trim() ? { apiKey: provider.apiKey.trim() } : {}),
         providerRef: provider.providerRef,
       });
@@ -1868,6 +1875,17 @@ export function SettingsPanel({
                                 disabled={editingDisabled}
                               />
                             </label>
+                            <ProviderProtocolSelect
+                              value={provider.protocol ?? 'openai-compatible'}
+                              disabled={editingDisabled}
+                              onChange={protocol => setCatalog(current => current ? {
+                                ...current,
+                                providers: {
+                                  ...current.providers,
+                                  [provider.providerRef]: { ...provider, protocol },
+                                },
+                              } : current)}
+                            />
                             <label className="settings-field">
                               <span>API URL</span>
                               <input

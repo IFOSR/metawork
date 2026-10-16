@@ -126,7 +126,7 @@ function latestExecutionMeta(
     : null;
 }
 
-function collectDetailEvents(
+export function collectDetailEvents(
   traceEvents: InteractionTraceEvent[],
   timeline: ExecutionTimeline | null,
   subtaskId: string,
@@ -136,17 +136,21 @@ function collectDetailEvents(
     return event.subtaskId === subtaskId
       || (Boolean(details) && details?.subtaskId === subtaskId);
   });
-  const knownProgress = new Set(events.map(event => (
-    `${event.attemptId ?? String(event.details.attemptId ?? '')}:${event.occurredAt}:${event.summary}`
-  )));
+  // Trace and the bounded runtime history are projections of the same progress
+  // stream, with independently recorded timestamps. Prefer the trace per attempt;
+  // history is a fallback when that attempt's trace has not been loaded.
+  // Do not deduplicate by text: separate tool calls can have identical summaries.
+  const tracedAttempts = new Set(events
+    .filter(event => event.kind === 'executor_progress')
+    .map(event => event.attemptId ?? readString(event.details.attemptId))
+    .filter(Boolean));
   const durableEvents: InteractionTraceEvent[] = [];
   const subtask = timeline?.stages
     .find(stage => stage.phase === 'execution')
     ?.subtasks?.find(item => item.id === subtaskId);
   for (const attempt of subtask?.attempts ?? []) {
+    if (attempt.attemptId && tracedAttempts.has(attempt.attemptId)) continue;
     for (const [index, progress] of (attempt.progressHistory ?? []).entries()) {
-      const key = `${attempt.attemptId ?? ''}:${progress.occurredAt}:${progress.text}`;
-      if (knownProgress.has(key)) continue;
       durableEvents.push({
         id: `durable:${attempt.attemptId ?? subtaskId}:${index}:${progress.occurredAt}`,
         cursor: `durable:${attempt.attemptId ?? subtaskId}:${index}`,

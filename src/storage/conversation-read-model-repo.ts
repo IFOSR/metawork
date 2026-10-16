@@ -248,7 +248,7 @@ export class SqliteConversationReadModel implements ConversationReadModel {
     let row = this.db.prepare(`SELECT length(body) AS byte_length, substr(body, ?, ?) AS chunk
       FROM conversation_read_bodies WHERE account_id = ? AND conversation_id = ? AND hash = ?`)
       .get(offset + 1, maxBytes + 1, accountId, conversationId, hash) as
-      { byte_length: number; chunk: Buffer } | undefined;
+      { byte_length: number; chunk: Buffer | null } | undefined;
     if (!row) {
       const manifest = this.db.prepare(`SELECT byte_length FROM conversation_read_content_manifests
         WHERE account_id = ? AND conversation_id = ? AND hash = ?`).get(accountId, conversationId, hash) as
@@ -260,11 +260,14 @@ export class SqliteConversationReadModel implements ConversationReadModel {
         .get(offset, maxBytes + 1, accountId, conversationId, hash, offset) as { byte_offset: number; chunk: Buffer } | undefined;
       row = { byte_length: manifest.byte_length, chunk: part?.chunk ?? Buffer.alloc(0) };
     }
-    recordNavigationRead('conversation_content_read', row.chunk.length);
-    if (offset > row.byte_length || (row.chunk.length && (row.chunk[0]! & 0xc0) === 0x80)) throw new Error('invalid_content_offset');
-    let end = Math.min(row.chunk.length, maxBytes);
-    while (end > 0 && end < row.chunk.length && (row.chunk[end]! & 0xc0) === 0x80) end--;
-    return { text: row.chunk.subarray(0, end).toString('utf8'), offset, nextOffset: offset + end, byteLength: row.byte_length };
+    // SQLite returns NULL for substr() of a zero-byte BLOB. Keep the row's
+    // existence and declared byte length while normalizing its readable chunk.
+    const chunk = row.chunk ?? Buffer.alloc(0);
+    recordNavigationRead('conversation_content_read', chunk.length);
+    if (offset > row.byte_length || (chunk.length && (chunk[0]! & 0xc0) === 0x80)) throw new Error('invalid_content_offset');
+    let end = Math.min(chunk.length, maxBytes);
+    while (end > 0 && end < chunk.length && (chunk[end]! & 0xc0) === 0x80) end--;
+    return { text: chunk.subarray(0, end).toString('utf8'), offset, nextOffset: offset + end, byteLength: row.byte_length };
   }
 
   private trimTail(accountId: string, conversationId: string, epoch: string): void {

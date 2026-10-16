@@ -513,14 +513,16 @@ function isPlannerProposalResult(value: unknown): value is PlannerProposalResult
 function isExecutorManualProposalResult(value: unknown): value is ExecutorManualProposalResult {
 	if (!isRecord(value)) return false;
 	if (value.status === "rejected") {
-		return Array.isArray(value.issues) && value.issues.every(item => typeof item === "string");
+		return Array.isArray(value.issues) && value.issues.every((item) => typeof item === "string");
 	}
 	if (value.status === "transport_uncertain") {
 		return value.retryableByReplay === true && typeof value.message === "string";
 	}
-	return value.status === "accepted"
-		&& typeof value.agentClassRef === "string"
-		&& isRecord(value.userProfile)
-		&& typeof value.userProfile.sourceText === "string"
-		&& Array.isArray(value.userProfile.assertions);
+	return (
+		value.status === "accepted" &&
+		typeof value.agentClassRef === "string" &&
+		isRecord(value.userProfile) &&
+		typeof value.userProfile.sourceText === "string" &&
+		Array.isArray(value.userProfile.assertions)
+	);
 }

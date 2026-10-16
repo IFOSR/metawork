@@ -100,14 +100,21 @@ export interface TaskViewFacts {
   readonly retryWakeAt: string | null;
   /** A durable wake exists but cannot safely drive a continuation. */
   readonly retryWakeRecoveryRequired?: boolean;
+  readonly capacityWaiting?: boolean;
+  readonly deliveryState?: 'pending' | 'failed' | null;
   readonly result: TaskViewResultFact | null;
 }
 
+import type { TaskUserState } from './task-user-state.js';
+export { type TaskUserState, TASK_USER_STATE_LABELS } from './task-user-state.js';
+
 export interface TaskView {
+  readonly userState: TaskUserState;
+  readonly userStateReason: string;
   readonly taskId: string;
   /** Canonical business lifecycle state. */
   readonly lifecycle: TaskLifecycleState;
-  /** User-facing phase; the only value surfaces may render as prose. */
+  /** Internal detail phase; primary presentation uses userState. */
   readonly phase: TaskUserFacingPhase;
   readonly activeAttempt: {
     readonly attemptId: string;
@@ -181,8 +188,10 @@ export const RESIDUAL_PUBLICATION_STATUSES = new Set([
 export function projectTaskView(facts: TaskViewFacts): TaskView {
   const attempts = orderAttempts(facts);
   const activeAttempt = attempts.find(attempt => (
-    isActiveDispatchStatus(attempt.dispatchStatus)
+    isActiveDispatchStatus(attempt.dispatchStatus) && attempt.dispatchStatus !== 'pending_launch'
+    && (attempt.settledAt === null || attempt.dispatchStatus === 'cancelling')
   )) ?? null;
+  const queuedAttempts = attempts.filter(attempt => attempt.dispatchStatus === 'pending_launch');
   const replanJob = facts.replanJobs
     .filter(job => ACTIVE_REPLAN_STATUSES.includes(job.status))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null;
@@ -223,6 +232,7 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
   const phase = derivePhase({
     lifecycle,
     activeAttempt: activeAttempt !== null,
+    queuedAttempt: queuedAttempts.length > 0,
     retryWakeRecoveryRequired: facts.retryWakeRecoveryRequired === true,
     retryWakeAt: facts.retryWakeAt,
     replanJob: replanJob !== null,
@@ -232,10 +242,29 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
     result: facts.result,
   });
 
+  const automaticPublication = publishingResidue.some(item => ['pending', 'applying', 'cancelling'].includes(item.status));
+  const userState: TaskUserState = isTerminalTaskLifecycle(lifecycle) ? 'finished'
+    : activeAttempt || automaticPublication || facts.deliveryState === 'pending' ? 'executing'
+      : facts.capacityWaiting || queuedAttempts.length > 0 || (facts.retryWakeAt && !facts.retryWakeRecoveryRequired)
+        || (replanJob && replanJob.status !== 'waiting_for_availability') || lifecycle === 'queued' ? 'waiting'
+        : 'needs_action';
+  const explanation = facts.capacityWaiting || (phase === 'queued' && queuedAttempts.length > 0)
+    ? '等待执行名额；名额释放后系统会自动继续。'
+    : explain({ phase, lifecycle, blockingResidue, recoveryDiagnosis });
+  const userStateReason = (userState === 'finished'
+    ? explain({ phase: lifecycle as 'completed' | 'failed' | 'cancelled', lifecycle, blockingResidue, recoveryDiagnosis })
+    : userState === 'needs_action' && (facts.deliveryState === 'failed' || recoveryDiagnosis === 'no_authorized_driver')
+      ? (facts.deliveryState === 'failed' ? '文件交付失败，请继续未完成部分；已完成的执行不会重跑。' : '没有找到可以继续任务的执行记录。请继续未完成部分。')
+      : explanation)
+    + (activeAttempt && facts.subtasks.some(subtask => subtask.status === 'blocked')
+      ? ' 另有子任务需要处理，独立工作继续。' : '');
+
   return {
     taskId: facts.task.id,
     lifecycle,
     phase,
+    userState,
+    userStateReason,
     activeAttempt: activeAttempt
       ? {
           attemptId: activeAttempt.attemptId,
@@ -255,7 +284,11 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
     blockingResidue,
     nextAuthorizedAction: nextAuthorizedAction(phase, phase === 'recovery_required' ? recoveryDiagnosis : null),
     recoveryDiagnosis,
-    explanation: explain({ phase, lifecycle, blockingResidue, recoveryDiagnosis }),
+    explanation: phase === 'queued' && queuedAttempts.length > 0
+      ? '等待执行名额；名额释放后系统会自动继续。'
+      : explain({ phase, lifecycle, blockingResidue, recoveryDiagnosis })
+        + (activeAttempt && facts.subtasks.some(subtask => subtask.status === 'blocked')
+          ? ` 另有 ${facts.subtasks.filter(subtask => subtask.status === 'blocked').length} 个子任务待处理，其余独立工作继续。` : ''),
     result: facts.result,
     timestamps: {
       lastProgressAt: latestTimestamp([
@@ -320,6 +353,7 @@ function deriveBlockingResidue(input: {
 function derivePhase(input: {
   lifecycle: TaskLifecycleState;
   activeAttempt: boolean;
+  queuedAttempt: boolean;
   retryWakeRecoveryRequired: boolean;
   retryWakeAt: string | null;
   replanJob: boolean;
@@ -329,6 +363,7 @@ function derivePhase(input: {
   result: TaskViewResultFact | null;
 }): TaskUserFacingPhase {
   if (input.activeAttempt) return 'executing';
+  if (input.queuedAttempt) return 'queued';
   if (input.retryWakeRecoveryRequired) return 'recovery_required';
   if (input.retryWakeAt) return 'retrying';
   if (input.replanJob) {

@@ -49,6 +49,8 @@ export interface WorkGraphSubtask {
   requiredCapabilities: RoutingCapabilityId[];
   executorBindings: ProposedExecutorBinding[];
   deliveryKind: 'edit' | 'report';
+  /** Required in new proposals. Absent only on graphs authorized before schema 50. */
+  fileOutputs?: string[];
   acceptance: WorkGraphAcceptanceCriterion[];
   riskLevel: 'low' | 'medium' | 'high';
 }

@@ -314,6 +314,7 @@ describe('current SQLite baseline', () => {
     db.exec(`
       CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
       INSERT INTO schema_version VALUES (37);
+      CREATE TABLE subtasks (id TEXT PRIMARY KEY);
     `);
 
     runMigrations(db);
@@ -333,6 +334,7 @@ describe('current SQLite baseline', () => {
     db.exec(`
       CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
       INSERT INTO schema_version VALUES (36);
+      CREATE TABLE subtasks (id TEXT PRIMARY KEY);
       CREATE TABLE tasks (
         id TEXT PRIMARY KEY,
         account_id TEXT NOT NULL,

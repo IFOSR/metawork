@@ -163,8 +163,13 @@ export class AttemptSupervisor {
       await context.submit(event);
     } catch (error) {
       const summary = error instanceof Error ? error.message : String(error);
-      this.repository.markUncertain(item.attemptId, summary, new Date().toISOString());
       const event = await context.onLaunchError(item, error);
+      if (event.type === 'execution_outcome' && event.failure?.attemptStarted === false
+        && event.failure.externalSideEffect === false) {
+        this.repository.markTerminal(item.attemptId, summary, new Date().toISOString());
+      } else {
+        this.repository.markUncertain(item.attemptId, summary, new Date().toISOString());
+      }
       await context.submit(event);
     }
   }

@@ -112,6 +112,30 @@ function snapshot(revisionId: string, config: AnyFusionConfigurationV2): Configu
 }
 
 describe('AgentRuntimeRenderer', () => {
+  it('renders explicit transports into both Pi homes and excludes Anthropic from Codex', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'protocol-renderer-'));
+    try {
+      const config = makeConfig();
+      config.providers['provider-a'].protocol = 'openai-responses';
+      config.providers['provider-b'].protocol = 'anthropic';
+      config.providers.chat = { ...config.providers['provider-a'], protocol: 'openai-compatible' };
+      await new AgentRuntimeRenderer(root).render(snapshot('protocols', config));
+      for (const home of ['planner', 'pi-home/.pi/agent']) {
+        const { providers } = JSON.parse(await readFile(join(root, 'protocols', home, 'models.json'), 'utf8'));
+        expect(providers['provider-a'].api).toBe('openai-responses');
+        expect(providers['provider-b'].api).toBe('anthropic-messages');
+        expect(providers.chat.api).toBe('openai-completions');
+        expect(providers['provider-b'].apiKey).toBe('$ANTHROPIC_API_KEY__PROVIDER_B');
+        expect(providers['provider-a'].models[0]).not.toHaveProperty('compat');
+        expect(providers['provider-b'].models[0]).not.toHaveProperty('compat');
+      }
+      const codex = await readFile(join(root, 'protocols', 'codex/config.toml'), 'utf8');
+      expect(codex).toContain('[model_providers.provider-a]');
+      expect(codex).toContain('wire_api = "responses"');
+      expect(codex).not.toContain('[model_providers.provider-b]');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('preserves GLM auto-compatibility instead of forcing OpenAI reasoning_effort', () => {
     const config = makeConfig();
     config.providers['glm-provider'] = {

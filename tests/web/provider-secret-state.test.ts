@@ -10,6 +10,12 @@ import {
 } from '../../web/src/components/provider-secret-state.js';
 
 describe('provider secret state projection', () => {
+  it('keeps different protocols separate for the same endpoint and credential', () => {
+    const provider = { baseUrl: 'https://example.test/v1', apiKey: 'test-key' };
+    expect(providerIdentityKey(provider)).not.toBe(providerIdentityKey({ ...provider, protocol: 'openai-responses' }));
+    expect(providerIdentityKey(provider)).toBe(providerIdentityKey({ ...provider, protocol: 'openai-compatible' }));
+  });
+
   it('treats a configured shared Provider as configured for Planner and Executor', () => {
     expect(deriveSecretStates(
       ['planner', 'codex-cli'],

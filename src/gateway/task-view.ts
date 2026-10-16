@@ -1,3 +1,4 @@
+import type { TaskUserState } from '../task/task-user-state.js';
 /**
  * Gateway 只读 Task 视图契约（统一 TUI 设计 §9.3，task_view_v1）。
  *
@@ -29,7 +30,7 @@ export interface GatewayTaskViewSnapshot {
   /**
    * 统一的只读生命周期投影（2026-09-25 Task lifecycle 收敛 §7）。
    *
-   * 展示层必须消费 `lifecycle.phase` 作为用户可见状态；`status` 仅为历史
+   * 展示层必须消费 `lifecycle.userState` 作为用户可见状态；`status` 仅为历史
    * 兼容字段，不得直接渲染为面向用户的文案。
    */
   readonly lifecycle: GatewayTaskViewLifecycle;
@@ -65,6 +66,8 @@ export interface GatewayTaskViewRouting {
 export interface GatewayTaskViewLifecycle {
   readonly lifecycle: string;
   readonly phase: string;
+  readonly userState: TaskUserState;
+  readonly userStateReason: string;
   readonly activeAttempt: {
     readonly attemptId: string;
     readonly subtaskId: string;

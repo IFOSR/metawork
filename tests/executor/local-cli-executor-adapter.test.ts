@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RuntimePrivateConfigurationBinding } from '../../src/configuration/types.js';
-import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
+import { authorizedExecutorBindingFingerprint, type AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
 import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
 import type { ExecutorInput } from '../../src/executor/adapter.js';
 import type {
@@ -15,6 +15,22 @@ import {
 } from '../../src/executor/local-cli-executor-adapter.js';
 
 describe('LocalCliExecutorAdapter', () => {
+  it('rejects a substituted authorization fingerprint before creating a home or launching', async () => {
+    const driver = harnessDriver('pi-cli');
+    const processRunner = { run: vi.fn(), abort: vi.fn() };
+    const adapter = new LocalCliExecutorAdapter({
+      agentClassId: 'quality-beta', driver,
+      runtimeBinding: { ...runtimeBinding(), bindingFingerprint: 'substituted' },
+      authorizedBinding: authorizedBinding(), modelId: 'deepseek-v4-pro',
+      attemptsRoot: '/runtime/attempts', processRunner,
+    });
+    expect(await adapter.execute(executorInput('mismatch'))).toMatchObject({
+      success: false, failure: { kind: 'configuration', code: 'executor_binding_mismatch' },
+    });
+    expect(driver.materializeHome).not.toHaveBeenCalled();
+    expect(processRunner.run).not.toHaveBeenCalled();
+  });
+
   it('does not launch when cancelled while its isolated Home is being prepared', async () => {
     const driver = harnessDriver('codex-cli');
     const original = driver.materializeHome;
@@ -90,7 +106,7 @@ describe('LocalCliExecutorAdapter', () => {
       attemptId: 'attempt-1',
       revisionId: 'revision-10',
       agentClassId: 'quality-beta',
-      bindingFingerprint: 'binding-fingerprint',
+      bindingFingerprint: authorizedExecutorBindingFingerprint(authorizedBinding()),
       attemptsRoot: '/runtime/attempts',
       environment: {},
     });
@@ -134,7 +150,7 @@ describe('LocalCliExecutorAdapter', () => {
       abort: vi.fn(),
     };
     const adapter = new LocalCliExecutorAdapter({
-      agentClassId: 'implementation-alpha',
+      agentClassId: 'quality-beta',
       driver,
       runtimeBinding: runtimeBinding(),
       authorizedBinding: authorizedBinding(),
@@ -195,7 +211,7 @@ describe('LocalCliExecutorAdapter', () => {
       attemptId: 'attempt-correction',
       revisionId: 'revision-10',
       agentClassId: 'quality-beta',
-      bindingFingerprint: 'binding-fingerprint',
+      bindingFingerprint: authorizedExecutorBindingFingerprint(authorizedBinding()),
       attemptsRoot: '/runtime/attempts',
       environment: {},
     });
@@ -237,7 +253,7 @@ describe('LocalCliExecutorAdapter', () => {
       abort: vi.fn(),
     };
     const adapter = new LocalCliExecutorAdapter({
-      agentClassId: 'arbitrary-agent-class',
+      agentClassId: 'quality-beta',
       driver,
       runtimeBinding: runtimeBinding(),
       authorizedBinding: authorizedBinding(),
@@ -391,7 +407,7 @@ describe('LocalCliExecutorAdapter', () => {
       abort: vi.fn(),
     };
     const adapter = new LocalCliExecutorAdapter({
-      agentClassId: 'implementation-alpha',
+      agentClassId: 'quality-beta',
       driver,
       runtimeBinding: runtimeBinding(),
       authorizedBinding: authorizedBinding(),
@@ -681,7 +697,7 @@ function controllableChildProcess() {
 function runtimeBinding(): RuntimePrivateConfigurationBinding {
   return {
     revisionId: 'revision-10',
-    bindingFingerprint: 'binding-fingerprint',
+    bindingFingerprint: authorizedExecutorBindingFingerprint(authorizedBinding()),
   };
 }
 

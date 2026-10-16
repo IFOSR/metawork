@@ -26,6 +26,8 @@ export type QueuedExecutionRequest = {
   schedulingReason?: string;
   newlyProvidedResources?: string[];
   recoveryTrigger?: TaskRecoveryTrigger;
+      expectedGenerationId?: string;
+      expectedGraphRevision?: number;
   includeRecentConversationContext?: boolean;
 };
 

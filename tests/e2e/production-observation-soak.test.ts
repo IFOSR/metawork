@@ -12,7 +12,7 @@ enabled('production observation continuous update soak', () => {
       browser = await launchBrowser(server.port, 'observation-soak');
       const cdp = browser.cdp;
       await waitForExpression(cdp, `location.origin === 'http://127.0.0.1:${server.port}' && document.readyState === 'complete'`);
-      await cdp.evaluate(`fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'acceptance',password:'fixture-password'})})`);
+      await cdp.evaluate(`fetch('/api/auth/session')`);
       await cdp.send('Page.reload');
       await waitForExpression(cdp, `Boolean(document.querySelector('#workspace-select option[value="workspace_acceptance"]'))`);
       await cdp.evaluate(`(()=>{const s=document.querySelector('#workspace-select');s.value='workspace_acceptance';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);

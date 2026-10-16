@@ -72,6 +72,7 @@ const VALID_PLAN = {
         modelSelection: { mode: 'fixed-by-agent-class' },
       }],
       deliveryKind: 'edit',
+      fileOutputs: [],
       acceptance: [{ key: 'tests_pass', description: '测试通过', requiredEvidence: ['test result'] }],
       riskLevel: 'medium',
     }],

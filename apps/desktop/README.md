@@ -104,8 +104,12 @@ node packaging/prepare-runtime.mjs \
   --output /build/desktop-resources
 ```
 
-The tool directories provide `bin/node`, `bin/git`, and `bin/pi`, respectively,
-plus their complete libraries/resources/licenses. The preparer checks the
+The tool directories provide `bin/node`, `bin/git`, and `bin/pi`, respectively.
+Git and Pi retain their complete libraries/resources/licenses. The preparer
+always normalizes the supported self-contained macOS Node distribution to
+`bin/node`, `LICENSE` and optional `README.md` before signing; global packages,
+npm/corepack and headers are never inherited from the input directory. A
+separate manual Node trimming step is not required. The preparer checks the
 signed archive hashes, rejects links/special archive entries, verifies the
 payload inventory, probes Node ABI/SQLite/Git/Pi and produces a signed Desktop
 descriptor. Production preparation signs every Mach-O/native module before

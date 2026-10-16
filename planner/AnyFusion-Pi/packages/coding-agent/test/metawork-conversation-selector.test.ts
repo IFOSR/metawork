@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { MetaWorkConversationSelector } from "../src/modes/metawork-tui/components/conversation-selector.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { MetaWorkConversationSelector } from "../src/modes/metawork-tui/components/conversation-selector.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
 beforeAll(() => initTheme("dark"));
@@ -53,16 +53,12 @@ describe("MetaWork Conversation selector", () => {
 	});
 
 	it("renders title, activity, and recent update without internal IDs", () => {
-		const selector = new MetaWorkConversationSelector(
-			workspace,
-			conversations,
-			{
-				attach: vi.fn(),
-				create: vi.fn(),
-				refresh: vi.fn(),
-				cancel: vi.fn(),
-			},
-		);
+		const selector = new MetaWorkConversationSelector(workspace, conversations, {
+			attach: vi.fn(),
+			create: vi.fn(),
+			refresh: vi.fn(),
+			cancel: vi.fn(),
+		});
 
 		const output = stripAnsi(selector.render(100).join("\n"));
 		expect(output).toContain("MetaWork");

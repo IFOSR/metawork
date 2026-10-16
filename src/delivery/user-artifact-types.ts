@@ -7,6 +7,8 @@
  * 或内部执行标识。
  */
 
+import type { DocumentPreviewFormat } from './document-preview-format.js';
+
 export type ArtifactPreviewKind = 'markdown' | 'text' | 'code' | 'image' | 'unsupported';
 
 export interface ArtifactProjection {
@@ -18,6 +20,7 @@ export interface ArtifactProjection {
   mediaType: string;
   previewKind: ArtifactPreviewKind;
   previewable: boolean;
+  documentFormat?: DocumentPreviewFormat;
   byteLength: number;
   contentHash: string;
   publishedAt: string;
@@ -74,6 +77,13 @@ export function mediaTypeForRelativePath(relativePath: string): string {
     yml: 'text/yaml; charset=utf-8',
     yaml: 'text/yaml; charset=utf-8',
     html: 'text/html; charset=utf-8',
+    htm: 'text/html; charset=utf-8',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    xls: 'application/vnd.ms-excel',
+    doc: 'application/msword',
+    ppt: 'application/vnd.ms-powerpoint',
     css: 'text/css; charset=utf-8',
     js: 'text/javascript; charset=utf-8',
     mjs: 'text/javascript; charset=utf-8',

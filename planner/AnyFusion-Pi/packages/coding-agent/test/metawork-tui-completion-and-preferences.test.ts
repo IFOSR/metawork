@@ -24,12 +24,14 @@ function completion(overrides: Partial<MetaWorkCompletionState> = {}): MetaWorkC
 		requestId: "req_1",
 		targetConversationId: "conv_1",
 		state: "incomplete",
-		suggestions: [{
-			value: "/task list",
-			label: "/task list",
-			description: "列出任务",
-			replacement: { start: 0, end: 5, text: "/task list" },
-		}],
+		suggestions: [
+			{
+				value: "/task list",
+				label: "/task list",
+				description: "列出任务",
+				replacement: { start: 0, end: 5, text: "/task list" },
+			},
+		],
 		hint: null,
 		error: null,
 		inputVersion: 1,
@@ -50,10 +52,7 @@ describe("metawork-tui completion provider", () => {
 	});
 
 	it("returns suggestions and applies the server replacement range", async () => {
-		const provider = new GatewayCompletionProvider(
-			{ requestCompletion: async () => completion() },
-			() => "conv_1",
-		);
+		const provider = new GatewayCompletionProvider({ requestCompletion: async () => completion() }, () => "conv_1");
 		const suggestions = await provider.getSuggestions(["/tas"], 0, 4, {
 			signal: new AbortController().signal,
 		});
@@ -72,15 +71,15 @@ describe("metawork-tui completion provider", () => {
 			{ requestCompletion: async () => completion({ targetConversationId: "conv_1" }) },
 			() => "workspace",
 		);
-		await expect(provider.getSuggestions(["/"], 0, 1, { signal: new AbortController().signal }))
-			.resolves.toBeNull();
+		await expect(provider.getSuggestions(["/"], 0, 1, { signal: new AbortController().signal })).resolves.toBeNull();
 
 		const conversationProvider = new GatewayCompletionProvider(
 			{ requestCompletion: async () => completion({ targetConversationId: null }) },
 			() => "conv_1",
 		);
-		await expect(conversationProvider.getSuggestions(["/"], 0, 1, { signal: new AbortController().signal }))
-			.resolves.toBeNull();
+		await expect(
+			conversationProvider.getSuggestions(["/"], 0, 1, { signal: new AbortController().signal }),
+		).resolves.toBeNull();
 	});
 
 	it("returns null for inactive completions and aborted requests", async () => {
@@ -88,28 +87,28 @@ describe("metawork-tui completion provider", () => {
 			{ requestCompletion: async () => completion({ state: "inactive", suggestions: [] }) },
 			() => "conv_1",
 		);
-		await expect(inactive.getSuggestions(["hello"], 0, 5, { signal: new AbortController().signal }))
-			.resolves.toBeNull();
+		await expect(
+			inactive.getSuggestions(["hello"], 0, 5, { signal: new AbortController().signal }),
+		).resolves.toBeNull();
 
 		const controller = new AbortController();
 		controller.abort();
-		const aborted = new GatewayCompletionProvider(
-			{ requestCompletion: async () => completion() },
-			() => "conv_1",
-		);
-		await expect(aborted.getSuggestions(["/tas"], 0, 4, { signal: controller.signal }))
-			.resolves.toBeNull();
+		const aborted = new GatewayCompletionProvider({ requestCompletion: async () => completion() }, () => "conv_1");
+		await expect(aborted.getSuggestions(["/tas"], 0, 4, { signal: controller.signal })).resolves.toBeNull();
 	});
 
 	it("falls back to replacing the current token when no server range is present", async () => {
-		const provider = new GatewayCompletionProvider(
-			{ requestCompletion: async () => completion() },
-			() => "conv_1",
+		const provider = new GatewayCompletionProvider({ requestCompletion: async () => completion() }, () => "conv_1");
+		const applied = provider.applyCompletion(
+			["/ta"],
+			0,
+			3,
+			{
+				value: "/task",
+				label: "/task",
+			},
+			"/ta",
 		);
-		const applied = provider.applyCompletion(["/ta"], 0, 3, {
-			value: "/task",
-			label: "/task",
-		}, "/ta");
 		expect(applied.lines).toEqual(["/task"]);
 		expect(applied.cursorCol).toBe(5);
 	});
@@ -117,22 +116,22 @@ describe("metawork-tui completion provider", () => {
 
 describe("metawork-tui preferences", () => {
 	it("whitelists only UI preference keys", () => {
-		expect(sanitizePreferences({
-			theme: "light",
-			draft: "secret draft",
-			conversationHistory: [{ id: "turn_1" }],
-			__proto__: { polluted: true },
-		})).toEqual({ theme: "light" });
+		expect(
+			sanitizePreferences({
+				theme: "light",
+				draft: "secret draft",
+				conversationHistory: [{ id: "turn_1" }],
+				__proto__: { polluted: true },
+			}),
+		).toEqual({ theme: "light" });
 		expect(sanitizePreferences(null)).toEqual({});
 		expect(sanitizePreferences({ theme: 42 })).toEqual({});
 		expect(sanitizePreferences({ theme: "  " })).toEqual({});
 	});
 
 	it("resolves the preference path from the MetaWork config home only", () => {
-		expect(resolvePreferencesPath({ METAWORK_TUI_PREFERENCES: "/tmp/prefs.json" }))
-			.toBe("/tmp/prefs.json");
-		expect(resolvePreferencesPath({ METAWORK_CONFIG_HOME: "/tmp/mw" }))
-			.toBe(join("/tmp/mw", "tui-preferences.json"));
+		expect(resolvePreferencesPath({ METAWORK_TUI_PREFERENCES: "/tmp/prefs.json" })).toBe("/tmp/prefs.json");
+		expect(resolvePreferencesPath({ METAWORK_CONFIG_HOME: "/tmp/mw" })).toBe(join("/tmp/mw", "tui-preferences.json"));
 		// 不读取 ~/.pi 或 Planner home。
 		expect(resolvePreferencesPath({})).not.toContain(".pi");
 	});

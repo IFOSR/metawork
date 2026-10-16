@@ -1,0 +1,8 @@
+2026-01-05 09:12:01 INFO service started pid=4210
+2026-01-05 09:13:04 WARN cache miss key=user:42
+2026-01-05 09:14:09 INFO request ok path=/api/items ms=12
+2026-01-05 09:15:15 ERROR db timeout host=db-1
+2026-01-05 09:16:16 ERROR db timeout host=db-1
+2026-01-05 09:17:20 WARN retry attempt=1 host=db-1
+2026-01-05 09:18:25 INFO request ok path=/api/items ms=9
+2026-01-05 09:19:31 INFO service healthy

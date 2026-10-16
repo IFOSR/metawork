@@ -28,6 +28,28 @@ function facts(overrides: Partial<TaskViewFacts> = {}): TaskViewFacts {
 }
 
 describe('unified TaskView projection', () => {
+  it('projects four primary states from durable drivers, with terminal state first', () => {
+    expect(projectTaskView(facts()).userState).toBe('executing');
+    expect(projectTaskView(facts({ task: { id: 'task_1', status: 'cancelled', updatedAt: NOW } })).userState).toBe('finished');
+    expect(projectTaskView(facts({ dispatches: [], retryWakeAt: NOW })).userState).toBe('waiting');
+    expect(projectTaskView(facts({ dispatches: [] })).userState).toBe('needs_action');
+    expect(projectTaskView(facts({ dispatches: [], publications: [{ id: 'p', status: 'conflicted' }] })).userState).toBe('needs_action');
+    expect(projectTaskView(facts({ dispatches: [], publications: [{ id: 'p', status: 'pending' }] })).userState).toBe('executing');
+    const settled = facts({ receipts: [{ attemptId: 'attempt_1', terminalState: 'executor_failed', failure: null, completedAt: NOW }] });
+    expect(projectTaskView(settled).userState).toBe('needs_action');
+  });
+
+  it('reports real execution while a sibling is blocked, and queued capacity without claiming execution', () => {
+    const base = facts({ task: { id: 'task_1', status: 'blocked', updatedAt: NOW },
+      subtasks: [{ id: 'task_1_execute', status: 'running' }, { id: 'sibling', status: 'blocked' }] });
+    expect(projectTaskView(base).phase).toBe('executing');
+    expect(projectTaskView(base).explanation).toContain('1 个子任务待处理');
+    const queued = projectTaskView({ ...base, dispatches: base.dispatches.map(d => ({ ...d, status: 'pending_launch' })) });
+    expect(queued.phase).toBe('queued');
+    expect(queued.activeAttempt).toBeNull();
+    expect(queued.explanation).toContain('名额释放后系统会自动继续');
+  });
+
   it('reports executing only while an authorized Attempt is active', () => {
     const view = projectTaskView(facts());
     expect(view.phase).toBe('executing');

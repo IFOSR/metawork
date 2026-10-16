@@ -30,11 +30,13 @@ describe('resolveRuntimePrivateConfigurationBinding', () => {
     });
 
     expect(result).toEqual({
+      manifest: expect.objectContaining({ driverId: 'codex-cli', modelId: 'engineering-v1' }),
       revisionId: 'revision-10',
       bindingFingerprint: authorizedExecutorBindingFingerprint(authorizedBinding),
       environment: {
         OPENAI_BASE_URL: 'https://api.example.com/v1',
         OPENAI_API_KEY: 'sk-attempt-secret',
+        ANTHROPIC_API_KEY: 'sk-attempt-secret',
         OPENAI_API_KEY__PROVIDER_MAIN: 'sk-attempt-secret',
         OPENAI_MODEL: 'engineering-v1',
       },
@@ -45,6 +47,20 @@ describe('resolveRuntimePrivateConfigurationBinding', () => {
     expect(secretStore.get).toHaveBeenCalledWith('keychain:anyfusion/provider-main');
     expect(secretStore.put).not.toHaveBeenCalled();
     expect(secretStore.delete).not.toHaveBeenCalled();
+  });
+
+  it.each(['openai-responses', 'anthropic'] as const)('binds Pi credentials for %s without switching the authorized model', async protocol => {
+    const configuration = runtimeConfiguration({ providerProtocol: protocol });
+    configuration.harnesses['shared-harness'].driverId = 'pi-cli';
+    const result = await resolveRuntimePrivateConfigurationBinding({
+      configuration, authorizedBinding: binding(),
+      secretStore: recordingSecretStore({ 'keychain:anyfusion/provider-main': 'sk-attempt-secret' }),
+    });
+    expect(result.environment).toMatchObject({
+      ...(protocol === 'anthropic' ? {} : { OPENAI_API_KEY__PROVIDER_MAIN: 'sk-attempt-secret' }),
+      OPENAI_MODEL: 'engineering-v1',
+      ...(protocol === 'anthropic' ? { ANTHROPIC_API_KEY: 'sk-attempt-secret' } : {}),
+    });
   });
 
   it('accepts a Kernel-authorized model listed by an auto AgentClass policy', async () => {
@@ -219,7 +235,7 @@ function runtimeConfiguration(options: {
   agentClassEnabled?: boolean;
   harnessEnabled?: boolean;
   providerEnabled?: boolean;
-  providerProtocol?: 'openai-compatible' | 'anthropic';
+  providerProtocol?: 'openai-compatible' | 'openai-responses' | 'anthropic';
   modelPolicy?: AgentClassDefinition['modelPolicy'];
 } = {}): RuntimeConfigurationView {
   return {

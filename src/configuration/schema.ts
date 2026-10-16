@@ -171,7 +171,7 @@ const CommandArgumentSchema = z.string().trim().min(1).max(500).refine(
 const ProviderDefinitionSchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional(),
   systemManaged: z.boolean().optional(),
-  protocol: z.enum(['openai-compatible', 'anthropic']),
+  protocol: z.enum(['openai-compatible', 'openai-responses', 'anthropic']),
   baseUrl: credentialFreeHttpUrlSchema('Provider baseUrl'),
   apiKeyRef: z.string().regex(SECRET_REFERENCE).refine(
     reference => !/^(?:file-secret|keychain):anyfusion\/internal\//u.test(reference),
@@ -648,6 +648,13 @@ export const AnyFusionConfigurationV2Schema = z.object({
       const path = agentClass.modelPolicy.mode === 'fixed'
         ? ['agentClasses', agentClassRef, 'modelPolicy', 'modelRef']
         : ['agentClasses', agentClassRef, 'modelPolicy', 'allowedModelRefs', index];
+      if (model && harness?.driverId === 'codex-cli'
+        && configuration.providers[model.providerRef]?.protocol === 'anthropic') {
+        context.addIssue({
+          code: z.ZodIssueCode.custom, path,
+          message: 'Codex does not support Anthropic Messages; select an OpenAI endpoint or Pi',
+        });
+      }
       if (!model) {
         context.addIssue({
           code: z.ZodIssueCode.custom,

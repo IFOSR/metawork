@@ -289,6 +289,11 @@ It never widens the candidate set and never produces a binding decision.
 - The advisor has two physical slots and at most 128 queued requests Server-wide.
   Aborted or expired waiters are removed; a transport that ignores abort keeps
   its physical slot until it settles while the caller meets the deadline.
+- As of 2026-10-15, each Subtask request has a local 128 KiB serialized-byte
+  budget, including escaped state and candidate metadata, replacing 32 KiB.
+  This is not the Provider model's token context window. The 32-candidate limit
+  per Subtask and proposal limits remain unchanged. Oversized requests fall
+  back explicitly; legal candidates are never silently dropped to fit.
 - Replay of a stored `plan_proposed` event makes no external call. A crash
   before the event is durably stored may repeat the request; Span is not
   idempotent and must not be described as exactly-once.
@@ -403,3 +408,23 @@ permission profiles and other process changes retain their restart requirements.
 Historical revisions are not rewritten. Unchanged missing tool bindings do not
 block repairing unrelated settings; unavailable tools still fail execution
 probes and cannot become usable merely through a settings save.
+
+### Explicit Provider protocol amendment (2026-10-13)
+
+Provider connection settings explicitly select `openai-compatible` (Chat
+Completions), `openai-responses` (Responses), or `anthropic` (Messages).
+The existing `openai-compatible` value retains its meaning. Pi and Planner
+runtime rendering maps these values to their native API adapters; model names
+and Base URLs never silently select or fall back to another protocol. Credentials
+continue through the existing private environment references, never generated
+plaintext keys. Codex retains its Responses wire adapter and excludes Anthropic
+connections; enabled Codex/Anthropic bindings fail validation before activation.
+The separate Image API Runner retains its existing image endpoints.
+
+The new/edit Provider form preserves the selected protocol through the unified
+revision activation transaction. Duplicate connection identity now includes
+protocol in addition to normalized Base URL and complete credential identity,
+so two intentionally different API adapters cannot collapse into one entry.
+Model discovery and credential verification use the selected protocol's model
+list URL and authentication headers. Discovery failure does not infer a protocol
+or certify tool execution. No paid task probe is part of saving a Provider.

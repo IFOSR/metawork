@@ -79,6 +79,7 @@ function plan(overrides: Partial<PlanningAgentPlan> = {}): PlanningAgentPlan {
           modelSelection: { mode: 'fixed-by-agent-class' },
         }],
         deliveryKind: 'edit',
+        fileOutputs: [],
         acceptance: [{ key: 'tests', description: 'List changed files and test evidence.', requiredEvidence: ['test result'] }],
         riskLevel: 'low',
       }],
@@ -163,6 +164,7 @@ function seedPriorGenerationEvidence(db: Database.Database, taskId: string): voi
       configurationRevision: 'revision-test',
     }],
     deliveryKind: 'report',
+    fileOutputs: [],
     acceptance: [],
     riskLevel: 'low',
     result: 'must not leak into the current generation',
@@ -886,6 +888,7 @@ describe('natural-language planning/kernel path', () => {
           subtaskTitle: '实现一个普通功能',
           subtaskGoal: '实现一个普通功能',
           deliveryKind: 'edit',
+          fileOutputs: [],
         }),
       }),
       expect.objectContaining({
@@ -987,6 +990,7 @@ describe('natural-language planning/kernel path', () => {
               modelSelection: { mode: 'fixed-by-agent-class' },
             }],
             deliveryKind: 'report',
+            fileOutputs: [],
             acceptance: [{
               key: 'a_done',
               description: 'A is complete.',
@@ -1006,6 +1010,7 @@ describe('natural-language planning/kernel path', () => {
               modelSelection: { mode: 'fixed-by-agent-class' },
             }],
             deliveryKind: 'report',
+            fileOutputs: [],
             acceptance: [{
               key: 'b_done',
               description: 'B is complete.',

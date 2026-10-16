@@ -1,3 +1,4 @@
+import { executorRuntimeFileHashes } from './agent-runtime-renderer.js';
 import {
   authorizedExecutorBindingFingerprint,
   type AuthorizedExecutorBinding,
@@ -78,6 +79,11 @@ export async function resolveRuntimePrivateConfigurationBinding(
     );
   }
 
+  if (harness.driverId === 'codex-cli'
+    && configuration.providers[authorizedBinding.providerRef]?.protocol === 'anthropic') {
+    throw new Error('Provider protocol is not supported by Codex: anthropic');
+  }
+
   const environment = await resolveProviderEnvironment({
     configuration,
     providerRef: authorizedBinding.providerRef,
@@ -88,6 +94,14 @@ export async function resolveRuntimePrivateConfigurationBinding(
     revisionId: configuration.revisionId,
     bindingFingerprint: authorizedExecutorBindingFingerprint(authorizedBinding),
     environment,
+    manifest: Object.freeze({
+      driverId: harness.driverId,
+      protocol: configuration.providers[authorizedBinding.providerRef]!.protocol,
+      baseUrl: configuration.providers[authorizedBinding.providerRef]!.baseUrl,
+      modelId: model.modelId,
+      permissionProfileRef: authorizedBinding.permissionProfileRef,
+      runtimeFileHashes: executorRuntimeFileHashes(configuration, harness.driverId),
+    }),
   });
 }
 
@@ -162,11 +176,6 @@ async function resolveProviderEnvironment(input: {
   if (!provider || !provider.enabled) {
     throw new Error(`Provider is not enabled: ${input.providerRef}`);
   }
-  if (provider.protocol !== 'openai-compatible') {
-    throw new Error(
-      `Provider protocol is not supported for runtime binding: ${provider.protocol}`,
-    );
-  }
   if (!provider.baseUrl.trim()) {
     throw new Error(`Provider base URL is empty: ${input.providerRef}`);
   }
@@ -182,12 +191,13 @@ async function resolveProviderEnvironment(input: {
     throw new Error(`Provider credential is empty: ${input.providerRef}`);
   }
 
-  const providerKeyVariable = `OPENAI_API_KEY__${input.providerRef
-    .toUpperCase()
-    .replace(/[^A-Z0-9_]/g, '_')}`;
+  const providerKeySuffix = input.providerRef.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+  const protocolKey = provider.protocol === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
+  const providerKeyVariable = `${protocolKey}__${providerKeySuffix}`;
   return Object.freeze({
     OPENAI_BASE_URL: provider.baseUrl,
     OPENAI_API_KEY: apiKey,
+    ANTHROPIC_API_KEY: apiKey,
     [providerKeyVariable]: apiKey,
     OPENAI_MODEL: input.modelId,
   });

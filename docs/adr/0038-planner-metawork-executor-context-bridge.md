@@ -63,7 +63,14 @@ checks:
 The Kernel accepts only references in that verified set. Runtime repeats the
 source identity and hash checks before copying the selected file into the
 attempt-local `inputs/` directory. It exposes only a safe relative input name
-and metadata to the Executor. Image adapters read that directory for editing;
+and metadata to the Executor. The prompt also provides a `readPath` relative
+to the Executor working directory (for example `../inputs/input-01.pptx`);
+`relativeInputPath` alone is relative to the input directory, not the working
+directory. Container adapters resolve against container paths. A missing
+selected input must be reported, never rediscovered by searching the disk,
+user home, or other Task directories. These paths reveal only the materialized
+copies, not private Artifact Store paths (2026-10-15 clarification).
+Image adapters read that directory for editing;
 they never read Artifact Store paths or Conversation history. Current Task
 image resources and historical Artifact inputs share the same stable input
 naming scheme.
@@ -98,6 +105,31 @@ routed Executor's own base model and tools process the original file
 materialized under `inputs/`. Upload acceptance alone does not imply that every
 Executor can process every file format; an Executor that cannot process a
 format reports a normalized failure instead of guessing the contents.
+
+## Same-Conversation interaction reuse (2026-10-13)
+
+An explicitly selected `interaction` may belong to an earlier Task in the
+current trusted session/Conversation. Eligibility is identical for new and
+existing target Tasks; source Task equality is not an authorization condition.
+The application supplies the account database and trusted session scope.
+Admission and Runtime materialization share the same existence, session and
+non-empty assistant-content checks. This does not authorize account-wide or
+cross-Conversation history access.
+
+SQLite schema 48 keys `task_execution_evidence` by `(task_id, id)`. The 47→48
+transaction preserves existing IDs, data, foreign keys and the task listing
+index. Upsert never transfers ownership or overwrites a different
+kind/source/exact-only identity. Assistant evidence remains exact-only and
+absent from general list/search results.
+
+Context preparation revalidates each selected interaction and idempotently
+materializes its target Task association, including after an active graph is
+recovered without re-admission. Runtime does not select new history or resume
+blocked work. Missing sources, unauthorized sessions, unavailable assistant
+content and evidence identity collisions have distinct failure codes with
+`stage=context_preparation`, `attemptStarted=false` and no Executor side effect.
+They retain the existing Kernel explicit-recovery policy; no Runtime retry or
+fallback loop is added.
 
 ## Consequences
 

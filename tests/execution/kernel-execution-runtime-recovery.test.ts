@@ -169,7 +169,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
         status: 'running',
       },
       executionId: 'execution-timeout',
-      request: {},
+      request: { workspacePath: '/tmp/metawork-test-source' },
       progressTracker: { onProgress: vi.fn() },
     });
 
@@ -189,7 +189,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
     expect((runtime as unknown as {
       deps: { attemptRunner: { run: ReturnType<typeof vi.fn> } };
     }).deps.attemptRunner.run).toHaveBeenCalledWith(expect.objectContaining({
-      sourceRoot: '/Users/ylfego/Program/test',
+      sourceRoot: '/tmp/metawork-test-source',
     }));
   });
 
@@ -266,7 +266,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
         status: 'running',
       },
       executionId: 'execution-live',
-      request: {},
+      request: { workspacePath: '/tmp/metawork-test-source' },
       progressTracker: { onProgress: vi.fn() },
     });
 
@@ -327,7 +327,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
     expect(recordExecutionOutcome).not.toHaveBeenCalled();
   });
 
-  it('presents an authorized retry wait as non-terminal automatic recovery', async () => {
+  it.each(['running', 'blocked'])('arms a subtask retry without replacing a %s Task or sibling blocker', async taskStatus => {
     const blockTask = vi.fn();
     const finishExecution = vi.fn().mockResolvedValue(undefined);
     const retryBinding = binding('revision-a');
@@ -335,7 +335,8 @@ describe('KernelExecutionRuntime executor recovery', () => {
       taskRuntimeService: {
         findTask: vi.fn().mockReturnValue({
           id: 'task-retry-wait',
-          status: 'running',
+          status: taskStatus,
+          dependencies: [{ type: 'manual', status: 'waiting', description: 'sibling requires material' }],
         }),
         blockTask,
       },
@@ -379,17 +380,14 @@ describe('KernelExecutionRuntime executor recovery', () => {
     }).applyExecutionDecision({
       decision,
       executionId: 'execution-retry-wait',
-      request: {},
+      request: { workspacePath: '/tmp/metawork-test-source' },
       progressTracker: {},
       supervisorContext: {},
       attemptFacts: [],
       finishExecution,
     });
 
-    expect(blockTask).toHaveBeenCalledWith(
-      'task-retry-wait',
-      expect.objectContaining({ type: 'kernel_retry', status: 'waiting' }),
-    );
+    expect(blockTask).not.toHaveBeenCalled();
     expect(finishExecution).toHaveBeenCalledWith([
       expect.stringContaining('retry automatically'),
     ]);
@@ -435,7 +433,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
     }).runDispatchItem({
       item: historicalDispatch(),
       executionId: 'execution-recovery',
-      request: {},
+      request: { workspacePath: '/tmp/metawork-test-source' },
       progressTracker: {},
     });
 
@@ -497,7 +495,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
           reason: 'duplicate repair dispatch is stale',
         }),
       },
-      publicationRepo: {
+      publicationRepo: { unfinishedDeliveries: vi.fn().mockReturnValue([]),
         find: vi.fn().mockReturnValue(publication),
       },
       presentation: {
@@ -534,7 +532,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
         status: 'running',
       },
       executionId: 'execution-merge',
-      request: {},
+      request: { workspacePath: '/tmp/metawork-test-source' },
       progressTracker: { onProgress: vi.fn() },
     });
 
@@ -611,7 +609,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
     }).applyExecutionDecision({
       decision,
       executionId: 'execution-merge',
-      request: {},
+      request: { workspacePath: '/tmp/metawork-test-source' },
       progressTracker: {},
       supervisorContext: {},
       attemptFacts: [],
@@ -680,7 +678,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
     }).applyExecutionDecision({
       decision,
       executionId: 'execution-blocked',
-      request: {},
+      request: { workspacePath: '/tmp/metawork-test-source' },
       progressTracker: {},
       supervisorContext: {},
       attemptFacts: [],
@@ -692,7 +690,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
       'blocked',
       { error: reason },
     );
-    expect(blockTask).toHaveBeenCalled();
+    expect(blockTask).not.toHaveBeenCalled();
     expect(appendExecutionTrace).toHaveBeenCalledWith({
       phase: 'verification',
       actor: 'kernel',
@@ -710,12 +708,8 @@ describe('KernelExecutionRuntime executor recovery', () => {
       taskId: 'task-blocked',
       traceStatus: 'blocked',
     });
-    expect(blockTask.mock.invocationCallOrder[0]).toBeLessThan(
-      appendExecutionTrace.mock.invocationCallOrder.at(-1)!,
-    );
-    expect(finishExecution).toHaveBeenCalledWith([
-      `Execution blocked: ${reason}`,
-    ]);
+    expect(finishExecution).not.toHaveBeenCalled();
+
   });
 
   it('applies an authorized uncertified-result resume without clearing awaiting_decision', async () => {
@@ -740,6 +734,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
         appendExecutionTrace: vi.fn(),
         refreshRuntimeState: vi.fn(),
       },
+      workGraphRevisionRepo: { findActive: vi.fn().mockReturnValue({ generationId: 'generation-resume', revision: 3 }) },
       taskEventRepo: {},
       dispatchItemRepo: {},
       maxConcurrentAttempts: 4,
@@ -775,7 +770,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
     }).applyExecutionDecision({
       decision,
       executionId: 'execution-resume',
-      request: {},
+      request: { workspacePath: '/tmp/metawork-test-source' },
       progressTracker: {},
       supervisorContext: {},
       attemptFacts: [],
@@ -800,7 +795,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
     });
   });
 
-  it('projects a marker-only uncertified receipt with an active workspace as a resume candidate', () => {
+  it('does not treat missing workspace-change facts as metadata-only recovery', () => {
     const authorizedBinding = binding('revision-a');
     const runtime = new KernelExecutionRuntime({
       taskRuntimeService: {
@@ -867,7 +862,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
         }),
       },
       resultObjectRepo: {},
-      publicationRepo: {
+      publicationRepo: { unfinishedDeliveries: vi.fn().mockReturnValue([]),
         hasBlockingResidue: vi.fn().mockReturnValue(false),
       },
       generationReplanRepo: {
@@ -894,14 +889,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
       nativeContinuationAgentClasses: [AGENT_CLASS],
     });
 
-    expect(snapshot.resumeRecoveryCandidates).toEqual([{
-      subtaskId: 'subtask-resume',
-      sourceAttemptId: 'attempt-uncertified',
-      authorizedBinding,
-      bindingFingerprint: authorizedExecutorBindingFingerprint(authorizedBinding),
-      recoveryMode: 'native_session',
-      reason: 'completion_no_change_reason_mismatch',
-    }]);
+    expect(snapshot.resumeRecoveryCandidates).toBeUndefined();
   });
 
   it('projects a malformed completion report from a legacy blocked Subtask as a repair candidate', () => {
@@ -971,7 +959,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
         }),
       },
       resultObjectRepo: {},
-      publicationRepo: {
+      publicationRepo: { unfinishedDeliveries: vi.fn().mockReturnValue([]),
         hasBlockingResidue: vi.fn().mockReturnValue(false),
       },
       generationReplanRepo: {
@@ -1006,6 +994,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
       recoveryMode: 'recovery_packet',
       reason: 'completion_metadata_invalid',
       attemptKind: 'contract_correction',
+      correctionFacts: { receiptCount: 1, responseBytes: 15 },
       attemptPayload: {
         protocol: 'completion-correction-v2',
         completionContract: { protocol: 'v3' },
@@ -1168,7 +1157,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
       kernelWorkflowStore: {
         listRecoveryItems: vi.fn().mockReturnValue([application]),
       },
-      publicationRepo: {
+      publicationRepo: { unfinishedDeliveries: vi.fn().mockReturnValue([]),
         find: vi.fn().mockReturnValue({
           id: 'publication-merge-replan',
           taskId: 'task-merge-replan',

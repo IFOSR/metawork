@@ -9,7 +9,7 @@
 
 import { complete, type UserMessage } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { BorderedLoader } from "@earendil-works/pi-coding-agent";
+import { CancellableLoader } from "@earendil-works/pi-tui";
 
 const SYSTEM_PROMPT = `You are a question extractor. Given text from a conversation, extract any questions that need answering and format them for the user to fill in.
 
@@ -72,7 +72,12 @@ export default function (pi: ExtensionAPI) {
 
 			// Run extraction with loader UI
 			const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
-				const loader = new BorderedLoader(tui, theme, `Extracting questions using ${ctx.model!.id}...`);
+				const loader = new CancellableLoader(
+					tui,
+					(text) => theme.fg("accent", text),
+					(text) => theme.fg("muted", text),
+					`Extracting questions using ${ctx.model!.id}...`,
+				);
 				loader.onAbort = () => done(null);
 
 				// Do the work

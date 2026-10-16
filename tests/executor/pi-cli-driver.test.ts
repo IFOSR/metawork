@@ -16,7 +16,7 @@ describe('PiCliDriver', () => {
     expect(activity(event)?.checkpoint).not.toBe(activity({ ...event, partialResult: { page: 2 } })?.checkpoint);
   });
 
-  it('loads only the installed PDF extension into an isolated attempt home and probes its bundled Python', async () => {
+  it('loads the optional PDF extension without making its Python installation a Pi startup prerequisite', async () => {
     const root = await mkdtemp(join(tmpdir(), 'metawork-pdf-home-'));
     try {
       const pdfExtensionRoot = join(root, 'release', 'pi-pdf');
@@ -29,11 +29,8 @@ describe('PiCliDriver', () => {
       expect(await readFile(join(home.homePath, '.pi/agent/extensions/pi-pdf.ts'), 'utf8')).toContain(join(pdfExtensionRoot, 'index.ts'));
       await expect(stat(join(home.homePath, '.pi/agent/auth.json'))).rejects.toThrow();
       expect((await driver.probe()).available).toBe(true);
-      expect(probeCommand.mock.calls[1][0]).toBe(join(pdfExtensionRoot,
-        process.platform === 'win32' ? 'python/python.exe' : 'python/bin/python3'));
-      probeCommand.mockResolvedValueOnce({ code: 0, stdout: '1.0.0', stderr: '' })
-        .mockResolvedValueOnce({ code: 1, stdout: '', stderr: 'missing PDFium' });
-      expect(await driver.probe()).toMatchObject({ available: false, detail: expect.stringContaining('missing PDFium') });
+      expect(probeCommand).toHaveBeenCalledTimes(1);
+      expect(probeCommand).toHaveBeenCalledWith('pi', ['--version']);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

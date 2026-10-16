@@ -1,0 +1,7 @@
+lines: 6
+nonempty_lines: 4
+longest_line: #1 (17 chars)
+top_words:
+  world: 4
+  hello: 3
+  a: 1

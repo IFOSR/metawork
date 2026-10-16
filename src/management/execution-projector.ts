@@ -1,3 +1,4 @@
+import { projectTaskView, type TaskView } from '../task/task-view.js';
 import type { Task } from '../core/types.js';
 import type { TimelineTaskRecord } from '../storage/task-repo.js';
 import type { SubtaskRepo, TimelineSubtaskRecord } from '../storage/subtask-repo.js';
@@ -79,10 +80,13 @@ export interface ExecutionTimeline {
   taskId: string;
   title: string;
   status: string;
+  userState: TaskView['userState'];
+  userStateReason: string;
   stages: TimelineStage[];
 }
 
 export interface ExecutionProjectorDeps {
+  taskView?: (task: TimelineTaskRecord) => TaskView;
   subtaskRepo: SubtaskRepo;
   receiptRepo: ExecutorAttemptReceiptRepo;
   decisionRepo: KernelDecisionRepo;
@@ -140,15 +144,17 @@ export class ExecutionProjector {
     runtimeFor: (attemptId: string) => TimelineRuntimeRecord | null,
     publication?: { integrated: boolean; blocking: boolean },
   ): ExecutionTimeline {
+    const view = this.deps.taskView?.(task) ?? projectTaskView({
+      task: { ...task, updatedAt: null }, subtasks, dispatches: dispatchItems, receipts: [], replanJobs: [],
+      uncertainApplications: [], publications: [], completionResidue: [],
+      pendingPermission: null, retryWakeAt: null, result: null,
+    });
     return {
       taskId: task.id,
       title: task.title,
-      status: task.status === 'blocked'
-        && task.dependencies.some(dependency =>
-          dependency.type === 'kernel_retry' && dependency.status === 'waiting'
-        )
-        ? 'waiting_retry'
-        : task.status,
+      status: view.phase,
+      userState: view.userState,
+      userStateReason: view.userStateReason,
       stages: [
         this.projectPlanning(subtasks),
         this.projectAuthorization(decisions),

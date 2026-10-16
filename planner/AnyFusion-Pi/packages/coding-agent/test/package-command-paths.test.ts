@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_AGENT_DIR, PACKAGE_NAME, VERSION } from "../src/config.ts";
+import type { ExtensionAPI } from "../src/core/extensions/types.ts";
 import { ProjectTrustStore } from "../src/core/trust-manager.ts";
 import { main } from "../src/main.ts";
 import { handlePackageCommand } from "../src/package-manager-cli.ts";
@@ -199,7 +200,7 @@ describe("package commands", () => {
 			await expect(
 				main(["list"], {
 					extensionFactories: [
-						(pi) => {
+						(pi: ExtensionAPI) => {
 							pi.on("project_trust", () => ({ trusted: "yes" }));
 						},
 					],
@@ -236,7 +237,7 @@ describe("package commands", () => {
 			await expect(
 				main(["update", "--extensions"], {
 					extensionFactories: [
-						(pi) => {
+						(pi: ExtensionAPI) => {
 							pi.on("project_trust", () => {
 								projectTrustCalled = true;
 								return { trusted: "yes" };

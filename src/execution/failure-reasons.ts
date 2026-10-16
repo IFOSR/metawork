@@ -7,6 +7,16 @@ export function describeAttemptFailure(input: {
   errorDetail?: string | null;
 }): string | null {
   const detail = input.errorDetail ?? '';
+  switch (input.failureCode) {
+    case 'interaction_source_missing':
+      return '准备任务资料失败：引用的历史消息不存在，Executor 尚未启动。';
+    case 'interaction_not_authorized':
+      return '准备任务资料失败：引用的历史消息不属于当前对话，Executor 尚未启动。';
+    case 'interaction_content_unavailable':
+      return '准备任务资料失败：引用的历史回复没有可用内容，Executor 尚未启动。';
+    case 'evidence_identity_conflict':
+      return '准备任务资料失败：资料标识与已保存的来源冲突，Executor 尚未启动。';
+  }
   if (detail.includes('cannot copy a socket file')) {
     return '执行环境里残留了守护进程的 socket 文件，复制工作区时被中断；已在新版本中自动跳过此类文件，请重试任务。';
   }

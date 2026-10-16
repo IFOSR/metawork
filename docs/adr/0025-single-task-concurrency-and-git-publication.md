@@ -45,9 +45,29 @@ Downstream worktrees merge only their direct dependencies' published branches us
 
 Attempt success writes an immutable receipt and candidate commit, then moves the Subtask to `awaiting_integration`. It does not publish result, artifacts, handoffs or `done`.
 
-An Execution-owned publication worker integrates candidates in deterministic order: graph topological layer, first Kernel batch authorization order and Subtask ID. Only a successful integration transaction atomically publishes the original completion payload, final workspace state and `done`. Downstream frontier derivation therefore cannot observe unintegrated work.
+An Execution-owned publication worker integrates candidates in deterministic order: graph topological layer, first Kernel batch authorization order and Subtask ID. Git integration is recorded before required user delivery. Only successful delivery permits the transaction publishing the original completion payload, final workspace state and `done`. Downstream frontier derivation therefore cannot observe unintegrated work.
 
 The Runtime creates only MetaClaw-managed integration commits. It never mutates, merges or pushes a user branch.
+
+### Durable user delivery amendment (2026-10-15)
+
+SQLite schema 49 adds `workspace_publication_deliveries`, keyed by Publication,
+with pending/failed/succeeded status, artifact projections (including hashes),
+and per-file failures. Git integration and creation of pending delivery are one
+transaction. Filesystem copying is outside SQLite; delivery settlement and read
+model invalidation are transactional. No Attempt path copies user artifacts.
+Metadata correction produces a candidate for this same publication boundary.
+
+Delivery reads the recorded integration commit through an isolated snapshot, so
+later independent publications cannot substitute its file bytes. An integrated
+publication awaiting delivery does not hold the ordering of independent work.
+Failed delivery waits for the existing Kernel resume command; recovery copies
+only missing or changed files using the existing content-hash check and never
+restarts the Executor or repeats Git integration. Pending delivery and successful
+copy whose completion transaction was interrupted are replayed on recovery.
+Cancellation fences Subtask finalization even if filesystem copying has finished.
+Historical integrated publications without a delivery row retain their historical
+meaning; migration neither invents success nor republishes historical files.
 
 ### File policy and conflict repair
 

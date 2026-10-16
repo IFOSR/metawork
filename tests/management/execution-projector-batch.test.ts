@@ -177,7 +177,7 @@ it('projects narrow Task reads with canonical lifecycle semantics in seven queri
   try {
     const taskRepo = new TaskRepo(db);
     const canonical = tasks.map(task => projector.project(task));
-    expect(canonical[7]!.status).toBe('waiting_retry');
+    expect(canonical[7]!.status).toBe('executing');
     db.exec(`UPDATE tasks SET snapshot_json = 'unused-invalid', resources_json = 'unused-invalid',
       artifacts_json = 'unused-invalid', priority_json = 'unused-invalid', injected_prefs_json = 'unused-invalid'`);
     for (const count of [1, 10]) {
@@ -203,7 +203,7 @@ it('reads narrow columns in six queries for both one and ten populated canonical
     expect(canonical[1]!.stages[4]!.status).toBe('blocked');
     // Even a violation on an attempt outside the displayed last twenty still matters.
     expect(canonical[2]!.stages[3]!.status).toBe('failed');
-    expect(canonical[7]!.status).toBe('waiting_retry');
+    expect(canonical[7]!.status).toBe('executing');
     for (const count of [1, 10]) {
       queries.length = 0;
       const result = projector.projectMany(tasks.slice(0, count));

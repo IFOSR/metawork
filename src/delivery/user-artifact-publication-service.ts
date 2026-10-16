@@ -128,6 +128,9 @@ export class UserArtifactPublicationService {
       failures: [],
     };
     const sources = input.sources.slice(0, MAX_ARTIFACTS_PER_PUBLICATION);
+    for (const source of input.sources.slice(MAX_ARTIFACTS_PER_PUBLICATION)) {
+      result.failures.push({ sourceRelativePath: source.sourceRelativePath, reason: 'publication artifact count exceeds limit' });
+    }
     for (const source of sources) {
       try {
         const projection = await this.publishOne(
@@ -180,16 +183,18 @@ export class UserArtifactPublicationService {
     }
 
     const targetPath = this.safeJoinWithin(taskDirectory, sourceRelativePath);
-    await mkdir(dirname(targetPath), { recursive: true });
-    // 先写临时文件再原子 rename，避免半写状态对用户可见。
-    const tempTarget = `${targetPath}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    try {
-      await writeFile(tempTarget, bytes, { flag: 'wx' });
+    // A crash may leave the complete file without its SQLite row. Verify its
+    // bytes before adopting it, so recovery only registers that durable copy.
+    if (!await isPublishedArtifactIntact(targetPath, contentHash)) {
       await mkdir(dirname(targetPath), { recursive: true });
-      await rename(tempTarget, targetPath);
-    } catch (error) {
-      await rm(tempTarget, { force: true }).catch(() => undefined);
-      throw error;
+      const tempTarget = `${targetPath}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      try {
+        await writeFile(tempTarget, bytes, { flag: 'wx' });
+        await rename(tempTarget, targetPath);
+      } catch (error) {
+        await rm(tempTarget, { force: true }).catch(() => undefined);
+        throw error;
+      }
     }
 
     const now = this.now();

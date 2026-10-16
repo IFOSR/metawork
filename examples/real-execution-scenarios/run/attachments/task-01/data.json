@@ -1,0 +1,7 @@
+[
+  {"date": "2024-03-01", "sku": "A-100", "units": 3, "revenue": 45.5},
+  {"date": "2024-03-02", "sku": "B-220", "units": 10, "revenue": 120},
+  {"date": "2024-03-03", "sku": "A-100", "units": 1, "revenue": 15},
+  {"date": "2024-03-04", "sku": "C-300", "units": 7, "revenue": 89.99},
+  {"date": "2024-03-05", "sku": "B-220", "units": 0, "revenue": 0}
+]

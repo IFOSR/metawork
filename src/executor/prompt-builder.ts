@@ -1,4 +1,5 @@
 import type { ExecutorInput } from './adapter.js';
+import { posix, relative, win32 } from 'node:path';
 import {
   MERGE_REPAIR_PROTOCOL,
   mergeRepairReportExample,
@@ -7,6 +8,14 @@ import {
 /** The only production renderer for an Executor's attempt-scoped context. */
 export function buildExecutorContextPrompt(input: ExecutorInput): string {
   const { context } = input;
+  const binding = input.executionBinding;
+  const inputDirectory = binding
+    ? (win32.isAbsolute(binding.workspacePath) && !posix.isAbsolute(binding.workspacePath)
+      ? win32.relative(binding.workspacePath, binding.inputsPath).replaceAll('\\', '/')
+      : relative(binding.workspacePath, binding.inputsPath)) || '.'
+    : null;
+  const inputReadPath = (name: string) => inputDirectory === null
+    ? {} : { readPath: posix.join(inputDirectory, name) };
   const requiredCapabilities = context.currentSubtask.requiredCapabilities ?? [];
   const imageArtifactProtocol = requiredCapabilities.some(
     capability => capability === 'image-generation' || capability === 'image-editing',
@@ -38,7 +47,7 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
           noChangeReason: null,
         }),
         'Return only evidence and noChangeReason. Runtime derives changed files and injects schema identity, attempt/work-unit/subtask IDs, acceptance keys, and handoff identities from the bound contract.',
-        'Workspace changes are allowed for every delivery kind. Runtime tracks changes under the task Workspace for Git publication and audit; report delivery additionally returns the report body.',
+        'Workspace changes are allowed for every delivery kind when needed for the task. Runtime tracks changes for Git publication and audit. File delivery follows the Planner-declared fileOutputs below, independently of edit/report.',
         'If the Subtask cannot be completed, return {"failure":{"kind":"task_failed","code":"<stable_code>","summary":"<concise explanation>"}} instead.',
         'The marker shown above is illustrative. Emit it exactly once, only at the end of your final response.',
       ];
@@ -48,13 +57,22 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     'Boundary rules:',
     '- The Task goal below is background only. It is not an instruction to execute the whole Task.',
     '- Execute only currentSubtask.goal.',
+    '- Match the requested deliverable. A report delivery is an inline answer or action result, not an instruction to create a report file. For browser, installation, and other external actions, perform the action, verify its actual result, and briefly confirm it inline. Do not create Markdown reports, text logs, screenshots, or other extra documents merely to prove completion.',
+    '- For code edits, make the requested changes and briefly summarize verification inline; do not add a separate report document. Keep necessary temporary work separate from declared deliverables.',
+    '- Present comparisons as valid GFM tables: include a header separator row, keep each row on one line, escape literal pipes in cells, and keep tables outside code fences.',
+    '- For numeric analysis, include an inline chart when it materially helps explain trends, comparisons, or proportions. Use observed/supplied data, state units and sources, distinguish estimates, and explain the conclusion in prose. Never invent values to fill a chart or force a chart into a nonnumeric answer.',
+    '- Web/Desktop renders a fenced `chart` JSON block locally. Contract: version:1; type:"line"|"bar"|"area"|"pie"; title:string; labels:string[]; series:[{name:string,values:(number|null)[]}]; optional xLabel, unit, source strings. Use 1–200 labels and 1–8 uniquely named series, matching values to labels exactly; null means missing, never zero. Use line for trends, bar for comparisons, area for magnitude over time, and pie only for a nonnegative part-to-whole series with a positive total and unique labels. At most 12 charts per answer, each under 64,000 characters; numeric absolute values at most 10^15. No extra fields, JavaScript, HTML, URLs for external resources, or ECharts options. These charts are inline answer content, not file deliverables; they require no plugin, image-generation capability, or additional fileOutputs. Other text clients retain the JSON data; include a concise textual conclusion for them.',
+    'Illustrative chart syntax only (replace with actual task data; never copy these example values as evidence):',
+    '```chart',
+    '{"version":1,"type":"bar","title":"季度收入","labels":["一季度","二季度"],"series":[{"name":"收入","values":[120,150]}],"unit":"万元","source":"用户提供的季度数据"}',
+    '```',
     '- Other graph nodes are out of scope. Do not execute or anticipate their full goals.',
     '- Dependency data is available only through incomingHandoffs. Use result_reference_get to read an authorized full upstream result when the edge summary is insufficient.',
     '- The workspace is the primary task and publication context, not a read-only boundary. You may read and write ordinary user-space files outside it when useful for the task, including temporary research material and caches.',
     '- Web access must go through the web_search/web_fetch tools (managed backends, bounded timeouts, result caching). Only when web_search reports 网络不可用 may you fall back to bash curl/wget as a last resort.',
     '- Do not modify the host operating system control plane, credentials, privilege boundaries, devices, container control sockets, or high-impact external systems. Request a capability for such an operation and never work around a denial.',
     '- A granted request returns a grantId. Every broker-mediated use must call use_capability with that grantId and the exact operation payload so Runtime can enforce TTL, call, and byte budgets. A grant never permits direct access.',
-    '- Finish with non-empty Markdown followed by exactly one completion marker and strict JSON until EOF. Accepted trailer forms: `<!-- metaclaw:completion:v4 -->` on its own line followed by the JSON object, or the bundled `<!-- metaclaw:completion:v4 {...} -->`. The final response must be self-contained; never split the report body and the marker across multiple messages. If the report was written to a file in the output area, the trailer may instead declare "reportPath": "<relative file path>" and leave the inline body empty — that file content is then the authoritative body.',
+    '- Finish with a non-empty inline answer followed by exactly one completion marker and strict JSON until EOF. A short plain sentence is valid Markdown; no heading, report structure, or file is required. Accepted trailer forms: `<!-- metaclaw:completion:v4 -->` on its own line followed by the JSON object, or the bundled `<!-- metaclaw:completion:v4 {...} -->`. The final response must be self-contained; never split the body and the marker across multiple messages. Only when a report file is a declared deliverable may the trailer instead declare "reportPath": "<relative file path>" and leave the inline body empty; that file content then supplies the body.',
     '',
     `Task background: ${context.taskBackground.title}`,
     `Background goal: ${context.taskBackground.goal}`,
@@ -62,6 +80,12 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     `Current Subtask: ${context.currentSubtask.title}`,
     `Operative goal: ${context.currentSubtask.goal}`,
     `Delivery kind: ${context.currentSubtask.deliveryKind}`,
+    ...(context.currentSubtask.fileOutputs === undefined ? [] : [
+      `Planner-declared fileOutputs: ${JSON.stringify(context.currentSubtask.fileOutputs)}`,
+      context.currentSubtask.fileOutputs.length === 0
+        ? 'No file delivery is requested. Return the answer/action receipt inline. Do not create any extra report or evidence files. Requested code/configuration edits still belong in the workspace.'
+        : 'Produce every declared file output, or verify an existing file when it already satisfies the request. A trailing / declares a dedicated output directory that must contain deliverable files. Put only requested deliverables there; keep scratch files, scripts and logs outside it. Only matching files are delivered to the user and artifact handoffs.',
+    ]),
     `Required routing capabilities: ${
       requiredCapabilities.join(', ') || '(none)'
     }`,
@@ -108,10 +132,22 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
       truncated: evidence.truncated,
     })), null, 2),
     '',
+    'Input file resolution:',
+    ...(inputDirectory === null ? [
+      '- The input directory is provided by METACLAW_INPUTS_PATH; do not guess its location.',
+    ] : [
+      `Input directory relative to the working directory: ${JSON.stringify(inputDirectory)}`,
+      '- Each readPath below is directly usable from the working directory. relativeInputPath is relative to the input directory, NOT the working directory.',
+    ]),
+    '- These are the exact Planner-selected prior artifacts and current attachments, already verified and copied by Runtime. Read these copies; do not rediscover them in Conversation history or other task directories.',
+    '- Do not search the whole disk, filesystem root, or user home for these inputs. If a listed input cannot be read, report the missing input and stop instead of guessing another source.',
+    '- Treat inputs as read-only originals. Write revised deliverables in the working directory.',
+    '',
     'Planner-selected artifact inputs:',
     JSON.stringify((context.selectedArtifacts ?? []).map(artifact => ({
       displayName: artifact.displayName,
       relativeInputPath: artifact.relativeInputPath,
+      ...inputReadPath(artifact.relativeInputPath),
       mediaType: artifact.mediaType,
     })), null, 2),
     '',
@@ -119,6 +155,7 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     JSON.stringify((context.selectedAttachments ?? []).map(attachment => ({
       displayName: attachment.displayName,
       relativeInputPath: attachment.relativeInputPath,
+      ...inputReadPath(attachment.relativeInputPath),
       mediaType: attachment.mediaType,
     })), null, 2),
     '',

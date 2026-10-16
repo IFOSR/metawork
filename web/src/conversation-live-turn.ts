@@ -81,7 +81,7 @@ export function mergeExecutionTimeline(
   // timeline reports running work. Terminal Turns remain protected below.
   const canReopenActiveTask = current.status === 'blocked'
     && projectedStatus === 'running'
-    && ['running', 'waiting_retry'].includes(timeline.status);
+    && ['running', 'waiting_retry', 'executing', 'retrying', 'publishing', 'waiting_for_plan', 'queued'].includes(timeline.status);
   const status = projectedStatus && (current.status === 'running' || canReopenActiveTask)
     ? projectedStatus
     : current.status;
@@ -236,11 +236,11 @@ function mergeTraceStatus(
 export function turnStatusFromTimeline(
   timeline: ExecutionTimeline,
 ): ConversationTurnProjection['status'] | null {
-  if (['created', 'ready', 'running', 'waiting_retry'].includes(timeline.status)) {
+  if (['created', 'ready', 'running', 'waiting_retry', 'executing', 'retrying', 'publishing', 'waiting_for_plan', 'queued'].includes(timeline.status)) {
     return 'running';
   }
-  if (['done', 'archived'].includes(timeline.status)) return 'completed';
-  if (['blocked', 'parked'].includes(timeline.status)) return 'blocked';
+  if (['done', 'archived', 'completed'].includes(timeline.status)) return 'completed';
+  if (['blocked', 'parked', 'recovery_required', 'waiting_for_user'].includes(timeline.status)) return 'blocked';
   if (timeline.status === 'cancelled') return 'cancelled';
   if (timeline.status === 'failed') return 'failed';
 

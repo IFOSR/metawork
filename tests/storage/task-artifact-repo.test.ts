@@ -31,6 +31,18 @@ function createRepo(taskIds: string[] = ['task_a']) {
 }
 
 describe('TaskArtifactRepo', () => {
+  it('derives rich preview support from old unsupported records without changing persisted kinds', () => {
+    const { db, repo } = createRepo();
+    try {
+      const record = repo.insert({ accountId: 'local-default', taskId: 'task_a', displayName: '宣讲.pptx',
+        relativePath: '宣讲.pptx', publishedPath: '/private/input.pptx', mediaType: 'application/octet-stream',
+        previewKind: 'unsupported', contentHash: 'sha256:pptx', byteLength: 20, now: new Date().toISOString() });
+      expect(repo.toProjection(record)).toMatchObject({ previewable: true, documentFormat: 'pptx' });
+      expect(repo.findById(record.artifactId)?.previewKind).toBe('unsupported');
+      expect(repo.toProjection({ ...record, status: 'unavailable' }).previewable).toBe(false);
+    } finally { db.close(); }
+  });
+
   it('inserts records with stable ids and round-trips through projection without internal paths', () => {
     const { repo } = createRepo();
     const record = repo.insert({

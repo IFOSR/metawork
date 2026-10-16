@@ -5,7 +5,11 @@ import type { ConversationTaskSummary } from '../session/conversation-activity-t
 
 export class SqliteConversationActivityProjection implements ConversationActivityProjectionStore {
   constructor(private readonly db: Database.Database,
-    private readonly onCommitted?: (taskId: string, value: ConversationTaskSummary) => void) {}
+    private readonly onCommitted?: (taskId: string, value: ConversationTaskSummary) => void) {
+    this.db.prepare(`INSERT INTO conversation_activity_dirty(task_id, version)
+      SELECT task_id, 1 FROM conversation_activity_views WHERE json_extract(body_json, '$.userState') IS NULL
+      ON CONFLICT(task_id) DO UPDATE SET version = version + 1`).run();
+  }
   /** Bounded stop-dialog summary from canonical activity projections, including unsettled dirties. */
   serviceSummary(accountId: string): { activeTasks: number; tasks: Array<{ id: string; title: string }>; truncated: boolean } {
     const from = `FROM tasks task LEFT JOIN conversation_activity_views view ON view.task_id = task.id

@@ -102,6 +102,7 @@ export function ConversationTurnView({
   turn,
   liveExecutionPanel,
   onOpenArtifact,
+  onOpenAttachment,
   onOpenTrajectory,
   onOpenBilling,
   onRetryDelivery,
@@ -109,6 +110,7 @@ export function ConversationTurnView({
   turn: ConversationTurnProjection;
   liveExecutionPanel?: ReactNode;
   onOpenArtifact?: (artifact: ArtifactProjection) => void;
+  onOpenAttachment?: (conversationId: string, attachment: import('../api/session-types').ConversationAttachment) => void;
   onOpenTrajectory?: (turnId: string) => void;
   onOpenBilling?: (turnId: string) => void;
   onRetryDelivery?: (turnId: string) => void;
@@ -140,7 +142,7 @@ export function ConversationTurnView({
           <div className="message-attachments" aria-label={`附件 ${attachments.length} 个`}>
             {attachments.map(attachment => {
               const previewable = attachment.mediaClass === 'image' && attachment.status === 'available';
-              const previewUrl = previewable
+              const previewUrl = attachment.status === 'available'
                 ? `/api/attachments/${encodeURIComponent(attachment.attachmentId)}?sessionId=${encodeURIComponent(turn.sessionId)}`
                 : undefined;
               return (
@@ -151,9 +153,13 @@ export function ConversationTurnView({
                   rel={previewUrl ? 'noreferrer' : undefined}
                   aria-label={`${attachment.name}，${formatAttachmentSize(attachment.size)}，${attachment.status === 'available' ? '已上传' : '附件不可用'}`}
                   key={attachment.attachmentId}
-                  onClick={event => { if (!previewUrl) event.preventDefault(); }}
+                  onClick={event => {
+                    if (onOpenAttachment && attachment.status === 'available') {
+                      event.preventDefault(); onOpenAttachment(turn.sessionId, attachment);
+                    } else if (!previewUrl) event.preventDefault();
+                  }}
                 >
-                  {previewUrl
+                  {previewable
                     ? <img src={previewUrl} alt={`用户上传的截图 ${attachment.name}`} loading="lazy" />
                     : <span className="message-attachment-icon" aria-hidden="true">{attachmentIcon(attachment.mediaClass)}</span>}
                   <span className="message-attachment-meta">

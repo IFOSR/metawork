@@ -42,7 +42,7 @@ const DEFAULT_MAX_QUEUE_SIZE = 16;
  * turns — FIFO single-active-turn semantics (ADR-0031 §7) are preserved for
  * conversational input.
  */
-const CONTROL_COMMAND_PATTERN = /^\/(?:task\s+(?:clear|cancel|stop|list|show)|clear\b|status\b|doctor\b)/iu;
+const CONTROL_COMMAND_PATTERN = /^\/(?:task\s+(?:clear|cancel|stop|list|show|dashboard)\b|clear\b|status\b|doctor\b)/iu;
 
 /**
  * Turn control commands that must never wait for the active turn. This includes

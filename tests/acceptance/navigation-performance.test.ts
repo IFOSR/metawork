@@ -7,12 +7,9 @@ describe('production-shaped navigation HTTP acceptance', () => {
     const fixture = await createNavigationPerformanceFixture();
     try {
       const origin = fixture.server.address;
-      const login = await fetch(`${origin}/api/auth/login`, {
-        method: 'POST', headers: { 'content-type': 'application/json', origin },
-        body: JSON.stringify({ username: 'admin', password: 'test-password' }),
-      });
-      expect(login.status).toBe(200);
-      const cookie = login.headers.get('set-cookie')!.split(';')[0]!;
+      const session = await fetch(`${origin}/api/auth/session`, { headers: { origin } });
+      expect(session.status).toBe(200);
+      const cookie = session.headers.get('set-cookie')!.split(';')[0]!;
       const request = async (path: string, body?: unknown) => {
         const start = performance.now();
         const response = await fetch(`${origin}${path}`, {

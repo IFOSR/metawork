@@ -1,12 +1,18 @@
+import type { TaskUserState } from '../task/task-user-state.js';
 /** Small shared descriptors; Task Domain remains the lifecycle/phase authority. */
 export interface ConversationTaskSummary {
   readonly taskId: string;
   readonly title: string;
   readonly executionGeneration: string;
+  readonly graphRevision?: number;
   readonly phase: string;
+  readonly userState: TaskUserState;
+  readonly userStateReason: string;
   readonly explanation: string;
   readonly progressSummary?: string;
   readonly canCancel: boolean;
+  /** An attempt is settling; cancellation has not yet released execution. */
+  readonly executionSettling?: boolean;
 }
 
 export interface PendingInteractionSummary {

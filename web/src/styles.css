@@ -551,15 +551,15 @@ body {
   padding: 24px 0;
 }
 
-/* ─── TokenGate ─── */
-.token-gate {
+/* ─── Local session status ─── */
+.session-gate {
   height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.token-gate-card {
+.session-gate-card {
   width: 320px;
   display: flex;
   flex-direction: column;
@@ -570,18 +570,18 @@ body {
   border-radius: 12px;
 }
 
-.token-gate-card h1 {
+.session-gate-card h1 {
   margin: 0;
   font-size: 20px;
 }
 
-.token-gate-card p {
+.session-gate-card p {
   margin: 0;
   color: var(--text-dim);
 }
 
-.token-gate-card input[type='password'],
-.token-gate-card input[type='text'] {
+.session-gate-card input[type='password'],
+.session-gate-card input[type='text'] {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -589,22 +589,9 @@ body {
   color: var(--text);
   outline: none;
 }
-.token-gate-card input[type='password']:focus,
-.token-gate-card input[type='text']:focus {
+.session-gate-card input[type='password']:focus,
+.session-gate-card input[type='text']:focus {
   border-color: var(--accent);
-}
-
-.login-mode-switch {
-  padding: 4px;
-  border: 0;
-  color: var(--text-dim);
-  background: transparent;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.login-mode-switch:hover {
-  color: var(--accent);
 }
 
 .trust-row {
@@ -615,7 +602,7 @@ body {
   color: var(--text-dim);
 }
 
-.token-gate-card button {
+.session-gate-card button {
   background: var(--accent);
   border: none;
   border-radius: 8px;
@@ -4205,6 +4192,77 @@ select {
   color: var(--accent);
 }
 
+.markdown-content { min-width: 0; max-width: 100%; }
+.markdown-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 14px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.markdown-table-scroll:focus-visible,
+.inline-chart button:focus-visible,
+.inline-chart summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.markdown-content table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.markdown-content th, .markdown-content td {
+  padding: 9px 13px;
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  min-width: 90px;
+  max-width: 420px;
+  overflow-wrap: normal;
+  vertical-align: top;
+}
+.markdown-content th:not([align]), .markdown-content td:not([align]) { text-align: left; }
+.markdown-content [align='left'] { text-align: left; }
+.markdown-content [align='center'] { text-align: center; }
+.markdown-content [align='right'] { text-align: right; }
+.markdown-content thead th { background: var(--bg-elevated); font-weight: 600; }
+.markdown-content tbody tr:nth-child(even) { background: color-mix(in srgb, var(--bg-elevated) 45%, transparent); }
+.markdown-content tr:last-child > td, .markdown-content tbody tr:last-child > th { border-bottom: 0; }
+.markdown-content tr > :last-child { border-right: 0; }
+.markdown-content caption { padding: 8px; text-align: left; color: var(--text-dim); }
+.inline-chart {
+  margin: 18px 0;
+  padding: 18px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-panel);
+  color: var(--text);
+}
+.inline-chart figcaption { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; }
+.inline-chart figcaption strong { font-size: 15px; }
+.inline-chart figcaption span, .inline-chart-source { color: var(--text-dim); font-size: 12px; }
+.inline-chart-controls { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
+.inline-chart-legend { display: flex; flex-wrap: wrap; flex: 1; gap: 6px; }
+.inline-chart-legend button {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid transparent; border-radius: 5px; padding: 5px 8px;
+  background: var(--bg-elevated); color: var(--text); font: inherit; font-size: 12px;
+  text-align: left; overflow-wrap: anywhere; cursor: pointer;
+}
+.inline-chart-legend button[aria-pressed='false'] { opacity: .55; text-decoration: line-through; }
+.inline-chart-legend button span { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
+.inline-chart-plot { height: 300px; width: 100%; min-width: 0; }
+.inline-chart-source { margin: 4px 0 10px; }
+.inline-chart-data { border-top: 1px solid var(--border); padding-top: 10px; }
+.inline-chart summary, .inline-chart-fallback summary { cursor: pointer; }
+.markdown-content td.chart-number { text-align: right; }
+.inline-chart-fallback { padding: 12px; margin: 14px 0; border: 1px solid var(--border); border-radius: 8px; }
+@media (max-width: 600px) {
+  .inline-chart { padding: 12px 8px; }
+  .inline-chart-plot { height: 260px; }
+}
+
 .composer-wrap {
   position: relative;
   z-index: 5;
@@ -5238,6 +5296,15 @@ select:focus-visible {
   background: #1d2419;
 }
 
+.artifact-drawer-actions .artifact-drawer-download,
+.artifact-drawer-actions .native-artifact-save button {
+  width: auto;
+  min-height: 30px;
+  height: auto;
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+
 .artifact-drawer-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -5245,6 +5312,10 @@ select:focus-visible {
   overflow-y: auto;
   overscroll-behavior: contain;
 }
+
+.artifact-drawer-body:has(.rich-document-preview) { padding: 0; overflow: hidden; display: flex; }
+.rich-document-preview { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.rich-document-preview > iframe { flex: 1; width: 100%; min-height: 300px; border: 0; background: #fff; }
 
 .artifact-preview-drawer.is-collapsed .artifact-drawer-body {
   display: none;
@@ -8189,3 +8260,11 @@ html[data-platform='desktop'] .workspace-header { column-gap: 16px; }
 .official-payment-dialog img { display: block; margin: 12px auto; border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 8px; }
 .official-payment-dialog .official-actions { display: flex; justify-content: center; gap: 12px; margin-top: 12px; }
 @media(max-width: 540px) { .official-account-dialog { padding: 20px; } .official-plans { grid-template-columns: 1fr; gap: 20px; } .official-plans article { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; } .official-plans h3, .official-plans p { margin: 0; } }
+.task-attention {
+  margin: 12px 0;
+  padding: 16px;
+  border: 1px solid currentColor;
+  border-radius: 12px;
+  overflow-wrap: anywhere;
+}
+.task-attention button { margin: 4px 8px 4px 0; }

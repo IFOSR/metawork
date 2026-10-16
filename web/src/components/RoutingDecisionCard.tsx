@@ -71,7 +71,7 @@ function spanRoutingReason(reason: string | null): string {
     case 'span_timeout':
       return '决策模型超时，已回退到系统路由';
     case 'span_input_too_large':
-      return '本次任务信息超出决策模型输入上限，已回退到系统路由';
+      return '候选数量或路由请求大小超出 MetaWork 本地限制，未调用决策模型，已回退到系统路由';
     case 'span_proposal_budget_exhausted':
       return '本次候选数量超出决策模型处理上限，已回退到系统路由';
     case 'span_secret_unavailable':

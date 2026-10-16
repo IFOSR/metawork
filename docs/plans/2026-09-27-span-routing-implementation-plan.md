@@ -133,7 +133,7 @@ npx vitest run tests/routing/span-question-builder.test.ts tests/routing/span-re
 
 **Step 3 — 定义 observation union。** 共用 envelope 含 schema/policy/question version、eventId、proposal fingerprint、revision、generation、graph revision；每个 Subtask advised 分支有 candidate-set fingerprint、实际模型版本与完整概率，fallback/skipped 分支无评分。所有错误为枚举；unknown error 不持久化原文。
 
-**Step 4 — 请求边界。** 一个 Subtask 一批联合 choice；32 候选/32KiB request，proposal 128 候选/16 个评估 Subtask/128KiB observation，Server 2 并发，proposal timeout 包含排队与调用，禁用 SDK 重试。超限回退不静默丢候选。使用固定 endpoint，防止高级配置把凭据发往任意 URL。
+**Step 4 — 请求边界。** 一个 Subtask 一批联合 choice；32 候选/128KiB request（原设计 32KiB，2026-10-15 按 ADR-0033 调整本地字节预算），proposal 128 候选/16 个评估 Subtask/128KiB observation，Server 2 并发，proposal timeout 包含排队与调用，禁用 SDK 重试。超限回退不静默丢候选。使用固定 endpoint，防止高级配置把凭据发往任意 URL。
 
 **Step 5 — 适配器测试。** 使用假的 HTTP/SDK 返回，测试认证/限流/服务端异常、hang 后 abort、取消、缺 key、超时后迟到返回、并发和总 deadline。真实时间只用于少量 abort 集成测试，其他用 fake timers。
 

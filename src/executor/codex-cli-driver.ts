@@ -279,8 +279,8 @@ export class CodexCliDriver implements HarnessDriver {
         + join(this.generatedRuntimeRoot, revisionId, 'codex'),
       );
     }
-    const templateDir = this.explicitHomeTemplateDir
-      ?? revisionHome
+    const templateDir = revisionHome
+      ?? this.explicitHomeTemplateDir
       ?? this.fallbackHomeTemplateDir;
     if (!templateDir) return;
     const source = join(templateDir, 'config.toml');

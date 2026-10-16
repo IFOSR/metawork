@@ -93,7 +93,7 @@ state 只包含经过脱敏并限长的 Subtask 标题、目标、必需能力�
 }
 ```
 
-每个 Subtask 一个批量请求，最多 32 个候选、32KiB 请求；整个 proposal 最多 128 个候选、16 个被评估 Subtask、128KiB observation。超限的 Subtask 回退，不截掉合法候选制造偏向；整个 observation 超限时整次回退。每个 proposal 的外部请求总截止时间为 timeoutMs，不能让 N 个 Subtask 顺序累积 N 倍超时。Server 限制最多 2 个并发 Span 请求，等待计入截止时间，无无限队列。SDK 自动重试关闭；超时发送 abort，不仅 Promise.race。取消、服务停止中断请求；迟到结果不能复活 Turn 或入库。
+每个 Subtask 一个批量请求，最多 32 个候选、128KiB 请求（原设计 32KiB，2026-10-15 按 ADR-0033 调整；这是本地序列化字节预算，不是模型 token 窗口）；整个 proposal 最多 128 个候选、16 个被评估 Subtask、128KiB observation。超限的 Subtask 回退，不截掉合法候选制造偏向；整个 observation 超限时整次回退。每个 proposal 的外部请求总截止时间为 timeoutMs，不能让 N 个 Subtask 顺序累积 N 倍超时。Server 限制最多 2 个并发 Span 请求，等待计入截止时间，无无限队列。SDK 自动重试关闭；超时发送 abort，不仅 Promise.race。取消、服务停止中断请求；迟到结果不能复活 Turn 或入库。
 
 只接纳 exact question ID 集合、type=choice、合法 winner 以及完整候选 probability map；概率必须 finite 且在 [0,1]。缺失/未知候选、错误 primitive、无效模型身份均使该 Subtask 全部回退；不部分采用同一 Subtask 的回答。模型字段允许已核实的 Mercury snapshot 形式，并在 observation 中保存实际返回版本；usage 字段可缺省，但出现时必须有限、非负、有界。错误仅保留枚举和可选 HTTP status，不保存 SDK 原始 error body。
 

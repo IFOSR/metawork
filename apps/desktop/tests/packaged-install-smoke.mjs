@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { _electron } from 'playwright-core';
 import { verifyDesktopMenu } from './menu-smoke.mjs';
+import { verifyConversationChart } from './conversation-chart-smoke.mjs';
 
 // Clean-install smoke of the signed app; no model requests or paid task execution.
 const application = resolve(process.argv[2] ?? '');
@@ -33,6 +34,43 @@ try {
   await page.locator('.workspace-shell').waitFor({ timeout: 30000 });
   const authenticated = await page.evaluate(async () => (await (await fetch('/api/auth/session')).json()).authenticated);
   assert.equal(authenticated, true);
+  if (process.env.METAWORK_SMOKE_DOCUMENT_FIXTURES) {
+    const files = JSON.parse(await readFile(process.env.METAWORK_SMOKE_DOCUMENT_FIXTURES, 'utf8'));
+    const cases = [
+      ['report.docx', 'docx', '企业主权 AI 文档预览'],
+      ['slides.pptx', 'pptx', '商业宣讲第 1 页'],
+      ['sales.xlsx', 'xlsx', '商业化收入'],
+      ['report.pdf', 'pdf', '页 1 / 1'],
+    ];
+    if (files['user-presentation.pptx']) cases.push(['user-presentation.pptx', 'pptx', '幻灯片 1 / 3']);
+    for (const [name, format, text] of cases) {
+      await page.evaluate(input => {
+        const frame = document.createElement('iframe');
+        frame.id = 'document-smoke'; frame.setAttribute('sandbox', 'allow-scripts');
+        frame.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;z-index:99999;background:white';
+        frame.src = '/document-preview.html';
+        frame.onload = () => frame.contentWindow.postMessage({ type: 'metawork-preview', ...input }, '*');
+        document.body.append(frame);
+      }, { name, format, content: `data:application/octet-stream;base64,${files[name]}` });
+      const frame = page.frameLocator('#document-smoke');
+      await frame.getByText(text, { exact: true }).waitFor({ timeout: 30000 });
+      assert.equal(await frame.locator('body').evaluate(() => typeof window.metaworkDesktop), 'undefined');
+      assert.equal(await frame.locator('body').evaluate(() => {
+        try { void parent.document.body; return false; } catch { return true; }
+      }), true);
+      if (name === 'user-presentation.pptx') {
+        for (let index = 1; index <= 3; index++) {
+          await frame.getByText(`幻灯片 ${index} / 3`, { exact: true }).waitFor();
+          assert((await frame.locator('#document').innerText()).trim().length > 20);
+          if (index < 3) await frame.getByRole('button', { name: '下一页', exact: true }).click();
+        }
+        await page.screenshot({ path: join(root, 'user-presentation-preview.png') });
+        console.log('Published user presentation: all three pages rendered locally.');
+      }
+      await page.evaluate(() => document.querySelector('#document-smoke').remove());
+    }
+    console.log('Packaged document readers: Word, PowerPoint, Excel, PDF and sandbox isolation passed.');
+  }
   const initial = await page.evaluate(async () => (await (await fetch('/api/config')).json()));
   assert.deepEqual(initial.config.providers, {});
   assert.deepEqual(initial.config.models, {});
@@ -71,6 +109,7 @@ try {
   }
   await page.getByRole('button', { name: '关闭', exact: true }).click();
   await verifyDesktopMenu(app);
+  if (process.env.METAWORK_SMOKE_CHARTS === '1') await verifyConversationChart(app, page, root, installRoot);
   await assert.rejects(access(join(installRoot, 'internal/llm-credentials.json')));
   serverPid = JSON.parse(await readFile(join(installRoot, 'server-endpoint.json'), 'utf8')).pid;
   await page.reload();
@@ -113,11 +152,13 @@ try {
   await page.getByRole('button', { name: '配置模型', exact: true }).waitFor({ state: 'hidden' });
   assert.equal(JSON.parse(await readFile(join(installRoot, 'server-endpoint.json'), 'utf8')).pid, serverPid);
   if (process.env.METAWORK_SMOKE_MANAGED_TOOLS === '1') {
+    // Inject damage between launches. Corrupting the live tree can race the
+    // first connection's inventory scan and kill its repair when app.close()
+    // terminates Electron, consuming the once-per-release automatic attempt.
+    await app.close();
     const pi = join(installRoot, 'app/current/desktop-tools/executor/bin/pi');
     await chmod(pi, 0o755); await writeFile(pi, '#!/bin/sh\nexit 1\n');
-    // Exercise the real next-launch check. A reconnect during an existing
-    // connection's inventory scan is intentionally coalesced with that scan.
-    await app.close();
+    // Exercise the real next-launch check against the damaged installed tree.
     app = await launch();
     page = await app.firstWindow();
     const deadline = Date.now() + 120000;

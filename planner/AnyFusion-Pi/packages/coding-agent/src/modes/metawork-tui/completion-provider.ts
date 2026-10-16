@@ -7,19 +7,11 @@
  * - 旧响应（版本/scope 不匹配）不得覆盖新草稿。
  */
 
-import type {
-	AutocompleteItem,
-	AutocompleteProvider,
-	AutocompleteSuggestions,
-} from "@earendil-works/pi-tui";
+import type { AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions } from "@earendil-works/pi-tui";
 import type { MetaWorkCompletionState } from "./model.ts";
 
 export interface MetaWorkCompletionSource {
-	requestCompletion(
-		text: string,
-		cursor: number,
-		debounceMs?: number,
-	): Promise<MetaWorkCompletionState | null>;
+	requestCompletion(text: string, cursor: number, debounceMs?: number): Promise<MetaWorkCompletionState | null>;
 }
 
 export interface CompletionReplacement {
@@ -34,10 +26,7 @@ export class GatewayCompletionProvider implements AutocompleteProvider {
 	private readonly source: MetaWorkCompletionSource;
 	private readonly scopeKey: () => string;
 
-	constructor(
-		source: MetaWorkCompletionSource,
-		scopeKey: () => string,
-	) {
+	constructor(source: MetaWorkCompletionSource, scopeKey: () => string) {
 		this.source = source;
 		this.scopeKey = scopeKey;
 	}
@@ -88,8 +77,7 @@ export class GatewayCompletionProvider implements AutocompleteProvider {
 			text: item.value,
 		};
 		const applied = applyRange(text, replacement);
-		const nextCursor = Math.max(0, Math.min(replacement.start, text.length))
-			+ replacement.text.length;
+		const nextCursor = Math.max(0, Math.min(replacement.start, text.length)) + replacement.text.length;
 		return { lines: applied.split("\n"), ...positionAt(applied, nextCursor) };
 	}
 }

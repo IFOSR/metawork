@@ -22,6 +22,8 @@ if (process.isMainFrame) {
       selectExecutorFile: () => ipcRenderer.invoke('desktop:select-executor'),
       repairPi: () => ipcRenderer.invoke('desktop:repair-pi'),
       saveArtifact: (id, format) => ipcRenderer.invoke('desktop:save-artifact', id, format),
+      saveAttachment: (conversationId, id) => ipcRenderer.invoke('desktop:save-attachment', conversationId, id),
+      saveChartImage: (title, pngDataUrl) => ipcRenderer.invoke('desktop:save-chart-image', title, pngDataUrl),
       showDownloadedArtifact: id => ipcRenderer.invoke('desktop:reveal-artifact', id),
       readPreferences: () => ipcRenderer.invoke('desktop:preferences'),
       setTheme: theme => ipcRenderer.invoke('desktop:theme', theme),

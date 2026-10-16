@@ -42,6 +42,7 @@ function outputPlan() {
           modelSelection: { mode: 'fixed-by-agent-class' },
         }],
         deliveryKind: 'edit',
+        fileOutputs: [] as string[],
         acceptance: [{ key: 'tests_pass', description: 'tests pass', requiredEvidence: ['test result'] }],
         riskLevel: 'low',
       }],
@@ -51,6 +52,19 @@ function outputPlan() {
 }
 
 describe('PlanningAgent plan schemas', () => {
+  it.each([undefined, null, ['/tmp/report.md'], ['../report.md'], ['a/../../report.md'], ['./'], ['/'], ['C:/report.md'], ['a\\b'], ['a//b'], ['*.md'], ['.git/config'], ['.metaclaw/']].map(fileOutputs => ({ fileOutputs })))('rejects absent or unsafe file declarations: $fileOutputs', ({ fileOutputs }) => {
+    const plan = outputPlan();
+    expect(PlanningAgentPlanSchema.safeParse({ ...plan, workGraph: { ...plan.workGraph,
+      subtasks: [{ ...plan.workGraph.subtasks[0], fileOutputs }],
+    } }).success).toBe(false);
+  });
+
+  it.each([[], ['report.md'], ['演示.pptx', 'assets/']].map(fileOutputs => ({ fileOutputs })))('accepts explicit file declarations: $fileOutputs', ({ fileOutputs }) => {
+    const plan = outputPlan();
+    plan.workGraph.subtasks[0]!.fileOutputs = fileOutputs;
+    expect(PlanningAgentPlanSchema.safeParse(plan).success).toBe(true);
+  });
+
   it('generates a Responses API compatible structured-output schema without oneOf', () => {
     const schema = z.toJSONSchema(PlanningAgentPlanOutputSchema, {
       target: 'draft-7',

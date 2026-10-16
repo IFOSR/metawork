@@ -85,6 +85,35 @@ describe('durable Conversation read model', () => {
     expect(store.content('account', 'conv', hash, 0, 100)).toBeNull();
   });
 
+  it('continues projecting a zero-byte result after an existing empty body', () => {
+    const { store, projector } = fixture();
+    const hash = createHash('sha256').update('').digest('hex');
+    const metadata = { resultId: 'empty-result', contentHash: `sha256:${hash}`, byteLength: 0,
+      certification: 'certified', completeness: 'complete' };
+
+    // A non-streamed empty answer is persisted as a zero-byte BLOB. A later
+    // streamed result can legitimately reference the same empty body.
+    projector.apply('account', 'conv', [
+      fact(1, 'seed', 'turn_started', { userInput: 'seed' }),
+      fact(2, 'seed', 'final_answer', { lines: [''] }),
+    ], 2);
+    projector.apply('account', 'conv', [
+      fact(3, 'one', 'turn_started', { userInput: 'request' }),
+      fact(4, 'one', 'result_delivery_available', metadata),
+      fact(5, 'one', 'result_chunk', { ...metadata, offset: 0, chunk: '' }),
+      fact(6, 'one', 'result_completed', metadata),
+      fact(7, 'one', 'terminal_error', { code: 'cancelled' }),
+    ], 7);
+
+    expect(store.head('account', 'conv')?.journalSequence).toBe(7);
+    expect(store.findTurn('account', 'conv', 'one')).toMatchObject({
+      status: 'cancelled', deliveryStatus: 'ready', answerRef: { hash, byteLength: 0 },
+    });
+    expect(store.content('account', 'conv', hash, 0, 4)).toEqual({
+      text: '', offset: 0, nextOffset: 0, byteLength: 0,
+    });
+  });
+
   it('recovers replaced history and emits deletion tombstones without resurrecting removed Turns from the audit', () => {
     const { db, store, projector } = fixture();
     const history = new SqliteConversationHistoryRepo<ConversationTurn>(db, 'account', 'conversation');

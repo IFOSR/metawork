@@ -17,6 +17,9 @@ This directory contains both current technical documentation and historical plan
 
 ## Current Docs
 
+- [富文档预览](plans/2026-10-15-rich-document-preview.md)：HTML、Word、PPT、Excel 和 PDF 的本地预览、附件入口及 Web/Desktop 验收。
+- [对话表格与图表](plans/2026-10-16-conversation-tables-and-charts.md)：完整 Markdown 表格、离线交互图表、分析师输出约定与浏览器/桌面验收。
+
 - [历史会话空白修复](plans/2026-10-10-history-viewport-restore-fix.md)：修复 Desktop 重启后长报告滚动位置恢复导致的空白，历史内容无需重建。
 
 - [官方账号服务运行与验收](current/official-account-operations.md)：huoshan 部署、管理入口、凭证停用、隐私与验收证据。
@@ -103,7 +106,7 @@ replacing those semantics.
   socket query parsing, completion ordering, navigation, Task/Attempt projection,
   history paging, authoritative permissions and client entry dependency isolation.
 
-- [Web workspace creation and login](plans/2026-09-16-web-workspace-creation-and-login.md): delivered explicit Web login with fixed built-in `admin` / `123456` credentials, non-authenticating one-time launch directory hints applied only after authentication, a cookie-only read-only local directory browser for creating a Workspace from the Web surface with Server-owned path resolution and `realpath`-resolved paths and Server-built `crumbs`, removal of the `launchContext` / `initializeClient` / `workspaceInitialization` contracts, and a startup-snapshot race fix in the Web client. Recorded by [ADR-0039](adr/0039-web-workspace-creation-and-login.md), which amends ADR-0034 and ADR-0035. Three browser E2E suites fail identically on the pre-change baseline and are recorded as pre-existing.
+- [Web workspace creation and login](plans/2026-09-16-web-workspace-creation-and-login.md): delivered the cookie-only Web workspace browser and one-time launch directory hint. Its original Admin password gate is superseded: the local transport Cookie is now created automatically and official account login owns the user identity and entitlement boundary. The workspace path and launch-context contracts remain governed by [ADR-0039](adr/0039-web-workspace-creation-and-login.md).
 - [Executor idle timeout and retry presentation](plans/2026-09-10-executor-idle-timeout-and-retry-presentation.md): delivered an idle-only Executor watchdog with no overall attempt-duration limit, operation-aware timer pausing (superseded by the 2026-10-06 PDF/stall plan’s continuous observation), and Web continuity across Kernel-authorized retry.
 - [Web Turn-Task presentation isolation design](plans/2026-09-10-web-turn-task-presentation-isolation-design.md): defines `Conversation -> Turn -> Task -> Subtask -> Attempt` presentation ownership while preserving complete Conversation history.
 - [Web Turn-Task presentation isolation implementation](plans/2026-09-10-web-turn-task-presentation-isolation.md): delivered monotonic Turn-to-Task binding, exact historical trajectory selection, mixed-history filtering, and current Conversation record refresh.
@@ -183,6 +186,16 @@ replacing those semantics.
 
 ## Implementation Plans
 
+- [任务执行可靠性统一方案](plans/2026-10-15-task-execution-reliability-unified-plan.md)：2026-10-15 已实施核心代码并逐阶段 review；统一四态、局部等待/失败与独立恢复。主机验收通过，Docker/真实飞书/正式安装平台发布门未关闭，状态仍为实施中。
+
+- [任务执行可靠性技术方案](plans/2026-10-15-task-execution-reliability-technical-design.md)：记录运行绑定核对、schema 49 持久交付、元数据修复约束与恢复防重；§13 保存逐阶段验证、最终根 3616 项通过、Pi 全仓 check 和隔离安装 Electron 验收，以及未验收平台边界。
+
+- [阻塞任务恢复操作入口](plans/2026-10-14-blocked-task-interaction-fix.md)：早期交互修复交付记录；后续恢复验收及剩余工作统一见上方方案，保留原有执行清理和队列约束。
+
+- [当前 Provider 协议核对与隔离测试](plans/2026-10-13-provider-protocol-audit.md)：已核对 7 个 Provider，记录 9 次 CLI 测试。DeepSeek、GLM Flash 与两个本地连接可保留协议；Claude 原生协议候选通过但生产激活需要后端支持；另有 GPT 服务过载/超时、FlashX 订阅权限与 Mercury 专用接口问题。生产配置尚未更改。
+
+- [同一会话历史信息跨任务复用修复方案](plans/2026-10-13-shared-interaction-evidence-fix.md)：源码修复及本地验证完成，本机 Desktop/Server 已更新。schema 48 使用任务范围证据主键，统一历史引用检查并修复恢复时缺失的关联；已通过旧库升级、回滚、执行前错误分期及事故数据库隔离副本验证，安装后三轮测试确认历史引用成功，但无工具执行却显示完成的问题仍导致文件交付失败。
+
 - [PDF 下载与能力手册修复试用 DMG](plans/2026-10-10-report-manual-trial-dmg.md)：macOS arm64 内部包 `0.1.9-internal-local20261010b`；用户本地试用，不发布 GitHub。
 
 - [能力手册长度导致激活失败修复](plans/2026-10-10-executor-manual-activation-fix.md)：移除生成手册及 Planner 手册投影的固定字节长度阻断，保留完整内容。
@@ -194,6 +207,8 @@ replacing those semantics.
 - [MetaCoin usage and Query billing implementation](plans/2026-09-21-metacoin-query-billing-implementation-plan.md): implementation completed on 2026-09-22 without a commit. The 11-task plan covers single-user multi-task reliability, per-Query usage/stage costs, assessed MetaCoin bills, Task rollups, three-client projections, and idempotent external consumption reporting. Queries need not have Tasks; assessed charges and externally confirmed deductions are separate. Wallets, subscriptions/payment collection, recharge and refunds belong to an independent external system; Provider restrictions, a mandatory model proxy, local balance enforcement and shared-runtime multi-tenancy are excluded.
 
 ## Future Roadmap
+
+- [MetaWork 垂类化架构方案](plans/2026-10-12-metawork-vertical-domain-package-design.md)：待 Review，尚未实施。区分 Core、共享适配与产品组件，以单仓静态组合接入首个行业 Domain Package；保留现有 Executor 执行主链，不新增行业调度器或通用插件平台。
 
 - [Multi-tenant service and Query metering assessment](plans/2026-09-21-multi-tenant-and-query-metering-assessment.md): earlier code-grounded assessment of single-account deployment, queue wake-up/limit gaps and broader tenant isolation/metering proposals. Retained as evidence and deferred roadmap context; the finalized MetaCoin plan above governs this release, not the assessment's broader recommendations.
 - [Earlier multi-top-level-Task scheduling proposal](plans/future-multi-task-scheduling-roadmap.md): historical planning context. [ADR-0037](adr/0037-multi-conversation-task-parallelism.md) now defines multi-Conversation concurrency and supersedes ADR-0011's account-wide single-active-Task restriction; see the assessment above for remaining production scheduling gaps.
@@ -242,3 +257,5 @@ Desktop implementation: [isolated branch progress](plans/2026-10-05-metawork-des
 
 - [v0.1.7 Desktop release](plans/2026-10-08-v0.1.7-release.md) — published latest on 2026-10-08; CLI discovery, readiness UI and artifact acceptance.
 - [Desktop update recovery loop](plans/2026-10-08-desktop-update-recovery-loop.md) — lock-release ordering and repair-only source correction validated and included in v0.1.8.
+
+- [Provider 协议选择与 GPT Responses 切换（2026-10-13）](plans/2026-10-13-provider-protocol-selection.md)

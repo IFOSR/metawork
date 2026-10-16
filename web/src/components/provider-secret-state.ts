@@ -42,6 +42,7 @@ export function normalizeProviderBaseUrl(value: string): string {
 
 export function providerIdentityKey(provider: {
   baseUrl: string;
+  protocol?: import('../../../src/configuration/types').ProviderProtocol;
   apiKey: string;
   credentialFingerprint?: string;
 }): string | undefined {
@@ -50,11 +51,12 @@ export function providerIdentityKey(provider: {
   // Pending edits take precedence over the last saved credential fingerprint.
   const credential = provider.apiKey.trim()
     ? `raw:${provider.apiKey.trim()}` : provider.credentialFingerprint;
-  return baseUrl && credential ? `${baseUrl}|${credential}` : undefined;
+  return baseUrl && credential ? `${provider.protocol ?? 'openai-compatible'}|${baseUrl}|${credential}` : undefined;
 }
 
 export async function currentProviderIdentityKey(provider: {
   baseUrl: string;
+  protocol?: import('../../../src/configuration/types').ProviderProtocol;
   apiKey: string;
   credentialFingerprint?: string;
 }): Promise<string | undefined> {
