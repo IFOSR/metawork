@@ -1,0 +1,158 @@
+# MetaWork official service on Kubernetes.
+# SQLite is a single-writer local file: exactly one replica, Recreate strategy
+# (never RollingUpdate — a second pod must never share the data volume), RWO PVC.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: metawork-official-data
+  namespace: nexusfusionai
+spec:
+  accessModes: ["ReadWriteOnce"]
+  # 集群已有的阿里云 NAS CSI 存储类（nasplugin.csi.alibabacloud.com）：
+  # 网络附加存储，节点故障时 Pod 迁移数据不丢。SQLite 为单写者低频写入，NAS 可承载；
+  # 上线验收的第一步（建账号/建订单）即真实写库验证，若锁异常会当场暴露。
+  storageClassName: cloud-nas-cnfs
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metawork-official
+  namespace: nexusfusionai
+  labels:
+    app: metawork-official
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: metawork-official
+  template:
+    metadata:
+      labels:
+        app: metawork-official
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: official-server
+          image: registry.cn-shanghai.aliyuncs.com/metafusion/official-server:1.0.4
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8780
+          env:
+            - name: HOST
+              value: 0.0.0.0
+            - name: PORT
+              value: "8780"
+            - name: DATABASE_PATH
+              value: /app/data/official.sqlite
+            # Behind an ingress the peer address is the proxy, so the per-IP limiter
+            # degrades to a global bucket; raise the knobs instead of trusting proxy headers.
+            - name: HTTP_RATE_MAX
+              value: "6000"
+            - name: AUTH_RATE_MAX
+              value: "600"
+            - name: EMAIL_RATE_MAX
+              value: "600"
+            - name: TRUST_PROXY
+              value: "0"
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef: { name: metawork-official-secrets, key: ADMIN_TOKEN }
+            # 生产支付网关（微信 Native）。生产凭证经 Secret 注入，不入库；联调可用测试网关
+            # https://opc-openapi.dev.metafusion.cc（已全链路验证）。
+            - name: PAYMENT_HUB_BASE_URL
+              value: https://opchub-openapi.metafusion.cn
+            - name: PAYMENT_HUB_CLIENT_ID
+              valueFrom:
+                secretKeyRef: { name: metawork-official-secrets, key: PAYMENT_HUB_CLIENT_ID }
+            - name: PAYMENT_HUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: metawork-official-secrets, key: PAYMENT_HUB_CLIENT_SECRET }
+            - name: PAYMENT_NOTIFY_URL
+              valueFrom:
+                secretKeyRef: { name: metawork-official-secrets, key: PAYMENT_NOTIFY_URL }
+            # 内置 AI 为可选功能：三个键可不在 Secret 中（optional: true 时缺失即不注入），
+            # 此时其余功能正常，仅 AI 接口返回 official_ai_unavailable；后续补键需滚动重启生效。
+            - name: MODEL_BASE_URL
+              valueFrom:
+                secretKeyRef: { name: metawork-official-secrets, key: MODEL_BASE_URL, optional: true }
+            - name: MODEL_API_KEY
+              valueFrom:
+                secretKeyRef: { name: metawork-official-secrets, key: MODEL_API_KEY, optional: true }
+            - name: MODEL_ID
+              valueFrom:
+                secretKeyRef: { name: metawork-official-secrets, key: MODEL_ID, optional: true }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8780 }
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8780 }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: metawork-official-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metawork-official
+  namespace: nexusfusionai
+spec:
+  type: ClusterIP
+  selector:
+    app: metawork-official
+  ports:
+    - port: 80
+      targetPort: 8780
+---
+# Public HTTPS entry so the OPC Hub gateway can deliver PAYMENT.PAID notifications.
+# 系统域名（官方服务公网入口）= metawork.nexusfusionai.com。
+# 支付回调复用同一域名：PAYMENT_NOTIFY_URL = https://metawork.nexusfusionai.com/v1/payments/notify
+# （部署时经 Secret 注入；需在 OPC Hub 平台登记回调地址，DNS A 记录部署后指向 Ingress 外网地址）。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: metawork-official
+  namespace: nexusfusionai
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/proxy-body-size: 256k
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["metawork.nexusfusionai.com"]
+      secretName: metawork-official-tls
+  rules:
+    - host: metawork.nexusfusionai.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: metawork-official
+                port:
+                  number: 80

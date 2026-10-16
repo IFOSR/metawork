@@ -156,6 +156,7 @@ complete; the linked plan retains the real Docker acceptance gate.
 | Web workspace creation and login | [ADR-0039](0039-web-workspace-creation-and-login.md) | Explicit Web login, non-authenticating launch hints, fixed built-in credentials, and cookie-only local directory browsing for Workspace creation; amends ADR-0034 and ADR-0035 |
 | Query usage metering, billing and external consumption | [ADR-0042](0042-query-usage-billing-and-external-consumption.md) | Query-scoped attribution, metering spans/observations and coverage, payer policy, exact money precision, immutable final Query bills, Task/account rollups, idempotent third-party consumption, client read-only projection and the trusted-export gate |
 | Settings model catalog and Planner quality | [ADR-0044](0044-settings-model-catalog-and-planner-quality.md) | OpenRouter public metadata and CNY pricing, optional AgentClass responsibilities, internal SettingsAssistant ownership, shared Planner/Executor hot activation, and advisory DAG quality checks |
+| Official account payment settlement and refund channel | [ADR-0048](0048-official-account-payment-settlement.md) | Callback-only settlement authority, idempotent attempt-history settlement, exact integer money, append-only refund rollback, admin-only refund channel, persisted payment incidents, and graceful degradation without gateway credentials |
 
 When two current ADRs appear to overlap, the more specific topic ADR defines its data contract while ADR-0020 defines module ownership and dependency direction. A newer ADR must explicitly amend or supersede an older one; implementation plans cannot silently override ADRs.
 
@@ -163,6 +164,10 @@ When two current ADRs appear to overlap, the more specific topic ADR defines its
 
 - [ADR-0047](0047-account-license-and-official-ai.md), accepted 2026-10-09:
   official account sessions, entitlement admission and managed internal AI.
+
+- [ADR-0048](0048-official-account-payment-settlement.md), accepted 2026-10-14:
+  implemented locally with the full test suite green; huoshan deployment and
+  real scan-payment acceptance remain open. See the [plan](../plans/2026-10-14-official-account-payment-integration.md).
 
 - [ADR-0043](0043-explicit-conversation-observation-and-client-read-models.md), accepted 2026-10-03: implementation remains local pending user validation. See the [design](../plans/2026-10-02-frontend-observation-architecture-upgrade-design.md) and [evidence and remaining gates](../plans/2026-10-02-frontend-observation-implementation.md).
 

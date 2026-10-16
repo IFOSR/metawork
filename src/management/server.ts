@@ -1719,12 +1719,31 @@ export class ManagementServer {
         this.sendJson(response, 201, await authorization.createOrder(plan, idempotencyKey));
         return;
       }
+      const payMatch = /^\/api\/official-auth\/orders\/([A-Za-z0-9_-]+)\/pay$/u.exec(url.pathname);
+      if (request.method === 'POST' && payMatch) {
+        this.sendJson(response, 200, await authorization.payOrder(payMatch[1]));
+        return;
+      }
+      const orderCloseMatch = /^\/api\/official-auth\/orders\/([A-Za-z0-9_-]+)\/close$/u.exec(url.pathname);
+      if (request.method === 'POST' && orderCloseMatch) {
+        this.sendJson(response, 200, await authorization.closeOrder(orderCloseMatch[1]));
+        return;
+      }
+      const orderDetailMatch = /^\/api\/official-auth\/orders\/([A-Za-z0-9_-]+)$/u.exec(url.pathname);
+      if (request.method === 'GET' && orderDetailMatch) {
+        this.sendJson(response, 200, await authorization.refreshOrder(orderDetailMatch[1]));
+        return;
+      }
+      if (request.method === 'GET' && url.pathname === '/api/official-auth/orders') {
+        this.sendJson(response, 200, await authorization.listOrders());
+        return;
+      }
     } catch (error) {
       const code = (error as { code?: string }).code;
       const status = code === 'already_logged_in' ? 409
         : code === 'entitlement_inactive' ? 402
           : code === 'session_invalid' ? 401
-            : code === 'verification_unavailable' ? 503 : 400;
+            : code === 'verification_unavailable' || code === 'payment_unavailable' ? 503 : 400;
       this.sendJson(response, status, { error: code ?? 'official_authorization_failed', message: error instanceof OfficialAuthorizationError ? error.message : '官方账号操作失败，请重试。' });
       return;
     }

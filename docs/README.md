@@ -129,6 +129,8 @@ replacing those semantics.
 
 - [ADR-0047: 官方账号授权与内置 AI](adr/0047-account-license-and-official-ai.md)：一期实现边界、授权核验和官方服务职责。
 
+- [ADR-0048: 官方账号支付结算与退款通道](adr/0048-official-account-payment-settlement.md)：回调唯一授权、attempt 历史幂等结算、整数分金额、append-only 退款恢复、仅管理端退款与支付 incident 台账；本地实施完成，部署验收待办。[方案](plans/2026-10-14-official-account-payment-integration.md)。
+
 - [Desktop 接入已有 Web Runtime](plans/2026-10-08-desktop-existing-runtime-adoption.md)：同版本复用与工具补齐、旧版本原地升级、数据保留及联合激活回滚验证。
 
 - [v0.1.5 Web 与 Desktop 联合发布](plans/2026-10-07-v0.1.5-release.md)：准备中；统一版本、完整产物发布校验及中英文安装入口。正式签名与线上发布尚未完成。

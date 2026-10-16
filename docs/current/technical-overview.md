@@ -1963,3 +1963,12 @@ HTTP or commercial credentials enter Kernel. Clean native installs without
 Provider environment variables open the login/settings shell.
 Deployment, limits, privacy, credential retirement and acceptance evidence are
 recorded in [official account operations](official-account-operations.md).
+ADR-0048 (2026-10-14) adds the payment settlement and refund channel to the
+same service: WeChat Native scan payments via the OPC Hub gateway, callback-only
+settlement (HMAC-verified `PAYMENT.PAID`, idempotent attempt-history
+transactions, exact integer money), admin-only refunds that restore the
+pre-purchase license revision, and persisted `payment_incidents` for money
+that cannot settle automatically. Local clients gain pay/poll/list
+passthrough routes and a QR dialog; refunds never surface to clients.
+Without `PAYMENT_HUB_*` credentials the payment paths answer
+`payment_unavailable` and all other behavior is unchanged.

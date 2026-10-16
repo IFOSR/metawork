@@ -83,9 +83,9 @@ npm test
 
 ## 运行行为
 
-Web/Desktop 顶部“登录 / 注册”或“账号与订阅”进入账号窗口。注册后选择七天试用，已订阅者刷新权益。月/年订单由服务器定价，目前支付渠道未接入，创建订单不会开通付费权益；有试用时创建付费订单也不会覆盖有效试用。
+Web/Desktop 顶部“登录 / 注册”或“账号与订阅”进入账号窗口。注册后选择七天试用，已订阅者刷新权益。月/年订单经 OPC Hub（微信 Native 扫码）真实支付：Web 弹窗展示二维码并轮询，官方服务接收网关 `PAYMENT.PAID` 回调（HMAC 验签）后事务结算并顺延/起算权益，重复回调不重复加时长；退款通道本期仅管理员/客服发起（`node admin.js refund ...`，全额退、恢复购买前权益），Web 无退款入口，无法结算的资金一律落 `payment_incidents` 台账（`node admin.js incidents`）人工对账。K8s 部署配置 `PAYMENT_HUB_BASE_URL=https://opchub-openapi.metafusion.cn`（生产网关；`https://opc-openapi.dev.metafusion.cc` 为测试网关，仅联调）、`PAYMENT_HUB_CLIENT_ID` / `PAYMENT_HUB_CLIENT_SECRET`（**生产凭证部署时经 K8s Secret 注入，不入库不进聊天**）与 `PAYMENT_NOTIFY_URL`——回调必须是**域名**（真实 Hub 以 `OPC_PARAM_INVALID` 拒绝 IP 字面量），路径 `/v1/payments/notify`；未配置时支付关闭、行为与未接入一致（ADR-0048）。全链路真实冒烟：`official-server/test/real-hub-smoke.mjs`（凭证走环境变量，13 步含真实下单/二维码/关单与本地服务端到端）。
 
-生产性请求经 Gateway 在线核验，已有链内部使用当前事实；本地 UI 每五秒只读一次本机投影，不额外请求官方核验。TUI/飞书的生产性拒绝消息引导到 Web/Desktop，取消/历史访问不要求商业权益。已知到期立即阻断，后台核验只在活动工作达到 24 小时基准时发起一次。
+生产性请求经 Gateway 在线核验，已有链内部使用当前事实；本地 UI 每五秒只读一次本机投影，不额外请求官方核验。TUI/飞书的生产性拒绝消息引导到 Web/Desktop，取消/历史访问不要求商业权益。已知到期立即阻断，后台核验只在活动工作达到 24 小时基准时发起一次；退款成功后的权益降级时序与到期/撤销一致（新请求即时阻断，24 小时仅影响已开跑工作）。
 
 失去授权后，既有尝试可以受控完成并落盘，Kernel 阻断后续派发、重试、重规划。持久化应用与排队尝试暂缓恢复；重新登录/核验后通过既有恢复机制继续。当前进程更换账号必须先用旧账号完成或取消未结束任务。账号不构成本地数据隔离或跨机器同步承诺。
 
@@ -100,7 +100,7 @@ Web/Desktop 顶部“登录 / 注册”或“账号与订阅”进入账号窗�
 - macOS Node 22.23.3：TypeScript 检查及产品/Web 构建通过。
 - 全量回归：536 个文件通过、12 个跳过；3485 项通过、22 项跳过。随后最终 Gateway 输入标签绕过修复及授权/Replan 针对性 54 项通过。覆盖旧响应隔离、单飞、24 小时周期、失败不快速重试、时钟/到期、排队派发与持久化恢复阻断。
 - Management、native 安装及相关回归 89 项通过，覆盖本地认证/Origin/官方 token 不外泄和无模型安装。
-- 官方服务 8 项集成测试在 macOS、huoshan Node 22.19.0 及 Docker Node 22.19.0 均通过，使用临时 SQLite 和上游桩；覆盖事务试用、幂等隔离、待支付无权益、AI 边界、并发/退出、管理签发与撤销。
+- 官方服务 8 项集成测试（历史基线）在 macOS、huoshan Node 22.19.0 及 Docker Node 22.19.0 均通过，使用临时 SQLite 和上游桩；覆盖事务试用、幂等隔离、待支付无权益、AI 边界、并发/退出、管理签发与撤销。2026-10-14 支付/退款通道接入后扩至 22/22（9 项既有回归 + 13 项支付/退款桩测，含已结算行外部退款观测与丢 notify 重复支付笔退款），另有真实网关 smoke 13/13（见 [支付接入计划](../plans/2026-10-14-official-account-payment-integration.md)）。
 - 真实 HTTPS `https://14.103.216.193:9222/healthz` 返回 200，无跳过 TLS 校验；套餐接口返回服务端价格，未登录权益接口返回 401，公网管理路径返回 404。nginx 与官方服务均为 active/enabled。
 - 隔离本机安装 `/tmp/metawork-official-acceptance` 无 internal 凭据，能启动 Web 登录/设置。Chrome 已通过真实 HTTPS 下的注册、登录、七天试用、待支付订单、退出、重新登录及 1440/390 宽度交互；Server 重启后投影为 logged_out。测试账号已删除。
 

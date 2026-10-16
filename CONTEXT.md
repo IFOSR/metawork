@@ -5,10 +5,18 @@ owns an in-memory official session and normalized entitlement state. Production
 Gateway admission verifies that entitlement online; active work triggers one
 Server-level daily check after 24 hours from the last successful verification.
 The official reference service is deployed on huoshan and owns account/session
-digests, licenses, public plan prices, pending-payment orders and fixed internal
-AI operations. Query billing remains separate. No local session token is
-persisted, and Server restart requires official login again. Local Web cookie /
-Desktop ticket authentication remains mandatory for official-account routes.
+digests, licenses, public plan prices, payment orders and fixed internal
+AI operations. Payment settlement and the refund channel (2026-10-14,
+ADR-0048) live entirely in the official service: the HMAC-verified gateway
+callback is the only authorization basis, settlement is idempotent over
+payment-attempt history with exact integer money, refunds are admin-only over
+SSH loopback and restore the pre-purchase license revision, and money that
+cannot settle persists as `payment_incidents` for manual reconciliation.
+Local clients only proxy pay/poll/list; without `PAYMENT_HUB_*` credentials
+payments stay closed with otherwise unchanged behavior. Query billing remains
+separate. No local session token is persisted, and Server restart requires
+official login again. Local Web cookie / Desktop ticket authentication remains
+mandatory for official-account routes.
 Official AI simplification (2026-10-10): the service authenticates/authorizes the
 request, selects a fixed business prompt, calls the configured model with provider
 defaults and returns parsed business JSON. It does not impose AI quotas, request

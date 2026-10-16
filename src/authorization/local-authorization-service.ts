@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { OfficialServiceClient } from './official-service-client.js';
-import { OfficialAuthorizationError, type OfficialAuthorizationProjection, type OfficialEntitlement } from './types.js';
+import { OfficialAuthorizationError, type OfficialAuthorizationProjection, type OfficialEntitlement, type OfficialOrderListItem, type OfficialOrderPaymentResult } from './types.js';
 
-type Client = Pick<OfficialServiceClient, 'login' | 'logout' | 'verifyEntitlement' | 'ai' | 'createOrder' | 'getPlans' | 'register'>;
+type Client = Pick<OfficialServiceClient, 'login' | 'logout' | 'verifyEntitlement' | 'ai' | 'createOrder' | 'getPlans' | 'register' | 'payOrder' | 'closeOrder' | 'getOrder' | 'listOrders'>;
 export interface LocalAuthorizationServiceOptions {
   readonly client: Client;
   readonly clock?: () => number;
@@ -130,6 +130,62 @@ export class LocalAuthorizationService {
       const result = await this.options.client.createOrder(token, plan, idempotencyKey);
       if (generation !== this.generation) throw new OfficialAuthorizationError('登录状态已变化。', 'session_invalid');
       await this.verifyForProduction();
+      if (generation !== this.generation) throw new OfficialAuthorizationError('登录状态已变化。', 'session_invalid');
+      return result;
+    } catch (error) {
+      if (generation === this.generation) this.handleFailure(error, true);
+      throw error;
+    }
+  }
+
+  async payOrder(orderId: string): Promise<OfficialOrderPaymentResult> {
+    const token = this.requireToken();
+    const generation = this.generation;
+    try {
+      const result = await this.options.client.payOrder(token, orderId);
+      if (generation !== this.generation) throw new OfficialAuthorizationError('登录状态已变化。', 'session_invalid');
+      return result;
+    } catch (error) {
+      if (generation === this.generation) this.handleFailure(error, true);
+      throw error;
+    }
+  }
+
+  /** Poll one order; a confirmed payment immediately refreshes the projection online (no 24h wait). */
+  async refreshOrder(orderId: string): Promise<OfficialOrderPaymentResult> {
+    const token = this.requireToken();
+    const generation = this.generation;
+    try {
+      const result = await this.options.client.getOrder(token, orderId);
+      if (generation !== this.generation) throw new OfficialAuthorizationError('登录状态已变化。', 'session_invalid');
+      if (result.order.status === 'paid' || result.payment?.status === 'paid') await this.verifyForProduction();
+      if (generation !== this.generation) throw new OfficialAuthorizationError('登录状态已变化。', 'session_invalid');
+      return result;
+    } catch (error) {
+      if (generation === this.generation) this.handleFailure(error, true);
+      throw error;
+    }
+  }
+
+  /** 用户取消自己的待支付订单（关单无资金流动，退款仍走管理端）。 */
+  async closeOrder(orderId: string): Promise<OfficialOrderPaymentResult> {
+    const token = this.requireToken();
+    const generation = this.generation;
+    try {
+      const result = await this.options.client.closeOrder(token, orderId);
+      if (generation !== this.generation) throw new OfficialAuthorizationError('登录状态已变化。', 'session_invalid');
+      return result;
+    } catch (error) {
+      if (generation === this.generation) this.handleFailure(error, true);
+      throw error;
+    }
+  }
+
+  async listOrders(): Promise<{ orders: OfficialOrderListItem[] }> {
+    const token = this.requireToken();
+    const generation = this.generation;
+    try {
+      const result = await this.options.client.listOrders(token);
       if (generation !== this.generation) throw new OfficialAuthorizationError('登录状态已变化。', 'session_invalid');
       return result;
     } catch (error) {

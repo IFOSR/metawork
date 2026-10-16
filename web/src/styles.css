@@ -8154,13 +8154,38 @@ html[data-platform='desktop'] .workspace-header { column-gap: 16px; }
 .official-current { padding: 16px 0; overflow-wrap: anywhere; }
 .official-current p { margin: 8px 0; font-size: 13px; color: var(--text-dim); }
 .official-plans { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin: 24px 0; }
-.official-plans article { border-top: 2px solid var(--border); padding: 16px 0 0; }
+.official-plans article { border-top: 2px solid var(--border); padding: 16px 0 0; display: flex; flex-direction: column; }
 .official-plans h3 { font-size: 14px; margin: 0 0 14px; }
 .official-plans p { font-size: 11px; color: var(--text-dim); }
 .official-plans .official-price { color: var(--text); font-size: 24px; font-variant-numeric: tabular-nums; margin: 0; }
 .official-price small { font-size: 11px; color: var(--text-dim); }
-.official-plans button { font-size: 11px; }
+.official-plans button { font-size: 11px; margin-top: auto; align-self: flex-start; }
+.official-bar-actions { display: flex; gap: 8px; }
+.official-orders-dialog { padding: 24px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-panel); color: var(--text); width: min(560px, 94vw); }
+.official-orders-dialog::backdrop { background: rgba(0, 0, 0, .55); }
+.official-orders-dialog header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.official-orders-dialog h2 { font-size: 16px; margin: 0; }
+.official-orders-dialog small { letter-spacing: .08em; color: var(--text-dim); }
+.official-tabs { display: inline-flex; gap: 2px; margin: 12px 0 16px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg, transparent); }
+.official-tabs button { font-size: 12px; padding: 5px 18px; border: none; border-radius: 6px; background: transparent; color: var(--text-dim); cursor: pointer; box-shadow: none; transform: none; }
+.official-tabs button:hover:not([aria-selected="true"]) { color: var(--text); background: transparent; border-color: transparent; }
+.official-tabs button:active:not([aria-selected="true"]) { transform: none; background: transparent; }
+.official-tabs button[aria-selected="true"] { background: var(--accent); color: #fff; }
+.official-order-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px; overflow-wrap: anywhere; }
+.official-order-row .official-actions { display: flex; gap: 8px; }
 .official-error { color: var(--red); line-height: 1.7; }
 .official-message { color: var(--green); line-height: 1.7; overflow-wrap: anywhere; }
 .official-account-dialog footer { border-top: 1px solid var(--border); padding-top: 16px; }
+.official-pending { margin: 16px 0; }
+.official-pending h3 { font-size: 14px; margin: 0 0 8px; }
+.official-pending-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; overflow-wrap: anywhere; }
+.official-payment { margin: 16px 0 0; border-top: 2px solid var(--border); padding-top: 16px; text-align: center; }
+.official-payment h2 { font-size: 16px; margin: 0 0 8px; }
+.official-payment img { display: block; margin: 12px auto; border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 8px; }
+.official-payment .official-actions { display: flex; justify-content: center; gap: 12px; margin-top: 12px; }
+.official-payment-dialog { padding: 24px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-panel); color: var(--text); width: min(360px, 92vw); text-align: center; }
+.official-payment-dialog::backdrop { background: rgba(0, 0, 0, .55); }
+.official-payment-dialog h2 { font-size: 16px; margin: 0 0 8px; }
+.official-payment-dialog img { display: block; margin: 12px auto; border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 8px; }
+.official-payment-dialog .official-actions { display: flex; justify-content: center; gap: 12px; margin-top: 12px; }
 @media(max-width: 540px) { .official-account-dialog { padding: 20px; } .official-plans { grid-template-columns: 1fr; gap: 20px; } .official-plans article { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; } .official-plans h3, .official-plans p { margin: 0; } }

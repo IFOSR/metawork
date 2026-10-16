@@ -44,6 +44,39 @@ export interface OfficialLoginResult {
   readonly entitlement: OfficialEntitlement;
 }
 
+/** Payment attempt view served by the official service; ISO timestamps are already UTC-normalized. */
+export type OfficialPaymentStatus = 'pending' | 'paid' | 'refunded' | 'closed';
+
+export interface OfficialPaymentView {
+  readonly hubOrderNo: string;
+  readonly attempt: number;
+  readonly status: OfficialPaymentStatus;
+  readonly amountCents: number;
+  readonly qrCodeUrl: string | null;
+  readonly expiresAt: string | null;
+  readonly paidAt: string | null;
+  readonly channelOrderNo: string | null;
+}
+
+export interface OfficialOrderView {
+  readonly orderId: string;
+  readonly plan: 'trial' | 'monthly' | 'annual';
+  readonly amountCny: string;
+  readonly currency: string;
+  readonly status: string;
+  readonly createdAt: string;
+}
+
+/** 订单列表项：官方 /v1/orders 在 orderView 之上附 payment。 */
+export interface OfficialOrderListItem extends OfficialOrderView {
+  readonly payment: OfficialPaymentView | null;
+}
+
+export interface OfficialOrderPaymentResult {
+  readonly order: OfficialOrderView;
+  readonly payment: OfficialPaymentView | null;
+}
+
 export interface OfficialAiRequest {
   readonly operation: 'responsibility_rewrite' | 'model_summary' | 'capability_explanation';
   readonly requestId: string;
@@ -65,6 +98,7 @@ export class OfficialAuthorizationError extends Error {
       | 'invalid_credentials'
       | 'session_invalid'
       | 'entitlement_inactive'
+      | 'payment_unavailable'
       | 'verification_unavailable'
       | 'official_ai_unavailable'
       | 'official_protocol_error',

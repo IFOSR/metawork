@@ -6,6 +6,10 @@ import {
   type OfficialAccount,
   type OfficialEntitlement,
   type OfficialLoginResult,
+  type OfficialOrderListItem,
+  type OfficialOrderPaymentResult,
+  type OfficialOrderView,
+  type OfficialPaymentView,
 } from './types.js';
 
 export const DEFAULT_OFFICIAL_SERVICE_URL = 'https://14.103.216.193:9222';
@@ -72,6 +76,25 @@ export class OfficialServiceClient {
     return this.request('/v1/orders', { method: 'POST', sessionToken, body: { plan, idempotencyKey } });
   }
 
+  async payOrder(sessionToken: string, orderId: string): Promise<OfficialOrderPaymentResult> {
+    return parseOrderPayment(await this.request(`/v1/orders/${encodeURIComponent(orderId)}/pay`, { method: 'POST', sessionToken, body: {} }));
+  }
+
+  async closeOrder(sessionToken: string, orderId: string): Promise<OfficialOrderPaymentResult> {
+    return parseOrderPayment(await this.request(`/v1/orders/${encodeURIComponent(orderId)}/close`, { method: 'POST', sessionToken, body: {} }));
+  }
+
+  async getOrder(sessionToken: string, orderId: string): Promise<OfficialOrderPaymentResult> {
+    return parseOrderPayment(await this.request(`/v1/orders/${encodeURIComponent(orderId)}`, { method: 'GET', sessionToken }));
+  }
+
+  async listOrders(sessionToken: string): Promise<{ orders: OfficialOrderListItem[] }> {
+    const data = parseObject(await this.request('/v1/orders', { method: 'GET', sessionToken }), 'orders');
+    const result = z.object({ orders: z.array(officialListItemShape) }).safeParse(data);
+    if (!result.success) throw new OfficialAuthorizationError('订单列表响应无效', 'official_protocol_error');
+    return result.data;
+  }
+
   async getSession(sessionToken: string): Promise<OfficialAccount> {
     const response = await this.request('/v1/auth/session', { method: 'GET', sessionToken });
     return parseAccount(parseObject(response, 'session').account);
@@ -117,6 +140,13 @@ export class OfficialServiceClient {
         throw new OfficialAuthorizationError(({ trial_already_used: '该账号已使用过试用', account_exists: '账号已存在', invalid_account: '请填写有效邮箱及 12–128 位密码', idempotency_conflict: '订单请求冲突，请刷新', active_plan_conflict: '当前套餐不支持此操作', rate_limited: '请求过于频繁，请稍后重试', daily_limit: '今日内置 AI 额度已用完', request_already_processed: '此请求已处理，请刷新后重试', invalid_input: '业务输入超出限制或格式不正确', invalid_operation: '不支持的内置 AI 操作' } as Record<string, string>)[code]!, 'request_rejected');
       }
       if (code === 'official_ai_unavailable') throw new OfficialAuthorizationError('MetaWork 内置 AI 暂时不可用', 'official_ai_unavailable');
+      if (code === 'payment_unavailable') throw new OfficialAuthorizationError('支付功能暂未开放，请稍后重试', 'payment_unavailable');
+      if (['order_not_found', 'order_not_payable', 'payment_order_expired', 'payment_order_state_conflict'].includes(code)) {
+        throw new OfficialAuthorizationError('订单不存在或当前不可支付', 'request_rejected');
+      }
+      if (code === 'payment_hub_busy' || code === 'OPC_PAY_CHANNEL_UNAVAILABLE' || code === 'OPC_PAY_CHANNEL_ERROR' || code.startsWith('OPC_SYS_')) {
+        throw new OfficialAuthorizationError('支付渠道暂时不可用，请稍后重试', 'payment_unavailable');
+      }
       if (response.status === 401) throw new OfficialAuthorizationError('官方登录会话已失效，请重新登录', 'session_invalid');
       if (response.status === 402 || code === 'entitlement_inactive') {
         throw new OfficialAuthorizationError('当前账号没有有效 MetaWork 服务权益', 'entitlement_inactive');
@@ -140,6 +170,33 @@ function parseObject(value: unknown, operation: string): Record<string, unknown>
     throw new OfficialAuthorizationError(`官方 ${operation} 响应无效`, 'official_protocol_error');
   }
   return value as Record<string, unknown>;
+}
+
+const officialPaymentShape = z.object({
+  hubOrderNo: z.string().min(8).max(64),
+  attempt: z.number().int().positive(),
+  status: z.enum(['pending', 'paid', 'refunded', 'closed']),
+  amountCents: z.number().int().nonnegative(),
+  qrCodeUrl: z.string().max(512).nullable(),
+  expiresAt: z.string().datetime({ offset: true }).nullable(),
+  paidAt: z.string().datetime({ offset: true }).nullable(),
+  channelOrderNo: z.string().max(64).nullable(),
+});
+const officialOrderShape = z.object({
+  orderId: z.string().min(1).max(128),
+  plan: z.enum(['trial', 'monthly', 'annual']),
+  amountCny: z.string().regex(/^\d+\.\d{2}$/u),
+  currency: z.literal('CNY'),
+  status: z.string().max(32),
+  createdAt: z.string().datetime({ offset: true }),
+});
+// 订单列表项在 orderView 之上附 payment；pay/get 响应的 payment 在顶层。
+const officialListItemShape = officialOrderShape.extend({ payment: officialPaymentShape.nullable() });
+
+function parseOrderPayment(value: unknown): OfficialOrderPaymentResult {
+  const result = z.object({ order: officialOrderShape, payment: officialPaymentShape.nullable() }).safeParse(value);
+  if (!result.success) throw new OfficialAuthorizationError('订单支付响应无效', 'official_protocol_error');
+  return result.data;
 }
 
 function parseAccount(value: unknown): OfficialAccount {
