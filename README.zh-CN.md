@@ -64,9 +64,19 @@ Release 提供 macOS arm64 Desktop DMG，以及 macOS arm64、macOS x64 和 Linu
 Runtime、Planner 归档。Desktop 仅支持 Apple Silicon；macOS x64 和 Linux x64 请使用
 Server 安装包提供的 Web、TUI 或飞书客户端。本次不发布 Windows。
 
-- [下载 macOS arm64 DMG](https://github.com/IFOSR/metawork/releases/download/v0.1.18/MetaWork-darwin-arm64.dmg)
-- [查看 v0.1.18 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.18)
-- [下载校验文件和 Runtime/Planner 归档](https://github.com/IFOSR/metawork/releases/tag/v0.1.18)
+| 平台 | 最新可用版本 | 下载 / 安装 |
+| --- | --- | --- |
+| macOS Apple Silicon（`arm64`）桌面版 | 0.1.18 | [最新 DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
+| macOS Apple Silicon（`arm64`）Server | 0.1.18 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
+| macOS Intel（`x64`）Server | 0.1.18 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
+| Linux / WSL2（`x64`）Server | 0.1.18 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
+| Windows 原生（`x64`）Server | 0.1.17（本次未更新） | [Windows 安装器](https://github.com/IFOSR/metawork/releases/download/v0.1.17/install.ps1) · [签名清单](https://github.com/IFOSR/metawork/releases/download/v0.1.17/manifest.win32-x64.json) |
+
+[最新 macOS/Linux Release 与归档](https://github.com/IFOSR/metawork/releases/latest) ·
+[最新校验文件](https://github.com/IFOSR/metawork/releases/latest/download/SHA256SUMS)。
+macOS/Linux 下载链接跟随 GitHub 最新 Release；安装器自动选择当前架构，
+按签名清单下载匹配的 Runtime 和 Planner。Windows 未参与 0.1.18 发布，
+最新可用包仍为 0.1.17，请使用下文指定 Windows 清单的安装命令。
 
 Desktop DMG 使用内部 ad-hoc 签名，未使用 Apple Developer ID 公证，
 当前只支持 macOS Apple Silicon（`arm64`）。Server/Web/TUI 安装器支持 Linux x64、
@@ -90,7 +100,7 @@ Web 已包含在 Server 安装包中，不需要安装 Desktop。
 1. 在 **苹果菜单 → 关于本机** 确认 Mac 使用 Apple Silicon（M 系列）。
 2. 如果尚未安装 Apple Command Line Tools，先在终端执行 `xcode-select --install`，
    按 macOS 提示完成安装。内部包使用系统 Git wrapper 执行仓库操作。
-3. 从 v0.1.18 Release 下载 [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/download/v0.1.18/MetaWork-darwin-arm64.dmg)，
+3. 从最新 Release 下载 [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg)，
    打开 DMG，把 **MetaWork.app** 拖入“应用程序”。
 4. 由于这是未公证内部 DMG，首次启动可能被 macOS 拦截。在 Finder 中右键
    **MetaWork.app**，选择“打开”，再确认“打开”。如果仍被拦截，进入
@@ -122,10 +132,10 @@ Server。关闭窗口或退出 Desktop 后，后台服务和任务继续运行�
 Executor CLI，但不会代为安装。预构建包已包含原生依赖；npm 与原生编译工具用于
 源码构建，普通预构建安装不需要编译。
 
-macOS Apple Silicon、Linux x64、WSL2 x64，在可输入的交互终端运行：
+macOS Apple Silicon 或 Intel、Linux x64、WSL2 x64，在可输入的交互终端运行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh -o metawork-install.sh
+curl -fsSL https://github.com/IFOSR/metawork/releases/latest/download/install.sh -o metawork-install.sh
 bash metawork-install.sh
 export PATH="$HOME/.local/bin:$PATH"
 metawork --help
@@ -135,14 +145,15 @@ Windows x64，在 PowerShell 中执行；需要启用 Developer Mode 或使用�
 以支持事务性 NTFS Release 指针：
 
 ```powershell
-irm https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.ps1 -OutFile metawork-install.ps1
-.\metawork-install.ps1
+irm https://github.com/IFOSR/metawork/releases/download/v0.1.17/install.ps1 -OutFile metawork-install.ps1
+.\metawork-install.ps1 -ManifestUrl "https://github.com/IFOSR/metawork/releases/download/v0.1.17/manifest.win32-x64.json"
 ```
 
-两个安装器均获取**最新稳定版的签名 manifest**，校验 Runtime/Planner 归档，并通过
-配置向导设置模型服务。Linux/WSL2 默认使用文件 SecretStore。Release 页面会在对应
-平台归档可用时附带 `install.sh` 和 `install.ps1`。当前版本提供 Linux x64、
-macOS arm64 和 Windows x64 预构建运行时；安装器会对不支持的架构明确报错，
+macOS/Linux 命令使用**最新稳定版的签名清单**；Windows 命令使用
+**Windows 最新可用版本（0.1.17）**的清单。由于 0.1.18 没有 Windows 产物，
+Windows 安装命令必须显式指定该清单，不能使用全局 latest。
+两个安装器都会校验 Runtime/Planner 归档，并通过配置向导设置模型服务。
+Linux/WSL2 默认使用文件 SecretStore。安装器会对不支持的架构明确报错，
 不会安装不匹配的归档。
 
 安装后，在一个终端启动 Server 并保持运行：

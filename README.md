@@ -78,9 +78,20 @@ signed Runtime and Planner archives for macOS arm64, macOS x64 and Linux x64.
 Desktop is available only on Apple Silicon; macOS x64 and Linux x64 use the Web,
 TUI or Feishu clients with the Server package. Windows is excluded from this release.
 
-- [Download the macOS arm64 DMG](https://github.com/IFOSR/metawork/releases/download/v0.1.18/MetaWork-darwin-arm64.dmg)
-- [View the v0.1.18 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.18)
-- [Download checksums and Runtime/Planner archives](https://github.com/IFOSR/metawork/releases/tag/v0.1.18)
+| Platform | Latest available version | Download / install |
+| --- | --- | --- |
+| macOS Apple Silicon (`arm64`) Desktop | 0.1.18 | [Latest DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
+| macOS Apple Silicon (`arm64`) Server | 0.1.18 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
+| macOS Intel (`x64`) Server | 0.1.18 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
+| Linux / WSL2 (`x64`) Server | 0.1.18 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
+| Windows native (`x64`) Server | 0.1.17 (unchanged) | [Windows installer](https://github.com/IFOSR/metawork/releases/download/v0.1.17/install.ps1) · [Signed manifest](https://github.com/IFOSR/metawork/releases/download/v0.1.17/manifest.win32-x64.json) |
+
+[Latest macOS/Linux Release and archives](https://github.com/IFOSR/metawork/releases/latest) ·
+[Latest checksums](https://github.com/IFOSR/metawork/releases/latest/download/SHA256SUMS).
+The macOS/Linux links follow GitHub's latest Release. The installer selects the
+matching architecture and downloads both Runtime and Planner from its signed
+manifest. Windows was excluded from 0.1.18; its latest available package remains
+0.1.17 and uses the explicit Windows command below.
 
 The Desktop DMG uses an internal ad-hoc signature and
 is not notarized with an Apple Developer ID. It currently supports macOS Apple
@@ -106,7 +117,7 @@ account data. Web is included in the Server package and does not require Desktop
 2. Install Apple's Command Line Tools once if they are not already present:
    run `xcode-select --install` in Terminal and finish the macOS prompt. The
    internal package uses the system Git wrapper for repository operations.
-3. Download [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/download/v0.1.18/MetaWork-darwin-arm64.dmg)
+3. Download [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg)
    from the latest release, open it, and drag **MetaWork.app** to **Applications**.
 4. The first launch may be blocked because this internal DMG is not notarized. In
    Finder, right-click **MetaWork.app** and choose **Open**, then confirm **Open**.
@@ -146,10 +157,10 @@ on `PATH`. The installer detects Executor CLIs but does not install them.
 Prebuilt archives include native dependencies; npm and native build tools are
 required for source builds, not ordinary prebuilt installation.
 
-macOS Apple Silicon, Linux x64 or WSL2 x64, in an interactive terminal:
+macOS Apple Silicon or Intel, Linux x64 or WSL2 x64, in an interactive terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.sh -o metawork-install.sh
+curl -fsSL https://github.com/IFOSR/metawork/releases/latest/download/install.sh -o metawork-install.sh
 bash metawork-install.sh
 export PATH="$HOME/.local/bin:$PATH"
 metawork --help
@@ -159,17 +170,16 @@ Windows x64, in PowerShell (enable Developer Mode or use an elevated terminal
 for NTFS release pointers):
 
 ```powershell
-irm https://raw.githubusercontent.com/IFOSR/metawork/main/scripts/install.ps1 -OutFile metawork-install.ps1
-.\metawork-install.ps1
+irm https://github.com/IFOSR/metawork/releases/download/v0.1.17/install.ps1 -OutFile metawork-install.ps1
+.\metawork-install.ps1 -ManifestUrl "https://github.com/IFOSR/metawork/releases/download/v0.1.17/manifest.win32-x64.json"
 ```
 
-Both scripts resolve the **latest stable release's signed manifest** and verify
-its Runtime/Planner archives. The setup wizard configures the model provider.
-Linux/WSL2 defaults to file-backed secrets. The release page also contains the
-matching `install.sh` and `install.ps1` files when a platform archive is available.
-The current release provides prebuilt Runtime and Planner archives for Linux x64,
-macOS arm64, and Windows x64. The installers report an unsupported architecture
-instead of installing a mismatched archive.
+The macOS/Linux command uses the **latest stable release's signed manifest**;
+the Windows command selects the **latest available Windows package (0.1.17)**.
+This explicit Windows manifest is required because 0.1.18 contains no Windows
+assets. Both installers verify Runtime/Planner archives before installation.
+The setup wizard configures the model provider; Linux/WSL2 defaults to file-backed
+secrets. Unsupported architectures are rejected rather than given another platform's archive.
 
 Start Server in one terminal and keep it running:
 
