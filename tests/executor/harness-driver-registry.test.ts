@@ -6,12 +6,49 @@ import type {
 } from '../../src/configuration/types.js';
 import type { ExecutorAdapter } from '../../src/executor/adapter.js';
 import type { HarnessDriver } from '../../src/executor/harness-driver.js';
+import { PiCliDriver } from '../../src/executor/pi-cli-driver.js';
+import { CodexCliDriver } from '../../src/executor/codex-cli-driver.js';
+import { ExecutionRuntime, ExecutorRegistry } from '../../src/execution/execution-runtime.js';
 import {
   HarnessDriverRegistry,
   type HarnessDriverAdapterFactoryInput,
 } from '../../src/executor/harness-driver-registry.js';
 
 describe('HarnessDriverRegistry', () => {
+  it.each([new PiCliDriver(), new CodexCliDriver()])(
+    'resolves evidence tools from the pinned driver $id for custom agents', driver => {
+      const drivers = new HarnessDriverRegistry();
+      drivers.register(driver, () => executorAdapter('custom'));
+      const configuration = runtimeConfiguration(driver.id as 'pi-cli' | 'codex-cli');
+      const binding = authorizedBinding('quality-beta', 'model-review');
+      const runtime = new ExecutionRuntime(new ExecutorRegistry({
+        driverRegistry: drivers,
+        getRuntimeConfiguration: revision => revision === configuration.revisionId ? configuration : null,
+        getRuntimeBinding: () => runtimeBinding('unused'),
+        getActiveRuntimeConfiguration: () => { throw new Error('must use pinned revision'); },
+      }));
+      expect(runtime.supportsEvidenceTools(binding)).toBe(true);
+      expect(runtime.supportsEvidenceTools({ ...binding, configurationRevision: 'missing' })).toBe(false);
+      expect(runtime.supportsEvidenceTools({ ...binding, harnessRef: 'other' })).toBe(false);
+      configuration.harnesses['shared-harness']!.enabled = false;
+      expect(runtime.supportsEvidenceTools(binding)).toBe(false);
+      configuration.harnesses['shared-harness']!.enabled = true;
+      configuration.agentClasses['quality-beta']!.enabled = false;
+      expect(runtime.supportsEvidenceTools(binding)).toBe(false);
+    },
+  );
+
+  it('does not advertise evidence tools for drivers without that capability', () => {
+    const registry = new HarnessDriverRegistry();
+    const input = {
+      configuration: runtimeConfiguration('pi-cli'),
+      authorizedBinding: authorizedBinding('quality-beta', 'model-review'),
+    };
+    expect(registry.supportsEvidenceTools(input)).toBe(false);
+    registry.register(harnessDriver('pi-cli'), () => executorAdapter('custom'));
+    expect(registry.supportsEvidenceTools(input)).toBe(false);
+  });
+
   it('registers a Harness driver by driverId and rejects duplicates', () => {
     const registry = new HarnessDriverRegistry();
     const driver = harnessDriver('codex-cli');

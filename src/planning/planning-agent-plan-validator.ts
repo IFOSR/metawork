@@ -4,7 +4,7 @@ import {
   type ConfigurationCatalogAgentClass,
 } from '../routing/types.js';
 import { PlanningAgentPlanSchema } from './planning-agent-plan-schema.js';
-import type { PlanningAgentPlan, SubtaskProposal } from './planning-types.js';
+import type { PlanningAgentPlan, PlanningContext, SubtaskProposal } from './planning-types.js';
 import { validateWorkGraph } from '../work-graph/index.js';
 
 export interface PlanningAgentPlanValidationResult {
@@ -18,6 +18,7 @@ export function validatePlanningAgentPlan(
   value: unknown,
   configuration: PlannerConfigurationView,
   pendingAuthorizationRequest: { requestId: string; taskId: string } | null = null,
+  replan?: PlanningContext['replan'],
 ): PlanningAgentPlanValidationResult {
   const parsed = PlanningAgentPlanSchema.safeParse(value);
   if (!parsed.success) {
@@ -31,6 +32,20 @@ export function validatePlanningAgentPlan(
 
   const plan = parsed.data as PlanningAgentPlan;
   const errors: string[] = [];
+  if (replan) {
+    if (plan.action !== 'plan_work_graph' || plan.task.binding !== 'reference'
+      || plan.task.taskId !== replan.taskId) {
+      errors.push(`Replan must describe remaining work for existing Task ${replan.taskId}`);
+    }
+    const available = new Set(replan.taskEvidenceIds);
+    for (const subtask of plan.workGraph?.subtasks ?? []) {
+      for (const ref of subtask.contextRefs) {
+        if (ref.kind === 'task_evidence' && !available.has(ref.evidenceId)) {
+          errors.push(`Unavailable task_evidence ID: ${ref.evidenceId}. Copy an exact evidenceId from Completed evidence; do not shorten or reconstruct it.`);
+        }
+      }
+    }
+  }
   validateActionSemantics(plan, errors);
   validateTaskControlScope(plan, errors);
   validateTaskPriority(plan, errors);

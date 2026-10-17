@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
@@ -17,6 +18,7 @@ import { TaskRuntimeService } from '../../src/task/task-runtime-service.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import type { Subtask } from '../../src/core/types.js';
 import { WorkspaceStore } from '../../src/execution/workspace-store.js';
+import { ManagedGitWorkspaceService } from '../../src/execution/managed-git-workspace.js';
 import { ResourceLeaseService } from '../../src/execution/resource-lease-service.js';
 import { SqliteResourceLeaseRepository } from '../../src/storage/resource-lease-repo.js';
 import { SqlitePermissionRepository } from '../../src/storage/permission-repo.js';
@@ -27,6 +29,7 @@ import type { AttemptExecutionBackend } from '../../src/execution/attempt-execut
 import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-repo.js';
 import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
 import { ResultObjectRepo } from '../../src/storage/result-object-repo.js';
+import { SubtaskHandoffRepo } from '../../src/storage/subtask-handoff-repo.js';
 import {
   authorizedExecutorBindingFingerprint,
   type AuthorizedExecutorBinding,
@@ -146,6 +149,7 @@ function setup(
       output: rawResponse, error: null, artifacts: [], subtaskResults: [], durationMs: 10,
     }),
     supportsResponseOnly: vi.fn().mockReturnValue(true),
+    supportsEvidenceTools: vi.fn().mockReturnValue(true),
     resolvePermissionProfile: vi.fn((binding: AuthorizedExecutorBinding) => (
       binding.permissionProfileRef === 'research-policy'
         ? 'public-web-research'
@@ -277,6 +281,7 @@ function setup(
     defaultResourceGrant,
     artifactPublicationStub,
     workspaceStore,
+    sourceRoot,
   };
 }
 
@@ -331,6 +336,92 @@ function validResponse(): string {
 }
 
 describe('SubtaskAttemptRunner', () => {
+  it('lets a custom reviewer read the published upstream body through its attempt service', async () => {
+    const fixture = setup(validResponse());
+    const binding = { ...piAuthorizedBinding, agentClassRef: 'executor-custom-reviewer' };
+    const upstreamBody = '三点方向的完整草稿，供第二阶段审校。';
+    let responseStatus: number | undefined;
+    let responseBody: unknown;
+    let deniedStatus: number | undefined;
+    let serviceUrl: string | undefined;
+    try {
+      new AgentClassRepo(fixture.db).upsert({ ...builtinPiAgentClass(), name: binding.agentClassRef });
+      fixture.workUnitRepo.upsert({
+        ...fixture.workUnitRepo.findById('executor-codex')!,
+        id: 'executor-custom', agentClassName: binding.agentClassRef,
+      });
+      fixture.b.dependencies = [];
+      fixture.b.status = 'done';
+      fixture.a.executorBindings = [binding];
+      fixture.a.dependencies = [{
+        fromSubtaskId: fixture.b.id,
+        requiredItems: [{ key: 'direction_draft', type: 'text', description: '完整草稿' }],
+      }];
+      fixture.subtaskRepo.upsert(fixture.b);
+      fixture.subtaskRepo.upsert(fixture.a);
+      const workspace = await new ManagedGitWorkspaceService(fixture.workspaceStore).ensure({
+        taskId: fixture.b.taskId, generationId: fixture.b.generationId, subtaskId: fixture.b.id,
+      }, fixture.sourceRoot);
+      new SqliteWorkspaceRepository(fixture.db).upsert({
+        id: workspace.id, taskId: fixture.b.taskId, generationId: fixture.b.generationId,
+        subtaskId: fixture.b.id, kind: 'git', rootUri: pathToFileURL(workspace.rootPath).href,
+        baseline: {}, managedRepositoryUri: pathToFileURL(workspace.repositoryPath).href,
+        managedBranch: workspace.branch, headCommit: workspace.headCommit,
+        currentCheckpointId: null, status: 'active', cleanupAfter: null,
+        createdAt: fixture.b.createdAt, updatedAt: fixture.b.updatedAt,
+      });
+      const result = fixture.resultObjectRepo.putObject({
+        resultId: 'upstream-safe', accountId: 'local-default', taskId: fixture.a.taskId,
+        generationId: fixture.a.generationId, sourceSubtaskId: fixture.b.id,
+        attemptId: 'upstream-attempt', kind: 'safe_projection', mediaType: 'text/markdown',
+        content: upstreamBody, completeness: 'complete', retentionClass: 'task',
+      });
+      const reference = fixture.resultObjectRepo.createReference({
+        referenceId: 'upstream-reference', resultId: result.resultId, accountId: 'local-default',
+        taskId: fixture.a.taskId, generationId: fixture.a.generationId,
+        sourceSubtaskId: fixture.b.id, targetSubtaskId: fixture.a.id,
+        edgeKey: `${fixture.b.id}->${fixture.a.id}`, requiredItems: ['direction_draft'],
+        readScope: { kind: 'direct_dependency', offset: 0, length: result.byteLength, summaryHash: 'sha256:summary' },
+      });
+      new SubtaskHandoffRepo(fixture.db).insert({
+        taskId: fixture.a.taskId, fromSubtaskId: fixture.b.id, toSubtaskId: fixture.a.id,
+        attemptId: 'upstream-attempt', completionSchemaVersion: 4, createdAt: fixture.a.createdAt,
+        items: [{ key: 'direction_draft', type: 'result_reference', referenceId: reference.referenceId, summary: 'Authorized draft' }],
+        resultReference: reference,
+      });
+      fixture.executionRuntime.run.mockImplementationOnce(async (invocation) => {
+        const service = invocation.executorInput.context.evidenceTools.binding!;
+        serviceUrl = service.jsonUrl;
+        const read = (referenceId: string) => fetch(service.jsonUrl, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${service.bearerToken}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ operation: 'result_reference_get', input: { referenceId } }),
+        });
+        const response = await read(reference.referenceId);
+        responseStatus = response.status;
+        responseBody = await response.json();
+        deniedStatus = (await read('unauthorized-reference')).status;
+        return {
+          taskId: fixture.a.taskId, executionId: 'exec_review', status: 'success', executorName: binding.agentClassRef,
+          output: validResponse(), error: null, artifacts: [], subtaskResults: [], durationMs: 10,
+        };
+      });
+      const outcome = await fixture.runner.run({
+        attemptId: 'attempt_review', executionId: 'exec_review', taskId: fixture.a.taskId,
+        subtaskId: fixture.a.id, ...attemptIdentity(binding), executionMode: 'fresh',
+        defaultResourceGrant: fixture.defaultResourceGrant,
+      });
+      expect(outcome, JSON.stringify(outcome)).toMatchObject({ outcome: 'completed' });
+      expect(fixture.executionRuntime.supportsEvidenceTools).toHaveBeenCalledWith(binding);
+      expect(responseStatus).toBe(200);
+      expect(responseBody).toMatchObject({ content: upstreamBody, complete: true });
+      expect(deniedStatus).toBe(400);
+      await expect(fetch(serviceUrl!)).rejects.toThrow();
+    } finally {
+      fixture.db.close();
+    }
+  });
+
   it('commits a successful authorized Attempt while a sibling has blocked the Task', async () => {
     const fixture = setup(validResponse());
     try {

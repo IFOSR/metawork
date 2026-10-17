@@ -264,3 +264,35 @@ missing handoff/artifact/workspace facts cannot be repaired by rewriting metadat
 An exhausted correction never becomes an automatic business continuation.
 Configuration and adapter failures require explicit recovery; independent branches
 continue through the original dispatch loop.
+
+### Restored upstream-input explicit recovery (2026-10-17)
+
+Explicit Resume can recover an immutable `executor_failed / task_failed /
+missing_upstream_input` receipt after Runtime revalidates the exact revision,
+Executor binding, published direct dependencies/ResultReferences, current driver
+support for evidence tools, and the retained workspace. Kernel requires quiescence,
+no live/uncertain effects or resource residue, and safe recovery classification
+including awaiting-decision nodes. It authorizes a recovery-packet continuation
+of the failed node only; completed nodes, receipts and publications are retained.
+
+The exact startup-generated “running work without authorized dispatch” dependency
+may be superseded only by these terminal-attempt facts. Other manual dependencies,
+contract/material gates, missing inputs and external non-idempotent uncertainty
+remain closed. Startup orphan detection now applies only to running Subtasks;
+an awaiting-decision node is not itself evidence of an orphan process.
+
+A submitted automatic replan that the durable Kernel ledger rejected for
+unqualified context references can be retired by that same resume decision when
+its Task/generation/revision/configuration identities match. Runtime conditionally
+cancels only that submitted Job, idempotently by resume Decision, before emitting
+the recovery dispatch. It never rewrites the rejected proposal or resets the
+automatic-replan budget. Pending/uncertain applications and ongoing Planner claims
+cannot be retired by this path. There is no startup auto-resume or database repair.
+
+Replan workers use the existing detached validation host, independent of connected
+clients. Trusted replan context carries the exact Task and available task-evidence
+IDs; invalid references return normal proposal-tool feedback within the same
+Planner turn, before consuming the durable proposal. Kernel still performs final
+eligibility checks. New task-evidence IDs hash the complete source identity;
+already-persisted references for the same source are retained. No schema migration
+or fuzzy reference matching is introduced.

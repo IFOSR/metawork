@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access, cp, mkdir, readFile, readlink, writeFile, rename } from 'node:fs/promises';
+import { access, cp, mkdir, readFile, readlink, writeFile, rename, realpath, appendFile, chmod, stat } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createServer } from 'node:net';
@@ -9,7 +9,7 @@ import Database from 'better-sqlite3';
 
 // The fixture is a disposable packaged app with an ephemeral local signing key.
 // Usage: node apps/desktop/tests/customer-upgrade-smoke.mjs <fixture-directory>
-//   <short-disposable-run-directory> upgrade <actual-previous-runtime> [failure-repair]
+//   <short-disposable-run-directory> upgrade <actual-previous-runtime> [failure-repair|interrupt-repair|stalled-repair]
 // The fixture directory contains a disposable MetaWork.app and fixture-tools.mjs.
 if (!process.argv[2] || !process.argv[3] || !process.argv[5]) throw new Error('Supply fixture, run directory and actual previous Runtime');
 const root = resolve(process.argv[2]);
@@ -32,7 +32,8 @@ for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE', 'METAWOR
   delete baselineEnvironment[key];
 }
 const evidence = [];
-const interruptedMode = process.argv[6] === 'interrupt-repair';
+const stalledRepair = process.argv[6] === 'stalled-repair';
+const interruptedMode = stalledRepair || process.argv[6] === 'interrupt-repair';
 const faultMode = interruptedMode || process.argv[6] === 'failure-repair';
 // macOS Unix socket paths (including Planner's filename) must fit in 104 bytes.
 const runRoot = resolve(process.argv[3]);
@@ -63,7 +64,27 @@ for (const scenario of scenarios) {
     db.close();
   }
   const configuration = await readFile(join(installationRoot, 'accounts/local-default/config/active/revision-manifest.json'), 'utf8').then(JSON.parse);
-  const manager = new DesktopServiceManager({ installRoot: installationRoot, releaseId, nodePath: node,
+  let serverNode = join(installationRoot, 'app/current/desktop-tools/node/bin/node');
+  if (!await access(serverNode).then(() => true, () => false)) {
+    const supportNode = join(installationRoot, 'desktop-support/smoke/desktop-tools/node');
+    await mkdir(join(supportNode, '..'), { recursive: true });
+    await cp(join(payload, 'metawork/desktop-tools/node'), supportNode, { recursive: true });
+    serverNode = join(supportNode, 'bin/node');
+  }
+  serverNode = await realpath(serverNode);
+  if (stalledRepair) {
+    // Fault injection only in this disposable previous release: freeze after
+    // the real Server has drained, closed storage and released runtime facts.
+    // Neither candidate application nor the user's Runtime is modified.
+    const entry = join(installationRoot, 'app/current/dist/index.js');
+    const mode = (await stat(entry)).mode & 0o777;
+    await chmod(entry, mode | 0o200);
+    try {
+      await appendFile(entry,
+        '\nif (process.argv[2] === "server" && process.argv[3] === "start") process.on("exit", () => process.kill(process.pid, "SIGSTOP"));\n');
+    } finally { await chmod(entry, mode); }
+  }
+  const manager = new DesktopServiceManager({ installRoot: installationRoot, releaseId, nodePath: serverNode,
     configHome: env.METAWORK_CONFIG_HOME, env });
   await manager.startForUpdate();
   // Native startup may import missing local Agent credentials before Desktop attaches.
@@ -106,7 +127,7 @@ for (const scenario of scenarios) {
         dialog.showMessageBox = async () => { throw new Error('Startup update must not request a second confirmation'); };
       });
       let blocker;
-      if (faultMode) {
+      if (faultMode && !stalledRepair) {
         blocker=createServer();await new Promise(resolve=>blocker.listen(0,'127.0.0.1',resolve));
         await app.evaluate((_,port)=>{process.env.METAWORK_WEB_PORT=String(port);},blocker.address().port);
       }
@@ -122,10 +143,13 @@ for (const scenario of scenarios) {
         phase = await readFile(join(installationRoot, 'upgrades/desktop-activation.json'), 'utf8').then(raw => JSON.parse(raw).phase, () => null);
         if (faultMode) {
           const status=await readFile(join(installationRoot,'upgrades/desktop-update-status.json'),'utf8').then(JSON.parse,()=>null);
-          if (interruptedMode && !interrupted && phase === 'shell-replaced' && status?.stage === 'startAndVerifyCandidate') {
+          const stoppedLegacy = stalledRepair && phase === 'prepared' && status?.stage === 'stop'
+            && !await access(join(installationRoot, 'data/runtime.lock')).then(() => true, () => false);
+          if (interruptedMode && !interrupted && (stoppedLegacy || (!stalledRepair && phase === 'shell-replaced' && status?.stage === 'startAndVerifyCandidate'))) {
+            if (stoppedLegacy) process.kill(previous.pid, 0); // Lost lock but live process is the actual regression.
             const helperPid = Number(await readFile(join(installationRoot, 'upgrades/desktop-helper.lock'), 'utf8'));
             process.kill(helperPid, 'SIGKILL');
-            await new Promise(resolve => blocker.close(resolve)); blocker = null;
+            if (blocker) { await new Promise(resolve => blocker.close(resolve)); blocker = null; }
             const requestPath = join(installationRoot, 'upgrades/desktop-request.json');
             const request = JSON.parse(await readFile(requestPath, 'utf8'));
             // Lost staging/helper simulates interrupted upgrade cleanup. Only
@@ -148,7 +172,7 @@ for (const scenario of scenarios) {
         }
       } while (phase !== 'committed' && Date.now() < deadline);
       if(faultMode) {
-        assert.equal(phase, interruptedMode ? 'shell-replaced' : 'rolled-back');
+        assert.equal(phase, interruptedMode ? (stalledRepair ? 'prepared' : 'shell-replaced') : 'rolled-back');
         await new Promise(resolve=>setTimeout(resolve,1200));
         if (!interruptedMode) assert.equal(await access(join(installationRoot,'upgrades/desktop-helper.lock')).then(()=>true,()=>false),false);
         const status=JSON.parse(await readFile(join(installationRoot,'upgrades/desktop-update-status.json'),'utf8'));
@@ -188,6 +212,7 @@ for (const scenario of scenarios) {
           const repairDeadline=Date.now()+180000;
           while(Date.now()<repairDeadline){
             const d=await readFile(join(installationRoot,'upgrades/desktop-update-status.json'),'utf8').then(JSON.parse,()=>null);
+            if(d?.operation==='repair' && d.outcome==='failed') throw new Error(`Repair failed: ${JSON.stringify(d.failures)}`);
             if(d?.operation==='repair' && d.outcome==='rolled-back' && !await access(join(installationRoot,'upgrades/desktop-helper.lock')).then(()=>true,()=>false))break;
             await new Promise(resolve=>setTimeout(resolve,500));
           }
@@ -206,7 +231,7 @@ for (const scenario of scenarios) {
           if(phase==='committed')break;
           await new Promise(resolve=>setTimeout(resolve,500));
         }
-        evidence.push({scenario:interruptedMode ? 'interrupt-repair-retry' : 'failure-repair-retry',rollback:true,repairDidNotReapply:true,subsequentUpgrade:phase});
+        evidence.push({scenario:stalledRepair ? 'stalled-exit-repair-retry' : interruptedMode ? 'interrupt-repair-retry' : 'failure-repair-retry',rollback:true,repairDidNotReapply:true,subsequentUpgrade:phase});
       }
       assert.equal(phase, 'committed');
       const health = JSON.parse(await readFile(join(installationRoot, 'upgrades/desktop-shell-health.json'), 'utf8'));
@@ -223,7 +248,7 @@ for (const scenario of scenarios) {
     evidence.push({ scenario, authenticatedRender: true, configurationPreserved: true, credentialsPreserved: true, workPreserved: true });
     console.log(`Passed native ${scenario}: authenticated Desktop and preserved account data`);
   } catch (error) {
-    console.error(await app?.firstWindow().then(page => page.locator('body').innerText({ timeout: 1000 })).catch(() => 'Window closed'));
+    console.error(await app?.firstWindow({ timeout: 1000 }).then(page => page.locator('body').innerText({ timeout: 1000 })).catch(() => 'Window closed'));
     console.error('Electron diagnostic output withheld; inspect the fixture startup log for safe stage codes.'); console.error('Startup diagnostics:', await readFile(join(installationRoot, 'desktop-profile/startup.log'), 'utf8').catch(() => 'absent'));
     throw error;
   } finally {
@@ -238,7 +263,7 @@ for (const scenario of scenarios) {
     }
     await new Promise(resolve => setTimeout(resolve, 2500));
     const identity = JSON.parse(await readFile(join(installationRoot, 'app/current/release-identity.json'), 'utf8'));
-    await new DesktopServiceManager({ installRoot: installationRoot, releaseId: identity.releaseId, nodePath: node,
+    await new DesktopServiceManager({ installRoot: installationRoot, releaseId: identity.releaseId, nodePath: serverNode,
       configHome: env.METAWORK_CONFIG_HOME, env }).stopForUpdate();
   }
 }

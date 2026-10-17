@@ -1067,20 +1067,22 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
     lifetimeSignal: spanRoutingShutdown.signal,
   });
+  const recoveryPlan = (context: import('../planning/planning-types.js').PlanningContext) => planWithoutClient({
+    context, runner: plannerSupervisor, signal: spanRoutingShutdown.signal,
+    registerSession: (id, session) => plannerHost.registerSession(id, session),
+  });
   const recoveryReplan = createRecoveryReplanner({
     db,
     getPort: () => accountRuntimeComposition!.runtimePort,
     getSnapshot: revisionId => configurationService.getSnapshot(revisionId),
     evaluator: spanRoutingAdvisor,
     signal: spanRoutingShutdown.signal,
-    plan: context => planWithoutClient({
-      context, runner: plannerSupervisor, signal: spanRoutingShutdown.signal,
-      registerSession: (id, session) => plannerHost.registerSession(id, session),
-    }),
+    plan: recoveryPlan,
   });
   let conversationRegistry: ConversationRegistry | null = null;
   accountRuntimeComposition = buildAccountRuntimeComposition({
     recoveryReplan,
+    recoveryPlan,
     resolveConfigurationSnapshot: revisionId => configurationService.getSnapshot(revisionId),
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     db,

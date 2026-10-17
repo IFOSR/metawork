@@ -148,6 +148,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         bindingFingerprint: this.runtimeBinding.bindingFingerprint,
         attemptsRoot: this.attemptsRoot,
         environment: this.runtimeBinding.environment ?? {},
+        evidenceToolsAvailable: Boolean(input.context.evidenceTools.binding),
         ...(this.executorAffordances
           ? { executorAffordances: this.executorAffordances }
           : {}),

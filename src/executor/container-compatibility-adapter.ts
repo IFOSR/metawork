@@ -88,6 +88,7 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
         bindingFingerprint: this.runtimeBinding.bindingFingerprint,
         attemptsRoot: this.attemptsRoot,
         environment: this.runtimeBinding.environment ?? {},
+        evidenceToolsAvailable: Boolean(input.context.evidenceTools.binding),
         ...(this.executorAffordances
           ? { executorAffordances: this.executorAffordances }
           : {}),
@@ -141,6 +142,9 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
           ...this.runtimeBinding.environment,
           ...this.runtimeEnvironment,
           ...launch.environment,
+          ...(runtimeHome.environment.METACLAW_PI_WEB_TOOLS_ENABLED ? {
+            METACLAW_PI_WEB_TOOLS_ENABLED: runtimeHome.environment.METACLAW_PI_WEB_TOOLS_ENABLED,
+          } : {}),
           METACLAW_ATTEMPT_ID: binding.attemptId,
           METACLAW_CAPABILITY_MCP_URL: binding.capabilityBinding?.mcpUrl ?? '',
           METACLAW_CAPABILITY_URL: binding.capabilityBinding?.jsonUrl ?? '',

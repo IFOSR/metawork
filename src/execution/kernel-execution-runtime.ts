@@ -125,6 +125,7 @@ function dependencyReadinessFacts(input: {
   handoffs: readonly import('../storage/subtask-handoff-repo.js').PersistedSubtaskHandoff[];
   resultObjectRepo?: ResultObjectRepo;
   workspaceRepository?: WorkspaceRepositoryPort;
+  includeRecoverable?: boolean;
 }): Extract<KernelSnapshot, { type: 'dispatch' }>['dependencyReadiness'] {
   const byId = new Map(input.subtasks.map(subtask => [subtask.id, subtask]));
   const handoffByEdge = new Map(
@@ -136,7 +137,8 @@ function dependencyReadinessFacts(input: {
   const facts: NonNullable<Extract<KernelSnapshot, { type: 'dispatch' }>['dependencyReadiness']> = [];
 
   for (const target of input.subtasks) {
-    if (target.status !== 'ready') continue;
+    if (target.status !== 'ready'
+      && !(input.includeRecoverable && ['blocked', 'awaiting_decision'].includes(target.status))) continue;
     for (const dependency of target.dependencies) {
       const source = byId.get(dependency.fromSubtaskId);
       if (!source) {
@@ -226,7 +228,10 @@ function dependencyReadinessFacts(input: {
           terminal: true,
           detail: `source workspace state is missing for ${source.id}`,
         });
+        continue;
       }
+      if (input.includeRecoverable) facts.push({ sourceSubtaskId: source.id, targetSubtaskId: target.id,
+        code: 'ready', terminal: true, detail: 'published dependency is available' });
     }
   }
   return facts.length > 0 ? facts : undefined;
@@ -239,6 +244,8 @@ function resumeRecoveryCandidates(input: {
   dispatchItems: readonly KernelDispatchItemRecord[];
   workspaceRepository: WorkspaceRepositoryPort;
   nativeContinuationAgentClasses: readonly string[];
+  dependencyReadiness: NonNullable<Extract<KernelSnapshot, { type: 'dispatch' }>['dependencyReadiness']>;
+  supportsEvidenceTools(binding: AuthorizedExecutorBinding): boolean;
 }): Extract<KernelSnapshot, { type: 'dispatch' }>['resumeRecoveryCandidates'] {
   const activeSubtaskIds = new Set(input.dispatchItems
     .filter(item => ['pending_launch', 'launching', 'running', 'cancelling'].includes(item.status))
@@ -314,14 +321,24 @@ function resumeRecoveryCandidates(input: {
         authorizedExecutorBindingFingerprint(binding) === receipt.bindingFingerprint
       )
     ) return [];
-    const interrupted = receipt.failure !== null && ['executor_failed', 'heartbeat_lost'].includes(receipt.terminalState)
+    const upstreamInputRestored = receipt.terminalState === 'executor_failed'
+      && receipt.failure?.kind === 'task_failed'
+      && receipt.errorCode === 'missing_upstream_input'
+      && receipt.failure?.code === 'missing_upstream_input'
+      && subtask.dependencies.length > 0
+      && subtask.dependencies.every(dependency => input.dependencyReadiness.some(fact =>
+        fact.targetSubtaskId === subtask.id && fact.sourceSubtaskId === dependency.fromSubtaskId
+        && fact.code === 'ready'))
+      && input.supportsEvidenceTools(receipt.authorizedBinding);
+    const interrupted = upstreamInputRestored || receipt.failure !== null && ['executor_failed', 'heartbeat_lost'].includes(receipt.terminalState)
       && ['network', 'timeout', 'infrastructure', 'heartbeat_lost', 'configuration', 'adapter'].includes(receipt.failure.kind);
     if (!interrupted && (receipt.terminalState !== 'uncertified_result' || receipt.failure !== null
       || receipt.verification.violations.length === 0
       || receipt.attemptKind === 'contract_correction'
       || receipt.verification.violations.some(item => item.code !== 'completion_malformed' || item.path === 'reportPath'))) return [];
     const violation = receipt.verification.violations[0];
-    const recoveryReason = interrupted ? 'execution_interrupted' as const : violation?.code === 'completion_malformed' && violation.path === 'marker'
+    const recoveryReason = upstreamInputRestored ? 'upstream_input_restored' as const
+      : interrupted ? 'execution_interrupted' as const : violation?.code === 'completion_malformed' && violation.path === 'marker'
       ? 'completion_marker_missing' as const
       : violation?.code === 'completion_malformed'
           ? 'completion_metadata_invalid' as const
@@ -350,7 +367,7 @@ function resumeRecoveryCandidates(input: {
       sourceAttemptId: receipt.attemptId,
       authorizedBinding: receipt.authorizedBinding,
       bindingFingerprint: receipt.bindingFingerprint,
-      recoveryMode: input.nativeContinuationAgentClasses.includes(
+      recoveryMode: !upstreamInputRestored && input.nativeContinuationAgentClasses.includes(
         receipt.authorizedBinding.agentClassRef,
       ) ? 'native_session' as const : 'recovery_packet' as const,
       reason: recoveryReason,
@@ -1232,6 +1249,12 @@ export class KernelExecutionRuntime {
       dispatchItems,
       workspaceRepository: this.deps.workspaceRepository,
       nativeContinuationAgentClasses: revisionStableFacts.nativeContinuationAgentClasses,
+      dependencyReadiness: dependencyReadinessFacts({
+        taskId, generationId: activeRevision?.generationId ?? `generation_${taskId}_1`,
+        subtasks, handoffs: persistedHandoffs, resultObjectRepo: this.deps.resultObjectRepo,
+        workspaceRepository: this.deps.workspaceRepository, includeRecoverable: true,
+      }) ?? [],
+      supportsEvidenceTools: binding => this.deps.attemptRunner.supportsEvidenceTools(binding),
     });
     const frontier = deriveRunnableFrontier(
       { subtasks },
@@ -1261,7 +1284,7 @@ export class KernelExecutionRuntime {
       : subtasks.find(subtask => frontier.includes(subtask.id));
     const recoverySafety = deriveRecoverySafety(recoverySubtask
       ? recoverySubtask.requiredCapabilities
-      : subtasks.filter(subtask => ['ready', 'blocked'].includes(subtask.status))
+      : subtasks.filter(subtask => ['ready', 'blocked', 'awaiting_decision'].includes(subtask.status))
         .flatMap(subtask => subtask.requiredCapabilities));
     return {
       schemaVersion: 5,
@@ -1291,6 +1314,8 @@ export class KernelExecutionRuntime {
       frontier,
       dependencyReadiness,
       resumeRecoveryCandidates: recoveryCandidates,
+      upstreamInputResume: recoveryCandidates?.some(item => item.reason === 'upstream_input_restored')
+        ? this.upstreamInputResumeFacts(taskId) : undefined,
       deliveryRecoveryPublicationIds: this.deps.publicationRepo.unfinishedDeliveries(taskId, activeRevision?.generationId ?? `generation_${taskId}_1`)
         .filter(item => this.deps.publicationRepo.delivery(item.id)?.status === 'failed').map(item => item.id),
       pendingRetrySubtaskIds: this.deps.retryWakeRepo?.findBlockingByTask?.(taskId).map(wake => wake.subtaskId) ?? [],
@@ -1367,6 +1392,31 @@ export class KernelExecutionRuntime {
           'attempt_receipt',
         ].includes(reason)),
     };
+  }
+
+  private upstreamInputResumeFacts(taskId: string): Extract<KernelSnapshot, { type: 'dispatch' }>['upstreamInputResume'] {
+    const task = this.deps.taskRuntimeService.findTask(taskId);
+    const revision = this.deps.workGraphRevisionRepo.findActive(taskId);
+    if (!task || !revision) return undefined;
+    const blockers = task.dependencies.filter(item => item.status === 'waiting');
+    // Only the exact startup-created orphan fence can be superseded by terminal
+    // receipts. A user/manual/permission blocker is never inferred away.
+    if (blockers.some(item => item.type !== 'manual'
+      || item.description !== 'startup recovery found running work without authorized dispatch')) return undefined;
+    if ((this.deps.kernelWorkflowStore.listRecoveryItems?.(taskId) ?? []).length > 0
+      || (this.deps.kernelWorkflowStore.listRecoverableApplications?.(undefined, taskId) ?? []).length > 0) return undefined;
+    const request = this.deps.generationReplanRepo.findLatestOpen(taskId, revision.generationId);
+    if (!request) return { rejectedReplanRequestId: null };
+    if (request.status !== 'submitted' || request.sourceRevision !== revision.revision
+      || request.configurationRevision !== revision.configurationRevision) return undefined;
+    const rejected = this.deps.kernelDecisionRepo?.findById(`decision_replan_event_${request.triggerDecisionId}`);
+    const event = rejected?.event;
+    if (rejected?.action !== 'request_clarification' || !rejected.reason.startsWith('unqualified context refs:')
+      || event?.type !== 'plan_proposed' || event.proposalSource !== 'replan'
+      || event.taskId !== taskId || event.proposal.task.taskId !== taskId
+      || event.generationId !== revision.generationId || event.targetGraphRevision !== revision.revision + 1
+      || event.configurationRevision !== revision.configurationRevision) return undefined;
+    return { rejectedReplanRequestId: request.id };
   }
 
   private buildDispatchStableFacts(configurationRevision: string): DispatchStableFacts {
@@ -1546,6 +1596,13 @@ export class KernelExecutionRuntime {
       ) return null;
       const resumeRevision = this.deps.workGraphRevisionRepo.findActive(action.taskId);
       if (!resumeRevision || resumeRevision.generationId !== action.generationId || resumeRevision.revision !== action.graphRevision) return null;
+      if (action.retireReplanRequestId) {
+        this.deps.generationReplanRepo.retireRejectedProposal({
+          id: action.retireReplanRequestId, taskId: action.taskId,
+          generationId: action.generationId, sourceRevision: action.graphRevision,
+          decisionId: decision.id, now: new Date().toISOString(),
+        });
+      }
       for (const publicationId of action.deliveryPublicationIds ?? []) {
         this.deps.publicationRepo.retryDelivery(publicationId, action.taskId, action.generationId, new Date().toISOString());
       }

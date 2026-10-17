@@ -1699,6 +1699,7 @@ export class ConversationSession {
                 taskId: context.pendingAuthorizationRequest.taskId,
               }
             : null,
+          context.replan,
         )
       : { valid: false, errors: ['Planner context is unavailable'] };
     const expectedSubmissionId = createPlannerProposalSubmissionId(sessionId, turnId, submission.plan);
@@ -2462,6 +2463,7 @@ export class ConversationSession {
       'Bind the proposal to the exact existing Task id. Do not include raw Executor responses.',
     ].join('\n\n').slice(0, 24_000);
     const context = this.deps.planningContextBuilder!.build({ userInput: request });
+    context.replan = { taskId: task.id, taskEvidenceIds: evidence.map(item => item.id) };
     if (pinned) context.configuration = buildPlannerConfigurationView(pinned);
     if (context.configuration.revisionId !== decision.configurationRevision) {
       throw new Error('replan configuration revision mismatch');

@@ -17,6 +17,9 @@ This directory contains both current technical documentation and historical plan
 
 ## Current Docs
 
+- [上游输入失败后的恢复修复](plans/2026-10-17-blocked-upstream-recovery-fix.md)：保留完成阶段、显式恢复、重规划引用校验及本地 DMG 验收。
+- [Desktop 退出与升级恢复修复](plans/2026-10-17-desktop-exit-recovery-fix.md)：旧进程卡住清理、重连及本地 DMG 验收。
+
 - [富文档预览](plans/2026-10-15-rich-document-preview.md)：HTML、Word、PPT、Excel 和 PDF 的本地预览、附件入口及 Web/Desktop 验收。
 - [对话表格与图表](plans/2026-10-16-conversation-tables-and-charts.md)：完整 Markdown 表格、离线交互图表、分析师输出约定与浏览器/桌面验收。
 - [任务执行结果、验收与用户状态收敛](plans/2026-10-16-task-execution-user-state-convergence-plan.md)：安全未认证结果的用户决策闭环，以及四态用户状态投影。

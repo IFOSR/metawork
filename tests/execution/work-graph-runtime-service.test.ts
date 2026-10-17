@@ -9,7 +9,7 @@ import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskEventRepo } from '../../src/storage/task-event-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
-import { TaskExecutionEvidenceRepo } from '../../src/execution/execution-evidence-port.js';
+import { createEvidenceId, TaskExecutionEvidenceRepo } from '../../src/execution/execution-evidence-port.js';
 import { SubtaskExecutionContextBuilder } from '../../src/execution/subtask-execution-context.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -412,6 +412,33 @@ describe('WorkGraphRuntimeService', () => {
     });
   });
 
+  it('keeps distinct completed nodes with long task IDs and preserves existing evidence references', () => {
+    const db = createDb();
+    const taskRecord = task(`task_plan_event_${'a'.repeat(80)}`);
+    new TaskRepo(db).insert(taskRecord);
+    seedKernelDecision(db, 'decision_initial', taskRecord.id);
+    const runtime = service(db);
+    const first = graph(taskRecord.id).subtasks[0]!;
+    runtime.apply({ task: taskRecord, userPrompt: 'initial',
+      authorizedWorkGraph: { ...graph(taskRecord.id), subtasks: [
+        { ...first, id: 'one' }, { ...first, id: 'two' },
+      ] }, authorizedBindingsBySubtask: { one: [authorizedBinding], two: [authorizedBinding] },
+      authorization: { decisionId: 'decision_initial', generationId: 'generation_1', revision: 1, source: 'initial', automaticReplan: false },
+    });
+    const subtasks = new SubtaskRepo(db);
+    const evidence = new TaskExecutionEvidenceRepo(db);
+    for (const name of ['one', 'two']) subtasks.updateStatus(`${taskRecord.id}_r1_${name}`, 'done', { result: name });
+    evidence.upsert({ id: 'historical-reference', taskId: taskRecord.id, kind: 'task_evidence',
+      sourceId: `${taskRecord.id}_r1_one`, title: 'One', content: 'one' });
+    const ids = runtime.materializeCompletedEvidence(taskRecord.id, 1);
+    expect(new Set(ids).size).toBe(2);
+    expect(ids).toContain('historical-reference');
+    expect(runtime.materializeCompletedEvidence(taskRecord.id, 1)).toEqual(ids);
+    expect(evidence.listTaskEvidenceByGeneration(taskRecord.id, 'generation_1').map(item => item.sourceId).sort())
+      .toEqual([`${taskRecord.id}_r1_one`, `${taskRecord.id}_r1_two`]);
+    db.close();
+  });
+
   it('supersedes unfinished work and exposes completed work as immutable task evidence', () => {
     const db = createDb();
     const taskRecord = task('task_replan');
@@ -439,7 +466,7 @@ describe('WorkGraphRuntimeService', () => {
     });
     repo.updateStatus('task_replan_r1_research', 'done', { result: 'Verified facts', artifacts: ['report.md'] });
 
-    const evidenceId = 'evidence_task_evidence_task_replan_r1_task_replan_r1_research';
+    const evidenceId = createEvidenceId('task_evidence', 'task_replan_r1_task_replan_r1_research');
     const replacement: WorkGraphProposal = {
       schemaVersion: 7,
       configurationRevision,

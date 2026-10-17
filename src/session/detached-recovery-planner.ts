@@ -34,7 +34,7 @@ export async function planWithoutClient(input: {
       }
       const plan = normalizePlanningAgentPlanInput(submission.plan);
       const parsed = PlanningAgentPlanSchema.safeParse(plan);
-      const validation = validatePlanningAgentPlan(plan, context.configuration);
+      const validation = validatePlanningAgentPlan(plan, context.configuration, context.pendingAuthorizationRequest, context.replan);
       if (!parsed.success || !validation.valid) {
         return { ...base, status: 'rejected', rejectionType: 'validation', issues: parsed.success
           ? validation.errors : parsed.error.issues.map(issue => issue.message) };

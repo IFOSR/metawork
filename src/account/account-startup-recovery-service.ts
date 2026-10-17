@@ -86,6 +86,7 @@ export class AccountStartupRecoveryService {
     readonly productionAuthorization?: () => { allowed: boolean; reason?: string };
     readonly db: Database.Database;
     readonly recoveryReplan?: RecoveryReplan;
+    readonly recoveryPlan?: PlanningAgent['plan'];
     readonly resolveConfigurationSnapshot?: (revisionId: string) => Promise<ConfigurationSnapshot>;
     readonly kernelServices: AccountKernelServices;
     readonly repositories: AccountRepositories;
@@ -368,7 +369,7 @@ export class AccountStartupRecoveryService {
 
       if (taskClaims.length === 0 && !this.deps.kernelServices.kernelWorkflowRepo.hasRecoverableWork(task.id)) {
         const subtasks = this.deps.repositories.subtaskRepo.listActiveByTask(task.id);
-        const orphan = subtasks.find(subtask => !['done', 'cancelled'].includes(subtask.status));
+        const orphan = subtasks.find(subtask => subtask.status === 'running');
         if (orphan) {
           const dispatch = dispatchItems.listByTask(task.id).find(item =>
             item.subtaskId === orphan.id
@@ -829,7 +830,7 @@ export class AccountStartupRecoveryService {
 
   private buildReplanPlannerPort(): GenerationReplanPlannerPort {
     return {
-      plan: context => this.deps.planningAgent.plan(context),
+      plan: context => (this.deps.recoveryPlan ?? this.deps.planningAgent.plan.bind(this.deps.planningAgent))(context),
       buildPlanningContext: input => new PlanningContextBuilder({
         sessionId: input.sessionId,
         ...(input.conversationId ? { conversationId: input.conversationId } : {}),
@@ -1159,6 +1160,7 @@ export class AccountStartupRecoveryService {
             ? this.deps.taskServices.taskRuntimeService.findTask(event.proposal.task.taskId)
             : null,
           userInput: event.requestText,
+          attachmentIds: event.attachmentIds,
         }),
         pendingAuthorizationRequest: (() => {
           const pending = this.deps.workspaceServices.permissionRepository

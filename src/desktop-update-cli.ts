@@ -106,7 +106,9 @@ async function main(): Promise<void> {
             await new Promise(resolve => setTimeout(resolve, 100));
           }
         }
-        if (await running()) await (await manager()).stopForUpdate();
+        // A shutdown-stalled launchd process can outlive both lock and endpoint.
+        // Explicit recovery must complete the stop even when running() is false.
+        await (await manager()).stopForUpdate();
       },
       updateRuntime: () => updater.update({ releaseId: record.candidateReleaseId,
         sourceRoot: join(resources, 'payload/metawork'), plannerRoot: join(resources, 'payload/planner') }).then(() => undefined),

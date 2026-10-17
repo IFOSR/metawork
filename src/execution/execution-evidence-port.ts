@@ -270,6 +270,6 @@ function decodeCursor(cursor: string | undefined): number {
 
 export function createEvidenceId(kind: string, sourceId: string): string {
   // Resource paths may share a long directory prefix; truncating them aliases distinct files.
-  if (kind === 'task_resource') return `evidence_${kind}_${createHash('sha256').update(sourceId).digest('hex')}`;
+  if (kind === 'task_resource' || kind === 'task_evidence') return `evidence_${kind}_${createHash('sha256').update(sourceId).digest('hex')}`;
   return `evidence_${kind}_${sourceId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) || generateInteractionId()}`;
 }

@@ -1,5 +1,24 @@
 # MetaWork Planning Agent And Work Unit Context
 
+Upstream-input recovery (2026-10-17): explicit Resume may continue a settled
+`missing_upstream_input` failure only after current binding/evidence support,
+published direct inputs, retained workspace and residue checks. Kernel can
+supersede the exact startup orphan fence and retire an identity-matched replan
+rejected for invalid context refs; real manual blockers and external uncertainty
+remain closed. Completed stages and historical facts are preserved. Replan
+proposal validation checks exact evidence IDs in the same Planner turn using a
+detached host. New evidence IDs hash the full source; existing refs stay stable.
+See ADR-0023 and the blocked-upstream recovery implementation record.
+
+Desktop shutdown recovery (2026-10-17): explicit installer stop captures the
+owned launchd Server before invoking the installed stop CLI, including when a
+legacy Server has already removed its runtime lock. Activation waits for actual
+process exit. Bounded cleanup requires unchanged user/process/job identity,
+withdrawn lock and endpoint, and no open account/data files or sockets. Ordinary
+connection never terminates a live job. Pi inventory verification runs outside
+the connection promise so a ready client can reconnect immediately. See the
+Desktop exit recovery implementation record for local acceptance.
+
 Official account authorization (2026-10-09, ADR-0047): the local Server now
 owns an in-memory official session and normalized entitlement state. Production
 Gateway admission verifies that entitlement online; active work triggers one
@@ -93,6 +112,14 @@ delivery semantics. New proposals cannot omit the declaration. Git integration,
 safe text visibility, and file-delivery-only recovery retain their existing owners.
 
 ## Current Implementation Notes
+
+Upstream result access (2026-10-17): attempt evidence/ResultReference services
+are enabled from registered Harness driver support in the authorized configuration
+revision, independent of AgentClass names. Custom Pi/Codex Executors receive
+the same scoped read service. Pi installs evidence tools for bound attempts
+even without web affordances; web tools still follow the AgentClass's affordances.
+Direct-edge authorization and attempt-end revocation are unchanged. This source
+fix requires an installed Desktop/Server update before retrying affected work.
 
 Conversation tables and charts (2026-10-16): the shared Web/Desktop Markdown
 renderer parses complete blocks before inserting authorized artifact links;

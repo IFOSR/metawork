@@ -81,6 +81,7 @@ describe('ContainerCompatibilityAdapter', () => {
       bindingFingerprint: 'binding-fingerprint',
       attemptsRoot: '/runtime/attempts',
       environment: {},
+      evidenceToolsAvailable: true,
     });
     expect(driver.buildLaunch).toHaveBeenCalledWith(expect.objectContaining({
       prompt: expect.stringContaining('Working directory: /workspace'),

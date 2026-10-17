@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile, realpath } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -43,6 +43,9 @@ const db = new Database(dbPath);
 db.exec("CREATE TABLE desktop_finder_acceptance (value TEXT); INSERT INTO desktop_finder_acceptance VALUES ('preserved work');"); db.close();
 const configPath = join(root, 'accounts/local-default/config/active/revision-manifest.json');
 const configHash = JSON.parse(await readFile(configPath, 'utf8')).contentHash;
+// Exercise an upgrade while the actual previous Runtime is already serving.
+await new DesktopServiceManager({ installRoot: root, releaseId: previous.releaseId,
+  nodePath: await realpath(join(root, 'app/current/desktop-tools/node/bin/node')), configHome: env.METAWORK_CONFIG_HOME, env }).startForUpdate();
 await mkdir(join(root, 'upgrades'), { recursive: true });
 // A real repeat installation has a completed old transaction plus a dead helper
 // and an interrupted pre-verification status. These facts must not cause a loop.

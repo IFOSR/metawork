@@ -209,6 +209,10 @@ export class SubtaskAttemptRunner {
     return this.deps.getSessionId?.() ?? this.deps.sessionId;
   }
 
+  supportsEvidenceTools(binding: AuthorizedExecutorBinding): boolean {
+    return this.deps.executionRuntime.supportsEvidenceTools(binding);
+  }
+
   supportsResponseOnly(
     agentClassName: string,
     configurationRevision: string,
@@ -580,7 +584,7 @@ export class SubtaskAttemptRunner {
         kind: 'status',
         text: '正在准备任务资料，Executor 尚未启动',
       }, startedAt);
-      const evidenceToolsAvailable = agentClassName === 'codex-cli' || agentClassName === 'pi-agent';
+      const evidenceToolsAvailable = this.deps.executionRuntime.supportsEvidenceTools(dispatch.authorizedBinding);
       const attemptControlHost = this.deps.attemptExecutionBackend.pathMode === 'native'
         ? '127.0.0.1'
         : process.env.METACLAW_CONTROL_HOST ?? 'metaclaw-control';

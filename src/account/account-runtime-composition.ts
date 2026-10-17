@@ -65,6 +65,7 @@ export interface AccountRuntimeComposition {
 export function buildAccountRuntimeComposition(deps: {
   accountId: string;
   recoveryReplan?: import('../session/recovery-replanner.js').RecoveryReplan;
+  recoveryPlan?: PlanningAgent['plan'];
   resolveConfigurationSnapshot?: (revisionId: string) => Promise<import('../configuration/types.js').ConfigurationSnapshot>;
   db: Database.Database;
   taskEngine: TaskEngine;
@@ -307,6 +308,7 @@ export function buildAccountRuntimeComposition(deps: {
   startupRecovery = new AccountStartupRecoveryService({
     productionAuthorization: deps.productionAuthorization,
     recoveryReplan: deps.recoveryReplan,
+    recoveryPlan: deps.recoveryPlan,
     resolveConfigurationSnapshot: deps.resolveConfigurationSnapshot,
     db: deps.db,
     kernelServices,

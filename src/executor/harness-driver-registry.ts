@@ -123,6 +123,19 @@ export class HarnessDriverRegistry {
     return Boolean(resolved?.registration.driver.supportsResponseOnly);
   }
 
+  supportsEvidenceTools(input: {
+    configuration: RuntimeConfigurationView;
+    authorizedBinding: AuthorizedExecutorBinding;
+  }): boolean {
+    const { configuration, authorizedBinding } = input;
+    if (configuration.revisionId !== authorizedBinding.configurationRevision
+      || configuration.agentClasses[authorizedBinding.agentClassRef]?.harnessRef !== authorizedBinding.harnessRef) {
+      return false;
+    }
+    const resolved = this.resolveRegistration({ configuration, agentClassRef: authorizedBinding.agentClassRef });
+    return Boolean(resolved?.registration.driver.supportsEvidenceTools);
+  }
+
   private resolveRegistration(input: {
     configuration: RuntimeConfigurationView;
     agentClassRef: string;

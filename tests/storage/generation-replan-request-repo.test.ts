@@ -4,6 +4,22 @@ import type { KernelEvent } from '../../src/kernel/control-kernel.js';
 import { REVISION, createV31RepositoryDb } from './v31-repository-fixture.js';
 
 describe('GenerationReplanRequestRepo', () => {
+  it('retires only the exact submitted job and replays the same resume without reopening Planner work', () => {
+    const db = createV31RepositoryDb(); const repo = new GenerationReplanRequestRepo(db);
+    repo.enqueue({ id: 'replan', taskId: 'task_1', generationId: 'generation-1', sourceRevision: 1,
+      configurationRevision: REVISION, triggerDecisionId: 'decision-1', now });
+    const resume = { id: 'replan', taskId: 'task_1', generationId: 'generation-1', sourceRevision: 1,
+      decisionId: 'resume', now };
+    expect(() => repo.retireRejectedProposal(resume)).toThrow();
+    repo.markPlanning('replan', 'token', now); repo.markSubmitted('replan', 'token', now);
+    expect(() => repo.retireRejectedProposal({ ...resume, sourceRevision: 2 })).toThrow();
+    repo.retireRejectedProposal(resume); repo.retireRejectedProposal(resume);
+    expect(repo.find('replan')).toMatchObject({ status: 'cancelled' });
+    expect(repo.listPlannerClaimable(now, now)).toEqual([]);
+    expect(() => repo.retireRejectedProposal({ ...resume, decisionId: 'other' })).toThrow();
+    db.close();
+  });
+
   it('coalesces one generation request and rejects a Planner result after cancellation', () => {
     const db = createV31RepositoryDb();
     const repo = new GenerationReplanRequestRepo(db);

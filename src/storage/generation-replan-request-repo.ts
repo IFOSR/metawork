@@ -410,6 +410,26 @@ export class GenerationReplanRequestRepo {
     }).immediate();
   }
 
+  /** Applied only by a Kernel-authorized explicit resume; historical proposal stays immutable. */
+  retireRejectedProposal(input: {
+    id: string; taskId: string; generationId: string; sourceRevision: number;
+    decisionId: string; now: string;
+  }): void {
+    const reason = `superseded by explicit resume ${input.decisionId}`;
+    const changed = this.db.prepare(`
+      UPDATE generation_replan_requests
+      SET status = 'cancelled', cancelled_at = ?, updated_at = ?, error_summary = ?
+      WHERE id = ? AND task_id = ? AND generation_id = ? AND source_revision = ?
+        AND status = 'submitted'
+    `).run(input.now, input.now, reason, input.id, input.taskId, input.generationId, input.sourceRevision).changes;
+    if (changed === 1) return;
+    const current = this.find(input.id);
+    if (current?.status === 'cancelled' && current.errorSummary === reason
+      && current.taskId === input.taskId && current.generationId === input.generationId
+      && current.sourceRevision === input.sourceRevision) return;
+    throw new Error('Rejected replan changed before authorized resume');
+  }
+
   resolve(id: string, now: string): void {
     this.db.prepare(`
       UPDATE generation_replan_requests

@@ -102,6 +102,7 @@ export interface RuntimeHomeInput {
   revisionId: string;
   agentClassId: string;
   executorAffordances?: readonly ExecutorAffordanceId[];
+  evidenceToolsAvailable?: boolean;
   bindingFingerprint: string;
   attemptsRoot: string;
   environment: Record<string, string>;
@@ -122,6 +123,8 @@ export interface HarnessDriver {
   readonly executionProtocols: readonly HarnessExecutionProtocolId[];
   readonly supportsContinuation?: boolean;
   readonly supportsResponseOnly?: boolean;
+  /** Can consume the attempt-scoped evidence and upstream-result service. */
+  readonly supportsEvidenceTools?: boolean;
   probe(): Promise<HarnessProbeResult>;
   materializeHome(input: RuntimeHomeInput): Promise<MaterializedRuntimeHome>;
   buildLaunch(input: HarnessLaunchInput): HarnessLaunchSpec;

@@ -46,6 +46,7 @@ export class PiCliDriver implements HarnessDriver {
   readonly id = 'pi-cli';
   readonly executionProtocols = ['workspace-image-artifact-v1'] as const;
   readonly supportsResponseOnly = true;
+  readonly supportsEvidenceTools = true;
   private readonly runProbe: ProbeCommandRunner;
   private readonly explicitHomeTemplateDir?: string;
   private readonly generatedRuntimeRoot?: string;
@@ -103,11 +104,12 @@ export class PiCliDriver implements HarnessDriver {
         PI_CODING_AGENT_DIR: agentPath,
         PI_CODING_AGENT_SESSION_DIR: sessionPath,
         ...input.environment,
+        METACLAW_PI_WEB_TOOLS_ENABLED: hasWebResearchAffordances(input.executorAffordances) ? '1' : '0',
       },
       homeDirectories: ['.pi/agent/sessions'],
     });
     await this.seedProviderConfig(homePath, input.revisionId);
-    await this.seedWebExtension(homePath, input.executorAffordances);
+    await this.seedWebExtension(homePath, input.executorAffordances, input.evidenceToolsAvailable === true);
     if (existsSync(join(this.pdfExtensionRoot, 'index.ts'))) {
       const extensions = join(homePath, '.pi', 'agent', 'extensions');
       await mkdir(extensions, { recursive: true, mode: 0o700 });
@@ -335,8 +337,10 @@ export class PiCliDriver implements HarnessDriver {
   private async seedWebExtension(
     homePath: string,
     affordances: readonly ExecutorAffordanceId[] | undefined,
+    evidenceToolsAvailable: boolean,
   ): Promise<void> {
-    if (!this.webExtensionSourcePath || !hasWebResearchAffordances(affordances)) return;
+    if (!this.webExtensionSourcePath
+      || (!hasWebResearchAffordances(affordances) && !evidenceToolsAvailable)) return;
     const extensionsDir = join(homePath, '.pi', 'agent', 'extensions');
     await mkdir(extensionsDir, { recursive: true, mode: 0o700 });
     const target = join(extensionsDir, 'metawork-web-tools.ts');

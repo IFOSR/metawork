@@ -1,5 +1,24 @@
 # MetaWork
 
+Upstream-input recovery (2026-10-17): explicit Resume may continue a settled
+`missing_upstream_input` failure only after current binding/evidence support,
+published direct inputs, retained workspace and residue checks. Kernel can
+supersede the exact startup orphan fence and retire an identity-matched replan
+rejected for invalid context refs; real manual blockers and external uncertainty
+remain closed. Completed stages and historical facts are preserved. Replan
+proposal validation checks exact evidence IDs in the same Planner turn using a
+detached host. New evidence IDs hash the full source; existing refs stay stable.
+See ADR-0023 and the blocked-upstream recovery implementation record.
+
+Desktop shutdown recovery (2026-10-17): explicit installer stop captures the
+owned launchd Server before invoking the installed stop CLI, including when a
+legacy Server has already removed its runtime lock. Activation waits for actual
+process exit. Bounded cleanup requires unchanged user/process/job identity,
+withdrawn lock and endpoint, and no open account/data files or sockets. Ordinary
+connection never terminates a live job. Pi inventory verification runs outside
+the connection promise so a ready client can reconnect immediately. See the
+Desktop exit recovery implementation record for local acceptance.
+
 Explicit file delivery (2026-10-15, ADR-0032): new Planner proposals require
 `fileOutputs` per Subtask. Empty arrays request inline answers/action receipts or
 Git edits without downloadable documents. Safe relative filenames or dedicated
@@ -1647,6 +1666,13 @@ The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanne
 
 ## Complex Task Strategy And Agentic Loop
 
+Attempt evidence and upstream ResultReference access follow the registered
+Harness driver's support in the authorized configuration revision, including
+custom Pi/Codex AgentClasses. AgentClass names do not gate the service. Pi
+materializes its evidence extension for bound attempts even without web
+affordances; only the web tools follow those affordances. The service retains
+direct-dependency authorization and closes when the attempt ends.
+
 MetaWork can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
 In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The source uses SQLite schema v49 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50 upgrades; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers; v45 adds durable Retry Wake continuation facts for timeout recovery; v46 adds the indexed latest Task-creation timestamp used to order Conversation history; v47 adds body-separated Conversation entities, projection checkpoints/tail/staging rebuild, activity invalidation and witness indexes, trace/content-search indexes, client navigation, durable approval acceptance/application and notification routes/outbox. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
@@ -2105,4 +2131,3 @@ Source validation, native CLI protocol probes, browser/TUI tests, Desktop shell,
 Docker and installed-package acceptance are recorded independently in the
 [reliability technical design](../plans/2026-10-15-task-execution-reliability-technical-design.md).
 A successful source build is not an installed commercial-release acceptance.
-

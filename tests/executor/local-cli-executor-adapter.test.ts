@@ -109,6 +109,7 @@ describe('LocalCliExecutorAdapter', () => {
       bindingFingerprint: authorizedExecutorBindingFingerprint(authorizedBinding()),
       attemptsRoot: '/runtime/attempts',
       environment: {},
+      evidenceToolsAvailable: true,
     });
     expect(driver.buildLaunch).toHaveBeenCalledWith(expect.objectContaining({
       prompt: expect.stringContaining('Operative goal: Implement the selected slice'),

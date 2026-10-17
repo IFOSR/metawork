@@ -351,8 +351,10 @@ const resultReferenceGetTool = defineTool({
 });
 
 export default function (pi: ExtensionAPI) {
-  pi.registerTool(webSearchTool);
-  pi.registerTool(webFetchTool);
+  if (process.env.METACLAW_PI_WEB_TOOLS_ENABLED !== "0") {
+    pi.registerTool(webSearchTool);
+    pi.registerTool(webFetchTool);
+  }
   pi.registerTool(evidenceListTool);
   pi.registerTool(evidenceSearchTool);
   pi.registerTool(evidenceGetTool);

@@ -360,7 +360,8 @@ export interface KernelResumeRecoveryCandidate {
     | 'completion_marker_missing'
     | 'completion_no_change_reason_mismatch'
     | 'completion_metadata_invalid'
-    | 'execution_interrupted';
+    | 'execution_interrupted'
+    | 'upstream_input_restored';
   attemptKind?: 'continuation' | 'contract_correction';
   attemptPayload?: KernelAttemptPayload;
   correctionFacts?: { receiptCount: number; responseBytes: number };
@@ -397,6 +398,8 @@ export type KernelSnapshot = { productionAuthorization?: ProductionAuthorization
       frontier: string[];
       dependencyReadiness?: KernelDependencyReadinessFact[];
       resumeRecoveryCandidates?: KernelResumeRecoveryCandidate[];
+      /** Current blockers and rejected replan have been identified from durable facts. */
+      upstreamInputResume?: { rejectedReplanRequestId: string | null };
       deliveryRecoveryPublicationIds?: string[];
       pendingRetrySubtaskIds?: string[];
       dispatchItems: KernelDispatchItemFact[];
@@ -557,6 +560,7 @@ export type KernelDecisionAction =
       graphRevision: number;
       subtaskIds: string[];
       deliveryPublicationIds?: string[];
+      retireReplanRequestId?: string;
       blockerCategory: KernelResumeBlockerCategory;
       recovery?: {
         subtaskId: string;
@@ -1211,9 +1215,21 @@ export class ControlKernel {
           item.subtaskId === candidate.subtaskId && isPendingOrActiveDispatch(item.status)
         );
     });
+    const restoredUpstream = recovery?.reason === 'upstream_input_restored'
+      && !['contract', 'material'].includes(event.blockerCategory)
+      && snapshot.upstreamInputResume !== undefined
+      && snapshot.generationQuiescent
+      && snapshot.recoverySafety !== 'external_non_idempotent'
+      && !snapshot.completionBlockedReasons.some(reason => !['generation_replan', 'kernel_application'].includes(reason))
+      && (!snapshot.generationReplanRequest || (
+        snapshot.generationReplanRequest.status === 'submitted'
+        && snapshot.generationReplanRequest.id === snapshot.upstreamInputResume.rejectedReplanRequestId
+      ));
     if (
       recovery
-      && !['manual', 'material', 'contract'].includes(event.blockerCategory)
+      && (recovery.reason === 'upstream_input_restored'
+        ? restoredUpstream
+        : !['manual', 'material', 'contract'].includes(event.blockerCategory))
     ) {
       const recoveryAttemptKind = recovery.attemptKind
         ?? (['completion_metadata_invalid', 'completion_marker_missing'].includes(recovery.reason)
@@ -1245,6 +1261,8 @@ export class ControlKernel {
         graphRevision: snapshot.graphRevision,
         subtaskIds: [],
         blockerCategory: event.blockerCategory,
+        ...(restoredUpstream && snapshot.upstreamInputResume?.rejectedReplanRequestId
+          ? { retireReplanRequestId: snapshot.upstreamInputResume.rejectedReplanRequestId } : {}),
         recovery: {
           subtaskId: recovery.subtaskId,
           sourceAttemptId: recovery.sourceAttemptId,
@@ -1255,7 +1273,8 @@ export class ControlKernel {
           defaultResourceGrant: resourceGrantForSubtask(snapshot, recovery.subtaskId),
           ...(recovery.attemptPayload ? { attemptPayload: recovery.attemptPayload } : {}),
         },
-      }, recoveryAttemptKind === 'contract_correction'
+      }, restoredUpstream ? 'Kernel authorized recovery after revalidating published upstream inputs'
+        : recoveryAttemptKind === 'contract_correction'
         ? 'Kernel authorized metadata-only correction of the existing safe result'
         : 'Kernel authorized exact uncertified-result workspace recovery');
     }

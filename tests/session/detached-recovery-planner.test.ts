@@ -20,11 +20,17 @@ it('validates through an isolated temporary host and unregisters after planning'
       userInput: context.userInput, plan: proposal };
     const rejected = await host.submitPlannerProposal(submission, 'kernel');
     expect(rejected.status).toBe('rejected');
+    const wrong = structuredClone(submission);
+    wrong.plan.workGraph!.subtasks[0]!.contextRefs = [{ kind: 'task_evidence', evidenceId: 'mistyped-evidence' }];
+    const invalid = await host.submitPlannerProposal(wrong, purpose);
+    expect(invalid).toMatchObject({ status: 'rejected', issues: [expect.stringContaining('Unavailable task_evidence ID')] });
+    proposal.workGraph!.subtasks[0]!.contextRefs = [{ kind: 'task_evidence', evidenceId: 'evidence-exact' }];
     const proposalResult = await host.submitPlannerProposal(submission, purpose);
     expect(proposalResult.status, JSON.stringify(proposalResult)).toBe('accepted');
     return { proposalResult, submittedPlan: proposal, toolCalls: [] };
   });
   const result = await planWithoutClient({ context: {
+    replan: { taskId: 'task', taskEvidenceIds: ['evidence-exact'] },
     userInput: 'Fix parser', request: { sessionId: 'owner', conversationId: 'conversation', source: 'recovery' },
     configuration: buildPlannerConfigurationView(spanSnapshot()), pendingAuthorizationRequest: null, timeoutMs: 1000,
   }, runner: { run, abortSession: vi.fn() } as never, registerSession });

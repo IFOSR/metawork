@@ -88,6 +88,13 @@ export class ExecutorRegistry {
       ?? null;
   }
 
+  supportsEvidenceTools(binding: AuthorizedExecutorBinding): boolean {
+    const configuration = this.deps.getRuntimeConfiguration(binding.configurationRevision);
+    return configuration
+      ? this.deps.driverRegistry.supportsEvidenceTools({ configuration, authorizedBinding: binding })
+      : false;
+  }
+
   async resolve(binding: AuthorizedExecutorBinding): Promise<ExecutorAdapter | null> {
     const configuration = this.deps.getRuntimeConfiguration(
       binding.configurationRevision,
@@ -281,6 +288,10 @@ export class ExecutionRuntime implements ActiveExecutionControl {
 
   async isExecutorAvailable(binding: AuthorizedExecutorBinding): Promise<boolean> {
     return (await this.registry.probe(binding)).available;
+  }
+
+  supportsEvidenceTools(binding: AuthorizedExecutorBinding): boolean {
+    return this.registry.supportsEvidenceTools(binding);
   }
 
   probeExecutor(

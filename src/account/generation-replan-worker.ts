@@ -206,6 +206,10 @@ export class GenerationReplanWorker {
         conversationId,
         userInput,
       });
+      context.replan = {
+        taskId: task.id,
+        taskEvidenceIds: this.deps.planner.listTaskEvidence(task.id, job.generationId).map(item => item.id),
+      };
       // The Job is pinned to the configuration revision that authorized its
       // generation. Replanning it against a different revision would silently
       // break the one-revision-per-generation rule, so fail closed instead.
@@ -333,6 +337,7 @@ export function buildGenerationReplanRequestText(input: {
     `Generation: ${input.generationId}`,
     `Superseded revision: ${input.sourceRevision}`,
     'The new graph must describe only remaining work and may reference the task_evidence IDs below.',
+    'Copy evidenceId strings exactly into task_evidence ContextRefs; never shorten or reconstruct an ID.',
     'Do not bind the remaining work back to an Executor candidate that already failed in this generation unless you explain why this attempt would behave differently.',
     `Completed evidence: ${JSON.stringify(input.evidence.map(item => ({
       evidenceId: item.id,

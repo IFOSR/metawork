@@ -49,6 +49,17 @@ afterEach(() => {
 });
 
 describe('AccountStartupRecoveryService production composition', () => {
+  it('does not classify a settled awaiting-decision node as an orphan running process', async () => {
+    const fixture = createFixture('settled-awaiting-decision');
+    const task = createRunningTask(fixture, 'Review the completed upstream draft');
+    fixture.db.prepare("UPDATE subtasks SET status='awaiting_decision', error='missing_upstream_input' WHERE task_id=?").run(task.id);
+    seedTaskOriginDecision(fixture.db, task.id, 'conversation-origin');
+    await fixture.composition.accountRuntime.initialize();
+    const current = new TaskRepo(fixture.db).findById(task.id)!;
+    expect(current.dependencies.some(item => item.description === 'startup recovery found running work without authorized dispatch')).toBe(false);
+    expect(new KernelDispatchItemRepo(fixture.db).listByTask(task.id)).toHaveLength(0);
+  });
+
   it('finishes an already published Task after cleanup without relaunching an Executor', async () => {
     const fixture = createFixture('completion-after-cleanup');
     const task = createRunningTask(fixture, 'Deliver the completed research');

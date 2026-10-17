@@ -423,7 +423,8 @@ function fakePlannerPort(
 } {
   const state = { plans: 0, drains: 0, failuresLeft: options.failPlans ?? 0 };
   const port: GenerationReplanPlannerPort = {
-    plan: async () => {
+    plan: async context => {
+      expect(context.replan).toEqual({ taskId: TASK_ID, taskEvidenceIds: [] });
       state.plans += 1;
       if (state.failuresLeft > 0) {
         state.failuresLeft -= 1;

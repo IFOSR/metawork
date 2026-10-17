@@ -8,6 +8,11 @@ const execute = promisify(execFile);
 const xml = (value: string): string => value.replace(/[<>&"']/gu, character =>
   ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[character]!);
 
+export async function macOSBackgroundTarget(root: string, role: 'update' | 'server'): Promise<string> {
+  const canonical = await realpath(root);
+  return `gui/${process.getuid!()}/com.metawork.${role}.${createHash('sha256').update(canonical).digest('hex').slice(0, 24)}`;
+}
+
 export function backgroundProcessPlist(input: {
   label: string; executable: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; logPath: string;
 }): string {
@@ -38,9 +43,9 @@ export async function startMacOSBackgroundProcess(input: {
   cwd: string; env: NodeJS.ProcessEnv; logPath: string;
 }): Promise<void> {
   const root = await realpath(input.root);
-  const label = `com.metawork.${input.role}.${createHash('sha256').update(root).digest('hex').slice(0, 24)}`;
+  const target = await macOSBackgroundTarget(root, input.role);
+  const label = target.split('/').at(-1)!;
   const domain = `gui/${process.getuid!()}`;
-  const target = `${domain}/${label}`;
   const previous = await execute('/bin/launchctl', ['print', target]).then(value => value.stdout, () => null);
   if (previous !== null) {
     if (/^\s*pid = \d+$/mu.test(previous)) {

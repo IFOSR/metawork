@@ -151,3 +151,15 @@ existing runtime/update lock. A staged, verified support tree is selected by an
 atomic release-scoped pointer; the immutable active application is not edited.
 Automatic repair is attempted once per release, then requires an explicit retry.
 The ordinary Web settings remain reachable when execution tools are unavailable.
+
+## Explicit installer stop correction (2026-10-17)
+
+The launchd transport does not equate absence of the Server runtime lock with
+OS process exit. An explicit update/repair captures its owned job and process
+identity before calling the installed formal stop CLI. A legacy process stalled
+in Node exit may be terminated only after a bounded wait, with unchanged
+user/PID/start time/entrypoint/job, withdrawn lock and endpoint, and no open
+account/data files or sockets. Failure to prove these conditions blocks
+activation. A completed stop waits for launchd to reap the process, including
+the transient zombie state. Ordinary connection never kills or boots out a live
+job. This remains Installer lifecycle handling, not Task recovery policy.

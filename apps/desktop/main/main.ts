@@ -51,6 +51,7 @@ let updatingApplication = false;
 let recoveryRequired = false;
 let backendUnavailable = false;
 let connectPromise: Promise<void> | null = null;
+let piCheckStarted = false;
 const downloads = new Map<string, string>();
 let saving = false;
 let notifications: DesktopNotifications;
@@ -228,9 +229,14 @@ async function connectOnce(): Promise<void> {
         instanceId: grant.instanceId, pid: process.pid });
     }
     setState({ phase: 'ready', message: '后台服务已连接' });
-    if (installation && !shellCheckChallenge && !await installation.piIntact()) {
-      // Run only after ordinary Web is available. Failed repair never becomes an update loop.
-      setTimeout(() => { void repairPi(true).catch(() => undefined); }, 0);
+    if (installation && !shellCheckChallenge && !piCheckStarted) {
+      // Tool inventory can take seconds. It must not hold the connection promise
+      // after ready, otherwise reconnect silently reuses that completed session.
+      piCheckStarted = true;
+      void installation.piIntact().then(intact => {
+        if (!intact && state.phase === 'ready' && !backendUnavailable && !updatingApplication) return repairPi(true);
+        return undefined;
+      }).catch(() => undefined);
     }
   } catch (error) {
     // Never interpolate provider response bodies or native command output into diagnostics.

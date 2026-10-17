@@ -8,6 +8,7 @@ import { discoverDesktopSession } from './desktop-session-client.js';
 import type { DesktopSessionGrant } from '../gateway/desktop-session-contract.js';
 import { resolveClientEndpoint } from './client-endpoint-resolver.js';
 import { startMacOSBackgroundProcess } from '../installation/macos-background-process.js';
+import { captureMacOSServerProcess, finishMacOSServerExit } from '../installation/macos-server-exit.js';
 
 export interface DesktopRuntime {
   installRoot: string;
@@ -106,13 +107,23 @@ export class DesktopServiceManager {
   /** Explicit installer action; legacy Web Servers cannot issue Desktop tickets. */
   async stopForUpdate(): Promise<void> {
     const root = await this.releaseRoot();
-    await new Promise<void>((resolve, reject) => {
+    const background = process.platform === 'darwin' ? await captureMacOSServerProcess(this.runtime.installRoot) : null;
+    const stopped = await new Promise<void>((resolve, reject) => {
       const child = spawn(this.runtime.nodePath, [join(root, 'dist', 'index.js'), 'server', 'stop'], {
         cwd: this.runtime.installRoot, env: this.environment(root), stdio: 'ignore',
       });
-      child.once('error', reject);
-      child.once('exit', code => code === 0 ? resolve() : reject(new Error('后台服务未完成停止，请检查服务状态。')));
-    });
+      // Bound the stop CLI too: it is a separate Node process and may itself
+      // stall in native exit. Killing this command does not kill Server.
+      const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Server stop command timed out')); }, 20_000);
+      child.once('error', error => { clearTimeout(timer); reject(error); });
+      child.once('exit', code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error('后台服务未完成停止，请检查服务状态。')); });
+    }).then(() => ({ error: null }), error => ({ error }));
+    if (background) {
+      await finishMacOSServerExit(background);
+      if (await isInstanceRunning(join(this.runtime.installRoot, 'data/runtime.lock'))) {
+        throw new Error('Another Server is running after stop');
+      }
+    } else if (stopped.error) throw stopped.error;
   }
 
   private async releaseRoot(): Promise<string> {

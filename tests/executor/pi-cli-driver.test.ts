@@ -560,6 +560,22 @@ describe('PiCliDriver', () => {
       await expect(stat(
         join(ordinaryHome.homePath, '.pi', 'agent', 'extensions', 'metawork-web-tools.ts'),
       )).rejects.toMatchObject({ code: 'ENOENT' });
+
+      const reviewerHome = await driver.materializeHome({
+        attemptId: 'reviewer-attempt',
+        revisionId: 'revision-1',
+        agentClassId: 'executor-custom-reviewer',
+        executorAffordances: [],
+        evidenceToolsAvailable: true,
+        bindingFingerprint: 'fingerprint',
+        attemptsRoot: join(root, 'attempts'),
+        environment: {},
+      });
+      expect(await readFile(
+        join(reviewerHome.homePath, '.pi', 'agent', 'extensions', 'metawork-web-tools.ts'), 'utf8',
+      )).toContain('testExtension');
+      expect(reviewerHome.environment.METACLAW_PI_WEB_TOOLS_ENABLED).toBe('0');
+      expect(researchHome.environment.METACLAW_PI_WEB_TOOLS_ENABLED).toBe('1');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

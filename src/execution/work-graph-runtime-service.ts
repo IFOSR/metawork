@@ -139,10 +139,12 @@ export class WorkGraphRuntimeService {
 
   materializeCompletedEvidence(taskId: string, revision: number): string[] {
     const ids: string[] = [];
+    const existing = this.evidenceRepo?.listGeneral(taskId) ?? [];
     for (const subtask of this.subtaskRepo.listByTask(taskId).filter(item =>
       item.graphRevision === revision && item.status === 'done'
     )) {
-      const evidenceId = createEvidenceId('task_evidence', `${taskId}_r${revision}_${subtask.id}`);
+      const evidenceId = existing.find(item => item.kind === 'task_evidence' && item.source_id === subtask.id)?.id
+        ?? createEvidenceId('task_evidence', `${taskId}_r${revision}_${subtask.id}`);
       this.evidenceRepo?.upsert({
         id: evidenceId,
         taskId,

@@ -82,6 +82,8 @@ export interface PlannerImageAttachment {
 }
 
 export interface PlanningContext {
+  /** Trusted replan input; never supplied by the model. */
+  replan?: { taskId: string; taskEvidenceIds: readonly string[] };
   userInput: string;
   attachments?: PlannerAttachmentView[];
   /** 多模态图片附件；Planner 进程以 RPC images 通道原生消费。 */

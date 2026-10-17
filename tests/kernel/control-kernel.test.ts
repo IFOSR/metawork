@@ -1155,6 +1155,35 @@ describe('ControlKernel', () => {
     }
   });
 
+  it.each(['safe', 'manual', 'live', 'external', 'stale-job', 'lease', 'stale-revision'])(
+    'checks %s facts before recovering restored upstream inputs', scenario => {
+      const snapshot = dispatchSnapshot([], 'awaiting_decision');
+      snapshot.task = { id: 'task_1', status: 'blocked' };
+      snapshot.generationQuiescent = true;
+      snapshot.recoverySafety = 'read_only';
+      snapshot.upstreamInputResume = { rejectedReplanRequestId: 'replan' };
+      snapshot.generationReplanRequest = { id: 'replan', status: 'submitted' };
+      snapshot.resumeRecoveryCandidates = [{ subtaskId: 'subtask_1', sourceAttemptId: 'old-failure',
+        authorizedBinding: codexBinding, bindingFingerprint: codexFingerprint,
+        recoveryMode: 'recovery_packet', reason: 'upstream_input_restored' }];
+      if (scenario === 'manual') snapshot.upstreamInputResume = undefined;
+      if (scenario === 'live') snapshot.generationQuiescent = false;
+      if (scenario === 'external') snapshot.recoverySafety = 'external_non_idempotent';
+      if (scenario === 'stale-job') snapshot.generationReplanRequest.id = 'other-replan';
+      if (scenario === 'lease') snapshot.completionBlockedReasons = ['resource_lease'];
+      const result = new ControlKernel().decide(runtimeEvent({
+        type: 'task_resume_requested', blockerCategory: 'manual', sourceInputExcerpt: 'continue',
+        newlyProvidedResources: [], idempotencyKey: 'resume:upstream',
+        ...(scenario === 'stale-revision' ? { expectedGraphRevision: 999 } : {}),
+      }), snapshot);
+      if (scenario === 'safe') expect(result.action).toMatchObject({
+        type: 'resume_task', subtaskIds: [], retireReplanRequestId: 'replan',
+        recovery: { subtaskId: 'subtask_1', sourceAttemptId: 'old-failure', recoveryMode: 'recovery_packet' },
+      });
+      else expect(result.action.type).not.toBe('resume_task');
+    },
+  );
+
   it('authorizes metadata correction without business continuation when a safe result only lacks the completion marker', () => {
     const snapshot = dispatchSnapshot([], 'awaiting_decision');
     snapshot.task = { id: 'task_1', status: 'running' };
