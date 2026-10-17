@@ -1,0 +1,96 @@
+name: Assemble internal Desktop upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing draft release tag
+        required: true
+      source_commit:
+        description: Exact source commit of the tested DMG
+        required: true
+      sha256:
+        description: SHA-256 of the tested complete DMG
+        required: true
+      byte_size:
+        description: Byte size of the tested complete DMG
+        required: true
+      part_count:
+        description: Number of sequential .part-0000 assets
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: internal-desktop-upload-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  assemble:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      EXPECTED_SHA256: ${{ inputs.sha256 }}
+      EXPECTED_SIZE: ${{ inputs.byte_size }}
+      PART_COUNT: ${{ inputs.part_count }}
+      DMG_NAME: MetaWork-darwin-arm64.dmg
+    steps:
+      - name: Require exact draft release and validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$EXPECTED_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$EXPECTED_SIZE" =~ ^[1-9][0-9]*$ ]]
+          [[ "$PART_COUNT" =~ ^[1-9][0-9]*$ ]]
+          test "$PART_COUNT" -le 512
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,targetCommitish > release.json
+          jq -e --arg source "$SOURCE_COMMIT" \
+            '.isDraft == true and .targetCommitish == $source' release.json
+      - name: Download and verify complete DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$DMG_NAME.part-*" --dir parts
+          python3 - <<'PY'
+          import hashlib, os
+          from pathlib import Path
+          name = os.environ['DMG_NAME']
+          count = int(os.environ['PART_COUNT'])
+          expected = [f'{name}.part-{index:04d}' for index in range(count)]
+          assert sorted(p.name for p in Path('parts').iterdir()) == expected
+          digest = hashlib.sha256()
+          size = 0
+          with open(name, 'wb') as output:
+              for part in expected:
+                  with open(Path('parts') / part, 'rb') as source:
+                      while chunk := source.read(1024 * 1024):
+                          output.write(chunk)
+                          digest.update(chunk)
+                          size += len(chunk)
+          assert size == int(os.environ['EXPECTED_SIZE']), 'DMG size mismatch'
+          assert digest.hexdigest() == os.environ['EXPECTED_SHA256'], 'DMG hash mismatch'
+          print(f'Verified {name}: {size} bytes, SHA-256 {digest.hexdigest()}')
+          PY
+      - name: Upload verified DMG and remove temporary parts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+          gh release upload "$RELEASE_TAG" "$DMG_NAME" --repo "$GITHUB_REPOSITORY" --clobber
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets' > assets.json
+          jq -e --arg name "$DMG_NAME" --arg hash "sha256:$EXPECTED_SHA256" \
+            --argjson size "$EXPECTED_SIZE" \
+            'any(.[]; .name == $name and .digest == $hash and .size == $size and .state == "uploaded")' assets.json
+          for part in parts/*; do
+            gh release delete-asset "$RELEASE_TAG" "$(basename "$part")" \
+              --repo "$GITHUB_REPOSITORY" --yes
+          done
