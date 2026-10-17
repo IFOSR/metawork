@@ -70,20 +70,19 @@ existing names where changing them would break installations.
 
 ## Release
 
-The current release is **v0.1.17**. It includes the unified four-state task
-surface, safe uncertified-result acceptance and retry, official account payment
-settlement, installation recovery fixes, and the latest Runtime/Web/Desktop
-builds. The internal release includes a self-contained macOS arm64 Desktop DMG
-plus signed Runtime and Planner archives for macOS arm64, macOS x64 and Linux
-x64. Desktop is available only on Apple Silicon; macOS x64 and Linux x64 use
-the Web, TUI or Feishu clients with the Server package. Windows is intentionally
-deferred to the separate `v0.1.17-windows` tag.
+The current release is **v0.1.18**. It fixes upstream result access for custom
+AgentClasses, explicit recovery of affected blocked tasks, replan evidence
+validation, and Desktop service reconnect and interrupted-update recovery.
+The internal release includes a self-contained macOS arm64 Desktop DMG plus
+signed Runtime and Planner archives for macOS arm64, macOS x64 and Linux x64.
+Desktop is available only on Apple Silicon; macOS x64 and Linux x64 use the Web,
+TUI or Feishu clients with the Server package. Windows is excluded from this release.
 
-- [Download the macOS arm64 DMG](https://github.com/IFOSR/metawork/releases/download/v0.1.17/MetaWork-darwin-arm64.dmg)
-- [View the v0.1.17 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.17)
-- [Download checksums and Runtime/Planner archives](https://github.com/IFOSR/metawork/releases/tag/v0.1.17)
+- [Download the macOS arm64 DMG](https://github.com/IFOSR/metawork/releases/download/v0.1.18/MetaWork-darwin-arm64.dmg)
+- [View the v0.1.18 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.18)
+- [Download checksums and Runtime/Planner archives](https://github.com/IFOSR/metawork/releases/tag/v0.1.18)
 
-The Desktop DMG is approximately 277 MB, uses an internal ad-hoc signature, and
+The Desktop DMG uses an internal ad-hoc signature and
 is not notarized with an Apple Developer ID. It currently supports macOS Apple
 Silicon (`arm64`) only. The Server/Web/TUI installer supports Linux x64,
 macOS arm64 and macOS x64. Windows is not included in this internal release.
@@ -107,7 +106,7 @@ account data. Web is included in the Server package and does not require Desktop
 2. Install Apple's Command Line Tools once if they are not already present:
    run `xcode-select --install` in Terminal and finish the macOS prompt. The
    internal package uses the system Git wrapper for repository operations.
-3. Download [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/download/v0.1.17/MetaWork-darwin-arm64.dmg)
+3. Download [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/download/v0.1.18/MetaWork-darwin-arm64.dmg)
    from the latest release, open it, and drag **MetaWork.app** to **Applications**.
 4. The first launch may be blocked because this internal DMG is not notarized. In
    Finder, right-click **MetaWork.app** and choose **Open**, then confirm **Open**.

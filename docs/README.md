@@ -10,6 +10,8 @@ AnyFusion references identify the separate open-source upstream, attributed
 components such as `AnyFusion-Pi`, compatibility contracts, or historical
 records.
 
+Current release: [v0.1.18 publication plan](plans/2026-10-17-v0.1.18-release.md).
+
 Current release reliability work is tracked in
 [Customer Desktop upgrade reliability](plans/2026-10-08-customer-upgrade-reliability.md).
 
@@ -54,7 +56,7 @@ This directory contains both current technical documentation and historical plan
 
 ## Releases
 
-- [MetaWork v0.1.17 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.17): current Desktop DMGs and signed Runtime/Planner archives.
+- [MetaWork v0.1.18 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.18): Apple Silicon Desktop DMG and signed macOS/Linux Runtime/Planner archives.
 - [AnyFusion v1.2.0 Preview](releases/v1.2.0-preview.0.md): public preview highlights, architecture summary, deployment status, and known limitations.
 - [MetaWork v1.2.0 Preview 6](releases/v1.2.0-preview.6.md): historical preview release matrix and build notes.
 - [MetaWork v0.1.7 Internal Release](releases/v0.1.7.md): latest macOS arm64 internal release with host CLI discovery and compact readiness notices; Apple signing/notarization remain pending.

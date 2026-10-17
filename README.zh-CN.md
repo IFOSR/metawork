@@ -58,18 +58,17 @@ AnyFusion 标识。
 
 ## Release
 
-当前发布版本是 **v0.1.17**，包含统一的四态任务界面、安全未认证结果的接受与重试、
-官方账号支付结算、安装恢复修复，以及最新的 Runtime/Web/Desktop 构建。Release
-同时提供 macOS arm64 Desktop DMG，以及 macOS arm64、macOS x64 和 Linux x64 的签名
+当前发布版本是 **v0.1.18**，修复自定义 AgentClass 的上游成果读取、受影响任务的
+显式恢复、重规划证据引用校验，以及 Desktop 服务重连和更新中断后的恢复。
+Release 提供 macOS arm64 Desktop DMG，以及 macOS arm64、macOS x64 和 Linux x64 的签名
 Runtime、Planner 归档。Desktop 仅支持 Apple Silicon；macOS x64 和 Linux x64 请使用
-Server 安装包提供的 Web、TUI 或飞书客户端。Windows 将通过独立的
-`v0.1.17-windows` tag 后续发布。
+Server 安装包提供的 Web、TUI 或飞书客户端。本次不发布 Windows。
 
-- [下载 macOS arm64 DMG](https://github.com/IFOSR/metawork/releases/download/v0.1.17/MetaWork-darwin-arm64.dmg)
-- [查看 v0.1.17 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.17)
-- [下载校验文件和 Runtime/Planner 归档](https://github.com/IFOSR/metawork/releases/tag/v0.1.17)
+- [下载 macOS arm64 DMG](https://github.com/IFOSR/metawork/releases/download/v0.1.18/MetaWork-darwin-arm64.dmg)
+- [查看 v0.1.18 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.18)
+- [下载校验文件和 Runtime/Planner 归档](https://github.com/IFOSR/metawork/releases/tag/v0.1.18)
 
-Desktop DMG 约 277 MB，使用内部 ad-hoc 签名，未使用 Apple Developer ID 公证，
+Desktop DMG 使用内部 ad-hoc 签名，未使用 Apple Developer ID 公证，
 当前只支持 macOS Apple Silicon（`arm64`）。Server/Web/TUI 安装器支持 Linux x64、
 macOS arm64 和 macOS x64；本次 internal release 暂不包含 Windows。
 
@@ -91,7 +90,7 @@ Web 已包含在 Server 安装包中，不需要安装 Desktop。
 1. 在 **苹果菜单 → 关于本机** 确认 Mac 使用 Apple Silicon（M 系列）。
 2. 如果尚未安装 Apple Command Line Tools，先在终端执行 `xcode-select --install`，
    按 macOS 提示完成安装。内部包使用系统 Git wrapper 执行仓库操作。
-3. 从 v0.1.17 Release 下载 [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/download/v0.1.17/MetaWork-darwin-arm64.dmg)，
+3. 从 v0.1.18 Release 下载 [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/download/v0.1.18/MetaWork-darwin-arm64.dmg)，
    打开 DMG，把 **MetaWork.app** 拖入“应用程序”。
 4. 由于这是未公证内部 DMG，首次启动可能被 macOS 拦截。在 Finder 中右键
    **MetaWork.app**，选择“打开”，再确认“打开”。如果仍被拦截，进入

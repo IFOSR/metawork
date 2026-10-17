@@ -57,4 +57,4 @@ connectPromise 长时间未释放，点击重新连接会复用旧 Promise。
 - Node 内部退出卡住以进程采样为依据；本修复在 Installer 侧保障安全停止
   和恢复，不声称修改或消除了 Node/libuv 内部问题。
 
-关闭提交：未提交；用户仅要求本地 DMG。
+关闭提交：`2d4c077e`；后续按用户授权纳入 v0.1.18 GitHub 发布。

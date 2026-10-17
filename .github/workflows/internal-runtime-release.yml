@@ -6,7 +6,7 @@ on:
       release_tag:
         description: Stable release tag to populate
         required: true
-        default: v0.1.17
+        default: v0.1.18
       source_ref:
         description: Exact source ref to build
         required: true
@@ -109,7 +109,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          cp scripts/install.sh scripts/install.ps1 release-assets/
+          cp scripts/install.sh release-assets/
           node --input-type=module <<'NODE'
           import { verifyReleaseAssets } from './scripts/verify-release-assets.mjs';
           const release = await verifyReleaseAssets('release-assets', process.env.RELEASE_TAG, {

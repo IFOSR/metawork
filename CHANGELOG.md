@@ -7,6 +7,18 @@ The project follows [Semantic Versioning](https://semver.org/) for public releas
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-10-17
+
+- Restore authorized upstream ResultReference access for custom Pi/Codex AgentClasses.
+- Allow explicit, safety-checked recovery of affected missing-upstream-input tasks
+  while preserving completed stages, prior receipts and published results.
+- Validate replan evidence references before submission, preserve historical
+  evidence IDs, and avoid treating awaiting-decision work as orphan execution.
+- Repair macOS Desktop reconnect and interrupted upgrades by verifying and
+  reaping owned Server processes stalled after shutdown.
+- Publish macOS arm64 Desktop and macOS arm64/x64 and Linux x64 Runtime/Planner;
+  Windows is excluded. Task presentation is unchanged.
+
 ## [0.1.17] - 2026-10-16
 
 - Converge task presentation on waiting, executing, needs-action and finished;
