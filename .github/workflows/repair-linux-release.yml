@@ -40,12 +40,18 @@ jobs:
           revision="$(git rev-parse --short=7 HEAD)"
           tag="${{ inputs.release_tag }}"
           test "$version" = "${tag#v}"
-          release_id="${version}-build-${revision}"
+          if [[ "$version" =~ -preview\.[0-9]+$ ]]; then
+            channel=preview
+            release_id="$version"
+          else
+            channel=stable
+            release_id="${version}-build-${revision}"
+          fi
           printf '%s\n' "$METAWORK_RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/metawork-release-key.pem"
           npm run build:release -- \
             --platform linux \
             --arch x64 \
-            --channel stable \
+            --channel "$channel" \
             --release-id "$release_id" \
             --artifact-base-url "https://github.com/IFOSR/metawork/releases/download/${{ inputs.release_tag }}" \
             --signing-key "$RUNNER_TEMP/metawork-release-key.pem" \

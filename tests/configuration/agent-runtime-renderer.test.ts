@@ -1,10 +1,12 @@
 import { chmod, mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { dump, load } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
 import {
   AgentRuntimeRenderer,
   buildModelsJson,
+  executorRuntimeConfiguration,
   resolveCurrentRuntimeHome,
 } from '../../src/configuration/agent-runtime-renderer.js';
 import { buildPlannerConfigurationView } from '../../src/configuration/projections.js';
@@ -112,6 +114,28 @@ function snapshot(revisionId: string, config: AnyFusionConfigurationV2): Configu
 }
 
 describe('AgentRuntimeRenderer', () => {
+  it('keeps generated launch bytes identical after sorted YAML persistence and reload', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-order-'));
+    try {
+      const config = makeConfig();
+      // Settings appends new entries; persisted config.yaml sorts their keys.
+      config.providers = Object.fromEntries(Object.entries(config.providers).reverse());
+      config.models = Object.fromEntries(Object.entries(config.models).reverse());
+      const reloaded = load(dump(config, { noRefs: true, sortKeys: true })) as AnyFusionConfigurationV2;
+      await new AgentRuntimeRenderer(root).render(snapshot('order', config));
+      await new AgentRuntimeRenderer(root).render(snapshot('reloaded', reloaded));
+      for (const path of ['pi-home/.pi/agent/models.json', 'pi-home/.pi/agent/settings.json', 'codex/config.toml']) {
+        expect(await readFile(join(root, 'reloaded', path), 'utf8')).toBe(await readFile(join(root, 'order', path), 'utf8'));
+      }
+      reloaded.models['model-a'].modelId = 'changed-model';
+      expect(executorRuntimeConfiguration(reloaded, 'pi-cli', 'provider-a', 'changed-model'))
+        .not.toEqual(executorRuntimeConfiguration(config, 'pi-cli', 'provider-a', 'gpt-a'));
+      reloaded.providers['provider-a'].baseUrl = 'https://changed.example/v1';
+      expect(executorRuntimeConfiguration(reloaded, 'codex-cli', 'provider-a', 'changed-model'))
+        .not.toEqual(executorRuntimeConfiguration(config, 'codex-cli', 'provider-a', 'gpt-a'));
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('renders explicit transports into both Pi homes and excludes Anthropic from Codex', async () => {
     const root = await mkdtemp(join(tmpdir(), 'protocol-renderer-'));
     try {

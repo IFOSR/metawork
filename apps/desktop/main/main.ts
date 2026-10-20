@@ -189,7 +189,7 @@ async function connectOnce(): Promise<void> {
       if (await installation.needsUpgrade()) {
         const installedIdentity = await readReleaseIdentity(join(installRoot, 'app/current/release-identity.json'));
         if (installedIdentity && compareReleaseVersions(release.releaseId, installedIdentity.releaseId) < 0) {
-          setState({ phase: 'error', message: '当前 Desktop 版本低于已安装的后台运行时。请退出 MetaWork，安装更新版本的 Desktop 后再打开；原有配置和数据不会受影响。' });
+          setState({ phase: 'error', retryable: false, action: 'quit', message: '当前 Desktop 版本低于已安装的后台运行时。请退出当前应用，安装更新版本的 MetaWork 后再打开。原有配置和数据不会受影响。' });
           return;
         }
         const previousUpdate = await readDesktopUpdateDiagnostic(installRoot);
@@ -256,6 +256,7 @@ async function connectOnce(): Promise<void> {
 
 ipcMain.handle('shell:state', event => { ownedShell(event); return state; });
 ipcMain.handle('shell:retry', event => { ownedShell(event); return connect(); });
+ipcMain.handle('shell:quit', event => { ownedShell(event); app.quit(); });
 ipcMain.handle('shell:upgrade', async event => {
   ownedShell(event);
   if (!installation || state.phase !== 'upgrade') throw new Error('Runtime upgrade is unavailable');
@@ -486,7 +487,7 @@ async function updateApplication(recover = false): Promise<void> {
   } catch (error) {
     if (error instanceof Error && error.message === 'Installed Runtime is newer; download a newer Desktop') {
       dialog.showErrorBox('需要更新桌面应用', '已有后台运行时比这个安装包更新。请下载较新的 Desktop，再接入原有数据。');
-      setState({ phase: 'error', message: '当前 Desktop 版本低于已安装的后台运行时。请退出 MetaWork，安装更新版本的 Desktop 后再打开；原有配置和数据不会受影响。' });
+      setState({ phase: 'error', retryable: false, action: 'quit', message: '当前 Desktop 版本低于已安装的后台运行时。请退出当前应用，安装更新版本的 MetaWork 后再打开。原有配置和数据不会受影响。' });
       return;
     } else {
       dialog.showErrorBox('更新尚未完成', '请确认新版应用签名、配套版本、磁盘空间和应用目录写入权限。已有数据与更新记录会保留；可使用“修复未完成的更新”重试。');

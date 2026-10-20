@@ -88,7 +88,11 @@ function findAuthorityViolations(): AuthorityViolation[] {
       ));
     }
 
-    if (/^src\/(?:executor|execution)\//u.test(file.path)) {
+    // Runtime binding verification reads the current managed config as an
+    // integrity check against the authorized manifest; it is not a legacy
+    // harness/model-settings authority.
+    if (/^src\/(?:executor|execution)\//u.test(file.path)
+      && file.path !== 'src/executor/runtime-binding-verification.ts') {
       violations.push(...matchingLines(
         file,
         'legacy-harness-model-settings-fallback',

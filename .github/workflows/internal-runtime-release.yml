@@ -71,11 +71,17 @@ jobs:
         run: |
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
-          release_id="${version}-build-${GITHUB_SHA:0:7}"
+          if [[ "$version" =~ -preview\.[0-9]+$ ]]; then
+            channel=preview
+            release_id="$version"
+          else
+            channel=stable
+            release_id="${version}-build-${GITHUB_SHA:0:7}"
+          fi
           npm run build:release -- \
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}" \
-            --channel stable \
+            --channel "$channel" \
             --release-id "$release_id" \
             --artifact-base-url "https://github.com/IFOSR/metawork/releases/download/$RELEASE_TAG" \
             --signing-key "$RUNNER_TEMP/metawork-release-key.pem" \

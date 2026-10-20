@@ -582,7 +582,7 @@ export class SubtaskAttemptRunner {
       });
       this.attemptRuntimeRepo.appendProgress(attemptId, {
         kind: 'status',
-        text: '正在准备任务资料，Executor 尚未启动',
+        text: '工作区与输入资料已准备，正在生成 Executor 执行上下文',
       }, startedAt);
       const evidenceToolsAvailable = this.deps.executionRuntime.supportsEvidenceTools(dispatch.authorizedBinding);
       const attemptControlHost = this.deps.attemptExecutionBackend.pathMode === 'native'
@@ -625,6 +625,10 @@ export class SubtaskAttemptRunner {
       });
       evidenceCapability = built.evidenceCapability;
       resultReferenceCapability = built.resultReferenceCapability;
+      this.attemptRuntimeRepo.appendProgress(attemptId, {
+        kind: 'status',
+        text: '执行上下文已生成，正在启动权限与能力服务',
+      }, new Date().toISOString());
       if (evidenceToolsAvailable) {
         evidenceToolServer = new ExecutionEvidenceToolServer(
           built.evidenceCapability,
@@ -690,6 +694,10 @@ export class SubtaskAttemptRunner {
         advertisedHost: attemptControlHost,
       });
       const capabilityBinding = await capabilityToolServer.start();
+      this.attemptRuntimeRepo.appendProgress(attemptId, {
+        kind: 'status',
+        text: '执行上下文已就绪，正在启动 Executor',
+      }, new Date().toISOString());
       // Workspace and tool preparation yield; the durable fence may have won
       // before ExecutionRuntime has an adapter registered to abort.
       if (!this.isStillCurrent(task.id, subtask.id, attemptId, claim.workUnit.id)) {

@@ -33,7 +33,7 @@ describe('ContainerCompatibilityAdapter', () => {
         bindingFingerprint: authorizedExecutorBindingFingerprint(authorized),
         environment: { OPENAI_BASE_URL: 'https://test.invalid/v1', OPENAI_MODEL: 'deepseek-v4-pro', OPENAI_API_KEY: 'secret-test-only' },
         manifest: { driverId: driver.id, protocol: 'openai-compatible', baseUrl: 'https://test.invalid/v1',
-          modelId: 'deepseek-v4-pro', permissionProfileRef: authorized.permissionProfileRef, runtimeFileHashes: {} } };
+          modelId: 'deepseek-v4-pro', permissionProfileRef: authorized.permissionProfileRef } };
       const adapter = new ContainerCompatibilityAdapter({ agentClassId: authorized.agentClassRef, driver,
         runtimeBinding: runtime, authorizedBinding: authorized, modelId: 'deepseek-v4-pro', attemptsRoot: root,
         imageRef: 'executor:mutable-tag', backend });

@@ -58,24 +58,24 @@ AnyFusion 标识。
 
 ## Release
 
-当前发布版本是 **v0.1.18**，修复自定义 AgentClass 的上游成果读取、受影响任务的
-显式恢复、重规划证据引用校验，以及 Desktop 服务重连和更新中断后的恢复。
+当前发布版本是 **v0.1.19**，修复运行配置语义校验、执行状态与阻塞原因展示，并统一
+预览版的有序版本标识。
 Release 提供 macOS arm64 Desktop DMG，以及 macOS arm64、macOS x64 和 Linux x64 的签名
 Runtime、Planner 归档。Desktop 仅支持 Apple Silicon；macOS x64 和 Linux x64 请使用
 Server 安装包提供的 Web、TUI 或飞书客户端。本次不发布 Windows。
 
 | 平台 | 最新可用版本 | 下载 / 安装 |
 | --- | --- | --- |
-| macOS Apple Silicon（`arm64`）桌面版 | 0.1.18 | [最新 DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
-| macOS Apple Silicon（`arm64`）Server | 0.1.18 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
-| macOS Intel（`x64`）Server | 0.1.18 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
-| Linux / WSL2（`x64`）Server | 0.1.18 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
+| macOS Apple Silicon（`arm64`）桌面版 | 0.1.19 | [最新 DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
+| macOS Apple Silicon（`arm64`）Server | 0.1.19 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
+| macOS Intel（`x64`）Server | 0.1.19 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
+| Linux / WSL2（`x64`）Server | 0.1.19 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
 | Windows 原生（`x64`）Server | 0.1.17（本次未更新） | [Windows 安装器](https://github.com/IFOSR/metawork/releases/download/v0.1.17/install.ps1) · [签名清单](https://github.com/IFOSR/metawork/releases/download/v0.1.17/manifest.win32-x64.json) |
 
 [最新 macOS/Linux Release 与归档](https://github.com/IFOSR/metawork/releases/latest) ·
 [最新校验文件](https://github.com/IFOSR/metawork/releases/latest/download/SHA256SUMS)。
 macOS/Linux 下载链接跟随 GitHub 最新 Release；安装器自动选择当前架构，
-按签名清单下载匹配的 Runtime 和 Planner。Windows 未参与 0.1.18 发布，
+按签名清单下载匹配的 Runtime 和 Planner。Windows 未参与 0.1.19 发布，
 最新可用包仍为 0.1.17，请使用下文指定 Windows 清单的安装命令。
 
 Desktop DMG 使用内部 ad-hoc 签名，未使用 Apple Developer ID 公证，
@@ -150,7 +150,7 @@ irm https://github.com/IFOSR/metawork/releases/download/v0.1.17/install.ps1 -Out
 ```
 
 macOS/Linux 命令使用**最新稳定版的签名清单**；Windows 命令使用
-**Windows 最新可用版本（0.1.17）**的清单。由于 0.1.18 没有 Windows 产物，
+**Windows 最新可用版本（0.1.17）**的清单。由于 0.1.19 没有 Windows 产物，
 Windows 安装命令必须显式指定该清单，不能使用全局 latest。
 两个安装器都会校验 Runtime/Planner 归档，并通过配置向导设置模型服务。
 Linux/WSL2 默认使用文件 SecretStore。安装器会对不支持的架构明确报错，

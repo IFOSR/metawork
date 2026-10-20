@@ -10,7 +10,7 @@ AnyFusion references identify the separate open-source upstream, attributed
 components such as `AnyFusion-Pi`, compatibility contracts, or historical
 records.
 
-Current release: [v0.1.18 publication plan](plans/2026-10-17-v0.1.18-release.md).
+Current release: [v0.1.19 publication plan](plans/2026-10-20-v0.1.19-release.md).
 
 Current release reliability work is tracked in
 [Customer Desktop upgrade reliability](plans/2026-10-08-customer-upgrade-reliability.md).
@@ -19,6 +19,9 @@ This directory contains both current technical documentation and historical plan
 
 ## Current Docs
 
+- [MetaWork v0.1.19 发布计划](plans/2026-10-20-v0.1.19-release.md)：发布当前源码到 macOS arm64/x64、Linux x64 和 Apple Silicon Desktop；Windows 保持不发布。
+
+- [执行配置误阻塞与对话状态展示修复](plans/2026-10-19-execution-configuration-and-notice.md)：修复配置排序导致的内容校验失败，将阻塞原因、子任务影响和恢复说明分层展示；源码验收完成，尚未安装发布。
 - [上游输入失败后的恢复修复](plans/2026-10-17-blocked-upstream-recovery-fix.md)：保留完成阶段、显式恢复、重规划引用校验及本地 DMG 验收。
 - [Desktop 退出与升级恢复修复](plans/2026-10-17-desktop-exit-recovery-fix.md)：旧进程卡住清理、重连及本地 DMG 验收。
 
@@ -56,7 +59,7 @@ This directory contains both current technical documentation and historical plan
 
 ## Releases
 
-- [MetaWork v0.1.18 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.18): Apple Silicon Desktop DMG and signed macOS/Linux Runtime/Planner archives.
+- [MetaWork v0.1.19 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.19): Apple Silicon Desktop DMG and signed macOS/Linux Runtime/Planner archives.
 - [AnyFusion v1.2.0 Preview](releases/v1.2.0-preview.0.md): public preview highlights, architecture summary, deployment status, and known limitations.
 - [MetaWork v1.2.0 Preview 6](releases/v1.2.0-preview.6.md): historical preview release matrix and build notes.
 - [MetaWork v0.1.7 Internal Release](releases/v0.1.7.md): latest macOS arm64 internal release with host CLI discovery and compact readiness notices; Apple signing/notarization remain pending.

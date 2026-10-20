@@ -7,6 +7,19 @@ The project follows [Semantic Versioning](https://semver.org/) for public releas
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-10-20
+
+- Compare authorized Pi and Codex runtime configuration semantically so model
+  ordering, formatting and unrelated catalog entries no longer block execution.
+- Fail closed when the selected Provider, Model, service endpoint, protocol,
+  credential reference or managed execution setting actually changes.
+- Clarify execution cards and notices so waiting, executing, completed and
+  upstream-blocked work are distinguishable with the affected subtask and next
+  action visible.
+- Use ordered `-preview.N` release identities for preview artifacts and publish
+  the updated macOS/Linux release tooling and validation.
+- Windows remains excluded from this release.
+
 ## [0.1.18] - 2026-10-17
 
 - Restore authorized upstream ResultReference access for custom Pi/Codex AgentClasses.

@@ -82,6 +82,7 @@ export async function verifyDesktopRelease(resources: string, options: {
   }
   for (const required of ['metawork/dist/index.js', 'metawork/dist/desktop-install-cli.js',
     'metawork/dist/desktop-update-cli.js', 'metawork/web/dist/index.html',
+    'metawork/dist/planning-agent-plan-v8.schema.json',
     'metawork/desktop-tools/node/bin/node', 'metawork/desktop-tools/git/bin/git',
     'metawork/desktop-tools/executor/bin/pi', 'planner/packages/coding-agent/dist/cli.js']) {
     if (!inventory[required]) throw new Error('Required Desktop runtime dependency is missing');

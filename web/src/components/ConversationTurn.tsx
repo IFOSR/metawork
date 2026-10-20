@@ -3,6 +3,8 @@ import type { ReactNode } from 'react';
 import { ArtifactAwareMarkdownContent } from './ArtifactAwareMarkdownContent';
 import { ArtifactLink } from './ArtifactLink';
 import { TurnBillCard } from './TurnBillCard';
+import { ExecutionNotice, type TurnFailureFacts } from './ExecutionNotice';
+import { conversationOutput } from '../conversation-output';
 
 function formatAttachmentSize(size: number): string {
   if (size < 1024) return `${size} B`;
@@ -19,7 +21,7 @@ function attachmentIcon(mediaClass: string): string {
 
 function executionStatusLabel(status: ConversationTurnProjection['status']): string {
   if (status === 'running') return '执行中';
-  if (status === 'blocked') return '已阻塞';
+  if (status === 'blocked') return '需要处理';
   if (status === 'failed') return '失败';
   if (status === 'cancelled') return '已取消';
   return '已完成';
@@ -35,36 +37,13 @@ function deliveryFailed(turn: ConversationTurnProjection): boolean {
   return turn.deliveryStatus === 'failed';
 }
 
-interface TurnFailureFacts {
-  code?: string;
-  summary?: string;
-  label?: string;
-  step?: string;
-  provider?: string;
-  stage?: string;
-  retryable?: boolean;
-  attemptStarted?: boolean;
-  externalSideEffect?: boolean | 'unknown';
-  userAction?: string;
-}
-
-function failureStageLabel(stage?: string): string | undefined {
-  if (!stage) return undefined;
-  const labels: Record<string, string> = {
-    attempt: 'Executor 调用',
-    workspace_preflight: 'Workspace 预检',
-    dispatch: '任务派发',
-    completion: '结果校验',
-  };
-  return labels[stage] ?? stage;
-}
-
 /**
  * Reads the passthrough failure facts the Runtime recorded for this Turn, so a
  * blocked or failed Turn shows what actually went wrong and where.
  */
 function turnFailureFacts(turn: ConversationTurnProjection): TurnFailureFacts | null {
   for (const event of [...turn.traceEvents].reverse()) {
+    if (event.kind === 'execution_resumed') return null;
     const details = event.details as Record<string, unknown> | undefined;
     if (!details || typeof details.failureSummary !== 'string') continue;
     const summary = details.failureSummary;
@@ -133,6 +112,8 @@ export function ConversationTurnView({
   const automaticRetryScheduled = turn.status === 'blocked'
     && turn.traceEvents.some(event => event.kind === 'execution_waiting_retry');
   const attachments = Array.isArray(turn.attachments) ? turn.attachments : [];
+  const output = conversationOutput(isSystemCommand ? '' : turn.finalAnswer ?? '');
+  const showNotice = Boolean(failure || output.receipts.length > 0);
   return (
     <article className="conversation-turn" data-turn-id={turn.id}>
       <section className="user-message">
@@ -193,23 +174,8 @@ export function ConversationTurnView({
           )}
         </section>
       )}
-      {failure && (
-        <section className="execution-failure" data-status={turn.status}>
-          <strong>{failure.label ?? '执行未完成'}</strong>
-          {failure.summary && <p className="execution-failure-summary">{failure.summary}</p>}
-          <span className="execution-failure-facts">
-            {[
-              failure.code,
-              failure.stage ? `阶段：${failureStageLabel(failure.stage)}` : undefined,
-              failure.step ? `步骤：${failure.step}` : undefined,
-              failure.provider,
-              failure.retryable !== undefined ? `恢复：${failure.retryable ? '可自动重试' : '需人工处理'}` : undefined,
-              failure.attemptStarted !== undefined ? `Executor：${failure.attemptStarted ? '已启动' : '未启动'}` : undefined,
-              failure.externalSideEffect !== undefined ? `副作用：${failure.externalSideEffect === 'unknown' ? '未知' : failure.externalSideEffect ? '可能有' : '无'}` : undefined,
-            ].filter(Boolean).join(' · ')}
-          </span>
-          {failure.userAction && <p className="execution-failure-action">下一步：{failure.userAction}</p>}
-        </section>
+      {showNotice && (
+        <ExecutionNotice turn={turn} failure={failure} receipts={output.receipts} />
       )}
       {isSystemCommand && turn.finalAnswer && (
         <section className="system-command-result">
@@ -221,10 +187,10 @@ export function ConversationTurnView({
           />
         </section>
       )}
-      {!isSystemCommand && turn.finalAnswer && (
+      {!isSystemCommand && output.body && (
         <section className="final-answer">
           <ArtifactAwareMarkdownContent
-            value={turn.finalAnswer}
+            value={output.body}
             artifacts={artifacts}
             onOpenArtifact={onOpenArtifact}
           />

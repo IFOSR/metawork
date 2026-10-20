@@ -70,9 +70,9 @@ existing names where changing them would break installations.
 
 ## Release
 
-The current release is **v0.1.18**. It fixes upstream result access for custom
-AgentClasses, explicit recovery of affected blocked tasks, replan evidence
-validation, and Desktop service reconnect and interrupted-update recovery.
+The current release is **v0.1.19**. It fixes semantic runtime configuration
+verification, clearer execution state and blocker presentation, and ordered
+preview release identities.
 The internal release includes a self-contained macOS arm64 Desktop DMG plus
 signed Runtime and Planner archives for macOS arm64, macOS x64 and Linux x64.
 Desktop is available only on Apple Silicon; macOS x64 and Linux x64 use the Web,
@@ -80,17 +80,17 @@ TUI or Feishu clients with the Server package. Windows is excluded from this rel
 
 | Platform | Latest available version | Download / install |
 | --- | --- | --- |
-| macOS Apple Silicon (`arm64`) Desktop | 0.1.18 | [Latest DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
-| macOS Apple Silicon (`arm64`) Server | 0.1.18 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
-| macOS Intel (`x64`) Server | 0.1.18 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
-| Linux / WSL2 (`x64`) Server | 0.1.18 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
+| macOS Apple Silicon (`arm64`) Desktop | 0.1.19 | [Latest DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
+| macOS Apple Silicon (`arm64`) Server | 0.1.19 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
+| macOS Intel (`x64`) Server | 0.1.19 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
+| Linux / WSL2 (`x64`) Server | 0.1.19 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
 | Windows native (`x64`) Server | 0.1.17 (unchanged) | [Windows installer](https://github.com/IFOSR/metawork/releases/download/v0.1.17/install.ps1) · [Signed manifest](https://github.com/IFOSR/metawork/releases/download/v0.1.17/manifest.win32-x64.json) |
 
 [Latest macOS/Linux Release and archives](https://github.com/IFOSR/metawork/releases/latest) ·
 [Latest checksums](https://github.com/IFOSR/metawork/releases/latest/download/SHA256SUMS).
 The macOS/Linux links follow GitHub's latest Release. The installer selects the
 matching architecture and downloads both Runtime and Planner from its signed
-manifest. Windows was excluded from 0.1.18; its latest available package remains
+manifest. Windows is excluded from 0.1.19; its latest available package remains
 0.1.17 and uses the explicit Windows command below.
 
 The Desktop DMG uses an internal ad-hoc signature and
@@ -176,7 +176,7 @@ irm https://github.com/IFOSR/metawork/releases/download/v0.1.17/install.ps1 -Out
 
 The macOS/Linux command uses the **latest stable release's signed manifest**;
 the Windows command selects the **latest available Windows package (0.1.17)**.
-This explicit Windows manifest is required because 0.1.18 contains no Windows
+This explicit Windows manifest is required because 0.1.19 contains no Windows
 assets. Both installers verify Runtime/Planner archives before installation.
 The setup wizard configures the model provider; Linux/WSL2 defaults to file-backed
 secrets. Unsupported architectures are rejected rather than given another platform's archive.

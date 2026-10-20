@@ -49,6 +49,18 @@ describe('Conversation live Turn ownership', () => {
     expect(result?.completedAt).toEqual(expect.any(String));
   });
 
+  it('keeps a Turn live when its top-level status is terminal but execution facts are still active', () => {
+    const running = liveTurn('conversation-a');
+    const result = mergeExecutionTimeline(running, running.id, {
+      taskId: running.taskId!, title: 'task-convergence', status: 'done', stages: [{
+        phase: 'execution', status: 'running', subtasks: [{
+          id: 'subtask-a', title: '仍在生成', status: 'running', attempts: [],
+        }],
+      }],
+    });
+    expect(result).toMatchObject({ status: 'running', completedAt: null });
+  });
+
   it('does not reopen a terminal Turn from a late running execution timeline', () => {
     const running = liveTurn('conversation-a');
     const completed = mergeExecutionTimeline(running, running.id, {

@@ -86,6 +86,53 @@ describe('Turn Task presentation', () => {
     expect(cards[0]?.updatedAt).toBe('2026-09-30T10:00:00.000Z');
   });
 
+  it('explains the pre-Executor preparation stage instead of showing an opaque wait', () => {
+    const now = new Date().toISOString();
+    const turn = {
+      id: 'turn_preparing', sessionId: 'conv_1', userInput: '整理资料', status: 'running',
+      finalAnswer: null, taskId: 'task_preparing', startedAt: now, completedAt: null,
+      traceEvents: [], artifactRefs: [], artifacts: [],
+      executionTimeline: { taskId: 'task_preparing', title: '整理资料', status: 'running', stages: [{
+        phase: 'execution', status: 'running', subtasks: [{ id: 's', title: '整理资料', status: 'running',
+          attempts: [{ attemptKind: 'primary', attemptOrdinal: 1, attemptLabel: '主执行', displayStatus: '执行中',
+            result: 'running', startedAt: now, updatedAt: now,
+            progressHistory: [{ kind: 'status', text: '工作区与输入资料已准备，正在生成 Executor 执行上下文', occurredAt: now }] }],
+        }],
+      }] },
+    } as ConversationTurnProjection;
+
+    const html = renderToStaticMarkup(createElement(LiveExecutionPanel, { turn }));
+
+    expect(html).toContain('Executor 尚未启动');
+    expect(html).toContain('正在创建工作区、整理输入资料并生成执行上下文');
+  });
+
+  it('keeps card state independent when a Turn contains completed and active Subtasks', () => {
+    const turn = {
+      id: 'turn_mixed', sessionId: 'conv_1', userInput: '生成演示文稿', status: 'completed',
+      finalAnswer: '已交付', taskId: 'task_mixed', startedAt: '2026-10-20T09:00:00Z',
+      completedAt: '2026-10-20T09:30:00Z', traceEvents: [], artifactRefs: [], artifacts: [],
+      executionTimeline: { taskId: 'task_mixed', title: '生成演示文稿', status: 'done', stages: [{
+        phase: 'execution', status: 'running', subtasks: [
+          { id: 'done', title: '检查结构', status: 'done', attempts: [{ attemptKind: 'primary', attemptOrdinal: 1,
+            attemptLabel: '主执行', displayStatus: '已完成', result: 'success' }] },
+          { id: 'running', title: '生成文件', status: 'running', attempts: [{ attemptKind: 'primary', attemptOrdinal: 1,
+            attemptLabel: '主执行', displayStatus: '执行中', result: 'running', startedAt: '2026-10-20T09:29:00Z' }] },
+          { id: 'waiting', title: '交付文件', status: 'ready', attempts: [] },
+        ],
+      }] },
+    } as ConversationTurnProjection;
+
+    const html = renderToStaticMarkup(createElement(LiveExecutionPanel, { turn }));
+
+    expect(html).toContain('data-state="completed"');
+    expect(html).toContain('data-state="running"');
+    expect(html).toContain('data-state="waiting"');
+    expect(html).toContain('已完成');
+    expect(html).toContain('执行中');
+    expect(html).toContain('等待启动');
+  });
+
   it('shows every current-Task Subtask but excludes a foreign Task trace card', () => {
     const turn: ConversationTurnProjection = {
       id: 'turn_b',

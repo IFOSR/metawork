@@ -13,7 +13,8 @@
 //   --planner-root <dir>     Vendored Planner root (default: <source>/planner/AnyFusion-Pi)
 //   --out-dir <dir>          Output directory (default: <source>/dist-release)
 //   --channel <name>         Release channel (default: stable)
-//   --release-id <id>        Release ID (default: <version>-build-<rev>-<epoch>)
+//   --release-id <id>        Release ID (default: stable build ID or <version>-preview.N)
+//   --preview-number <n>     Required for --channel preview when package.json is stable
 //   --key-id <id>            Signing key ID (default: metawork-release-2026-03)
 //   --signing-key <path>     Ed25519 private key PEM (or env METAWORK_RELEASE_SIGNING_KEY)
 //   --generate-dev-key <prefix>
@@ -49,6 +50,7 @@ function parseArguments(argv) {
     outDir: undefined,
     channel: 'stable',
     releaseId: undefined,
+    previewNumber: undefined,
     keyId: 'metawork-release-2026-03',
     signingKeyPath: undefined,
     generateDevKeyPrefix: undefined,
@@ -73,6 +75,7 @@ function parseArguments(argv) {
       case '--out-dir': options.outDir = resolve(requireValue()); break;
       case '--channel': options.channel = requireValue(); break;
       case '--release-id': options.releaseId = requireValue(); break;
+      case '--preview-number': options.previewNumber = Number(requireValue()); break;
       case '--key-id': options.keyId = requireValue(); break;
       case '--signing-key': options.signingKeyPath = resolve(requireValue()); break;
       case '--generate-dev-key': options.generateDevKeyPrefix = requireValue(); break;
@@ -116,6 +119,40 @@ export function archiveName(kind, releaseId, platform, arch) {
   return `${kind === 'metawork' ? 'metawork' : 'planner'}-${releaseId}-${platform}-${arch}${archiveExtension(platform)}`;
 }
 
+/** Release IDs for preview artifacts are ordered SemVer prereleases. */
+export function previewReleaseId(packageVersion, previewNumber) {
+  if (!Number.isSafeInteger(previewNumber) || previewNumber < 1) {
+    throw new Error(`preview number must be a positive integer: ${previewNumber}`);
+  }
+  return `${packageVersion}-preview.${previewNumber}`;
+}
+
+function assertReleaseIdentity({ channel, packageVersion, releaseId, previewNumber }) {
+  const packagePreview = /^(.*)-preview\.(\d+)$/u.exec(packageVersion);
+  const baseVersion = packagePreview?.[1] ?? packageVersion;
+  const escapedVersion = baseVersion.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const previewPattern = new RegExp(`^${escapedVersion}-preview\\.(\\d+)$`, 'u');
+  const previewMatch = previewPattern.exec(releaseId);
+  if (channel === 'preview') {
+    if (previewNumber !== undefined) previewReleaseId(baseVersion, previewNumber);
+    if (packagePreview && releaseId !== packageVersion) {
+      throw new Error(`package.json preview version must match release ID: ${packageVersion}`);
+    }
+    if (previewNumber !== undefined) {
+      const existingNumber = packagePreview?.[2] ?? previewMatch?.[1];
+      if (existingNumber !== undefined && Number(existingNumber) !== previewNumber) {
+        throw new Error(`preview number does not match release ID: expected ${previewNumber}`);
+      }
+    }
+    if (previewMatch && Number(previewMatch[1]) >= 1) return;
+    if (previewNumber !== undefined && releaseId === previewReleaseId(baseVersion, previewNumber)) return;
+    throw new Error(`preview releases must use ${packageVersion}-preview.N`);
+  }
+  if (packagePreview) throw new Error('preview package versions require --channel preview');
+  if (previewMatch) throw new Error('preview release IDs require --channel preview');
+  if (previewNumber !== undefined) throw new Error('--preview-number requires --channel preview');
+}
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', ...options });
   if (result.status !== 0) {
@@ -145,6 +182,7 @@ function gitSourceUrl(sourceRoot) {
 function assertPackagableTree(options) {
   const required = [
     join(options.sourceRoot, 'dist', 'install-cli.js'),
+    join(options.sourceRoot, 'dist', 'planning-agent-plan-v8.schema.json'),
     join(options.sourceRoot, 'web', 'dist'),
     join(options.sourceRoot, 'node_modules'),
     join(options.plannerRoot, 'package.json'),
@@ -353,10 +391,15 @@ async function main() {
   const sourceUrl = gitSourceUrl(options.sourceRoot);
   const packageVersion = JSON.parse(readFileSync(join(options.sourceRoot, 'package.json'), 'utf8')).version;
   const releaseId = options.releaseId
-    ?? `${packageVersion}-build-${revision}-${Date.now()}`;
+    ?? (options.channel === 'preview'
+      ? /-preview\.\d+$/u.test(packageVersion)
+        ? packageVersion
+        : previewReleaseId(packageVersion, options.previewNumber)
+      : `${packageVersion}-build-${revision}-${Date.now()}`);
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(releaseId)) {
     throw new Error(`invalid release ID: ${releaseId}`);
   }
+  assertReleaseIdentity({ channel: options.channel, packageVersion, releaseId, previewNumber: options.previewNumber });
 
   const stagingRoot = join(options.outDir, '.staging');
   rmSync(stagingRoot, { recursive: true, force: true });

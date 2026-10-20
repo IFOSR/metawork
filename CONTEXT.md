@@ -63,8 +63,12 @@ Desktop first launch (2026-10-08, ADR-0045) initializes without model credential
 empty Provider/Model catalogs, disabled editable AgentClass presets, and an
 explicitly absent Planner binding. The ordinary Server provides Settings and
 browsing; Gateway blocks semantic work until configuration activation enables
-Planner and Executors. Internal commit suffixes identify builds, not release
-chronology; numeric product downgrade and compatibility checks remain intact.
+Planner and Executors. Stable release artifacts may retain an immutable build
+identity. Preview artifacts use the ordered SemVer form
+`<stable-version>-preview.<n>` (for example `0.1.18-preview.1` and
+`0.1.18-preview.2`). Preview numbers are the chronology signal; commit hashes
+and local labels are not used to order preview releases. Numeric product
+downgrade and compatibility checks remain intact.
 
 macOS Desktop starts updater and Server through one-shot user-session launchd
 jobs: detached spawn alone remains inside Finder's application coalition and can
@@ -860,6 +864,17 @@ from the authorized Planner binding, the turn fails closed and no model request
 is sent. Persisted Planner sessions remain in the account/runtime data path and
 may survive configuration changes; session history is not allowed to restore an
 unauthorized model.
+
+Executor runtime homes use semantic verification for the exact authorized
+Provider/Model and managed execution settings. Pi JSON and Codex TOML are
+parsed before launch; formatting, object-key/table order and unrelated catalog
+entries are ignored, while missing or malformed files, duplicate or missing
+selected Models, and changes to the selected service address, protocol,
+credential reference, model capability or execution setting fail closed. The
+expected scoped facts come from the immutable revision manifest and contain no
+credential values. This launch check is separate from the authorized binding
+fingerprint and the configuration revision/artifact/publication hashes, which
+retain their existing identity and integrity roles.
 
 The authorized execution identity is the complete AgentClass/Harness/Model/
 Permission Profile/revision tuple plus generation, Subtask and attempt kind.

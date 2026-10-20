@@ -1,4 +1,4 @@
-import { executorRuntimeFileHashes } from './agent-runtime-renderer.js';
+import { executorRuntimeConfiguration } from './agent-runtime-renderer.js';
 import {
   authorizedExecutorBindingFingerprint,
   type AuthorizedExecutorBinding,
@@ -100,7 +100,9 @@ export async function resolveRuntimePrivateConfigurationBinding(
       baseUrl: configuration.providers[authorizedBinding.providerRef]!.baseUrl,
       modelId: model.modelId,
       permissionProfileRef: authorizedBinding.permissionProfileRef,
-      runtimeFileHashes: executorRuntimeFileHashes(configuration, harness.driverId),
+      runtimeConfiguration: executorRuntimeConfiguration(
+        configuration, harness.driverId, authorizedBinding.providerRef, model.modelId,
+      ),
     }),
   });
 }

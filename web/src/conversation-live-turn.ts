@@ -236,6 +236,23 @@ function mergeTraceStatus(
 export function turnStatusFromTimeline(
   timeline: ExecutionTimeline,
 ): ConversationTurnProjection['status'] | null {
+  // The Task status can reach a terminal value before the execution projector
+  // has incorporated the last Subtask/Attempt write. Keep the Turn live while
+  // durable stage facts still report active work; otherwise the UI labels every
+  // card as a completed summary and stops the fast refresh loop.
+  const execution = timeline.stages.find(stage => stage.phase === 'execution');
+  if (execution?.status === 'running'
+    || execution?.subtasks?.some(subtask => ['running', 'ready'].includes(subtask.status))) {
+    return 'running';
+  }
+  if (execution?.status === 'blocked'
+    || execution?.subtasks?.some(subtask => ['blocked', 'awaiting_decision'].includes(subtask.status))) {
+    return 'blocked';
+  }
+  if (execution?.status === 'failed'
+    || execution?.subtasks?.some(subtask => ['failed', 'cancelled'].includes(subtask.status))) {
+    return 'failed';
+  }
   if (['created', 'ready', 'running', 'waiting_retry', 'executing', 'retrying', 'publishing', 'waiting_for_plan', 'queued'].includes(timeline.status)) {
     return 'running';
   }

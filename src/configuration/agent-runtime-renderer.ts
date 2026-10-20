@@ -1,8 +1,9 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { chmod, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { AnyFusionConfigurationV2, ConfigurationSnapshot } from './types.js';
+import { parse as parseToml } from 'smol-toml';
+import type { AnyFusionConfigurationV2, ConfigurationSnapshot, ExecutorRuntimeConfiguration } from './types.js';
 import { buildExecutorCapabilityManual } from '../routing/executor-capability-manual.js';
 
 type RuntimeRenderConfiguration = Pick<AnyFusionConfigurationV2, 'providers' | 'models' | 'agentClasses'>;
@@ -117,14 +118,22 @@ export class AgentRuntimeRenderer {
   }
 }
 
+// Keep generated catalogs deterministic for stable diffs and audit output. Use
+// code point order so host locale cannot change the rendered order.
+function compareRefs([left]: [string, unknown], [right]: [string, unknown]): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function enabledProviders(config: RuntimeRenderConfiguration): Array<[string, AnyFusionConfigurationV2['providers'][string]]> {
   return Object.entries(config.providers)
-    .filter(([, provider]) => provider.enabled);
+    .filter(([, provider]) => provider.enabled)
+    .sort(compareRefs);
 }
 
 function enabledModelsFor(config: RuntimeRenderConfiguration, providerRef: string) {
   return Object.entries(config.models)
-    .filter(([, model]) => model.enabled && model.providerRef === providerRef);
+    .filter(([, model]) => model.enabled && model.providerRef === providerRef)
+    .sort(compareRefs);
 }
 
 function isZaiCompatibleBaseUrl(baseUrl: string): boolean {
@@ -266,13 +275,28 @@ export function resolveRevisionRuntimeHome(
   return existsSync(path) ? path : undefined;
 }
 
-/** Expected bytes come from the authorized revision, never from a mutable current pointer. */
-export function executorRuntimeFileHashes(config: RuntimeRenderConfiguration, driverId: string): Readonly<Record<string, string>> {
-  const { defaultProvider, defaultModel, enabledModels, ...settings } = buildSettingsJson(config, '');
-  const files: Record<string, string> = driverId === 'pi-cli' ? {
-    '.pi/agent/models.json': `${JSON.stringify(buildModelsJson(config), null, 2)}\n`,
-    '.pi/agent/settings.json': `${JSON.stringify(settings, null, 2)}\n`,
-  } : driverId === 'codex-cli' ? { 'config.toml': buildCodexConfigToml(config) } : {};
-  return Object.freeze(Object.fromEntries(Object.entries(files).map(([path, content]) =>
-    [path, createHash('sha256').update(content).digest('hex')])));
+/** Expected values come from the authorized revision, scoped to this attempt. */
+export function executorRuntimeConfiguration(
+  config: RuntimeRenderConfiguration,
+  driverId: string,
+  providerRef: string,
+  modelId: string,
+): ExecutorRuntimeConfiguration | undefined {
+  if (driverId === 'pi-cli') {
+    const providers = buildModelsJson(config).providers as Record<string, Record<string, unknown>>;
+    const entry = providers[providerRef];
+    if (!entry) throw new Error('Authorized Pi Provider is missing from runtime configuration');
+    const { models, ...provider } = entry;
+    const model = (models as Record<string, unknown>[]).find(item => item.id === modelId);
+    if (!model) throw new Error('Authorized Pi Model is missing from runtime configuration');
+    const { defaultProvider, defaultModel, enabledModels, ...settings } = buildSettingsJson(config, '');
+    return { provider, model, settings };
+  }
+  if (driverId === 'codex-cli') {
+    const { model_providers, ...settings } = parseToml(buildCodexConfigToml(config));
+    const provider = (model_providers as Record<string, Record<string, unknown>>)[providerRef];
+    if (!provider) throw new Error('Authorized Codex Provider is missing from runtime configuration');
+    return { provider, settings };
+  }
+  return undefined;
 }

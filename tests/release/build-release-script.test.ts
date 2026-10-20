@@ -70,12 +70,23 @@ describe('release build entry points', () => {
     expect(workflow).toContain('v${VERSION}');
     expect(workflow).toContain("- '!v*-windows'");
     expect(workflow).not.toContain('Build and package Windows release');
-    expect(workflow).toContain('--channel stable');
+    expect(workflow).toContain('CHANNEL=preview');
+    expect(workflow).toContain('CHANNEL=stable');
+    expect(workflow).toContain('--channel "${{ steps.release.outputs.channel }}"');
     expect(workflow).not.toContain('--prerelease');
     expect(workflow).not.toContain("if: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY != '' }}");
     expect(workflow).toContain('runner: macos-15-intel');
     expect(workflow).toContain('runner: macos-15');
     expect(workflow).not.toContain('runner: macos-15-arm64');
     expect(workflow).not.toContain('runner: macos-13');
+  });
+
+  it('keeps Windows preview releases on the numbered preview identity', () => {
+    const workflow = readFileSync(resolve('.github', 'workflows', 'windows-release.yml'), 'utf8');
+
+    expect(workflow).toContain('(?:-[0-9A-Za-z.-]+)?');
+    expect(workflow).toContain("$channel = 'preview'");
+    expect(workflow).toContain('$releaseId = $version');
+    expect(workflow).toContain('--channel $channel');
   });
 });

@@ -13,7 +13,8 @@ p { line-height: 1.8; font-size: 14px; }
 body[data-busy="true"] .indicator { animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
 .note { margin-top: 64px; opacity: .6; font-size: 12px; }
-button { margin-top: 16px; padding: 10px 24px; border-radius: 6px; border: 1px solid #6c8262; background: #6c8262; color: white; font: inherit; cursor: pointer; }
+button { margin: 16px 8px 0 0; padding: 10px 24px; border-radius: 6px; border: 1px solid #6c8262; background: #6c8262; color: white; font: inherit; cursor: pointer; }
+button.secondary { border-color: light-dark(#8b9287, #87907f); background: transparent; color: inherit; }
 button:focus-visible { outline: 3px solid #90a9cc; outline-offset: 4px; }
 button:disabled { opacity: .5; cursor: wait; }
 form { margin-top: 24px; }

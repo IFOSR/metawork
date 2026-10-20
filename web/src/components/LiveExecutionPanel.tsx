@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ConversationTurnProjection } from '../api/session-types';
-import type { ExecutionTimeline, InteractionTraceEvent } from '../api/types';
+import type { ExecutionTimeline, InteractionTraceEvent, SubtaskCard } from '../api/types';
 import { executionElapsedEndMs } from '../execution-duration';
 import {
   executorHealthBadge,
@@ -25,7 +25,19 @@ interface ExecutionCard {
   healthText: string | null;
   activityStatus: string;
   activityState: ExecutorActivityState | null;
+  state: ExecutionCardState;
 }
+
+type ExecutionCardState = 'completed' | 'running' | 'waiting' | 'blocked' | 'failed' | 'unknown';
+
+const EXECUTION_CARD_STATE_LABEL: Record<ExecutionCardState, string> = {
+  completed: '已完成',
+  running: '执行中',
+  waiting: '等待启动',
+  blocked: '已阻塞',
+  failed: '执行失败',
+  unknown: '状态待确认',
+};
 
 /**
  * 当前执行卡片：把安全的 InteractionTrace 里程碑按 Subtask 分组展示，
@@ -40,7 +52,7 @@ export function LiveExecutionPanel({
   turn: ConversationTurnProjection;
   onSelectSubtask?: (subtaskId: string, subtaskTitle: string) => void;
 }) {
-  const [, setNowMs] = useState(() => Date.now());
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const completed = turn.status !== 'running';
 
   useEffect(() => {
@@ -51,6 +63,7 @@ export function LiveExecutionPanel({
 
   const cards = collectExecutionCards(turn.traceEvents, turn.executionTimeline);
   if (cards.length === 0) return null;
+  const cardIsActive = (state: ExecutionCardState) => state === 'running' || state === 'waiting';
 
   return (
     <section className={`live-execution-panel${completed ? ' is-summary' : ''}`} aria-label="执行状态">
@@ -64,20 +77,22 @@ export function LiveExecutionPanel({
             <button
               type="button"
               className="execution-card is-clickable"
-              data-status={completed ? 'settled' : 'running'}
+              data-status={card.state === 'completed' ? 'settled' : card.state}
+              data-state={card.state}
               onClick={() => onSelectSubtask(card.subtaskId, card.subtaskTitle)}
               title="查看 Executor 执行详情"
               key={card.subtaskId}
             >
-              <CardBody card={card} completed={completed} />
+              <CardBody card={card} completed={!cardIsActive(card.state)} nowMs={nowMs} />
             </button>
           ) : (
             <article
               className="execution-card"
-              data-status={completed ? 'settled' : 'running'}
+              data-status={card.state === 'completed' ? 'settled' : card.state}
+              data-state={card.state}
               key={card.subtaskId}
             >
-              <CardBody card={card} completed={completed} />
+              <CardBody card={card} completed={!cardIsActive(card.state)} nowMs={nowMs} />
             </article>
           )
         ))}
@@ -86,16 +101,30 @@ export function LiveExecutionPanel({
   );
 }
 
-function CardBody({ card, completed }: { card: ExecutionCard; completed: boolean }) {
+function CardBody({ card, completed, nowMs }: { card: ExecutionCard; completed: boolean; nowMs: number }) {
+  const elapsedText = formatElapsed(
+    card.startedAt,
+    executionElapsedEndMs(
+      !completed && isActiveActivity(card.activityStatus),
+      card.updatedAt,
+      nowMs,
+    ),
+  );
+  const preparation = preparationStatus(card, nowMs, completed);
   const healthBadge = executorHealthBadge({
     updatedAt: card.lastActivityAt ?? card.lastProgressAt,
-    nowMs: Date.now(),
+    nowMs,
     running: !completed && isActiveActivity(card.activityStatus),
     activityState: card.activityState,
   });
   return (
     <>
-      <h4 title={card.subtaskTitle}>{card.subtaskTitle}</h4>
+      <div className="execution-card-title-row">
+        <h4 title={card.subtaskTitle}>{card.subtaskTitle}</h4>
+        <span className="execution-card-state" data-state={card.state}>
+          {EXECUTION_CARD_STATE_LABEL[card.state]}
+        </span>
+      </div>
       <dl>
         <dt>Executor</dt><dd>{card.executorDisplayName || '—'}</dd>
         <dt>Harness</dt><dd>{card.harnessDisplayName || '—'}</dd>
@@ -105,26 +134,44 @@ function CardBody({ card, completed }: { card: ExecutionCard; completed: boolean
       <p className="execution-card-step" data-activity={card.activityStatus}>
         {card.healthText ?? activityLabel(card.activityStatus, card.stepLabel)}
       </p>
+      {preparation && <p className="execution-card-preparation" data-health={preparation.level}>
+        <strong>{preparation.label}</strong><span>{preparation.detail}</span>
+      </p>}
       {healthBadge && (
         <p className="execution-card-health" data-health={healthBadge.level}>
           {healthBadge.label}
         </p>
       )}
       <footer>
-        <time>{formatElapsed(
-          card.startedAt,
-          executionElapsedEndMs(
-            !completed && isActiveActivity(card.activityStatus),
-            card.updatedAt,
-            Date.now(),
-          ),
-        )}</time>
+        <time>{elapsedText}</time>
         {completed
           ? <span className="execution-card-open-hint">查看执行详情 →</span>
           : card.progress !== null && <progress value={Math.min(1, card.progress)} max={1} />}
       </footer>
     </>
   );
+}
+
+function preparationStatus(
+  card: ExecutionCard,
+  nowMs: number,
+  completed: boolean,
+): { level: 'info' | 'warning'; label: string; detail: string } | null {
+  if (completed || !card.stepLabel || !/准备|上下文|权限与能力服务|启动 Executor/u.test(card.stepLabel)) return null;
+  const startedMs = card.startedAt ? Date.parse(card.startedAt) : NaN;
+  const elapsedSeconds = Number.isFinite(startedMs) ? Math.max(0, Math.floor((nowMs - startedMs) / 1_000)) : 0;
+  if (elapsedSeconds >= 30) {
+    return {
+      level: 'warning',
+      label: '准备阶段已超过 30 秒',
+      detail: 'Executor 仍未启动，可能卡在工作区、输入资料或权限服务初始化；可展开执行详情查看。',
+    };
+  }
+  return {
+    level: 'info',
+    label: 'Executor 尚未启动',
+    detail: '正在创建工作区、整理输入资料并生成执行上下文。',
+  };
 }
 
 export function collectExecutionCards(
@@ -159,6 +206,7 @@ export function collectExecutionCards(
       healthText: null,
       activityStatus: attempt?.status ?? attempt?.result ?? subtask.status,
       activityState: null,
+      state: executionCardState(subtask.status, attempt),
     });
   }
   for (const event of events) {
@@ -187,6 +235,7 @@ export function collectExecutionCards(
       healthText: null as string | null,
       activityStatus: event.kind,
       activityState: null as ExecutorActivityState | null,
+      state: stateFromTraceEvent(event),
     };
     // 事件按 sequence 有序，后到的事实覆盖先到的字段。
     const next: ExecutionCard = {
@@ -234,6 +283,36 @@ export function collectExecutionCards(
 function operationLastActivity(value: unknown): string | null {
   return value && typeof value === 'object' && typeof (value as { lastActivityAt?: unknown }).lastActivityAt === 'string'
     ? (value as { lastActivityAt: string }).lastActivityAt : null;
+}
+
+function executionCardState(
+  subtaskStatus: string,
+  attempt: SubtaskCard['attempts'][number] | undefined,
+): ExecutionCardState {
+  // A terminal Subtask is the durable source of truth, even if its last
+  // attempt still has a stale progress message such as "waiting for progress".
+  if (subtaskStatus === 'done' || attempt?.displayStatus === '已完成' || attempt?.result === 'success') {
+    return 'completed';
+  }
+  if (subtaskStatus === 'failed' || subtaskStatus === 'cancelled'
+    || attempt?.displayStatus === '失败' || attempt?.displayStatus === '已取消' || attempt?.result === 'failed') {
+    return 'failed';
+  }
+  if (subtaskStatus === 'blocked' || subtaskStatus === 'awaiting_decision') return 'blocked';
+  if (attempt?.displayStatus === '执行中' || attempt?.status === 'running' || subtaskStatus === 'running') {
+    return 'running';
+  }
+  if (attempt?.displayStatus === '等待启动' || ['ready', 'awaiting_integration'].includes(subtaskStatus)) {
+    return 'waiting';
+  }
+  return 'unknown';
+}
+
+function stateFromTraceEvent(event: InteractionTraceEvent): ExecutionCardState {
+  if (event.status === 'completed') return 'completed';
+  if (event.status === 'failed') return 'failed';
+  if (event.status === 'blocked') return 'blocked';
+  return 'running';
 }
 
 function activityStatusFor(event: InteractionTraceEvent): string {

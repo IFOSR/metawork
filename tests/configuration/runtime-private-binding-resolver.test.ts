@@ -43,6 +43,10 @@ describe('resolveRuntimePrivateConfigurationBinding', () => {
     });
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(result.environment)).toBe(true);
+    expect(result.manifest).not.toHaveProperty('runtimeFileHashes');
+    expect(result.manifest?.runtimeConfiguration?.provider).toMatchObject({
+      base_url: 'https://api.example.com/v1', wire_api: 'responses',
+    });
     expect(secretStore.get).toHaveBeenCalledOnce();
     expect(secretStore.get).toHaveBeenCalledWith('keychain:anyfusion/provider-main');
     expect(secretStore.put).not.toHaveBeenCalled();
@@ -60,6 +64,10 @@ describe('resolveRuntimePrivateConfigurationBinding', () => {
       ...(protocol === 'anthropic' ? {} : { OPENAI_API_KEY__PROVIDER_MAIN: 'sk-attempt-secret' }),
       OPENAI_MODEL: 'engineering-v1',
       ...(protocol === 'anthropic' ? { ANTHROPIC_API_KEY: 'sk-attempt-secret' } : {}),
+    });
+    expect(result.manifest?.runtimeConfiguration).toMatchObject({
+      provider: { api: protocol === 'anthropic' ? 'anthropic-messages' : 'openai-responses' },
+      model: { id: 'engineering-v1' },
     });
   });
 

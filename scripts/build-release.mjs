@@ -11,6 +11,7 @@ function parseArguments(argv) {
     outDir: undefined,
     channel: 'stable',
     releaseId: undefined,
+    previewNumber: undefined,
     signingKey: undefined,
     artifactBaseUrl: undefined,
     packageOnly: false,
@@ -29,6 +30,7 @@ function parseArguments(argv) {
       case '--out-dir': options.outDir = resolve(requireValue()); break;
       case '--channel': options.channel = requireValue(); break;
       case '--release-id': options.releaseId = requireValue(); break;
+      case '--preview-number': options.previewNumber = Number(requireValue()); break;
       case '--signing-key': options.signingKey = resolve(requireValue()); break;
       case '--artifact-base-url': options.artifactBaseUrl = requireValue(); break;
       case '--package-only': options.packageOnly = true; break;
@@ -107,6 +109,7 @@ function main() {
     ...(options.outDir ? ['--out-dir', options.outDir] : []),
     '--channel',
     options.channel,
+    ...(options.previewNumber !== undefined ? ['--preview-number', String(options.previewNumber)] : []),
     ...(options.releaseId ? ['--release-id', options.releaseId] : []),
     ...(options.signingKey ? ['--signing-key', options.signingKey] : []),
     ...(options.artifactBaseUrl ? ['--artifact-base-url', options.artifactBaseUrl] : []),

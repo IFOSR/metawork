@@ -113,6 +113,28 @@ interface AuthorizedExecutorBinding {
 
 Runtime receives only the authorized binding. It does not receive the raw Planner proposal as an execution contract and does not infer a different model or harness at launch time.
 
+#### 2.1 Effective runtime configuration verification (2026-10-19)
+
+The runtime manifest carries the effective configuration facts for the
+authorized Provider and Model, together with the managed execution settings.
+Before a `pi-cli` or `codex-cli` process starts, the adapter parses the
+revision-scoped runtime files and compares those selected facts semantically.
+The check remains bound to the exact revision, binding fingerprint, driver,
+model, permission profile, protocol and service address recorded in the
+manifest.
+
+The verification scope is deliberately narrow: object-key order, whitespace,
+serialization style, and entries for Providers or Models unrelated to the
+authorized attempt do not block launch. A missing or malformed file, an
+ambiguous selected Model, a changed selected Provider or Model field, or a
+changed managed execution setting fails closed. Credentials are represented by
+references and are never persisted in the manifest or included in diagnostics.
+The manifest is the expected-value source; the adapter owns parsing the
+driver-specific file format. Other integrity hashes, including authorized
+binding fingerprints, configuration revision content hashes, artifact hashes
+and publication hashes, retain their existing purposes and are not replaced by
+this check.
+
 Each Work Graph generation pins exactly one `configurationRevision`. That revision applies to the generation, all graph revisions, deferred replans, decisions, dispatches, retries, fallbacks, receipts, and recovery packets produced for that generation. Configuration activation affects only future generations. If the current task must adopt new configuration, Kernel must create a new generation rather than mixing revisions inside the existing one.
 
 ### 3. Health identities and structured failure subjects

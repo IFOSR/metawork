@@ -28,6 +28,10 @@ export interface DesktopBridge {
 export interface ShellState {
   phase: 'connecting' | 'ready' | 'error' | 'upgrade';
   message: string;
+  /** Whether the error can be resolved by trying the connection again. */
+  retryable?: boolean;
+  /** The action that can resolve the current shell state, when one is known. */
+  action?: 'retry' | 'quit';
   /** A blocking native update is in progress; the shell must not offer actions. */
   busy?: boolean;
   /** Percent complete when known; null keeps the progress indicator indeterminate. */
@@ -36,6 +40,7 @@ export interface ShellState {
 export interface DesktopShellBridge {
   state(): Promise<ShellState>;
   retry(): Promise<void>;
+  quit(): Promise<void>;
   upgrade(): Promise<void>;
   onState(listener: (state: ShellState) => void): () => void;
 }

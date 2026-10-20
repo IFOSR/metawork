@@ -19,21 +19,24 @@ function signed(value: Record<string, unknown>) {
   return { ...value, signature: { algorithm: 'ed25519', keyId: TRUSTED_KEY_ID,
     value: sign(null, Buffer.from(stable(value)), keys.privateKey).toString('base64') } };
 }
-function fixture(absolute = true) {
+function fixture(absolute = true, preview = false) {
   const root = mkdtempSync(join(tmpdir(), 'metawork-release-')); roots.push(root);
+  const fixtureTag = preview ? 'v0.1.5-preview.1' : tag;
+  const fixtureReleaseId = preview ? '0.1.5-preview.1' : releaseId;
+  const fixtureChannel = preview ? 'preview' : 'stable';
   const body = Buffer.from('archive fixture');
   const facts = { byteSize: body.length, sha256: createHash('sha256').update(body).digest('hex') };
   for (const target of RELEASE_TARGETS) {
     const [platform, arch] = target.split('-');
     const artifacts: Record<string, unknown> = {};
     for (const kind of ['metawork', 'planner']) {
-      const name = `${kind}-${releaseId}-${target}${platform === 'win32' ? '.zip' : '.tar.gz'}`;
+      const name = `${kind}-${fixtureReleaseId}-${target}${platform === 'win32' ? '.zip' : '.tar.gz'}`;
       writeFileSync(join(root, name), body);
       artifacts[kind] = { source: 'https://github.com/IFOSR/metawork.git', revision,
-        url: absolute ? `https://github.com/IFOSR/metawork/releases/download/${tag}/${name}` : name, ...facts };
+        url: absolute ? `https://github.com/IFOSR/metawork/releases/download/${fixtureTag}/${name}` : name, ...facts };
     }
     writeFileSync(join(root, `manifest.${target}.json`), JSON.stringify(signed({
-      manifestSchemaVersion: 1, channel: 'stable', platform, arch, releaseId, ...artifacts,
+      manifestSchemaVersion: 1, channel: fixtureChannel, platform, arch, releaseId: fixtureReleaseId, ...artifacts,
       publishedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString(),
       compatibility: { databaseSchema: 47 }, minimumInstallerVersion: '1.2.0', minimumNodeVersion: '22.19.0',
     })));
@@ -41,7 +44,7 @@ function fixture(absolute = true) {
   for (const target of DESKTOP_TARGETS) {
     const name = `MetaWork-${target}.dmg`; writeFileSync(join(root, name), body);
     writeFileSync(join(root, `desktop-manifest.${target}.json`), JSON.stringify(signed({
-      schemaVersion: 1, target, tag, desktopVersion: '0.1.5', releaseId,
+      schemaVersion: 1, target, tag: fixtureTag, desktopVersion: preview ? '0.1.5-preview.1' : '0.1.5', releaseId: fixtureReleaseId,
       sourceCommit: revision, development: false, artifact: { name, ...facts },
     })));
   }
@@ -52,6 +55,10 @@ describe('complete latest release gate', () => {
   it.each([true, false])('accepts a coherent native/Desktop set (absolute URLs: %s)', async absolute => {
     const release = await verifyReleaseAssets(fixture(absolute), tag, { ...options, sourceCommit: revision });
     expect(release.files).toHaveLength(18);
+  });
+  it('accepts an ordered preview release ID without a commit suffix', async () => {
+    const release = await verifyReleaseAssets(fixture(true, true), 'v0.1.5-preview.1', { ...options, sourceCommit: revision });
+    expect(release.releaseId).toBe('0.1.5-preview.1');
   });
   it('accepts a stable release set before the independent Windows upload', async () => {
     const root = fixture();

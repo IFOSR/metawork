@@ -6,6 +6,7 @@ import {
   archiveName,
   architectureName,
   platformName,
+  previewReleaseId,
 } from '../../scripts/package-release.mjs';
 
 describe('release package matrix', () => {
@@ -27,6 +28,13 @@ describe('release package matrix', () => {
       .toBe('planner-0.1.3-build-test-darwin-arm64.tar.gz');
   });
 
+  it('formats preview releases as ordered SemVer prereleases', () => {
+    expect(previewReleaseId('0.1.18', 1)).toBe('0.1.18-preview.1');
+    expect(previewReleaseId('0.1.18', 12)).toBe('0.1.18-preview.12');
+    expect(() => previewReleaseId('0.1.18', 0)).toThrow(/positive integer/u);
+    expect(() => previewReleaseId('0.1.18', 1.5)).toThrow(/positive integer/u);
+  });
+
   it('does not default to the revoked preview signing key', () => {
     const script = readFileSync(resolve('scripts/package-release.mjs'), 'utf8');
     expect(script).toContain("keyId: 'metawork-release-2026-03'");
@@ -39,5 +47,11 @@ describe('release package matrix', () => {
     expect(script).toContain('better-sqlite3');
     expect(script).toContain('better_sqlite3.node');
     expect(script).toContain('missing native runtime dependency');
+  });
+
+  it('requires the Planner proposal schema in the Runtime archive', () => {
+    const script = readFileSync(resolve('scripts/package-release.mjs'), 'utf8');
+
+    expect(script).toContain("dist', 'planning-agent-plan-v8.schema.json");
   });
 });

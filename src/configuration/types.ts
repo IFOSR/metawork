@@ -443,13 +443,20 @@ export type RuntimeConfigurationView = Readonly<{
   routing?: RoutingConfiguration;
 }>;
 
+/** Effective driver configuration for one authorized Provider/Model. No secrets. */
+export interface ExecutorRuntimeConfiguration {
+  readonly provider: Readonly<Record<string, unknown>>;
+  readonly model?: Readonly<Record<string, unknown>>;
+  readonly settings: Readonly<Record<string, unknown>>;
+}
+
 export interface ExecutorRuntimeConfigurationManifest {
   readonly driverId: string;
   readonly protocol: ProviderDefinition['protocol'];
   readonly baseUrl: string;
   readonly modelId: string;
   readonly permissionProfileRef: string;
-  readonly runtimeFileHashes: Readonly<Record<string, string>>;
+  readonly runtimeConfiguration?: ExecutorRuntimeConfiguration;
 }
 
 export type RuntimePrivateConfigurationBinding = Readonly<{

@@ -109,12 +109,14 @@ strict-idle activation transaction binds the Planner after real models/agents
 are configured; compensation can restore the unconfigured state. No separate
 Desktop backend or alternate storage/recovery owner is introduced.
 
-Internal release IDs ending in `-internal-<commit hash>` identify immutable builds.
-Their hashes carry no chronological order: same-product internal builds may be
-explicitly replaced through the normal verified update transaction. Product
-version downgrade and stable/prerelease ordering, actual schema compatibility,
-backup and authenticated health checks remain enforced. This corrects identity
-comparison, rather than adding a compatibility bypass.
+Stable release artifacts may retain an immutable build identity. Preview release
+IDs use the ordered SemVer form `<stable-version>-preview.<n>` (for example
+`0.1.18-preview.1` and `0.1.18-preview.2`). Preview numbers are the chronology
+signal; commit hashes and local labels are not used to order preview releases.
+Product version downgrade and stable/prerelease ordering, actual schema
+compatibility, backup and authenticated health checks remain enforced. This
+keeps preview identity comparison deterministic rather than adding a
+compatibility bypass.
 
 ## Finder process lifecycle correction (2026-10-08)
 

@@ -73,7 +73,14 @@ jobs:
         shell: bash
         run: |
           VERSION="$(node -p "require('./package.json').version")"
-          RELEASE_ID="${VERSION}-build-${GITHUB_SHA:0:7}"
+          if [[ "$VERSION" =~ -preview\.[0-9]+$ ]]; then
+            CHANNEL=preview
+            RELEASE_ID="$VERSION"
+          else
+            CHANNEL=stable
+            RELEASE_ID="${VERSION}-build-${GITHUB_SHA:0:7}"
+          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
           echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
 
       - name: Write release signing key
@@ -95,7 +102,7 @@ jobs:
           npm run build:release -- \
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}" \
-            --channel stable \
+            --channel "${{ steps.release.outputs.channel }}" \
             --release-id "${{ steps.release.outputs.release_id }}" \
             --artifact-base-url "https://github.com/IFOSR/metawork/releases/download/v$(node -p "require('./package.json').version")" \
             --signing-key "$RUNNER_TEMP/metawork-release-key.pem" \

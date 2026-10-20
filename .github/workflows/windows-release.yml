@@ -24,8 +24,8 @@ jobs:
       - name: Verify Windows tag and package version
         shell: pwsh
         run: |
-          if ($env:GITHUB_REF_NAME -notmatch '^v(\d+\.\d+\.\d+)-windows$') {
-            throw "Windows release tag must be v<version>-windows"
+          if ($env:GITHUB_REF_NAME -notmatch '^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)-windows$') {
+            throw "Windows release tag must be v<version>[-prerelease]-windows"
           }
           $version = $Matches[1]
           $packageVersion = node -p "require('./package.json').version"
@@ -44,12 +44,18 @@ jobs:
         env:
           METAWORK_RELEASE_SIGNING_KEY: ${{ secrets.METAWORK_RELEASE_SIGNING_KEY }}
         run: |
-          $version = [regex]::Match($env:GITHUB_REF_NAME, '^v(\d+\.\d+\.\d+)-windows$').Groups[1].Value
-          $releaseId = "$version-build-$($env:GITHUB_SHA.Substring(0, 7))"
+          $version = [regex]::Match($env:GITHUB_REF_NAME, '^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)-windows$').Groups[1].Value
+          if ($version -match '-preview\.\d+$') {
+            $channel = 'preview'
+            $releaseId = $version
+          } else {
+            $channel = 'stable'
+            $releaseId = "$version-build-$($env:GITHUB_SHA.Substring(0, 7))"
+          }
           npm run build:release -- `
             --platform win32 `
             --arch x64 `
-            --channel stable `
+            --channel $channel `
             --release-id $releaseId `
             --artifact-base-url "https://github.com/IFOSR/metawork/releases/download/v$version" `
             --signing-key "$env:RUNNER_TEMP\metawork-release-key.pem" `

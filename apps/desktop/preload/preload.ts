@@ -7,6 +7,7 @@ if (process.isMainFrame) {
     const bridge: DesktopShellBridge = {
       state: () => ipcRenderer.invoke('shell:state'),
       retry: () => ipcRenderer.invoke('shell:retry'),
+      quit: () => ipcRenderer.invoke('shell:quit'),
       upgrade: () => ipcRenderer.invoke('shell:upgrade'),
       onState: listener => {
         const receive = (_event: unknown, state: ShellState) => listener(state);

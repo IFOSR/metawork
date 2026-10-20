@@ -327,5 +327,8 @@ describe('internal release identities', () => {
     expect(compareReleaseVersions('0.1.8-internal-1e26ed0', '0.1.9-internal-aaaaaaa')).toBeLessThan(0);
     expect(compareReleaseVersions('0.1.8-internal-1e26ed0', '0.1.8')).toBeLessThan(0);
     expect(compareReleaseVersions('0.1.8-preview.2', '0.1.8-preview.10')).toBeLessThan(0);
+    expect(compareReleaseVersions('0.1.18-preview.1', '0.1.18-preview.2')).toBeLessThan(0);
+    expect(compareReleaseVersions('0.1.18-preview.10', '0.1.18-preview.2')).toBeGreaterThan(0);
+    expect(compareReleaseVersions('0.1.18-preview.10', '0.1.18')).toBeLessThan(0);
   });
 });

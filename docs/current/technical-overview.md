@@ -1316,6 +1316,17 @@ automatically, while a Fixed reference is left invalid and must be repaired
 rather than silently replaced. The API returns `runtime_busy` for a busy gate
 and `invalid_configuration` for an unrepairable draft.
 
+Before an Executor process starts, the native and container adapters verify the
+effective runtime configuration for the authorized Provider and Model. They
+parse the selected Pi JSON or Codex TOML facts and managed execution settings
+from the revision-scoped home and compare them with the manifest. File format,
+whitespace, key/table ordering and unrelated Provider/Model entries do not
+matter; a missing or malformed file, an ambiguous selected Model, or a change
+to selected connection, protocol, credential reference, model capability or
+managed setting blocks launch. The manifest stores references and expected
+facts only, never credential values. Binding fingerprints and other content
+hashes continue to protect their separate identities and artifacts.
+
 Web settings exposes active/runtime revision, gate status, structured blocking
 reasons, and HTTP 409 responses for busy, revision-conflict, or
 restart-required activation. Work Graph presentation is a read-only projection

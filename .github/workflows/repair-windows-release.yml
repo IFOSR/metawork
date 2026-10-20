@@ -41,14 +41,20 @@ jobs:
           $revision = (git rev-parse --short=7 HEAD).Trim()
           $tag = '${{ inputs.release_tag }}'
           if ($version -ne $tag.Substring(1)) { throw "Package version $version does not match $tag" }
-          $releaseId = "$version-build-$revision"
+          if ($version -match '-preview\.\d+$') {
+            $channel = 'preview'
+            $releaseId = $version
+          } else {
+            $channel = 'stable'
+            $releaseId = "$version-build-$revision"
+          }
           $keyPath = Join-Path $env:RUNNER_TEMP 'metawork-release-key.pem'
           $env:METAWORK_RELEASE_SIGNING_KEY | Set-Content -NoNewline -Encoding utf8 $keyPath
           $output = Join-Path $env:RUNNER_TEMP 'metawork-release'
           npm run build:release -- `
             --platform win32 `
             --arch x64 `
-            --channel stable `
+            --channel $channel `
             --release-id $releaseId `
             --artifact-base-url "https://github.com/IFOSR/metawork/releases/download/$tag" `
             --signing-key $keyPath `

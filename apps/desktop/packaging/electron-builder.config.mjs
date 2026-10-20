@@ -23,7 +23,16 @@ export default {
     entitlements: 'packaging/entitlements.mac.plist', entitlementsInherit: 'packaging/entitlements.mac.plist',
     // The Runtime is independently verified and pre-signed before its inventory is signed.
     signIgnore: ['.*\/Resources\/payload\/.*'], notarize: false },
-  dmg: { sign: !internal },
+  // Keep the standard drag-and-drop affordance visible in Finder. Without an
+  // explicit Applications alias, some electron-builder/OS combinations create
+  // a DMG containing only the app, leaving users with no install destination.
+  dmg: {
+    sign: !internal,
+    contents: [
+      { x: 130, y: 220 },
+      { x: 410, y: 220, type: 'link', path: '/Applications' },
+    ],
+  },
   beforePack: async context => {
     if (process.platform !== 'darwin') throw new Error('Desktop release requires a native macOS builder');
     const arch = context.arch === 3 ? 'arm64' : context.arch === 1 ? 'x64' : 'unsupported';

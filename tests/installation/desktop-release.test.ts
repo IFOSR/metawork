@@ -17,6 +17,7 @@ async function fixture(development = false) {
   const payload = join(root, 'payload');
   for (const file of ['metawork/dist/index.js', 'metawork/dist/desktop-install-cli.js',
     'metawork/dist/desktop-update-cli.js', 'metawork/web/dist/index.html',
+    'metawork/dist/planning-agent-plan-v8.schema.json',
     'metawork/desktop-tools/node/bin/node', 'metawork/desktop-tools/git/bin/git',
     'metawork/desktop-tools/executor/bin/pi', 'planner/packages/coding-agent/dist/cli.js']) {
     const path = join(payload, file); await mkdir(dirname(path), { recursive: true });

@@ -69,6 +69,10 @@ function assertArtifact(actual, expected, name) {
 
 export async function verifyReleaseAssets(directory, tag, options = {}) {
   if (!/^v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(tag)) throw new Error('invalid release tag');
+  const tagVersion = tag.slice(1);
+  const previewRelease = /-preview\.\d+$/u.test(tagVersion);
+  const expectedChannel = previewRelease ? 'preview' : 'stable';
+  const expectedReleaseId = previewRelease ? tagVersion : `${tagVersion}-build-`;
   const targets = options.targets ?? RELEASE_TARGETS;
   const now = options.now ?? Date.now();
   const manifests = [];
@@ -84,7 +88,7 @@ export async function verifyReleaseAssets(directory, tag, options = {}) {
         Buffer.from(signature.value, 'base64'))) {
       throw new Error(`${target}: signature verification failed`);
     }
-    if (manifest.manifestSchemaVersion !== 1 || manifest.channel !== 'stable'
+    if (manifest.manifestSchemaVersion !== 1 || manifest.channel !== expectedChannel
       || `${manifest.platform}-${manifest.arch}` !== target
       || !Number.isFinite(Date.parse(manifest.publishedAt))
       || !(Date.parse(manifest.expiresAt) > now)) {
@@ -93,7 +97,9 @@ export async function verifyReleaseAssets(directory, tag, options = {}) {
     const revision = manifest.metawork?.revision;
     if (!/^[a-f0-9]{7,40}$/.test(revision)
       || (options.sourceCommit && !options.sourceCommit.startsWith(revision))
-      || manifest.releaseId !== `${tag.slice(1)}-build-${revision.slice(0, 7)}`
+      || (previewRelease
+        ? manifest.releaseId !== expectedReleaseId
+        : manifest.releaseId !== `${expectedReleaseId}${revision.slice(0, 7)}`)
       || manifest.planner?.revision !== revision
       || !['https://github.com/IFOSR/metawork', 'https://github.com/IFOSR/metawork.git']
         .includes(manifest.metawork.source)
