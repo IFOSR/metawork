@@ -276,3 +276,4 @@ Desktop implementation: [isolated branch progress](plans/2026-10-05-metawork-des
 - [Desktop update recovery loop](plans/2026-10-08-desktop-update-recovery-loop.md) — lock-release ordering and repair-only source correction validated and included in v0.1.8.
 
 - [Provider 协议选择与 GPT Responses 切换（2026-10-13）](plans/2026-10-13-provider-protocol-selection.md)
+- [会话-任务-交付模型故障复盘与改造方案（2026-10-22，待评审）](plans/2026-10-22-conversation-task-delivery-and-service-ownership-review.md) — 平台级空转与日志失明（A）、启动服务四层闸门与永久死锁（B）、"每轮新工单/新目录/新服务/新经验"的作用域错位，以及"会话即目录 + 验收可执行"的目标模型与分期计划。
