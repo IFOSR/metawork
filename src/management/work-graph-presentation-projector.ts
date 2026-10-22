@@ -93,6 +93,7 @@ export interface WorkGraphPresentationNode {
   title: string;
   goal: string;
   status: string;
+  executionState: 'completed' | 'running' | 'waiting' | 'blocked' | 'failed' | 'unknown';
   phase: number;
   runnable: boolean;
   dependencies: string[];
@@ -169,6 +170,7 @@ export class WorkGraphPresentationProjector {
         title: bounded(subtask.title, 300),
         goal: bounded(subtask.goal, 1_000),
         status: publication?.status ?? receipt?.terminalState ?? dispatch?.status ?? fact?.status ?? 'unknown',
+        executionState: presentationExecutionState(fact?.status ?? 'unknown'),
         phase: layers.get(subtask.id) ?? 0,
         runnable: runnable.has(subtask.id),
         dependencies: subtask.dependencies.map(dependency => dependency.fromSubtaskId),
@@ -196,6 +198,17 @@ export class WorkGraphPresentationProjector {
       currentRunnableFrontier: [...runnable],
     };
   }
+}
+
+function presentationExecutionState(
+  status: string,
+): NonNullable<WorkGraphPresentationNode['executionState']> {
+  if (status === 'done') return 'completed';
+  if (status === 'running') return 'running';
+  if (['ready', 'awaiting_integration'].includes(status)) return 'waiting';
+  if (['blocked', 'awaiting_decision'].includes(status)) return 'blocked';
+  if (['failed', 'cancelled'].includes(status)) return 'failed';
+  return 'unknown';
 }
 
 function routingFor(

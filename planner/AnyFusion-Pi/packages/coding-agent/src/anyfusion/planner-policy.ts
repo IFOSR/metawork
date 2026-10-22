@@ -148,25 +148,6 @@ const ALLOWED_SLASH_COMMANDS = new Set([
 	"quit",
 ]);
 
-/** MetaClaw-owned deterministic command roots exposed by the Planner shell. */
-export const METACLAW_SLASH_COMMANDS = [
-	{ name: "permission", description: "Runtime permission decisions" },
-	{ name: "task", description: "Task inspection and control" },
-	{ name: "executor", description: "Executor registration, inspection, and feedback" },
-	{ name: "memory", description: "Memory and review policy" },
-	{ name: "profile", description: "User, project, and Executor profiles" },
-	{ name: "learning", description: "Learning candidates and Skill governance" },
-	{ name: "config", description: "Show the active MetaClaw configuration" },
-	{ name: "help", description: "Show the MetaClaw command tree" },
-	{ name: "exit", description: "Exit the MetaClaw session" },
-] as const;
-
-const METACLAW_SLASH_COMMAND_NAMES = new Set<string>(METACLAW_SLASH_COMMANDS.map((command) => command.name));
-
-export function isMetaClawSlashCommand(name: string): boolean {
-	return METACLAW_SLASH_COMMAND_NAMES.has(name);
-}
-
 /** Return whether an interactive slash command is safe for Planner sessions. */
 export function isPlannerSlashCommandAllowed(name: string): boolean {
 	return ALLOWED_SLASH_COMMANDS.has(name);

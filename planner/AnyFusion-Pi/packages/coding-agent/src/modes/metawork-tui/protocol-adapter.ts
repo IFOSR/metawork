@@ -6,6 +6,7 @@
  * 绝不打印原始数据。
  */
 
+import type { GatewayPublicDelivery, GatewayResultDecision } from "../../anyfusion/gateway-protocol.ts";
 import type {
 	MetaWorkAttemptProjection,
 	MetaWorkBillStageUsage,
@@ -348,6 +349,8 @@ export function normalizeCompletion(payload: Record<string, unknown>): Normalize
 }
 
 export interface NormalizedTaskView {
+	readonly resultDecision: GatewayResultDecision | null;
+	readonly publicDelivery: GatewayPublicDelivery | null;
 	readonly requestId: string;
 	readonly targetConversationId: string;
 	readonly turnId: string;
@@ -506,6 +509,39 @@ export function normalizeTaskView(payload: Record<string, unknown>): NormalizedT
 		}
 	}
 	const lifecycleRecord = asRecord(payload.lifecycle);
+	const decision = asRecord(lifecycleRecord?.pendingDecision);
+	const identity = asRecord(decision?.expectedResult);
+	const resultDecision: GatewayResultDecision | null =
+		identity &&
+		["taskId", "generationId", "subtaskId", "attemptId", "resultId"].every(
+			(key) => typeof identity[key] === "string" && identity[key],
+		) &&
+		identity.taskId === taskId &&
+		Number.isSafeInteger(identity.graphRevision) &&
+		(identity.graphRevision as number) > 0
+			? {
+					expectedResult: {
+						taskId,
+						generationId: identity.generationId as string,
+						graphRevision: identity.graphRevision as number,
+						subtaskId: identity.subtaskId as string,
+						attemptId: identity.attemptId as string,
+						resultId: identity.resultId as string,
+					},
+					actions: asStringArray(decision?.actions),
+				}
+			: null;
+	const delivery = asRecord(payload.publicDelivery);
+	const publicDelivery: GatewayPublicDelivery | null =
+		delivery && typeof delivery.workspace === "string" && typeof delivery.taskDirectory === "string"
+			? {
+					workspace: asString(delivery.workspace)!,
+					taskDirectory: asString(delivery.taskDirectory)!,
+					state: asString(delivery.state) ?? "not_published",
+					files: asStringArray(delivery.files),
+					conflicts: asStringArray(delivery.conflicts),
+				}
+			: null;
 	const lifecycle: NormalizedTaskView["lifecycle"] =
 		lifecycleRecord && asString(lifecycleRecord.phase)
 			? {
@@ -552,6 +588,8 @@ export function normalizeTaskView(payload: Record<string, unknown>): NormalizedT
 		title: asString(payload.title) ?? "",
 		status: asString(payload.status) ?? "",
 		lifecycle,
+		resultDecision,
+		publicDelivery,
 		routing,
 		attempts,
 		goal: asString(payload.goal),

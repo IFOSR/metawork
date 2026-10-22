@@ -48,6 +48,7 @@ describe('Planner-declared delivery end-to-end', () => {
     mkdirSync(join(root, 'app/current/dist'), { recursive: true });
     writeFileSync(join(root, 'app/current/dist/pi-attempt-tools.ts'), 'export default function () {}\n');
     const userRoot = join(root, 'delivered');
+    mkdirSync(userRoot, { recursive: true });
     const db = new Database(join(root, 'delivery.sqlite'));
     runMigrations(db);
     const taskRepo = new TaskRepo(db);
@@ -114,7 +115,8 @@ describe('Planner-declared delivery end-to-end', () => {
         : testCase.missing ? [] : files.filter(file => outputs.some(output => output.endsWith('/') ? file.startsWith(output) : file === output));
       expect(delivered.map(row => row.relative_path).sort()).toEqual([...expectedFiles].sort());
       const destination = join(userRoot, 'metaclaw-tasks', userTaskDirectorySlug(task!.title, task!.id));
-      if (!expectedFiles.length) expect(existsSync(destination)).toBe(false);
+      if (!expectedFiles.length && testCase.kind !== 'edit') expect(existsSync(destination)).toBe(false);
+      if (testCase.kind === 'edit') for (const file of testCase.files) expect(readFileSync(join(destination, file))).toEqual(bytes(file));
       for (const file of expectedFiles) expect(readFileSync(join(destination, file))).toEqual(file === 'README.md'
         ? readFileSync(join(actualWorkspace, file)) : bytes(file));
       if (testCase.files.length === 0) expect(readdirSync(actualWorkspace).filter(file => !['.git', '.metaclaw'].includes(file))).toEqual(['README.md']);

@@ -48,6 +48,13 @@ export interface GatewayTaskViewSnapshot {
   readonly pendingPermission: GatewayTaskViewPermission | null;
   readonly artifacts: ArtifactProjection[];
   readonly result: GatewayTaskViewResult | null;
+  readonly publicDelivery?: {
+    workspace: string;
+    taskDirectory: string;
+    state: 'not_published' | 'awaiting_acceptance' | 'publishing' | 'published' | 'failed';
+    files: string[];
+    conflicts: string[];
+  } | null;
   /** 快照水位，属于目标 Conversation 的事件流。 */
   readonly asOfSequence: number;
 }
@@ -78,6 +85,7 @@ export interface GatewayTaskViewLifecycle {
   } | null;
   readonly blockingResidue: readonly string[];
   readonly nextAuthorizedAction: string;
+  readonly pendingDecision?: import('../task/task-view.js').TaskViewPendingDecisionFact | null;
   /** Why `phase` is `recovery_required`, so a surface can offer the entry point. */
   readonly recoveryDiagnosis: string | null;
   readonly explanation: string;

@@ -314,6 +314,7 @@ describe('current SQLite baseline', () => {
     db.exec(`
       CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
       INSERT INTO schema_version VALUES (37);
+      CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT NOT NULL, account_id TEXT, conversation_id TEXT, workspace_id TEXT);
       CREATE TABLE subtasks (id TEXT PRIMARY KEY);
     `);
 
@@ -337,11 +338,12 @@ describe('current SQLite baseline', () => {
       CREATE TABLE subtasks (id TEXT PRIMARY KEY);
       CREATE TABLE tasks (
         id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '',
         account_id TEXT NOT NULL,
         conversation_id TEXT NOT NULL,
         workspace_id TEXT NOT NULL
       );
-      INSERT INTO tasks VALUES ('task-image', 'account', 'conversation', 'workspace');
+      INSERT INTO tasks (id, account_id, conversation_id, workspace_id) VALUES ('task-image', 'account', 'conversation', 'workspace');
       CREATE TABLE task_artifacts (
         artifact_id TEXT PRIMARY KEY,
         account_id TEXT NOT NULL,

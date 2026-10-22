@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, existsSync, readFileSync, statSync, utimesSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, realpathSync, chmodSync, rmSync, mkdirSync, writeFileSync, symlinkSync, existsSync, readFileSync, statSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -51,6 +52,29 @@ function seedIntegratedWorkspace(root: string): string {
 }
 
 describe('UserArtifactPublicationService', () => {
+  it('publishes code without inventing downloadable artifacts, and retires stale downloads on later code edits or deletion', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'metawork-code-artifacts-')); roots.push(root);
+    const service = createService(root, ['code-task']);
+    const source = seedIntegratedWorkspace(root);
+    const input = { accountId: 'local-default', taskId: 'code-task', taskTitle: 'Code', generationId: 'g',
+      subtaskId: 's', publicationId: 'p1', integratedWorkspaceRoot: source,
+      sources: [{ sourceRelativePath: 'report.md', downloadable: false }] };
+    const first = await service.publishIntegratedArtifacts(input);
+    expect(first.failures).toEqual([]); expect(first.projections).toEqual([]);
+    expect(service.taskArtifactRepo.listByTask('code-task')).toEqual([]);
+    expect(service.taskArtifactRepo.publicFiles.list('local-default', 'code-task')).toHaveLength(1);
+    expect(service.taskArtifactRepo.publicFiles.list('another', 'code-task')).toEqual([]);
+    await service.publishIntegratedArtifacts({ ...input, sources: [{ sourceRelativePath: 'report.md' }] });
+    expect(service.taskArtifactRepo.listByTask('code-task')[0]!.status).toBe('published');
+    writeFileSync(join(source, 'report.md'), 'updated code without a download declaration');
+    expect((await service.publishIntegratedArtifacts({ ...input, publicationId: 'p2' })).failures).toEqual([]);
+    expect(readFileSync(join(first.taskDirectory, 'report.md'), 'utf8')).toBe('updated code without a download declaration');
+    expect(service.taskArtifactRepo.listByTask('code-task')[0]!.status).toBe('unavailable');
+    expect((await service.publishIntegratedArtifacts({ ...input, publicationId: 'p3',
+      sources: [{ sourceRelativePath: 'report.md', remove: true }] })).failures).toEqual([]);
+    expect(existsSync(join(first.taskDirectory, 'report.md'))).toBe(false);
+    expect(service.taskArtifactRepo.publicFiles.list('local-default', 'code-task')).toEqual([]);
+  });
   it('publishes verified artifacts under the user workspace metaclaw-tasks directory with safe projections', async () => {
     const root = mkdtempSync(join(tmpdir(), 'anyfusion-user-artifacts-'));
     roots.push(root);
@@ -74,7 +98,7 @@ describe('UserArtifactPublicationService', () => {
 
     expect(outcome.failures).toEqual([]);
     expect(outcome.taskDirectory.startsWith(
-      join(root, 'startup', USER_ARTIFACTS_DIRECTORY),
+      join(realpathSync(root), 'startup', USER_ARTIFACTS_DIRECTORY),
     )).toBe(true);
     expect(outcome.projections).toHaveLength(3);
 
@@ -209,7 +233,7 @@ describe('UserArtifactPublicationService', () => {
       .toBe('published');
   });
 
-  it('rejects symbolic links and path traversal without blocking other artifacts', async () => {
+  it('rejects the entire publication before writing when any source escapes or is invalid', async () => {
     const root = mkdtempSync(join(tmpdir(), 'anyfusion-user-artifacts-sec-'));
     roots.push(root);
     const service = createService(root, ['task_security']);
@@ -233,7 +257,7 @@ describe('UserArtifactPublicationService', () => {
     });
 
     expect(outcome.projections.map(projection => projection.relativePath))
-      .toEqual(['summary.md']);
+      .toEqual([]);
     expect(outcome.failures.map(failure => failure.sourceRelativePath).sort())
       .toEqual(['../outside.md', '/etc/hostname', 'linked.md', 'missing.md']);
     // 符号链接目标绝不能被复制到用户目录。
@@ -242,8 +266,9 @@ describe('UserArtifactPublicationService', () => {
 
   it('keeps the user task directory name stable from title slug and short task id', () => {
     const slug = userTaskDirectorySlug('Quarterly 报告!', 'task_xz9999ab');
-    expect(slug).toBe('quarterly-报告-9999ab');
-    expect(userTaskDirectorySlug('', 'task_xz9999ab')).toBe('task-9999ab');
+    expect(slug).toMatch(/^quarterly-报告-[a-f0-9]{16}$/u);
+    expect(userTaskDirectorySlug('', 'task_xz9999ab')).toMatch(/^task-[a-f0-9]{16}$/u);
+    expect(userTaskDirectorySlug('same', 'prefix_9999ab')).not.toBe(userTaskDirectorySlug('same', 'other_9999ab'));
   });
 
   it('records a failure when an artifact source disappears mid-publication without corrupting targets', async () => {
@@ -272,13 +297,9 @@ describe('UserArtifactPublicationService', () => {
 
     expect(outcome.failures).toHaveLength(1);
     expect(outcome.failures[0]?.sourceRelativePath).toBe('broken.md');
-    expect(outcome.projections).toHaveLength(1);
-    expect(readFileSync(
-      join(outcome.taskDirectory, 'keep', 'fine.md'),
-      'utf8',
-    )).toBe('# fine');
-    expect(service.taskArtifactRepo.listByTask('task_corrupt0')).toHaveLength(1);
-    const previous = outcome.projections[0]!;
+    expect(outcome.projections).toHaveLength(0);
+    expect(existsSync(join(outcome.taskDirectory, 'keep', 'fine.md'))).toBe(false);
+    expect(service.taskArtifactRepo.listByTask('task_corrupt0')).toHaveLength(0);
     rmSync(join(workspaceRoot, 'broken.md'), { recursive: true });
     writeFileSync(join(workspaceRoot, 'broken.md'), '# repaired');
     const restarted = new UserArtifactPublicationService({ userWorkspaceRoot: join(root, 'startup'), taskArtifactRepo: service.taskArtifactRepo });
@@ -286,8 +307,57 @@ describe('UserArtifactPublicationService', () => {
       taskTitle: 'corrupt', generationId: null, subtaskId: null, publicationId: null,
       integratedWorkspaceRoot: workspaceRoot, sources: [{ sourceRelativePath: 'broken.md' }, { sourceRelativePath: 'keep/fine.md' }] });
     expect(retry.failures).toEqual([]);
-    expect(retry.projections).toContainEqual(previous);
+    expect(retry.projections).toHaveLength(2);
+    expect(readFileSync(join(retry.taskDirectory, 'keep/fine.md'), 'utf8')).toBe('# fine');
     expect(service.taskArtifactRepo.listByTask('task_corrupt0')).toHaveLength(2);
 
+  });
+});
+
+
+describe('public Workspace delivery safety', () => {
+  function setup() {
+    const root = mkdtempSync(join(tmpdir(), 'metawork-public-test-')); roots.push(root);
+    const service = createService(root); const origin = seedIntegratedWorkspace(root);
+    const input = { accountId: 'local-default', taskId: 'seeded', taskTitle: 'public', generationId: null,
+      subtaskId: null, publicationId: null, integratedWorkspaceRoot: origin, sources: [{ sourceRelativePath: 'report.md' }] };
+    return { service, input, origin };
+  }
+  it('updates real files and HEAD in an initially empty Git Workspace', async () => {
+    const { service, input } = setup();
+    execFileSync('git', ['init', service.userWorkspaceRoot]);
+    const result = await service.publishIntegratedArtifacts(input);
+    expect(result.failures).toEqual([]);
+    expect(readFileSync(join(result.taskDirectory, 'report.md'), 'utf8')).toContain('final');
+    const head = execFileSync('git', ['-C', service.userWorkspaceRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+    expect((await service.publishIntegratedArtifacts(input)).failures).toEqual([]);
+    expect(execFileSync('git', ['-C', service.userWorkspaceRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).toBe(head);
+    expect(execFileSync('git', ['-C', service.userWorkspaceRoot, 'status', '--porcelain'], { encoding: 'utf8' })).toBe('');
+  });
+  it('fails closed on a damaged Git repository', async () => {
+    const { service, input } = setup();
+    writeFileSync(join(service.userWorkspaceRoot, '.git'), 'gitdir: /does/not/exist');
+    const result = await service.publishIntegratedArtifacts(input);
+    expect(result.failures[0]?.reason).toContain('Git Workspace 无效');
+    expect(existsSync(result.taskDirectory)).toBe(false);
+  });
+  it('serializes two publisher instances and preserves the externally deleted file conflict', async () => {
+    const { service, input, origin } = setup();
+    const other = new UserArtifactPublicationService({ userWorkspaceRoot: service.userWorkspaceRoot, taskArtifactRepo: service.taskArtifactRepo });
+    const [first, second] = await Promise.all([service.publishIntegratedArtifacts(input), other.publishIntegratedArtifacts(input)]);
+    expect(first.failures).toEqual([]); expect(second.failures).toEqual([]);
+    expect(service.taskArtifactRepo.listByTask('seeded')).toHaveLength(1);
+    rmSync(join(first.taskDirectory, 'report.md'));
+    writeFileSync(join(origin, 'report.md'), 'updated');
+    const failed = await other.publishIntegratedArtifacts(input);
+    expect(failed.failures[0]?.reason).toContain('文件已被删除');
+    expect(existsSync(join(first.taskDirectory, 'report.md'))).toBe(false);
+  });
+  it('rejects internal path references in deliverable bytes before any file becomes public', async () => {
+    const { service, input, origin } = setup();
+    writeFileSync(join(origin, 'report.md'), 'Code is at /Users/example/.metawork/accounts/local-default/workspace-store/workspaces/worktree/server');
+    const result = await service.publishIntegratedArtifacts(input);
+    expect(result.failures[0]?.reason).toContain('内部执行路径');
+    expect(existsSync(result.taskDirectory)).toBe(false);
   });
 });

@@ -80,6 +80,7 @@ export interface WorkGraphPresentationProjection {
     title: string;
     goal: string;
     status: string;
+    executionState?: 'completed' | 'running' | 'waiting' | 'blocked' | 'failed' | 'unknown';
     phase: number;
     runnable: boolean;
     dependencies: string[];

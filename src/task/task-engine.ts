@@ -1,3 +1,4 @@
+import { publicTaskRelativeDirectory } from './public-task-directory.js';
 // Owns the core task state machine and snapshot persistence primitives.
 import type { Task, TaskStatus, TaskSnapshot, Dependency, ResumeSummary } from '../core/types.js';
 import type { TaskRepo } from '../storage/task-repo.js';
@@ -49,6 +50,9 @@ export class TaskEngine {
     workspaceId?: string;
     ownerPlannerSessionId?: string;
     admittedAt?: string;
+    publicTaskDirectory?: string;
+    publicDeliveryBaseline?: Record<string, string>;
+    startServiceAfterPublish?: boolean;
   }): Task {
     const now = new Date().toISOString();
     const taskId = input.id?.trim() ? input.id : generateTaskId();
@@ -60,6 +64,10 @@ export class TaskEngine {
       ...(input.ownerPlannerSessionId ? { ownerPlannerSessionId: input.ownerPlannerSessionId } : {}),
       ...(input.admittedAt ? { admittedAt: input.admittedAt } : {}),
       title: input.title,
+      publicTaskDirectory: input.publicTaskDirectory ?? publicTaskRelativeDirectory(input.title, taskId),
+      publicDeliveryBaseline: input.publicDeliveryBaseline ?? {},
+      publicProject: input.publicTaskDirectory !== undefined,
+      startServiceAfterPublish: input.startServiceAfterPublish ?? false,
       goal: input.goal,
       status: 'created',
       summary: '',

@@ -1,3 +1,4 @@
+import { TaskResultActions } from '../components/TaskResultActions';
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { HttpClient } from '../api/http';
 import type { WsClient } from '../api/ws';
@@ -253,6 +254,7 @@ const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, htt
       liveExecutionPanel={showExecution ? (plannerActivity(projection)
         ? <LivePlanningPanel turn={projection} />
         : <LiveExecutionPanel turn={projection} onSelectSubtask={(subtaskId, title) => onOpenSubtaskDetail(projection, subtaskId, title)} />) : undefined} />
+    <TaskResultActions ws={ws} conversationId={conversationId} lifecycle={details.taskLifecycle} delivery={details.publicDelivery} refresh={details.refresh} />
     {(answer.error || prompt.error) && <p role="alert">{answer.error ?? prompt.error}</p>}
   </div>;
 });

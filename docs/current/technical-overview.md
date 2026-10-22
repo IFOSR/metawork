@@ -96,9 +96,9 @@ MetaWork is a local AI Task OS for agentic work. It turns natural-language reque
 
 It is built for teams who need agents to do more than answer the current turn. MetaWork gives long-running AI work a task state machine, memory boundary, unified ControlKernel decision plane, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
 
-> Current implementation baseline (2026-10-15): PlanningAgentPlan v8, Work
+> Current implementation baseline (2026-10-21): PlanningAgentPlan v8, Work
 > Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
-> and SQLite schema v50 with transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50 upgrade support.
+> and SQLite schema v51 with transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51 upgrade support.
 > Schema v39/v40 adds the Query usage/billing facts (Query attribution contexts,
 > metering spans/observations, immutable price versions, cost entries, per-Query
 > bills and lines, the consumption outbox/receipts and bill adjustments) that
@@ -129,9 +129,64 @@ implementation is deferred to a separate roadmap.
 
 ## What MetaWork Does
 
+### Task Acceptance, Public Workspace Delivery And Local Services (2026-10-21)
+
+TaskView exposes authorized accept/retry actions to Web/Desktop, the single TUI,
+CLI and Feishu. Controls bind the exact Task/Generation/Revision/Subtask/Attempt/
+Result tuple. A correction receipt can reference its primary safe projection
+only through the validated source receipt; stale or foreign identities reject.
+Acceptance rechecks safety and publishes the original result without rerunning
+its Executor. Explicit retry retains the original history and rejects uncertain
+external-effect replay. Independent backend/API work can continue while UI work
+awaits a user decision.
+
+Every Task persists its public Workspace-relative directory at creation. New
+projects use a stable title/digest directory; an explicitly selected existing
+project subdirectory is updated in place. Runtime records the baseline, detects
+external edits, validates every write/delete, and publishes the full code delta.
+Downloads still follow only Planner-declared fileOutputs. Non-Git publication is
+staged with rollback; Git delivery uses a controlled branch and checked
+fast-forward into the user's actual files. The shared public delivery projection
+contains Workspace, task directory, relative code files, state and conflicts.
+Internal worktrees, private logs and secrets do not enter ordinary responses.
+
+For implement-and-start requests Planner sets task.startServiceAfterPublish.
+The command-capable Executor creates this manifest in its project root; Runtime
+binds Task ownership, verifies publication, then starts and health-checks the
+service from the public directory:
+
+```json
+{
+  "serviceId": "backend",
+  "command": "node",
+  "args": ["server.mjs"],
+  "environmentReferences": {},
+  "host": "127.0.0.1",
+  "port": 8080,
+  "healthPath": "/health",
+  "startupTimeoutMs": 10000,
+  "restartPolicy": "explicit"
+}
+```
+
+Store the manifest as `.metawork-service.json`. Optional `directory` is relative
+to the public project. Environment values are resolved from references; HOST
+and PORT remain controlled by the specification. Service health gates Task done;
+a live HTTP 503 is needs_action. Runtime owns detached process groups, durable
+service/operation facts and replay-safe start/stop/restart. Server recovery
+reobserves the owned process rather than blindly launching it again. Bounded
+follow-up controls do not replan an existing graph:
+
+See the [current slash-command reference](commands.md) for result controls, managed-service commands, and shared Desktop/Web completion.
+
+Schema 51 adds immutable public directory/baseline and service intent fields,
+`public_workspace_files`, managed service records and service-operation journal;
+50→51 upgrades transactionally. See the [implementation and acceptance evidence](../tech-debt/task-acceptance-and-local-service-findings.md).
+
+
 ### Navigation And Observation Status (2026-10-03)
 
-The source schema is 48. Web and the single native TUI browse indexed metadata
+The current source schema is 51. Web and the single native TUI browse indexed metadata
 and a bounded Conversation read model, independently of execution attachment.
 A baseline contains at most 20 recent Turn summaries within 256 KiB; long
 bodies, history pages, trace, Task details and billing load separately. An
@@ -700,48 +755,9 @@ optional compatibility paths.
 
 MetaWork does not vendor the downstream executor CLIs. Install the ones you want to use and make sure each command is available on `PATH`.
 
-### Register Custom Executors
+### Executor configuration
 
-Installed executors are runtime workers that MetaWork can assign subtasks to. A registered executor now has three parts:
-
-- The `AgentClass`: domains, capabilities, risk level, input/output types, use-case hints, route-intent affinity, and runtime defaults.
-- The runtime binding: immutable Docker image ID, controlled permission profile, in-container command/arguments, install check command, and optional project URL.
-- At least one executor `WorkUnit`: a concrete idle runtime slot that can claim one ready subtask at a time.
-
-Use the guided registration flow when you are not sure what to fill in:
-
-```bash
-/executor register wizard
-```
-
-The wizard asks for the executor name, whether to infer from a project URL or fill fields manually, the local command, non-interactive args, install check command, domains, and capabilities. If you provide a GitHub URL, MetaWork tries to infer CLI information from `package.json` or README examples. If inference is not reliable, it falls back to manual entry.
-
-One-line registration is also supported:
-
-```bash
-/executor register research-bot \
-  --image registry.example/research-bot:1.2.3 \
-  --image-id sha256:<64-hex-digest> \
-  --permission-profile restricted-custom \
-  --command research-bot \
-  --args "run --prompt {prompt}" \
-  --check "research-bot --version" \
-  --project-url https://github.com/example/research-bot \
-  --domains research,reporting \
-  --capabilities research,report_generation
-```
-
-`{prompt}` is replaced with the subtask prompt. If `--args` does not contain `{prompt}`, MetaWork appends the prompt as the final argument. The image ID must match the referenced image and the permission profile must be one of the controlled profiles. A missing binding or changed tag fails closed until the class is explicitly updated; there is no host-process fallback. Static routing capabilities remain separate and Planner-safe.
-
-`codex-cli` and `pi-agent` are owned completely by canonical definitions. Startup force-converges every persisted static field, immutable image binding and permission profile for those names, and normal registration APIs reject overwrite or deletion. Non-canonical capabilities remain free-form registration metadata and are never promoted into the controlled Planner catalog. Historical custom classes without image/profile bindings remain visible for audit but are non-executable.
-
-The Phase 5 permission product boundary is the selected execution backend plus
-the permission profile and durable request/grant/use audit budgets.
-`use_capability` atomically consumes attempt, expiry, call and byte limits, but
-it is not a universal operation broker and does not prove fine-grained
-mediation of every native file, network or external action. Container mounts
-and sandbox policy apply only to the container backend; egress profiles and
-resource leases remain Runtime enforcement boundaries.
+Executor registration, binding, and enablement are owned by Settings activation. Slash commands are diagnostic only; see the [current slash-command reference](commands.md) for the available diagnostics.
 
 Executor extension contract:
 
@@ -798,15 +814,7 @@ Optional advanced adapter interfaces:
 - `abort(attemptId?)`: abort one exact attempt; Task cancellation enumerates every active attempt through the Runtime control port.
 - `installSkill(pkg)`, `updateSkill(pkg)`, `disableSkill(target)`, `deprecateSkill(target)`: support executor-specific Skill lifecycle management.
 
-Executor management commands:
-
-```bash
-/executor list
-/executor show <name>
-/executor register wizard
-/executor unregister <name>
-/executor feedback <taskId>
-```
+Executor command details are kept in the [current slash-command reference](commands.md). Registration is owned by Settings activation; the command surface is read-only.
 
 ### Codex CLI
 
@@ -1558,33 +1566,7 @@ MetaWork will:
 
 Useful commands:
 
-```bash
-/task list
-/task list active
-/task list ready
-/task list parked
-/task list blocked
-/task list done
-
-/task show <id>
-/task pause <id>
-/task resume <id>
-/task block <id> waiting for customer data
-/task unblock <id>
-/task unblock <id> /tmp/evidence-v4.pdf
-/task cancel <id>
-/task <taskId> subtask cancel <subtaskId...>
-/task <taskId> accept-partial
-/task index rebuild
-/task index search <query>
-
-/task dashboard
-/task attach <taskId> <file paths...>
-/task history <taskId>
-/config
-/help
-/exit
-```
+See the [current slash-command reference](commands.md) for the canonical task commands.
 
 The MetaWork TUI (`metawork`, `metawork tui`) is the only product terminal
 surface. The client owns only editor, layout and presentation state;
@@ -1600,12 +1582,8 @@ mode, the vendored standalone agent TUI (`InteractiveMode`) and the Ink UI under
 
 MetaWork keeps a local SQLite FTS5 search index for tasks and task-related text. This makes historical work recoverable even when the user does not remember the exact task id.
 
-Commands:
+See the [current slash-command reference](commands.md).
 
-```bash
-/task index rebuild
-/task index search contract risk matrix
-```
 
 The index is a deterministic read model, not a semantic router. The PlanningAgent decides when historical work is relevant, calls `search_tasks`, and reads selected records with `get_task_context`. Runtime code does not infer task continuity, related history, timeline intent, or resume/reference mode from user wording.
 
@@ -1615,7 +1593,7 @@ MetaWork admits one executing or cleaning-up top-level Task per Conversation. An
 
 Every natural-language proposal and deterministic execution entrypoint enters the same persisted control chain: `event → bounded snapshot → ControlKernel.decide → kernel_decisions → Runtime apply → normalized event`. `KernelWorkflow` remains serial, but applying `dispatch_batch` only persists `kernel_dispatch_items`; an Execution-owned supervisor launches them asynchronously and submits each outcome independently. A sibling failure never cancels the rest of the batch.
 
-Whole-Task and explicit Subtask cancellation use the same durable control chain. The cancellation fence commits before process termination; `cancelling` dispatch/publication rows continue to own capacity until the exact backend execution has exited or is confirmed missing and WorkUnit/resource leases are released. Late outcomes are `no_op`. Subtask cancellation atomically includes every downstream dependent while independent siblings continue. After the surviving graph drains, the Task blocks until the user either cancels it or explicitly accepts the published subset with `/task <taskId> accept-partial`.
+Whole-Task and explicit Subtask cancellation use the same durable control chain. The cancellation fence commits before process termination; `cancelling` dispatch/publication rows continue to own capacity until the exact backend execution has exited or is confirmed missing and WorkUnit/resource leases are released. Late outcomes are `no_op`. Subtask cancellation atomically includes every downstream dependent while independent siblings continue. After the surviving graph drains, the Task blocks until the user either cancels it or explicitly accepts the published subset with `/task accept-partial <taskId>`.
 
 ## Query Usage And Billing (Target)
 
@@ -1686,7 +1664,7 @@ direct-dependency authorization and closes when the attempt ends.
 
 MetaWork can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The source uses SQLite schema v49 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50 upgrades; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers; v45 adds durable Retry Wake continuation facts for timeout recovery; v46 adds the indexed latest Task-creation timestamp used to order Conversation history; v47 adds body-separated Conversation entities, projection checkpoints/tail/staging rebuild, activity invalidation and witness indexes, trace/content-search indexes, client navigation, durable approval acceptance/application and notification routes/outbox. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The source uses SQLite schema v51 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51 upgrades; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers; v45 adds durable Retry Wake continuation facts for timeout recovery; v46 adds the indexed latest Task-creation timestamp used to order Conversation history; v47 adds body-separated Conversation entities, projection checkpoints/tail/staging rebuild, activity invalidation and witness indexes, trace/content-search indexes, client navigation, durable approval acceptance/application and notification routes/outbox. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Historical Artifact refs are validated against Account/Conversation/Workspace ownership, publication status, regular-file safety and content hash, then copied to attempt-local `inputs/` with stable `input-XX-*` names. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; image-capable adapters consume only the materialized input directory.
 
@@ -1751,16 +1729,7 @@ Natural-language requests never create, promote, or apply memory through a code-
 
 Commands:
 
-```bash
-/memory
-/memory add Alex prefers formal updates with legal copied
-/memory search formal
-/memory edit <pref_id> --scope project Use tables for outputs
-/memory delete <pref_id>
-/memory stats
-/memory vault export
-/memory vault status
-```
+See the [current slash-command reference](commands.md) for memory commands.
 
 ## Learning Loop
 
@@ -1768,16 +1737,7 @@ MetaWork can turn successful tasks, failures, artifacts, and executor skill usag
 
 Commands:
 
-```bash
-/learning candidates
-/learning approve <candidate_id> [note]
-/learning reject <candidate_id> [reason]
-/learning promote <candidate_id>
-/learning cards
-/learning skills
-/learning summary
-/learning weekly
-```
+See the [current slash-command reference](commands.md) for learning commands.
 
 ## Development
 

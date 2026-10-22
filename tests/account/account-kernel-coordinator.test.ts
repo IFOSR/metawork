@@ -9,12 +9,46 @@ import {
   AccountKernelCoordinator,
   type AccountKernelCoordinatorSubmitContext,
 } from '../../src/account/account-kernel-coordinator.js';
+import { ACCOUNT_KERNEL_ACCEPTED_ACTIONS } from '../../src/account/account-runtime-composition.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 
 const CONFIGURATION_REVISION = 'revision_coordinator';
 
 describe('AccountKernelCoordinator', () => {
+  it('keeps Planner permission resolutions in the account admission allowlist', () => {
+    expect(ACCOUNT_KERNEL_ACCEPTED_ACTIONS).toContain('record_permission_resolution');
+  });
+
+  it('applies a Planner permission resolution through the account admission path', async () => {
+    const { repo, applied } = makeStore();
+    const coordinator = new AccountKernelCoordinator({
+      kernel: { decide: event => permissionResolutionDecision(event) },
+      store: repo,
+      clock: { now: () => '2026-08-18T00:00:01.000Z' },
+      acceptedEventTypes: ['plan_proposed'],
+      acceptedActions: ACCOUNT_KERNEL_ACCEPTED_ACTIONS,
+    });
+    const context: AccountKernelCoordinatorSubmitContext = {
+      buildSnapshot: () => planSnapshot(),
+      runtime: {
+        apply: async decision => {
+          applied.push(decision.action.type);
+          return null;
+        },
+      },
+    };
+
+    const result = await coordinator.submit(
+      planProposedEvent('permission_event', 'session_permission', 'generation_permission'),
+      context,
+    );
+
+    expect(result.decisions).toHaveLength(1);
+    expect(result.decisions[0]?.action.type).toBe('record_permission_resolution');
+    expect(applied).toEqual(['record_permission_resolution']);
+  });
+
   it('serializes concurrent submissions through one drain loop', async () => {
     const { repo, applied } = makeStore();
     const { coordinator, context } = makeCoordinator(repo, applied);
@@ -147,6 +181,23 @@ function directReplyDecision(event: KernelEvent): KernelDecision {
     eventId: event.id,
     action: { type: 'deliver_direct_reply', response: 'done' },
     reason: 'answer',
+  };
+}
+
+function permissionResolutionDecision(event: KernelEvent): KernelDecision {
+  return {
+    schemaVersion: 5,
+    configurationRevision: event.configurationRevision,
+    id: `decision_${event.id}`,
+    eventId: event.id,
+    action: {
+      type: 'record_permission_resolution',
+      taskId: 'task_permission',
+      requestId: 'request_permission',
+      resolution: 'approve',
+      plannerPlanId: 'plan_permission',
+    },
+    reason: 'permission response accepted',
   };
 }
 

@@ -3499,7 +3499,19 @@ select {
 .work-graph-diagram-node:focus-visible,
 .work-graph-canvas-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .work-graph-diagram-node-meta { display: flex; justify-content: space-between; color: var(--text-dim); font-size: 10px; }
-.work-graph-diagram-node[data-runnable='true'] .work-graph-diagram-node-meta { color: var(--accent); }
+.work-graph-node-status { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; }
+.work-graph-node-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.work-graph-node-status[data-status='completed'] { color: var(--status-success, var(--green)); }
+.work-graph-node-status[data-status='running'] { color: var(--accent); }
+.work-graph-node-status[data-status='waiting'] { color: var(--status-warning, var(--yellow)); }
+.work-graph-node-status[data-status='blocked'],
+.work-graph-node-status[data-status='failed'] { color: var(--status-danger, var(--red)); }
+.work-graph-node-status[data-status='unknown'] { color: var(--text-dim); }
+.work-graph-diagram-node[data-status='completed'] { border-color: color-mix(in srgb, var(--status-success, var(--green)) 68%, var(--border)); background: color-mix(in srgb, var(--status-success, var(--green)) 7%, var(--surface-raised, var(--bg-elevated))); }
+.work-graph-diagram-node[data-status='running'] { border-color: color-mix(in srgb, var(--accent) 78%, var(--border)); box-shadow: inset 3px 0 var(--accent); }
+.work-graph-diagram-node[data-status='waiting'] { border-color: color-mix(in srgb, var(--status-warning, var(--yellow)) 68%, var(--border)); background: color-mix(in srgb, var(--status-warning, var(--yellow)) 6%, var(--surface-raised, var(--bg-elevated))); }
+.work-graph-diagram-node[data-status='blocked'],
+.work-graph-diagram-node[data-status='failed'] { border-color: color-mix(in srgb, var(--status-danger, var(--red)) 72%, var(--border)); background: color-mix(in srgb, var(--status-danger, var(--red)) 6%, var(--surface-raised, var(--bg-elevated))); }
 .work-graph-diagram-node strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; font-size: 13px; line-height: 1.4; }
 .work-graph-diagram-node small { margin-top: auto; color: var(--text-dim); font-size: 10px; }
 .work-graph-diagram-hint { display: block; margin-top: 10px; color: var(--text-dim); font-size: 11px; line-height: 1.6; }
@@ -5533,7 +5545,8 @@ select:focus-visible {
 }
 
 .execution-card[data-state='completed'] {
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-color: color-mix(in srgb, var(--status-success, var(--green)) 68%, var(--border));
+  box-shadow: inset 3px 0 0 var(--status-success, var(--green));
 }
 
 .execution-card[data-state='running'] {
@@ -5542,14 +5555,14 @@ select:focus-visible {
 }
 
 .execution-card[data-state='waiting'] {
-  border-color: color-mix(in srgb, var(--warning, #b5872a) 62%, var(--border));
-  box-shadow: inset 3px 0 0 var(--warning, #b5872a);
+  border-color: color-mix(in srgb, var(--status-warning, var(--yellow)) 68%, var(--border));
+  box-shadow: inset 3px 0 0 var(--status-warning, var(--yellow));
 }
 
 .execution-card[data-state='blocked'],
 .execution-card[data-state='failed'] {
-  border-color: color-mix(in srgb, var(--danger, #c2413f) 68%, var(--border));
-  box-shadow: inset 3px 0 0 var(--danger, #c2413f);
+  border-color: color-mix(in srgb, var(--status-danger, var(--red)) 72%, var(--border));
+  box-shadow: inset 3px 0 0 var(--status-danger, var(--red));
 }
 
 .execution-card-title-row {
@@ -5578,11 +5591,11 @@ select:focus-visible {
   white-space: nowrap;
 }
 
-.execution-card-state[data-state='completed'] { color: var(--accent); }
+.execution-card-state[data-state='completed'] { color: var(--status-success, var(--green)); }
 .execution-card-state[data-state='running'] { color: var(--accent); }
-.execution-card-state[data-state='waiting'] { color: var(--warning, #b5872a); }
+.execution-card-state[data-state='waiting'] { color: var(--status-warning, var(--yellow)); }
 .execution-card-state[data-state='blocked'],
-.execution-card-state[data-state='failed'] { color: var(--danger, #c2413f); }
+.execution-card-state[data-state='failed'] { color: var(--status-danger, var(--red)); }
 
 .execution-card dl {
   display: grid;
@@ -5685,6 +5698,24 @@ select:focus-visible {
 .execution-card.is-clickable:focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: 1px;
+}
+
+.execution-card.is-clickable[data-state='completed'] {
+  border-color: color-mix(in srgb, var(--status-success, var(--green)) 68%, var(--border));
+  box-shadow: inset 3px 0 0 var(--status-success, var(--green));
+}
+.execution-card.is-clickable[data-state='running'] {
+  border-color: color-mix(in srgb, var(--accent) 82%, var(--border));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.execution-card.is-clickable[data-state='waiting'] {
+  border-color: color-mix(in srgb, var(--status-warning, var(--yellow)) 68%, var(--border));
+  box-shadow: inset 3px 0 0 var(--status-warning, var(--yellow));
+}
+.execution-card.is-clickable[data-state='blocked'],
+.execution-card.is-clickable[data-state='failed'] {
+  border-color: color-mix(in srgb, var(--status-danger, var(--red)) 72%, var(--border));
+  box-shadow: inset 3px 0 0 var(--status-danger, var(--red));
 }
 
 .execution-card-open-hint {
@@ -6203,6 +6234,27 @@ button:active:not(:disabled) {
 :root[data-theme='light'] .live-execution-panel {
   border-color: var(--line-subtle);
   background: var(--surface-raised);
+}
+
+/* Keep execution-state colors above the light-mode surface reset. The border,
+   leading rail, and compact status badge use the same semantic color so state
+   remains scannable without relying on the step text. */
+.execution-card[data-state='completed'] {
+  border-color: color-mix(in srgb, var(--status-success, var(--green)) 68%, var(--line-subtle, var(--border)));
+  box-shadow: inset 3px 0 0 var(--status-success, var(--green));
+}
+.execution-card[data-state='running'] {
+  border-color: color-mix(in srgb, var(--accent) 78%, var(--line-subtle, var(--border)));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.execution-card[data-state='waiting'] {
+  border-color: color-mix(in srgb, var(--status-warning, var(--yellow)) 68%, var(--line-subtle, var(--border)));
+  box-shadow: inset 3px 0 0 var(--status-warning, var(--yellow));
+}
+.execution-card[data-state='blocked'],
+.execution-card[data-state='failed'] {
+  border-color: color-mix(in srgb, var(--status-danger, var(--red)) 72%, var(--line-subtle, var(--border)));
+  box-shadow: inset 3px 0 0 var(--status-danger, var(--red));
 }
 
 /* Muted execution copy was tuned for a dark backdrop; restore contrast here. */
@@ -8383,3 +8435,44 @@ html[data-platform='desktop'] .workspace-header { column-gap: 16px; }
   overflow-wrap: anywhere;
 }
 .task-attention button { margin: 4px 8px 4px 0; }
+
+.task-result-actions { margin: 12px 0; padding: 12px; border: 1px solid var(--border-color, #8885); border-radius: 8px; overflow-wrap: anywhere; }
+.task-result-actions p { margin: 6px 0; }
+.task-result-actions-buttons { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+.task-result-actions button { min-height: 40px; padding: 6px 14px; }
+.task-result-actions button:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+
+/* Shared Web/Desktop command completion, projected from the Gateway catalog. */
+.command-completion {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(calc(100% - 24px), 980px);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px #0002;
+  overflow: hidden;
+  color: var(--text);
+}
+.command-completion-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.command-completion-heading span, .command-completion-hint { color: var(--text-dim); }
+.command-completion-list { max-height: min(280px, 35vh); overflow-y: auto; overscroll-behavior: contain; }
+.command-completion-option { display: flex; align-items: baseline; gap: 16px; padding: 10px 14px; cursor: pointer; }
+.command-completion-option code { flex: 0 1 auto; max-width: 100%; overflow-wrap: anywhere; white-space: normal; font-size: 13px; }
+.command-completion-option span { min-width: 0; overflow-wrap: anywhere; font-size: 12px; color: var(--text-dim); }
+.command-completion-option:hover, .command-completion-option[aria-selected="true"] { background: var(--bg-elevated); }
+.command-completion-option[aria-selected="true"] { box-shadow: inset 3px 0 var(--accent); }
+.command-completion-hint { padding: 10px 14px; font-size: 12px; }
+@media (max-width: 600px) {
+  .command-completion-option { flex-direction: column; gap: 3px; }
+}

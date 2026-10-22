@@ -153,6 +153,31 @@ export class MetaWorkConversationPanel implements Component {
 		}
 
 		lines.push(...this.renderResult(turn, width));
+		if (turn.publicDelivery) {
+			const delivery = turn.publicDelivery;
+			const labels: Record<string, string> = {
+				not_published: "待发布",
+				awaiting_acceptance: "等待用户接受",
+				publishing: "正在发布到任务目录",
+				published: "已发布到任务目录",
+				failed: "发布失败",
+			};
+			lines.push(
+				...wrapTextWithAnsi(
+					`Workspace: ${delivery.workspace}\n任务目录: ${delivery.taskDirectory}\n代码状态: ${labels[delivery.state] ?? "待发布"}`,
+					width,
+				),
+			);
+			if (expanded) lines.push(...wrapTextWithAnsi(`交付文件: ${delivery.files.join("、") || "暂无"}`, width));
+			if (delivery.conflicts.length)
+				lines.push(...wrapTextWithAnsi(`冲突文件: ${delivery.conflicts.join("、")}`, width));
+		}
+		if (turn.resultDecision?.actions.includes("accept_result")) {
+			lines.push(...wrapTextWithAnsi(`接受并交付：/task accept-result ${turn.taskId}`, width));
+		}
+		if (turn.resultDecision?.actions.includes("retry_attempt")) {
+			lines.push(...wrapTextWithAnsi(`重新执行：/task retry-result ${turn.taskId}`, width));
+		}
 		if (turn.turnBill) lines.push(...billingLines(turn, width));
 
 		if (turn.error) {

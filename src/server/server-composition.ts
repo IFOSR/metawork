@@ -1,9 +1,11 @@
+import { ManagedLocalServices, LOCAL_SERVICE_SPECIFICATION_FILENAME } from '../execution/managed-local-service.js';
+import { ManagedLocalServiceRepo } from '../storage/managed-local-service-repo.js';
 import { resolveHostToolPath } from '../utils/host-tool-path.js';
 import { resolveExecutorTool } from '../utils/executor-tool-path.js';
 import { validateCodexCommand } from '../executor/tool-validation.js';
 import { defaultVersionProbe } from '../management/agent-installation-readiness-service.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
+import { realpath, lstat, readFile } from 'node:fs/promises';
 import { DesktopSessionService } from '../management/desktop-session.js';
 import { ClientNotificationFeed, type ClientNotificationPage } from '../gateway/client-notification-feed.js';
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
@@ -158,6 +160,8 @@ import { SqliteTaskActivityFacts } from '../storage/task-activity-facts-repo.js'
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
 import { RetryWakeRepo } from '../storage/retry-wake-repo.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
+import { projectPublicDelivery } from '../delivery/public-delivery-view.js';
+import { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
@@ -974,6 +978,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   });
   await plannerHost.start();
   const executorManualPreview = new ExecutorManualPreviewService(configurationService);
+  const taskArtifactRepo = new TaskArtifactRepo(db);
 
   // ADR-0031: 组合根构造 RuntimeRegistry + AccountRuntime（local-default），
   // 会话工厂复用 AccountRuntime 的账户级服务簇。
@@ -984,6 +989,43 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     const workspace = await workspaceCatalogStore.findById(task.workspace_id);
     return workspace && workspace.availability === 'available' ? workspace.canonicalPath : null;
   };
+  const managedLocalServices = new ManagedLocalServices({
+    accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+    store: new ManagedLocalServiceRepo(db, LOCAL_DEFAULT_ACCOUNT_ID),
+    logRoot: resolve(accountPaths.attempts, '..', 'managed-services'),
+    resolveEnvironment: async reference => {
+      try { assertSecretReference(reference); return await secretStore.get(reference); } catch { return null; }
+    },
+    isPublishedServiceSpecification: async (taskId, root) => taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId)
+      .some(item => item.status === 'published' && item.relativePath === LOCAL_SERVICE_SPECIFICATION_FILENAME
+        && item.publishedPath === join(root, LOCAL_SERVICE_SPECIFICATION_FILENAME)),
+    resolvePublishedDirectory: async taskId => {
+      const task = taskEngine.getTaskRepo().findById(taskId);
+      if (!task || task.accountId !== LOCAL_DEFAULT_ACCOUNT_ID || !task.publicTaskDirectory) return null;
+      const workspace = await resolveTaskWorkspacePath(taskId);
+      if (!workspace) return null;
+      const canonicalWorkspace = await realpath(workspace);
+      const root = resolve(canonicalWorkspace, task.publicTaskDirectory);
+      if (!root.startsWith(`${canonicalWorkspace}/`)) return null;
+      try {
+        if ((await lstat(root)).isSymbolicLink() || await realpath(root) !== root) return null;
+        const artifacts = taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId).filter(item => item.status === 'published');
+        if (!artifacts.length) return null;
+        for (const item of artifacts) {
+          if (!item.publishedPath.startsWith(`${root}/`) || item.publishedPath !== resolve(root, item.relativePath)
+            || (await lstat(item.publishedPath)).isSymbolicLink()
+            || await realpath(item.publishedPath) !== item.publishedPath
+            || createHash('sha256').update(await readFile(item.publishedPath)).digest('hex') !== item.contentHash.replace(/^sha256:/u, '')) return null;
+        }
+        const publicationRepo = new WorkspacePublicationRepo(db);
+        for (const publicationId of new Set(artifacts.map(item => item.publicationId).filter((id): id is string => Boolean(id)))) {
+          if (publicationRepo.delivery(publicationId)?.status !== 'succeeded') return null;
+        }
+        return root;
+      } catch { return null; }
+    },
+  });
+  await managedLocalServices.recover();
   const webAttachmentStore = new FileAttachmentStore(
     resolve(accountPaths.conversations, 'web-attachments'),
     { accountId: LOCAL_DEFAULT_ACCOUNT_ID },
@@ -1081,6 +1123,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   });
   let conversationRegistry: ConversationRegistry | null = null;
   accountRuntimeComposition = buildAccountRuntimeComposition({
+    managedLocalServices,
     recoveryReplan,
     recoveryPlan,
     resolveConfigurationSnapshot: revisionId => configurationService.getSnapshot(revisionId),
@@ -1320,6 +1363,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   const runtimePort = activatedAccountRuntime.getConversationPort();
   conversationRegistry = new ConversationRegistry();
 
+  const commandCatalog = createDefaultCommandCatalog();
 
   // ADR-0031: 直接构造 ConversationSession（不经过 MetaclawSession 桥接），
   // 会话级 callbacks + 账户级 Kernel 执行服务后置绑定。
@@ -1366,7 +1410,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       },
       getPlannerConfiguration: () => stagedConfiguration.planner,
     });
-    const commandCatalog = createDefaultCommandCatalog();
     const commandReadServices = new CommandReadServices(db, accountRuntimeComposition.executionRuntime, {
       getConfigurationRevision: () => stagedConfiguration.snapshot.revisionId,
     });
@@ -1588,6 +1631,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           .findRecoveryRequiredByTask(taskId)
           .length > 0,
         result,
+        pendingDecision: new SqliteTaskActivityFacts(db).read(task, null).pendingDecision,
       });
   };
   const permissionNotificationPage = (taskId: string, afterId = '') => {
@@ -1647,6 +1691,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       ...(progress ? { progressSummary: redactSensitiveText(progress).slice(0, 1024) } : {}),
       phase: view.phase, explanation: view.explanation,
       userState: view.userState, userStateReason: view.userStateReason,
+      pendingDecision: view.pendingDecision,
       executionSettling: view.activeAttempt?.lifecycle === 'settling',
       canCancel: !isTerminalTaskLifecycle(view.lifecycle) };
   });
@@ -1707,7 +1752,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   });
   // ExecutionProjector / TaskArtifactRepo 同时服务 Web 管理面与 Gateway 只读
   // Task 视图查询（统一 TUI 设计 §9.3）：同一投影 owner，不复制状态计算。
-  const taskArtifactRepo = new TaskArtifactRepo(db);
   const timelineConfigurationByRevision = new Map<string, Awaited<ReturnType<typeof configurationRepository.readSnapshot>>>();
   for (const revisionId of await configurationRepository.listRevisions()) {
     try {
@@ -1873,16 +1917,22 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       if (scope.kind === 'workspace') {
         return completeWorkspaceNavigationCommand(text, cursor);
       }
-      // Conversation scope 必须显式 attach；会话未打开时 fail closed，
-      // 不为补全隐式启动 Planner 或创建绑定。
+      // 授权由只读查询入口完成；补全不打开会话、不启动 Planner 或创建绑定。
       if (scope.selection.mode !== 'attach') {
         return { state: 'inactive', suggestions: [], hint: null, error: null };
       }
-      const conversation = conversationRegistry.getIfOpen(scope.selection.conversationId);
-      if (!conversation) {
-        return { state: 'inactive', suggestions: [], hint: null, error: null };
-      }
-      return conversation.completeCommand(text, cursor);
+      return commandCatalog.complete({
+        text,
+        cursor: cursor ?? text.length,
+        context: {
+          conversationId: scope.selection.conversationId,
+          currentTaskId: conversationRegistry.getIfOpen(scope.selection.conversationId)?.getCurrentTaskId() ?? null,
+          taskEngine,
+          memoryEngine,
+          db,
+          executorAgentClassNames: runtimePort.execution?.listExecutorAgentClassNames(),
+        },
+      });
     },
     getTaskView: async ({ accountId, conversationId, turnId, taskId, requestId }) => {
       if (accountId !== LOCAL_DEFAULT_ACCOUNT_ID) return { error: 'task_view_unavailable' };
@@ -1939,6 +1989,16 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         readConfiguration: revisionId => configurationRepository.readSnapshot(revisionId),
       });
       const lifecycleProjection = projectObservedTask(task, taskPermission?.request.id ?? null, executionFacts.result);
+      const publicWorkspace = task.workspaceId ? await workspaceCatalogStore.findById(task.workspaceId) : null;
+      const publicArtifacts = taskArtifactRepo.listByTask(taskId).filter(item => item.accountId === accountId && item.status === 'published');
+      const publications = new WorkspacePublicationRepo(db);
+      const activeGraph = new WorkGraphRevisionRepo(db).findActive(taskId);
+      const publicDelivery = projectPublicDelivery({ task, workspace: publicWorkspace?.canonicalPath ?? null,
+        pendingDecision: lifecycleProjection.pendingDecision !== null,
+        artifacts: [...taskArtifactRepo.publicFiles.list(accountId, taskId), ...publicArtifacts],
+        publications: publications.listByTask(taskId).filter(item => item.generationId === activeGraph?.generationId
+          && new SubtaskRepo(db).findById(item.subtaskId)?.graphRevision === activeGraph?.revision),
+        delivery: id => publications.delivery(id) });
       const timeline = executionProjector.project(task);
       const publicExecutors = new Map(executionFacts.subtasks.map(subtask => [subtask.id, subtask.executor]));
       for (const stage of timeline.stages) {
@@ -1947,6 +2007,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         }
       }
       return {
+        publicDelivery,
         queryVersion: GATEWAY_TASK_VIEW_QUERY_VERSION,
         requestId,
         targetConversationId: conversationId,
@@ -1970,6 +2031,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             : null,
           blockingResidue: lifecycleProjection.blockingResidue,
           nextAuthorizedAction: lifecycleProjection.nextAuthorizedAction,
+          pendingDecision: lifecycleProjection.pendingDecision,
           recoveryDiagnosis: lifecycleProjection.recoveryDiagnosis,
           explanation: lifecycleProjection.explanation,
           lastProgressAt: lifecycleProjection.timestamps.lastProgressAt,
@@ -2264,6 +2326,18 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       },
     });
     const feishuPort = new FeishuGatewaySessionPort({
+      publicTaskDelivery: async taskId => {
+        const task = taskRepo.findById(taskId);
+        if (!task || task.accountId !== LOCAL_DEFAULT_ACCOUNT_ID) return null;
+        const publications = new WorkspacePublicationRepo(db);
+        const graph = new WorkGraphRevisionRepo(db).findActive(taskId);
+        return projectPublicDelivery({ task, workspace: await resolveTaskWorkspacePath(taskId),
+          pendingDecision: Boolean(new SqliteTaskActivityFacts(db).read(task, null).pendingDecision),
+          artifacts: [...taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId),
+            ...taskArtifactRepo.listByTask(taskId).filter(item => item.accountId === LOCAL_DEFAULT_ACCOUNT_ID)], publications: publications.listByTask(taskId).filter(item => item.generationId === graph?.generationId
+            && new SubtaskRepo(db).findById(item.subtaskId)?.graphRevision === graph?.revision),
+          delivery: id => publications.delivery(id) });
+      },
       actions: clientActions,
       observation: conversationObservation,
       accountId: LOCAL_DEFAULT_ACCOUNT_ID,
@@ -2276,6 +2350,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       onSystemMessage: (...lines) => console.log(lines.join('\n')),
       listTaskArtifacts: (taskId: string) => new TaskArtifactRepo(db)
         .listByTask(taskId)
+        .filter(record => record.status === 'published')
         .map(record => ({
           displayName: record.displayName,
           publishedPath: record.publishedPath,

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
 	applyPlannerResourcePolicy,
 	buildPlannerProviderTimeoutOverrides,
-	METACLAW_SLASH_COMMANDS,
 	PLANNER_ACTIVE_TOOL_NAMES,
 	PLANNER_ALLOWED_BUILTIN_TOOLS,
 	plannerRpcCommandError,
@@ -39,20 +38,6 @@ describe("AnyFusion Planner policy", () => {
 		expect(plannerRpcCommandError({ type: "bash", command: "rm -rf /" })).toContain("disabled");
 		expect(plannerRpcCommandError({ type: "set_model", provider: "x", modelId: "y" })).toContain("disabled");
 		expect(plannerRpcCommandError({ type: "prompt", message: "!cat secret" })).toContain("accepts conversation");
-	});
-
-	it("exposes MetaClaw command roots separately from Planner-local commands", () => {
-		expect(METACLAW_SLASH_COMMANDS.map((command) => command.name)).toEqual([
-			"permission",
-			"task",
-			"executor",
-			"memory",
-			"profile",
-			"learning",
-			"config",
-			"help",
-			"exit",
-		]);
 	});
 
 	it("forces the read-only built-in tool surface", () => {

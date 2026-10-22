@@ -481,42 +481,9 @@ Windows 原生开发使用 Node.js 22.19+、Git、Visual Studio Build Tools、
 
 MetaWork 不内置下游执行器 CLI。你需要自己安装要使用的执行器，并确保命令在 `PATH` 中。
 
-### 注册自定义 Executor
+### Executor 配置
 
-Executor 是 MetaWork 可以分配 subtask 的运行时工人。一个已注册 Executor 现在包含三层信息：
-
-- `AgentClass`：适用领域、能力、风险等级、输入/输出类型、适用场景、route-intent affinity 和 runtime 默认配置。
-- 运行绑定：不可变 Docker image ID、受控 permission profile、容器内命令/参数、安装检测命令和可选项目地址。
-- 至少一个 executor `WorkUnit`：一个具体的空闲 runtime slot，一次 claim 一个 ready subtask。
-
-如果不确定具体该填什么，使用问答式注册向导：
-
-```bash
-/executor register wizard
-```
-
-向导会依次询问 Executor 名称、是否从项目地址推断、运行命令、非交互参数、安装检测命令、适用领域和能力。如果提供 GitHub 项目地址，MetaWork 会尝试从 `package.json` 或 README 示例推断 CLI 信息；如果无法可靠推断，会自动回到手动填写。
-
-也可以一次性注册：
-
-```bash
-/executor register research-bot \
-  --image registry.example/research-bot:1.2.3 \
-  --image-id sha256:<64-hex-digest> \
-  --permission-profile restricted-custom \
-  --command research-bot \
-  --args "run --prompt {prompt}" \
-  --check "research-bot --version" \
-  --project-url https://github.com/example/research-bot \
-  --domains research,reporting \
-  --capabilities research,report_generation
-```
-
-`{prompt}` 会被替换为 subtask 提示词。如果 `--args` 不包含 `{prompt}`，MetaWork 会把 prompt 追加为最后一个参数。image ID 必须匹配引用镜像，permission profile 必须来自受控目录。缺少绑定、镜像标签漂移或 profile 无效都会 fail closed；不存在宿主进程 fallback。路由 capability 仍与权限事实分离，不把权限细节暴露给 Planner。
-
-`codex-cli` 与 `pi-agent` 完全由 canonical built-in definitions 管理。启动时会把这两个名称对应的全部静态字段、不可变镜像绑定和 permission profile 强制收敛，常规注册接口也拒绝覆盖或删除。非 canonical capability 仍是自由注册元数据，不会自动进入受控 Planner catalog；缺少 image/profile 的历史自定义类保留审计记录但不可执行。
-
-Phase 5 的权限产品边界是所选 execution backend、permission profile 和持久 request/grant/use 审计预算。`use_capability` 会原子消费 attempt identity、expiry、调用次数和字节预算，但它不是通用 operation broker，也不证明每个原生文件、网络或外部动作都经过细粒度中介。容器 mount 与 sandbox policy 只适用于 container backend；egress profile 和 resource lease 仍是 Runtime 强制边界。
+Executor 的注册、绑定和启用统一由 Settings 的“保存并激活”完成。斜杠命令只提供运行诊断；当前可用的诊断指令见[斜杠指令参考](commands.md)。
 
 Executor 扩展契约：
 
@@ -561,15 +528,7 @@ Executor 健康状态与近期结果属于动态状态。Planner 通过 `list_ex
 - `abort(attemptId?)`：精确中止一个 attempt；整 Task 取消由 Runtime control port 枚举其全部 active attempts。
 - `installSkill(pkg)`、`updateSkill(pkg)`、`disableSkill(target)`、`deprecateSkill(target)`：支持 Executor 自己的 Skill 生命周期管理。
 
-常用管理命令：
-
-```bash
-/executor list
-/executor show <name>
-/executor register wizard
-/executor unregister <name>
-/executor feedback <taskId>
-```
+Executor 指令统一见[斜杠指令参考](commands.md)。Executor 注册和绑定由设置激活负责，命令面只读。
 
 ### Codex CLI
 
@@ -707,10 +666,12 @@ metawork web --conversation <id>
 Server 生命周期使用显式命令：
 
 ```bash
+metawork server start
+metawork server status
 metawork server stop
 metawork server restart
-metawork server doctor
 ```
+
 
 只有 Server 持有 `runtime.lock`、Runtime、恢复和 transport listener。TUI 与
 Web 读取同一份原子 endpoint manifest；没有兼容且 ready 的 Server 时，明确
@@ -1036,35 +997,8 @@ MetaWork 会：
 8. 保存结果摘要、文件产物和任务记忆。
 9. 给出下一步建议。
 
-常用命令：
+当前指令清单统一见[斜杠指令参考](commands.md)，本节不再重复维护命令。
 
-```bash
-/task list
-/task list active
-/task list ready
-/task list parked
-/task list blocked
-/task list done
-
-/task show <id>
-/task pause <id>
-/task resume <id>
-/task block <id> waiting for customer data
-/task unblock <id>
-/task unblock <id> /tmp/evidence-v4.pdf
-/task cancel <id>
-/task <taskId> subtask cancel <subtaskId...>
-/task <taskId> accept-partial
-/task index rebuild
-/task index search <query>
-
-/task dashboard
-/task attach <taskId> <file paths...>
-/task history <taskId>
-/config
-/help
-/exit
-```
 
 AnyFusion-Pi Gateway TUI 是默认本地入口。client 只拥有编辑器和展示状态；
 `ClientGateway`、`ConversationSession`、AccountRuntime 和 ControlKernel
@@ -1078,10 +1012,7 @@ MetaWork 会用本地 SQLite FTS5 建立任务检索索引，让历史工作可�
 
 命令：
 
-```bash
-/task index rebuild
-/task index search 合同 风险 矩阵
-```
+当前任务搜索指令统一见[斜杠指令参考](commands.md)。
 
 该索引是确定性读模型，不是语义路由器。PlanningAgent 决定历史任务是否相关，调用 `search_tasks` 搜索，再通过 `get_task_context` 读取选中的记录。Runtime 不根据用户措辞推断任务连续性、相关历史、时间线意图或恢复/参考模式。
 
@@ -1093,7 +1024,7 @@ MetaWork 为每个 Conversation 调度一个执行或清理中的顶层 Task。A
 
 单个已接纳的顶层任务内部可以存在多个并行 Subtasks。一个 Subtask 同时最多一个 pending/active attempt；attempt、WorkUnit 和短命 Executor 进程一一绑定。完成顺序不决定发布顺序，`awaiting_integration` 期间下游不可运行。
 
-整 Task 取消和显式 Subtask 取消也必须进入 durable Kernel seam。取消栅栏先提交，`cancelling` dispatch/publication 在精确执行后端实例退出或确认缺失、WorkUnit 与 lease 释放前继续占用容量；晚到 outcome 只记为 `no_op`。Subtask 取消按下游闭包原子执行，不影响独立 sibling；剩余工作收束后 Task 进入 `blocked`，用户只能取消整个 Task，或通过 `/task <taskId> accept-partial` 显式接受已发布部分。
+整 Task 取消和显式 Subtask 取消也必须进入 durable Kernel seam。取消栅栏先提交，`cancelling` dispatch/publication 在精确执行后端实例退出或确认缺失、WorkUnit 与 lease 释放前继续占用容量；晚到 outcome 只记为 `no_op`。Subtask 取消按下游闭包原子执行，不影响独立 sibling；剩余工作收束后 Task 进入 `blocked`，用户只能取消整个 Task，或通过 `/task accept-partial <taskId>` 显式接受已发布部分。
 
 ## Query 用量与账单（目标态）
 
@@ -1138,16 +1069,7 @@ MetaWork 把显式确认的偏好、任务记忆卡片和学习候选保存在 S
 
 命令：
 
-```bash
-/memory
-/memory add Alex prefers formal updates with legal copied
-/memory search formal
-/memory edit <pref_id> --scope project Use tables for outputs
-/memory delete <pref_id>
-/memory stats
-/memory vault export
-/memory vault status
-```
+当前记忆指令统一见[斜杠指令参考](commands.md)。
 
 ## 学习循环
 
@@ -1155,16 +1077,7 @@ MetaWork 可以把成功任务、失败任务、文件产物和 executor skill �
 
 命令：
 
-```bash
-/learning candidates
-/learning approve <candidate_id> [note]
-/learning reject <candidate_id> [reason]
-/learning promote <candidate_id>
-/learning cards
-/learning skills
-/learning summary
-/learning weekly
-```
+当前学习指令统一见[斜杠指令参考](commands.md)。
 
 ## 开发
 

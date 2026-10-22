@@ -30,6 +30,30 @@ describe('inline Work Graph DAG', () => {
     expect(html).toContain('目标 a');
   });
 
+  it('renders a visible status label and distinct state attribute on every graph node', () => {
+    const projection = graph([
+      node('done'), node('running', 1), node('ready', 2), node('blocked', 3), node('failed', 4),
+    ]);
+    projection.nodes[0]!.status = 'done';
+    projection.nodes[1]!.status = 'running';
+    projection.nodes[2]!.status = 'ready';
+    projection.nodes[3]!.status = 'blocked';
+    projection.nodes[4]!.status = 'failed';
+    const html = renderToStaticMarkup(createElement(WorkGraphPanel, { projection }));
+
+    expect(html.match(/class="work-graph-node-status"/g)).toHaveLength(6);
+    expect(html).toContain('data-status="completed"');
+    expect(html).toContain('data-status="running"');
+    expect(html).toContain('data-status="waiting"');
+    expect(html).toContain('data-status="blocked"');
+    expect(html).toContain('data-status="failed"');
+    expect(html).toContain('已完成');
+    expect(html).toContain('执行中');
+    expect(html).toContain('待执行');
+    expect(html).toContain('已阻塞');
+    expect(html).toContain('失败');
+  });
+
   it('lays out a diamond with parallel branches and a join, independent of input order', () => {
     const projection = graph([node('d', 2, ['b', 'c']), node('a'), node('c', 1, ['a']), node('b', 1, ['a'])]);
     const layout = layoutWorkGraph(projection);

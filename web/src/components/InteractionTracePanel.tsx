@@ -5,6 +5,7 @@ import type {
   InteractionTraceEvent,
 } from '../api/types';
 import { MarkdownContent } from './MarkdownContent';
+import { subtaskTitle, type WorkGraphTitleIndex } from '../work-graph-titles';
 
 const PHASE_LABEL: Record<InteractionTraceEvent['phase'], string> = {
   intake: '接收',
@@ -49,9 +50,11 @@ const PUBLIC_DETAIL_KEYS = new Set([
 export function InteractionTracePanel({
   trace,
   timeline,
+  titleBySubtask,
 }: {
   trace: InteractionTrace | null;
   timeline: ExecutionTimeline | null;
+  titleBySubtask?: WorkGraphTitleIndex;
 }) {
   const scrollRef = useRef<HTMLElement | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -136,7 +139,7 @@ export function InteractionTracePanel({
                   {Object.keys(event.details).length > 0 && (
                     <details>
                       <summary>查看结构化详情</summary>
-                      <DetailGrid details={event.details} />
+                      <DetailGrid details={event.details} subtaskId={event.subtaskId ?? String(event.details.subtaskId ?? '')} titleBySubtask={titleBySubtask} />
                     </details>
                   )}
                 </article>
@@ -163,7 +166,7 @@ export function InteractionTracePanel({
                     subtask.modelDisplayName || subtask.model].filter(Boolean).join(' · ')}
                 </small>
               )}
-              <p>{subtask.title}</p>
+              <p>{subtaskTitle(titleBySubtask, subtask.id, subtask.title)}</p>
               {subtask.attempts.map((attempt, index) => (
                 <small key={index}>
                   {attempt.result}
@@ -179,11 +182,17 @@ export function InteractionTracePanel({
   );
 }
 
-function DetailGrid({ details }: { details: Record<string, unknown> }) {
+function DetailGrid({ details, subtaskId, titleBySubtask }: {
+  details: Record<string, unknown>;
+  subtaskId: string;
+  titleBySubtask?: WorkGraphTitleIndex;
+}) {
   return (
     <dl className="detail-grid">
       {Object.entries(details).filter(([key]) => PUBLIC_DETAIL_KEYS.has(key)).map(([key, value]) => (
-        <div key={key}><dt>{formatKey(key)}</dt><dd>{formatValue(value)}</dd></div>
+        <div key={key}><dt>{formatKey(key)}</dt><dd>{key === 'subtaskTitle' && subtaskId
+          ? subtaskTitle(titleBySubtask, subtaskId, formatValue(value))
+          : formatValue(value)}</dd></div>
       ))}
     </dl>
   );

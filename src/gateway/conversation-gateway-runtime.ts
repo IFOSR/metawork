@@ -21,7 +21,7 @@ import type { GatewaySubscriptions } from './gateway-subscriptions.js';
 import type { GatewayTurnOrigin } from './gateway-delivery-context.js';
 import type { GatewayAttachmentStore } from './attachment-store-port.js';
 import type { PlannerAttachmentView } from '../planning/planning-types.js';
-import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
+import { publicText } from '../utils/public-text.js';
 import { conversationPreview } from '../session/conversation-read-model.js';
 
 export interface ConversationGatewayRuntimeDeps {
@@ -258,7 +258,7 @@ export class ConversationGatewayRuntime {
         const page = await this.deps.readHistory(conversationId, command.cursor, command.limit);
         await this.publishHistoryPage(conversationId, requestId, page, command.acceptFragments === true, origin);
       } catch (error) {
-        const reason = redactSensitiveText((error as Error).message);
+        const reason = publicText((error as Error).message);
         return {
           requestId, idempotencyKey, status: 'rejected', reason,
           completion: Promise.resolve({ status: 'failed', reason }),
@@ -459,7 +459,7 @@ export class ConversationGatewayRuntime {
     );
     const completion = this.completions.get(completionKey);
     const origin = mailboxCommand.origin;
-    if (['cancel_turn', 'cancel_task', 'permission_resolution', 'permission_resolution_v2'].includes(mailboxCommand.command.kind)) {
+    if (['accept_task_result', 'retry_task_attempt', 'cancel_turn', 'cancel_task', 'permission_resolution', 'permission_resolution_v2'].includes(mailboxCommand.command.kind)) {
       try {
         await conversation.executeGatewayCommand(mailboxCommand.command, { rethrowErrors: true, awaitAsyncWork: false,
           requestId: mailboxCommand.requestId, idempotencyKey: mailboxCommand.idempotencyKey,
@@ -503,7 +503,7 @@ export class ConversationGatewayRuntime {
       if (mailboxCommand.command.kind === 'user_message') {
         await this.deps.recordInputTitle?.(conversation.conversationId, mailboxCommand.command.text);
       }
-      const userInput = 'text' in mailboxCommand.command ? redactSensitiveText(mailboxCommand.command.text) : null;
+      const userInput = 'text' in mailboxCommand.command ? publicText(mailboxCommand.command.text) : null;
       const turnAttachments = mailboxCommand.command.kind === 'user_message'
         ? await this.resolveAttachmentMetadata(conversation.conversationId, mailboxCommand.command)
         : [];
@@ -766,7 +766,7 @@ export class ConversationGatewayRuntime {
   ): Promise<ResultDeliveryMetadata> {
     // The journal applies the same redaction before persistence. Hash the
     // projected content so clients can verify exactly what they receive.
-    const deliveryContent = redactSensitiveText(content);
+    const deliveryContent = publicText(content);
     this.deps.storeResultContent?.(this.deps.accountId, conversationId, deliveryContent);
     const bytes = Buffer.from(deliveryContent, 'utf8');
     const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;

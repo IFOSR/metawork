@@ -1,3 +1,4 @@
+import { serviceCommand } from './service-commands.js';
 import type { TaskStatus } from '../core/types.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
 import { LearningCandidateRepo } from '../storage/learning-candidate-repo.js';
@@ -6,13 +7,14 @@ import {
   stringArg,
   type CommandAction,
   type CommandArgumentSpec,
-  type CommandContext,
+  type CommandCompletionContext,
   type CommandNode,
   type CommandOptionSpec,
 } from './catalog.js';
 import {
   acceptPartialResult,
   acceptResult,
+  retryResult,
   blockTask,
   cancelSubtasks,
   cancelTask,
@@ -20,8 +22,8 @@ import {
   listTasks,
   pauseTask,
   rebuildTaskIndex,
-  resumeTask,
   searchTaskIndex,
+  resumeTask,
   showTask,
   unblockTask,
 } from './task-commands.js';
@@ -60,6 +62,7 @@ interface ActionInput {
   effect: string;
   usage: string;
   examples?: string[];
+  category?: 'common' | 'advanced';
   arguments?: CommandArgumentSpec[];
   options?: CommandOptionSpec[];
   builtin?: 'help';
@@ -74,6 +77,7 @@ function action(input: ActionInput): CommandAction {
     effect: input.effect,
     usages: [input.usage],
     examples: input.examples ?? [],
+    category: input.category,
     arguments: input.arguments,
     options: input.options,
     builtin: input.builtin,
@@ -91,7 +95,8 @@ function taskReference(
     description,
     candidates: context => {
       const tasks = context.taskEngine.getTaskRepo().findAll()
-        .filter(task => !allowed || allowed.includes(task.status))
+        .filter(task => (!context.conversationId || task.conversationId === context.conversationId)
+          && (!allowed || allowed.includes(task.status)))
         .sort((left, right) => {
           if (left.id === context.currentTaskId) return -1;
           if (right.id === context.currentTaskId) return 1;
@@ -100,7 +105,7 @@ function taskReference(
       return tasks.map(task => ({
         value: task.id,
         label: `${task.title} · #${task.id}`,
-        description: `[${task.status.toUpperCase()}] updated ${task.updatedAt}`,
+        description: `最近更新：${task.updatedAt}`,
       }));
     },
     validate: (value, context) => {
@@ -117,7 +122,7 @@ function taskReference(
 function dynamicReference(
   name: string,
   description: string,
-  values: (context: CommandContext) => Array<{ id: string; label: string; description: string }>,
+  values: (context: CommandCompletionContext) => Array<{ id: string; label: string; description: string }>,
   optional = false,
 ): CommandArgumentSpec {
   return {
@@ -185,21 +190,18 @@ function taskNodes(): CommandNode[] {
   });
 
   return [
+    action({ name: 'dashboard', summary: '显示任务盘面', effect: '读取任务统计、优先任务和需要处理的任务并展示盘面。', usage: '/task dashboard', category: 'advanced', run: showDashboard }),
     action({
-      name: 'dashboard', summary: '显示任务盘面', effect: '读取任务统计、优先任务和需要处理的任务并展示盘面。',
-      usage: '/task dashboard', run: showDashboard,
-    }),
-    action({
-      name: 'list', summary: '按状态查看任务', effect: '读取任务库并按指定范围分组或过滤。',
-      usage: '/task list [all|active|ready|parked|blocked|done]',
-      arguments: [{ ...enumArg('scope', '任务范围', ['all', 'active', 'ready', 'parked', 'blocked', 'done'], true) }],
+      name: 'list', summary: '按统一状态查看任务', effect: '按等待中、执行中、需要处理、已结束显示任务。',
+      usage: '/task list [all|waiting|executing|needs-action|finished]',
+      arguments: [{
+        ...enumArg('scope', '任务范围', ['all', 'waiting', 'executing', 'needs-action', 'finished'], true),
+        values: [
+          ...enumArg('scope', '任务范围', ['all', 'waiting', 'executing', 'needs-action', 'finished']).values!,
+          ...['active', 'ready', 'parked', 'blocked', 'done'].map(value => ({ value, description: '旧筛选参数', hidden: true })),
+        ],
+      }],
       run: listTasks,
-    }),
-    action({
-      name: 'clear', summary: '取消指定范围内的任务', effect: '先持久化取消状态，再终止其中所有运行中的实际 Executor。',
-      usage: '/task clear [all|parked|blocked]',
-      arguments: [{ ...enumArg('scope', '清理范围', ['all', 'parked', 'blocked'], true) }],
-      run: clearTasks,
     }),
     action({
       name: 'show', summary: '查看任务详情', effect: '读取任务状态、快照、材料、结果和恢复建议。',
@@ -207,19 +209,21 @@ function taskNodes(): CommandNode[] {
       run: showTask,
     }),
     operation('pause', '暂停任务', ['running'], pauseTask),
+    action({ name: 'block', summary: '标记为需要处理（兼容命令）', effect: '将运行中的任务标记为需要处理。', usage: '/task block <taskId> <reason...>', category: 'advanced', arguments: [taskReference('要标记的任务', ['running']), rest('reason', '处理原因')], run: blockTask }),
     action({ name: 'resume', summary: '继续未完成部分', effect: '提交一次绑定当前任务图的恢复请求。',
-      usage: '/task resume <taskId> [--generation <id>] [--revision <number>]',
-      arguments: [taskReference('要恢复的任务', ['running', 'parked', 'blocked'])],
+      usage: '/task resume <taskId> [resources...]',
+      arguments: [taskReference('要恢复的任务', ['running', 'parked', 'blocked']), variadic('resources', '新增材料路径', true)],
       options: [option('--generation', '执行代际', text('generation', '执行代际')),
         option('--revision', '任务图版本', text('revision', '任务图版本'))], run: resumeTask }),
-    operation('block', '标记为需要处理（兼容命令）', ['running'], blockTask, [rest('reason', '处理原因')]),
-    operation('unblock', '继续处理任务（兼容命令）', ['blocked'], unblockTask, [variadic('resources', '新增资源', true)]),
+    action({ name: 'unblock', summary: '继续处理任务（兼容命令）', effect: '提交带材料的恢复请求。', usage: '/task unblock <taskId> [resources...]', category: 'advanced', arguments: [taskReference('要继续的任务', ['blocked']), variadic('resources', '新增材料路径', true)], run: unblockTask }),
     operation('cancel', '取消任务', ['created', 'ready', 'running', 'parked', 'blocked'], cancelTask),
+    action({ name: 'clear', summary: '批量取消未完成任务', effect: '经统一 Kernel 取消链取消选定范围内的未完成任务。', usage: '/task clear [all|parked|blocked]', category: 'advanced', arguments: [{ ...enumArg('scope', '任务范围', ['all', 'parked', 'blocked'], true) }], run: clearTasks }),
     action({
       name: 'subtask-cancel',
       summary: '原子取消 Subtask 及其传递下游',
       effect: '提交 Kernel durable event；独立 sibling 继续运行。',
       usage: '/task subtask-cancel <taskId> <subtaskId...>',
+      category: 'advanced',
       arguments: [
         taskReference('所属任务', ['running', 'blocked']),
         variadic('subtaskIds', '要取消的 Subtask ID'),
@@ -231,8 +235,15 @@ function taskNodes(): CommandNode[] {
       summary: '显式接受部分取消后的剩余成果',
       effect: '仅在所有节点 done/cancelled 且运行残留清零时完成 Task。',
       usage: '/task accept-partial <taskId>',
+      category: 'advanced',
       arguments: [taskReference('要接受部分结果的任务', ['blocked'])],
       run: acceptPartialResult,
+    }),
+    action({
+      name: 'retry-result', summary: '重新执行当前待处理结果',
+      effect: '提交受授权的新 Attempt，保留原结果；拒绝重复不确定的外部副作用。',
+      usage: '/task retry-result <taskId>', arguments: [taskReference('要重新执行的任务', ['blocked', 'running'])],
+      run: retryResult,
     }),
     action({
       name: 'accept-result',
@@ -243,16 +254,29 @@ function taskNodes(): CommandNode[] {
       run: acceptResult,
     }),
     action({
+      name: 'search', summary: '搜索历史任务', effect: '在任务全文索引中搜索标题、目标、交互和结果。',
+      usage: '/task search <query...>', arguments: [rest('query', '检索词')],
+      category: 'advanced',
+      run: searchTaskIndex,
+    }),
+    action({ name: 'attach', summary: '为任务补充材料', effect: '将材料关联到任务，但不自动恢复任务。', usage: '/task attach <taskId> <resource...>', category: 'advanced', arguments: [taskReference('接收材料的任务'), variadic('resources', '材料路径或链接')], run: attachTaskResources }),
+    action({
       name: 'recovery', summary: '查看任务恢复项', effect: '只读查看 uncertain/failed application 和外部副作用。',
       usage: '/task recovery <taskId>', arguments: [taskReference('要查看恢复项的任务')],
+      category: 'advanced',
       run: async args => ({
         type: 'directive', content: '',
         directive: { kind: 'show-task-recovery', taskId: stringArg(args, 'taskId') },
       }),
     }),
+    { kind: 'group', name: 'index', summary: '任务检索索引', category: 'advanced', children: [
+      action({ name: 'rebuild', summary: '重建任务检索索引', effect: '从任务及相关记录重建全文检索索引。', usage: '/task index rebuild', run: rebuildTaskIndex }),
+      action({ name: 'search', summary: '搜索任务检索索引（兼容命令）', effect: '在任务全文检索索引中查询并返回匹配片段。', usage: '/task index search <query...>', arguments: [rest('query', '检索词')], run: searchTaskIndex }),
+    ] },
     action({
       name: 'recover', summary: '解决任务恢复项', effect: '只提交 Kernel recovery resolution event，不直接改库。',
       usage: '/task recover <taskId> <recoveryItemId> <assume-applied|retry>',
+      category: 'advanced',
       arguments: [
         taskReference('要恢复的任务'),
         text('recoveryItemId', '恢复项 ID'),
@@ -269,37 +293,19 @@ function taskNodes(): CommandNode[] {
       }),
     }),
     action({
-      name: 'attach', summary: '关联资源到任务', effect: '把一个或多个资源路径持久化到指定任务。',
-      usage: '/task attach <taskId> <resource...>',
-      arguments: [taskReference('接收资源的任务'), variadic('resources', '资源路径')],
-      run: attachTaskResources,
-    }),
-    action({
       name: 'history', summary: '查看任务历史', effect: '读取指定任务最近 20 条真实交互、状态变化和执行事件。',
       usage: '/task history <taskId>', arguments: [taskReference('要查看历史的任务')],
+      category: 'advanced',
       run: (args, context) => Promise.resolve({
         type: 'text',
         content: context.readServices.taskHistory(stringArg(args, 'taskId')),
       }),
     }),
-    {
-      kind: 'group', name: 'index', summary: '任务检索索引', children: [
-        action({
-          name: 'rebuild', summary: '重建任务检索索引', effect: '从任务及相关记录重建全文检索索引。',
-          usage: '/task index rebuild', run: rebuildTaskIndex,
-        }),
-        action({
-          name: 'search', summary: '搜索任务检索索引', effect: '在任务全文检索索引中查询并返回匹配片段。',
-          usage: '/task index search <query...>', arguments: [rest('query', '检索词')],
-          run: searchTaskIndex,
-        }),
-      ],
-    },
   ];
 }
 
 function executorNodes(): CommandNode[] {
-  const executorValues = (context: CommandContext) => {
+  const executorValues = (context: CommandCompletionContext) => {
     const names = context.executorAgentClassNames
       ?? new AgentClassRepo(context.db).findAll().map(item => item.name);
     return names.map(name => ({ id: name, label: name, description: 'executor' }));
@@ -335,7 +341,7 @@ function executorNodes(): CommandNode[] {
 }
 
 function memoryNodes(): CommandNode[] {
-  const memoryValues = (context: CommandContext) => context.memoryEngine.list().map(item => ({ id: item.id, label: `#${item.id}`, description: item.content }));
+  const memoryValues = (context: CommandCompletionContext) => context.memoryEngine.list().map(item => ({ id: item.id, label: `#${item.id}`, description: item.content }));
   const memoryRef = () => dynamicReference('memoryId', '记忆', memoryValues);
   const scopeOption = option('--scope', '记忆作用域', enumArg('scope', '作用域', ['global', 'project', 'contact', 'task-local']));
   const typeOption = option('--type', '记忆类型', text('type', '记忆类型'));
@@ -347,9 +353,9 @@ function memoryNodes(): CommandNode[] {
     action({ name: 'add', summary: '添加记忆', effect: '新增手工确认的偏好记忆。', usage: '/memory add [options] <content...>', arguments: [rest('content', '记忆内容')], options: editOptions, run: addMemory }),
     action({ name: 'edit', summary: '编辑记忆', effect: '修改记忆的内容或元数据。', usage: '/memory edit <memoryId> [options] [content...]', arguments: [memoryRef(), rest('content', '新内容', true)], options: editOptions, run: editMemory }),
     action({ name: 'delete', summary: '删除记忆', effect: '删除指定记忆。', usage: '/memory delete <memoryId>', arguments: [memoryRef()], run: deleteMemory }),
-    action({ name: 'stats', summary: '查看记忆统计', effect: '统计已确认的偏好记忆。', usage: '/memory stats', run: showMemoryStats }),
+    action({ name: 'stats', summary: '查看记忆统计', effect: '统计已确认的偏好记忆。', usage: '/memory stats', category: 'advanced', run: showMemoryStats }),
     {
-      kind: 'group', name: 'vault', summary: '记忆 Vault', children: (['export', 'status'] as const).map(name => action({
+      kind: 'group', name: 'vault', summary: '记忆 Vault', category: 'advanced', children: (['export', 'status'] as const).map(name => action({
         name, summary: `${name === 'export' ? '导出' : '查看'} Vault`, effect: `${name === 'export' ? '导出' : '统计'}记忆 Vault 文件。`,
         usage: `/memory vault ${name} [--dir <path>]`, options: [option('--dir', 'Vault 目录', text('dir', '目录路径'))],
         run: name === 'export' ? exportMemoryVault : showMemoryVaultStatus,
@@ -359,7 +365,7 @@ function memoryNodes(): CommandNode[] {
 }
 
 function learningNodes(): CommandNode[] {
-  const values = (context: CommandContext) => new LearningCandidateRepo(context.db).listPending().map(item => ({ id: item.id, label: `#${item.id}`, description: `${item.kind} · ${item.title}` }));
+  const values = (context: CommandCompletionContext) => new LearningCandidateRepo(context.db).listPending().map(item => ({ id: item.id, label: `#${item.id}`, description: `${item.kind} · ${item.title}` }));
   const candidateRef = () => dynamicReference('candidateId', '学习候选', values);
   const candidateAction = (name: 'approve' | 'reject', tailName: string) => action({
     name, summary: `${name === 'approve' ? '批准' : '拒绝'}学习候选`, effect: `审查并${name === 'approve' ? '批准' : '拒绝'}候选。`,
@@ -387,7 +393,7 @@ function learningNodes(): CommandNode[] {
 }
 
 function profileNodes(): CommandNode[] {
-  const executorValues = (context: CommandContext) => new AgentClassRepo(context.db).findAll().map(item => ({ id: item.name, label: item.name, description: item.domains.join(',') || item.kind }));
+  const executorValues = (context: CommandCompletionContext) => new AgentClassRepo(context.db).findAll().map(item => ({ id: item.name, label: item.name, description: item.domains.join(',') || item.kind }));
   return [
     action({ name: 'user', summary: '查看用户画像', effect: '汇总长期记忆和自动化事件。', usage: '/profile user', run: showUserProfile }),
     action({ name: 'project', summary: '查看项目画像', effect: '按项目主题汇总项目记忆。', usage: '/profile project <name>', arguments: [text('name', '项目名称')], run: showProjectProfile }),
@@ -397,13 +403,19 @@ function profileNodes(): CommandNode[] {
 
 export function createDefaultCommandCatalog(): CommandCatalog {
   return new CommandCatalog([
+    { kind: 'group', name: 'service', summary: '受管本地服务', category: 'advanced', children: (['start', 'status', 'logs', 'stop', 'restart'] as const).map(operation => action({
+      name: operation, summary: `${operation} 本地服务`, effect: '读取服务状态或经 Kernel 授权管理进程',
+      usage: `/service ${operation} <${operation === 'start' ? 'taskId' : 'serviceId'}>`,
+      arguments: [{ name: 'target', kind: 'text', description: operation === 'start' ? '已发布代码的任务 ID' : '服务标识' }],
+      run: (args, context) => serviceCommand(args, context, operation),
+    })) },
     { kind: 'group', name: 'task', summary: '任务查看与控制', category: 'common', children: taskNodes() },
-    { kind: 'group', name: 'executor', summary: 'Executor 查看与反馈', category: 'common', children: executorNodes() },
-    { kind: 'group', name: 'memory', summary: '记忆与审查策略', category: 'common', children: memoryNodes() },
+    { kind: 'group', name: 'executor', summary: 'Executor 运行诊断', category: 'advanced', children: executorNodes() },
+    { kind: 'group', name: 'memory', summary: '已确认偏好', category: 'common', children: memoryNodes() },
     { kind: 'group', name: 'profile', summary: '用户、项目和 Executor 画像', category: 'advanced', children: profileNodes() },
     { kind: 'group', name: 'learning', summary: '学习候选与 Skill 治理', category: 'advanced', children: learningNodes() },
-    action({ name: 'config', summary: '查看当前配置', effect: '以 YAML 展示当前生效配置。', usage: '/config', run: showConfig }),
-    action({ name: 'help', summary: '查看命令树帮助', effect: '从 CommandCatalog 静态命令树生成帮助。', usage: '/help [<commandPath...>]', arguments: [{ name: 'commandPath', kind: 'command-path', description: '命令路径', optional: true }], builtin: 'help' }),
-    action({ name: 'exit', summary: '退出 MetaClaw', effect: '持久化会话状态并请求客户端退出。', usage: '/exit', run: exitSession }),
+    action({ name: 'config', summary: '查看当前配置', effect: '以 YAML 展示当前生效配置。', usage: '/config', category: 'advanced', run: showConfig }),
+    action({ name: 'help', summary: '查看常用命令', effect: '从 CommandCatalog 静态命令树生成帮助。', usage: '/help [<commandPath...>]', arguments: [{ name: 'commandPath', kind: 'command-path', description: '命令路径', optional: true }], category: 'common', builtin: 'help' }),
+    action({ name: 'exit', summary: '退出 MetaWork', effect: '持久化会话状态并请求客户端退出。', usage: '/exit', category: 'common', run: exitSession }),
   ]);
 }

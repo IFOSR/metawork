@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { KernelDecision } from '../../src/kernel/control-kernel.js';
 import type { AccountKernelCoordinator } from '../../src/account/account-kernel-coordinator.js';
 import { ConversationInputMailbox } from '../../src/session/conversation-input-mailbox.js';
@@ -812,6 +812,41 @@ describe('ConversationSession', () => {
           attemptId: 'attempt_resume',
         }),
       ],
+    });
+  });
+
+  it('reopens the original Task trace before a result retry', async () => {
+    const trace = new InteractionTraceStream('conv_retry_trace');
+    const task = {
+      id: 'task_retry_trace', accountId: 'local-default', conversationId: 'conv_retry_trace',
+      title: 'retry trace', goal: 'retry trace', status: 'done',
+    } as never;
+    const retry = vi.fn(async () => undefined);
+    const session = new ConversationSession({
+      conversationId: 'conv_retry_trace', plannerSessionId: 'planner_retry_trace',
+      runtimePort: makePort('local-default', { queries: { findTask: () => task } as never }),
+      mailbox: new ConversationInputMailbox({ execute: async () => undefined }),
+      interactionTraceStream: trace,
+      kernelExecutionRuntime: { retryTaskResult: retry } as never,
+    });
+    trace.beginTurn({ turnId: 'turn_retry_trace', userInput: 'retry trace' });
+    session.setCurrentTaskId('task_retry_trace');
+    trace.append({ phase: 'delivery', actor: 'runtime', kind: 'delivery_completed', status: 'completed',
+      title: 'Delivered', summary: 'Delivered', details: {}, taskId: 'task_retry_trace',
+      eventKey: 'delivered', traceStatus: 'completed' });
+
+    await session.executeGatewayCommand({
+      kind: 'retry_task_attempt',
+      expectedResult: {
+        taskId: 'task_retry_trace', generationId: 'generation_1', graphRevision: 1,
+        subtaskId: 'subtask_1', attemptId: 'attempt_1', resultId: 'result_1',
+      },
+    }, { rethrowErrors: true });
+
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(trace.getSnapshot()).toMatchObject({ turnId: 'turn_retry_trace', taskId: 'task_retry_trace', status: 'running' });
+    expect(trace.getSnapshot()?.events.at(-1)).toMatchObject({
+      kind: 'execution_resumed', taskId: 'task_retry_trace', status: 'running',
     });
   });
 

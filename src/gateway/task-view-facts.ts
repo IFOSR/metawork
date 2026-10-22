@@ -1,3 +1,4 @@
+import { resolveSafeResult } from '../task/safe-result-identity.js';
 import type { Subtask, Task } from '../core/types.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import { resolvePublicRoutingIdentity } from '../configuration/public-routing-identity.js';
@@ -16,6 +17,9 @@ interface GatewayAttemptReceiptFact {
   readonly taskId: string;
   readonly subtaskId: string;
   readonly generationId: string;
+  readonly graphRevision?: number;
+  readonly attemptKind?: string;
+  readonly sourceAttemptId?: string | null;
   readonly completedAt: string;
   readonly terminalState: string;
   readonly failure: unknown;
@@ -67,13 +71,10 @@ export async function projectTaskViewFacts(input: {
   let result: GatewayTaskViewSnapshot['result'] = null;
   for (const receipt of receipts) {
     if (receipt.taskId !== input.task.id) continue;
-    const refs = receipt.parsing.resultObjects as { safeProjectionId?: unknown } | undefined;
-    if (typeof refs?.safeProjectionId !== 'string') continue;
-    const object = input.findObject(refs.safeProjectionId);
-    if (!object || object.kind !== 'safe_projection' || object.byteLength === 0
-      || object.accountId !== input.task.accountId || object.taskId !== input.task.id
-      || object.attemptId !== receipt.attemptId || object.sourceSubtaskId !== receipt.subtaskId
-      || object.generationId !== receipt.generationId) continue;
+    const pair = resolveSafeResult({ accountId: input.task.accountId ?? 'local-default', receipt,
+      findObject: input.findObject, findReceipt: id => input.receipts.find(item => item.attemptId === id) ?? null });
+    if (!pair) continue;
+    const object = pair.object;
     result = {
       resultId: object.resultId,
       completeness: object.completeness,

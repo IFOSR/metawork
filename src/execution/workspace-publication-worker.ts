@@ -1,3 +1,6 @@
+import { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
+import { parseWorkspaceDelta } from './workspace-change-tracker.js';
+import { resolveSafeResult } from '../task/safe-result-identity.js';
 import { existsSync, realpathSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, join, relative, sep } from 'node:path';
@@ -601,6 +604,8 @@ export class WorkspacePublicationWorker {
           const result = await this.git.withCommitSnapshot(integrationWorkspace, publication.integrationCommit!, async root => service.publishIntegratedArtifacts({
             sessionId: this.sessionId, accountId: this.deps.accountId ?? 'local-default', taskId: publication.taskId,
             taskTitle: this.deps.taskRuntimeService.findTask(publication.taskId)?.title ?? publication.taskId,
+            publicTaskDirectory: this.deps.taskRuntimeService.findTask(publication.taskId)?.publicTaskDirectory,
+            publicDeliveryBaseline: this.deps.taskRuntimeService.findTask(publication.taskId)?.publicDeliveryBaseline,
             generationId: publication.generationId, subtaskId: publication.subtaskId, publicationId: publication.id,
             integratedWorkspaceRoot: root,
             userWorkspaceRoot: await this.deps.resolveUserWorkspaceRoot?.(this.sessionId) ?? undefined, sources,
@@ -783,7 +788,7 @@ export class WorkspacePublicationWorker {
   private artifactSources(
     publication: WorkspacePublicationRecord,
     integrationWorkspace: Awaited<ReturnType<ManagedGitWorkspaceService['ensure']>>,
-  ): Array<{ sourceRelativePath: string }> {
+  ): Array<{ sourceRelativePath: string; remove?: boolean; downloadable?: boolean }> {
     for (const target of this.deps.subtaskRepo.listByTask(publication.taskId)) {
       if (target.generationId !== publication.generationId || target.status === 'cancelled') continue;
       for (const edge of target.dependencies.filter(item => item.fromSubtaskId === publication.subtaskId)) {
@@ -804,7 +809,7 @@ export class WorkspacePublicationWorker {
     const sourceFilesRoot = sourceWorkspace
       ? join(fileURLToPath(sourceWorkspace.rootUri), 'files')
       : null;
-    return publication.originalCompletion.artifacts.flatMap(path => {
+    const artifacts = publication.originalCompletion.artifacts.flatMap(path => {
       if (typeof path !== 'string' || path.trim().length === 0) throw new Error('Invalid publication artifact path');
       if (!isAbsolute(path)) return [{ sourceRelativePath: path }];
       for (const root of [sourceFilesRoot, integrationWorkspace.filesPath]) {
@@ -821,44 +826,27 @@ export class WorkspacePublicationWorker {
       }
       throw new Error('Publication artifact is outside its authorized workspace');
     });
+    const subtask = this.deps.subtaskRepo.findById(publication.subtaskId);
+    if (subtask?.deliveryKind !== 'edit') return artifacts;
+    const receipt = this.deps.attemptReceiptRepo.findByAttemptId(publication.sourceAttemptId);
+    const pair = receipt ? resolveSafeResult({ accountId: this.deps.accountId ?? 'local-default', receipt,
+      findObject: id => this.results.findObject(id), findReceipt: id => this.deps.attemptReceiptRepo.findByAttemptId(id) }) : null;
+    const delta = parseWorkspaceDelta(new ExecutorAttemptRuntimeRepo(this.deps.db)
+      .find(pair?.resultOwnerAttemptId ?? publication.sourceAttemptId)?.workspaceDelta);
+    if (!delta || delta.baselineTruncated || delta.finalTruncated) throw new Error('无法确认完整代码变更，发布暂停');
+    const changes = delta.changed.map(item => ({ sourceRelativePath: item.path, remove: item.afterHash === null,
+      downloadable: artifacts.some(artifact => artifact.sourceRelativePath === item.path) }));
+    return [...changes, ...artifacts.filter(item => !changes.some(change => change.sourceRelativePath === item.sourceRelativePath))];
   }
 
   private findSafeProjection(
     publication: WorkspacePublicationRecord,
     receipt: import('../storage/executor-attempt-receipt-repo.js').ExecutorAttemptReceipt,
   ) {
-    const resultObjects = receipt.parsing?.resultObjects as {
-      safeProjectionId?: string | null;
-    } | null | undefined;
-    const result = resultObjects?.safeProjectionId
-      ? this.results.findObject(resultObjects.safeProjectionId)
-      : this.results.findObjectByAttempt({
-          accountId: this.deps.accountId ?? 'local-default',
-          taskId: publication.taskId,
-          attemptId: publication.sourceAttemptId,
-          kind: 'safe_projection',
-        });
-    if (!result) return null;
-    const correctionSourceAttemptId = receipt.attemptKind === 'contract_correction'
-      ? receipt.sourceAttemptId
-      : null;
-    const attemptIdentityMatches = result.attemptId === publication.sourceAttemptId
-      || (
-        correctionSourceAttemptId !== null
-        && result.attemptId === correctionSourceAttemptId
-      );
-    if (
-      result.accountId !== (this.deps.accountId ?? 'local-default')
-      || result.taskId !== publication.taskId
-      || result.generationId !== publication.generationId
-      || result.sourceSubtaskId !== publication.subtaskId
-      || !attemptIdentityMatches
-    ) {
-      throw new Error(
-        `safe projection identity mismatch for handoff publication: ${publication.sourceAttemptId}`,
-      );
-    }
-    return result;
+    const pair = resolveSafeResult({ accountId: this.deps.accountId ?? 'local-default', receipt,
+      findObject: id => this.results.findObject(id), findReceipt: id => this.deps.attemptReceiptRepo.findByAttemptId(id) });
+    if (!pair && receipt.parsing?.resultObjects) throw new Error('safe projection identity mismatch for publication');
+    return pair?.object ?? null;
   }
 }
 

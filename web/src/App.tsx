@@ -62,6 +62,7 @@ export function App() {
         themePreference={themePreference}
         composerVisible={tab === 'conversation' && Boolean(selectedId)}
         draft={draft}
+        commandClient={observationClient}
         composerDisabled={workspaceSwitching || composerDisabled}
         newWorkBlocked={requiredBlock.blocked}
         configurationNeeded={configurationRuntime?.workConfigurationReady === false}
@@ -75,6 +76,7 @@ export function App() {
             conversationId={selectedId} initial={executionDetailTurn}
             ws={observationClient} http={httpRef.current}
             subtaskId={executionDetail.subtaskId}
+            fallbackTitle={executionDetail.subtaskTitle}
             onClose={() => setExecutionDetail(null)}
           />
         ) : (

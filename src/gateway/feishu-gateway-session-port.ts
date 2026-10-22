@@ -1,3 +1,4 @@
+import { publicDeliveryLines } from '../delivery/public-delivery-view.js';
 import { feishuClientConnectionId } from './feishu-conversation-routing.js';
 import { clientConnectionEventStreamId } from './client-connection-event-stream.js';
 import type { CommandReceipt } from './command-admission.js';
@@ -44,6 +45,7 @@ function formatFeishuBillingSummary(bill: QueryBillProjection): string {
 }
 
 export interface FeishuGatewaySessionPortDeps {
+  readonly publicTaskDelivery?: (taskId: string) => Promise<import('../delivery/public-delivery-view.js').PublicDeliveryView | null>;
   readonly accountId: string;
   readonly tenantKey: string;
   readonly adapter: Pick<FeishuGatewayAdapter, 'handleMessage' | 'handleCardAction'>;
@@ -347,16 +349,28 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       // Stable command text keeps progress cards editable through the shared card machine.
       approval.push(`/stop-task ${job.fact.taskId} ${payload.executionGeneration} ${job.route.conversationId}`);
     }
-    if (payload.userState === 'needs_action' && job.fact.taskId
+    const decision = asRecord(payload.pendingDecision);
+    const expectedResult = asRecord(decision?.expectedResult);
+    if (decision?.reason === 'uncertified_result' && expectedResult) {
+      const expected = expectedResult as unknown as import('../task/safe-result-identity.js').PendingResultIdentity;
+      if (Array.isArray(decision.actions) && decision.actions.includes('accept_result')) {
+        issue('接受并交付', { kind: 'accept_task_result', expectedResult: expected });
+      }
+      if (Array.isArray(decision.actions) && decision.actions.includes('retry_attempt')) {
+        issue('重新执行', { kind: 'retry_task_attempt', expectedResult: expected });
+      }
+    }
+    if (!expectedResult && payload.userState === 'needs_action' && job.fact.taskId
       && typeof payload.executionGeneration === 'string' && Number.isInteger(payload.graphRevision)) {
       issue('继续未完成部分', { kind: 'slash_command',
         text: `/task resume ${job.fact.taskId} --generation ${payload.executionGeneration} --revision ${payload.graphRevision}` });
     }
+    const publicDelivery = job.fact.taskId ? await this.deps.publicTaskDelivery?.(job.fact.taskId) ?? null : null;
     const delivery: FeishuGatewayDelivery = {
       senderId: destination.senderId, chatId: destination.chatId, threadId: destination.threadId, chatType: destination.chatType,
       kind: job.fact.category === 'result' ? 'final' : 'progress',
       reply: { lines: [`${stringValue(payload.title) ?? label} · ${job.route.conversationId}`,
-        ...(stringValue(payload.userStateReason) ? [String(payload.userStateReason)] : []), ...approval, ...(body ? [body] : []),
+        ...(stringValue(payload.userStateReason) ? [String(payload.userStateReason)] : []), ...publicDeliveryLines(publicDelivery), ...approval, ...(body ? [body] : []),
         ...(stringValue(payload.progressSummary) ? [String(payload.progressSummary)] : []),
         ...(reference && reference.byteLength > 16 * 1024 * 1024
           ? [`结果较长，可分段读取完整正文：/read ${job.route.conversationId} ${reference.hash} 0`] : []),

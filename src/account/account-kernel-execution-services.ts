@@ -1,3 +1,5 @@
+import { SqliteTaskActivityFacts } from '../storage/task-activity-facts-repo.js';
+import type { ManagedLocalServices } from '../execution/managed-local-service.js';
 /**
  * 账户级 Kernel 执行 / 任务执行应用 / 会话 Kernel 运行时服务簇（ADR-0031 第 2 节）。
  *
@@ -112,9 +114,14 @@ export function buildAccountKernelExecutionServices(deps: {
   conversationTaskSchedulerRepo?: ConversationTaskSchedulerRepo;
   resolveWorkspacePath?: (taskId: string) => Promise<string | null>;
   preflightWorkspacePath?: (path: string) => Promise<string>;
+  managedLocalServices?: ManagedLocalServices;
   productionAuthorization?: () => { allowed: boolean; reason?: string };
 }): AccountKernelExecutionServices {
   const kernelExecutionRuntime = new KernelExecutionRuntime({
+    taskActivityFacts: new SqliteTaskActivityFacts(deps.db),
+    managedLocalServices: deps.managedLocalServices,
+    userArtifactPublication: deps.userArtifactPublication,
+    resolveUserWorkspaceRoot: deps.resolveUserWorkspaceRoot,
     sessionId: deps.sessionId,
     getSessionId: deps.getSessionId,
     getConfigurationRevision: deps.getConfigurationRevision,
@@ -189,6 +196,8 @@ export function buildAccountKernelExecutionServices(deps: {
   });
 
   const sessionKernelRuntime = new SessionKernelRuntime({
+    resolveUserWorkspaceRoot: deps.resolveUserWorkspaceRoot,
+    manageLocalService: (taskId, operation, serviceId) => kernelExecutionRuntime.manageLocalService(taskId, operation, serviceId),
     sessionId: deps.sessionId,
     legacyCompatibility: deps.legacyCompatibility,
     accountId: deps.accountId,

@@ -1,3 +1,4 @@
+import type { PendingResultIdentity } from '../task/safe-result-identity.js';
 import type { AccountId, Principal } from '../account/types.js';
 import type { ConversationSelection } from '../session/conversation-types.js';
 
@@ -57,6 +58,8 @@ export type GatewayCommand =
       readonly expectedExecutionGeneration: string; readonly resolution: 'approve' | 'deny' }
   | { readonly kind: 'get_pending_interactions'; readonly conversationId: string; readonly cursor?: string }
   | { readonly kind: 'cancel_turn'; readonly turnId: string }
+  | { readonly kind: 'accept_task_result'; readonly expectedResult: PendingResultIdentity }
+  | { readonly kind: 'retry_task_attempt'; readonly expectedResult: PendingResultIdentity }
   | { readonly kind: 'cancel_task'; readonly taskId: string; readonly expectedExecutionGeneration: string }
   | {
       readonly kind: 'complete_command';
@@ -265,6 +268,14 @@ function parseCommand(value: unknown): GatewayCommand | null {
     return hasOnlyKeys(value, ['kind', 'turnId']) && isGatewayIdentifier(value.turnId)
       ? { kind: value.kind, turnId: value.turnId } : null;
   }
+  if (value.kind === 'accept_task_result' || value.kind === 'retry_task_attempt') {
+    const e = value.expectedResult;
+    if (!hasOnlyKeys(value, ['kind', 'expectedResult']) || !isRecord(e)
+      || !hasOnlyKeys(e, ['taskId', 'generationId', 'graphRevision', 'subtaskId', 'attemptId', 'resultId'])
+      || !['taskId', 'generationId', 'subtaskId', 'attemptId', 'resultId'].every(key => isGatewayIdentifier(e[key]))
+      || !Number.isSafeInteger(e.graphRevision) || (e.graphRevision as number) < 1) return null;
+    return { kind: value.kind, expectedResult: e as unknown as PendingResultIdentity };
+  }
   if (value.kind === 'cancel_task') {
     return hasOnlyKeys(value, ['kind', 'taskId', 'expectedExecutionGeneration'])
       && isGatewayIdentifier(value.taskId) && isGatewayIdentifier(value.expectedExecutionGeneration)
@@ -352,7 +363,7 @@ function matchesScope(scope: GatewayScope, command: GatewayCommand): boolean {
     return scope.kind === 'workspace' || scope.kind === 'conversation';
   }
   if (scope.kind !== 'conversation') return false;
-  if (command.kind === 'cancel_task' || command.kind === 'permission_resolution_v2') return scope.selection.mode === 'attach';
+  if (command.kind === 'accept_task_result' || command.kind === 'retry_task_attempt' || command.kind === 'cancel_task' || command.kind === 'permission_resolution_v2') return scope.selection.mode === 'attach';
   if (command.kind === 'get_pending_interactions' || command.kind === 'get_conversation_resource') return scope.selection.mode === 'attach'
     && scope.selection.conversationId === command.conversationId;
   if (command.kind === 'get_task_view') {

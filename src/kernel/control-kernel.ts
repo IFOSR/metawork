@@ -1,3 +1,5 @@
+import type { LocalServiceOperation, LocalServiceSpecification } from '../task/local-service.js';
+import type { PendingResultIdentity } from '../task/safe-result-identity.js';
 import { allowsKernelAction, type ProductionAuthorizationFact } from './production-authorization.js';
 import { createHash } from 'node:crypto';
 import type {
@@ -107,6 +109,7 @@ export interface KernelEventEnvelope {
 export type KernelPlanProposal = PlanningAgentPlan;
 
 export type KernelEvent =
+  | (KernelEventEnvelope & { type: 'managed_service_requested'; operation: LocalServiceOperation; serviceId: string; specification?: LocalServiceSpecification })
   | (KernelEventEnvelope & {
       type: 'plan_proposed';
       proposal: KernelPlanProposal;
@@ -274,6 +277,11 @@ export type KernelEvent =
     })
   | (KernelEventEnvelope & {
       type: 'partial_result_acceptance_requested';
+      expectedResult?: PendingResultIdentity;
+    })
+  | (KernelEventEnvelope & {
+      type: 'task_result_retry_requested';
+      expectedResult: PendingResultIdentity;
     })
   | (KernelEventEnvelope & {
       type: 'generation_quiescence_observed';
@@ -426,6 +434,13 @@ export type KernelSnapshot = { productionAuthorization?: ProductionAuthorization
     }
   | {
       schemaVersion: 5;
+      type: 'service_control';
+      task: KernelTaskFact | null;
+      published: boolean;
+      serviceTaskId: string | null;
+    }
+  | {
+      schemaVersion: 5;
       type: 'task_control';
       task: KernelTaskFact | null;
       generationId: string | null;
@@ -434,6 +449,8 @@ export type KernelSnapshot = { productionAuthorization?: ProductionAuthorization
       completionBlockedReasons: string[];
       partialCancellation: boolean;
       uncertifiedResult?: { subtaskId: string; attemptId: string; resultId: string } | null;
+      resultRetrySafe?: boolean;
+      acceptedResult?: PendingResultIdentity | null;
     }
   | {
       schemaVersion: 5;
@@ -536,6 +553,7 @@ export type KernelDecisionAction =
       /** §5.4 abandon-and-create: the exact old Task to abandon before admission. */
       conflictResolution?: { oldTaskId: string };
     }
+  | { type: 'control_managed_service'; taskId: string; serviceId: string; operation: LocalServiceOperation; specification?: LocalServiceSpecification }
   | { type: 'authorize_task_control'; task: KernelPlanProposal['task'] }
   | {
       type: 'dispatch_batch';
@@ -665,6 +683,16 @@ export type KernelDecisionAction =
     }
   | {
       type: 'accept_uncertified_result';
+      generationId: string;
+      graphRevision: number;
+      taskId: string;
+      subtaskId: string;
+      attemptId: string;
+      resultId: string;
+    }  | {
+      type: 'retry_uncertified_result';
+      generationId: string;
+      graphRevision: number;
       taskId: string;
       subtaskId: string;
       attemptId: string;
@@ -800,9 +828,26 @@ export class ControlKernel {
         return this.decideSandboxRecovery(event, snapshot as Extract<KernelSnapshot, { type: 'sandbox_recovery' }>);
       case 'merge_conflict_observed':
         return this.decideMergeConflict(event, snapshot as Extract<KernelSnapshot, { type: 'dispatch' }>);
+      case 'managed_service_requested': {
+        const facts = snapshot as Extract<KernelSnapshot, { type: 'service_control' }>;
+        if (!event.taskId || facts.task?.id !== event.taskId || (facts.serviceTaskId && facts.serviceTaskId !== event.taskId)
+          || (event.specification && (event.specification.taskId !== event.taskId || event.specification.serviceId !== event.serviceId))) {
+          return decision(event, { type: 'reject_request' }, '服务与任务归属不匹配');
+        }
+        if (event.operation !== 'stop' && ['cancelled', 'archived', 'failed'].includes(facts.task.status)) {
+          return decision(event, { type: 'reject_request' }, '任务已取消、归档或失败，不能启动服务');
+        }
+        if (event.operation !== 'stop' && !facts.published) {
+          return decision(event, { type: 'reject_request' }, '代码尚未发布到用户任务目录，不能启动服务');
+        }
+        if (event.operation !== 'start' && !facts.serviceTaskId) return decision(event, { type: 'reject_request' }, '服务不存在');
+        return decision(event, { type: 'control_managed_service', taskId: event.taskId, serviceId: event.serviceId,
+          operation: event.operation, specification: event.specification }, 'explicit managed service action authorized');
+      }
       case 'task_cancel_requested':
       case 'subtasks_cancel_requested':
       case 'partial_result_acceptance_requested':
+      case 'task_result_retry_requested':
         return this.decideTaskControl(
           event,
           snapshot as Extract<KernelSnapshot, { type: 'task_control' }>,
@@ -876,7 +921,7 @@ export class ControlKernel {
         // target any Task in this Conversation (the slot owner or a queued
         // Task), never a Task of another Conversation. Topic similarity alone
         // still authorizes nothing (§4.2 fail-closed rule).
-        if (proposal.task.control !== 'abandon_task') {
+        if (proposal.task.control !== 'abandon_task' && !proposal.task.control.startsWith('service_')) {
           const scopedActiveTaskId = snapshot.activeTaskByConversation?.[conversationId]
             ?? (snapshot.activeTaskByConversation ? null : snapshot.runningTaskId);
           if (scopedActiveTaskId && proposal.task.taskId !== scopedActiveTaskId) {
@@ -1144,6 +1189,9 @@ export class ControlKernel {
       }
       if (snapshot.pendingRetrySubtaskIds?.length) {
         return decision(event, { type: 'no_op' }, 'unfinished work has a durable retry wake');
+      }
+      if (snapshot.subtasks.some(item => item.status === 'awaiting_decision')) {
+        return decision(event, { type: 'no_op' }, 'safe result awaits an explicit user decision');
       }
       return decision(event, { type: 'block_work', taskId: event.taskId, subtaskId: null }, 'no runnable Subtask while work remains');
     }
@@ -1528,7 +1576,7 @@ export class ControlKernel {
 
   private decideTaskControl(
     event: Extract<KernelEvent, {
-      type: 'task_cancel_requested' | 'subtasks_cancel_requested' | 'partial_result_acceptance_requested';
+      type: 'task_cancel_requested' | 'subtasks_cancel_requested' | 'partial_result_acceptance_requested' | 'task_result_retry_requested';
     }>,
     snapshot: Extract<KernelSnapshot, { type: 'task_control' }>,
   ): KernelDecision {
@@ -1548,9 +1596,34 @@ export class ControlKernel {
     if (!snapshot.generationId || snapshot.graphRevision === null) {
       return decision(event, { type: 'reject_request' }, 'active Work Graph generation is missing');
     }
+    if (event.type === 'partial_result_acceptance_requested' || event.type === 'task_result_retry_requested') {
+      const expected = event.expectedResult;
+      const accepted = snapshot.acceptedResult;
+      if (event.type === 'partial_result_acceptance_requested' && expected && accepted
+        && !['cancelled', 'archived', 'failed'].includes(snapshot.task.status)
+        && Object.keys(expected).every(key => expected[key as keyof PendingResultIdentity] === accepted[key as keyof PendingResultIdentity])) {
+        return decision(event, { type: 'accept_uncertified_result', ...accepted }, 'previously authorized result acceptance replay');
+      }
+      const pending = snapshot.uncertifiedResult;
+      if (['done', 'archived', 'cancelled'].includes(snapshot.task.status)
+        || (expected && (!pending || expected.taskId !== event.taskId
+          || expected.generationId !== snapshot.generationId || expected.graphRevision !== snapshot.graphRevision
+          || expected.subtaskId !== pending.subtaskId || expected.attemptId !== pending.attemptId
+          || expected.resultId !== pending.resultId))) {
+        return decision(event, { type: 'reject_request' }, '该结果操作已过期，请刷新任务后重试。');
+      }
+      if (event.type === 'task_result_retry_requested') {
+        if (!pending || !snapshot.resultRetrySafe) return decision(event, { type: 'reject_request' },
+          '无法安全重新执行：请先确认不确定的外部副作用。');
+        return decision(event, { type: 'retry_uncertified_result', taskId: event.taskId,
+          generationId: snapshot.generationId, graphRevision: snapshot.graphRevision,
+          ...pending }, 'explicit safe result retry authorized');
+      }
+    }
     if (event.type === 'partial_result_acceptance_requested' && snapshot.uncertifiedResult && !snapshot.partialCancellation) {
       return decision(event, {
         type: 'accept_uncertified_result',
+        generationId: snapshot.generationId, graphRevision: snapshot.graphRevision,
         taskId: event.taskId,
         subtaskId: snapshot.uncertifiedResult.subtaskId,
         attemptId: snapshot.uncertifiedResult.attemptId,
@@ -2083,6 +2156,7 @@ function decision(event: KernelEvent, action: KernelDecisionAction, reason: stri
 }
 
 function snapshotMatches(event: KernelEvent, snapshot: KernelSnapshot): boolean {
+  if (event.type === 'managed_service_requested') return snapshot.type === 'service_control';
   if (event.type === 'plan_proposed') return snapshot.type === 'plan_admission';
   if (event.type === 'executor_recovered') return snapshot.type === 'availability_recovery';
   if (event.type === 'timer_tick') return snapshot.type === 'timer';
@@ -2096,6 +2170,7 @@ function snapshotMatches(event: KernelEvent, snapshot: KernelSnapshot): boolean 
     event.type === 'task_cancel_requested'
     || event.type === 'subtasks_cancel_requested'
     || event.type === 'partial_result_acceptance_requested'
+    || event.type === 'task_result_retry_requested'
   ) return snapshot.type === 'task_control';
   return snapshot.type === 'dispatch';
 }
@@ -2245,26 +2320,6 @@ function resolveAuthorizedBindings(
   return errors.length > 0
     ? { ok: false, errors: errors.sort() }
     : { ok: true, bindingsBySubtask, routing };
-}
-
-function resolveModelRef(
-  proposed: WorkGraphProposal['subtasks'][number]['executorBindings'][number],
-  policy: KernelConfigurationView['agentClasses'][string]['modelPolicy'],
-): string | null {
-  if (policy.mode === 'fixed') {
-    return proposed.modelSelection.mode === 'fixed-by-agent-class'
-      ? policy.modelRef
-      : null;
-  }
-  if (proposed.modelSelection.mode === 'proposed') {
-    return policy.allowedModelRefs.includes(proposed.modelSelection.modelRef)
-      ? proposed.modelSelection.modelRef
-      : null;
-  }
-  if (proposed.modelSelection.mode === 'agent-class-default') {
-    return policy.defaultModelRef ?? null;
-  }
-  return null;
 }
 
 function bindingsForProposalSubtask(

@@ -66,6 +66,7 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     '```chart',
     '{"version":1,"type":"bar","title":"季度收入","labels":["一季度","二季度"],"series":[{"name":"收入","values":[120,150]}],"unit":"万元","source":"用户提供的季度数据"}',
     '```',
+    '- Local service delivery: when starting a service is requested, build and API-test the backend independently of unrelated UI work. Produce .metawork-service.json at the workspace root: {serviceId: <stable identifier>, command: <executable>, args: [], directory: <optional relative directory>, environmentReferences: {}, host: "127.0.0.1", port: <port>, healthPath: "/health", startupTimeoutMs: 10000, restartPolicy: "explicit"}. Omit taskId; Runtime binds the authoritative Task identity. Store only secret references. Runtime publishes code then launches from the public directory, owns health checks and process lifetime. Never claim running from a command snippet or start a persistent daemon in the isolated workspace.',
     '- Other graph nodes are out of scope. Do not execute or anticipate their full goals.',
     '- Dependency data is available only through incomingHandoffs. Use result_reference_get to read an authorized full upstream result when the edge summary is insufficient.',
     '- The workspace is the primary task and publication context, not a read-only boundary. You may read and write ordinary user-space files outside it when useful for the task, including temporary research material and caches.',

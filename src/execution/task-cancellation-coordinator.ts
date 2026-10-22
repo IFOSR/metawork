@@ -1,3 +1,8 @@
+import type { PendingResultIdentity } from '../task/safe-result-identity.js';
+import { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
+import { safeProjectionId } from '../task/safe-result-identity.js';
+import { readPendingTaskResult } from '../storage/pending-task-result.js';
+import { deriveRecoverySafety } from '../routing/types.js';
 import type Database from 'better-sqlite3';
 import type { ActiveExecutionControl } from './active-execution-control.js';
 import type { AttemptExecutionBackend } from './attempt-execution-backend.js';
@@ -71,12 +76,14 @@ export class TaskCancellationCoordinator {
     });
   }
 
-  buildSnapshot(taskId: string): Extract<KernelSnapshot, { type: 'task_control' }> {
+  buildSnapshot(taskId: string, expectedResult?: PendingResultIdentity): Extract<KernelSnapshot, { type: 'task_control' }> {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     const revision = this.deps.workGraphRevisionRepo.findActive(taskId);
     const subtasks = revision
       ? this.deps.subtaskRepo.listActiveByTask(taskId)
       : this.deps.subtaskRepo.listByTask(taskId);
+    const pending = readPendingTaskResult(this.deps.db, taskId);
+    const pendingSubtask = subtasks.find(item => item.id === pending?.subtaskId);
     return {
       schemaVersion: 5,
       type: 'task_control',
@@ -98,15 +105,9 @@ export class TaskCancellationCoordinator {
         task?.status !== 'cancelled'
         && subtasks.some(subtask => subtask.status === 'cancelled'),
       ),
-      uncertifiedResult: (() => {
-        const row = this.deps.db.prepare(`SELECT attempt_id AS attemptId, subtask_id AS subtaskId,
-          json_extract(parsing_json, '$.resultObjects.safeProjectionId') AS resultId
-          FROM executor_attempt_receipts WHERE task_id = ? AND terminal_state = 'uncertified_result'
-          ORDER BY completed_at DESC LIMIT 1`).get(taskId) as {
-            attemptId: string; subtaskId: string; resultId: string | null;
-          } | undefined;
-        return row?.resultId ? { ...row, resultId: row.resultId } : null;
-      })(),
+      uncertifiedResult: pending,
+      acceptedResult: expectedResult && this.previouslyAccepted(expectedResult) ? expectedResult : null,
+      resultRetrySafe: Boolean(pendingSubtask && deriveRecoverySafety(pendingSubtask.requiredCapabilities) !== 'external_non_idempotent'),
     };
   }
 
@@ -362,12 +363,30 @@ export class TaskCancellationCoordinator {
     return slotRelease;
   }
 
+  private previouslyAccepted(expected: PendingResultIdentity): boolean {
+    const publication = this.deps.publicationRepo.find(`publication_accepted_${expected.attemptId}`);
+    const receipt = new ExecutorAttemptReceiptRepo(this.deps.db).findByAttemptId(expected.attemptId);
+    const revision = this.deps.workGraphRevisionRepo.findActive(expected.taskId);
+    return Boolean(publication && !['cancelled', 'conflicted'].includes(publication.status)
+      && publication.taskId === expected.taskId && publication.subtaskId === expected.subtaskId
+      && publication.generationId === expected.generationId && receipt?.graphRevision === expected.graphRevision
+      && revision?.generationId === expected.generationId && revision.revision === expected.graphRevision
+      && receipt.taskId === expected.taskId && receipt.subtaskId === expected.subtaskId
+      && safeProjectionId(receipt) === expected.resultId);
+  }
+
   completionBlockedReasons(
     taskId: string,
     generationId: string | null,
     excludedDecisionId?: string,
   ): string[] {
-    return this.residueReader.blockingReasons(taskId, generationId, excludedDecisionId);
+    const reasons: string[] = this.residueReader.blockingReasons(taskId, generationId, excludedDecisionId);
+    const task = this.deps.taskRuntimeService.findTask(taskId);
+    if (task?.startServiceAfterPublish && !['done', 'cancelled', 'failed', 'archived'].includes(task.status)
+      && !this.deps.db.prepare("SELECT 1 FROM managed_local_services WHERE task_id = ? AND state = 'healthy' LIMIT 1").get(taskId)) {
+      reasons.push('managed_service:health_required');
+    }
+    return reasons;
   }
 
   findCleanupTaskId(): string | null {

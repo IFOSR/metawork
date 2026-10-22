@@ -189,6 +189,7 @@ export interface MetaclawSessionDeps {
   sourceRoot?: string;
   resultsRoot?: string;
   userArtifactPublication?: UserArtifactPublicationService;
+  managedLocalServices?: import('../execution/managed-local-service.js').ManagedLocalServices;
   attemptExecutionBackend?: AttemptExecutionBackend;
   plannerHost?: PlannerHostRegistrar;
   plannerSupervisor?: PlannerProcessController;
@@ -580,10 +581,13 @@ export class MetaclawSession {
     const cancellationCoordinator = runtimeExecutionServices.cancellationCoordinator;
     this.attemptRunner = runtimeExecutionServices.attemptRunner;
     const kernelExecutionServices = deps.accountKernelExecutionServices ?? buildAccountKernelExecutionServices({
+      accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+      managedLocalServices: deps.managedLocalServices,
       userArtifactPublication: deps.userArtifactPublication ?? new UserArtifactPublicationService({
         userWorkspaceRoot: sourceRoot, taskArtifactRepo: new TaskArtifactRepo(deps.db),
       }),
       resolveWorkspacePath: async () => sourceRoot,
+      resolveUserWorkspaceRoot: async () => deps.userArtifactPublication?.userWorkspaceRoot || sourceRoot,
       db: deps.db,
       sessionId: deps.sessionId,
       legacyCompatibility: true,
@@ -2680,6 +2684,7 @@ export class MetaclawSession {
       memoryEngine: this.deps.memoryEngine,
       orchestration: this.deps.orchestration,
       activeExecutions: this.executionRuntime,
+      conversationId: this.deps.sessionId,
       taskControl: this.kernelExecutionRuntime,
       readServices: this.commandReadServices,
       refreshExecutors: agentClassNames => this.executorRecoveryRefreshService.refresh({

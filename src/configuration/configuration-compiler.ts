@@ -1,9 +1,7 @@
-import { createHash } from 'node:crypto';
 import {
   chmod,
   mkdir,
   readdir,
-  stat,
   writeFile,
 } from 'node:fs/promises';
 import { join, resolve } from 'node:path';

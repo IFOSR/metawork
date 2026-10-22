@@ -1,3 +1,5 @@
+import { deriveRecoverySafety } from '../routing/types.js';
+import { readPendingTaskResult } from './pending-task-result.js';
 import type Database from 'better-sqlite3';
 import type { TaskActivityFactsReader } from '../task/task-activity-facts.js';
 import { ACTIVE_REPLAN_STATUSES, RESIDUAL_PUBLICATION_STATUSES, type TaskViewFacts } from '../task/task-view.js';
@@ -36,7 +38,15 @@ export class SqliteTaskActivityFacts implements TaskActivityFactsReader {
       WHERE p.task_id = ? AND p.status = 'integrated' AND s.status = 'awaiting_integration'
       ORDER BY CASE WHEN d.status = 'failed' THEN 1 ELSE 0 END LIMIT 1`).get(task.id) as { status: string } | undefined;
     const deliveryState = delivery ? (delivery.status === 'failed' ? 'failed' : 'pending') : null;
-    return { task, pendingPermission, capacityWaiting, deliveryState, dispatches: dispatch ? [dispatch] : [], replanJobs: replan ? [replan] : [],
+    const serviceRequired = this.db.prepare("SELECT 1 FROM tasks WHERE id = ? AND start_service_after_publish = 1").get(task.id);
+    const service = serviceRequired ? this.db.prepare("SELECT state FROM managed_local_services WHERE task_id = ? ORDER BY updated_at DESC LIMIT 1").get(task.id) as { state: string } | undefined : undefined;
+    const serviceState = serviceRequired ? service?.state ?? 'not_started' : null;
+    const expectedResult = readPendingTaskResult(this.db, task.id);
+    const capabilities = expectedResult ? this.db.prepare('SELECT required_capabilities_json FROM subtasks WHERE id = ?').get(expectedResult.subtaskId) as { required_capabilities_json: string } | undefined : undefined;
+    const retrySafe = capabilities && deriveRecoverySafety(JSON.parse(capabilities.required_capabilities_json)) !== 'external_non_idempotent';
+    return { pendingDecision: expectedResult ? { owner: 'user', reason: 'uncertified_result',
+      resultId: expectedResult.resultId, attemptId: expectedResult.attemptId, expectedResult,
+      actions: retrySafe ? ['accept_result', 'retry_attempt'] : ['accept_result'] } : null, task, pendingPermission, capacityWaiting, deliveryState, serviceState, dispatches: dispatch ? [dispatch] : [], replanJobs: replan ? [replan] : [],
       uncertainApplications: recovery ? [recovery] : [], publications: publication ? [publication] : [],
       retryWakeAt: retry?.resumeAt ?? null, retryWakeRecoveryRequired: Boolean(recoveryWake),
       subtasks: this.db.prepare(`SELECT id, status FROM subtasks WHERE task_id = ? AND graph_revision =

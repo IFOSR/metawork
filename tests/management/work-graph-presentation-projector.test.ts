@@ -121,6 +121,7 @@ describe('WorkGraphPresentationProjector', () => {
       ['task-1_r1_implement'],
     ]);
     expect(result.currentRunnableFrontier).toEqual(['task-1_r1_docs']);
+    expect(result.nodes.map(node => node.executionState)).toEqual(['completed', 'running', 'waiting']);
     expect(result.nodes.find(node => node.id === 'task-1_r1_implement')).toMatchObject({
       status: 'running',
       routing: [{

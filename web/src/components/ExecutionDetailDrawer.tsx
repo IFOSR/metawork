@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { ConversationTurnProjection } from '../api/session-types';
-import type { ExecutionTimeline, InteractionTraceEvent } from '../api/types';
+import type { ExecutionTimeline, InteractionTraceEvent, WorkGraphPresentationProjection } from '../api/types';
+import { subtaskTitle } from '../work-graph-titles';
 
 const KIND_LABELS: Record<string, string> = {
   executor_routed: '路由',
@@ -22,15 +23,20 @@ const KIND_LABELS: Record<string, string> = {
 export function ExecutionDetailDrawer({
   turn,
   subtaskId,
+  fallbackTitle,
+  workGraph,
   onClose,
 }: {
   turn: ConversationTurnProjection;
   subtaskId: string;
+  fallbackTitle?: string;
+  workGraph?: WorkGraphPresentationProjection | null;
   onClose: () => void;
 }) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const events = collectDetailEvents(turn.traceEvents, turn.executionTimeline, subtaskId);
   const meta = latestExecutionMeta(turn.traceEvents, turn.executionTimeline, subtaskId);
+  const titleBySubtask = new Map(workGraph?.nodes.map(node => [node.id, node.title]) ?? []);
 
   useEffect(() => {
     const body = bodyRef.current;
@@ -42,7 +48,7 @@ export function ExecutionDetailDrawer({
       <header className="execution-detail-header">
         <div className="execution-detail-title">
           <span>EXECUTOR DETAIL</span>
-          <strong>{meta?.subtaskTitle || subtaskId}</strong>
+          <strong>{subtaskTitle(titleBySubtask, subtaskId, fallbackTitle || meta?.subtaskTitle || subtaskId)}</strong>
           <small>
             {[
               meta?.executorDisplayName,

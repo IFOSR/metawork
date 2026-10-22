@@ -11,6 +11,7 @@ export interface ConversationTaskSummary {
   readonly explanation: string;
   readonly progressSummary?: string;
   readonly canCancel: boolean;
+  readonly pendingDecision?: import('../task/task-view.js').TaskViewPendingDecisionFact | null;
   /** An attempt is settling; cancellation has not yet released execution. */
   readonly executionSettling?: boolean;
 }

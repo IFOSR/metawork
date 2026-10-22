@@ -68,9 +68,11 @@ presentation snapshot without reconstructing business state on the client.
 5. **Capabilities are explicit.** The Server hello advertises
    `command_completion_v1` and `task_view_v1`. A TUI that requires them must
    fail closed with an upgrade prompt when they are absent; it must not fall
-   back to a Planner Host channel or silently drop panels. Web and Feishu do
-   not consume the new queries, and their existing fields and semantics stay
-   compatible.
+   back to a Planner Host channel or silently drop panels. Desktop/Web consume `complete_command` through the same connection-scoped
+   Gateway path (2026-10-22); completion uses data only, including unopened
+   existing Conversations, without starting Planner. Feishu retains its current
+   command entry points. Help and completion share the server command tree;
+   clients must not maintain a duplicate task-command catalog.
 6. **The vendored protocol file is a mirror.** `gateway-protocol.ts` inside the
    Pi fork copies the authoritative contract for the isolated build; field-level
    contract tests keep both sides and the Web/Feishu consumers consistent.

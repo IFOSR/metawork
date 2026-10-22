@@ -1,3 +1,5 @@
+import { projectTaskView } from '../../src/task/task-view.js';
+import { SqliteTaskActivityFacts } from '../../src/storage/task-activity-facts-repo.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { tmpdir } from 'os';
@@ -56,6 +58,7 @@ describe('showTask detail view', () => {
       taskEngine,
       memoryEngine,
       orchestration,
+      taskControl: { taskView: (id: string) => projectTaskView(new SqliteTaskActivityFacts(db).read(taskEngine.getTaskRepo().findById(id)!, null)) },
       currentTaskId: null,
       db,
       config: createConfig(),
@@ -173,7 +176,7 @@ describe('showTask detail view', () => {
 
     const result = await showTask({ positionals: { taskId: task.id }, options: {} }, context);
 
-    expect(result.content).toContain('当前状态: parked');
+    expect(result.content).toContain('当前状态: 需要处理');
     expect(result.content).toContain('上次做到');
     expect(result.content).toContain('已完成行业格局整理');
     expect(result.content).toContain('恢复操作');
@@ -223,7 +226,7 @@ describe('showTask detail view', () => {
 
     const result = await showTask({ positionals: { taskId: task.id }, options: {} }, context);
 
-    expect(result.content).toContain('状态说明: 上次执行结果不确定');
+    expect(result.content).toContain('当前状态: 需要处理');
     expect(result.content).toContain('最新下一步: 材料齐全不等于可以安全恢复');
     expect(result.content).toContain('材料齐全不等于可以安全恢复');
     expect(result.content).toContain(`/task recovery ${task.id}`);

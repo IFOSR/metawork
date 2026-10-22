@@ -192,6 +192,53 @@ function stateWithConversation(controller: MetaWorkTuiController): void {
 }
 
 describe("metawork-tui controller", () => {
+	it.each([
+		["accept-result", "accept_task_result"],
+		["retry-result", "retry_task_attempt"],
+	])("submits %s with the exact selected result identity and refreshes", async (input, kind) => {
+		const gateway = createFakeGateway();
+		const controller = new MetaWorkTuiController({ gateway });
+		const expectedResult = {
+			taskId: "task_1",
+			generationId: "generation",
+			graphRevision: 2,
+			subtaskId: "backend",
+			attemptId: "correction",
+			resultId: "primary-result",
+		};
+		try {
+			await controller.start();
+			await controller.attachConversation("conv_1", false);
+			gateway.observed.set("conv_1", { turns: [{ ...turn("conv_1", "turn_1"), taskId: "task_1" }] });
+			gateway.emit(
+				event("connection", 1, "task_view_snapshot", {
+					queryVersion: "task_view_v1",
+					requestId: "view",
+					targetConversationId: "conv_1",
+					turnId: "turn_1",
+					taskId: "task_1",
+					asOfSequence: 1,
+					subtasks: [],
+					lifecycle: { pendingDecision: { actions: ["accept_result", "retry_attempt"], expectedResult } },
+				}),
+			);
+			expect(controller.getView().selectedTurn?.resultDecision?.expectedResult).toEqual(expectedResult);
+			await controller.submit(`/task ${input} task_1`);
+			expect(gateway.submitted.at(-1)?.command).toEqual({ kind, expectedResult });
+			expect(gateway.submitted.at(-1)?.scope).toEqual({
+				kind: "conversation",
+				selection: { mode: "attach", conversationId: "conv_1" },
+			});
+			expect(gateway.calls).toContain("task_view:conv_1");
+			const count = gateway.submitted.length;
+			await controller.submit(`/task ${input} different-task`);
+			expect(gateway.submitted).toHaveLength(count);
+			expect(controller.getView().operation).toContain("过期");
+		} finally {
+			controller.stop();
+		}
+	});
+
 	it("loads older directory pages explicitly and resets a stale cursor with the same query", async () => {
 		const gateway = createFakeGateway();
 		const controller = new MetaWorkTuiController({ gateway });

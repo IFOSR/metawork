@@ -61,6 +61,10 @@ export type GatewayCommand =
 	| { readonly kind: "get_pending_interactions"; readonly conversationId: string; readonly cursor?: string }
 	| { readonly kind: "cancel_task"; readonly taskId: string; readonly expectedExecutionGeneration: string }
 	| {
+			readonly kind: "accept_task_result" | "retry_task_attempt";
+			readonly expectedResult: GatewayPendingResultIdentity;
+	  }
+	| {
 			readonly kind: "permission_resolution_v2";
 			readonly requestId: string;
 			readonly requestRevision: string;
@@ -118,6 +122,28 @@ export const GATEWAY_CAPABILITY_TASK_VIEW = "task_view_v1";
 /** Gateway v2 显式能力：只读用量与账单投影。 */
 export const GATEWAY_CAPABILITY_USAGE_BILLING = "usage_billing_v1";
 
+export interface GatewayPendingResultIdentity {
+	readonly taskId: string;
+	readonly generationId: string;
+	readonly graphRevision: number;
+	readonly subtaskId: string;
+	readonly attemptId: string;
+	readonly resultId: string;
+}
+
+export interface GatewayResultDecision {
+	readonly expectedResult: GatewayPendingResultIdentity;
+	readonly actions: readonly string[];
+}
+
+export interface GatewayPublicDelivery {
+	readonly workspace: string;
+	readonly taskDirectory: string;
+	readonly state: string;
+	readonly files: readonly string[];
+	readonly conflicts: readonly string[];
+}
+
 /** command_completion 响应 payload（command_completion_v1）。 */
 export interface GatewayCommandCompletionPayload {
 	readonly queryVersion: "command_completion_v1";
@@ -152,6 +178,7 @@ export interface GatewayTaskViewSnapshot {
 	readonly taskId: string;
 	readonly title: string;
 	readonly status: string;
+	readonly publicDelivery?: GatewayPublicDelivery | null;
 	readonly goal: string | null;
 	readonly startedAt: string | null;
 	readonly completedAt: string | null;
@@ -173,6 +200,7 @@ export interface GatewayTaskViewSnapshot {
 		} | null;
 		readonly blockingResidue: readonly string[];
 		readonly nextAuthorizedAction: string;
+		readonly pendingDecision?: GatewayResultDecision | null;
 		/** `uncertain_application` 或 `no_authorized_driver`；其他情况为 null。 */
 		readonly recoveryDiagnosis?: string | null;
 		readonly explanation: string;

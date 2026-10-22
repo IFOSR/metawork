@@ -47,7 +47,30 @@ Attempt success writes an immutable receipt and candidate commit, then moves the
 
 An Execution-owned publication worker integrates candidates in deterministic order: graph topological layer, first Kernel batch authorization order and Subtask ID. Git integration is recorded before required user delivery. Only successful delivery permits the transaction publishing the original completion payload, final workspace state and `done`. Downstream frontier derivation therefore cannot observe unintegrated work.
 
-The Runtime creates only MetaClaw-managed integration commits. It never mutates, merges or pushes a user branch.
+Internal integration creates only MetaClaw-managed integration commits. The
+2026-10-21 public-delivery amendment below additionally permits a controlled
+fast-forward into the user's local Git tree; it never pushes a user branch.
+
+### Public Workspace delivery amendment (2026-10-21)
+
+The delivery boundary writes actual files into the Task's immutable public
+directory. All edit changes, including deletions, are delivered; explicitly
+declared downloadable artifacts remain a separate projection. Cross-process
+Workspace locking serializes publications. Preflight checks the complete batch
+against initial or previously published hashes, boundaries, symlinks and size
+limits before mutation. External edits pause delivery and name relative conflict
+files. New non-Git directories use one staged-tree rename; existing directories
+use staged replacements and rollback on ordinary write failure. Interrupted
+delivery adopts matching bytes idempotently during recovery.
+
+For a Git Workspace, Runtime requires a clean valid repository, builds a
+controlled Task branch with an isolated index, rechecks cleanliness and performs
+`merge --ff-only` into the actual user tree. It never silently chooses conflict
+versions or treats a private integration commit as delivered user code. Dirty,
+corrupt or concurrently changed trees fail delivery. A same-tree replay creates
+no additional commit. Publication and delivery facts gate Subtask `done`, handoff
+and Task completion. Service-required Tasks additionally require healthy service
+facts under ADR-0024.
 
 ### Durable user delivery amendment (2026-10-15)
 

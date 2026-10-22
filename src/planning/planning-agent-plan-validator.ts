@@ -139,7 +139,16 @@ function validateActionSemantics(plan: PlanningAgentPlan, errors: string[]): voi
 }
 
 function validateTaskControlScope(plan: PlanningAgentPlan, errors: string[]): void {
+  if (plan.task.publicProjectDirectory && (plan.task.binding !== 'new' || plan.task.publicProjectDirectory.startsWith('/')
+    || plan.task.publicProjectDirectory.includes('\\') || plan.task.publicProjectDirectory.split('/').some(part => !part || part === '.' || part === '..'))) {
+    errors.push('publicProjectDirectory requires an explicitly selected Workspace-relative project on a new Task');
+  }
+  if (plan.task.startServiceAfterPublish && (plan.action !== 'plan_work_graph' || plan.task.binding !== 'new')) errors.push('startServiceAfterPublish requires a new implementation Task');
   if (plan.action !== 'task_control') return;
+  if (plan.task.control.startsWith('service_')) {
+    if (plan.task.binding !== 'reference' || !plan.task.taskId) errors.push('service control requires an exact reference Task');
+    if (plan.task.control === 'service_start' ? plan.task.scope !== null : !/^[a-zA-Z0-9_-]{1,100}$/u.test(plan.task.scope ?? '')) errors.push('service_start requires null scope; stop/restart require the exact serviceId');
+  }
   if (plan.task.control === 'status_query' && !['dashboard', 'blocked', 'running'].includes(plan.task.scope ?? '')) {
     errors.push('status_query requires scope dashboard, blocked, or running');
   }

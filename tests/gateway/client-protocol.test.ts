@@ -22,6 +22,21 @@ function conversationEnvelope(): GatewayCommandEnvelope {
 }
 
 describe('gateway client command protocol v2', () => {
+  it.each(['accept_task_result', 'retry_task_attempt'] as const)('fences %s with all six result identity fields and an attached Conversation', kind => {
+    const expectedResult = { taskId: 'task', generationId: 'generation', graphRevision: 3,
+      subtaskId: 'subtask', attemptId: 'attempt', resultId: 'result' };
+    const envelope = { ...conversationEnvelope(), command: { kind, expectedResult } };
+    expect(parseGatewayCommandEnvelope(envelope)?.command).toEqual(envelope.command);
+    for (const key of Object.keys(expectedResult)) {
+      const incomplete = { ...expectedResult } as Record<string, unknown>;
+      delete incomplete[key];
+      expect(parseGatewayCommandEnvelope({ ...envelope, command: { kind, expectedResult: incomplete } })).toBeNull();
+    }
+    expect(parseGatewayCommandEnvelope({ ...envelope, command: { kind, expectedResult: { ...expectedResult, graphRevision: 0 } } })).toBeNull();
+    expect(parseGatewayCommandEnvelope({ ...envelope, command: { kind, expectedResult: { ...expectedResult, ownerAttemptId: 'forged' } } })).toBeNull();
+    expect(parseGatewayCommandEnvelope({ ...envelope, scope: { kind: 'workspace' } })).toBeNull();
+    expect(parseGatewayCommandEnvelope({ ...envelope, scope: { kind: 'conversation', selection: { mode: 'new', workspaceId: 'w' } } })).toBeNull();
+  });
   it('advertises negotiated bounded replay resets', () => {
     expect(GATEWAY_SERVER_CAPABILITIES).toContain('bounded_replay_v1');
   });

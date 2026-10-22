@@ -607,6 +607,11 @@ the explicit target Conversation ID, with sequences drawn from the same
 per-connection allocator via ephemeral journal reservation. The Server hello
 advertises the `command_completion_v1` and `task_view_v1` capabilities; clients
 that require them fail closed with an upgrade prompt.
+Desktop and Web share slash-command completion through this same read-only query;
+common help, advanced discovery and candidates use the server's CommandCatalog.
+Completion uses data only, including for unopened historical/new Conversations;
+it never opens a Planner session. The current command reference is
+`docs/current/commands.md`.
 
 ADR-0034 makes the process topology explicit. ADR-0035 makes Workspace a
 first-class Account-scoped product container with immutable `workspaceId`.
@@ -653,7 +658,7 @@ Turn cancellation invariant: the Client stop control cancels the Turn it is disp
 
 Managed path-naming invariant: durable identities (Task, generation, Subtask, attempt) stay complete in the database, the Kernel ledger and every handle/URI, while the on-disk directory names derived from them are deterministic bounded segments of at most 64 characters carrying a readable prefix/suffix plus an eight-character digest. This keeps a managed workspace at `<account>/workspace-store/workspaces/<segment>/<segment>/<segment>/files`, a managed Git repository and an attempt runtime HOME well inside `NAME_MAX` and inside the budget of tools that flatten a path into one component; a single long plan-event hash must never be repeated across nesting levels. The mapping is pure, so recovery recomputes the same directory without a lookup table. Executor failure facts are passed through the same way: `KernelFailure.summary` carries the upstream text as it happened, `detail` preserves the raw tail, `label` is only an optional localized headline, and `origin`, `stage`, `actor`, `provider` and `step` record where the failure came from. Client surfaces render that text instead of replacing it with a category.
 
-The unreleased product uses SQLite schema version 42. Fresh databases start at v42; supported pre-release databases migrate transactionally through v31→v32→…→v41→v42 on a verified clone while unsupported older schemas are refused. Schema v42 adds `generation_replan_requests.planner_claim_token`, the fencing token that makes one Planner turn land at most once even when two account workers re-claim the same Job after a lease expiry. Schema v41 adds the resolved routing identity columns (`agent_class_ref`, `provider_ref`, `model_id`) on `usage_observations`. Schema v39/v40 adds the ADR-0042 Query usage and billing facts: Query attribution contexts with one request-scoped idempotency key, Query-to-cost-Task links, execution-segment mappings, metering spans, normalized usage observations with one row per `(source_id, source_event_key, metric)`, normalization issues, immutable price versions, cost entries, per-Query bills and stage lines, the consumption outbox and receipts, bill adjustments, and the stable billing source-instance identity. Amounts are constrained decimal text; all aggregation happens in exact money code. Schema v38 adds the durable `planner_turn_inputs` record holding one Planner Turn's attachment facts for the host-bridge submission, so admission stays correct across a Server restart. Schema v37 permits image preview kinds in the durable `task_artifacts` table. The migration converts active/recoverable Planning and Work Graph payloads from v7/v6 to v8/v7, including revision-pinned `executorBindings`, while terminal Kernel ledger history remains immutable. Any ambiguous recoverable payload rolls the cloned migration back and refuses activation; runtime has no earlier-schema read fallback. Schema v32 added immutable Result Objects and edge-scoped ResultReferences; schema v33 adds the Planner proposal configuration-revision pin used by replay and recovery. `awaiting_decision` and `awaiting_integration` remain Subtask-only states; startup recovery reconciles applications, child items, cancellation cleanup, execution-backend records, leases, publications and result delivery before accepting input. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` are retained only as durable schema/event compatibility names; new TypeScript abstractions use Execution Backend terminology.
+The unreleased product uses SQLite schema version 51. Fresh databases start at v51; supported pre-release databases migrate transactionally through v31→v32→…→v50→v51 on a verified clone while unsupported older schemas are refused. Schema v42 adds `generation_replan_requests.planner_claim_token`, the fencing token that makes one Planner turn land at most once even when two account workers re-claim the same Job after a lease expiry. Schema v41 adds the resolved routing identity columns (`agent_class_ref`, `provider_ref`, `model_id`) on `usage_observations`. Schema v39/v40 adds the ADR-0042 Query usage and billing facts: Query attribution contexts with one request-scoped idempotency key, Query-to-cost-Task links, execution-segment mappings, metering spans, normalized usage observations with one row per `(source_id, source_event_key, metric)`, normalization issues, immutable price versions, cost entries, per-Query bills and stage lines, the consumption outbox and receipts, bill adjustments, and the stable billing source-instance identity. Amounts are constrained decimal text; all aggregation happens in exact money code. Schema v38 adds the durable `planner_turn_inputs` record holding one Planner Turn's attachment facts for the host-bridge submission, so admission stays correct across a Server restart. Schema v37 permits image preview kinds in the durable `task_artifacts` table. The migration converts active/recoverable Planning and Work Graph payloads from v7/v6 to v8/v7, including revision-pinned `executorBindings`, while terminal Kernel ledger history remains immutable. Any ambiguous recoverable payload rolls the cloned migration back and refuses activation; runtime has no earlier-schema read fallback. Schema v32 added immutable Result Objects and edge-scoped ResultReferences; schema v33 adds the Planner proposal configuration-revision pin used by replay and recovery. `awaiting_decision` and `awaiting_integration` remain Subtask-only states; startup recovery reconciles applications, child items, cancellation cleanup, execution-backend records, leases, publications and result delivery before accepting input. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` are retained only as durable schema/event compatibility names; new TypeScript abstractions use Execution Backend terminology.
 
 The legacy routing/intent subsystem, `PolicyKernel`, `TaskAdmissionGate`, `SchedulerEngine`, queue/preemption policy and parked auto-resume have been removed. The target active path is `PlanningAgent/Application Shell → KernelWorkflow → ControlKernel → idempotent Runtime handlers → SubtaskAttemptRunner`; do not reintroduce a parallel strategic interpreter or allow a workflow framework to own domain retry policy.
 
@@ -672,10 +677,48 @@ Executor recovery is event-driven rather than periodic. `ExecutorRecoveryRefresh
 
 When touching dispatch, update focused behavior tests around `ControlKernel`, `DurableKernelWorkflow`, the decision/application ledger, work-graph runtime, work-unit claims and attempt landing. Attempt terminal regressions remain anchored in `tests/execution/subtask-attempt-runner.test.ts` and `tests/session/planning-agent-session-routing.test.ts`.
 
+## Task Acceptance, Public Delivery And Managed Services (2026-10-21)
+
+All clients consume the same TaskView pending decision. Accept/retry controls
+carry exact Task, Generation, Graph Revision, Subtask, decision Attempt and Result
+identities. The pending receipt and immutable safe result are resolved together;
+a correction may reference its primary source only when both receipts agree on
+the result ownership. Stale, cross-account or mismatched controls fail closed.
+Acceptance revalidates files/security and enters ordinary publication without
+rerunning the Executor. Explicit retry preserves history and cannot repeat an
+uncertain external side effect. An independent runnable frontier keeps advancing
+while another Subtask awaits a user decision.
+
+Task creation persists an immutable Workspace-relative public directory, either
+a title-derived task directory or an explicitly selected existing project
+subdirectory. Recovery/retry cannot change it. Runtime records the baseline and
+checks user edits, full code deltas including deletions, symlinks and path escape
+before publication. Non-Git writes use staging and rollback; Git delivery uses a
+controlled branch and checked fast-forward into the actual user tree. A delivery
+is successful only after the public files exist. Published code facts are
+separate from Planner-declared downloadable fileOutputs. Ordinary clients expose
+only the Workspace, public task directory, relative files, delivery state and
+conflicts; internal execution paths and secrets are redacted from public text.
+
+Planner proposes service intent; Kernel authorizes; Runtime owns the process.
+For an explicit implement-and-start request, startServiceAfterPublish gates
+completion on publication and a real health check. The Executor produces
+.metawork-service.json without needing a Task ID; Runtime binds that identity and
+rejects an explicitly foreign one. The manifest declares command/args, relative
+directory, environment references, loopback host/port, health path, startup
+window and explicit restart policy. Runtime starts from the verified public
+project, persists ownership and durable operation phases, observes across Server
+restart, and serializes process-group start/stop/restart. A failed health check
+remains needs_action. Stop retains delivered code and remains available when
+productive authorization closes. Existing Tasks accept bounded service controls
+without rerunning the graph. Service logs contain neither secret values nor
+private Runtime paths. Schema 51 stores the public directory/baseline, code file
+facts, service records and operation journal; 50→51 migration is transactional.
+
 ## Current Server Upgrade Baseline
 
 The current implementation uses PlanningAgentPlan v8, Work Graph v7, Kernel wire
-v5 and SQLite schema v49. ADR-0027 through ADR-0030 govern the configuration
+v5 and SQLite schema v51. ADR-0027 through ADR-0030 govern the configuration
 and release baseline; ADR-0032 governs Completion Protocol v4 and result-first
 delivery.
 

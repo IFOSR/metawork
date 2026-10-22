@@ -165,6 +165,23 @@ describe('Feishu shared read model and durable delivery adapter', () => {
     expect(reply.lines).toContain('/approve permission revision generation conversation');
     expect(reply.lines.some(line => line.includes('/read conversation'))).toBe(true);
   });
+  it('signs acceptance and retry cards with the exact pending result and recipient identity', async () => {
+    const { port, job, deliver, actions } = fixture();
+    const expectedResult = { taskId: 'task', generationId: 'generation-old', graphRevision: 4,
+      subtaskId: 'ui', attemptId: 'correction', resultId: 'primary-safe' };
+    await port.deliverNotification({ ...job, fact: { ...job.fact, category: 'progress', payload: {
+      userState: 'needs_action', pendingDecision: { reason: 'uncertified_result',
+        actions: ['accept_result', 'retry_attempt'], expectedResult },
+    } } });
+    const controls = deliver.mock.calls[0]![0].reply.actions!;
+    expect(controls.map(control => control.label)).toEqual(['接受并交付', '重新执行']);
+    const identity = { accountId: 'account', principalId: 'feishu:tenant:sender', chatId: 'chat', threadId: 'thread' };
+    for (const [index, kind] of ['accept_task_result', 'retry_task_attempt'].entries()) {
+      const token = controls[index]!.value.cursor;
+      expect(actions.resolve(token, identity)).toMatchObject({ conversationId: 'conversation', command: { kind, expectedResult } });
+      expect(() => actions.resolve(token, { ...identity, principalId: 'feishu:tenant:other' })).toThrow();
+    }
+  });
   it('propagates platform failure instead of acknowledging an undelivered result', async () => {
     const { port, job, deliver } = fixture(); deliver.mockRejectedValue(new Error('platform offline'));
     await expect(port.deliverNotification(job)).rejects.toThrow('platform offline');

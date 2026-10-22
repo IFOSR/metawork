@@ -87,6 +87,38 @@ describe('Web Cookie authentication', () => {
     expect(FakeWebSocket.instances[2]!.sent).toEqual([]);
     client.close();
   });
+  it('correlates command completion replies without treating admission as completion or retrying queries', async () => {
+    vi.stubGlobal('window', { location: { protocol: 'http:', host: '127.0.0.1:8788' },
+      setTimeout: vi.fn(() => 1), clearTimeout: vi.fn() });
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    const onError = vi.fn(); const client = new WsClient({ onError }); client.connect();
+    const socket = FakeWebSocket.instances[0]!; const completed = vi.fn();
+    const pending = client.query('history', { kind: 'complete_command', text: '/task ', cursor: 6 }).then(completed);
+    const envelope = JSON.parse(socket.sent[0]!).envelope;
+    expect(envelope.scope.selection).toEqual({ mode: 'attach', conversationId: 'history' });
+    expect(envelope.command).toEqual({ kind: 'complete_command', text: '/task ', cursor: 6 });
+    const requestId = envelope.requestId;
+    socket.onmessage?.({ data: JSON.stringify({ type: 'receipt', receipt: { requestId, status: 'accepted' } }) });
+    await Promise.resolve(); expect(completed).not.toHaveBeenCalled();
+    socket.onmessage?.({ data: JSON.stringify({ type: 'gateway_reply', event: { requestId: 'other', kind: 'command_completion', payload: {} } }) });
+    expect(completed).not.toHaveBeenCalled();
+    const payload = { targetConversationId: 'history', suggestions: [] };
+    socket.onmessage?.({ data: JSON.stringify({ type: 'gateway_reply', event: { requestId, kind: 'command_completion', payload } }) });
+    await pending; expect(completed).toHaveBeenCalledWith(payload);
+    const rejected = client.query('history', { kind: 'complete_command', text: '/' });
+    const rejectedId = JSON.parse(socket.sent[1]!).envelope.requestId;
+    socket.onmessage?.({ data: JSON.stringify({ type: 'receipt', receipt: { requestId: rejectedId, status: 'rejected', reason: 'rate_limit' } }) });
+    await expect(rejected).rejects.toThrow('rate_limit'); expect(onError).not.toHaveBeenCalled();
+    const disconnected = client.query('history', { kind: 'complete_command', text: '/' });
+    client.close(); await expect(disconnected).rejects.toThrow('disconnected');
+    client.connect();
+    const next = FakeWebSocket.instances[1]!;
+    next.onmessage?.({ data: JSON.stringify({ type: 'hello', sessionId: null,
+      capabilities: ['conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1'],
+      identity: { serverId: 'server', accountId: 'account' } }) });
+    expect(next.sent).toEqual([]); client.close();
+  });
+
   it('distinguishes control admission from the applied result and binds each response to its request', async () => {
     vi.stubGlobal('window', { location: { protocol: 'http:', host: '127.0.0.1:8788' },
       setTimeout: vi.fn(() => 1), clearTimeout: vi.fn() });

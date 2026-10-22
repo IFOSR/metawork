@@ -1,3 +1,4 @@
+import type { PendingResultIdentity } from '../../../src/task/safe-result-identity';
 import type {
   ClientMessage,
   ServerMessage,
@@ -15,6 +16,8 @@ import type { ConversationObservationFrame } from '../../../src/gateway/conversa
 export type ConversationCommand =
   | { kind: 'user_message'; text: string; attachments: Array<{ attachmentId: string; kind: string }> }
   | { kind: 'slash_command'; text: string }
+  | { kind: 'complete_command'; text: string; cursor?: number }
+  | { kind: 'accept_task_result' | 'retry_task_attempt'; expectedResult: PendingResultIdentity }
   | { kind: 'cancel_turn'; turnId: string }
   | { kind: 'cancel_task'; taskId: string; expectedExecutionGeneration: string }
   | { kind: 'get_pending_interactions'; conversationId: string }
@@ -251,7 +254,7 @@ export class WsClient {
     }, 1500);
   }
 
-  query<T>(conversationId: string, command: Extract<ConversationCommand, { kind: 'get_task_view' | 'get_query_bill_for_turn' | 'get_query_bill' }>): Promise<T> {
+  query<T>(conversationId: string, command: Extract<ConversationCommand, { kind: 'get_task_view' | 'get_query_bill_for_turn' | 'get_query_bill' | 'complete_command' }>): Promise<T> {
     if (this.queries.size >= 16) return Promise.reject(new Error('query_limit'));
     const id = `query_${crypto.randomUUID()}`;
     return new Promise<T>((resolve, reject) => {
@@ -271,7 +274,7 @@ export class WsClient {
   }
 
   control(conversationId: string,
-    command: Extract<ConversationCommand, { kind: 'cancel_turn' | 'cancel_task' | 'permission_resolution_v2' }>,
+    command: Extract<ConversationCommand, { kind: 'cancel_turn' | 'cancel_task' | 'permission_resolution_v2' | 'accept_task_result' | 'retry_task_attempt' }>,
     accepted: () => void): Promise<{ status: string; reason?: string }> {
     if (this.controls.size >= 16) return Promise.reject(new Error('command_limit'));
     const requestId = `control_${crypto.randomUUID()}`;
@@ -292,7 +295,7 @@ export class WsClient {
     const message = { type: 'command', envelope: {
       protocolVersion: 2, requestId, idempotencyKey: requestId, connectionId: 'web',
       scope: { kind: 'conversation', selection: { mode: 'attach', conversationId } },
-      command, clientCapabilities: ['conversation_observation_v1'],
+      command, clientCapabilities: ['conversation_observation_v1', 'command_completion_v1'],
     } };
     if (!this.sendMessage(message)) return null;
     if (input) {

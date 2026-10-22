@@ -233,6 +233,7 @@ export class ConversationSession {
   private runningExecutorsByAttempt = new Map<string, { taskId: string; subtaskId: string; name: string }>();
   private backgroundWork = new Set<Promise<void>>();
   private taskTraceTurnIds = new Map<string, string>();
+  private pendingTaskTraceResumes = new Map<string, string>();
   private blockedRecheckInFlight = false;
   private lastBlockedRecheckAt: number | null = null;
   private lastTaskPoolWatchdogFingerprint: string | null = null;
@@ -336,7 +337,7 @@ export class ConversationSession {
   setCurrentTaskId(taskId: string | null): void {
     this.currentTaskId = taskId;
     const trace = this.deps.interactionTraceStream?.getSnapshot();
-    if (taskId && trace?.status === 'running') {
+    if (taskId && trace && (trace.status === 'running' || trace.taskId === taskId)) {
       this.taskTraceTurnIds.set(taskId, trace.turnId);
     }
     this.notify();
@@ -559,7 +560,14 @@ export class ConversationSession {
   }
 
   appendExecutionTrace(input: ExecutionTraceAppendInput): void {
-    const current = this.deps.interactionTraceStream?.getSnapshot();
+    let current = this.deps.interactionTraceStream?.getSnapshot();
+    if (current?.status !== 'running' && input.taskId) {
+      const eventKey = this.pendingTaskTraceResumes.get(input.taskId);
+      if (eventKey) {
+        this.resumeTaskTrace(input.taskId, eventKey);
+        current = this.deps.interactionTraceStream?.getSnapshot();
+      }
+    }
     if (!current || current.status !== 'running') return;
     if (input.taskId) {
       const ownerTurnId = this.taskTraceTurnIds.get(input.taskId);
@@ -567,6 +575,29 @@ export class ConversationSession {
       if (!ownerTurnId && current.taskId && current.taskId !== input.taskId) return;
     }
     this.deps.interactionTraceStream?.append(input);
+  }
+
+  private resumeTaskTrace(taskId: string, eventKey: string): void {
+    const stream = this.deps.interactionTraceStream;
+    if (!stream) return;
+    const current = stream.getSnapshot();
+    const ownerTurnId = this.taskTraceTurnIds.get(taskId)
+      ?? (current?.taskId === taskId ? current.turnId : null);
+    if (!ownerTurnId) return;
+    this.taskTraceTurnIds.set(taskId, ownerTurnId);
+    stream.resumeTurn({ turnId: ownerTurnId, taskId });
+    this.appendExecutionTrace({
+      phase: 'execution',
+      actor: 'runtime',
+      kind: 'execution_resumed',
+      status: 'running',
+      title: '任务已重新执行',
+      summary: '已在原任务视图中恢复执行，并保留此前的轨迹记录。',
+      details: { taskId },
+      eventKey,
+      taskId,
+      traceStatus: 'running',
+    });
   }
 
   async cancelTask(taskId: string, reason: string): Promise<void> {
@@ -1382,6 +1413,29 @@ export class ConversationSession {
       case 'cancel_turn':
         await this.cancelActiveTurn(command.turnId);
         return;
+      case 'accept_task_result':
+      case 'retry_task_attempt': {
+        const expected = command.expectedResult;
+        const task = this.deps.runtimePort.queries.findTask(expected.taskId);
+        if (!task || task.accountId !== this.deps.runtimePort.accountId || task.conversationId !== this.deps.conversationId) {
+          throw new Error('task_scope_mismatch');
+        }
+        if (!this.kernelExecutionRuntime) throw new Error('task_control_unavailable');
+        if (command.kind === 'accept_task_result') await this.kernelExecutionRuntime.acceptPartialResult(task.id, expected);
+        else {
+          const eventKey = `retry:${expected.attemptId}:${expected.resultId}`;
+          this.pendingTaskTraceResumes.set(task.id, eventKey);
+          try {
+            await this.kernelExecutionRuntime.retryTaskResult(task.id, expected);
+            this.resumeTaskTrace(task.id, eventKey);
+          } finally {
+            this.pendingTaskTraceResumes.delete(task.id);
+          }
+        }
+        this.refreshRuntimeState();
+        this.appendOutput(command.kind === 'accept_task_result' ? '已接受结果，正在检查并交付。' : '已请求重新执行，原结果和历史记录保留。');
+        return;
+      }
       case 'cancel_task': {
         const task = this.deps.runtimePort.queries.findTask(command.taskId);
         if (!task || task.accountId !== this.deps.runtimePort.accountId || task.conversationId !== this.deps.conversationId) {
@@ -1790,6 +1844,18 @@ export class ConversationSession {
         eventId!,
       );
       if (result.status === 'accepted' || result.status === 'rejected') {
+        if (
+          result.status === 'accepted'
+          && result.kernel?.action === 'record_permission_resolution'
+          && parsed.data.authorizationResolution
+        ) {
+          await this.resolvePermission(
+            parsed.data.authorizationResolution.requestId,
+            parsed.data.authorizationResolution.resolution,
+            'planner',
+            parsed.data.id,
+          );
+        }
         repo.completeSubmission(sessionId, turnId, submission.submissionId, {
           ...result,
           turnId,
@@ -2727,6 +2793,7 @@ export class ConversationSession {
       memoryEngine: this.deps.memoryEngine!,
       orchestration: this.deps.orchestration!,
       activeExecutions: port.execution.activeExecutions,
+      conversationId: this.deps.conversationId,
       taskControl: this.kernelExecutionRuntime!,
       readServices: this.deps.commandReadServices!,
       refreshExecutors: agentClassNames => port.commands.refreshExecutors({

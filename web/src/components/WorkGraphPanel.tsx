@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { WorkGraphPresentationProjection } from '../api/types';
 import { workGraphNodeLabel } from '../work-graph-layout';
+import { WORK_GRAPH_STATUS_LABEL, workGraphExecutionState } from '../work-graph-status';
 import { RoutingDecisionCard } from './RoutingDecisionCard';
 import { WorkGraphDiagram } from './WorkGraphDiagram';
 
@@ -70,7 +71,9 @@ function WorkGraphNode({
     <article className="work-graph-node" data-status={node.status} data-runnable={node.runnable}>
       <div className="work-graph-node-topline">
         <strong>{workGraphNodeLabel(node)}</strong>
-        <span>{node.runnable ? '可调度' : node.status}</span>
+        <span className="work-graph-node-status" data-status={node.executionState ?? workGraphExecutionState(node.status)}>
+          {WORK_GRAPH_STATUS_LABEL[node.executionState ?? workGraphExecutionState(node.status)]}
+        </span>
       </div>
       <p>{node.goal}</p>
       <div className="work-graph-tags">

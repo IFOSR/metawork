@@ -3,6 +3,7 @@ import type { ConversationTurnProjection } from '../api/session-types';
 import type { InteractionTraceEvent } from '../api/types';
 import { executionElapsedEndMs } from '../execution-duration';
 import { ExecutionStep } from './ExecutionStep';
+import { subtaskTitle, type WorkGraphTitleIndex } from '../work-graph-titles';
 
 const GROUPS: Array<{
   title: string;
@@ -14,7 +15,10 @@ const GROUPS: Array<{
   { title: '验证与交付', phases: ['verification', 'delivery'] },
 ];
 
-export function ExecutionNarrative({ turn }: { turn: ConversationTurnProjection }) {
+export function ExecutionNarrative({ turn, titleBySubtask }: {
+  turn: ConversationTurnProjection;
+  titleBySubtask?: WorkGraphTitleIndex;
+}) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [collapsed, setCollapsed] = useState(true);
   const activeEvent = turn.status === 'running'
@@ -95,7 +99,7 @@ export function ExecutionNarrative({ turn }: { turn: ConversationTurnProjection 
               <div className="executor-subtask" key={subtask.id}>
                 <div className="subtask-fact">
                   <span>{subtask.status}</span>
-                  <strong>{subtask.title}</strong>
+                  <strong>{subtaskTitle(titleBySubtask, subtask.id, subtask.title)}</strong>
                   <small>{subtask.executor ?? '等待 Executor 绑定'}</small>
                 </div>
                 {subtask.attempts.map(attempt => {

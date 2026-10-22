@@ -8,6 +8,8 @@ import type { GatewayEventEnvelope } from '../../src/gateway/client-events.js';
 import { resolveTaskViewTurnAssociation } from '../../src/gateway/task-view-association.js';
 import { createAccountEventJournal } from '../../src/server/account-event-journal.js';
 import { runMigrations } from '../../src/storage/migrations.js';
+import { projectPublicDelivery } from '../../src/delivery/public-delivery-view.js';
+import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
 import { RetryWakeRepo } from '../../src/storage/retry-wake-repo.js';
 
 const source = ts.createSourceFile('server-composition.ts',
@@ -35,7 +37,7 @@ function event(id: string, turnId: string, kind: GatewayEventEnvelope['kind'], p
   };
 }
 
-async function fixture() {
+async function fixture(publicCode = false) {
   const root = await mkdtemp(join(tmpdir(), 'task-view-history-'));
   const db = new Database(':memory:');
   runMigrations(db);
@@ -53,11 +55,12 @@ async function fixture() {
     .toEqual(['turn_new']);
   const noReplay = vi.spyOn(journal, 'replay').mockRejectedValue(new Error('navigation must not replay'));
   const readTurn = vi.fn(async () => null);
-  const task = { id: input.taskId, accountId: input.accountId, conversationId: input.conversationId, title: 'Old task' };
+  const task = { id: input.taskId, accountId: input.accountId, conversationId: input.conversationId, title: 'Old task',
+    workspaceId: publicCode ? 'workspace' : undefined, publicTaskDirectory: publicCode ? 'project' : undefined };
   class EmptyRepo { listByTask() { return []; } }
   const scope = {
     LOCAL_DEFAULT_ACCOUNT_ID: input.accountId, GATEWAY_TASK_VIEW_QUERY_VERSION: 1,
-    RetryWakeRepo,
+    RetryWakeRepo, WorkGraphRevisionRepo, projectPublicDelivery,
     webSessionCatalog: { readTurn }, eventJournal: journal, resolveTaskViewTurnAssociation,
     conversationReadModel: runtime.readModel,
     conversationRegistry: { getIfOpen: () => null },
@@ -67,14 +70,18 @@ async function fixture() {
     db, SubtaskRepo: EmptyRepo, KernelDispatchItemRepo: EmptyRepo,
     ExecutorAttemptReceiptRepo: EmptyRepo, GenerationReplanRequestRepo: EmptyRepo, WorkspacePublicationRepo: EmptyRepo,
     projectTaskViewFacts: async () => ({ result: null, routing: [], subtasks: [] }),
-    projectTaskView: () => ({ lifecycle: 'terminal', phase: 'completed', timestamps: {} }),
-    projectObservedTask: () => ({ lifecycle: 'terminal', phase: 'completed', timestamps: {} }),
+    projectTaskView: () => ({ lifecycle: 'terminal', phase: 'completed', pendingDecision: null, timestamps: {} }),
+    projectObservedTask: () => ({ lifecycle: 'terminal', phase: 'completed', pendingDecision: null, timestamps: {} }),
     executionProjector: { project: () => ({ taskId: input.taskId, status: 'completed', stages: [] }) },
     accountRuntimeComposition: { runtimePort: { queries: {
       listRecoveryApplications: () => [], listCompletionResidue: () => [],
       listCurrentKernelDecisions: () => [], getQueuedTaskReason: () => null,
     } } },
-    taskArtifactRepo: { listByTask: () => [] },
+    workspaceCatalogStore: { findById: async () => ({ canonicalPath: '/user/workspace' }) },
+    taskArtifactRepo: { listByTask: () => [], publicFiles: { list: () => publicCode ? [{
+      accountId: input.accountId, taskId: input.taskId, status: 'published',
+      relativePath: 'server.mjs', publishedPath: '/user/workspace/project/server.mjs',
+    }] : [] } },
   };
   if (!callback) throw new Error('Production getTaskView callback missing');
   // Execute the source callback, not a test copy of association/watermark wiring.
@@ -88,6 +95,14 @@ async function fixture() {
 }
 
 describe('production historical Task view lookup', () => {
+  it('lists published code independently of downloadable artifacts', async () => {
+    const f = await fixture(true);
+    expect((await f.getTaskView(input)).publicDelivery).toEqual({
+      workspace: '/user/workspace', taskDirectory: '/user/workspace/project',
+      state: 'published', files: ['server.mjs'], conflicts: [],
+    });
+  });
+
   it('opens an older trace-only Task after a newer Turn without aggregate history or replay', async () => {
     const f = await fixture();
     const result = await f.getTaskView(input);

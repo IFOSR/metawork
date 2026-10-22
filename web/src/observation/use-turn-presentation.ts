@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import type { GatewayTaskViewSnapshot } from '../../../src/gateway/task-view';
+import { useEffect, useState, useCallback } from 'react';
 import type { ConversationTurnView } from '../../../src/session/conversation-read-types';
 import type { HttpClient } from '../api/http';
 import type { WsClient } from '../api/ws';
@@ -6,9 +7,12 @@ import type { ConversationTurnProjection, TurnBillUserView } from '../api/sessio
 import { turnStatusFromTimeline } from '../conversation-live-turn';
 
 type Presentation = Pick<ConversationTurnProjection, 'traceEvents' | 'executionTimeline' | 'artifacts' | 'turnBilling'>
-  & Partial<Pick<ConversationTurnProjection, 'status' | 'completedAt'>>;
+  & Partial<Pick<ConversationTurnProjection, 'status' | 'completedAt'>>
+  & { taskLifecycle?: GatewayTaskViewSnapshot['lifecycle']; publicDelivery?: GatewayTaskViewSnapshot['publicDelivery'] };
 interface TaskResource {
   targetConversationId: string; turnId: string; taskId: string;
+  lifecycle: GatewayTaskViewSnapshot['lifecycle'];
+  publicDelivery?: GatewayTaskViewSnapshot['publicDelivery'];
   timeline: ConversationTurnProjection['executionTimeline'];
   artifacts: ConversationTurnProjection['artifacts'];
 }
@@ -45,8 +49,14 @@ function remember(ws: WsClient, key: string, value: Presentation) {
 /** Hydrate the existing cards for mounted Turns without delaying text or replaying history. */
 export function useTurnPresentation(ws: WsClient, http: HttpClient, conversationId: string,
   turn: ConversationTurnView | undefined, showExecution: boolean) {
+  const [refreshIndex, setRefreshIndex] = useState(0);
+  const refresh = useCallback(() => setRefreshIndex(value => value + 1), []);
   const generation = ws.conversations.currentGeneration();
-  const key = `${generation}\0${conversationId}\0${turn?.id ?? ''}\0${turn?.taskId ?? ''}`;
+  const timelineTaskId = turn && 'executionTimeline' in turn
+    ? (turn as unknown as ConversationTurnProjection).executionTimeline?.taskId ?? null
+    : null;
+  const taskId = turn?.taskId ?? timelineTaskId;
+  const key = `${generation}\0${conversationId}\0${turn?.id ?? ''}\0${taskId ?? ''}`;
   const [state, setState] = useState<{ key: string; value: Presentation }>(() => ({ key, value: cacheFor(ws).get(key) ?? EMPTY }));
   useEffect(() => {
     if (!turn) return;
@@ -71,11 +81,13 @@ export function useTurnPresentation(ws: WsClient, http: HttpClient, conversation
         const jobs: Promise<unknown>[] = [];
         if (showExecution) jobs.push(http.getConversationTrace(conversationId, turn.id, undefined, true)
           .then(page => commit({ traceEvents: page.events })));
-        if (turn.taskId) jobs.push(ws.query<TaskResource>(conversationId,
-          { kind: 'get_task_view', conversationId, turnId: turn.id, taskId: turn.taskId }).then(task => {
-          if (task.targetConversationId !== conversationId || task.turnId !== turn.id || task.taskId !== turn.taskId) return;
+        if (taskId) jobs.push(ws.query<TaskResource>(conversationId,
+          { kind: 'get_task_view', conversationId, turnId: turn.id, taskId }).then(task => {
+          if (task.targetConversationId !== conversationId || task.turnId !== turn.id || task.taskId !== taskId) return;
           const projectedStatus = task.timeline ? turnStatusFromTimeline(task.timeline) : null;
           commit({
+            taskLifecycle: task.lifecycle,
+            publicDelivery: task.publicDelivery,
             executionTimeline: task.timeline,
             artifacts: task.artifacts,
             ...(projectedStatus ? {
@@ -103,6 +115,6 @@ export function useTurnPresentation(ws: WsClient, http: HttpClient, conversation
       active = false; caches.delete(ws); setState({ key, value: EMPTY });
     });
     return () => { active = false; clearInterval(timer); unsubscribe(); revoke(); };
-  }, [ws, http, key, generation, conversationId, turn?.id, turn?.taskId, turn?.status, showExecution]);
-  return state.key === key ? state.value : cacheFor(ws).get(key) ?? EMPTY;
+  }, [ws, http, key, generation, conversationId, turn?.id, taskId, turn?.status, showExecution, refreshIndex]);
+  return { ...(state.key === key ? state.value : cacheFor(ws).get(key) ?? EMPTY), refresh };
 }

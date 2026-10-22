@@ -1,4 +1,7 @@
 import Database from 'better-sqlite3';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
@@ -11,6 +14,59 @@ import { workGraphPlan } from '../support/planning-agent-plans.js';
 import type { KernelDecision } from '../../src/kernel/control-kernel.js';
 
 describe('SessionKernelRuntime parallel admission', () => {
+  it('resolves an existing project Workspace by Conversation id, not Planner session id', async () => {
+    const database = new Database(':memory:');
+    runMigrations(database);
+    const taskRepo = new TaskRepo(database);
+    const taskRuntimeService = new TaskRuntimeService({
+      taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-test-snapshots'),
+      taskRepo,
+    });
+    const workspace = await mkdtemp(join(tmpdir(), 'metawork-existing-project-'));
+    await mkdir(join(workspace, 'existing'));
+    const resolvedIds: string[] = [];
+    const plan = workGraphPlan({ goal: 'update existing project', capabilityClass: 'code_edit' });
+    plan.task!.publicProjectDirectory = 'existing';
+    plan.workGraph!.subtasks[0]!.contextRefs = [];
+    const decision = {
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      id: 'decision-existing-project-workspace',
+      eventId: 'event-existing-project-workspace',
+      reason: 'work graph authorized',
+      action: {
+        type: 'authorize_task_plan', taskId: 'task-existing-project', task: plan.task,
+        workGraph: plan.workGraph!, scheduleState: 'eligible',
+        owner: { conversationId: 'conversation-owner', workspaceId: 'workspace-a', plannerSessionId: 'planner-runtime' },
+        authorizedBindingsBySubtask: {}, generationId: 'generation-existing-project', graphRevision: 1,
+        proposalSource: 'initial',
+      },
+    } as KernelDecision;
+    const runtime = new SessionKernelRuntime({
+      sessionId: 'planner-runtime',
+      taskRuntimeService,
+      memoryContextService: { normalizeInlineResourcesFromInput: () => ({ normalizedGoal: 'update existing project', resources: [] }) } as never,
+      orchestration: {} as never,
+      activeExecutions: {} as never,
+      presentation: new SessionPresentationService(),
+      resolveUserWorkspaceRoot: async id => { resolvedIds.push(id); return workspace; },
+      callbacks: {
+        appendOutput: () => undefined, prepareTaskExecution: () => undefined, refreshRuntimeState: () => undefined,
+        setCurrentTaskId: () => undefined, getCurrentTaskId: () => null, setFocusContext: () => undefined,
+        resolveRequestText: () => '', deliverDirectReply: () => undefined, cancelTask: async () => undefined,
+      },
+    });
+
+    try {
+      await runtime.forInput('update existing project', 'conversation-owner').apply(decision);
+      expect(resolvedIds).toEqual(['conversation-owner']);
+      expect(taskRuntimeService.findTask('task-existing-project')).toMatchObject({ workspaceId: 'workspace-a' });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+      database.close();
+    }
+  });
+
   it('persists a same-Conversation queued Task without preparing execution', async () => {
     const database = new Database(':memory:');
     runMigrations(database);

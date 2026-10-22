@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ConversationTurnProjection } from '../api/session-types';
-import type { ExecutionTimeline, InteractionTraceEvent, SubtaskCard } from '../api/types';
+import type { ExecutionTimeline, InteractionTraceEvent, SubtaskCard, WorkGraphPresentationProjection } from '../api/types';
 import { executionElapsedEndMs } from '../execution-duration';
 import {
   executorHealthBadge,
@@ -10,6 +10,8 @@ import { traceEventTaskId } from '../turn-task-presentation';
 
 interface ExecutionCard {
   subtaskId: string;
+  /** Attempt whose live fields are currently projected into this card. */
+  activeAttemptId: string | null;
   subtaskTitle: string;
   executorDisplayName: string;
   harnessDisplayName: string;
@@ -48,9 +50,11 @@ const EXECUTION_CARD_STATE_LABEL: Record<ExecutionCardState, string> = {
 export function LiveExecutionPanel({
   turn,
   onSelectSubtask,
+  workGraph,
 }: {
   turn: ConversationTurnProjection;
   onSelectSubtask?: (subtaskId: string, subtaskTitle: string) => void;
+  workGraph?: WorkGraphPresentationProjection | null;
 }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const completed = turn.status !== 'running';
@@ -61,7 +65,7 @@ export function LiveExecutionPanel({
     return () => window.clearInterval(timer);
   }, [turn.id, completed]);
 
-  const cards = collectExecutionCards(turn.traceEvents, turn.executionTimeline);
+  const cards = collectExecutionCards(turn.traceEvents, turn.executionTimeline, workGraph);
   if (cards.length === 0) return null;
   const cardIsActive = (state: ExecutionCardState) => state === 'running' || state === 'waiting';
 
@@ -177,19 +181,23 @@ function preparationStatus(
 export function collectExecutionCards(
   events: InteractionTraceEvent[],
   timeline: ExecutionTimeline | null,
+  workGraph?: WorkGraphPresentationProjection | null,
 ): ExecutionCard[] {
   const bySubtask = new Map<string, ExecutionCard>();
+  const titleBySubtask = new Map(workGraph?.nodes.map(node => [node.id, node.title]) ?? []);
   const executionStage = timeline?.stages.find(stage => stage.phase === 'execution');
   const dependencies = timeline?.stages.find(stage => stage.phase === 'planning')?.proposal?.dependencies ?? [];
   for (const subtask of executionStage?.subtasks ?? []) {
     const attempt = subtask.attempts.at(-1);
     const latest = attempt?.progressHistory?.at(-1);
-    const subtaskTitle = presentationTitle(subtask.title, timeline?.title);
+    const subtaskTitle = titleBySubtask.get(subtask.id)
+      || presentationTitle(subtask.title, timeline?.title);
     const waitingFor = dependencies.filter(([, target]) => target === subtask.id)
       .map(([source]) => executionStage?.subtasks?.find(candidate => candidate.id === source)?.title)
       .filter(Boolean);
     bySubtask.set(subtask.id, {
       subtaskId: subtask.id,
+      activeAttemptId: attempt?.attemptId ?? null,
       subtaskTitle,
       executorDisplayName: subtask.executor || '',
       harnessDisplayName: subtask.harnessDisplayName || subtask.harness || '',
@@ -218,8 +226,14 @@ export function collectExecutionCards(
     if (!subtaskId) continue;
     const current = bySubtask.get(subtaskId);
     if (timeline && !current) continue;
+    const eventAttemptId = event.attemptId || readString(details.attemptId) || null;
+    // A retry keeps the same Subtask card while creating a new Attempt. Older
+    // terminal events remain useful in the detail drawer, but must not
+    // overwrite the current Attempt's step/status in the live card.
+    if (current?.activeAttemptId && eventAttemptId && eventAttemptId !== current.activeAttemptId) continue;
     const existing = current ?? {
       subtaskId,
+      activeAttemptId: eventAttemptId,
       subtaskTitle: '',
       executorDisplayName: '',
       harnessDisplayName: '',
@@ -240,10 +254,10 @@ export function collectExecutionCards(
     // 事件按 sequence 有序，后到的事实覆盖先到的字段。
     const next: ExecutionCard = {
       ...existing,
-      subtaskTitle: presentationTitle(
-        readString(details.subtaskTitle) || existing.subtaskTitle || subtaskId,
-        timeline?.title,
-      ),
+      activeAttemptId: existing.activeAttemptId ?? eventAttemptId,
+      subtaskTitle: titleBySubtask.get(subtaskId)
+        || existing.subtaskTitle
+        || presentationTitle(readString(details.subtaskTitle) || subtaskId, timeline?.title),
       executorDisplayName: readString(details.executorDisplayName)
         || readString(details.executorName)
         || existing.executorDisplayName,

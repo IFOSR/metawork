@@ -369,6 +369,27 @@ export class MetaWorkTuiController {
 		if (this.state.selectedConversationId) {
 			const conversationId = this.state.selectedConversationId;
 			const readGeneration = this.state.navigationGeneration;
+			const resultAction = /^\/task (accept-result|retry-result) (\S+)$/u.exec(text);
+			if (resultAction) {
+				const turn = this.getView().selectedTurn;
+				const decision = turn?.resultDecision;
+				const action = resultAction[1] === "accept-result" ? "accept_result" : "retry_attempt";
+				if (!decision || turn?.taskId !== resultAction[2] || !decision.actions.includes(action)) {
+					this.operation = "结果操作已过期，请打开任务详情刷新后重试。";
+					await this.refreshSelectedTask();
+					this.emit();
+					return;
+				}
+				try {
+					await this.submitControl(conversationId, {
+						kind: action === "accept_result" ? "accept_task_result" : "retry_task_attempt",
+						expectedResult: decision.expectedResult,
+					});
+				} finally {
+					await this.refreshSelectedTask();
+				}
+				return;
+			}
 			const control = /^\/(approve|deny|stop-task)\s+(\S+)\s+(\S+)(?:\s+(\S+))?$/u.exec(text);
 			if (control) {
 				const command: GatewayCommand =
@@ -1217,6 +1238,7 @@ export class MetaWorkTuiController {
 				payload?.status === "failed" ? `操作未完成：${String(payload.reason)}` : "操作已处理。",
 			);
 			this.emit();
+			this.scheduleTaskRefresh();
 			return;
 		}
 		if (event.kind === "conversation_resource" || event.kind === "pending_interactions") return;
@@ -1535,7 +1557,12 @@ export class MetaWorkTuiController {
 		this.state = queueSubmission(this.state, envelope, this.now());
 		this.emit();
 		try {
-			this.state = reduceReceipt(this.state, await this.deps.gateway.submitEnvelope(envelope));
+			const receipt = await this.deps.gateway.submitEnvelope(envelope);
+			this.state = reduceReceipt(this.state, receipt);
+			this.operation =
+				receipt.status === "rejected"
+					? `操作已失效或被拒绝：${receipt.reason ?? "请刷新后重试"}`
+					: "操作已提交，正在刷新任务。";
 		} catch (error) {
 			this.state = markPendingSubmissionsUncertain(this.state);
 			throw error;

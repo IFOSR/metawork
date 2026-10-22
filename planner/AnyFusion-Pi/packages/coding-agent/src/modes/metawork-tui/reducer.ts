@@ -423,6 +423,8 @@ function reduceConnectionStreamEvent(
 		// 主状态由 Task Domain 投影；缺少新字段时等待同步。
 		taskPhase: view.lifecycle?.userState ?? turn.taskPhase,
 		taskNextAction: view.lifecycle?.nextAuthorizedAction ?? turn.taskNextAction,
+		resultDecision: view.resultDecision,
+		publicDelivery: view.publicDelivery,
 		routing: view.routing,
 		progressSummary: view.lifecycle?.userStateReason ?? view.progressSummary ?? turn.progressSummary,
 		schedulingReason: view.schedulingReason,

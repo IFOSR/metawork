@@ -1,3 +1,5 @@
+import { resolveSafeResult, type PendingResultIdentity } from '../task/safe-result-identity.js';
+import { readPendingTaskResult } from '../storage/pending-task-result.js';
 import { ExecutorProbeError } from './work-unit-claim-service.js';
 import { basename, extname, join, resolve } from 'node:path';
 import { chmod, copyFile, lstat, mkdir } from 'node:fs/promises';
@@ -87,7 +89,7 @@ import {
   normalizeDependencyMaterializationFailure,
 } from '../executor/error-utils.js';
 import { kernelFailure } from '../core/kernel-failure.js';
-import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
+import { publicText } from '../utils/public-text.js';
 import {
   ResultObjectRepo,
   type ResultObjectWriter,
@@ -231,6 +233,75 @@ export class SubtaskAttemptRunner {
       agentClassName,
       configurationRevision,
     );
+  }
+
+  /** User acceptance substitutes certification only; file/security checks and publication remain mandatory. */
+  async stageAcceptedResult(expected: PendingResultIdentity): Promise<void> {
+    const publicationId = `publication_accepted_${expected.attemptId}`;
+
+    const assertCurrent = () => {
+      const pending = readPendingTaskResult(this.deps.db, expected.taskId);
+      const keys: Array<keyof PendingResultIdentity> = ['taskId', 'generationId', 'graphRevision', 'subtaskId', 'attemptId', 'resultId'];
+      if (!pending || keys.some(key => pending[key] !== expected[key])) {
+        throw new Error('该结果操作已过期，请刷新任务后重试。');
+      }
+    };
+    const existing = this.publicationRepo.find(publicationId);
+    if (!existing) assertCurrent();
+    const receipt = this.receiptRepo.findByAttemptId(expected.attemptId);
+    if (!receipt) throw new Error('结果归属校验失败');
+    const pair = resolveSafeResult({ accountId: this.deps.accountId ?? 'local-default', receipt,
+      findObject: id => this.resultObjectRepo.findObject(id), findReceipt: id => this.receiptRepo.findByAttemptId(id) });
+    if (!pair || pair.resultObjectId !== expected.resultId) throw new Error('结果归属校验失败');
+    if (existing) {
+      if (existing.taskId !== expected.taskId || existing.generationId !== expected.generationId
+        || existing.subtaskId !== expected.subtaskId || receipt.graphRevision !== expected.graphRevision) {
+        throw new Error('该结果操作已过期，请刷新任务后重试。');
+      }
+      return;
+    }
+    const sourceRuntime = this.attemptRuntimeRepo.find(pair.resultOwnerAttemptId);
+    const delta = parseWorkspaceDelta(sourceRuntime?.workspaceDelta);
+    if (!delta) throw new Error('无法确认文件变更，结果尚不能交付');
+    const subtask = this.deps.subtaskRepo.findById(expected.subtaskId)!;
+    const workspace = this.deps.workspaceRepository.findByIdentity(expected.taskId, expected.generationId, expected.subtaskId);
+    if (!workspace?.rootUri.startsWith('file:')) throw new Error('结果工作区不可用');
+    const baseline = parseWorkspaceState(sourceRuntime?.workspaceBaseline);
+    if (!baseline || delta.baselineTruncated || delta.finalTruncated) throw new Error('文件快照不完整，无法接受');
+    const currentDelta = deriveWorkspaceDelta(baseline, captureWorkspaceState(join(fileURLToPath(workspace.rootUri), 'files')));
+    if (JSON.stringify(currentDelta) !== JSON.stringify(delta)) throw new Error('结果生成后文件已变化，请重新执行并检查');
+    const body = this.resultObjectRepo.readRange(pair.object.resultId, 0, pair.object.byteLength).content;
+    const subtasks = this.deps.subtaskRepo.listActiveByTask(expected.taskId);
+    const outgoingHandoffs = subtasks.flatMap(candidate => {
+      const edge = candidate.dependencies.find(item => item.fromSubtaskId === subtask.id);
+      return edge ? [{ toSubtaskId: candidate.id, requiredItems: edge.requiredItems }] : [];
+    });
+    const completion = validateCompletionProtocol({ subtask, outgoingHandoffs,
+      workspaceRoot: join(fileURLToPath(workspace.rootUri), 'files'), workspaceDelta: delta,
+      rawResponse: `${body}\n\n${COMPLETION_MARKER_V4}\n${JSON.stringify({
+        evidence: ['用户明确接受当前结果'], noChangeReason: delta.changed.length ? null : '用户接受现有结果，无文件变更',
+      })}` });
+    if (!completion.ok || completion.assessment.safety.status !== 'safe'
+      || completion.assessment.deliverability.status !== 'deliverable'
+      || completion.assessment.certification.violations.some(item => item.code !== 'completion_acceptance_mismatch')) {
+      throw new Error('文件、安全或下游交付检查失败，结果尚不能发布');
+    }
+    const managed = await this.managedGitWorkspace.ensure({ taskId: expected.taskId,
+      generationId: expected.generationId, subtaskId: expected.subtaskId }, this.deps.sourceRoot);
+    const candidate = await this.managedGitWorkspace.commit(managed, `fix: publish accepted ${subtask.id} result`);
+    const dispatch = this.dispatchItemRepo.find(expected.attemptId)!;
+    this.deps.db.transaction(() => {
+      assertCurrent();
+      this.publicationRepo.insertCandidate({ id: publicationId, taskId: expected.taskId,
+        generationId: expected.generationId, subtaskId: expected.subtaskId, sourceAttemptId: expected.attemptId,
+        agentClassName: receipt.agentClassName, candidateCommit: candidate.commit,
+        completion: { body, artifacts: completion.normalizedArtifacts, warnings: completion.warnings,
+          handoffs: completion.envelope?.status === 'completed' ? completion.envelope.handoffs : [], completionSchemaVersion: 4 },
+        topologyLayer: deriveTopologyLayer(subtask.id, subtasks), firstDispatchOrder: dispatch.batchOrder,
+        createdAt: new Date().toISOString() });
+      this.lifecycle.transitionSubtask({ subtaskId: subtask.id, to: 'awaiting_integration',
+        actor: 'subtask-attempt-runner', reason: 'user accepted result; publication and delivery still required', changes: { error: null } });
+    }).immediate();
   }
 
   landHeartbeatLost(input: {
@@ -1388,11 +1459,13 @@ export class SubtaskAttemptRunner {
       claim.markRunning();
       const sourceResult = this.readCorrectionSourceResult(source);
       const sourceDelta = parseWorkspaceDelta(sourceRuntime.workspaceDelta);
+      const workspaceChanged = Array.isArray(sourceDelta?.changed) && (sourceDelta?.changed?.length ?? 0) > 0;
       const prompt = buildCorrectionPrompt({
         resultId: sourceResult.safe.resultId,
         contentHash: sourceResult.safe.contentHash,
         byteLength: sourceResult.safe.byteLength,
-        workspaceChanged: Array.isArray(sourceDelta?.changed) && (sourceDelta?.changed?.length ?? 0) > 0,
+        workspaceChanged,
+        deliveryKind: subtask.deliveryKind,
         producedFiles: (sourceDelta?.changed ?? [])
           .filter(entry => entry.afterHash !== null)
           .map(entry => entry.path),
@@ -1407,17 +1480,33 @@ export class SubtaskAttemptRunner {
       );
       if (!result?.success) {
         const error = result?.error ?? 'AgentClass does not enforce response-only correction';
-        this.persistNonSuccess({
+        // An unavailable metadata repair must not hide the original safe
+        // result. Bind this decision receipt to that exact source projection.
+        const assessment = source.parsing.completionAssessment as CompletionAssessment;
+        const outcome = this.landContractFailure({
           attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName, startedAt,
-          terminalState: 'executor_failed', rawResponse: result?.output ?? '', errorCode: 'correction_unavailable', errorDetail: error,
+          terminalState: 'uncertified_result', rawResponse: result?.output ?? '',
+          errorCode: 'correction_unavailable', errorDetail: '格式纠正未完成，请接受当前安全结果或重新执行',
+          completionSchemaVersion: source.completionSchemaVersion, completionContract: input.completionContract,
+          violations: input.violations, assessment, output: sourceResult.body,
+          resultObjects: { rawOutputId: (source.parsing.resultObjects as AttemptResultObjects).rawOutputId,
+            businessResultId: sourceResult.business.resultId, safeProjectionId: sourceResult.safe.resultId },
         });
         claim.markFailed(error);
-        return {
-          outcome: 'executor_failed', attemptId: input.attemptId, error,
-          failure: result?.failure ?? { kind: 'unknown', scope: 'attempt', code: 'correction_unavailable', summary: error },
-        };
+        return outcome;
       }
+      // A response-only correction may repair metadata safely without ever
+      // touching the business result. For edit delivery with a zero-file
+      // delta, the protocol requires a non-empty explanation. Models still
+      // occasionally echo the report schema's `null` default, so fill only
+      // that deterministic field before normal validation. This cannot hide
+      // a malformed marker or any other contract violation.
+      const correctedOutput = repairZeroChangeReason({
+        output: result.output,
+        workspaceChanged,
+        deliveryKind: subtask.deliveryKind,
+      });
       const activeSubtasks = this.deps.subtaskRepo.listActiveByTask(task.id);
       const allSubtasks = activeSubtasks.length > 0 ? activeSubtasks : this.deps.subtaskRepo.listByTask(task.id);
       const outgoingHandoffs = allSubtasks.flatMap(candidate => {
@@ -1432,10 +1521,10 @@ export class SubtaskAttemptRunner {
       if (!sourceWorkspace || !sourceWorkspace.rootUri.startsWith('file:')) {
         throw new Error(`response-only correction source workspace is unavailable: ${subtask.id}`);
       }
-      const correctionMarkerIndex = result.output.indexOf(COMPLETION_MARKER_V4);
+      const correctionMarkerIndex = correctedOutput.indexOf(COMPLETION_MARKER_V4);
       const correctedMetadata = correctionMarkerIndex >= 0
-        ? result.output.slice(correctionMarkerIndex)
-        : result.output;
+        ? correctedOutput.slice(correctionMarkerIndex)
+        : correctedOutput;
       const completion = validateCompletionProtocol({
         rawResponse: `${sourceResult.body}\n\n${correctedMetadata}`,
         subtask,
@@ -1484,7 +1573,7 @@ export class SubtaskAttemptRunner {
           taskId: task.id,
           generationId: subtask.generationId,
           subtaskId: subtask.id,
-          rawResponse: result.output,
+          rawResponse: correctedOutput,
           body: completion.body,
           completeness: 'complete',
         });
@@ -1507,7 +1596,7 @@ export class SubtaskAttemptRunner {
           workUnitId: claim.workUnit.id,
           agentClassName,
           startedAt,
-          rawResponse: result.output,
+          rawResponse: correctedOutput,
           completionSchemaVersion: completion.envelope?.schemaVersion ?? null,
           violations: completion.violations,
           errorCode: completion.violations[0]?.code ?? 'completion_malformed',
@@ -1833,7 +1922,7 @@ export class SubtaskAttemptRunner {
       resultId: `result_${input.attemptId}_safe`,
       kind: 'safe_projection',
       mediaType: 'text/markdown',
-      content: redactSensitiveText(input.body),
+      content: publicText(input.body),
       completeness: input.completeness,
     });
     return {
@@ -2115,11 +2204,16 @@ function buildCorrectionPrompt(input: {
   contentHash: string;
   byteLength: number;
   workspaceChanged: boolean;
+  deliveryKind: Subtask['deliveryKind'];
   producedFiles: string[];
   sourceBodyPresent: boolean;
   violations: CompletionContractViolation[];
 }): string {
   const guidance = [...new Set(input.violations.map(violation => correctionGuidance(violation.code)))];
+  const zeroChangeEdit = input.deliveryKind === 'edit' && !input.workspaceChanged;
+  const noChangeReasonExample = zeroChangeEdit
+    ? '"noChangeReason":"已完成结果检查，但本次修正未产生新的文件变更"'
+    : '"noChangeReason":null';
   return [
     'Repair only completion metadata. Do not execute the task, use tools, inspect files, change the workspace, or rewrite the business result.',
     'The immutable business result is not included in this prompt. Return exactly one completion trailer and no business body.',
@@ -2132,11 +2226,32 @@ function buildCorrectionPrompt(input: {
       ? [`Files produced by the source attempt (reportPath must be one of these when the body is empty): ${input.producedFiles.map(file => `"${file}"`).join(', ')}`]
       : ['The source attempt produced no workspace files; omit reportPath.']),
     `Trailer marker: ${COMPLETION_MARKER_V4}`,
-    'Successful report schema: {"evidence":["<evidence>"],"noChangeReason":null,"reportPath":"<optional: workspace file that is the authoritative body when the body is empty>"}',
+    `Successful report schema: {"evidence":["<evidence>"],${noChangeReasonExample},"reportPath":"<optional: workspace file that is the authoritative body when the body is empty>"}`,
+    ...(zeroChangeEdit
+      ? ['This is an edit delivery with zero workspace changes. noChangeReason is required: return a concise non-empty reason string; never return null.']
+      : input.deliveryKind === 'edit'
+        ? ['This is an edit delivery with workspace changes. noChangeReason must be null.']
+        : []),
     'Failure report schema: {"failure":{"kind":"task_failed","code":"<stable_code>","summary":"<concise explanation>"}}',
     'Do not return schema/status identity, Task/Subtask/attempt/WorkUnit IDs, acceptance keys, or handoff identities. Runtime owns and injects them.',
     `Validation guidance:\n${guidance.map(item => `- ${item}`).join('\n')}`,
   ].join('\n\n');
+}
+
+function repairZeroChangeReason(input: {
+  output: string;
+  workspaceChanged: boolean;
+  deliveryKind: Subtask['deliveryKind'];
+}): string {
+  if (input.workspaceChanged || input.deliveryKind !== 'edit') return input.output;
+  const markerIndex = input.output.indexOf(COMPLETION_MARKER_V4);
+  if (markerIndex < 0) return input.output;
+  const prefix = input.output.slice(0, markerIndex + COMPLETION_MARKER_V4.length);
+  const metadata = input.output.slice(markerIndex + COMPLETION_MARKER_V4.length);
+  return prefix + metadata.replace(
+    /("noChangeReason"\s*:\s*)(null|"")/u,
+    '$1"已完成结果检查，但本次修正未产生新的文件变更"',
+  );
 }
 
 function correctionGuidance(code: CompletionContractViolation['code']): string {

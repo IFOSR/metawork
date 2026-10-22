@@ -1,8 +1,28 @@
+import { publicTaskRelativeDirectory } from '../task/public-task-directory.js';
 import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 import { installObservationSchema } from './observation-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 50;
+export const CURRENT_SCHEMA_VERSION = 51;
+
+const MANAGED_SERVICES_SQL = `
+  CREATE TABLE IF NOT EXISTS public_workspace_files (
+    account_id TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id), relative_path TEXT NOT NULL,
+    generation_id TEXT, subtask_id TEXT, publication_id TEXT, published_path TEXT NOT NULL,
+    content_hash TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, task_id, relative_path)
+  );
+  CREATE TABLE IF NOT EXISTS managed_local_services (
+    service_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id),
+    specification_json TEXT NOT NULL, state TEXT NOT NULL, process_id INTEGER, process_token TEXT,
+    health_message TEXT, updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS managed_services_task ON managed_local_services(account_id, task_id);
+  CREATE TABLE IF NOT EXISTS managed_local_service_effects (
+    account_id TEXT NOT NULL, decision_id TEXT NOT NULL, effect_json TEXT NOT NULL,
+    PRIMARY KEY (account_id, decision_id)
+  );
+`;
 
 const PUBLICATION_DELIVERY_SQL = `
   CREATE TABLE IF NOT EXISTS workspace_publication_deliveries (
@@ -1601,6 +1621,27 @@ export function runMigrations(
       const changed = db.prepare('UPDATE schema_version SET version = 50 WHERE version = 49').run();
       if (changed.changes !== 1) throw new Error('schema version changed during 49 to 50 migration');
     })();
+    version = 50;
+  }
+  if (version === 50) {
+    db.transaction(() => {
+      if (!columnsOf(db, 'tasks').includes('public_task_directory')) {
+        db.exec('ALTER TABLE tasks ADD COLUMN public_task_directory TEXT');
+        const update = db.prepare('UPDATE tasks SET public_task_directory = ? WHERE id = ?');
+        for (const task of db.prepare('SELECT id, title FROM tasks').all() as Array<{ id: string; title: string }>) {
+          const artifact = db.prepare("SELECT published_path, relative_path FROM task_artifacts WHERE task_id = ? AND status = 'published' ORDER BY created_at DESC LIMIT 1").get(task.id) as { published_path: string; relative_path: string } | undefined;
+          const prefix = artifact?.published_path.slice(0, -artifact.relative_path.length).replace(/\/$/u, '');
+          const retained = prefix?.match(/(?:^|\/)(metaclaw-tasks\/[^/]+)$/u)?.[1];
+          update.run(retained ?? publicTaskRelativeDirectory(task.title, task.id), task.id);
+        }
+      }
+      if (!columnsOf(db, 'tasks').includes('public_delivery_baseline_json')) db.exec("ALTER TABLE tasks ADD COLUMN public_delivery_baseline_json TEXT NOT NULL DEFAULT '{}'");
+      if (!columnsOf(db, 'tasks').includes('start_service_after_publish')) db.exec('ALTER TABLE tasks ADD COLUMN start_service_after_publish INTEGER NOT NULL DEFAULT 0');
+      if (!columnsOf(db, 'tasks').includes('public_project')) db.exec('ALTER TABLE tasks ADD COLUMN public_project INTEGER NOT NULL DEFAULT 0');
+      db.exec(MANAGED_SERVICES_SQL);
+      const changed = db.prepare('UPDATE schema_version SET version = 51 WHERE version = 50').run();
+      if (changed.changes !== 1) throw new Error('schema version changed during 50 to 51 migration');
+    })();
   }
   // Current-schema databases may have been created before a new projection
   // invalidation trigger was introduced. Reinstalling the idempotent trigger
@@ -1618,7 +1659,7 @@ function runBaseMigrations(
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
     ).all() as Array<{ version: number }>;
-    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
+    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 41) {
@@ -1762,6 +1803,11 @@ function runBaseMigrations(
   db.transaction(() => {
     db.exec('CREATE TABLE schema_version (version INTEGER PRIMARY KEY)');
     db.exec(CURRENT_SCHEMA_SQL);
+    db.exec('ALTER TABLE tasks ADD COLUMN public_task_directory TEXT');
+    db.exec("ALTER TABLE tasks ADD COLUMN public_delivery_baseline_json TEXT NOT NULL DEFAULT '{}'");
+    db.exec('ALTER TABLE tasks ADD COLUMN start_service_after_publish INTEGER NOT NULL DEFAULT 0');
+    db.exec('ALTER TABLE tasks ADD COLUMN public_project INTEGER NOT NULL DEFAULT 0');
+    db.exec(MANAGED_SERVICES_SQL);
     db.exec(PUBLICATION_DELIVERY_SQL);
     db.exec(RETRY_WAKE_SQL);
     db.exec(NAVIGATION_PROJECTION_SQL);

@@ -46,7 +46,34 @@ retained only during bounded automatic Kernel/Planner review; waiting for a user
 or replan checkpoints the workspace, terminates the runtime instance and
 releases active leases.
 
-The original repository, Task evidence and dependency inputs are read-only sources for reproducibility. The private workspace and `/tmp` are writable, and Native worktree attempts may also read and write ordinary user-space paths outside the managed Workspace when the Executor needs caches, downloaded pages, generated files or other intermediate material. Git executions use a MetaWork-managed repository/worktree and managed Task branch; Runtime owns `.git` and controlled commits. No Phase 5 action mutates, merges or pushes the user's branch. Non-Git workspaces use filesystem checkpoints and content-addressed objects. SQLite stores metadata, not large contents.
+The original repository, Task evidence and dependency inputs are read-only sources for reproducibility. The private workspace and `/tmp` are writable, and Native worktree attempts may also read and write ordinary user-space paths outside the managed Workspace when the Executor needs caches, downloaded pages, generated files or other intermediate material. Git executions use a MetaWork-managed repository/worktree and managed Task branch; Runtime owns `.git` and controlled commits. Attempt execution does not merge or push the user's branch. The 2026-10-21 public-delivery amendment to ADR-0025 permits Runtime's separate checked local fast-forward publication. Non-Git workspaces use filesystem checkpoints and content-addressed objects. SQLite stores metadata, not large contents.
+
+### Managed local services amendment (2026-10-21)
+
+An explicit user request to start a service authorizes a Kernel-mediated Runtime
+effect, never Planner shell access. Implementation publishes code first, then
+Runtime reads `.metawork-service.json` from the verified public directory. The
+persisted specification fixes Task/service identity, command/args, relative cwd,
+environment references, loopback host/port, health path, startup timeout and
+explicit restart policy. Referenced values are resolved at launch and are not
+stored as plaintext secrets. HOST/PORT cannot be overridden by references.
+
+The Runtime owns a detached process group and private logs. Account-scoped
+immutable service records, process ownership tokens and a durable per-Decision
+effect journal distinguish stopping, starting and completed operations. Replay
+observes an already attempted launch instead of launching again. Startup
+reconciles live process ownership and HTTP health without automatic restart.
+Stop signals the owned group and escalates to KILL for lingering children;
+command exit also cleans remaining group members. Stopping preserves delivered
+code and remains authorized when productive account operations are closed.
+
+`/service start <taskId>` and `/service status|logs|stop|restart <serviceId>` use
+the same account/Conversation ownership and Kernel boundary as Planner service
+control proposals. Ordinary responses expose service identity, health and URL,
+not PID, ownership token or internal log path. Logs redact referenced secrets
+and internal paths. Failed health leaves a service-required Task needing action;
+healthy explicit start/restart can release completion without another Executor.
+Independent API verification continues while unrelated UI acceptance waits.
 
 Docker compatibility attempt containers are non-root with read-only root
 filesystem, dropped Linux capabilities, no-new-privileges, bounded

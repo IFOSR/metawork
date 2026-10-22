@@ -20,14 +20,19 @@ describe('KernelExecutionRuntime executor recovery', () => {
     const recordResultDelivery = vi.fn();
     const runtime = new KernelExecutionRuntime({
       callbacks: { recordResultDelivery, appendOutput: vi.fn() },
+      cancellationCoordinator: { buildSnapshot: () => ({ uncertifiedResult: { resultId: 'new-result' } }) },
       attemptReceiptRepo: { listByTask: () => [
-        { parsing: { resultObjects: { safeProjectionId: 'new-result' } },
+        { attemptId: 'new-attempt', taskId: 'task', subtaskId: 'subtask', generationId: 'gen',
+          parsing: { resultObjects: { safeProjectionId: 'new-result' } },
           failure: { code: 'model_response_incomplete', summary: 'new failure' } },
-        { parsing: { resultObjects: { safeProjectionId: 'old-result' } },
+        { attemptId: 'old-attempt', taskId: 'task', subtaskId: 'subtask', generationId: 'gen',
+          parsing: { resultObjects: { safeProjectionId: 'old-result' } },
           failure: { code: 'unknown_executor_failure', summary: 'old failure' } },
       ] },
       resultObjectRepo: {
-        findObject: () => ({ completeness: 'partial', byteLength: 11 }),
+        findObject: (id: string) => ({ resultId: id, attemptId: id === 'new-result' ? 'new-attempt' : 'old-attempt',
+          accountId: 'local-default', taskId: 'task', sourceSubtaskId: 'subtask', generationId: 'gen',
+          kind: 'safe_projection', completeness: 'partial', byteLength: 11 }),
         readRange: (id: string) => ({ content: id }),
       },
       dispatchItemRepo: {}, maxConcurrentAttempts: 4,

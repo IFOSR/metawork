@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { HttpClient } from '../api/http';
 import type { WsClient } from '../api/ws';
 import type { ArtifactProjection, ConversationTurnProjection, QueryBillProjection } from '../api/session-types';
-import type { InteractionTraceEvent } from '../api/types';
+import type { InteractionTraceEvent, WorkGraphPresentationProjection } from '../api/types';
 import { useConversationTurn } from './use-conversation';
 import { turnProjection } from './turn-projection';
 import { TrajectoryView } from '../components/TrajectoryView';
@@ -10,14 +10,23 @@ import { BillingView } from '../components/BillingView';
 import { ExecutionDetailDrawer } from '../components/ExecutionDetailDrawer';
 import { useTurnPresentation } from './use-turn-presentation';
 
-export function ObservedExecutionDetail({ conversationId, initial, subtaskId, ws, http, onClose }: {
-  conversationId: string; initial: ConversationTurnProjection; subtaskId: string;
+export function ObservedExecutionDetail({ conversationId, initial, subtaskId, fallbackTitle, ws, http, onClose }: {
+  conversationId: string; initial: ConversationTurnProjection; subtaskId: string; fallbackTitle?: string;
   ws: WsClient; http: HttpClient; onClose(): void;
 }) {
   const summary = useConversationTurn(ws.conversations, conversationId, initial.id);
   const details = useTurnPresentation(ws, http, conversationId, summary, true);
+  const [workGraph, setWorkGraph] = useState<WorkGraphPresentationProjection | null>(null);
+  useEffect(() => {
+    const taskId = summary?.taskId ?? initial.taskId;
+    if (!taskId) { setWorkGraph(null); return; }
+    let active = true;
+    void http.getTaskWorkGraph(taskId).then(value => { if (active) setWorkGraph(value); })
+      .catch(() => { if (active) setWorkGraph(null); });
+    return () => { active = false; };
+  }, [http, summary?.taskId, initial.taskId]);
   return <ExecutionDetailDrawer turn={summary ? { ...turnProjection(summary), ...details } : initial}
-    subtaskId={subtaskId} onClose={onClose} />;
+    subtaskId={subtaskId} fallbackTitle={fallbackTitle} workGraph={workGraph} onClose={onClose} />;
 }
 
 /** Separate, bounded detail requests never block the Conversation baseline. */

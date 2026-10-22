@@ -82,8 +82,8 @@ export interface GatewayReadOnlyQueryHandlerDeps {
     conversationId: string,
   ) => Promise<boolean>;
   /**
-   * Server 命令目录补全。实现只能使用既有 ConversationSession.completeCommand
-   * 的查询能力，不得把 CommandContext / catalog 实现暴露给客户端。
+   * Server 命令目录补全。实现使用同一 CommandCatalog 的只读数据上下文，
+   * 不得打开会话、启动 Planner 或把 context / catalog 实现暴露给客户端。
    */
   readonly completeCommand: (input: {
     readonly accountId: string;

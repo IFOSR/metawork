@@ -206,6 +206,9 @@ describe('unified TaskView projection', () => {
         attemptId: 'attempt_1', terminalState: 'uncertified_result', failure: null, completedAt: NOW,
       }],
       result: { resultId: 'result_1', completeness: 'complete', certification: 'uncertified' },
+      pendingDecision: { owner: 'user', reason: 'uncertified_result', resultId: 'result_1', attemptId: 'attempt_1',
+        actions: ['accept_result', 'retry_attempt'], expectedResult: { taskId: 'task_1', generationId: 'gen_1', graphRevision: 1,
+          subtaskId: 'task_1_execute', attemptId: 'attempt_1', resultId: 'result_1' } },
     }));
     expect(view.userState).toBe('needs_action');
     expect(view.userStateReason).toContain('接受并交付');

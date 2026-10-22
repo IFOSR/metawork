@@ -3,6 +3,7 @@ import { createElement } from 'react';
 import { describe, expect, it } from 'vitest';
 import { collectExecutionCards, LiveExecutionPanel } from '../../web/src/components/LiveExecutionPanel';
 import type { ConversationTurnProjection } from '../../web/src/api/session-types';
+import type { ExecutionTimeline, WorkGraphPresentationProjection } from '../../web/src/api/types';
 import { projectTurnForPresentation } from '../../web/src/turn-task-presentation';
 
 const requireFromWeb = createRequire(new URL('../../web/package.json', import.meta.url));
@@ -84,6 +85,58 @@ describe('Turn Task presentation', () => {
     );
 
     expect(cards[0]?.updatedAt).toBe('2026-09-30T10:00:00.000Z');
+  });
+
+  it('does not let a previous Attempt terminal event overwrite a retried Attempt card', () => {
+    const cards = collectExecutionCards([{
+      id: 'old_contract_failure',
+      sequence: 7,
+      occurredAt: '2026-10-21T06:09:19.850Z',
+      phase: 'verification',
+      actor: 'executor',
+      kind: 'executor_result_observed',
+      status: 'completed',
+      title: 'Executor attempt settled',
+      summary: 'Executor returned a result that Runtime is certifying for delivery.',
+      taskId: 'task_retry',
+      subtaskId: 'subtask-ui',
+      attemptId: 'attempt-old',
+      details: {
+        taskId: 'task_retry',
+        subtaskId: 'subtask-ui',
+        attemptId: 'attempt-old',
+        outcome: 'contract_failed',
+        stepLabel: '执行结束：contract_failed',
+      },
+    }], {
+      taskId: 'task_retry',
+      title: 'Retry',
+      status: 'running',
+      stages: [{
+        phase: 'execution',
+        status: 'running',
+        subtasks: [{
+          id: 'subtask-ui',
+          title: '实现多模态决策对话 Web 界面',
+          status: 'running',
+          attempts: [{
+            attemptId: 'attempt-new',
+            attemptKind: 'primary',
+            attemptOrdinal: 3,
+            attemptLabel: '主执行',
+            displayStatus: '执行中',
+            result: 'running',
+          }],
+        }],
+      }],
+    });
+
+    expect(cards[0]).toMatchObject({
+      state: 'running',
+      activeAttemptId: 'attempt-new',
+      stepLabel: '执行器已启动，等待实际进度…',
+    });
+    expect(cards[0]?.stepLabel).not.toContain('contract_failed');
   });
 
   it('explains the pre-Executor preparation stage instead of showing an opaque wait', () => {
@@ -213,6 +266,37 @@ describe('Turn Task presentation', () => {
     expect(html).toContain('Current B1');
     expect(html).toContain('Current B2');
     expect(html).not.toContain('Historical A');
+  });
+
+  it('uses Work Graph Subtask titles instead of stale duplicate trace titles', () => {
+    const timeline = {
+      taskId: 'task_graph', title: '快速构建服务', status: 'running',
+      stages: [{ phase: 'execution' as const, status: 'running' as const, subtasks: [
+        { id: 'sub_1', title: '快速构建服务', status: 'ready', attempts: [] },
+        { id: 'sub_2', title: '快速构建服务', status: 'ready', attempts: [] },
+        { id: 'sub_3', title: 'Rust 服务端与 System One 协议层', status: 'running', attempts: [] },
+      ] }],
+    } as ExecutionTimeline;
+    const events = ['sub_1', 'sub_2', 'sub_3'].map((subtaskId, sequence) => ({
+      id: `route_${subtaskId}`, sequence, occurredAt: '2026-10-20T09:00:00Z', phase: 'routing' as const,
+      actor: 'kernel' as const, kind: 'executor_routed', status: 'completed' as const,
+      title: 'Primary Executor authorized', summary: '', taskId: 'task_graph', subtaskId,
+      details: { subtaskId, subtaskTitle: '快速构建服务' },
+    }));
+    const graph = {
+      generationId: 'generation_1', edges: [], parallelGroups: [], currentRunnableFrontier: [],
+      nodes: [
+        { id: 'sub_1', title: 'Rust 服务端与 System One 协议层' },
+        { id: 'sub_2', title: '决策对话单页界面' },
+        { id: 'sub_3', title: '端到端自验与缺陷修复' },
+      ],
+    } as WorkGraphPresentationProjection;
+
+    const cards = collectExecutionCards(events, timeline, graph);
+
+    expect(cards.map(card => card.subtaskTitle)).toEqual([
+      'Rust 服务端与 System One 协议层', '决策对话单页界面', '端到端自验与缺陷修复',
+    ]);
   });
 
   it('uses the Task title when a Subtask title is an internal canonical ID', () => {

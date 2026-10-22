@@ -103,6 +103,32 @@ Harness.
 
 ## Consequences
 
+### 2026-10-21 amendment: exact acceptance and explicit retry
+
+One read-only resolver binds the pending receipt to its safe projection. The
+decision Attempt and Result owner Attempt are distinct: a `contract_correction`
+receipt may reference its source Attempt's projection only when both receipts
+agree on that Result and Task/Subtask/generation/revision. Account, object kind,
+completeness and nonempty content are checked independently. Other ownership
+combinations fail closed.
+
+`accept_task_result` and `retry_task_attempt` carry the exact Task, generation,
+graph revision, Subtask, decision Attempt and Result ID. CLI captures the same
+current identity; Web, native TUI and signed Feishu actions consume the shared
+TaskView decision. Stale actions reject and refresh. Acceptance revalidates the
+workspace delta, safety and publication prerequisites, stages the original safe
+body and enters normal publication without executing the business task again.
+An identical completed acceptance is idempotent. Explicit retry retains all old
+receipts/objects and authorizes a new Attempt; uncertain external effects forbid
+retry. A waiting decision blocks its dependants, not independent runnable work.
+
+Public code delivery includes the complete authorized edit delta and deletions.
+Only `fileOutputs` matches become downloadable TaskArtifacts; all published code
+files have separate durable `public_workspace_files` facts. Updating code cannot
+leave a stale downloadable artifact claiming different bytes. Internal paths
+and credentials are removed from ordinary text projections, and internal runtime
+paths in text delivery files block publication.
+
 ### 2026-10-15 amendment: explicit file delivery
 
 The reliability plan's no-unsolicited-documents goal requires a minimal additive

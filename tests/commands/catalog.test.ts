@@ -1,7 +1,9 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import {
   CommandCatalog,
   type CommandContext,
+  type CommandCompletionContext,
   type CommandNode,
 } from '../../src/commands/catalog.js';
 import { createDefaultCommandCatalog } from '../../src/commands/command-tree.js';
@@ -104,9 +106,9 @@ describe('CommandCatalog', () => {
     const catalog = createDefaultCommandCatalog();
 
     const root = catalog.complete({ text: '/', cursor: 1, context });
-    expect(root.suggestions.find(item => item.value === 'executor')).toMatchObject({
-      label: '/executor',
-      replacement: { start: 0, end: 1, text: '/executor' },
+    expect(root.suggestions.find(item => item.value === 'task')).toMatchObject({
+      label: '/task',
+      replacement: { start: 0, end: 1, text: '/task' },
     });
     const configRoot = catalog.complete({ text: '/con', cursor: 4, context });
     expect(configRoot.suggestions.find(item => item.value === 'config')).toMatchObject({
@@ -219,7 +221,7 @@ describe('CommandCatalog', () => {
     expect(completion.suggestions[0]).toMatchObject({
       value: 'task-1',
       label: 'Prepare release notes · #task-1',
-      description: '[RUNNING] updated 2026-08-04T10:00:00.000Z',
+      description: '最近更新：2026-08-04T10:00:00.000Z',
       replacement: { start: 11, end: 11, text: 'task-1' },
     });
   });
@@ -235,6 +237,12 @@ describe('CommandCatalog', () => {
     const catalog = createDefaultCommandCatalog();
     const actions = catalog.listActions();
     const expectedActions = `
+/service start
+/service status
+/service logs
+/service stop
+/service restart
+/task retry-result
 /task dashboard
 /task list
 /task clear
@@ -247,6 +255,7 @@ describe('CommandCatalog', () => {
 /task subtask-cancel
 /task accept-partial
 /task accept-result
+/task search
 /task attach
 /task history
 /task recovery
@@ -284,8 +293,12 @@ describe('CommandCatalog', () => {
 `.trim().split('\n');
     expect(new Set(actions)).toEqual(new Set(expectedActions));
     const help = catalog.describe();
-    for (const commandPath of actions) expect(help).toContain(commandPath);
+    for (const commandPath of ['/task list', '/task show', '/task resume', '/task cancel', '/memory list', '/help', '/exit']) {
+      expect(help).toContain(commandPath);
+    }
+    expect(help).not.toContain('/executor list');
     expect(actions).toContain('/task dashboard');
+    expect(actions).toContain('/task search');
     expect(actions).toContain('/task index search');
     expect(actions).not.toContain('/task complete');
     expect(actions).not.toContain('/executor register <executorName>');
@@ -300,5 +313,34 @@ describe('CommandCatalog', () => {
     expect(actions).not.toContain('/tasks');
     expect(actions).not.toContain('/dashboard');
     expect(actions).not.toContain('/quit');
+  });
+});
+
+
+describe('shared read-only command completion', () => {
+  it('keeps every application command in the single current reference', async () => {
+    const reference = await readFile(new URL('../../docs/current/commands.md', import.meta.url), 'utf8');
+    for (const command of createDefaultCommandCatalog().listActions()) {
+      expect(reference, command).toContain(command);
+    }
+  });
+  it('completes closed conversations using data only and limits task candidates to their conversation', () => {
+    const catalog = createDefaultCommandCatalog();
+    const local = { id: 'local', title: '本会话', status: 'running', conversationId: 'selected', updatedAt: '2026-10-22' };
+    const foreign = { ...local, id: 'foreign', conversationId: 'another' };
+    const reads = { conversationId: 'selected', currentTaskId: null,
+      taskEngine: { getTaskRepo: () => ({ findAll: () => [local, foreign] }) },
+    } as CommandCompletionContext;
+    expect(catalog.complete({ text: '/', cursor: 1, context: reads }).suggestions.map(item => item.value))
+      .toEqual(['task', 'memory', 'help', 'exit']);
+    expect(catalog.complete({ text: '/task show ', cursor: 11, context: reads }).suggestions.map(item => item.value)).toEqual(['local']);
+    expect(catalog.complete({ text: '/task list ', cursor: 11, context: reads }).suggestions.map(item => item.value))
+      .toEqual(['all', 'waiting', 'executing', 'needs-action', 'finished']);
+    for (const command of catalog.listActions()) expect(catalog.owns(command)).toBe(true);
+    expect(catalog.owns('/settings')).toBe(false);
+    expect(catalog.owns('/taskish')).toBe(false);
+    expect(catalog.owns('task list')).toBe(false);
+    expect(catalog.describe(['memory'])).toContain('/help advanced memory');
+    expect(catalog.describe(['memory'])).not.toContain('/help advanced task');
   });
 });

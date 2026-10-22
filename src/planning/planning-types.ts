@@ -19,6 +19,9 @@ export type IntentTaskControl =
   | 'status_query'
   | 'resume_task'
   | 'recover_blocked'
+  | 'service_start'
+  | 'service_stop'
+  | 'service_restart'
   | 'abandon_task'
   | 'none';
 export type TaskSemanticPriority = 'normal' | 'high' | 'urgent';
@@ -37,6 +40,8 @@ export interface PlanningAgentPlan {
     directReply: string | null;
   };
   task: {
+    publicProjectDirectory?: string | null;
+    startServiceAfterPublish?: boolean | null;
     binding: IntentTaskBinding;
     taskId: string | null;
     control: IntentTaskControl;

@@ -1,4 +1,4 @@
-﻿import type Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import type { TaskEngine } from '../task/task-engine.js';
 import type { MemoryEngine } from '../memory/memory-engine.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
@@ -7,7 +7,17 @@ import type { ActiveExecutionControl } from '../execution/active-execution-contr
 import type { CommandReadServices } from './command-read-services.js';
 import type { TaskControlPort } from './task-control-port.js';
 
-export interface CommandContext {
+/** Data needed for parsing and completion; no execution controls or Planner session. */
+export interface CommandCompletionContext {
+  conversationId?: string;
+  taskEngine: Pick<TaskEngine, 'getTaskRepo'>;
+  memoryEngine: Pick<MemoryEngine, 'list'>;
+  currentTaskId: string | null;
+  db: Database.Database;
+  executorAgentClassNames?: string[];
+}
+
+export interface CommandContext extends CommandCompletionContext {
   taskEngine: TaskEngine;
   memoryEngine: MemoryEngine;
   orchestration: OrchestrationEngine;
@@ -20,10 +30,7 @@ export interface CommandContext {
     stillError: string[];
     skipped: string[];
   }>;
-  currentTaskId: string | null;
-  db: Database.Database;
   config: Config;
-  executorAgentClassNames?: string[];
 }
 
 export type CommandDirective =
@@ -99,7 +106,7 @@ export interface ResolvedCommandArgs {
 }
 
 export type CommandCandidateProvider = (
-  context: CommandContext,
+  context: CommandCompletionContext,
   prefix: string,
 ) => CommandCandidate[];
 
@@ -108,9 +115,9 @@ export interface CommandArgumentSpec {
   kind: 'enum' | 'text' | 'rest' | 'variadic' | 'reference' | 'command-path';
   description: string;
   optional?: boolean;
-  values?: Array<{ value: string; description: string }>;
+  values?: Array<{ value: string; description: string; hidden?: boolean }>;
   candidates?: CommandCandidateProvider;
-  validate?: (value: string, context: CommandContext) => string | null;
+  validate?: (value: string, context: CommandCompletionContext) => string | null;
 }
 
 export interface CommandOptionSpec {
@@ -124,6 +131,12 @@ interface CommandNodeBase {
   name: string;
   summary: string;
   category?: 'common' | 'advanced';
+}
+
+interface CommandEntry {
+  readonly path: string[];
+  readonly action: CommandAction;
+  readonly category: 'common' | 'advanced';
 }
 
 export interface CommandGroup extends CommandNodeBase {
@@ -327,63 +340,48 @@ function renderUsage(action: CommandAction, path: string[]): string[] {
 export class CommandCatalog {
   constructor(private readonly roots: CommandNode[]) {}
 
+  owns(input: string): boolean {
+    const root = /^\/([^\s]+)(?:\s|$)/u.exec(input.trim())?.[1];
+    return Boolean(root && this.roots.some(node => node.name === root));
+  }
+
   listActions(): string[] {
-    const actions: string[] = [];
-    const visit = (nodes: CommandNode[], path: string[]) => {
-      for (const node of nodes) {
-        if (node.kind === 'group') {
-          const groupPath = [...path, node.name];
-          if (node.fallbackAction) {
-            const firstArgument = node.fallbackAction.arguments?.[0];
-            actions.push(`/${groupPath.join(' ')}${firstArgument ? ` ${describeArgument(firstArgument)}` : ''}`);
-          }
-          visit(node.children, groupPath);
-        } else actions.push(`/${[...path, node.name].join(' ')}`);
-      }
-    };
-    visit(this.roots, []);
-    return actions;
+    return this.commandEntries().map(entry => this.entryPath(entry));
   }
 
   describe(commandPath?: string | string[]): string {
-    const path = Array.isArray(commandPath)
+    let path = Array.isArray(commandPath)
       ? commandPath.filter(Boolean)
       : (commandPath ?? '').trim().replace(/^\//, '').split(/\s+/).filter(Boolean);
+    const category = path[0] === 'advanced' ? 'advanced' : 'common';
+    if (path[0] === 'advanced') path = path.slice(1);
 
     if (path.length === 0) {
-      const lines = ['MetaClaw 命令树', ''];
-      const renderNodes = (nodes: CommandNode[], parentPath: string[], depth: number) => {
-        for (const node of nodes) {
-          const currentPath = [...parentPath, node.name];
-          lines.push(`${'  '.repeat(depth)}/${currentPath.join(' ')}  ${node.summary}`);
-          if (node.kind === 'group') {
-            if (node.fallbackAction) {
-              const firstArgument = node.fallbackAction.arguments?.[0];
-              const fallbackPath = `/${currentPath.join(' ')}${firstArgument ? ` ${describeArgument(firstArgument)}` : ''}`;
-              lines.push(`${'  '.repeat(depth + 1)}${fallbackPath}  ${node.fallbackAction.summary}`);
-            }
-            renderNodes(node.children, currentPath, depth + 1);
-          }
-        }
-      };
-      for (const category of ['common', 'advanced'] as const) {
-        const nodes = this.roots.filter(node => (node.category ?? 'advanced') === category);
-        if (nodes.length === 0) continue;
-        lines.push(category === 'common' ? '常用：' : '高级：');
-        renderNodes(nodes, [], 1);
-        lines.push('');
+      const hasCategories = this.roots.some(node => node.category !== undefined);
+      const entries = this.commandEntries().filter(entry => !hasCategories || entry.category === category);
+      if (category === 'advanced') {
+        return [
+          '高级命令（诊断、恢复与治理）：',
+          ...entries.map(entry => `  ${this.entryUsage(entry)}  ${entry.action.summary}`),
+          '',
+          '输入 /help <命令路径> 查看详细说明。',
+        ].join('\n');
       }
-      lines.push('使用 /help <命令路径> 查看详细说明，例如 /help task pause。');
+      const lines = ['常用命令：', ...entries.map(entry => `  ${this.entryUsage(entry)}  ${entry.action.summary}`), ''];
+      lines.push('高级命令：输入 /help advanced 查看。');
+      lines.push('输入 /help <命令路径> 查看详细说明，例如 /help task resume。');
       return lines.join('\n').trimEnd();
     }
 
     let nodes = this.roots;
     const traversed: string[] = [];
+    let inheritedCategory: 'common' | 'advanced' = 'advanced';
     for (let index = 0; index < path.length; index += 1) {
       const segment = path[index]!;
       const node = nodes.find(candidate => candidate.name === segment);
       if (!node) return `未找到命令路径: /${path.join(' ')}`;
       traversed.push(node.name);
+      inheritedCategory = node.category ?? inheritedCategory;
       if (node.kind === 'action') {
         if (index !== path.length - 1) return `未找到命令路径: /${path.join(' ')}`;
         return [
@@ -409,11 +407,16 @@ export class CommandCatalog {
       const firstArgument = resolvedGroup.fallbackAction.arguments?.[0];
       lines.push(`  ${(firstArgument ? describeArgument(firstArgument) : resolvedGroup.fallbackAction.name).padEnd(18)} ${resolvedGroup.fallbackAction.summary}`);
     }
-    for (const node of nodes) lines.push(`  ${node.name.padEnd(18)} ${node.summary}`);
+    for (const node of nodes.filter(node => this.nodeHasCategory(node, category, inheritedCategory))) {
+      lines.push(`  ${node.name.padEnd(18)} ${node.summary}`);
+    }
+    if (category === 'common' && resolvedGroup?.children.some(node => this.nodeHasCategory(node, 'advanced', inheritedCategory))) {
+      lines.push('', `高级命令：输入 /help advanced ${traversed.join(' ')} 查看。`);
+    }
     return lines.join('\n');
   }
 
-  complete(input: { text: string; cursor: number; context: CommandContext }): CommandCompletion {
+  complete(input: { text: string; cursor: number; context: CommandCompletionContext }): CommandCompletion {
     const { text, context } = input;
     const cursor = Math.max(0, Math.min(input.cursor, text.length));
     if (!text.startsWith('/')) {
@@ -453,12 +456,18 @@ export class CommandCatalog {
 
     if (!resolved.action) {
       const nodes = resolved.group ? resolved.group.children : this.roots;
-      const nodeSuggestions = nodes
+      const hasCategories = this.roots.some(node => node.category !== undefined);
+      const suggestionNodes = prefix === '' && hasCategories
+        ? resolved.group
+          ? nodes.filter(node => (node.category ?? resolved.group?.category ?? 'common') === (resolved.group?.category ?? 'common'))
+          : nodes.filter(node => node.category === 'common')
+        : nodes;
+      const nodeSuggestions = suggestionNodes
         .filter(node => node.name.toLowerCase().startsWith(prefix.toLowerCase()))
-        .map(node => this.nodeSuggestion(node.name, nodes, replacement));
+        .map(node => this.nodeSuggestion(node.name, suggestionNodes, replacement));
       if (nodeSuggestions.length === 0 && prefix) {
-        const nearest = nearestNode(prefix, nodes);
-        if (nearest) nodeSuggestions.push(this.nodeSuggestion(nearest, nodes, replacement));
+        const nearest = nearestNode(prefix, suggestionNodes);
+        if (nearest) nodeSuggestions.push(this.nodeSuggestion(nearest, suggestionNodes, replacement));
       }
       const fallbackArgument = resolved.group?.fallbackAction?.arguments?.[0];
       const fallbackSuggestions = fallbackArgument
@@ -538,7 +547,7 @@ export class CommandCatalog {
       const token = tokens[index]!;
       const node = nodes.find(candidate => candidate.name === token);
       if (!node) {
-        if (group?.fallbackAction) {
+        if (group?.fallbackAction && (group.fallbackAction.arguments?.length ?? 0) > 0) {
           return {
             action: group.fallbackAction,
             group,
@@ -578,7 +587,7 @@ export class CommandCatalog {
   private parseAction(
     action: CommandAction,
     tokens: string[],
-    context: CommandContext,
+    context: CommandCompletionContext,
     allowIncomplete: boolean,
     candidateCache: CandidateCache,
   ): ParseActionResult {
@@ -678,7 +687,7 @@ export class CommandCatalog {
     completedTokens: string[],
     prefix: string,
     replacement: { start: number; end: number },
-    context: CommandContext,
+    context: CommandCompletionContext,
     candidateCache: CandidateCache,
   ): CommandCompletion {
     const optionSpecs = action.options ?? [];
@@ -799,28 +808,70 @@ export class CommandCatalog {
     return group;
   }
 
+  private commandEntries(): CommandEntry[] {
+    const entries: CommandEntry[] = [];
+    const visit = (
+      nodes: CommandNode[],
+      parentPath: string[],
+      inheritedCategory: 'common' | 'advanced',
+    ) => {
+      for (const node of nodes) {
+        const category = node.category ?? inheritedCategory;
+        const path = [...parentPath, node.name];
+        if (node.kind === 'group') {
+          if (node.fallbackAction) {
+            entries.push({ path, action: node.fallbackAction, category: node.fallbackAction.category ?? category });
+          }
+          visit(node.children, path, category);
+        } else entries.push({ path, action: node, category });
+      }
+    };
+    visit(this.roots, [], 'advanced');
+    return entries;
+  }
+
+  private entryPath(entry: CommandEntry): string {
+    return `/${entry.path.join(' ')}`;
+  }
+
+  private entryUsage(entry: CommandEntry): string {
+    if (entry.action.usages.length > 0) return entry.action.usages[0]!;
+    const firstArgument = entry.action.arguments?.[0];
+    return `${this.entryPath(entry)}${firstArgument ? ` ${describeArgument(firstArgument)}` : ''}`;
+  }
+
   private completeHelpPath(
     completedPath: string[],
     prefix: string,
     replacement: { start: number; end: number },
   ): CommandCompletion {
-    let nodes = this.roots;
-    for (const segment of completedPath) {
+    const advanced = completedPath[0] === 'advanced';
+    const actualPath = advanced ? completedPath.slice(1) : completedPath;
+    let nodes = advanced
+      ? this.roots.filter(node => this.nodeHasCategory(node, 'advanced'))
+      : this.roots.filter(node => this.nodeHasCategory(node, 'common'));
+    for (const segment of actualPath) {
       const node = nodes.find(candidate => candidate.name === segment);
       if (!node) return { state: 'invalid', suggestions: [], hint: null, error: `未知命令路径: /${completedPath.join(' ')}` };
       if (node.kind === 'action') return { state: 'invalid', suggestions: [], hint: null, error: `命令路径不能继续: /${completedPath.join(' ')}` };
       nodes = node.children;
     }
-    const suggestions = nodes
-      .filter(node => node.name.toLowerCase().startsWith(prefix.toLowerCase()))
+    const pathCandidates = completedPath.length === 0
+      ? [
+          { value: 'advanced', label: 'advanced', description: '列出少用的诊断、恢复与治理命令' },
+          ...this.commandPathCandidates([], prefix),
+        ]
+      : this.commandPathCandidates(completedPath, prefix);
+    const suggestions = pathCandidates
+      .filter(node => node.value.toLowerCase().startsWith(prefix.toLowerCase()))
       .slice(0, SUGGESTION_LIMIT)
       .map(node => ({
-        value: node.name,
-        label: node.name,
-        description: node.summary,
-        replacement: { ...replacement, text: node.name },
+        value: node.value,
+        label: node.label,
+        description: node.description,
+        replacement: { ...replacement, text: node.value },
       }));
-    const exact = prefix ? nodes.find(node => node.name === prefix) : null;
+    const exact = prefix ? pathCandidates.find(node => node.value === prefix) : null;
     return {
       state: prefix === '' || Boolean(exact) ? 'executable' : 'incomplete',
       suggestions,
@@ -833,7 +884,7 @@ export class CommandCatalog {
     argument: CommandArgumentSpec,
     prefix: string,
     replacement: { start: number; end: number },
-    context: CommandContext,
+    context: CommandCompletionContext,
     executableWhenEmpty: boolean,
     candidateCache: CandidateCache,
   ): CommandCompletion {
@@ -852,7 +903,7 @@ export class CommandCatalog {
     }
 
     const candidates = argument.kind === 'enum'
-      ? (argument.values ?? []).map(value => ({ value: value.value, label: value.value, description: value.description }))
+      ? (argument.values ?? []).filter(value => !value.hidden).map(value => ({ value: value.value, label: value.value, description: value.description }))
       : this.referenceCandidates(argument, context, prefix, candidateCache);
     const filtered = candidates
       .filter(candidate => candidate.value.toLowerCase().startsWith(prefix.toLowerCase())
@@ -870,21 +921,49 @@ export class CommandCatalog {
   }
 
   private commandPathCandidates(path: string[], prefix: string): CommandCandidate[] {
-    let nodes = this.roots;
-    for (const segment of path) {
+    let category: 'common' | 'advanced' = 'common';
+    let remainingPath = path;
+    let nodes: CommandNode[] = this.roots;
+    if (remainingPath[0] === 'advanced') {
+      category = 'advanced';
+      remainingPath = remainingPath.slice(1);
+      nodes = nodes.filter(node => this.nodeHasCategory(node, category));
+      if (remainingPath.length === 0) {
+        return nodes
+          .filter(node => node.name.startsWith(prefix))
+          .map(node => ({ value: node.name, label: node.name, description: node.summary }));
+      }
+    } else {
+      nodes = nodes.filter(node => this.nodeHasCategory(node, category));
+    }
+    let inheritedCategory: 'common' | 'advanced' = 'advanced';
+    for (const segment of remainingPath) {
       const node = nodes.find(candidate => candidate.name === segment);
       if (!node || node.kind !== 'group') return [];
       nodes = node.children;
+      inheritedCategory = node.category ?? inheritedCategory;
     }
     return nodes
+      .filter(node => (node.category ?? inheritedCategory) === category)
       .filter(node => node.name.startsWith(prefix))
       .map(node => ({ value: node.name, label: node.name, description: node.summary }));
+  }
+
+  private nodeHasCategory(
+    node: CommandNode,
+    category: 'common' | 'advanced',
+    inheritedCategory: 'common' | 'advanced' = 'advanced',
+  ): boolean {
+    const current = node.category ?? inheritedCategory;
+    if (current === category) return true;
+    return node.kind === 'group'
+      && node.children.some(child => this.nodeHasCategory(child, category, current));
   }
 
   private validateValue(
     argument: CommandArgumentSpec,
     value: string,
-    context: CommandContext,
+    context: CommandCompletionContext,
     candidateCache: CandidateCache,
   ): string | null {
     if (argument.kind === 'enum' && !(argument.values ?? []).some(candidate => candidate.value === value)) {
@@ -902,7 +981,7 @@ export class CommandCatalog {
 
   private referenceCandidates(
     argument: CommandArgumentSpec,
-    context: CommandContext,
+    context: CommandCompletionContext,
     prefix: string,
     candidateCache: CandidateCache,
   ): CommandCandidate[] {

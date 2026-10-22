@@ -61,22 +61,14 @@ On PowerShell:
 .\scripts\build-attempt-images.ps1
 ```
 
-In Docker compatibility mode, MetaClaw resolves each canonical image tag to a
-Docker image ID. Custom AgentClasses must be registered with an image reference,
+In Docker compatibility mode, MetaWork resolves each canonical image tag to a
+Docker image ID. Custom AgentClasses are configured through Settings activation with an image reference,
 its current immutable `sha256:` image ID, a valid permission profile, and the
 command/arguments inside the image. Worktree mode is restricted to the two
 canonical built-ins and does not add a custom registration path. A changed
 Docker tag fails closed until the class is explicitly updated.
 
-Example:
-
-```text
-/executor register research-bot \
-  --image registry.example/research-bot:1.2.3 \
-  --image-id sha256:<64-hex-digest> \
-  --permission-profile restricted-custom \
-  --command research-bot --args "run --prompt {prompt}"
-```
+The command surface exposes inspection and health diagnostics only; see the [current slash-command reference](commands.md).
 
 Historical custom classes without the Docker image/profile triplet remain visible
 for audit but cannot execute. Worktree execution is an explicit trusted backend,

@@ -199,6 +199,29 @@ const snapshot: KernelSnapshot = {
 };
 
 describe('ControlKernel', () => {
+  it('separates unpublished code from a completed task without a service specification', () => {
+    const kernel = new ControlKernel();
+    const event = runtimeEvent({ type: 'managed_service_requested', operation: 'start', serviceId: 'backend' });
+    const published = {
+      schemaVersion: 5 as const,
+      type: 'service_control' as const,
+      task: { id: 'task_1', status: 'done' as const },
+      published: true,
+      serviceTaskId: null,
+    };
+    expect(kernel.decide(event, published)).toMatchObject({
+      action: { type: 'control_managed_service', taskId: 'task_1', serviceId: 'backend', operation: 'start' },
+    });
+    expect(kernel.decide(event, { ...published, published: false })).toMatchObject({
+      action: { type: 'reject_request' },
+      reason: '代码尚未发布到用户任务目录，不能启动服务',
+    });
+    expect(kernel.decide(event, { ...published, task: { id: 'task_1', status: 'failed' as const } })).toMatchObject({
+      action: { type: 'reject_request' },
+      reason: '任务已取消、归档或失败，不能启动服务',
+    });
+  });
+
   it('queues three independent subtasks durably even when physical slots are occupied', () => {
     const snapshot = dispatchSnapshot();
     snapshot.availableSlots = 0;
@@ -901,6 +924,30 @@ describe('ControlKernel', () => {
       completedSubtaskIds: ['published'],
       cancelledSubtaskIds: ['cancelled'],
     });
+  });
+
+  it('fences result acceptance and retry against stale identities, and refuses uncertain external repetition', () => {
+    const expected = { taskId: 'task_1', generationId: 'generation_task_1_1', graphRevision: 1,
+      subtaskId: 'subtask_1', attemptId: 'attempt_safe', resultId: 'result_safe' };
+    const snapshot: Extract<KernelSnapshot, { type: 'task_control' }> = { schemaVersion: 5,
+      type: 'task_control', task: { id: 'task_1', status: 'running' }, generationId: expected.generationId,
+      graphRevision: 1, subtasks: [cancellationSubtask('subtask_1', 'awaiting_decision')],
+      completionBlockedReasons: [], partialCancellation: false,
+      uncertifiedResult: { subtaskId: expected.subtaskId, attemptId: expected.attemptId, resultId: expected.resultId },
+      resultRetrySafe: true };
+    const kernel = new ControlKernel();
+    for (const type of ['partial_result_acceptance_requested', 'task_result_retry_requested'] as const) {
+      const event = runtimeEvent({ type, expectedResult: expected });
+      expect(kernel.decide(event, snapshot).action.type).toBe(type === 'partial_result_acceptance_requested'
+        ? 'accept_uncertified_result' : 'retry_uncertified_result');
+      for (const key of Object.keys(expected)) {
+        const stale = { ...expected, [key]: key === 'graphRevision' ? 2 : 'other' };
+        expect(kernel.decide(runtimeEvent({ type, expectedResult: stale }), snapshot).action.type).toBe('reject_request');
+      }
+      expect(kernel.decide(event, { ...snapshot, task: { id: 'task_1', status: 'cancelled' } }).action.type).toBe('reject_request');
+    }
+    expect(kernel.decide(runtimeEvent({ type: 'task_result_retry_requested', expectedResult: expected }),
+      { ...snapshot, resultRetrySafe: false }).action.type).toBe('reject_request');
   });
 
   it('tries remaining AgentClasses in order, then waits for capacity', () => {

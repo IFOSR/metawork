@@ -54,6 +54,10 @@ export interface PrioritySignals {
 // ─── 任务对象 ───
 export interface Task {
   id: string;
+  publicTaskDirectory?: string;
+  publicDeliveryBaseline?: Record<string, string>;
+  publicProject?: boolean;
+  startServiceAfterPublish?: boolean;
   accountId?: string;
   conversationId?: string;
   workspaceId?: string;

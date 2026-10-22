@@ -17,8 +17,10 @@ export function allowsKernelAction(action: KernelDecisionAction, fact: Productio
     case 'queue_generation_replan': case 'defer_task_plan_for_availability': case 'activate_deferred_task_plan':
     case 'request_merge_replan': case 'recover_workspace_attempt': case 'grant_capability': case 'escalate_capability':
       return false;
+    case 'control_managed_service': return action.operation === 'stop';
+    case 'retry_uncertified_result': case 'accept_uncertified_result': return false;
     case 'authorize_task_control':
-      return ['cancel', 'pause', 'block'].includes(action.task.control ?? '');
+      return ['cancel', 'pause', 'block', 'service_stop'].includes(action.task.control ?? '');
     case 'resolve_recovery': return action.resolution !== 'retry';
     default: return true;
   }

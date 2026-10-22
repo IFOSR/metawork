@@ -143,6 +143,24 @@ not gain independent scheduling or concurrent repository-write authority.
 
 ## Persistence And Migration
 
+### Public Task directory amendment (2026-10-21)
+
+Task creation persists one immutable Workspace-relative public directory:
+`metaclaw-tasks/<title-slug>-<16-hex-task-id-digest>`. Renaming, retry, recovery
+and reconnect never recompute it. A new Task that explicitly modifies a selected
+existing project may instead bind a relative subdirectory of the Workspace;
+Runtime captures its initial file hashes before execution and rejects traversal,
+symlinks and oversized snapshots. Planner cannot supply an absolute path.
+
+Managed execution worktrees remain private. Ordinary clients see the authorized
+Workspace path, public Task directory, relative files, conflicts and public
+delivery status. Internal Git integration is not proof of public delivery.
+SQLite schema 51 adds Task directory/baseline/start-service and selected-project
+facts, public file facts and account-scoped managed service/effect records.
+The transactional 50→51 migration retains a matching historical published
+directory when available, preserves receipts/ledgers and otherwise assigns a
+stable directory without inventing delivery success.
+
 Conversation metadata format advances to v3 and stores
 `workspaceBinding` instead of the legacy mutable `workspace` path.
 

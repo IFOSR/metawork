@@ -268,6 +268,7 @@ function setup(
   return {
     db,
     runner,
+    attemptRunner,
     taskRuntimeService,
     subtaskRepo,
     workUnitRepo,
@@ -1289,6 +1290,31 @@ describe('SubtaskAttemptRunner', () => {
     expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({ state: 'idle' });
   });
 
+  it.each([false, true])('publishes a user-accepted safe result without another Executor run (correction=%s)', async correction => {
+    const fixture = setup('用户需要的原始结果');
+    fixture.db.prepare("UPDATE tasks SET account_id = 'local-default' WHERE id = 'task_phase2'").run();
+    const source = await fixture.runner.run({ attemptId: 'accept_primary', executionId: 'exec_accept',
+      taskId: 'task_phase2', subtaskId: fixture.a.id, ...attemptIdentity(), executionMode: 'fresh',
+      defaultResourceGrant: fixture.defaultResourceGrant });
+    expect(source.outcome).toBe('contract_failed');
+    if (correction) {
+      fixture.executionRuntime.runResponseOnly.mockResolvedValue({ success: true, output: '仍然缺少说明', durationMs: 1 });
+      await fixture.runner.runCorrection({ attemptId: 'accept_correction', sourceAttemptId: source.attemptId,
+        executionId: 'exec_accept', taskId: 'task_phase2', subtaskId: fixture.a.id, ...attemptIdentity(),
+        completionContract: { marker: COMPLETION_MARKER_V4, schemaVersion: 4 }, violations: [] });
+    }
+    const { readPendingTaskResult } = await import('../../src/storage/pending-task-result.js');
+    const pending = readPendingTaskResult(fixture.db, 'task_phase2');
+    expect(pending?.attemptId).toBe(correction ? 'accept_correction' : 'accept_primary');
+    await fixture.attemptRunner.stageAcceptedResult(pending!);
+    await fixture.attemptRunner.stageAcceptedResult(pending!);
+    expect(fixture.executionRuntime.run).toHaveBeenCalledTimes(1);
+    expect(fixture.subtaskRepo.findById(fixture.a.id)?.status).toBe('awaiting_integration');
+    expect(fixture.taskRuntimeService.findTask('task_phase2')?.status).toBe('running');
+    expect(fixture.db.prepare('SELECT count(*) AS n FROM workspace_publications').get()).toEqual({ n: 1 });
+    expect(readPendingTaskResult(fixture.db, 'task_phase2')).toBeNull();
+  });
+
   it('uses correction only for metadata and preserves the original safe business result', async () => {
     const originalBody = 'ORIGINAL_RESULT_BODY';
     const setupResult = setup(originalBody);
@@ -1677,6 +1703,44 @@ describe('attempt artifact candidates (publication required)', () => {
     });
     expect(outcome).toMatchObject({ outcome: 'completed' });
     expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).not.toHaveBeenCalled();
+  });
+
+  it('repairs a null noChangeReason for zero-change edit delivery', async () => {
+    const setupResult = setup(validResponse());
+    setupResult.a.deliveryKind = 'edit';
+    setupResult.subtaskRepo.upsert(setupResult.a);
+
+    const first = await setupResult.runner.run({
+      attemptId: 'attempt_zero_change_primary', executionId: 'exec_zero_change',
+      taskId: 'task_phase2', subtaskId: setupResult.a.id, ...attemptIdentity(),
+      executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
+    });
+    expect(first.outcome).toBe('contract_failed');
+
+    setupResult.executionRuntime.runResponseOnly.mockResolvedValue({
+      success: true,
+      output: `${COMPLETION_MARKER_V4}\n${JSON.stringify({
+        evidence: ['checked'],
+        noChangeReason: null,
+      })}`,
+      exitCode: 0,
+      durationMs: 5,
+    });
+    const corrected = await setupResult.runner.runCorrection({
+      attemptId: 'attempt_zero_change_correction', sourceAttemptId: first.attemptId,
+      executionId: 'exec_zero_change', taskId: 'task_phase2', subtaskId: setupResult.a.id,
+      ...attemptIdentity(), completionContract: { marker: COMPLETION_MARKER_V4, schemaVersion: 4 },
+      violations: [{
+        code: 'completion_no_change_reason_mismatch', path: 'noChangeReason',
+        message: 'edit delivery without workspace changes requires a no-change reason',
+      }],
+    });
+
+    expect(corrected).toMatchObject({ outcome: 'completed', output: expect.any(String) });
+    const correctionPrompt = setupResult.executionRuntime.runResponseOnly.mock.calls[0][1];
+    expect(correctionPrompt).toContain('zero workspace changes');
+    expect(correctionPrompt).toContain('noChangeReason is required');
+    expect(correctionPrompt).toContain('"noChangeReason":"已完成结果检查，但本次修正未产生新的文件变更"');
   });
 
   it('persists a corrected candidate without premature file copying', async () => {

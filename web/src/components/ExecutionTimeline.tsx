@@ -1,8 +1,10 @@
 import type { ExecutionTimeline, SubtaskCard } from '../api/types';
 import { DecisionDetail } from './DecisionDetail';
+import { subtaskTitle, type WorkGraphTitleIndex } from '../work-graph-titles';
 
 interface ExecutionTimelineViewProps {
   timeline: ExecutionTimeline | null;
+  titleBySubtask?: WorkGraphTitleIndex;
 }
 
 const PHASE_LABEL: Record<string, string> = {
@@ -22,7 +24,7 @@ const STATUS_LABEL: Record<string, string> = {
   waiting: '等待中', executing: '执行中', needs_action: '需要处理', finished: '已结束',
 };
 
-export function ExecutionTimelineView({ timeline }: ExecutionTimelineViewProps) {
+export function ExecutionTimelineView({ timeline, titleBySubtask }: ExecutionTimelineViewProps) {
   if (!timeline) {
     return (
       <aside className="timeline-pane">
@@ -30,6 +32,10 @@ export function ExecutionTimelineView({ timeline }: ExecutionTimelineViewProps) 
       </aside>
     );
   }
+
+  const proposalTitles = titleBySubtask && titleBySubtask.size > 0
+    ? [...titleBySubtask.values()]
+    : null;
 
   return (
     <aside className="timeline-pane">
@@ -49,8 +55,8 @@ export function ExecutionTimelineView({ timeline }: ExecutionTimelineViewProps) 
             {stage.proposal && (
               <div className="stage-body">
                 <div className="stage-subtasks">
-                  {stage.proposal.subtasks.map(subtask => (
-                    <div className="proposal-subtask" key={subtask}>{subtask}</div>
+                  {(proposalTitles ?? stage.proposal.subtasks).map((subtask, index) => (
+                    <div className="proposal-subtask" key={`${index}:${subtask}`}>{subtask}</div>
                   ))}
                 </div>
               </div>
@@ -67,7 +73,7 @@ export function ExecutionTimelineView({ timeline }: ExecutionTimelineViewProps) 
             {stage.subtasks && stage.subtasks.length > 0 && (
               <div className="stage-body">
                 {stage.subtasks.map(subtask => (
-                  <SubtaskRow subtask={subtask} key={subtask.id} />
+                  <SubtaskRow subtask={subtask} titleBySubtask={titleBySubtask} key={subtask.id} />
                 ))}
               </div>
             )}
@@ -78,10 +84,10 @@ export function ExecutionTimelineView({ timeline }: ExecutionTimelineViewProps) 
   );
 }
 
-function SubtaskRow({ subtask }: { subtask: SubtaskCard }) {
+function SubtaskRow({ subtask, titleBySubtask }: { subtask: SubtaskCard; titleBySubtask?: WorkGraphTitleIndex }) {
   return (
     <div className="subtask-row" data-status={subtask.status}>
-      <span className="subtask-name">{subtask.title}</span>
+      <span className="subtask-name">{subtaskTitle(titleBySubtask, subtask.id, subtask.title)}</span>
       {subtask.executor && <span className="subtask-executor">{subtask.executor}</span>}
       <span className="subtask-status">{STATUS_LABEL[subtask.status] ?? subtask.status}</span>
     </div>

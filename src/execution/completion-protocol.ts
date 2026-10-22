@@ -153,7 +153,6 @@ type ParsedCompletionReportResult =
     violations: CompletionContractViolation[];
   }
   | Extract<CompletionProtocolResult, { ok: false }>;
-type CompletionProtocolFailure = Extract<CompletionProtocolResult, { ok: false }>;
 
 /** Structural completion facts gate downstream use, never visibility of safe text. */
 const CONTENT_VIOLATION_CODES = new Set<CompletionContractErrorCode>([

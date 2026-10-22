@@ -1,3 +1,4 @@
+import { PublicWorkspaceFileRepo } from './public-workspace-file-repo.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { resolvePreviewKind, type ArtifactProjection } from '../delivery/user-artifact-types.js';
@@ -87,7 +88,9 @@ export interface InsertTaskArtifactInput {
  * backend-only; every Web consumer must go through `toProjection`.
  */
 export class TaskArtifactRepo {
-  constructor(private readonly db: Database.Database) {}
+  readonly publicFiles: PublicWorkspaceFileRepo;
+
+  constructor(private readonly db: Database.Database) { this.publicFiles = new PublicWorkspaceFileRepo(db); }
 
   insert(input: InsertTaskArtifactInput): TaskArtifactRecord {
     const record: TaskArtifactRecord = {

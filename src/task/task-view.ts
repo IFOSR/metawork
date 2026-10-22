@@ -63,6 +63,7 @@ export interface TaskViewResultFact {
 }
 
 export interface TaskViewPendingDecisionFact {
+  readonly expectedResult?: import('./safe-result-identity.js').PendingResultIdentity;
   readonly owner: 'kernel' | 'user' | 'recovery';
   readonly reason: 'uncertified_result' | 'missing_material' | 'permission' | 'uncertain_application' | 'recovery';
   readonly resultId: string | null;
@@ -71,6 +72,7 @@ export interface TaskViewPendingDecisionFact {
 }
 
 export interface TaskViewFacts {
+  readonly serviceState?: string | null;
   readonly task: {
     readonly id: string;
     readonly status: TaskStatus;
@@ -261,16 +263,19 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
       : facts.capacityWaiting || queuedAttempts.length > 0 || (facts.retryWakeAt && !facts.retryWakeRecoveryRequired)
         || (replanJob && replanJob.status !== 'waiting_for_availability') || lifecycle === 'queued' ? 'waiting'
       : 'needs_action';
-  const pendingDecision = facts.pendingDecision
-    ?? derivePendingDecision(facts);
+  const pendingDecision = isTerminalTaskLifecycle(lifecycle) ? null
+    : facts.pendingDecision ?? null;
   const explanation = facts.capacityWaiting || (phase === 'queued' && queuedAttempts.length > 0)
     ? '等待执行名额；名额释放后系统会自动继续。'
     : explain({ phase, lifecycle, blockingResidue, recoveryDiagnosis });
   const userStateReason = (userState === 'finished'
     ? explain({ phase: lifecycle as 'completed' | 'failed' | 'cancelled', lifecycle, blockingResidue, recoveryDiagnosis })
+    : userState === 'needs_action' && facts.serviceState && facts.serviceState !== 'healthy'
+      && !pendingDecision && facts.subtasks.length > 0 && facts.subtasks.every(item => item.status === 'done')
+      ? '代码已交付，服务尚未通过健康检查。请查询服务状态，并显式启动或重启服务。'
     : userState === 'needs_action' && (pendingDecision?.reason === 'uncertified_result' || facts.deliveryState === 'failed' || recoveryDiagnosis === 'no_authorized_driver')
       ? (pendingDecision?.reason === 'uncertified_result'
-        ? '结果已安全保存，但完成验收还缺少执行说明。请接受并交付，或重新执行。'
+        ? `结果已安全保存，但完成验收还缺少执行说明。请接受并交付${pendingDecision.actions.includes('retry_attempt') ? '，或重新执行' : ''}。`
         : facts.deliveryState === 'failed' ? '文件交付失败，请继续未完成部分；已完成的执行不会重跑。' : '没有找到可以继续任务的执行记录。请继续未完成部分。')
       : explanation)
     + (activeAttempt && facts.subtasks.some(subtask => subtask.status === 'blocked')
@@ -431,20 +436,6 @@ function nextAuthorizedAction(
     case 'cancelled':
       return 'none';
   }
-}
-
-function derivePendingDecision(facts: TaskViewFacts): TaskViewPendingDecisionFact | null {
-  const receipt = [...facts.receipts]
-    .sort((left, right) => right.completedAt.localeCompare(left.completedAt))[0];
-  if (!receipt || receipt.terminalState !== 'uncertified_result') return null;
-  const resultId = facts.result?.resultId ?? null;
-  return {
-    owner: 'user',
-    reason: 'uncertified_result',
-    resultId,
-    attemptId: receipt.attemptId,
-    actions: ['accept_result', 'retry_attempt'],
-  };
 }
 
 function explain(input: {

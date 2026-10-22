@@ -8,6 +8,7 @@
  * 邮箱只拥有 turn 准入；账户 Kernel 策略仍归 AccountKernelCoordinator。
  */
 
+import { createDefaultCommandCatalog } from '../commands/command-tree.js';
 import type { GatewayCommand } from '../gateway/client-protocol.js';
 import type { GatewayTurnOrigin } from '../gateway/gateway-delivery-context.js';
 
@@ -33,22 +34,12 @@ export interface ConversationInputMailboxDeps {
 }
 
 const DEFAULT_MAX_QUEUE_SIZE = 16;
+const controlCommandCatalog = createDefaultCommandCatalog();
 
 /**
- * Control commands execute immediately instead of queueing behind the
- * active turn: cancelling or inspecting task state must not wait for a
- * long-running turn to finish (observed 2026-09-04: `/task clear all` sat
- * in the FIFO for the whole task duration with no feedback). They are not
- * turns — FIFO single-active-turn semantics (ADR-0031 §7) are preserved for
- * conversational input.
- */
-const CONTROL_COMMAND_PATTERN = /^\/(?:task\s+(?:clear|cancel|stop|list|show|dashboard)\b|clear\b|status\b|doctor\b)/iu;
-
-/**
- * Turn control commands that must never wait for the active turn. This includes
- * Gateway-level turn cancellation, not only slash commands: a stop request that
- * queues behind the run it is stopping can never take effect (observed
- * 2026-09-18 on a live Executor attempt).
+ * Explicit system commands are never semantic turns, so they execute without
+ * waiting behind a Planner turn. Natural-language input remains FIFO. Gateway
+ * cancellation and permission decisions use the same immediate control lane.
  */
 export function isControlCommand(command: MailboxCommand): boolean {
   if (command.command?.kind === 'cancel_turn' || command.command?.kind === 'cancel_task'
@@ -58,7 +49,7 @@ export function isControlCommand(command: MailboxCommand): boolean {
 
 export function isControlSlashCommand(command: MailboxCommand): boolean {
   return command.command?.kind === 'slash_command'
-    && CONTROL_COMMAND_PATTERN.test(command.command.text.trim());
+    && controlCommandCatalog.owns(command.command.text);
 }
 
 export class ConversationInputMailbox {

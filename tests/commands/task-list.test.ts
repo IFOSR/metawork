@@ -1,3 +1,5 @@
+import { projectTaskView } from '../../src/task/task-view.js';
+import { SqliteTaskActivityFacts } from '../../src/storage/task-activity-facts-repo.js';
 import { describe, expect, it, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { tmpdir } from 'os';
@@ -56,6 +58,7 @@ describe('task list commands', () => {
       memoryEngine,
       orchestration,
       taskControl: {
+        taskView: (id: string) => projectTaskView(new SqliteTaskActivityFacts(db).read(taskRepo.findById(id)!, null)),
         cancelTask: async taskId => {
           taskEngine.cancel(taskId, 'test cancellation');
           return {
@@ -112,7 +115,7 @@ describe('task list commands', () => {
 
     const result = await listTasks({ positionals: {}, options: {} }, context);
 
-    expect(result.content).toContain('当前执行');
+    expect(result.content).toContain('需要处理');
     expect(result.content).toContain('待执行');
     expect(result.content).toContain('已挂起');
     expect(result.content).toContain('已阻塞');
@@ -157,7 +160,7 @@ describe('task list commands', () => {
 
     expect(result.content).toContain(realTask.id);
     expect(result.content).toContain(chatterTask.id);
-    expect(result.content).toContain('[DONE] hi');
+    expect(result.content).toContain('[已结束] hi');
   });
 
   it('clears only parked tasks when requested', async () => {

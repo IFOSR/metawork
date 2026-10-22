@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { CURRENT_SCHEMA_VERSION, runMigrations } from '../../src/storage/migrations.js';
 
 function schema49() {
   const db = new Database(':memory:');
@@ -19,7 +19,7 @@ describe('schema 50 explicit file output declarations', () => {
       const history = db.prepare('SELECT * FROM tasks').all();
       runMigrations(db);
       runMigrations(db);
-      expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 50 });
+      expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: CURRENT_SCHEMA_VERSION });
       expect(db.prepare('SELECT * FROM tasks').all()).toEqual(history);
       expect(db.prepare('PRAGMA table_info(subtasks)').all()).toContainEqual(expect.objectContaining({ name: 'file_outputs_json', notnull: 0, dflt_value: null }));
       expect(db.pragma('foreign_key_check')).toEqual([]);

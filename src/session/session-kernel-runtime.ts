@@ -1,3 +1,4 @@
+import { capturePublicProjectBaseline } from '../delivery/public-project-baseline.js';
 import type { KernelDecision, KernelEvent } from '../kernel/control-kernel.js';
 import type { KernelRuntime } from '../kernel/kernel-workflow.js';
 import type { MemoryContextService } from '../memory/memory-context-service.js';
@@ -36,6 +37,8 @@ export interface SessionKernelRuntimeDeps {
   activeExecutions: ActiveExecutionControl;
   conversationTaskSchedulerRepo?: ConversationTaskSchedulerRepo;
   presentation: SessionPresentationService;
+  resolveUserWorkspaceRoot?: (conversationId: string) => Promise<string | null> | string | null;
+  manageLocalService?: (taskId: string, operation: 'start' | 'stop' | 'restart', serviceId?: string) => Promise<unknown>;
   callbacks: {
     appendOutput(...lines: string[]): void;
     onDecisionApplying?(decision: KernelDecision): void;
@@ -116,7 +119,7 @@ export class SessionKernelRuntime {
         return null;
       }
       case 'authorize_task_plan':
-        await this.applyTaskPlan(decision, userInput, queryId);
+        await this.applyTaskPlan(decision, userInput, conversationId, queryId);
         return null;
       case 'record_permission_resolution':
         return null;
@@ -167,6 +170,8 @@ export class SessionKernelRuntime {
       case 'cancel_subtasks':
       case 'accept_partial_result':
       case 'accept_uncertified_result':
+      case 'retry_uncertified_result':
+      case 'control_managed_service':
       case 'resolve_recovery':
       case 'grant_capability':
       case 'deny_capability':
@@ -187,6 +192,16 @@ export class SessionKernelRuntime {
   ): Promise<void> {
     if (decision.action.type !== 'authorize_task_control') return;
     const taskCommand = decision.action.task;
+    if (taskCommand.control.startsWith('service_')) {
+      if (!taskCommand.taskId || !this.deps.manageLocalService) throw new Error('受管服务操作不可用');
+      const task = this.deps.taskRuntimeService.findTask(taskCommand.taskId);
+      if (!task || !taskBelongsToConversation(task, conversationId, this.deps.legacyCompatibility)) throw new Error('服务任务不属于当前会话');
+      const operation = taskCommand.control.slice('service_'.length) as 'start' | 'stop' | 'restart';
+      const result = await this.deps.manageLocalService(task.id, operation, taskCommand.scope ?? undefined);
+      this.deps.callbacks.appendOutput(JSON.stringify(result));
+      this.deps.callbacks.refreshRuntimeState();
+      return;
+    }
     if (taskCommand.control === 'status_query') {
       const scope = normalizeStatusScope(taskCommand.scope);
       const conversationTasks = this.deps.taskRuntimeService.listTasks()
@@ -324,6 +339,7 @@ export class SessionKernelRuntime {
   private async applyTaskPlan(
     decision: Extract<KernelDecision, { action: { type: 'authorize_task_plan' } }> | KernelDecision,
     userInput: string,
+    conversationId: string | undefined,
     queryId?: string | null,
   ): Promise<void> {
     if (decision.action.type !== 'authorize_task_plan') return;
@@ -368,10 +384,23 @@ export class SessionKernelRuntime {
       }
     }
     const inline = this.deps.memoryContextService.normalizeInlineResourcesFromInput(userInput);
+    // The resolver is account-runtime scoped by Conversation id. `sessionId`
+    // is the Planner/runtime process identity and may be different from the
+    // Conversation that owns this plan.
+    const ownerConversationId = conversationId ?? decision.action.owner.conversationId;
+    const publicWorkspace = command.publicProjectDirectory
+      ? await this.deps.resolveUserWorkspaceRoot?.(ownerConversationId)
+      : null;
+    if (command.publicProjectDirectory && !publicWorkspace) throw new Error('无法确认现有项目的 Workspace');
+    const publicBaseline = command.publicProjectDirectory && publicWorkspace
+      ? await capturePublicProjectBaseline(publicWorkspace, command.publicProjectDirectory) : {};
     const task = command.taskId
       ? this.deps.taskRuntimeService.findTask(command.taskId)
       : this.deps.taskRuntimeService.createTask({
           id: decision.action.taskId,
+          publicTaskDirectory: command.publicProjectDirectory ?? undefined,
+          publicDeliveryBaseline: publicBaseline,
+          startServiceAfterPublish: command.startServiceAfterPublish ?? false,
           title: (command.title ?? inline.normalizedGoal).slice(0, 50),
           goal: command.goal ?? inline.normalizedGoal,
           resources: inline.resources,

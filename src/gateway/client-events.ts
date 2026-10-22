@@ -10,7 +10,7 @@
  */
 
 import { GATEWAY_PROTOCOL_VERSION } from './client-protocol.js';
-import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
+import { publicText } from '../utils/public-text.js';
 
 export type GatewayEventKind =
   | 'conversation_resource'
@@ -224,11 +224,11 @@ function sanitizePayloadValue(
   if (depth > MAX_GATEWAY_PAYLOAD_DEPTH) {
     throw new Error('Gateway event payload exceeds the maximum nesting depth');
   }
-  if (typeof value === 'string') return redactSensitiveText(value);
+  if (typeof value === 'string') return publicText(value);
   if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
   if (value === undefined) return null;
   if (typeof value === 'bigint') return value.toString();
-  if (typeof value !== 'object') return redactSensitiveText(String(value));
+  if (typeof value !== 'object') return publicText(String(value));
   if (ancestors.has(value)) throw new Error('Gateway event payload must not contain cycles');
 
   ancestors.add(value);

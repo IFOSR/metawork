@@ -1,3 +1,7 @@
+import { publicText } from '../utils/public-text.js';
+import type { TaskView } from '../task/task-view.js';
+import { publicDeliveryLines } from '../delivery/public-delivery-view.js';
+import { TASK_USER_STATE_LABELS } from '../task/task-user-state.js';
 import { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import {
   optionalStringArg,
@@ -80,59 +84,14 @@ export function formatTaskClearResult(scope: TaskClearScope, cancelled: Task[], 
   }
 
   lines.push(
-    ...cancelled.map(task => `  - #${task.id} [${task.status.toUpperCase()}] ${task.title}`),
+    ...cancelled.map(task => `  - #${task.id} [已结束] ${task.title}`),
   );
   lines.push('→ 相关会话任务槽、调度队列与执行派发已同步释放；新任务可立即执行');
   return lines.join('\n');
 }
 
-function formatTaskLine(task: {
-  id: string;
-  status: string;
-  title: string;
-  lastSchedulingReason: string;
-  lastInterruptionReason: string;
-  dependencies: Array<{ status: string; description: string }>;
-}) {
-  const displayStatus = task.status === 'blocked' ? 'NEEDS_ACTION' : task.status.toUpperCase();
-  const lines = [`  #${task.id} [${displayStatus}] ${task.title}`];
-
-  if (task.status === 'running' || task.status === 'ready') {
-    lines.push(`    → 原因：${task.lastSchedulingReason || '等待调度'}`);
-  } else if (task.status === 'parked') {
-    lines.push(`    → 原因：${task.lastInterruptionReason || '等待恢复'}`);
-  } else if (task.status === 'blocked') {
-    lines.push(`    → 原因：${formatBlockedTaskReason(task.dependencies.find(dep => dep.status === 'waiting')?.description || '未知原因')}`);
-  }
-
-  return lines.join('\n');
-}
-
-function buildStatusExplanation(task: {
-  status: string;
-  lastSchedulingReason: string;
-  lastInterruptionReason: string;
-  dependencies: Array<{ status: string; description: string }>;
-}): string {
-  if (task.status === 'blocked') {
-    return formatBlockedTaskReason(
-      task.dependencies.find(dep => dep.status === 'waiting')?.description || '等待处理',
-    );
-  }
-
-  if (task.status === 'parked') {
-    return task.lastInterruptionReason || '等待恢复';
-  }
-
-  if (task.status === 'ready' || task.status === 'running') {
-    return task.lastSchedulingReason || '等待调度';
-  }
-
-  if (task.status === 'done') {
-    return '已完成，可查看结果摘要与后续动作';
-  }
-
-  return '暂无额外说明';
+function formatTaskLine(task: Task, view: TaskView | null): string {
+  return publicText(`  #${task.id} [${TASK_USER_STATE_LABELS[view?.userState ?? 'needs_action']}] ${task.title}\n    → ${view?.userStateReason ?? '任务视图暂不可用，请重新查询'}`);
 }
 
 function buildLatestNextStep(task: {
@@ -192,43 +151,44 @@ function buildRecoveryAction(task: {
 
 export async function listTasks(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
   const scope = optionalStringArg(args, 'scope');
-  const filter = scope && scope !== 'all' ? scope : undefined;
+  const legacyStatus = scope === 'active' ? 'active'
+    : scope === 'ready' || scope === 'parked' || scope === 'blocked' || scope === 'done' ? scope
+      : undefined;
+  const filter = scope === 'needs-action' || scope === 'blocked' ? 'needs_action'
+    : scope === 'executing' || scope === 'active' || scope === 'running' ? 'executing'
+      : scope === 'waiting' || scope === 'ready' || scope === 'parked' ? 'waiting'
+        : scope === 'finished' || scope === 'done' ? 'finished'
+          : undefined;
   const repo = context.taskEngine.getTaskRepo();
-  let tasks;
+  const tasks = repo.findAll();
+  const views = new Map(tasks.map(task => [task.id, context.taskControl?.taskView?.(task.id) ?? null]));
+  const visibleTasks = legacyStatus
+    ? (legacyStatus === 'active' ? tasks.filter(task => task.status === 'running') : tasks.filter(task => task.status === legacyStatus))
+    : filter
+      ? tasks.filter(task => (views.get(task.id)?.userState ?? 'needs_action') === filter)
+    : tasks;
 
-  if (filter === 'active') {
-    tasks = repo.findActive();
-  } else if (filter === 'ready' || filter === 'parked' || filter === 'blocked' || filter === 'done') {
-    tasks = repo.findByStatus(filter);
-  } else {
-    tasks = repo.findAll();
-  }
-
-  if (tasks.length === 0) {
+  if (visibleTasks.length === 0) {
     return { type: 'text', content: '暂无任务' };
   }
 
   if (filter) {
-    const lines = tasks.map(formatTaskLine);
+    const lines = visibleTasks.map(task => formatTaskLine(task, views.get(task.id) ?? null));
     return { type: 'text', content: `任务列表：\n${lines.join('\n')}` };
   }
 
-  const groups = [
-    { title: '当前执行', tasks: repo.findByStatus('running') },
-    { title: '待执行', tasks: repo.findByStatus('ready') },
-    { title: '已挂起', tasks: repo.findByStatus('parked') },
-    { title: '需要处理', tasks: repo.findByStatus('blocked') },
-    { title: '已完成', tasks: repo.findByStatus('done') },
-  ].filter(group => group.tasks.length > 0);
+  const groups = (['executing', 'waiting', 'needs_action', 'finished'] as const).map(state => ({
+    title: TASK_USER_STATE_LABELS[state], tasks: visibleTasks.filter(task => (views.get(task.id)?.userState ?? 'needs_action') === state),
+  })).filter(group => group.tasks.length > 0);
 
   const lines = ['任务清单：', ''];
   for (const group of groups) {
     lines.push(group.title);
-    group.tasks.forEach(task => lines.push(formatTaskLine(task)));
+    group.tasks.forEach(task => lines.push(formatTaskLine(task, views.get(task.id) ?? null)));
     lines.push('');
   }
 
-  return { type: 'text', content: lines.join('\n').trimEnd() };
+  return { type: 'text', content: publicText(lines.join('\n')).trimEnd() };
 }
 
 export async function clearTasks(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
@@ -247,9 +207,11 @@ export async function clearTasks(args: ResolvedCommandArgs, context: CommandCont
 export async function showTask(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
   const taskId = stringArg(args, 'taskId');
   const task = context.taskEngine.getTaskRepo().findById(taskId);
-  if (!task) {
-    return { type: 'text', content: `任务不存在: ${taskId}` };
+  if (!task || (context.conversationId && task.conversationId !== context.conversationId)) {
+    return { type: 'text', content: `当前会话中没有该任务: ${taskId}` };
   }
+  const taskView = context.taskControl?.taskView?.(taskId) ?? null;
+  const delivery = await context.taskControl?.publicTaskDelivery?.(taskId) ?? null;
 
   const latestInteraction = context.db.prepare(
     'SELECT executor_used, system_output, created_at FROM interactions WHERE task_id = ? ORDER BY created_at DESC LIMIT 1'
@@ -261,7 +223,6 @@ export async function showTask(args: ResolvedCommandArgs, context: CommandContex
   const blocker = task.dependencies.find(dep => dep.status === 'waiting')?.description || '无';
   const latestResult = task.summary || latestInteraction?.system_output || '无';
   const latestNextStep = buildLatestNextStep(task);
-  const statusExplanation = buildStatusExplanation(task);
   const lastProgress = latestSnapshot?.done.join('；') || task.summary || '无';
   const materialGroups = splitTaskResources(task.resources);
   const materialSnippets = await extractMaterialTextSnippets(task.resources);
@@ -277,8 +238,11 @@ export async function showTask(args: ResolvedCommandArgs, context: CommandContex
     `标题: ${task.title}`,
     `目标: ${task.goal}`,
     '',
-    `当前状态: ${task.status}`,
-    `状态说明: ${statusExplanation}`,
+    `当前状态: ${TASK_USER_STATE_LABELS[taskView?.userState ?? 'needs_action']}`,
+    `状态说明: ${taskView?.userStateReason ?? '任务视图暂不可用，请重新查询'}`,
+    ...publicDeliveryLines(delivery),
+    ...(taskView?.pendingDecision?.actions.includes('accept_result') ? [`接受并交付: /task accept-result ${taskId}`] : []),
+    ...(taskView?.pendingDecision?.actions.includes('retry_attempt') ? [`重新执行: /task retry-result ${taskId}`] : []),
     `上次做到: ${lastProgress}`,
     `最新结果摘要: ${latestResult}`,
     `最新下一步: ${latestNextStep}`,
@@ -305,7 +269,7 @@ export async function showTask(args: ResolvedCommandArgs, context: CommandContex
       lines.push(`  - [${preference.scope}]${subjectText} ${preference.content}`);
     });
   }
-  return { type: 'text', content: lines.join('\n') };
+  return { type: 'text', content: publicText(lines.join('\n')) };
 }
 
 export async function pauseTask(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
@@ -344,15 +308,19 @@ export async function resumeTask(args: ResolvedCommandArgs, context: CommandCont
   if (expectedGraphRevision !== undefined && (!Number.isSafeInteger(expectedGraphRevision) || expectedGraphRevision < 1)) {
     return { type: 'text', content: '任务图版本无效，请刷新任务后重试。' };
   }
+  const newlyProvidedResources = Array.from(new Set(stringListArg(args, 'resources').filter(Boolean)));
   return {
     type: 'directive',
-    content: `任务 #${taskId} 已提交恢复请求`,
+    content: newlyProvidedResources.length > 0
+      ? `任务 #${taskId} 已提交恢复请求，并附带 ${newlyProvidedResources.length} 份材料`
+      : `任务 #${taskId} 已提交恢复请求`,
     directive: {
       kind: 'resume-task',
       taskId,
       expectedGenerationId,
       expectedGraphRevision,
       mode: task.status === 'blocked' ? 'resume-blocked' : 'resume-parked',
+      newlyProvidedResources,
     },
   };
 }
@@ -480,17 +448,24 @@ export async function acceptPartialResult(
   }
 }
 
-export async function acceptResult(
-  args: ResolvedCommandArgs,
-  context: CommandContext,
-): Promise<CommandResult> {
+export async function acceptResult(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
+  return decideResult(args, context, false);
+}
+
+export async function retryResult(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
+  return decideResult(args, context, true);
+}
+
+async function decideResult(args: ResolvedCommandArgs, context: CommandContext, retry: boolean): Promise<CommandResult> {
   const taskId = stringArg(args, 'taskId');
-  if (!context.taskEngine.getTaskRepo().findById(taskId)) {
-    return { type: 'text', content: `任务不存在: ${taskId}` };
-  }
+  const expected = context.taskControl.pendingTaskResult?.(taskId);
+  if (!expected) return { type: 'text', content: '没有待处理的安全结果，请刷新任务状态。' };
   try {
-    await context.taskControl.acceptPartialResult(taskId);
-    return { type: 'text', content: `任务 #${taskId} 已接受当前结果，正在执行交付前检查。` };
+    if (retry) {
+      if (!context.taskControl.retryTaskResult) throw new Error('task_control_unavailable');
+      await context.taskControl.retryTaskResult(taskId, expected);
+    } else await context.taskControl.acceptPartialResult(taskId, expected);
+    return { type: 'text', content: retry ? '已请求重新执行，历史结果保留。' : '已接受当前结果，正在执行发布与交付检查。' };
   } catch (error) {
     return { type: 'text', content: `操作失败: ${(error as Error).message}` };
   }

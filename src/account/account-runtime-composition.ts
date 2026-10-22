@@ -1,3 +1,4 @@
+import type { ManagedLocalServices } from '../execution/managed-local-service.js';
 /**
  * AccountRuntime 组合辅助（ADR-0031 第 2、12 节）。
  *
@@ -54,6 +55,25 @@ import type { Payer } from '../billing/cost-policy.js';
 import type { QueryUsageLifecycle } from '../metering/query-lifecycle.js';
 import type { ConversationResultDelivery } from '../session/conversation-session.js';
 import type { ExecutionTraceAppendInput } from '../execution/execution-trace.js';
+import type { KernelDecisionAction } from '../kernel/control-kernel.js';
+
+/**
+ * Plan-admission decisions that the account coordinator must apply before
+ * returning the authoritative result to a Conversation. Permission
+ * resolutions use the same `plan_proposed` event as ordinary task plans.
+ */
+export const ACCOUNT_KERNEL_ACCEPTED_ACTIONS: KernelDecisionAction['type'][] = [
+  'reject_request',
+  'request_clarification',
+  'deliver_direct_reply',
+  'no_op',
+  'authorize_task_plan',
+  'authorize_task_control',
+  'block_work',
+  'park_for_replan',
+  'record_permission_resolution',
+  'resolve_recovery',
+];
 
 export interface AccountRuntimeComposition {
   readonly accountRuntime: AccountRuntime;
@@ -76,6 +96,7 @@ export function buildAccountRuntimeComposition(deps: {
   /** 任务 → 会话工作区解析（恢复/定时请求缺 workspacePath 时兜底）。 */
   resolveWorkspacePath?: (taskId: string) => Promise<string | null>;
   preflightWorkspacePath?: (path: string) => Promise<string>;
+  managedLocalServices?: ManagedLocalServices;
   productionAuthorization?: () => { allowed: boolean; reason?: string };
   /** 用户可见 Workspace 根（进程启动目录），与内部 workspaceStore 是不同依赖。 */
   userWorkspaceRoot?: string;
@@ -212,6 +233,7 @@ export function buildAccountRuntimeComposition(deps: {
   // 用户可见 Workspace（进程启动目录）与内部 workspaceStore 是不同依赖；
   // 未提供时（如测试组合）不启用用户产物发布。
   const kernelExecutionServices = buildAccountKernelExecutionServices({
+    managedLocalServices: deps.managedLocalServices,
     db: deps.db,
     sessionId: deps.sessionId,
     getSessionId: () => conversationExecutionBinder.currentSessionId() ?? deps.sessionId,
@@ -293,17 +315,7 @@ export function buildAccountRuntimeComposition(deps: {
         store: kernelServices.kernelWorkflowRepo,
         clock: { now: () => new Date().toISOString() },
         acceptedEventTypes: ['plan_proposed', 'recovery_resolution_requested'],
-        acceptedActions: [
-          'reject_request',
-          'request_clarification',
-          'deliver_direct_reply',
-          'no_op',
-          'authorize_task_plan',
-          'authorize_task_control',
-          'block_work',
-          'park_for_replan',
-          'resolve_recovery',
-        ],
+        acceptedActions: ACCOUNT_KERNEL_ACCEPTED_ACTIONS,
       });
   startupRecovery = new AccountStartupRecoveryService({
     productionAuthorization: deps.productionAuthorization,

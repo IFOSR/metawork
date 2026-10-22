@@ -8,7 +8,11 @@
  */
 
 import type { ConversationContentReference } from "../../anyfusion/conversation-observation-protocol.ts";
-import type { GatewayCommandEnvelope } from "../../anyfusion/gateway-protocol.ts";
+import type {
+	GatewayCommandEnvelope,
+	GatewayPublicDelivery,
+	GatewayResultDecision,
+} from "../../anyfusion/gateway-protocol.ts";
 
 export type MetaWorkConnectionState = "connecting" | "ready" | "reconnecting" | "incompatible" | "draining" | "closed";
 
@@ -148,6 +152,8 @@ export interface MetaWorkTurnProjection {
 	 */
 	readonly taskPhase?: string;
 	readonly taskNextAction?: string;
+	readonly resultDecision?: GatewayResultDecision | null;
+	readonly publicDelivery?: GatewayPublicDelivery | null;
 	/** 服务端提供的最近调度原因；排队时解释为什么尚未启动。 */
 	readonly schedulingReason?: string | null;
 	readonly routing?: MetaWorkRoutingProjection | null;

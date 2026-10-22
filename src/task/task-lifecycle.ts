@@ -200,7 +200,7 @@ export function isTaskTransitionAllowed(
 const SUBTASK_TRANSITIONS: Record<SubtaskLifecycleState, readonly SubtaskLifecycleState[]> = {
   pending: ['executing', 'awaiting_completion', 'blocked', 'cancelled'],
   executing: ['pending', 'awaiting_completion', 'blocked', 'completed', 'cancelled'],
-  awaiting_completion: ['executing', 'completed', 'blocked', 'cancelled'],
+  awaiting_completion: ['pending', 'executing', 'completed', 'blocked', 'cancelled'],
   completed: [],
   blocked: ['pending', 'executing', 'awaiting_completion', 'completed', 'cancelled'],
   cancelled: [],

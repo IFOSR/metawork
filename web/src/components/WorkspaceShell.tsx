@@ -6,6 +6,7 @@ import type {
   WorkspaceSummary,
 } from '../api/session-types';
 import { Composer } from './Composer';
+import type { WsClient } from '../api/ws';
 import { SessionSidebar } from './SessionSidebar';
 import { WorkspaceHeader, type WorkspaceTab } from './WorkspaceHeader';
 import type { ThemePreference } from '../theme';
@@ -30,6 +31,7 @@ export function WorkspaceShell({
   themePreference,
   composerVisible,
   draft,
+  commandClient,
   composerDisabled,
   newWorkBlocked,
   running,
@@ -78,6 +80,7 @@ export function WorkspaceShell({
   themePreference: ThemePreference;
   composerVisible: boolean;
   draft: string;
+  commandClient?: WsClient;
   composerDisabled: boolean;
   newWorkBlocked: boolean;
   running: boolean;
@@ -182,6 +185,8 @@ export function WorkspaceShell({
         {composerVisible && (
           <Composer
             draft={draft}
+            commandClient={commandClient}
+            conversationId={selectedSessionId}
             disabled={composerDisabled}
             running={running}
             blockedReason={blockedReason}

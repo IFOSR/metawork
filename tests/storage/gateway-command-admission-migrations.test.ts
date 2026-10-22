@@ -288,6 +288,13 @@ function schema43(path?: string): Database.Database {
   }
   // Restore the historical global evidence key; keep the captured schema43 hash meaningful.
   db.exec(`
+    DROP TABLE public_workspace_files;
+    DROP TABLE managed_local_service_effects;
+    DROP TABLE managed_local_services;
+    ALTER TABLE tasks DROP COLUMN public_task_directory;
+    ALTER TABLE tasks DROP COLUMN public_delivery_baseline_json;
+    ALTER TABLE tasks DROP COLUMN start_service_after_publish;
+    ALTER TABLE tasks DROP COLUMN public_project;
     ALTER TABLE subtasks DROP COLUMN file_outputs_json;
     DROP TABLE task_execution_evidence;
     CREATE TABLE task_execution_evidence (
@@ -347,11 +354,15 @@ function facts(db: Database.Database, tables?: string[]): Record<string, string[
       name !== 'schema_version'
       && !admissionTables.includes(name)
       && !retryWakeTables.includes(name)
-      && name !== 'workspace_publication_deliveries'
+      && !['workspace_publication_deliveries', 'public_workspace_files', 'managed_local_services', 'managed_local_service_effects', 'workspace_directory_dirty'].includes(name)
       && !observationTables.includes(name)
     ));
   return Object.fromEntries(names.map(name => [
-    name, db.prepare(`SELECT * FROM "${name}"`).all().map(row => JSON.stringify(row)).sort(),
+    name, db.prepare(`SELECT * FROM "${name}"`).all().map(row => {
+      const original = { ...(row as Record<string, unknown>) };
+      if (name === 'tasks') for (const key of ['public_task_directory', 'public_delivery_baseline_json', 'start_service_after_publish', 'public_project']) delete original[key];
+      return JSON.stringify(original);
+    }).sort(),
   ]));
 }
 

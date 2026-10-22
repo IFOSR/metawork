@@ -1,5 +1,6 @@
+import { publicTaskRelativeDirectory } from '../task/public-task-directory.js';
 import type Database from 'better-sqlite3';
-import type { Task, TaskSnapshot, TaskStatus, PrioritySignals, Dependency } from '../core/types.js';
+import type { Task, TaskSnapshot, TaskStatus, Dependency } from '../core/types.js';
 import type { TaskSearchIndexRepo } from './task-search-index-repo.js';
 
 export type TimelineTaskRecord = Pick<Task, 'id' | 'title' | 'status' | 'dependencies'>;
@@ -26,11 +27,19 @@ interface TaskRow {
   workspace_id: string;
   owner_planner_session_id: string;
   admitted_at: string;
+  public_task_directory: string | null;
+  public_delivery_baseline_json: string;
+  public_project: number;
+  start_service_after_publish: number;
 }
 
 function rowToTask(row: TaskRow): Task {
   return {
     id: row.id,
+    publicTaskDirectory: row.public_task_directory ?? publicTaskRelativeDirectory(row.title, row.id),
+    publicDeliveryBaseline: JSON.parse(row.public_delivery_baseline_json ?? '{}'),
+    publicProject: row.public_project === 1,
+    startServiceAfterPublish: row.start_service_after_publish === 1,
     accountId: row.account_id,
     conversationId: row.conversation_id,
     workspaceId: row.workspace_id,
@@ -67,8 +76,8 @@ export class TaskRepo {
       INSERT INTO tasks (id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
         dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
         last_interruption_reason, interruption_count, created_at, updated_at,
-        account_id, conversation_id, workspace_id, owner_planner_session_id, admitted_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        account_id, conversation_id, workspace_id, owner_planner_session_id, admitted_at, public_task_directory, public_delivery_baseline_json, start_service_after_publish, public_project)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       task.id, task.title, task.goal, task.status, task.summary,
       JSON.stringify(task.snapshots), JSON.stringify(task.resources),
@@ -79,6 +88,8 @@ export class TaskRepo {
       task.accountId ?? 'legacy-account', task.conversationId ?? 'legacy-conversation',
       task.workspaceId ?? 'legacy-workspace', task.ownerPlannerSessionId ?? 'legacy-planner-session',
       task.admittedAt ?? task.createdAt,
+      task.publicTaskDirectory ?? publicTaskRelativeDirectory(task.title, task.id),
+      JSON.stringify(task.publicDeliveryBaseline ?? {}), task.startServiceAfterPublish ? 1 : 0, task.publicProject ? 1 : 0,
     );
     this.taskSearchIndexRepo?.indexTask(task);
   }

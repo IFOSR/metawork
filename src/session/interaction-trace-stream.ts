@@ -69,6 +69,22 @@ export class InteractionTraceStream {
     return this.getSnapshot()!;
   }
 
+  /**
+   * Reopens a completed Turn for durable Task work which was explicitly
+   * retried. A retry is a continuation of the original user request, so it
+   * must keep the same Turn identity and event history instead of creating a
+   * second presentation-only Turn.
+   */
+  resumeTurn(input: { turnId: string; taskId?: string | null }): InteractionTrace | null {
+    if (!this.current || this.current.turnId !== input.turnId) return null;
+    this.current.status = 'running';
+    this.current.completedAt = null;
+    if (input.taskId != null) this.current.taskId = input.taskId;
+    this.nextSequence = (this.current.events.at(-1)?.sequence ?? 0) + 1;
+    this.publish();
+    return this.getSnapshot();
+  }
+
   append(input: InteractionTraceAppendInput): InteractionTraceEvent {
     if (!this.current) throw new Error('Interaction trace turn has not started');
     const sequence = this.nextSequence;
