@@ -6,6 +6,7 @@ import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { desktopInventory, verifyDesktopRelease } from '../dist/release-tools.mjs';
 import { prepareNodeRuntime } from '../../../scripts/prepare-node-runtime.mjs';
+import { verifyExecutorPi } from './verify-executor-pi.mjs';
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) {
@@ -59,6 +60,17 @@ async function removeArchiveMarkers(directory) {
     else if (entry.name === '.gitkeep') await rm(path);
   }
 }
+async function removePythonBytecode(directory) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === '__pycache__') await rm(path, { recursive: true, force: true });
+      else await removePythonBytecode(path);
+    } else if (entry.name.endsWith('.pyc')) {
+      await rm(path, { force: true });
+    }
+  }
+}
 try {
   for (const name of ['metawork', 'planner']) {
     const artifact = manifest[name];
@@ -77,6 +89,10 @@ try {
   }
   // Electron Builder omits dot-file placeholders while copying extraResources.
   await removeArchiveMarkers(payload);
+  // Python bytecode is generated at import time and excluded from the signed
+  // inventory. Remove any pre-existing caches from source runtimes so they are
+  // not needlessly shipped in the DMG.
+  await removePythonBytecode(payload);
   const toolRoot = join(payload, 'metawork', 'desktop-tools');
   await mkdir(toolRoot, { recursive: true });
   for (const [name, root] of [['node', nodeRoot], ['git', gitRoot], ['executor', executorRoot]]) {
@@ -85,6 +101,9 @@ try {
     const inventory = await desktopInventory(join(toolRoot, name));
     if (!Object.keys(inventory).some(path => /(?:^|\/)(?:licen[sc]e|copying|notice)[^/]*$/iu.test(path))) throw new Error(`Missing ${name} license notices`);
   }
+  // Tool distributions may carry their own Python caches; clean again after
+  // copying them so the final payload is cache-free as a whole.
+  await removePythonBytecode(payload);
   if (!development) {
     const magicValues = new Set(['feedface', 'cefaedfe', 'feedfacf', 'cffaedfe', 'cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca']);
     for (const path of Object.keys(await desktopInventory(payload))) {
@@ -105,8 +124,9 @@ try {
     }
   }
   const node = join(toolRoot, 'node/bin/node');
-  const toolEnv = { ...process.env, PATH: [join(toolRoot, 'node/bin'), join(toolRoot, 'git/bin'), join(toolRoot, 'executor/bin'), '/usr/bin', '/bin'].join(':') };
+  const toolEnv = { ...process.env, PYTHONDONTWRITEBYTECODE: '1', PATH: [join(toolRoot, 'node/bin'), join(toolRoot, 'git/bin'), join(toolRoot, 'executor/bin'), '/usr/bin', '/bin'].join(':') };
   for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE']) delete toolEnv[key];
+  verifyExecutorPi(join(toolRoot, 'executor/bin/pi'), { cwd: payload, env: toolEnv });
   const facts = JSON.parse(run(node, ['-p', 'JSON.stringify({version:process.versions.node,abi:process.versions.modules,arch:process.arch,platform:process.platform})'], payload, toolEnv));
   if (facts.platform !== 'darwin' || facts.arch !== process.arch || facts.abi !== '127') throw new Error('Node platform/ABI mismatch');
   run(node, ['-e', "const Database=require('better-sqlite3'); const db=new Database(':memory:'); db.prepare('select 1').get(); db.close();"], join(payload, 'metawork'), toolEnv);
@@ -114,7 +134,7 @@ try {
   run(join(toolRoot, 'executor/bin/pi'), ['--version'], payload, toolEnv);
   const pdfRoot = join(payload, 'metawork/dist/pi-pdf');
   await readFile(join(pdfRoot, 'index.ts'));
-  run(join(pdfRoot, 'python/bin/python3'), ['-I', '-c',
+  run(join(pdfRoot, 'python/bin/python3'), ['-I', '-B', '-c',
     'import sys;sys.path.insert(0,sys.argv[1]);import pypdf,pdfplumber,pypdfium2,PIL',
     join(pdfRoot, 'site-packages')], payload, toolEnv);
   const release = {

@@ -38,9 +38,16 @@ export async function desktopInventory(root: string): Promise<DesktopRelease['fi
   async function visit(directory: string): Promise<void> {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
-      if (entry.isDirectory()) await visit(path);
+      // Python bytecode caches are derived, mutable files and must not be part
+      // of the signed Desktop payload inventory; otherwise a normal launch
+      // changes the payload and the next integrity check fails.
+      if (entry.isDirectory()) {
+        if (entry.name === '__pycache__') continue;
+        await visit(path);
+      }
       else {
         if (!entry.isFile()) throw new Error('Desktop payload cannot contain links or special files');
+        if (entry.name.endsWith('.pyc')) continue;
         const name = relative(root, path).split(sep).join('/');
         pathSchema.parse(name);
         files[name] = await hashReleaseFile(path);

@@ -8,6 +8,8 @@ import { _electron } from 'playwright-core';
 import { verifyDesktopMenu } from './menu-smoke.mjs';
 import { verifyConversationChart } from './conversation-chart-smoke.mjs';
 
+const execFileAsync = promisify(execFile);
+
 // Clean-install smoke of the signed app; no model requests or paid task execution.
 const application = resolve(process.argv[2] ?? '');
 if (!application.endsWith('/MetaWork.app')) throw new Error('Supply the packaged MetaWork.app path');
@@ -32,6 +34,15 @@ try {
   let page = await app.firstWindow();
   await page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\/$/, { timeout: 180000 });
   await page.locator('.workspace-shell').waitFor({ timeout: 30000 });
+  const installedPi = join(installRoot, 'app/current/desktop-tools/executor/bin/pi');
+  const executorHelp = await execFileAsync(installedPi,
+    ['--mode', 'json', '--no-session', '--tools', '', '--provider', 'metawork-packaged-smoke',
+      '--model', 'metawork-packaged-smoke', '--help'],
+    { cwd: root, env, timeout: 15000, maxBuffer: 1024 * 1024 });
+  assert.match(`${executorHelp.stdout}\n${executorHelp.stderr}`, /\bUsage:/u);
+  assert.match(`${executorHelp.stdout}\n${executorHelp.stderr}`, /--provider\s/u);
+  assert.match(`${executorHelp.stdout}\n${executorHelp.stderr}`, /--model\s/u);
+  assert.doesNotMatch(`${executorHelp.stdout}\n${executorHelp.stderr}`, /managed by AnyFusion/u);
   const authenticated = await page.evaluate(async () => (await (await fetch('/api/auth/session')).json()).authenticated);
   assert.equal(authenticated, true);
   if (process.env.METAWORK_SMOKE_DOCUMENT_FIXTURES) {
