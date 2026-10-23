@@ -98,7 +98,7 @@ import { createConversationReadModel } from './conversation-read-model-compositi
 import { ConversationReadProjector } from '../session/conversation-read-projector.js';
 import { SqliteConversationActivitySource } from '../storage/conversation-activity-source.js';
 import type { ConversationActivityTask } from '../session/conversation-activity-source.js';
-import { isTerminalTaskLifecycle, toTaskLifecycleState } from '../task/task-lifecycle.js';
+import { TASK_STATUS_LABELS, isTerminalTaskStatus } from '../task/task-state.js';
 import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
 import { GatewaySubscriptions } from '../gateway/gateway-subscriptions.js';
 import { ConversationGatewayRuntime } from '../gateway/conversation-gateway-runtime.js';
@@ -1584,7 +1584,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     const taskId = task.id;
     return projectTaskView({
         ...new SqliteTaskActivityFacts(db).read(task, permissionRequestId ? { requestId: permissionRequestId } : null),
-        task: { id: task.id, status: task.status, updatedAt: task.updatedAt },
+        task: {
+          id: task.id,
+          status: task.status,
+          stateVersion: task.stateVersion,
+          stateDetail: task.stateDetail,
+          updatedAt: task.updatedAt,
+        },
         subtasks: new SubtaskRepo(db).listByTask(taskId)
           .map(subtask => ({ id: subtask.id, status: subtask.status })),
         dispatches: new KernelDispatchItemRepo(db).listByTask(taskId).map(item => ({
@@ -1668,8 +1674,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     // Run after the projection transaction. Confirm its committed value before issuing a UI hint.
     queueMicrotask(() => {
       if (!db.open || JSON.stringify(activityProjection.read(taskId)) !== JSON.stringify(summary)) return;
-      const kind = summary.phase === 'completed' ? 'completed' : summary.phase === 'failed' ? 'failed'
-        : summary.phase === 'waiting_for_user' ? 'approval' : null;
+      const kind = summary.status === 'succeeded' ? 'completed'
+        : summary.status === 'failed' ? 'failed'
+          : summary.status === 'needs_action' ? 'approval' : null;
       if (!kind || !task.workspaceId) return;
       clientNotifications.publish(task.accountId!, {
         workspaceId: task.workspaceId, conversationId: task.conversationId!, taskId,
@@ -1689,11 +1696,12 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       executionGeneration: generation,
       graphRevision: accountRuntimeComposition.runtimePort.queries.findActiveWorkGraphRevision(task.id)?.revision,
       ...(progress ? { progressSummary: redactSensitiveText(progress).slice(0, 1024) } : {}),
-      phase: view.phase, explanation: view.explanation,
-      userState: view.userState, userStateReason: view.userStateReason,
-      pendingDecision: view.pendingDecision,
+      status: view.status, statusLabel: view.statusLabel,
+      stateVersion: view.state.stateVersion, reason: view.state.reason,
+      phase: view.state.phase, pendingActions: view.state.pendingActions,
+      explanation: view.explanation,
       executionSettling: view.activeAttempt?.lifecycle === 'settling',
-      canCancel: !isTerminalTaskLifecycle(view.lifecycle) };
+      canCancel: !isTerminalTaskStatus(view.status) };
   });
   const activityProjectionTimer = setInterval(() => {
     try {
@@ -1727,10 +1735,19 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       const page = new SqliteConversationActivitySource(db).page(accountId, conversationId, cursor);
       return {
         tasks: page.tasks.map(task => activityProjection.read(task.id) ?? {
-          taskId: task.id, title: task.title, executionGeneration: '',
-          phase: 'preparing', explanation: '正在同步任务进度…', canCancel: false,
-          userState: projectTaskView(new SqliteTaskActivityFacts(db).read(task, null)).userState,
-          userStateReason: '正在同步任务进度…',
+          // A pending projection still carries the committed Task conclusion;
+          // only the narrative text is provisional.
+          taskId: task.id,
+          title: task.title,
+          executionGeneration: '',
+          status: task.status,
+          statusLabel: TASK_STATUS_LABELS[task.status],
+          stateVersion: task.stateVersion,
+          reason: task.stateDetail.reason,
+          phase: task.stateDetail.phase,
+          pendingActions: task.stateDetail.pendingActions,
+          explanation: '正在同步任务进度…',
+          canCancel: !isTerminalTaskStatus(task.status),
         }),
         nextCursor: page.nextCursor,
         pendingNextCursor: requests.length > 8 ? requests[7]!.permissionRequestId : null,
@@ -1829,7 +1846,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   }
   // Older system bindings discarded the presentation callback. Recover only
   // safe result objects of completed queued Tasks, never raw attempt output.
-  for (const task of taskRepo.findByStatus('done')) {
+  for (const task of taskRepo.findByStatus('succeeded')) {
     const queued = deliveryScheduler.getQueuedPayload(task.id);
     if (!task.conversationId || !queued?.queryId
       || !['account_task_capacity', 'conversation_slot_occupied'].includes(queued.schedulingReason ?? '')) continue;
@@ -1994,7 +2011,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       const publications = new WorkspacePublicationRepo(db);
       const activeGraph = new WorkGraphRevisionRepo(db).findActive(taskId);
       const publicDelivery = projectPublicDelivery({ task, workspace: publicWorkspace?.canonicalPath ?? null,
-        pendingDecision: lifecycleProjection.pendingDecision !== null,
+        pendingDecision: lifecycleProjection.state.pendingActions.length > 0,
         artifacts: [...taskArtifactRepo.publicFiles.list(accountId, taskId), ...publicArtifacts],
         publications: publications.listByTask(taskId).filter(item => item.generationId === activeGraph?.generationId
           && new SubtaskRepo(db).findById(item.subtaskId)?.graphRevision === activeGraph?.revision),
@@ -2015,10 +2032,15 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         taskId,
         title: task.title,
         status: timeline.status,
+        state: lifecycleProjection.state,
         lifecycle: {
-          lifecycle: lifecycleProjection.lifecycle,
-          phase: lifecycleProjection.phase,
-          userState: lifecycleProjection.userState, userStateReason: lifecycleProjection.userStateReason,
+          status: lifecycleProjection.status,
+          statusLabel: lifecycleProjection.statusLabel,
+          stateVersion: lifecycleProjection.state.stateVersion,
+          phase: lifecycleProjection.state.phase,
+          reason: lifecycleProjection.state.reason,
+          pendingActions: lifecycleProjection.state.pendingActions,
+          cleanup: lifecycleProjection.state.cleanup,
           activeAttempt: lifecycleProjection.activeAttempt
             ? {
                 attemptId: lifecycleProjection.activeAttempt.attemptId,
@@ -2031,7 +2053,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             : null,
           blockingResidue: lifecycleProjection.blockingResidue,
           nextAuthorizedAction: lifecycleProjection.nextAuthorizedAction,
-          pendingDecision: lifecycleProjection.pendingDecision,
           recoveryDiagnosis: lifecycleProjection.recoveryDiagnosis,
           explanation: lifecycleProjection.explanation,
           lastProgressAt: lifecycleProjection.timestamps.lastProgressAt,
@@ -2267,7 +2288,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         const task = request && taskRepo.findById(request.request.taskId);
         const revision = request && accountRuntimeComposition.runtimePort.queries.findActiveWorkGraphRevision(request.request.taskId);
         return Boolean(request?.status === 'escalated'
-          && task && !isTerminalTaskLifecycle(toTaskLifecycleState(task.status))
+          && task && !isTerminalTaskStatus(task.status)
           && revision?.generationId === request.request.generationId
           && request.request.fingerprint === job.fact.version
           && Date.parse(request.createdAt) + 24 * 60 * 60 * 1000 > Date.now()

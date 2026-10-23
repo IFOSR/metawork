@@ -22,6 +22,9 @@ import { seedAgentClasses } from '../support/seed-agent-classes.js';
 import type { KernelDecision } from '../../src/kernel/control-kernel.js';
 import type { AttemptExecutionBackend, AttemptExecutionRecord } from '../../src/execution/attempt-execution-backend.js';
 import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
+import { setTaskStatus, recordingTaskStateAuthority, recordingTaskLifecyclePort } from '../support/task-state-fixture.js';
+import { createSqliteTaskLifecyclePort } from '../../src/storage/task-lifecycle-port-adapter.js';
+import { TaskStateChangeRepo, TaskStateProjectionOutbox } from '../../src/storage/task-state-change-repo.js';
 
 const authorizedBinding: AuthorizedExecutorBinding = {
   agentClassRef: 'codex-cli',
@@ -31,6 +34,12 @@ const authorizedBinding: AuthorizedExecutorBinding = {
   permissionProfileRef: 'workspace-engineering',
   configurationRevision: 'configuration_revision_1',
 };
+
+function recordingCoordinatorTaskState() {
+  const { authority } = recordingTaskStateAuthority();
+  const { port } = recordingTaskLifecyclePort();
+  return { taskStateAuthority: authority, taskLifecyclePort: port };
+}
 
 describe('TaskCancellationCoordinator', () => {
   it('lists every Task with durable cancellation residue instead of selecting one account singleton', () => {
@@ -87,9 +96,18 @@ describe('TaskCancellationCoordinator', () => {
         now,
       });
     }
+    const taskLifecyclePort = createSqliteTaskLifecyclePort(db, {
+      taskRepo,
+      subtaskRepo: subtasks,
+      stateChanges: new TaskStateChangeRepo(db),
+      projectionOutbox: new TaskStateProjectionOutbox(db),
+      workGraphRevisionRepo: revisions,
+    });
     const coordinator = new TaskCancellationCoordinator({
+      ...recordingCoordinatorTaskState(),
+      taskLifecyclePort,
       db,
-      taskRuntimeService: new TaskRuntimeService({ taskEngine, taskRepo }),
+      taskRuntimeService: new TaskRuntimeService({ lifecyclePort: taskLifecyclePort, taskEngine, taskRepo }),
       subtaskRepo: subtasks,
       taskEventRepo: new TaskEventRepo(db),
       workGraphRevisionRepo: revisions,
@@ -115,10 +133,17 @@ describe('TaskCancellationCoordinator', () => {
     seedAgentClasses(db);
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-task-cancel');
-    const taskRuntime = new TaskRuntimeService({ taskEngine, taskRepo });
+    const taskLifecyclePort = createSqliteTaskLifecyclePort(db, {
+      taskRepo,
+      subtaskRepo: new SubtaskRepo(db),
+      stateChanges: new TaskStateChangeRepo(db),
+      projectionOutbox: new TaskStateProjectionOutbox(db),
+      workGraphRevisionRepo: new WorkGraphRevisionRepo(db),
+    });
+    const taskRuntime = new TaskRuntimeService({ lifecyclePort: taskLifecyclePort, taskEngine, taskRepo });
     const task = taskEngine.create({ id: 'task-cancel', title: 'Cancel', goal: 'Cancel safely' });
-    taskEngine.transition(task.id, 'ready');
-    taskEngine.transition(task.id, 'running');
+    setTaskStatus(db, task.id, 'queued');
+    setTaskStatus(db, task.id, 'running');
     const revisions = new WorkGraphRevisionRepo(db);
     revisions.activate({
       id: 'revision-cancel-1',
@@ -282,6 +307,14 @@ describe('TaskCancellationCoordinator', () => {
     } as AttemptExecutionBackend;
     const abortAttempt = vi.fn().mockReturnValue(true);
     const coordinator = new TaskCancellationCoordinator({
+      ...recordingCoordinatorTaskState(),
+      taskLifecyclePort: createSqliteTaskLifecyclePort(db, {
+        taskRepo,
+        subtaskRepo: subtasks,
+        stateChanges: new TaskStateChangeRepo(db),
+        projectionOutbox: new TaskStateProjectionOutbox(db),
+        workGraphRevisionRepo: revisions,
+      }),
       db,
       taskRuntimeService: taskRuntime,
       subtaskRepo: subtasks,
@@ -339,14 +372,21 @@ describe('TaskCancellationCoordinator', () => {
     seedAgentClasses(db);
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-subtask-cancel');
-    const taskRuntime = new TaskRuntimeService({ taskEngine, taskRepo });
+    const taskLifecyclePort = createSqliteTaskLifecyclePort(db, {
+      taskRepo,
+      subtaskRepo: new SubtaskRepo(db),
+      stateChanges: new TaskStateChangeRepo(db),
+      projectionOutbox: new TaskStateProjectionOutbox(db),
+      workGraphRevisionRepo: new WorkGraphRevisionRepo(db),
+    });
+    const taskRuntime = new TaskRuntimeService({ lifecyclePort: taskLifecyclePort, taskEngine, taskRepo });
     const task = taskEngine.create({
       id: 'task-subtask-cancel',
       title: 'Cancel one branch',
       goal: 'Keep the sibling alive',
     });
-    taskEngine.transition(task.id, 'ready');
-    taskEngine.transition(task.id, 'running');
+    setTaskStatus(db, task.id, 'queued');
+    setTaskStatus(db, task.id, 'running');
     const revisions = new WorkGraphRevisionRepo(db);
     revisions.activate({
       id: 'revision-subtask-cancel',
@@ -397,6 +437,14 @@ describe('TaskCancellationCoordinator', () => {
     }, dispatchBindingContext(['root', 'sibling']), now);
     const abortAttempt = vi.fn();
     const coordinator = new TaskCancellationCoordinator({
+      ...recordingCoordinatorTaskState(),
+      taskLifecyclePort: createSqliteTaskLifecyclePort(db, {
+        taskRepo,
+        subtaskRepo: subtasks,
+        stateChanges: new TaskStateChangeRepo(db),
+        projectionOutbox: new TaskStateProjectionOutbox(db),
+        workGraphRevisionRepo: revisions,
+      }),
       db,
       taskRuntimeService: taskRuntime,
       subtaskRepo: subtasks,
@@ -504,9 +552,9 @@ function subtask(
     deliveryKind: 'report' as const,
     acceptance: [],
     riskLevel: 'low' as const,
-    result: status === 'done' ? 'done' : '',
+    result: status === 'succeeded' ? 'done' : '',
     artifacts: [],
-    verification: { warnings: [], completionSchemaVersion: status === 'done' ? 2 : null },
+    verification: { warnings: [], completionSchemaVersion: status === 'succeeded' ? 2 : null },
     error: null,
     createdAt: now,
     updatedAt: now,
@@ -550,10 +598,17 @@ describe('TaskCancellationCoordinator idempotent replay (2026-09-06 plan §5.3)'
     seedConfigurationRevision(db);
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-cancel-replay');
-    const taskRuntime = new TaskRuntimeService({ taskEngine, taskRepo });
+    const taskLifecyclePort = createSqliteTaskLifecyclePort(db, {
+      taskRepo,
+      subtaskRepo: new SubtaskRepo(db),
+      stateChanges: new TaskStateChangeRepo(db),
+      projectionOutbox: new TaskStateProjectionOutbox(db),
+      workGraphRevisionRepo: new WorkGraphRevisionRepo(db),
+    });
+    const taskRuntime = new TaskRuntimeService({ lifecyclePort: taskLifecyclePort, taskEngine, taskRepo });
     const task = taskEngine.create({ id: 'task-replay', title: 'Replay', goal: 'Replay' });
-    taskEngine.transition(task.id, 'ready');
-    taskEngine.transition(task.id, 'running');
+    setTaskStatus(db, task.id, 'queued');
+    setTaskStatus(db, task.id, 'running');
     const revisions = new WorkGraphRevisionRepo(db);
     revisions.activate({
       id: 'revision-replay-1',
@@ -591,6 +646,14 @@ describe('TaskCancellationCoordinator idempotent replay (2026-09-06 plan §5.3)'
     } as unknown as Parameters<TaskCancellationCoordinator['apply']>[0];
 
     const coordinator = new TaskCancellationCoordinator({
+      ...recordingCoordinatorTaskState(),
+      taskLifecyclePort: createSqliteTaskLifecyclePort(db, {
+        taskRepo,
+        subtaskRepo: subtasks,
+        stateChanges: new TaskStateChangeRepo(db),
+        projectionOutbox: new TaskStateProjectionOutbox(db),
+        workGraphRevisionRepo: revisions,
+      }),
       db,
       taskRuntimeService: taskRuntime,
       subtaskRepo: subtasks,

@@ -36,8 +36,8 @@ import {
   type ApplicationPostconditionFactSource,
 } from '../execution/kernel-application-recovery.js';
 import {
-  createTaskLifecycleTransitionPort,
-  type TaskLifecycleTransitionPort,
+  createSubtaskLifecyclePort,
+  type SubtaskLifecyclePort,
 } from '../task/task-lifecycle-transition-port.js';
 import { reconcileUncertainCancellations } from '../execution/cancellation-reconciliation.js';
 import { TaskResidueReader } from '../execution/task-residue-reader.js';
@@ -62,7 +62,7 @@ export class AccountStartupRecoveryService {
   private readonly promotionInFlight = new Map<string, Promise<void>>();
   private replanWorker: GenerationReplanWorker | null = null;
   private retryWakeWorker: RetryWakeWorker | null = null;
-  private lifecycle: TaskLifecycleTransitionPort | null = null;
+  private lifecycle: SubtaskLifecyclePort | null = null;
   private residue: TaskResidueReader | null = null;
   private readonly configurations = new Map<string, ConfigurationSnapshot>();
 
@@ -92,6 +92,7 @@ export class AccountStartupRecoveryService {
     readonly repositories: AccountRepositories;
     readonly workspaceServices: AccountWorkspaceServices;
     readonly taskServices: AccountTaskServices;
+    readonly taskStateAuthority: import('../task/task-state-authority.js').TaskStateAuthority;
     readonly coordinatorServices: AccountCoordinatorServices;
     readonly runtimeExecutionServices: AccountRuntimeExecutionServices;
     readonly kernelExecutionServices: AccountKernelExecutionServices;
@@ -137,7 +138,7 @@ export class AccountStartupRecoveryService {
       conversationId,
       taskId,
       new Date().toISOString(),
-      false,
+      () => this.hasReleasableResidue(taskId, this.activeGenerationId(taskId)),
       occupiedOtherCount < maxConcurrentTasks,
     );
     if (promotion) {
@@ -201,6 +202,11 @@ export class AccountStartupRecoveryService {
       throw new Error(`queued Task ${taskId} failed immutable owner/payload validation`);
     }
     this.deps.repositories.conversationTaskSchedulerRepo.markRunning(taskId, new Date().toISOString());
+    if (payload.remainingWork) {
+      await this.withSystemBinding(task.ownerPlannerSessionId ?? payload.plannerSessionId,
+        () => this.deps.kernelExecutionServices.kernelExecutionRuntime.recoverDue(taskId));
+      return;
+    }
     const request = promotedExecutionRequest(payload, taskId);
     await this.withSystemBinding(task.ownerPlannerSessionId ?? payload.plannerSessionId, () => {
       const started = this.deps.kernelExecutionServices.taskExecutionApplicationService
@@ -381,19 +387,13 @@ export class AccountStartupRecoveryService {
             // Only a still-running orphan needs a new manual blocker.
             const currentTask = this.deps.taskServices.taskRuntimeService.findTask(task.id);
             if (currentTask?.status === 'running') {
-              this.lifecyclePort().blockTask({
-                taskId: task.id,
-                dependency: {
-                  taskId: task.id,
-                  type: 'manual',
-                  description: 'startup recovery found running work without authorized dispatch',
-                  status: 'waiting',
-                },
-                actor: 'account-startup-recovery',
-                reason: 'startup recovery found running work without authorized dispatch',
-              });
+              this.markStartupRecoveryBlocked(
+                task.id,
+                'startup recovery found running work without authorized dispatch',
+                currentTask,
+              );
             }
-            if (currentTask?.status === 'running' || currentTask?.status === 'blocked') continue;
+            if (currentTask?.status === 'running' || currentTask?.status === 'needs_action') continue;
           } else {
             this.deps.kernelServices.kernelWorkflowRepo.enqueue(
               startupOrphanEvent({
@@ -410,7 +410,7 @@ export class AccountStartupRecoveryService {
       }
       await this.recoverTask(task.id);
     }
-    for (const task of this.deps.taskServices.taskRuntimeService.listTasksByStatus('blocked')) {
+    for (const task of this.deps.taskServices.taskRuntimeService.listTasksByStatus('needs_action')) {
       await this.recoverTask(task.id);
     }
   }
@@ -463,7 +463,7 @@ export class AccountStartupRecoveryService {
     let changed = 0;
     const taskRuntime = this.deps.taskServices.taskRuntimeService;
     const wakeRepo = this.deps.runtimeExecutionServices.retryWakeRepo;
-    for (const task of taskRuntime.listTasksByStatus('blocked')) {
+    for (const task of taskRuntime.listTasksByStatus('needs_action')) {
       if (!task.dependencies.some(dependency =>
         dependency.type === 'kernel_retry' && dependency.status === 'waiting'
       )) continue;
@@ -603,7 +603,7 @@ export class AccountStartupRecoveryService {
    * Queries idempotently.
    */
   private convergeTerminalTaskBilling(now: string): void {
-    const terminalStatuses = new Set(['done', 'archived', 'cancelled']);
+    const terminalStatuses = new Set(['succeeded', 'failed', 'cancelled']);
     for (const task of this.deps.taskServices.taskRuntimeService.listTasks()) {
       if (!terminalStatuses.has(task.status)) continue;
       try {
@@ -625,7 +625,10 @@ export class AccountStartupRecoveryService {
   private async convergeRecoveryRequired(now: string): Promise<boolean> {
     let signalled = false;
     for (const task of this.deps.taskServices.taskRuntimeService.listTasks()) {
-      if (['done', 'archived', 'cancelled', 'blocked'].includes(task.status)) continue;
+      // A terminal conclusion or a Task already waiting for its user needs no
+      // additional recovery observation.
+      if (task.status === 'succeeded' || task.status === 'failed'
+        || task.status === 'cancelled' || task.status === 'needs_action') continue;
       const fact = this.recoveryRequiredFact(task.id);
       if (!fact) continue;
       // Prefer the active revision's pin, but fall back to the recovery item's
@@ -759,6 +762,10 @@ export class AccountStartupRecoveryService {
           WHERE d.publication_id = workspace_publications.id AND d.status <> 'failed' AND s.status = 'awaiting_integration'))
     `).all() as Array<{ task_id: string }>;
     for (const publication of publications) taskIds.add(publication.task_id);
+    const continuations = this.deps.db.prepare(`SELECT DISTINCT task_id FROM kernel_effect_outbox
+      WHERE effect_type IN ('task_result_continuation', 'task_remaining_work')
+        AND status <> 'sent'`).all() as Array<{ task_id: string }>;
+    for (const continuation of continuations) taskIds.add(continuation.task_id);
     return [...taskIds].sort();
   }
 
@@ -771,7 +778,7 @@ export class AccountStartupRecoveryService {
     // The same convergence entry as startup recovery, selected from durable
     // pending facts rather than a blocked-only Task scan (review fix 2).
     const converged = await this.convergeRecovery(now);
-    for (const task of this.deps.taskServices.taskRuntimeService.listTasksByStatus('blocked')) {
+    for (const task of this.deps.taskServices.taskRuntimeService.listTasksByStatus('needs_action')) {
       const sessionId = this.originForTask(task.id);
       if (!sessionId) continue;
       const recovered = await this.withSystemBinding(sessionId, () => (
@@ -933,9 +940,45 @@ export class AccountStartupRecoveryService {
     return [...retriedTaskIds];
   }
 
-  private lifecyclePort(): TaskLifecycleTransitionPort {
-    return this.lifecycle ??= createTaskLifecycleTransitionPort({
-      taskRuntimeService: this.deps.taskServices.taskRuntimeService,
+  /**
+   * Records a durable startup-recovery blocker and lets the Task state authority
+   * conclude. Recovery never writes a Task status itself.
+   */
+  private markStartupRecoveryBlocked(
+    taskId: string,
+    reason: string,
+    task?: import('../core/types.js').Task,
+  ): void {
+    const runtime = this.deps.taskServices.taskRuntimeService;
+    const current = task ?? runtime.findTask(taskId);
+    if (!current) return;
+    this.deps.taskStateAuthority.reconcile({
+      taskId,
+      decisionId: `startup_recovery:${taskId}:${current.stateVersion}`,
+      operationKey: `startup_recovery:${taskId}:${current.stateVersion}`,
+      actor: 'account-startup-recovery',
+      reason,
+      facts: () => {
+        runtime.updateTask(taskId, {
+          dependencies: [
+            ...current.dependencies.filter(dependency => !(dependency.status === 'waiting'
+              && dependency.type === 'manual' && dependency.description === reason)),
+            {
+              taskId,
+              type: 'manual',
+              description: reason,
+              status: 'waiting' as const,
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        });
+        return [];
+      },
+    });
+  }
+
+  private lifecyclePort(): SubtaskLifecyclePort {
+    return this.lifecycle ??= createSubtaskLifecyclePort({
       subtaskRepo: this.deps.repositories.subtaskRepo,
     });
   }
@@ -1037,6 +1080,36 @@ export class AccountStartupRecoveryService {
    * successor promoted exactly once; a Task with residue keeps the slot and the
    * residue stays visible through TaskView.
    */
+  /**
+   * Prompt single-Task form of {@link convergeConversationSlots}: called right
+   * after a Task committed `needs_action`. It releases the Conversation slot only
+   * when no residue remains, so a user's next answer is admitted instead of
+   * queuing behind a Task that is only waiting for them. The periodic
+   * convergence repeats the same check from durable facts, so a crash between
+   * the state commit and this call still converges.
+   */
+  async onWaitingForUser(taskId: string, now = new Date().toISOString()): Promise<void> {
+    const scheduler = this.deps.repositories.conversationTaskSchedulerRepo;
+    const task = this.deps.taskServices.taskRuntimeService.findTask(taskId);
+    if (!task || task.status !== 'needs_action') return;
+    const slot = scheduler.getSlot(task.conversationId ?? '');
+    if (!slot || slot.activeTaskId !== taskId || slot.state === 'free') {
+      // Nothing is held; still close a runnable queue entry so the paused Task
+      // cannot be promoted while it waits.
+      scheduler.parkScheduleEntry(taskId, now);
+      return;
+    }
+    if (this.hasReleasableResidue(taskId, this.activeGenerationId(taskId))) {
+      scheduler.releaseSlotAndPromote(slot.conversationId, taskId, now, true);
+      return;
+    }
+    scheduler.parkScheduleEntry(taskId, now);
+    const promotion = scheduler.releaseSlotAndPromote(slot.conversationId, taskId, now,
+      () => this.hasReleasableResidue(taskId, this.activeGenerationId(taskId)), true,
+      { reservationId: slot.reservationId, slotVersion: slot.slotVersion, taskVersion: task?.stateVersion ?? 0 });
+    if (promotion) await this.promoteConversationTask(promotion.taskId, slot.conversationId);
+  }
+
   private async convergeConversationSlots(now: string): Promise<void> {
     const scheduler = this.deps.repositories.conversationTaskSchedulerRepo;
     const tasks = this.deps.taskServices.taskRuntimeService;
@@ -1044,31 +1117,34 @@ export class AccountStartupRecoveryService {
       const taskId = slot.activeTaskId;
       if (!taskId || slot.state === 'free') continue;
       const task = tasks.findTask(taskId);
-      if (!task) {
-        scheduler.releaseSlotAndPromote(slot.conversationId, taskId, now, false);
-        continue;
-      }
-      const terminal = ['done', 'archived', 'cancelled'].includes(task.status);
-      const releasableBlock = task.status === 'blocked';
+      if (!task) continue;
+      const terminal = task.status === 'succeeded' || task.status === 'failed'
+        || task.status === 'cancelled';
+      // `needs_action` is the only non-terminal state that must never hold a slot
+      // after its cleanup converged, and `queued` never holds one.
+      const releasableBlock = task.status === 'needs_action';
       if (!terminal && !releasableBlock) continue;
       if (this.hasReleasableResidue(taskId, this.activeGenerationId(taskId))) {
         scheduler.releaseSlotAndPromote(slot.conversationId, taskId, now, true);
         continue;
       }
-      if (task.status === 'blocked') {
-        // A blocked Task with no residue must not hold its Conversation.
+      if (task.status === 'needs_action') {
+        // A needs-action Task with no residue must not hold its Conversation.
         const promotion = scheduler.releaseSlotAndPromote(
           slot.conversationId,
           taskId,
           now,
-          false,
+          () => this.hasReleasableResidue(taskId, this.activeGenerationId(taskId)), true,
+          { reservationId: slot.reservationId, slotVersion: slot.slotVersion, taskVersion: task.stateVersion },
         );
         if (promotion) {
           await this.promoteConversationTask(promotion.taskId, slot.conversationId);
         }
         continue;
       }
-      const promotion = scheduler.releaseSlotAndPromote(slot.conversationId, taskId, now, false);
+      const promotion = scheduler.releaseSlotAndPromote(slot.conversationId, taskId, now,
+      () => this.hasReleasableResidue(taskId, this.activeGenerationId(taskId)), true,
+      { reservationId: slot.reservationId, slotVersion: slot.slotVersion, taskVersion: task?.stateVersion ?? 0 });
       if (promotion) {
         await this.promoteConversationTask(promotion.taskId, slot.conversationId);
       }

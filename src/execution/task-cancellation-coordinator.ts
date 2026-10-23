@@ -21,8 +21,9 @@ import type { ResourceLeaseService } from './resource-lease-service.js';
 import type { WorkUnitClaimService } from './work-unit-claim-service.js';
 import { TaskResidueReader } from './task-residue-reader.js';
 import {
-  createTaskLifecycleTransitionPort,
-  type TaskLifecycleTransitionPort,
+  createSubtaskLifecyclePort,
+  type SubtaskLifecyclePort,
+  type TaskLifecyclePort,
 } from '../task/task-lifecycle-transition-port.js';
 
 export interface CancellationReceipt {
@@ -45,11 +46,14 @@ type CancellationDecision = KernelDecision & {
 export class TaskCancellationCoordinator {
   private readonly taskEvents: TaskEventRecorder;
   private readonly residueReader: TaskResidueReader;
-  private readonly lifecycle: TaskLifecycleTransitionPort;
+  private readonly lifecycle: SubtaskLifecyclePort;
+  private readonly taskLifecycle: Pick<TaskLifecyclePort, 'applyTaskChange'>;
 
   constructor(private readonly deps: {
     db: Database.Database;
     taskRuntimeService: TaskRuntimeService;
+    taskStateAuthority: import('../task/task-state-authority.js').TaskStateAuthority;
+    taskLifecyclePort: Pick<TaskLifecyclePort, 'applyTaskChange'>;
     subtaskRepo: SubtaskRepo;
     taskEventRepo: TaskEventRepo;
     workGraphRevisionRepo: WorkGraphRevisionRepo;
@@ -64,10 +68,8 @@ export class TaskCancellationCoordinator {
     attemptExecutionRepository: AttemptExecutionRepositoryPort;
   }) {
     this.taskEvents = new TaskEventRecorder(deps.taskEventRepo);
-    this.lifecycle = createTaskLifecycleTransitionPort({
-      taskRuntimeService: deps.taskRuntimeService,
-      subtaskRepo: deps.subtaskRepo,
-    });
+    this.lifecycle = createSubtaskLifecyclePort({ subtaskRepo: deps.subtaskRepo });
+    this.taskLifecycle = deps.taskLifecyclePort;
     this.residueReader = new TaskResidueReader({
       db: deps.db,
       dispatchItemRepo: deps.dispatchItemRepo,
@@ -132,10 +134,31 @@ export class TaskCancellationCoordinator {
         // which kept the Task blocked with its Conversation slot occupied.
         const alreadyCancelled = task.status === 'cancelled';
         if (!alreadyCancelled) {
-          this.lifecycle.cancelTask({
+          // The Kernel authorized the fence; the Task Domain port applies it with
+          // CAS against the version this operation validated.
+          this.taskLifecycle.applyTaskChange({
             taskId: action.taskId,
-            reason: decision.reason,
+            decisionId: decision.id,
+            operationKey: `cancel:${decision.id}`,
+            expectedVersion: task.stateVersion,
+            generationId: revision?.generationId ?? null,
+            graphRevision: revision?.revision ?? null,
+            to: 'cancelled',
+            detail: {
+              reason: {
+                code: 'user_cancelled',
+                message: decision.reason,
+                evidenceRefs: [`decision:${decision.id}`],
+              },
+              unresolved: [],
+              phase: 'stopping',
+              pendingActions: [],
+              requiredWork: task.stateDetail.requiredWork,
+              cleanup: { state: 'pending', objects: [], reason: '正在安全停止。' },
+              nextWakeAt: null,
+            },
             actor: 'task-cancellation-coordinator',
+            reason: decision.reason,
           });
         }
         const subtasks = revision
@@ -343,10 +366,18 @@ export class TaskCancellationCoordinator {
     taskId: string,
     now = new Date().toISOString(),
   ): { conversationId: string; promotedTaskId: string | null } | null {
+    return this.deps.db.transaction(() => {
     const task = this.deps.taskRuntimeService.findTask(taskId);
-    if (!task || !['cancelled', 'done', 'failed', 'archived'].includes(task.status)) return null;
+    // A Task waiting for the user has stopped its own operations, so it must not
+    // keep the Conversation slot: a later answer has to be able to run
+    // (design §1: 待处理任务在安全停下后让出名额).
+    const pausedForUser = task?.status === 'needs_action';
+    if (!task || (!pausedForUser && !['cancelled', 'succeeded', 'failed'].includes(task.status))) {
+      return null;
+    }
     if (this.completionBlockedReasons(taskId, null).length > 0) return null;
-    this.deps.schedulerRepo.markTerminal(taskId, now);
+    if (pausedForUser) this.deps.schedulerRepo.parkScheduleEntry(taskId, now);
+    else this.deps.schedulerRepo.markTerminal(taskId, now);
     const slotRelease = this.deps.schedulerRepo.releaseTaskSlotAndPromote(taskId, now);
     if (slotRelease) {
       this.taskEvents.record(
@@ -361,6 +392,7 @@ export class TaskCancellationCoordinator {
       );
     }
     return slotRelease;
+    }).immediate();
   }
 
   private previouslyAccepted(expected: PendingResultIdentity): boolean {
@@ -380,13 +412,10 @@ export class TaskCancellationCoordinator {
     generationId: string | null,
     excludedDecisionId?: string,
   ): string[] {
-    const reasons: string[] = this.residueReader.blockingReasons(taskId, generationId, excludedDecisionId);
-    const task = this.deps.taskRuntimeService.findTask(taskId);
-    if (task?.startServiceAfterPublish && !['done', 'cancelled', 'failed', 'archived'].includes(task.status)
-      && !this.deps.db.prepare("SELECT 1 FROM managed_local_services WHERE task_id = ? AND state = 'healthy' LIMIT 1").get(taskId)) {
-      reasons.push('managed_service:health_required');
-    }
-    return reasons;
+    // Safe-shutdown residue only. Whether a required service is healthy is a
+    // business completion condition and belongs to the operation work chain, not
+    // to the slot-release decision (design §5.3).
+    return this.residueReader.blockingReasons(taskId, generationId, excludedDecisionId);
   }
 
   findCleanupTaskId(): string | null {
@@ -418,11 +447,16 @@ export class TaskCancellationCoordinator {
       subtasks.some(subtask => subtask.status === 'cancelled')
       && subtasks.every(subtask => ['done', 'cancelled'].includes(subtask.status))
       && this.completionBlockedReasons(taskId, revision.generationId).length === 0
-      && task.status !== 'blocked'
+      && task.status !== 'needs_action'
     ) {
-      this.deps.taskRuntimeService.updateTask(taskId, {
-        status: 'blocked',
-        lastInterruptionReason: 'partial Subtask cancellation requires explicit acceptance',
+      // The facts now require an explicit partial acceptance; the authority
+      // derives `needs_action` from the pending acceptance action.
+      this.deps.taskStateAuthority.reconcile({
+        taskId,
+        decisionId: `partial_cancellation:${taskId}:${revision.generationId}`,
+        operationKey: `partial_cancellation:${taskId}:${revision.generationId}`,
+        actor: 'task-cancellation-coordinator',
+        reason: 'partial Subtask cancellation requires explicit acceptance',
       });
       this.taskEvents.record(
         taskId,

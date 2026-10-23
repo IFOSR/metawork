@@ -90,9 +90,8 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       runtimeState: {
         runningTaskId: null,
         runningExecutorName: null,
-        readyTaskIds: [],
-        blockedTaskIds: [],
-        parkedTaskIds: [],
+        queuedTaskIds: [],
+        needsActionTaskIds: [],
         lastEvent: null,
       },
       plannerState: { status: 'idle' },

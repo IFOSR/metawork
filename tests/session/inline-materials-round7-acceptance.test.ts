@@ -79,7 +79,7 @@ describe('Round 7 inline materials acceptance', () => {
     session.initialize();
     await session.submit(`基于 ${weeklyPath} 和 ${riskPath} 整理 Phoenix 周报，输出一个简短结论`, { awaitAsyncWork: true });
 
-    const doneTask = taskRepo.findByStatus('done')[0];
+    const doneTask = taskRepo.findByStatus('succeeded')[0];
     expect(doneTask, session.getSnapshot().output.join('\n')).toBeDefined();
     expect(doneTask.resources).toEqual([weeklyPath, riskPath]);
     expect(doneTask.title).not.toContain(weeklyPath);

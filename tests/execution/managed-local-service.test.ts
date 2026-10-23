@@ -22,7 +22,7 @@ async function fixture(health = '/health') {
   await mkdir(published, { recursive: true });
   const db = new Database(join(root, 'state.db'));
   runMigrations(db);
-  db.prepare("INSERT INTO tasks(id,title,goal,status,created_at,updated_at) VALUES ('task','Service','Service','done','now','now')").run();
+  db.prepare("INSERT INTO tasks (id,title,goal,status,created_at,updated_at) VALUES ('task', 'Service', 'Service', 'succeeded', 'now', 'now')").run();
   const port = await new Promise<number>(accept => {
     const probe = createServer(); probe.listen(0, '127.0.0.1', () => {
       const address = probe.address(); const value = typeof address === 'object' && address ? address.port : 0;
@@ -130,12 +130,14 @@ spawn(process.execPath,['child.mjs'],{stdio:'inherit'});process.on('SIGTERM',()=
     expect(recovered.find('backend')!.processId).not.toBe(processId);
   }, 15000);
 
-  it('reports a live but unhealthy service truthfully and preserves its stop control', async () => {
+  it('records a bounded startup timeout as a definite failure and stops the process', async () => {
     const { manager, spec } = await fixture('/missing');
     const result = await manager.start(spec);
-    expect(result.state).toBe('unhealthy');
-    expect(result.message).toContain('503');
-    expect((await manager.stop('backend')).state).toBe('stopped');
+    // Health never passed inside startupTimeoutMs: the task-owned start is a
+    // definite failure and its process is stopped, never left half-running.
+    expect(result.state).toBe('failed');
+    expect(result.message).toBe('service_health_timeout');
+    expect(manager.find('backend')?.processId ?? null).toBeNull();
   });
 
   it('refuses an occupied port and an unpublished task', async () => {
@@ -144,7 +146,7 @@ spawn(process.execPath,['child.mjs'],{stdio:'inherit'});process.on('SIGTERM',()=
     // Publication refusal is checked with a fresh service ID, before any command runs.
     const unavailable = new ManagedLocalServices({ ...deps, resolvePublishedDirectory: async () => null });
     await expect(unavailable.start({ ...spec, serviceId: 'unpublished', port: spec.port + 1 })).rejects.toThrow('尚未发布');
-    await expect(manager.start({ ...spec, serviceId: 'occupied' })).rejects.toThrow('端口已被占用');
+    await expect(manager.start({ ...spec, serviceId: 'occupied' })).rejects.toMatchObject({ code: 'EADDRINUSE' });
   });
 });
 

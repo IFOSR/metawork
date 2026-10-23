@@ -39,11 +39,15 @@ export function createBackgroundResultDelivery(deps: BackgroundResultDeliveryDep
     const old = (await deps.read(sessionId))?.turns.find(turn => turn.id === query.turnId);
     const userInput = old?.userInput ?? deps.requestText(task.id);
     if (!userInput) return;
-    const backgroundWorkPending = ['created', 'ready', 'running'].includes(task.status);
+    // Only an active Task keeps the Conversation doing background work. A
+    // needs-action Task waits for the user and is not "running".
+    const backgroundWorkPending = task.status === 'running';
     // Store the answer before publishing, including when the original client disconnected.
     if (old?.finalAnswer !== delivery.content) await deps.append(sessionId, {
       id: query.turnId, sessionId, userInput, interactionKind: 'ai_turn',
-      status: task.status === 'blocked' ? 'blocked' : task.status === 'cancelled' ? 'cancelled' : 'completed',
+      status: task.status === 'needs_action' ? 'blocked'
+        : task.status === 'cancelled' ? 'cancelled'
+          : task.status === 'failed' ? 'failed' : 'completed',
       deliveryStatus: 'ready',
       finalAnswer: delivery.content, taskId: task.id,
       startedAt: old?.startedAt ?? query.acceptedAt,

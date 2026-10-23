@@ -218,7 +218,7 @@ export function verifyAuthoritativeTaskState(state) {
   }
 
   const task = state.tasks[0];
-  if (task.status !== 'done') {
+  if (task.status !== 'succeeded') {
     throw new Error([
       `Smoke failed: authoritative Task ${task.id} is ${task.status}, not done.`,
       `Authoritative state: ${formatAuthoritativeFailure(state)}`,

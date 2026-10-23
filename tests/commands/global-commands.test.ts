@@ -9,6 +9,7 @@ import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import type { ResolvedCommandArgs } from '../../src/commands/catalog.js';
 import type { Config } from '../../src/core/types.js';
+import { setTaskStatus } from '../support/task-state-fixture.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -76,14 +77,9 @@ describe('global commands', () => {
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
     const task = taskEngine.create({ title: '起诉材料补齐', goal: '继续补齐起诉材料' });
-    taskEngine.transition(task.id, 'ready');
-    taskEngine.transition(task.id, 'running');
-    taskEngine.block(task.id, {
-      taskId: task.id,
-      type: 'manual',
-      description: '等待客户补充证据文件',
-      status: 'waiting',
-    });
+    setTaskStatus(db, task.id, 'queued');
+    setTaskStatus(db, task.id, 'running');
+    setTaskStatus(db, task.id, 'needs_action');
 
     const result = await attachTaskResources(
       attachArgs(task.id, ['evidence-a.pdf', 'evidence-b.pdf']),

@@ -4,6 +4,7 @@ import {
   type ExecutionProjectorDeps,
 } from '../../src/management/execution-projector.js';
 import type { Subtask, Task } from '../../src/core/types.js';
+import { EMPTY_TASK_STATE_DETAIL } from '../../src/task/task-state.js';
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -11,6 +12,11 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     title: '测试任务',
     goal: '',
     status: 'running',
+    stateVersion: 1,
+    stateDetail: EMPTY_TASK_STATE_DETAIL,
+    completedAt: null,
+    archivedAt: null,
+    retryOfTaskId: null,
     summary: '',
     snapshots: [],
     resources: [],
@@ -79,7 +85,7 @@ describe('ExecutionProjector', () => {
 
   it('有 subtasks 时 planning done 且 proposal 含依赖', () => {
     const subtasks = [
-      makeSubtask({ id: 'sub_1', title: '写配置', status: 'done' }),
+      makeSubtask({ id: 'sub_1', title: '写配置', status: 'succeeded' }),
       makeSubtask({
         id: 'sub_2',
         title: '写脚本',
@@ -99,7 +105,7 @@ describe('ExecutionProjector', () => {
 
   it('does not invent an automatic retry from a legacy Task dependency without a durable wake', () => {
     const timeline = makeProjector().project(makeTask({
-      status: 'blocked',
+      status: 'needs_action',
       dependencies: [{
         taskId: 'task_1',
         type: 'kernel_retry',
@@ -108,7 +114,7 @@ describe('ExecutionProjector', () => {
       }],
     }));
 
-    expect(timeline.status).toBe('blocked');
+    expect(timeline.status).toBe('needs_action');
   });
 
   it('有 decisions 时 authorization done', () => {
@@ -131,7 +137,7 @@ describe('ExecutionProjector', () => {
 
   it('execution 阶段聚合 subtask 状态和 executor', () => {
     const subtasks = [
-      makeSubtask({ id: 'sub_1', title: '写配置', status: 'done' }),
+      makeSubtask({ id: 'sub_1', title: '写配置', status: 'succeeded' }),
       makeSubtask({ id: 'sub_2', title: '写脚本', status: 'running' }),
     ];
     const receipts = [
@@ -258,7 +264,7 @@ describe('ExecutionProjector', () => {
 
   it('bounds historical attempts and progress in the public execution timeline', () => {
     const subtasks = [
-      makeSubtask({ id: 'sub_1', title: '生成报告', status: 'done' }),
+      makeSubtask({ id: 'sub_1', title: '生成报告', status: 'succeeded' }),
     ];
     const dispatches = Array.from({ length: 25 }, (_, index) => ({
       attemptId: `attempt_${index}`,
@@ -288,7 +294,7 @@ describe('ExecutionProjector', () => {
           },
         }),
       },
-    }).project(makeTask({ status: 'done' }));
+    }).project(makeTask({ status: 'succeeded' }));
 
     const attempts = timeline.stages[2].subtasks?.[0]?.attempts ?? [];
     expect(attempts).toHaveLength(20);
@@ -309,7 +315,7 @@ describe('ExecutionProjector', () => {
   });
 
   it('verification 阶段按 receipt violations 推导 failed', () => {
-    const subtasks = [makeSubtask({ id: 'sub_1', status: 'done' })];
+    const subtasks = [makeSubtask({ id: 'sub_1', status: 'succeeded' })];
     const receipts = [
       {
         subtaskId: 'sub_1',
@@ -358,11 +364,11 @@ describe('ExecutionProjector', () => {
     }));
     const timeline = makeProjector({
       subtaskRepo: {
-        listByTask: () => [makeSubtask({ id: 'sub_1', status: 'done' })],
+        listByTask: () => [makeSubtask({ id: 'sub_1', status: 'succeeded' })],
       },
       dispatchItemRepo: { listByTask: () => dispatches },
       receiptRepo: { listByTask: () => receipts },
-    }).project(makeTask({ status: 'done' }));
+    }).project(makeTask({ status: 'succeeded' }));
 
     const attempts = timeline.stages[2].subtasks?.[0]?.attempts ?? [];
     expect(attempts.map(attempt => attempt.attemptLabel)).toEqual(kinds.map(([, label]) => label));
@@ -377,14 +383,14 @@ describe('ExecutionProjector', () => {
   });
 
   it('delivery 阶段 integrated 推导 done', () => {
-    const subtasks = [makeSubtask({ id: 'sub_1', status: 'done' })];
+    const subtasks = [makeSubtask({ id: 'sub_1', status: 'succeeded' })];
     const timeline = makeProjector({
       subtaskRepo: { listByTask: () => subtasks },
       publicationRepo: {
         listIntegratedByTaskIds: () => [{ id: 'pub_1', taskId: 'task_1' }],
         hasBlockingResidue: () => false,
       },
-    }).project(makeTask({ status: 'done' }));
+    }).project(makeTask({ status: 'succeeded' }));
 
     expect(timeline.stages[4].status).toBe('done');
   });

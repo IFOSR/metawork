@@ -9,11 +9,15 @@ import type { ConversationTaskSummary } from '../../src/session/conversation-act
 const { renderToStaticMarkup } = createRequire(new URL('../../web/package.json', import.meta.url))('react-dom/server');
 const task = (phase: string): ConversationTaskSummary => ({
   taskId: 'task-ppt', title: '客户演示 PPT', phase, executionGeneration: 'generation-1',
-  explanation: 'requires explicit recovery', canCancel: true,
-  userState: phase === 'executing' || phase === 'publishing' ? 'executing'
-    : ['queued', 'retrying', 'waiting_for_plan'].includes(phase) ? 'waiting'
-      : ['completed', 'cancelled'].includes(phase) ? 'finished' : 'needs_action',
-  userStateReason: '需要处理，请继续未完成部分。',
+  explanation: '需要处理，请继续未完成部分。', canCancel: true,
+  status: phase === 'executing' || phase === 'publishing' ? 'running'
+    : phase === 'queued' || phase === 'retrying' || phase === 'waiting_for_plan' ? 'queued'
+      : phase === 'cancelled' ? 'cancelled'
+        : phase === 'completed' ? 'succeeded' : 'needs_action',
+  statusLabel: phase,
+  stateVersion: 2,
+  reason: { code: 'none', message: '需要处理，请继续未完成部分。', evidenceRefs: [] },
+  pendingActions: [],
 });
 
 describe('blocked task interaction', () => {
@@ -59,6 +63,6 @@ describe('blocked task interaction', () => {
     expect(html).toContain('查看任务详情');
   });
   it('states that a settling executor is still cleaning up', () => {
-    expect(taskActivityMessage({ userStateReason: '等待执行器退出和清理' })).toContain('等待执行器退出和清理');
+    expect(taskActivityMessage({ explanation: '等待执行器退出和清理' })).toContain('等待执行器退出和清理');
   });
 });

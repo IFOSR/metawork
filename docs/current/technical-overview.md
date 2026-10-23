@@ -37,7 +37,7 @@ failed Attempt is never rewritten as successful. See the [task blocking and stat
 
 Blocked-task interaction (2026-10-14): Web keeps submission and task queries
 available during execution and after blocking. Cancellation eligibility is not
-an execution-status signal. TaskView userState/userStateReason drive activity display; explicit
+an execution-status signal. The committed Task status and reason drive activity display; explicit
 retry uses the existing `/task resume` Gateway command, while live or uncertain
 residue continues to hold the Conversation execution slot under ADR-0037.
 See [implementation record](../plans/2026-10-14-blocked-task-interaction-fix.md).
@@ -240,7 +240,7 @@ See [implementation and validation](../plans/2026-10-03-tui-workspace-task-dashb
 
 ### Product Capabilities
 
-- Keeps durable tasks with explicit states: created, ready, running, parked, blocked, done, archived, and cancelled.
+- Keeps one durable Task conclusion: queued, running, needs_action, succeeded, failed, or cancelled. Archiving is metadata.
 - Restores interrupted work with resume context instead of restarting from scratch.
 - Enforces one active or cleaning-up top-level Task per Conversation through durable Conversation slots, while one AccountRuntime schedules Tasks from different Conversations concurrently and Phase 6 authorizes deterministic batches of isolated child attempts.
 - Keeps Planning and Runtime authorization in one append-only `kernel_decisions` ledger while durable inbox/application/outbox state owns recoverable execution.
@@ -1153,16 +1153,19 @@ structured transport uncertainty and partial tool audit.
 
 ### Task lifecycle state convergence (2026-09-25)
 
-Attempt settlement, Kernel application and Task lifecycle are separated by
-explicit ownership. The canonical Task/Subtask/Attempt lifecycle vocabulary,
-its transition table and the raw-status mapping functions live in
-`src/task/task-lifecycle.ts`; the read-only `TaskView` projection lives in
-`src/task/task-view.ts`. Presentation surfaces render
-`TaskView.userState` (`waiting`, `executing`, `needs_action`, `finished`) and
-`userStateReason`; internal phases remain available in details. Surfaces never interpret raw `tasks.status`,
-`kernel_dispatch_items.status`, `work_units.state` or
-`kernel_decision_applications.status`. The Gateway exposes the same projection
-additively as `GatewayTaskViewSnapshot.lifecycle`.
+Attempt settlement, Kernel application and Task conclusion are separated by
+explicit ownership. The six Task states, the one transition table and the pure
+`evaluateTaskState()` summary live in `src/task/task-state.ts`
+([ADR-0049](../adr/0049-six-state-task-conclusion.md)); Subtask/Attempt
+contracts remain in `src/task/task-lifecycle.ts`. `TaskStateAuthority` turns
+durable facts into the conclusion and applies it through the single
+`TaskLifecyclePort.applyTaskChange()` entry; the read-only `TaskView` projection
+in `src/task/task-view.ts` only assembles operational detail next to the
+committed `TaskStateSnapshot`. Surfaces render that snapshot (`status`,
+`stateVersion`, `reason`, `phase`, `pendingActions`, `cleanup`, `nextWakeAt`) and
+never interpret `kernel_dispatch_items.status`, `work_units.state` or
+`kernel_decision_applications.status`. The Gateway exposes the same snapshot as
+`GatewayTaskViewSnapshot.state` under `task_view_v2`.
 
 Automatic replan no longer invokes a foreground Conversation Planner callback.
 ControlKernel authorizes `schedule_replan`, whose only Runtime postcondition is
@@ -1187,7 +1190,7 @@ into an explicit `block_work` — the Task cannot stay `running`.
 
 One shared convergence entry runs at startup and on the account periodic review,
 selected from durable pending facts rather than a blocked-only Task scan, so a
-Task that never reaches `blocked` still converges. It inspects each action
+Task that never reaches `needs_action` still converges. It inspects each action
 family's declared postcondition. The replan postcondition inspector marks an
 uncertain `schedule_replan`/`request_replan` application `applied` once the Job
 carries `quiescence_<decisionId>`, and retries the same Decision only while the
@@ -1230,7 +1233,7 @@ graph runtime, publication worker, attempt runner and session Kernel runtime no
 longer write a status directly.
 
 Conversation slot release is a residue question. A slot is released only when
-the Task is terminal, or blocked, and no blocking dispatch, publication,
+the Task is terminal, or `needs_action`, and no blocking dispatch, publication,
 backend execution, lease, WorkUnit claim, uncertain Kernel application or
 outstanding Replan Job remains; the released slot promotes the next
 same-Conversation Task exactly once. The Feishu/Web activity card and the
@@ -1258,7 +1261,7 @@ and Pi Auto may use all enabled Provider models. The gate
 rechecks Planner turns, running Tasks, blocking Dispatch/Attempt facts, child
 processes, leases, publication/merge work, recovery, and concurrent activation
 inside the backend transaction; connected idle clients do not block it, but
-continuable ready/parked/blocked Tasks do. Application releases, schema, Harness/process
+continuable queued/needs_action Tasks do. Application releases, schema, Harness/process
 artifacts, Permission Profile semantics, Planner RPC, and runtime directory
 protocol changes remain restart-required.
 
@@ -2079,10 +2082,12 @@ adapter，配置验证拒绝 Codex/Anthropic 绑定；独立图像 Runner 继续
 
 ### Task execution reliability implementation (2026-10-15)
 
-The primary display contract is Task Domain `userState` / `userStateReason`:
-waiting, executing, needs_action, finished. Internal phases and cancellation
-eligibility remain separate facts. Web, Gateway, TUI and Feishu consume this
-projection; historic cached activity lacking it is invalidated for rebuild.
+The primary display contract is the Task Domain `TaskStateSnapshot`:
+`queued | running | needs_action | succeeded | failed | cancelled` plus reason,
+phase, pending actions and cleanup ([ADR-0049](../adr/0049-six-state-task-conclusion.md)).
+Operation phases and cancellation eligibility remain separate facts. Web,
+Gateway, TUI and Feishu consume this snapshot; historic cached activity lacking
+it is invalidated for rebuild by the schema-52 migration.
 
 Schema 49 adds `workspace_publication_deliveries`. Failed delivery remains
 queryable and requires `/task resume`; pending or interrupted finalization replays
@@ -2102,3 +2107,16 @@ Source validation, native CLI protocol probes, browser/TUI tests, Desktop shell,
 Docker and installed-package acceptance are recorded independently in the
 [reliability technical design](../plans/2026-10-15-task-execution-reliability-technical-design.md).
 A successful source build is not an installed commercial-release acceptance.
+
+### Task state review fixes (2026-10-22)
+
+Result acceptance atomically commits its decision, Task audit and durable queued
+continuation. Publication requires the current graph and reservation token/version;
+restart drains the existing outbox without rerunning the Executor. Definite delivery
+or required-service failure ends the original Task; `/task retry` creates a linked
+Task for remaining reusable delivery/service work. Task notifications feed the
+existing durable activity projector. Web/TUI negotiate Task View v2 and compare
+Task versions. Schema 51→52 classifies legacy evidence with immutable audit and
+quarantines unapplied legacy non-cancellation operations. See the
+[validation record](../plans/2026-10-22-task-state-review-fixes.md); installed/runtime
+packaging verification remains distinct from source validation.

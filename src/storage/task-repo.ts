@@ -1,15 +1,47 @@
 import { publicTaskRelativeDirectory } from '../task/public-task-directory.js';
 import type Database from 'better-sqlite3';
 import type { Task, TaskSnapshot, TaskStatus, Dependency } from '../core/types.js';
+import {
+  isTaskStatus,
+  normalizeTaskStateDetail,
+  type TaskStateDetail,
+} from '../task/task-state.js';
 import type { TaskSearchIndexRepo } from './task-search-index-repo.js';
 
-export type TimelineTaskRecord = Pick<Task, 'id' | 'title' | 'status' | 'dependencies'>;
+export type TimelineTaskRecord = Pick<
+  Task,
+  'id' | 'title' | 'status' | 'dependencies' | 'stateVersion' | 'stateDetail'
+> & { readonly completedAt?: string | null; readonly archivedAt?: string | null; readonly retryOfTaskId?: string | null };
+
+/**
+ * Task metadata that may be updated outside the Task state transaction. The
+ * lifecycle fields (`status`, `stateVersion`, `stateDetail`, `completedAt`,
+ * `archivedAt`, `retryOfTaskId`) are deliberately excluded: only
+ * `TaskLifecyclePort.applyTaskChange()` may write them.
+ */
+export type TaskMetadataChanges = Omit<
+  Partial<Task>,
+  | 'id'
+  | 'status'
+  | 'stateVersion'
+  | 'stateDetail'
+  | 'completedAt'
+  | 'archivedAt'
+  | 'retryOfTaskId'
+  | 'createdAt'
+  | 'updatedAt'
+>;
 
 interface TaskRow {
   id: string;
   title: string;
   goal: string;
   status: string;
+  state_version: number;
+  state_detail_json: string;
+  completed_at: string | null;
+  archived_at: string | null;
+  retry_of_task_id: string | null;
   summary: string;
   snapshot_json: string;
   resources_json: string;
@@ -48,6 +80,11 @@ function rowToTask(row: TaskRow): Task {
     title: row.title,
     goal: row.goal,
     status: row.status as TaskStatus,
+    stateVersion: row.state_version,
+    stateDetail: normalizeTaskStateDetail(safeJson(row.state_detail_json)),
+    completedAt: row.completed_at,
+    archivedAt: row.archived_at,
+    retryOfTaskId: row.retry_of_task_id,
     summary: row.summary,
     snapshots: JSON.parse(row.snapshot_json),
     resources: JSON.parse(row.resources_json),
@@ -65,6 +102,25 @@ function rowToTask(row: TaskRow): Task {
   };
 }
 
+function safeJson(value: string | null): unknown {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+export interface ApplyTaskStateInput {
+  readonly taskId: string;
+  readonly expectedVersion: number;
+  readonly from: TaskStatus;
+  readonly to: TaskStatus;
+  readonly detail: TaskStateDetail;
+  readonly completedAt: string | null;
+  readonly at: string;
+}
+
 export class TaskRepo {
   constructor(
     private db: Database.Database,
@@ -72,14 +128,22 @@ export class TaskRepo {
   ) {}
 
   insert(task: Task): void {
+    if (!isTaskStatus(task.status)) {
+      throw new Error(`Task status must be one of the six Task states: ${task.status}`);
+    }
     this.db.prepare(`
-      INSERT INTO tasks (id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
+      INSERT INTO tasks (id, title, goal, status, state_version, state_detail_json, completed_at,
+        archived_at, retry_of_task_id, summary, snapshot_json, resources_json, artifacts_json,
         dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
         last_interruption_reason, interruption_count, created_at, updated_at,
-        account_id, conversation_id, workspace_id, owner_planner_session_id, admitted_at, public_task_directory, public_delivery_baseline_json, start_service_after_publish, public_project)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        account_id, conversation_id, workspace_id, owner_planner_session_id, admitted_at,
+        public_task_directory, public_delivery_baseline_json, start_service_after_publish,
+        public_project)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      task.id, task.title, task.goal, task.status, task.summary,
+      task.id, task.title, task.goal, task.status, task.stateVersion,
+      JSON.stringify(task.stateDetail), task.completedAt, task.archivedAt, task.retryOfTaskId,
+      task.summary,
       JSON.stringify(task.snapshots), JSON.stringify(task.resources),
       JSON.stringify(task.artifacts),
       JSON.stringify(task.dependencies), JSON.stringify(task.prioritySignals),
@@ -111,15 +175,23 @@ export class TaskRepo {
     if (!ids.length) return [];
     if (ids.length > 100) throw new Error('history_task_limit');
     const rows = this.db.prepare(`
-      SELECT id, title, status, dependencies_json FROM tasks
+      SELECT id, title, status, dependencies_json, state_version, state_detail_json,
+        completed_at, archived_at, retry_of_task_id FROM tasks
       WHERE account_id = ? AND id IN (${ids.map(() => '?').join(',')})
       ORDER BY id
-    `).all(accountId, ...ids) as Array<Pick<TaskRow, 'id' | 'title' | 'status' | 'dependencies_json'>>;
+    `).all(accountId, ...ids) as Array<Pick<TaskRow,
+      'id' | 'title' | 'status' | 'dependencies_json' | 'state_version' | 'state_detail_json'
+      | 'completed_at' | 'archived_at' | 'retry_of_task_id'>>;
     return rows.map(row => ({
       id: row.id,
       title: row.title,
       status: row.status as TaskStatus,
       dependencies: JSON.parse(row.dependencies_json) as Dependency[],
+      stateVersion: row.state_version,
+      stateDetail: normalizeTaskStateDetail(safeJson(row.state_detail_json)),
+      completedAt: row.completed_at,
+      archivedAt: row.archived_at,
+      retryOfTaskId: row.retry_of_task_id,
     }));
   }
 
@@ -135,9 +207,10 @@ export class TaskRepo {
     return rows.map(rowToTask);
   }
 
+  /** Tasks that still own a Conversation slot or are waiting for one. */
   findActive(): Task[] {
     const rows = this.db.prepare(
-      `SELECT * FROM tasks WHERE status IN ('created', 'ready', 'running', 'parked', 'blocked') ORDER BY updated_at DESC`
+      `SELECT * FROM tasks WHERE status IN ('queued', 'running', 'needs_action') ORDER BY updated_at DESC`
     ).all() as TaskRow[];
     return rows.map(rowToTask);
   }
@@ -147,14 +220,18 @@ export class TaskRepo {
     return rows.map(rowToTask);
   }
 
-  update(id: string, changes: Partial<Task>): void {
+  /**
+   * Metadata update. It cannot change a lifecycle field; those only move through
+   * `applyTaskState()`, which the Task Domain port calls inside the state
+   * transaction.
+   */
+  update(id: string, changes: TaskMetadataChanges): void {
     const now = new Date().toISOString();
     const sets: string[] = ['updated_at = ?'];
     const values: unknown[] = [now];
 
     if (changes.title !== undefined) { sets.push('title = ?'); values.push(changes.title); }
     if (changes.goal !== undefined) { sets.push('goal = ?'); values.push(changes.goal); }
-    if (changes.status !== undefined) { sets.push('status = ?'); values.push(changes.status); }
     if (changes.summary !== undefined) { sets.push('summary = ?'); values.push(changes.summary); }
     if (changes.snapshots !== undefined) { sets.push('snapshot_json = ?'); values.push(JSON.stringify(changes.snapshots)); }
     if (changes.resources !== undefined) { sets.push('resources_json = ?'); values.push(JSON.stringify(changes.resources)); }
@@ -165,7 +242,11 @@ export class TaskRepo {
     if (changes.lastSchedulingReason !== undefined) { sets.push('last_scheduling_reason = ?'); values.push(changes.lastSchedulingReason); }
     if (changes.lastInterruptionReason !== undefined) { sets.push('last_interruption_reason = ?'); values.push(changes.lastInterruptionReason); }
     if (changes.interruptionCount !== undefined) { sets.push('interruption_count = ?'); values.push(changes.interruptionCount); }
+    if (changes.publicDeliveryBaseline !== undefined) { sets.push('public_delivery_baseline_json = ?'); values.push(JSON.stringify(changes.publicDeliveryBaseline)); }
+    if (changes.startServiceAfterPublish !== undefined) { sets.push('start_service_after_publish = ?'); values.push(changes.startServiceAfterPublish ? 1 : 0); }
+    if (changes.publicProject !== undefined) { sets.push('public_project = ?'); values.push(changes.publicProject ? 1 : 0); }
 
+    if (sets.length === 1) return;
     values.push(id);
     this.db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values);
     const updatedTask = this.findById(id);
@@ -174,8 +255,34 @@ export class TaskRepo {
     }
   }
 
-  updateStatus(id: string, status: TaskStatus): void {
-    this.update(id, { status });
+  /**
+   * Conditional Task state write. Returns `null` when the expected version or
+   * source status no longer holds, so a stale operation rolls back instead of
+   * overwriting a newer conclusion.
+   */
+  applyTaskState(input: ApplyTaskStateInput): Task | null {
+    const completedAt = input.completedAt;
+    const applied = this.db.prepare(`
+      UPDATE tasks SET status = ?, state_version = state_version + 1, state_detail_json = ?,
+        completed_at = ?, updated_at = ?
+      WHERE id = ? AND state_version = ? AND status = ?
+    `).run(
+      input.to, JSON.stringify(input.detail), completedAt, input.at,
+      input.taskId, input.expectedVersion, input.from,
+    );
+    if (applied.changes !== 1) return null;
+    const updatedTask = this.findById(input.taskId);
+    if (updatedTask) this.taskSearchIndexRepo?.indexTask(updatedTask);
+    return updatedTask;
+  }
+
+  /**
+   * Archiving is an attribute of a finished Task, never a status. It is not a
+   * state change, so it does not bump `state_version`.
+   */
+  setArchivedAt(id: string, archivedAt: string | null): void {
+    this.db.prepare('UPDATE tasks SET archived_at = ?, updated_at = ? WHERE id = ?')
+      .run(archivedAt, new Date().toISOString(), id);
   }
 
   appendSnapshot(id: string, snapshot: TaskSnapshot): void {

@@ -582,12 +582,27 @@ export class WorkspacePublicationWorker {
     }
   }
 
-  private async deliverIntegrated(publication: WorkspacePublicationRecord): Promise<WorkspacePublicationOutcome> {
+  async redeliverForRetry(taskId: string, publicationId: string, assertCurrent: () => void): Promise<boolean> {
+    const task = this.deps.taskRuntimeService.findTask(taskId);
+    const publication = this.publications.find(publicationId);
+    if (!task?.retryOfTaskId || publication?.taskId !== task.retryOfTaskId
+      || publication.status !== 'integrated' || !publication.integrationCommit) {
+      throw new Error('重试成果归属不匹配');
+    }
+    assertCurrent();
+    this.publications.retryDelivery(publication.id, publication.taskId, publication.generationId, new Date().toISOString());
+    await this.deliverIntegrated(publication, assertCurrent);
+    assertCurrent();
+    return this.publications.delivery(publicationId)?.status === 'succeeded';
+  }
+
+  private async deliverIntegrated(publication: WorkspacePublicationRecord, retryFence?: () => void): Promise<WorkspacePublicationOutcome> {
     const cancelled = (): boolean => this.deps.taskRuntimeService.findTask(publication.taskId)?.status === 'cancelled'
       || this.deps.subtaskRepo.findById(publication.subtaskId)?.status === 'cancelled';
     const cancellation = (): CancelledWorkspacePublication => ({ type: 'cancelled', publicationId: publication.id,
       taskId: publication.taskId, subtaskId: publication.subtaskId, observedIntegrationCommit: publication.integrationCommit });
     if (cancelled()) return cancellation();
+    retryFence?.();
     const integrationWorkspace = await this.git.ensure({ taskId: publication.taskId, generationId: publication.generationId,
       subtaskId: '__integration__' }, this.deps.sourceRoot);
     let delivery = this.publications.delivery(publication.id)!;
@@ -600,6 +615,7 @@ export class WorkspacePublicationWorker {
           throw new Error('User artifact publication service is unavailable');
         }
         if (sources.length && this.deps.userArtifactPublication) {
+          retryFence?.();
           const service = this.deps.userArtifactPublication;
           const result = await this.git.withCommitSnapshot(integrationWorkspace, publication.integrationCommit!, async root => service.publishIntegratedArtifacts({
             sessionId: this.sessionId, accountId: this.deps.accountId ?? 'local-default', taskId: publication.taskId,
@@ -616,12 +632,17 @@ export class WorkspacePublicationWorker {
       } catch (error) {
         failures = [{ sourceRelativePath: '', reason: error instanceof Error ? error.message : String(error) }];
       }
+      retryFence?.();
       this.publications.settleDelivery(publication.id, projections, failures, new Date().toISOString());
       delivery = this.publications.delivery(publication.id)!;
     }
     if (cancelled()) return cancellation();
     if (delivery.status !== 'succeeded') return { type: 'delivery_failed', publicationId: publication.id,
       taskId: publication.taskId, subtaskId: publication.subtaskId };
+    if (retryFence) return { type: 'integrated', publicationId: publication.id, taskId: publication.taskId,
+      subtaskId: publication.subtaskId, sourceAttemptId: publication.sourceAttemptId, agentClassName: publication.agentClassName,
+      integrationCommit: publication.integrationCommit!, resultId: null, output: publication.originalCompletion.body,
+      warnings: publication.originalCompletion.warnings, userArtifacts: delivery.projections };
     const receipt = this.deps.attemptReceiptRepo.findByAttemptId(publication.sourceAttemptId);
     if (!receipt) throw new Error(`missing publication receipt ${publication.sourceAttemptId}`);
     const safeProjection = this.findSafeProjection(publication, receipt);

@@ -70,7 +70,7 @@ describe('WorkspaceRetentionService', () => {
       expect(existsSync(first.workspace.rootPath)).toBe(false);
       expect(existsSync(objectPath)).toBe(true);
 
-      retention.reconcileTaskStatuses([{ id: 'task-b', status: 'archived' }], now);
+      retention.reconcileTaskStatuses([{ id: 'task-b', status: 'succeeded' }], now);
       expect(await retention.sweepDue(now)).toEqual({ workspaces: 1, objects: 1, repositories: 0 });
       expect(existsSync(second.workspace.rootPath)).toBe(false);
       expect(existsSync(objectPath)).toBe(false);

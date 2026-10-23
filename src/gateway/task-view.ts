@@ -1,6 +1,12 @@
-import type { TaskUserState } from '../task/task-user-state.js';
+import type {
+  TaskOperationPhase,
+  TaskPendingAction,
+  TaskReason,
+  TaskStateSnapshot,
+  TaskStatus,
+} from '../task/task-state.js';
 /**
- * Gateway 只读 Task 视图契约（统一 TUI 设计 §9.3，task_view_v1）。
+ * Gateway 只读 Task 视图契约（统一 TUI 设计 §9.3，task_view_v2）。
  *
  * `get_task_view` 命令的安全展示快照 DTO。它是读投影，不生成重复 durable
  * Task/trace 事实；字段全部来自既有 Application 投影 owner
@@ -13,7 +19,12 @@ import type { TaskUserState } from '../task/task-user-state.js';
 import type { ExecutionTimeline } from '../management/execution-projector.js';
 import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
 
-export const GATEWAY_TASK_VIEW_QUERY_VERSION = 'task_view_v1';
+/**
+ * v2: the Task conclusion is the six-state snapshot. Clients read
+ * `state.status` / `state.reason` / `state.stateVersion` and never derive a
+ * status from logs or from a raw column.
+ */
+export const GATEWAY_TASK_VIEW_QUERY_VERSION = 'task_view_v2';
 export const GATEWAY_COMMAND_COMPLETION_QUERY_VERSION = 'command_completion_v1';
 
 /** Task 快照水位：属于目标 Conversation 事件流的 sequence。 */
@@ -26,13 +37,10 @@ export interface GatewayTaskViewSnapshot {
   readonly turnId: string;
   readonly taskId: string;
   readonly title: string;
-  readonly status: string;
-  /**
-   * 统一的只读生命周期投影（2026-09-25 Task lifecycle 收敛 §7）。
-   *
-   * 展示层必须消费 `lifecycle.userState` 作为用户可见状态；`status` 仅为历史
-   * 兼容字段，不得直接渲染为面向用户的文案。
-   */
+  /** The one committed Task conclusion (six states). */
+  readonly status: TaskStatus;
+  /** The whole current Task snapshot, including its version. */
+  readonly state: TaskStateSnapshot;
   readonly lifecycle: GatewayTaskViewLifecycle;
   readonly goal: string | null;
   readonly startedAt: string | null;
@@ -71,10 +79,13 @@ export interface GatewayTaskViewRouting {
  * 状态计算；客户端只解释 phase 与 nextAuthorizedAction。
  */
 export interface GatewayTaskViewLifecycle {
-  readonly lifecycle: string;
-  readonly phase: string;
-  readonly userState: TaskUserState;
-  readonly userStateReason: string;
+  readonly status: TaskStatus;
+  readonly statusLabel: string;
+  readonly stateVersion: number;
+  readonly phase: TaskOperationPhase | null;
+  readonly reason: TaskReason;
+  readonly pendingActions: readonly TaskPendingAction[];
+  readonly cleanup: TaskStateSnapshot['cleanup'];
   readonly activeAttempt: {
     readonly attemptId: string;
     readonly subtaskId: string;
@@ -85,8 +96,7 @@ export interface GatewayTaskViewLifecycle {
   } | null;
   readonly blockingResidue: readonly string[];
   readonly nextAuthorizedAction: string;
-  readonly pendingDecision?: import('../task/task-view.js').TaskViewPendingDecisionFact | null;
-  /** Why `phase` is `recovery_required`, so a surface can offer the entry point. */
+  /** Why recovery was reached, so a surface can offer the entry point. */
   readonly recoveryDiagnosis: string | null;
   readonly explanation: string;
   readonly lastProgressAt: string | null;

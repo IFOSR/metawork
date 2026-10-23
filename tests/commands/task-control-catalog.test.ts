@@ -5,6 +5,7 @@ import { TaskEngine } from '../../src/task/task-engine.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { seedAgentClasses } from '../support/seed-agent-classes.js';
+import { setTaskStatus, withReason } from '../support/task-state-fixture.js';
 
 function createHarness() {
   const db = new Database(':memory:');
@@ -15,7 +16,7 @@ function createHarness() {
   const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-command-control');
   const abortTask = vi.fn().mockReturnValue(1);
   const cancelTask = vi.fn(async (taskId: string, reason?: string) => {
-    taskEngine.cancel(taskId, reason);
+    setTaskStatus(db, taskId, 'cancelled');
     return { taskId, affectedSubtaskIds: [], cleanupAttemptIds: [] };
   });
   const cancelSubtasks = vi.fn(async (taskId: string, subtaskIds: string[]) => ({
@@ -24,32 +25,35 @@ function createHarness() {
   const acceptPartialResult = vi.fn(async (taskId: string) => ({
     taskId, affectedSubtaskIds: ['cancelled'], cleanupAttemptIds: [],
   }));
+  const blockTask = vi.fn(async (taskId: string, reason: string) => {
+    setTaskStatus(db, taskId, 'needs_action', withReason(reason));
+  });
   const context = {
     db,
     taskEngine,
     activeExecutions: { abortTask },
-    taskControl: { cancelTask, cancelSubtasks, acceptPartialResult },
+    taskControl: { cancelTask, cancelSubtasks, acceptPartialResult, blockTask },
   } as any;
   return {
     db, taskRepo, taskEngine, abortTask, cancelTask, cancelSubtasks,
-    acceptPartialResult, context, catalog: createDefaultCommandCatalog(),
+    acceptPartialResult, blockTask, context, catalog: createDefaultCommandCatalog(),
   };
 }
 
-function createRunningTask(taskEngine: TaskEngine, suffix: string) {
-  const task = taskEngine.create({ title: `任务 ${suffix}`, goal: `执行 ${suffix}` });
-  taskEngine.transition(task.id, 'ready');
-  taskEngine.transition(task.id, 'running');
+function createRunningTask(harness: ReturnType<typeof createHarness>, suffix: string) {
+  const task = harness.taskEngine.create({ title: `任务 ${suffix}`, goal: `执行 ${suffix}` });
+  setTaskStatus(harness.db, task.id, 'queued');
+  setTaskStatus(harness.db, task.id, 'running');
   return task;
 }
 
 describe('canonical task control commands', () => {
   it.each([
-    ['pause', 'parked', ''],
-    ['block', 'blocked', ' 等待材料'],
+    ['pause', 'needs_action', ''],
+    ['block', 'needs_action', ' 等待材料'],
   ] as const)('persists %s before aborting the active task', async (command, expectedStatus, tail) => {
     const harness = createHarness();
-    const task = createRunningTask(harness.taskEngine, command);
+    const task = createRunningTask(harness, command);
 
     const result = await harness.catalog.execute(`/task ${command} ${task.id}${tail}`, harness.context);
 
@@ -60,7 +64,7 @@ describe('canonical task control commands', () => {
 
   it('routes Task cancellation through the durable Task control port', async () => {
     const harness = createHarness();
-    const task = createRunningTask(harness.taskEngine, 'cancel');
+    const task = createRunningTask(harness, 'cancel');
 
     await harness.catalog.execute(`/task cancel ${task.id}`, harness.context);
 
@@ -71,7 +75,7 @@ describe('canonical task control commands', () => {
 
   it('lets a running Task submit an explicit recovery request for uncertain durable work', async () => {
     const harness = createHarness();
-    const task = createRunningTask(harness.taskEngine, 'recover-running');
+    const task = createRunningTask(harness, 'recover-running');
 
     const result = await harness.catalog.execute(`/task resume ${task.id}`, harness.context);
 
@@ -87,7 +91,7 @@ describe('canonical task control commands', () => {
 
   it('accepts the hash-prefixed task id shown by the TUI', async () => {
     const harness = createHarness();
-    const task = createRunningTask(harness.taskEngine, 'recover-hash-prefixed');
+    const task = createRunningTask(harness, 'recover-hash-prefixed');
 
     const result = await harness.catalog.execute(`/task recovery #${task.id}`, harness.context);
 
@@ -102,7 +106,7 @@ describe('canonical task control commands', () => {
 
   it('removes the manual complete command from the command surface', async () => {
     const harness = createHarness();
-    const task = createRunningTask(harness.taskEngine, 'complete');
+    const task = createRunningTask(harness, 'complete');
 
     const result = await harness.catalog.execute(`/task complete ${task.id}`, harness.context);
 
@@ -112,9 +116,11 @@ describe('canonical task control commands', () => {
 
   it('clears matching tasks and aborts only tasks that were running', async () => {
     const harness = createHarness();
-    const running = createRunningTask(harness.taskEngine, 'running');
-    const parked = createRunningTask(harness.taskEngine, 'parked');
-    harness.taskEngine.park(parked.id);
+    const running = createRunningTask(harness, 'running');
+    const parked = createRunningTask(harness, 'parked');
+    setTaskStatus(harness.db, parked.id, 'queued');
+    setTaskStatus(harness.db, parked.id, 'running');
+    setTaskStatus(harness.db, parked.id, 'needs_action', withReason('用户暂停'));
 
     await harness.catalog.execute('/task clear all', harness.context);
 
@@ -128,7 +134,7 @@ describe('canonical task control commands', () => {
 
   it('accepts operation-first Subtask cancellation and partial acceptance commands', async () => {
     const harness = createHarness();
-    const task = createRunningTask(harness.taskEngine, 'subtask-control');
+    const task = createRunningTask(harness, 'subtask-control');
 
     await harness.catalog.execute(
       `/task subtask-cancel ${task.id} subtask-a subtask-b`,
@@ -139,19 +145,14 @@ describe('canonical task control commands', () => {
       ['subtask-a', 'subtask-b'],
     );
 
-    harness.taskEngine.block(task.id, {
-      taskId: task.id,
-      type: 'manual',
-      description: 'partial cancellation',
-      status: 'waiting',
-    });
+    setTaskStatus(harness.db, task.id, 'needs_action', withReason('partial cancellation'));
     await harness.catalog.execute(`/task accept-partial ${task.id}`, harness.context);
     expect(harness.acceptPartialResult).toHaveBeenCalledWith(task.id);
   });
 
   it('does not normalize target-first task control syntax', async () => {
     const harness = createHarness();
-    const task = createRunningTask(harness.taskEngine, 'target-first');
+    const task = createRunningTask(harness, 'target-first');
     const result = await harness.catalog.execute(`/task ${task.id} accept-partial`, harness.context);
     expect(result.content).toContain('未知命令');
   });

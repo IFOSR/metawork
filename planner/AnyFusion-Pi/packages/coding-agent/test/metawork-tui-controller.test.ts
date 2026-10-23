@@ -63,7 +63,7 @@ function createFakeGateway(
 	let disconnectListener: (() => void) | null = null;
 	const submitted: FakeGateway["submitted"] = [];
 	const calls: string[] = [];
-	let capabilities = overrides.capabilities ?? ["command_completion_v1", "task_view_v1"];
+	let capabilities = overrides.capabilities ?? ["command_completion_v1", "task_view_v2"];
 	let loseReceipt = false;
 	const observed = new ObservationFixture();
 	for (const e of [...(overrides.replay?.snapshot ?? []), ...(overrides.replay?.deltas ?? [])]) observed.scenario(e);
@@ -212,14 +212,21 @@ describe("metawork-tui controller", () => {
 			gateway.observed.set("conv_1", { turns: [{ ...turn("conv_1", "turn_1"), taskId: "task_1" }] });
 			gateway.emit(
 				event("connection", 1, "task_view_snapshot", {
-					queryVersion: "task_view_v1",
+					queryVersion: "task_view_v2",
 					requestId: "view",
 					targetConversationId: "conv_1",
 					turnId: "turn_1",
 					taskId: "task_1",
 					asOfSequence: 1,
 					subtasks: [],
-					lifecycle: { pendingDecision: { actions: ["accept_result", "retry_attempt"], expectedResult } },
+					lifecycle: {
+						status: "needs_action",
+						stateVersion: 2,
+						pendingActions: [
+							{ actionId: "accept", kind: "accept_result", label: "接受结果", result: expectedResult },
+							{ actionId: "retry", kind: "retry_attempt", label: "重试", result: expectedResult },
+						],
+					},
 				}),
 			);
 			expect(controller.getView().selectedTurn?.resultDecision?.expectedResult).toEqual(expectedResult);
@@ -467,7 +474,7 @@ describe("metawork-tui controller", () => {
 		gateway.getTaskView = async () => {
 			gateway.emit(
 				event("connection", 1, "task_view_snapshot", {
-					queryVersion: "task_view_v1",
+					queryVersion: "task_view_v2",
 					requestId: "view",
 					targetConversationId: "conv_1",
 					turnId: "turn_1",
@@ -581,7 +588,7 @@ describe("metawork-tui controller", () => {
 			snapshotSequence += 1;
 			gateway.emit(
 				event("connection", snapshotSequence, "task_view_snapshot", {
-					queryVersion: "task_view_v1",
+					queryVersion: "task_view_v2",
 					requestId: `view_${snapshotSequence}`,
 					targetConversationId: "conv_1",
 					turnId: "turn_1",
@@ -639,12 +646,12 @@ describe("metawork-tui controller", () => {
 		const gateway = createFakeGateway({ capabilities: [] });
 		const controller = new MetaWorkTuiController({
 			gateway,
-			requiredCapabilities: ["command_completion_v1", "task_view_v1"],
+			requiredCapabilities: ["command_completion_v1", "task_view_v2"],
 		});
 		await controller.start();
 		const view = controller.getView();
 		expect(view.client.connection).toBe("incompatible");
-		expect(view.capabilitiesMissing).toEqual(["command_completion_v1", "task_view_v1"]);
+		expect(view.capabilitiesMissing).toEqual(["command_completion_v1", "task_view_v2"]);
 	});
 
 	it("matches completion responses by request id and drops stale/superseded ones", async () => {

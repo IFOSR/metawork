@@ -11,8 +11,11 @@ export function TaskResultActions({ ws, conversationId, lifecycle, delivery, ref
 }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  const decision = lifecycle?.pendingDecision;
-  const expectedResult = decision?.expectedResult;
+  // Pending actions come from the committed Task state, never from a second
+  // client-side decision model.
+  const acceptAction = lifecycle?.pendingActions.find(action => action.kind === 'accept_result');
+  const retryAction = lifecycle?.pendingActions.find(action => action.kind === 'retry_attempt');
+  const expectedResult = acceptAction?.result ?? retryAction?.result ?? null;
   const act = async (kind: 'accept_task_result' | 'retry_task_attempt') => {
     if (!expectedResult || busy) return;
     setBusy(true); setMessage('正在提交，请稍候…');
@@ -36,9 +39,9 @@ export function TaskResultActions({ ws, conversationId, lifecycle, delivery, ref
       {delivery.conflicts.length > 0 && <p role="alert">请处理冲突文件后继续：{delivery.conflicts.join('、')}</p>}
     </div>}
     {expectedResult && <div className="task-result-actions-buttons">
-      {decision?.actions.includes('accept_result') && <button type="button" disabled={busy}
+      {acceptAction && <button type="button" disabled={busy}
         onClick={() => void act('accept_task_result')}>接受并交付</button>}
-      {decision?.actions.includes('retry_attempt') && <button type="button" disabled={busy}
+      {retryAction && <button type="button" disabled={busy}
         onClick={() => void act('retry_task_attempt')}>重新执行</button>}
     </div>}
     {message && <p role="status">{message}</p>}

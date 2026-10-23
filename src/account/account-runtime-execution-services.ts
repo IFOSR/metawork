@@ -49,6 +49,8 @@ export function buildAccountRuntimeExecutionServices(deps: {
   getSessionId?: () => string;
   sourceRoot: string;
   taskRuntimeService: TaskRuntimeService;
+  taskStateAuthority: import('../task/task-state-authority.js').TaskStateAuthority;
+  taskLifecyclePort: Pick<import('../task/task-lifecycle-transition-port.js').TaskLifecyclePort, 'applyTaskChange'>;
   subtaskRepo: SubtaskRepo;
   taskEventRepo: TaskEventRepo;
   workGraphRevisionRepo: WorkGraphRevisionRepo;
@@ -82,6 +84,8 @@ export function buildAccountRuntimeExecutionServices(deps: {
   const cancellationCoordinator = new TaskCancellationCoordinator({
     db: deps.db,
     taskRuntimeService: deps.taskRuntimeService,
+    taskStateAuthority: deps.taskStateAuthority,
+    taskLifecyclePort: deps.taskLifecyclePort,
     subtaskRepo: deps.subtaskRepo,
     taskEventRepo: deps.taskEventRepo,
     workGraphRevisionRepo: deps.workGraphRevisionRepo,

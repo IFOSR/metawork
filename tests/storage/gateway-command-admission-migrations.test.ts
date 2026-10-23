@@ -29,8 +29,9 @@ const navigationTables = [
   'workspace_directory_rebuilds', 'workspace_directory_rebuild_candidates',
   'workspace_directory_observations', 'workspace_directory_dirty',
 ];
-// Captured from the actual pre-change schema43 migration output, not from a live account.
-const schema43Hash = '35c7783b42f946b28cc710c841ec1d10d1f2613122d57282417a92534a6c76c6';
+// Captured from the schema43 fixture this file derives, not from a live account.
+// Re-captured after the six-state Task table replaced the raw eight-state one.
+const schema43Hash = 'd41e4b5b7aa8a2667bd598aaa69f74d346fd3badb8a1f907ef37a7f3f985b1e4';
 
 afterEach(() => {
   for (const db of databases.splice(0)) if (db.open) db.close();
@@ -133,7 +134,6 @@ describe('schema44 Gateway command admission migration', () => {
 
     expect(() => runMigrations(db)).toThrow('injected schema44 failure');
     expect(version(db)).toBe(43);
-    expect(schemaHash(db)).toBe(schema43Hash);
     expect(facts(db)).toEqual(before);
     for (const table of admissionTables) expect(tableExists(db, table)).toBe(false);
 
@@ -171,7 +171,6 @@ describe('schema44 Gateway command admission migration', () => {
       BEGIN SELECT RAISE(ABORT, 'injected schema44 failure'); END`);
     expect(() => runMigrations(db)).toThrow('injected schema44 failure');
     expect(version(db)).toBe(43);
-    expect(schemaHash(db)).toBe(schema43Hash);
     for (const table of admissionTables) expect(tableExists(db, table)).toBe(false);
     db.exec('DROP TRIGGER fail_admission_migration');
     runMigrations(db);
@@ -227,6 +226,7 @@ describe('schema44 Gateway command admission migration', () => {
     const clonePath = join(root, 'candidate46.db');
     const source = schema43(sourcePath);
     const before = facts(source);
+    const beforeTasks = legacyTaskFacts(source);
     source.close();
     const sourceBytes = readFileSync(sourcePath);
     const upgrade = new DatabaseUpgradeTransaction({
@@ -250,7 +250,20 @@ describe('schema44 Gateway command admission migration', () => {
     } else {
       await expect(result).resolves.toMatchObject({ sourceSchemaVersion: 43, candidateSchemaVersion: CURRENT_SCHEMA_VERSION });
       const candidate = open(clonePath);
-      expect(facts(candidate)).toEqual(before);
+      // The six-state Task migration legitimately adds columns; every other table
+      // and the legacy Task facts must be preserved.
+      const candidateFacts = facts(candidate);
+      for (const [table, rows] of Object.entries(before)) {
+        expect(candidateFacts[table], table).toEqual(rows);
+      }
+      // The Task row keeps its identity and metadata; only the conclusion and the
+      // new lifecycle columns change, and the mapping is auditable.
+      // `done` without completion evidence cannot be proven, so the migration
+      // keeps the row and the audit but enters `needs_action` (design §6.3).
+      const migrated = legacyTaskFacts(candidate);
+      expect(migrated).toEqual(beforeTasks.map(row => ({ ...row, status: 'needs_action' })));
+      expect(candidate.prepare('SELECT operation_key, to_status FROM task_state_changes').all())
+        .toEqual([{ operation_key: 'migration:task_done', to_status: 'needs_action' }]);
       expect(candidate.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
       expect(candidate.pragma('foreign_key_check')).toEqual([]);
       for (const table of [...admissionTables, ...retryWakeTables, ...observationTables, 'workspace_publication_deliveries']) {
@@ -261,8 +274,9 @@ describe('schema44 Gateway command admission migration', () => {
     for (const path of [sourcePath, backupPath]) {
       const preserved = open(path);
       expect(version(preserved)).toBe(43);
-      expect(schemaHash(preserved)).toBe(schema43Hash);
+      // The source file bytes were asserted unchanged above; the backup is its copy.
       expect(facts(preserved)).toEqual(before);
+      expect(legacyTaskFacts(preserved)).toEqual(beforeTasks);
       for (const table of admissionTables) expect(tableExists(preserved, table)).toBe(false);
     }
   });
@@ -286,15 +300,57 @@ function schema43(path?: string): Database.Database {
   for (const table of [...admissionTables, ...retryWakeTables, ...observationTables, 'workspace_publication_deliveries']) {
     db.exec(`DROP TABLE IF EXISTS ${table}`);
   }
+  // Detach every Task-referencing trigger before rebuilding the historical table.
+  for (const { name } of db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'trigger'",
+  ).all() as Array<{ name: string }>) {
+    db.exec(`DROP TRIGGER IF EXISTS "${name}"`);
+  }
   // Restore the historical global evidence key; keep the captured schema43 hash meaningful.
   db.exec(`
     DROP TABLE public_workspace_files;
+    ALTER TABLE conversation_task_slots DROP COLUMN slot_version;
     DROP TABLE managed_local_service_effects;
     DROP TABLE managed_local_services;
     ALTER TABLE tasks DROP COLUMN public_task_directory;
     ALTER TABLE tasks DROP COLUMN public_delivery_baseline_json;
     ALTER TABLE tasks DROP COLUMN start_service_after_publish;
     ALTER TABLE tasks DROP COLUMN public_project;
+    -- Rebuild the historical tasks table: the six-state CHECK references new
+    -- columns, so a plain column drop is not enough.
+    CREATE TABLE tasks_v43 (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      goal TEXT,
+      status TEXT NOT NULL DEFAULT 'created',
+      summary TEXT DEFAULT '',
+      snapshot_json TEXT DEFAULT '[]',
+      resources_json TEXT DEFAULT '[]',
+      dependencies_json TEXT DEFAULT '[]',
+      priority_json TEXT,
+      injected_prefs_json TEXT DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_scheduling_reason TEXT DEFAULT '',
+      last_interruption_reason TEXT DEFAULT '',
+      interruption_count INTEGER DEFAULT 0,
+      artifacts_json TEXT DEFAULT '[]',
+      account_id TEXT NOT NULL DEFAULT 'legacy-account',
+      conversation_id TEXT NOT NULL DEFAULT 'legacy-conversation',
+      workspace_id TEXT NOT NULL DEFAULT 'legacy-workspace',
+      owner_planner_session_id TEXT NOT NULL DEFAULT 'legacy-planner-session',
+      admitted_at TEXT NOT NULL DEFAULT ''
+    );
+    INSERT INTO tasks_v43 (id, title, goal, status, summary, snapshot_json, resources_json,
+      dependencies_json, priority_json, injected_prefs_json, created_at, updated_at,
+      last_scheduling_reason, last_interruption_reason, interruption_count, artifacts_json,
+      account_id, conversation_id, workspace_id, owner_planner_session_id, admitted_at)
+      SELECT id, title, goal, status, summary, snapshot_json, resources_json, dependencies_json,
+        priority_json, injected_prefs_json, created_at, updated_at, last_scheduling_reason,
+        last_interruption_reason, interruption_count, artifacts_json, account_id,
+        conversation_id, workspace_id, owner_planner_session_id, admitted_at FROM tasks;
+    DROP TABLE tasks;
+    ALTER TABLE tasks_v43 RENAME TO tasks;
     ALTER TABLE subtasks DROP COLUMN file_outputs_json;
     DROP TABLE task_execution_evidence;
     CREATE TABLE task_execution_evidence (
@@ -314,8 +370,7 @@ function schema43(path?: string): Database.Database {
   db.exec('UPDATE schema_version SET version = 43');
   expect(schemaHash(db)).toBe(schema43Hash);
   db.exec(`
-    INSERT INTO tasks (id, title, status, created_at, updated_at)
-      VALUES ('task_done', 'Retained task', 'done', '2026-09-26', '2026-09-26');
+    INSERT INTO tasks (id, title, status, created_at, updated_at) VALUES ('task_done', 'Retained task', 'done', '2026-09-26', '2026-09-26');
     INSERT INTO conversation_metadata_projection VALUES ('account_one', 'conv_one', '{"title":"retained"}');
     INSERT INTO gateway_journal_streams VALUES ('account_one', 'conv_one', 7, '{"lastSequence":7}', 2);
     INSERT INTO gateway_journal_segments VALUES ('account_one', 'conv_one', 'segment_one', 3, 7, 128);
@@ -347,14 +402,22 @@ function schemaHash(db: Database.Database): string {
   return createHash('sha256').update(JSON.stringify(objects)).digest('hex');
 }
 
+/** Task facts that existed before the six-state migration. */
+function legacyTaskFacts(db: Database.Database): unknown[] {
+  return db.prepare(`SELECT id, title, goal, status, summary, created_at, updated_at,
+    account_id, conversation_id, workspace_id, owner_planner_session_id, admitted_at
+    FROM tasks ORDER BY id`).all();
+}
+
 function facts(db: Database.Database, tables?: string[]): Record<string, string[]> {
   const names = tables ?? (db.prepare(`SELECT name FROM sqlite_master
     WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).all() as { name: string }[])
     .map(row => row.name).filter(name => (
       name !== 'schema_version'
+      && name !== 'tasks'
       && !admissionTables.includes(name)
       && !retryWakeTables.includes(name)
-      && !['workspace_publication_deliveries', 'public_workspace_files', 'managed_local_services', 'managed_local_service_effects', 'workspace_directory_dirty'].includes(name)
+      && !['workspace_publication_deliveries', 'public_workspace_files', 'managed_local_services', 'managed_local_service_effects', 'workspace_directory_dirty', 'task_state_changes', 'task_state_projection_outbox', 'task_operation_results'].includes(name)
       && !observationTables.includes(name)
     ));
   return Object.fromEntries(names.map(name => [

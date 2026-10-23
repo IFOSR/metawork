@@ -204,9 +204,8 @@ export class ConversationSession {
   private runtimeState: RuntimeState = {
     runningTaskId: null,
     runningExecutorName: null,
-    readyTaskIds: [],
-    blockedTaskIds: [],
-    parkedTaskIds: [],
+    queuedTaskIds: [],
+    needsActionTaskIds: [],
     lastEvent: null,
   };
   private focusContext: { kind: 'conversation' | 'task'; taskId: string | null } | null = null;
@@ -1247,7 +1246,7 @@ export class ConversationSession {
     const task = this.deps.runtimePort.queries.findTask(this.currentTaskId);
     return task?.status === 'running'
       || Boolean(
-        task?.status === 'blocked'
+        task?.status === 'needs_action'
         && task.dependencies.some(dependency =>
           dependency.type === 'kernel_retry' && dependency.status === 'waiting'
         ),
@@ -1306,9 +1305,8 @@ export class ConversationSession {
     this.runtimeState = {
       runningTaskId: runningTask?.id ?? null,
       runningExecutorName: null,
-      readyTaskIds: tasks.filter(task => task.status === 'ready').map(task => task.id),
-      blockedTaskIds: tasks.filter(task => task.status === 'blocked').map(task => task.id),
-      parkedTaskIds: tasks.filter(task => task.status === 'parked').map(task => task.id),
+      queuedTaskIds: tasks.filter(task => task.status === 'queued').map(task => task.id),
+      needsActionTaskIds: tasks.filter(task => task.status === 'needs_action').map(task => task.id),
       lastEvent: this.runtimeState.lastEvent,
     };
     this.notify();
@@ -1334,9 +1332,8 @@ export class ConversationSession {
         : null,
       runtimeState: {
         ...this.runtimeState,
-        readyTaskIds: [...this.runtimeState.readyTaskIds],
-        blockedTaskIds: [...this.runtimeState.blockedTaskIds],
-        parkedTaskIds: [...this.runtimeState.parkedTaskIds],
+        queuedTaskIds: [...this.runtimeState.queuedTaskIds],
+        needsActionTaskIds: [...this.runtimeState.needsActionTaskIds],
       },
       plannerState: {
         status: this.activePlannerRuns > 0 ? 'running' : 'idle',
@@ -2653,7 +2650,7 @@ export class ConversationSession {
   }
 
   async maybeReviewTaskPoolOnTimer(nowMs = Date.now()): Promise<boolean> {
-    for (const task of this.deps.runtimePort.queries.listTasksByStatus('blocked')) {
+    for (const task of this.deps.runtimePort.queries.listTasksByStatus('needs_action')) {
       if (await this.kernelExecutionRuntime?.recoverDue(task.id, 'timer durable recovery drain')) return true;
     }
     if (await this.maybeReconcileBlockedTasksOnTimer(nowMs)) {
@@ -2698,13 +2695,13 @@ export class ConversationSession {
   private maybeEmitTaskPoolWatchdogReminder(nowMs: number): boolean {
     if (!this.deps.config?.orchestration.reminder_enabled) return false;
     const tasks = this.deps.runtimePort.queries.listTasks();
-    const blockedTasks = tasks.filter(task => task.status === 'blocked');
-    const parkedTasks = tasks.filter(task => task.status === 'parked');
-    if (blockedTasks.length === 0 && parkedTasks.length === 0) return false;
-    const fingerprint = [
-      ...blockedTasks.map(task => `b:${task.id}:${this.getWaitingBlockReason(task)}`),
-      ...parkedTasks.map(task => `p:${task.id}:${task.lastInterruptionReason}:${task.snapshots.at(-1)?.nextStep ?? ''}`),
-    ].join('|');
+    const needsActionTasks = tasks.filter(task => task.status === 'needs_action');
+    if (needsActionTasks.length === 0) return false;
+    // One state, one reminder fingerprint: the waiting reason and the last
+    // progress hint are the durable facts a user needs to act on.
+    const fingerprint = needsActionTasks.map(task =>
+      `n:${task.id}:${this.getWaitingBlockReason(task)}:${task.stateDetail.reason.code}`
+    ).join('|');
     const throttleMs = (this.deps.config?.orchestration.reminder_throttle ?? 0) * 1000;
     if (
       this.lastTaskPoolWatchdogFingerprint === fingerprint
@@ -2716,8 +2713,7 @@ export class ConversationSession {
     this.lastTaskPoolWatchdogFingerprint = fingerprint;
     this.lastTaskPoolWatchdogReminderAt = nowMs;
     this.appendOutput(...this.deps.presentation!.formatTaskPoolWatchdogReminder({
-      blockedTasks,
-      parkedTasks,
+      needsActionTasks,
       getWaitingBlockReason: task => this.getWaitingBlockReason(task),
     }));
     return true;

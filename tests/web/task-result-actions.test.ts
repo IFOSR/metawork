@@ -12,11 +12,34 @@ const { renderToStaticMarkup } = requireFromWeb('react-dom/server') as {
 
 describe('Task result action presentation', () => {
   function render(actions: string[], delivery?: GatewayTaskViewSnapshot['publicDelivery']) {
+    const result = { taskId: 'task', generationId: 'generation', graphRevision: 2,
+      subtaskId: 'subtask', attemptId: 'attempt', resultId: 'result' };
     return renderToStaticMarkup(createElement(TaskResultActions, {
       ws: {} as WsClient, conversationId: 'conversation', refresh() {}, delivery,
-      lifecycle: { pendingDecision: { owner: 'user', reason: 'uncertified_result', resultId: 'result',
-        attemptId: 'attempt', actions, expectedResult: { taskId: 'task', generationId: 'generation',
-          graphRevision: 2, subtaskId: 'subtask', attemptId: 'attempt', resultId: 'result' } } } as GatewayTaskViewSnapshot['lifecycle'],
+      lifecycle: {
+        status: 'needs_action',
+        statusLabel: '待处理',
+        stateVersion: 2,
+        phase: null,
+        reason: { code: 'result_acceptance_required', message: '', evidenceRefs: [] },
+        cleanup: { state: 'none', objects: [], reason: '' },
+        // Pending actions are the only authorization for a control.
+        pendingActions: actions.map(kind => ({
+          actionId: `action:${kind}`,
+          kind,
+          label: kind,
+          reason: { code: 'result_acceptance_required', message: '', evidenceRefs: [] },
+          result,
+        })),
+        activeAttempt: null,
+        blockingResidue: [],
+        nextAuthorizedAction: 'accept_result',
+        recoveryDiagnosis: null,
+        explanation: '',
+        lastProgressAt: null,
+        lastAttemptSettledAt: null,
+        nextWakeAt: null,
+      } as GatewayTaskViewSnapshot['lifecycle'],
     }));
   }
 

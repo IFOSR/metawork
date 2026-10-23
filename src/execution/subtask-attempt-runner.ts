@@ -1,5 +1,6 @@
 import { resolveSafeResult, type PendingResultIdentity } from '../task/safe-result-identity.js';
 import { readPendingTaskResult } from '../storage/pending-task-result.js';
+import { TaskOperationKeys, TaskStateChangeRepo } from '../storage/task-state-change-repo.js';
 import { ExecutorProbeError } from './work-unit-claim-service.js';
 import { basename, extname, join, resolve } from 'node:path';
 import { chmod, copyFile, lstat, mkdir } from 'node:fs/promises';
@@ -187,7 +188,10 @@ export class SubtaskAttemptRunner {
   private readonly resultObjectRepo: ResultObjectRepo;
   private readonly lifecycle: SubtaskLifecyclePort;
 
+  private readonly stateChanges: TaskStateChangeRepo;
+
   constructor(private readonly deps: SubtaskAttemptRunnerDeps) {
+    this.stateChanges = new TaskStateChangeRepo(deps.db);
     this.lifecycle = createSubtaskLifecyclePort({ subtaskRepo: deps.subtaskRepo });
     this.contextBuilder = new SubtaskExecutionContextBuilder(deps.db, {
       accountId: deps.accountId,
@@ -239,11 +243,24 @@ export class SubtaskAttemptRunner {
   async stageAcceptedResult(expected: PendingResultIdentity): Promise<void> {
     const publicationId = `publication_accepted_${expected.attemptId}`;
 
+    const readSlot = () => this.deps.db.prepare(`SELECT slot.reservation_id, slot.slot_version
+      FROM conversation_task_slots slot JOIN tasks t ON t.conversation_id = slot.conversation_id
+      WHERE t.id = ? AND slot.active_task_id = t.id AND slot.state = 'occupied'`)
+      .get(expected.taskId) as { reservation_id: string; slot_version: number } | undefined;
+    const reservation = readSlot();
     const assertCurrent = () => {
-      const pending = readPendingTaskResult(this.deps.db, expected.taskId);
-      const keys: Array<keyof PendingResultIdentity> = ['taskId', 'generationId', 'graphRevision', 'subtaskId', 'attemptId', 'resultId'];
-      if (!pending || keys.some(key => pending[key] !== expected[key])) {
-        throw new Error('该结果操作已过期，请刷新任务后重试。');
+      const slot = readSlot();
+      const active = this.deps.db.prepare(`SELECT 1 FROM work_graph_revisions g
+        JOIN tasks t ON t.id = g.task_id JOIN subtasks s ON s.task_id = t.id
+        WHERE t.id = ? AND g.status = 'active' AND g.generation_id = ? AND g.revision = ?
+          AND s.id = ? AND s.generation_id = g.generation_id AND s.graph_revision = g.revision
+          AND s.status NOT IN ('cancelled', 'blocked') AND t.status IN ('queued', 'running', 'needs_action')`)
+        .get(expected.taskId, expected.generationId, expected.graphRevision, expected.subtaskId);
+      const accepted = this.stateChanges.findByOperationKey(expected.taskId,
+        TaskOperationKeys.acceptResult(expected.attemptId, expected.resultId));
+      if (!accepted || !active || !reservation || !slot
+        || slot.reservation_id !== reservation.reservation_id || slot.slot_version !== reservation.slot_version) {
+        throw new Error('结果发布授权已过期，等待当前任务名额并重新核实。');
       }
     };
     const existing = this.publicationRepo.find(publicationId);
@@ -286,8 +303,10 @@ export class SubtaskAttemptRunner {
       || completion.assessment.certification.violations.some(item => item.code !== 'completion_acceptance_mismatch')) {
       throw new Error('文件、安全或下游交付检查失败，结果尚不能发布');
     }
+    assertCurrent();
     const managed = await this.managedGitWorkspace.ensure({ taskId: expected.taskId,
       generationId: expected.generationId, subtaskId: expected.subtaskId }, this.deps.sourceRoot);
+    assertCurrent();
     const candidate = await this.managedGitWorkspace.commit(managed, `fix: publish accepted ${subtask.id} result`);
     const dispatch = this.dispatchItemRepo.find(expected.attemptId)!;
     this.deps.db.transaction(() => {
@@ -392,7 +411,7 @@ export class SubtaskAttemptRunner {
     const expectedStatus = attemptKind === 'primary' ? 'ready' : 'awaiting_decision';
     if (
       !task
-      || !['running', 'blocked'].includes(task.status)
+      || !['running', 'needs_action', 'queued'].includes(task.status)
       || !subtask
       || subtask.taskId !== input.taskId
       || subtask.status !== expectedStatus
@@ -1746,7 +1765,7 @@ export class SubtaskAttemptRunner {
     // previous `running`-only check caused exactly that race: one branch
     // blocked the Task while another branch was still completing, so the
     // terminal fence rejected the valid result and left the Subtask stuck.
-    return (task?.status === 'running' || task?.status === 'blocked')
+    return (task?.status === 'running' || task?.status === 'needs_action' || task?.status === 'queued')
       && subtask?.status === 'running'
       && this.deps.workUnitClaimService.isClaimCurrent(workUnitId, attemptId, 'running');
   }

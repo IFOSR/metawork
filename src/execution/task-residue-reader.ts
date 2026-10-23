@@ -33,6 +33,8 @@ export const TASK_RESIDUE_CATEGORIES = [
   'retry_wake',
   'kernel_application',
   'attempt_receipt',
+  'service_operation',
+  'continuation',
 ] as const;
 
 export type TaskResidueCategory = (typeof TASK_RESIDUE_CATEGORIES)[number];
@@ -95,8 +97,19 @@ export class TaskResidueReader {
       SELECT 1
       FROM kernel_decision_applications AS application
       INNER JOIN kernel_events AS event ON event.id = application.event_id
+      LEFT JOIN tasks AS task ON task.id = event.task_id
       WHERE event.task_id = ?
         AND application.status IN ('pending', 'applying', 'uncertain')
+        -- Schema-51 migration quarantines unapplied legacy decisions so they
+        -- cannot be replayed under the six-state contract. If the legacy Task
+        -- was already cancelled, that quarantine is historical audit only: it
+        -- has no live side effect and must not keep the Conversation slot
+        -- occupied forever. Any real dispatch/lease/backend residue is still
+        -- checked by the categories above and remains a release fence.
+        AND NOT (
+          task.status = 'cancelled'
+          AND application.error_summary = 'task_state_upgrade_requires_reauthorization'
+        )
         ${decisionFilter}
       LIMIT 1
     `).get(...applicationParameters)) reasons.push('kernel_application');
@@ -111,6 +124,16 @@ export class TaskResidueReader {
         AND receipt.attempt_id IS NULL
       LIMIT 1
     `).get(...parameters)) reasons.push('attempt_receipt');
+    if (this.deps.db.prepare(`SELECT 1 FROM managed_local_service_effects e
+      JOIN kernel_decisions d ON d.id = e.decision_id
+      WHERE d.task_id = ? AND json_extract(e.effect_json, '$.phase') <> 'completed' LIMIT 1`).get(taskId)
+      || this.deps.db.prepare(`SELECT 1 FROM managed_local_services
+        WHERE task_id = ? AND state IN ('starting', 'unhealthy', 'failed') AND process_id IS NOT NULL LIMIT 1`).get(taskId)) {
+      reasons.push('service_operation');
+    }
+    if (this.deps.db.prepare(`SELECT 1 FROM kernel_effect_outbox
+      WHERE task_id = ? AND effect_type IN ('task_result_continuation', 'task_remaining_work')
+        AND status = 'sending' LIMIT 1`).get(taskId)) reasons.push('continuation');
     return reasons;
   }
 

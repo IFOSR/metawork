@@ -573,7 +573,9 @@ export class ConversationGatewayRuntime {
         );
       }
       // A query/control reply is complete even while another Task continues.
-      const backgroundWorkPending = !isControlCommand(mailboxCommand) && conversation.hasBackgroundWork();
+      const backgroundWorkPending = conversation.hasBackgroundWork()
+        && (!isControlCommand(mailboxCommand) || (mailboxCommand.command.kind === 'slash_command'
+          && /^\/task\s+(?:resume|unblock|retry|retry-result|accept-result|recover)(?:\s|$)/u.test(mailboxCommand.command.text.trim())));
       const result = await this.publishResultDelivery(
         conversation.conversationId,
         mailboxCommand.requestId,

@@ -10,6 +10,7 @@ function seed(options: {
   readonly dispatchStatus?: 'pending_launch' | 'launching' | 'cancelling' | 'uncertain';
   readonly withWorkUnit?: boolean;
   readonly withLiveLease?: boolean;
+  readonly withCancelledMigrationApplication?: boolean;
 } = {}): Database.Database {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
@@ -80,6 +81,29 @@ function seed(options: {
       )
     `).run(NOW, NOW, NOW);
   }
+  if (options.withCancelledMigrationApplication) {
+    db.prepare(`INSERT INTO kernel_events (
+      id, schema_version, event_type, correlation_id, session_id, task_id,
+      event_json, available_at, status, configuration_revision, created_at, updated_at
+    ) VALUES ('legacy-event-a', 5, 'plan_proposed', 'legacy-a', 'planner', 'task-a',
+      '{}', ?, 'failed', 'revision-1', ?, ?)`)
+      .run(NOW, NOW, NOW);
+    db.prepare(`INSERT INTO kernel_decisions (
+      id, schema_version, event_id, event_type, correlation_id, session_id, task_id,
+      event_json, snapshot_json, decision_json, action, reason, configuration_revision, created_at
+    ) VALUES ('legacy-decision-a', 5, 'legacy-event-a', 'plan_proposed', 'legacy-a', 'planner', 'task-a',
+      '{}', '{}', '{"action":{"type":"authorize_task_control"}}',
+      'authorize_task_control', 'legacy migration', 'revision-1', ?)`)
+      .run(NOW);
+    db.prepare(`INSERT INTO kernel_decision_applications (
+      id, decision_id, event_id, idempotency_key, status, apply_attempts,
+      error_summary, created_at, updated_at
+    ) VALUES ('legacy-application-a', 'legacy-decision-a', 'legacy-event-a',
+      'legacy-application-a', 'uncertain', 1,
+      'task_state_upgrade_requires_reauthorization', ?, ?)`)
+      .run(NOW, NOW);
+    db.prepare(`UPDATE conversation_task_slots SET state = 'releasing' WHERE conversation_id = 'conv-a'`).run();
+  }
   return db;
 }
 
@@ -140,13 +164,30 @@ describe('task slot cleanup fence', () => {
     withLease.close();
   });
 
+  it('releases a cancelled Task held only by a quarantined legacy application', async () => {
+    const db = seed({ withCancelledMigrationApplication: true });
+    const report = await runTaskStateReconciler({ db, now: () => NOW });
+    expect(report.releasedSlots).toBe(1);
+    expect(report.retainedSlots).toBe(0);
+    expect(db.prepare(`
+      SELECT active_task_id, state FROM conversation_task_slots WHERE conversation_id = 'conv-a'
+    `).get()).toEqual({ active_task_id: null, state: 'free' });
+    // The historical application remains inspectable; it is simply no longer
+    // treated as a live physical side effect after explicit cancellation.
+    expect(db.prepare(`SELECT status, error_summary FROM kernel_decision_applications
+      WHERE id = 'legacy-application-a'`).get()).toEqual({
+      status: 'uncertain', error_summary: 'task_state_upgrade_requires_reauthorization',
+    });
+    db.close();
+  });
+
   it('releases stale capacity without reserving a successor it cannot launch', async () => {
     const db = seed({ dispatchStatus: 'pending_launch' });
     db.prepare(`
       INSERT INTO tasks (
         id, title, goal, status, created_at, updated_at,
         account_id, conversation_id, workspace_id, owner_planner_session_id, admitted_at
-      ) VALUES ('task-b', 'task-b', 'task-b', 'created', ?, ?, 'account', 'conv-a', 'workspace', 'planner', ?)
+      ) VALUES ('task-b', 'task-b', 'task-b', 'queued', ?, ?, 'account', 'conv-a', 'workspace', 'planner', ?)
     `).run(NOW, NOW, NOW);
     db.prepare(`
       INSERT INTO task_schedule_entries (task_id, conversation_id, state, enqueued_at, eligible_since, scheduling_reason, payload_json)
@@ -175,7 +216,7 @@ describe('task slot cleanup fence', () => {
       INSERT INTO tasks (
         id, title, goal, status, created_at, updated_at,
         account_id, conversation_id, workspace_id, owner_planner_session_id, admitted_at
-      ) VALUES ('task-b', 'task-b', 'task-b', 'created', ?, ?, 'account', 'conv-b', 'workspace', 'planner', ?)
+      ) VALUES ('task-b', 'task-b', 'task-b', 'queued', ?, ?, 'account', 'conv-b', 'workspace', 'planner', ?)
     `).run(NOW, NOW, NOW);
     db.prepare(`
       INSERT INTO conversation_task_slots (
@@ -195,7 +236,7 @@ describe('task slot cleanup fence', () => {
     expect(promotions).toEqual([{
       taskId: 'task-b',
       conversationId: 'conv-b',
-      reservationId: 'reservation_conv-b_task-b',
+      reservationId: expect.stringMatching(/^reservation_/),
     }]);
     expect(db.prepare(`
       SELECT active_task_id, state

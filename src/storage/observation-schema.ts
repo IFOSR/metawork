@@ -154,7 +154,7 @@ export function installObservationSchema(db: Database.Database): void {
     ['kernel_decisions', 'task_id, id'],
   ]) if (tables.has(table!)) db.exec(`CREATE INDEX IF NOT EXISTS observation_witness_${table} ON ${table}(${columns})`);
   db.exec(`CREATE INDEX IF NOT EXISTS conversation_activity_tasks ON tasks(account_id, conversation_id, id)
-    WHERE status IN ('created', 'ready', 'running', 'parked', 'blocked')`);
+    WHERE status IN ('queued', 'running', 'needs_action')`);
   for (const table of ['tasks', 'subtasks', 'kernel_dispatch_items', 'executor_attempt_receipts', 'executor_attempt_runtime',
     'work_graph_revisions', 'resource_leases', 'resource_waits', 'conversation_task_slots', 'task_schedule_entries',
     'generation_replan_requests', 'workspace_publications', 'retry_wakes', 'permission_requests', 'kernel_events', 'kernel_decision_applications']) {
@@ -178,5 +178,5 @@ export function installObservationSchema(db: Database.Database): void {
       ON CONFLICT(task_id) DO UPDATE SET version = version + 1;
     END`);
   db.exec(`INSERT OR IGNORE INTO conversation_activity_dirty(task_id)
-    SELECT id FROM tasks WHERE status IN ('created', 'ready', 'running', 'parked', 'blocked')`);
+    SELECT id FROM tasks WHERE status IN ('queued', 'running', 'needs_action')`);
 }

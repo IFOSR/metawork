@@ -65,7 +65,7 @@ function makeIdleRuntimeDeps(tasks: Task[] = []) {
 
 describe('AccountRuntime', () => {
   it('uses Conversation-scoped tasks and lightweight retry identities for incremental activity', () => {
-    const tasks = [makeTask('task_a', 'blocked', 'conv_a')];
+    const tasks = [makeTask('task_a', 'needs_action', 'conv_a')];
     const listTasks = vi.fn(() => { throw new Error('unrelated task scan'); });
     const listTasksByConversation = vi.fn(() => tasks);
     const listCurrentTaskIdsByAction = vi.fn(() => []);
@@ -94,16 +94,17 @@ describe('AccountRuntime', () => {
       } as never,
     });
 
+    // The committed six-state conclusion is what the activity card aggregates.
     expect(runtime.getConversationActivity('conv_a', tasks[0]!.updatedAt)).toMatchObject({
-      state: 'waiting',
+      state: 'executing',
       taskId: 'task_a',
     });
   });
 
   it('builds activity facts once for a directory batch without per-task reloads', () => {
     const tasks = [
-      makeTask('task_a', 'blocked', 'conv_a'),
-      makeTask('task_b', 'done', 'conv_b'),
+      makeTask('task_a', 'needs_action', 'conv_a'),
+      makeTask('task_b', 'succeeded', 'conv_b'),
     ];
     const listTasks = vi.fn(() => tasks);
     const findTask = vi.fn(() => { throw new Error('redundant Task read'); });
@@ -349,11 +350,11 @@ describe('AccountRuntime', () => {
 
   it('reports continuable unfinished tasks as activation-blocking facts', async () => {
     const tasks = [
-      makeTask('task-created', 'created'),
-      makeTask('task-ready', 'ready'),
-      makeTask('task-parked', 'parked', 'conv-2'),
-      makeTask('task-blocked', 'blocked'),
-      makeTask('task-done', 'done'),
+      makeTask('task-queued-a', 'queued'),
+      makeTask('task-queued-b', 'queued'),
+      makeTask('task-needs-action', 'needs_action', 'conv-2'),
+      makeTask('task-needs-action-2', 'needs_action'),
+      makeTask('task-done', 'succeeded'),
       makeTask('task-cancelled', 'cancelled'),
     ];
     const runtime = new AccountRuntime(makeIdleRuntimeDeps(tasks));
@@ -362,22 +363,47 @@ describe('AccountRuntime', () => {
     const facts = runtime.getConfigurationActivationFacts();
     expect(facts.unfinishedWork.count).toBe(4);
     expect(facts.unfinishedWork.items.map(item => item.taskId).sort()).toEqual([
-      'task-blocked',
-      'task-created',
-      'task-parked',
-      'task-ready',
+      'task-needs-action',
+      'task-needs-action-2',
+      'task-queued-a',
+      'task-queued-b',
     ]);
     const status = runtime.getConfigurationActivationStatus();
     expect(status.activationAllowed).toBe(false);
     expect(status.blockingReasons.map(reason => reason.code)).toContain('unfinished_task');
 
     const idleRuntime = new AccountRuntime(makeIdleRuntimeDeps([
-      makeTask('task-done', 'done'),
+      makeTask('task-done', 'succeeded'),
       makeTask('task-archived', 'archived'),
       makeTask('task-cancelled', 'cancelled'),
     ]));
     await idleRuntime.initialize();
     expect(idleRuntime.getConfigurationActivationStatus().activationAllowed).toBe(true);
+  });
+
+  it('does not label a terminal task held for cleanup as background execution', async () => {
+    const tasks = [makeTask('task-cancelled', 'cancelled')];
+    const runtime = new AccountRuntime({
+      ...makeIdleRuntimeDeps(tasks),
+      repositories: {
+        conversationTaskSchedulerRepo: {
+          listSlots: () => [{
+            conversationId: 'conv-1', activeTaskId: 'task-cancelled', state: 'releasing',
+            reservationId: 'reservation-1', fairnessSequence: 1, slotVersion: 1,
+            lastServedAt: null, updatedAt: '2026-10-23T00:00:00.000Z',
+          }],
+        },
+        workGraphRevisionRepo: { findActive: () => null },
+      },
+    });
+
+    await runtime.initialize();
+    const facts = runtime.getConfigurationActivationFacts();
+    expect(facts.activeTaskId).toBeNull();
+    expect(facts.recoveryInProgress).toBe(true);
+    expect(runtime.getConfigurationActivationStatus().blockingReasons).toEqual([
+      { code: 'recovery_in_progress', message: '运行时恢复尚未完成。' },
+    ]);
   });
 
   it('skips periodic recovery side effects while a configuration transaction is active', async () => {

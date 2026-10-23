@@ -18,10 +18,10 @@ function projector(facts: Partial<ConversationActivityFacts> = {}) {
 }
 
 describe('ConversationActivityProjector', () => {
-  it.each(['created', 'ready'] as const)('projects %s work without dependency blockers as queued', status => {
+  it('projects queued work without dependency blockers as queued', () => {
     expect(projector({
       tasks: [{
-        id: 'queued_task', originConversationId: 'conv_alpha', status,
+        id: 'queued_task', originConversationId: 'conv_alpha', status: 'queued',
         dependencies: [], updatedAt: NOW,
       }],
     }).project('conv_alpha', NOW)).toEqual({
@@ -87,7 +87,7 @@ describe('ConversationActivityProjector', () => {
         {
           id: 'task_old',
           originConversationId: 'conv_alpha',
-          status: 'done',
+          status: 'succeeded',
           dependencies: [],
           createdAt: '2026-09-29T10:00:00.000Z',
           updatedAt: '2026-09-30T12:00:00.000Z',
@@ -107,19 +107,19 @@ describe('ConversationActivityProjector', () => {
     expect(activity.latestTaskCreatedAt).toBe('2026-09-30T11:00:00.000Z');
   });
 
-  it('projects Kernel retry or capacity waits as waiting', () => {
+  it('projects a needs_action Task as blocked', () => {
     const activity = projector({
       tasks: [{
         id: 'task_wait',
         originConversationId: 'conv_alpha',
-        status: 'parked',
+        status: 'needs_action',
         dependencies: [{ type: 'kernel_retry', status: 'waiting' }],
         updatedAt: NOW,
       }],
     }).project('conv_alpha', '2026-08-27T07:00:00.000Z');
 
     expect(activity).toEqual({
-      state: 'waiting', taskId: 'task_wait', updatedAt: NOW,
+      state: 'blocked', taskId: 'task_wait', updatedAt: NOW,
       latestTaskCreatedAt: '2026-08-27T07:00:00.000Z',
     });
   });
@@ -138,7 +138,7 @@ describe('ConversationActivityProjector', () => {
         {
           id: 'task_blocked',
           originConversationId: 'conv_alpha',
-          status: 'blocked',
+          status: 'needs_action',
           dependencies: [],
           updatedAt: '2026-08-27T08:02:00.000Z',
         },
@@ -158,7 +158,7 @@ describe('ConversationActivityProjector', () => {
       tasks: [{
         id: 'task_done',
         originConversationId: 'conv_alpha',
-        status: 'done',
+        status: 'succeeded',
         dependencies: [],
         updatedAt: NOW,
       }],
@@ -188,7 +188,7 @@ describe('ConversationActivityProjector', () => {
     expect(projection.project('conv_other', NOW).state).toBe('idle');
   });
 
-  it('never reports a running Task without an active Attempt as executing', () => {
+  it('aggregates the committed needs_action conclusion', () => {
     const projection = projector({
       tasks: [{
         id: 'task_waiting_plan',
@@ -199,10 +199,10 @@ describe('ConversationActivityProjector', () => {
       }],
     });
 
-    expect(projection.project('conv_alpha', NOW).state).toBe('waiting');
+    expect(projection.project('conv_alpha', NOW).state).toBe('executing');
   });
 
-  it('reports an outstanding Replan Job as waiting, not idle', () => {
+  it('reports a running Task with an outstanding Replan Job as executing', () => {
     // The exact case the review reproduced: TaskView said waiting_for_plan while
     // the activity card said idle because it assumed the fact away.
     const projection = projector({
@@ -217,14 +217,14 @@ describe('ConversationActivityProjector', () => {
     });
 
     expect(projection.project('conv_alpha', NOW)).toEqual({
-      state: 'waiting',
+      state: 'executing',
       taskId: 'task_waiting_plan',
       updatedAt: NOW,
       latestTaskCreatedAt: NOW,
     });
   });
 
-  it('reports a persisted running Task with only a retry wake as waiting', () => {
+  it('reports a running Task with only a retry wake as executing', () => {
     const projection = projector({
       tasks: [{
         id: 'task_retry',
@@ -236,7 +236,7 @@ describe('ConversationActivityProjector', () => {
       pendingRetryWakeTaskIds: ['task_retry'],
     });
 
-    expect(projection.project('conv_alpha', NOW).state).toBe('waiting');
+    expect(projection.project('conv_alpha', NOW).state).toBe('executing');
   });
 
   it('bounds taskId and normalizes updatedAt', () => {
@@ -244,7 +244,7 @@ describe('ConversationActivityProjector', () => {
       tasks: [{
         id: `task_${'x'.repeat(500)}`,
         originConversationId: 'conv_alpha',
-        status: 'blocked',
+        status: 'needs_action',
         dependencies: [],
         updatedAt: 'not-a-date',
       }],
@@ -260,7 +260,7 @@ describe('ConversationActivityProjector', () => {
       tasks: [{
         id: 'task_recovered',
         originConversationId: 'conv_alpha',
-        status: 'blocked',
+        status: 'needs_action',
         dependencies: [],
         updatedAt: NOW,
       }],

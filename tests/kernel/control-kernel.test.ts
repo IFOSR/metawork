@@ -205,7 +205,9 @@ describe('ControlKernel', () => {
     const published = {
       schemaVersion: 5 as const,
       type: 'service_control' as const,
-      task: { id: 'task_1', status: 'done' as const },
+      // A required service is part of the work chain, so the Task is still
+      // running while it starts; a terminal Task never starts a new service.
+      task: { id: 'task_1', status: 'running' as const },
       published: true,
       serviceTaskId: null,
     };
@@ -218,7 +220,11 @@ describe('ControlKernel', () => {
     });
     expect(kernel.decide(event, { ...published, task: { id: 'task_1', status: 'failed' as const } })).toMatchObject({
       action: { type: 'reject_request' },
-      reason: '任务已取消、归档或失败，不能启动服务',
+      reason: '任务已结束，不能启动服务',
+    });
+    expect(kernel.decide(event, { ...published, task: { id: 'task_1', status: 'succeeded' as const } })).toMatchObject({
+      action: { type: 'reject_request' },
+      reason: '任务已成功结束，不能启动服务',
     });
   });
 
@@ -270,10 +276,10 @@ describe('ControlKernel', () => {
 
   it.each([true, false])('rechecks current entitlement on explicit resume (allowed=%s)', allowed => {
     const state = dispatchSnapshot();
-    state.task = { id: 'task_1', status: 'blocked' };
+    state.task = { id: 'task_1', status: 'needs_action' };
     state.productionAuthorization = { allowed, reason: 'official authorization state: logged_out' };
     state.subtasks = [
-      { ...state.subtasks[0]!, id: 'research', status: 'done' },
+      { ...state.subtasks[0]!, id: 'research', status: 'succeeded' },
       { ...state.subtasks[0]!, id: 'summary', status: 'ready', dependencies: ['research'] },
     ];
     const result = new ControlKernel().decide(runtimeEvent({
@@ -771,7 +777,7 @@ describe('ControlKernel', () => {
     const recoverySnapshot: Extract<KernelSnapshot, { type: 'availability_recovery' }> = {
       schemaVersion: 5,
       type: 'availability_recovery',
-      task: { id: 'task_1', status: 'blocked' },
+      task: { id: 'task_1', status: 'needs_action' },
       activeGenerationId: 'generation_1',
       activeGraphRevision: 1,
       deferredPlan: replanEvent,
@@ -903,7 +909,7 @@ describe('ControlKernel', () => {
     const partialSnapshot: Extract<KernelSnapshot, { type: 'task_control' }> = {
       schemaVersion: 5,
       type: 'task_control',
-      task: { id: 'task_1', status: 'blocked' },
+      task: { id: 'task_1', status: 'needs_action' },
       generationId: 'generation_task_1_1',
       graphRevision: 1,
       subtasks: [
@@ -980,7 +986,7 @@ describe('ControlKernel', () => {
       sessionId: 'session_1', taskId: 'task_1', recoveryItemId: 'effect_1', resolution: 'retry',
     };
     const unsafe: KernelSnapshot = {
-      schemaVersion: 5, type: 'recovery', task: { id: 'task_1', status: 'blocked' },
+      schemaVersion: 5, type: 'recovery', task: { id: 'task_1', status: 'needs_action' },
       item: { id: 'effect_1', kind: 'effect', status: 'uncertain', retrySafe: false },
     };
     expect(kernel.decide(recoveryEvent, unsafe).action).toEqual({
@@ -1092,7 +1098,7 @@ describe('ControlKernel', () => {
 
   it('authorizes explicit resume only for a recoverable blocked Task and restores runnable Subtasks through Runtime', () => {
     const snapshot = dispatchSnapshot();
-    snapshot.task = { id: 'task_1', status: 'blocked' };
+    snapshot.task = { id: 'task_1', status: 'needs_action' };
     snapshot.subtasks[0]!.status = 'ready';
     const result = new ControlKernel().decide({
       schemaVersion: 5,
@@ -1122,7 +1128,7 @@ describe('ControlKernel', () => {
 
   it('does not clear a manual or contract blocker on explicit resume', () => {
     const snapshot = dispatchSnapshot();
-    snapshot.task = { id: 'task_1', status: 'blocked' };
+    snapshot.task = { id: 'task_1', status: 'needs_action' };
     const result = new ControlKernel().decide({
       schemaVersion: 5,
       configurationRevision,
@@ -1148,8 +1154,8 @@ describe('ControlKernel', () => {
 
   it('does not retry a blocked Task with unresolved external effects', () => {
     const snapshot = dispatchSnapshot();
-    snapshot.task = { id: 'task_1', status: 'blocked' };
-    snapshot.subtasks[0]!.status = 'blocked';
+    snapshot.task = { id: 'task_1', status: 'needs_action' };
+    snapshot.subtasks[0]!.status = 'needs_action';
     snapshot.recoverySafety = 'external_non_idempotent';
     const result = new ControlKernel().decide(runtimeEvent({
       type: 'task_resume_requested', blockerCategory: 'retry',
@@ -1162,8 +1168,8 @@ describe('ControlKernel', () => {
 
   it('keeps an unknown blocker fail-closed even for read-only work', () => {
     const snapshot = dispatchSnapshot();
-    snapshot.task = { id: 'task_1', status: 'blocked' };
-    snapshot.subtasks[0]!.status = 'blocked';
+    snapshot.task = { id: 'task_1', status: 'needs_action' };
+    snapshot.subtasks[0]!.status = 'needs_action';
     snapshot.recoverySafety = 'read_only';
     const result = new ControlKernel().decide({
       schemaVersion: 5,
@@ -1205,7 +1211,7 @@ describe('ControlKernel', () => {
   it.each(['safe', 'manual', 'live', 'external', 'stale-job', 'lease', 'stale-revision'])(
     'checks %s facts before recovering restored upstream inputs', scenario => {
       const snapshot = dispatchSnapshot([], 'awaiting_decision');
-      snapshot.task = { id: 'task_1', status: 'blocked' };
+      snapshot.task = { id: 'task_1', status: 'needs_action' };
       snapshot.generationQuiescent = true;
       snapshot.recoverySafety = 'read_only';
       snapshot.upstreamInputResume = { rejectedReplanRequestId: 'replan' };
@@ -1284,7 +1290,7 @@ describe('ControlKernel', () => {
 
   it('authorizes metadata-only repair for a legacy blocked uncertified result', () => {
     const snapshot = dispatchSnapshot([], 'blocked');
-    snapshot.task = { id: 'task_1', status: 'blocked' };
+    snapshot.task = { id: 'task_1', status: 'needs_action' };
     snapshot.resumeRecoveryCandidates = [{
       subtaskId: 'subtask_1',
       sourceAttemptId: 'attempt_uncertified',
@@ -1747,7 +1753,7 @@ describe('ControlKernel', () => {
     });
     const timerSnapshot: KernelSnapshot = {
       schemaVersion: 5, type: 'timer', capacityBlockedAt: '2026-07-20T00:00:00.000Z', recheckAfterMs: 60_000,
-      task: { id: 'task_1', status: 'blocked' }, wakeAuthorized: true,
+      task: { id: 'task_1', status: 'needs_action' }, wakeAuthorized: true,
       capacityBindings: [codexBinding], executorStatuses: [],
       nativeContinuationAgentClasses: ['codex-cli'],
       defaultResourceGrant: [],
@@ -1819,7 +1825,7 @@ describe('ControlKernel', () => {
     const snapshot: KernelSnapshot = {
       schemaVersion: 5,
       type: 'timer',
-      task: { id: 'task_1', status: 'blocked' },
+      task: { id: 'task_1', status: 'needs_action' },
       wakeAuthorized: true,
       capacityBlockedAt: null,
       recheckAfterMs: 0,
@@ -1836,7 +1842,7 @@ describe('ControlKernel', () => {
     });
     expect(kernel.decide(timer, {
       ...snapshot,
-      task: { id: 'task_1', status: 'done' },
+      task: { id: 'task_1', status: 'succeeded' },
       wakeAuthorized: false,
     }).action).toEqual({
       type: 'supersede_retry_wake',
@@ -2104,7 +2110,7 @@ describe('ControlKernel abandon_task authorization (2026-09-06 plan §5.4)', () 
       taskControlProposal('abandon_task', 'task-old') as KernelEvent,
       {
         ...snapshot,
-        tasks: [{ id: 'task-old', status: 'blocked', conversationId: 'session_1' }],
+        tasks: [{ id: 'task-old', status: 'needs_action', conversationId: 'session_1' }],
         activeTaskByConversation: { session_1: 'task-old' },
       },
     );
@@ -2120,7 +2126,7 @@ describe('ControlKernel abandon_task authorization (2026-09-06 plan §5.4)', () 
       taskControlProposal('abandon_task', 'task-queued') as KernelEvent,
       {
         ...snapshot,
-        tasks: [{ id: 'task-queued', status: 'created', conversationId: 'session_1' }],
+        tasks: [{ id: 'task-queued', status: 'queued', conversationId: 'session_1' }],
         activeTaskByConversation: { session_1: 'task-other' },
       },
     );
@@ -2133,7 +2139,7 @@ describe('ControlKernel abandon_task authorization (2026-09-06 plan §5.4)', () 
       taskControlProposal('abandon_task', 'task-foreign') as KernelEvent,
       {
         ...snapshot,
-        tasks: [{ id: 'task-foreign', status: 'blocked', conversationId: 'conversation-b' }],
+        tasks: [{ id: 'task-foreign', status: 'needs_action', conversationId: 'conversation-b' }],
         activeTaskByConversation: {},
       },
     );
@@ -2157,7 +2163,7 @@ describe('ControlKernel abandon_task authorization (2026-09-06 plan §5.4)', () 
     proposal.proposal.task.priority = { level: 'normal', reason: 'explicit resume' };
     const decision = kernel.decide(proposal as KernelEvent, {
       ...snapshot,
-      tasks: [{ id: 'task-queued', status: 'parked', conversationId: 'session_1' }],
+      tasks: [{ id: 'task-queued', status: 'needs_action', conversationId: 'session_1' }],
       activeTaskByConversation: { session_1: 'task-other' },
     });
     expect(decision.action).toMatchObject({ type: 'reject_request' });
@@ -2183,7 +2189,7 @@ describe('ControlKernel conflictResolution (2026-09-06 plan §5.4 abandon-and-cr
       generationId: 'generation_conflict',
     }, {
       ...snapshot,
-      tasks: [{ id: 'task-old', status: 'blocked' }],
+      tasks: [{ id: 'task-old', status: 'needs_action' }],
       activeTaskByConversation: { session_1: 'task-old' },
       occupiedConversationIds: ['session_1'],
       queuedTaskCountByConversation: { session_1: 0 },
@@ -2206,7 +2212,7 @@ describe('ControlKernel conflictResolution (2026-09-06 plan §5.4 abandon-and-cr
       generationId: 'generation_conflict_unknown',
     }, {
       ...snapshot,
-      tasks: [{ id: 'task-other', status: 'blocked' }],
+      tasks: [{ id: 'task-other', status: 'needs_action' }],
       activeTaskByConversation: { session_1: 'task-other' },
     });
     expect(decision.action).toMatchObject({ type: 'reject_request' });
@@ -2223,7 +2229,7 @@ describe('ControlKernel conflictResolution (2026-09-06 plan §5.4 abandon-and-cr
       generationId: 'generation_conflict_terminal',
     }, {
       ...snapshot,
-      tasks: [{ id: 'task-done', status: 'done' }],
+      tasks: [{ id: 'task-done', status: 'succeeded' }],
       activeTaskByConversation: { session_1: 'task-done' },
     });
     expect(decision.action).toMatchObject({ type: 'reject_request' });

@@ -12,6 +12,7 @@ import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan, taskControlPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
 import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
+import { setTaskStatus, withReason } from '../support/task-state-fixture.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -72,7 +73,7 @@ describe('cross-session last-task continuation', () => {
     // The planner sees session1's completed task in recentTasks and pins it by
     // taskId. Runtime then forks a follow-up from that referenced done task —
     // no session-pointer guessing, no 'last_task_continuation' control.
-    const completedTaskId = taskRepo.findByStatus('done')[0]!.id;
+    const completedTaskId = taskRepo.findByStatus('succeeded')[0]!.id;
     const session2 = new MetaclawSession({
       taskEngine,
       memoryEngine,
@@ -108,14 +109,9 @@ describe('cross-session last-task continuation', () => {
       goal: '继续历史未完成调研',
     });
     seedPersistedWorkGraph(db, parkedTask.id, parkedTask.title);
-    taskEngine.transition(parkedTask.id, 'ready');
-    taskEngine.transition(parkedTask.id, 'running');
-    taskEngine.park(parkedTask.id, '等待继续', {
-      done: ['已整理框架'],
-      pending: ['继续补齐数据'],
-      nextStep: '继续补齐数据',
-      pauseReason: '等待继续',
-    });
+    setTaskStatus(db, parkedTask.id, 'queued');
+    setTaskStatus(db, parkedTask.id, 'running');
+    setTaskStatus(db, parkedTask.id, 'needs_action', withReason('等待继续'));
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '历史任务已恢复' }));
     const session = new MetaclawSession({

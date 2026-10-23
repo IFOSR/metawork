@@ -93,7 +93,7 @@ function reconcile(
       AND item.sandbox_container_id IS NULL
       AND EXISTS (
         SELECT 1 FROM tasks
-        WHERE tasks.id = item.task_id AND tasks.status IN ('cancelled', 'done', 'failed', 'archived')
+        WHERE tasks.id = item.task_id AND tasks.status IN ('cancelled', 'succeeded', 'failed')
       )
   `).run(now(), now(), now(), now()).changes;
   if (closedDispatchItems > 0) {
@@ -108,7 +108,7 @@ function reconcile(
       AND EXISTS (
         SELECT 1 FROM tasks
         WHERE tasks.id = conversation_task_slots.active_task_id
-          AND tasks.status IN ('cancelled', 'done', 'failed', 'archived')
+          AND tasks.status IN ('cancelled', 'succeeded', 'failed')
       )
   `).all() as Array<{ conversation_id: string; active_task_id: string }>;
   let releasedSlots = 0;
@@ -137,7 +137,11 @@ function reconcile(
     // release stale capacity, but it must not reserve a successor that it
     // cannot launch. AccountStartupRecoveryService performs promotion and
     // Kernel-authorized launch through the normal account path.
-    const released = scheduler.releaseSlot(slot.conversation_id, slot.active_task_id, now());
+    const released = db.transaction(() => {
+      const current = scheduler.getSlot(slot.conversation_id);
+      if (current.activeTaskId !== slot.active_task_id || residueReader.hasResidue(slot.active_task_id)) return false;
+      return scheduler.releaseSlot(slot.conversation_id, slot.active_task_id, now(), current);
+    }).immediate();
     releasedSlots += 1;
     if (released) lines.push(`released stale conversation slot in ${slot.conversation_id}`);
   }
@@ -152,7 +156,7 @@ function reconcile(
     WHERE entry.state IN ('queued', 'eligible', 'reserved', 'running')
       AND EXISTS (
         SELECT 1 FROM tasks
-        WHERE tasks.id = entry.task_id AND tasks.status IN ('cancelled', 'done', 'failed', 'archived')
+        WHERE tasks.id = entry.task_id AND tasks.status IN ('cancelled', 'succeeded', 'failed')
       )
   `).run(now()).changes;
   if (closedScheduleEntries > 0) {

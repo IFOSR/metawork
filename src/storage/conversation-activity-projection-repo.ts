@@ -2,12 +2,13 @@ import type Database from 'better-sqlite3';
 import type { ConversationActivityProjectionStore } from '../session/conversation-activity-projection.js';
 import type { ConversationActivityTask } from '../session/conversation-activity-source.js';
 import type { ConversationTaskSummary } from '../session/conversation-activity-types.js';
+import { TaskStateProjectionOutbox } from './task-state-change-repo.js';
 
 export class SqliteConversationActivityProjection implements ConversationActivityProjectionStore {
   constructor(private readonly db: Database.Database,
     private readonly onCommitted?: (taskId: string, value: ConversationTaskSummary) => void) {
     this.db.prepare(`INSERT INTO conversation_activity_dirty(task_id, version)
-      SELECT task_id, 1 FROM conversation_activity_views WHERE json_extract(body_json, '$.userState') IS NULL
+      SELECT task_id, 1 FROM conversation_activity_views WHERE json_extract(body_json, '$.stateVersion') IS NULL
       ON CONFLICT(task_id) DO UPDATE SET version = version + 1`).run();
   }
   /** Bounded stop-dialog summary from canonical activity projections, including unsettled dirties. */
@@ -22,6 +23,14 @@ export class SqliteConversationActivityProjection implements ConversationActivit
   }
   nextDirty() {
     this.db.transaction(() => {
+      // Forward the state outbox to the existing durable projection queue. Both
+      // writes commit together, so restart cannot lose a notification.
+      const outbox = new TaskStateProjectionOutbox(this.db);
+      for (const notification of outbox.listPending()) {
+        this.db.prepare(`INSERT INTO conversation_activity_dirty(task_id, version) VALUES (?, 1)
+          ON CONFLICT(task_id) DO UPDATE SET version = version + 1`).run(notification.taskId);
+        outbox.markDispatched(notification.sequence, new Date().toISOString());
+      }
       const removed = this.db.prepare(`SELECT task_id FROM conversation_activity_dirty
         WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE tasks.id = task_id) LIMIT 64`).all() as Array<{ task_id: string }>;
       for (const row of removed) {

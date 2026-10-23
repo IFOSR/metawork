@@ -146,9 +146,10 @@ export interface MetaWorkTurnProjection {
 	readonly progressSummary: string | null;
 	readonly taskTitle?: string;
 	readonly taskStatus?: string;
+	readonly taskStateVersion?: number;
 	/**
-	 * 用户可见 Task 四态；展示层只消费服务端投影。
-	 * 来自 `task_view_snapshot.lifecycle.userState`（task lifecycle 收敛 §7）。
+	 * 用户可见 Task 六态；展示层只消费服务端投影。
+	 * 来自 `task_view_snapshot.lifecycle.status`（task_view_v2）。
 	 */
 	readonly taskPhase?: string;
 	readonly taskNextAction?: string;

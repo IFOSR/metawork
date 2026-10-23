@@ -21,6 +21,7 @@ export interface TaskSchedulerSnapshot {
     priority: SchedulerPriority;
     aged: boolean;
     runnableAttemptCount: number;
+    runnableOperation?: boolean;
     activeAttemptCount: number;
     resourceConflict: boolean;
   }>;
@@ -54,7 +55,7 @@ export function selectTaskDispatches(snapshot: TaskSchedulerSnapshot): TaskSched
       waiting.push({ taskId: candidate.taskId, reason: 'resource_conflict' });
       return false;
     }
-    return candidate.runnableAttemptCount > 0;
+    return candidate.runnableAttemptCount > 0 || candidate.runnableOperation === true;
   });
   const ordered = [...eligible].sort((left, right) => compareCandidates(
     left,
@@ -75,7 +76,7 @@ export function selectTaskDispatches(snapshot: TaskSchedulerSnapshot): TaskSched
   let remainingAttempts = availableAttemptSlots;
   for (const candidate of ordered) {
     if (selectedConversations.has(candidate.conversationId)) continue;
-    if (dispatches.length >= availableTaskSlots || remainingAttempts <= 0) {
+    if (dispatches.length >= availableTaskSlots || (remainingAttempts <= 0 && !candidate.runnableOperation)) {
       waiting.push({ taskId: candidate.taskId, reason: 'capacity' });
       continue;
     }
@@ -88,7 +89,7 @@ export function selectTaskDispatches(snapshot: TaskSchedulerSnapshot): TaskSched
       availablePerTask,
       remainingAttempts,
     );
-    if (attemptCount <= 0) continue;
+    if (attemptCount <= 0 && !candidate.runnableOperation) continue;
     selectedConversations.add(candidate.conversationId);
     dispatches.push({ taskId: candidate.taskId, attemptCount });
     remainingAttempts -= attemptCount;

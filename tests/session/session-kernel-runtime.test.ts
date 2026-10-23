@@ -12,6 +12,7 @@ import { SessionKernelRuntime } from '../../src/session/session-kernel-runtime.j
 import { SessionPresentationService } from '../../src/session/session-presentation-service.js';
 import { workGraphPlan } from '../support/planning-agent-plans.js';
 import type { KernelDecision } from '../../src/kernel/control-kernel.js';
+import { setTaskStatus, recordingTaskStateAuthority, recordingTaskLifecyclePort } from '../support/task-state-fixture.js';
 
 describe('SessionKernelRuntime parallel admission', () => {
   it('resolves an existing project Workspace by Conversation id, not Planner session id', async () => {
@@ -19,6 +20,7 @@ describe('SessionKernelRuntime parallel admission', () => {
     runMigrations(database);
     const taskRepo = new TaskRepo(database);
     const taskRuntimeService = new TaskRuntimeService({
+      lifecyclePort: recordingTaskLifecyclePort().port,
       taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-test-snapshots'),
       taskRepo,
     });
@@ -43,6 +45,7 @@ describe('SessionKernelRuntime parallel admission', () => {
       },
     } as KernelDecision;
     const runtime = new SessionKernelRuntime({
+      taskStateAuthority: recordingTaskStateAuthority().authority,
       sessionId: 'planner-runtime',
       taskRuntimeService,
       memoryContextService: { normalizeInlineResourcesFromInput: () => ({ normalizedGoal: 'update existing project', resources: [] }) } as never,
@@ -72,6 +75,7 @@ describe('SessionKernelRuntime parallel admission', () => {
     runMigrations(database);
     const taskRepo = new TaskRepo(database);
     const taskRuntimeService = new TaskRuntimeService({
+      lifecyclePort: recordingTaskLifecyclePort().port,
       taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-test-snapshots'),
       taskRepo,
     });
@@ -114,6 +118,7 @@ describe('SessionKernelRuntime parallel admission', () => {
       },
     } as KernelDecision;
     const runtime = new SessionKernelRuntime({
+      taskStateAuthority: recordingTaskStateAuthority().authority,
       sessionId: 'planner-a',
       conversationId: 'conversation-a',
       taskRuntimeService,
@@ -159,6 +164,7 @@ describe('SessionKernelRuntime parallel admission', () => {
     runMigrations(database);
     const taskRepo = new TaskRepo(database);
     const taskRuntimeService = new TaskRuntimeService({
+      lifecyclePort: recordingTaskLifecyclePort().port,
       taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-test-snapshots'),
       taskRepo,
     });
@@ -172,6 +178,7 @@ describe('SessionKernelRuntime parallel admission', () => {
     });
     const cancelled: string[] = [];
     const runtime = new SessionKernelRuntime({
+      taskStateAuthority: recordingTaskStateAuthority().authority,
       sessionId: 'planner-a',
       conversationId: 'conversation-a',
       accountId: 'account-a',
@@ -224,6 +231,7 @@ describe('SessionKernelRuntime parallel admission', () => {
     runMigrations(database);
     const taskRepo = new TaskRepo(database);
     const taskRuntimeService = new TaskRuntimeService({
+      lifecyclePort: recordingTaskLifecyclePort().port,
       taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-test-snapshots'),
       taskRepo,
     });
@@ -232,6 +240,7 @@ describe('SessionKernelRuntime parallel admission', () => {
     const plan = workGraphPlan({ goal: 'capacity queued task', capabilityClass: 'code_edit' });
     plan.workGraph!.subtasks[0]!.contextRefs = [];
     const runtime = new SessionKernelRuntime({
+      taskStateAuthority: recordingTaskStateAuthority().authority,
       sessionId: 'planner-b',
       accountId: 'account-a',
       taskRuntimeService,
@@ -297,6 +306,7 @@ describe('SessionKernelRuntime abandon_task and durable clear outcomes (2026-09-
     runMigrations(database);
     const taskRepo = new TaskRepo(database);
     const taskRuntimeService = new TaskRuntimeService({
+      lifecyclePort: recordingTaskLifecyclePort().port,
       taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-abandon-test'),
       taskRepo,
     });
@@ -311,6 +321,7 @@ describe('SessionKernelRuntime abandon_task and durable clear outcomes (2026-09-
     const output: string[] = [];
     const cancelCalls: Array<{ taskId: string; reason: string }> = [];
     const runtime = new SessionKernelRuntime({
+      taskStateAuthority: recordingTaskStateAuthority().authority,
       sessionId: 'planner-a',
       conversationId: 'conversation-a',
       accountId: 'account-a',
@@ -339,7 +350,7 @@ describe('SessionKernelRuntime abandon_task and durable clear outcomes (2026-09-
         },
       },
     });
-    return { runtime, output, cancelCalls, taskRuntimeService };
+    return { runtime, output, cancelCalls, taskRuntimeService, db: database };
   }
 
   const abandonDecision = (taskId: string) => ({
@@ -412,10 +423,10 @@ describe('SessionKernelRuntime abandon_task and durable clear outcomes (2026-09-
   });
 
   it('skips cancellation for an already-terminal old Task', async () => {
-    const { runtime, output, cancelCalls, taskRuntimeService } = setupRuntime();
-    taskRuntimeService.transitionTask('task-old', 'ready');
-    taskRuntimeService.transitionTask('task-old', 'running');
-    taskRuntimeService.cancelTask('task-old');
+    const { runtime, output, cancelCalls, db } = setupRuntime();
+    setTaskStatus(db, 'task-old', 'queued');
+    setTaskStatus(db, 'task-old', 'running');
+    setTaskStatus(db, 'task-old', 'cancelled');
     await runtime.forInput('放弃旧任务').apply(abandonDecision('task-old'));
     expect(cancelCalls).toHaveLength(0);
     expect(output.join('\n')).toContain('已处于终态');
@@ -462,6 +473,7 @@ describe('SessionKernelRuntime abandon-and-create (2026-09-06 plan §5.4)', () =
     runMigrations(database);
     const taskRepo = new TaskRepo(database);
     const taskRuntimeService = new TaskRuntimeService({
+      lifecyclePort: recordingTaskLifecyclePort().port,
       taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-abandon-create'),
       taskRepo,
     });
@@ -479,6 +491,7 @@ describe('SessionKernelRuntime abandon-and-create (2026-09-06 plan §5.4)', () =
     const cancelled: string[] = [];
     const prepared: string[] = [];
     const runtime = new SessionKernelRuntime({
+      taskStateAuthority: recordingTaskStateAuthority().authority,
       sessionId: 'planner-a',
       conversationId: 'conversation-a',
       accountId: 'account-a',
@@ -585,6 +598,7 @@ describe('SessionKernelRuntime abandon-and-create holds during cleanup (closure 
     runMigrations(database);
     const taskRepo = new TaskRepo(database);
     const taskRuntimeService = new TaskRuntimeService({
+      lifecyclePort: recordingTaskLifecyclePort().port,
       taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-abandon-hold'),
       taskRepo,
     });
@@ -596,6 +610,7 @@ describe('SessionKernelRuntime abandon-and-create holds during cleanup (closure 
     scheduler.claimSlot('conversation-a', 'task-old', 'res', '2026-08-29T00:00:00.000Z');
     const output: string[] = [];
     const runtime = new SessionKernelRuntime({
+      taskStateAuthority: recordingTaskStateAuthority().authority,
       sessionId: 'planner-a',
       conversationId: 'conversation-a',
       accountId: 'account-a',

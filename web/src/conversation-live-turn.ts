@@ -81,7 +81,7 @@ export function mergeExecutionTimeline(
   // timeline reports running work. Terminal Turns remain protected below.
   const canReopenActiveTask = current.status === 'blocked'
     && projectedStatus === 'running'
-    && ['running', 'waiting_retry', 'executing', 'retrying', 'publishing', 'waiting_for_plan', 'queued'].includes(timeline.status);
+    && (timeline.status === 'running' || timeline.status === 'queued');
   const status = projectedStatus && (current.status === 'running' || canReopenActiveTask)
     ? projectedStatus
     : current.status;
@@ -253,11 +253,10 @@ export function turnStatusFromTimeline(
     || execution?.subtasks?.some(subtask => ['failed', 'cancelled'].includes(subtask.status))) {
     return 'failed';
   }
-  if (['created', 'ready', 'running', 'waiting_retry', 'executing', 'retrying', 'publishing', 'waiting_for_plan', 'queued'].includes(timeline.status)) {
-    return 'running';
-  }
-  if (['done', 'archived', 'completed'].includes(timeline.status)) return 'completed';
-  if (['blocked', 'parked', 'recovery_required', 'waiting_for_user'].includes(timeline.status)) return 'blocked';
+  // The timeline status is the committed six-state Task conclusion.
+  if (timeline.status === 'running' || timeline.status === 'queued') return 'running';
+  if (timeline.status === 'succeeded') return 'completed';
+  if (timeline.status === 'needs_action') return 'blocked';
   if (timeline.status === 'cancelled') return 'cancelled';
   if (timeline.status === 'failed') return 'failed';
 

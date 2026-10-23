@@ -41,7 +41,7 @@ export function ExecutionTimelineView({ timeline, titleBySubtask }: ExecutionTim
     <aside className="timeline-pane">
       <div className="timeline-header">
         <span className="timeline-title">{timeline.title}</span>
-        <span className="timeline-status" title={timeline.userStateReason}>{STATUS_LABEL[timeline.userState] ?? timeline.userState}</span>
+        <span className="timeline-status" title={timeline.explanation}>{timeline.statusLabel}</span>
       </div>
       <ol className="stages">
         {timeline.stages.map(stage => (

@@ -14,11 +14,17 @@ export interface TaskControlPort {
   readLocalService?(serviceId: string, logs?: boolean): Promise<LocalServiceView | string>;
   manageLocalService?(taskId: string, operation: LocalServiceOperation, serviceId?: string): Promise<LocalServiceView>;
   cancelTask(taskId: string, reason?: string): Promise<TaskControlReceipt>;
+  /**
+   * Marks the Task as needing user action. It records the durable blocker and
+   * lets the Task state authority conclude; the command never writes a status.
+   */
+  blockTask?(taskId: string, reason: string): Promise<void>;
   cancelSubtasks(
     taskId: string,
     targetSubtaskIds: string[],
     reason?: string,
   ): Promise<TaskControlReceipt>;
+  retryRemainingWork?(taskId: string): Promise<TaskControlReceipt>;
   retryTaskResult?(taskId: string, expectedResult: PendingResultIdentity): Promise<TaskControlReceipt>;
   acceptPartialResult(taskId: string, expectedResult?: PendingResultIdentity): Promise<TaskControlReceipt>;
 }

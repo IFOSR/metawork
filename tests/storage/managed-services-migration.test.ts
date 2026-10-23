@@ -17,10 +17,8 @@ function schema50() {
     ALTER TABLE tasks DROP COLUMN start_service_after_publish;
     ALTER TABLE tasks DROP COLUMN public_project;
     UPDATE schema_version SET version=50;
-    INSERT INTO tasks(id,title,goal,status,created_at,updated_at)
-      VALUES ('old','Old title','retain facts','done','then','then');
-    INSERT INTO tasks(id,title,goal,status,created_at,updated_at)
-      VALUES ('new','New title','new directory','blocked','then','then');`);
+    INSERT INTO tasks (id,title,goal,status,created_at,updated_at) VALUES ('old', 'Old title', 'retain facts', 'succeeded', 'then', 'then');
+    INSERT INTO tasks (id,title,goal,status,created_at,updated_at) VALUES ('new', 'New title', 'new directory', 'needs_action', 'then', 'then');`);
   new TaskArtifactRepo(db).insert({ accountId: 'a', taskId: 'old', displayName: 'answer.md',
     relativePath: 'reports/answer.md', publishedPath: '/user/workspace/metaclaw-tasks/original/reports/answer.md',
     mediaType: 'text/markdown', previewKind: 'markdown', contentHash: 'sha256:old', byteLength: 4, now: 'then' });
@@ -39,7 +37,7 @@ describe('schema 50 to 51 public delivery and managed service migration', () => 
       expect(tasks.findById('old')?.publicTaskDirectory).toBe('metaclaw-tasks/original');
       const original = tasks.findById('new')!.publicTaskDirectory;
       expect(original).toMatch(/^metaclaw-tasks\/new-title-[a-f0-9]{16}$/u);
-      tasks.update('new', { title: 'Renamed', publicTaskDirectory: 'another' });
+      tasks.update('new', { title: 'Renamed' });
       expect(tasks.findById('new')!.publicTaskDirectory).toBe(original);
       expect(db.pragma('foreign_key_check')).toEqual([]);
     } finally { db.close(); }
@@ -56,7 +54,7 @@ describe('schema 50 to 51 public delivery and managed service migration', () => 
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name IN ('managed_local_services','managed_local_service_effects','public_workspace_files')").all()).toEqual([]);
       db.exec('DROP TRIGGER fail_51');
       runMigrations(db);
-      expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 51 });
+      expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: CURRENT_SCHEMA_VERSION });
     } finally { db.close(); }
   });
 

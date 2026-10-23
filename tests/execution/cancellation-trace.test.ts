@@ -1,3 +1,4 @@
+import { recordingTaskStateAuthority, recordingTaskLifecyclePort } from '../support/task-state-fixture.js';
 import { describe, expect, it, vi } from 'vitest';
 import { KernelExecutionRuntime } from '../../src/execution/kernel-execution-runtime.js';
 import type { ExecutionTraceAppendInput } from '../../src/execution/execution-trace.js';
@@ -9,6 +10,7 @@ function fixture(status = 'cancelled', residue: string[] = []) {
   const recover = vi.fn(async () => undefined);
   const onTaskTerminal = vi.fn();
   const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
     taskEventRepo: {},
     dispatchItemRepo: {},
     maxConcurrentAttempts: 4,
@@ -30,6 +32,16 @@ function fixture(status = 'cancelled', residue: string[] = []) {
   };
   vi.spyOn(internal.attemptSupervisor, 'drain').mockResolvedValue(undefined);
   return { runtime, trace, recover, onTaskTerminal, drain: () => internal.drainCancellation('task_cancel') };
+}
+
+function recordingRuntimeTaskState() {
+  const { authority } = recordingTaskStateAuthority();
+  const { port } = recordingTaskLifecyclePort();
+  return {
+    taskStateAuthority: authority,
+    taskLifecyclePort: port,
+    taskOperationResults: { record: () => undefined },
+  };
 }
 
 describe('cancellation completion trace', () => {

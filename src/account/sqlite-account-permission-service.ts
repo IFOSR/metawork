@@ -11,7 +11,7 @@ import {
 } from '../execution/permission-workflow-service.js';
 import { RegisteredCapabilityResourceResolver } from '../execution/capability-resource-resolver.js';
 import { buildPermissionRules, type PermissionRequestRecord } from '../resource/index.js';
-import { isTerminalTaskLifecycle, toTaskLifecycleState } from '../task/task-lifecycle.js';
+import { isTerminalTaskStatus } from '../task/task-state.js';
 
 export function createSqliteAccountPermissionService(deps: {
   readonly kernelServices: AccountKernelServices;
@@ -66,7 +66,7 @@ export function createSqliteAccountPermissionService(deps: {
           if (!request) throw new Error('permission recovery request unavailable');
           const current = deps.taskServices.taskRuntimeService.findTask(request.taskId);
           const generation = deps.repositories.workGraphRevisionRepo.findActive(request.taskId);
-          if (!current || isTerminalTaskLifecycle(toTaskLifecycleState(current.status))
+          if (!current || isTerminalTaskStatus(current.status)
             || generation?.generationId !== request.generationId) return;
           // markApplied commits this next input in the SAME transaction as the
           // permission application. No client callback can lose the continuation.
@@ -199,7 +199,7 @@ export function createSqliteAccountPermissionService(deps: {
       }
       const task = deps.taskServices.taskRuntimeService.findTask(record.request.taskId);
       const revision = deps.repositories.workGraphRevisionRepo.findActive(record.request.taskId);
-      if (!task || isTerminalTaskLifecycle(toTaskLifecycleState(task.status))
+      if (!task || isTerminalTaskStatus(task.status)
         || (revision && revision.generationId !== record.request.generationId)
         || dispatchItem.taskId !== record.request.taskId || dispatchItem.generationId !== record.request.generationId) {
         return conflict('permission_request_execution_stale');

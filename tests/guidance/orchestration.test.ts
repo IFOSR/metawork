@@ -6,6 +6,7 @@ import { TaskEngine } from '../../src/task/task-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { tmpdir } from 'os';
 import { resolve } from 'path';
+import { setTaskStatus } from '../support/task-state-fixture.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -14,12 +15,14 @@ function createTestDb() {
   return db;
 }
 
+let db: Database.Database;
+
 describe('OrchestrationEngine', () => {
   let orchestration: OrchestrationEngine;
   let taskEngine: TaskEngine;
 
   beforeEach(() => {
-    const db = createTestDb();
+    db = createTestDb();
     const repo = new TaskRepo(db);
     taskEngine = new TaskEngine(repo, resolve(tmpdir(), 'metaclaw-test-snapshots'));
     orchestration = new OrchestrationEngine(taskEngine);
@@ -36,19 +39,30 @@ describe('OrchestrationEngine', () => {
     taskEngine.create({ title: '任务A', goal: '目标A' });
     taskEngine.create({ title: '任务B', goal: '目标B' });
 
+    // Created Tasks are queued; `active` counts executing work only.
     const dashboard = orchestration.getDashboard();
-    expect(dashboard.summary.active).toBe(2);
+    expect(dashboard.readyTasks).toHaveLength(2);
+    expect(dashboard.summary.active).toBe(0);
   });
 
   it('should show blocked tasks with reasons', () => {
     const t = taskEngine.create({ title: '任务A', goal: '目标A' });
-    taskEngine.transition(t.id, 'ready');
-    taskEngine.transition(t.id, 'running');
-    taskEngine.block(t.id, {
-      taskId: t.id,
-      type: 'manual',
-      description: '等待客户资料',
-      status: 'waiting',
+    setTaskStatus(db, t.id, 'queued');
+    setTaskStatus(db, t.id, 'running');
+    setTaskStatus(db, t.id, 'needs_action', {
+      reason: { code: 'input_required', message: '等待客户资料', evidenceRefs: [] },
+      unresolved: [],
+      phase: null,
+      pendingActions: [],
+      requiredWork: [],
+      cleanup: { state: 'none', objects: [], reason: '' },
+      nextWakeAt: null,
+    });
+    taskEngine.getTaskRepo().update(t.id, {
+      dependencies: [{
+        taskId: t.id, type: 'manual', description: '等待客户资料',
+        status: 'waiting', createdAt: new Date().toISOString(),
+      }],
     });
 
     const blocked = orchestration.getBlockedTasks();
@@ -65,7 +79,7 @@ describe('OrchestrationEngine', () => {
 
   it('renders no prioritize_task proposal for ready tasks', () => {
     const ready = taskEngine.create({ title: '就绪任务', goal: '目标' });
-    taskEngine.transition(ready.id, 'ready');
+    setTaskStatus(db, ready.id, 'queued');
 
     const proposals = orchestration.generateProposals();
     expect(proposals.some(proposal => proposal.actionType === 'prioritize_task')).toBe(false);

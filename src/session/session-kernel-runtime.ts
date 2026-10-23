@@ -14,10 +14,10 @@ import type {
   QueuedTaskPayload,
 } from '../storage/conversation-task-scheduler-repo.js';
 import { taskBelongsToConversation } from '../task/task-ownership.js';
-import {
-  createTaskLifecyclePort,
-  type TaskLifecyclePort,
+import type {
+  TaskLifecyclePort,
 } from '../task/task-lifecycle-transition-port.js';
+import type { TaskStateAuthority } from '../task/task-state-authority.js';
 
 interface FocusContext {
   kind: 'conversation' | 'task';
@@ -32,6 +32,7 @@ export interface SessionKernelRuntimeDeps {
   legacyCompatibility?: boolean;
   accountId?: string;
   taskRuntimeService: TaskRuntimeService;
+  taskStateAuthority: TaskStateAuthority;
   memoryContextService: MemoryContextService;
   orchestration: OrchestrationEngine;
   activeExecutions: ActiveExecutionControl;
@@ -50,16 +51,14 @@ export interface SessionKernelRuntimeDeps {
     setFocusContext(focus: FocusContext | null): void;
     resolveRequestText(eventId: string): string;
     cancelTask(taskId: string, reason: string): Promise<TaskClearOutcome>;
+    /** Release the Conversation slot once this Task is safely waiting for input. */
+    onWaitingForUser?(taskId: string): void;
   };
 }
 
 /** Session-side Runtime handlers for Kernel decisions; it contains no next-action policy. */
 export class SessionKernelRuntime {
-  private readonly lifecycle: TaskLifecyclePort;
-
-  constructor(private readonly deps: SessionKernelRuntimeDeps) {
-    this.lifecycle = createTaskLifecyclePort({ taskRuntimeService: deps.taskRuntimeService });
-  }
+  constructor(private readonly deps: SessionKernelRuntimeDeps) {}
 
   forInput(userInput?: string, conversationId?: string, queryId?: string | null): KernelRuntime {
     return {
@@ -84,16 +83,26 @@ export class SessionKernelRuntime {
         this.deps.callbacks.appendOutput(this.deps.presentation.formatKernelRejection(decision.reason));
         this.deps.callbacks.refreshRuntimeState();
         return null;
-      case 'request_clarification':
+      case 'request_clarification': {
+        const question = decision.action.question;
         this.deps.callbacks.appendOutput(
           '## ❓ 需要你回答（任务在此等待，不会自动继续）',
           '',
-          decision.action.question,
+          question,
           '',
           '> 直接回复本条消息即可继续；若不再需要，可发送 `/task clear all` 取消相关任务。',
         );
+        // The Planner stopped this turn to ask the user. If a Task owns the
+        // turn, it must say so durably and must not keep the Conversation slot:
+        // otherwise the user's answer queues behind a Task that is only waiting
+        // for them (design §1: 等待用户必须说清要用户做什么 / 待处理让出名额).
+        const clarificationTaskId = this.deps.callbacks.getCurrentTaskId();
+        if (clarificationTaskId) {
+          this.markTaskWaitingForInput(clarificationTaskId, question, decision.id);
+        }
         this.deps.callbacks.refreshRuntimeState();
         return null;
+      }
       case 'deliver_direct_reply':
         this.deps.callbacks.deliverDirectReply(userInput, decision.action.response);
         return null;
@@ -125,17 +134,30 @@ export class SessionKernelRuntime {
         return null;
       case 'block_work': {
         const task = this.deps.taskRuntimeService.findTask(decision.action.taskId);
-        if (task?.status === 'running') {
-          this.lifecycle.blockTask({
+        if (task && task.status !== 'succeeded' && task.status !== 'failed'
+          && task.status !== 'cancelled') {
+          this.deps.taskStateAuthority.reconcile({
             taskId: task.id,
-            dependency: {
-              taskId: task.id,
-              type: 'manual',
-              description: decision.reason,
-              status: 'waiting',
-            },
+            decisionId: decision.id,
+            operationKey: `block:${decision.id}`,
             actor: 'session-kernel-runtime',
             reason: decision.reason,
+            facts: () => {
+              this.deps.taskRuntimeService.updateTask(task.id, {
+                dependencies: [
+                  ...task.dependencies.filter(dependency => !(dependency.status === 'waiting'
+                    && dependency.type === 'manual' && dependency.description === decision.reason)),
+                  {
+                    taskId: task.id,
+                    type: 'manual',
+                    description: decision.reason,
+                    status: 'waiting' as const,
+                    createdAt: new Date().toISOString(),
+                  },
+                ],
+              });
+              return [];
+            },
           });
         }
         this.deps.callbacks.refreshRuntimeState();
@@ -145,10 +167,11 @@ export class SessionKernelRuntime {
         throw new Error('await_user_decision must be applied by the execution Runtime');
       case 'park_for_replan': {
         const task = this.deps.taskRuntimeService.findTask(decision.action.taskId);
-        if (task && task.status !== 'parked') {
-          this.lifecycle.transitionTask({
+        if (task && task.status !== 'needs_action' && task.status !== 'running') {
+          this.deps.taskStateAuthority.reconcile({
             taskId: task.id,
-            to: 'parked',
+            decisionId: decision.id,
+            operationKey: `replan_park:${decision.id}`,
             actor: 'session-kernel-runtime',
             reason: decision.reason,
           });
@@ -171,6 +194,7 @@ export class SessionKernelRuntime {
       case 'accept_partial_result':
       case 'accept_uncertified_result':
       case 'retry_uncertified_result':
+      case 'retry_remaining_work':
       case 'control_managed_service':
       case 'resolve_recovery':
       case 'grant_capability':
@@ -181,6 +205,56 @@ export class SessionKernelRuntime {
       case 'defer_task_plan_for_availability':
       case 'activate_deferred_task_plan':
         throw new Error(`${decision.action.type} must be applied by the execution Runtime`);
+    }
+  }
+
+  /**
+   * Records a durable "waiting for the user's answer" conclusion on the Task that
+   * owns this turn. It is a real state change (needs_action + a `provide_input`
+   * pending action), so every surface shows the same reason and the next answer
+   * is a plain re-entry instead of a hidden blocker.
+   */
+  private markTaskWaitingForInput(taskId: string, question: string, decisionId: string): void {
+    const task = this.deps.taskRuntimeService.findTask(taskId);
+    if (!task || task.status === 'succeeded' || task.status === 'failed'
+      || task.status === 'cancelled') return;
+    const boundedQuestion = question.replace(/[\r\n]+/gu, ' ').trim().slice(0, 320);
+    const reason = {
+      code: 'input_required' as const,
+      message: boundedQuestion,
+      evidenceRefs: [`decision:${decisionId}`],
+    };
+    try {
+      this.deps.taskRuntimeService.applyTaskChange({
+        taskId,
+        decisionId,
+        operationKey: `clarification:${decisionId}`,
+        expectedVersion: task.stateVersion,
+        generationId: null,
+        graphRevision: null,
+        to: task.status === 'running' ? 'needs_action' : task.status,
+        detail: {
+          reason,
+          unresolved: [],
+          phase: null,
+          pendingActions: [{
+            actionId: `input:${taskId}:${decisionId}`,
+            kind: 'provide_input',
+            label: '回复这条消息即可继续',
+            reason,
+            result: null,
+          }],
+          requiredWork: task.stateDetail.requiredWork,
+          cleanup: task.stateDetail.cleanup,
+          nextWakeAt: null,
+        },
+        actor: 'session-kernel-runtime',
+        reason: 'Planner asked the user a clarifying question',
+      });
+      this.deps.callbacks.onWaitingForUser?.(taskId);
+    } catch {
+      // A concurrent state change supersedes this detail write; the answer path
+      // reconciles the Task again from its own facts.
     }
   }
 
@@ -212,7 +286,7 @@ export class SessionKernelRuntime {
         ));
       this.deps.callbacks.appendOutput(this.deps.presentation.formatTaskStatus({
         scope,
-        blockedTasks: this.deps.orchestration.getBlockedTasks()
+        needsActionTasks: this.deps.orchestration.getBlockedTasks()
           .filter(task => taskBelongsToConversation(
             task,
             conversationId,
@@ -220,9 +294,9 @@ export class SessionKernelRuntime {
           )),
         runningTask: conversationTasks.find(task => task.status === 'running') ?? null,
         activeTasks: conversationTasks.filter(task => (
-          ['created', 'ready', 'running', 'parked', 'blocked'].includes(task.status)
+          task.status === 'queued' || task.status === 'running' || task.status === 'needs_action'
         )),
-        latestDone: conversationTasks.find(task => task.status === 'done') ?? null,
+        latestDone: conversationTasks.find(task => task.status === 'succeeded') ?? null,
         dashboard: scopeDashboard(this.deps.orchestration.getDashboard(), conversationTasks),
       }));
       this.deps.callbacks.refreshRuntimeState();
@@ -230,9 +304,10 @@ export class SessionKernelRuntime {
     }
     if (taskCommand.control === 'clear_tasks') {
       const scope = normalizeClearScope(taskCommand.scope);
+      // Both legacy scope names select the one pending state.
       const statuses = scope === 'all'
-        ? ['created', 'ready', 'running', 'parked', 'blocked']
-        : [scope];
+        ? ['queued', 'running', 'needs_action']
+        : ['needs_action'];
       const candidates = this.deps.taskRuntimeService.listTasks()
         .filter(task => statuses.includes(task.status) && (
           taskBelongsToConversation(task, conversationId, this.deps.legacyCompatibility)
@@ -318,10 +393,10 @@ export class SessionKernelRuntime {
     this.deps.callbacks.prepareTaskExecution(task.id, buildExecutionRequest({
       userInput,
       taskId: task.id,
-      executionMode: task.status === 'blocked' ? 'resume-blocked' : 'resume-parked',
+      executionMode: task.status === 'needs_action' ? 'resume-blocked' : 'resume-parked',
       decision,
       queryId,
-      recoveryTrigger: task.status === 'blocked'
+      recoveryTrigger: task.status === 'needs_action'
         ? {
             kind: /^\/task\s+/iu.test(userInput) ? 'explicit-task-command' : 'natural-language-resume',
             blockedReason: task.dependencies
@@ -500,15 +575,17 @@ function scopeDashboard(
   const taskIds = new Set(tasks.map(task => task.id));
   const scopedBlocked = dashboard.blockedTasks.filter(task => taskIds.has(task.id));
   const scopedReady = dashboard.readyTasks.filter(task => taskIds.has(task.id));
-  const scopedActive = tasks.filter(task => ['created', 'ready', 'running', 'parked'].includes(task.status));
+  const scopedActive = tasks.filter(task => (
+    task.status === 'running' || task.status === 'needs_action'
+  ));
   return {
     ...dashboard,
     summary: {
       ...dashboard.summary,
       active: scopedActive.length,
       blocked: scopedBlocked.length,
-      parked: scopedActive.filter(task => task.status === 'parked').length,
-      done: tasks.filter(task => task.status === 'done').length,
+      parked: 0,
+      done: tasks.filter(task => task.status === 'succeeded').length,
     },
     priorityTask: scopedReady[0] ? { ...scopedReady[0], reasons: [] } : null,
     blockedTasks: scopedBlocked,
@@ -536,7 +613,9 @@ function buildExecutionRequest(input: {
 }
 
 function normalizeStatusScope(scope: string | null): TaskStatusQueryScope {
-  if (scope === 'blocked' || scope === 'running' || scope === 'dashboard') return scope;
+  // `blocked` stays accepted as the CLI spelling of the one user-facing state.
+  if (scope === 'blocked' || scope === 'needs_action') return 'needs_action';
+  if (scope === 'running' || scope === 'dashboard') return scope;
   throw new Error(`Invalid status scope: ${String(scope)}`);
 }
 

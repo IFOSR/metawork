@@ -52,7 +52,7 @@ export class TaskSignalService {
   }
 
   private deriveHasNewMaterials(task: Task): boolean {
-    if (task.resources.length === 0 || task.status !== 'blocked') {
+    if (task.resources.length === 0 || task.status !== 'needs_action') {
       return false;
     }
 
@@ -79,7 +79,7 @@ export class TaskSignalService {
     if (
       /抢占/.test(task.lastInterruptionReason)
       || progressRatio >= 0.6
-      || (task.snapshots.length > 0 && task.status === 'parked')
+      || (task.snapshots.length > 0 && task.status === 'needs_action')
     ) {
       return 'high';
     }

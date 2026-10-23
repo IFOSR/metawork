@@ -5,19 +5,27 @@ import type {
   WorkGraphDependency,
 } from '../work-graph/types.js';
 import type { AuthorizedExecutorBinding } from './authorized-executor-binding.js';
+import type { TaskStateDetail } from '../task/task-state.js';
 
-export const TaskStatus = {
-  CREATED: 'created',
-  READY: 'ready',
-  RUNNING: 'running',
-  PARKED: 'parked',
-  BLOCKED: 'blocked',
-  DONE: 'done',
-  ARCHIVED: 'archived',
-  CANCELLED: 'cancelled',
-} as const;
+/**
+ * The six-state Task contract is owned by the Task Domain. This module only
+ * re-exports it so consumers do not copy the vocabulary.
+ *
+ * `task-state.ts` has no imports, so re-exporting it here keeps the dependency
+ * direction `core -> Task state owner` acyclic.
+ */
+export {
+  TASK_STATUSES,
+  TASK_STATUS_LABELS,
+  TERMINAL_TASK_STATUSES,
+  ACTIVE_TASK_STATUSES,
+  isTaskStatus,
+  isTerminalTaskStatus,
+  isActiveTaskStatus,
+} from '../task/task-state.js';
+export type { TaskStatus } from '../task/task-state.js';
 
-export type TaskStatus = (typeof TaskStatus)[keyof typeof TaskStatus];
+import type { TaskStatus } from '../task/task-state.js';
 
 export const SubtaskStatus = {
   READY: 'ready',
@@ -66,6 +74,16 @@ export interface Task {
   title: string;
   goal: string;
   status: TaskStatus;
+  /** Monotonic Task state version. Every status/reason/operation/cleanup change bumps it. */
+  stateVersion: number;
+  /** Bounded structured current reason, phase, pending actions and cleanup summary. */
+  stateDetail: TaskStateDetail;
+  /** First entry into a terminal status. Never reset. */
+  completedAt: string | null;
+  /** Archiving is an independent attribute; it never changes the conclusion. */
+  archivedAt: string | null;
+  /** A retry Task points at the Task whose unfinished requirements it continues. */
+  retryOfTaskId: string | null;
   summary: string;
   snapshots: TaskSnapshot[];
   resources: string[];
@@ -302,9 +320,8 @@ export interface Dashboard {
 export interface RuntimeState {
   runningTaskId: string | null;
   runningExecutorName: string | null;
-  readyTaskIds: string[];
-  blockedTaskIds: string[];
-  parkedTaskIds: string[];
+  queuedTaskIds: string[];
+  needsActionTaskIds: string[];
   lastEvent: string | null;
 }
 

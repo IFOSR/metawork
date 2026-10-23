@@ -202,7 +202,9 @@ export class DurableKernelWorkflow implements KernelWorkflow {
     const applying = this.deps.store.markApplying(application.decisionId, this.deps.clock.now());
     try {
       const observation = await this.deps.runtime.apply(applying.decision);
-      this.deps.store.markApplied(applying.decisionId, observation, this.deps.clock.now());
+      if (!this.deps.store.isDecisionApplied?.(applying.decisionId)) {
+        this.deps.store.markApplied(applying.decisionId, observation, this.deps.clock.now());
+      }
       return true;
     } catch (error) {
       // No observation or effect was committed. Keep `applying` for the

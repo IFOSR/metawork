@@ -364,6 +364,10 @@ describe('WebSessionCatalog', () => {
       taskId: 'task_1',
       title: 'Research',
       status: 'running',
+      statusLabel: '执行中',
+      stateVersion: 2,
+      reasonCode: 'none',
+      explanation: '正在执行。',
       stages: [{
         phase: 'execution',
         status: 'running',

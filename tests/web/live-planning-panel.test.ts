@@ -56,11 +56,11 @@ describe('planner activity projection', () => {
       status,
       stages: [{
         phase: 'execution',
-        status: status === 'done' ? 'done' : 'running',
+        status: status === 'succeeded' ? 'done' : 'running',
         subtasks: [{
           id: 'subtask_background',
           title: 'Background subtask',
-          status: status === 'done' ? 'done' : 'running',
+          status: status === 'succeeded' ? 'done' : 'running',
           attempts: [],
         }],
       }],

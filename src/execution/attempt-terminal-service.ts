@@ -181,7 +181,7 @@ export class AttemptTerminalService {
           WHERE id = ? AND task_id = ? AND status = ?
             AND EXISTS (
               SELECT 1 FROM tasks
-              WHERE tasks.id = subtasks.task_id AND tasks.status IN ('running', 'blocked')
+              WHERE tasks.id = subtasks.task_id AND tasks.status IN ('running', 'needs_action', 'queued')
             )
         `).run(
           input.nextSubtaskStatus,

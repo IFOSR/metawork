@@ -7,8 +7,7 @@ function schema49() {
   runMigrations(db);
   db.exec(`ALTER TABLE subtasks DROP COLUMN file_outputs_json;
     UPDATE schema_version SET version = 49;
-    INSERT INTO tasks (id, title, goal, status, created_at, updated_at)
-      VALUES ('old', 'History', 'Preserve old authorizations', 'done', 'now', 'now');`);
+    INSERT INTO tasks (id, title, goal, status, created_at, updated_at) VALUES ('old', 'History', 'Preserve old authorizations', 'succeeded', 'now', 'now');`);
   return db;
 }
 

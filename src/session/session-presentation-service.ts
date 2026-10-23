@@ -41,8 +41,8 @@ export interface ExecutorRegisterWizardSummaryInput {
 
 const CLEAR_SCOPE_LABELS: Record<TaskClearScope, string> = {
   all: '所有未完成任务',
-  parked: '挂起任务',
-  blocked: '需要处理',
+  parked: '待处理任务',
+  blocked: '待处理任务',
 };
 
 export type {
@@ -188,20 +188,20 @@ export class SessionPresentationService {
 
   formatTaskStatus(input: {
     scope: TaskStatusQueryScope;
-    blockedTasks: Array<Task & { blockReason: string }>;
+    needsActionTasks: Array<Task & { blockReason: string }>;
     runningTask: Task | null;
     activeTasks: Task[];
     latestDone: Task | null;
     dashboard: Dashboard;
   }): string {
-    if (input.scope === 'blocked') {
-      if (input.blockedTasks.length === 0) {
+    if (input.scope === 'needs_action') {
+      if (input.needsActionTasks.length === 0) {
         return '当前没有需要处理的任务。';
       }
 
       return [
-        `当前有 ${input.blockedTasks.length} 个需要处理的任务：`,
-        ...input.blockedTasks.map(task => [
+        `当前有 ${input.needsActionTasks.length} 个需要处理的任务：`,
+        ...input.needsActionTasks.map(task => [
           `  #${task.id} [NEEDS_ACTION] ${task.title}`,
           `    → 原因：${formatBlockedTaskReason(task.blockReason)}`,
           `    → 建议动作：${formatBlockedTaskNextStep(task.id, task.blockReason)}`,
@@ -221,7 +221,7 @@ export class SessionPresentationService {
 
       const lines = [
         '当前没有正在执行的任务。',
-        `  总览：待执行 ${input.activeTasks.filter(task => task.status === 'ready' || task.status === 'created').length} / 挂起 ${input.activeTasks.filter(task => task.status === 'parked').length} / 需要处理 ${input.activeTasks.filter(task => task.status === 'blocked').length}`,
+        `  总览：排队 ${input.activeTasks.filter(task => task.status === 'queued').length} / 待处理 ${input.activeTasks.filter(task => task.status === 'needs_action').length}`,
       ];
       if (input.latestDone) {
         lines.push(`  最近完成：#${input.latestDone.id} ${input.latestDone.title}`);
@@ -280,40 +280,30 @@ export class SessionPresentationService {
   }
 
   formatTaskPoolWatchdogReminder(input: {
-    blockedTasks: Task[];
-    parkedTasks: Task[];
+    needsActionTasks: Task[];
     getWaitingBlockReason: (task: Task) => string | null;
   }): string[] {
-    const { blockedTasks, parkedTasks, getWaitingBlockReason } = input;
+    const { needsActionTasks, getWaitingBlockReason } = input;
     const lines = [
       '',
       '┌─ 任务池看护提醒 ─────────────────────────────────┐',
-      `│ 当前不可自动执行：需要处理 ${blockedTasks.length} / 挂起 ${parkedTasks.length}`,
+      `│ 当前待处理任务：${needsActionTasks.length}`,
     ];
 
-    if (blockedTasks.length > 0) {
+    if (needsActionTasks.length > 0) {
       lines.push('│ 需要处理：');
-      for (const task of blockedTasks.slice(0, this.queueLimit)) {
-        const reason = getWaitingBlockReason(task) || '等待处理';
+      for (const task of needsActionTasks.slice(0, this.queueLimit)) {
+        const reason = getWaitingBlockReason(task)
+          || task.stateDetail.reason.message
+          || '等待处理';
         lines.push(`│   #${task.id} ${task.title}`);
         lines.push(`│     原因：${formatBlockedTaskReason(reason)}`);
         lines.push(`│     还差：${formatBlockedTaskNextStep(task.id, reason)}`);
+        const nextStep = task.snapshots.at(-1)?.nextStep;
+        if (nextStep) lines.push(`│     下一步：${nextStep}`);
       }
-      if (blockedTasks.length > this.queueLimit) {
-        lines.push(`│   ... 还有 ${blockedTasks.length - this.queueLimit} 个需要处理的任务`);
-      }
-    }
-
-    if (parkedTasks.length > 0) {
-      lines.push('│ 挂起任务：');
-      for (const task of parkedTasks.slice(0, this.queueLimit)) {
-        const latestSnapshot = task.snapshots.at(-1);
-        lines.push(`│   #${task.id} ${task.title}`);
-        lines.push(`│     原因：${task.lastInterruptionReason || latestSnapshot?.pauseReason || '等待恢复'}`);
-        lines.push(`│     下一步：${latestSnapshot?.nextStep || '继续推进当前任务'}`);
-      }
-      if (parkedTasks.length > this.queueLimit) {
-        lines.push(`│   ... 还有 ${parkedTasks.length - this.queueLimit} 个挂起任务`);
+      if (needsActionTasks.length > this.queueLimit) {
+        lines.push(`│   ... 还有 ${needsActionTasks.length - this.queueLimit} 个待处理的任务`);
       }
     }
 
@@ -348,13 +338,14 @@ export class SessionPresentationService {
     evaluateTask: (task: Task) => { score: { total: number }; reasons: string[] };
   }): TaskQueueSnapshotEntry[] {
     const scored = input.tasks
-      .filter(task => ['created', 'ready', 'running', 'parked', 'blocked'].includes(task.status))
+      .filter(task => task.status === 'queued' || task.status === 'running'
+        || task.status === 'needs_action')
       .map(task => {
         const evaluated = input.evaluateTask(task);
         return {
           task,
           score: evaluated.score.total,
-          reason: task.status === 'blocked'
+          reason: task.status === 'needs_action'
             ? this.defaultQueueSnapshotReason(task)
             : evaluated.reasons[0] ?? this.defaultQueueSnapshotReason(task),
         };
@@ -375,18 +366,15 @@ export class SessionPresentationService {
 
     let runnableOrder = 0;
     return scored.slice(0, this.queueLimit).map(item => {
-      const executable = ['running', 'ready', 'created'].includes(item.task.status)
-        || (item.task.status === 'parked' && item.task.prioritySignals.isReady);
+      const executable = item.task.status === 'running' || item.task.status === 'queued';
       let executionOrder = '-';
       if (item.task.id === input.runningTaskId) {
         executionOrder = '正在执行';
       } else if (executable) {
         runnableOrder += 1;
         executionOrder = `第 ${runnableOrder} 顺位`;
-      } else if (item.task.status === 'parked') {
-        executionOrder = '挂起待恢复';
-      } else if (item.task.status === 'blocked') {
-        executionOrder = '需要处理';
+      } else if (item.task.status === 'needs_action') {
+        executionOrder = '待处理';
       }
 
       return {
@@ -405,7 +393,7 @@ export class SessionPresentationService {
       '',
       '┌─ 任务队列前五 ───────────────────────────────────┐',
       `│ 触发：${input.trigger}`,
-      `│ 总览：执行中 ${input.runtimeState.runningTaskId ? 1 : 0} / 待执行 ${input.runtimeState.readyTaskIds.length} / 挂起 ${input.runtimeState.parkedTaskIds.length} / 需要处理 ${input.runtimeState.blockedTaskIds.length}`,
+      `│ 总览：执行中 ${input.runtimeState.runningTaskId ? 1 : 0} / 排队 ${input.runtimeState.queuedTaskIds.length} / 待处理 ${input.runtimeState.needsActionTaskIds.length}`,
       ...input.entries.map((entry, index) => this.formatTaskQueueSnapshotEntry(entry, index + 1)),
       '└──────────────────────────────────────────────────┘',
     ];
@@ -464,21 +452,9 @@ export class SessionPresentationService {
   }
 
   private queueSnapshotStatusRank(task: Task, runningTaskId: string | null): number {
-    if (task.id === runningTaskId || task.status === 'running') {
-      return 5;
-    }
-    if (task.status === 'ready' || task.status === 'created') {
-      return 4;
-    }
-    if (task.status === 'parked' && task.prioritySignals.isReady) {
-      return 3;
-    }
-    if (task.status === 'parked') {
-      return 2;
-    }
-    if (task.status === 'blocked') {
-      return 1;
-    }
+    if (task.id === runningTaskId || task.status === 'running') return 5;
+    if (task.status === 'queued') return 4;
+    if (task.status === 'needs_action') return 1;
     return 0;
   }
 
@@ -486,11 +462,9 @@ export class SessionPresentationService {
     if (task.status === 'running') {
       return '当前正在执行';
     }
-    if (task.status === 'parked') {
-      return task.lastInterruptionReason || '任务已挂起';
-    }
-    if (task.status === 'blocked') {
-      const reason = task.dependencies.find(dependency => dependency.status === 'waiting')?.description
+    if (task.status === 'needs_action') {
+      const reason = task.stateDetail.reason.message
+        || task.dependencies.find(dependency => dependency.status === 'waiting')?.description
         || '等待处理';
       return formatBlockedTaskReason(reason);
     }
@@ -503,13 +477,9 @@ export class SessionPresentationService {
   private formatTaskQueueSnapshotEntry(entry: TaskQueueSnapshotEntry, index: number): string {
     const marker = entry.task.status === 'running'
       ? '执行中'
-      : entry.task.status === 'parked'
-        ? '挂起'
-        : entry.task.status === 'blocked'
-          ? '需要处理'
-          : entry.task.status === 'ready'
-            ? '待执行'
-            : '已创建';
+      : entry.task.status === 'needs_action'
+        ? '待处理'
+        : '排队';
     const progress = Math.round(entry.task.prioritySignals.progressRatio * 100);
     return `│ ${index}. [${marker}] #${entry.task.id} ${entry.task.title} | 优先级 ${entry.score.toFixed(1)} | ${entry.executionOrder} | 进度 ${progress}% | ${entry.reason}`;
   }

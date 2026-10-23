@@ -62,7 +62,7 @@ export async function attachTaskResources(
   const targetTask = context.taskEngine.getTaskRepo().findById(taskId)!;
   const summaryLine = `已关联 ${resources.length} 个文件到任务 #${taskId}: ${resources.join(', ')}`;
 
-  if (targetTask.status === 'blocked') {
+  if (targetTask.status === 'needs_action') {
     return {
       type: 'text',
       content: `${summaryLine}\n任务 #${taskId} 仍需要处理，可继续执行 /task resume ${taskId}`,

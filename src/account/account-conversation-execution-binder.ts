@@ -110,6 +110,9 @@ function bindObject<T extends object>(
   });
 }
 
+/** Callbacks a binding may legitimately omit; calling them is a no-op. */
+const OPTIONAL_CALLBACKS = new Set<string | symbol>(['onWaitingForUser']);
+
 function routeCallbacks<T extends object>(
   storage: AsyncLocalStorage<ConversationExecutionBinding>,
   select: (binding: ConversationExecutionBinding) => T,
@@ -122,6 +125,7 @@ function routeCallbacks<T extends object>(
         const callbacks = select(binding);
         const value = Reflect.get(callbacks, property);
         if (typeof value !== 'function') {
+          if (OPTIONAL_CALLBACKS.has(property)) return undefined;
           throw new Error(`Conversation execution callback is unavailable: ${String(property)}`);
         }
         return Reflect.apply(value, callbacks, args);

@@ -118,6 +118,11 @@ import { buildAccountRepositories, type AccountRepositories } from '../account/a
 import { buildAccountWorkspaceServices, type AccountWorkspaceServices } from '../account/account-workspace-services.js';
 import { buildAccountExecutionServices, type AccountExecutionServices } from '../account/account-execution-services.js';
 import { buildAccountTaskServices, type AccountTaskServices } from '../account/account-task-services.js';
+import {
+  createTaskLifecyclePort as createSessionTaskLifecyclePort,
+  createTaskStateAuthority,
+} from '../account/task-state-composition.js';
+import { TaskOperationResultRepo } from '../storage/task-operation-result-repo.js';
 import { buildAccountCoordinatorServices, type AccountCoordinatorServices } from '../account/account-coordinator-services.js';
 import { buildAccountRuntimeExecutionServices, type AccountRuntimeExecutionServices } from '../account/account-runtime-execution-services.js';
 import { buildAccountKernelExecutionServices, type AccountKernelExecutionServices } from '../account/account-kernel-execution-services.js';
@@ -201,6 +206,9 @@ export interface MetaclawSessionDeps {
   accountWorkspaceServices?: AccountWorkspaceServices;
   accountExecutionServices?: AccountExecutionServices;
   accountTaskServices?: AccountTaskServices;
+  /** Durable Task state entry. Composed once per session/account. */
+  taskLifecyclePort?: import('../task/task-lifecycle-transition-port.js').TaskLifecycleTransitionPort;
+  taskStateAuthority?: import('../task/task-state-authority.js').TaskStateAuthority;
   accountCoordinatorServices?: AccountCoordinatorServices;
   accountRuntimeExecutionServices?: AccountRuntimeExecutionServices;
   accountKernelExecutionServices?: AccountKernelExecutionServices;
@@ -343,9 +351,8 @@ export class MetaclawSession {
   private runtimeState: RuntimeState = {
     runningTaskId: null,
     runningExecutorName: null,
-    readyTaskIds: [],
-    blockedTaskIds: [],
-    parkedTaskIds: [],
+    queuedTaskIds: [],
+    needsActionTaskIds: [],
     lastEvent: null,
   };
   private latestGuidance: GuidanceState | null = null;
@@ -424,6 +431,10 @@ export class MetaclawSession {
   private disposePromise: Promise<void> | null = null;
   private readonly allowLegacyDirectReply: boolean;
   private retryWakeWorker: RetryWakeWorker | null = null;
+  private readonly taskLifecyclePort: import('../task/task-lifecycle-transition-port.js').TaskLifecycleTransitionPort;
+  private readonly taskOperationResults: import('../storage/task-operation-result-repo.js').TaskOperationResultRepo;
+  private cancellationCoordinator: import('../execution/task-cancellation-coordinator.js').TaskCancellationCoordinator | null = null;
+  private taskStateAuthority!: import('../task/task-state-authority.js').TaskStateAuthority;
 
   constructor(private deps: MetaclawSessionDeps) {
     this.allowLegacyDirectReply = deps.allowLegacyDirectReply ?? process.env.NODE_ENV === 'test';
@@ -445,8 +456,11 @@ export class MetaclawSession {
     this.interactionTraceStream = new InteractionTraceStream(deps.sessionId);
     this.sessionStateRepo = new SessionStateRepo(deps.db);
     this.plannerProposalRepo = new PlannerProposalRepo(deps.db);
+    this.taskLifecyclePort = deps.taskLifecyclePort ?? createSessionTaskLifecyclePort(deps.db);
+    this.taskOperationResults = new TaskOperationResultRepo(deps.db);
     const taskServices = deps.accountTaskServices ?? buildAccountTaskServices({
       taskEngine: deps.taskEngine,
+      lifecyclePort: this.taskLifecyclePort,
       agentClasses: stagedConfiguration.snapshot.config.agentClasses,
       attemptExecutionBackend: deps.attemptExecutionBackend,
     });
@@ -495,6 +509,18 @@ export class MetaclawSession {
       getConfigurationRevision: () => this.kernelConfiguration.revisionId,
     });
     this.workUnitClaimService = coordinatorServices.workUnitClaimService;
+    this.taskStateAuthority = deps.taskStateAuthority ?? createTaskStateAuthority({
+      db: deps.db,
+      taskRepo: deps.taskEngine.getTaskRepo(),
+      subtaskRepo: this.subtaskRepo,
+      workGraphRevisionRepo: this.workGraphRevisionRepo,
+      workUnitClaimService: this.workUnitClaimService,
+      // Release the Conversation slot as soon as the Task starts waiting for the
+      // user, so their next answer is admitted instead of queued behind it.
+      onWaitingForUser: task => {
+        void this.releasePausedTaskSlot(task.id);
+      },
+    });
     this.executorRecoveryRefreshService = coordinatorServices.executorRecoveryRefreshService;
     const kernelExecutorStatusProjector = new KernelExecutorStatusProjector(this.kernelExecutorStatusRepo);
     const plannerModel = stagedConfiguration.snapshot.config.models[this.plannerBinding.modelRef];
@@ -557,6 +583,8 @@ export class MetaclawSession {
       resultRoot: resultsRoot,
       sourceRoot,
       taskRuntimeService: this.taskRuntimeService,
+      taskStateAuthority: this.taskStateAuthority,
+      taskLifecyclePort: this.taskLifecyclePort,
       subtaskRepo: this.subtaskRepo,
       taskEventRepo: this.taskEventRepo,
       workGraphRevisionRepo: this.workGraphRevisionRepo,
@@ -579,6 +607,7 @@ export class MetaclawSession {
     this.retryWakeRepo = runtimeExecutionServices.retryWakeRepo;
     this.dispatchItemRepo = runtimeExecutionServices.dispatchItemRepo;
     const cancellationCoordinator = runtimeExecutionServices.cancellationCoordinator;
+    this.cancellationCoordinator = cancellationCoordinator;
     this.attemptRunner = runtimeExecutionServices.attemptRunner;
     const kernelExecutionServices = deps.accountKernelExecutionServices ?? buildAccountKernelExecutionServices({
       accountId: LOCAL_DEFAULT_ACCOUNT_ID,
@@ -598,6 +627,8 @@ export class MetaclawSession {
       maxConcurrentAttempts: deps.config.orchestration.max_concurrent_attempts,
       getConfigurationRevision: () => this.kernelConfiguration.revisionId,
       taskRuntimeService: this.taskRuntimeService,
+      taskStateAuthority: this.taskStateAuthority,
+      conversationTaskSchedulerRepo: this.conversationTaskSchedulerRepo,
       agentClassService: this.agentClassService,
       workGraphRuntimeService: this.workGraphRuntimeService,
       subtaskRepo: this.subtaskRepo,
@@ -667,6 +698,9 @@ export class MetaclawSession {
         },
         cancelTask: (taskId, reason) =>
           this.kernelExecutionRuntime.cancelTaskWithOutcome(taskId, reason),
+        onWaitingForUser: taskId => {
+          void this.releasePausedTaskSlot(taskId);
+        },
       },
     });
     this.kernelExecutionRuntime = kernelExecutionServices.kernelExecutionRuntime;
@@ -762,9 +796,8 @@ export class MetaclawSession {
         focusedTask: snapshot.currentTask ? { ...snapshot.currentTask } : null,
         runtimeState: {
           ...snapshot.runtimeState,
-          readyTaskIds: [...snapshot.runtimeState.readyTaskIds],
-          blockedTaskIds: [...snapshot.runtimeState.blockedTaskIds],
-          parkedTaskIds: [...snapshot.runtimeState.parkedTaskIds],
+          queuedTaskIds: [...snapshot.runtimeState.queuedTaskIds],
+          needsActionTaskIds: [...snapshot.runtimeState.needsActionTaskIds],
         },
         plannerState: { ...snapshot.plannerState },
         recentOutput: snapshot.output.slice(-100),
@@ -1430,7 +1463,7 @@ export class MetaclawSession {
       new Date(nowMs).toISOString(),
     );
     if (retryWakesDelivered > 0) return true;
-    for (const task of this.listLocalTasksByStatus('blocked')) {
+    for (const task of this.listLocalTasksByStatus('needs_action')) {
       if (await this.kernelExecutionRuntime.recoverDue(task.id, 'timer durable recovery drain')) return true;
     }
     if (await this.maybeReconcileBlockedTasksOnTimer(nowMs)) {
@@ -1471,7 +1504,12 @@ export class MetaclawSession {
   ): TaskRecoveryTrigger {
     return {
       kind: input.kind,
-      blockedReason: input.blockedReason || this.getWaitingBlockReason(task) || '未知原因',
+      // An empty blocker means the user pause itself is the only reason; the
+      // explicit resume is its resolution, so it must not be classified as an
+      // unknown external blocker.
+      blockedReason: input.blockedReason || this.getWaitingBlockReason(task)
+        || task.stateDetail.reason.message
+        || '',
       triggerReason: input.triggerReason,
       sourceInputExcerpt: input.sourceInput ? this.excerptInput(input.sourceInput) : undefined,
       newlyProvidedResources: input.newlyProvidedResources,
@@ -1493,16 +1531,14 @@ export class MetaclawSession {
     }
 
     const localTasks = this.listLocalTasks();
-    const blockedTasks = localTasks.filter(task => task.status === 'blocked');
-    const parkedTasks = localTasks.filter(task => task.status === 'parked');
-    if (blockedTasks.length === 0 && parkedTasks.length === 0) {
+    const needsActionTasks = localTasks.filter(task => task.status === 'needs_action');
+    if (needsActionTasks.length === 0) {
       return false;
     }
 
-    const fingerprint = [
-      ...blockedTasks.map(task => `b:${task.id}:${this.getWaitingBlockReason(task)}`),
-      ...parkedTasks.map(task => `p:${task.id}:${task.lastInterruptionReason}:${task.snapshots.at(-1)?.nextStep ?? ''}`),
-    ].join('|');
+    const fingerprint = needsActionTasks.map(task =>
+      `n:${task.id}:${this.getWaitingBlockReason(task)}:${task.stateDetail.reason.code}`
+    ).join('|');
     const throttleMs = this.deps.config.orchestration.reminder_throttle * 1000;
     if (
       this.lastTaskPoolWatchdogFingerprint === fingerprint
@@ -1515,8 +1551,7 @@ export class MetaclawSession {
     this.lastTaskPoolWatchdogFingerprint = fingerprint;
     this.lastTaskPoolWatchdogReminderAt = nowMs;
     this.appendOutput(...this.presentation.formatTaskPoolWatchdogReminder({
-      blockedTasks,
-      parkedTasks,
+      needsActionTasks,
       getWaitingBlockReason: task => this.getWaitingBlockReason(task),
     }));
     return true;
@@ -2305,9 +2340,8 @@ export class MetaclawSession {
     const schedulerState: RuntimeState = {
       runningTaskId: runningTask?.id ?? this.kernelExecutionRuntime.getSingleActiveTaskId(),
       runningExecutorName: null,
-      readyTaskIds: tasks.filter(task => task.status === 'ready').map(task => task.id),
-      blockedTaskIds: tasks.filter(task => task.status === 'blocked').map(task => task.id),
-      parkedTaskIds: tasks.filter(task => task.status === 'parked').map(task => task.id),
+      queuedTaskIds: tasks.filter(task => task.status === 'queued').map(task => task.id),
+      needsActionTaskIds: tasks.filter(task => task.status === 'needs_action').map(task => task.id),
       lastEvent: this.runtimeState.lastEvent,
     };
     this.runtimeState = {
@@ -2510,11 +2544,92 @@ export class MetaclawSession {
     });
   }
 
-  private lifecyclePort(): TaskLifecycleTransitionPort {
-    return this.lifecycle ??= createTaskLifecycleTransitionPort({
-      taskRuntimeService: this.taskRuntimeService,
-      subtaskRepo: this.subtaskRepo,
+  /**
+   * Startup recovery could not prove a safe resumption. It records the durable
+   * blocker and asks the authority to conclude; it never picks a status itself.
+   */
+  /**
+   * Releases the Conversation slot for a Task that stopped to wait for the user,
+   * so the user's next answer is admitted instead of queued behind it. It only
+   * releases a slot this Task actually holds and never promotes twice: the
+   * scheduler's release+promote is a single transaction.
+   */
+  private async releasePausedTaskSlot(taskId: string): Promise<void> {
+    try {
+      const task = this.taskRuntimeService.findTask(taskId);
+      if (!task || task.status !== 'needs_action') return;
+      const now = new Date().toISOString();
+      this.conversationTaskSchedulerRepo.parkScheduleEntry(taskId, now);
+      const conversationId = task.conversationId;
+      const slot = conversationId
+        ? this.conversationTaskSchedulerRepo.getSlot(conversationId)
+        : null;
+      if (conversationId && slot && slot.activeTaskId === taskId && slot.state !== 'free') {
+        // Never hand the slot on while this Task still owns a live operation: the
+        // shared residue reader decides, and the slot stays `releasing` until the
+        // periodic convergence confirms the cleanup and promotes the successor.
+        const generationId = this.workGraphRevisionRepo.findActive(taskId)?.generationId ?? null;
+        const residue = this.cancellationCoordinator?.completionBlockedReasons(
+          taskId,
+          generationId,
+        ) ?? [];
+        this.conversationTaskSchedulerRepo.releaseSlotAndPromote(
+          conversationId,
+          taskId,
+          now,
+          () => (this.cancellationCoordinator?.completionBlockedReasons(taskId, generationId) ?? residue).length > 0,
+          true, { reservationId: slot.reservationId, slotVersion: slot.slotVersion, taskVersion: task.stateVersion },
+        );
+      }
+      this.refreshRuntimeState();
+    } catch {
+      // Periodic account convergence repeats the same release from durable facts.
+    }
+  }
+
+  private markStartupRecoveryBlocked(taskId: string, reason: string, task?: Task): void {
+    const current = task ?? this.taskRuntimeService.findTask(taskId);
+    if (!current) return;
+    this.taskRuntimeService.updateTask(taskId, {
+      dependencies: [
+        ...current.dependencies.filter(dependency => !(dependency.status === 'waiting'
+          && dependency.type === 'manual' && dependency.description === reason)),
+        {
+          taskId,
+          type: 'manual',
+          description: reason,
+          status: 'waiting' as const,
+          createdAt: new Date().toISOString(),
+        },
+      ],
     });
+    // Recovery could not verify the external side effect, so it records an
+    // `unknown` result instead of pretending the stale dispatch is still live.
+    try {
+      this.taskOperationResults.record({
+        taskId,
+        operationKey: `startup_recovery:${taskId}`,
+        operationKind: 'execution',
+        outcome: 'unknown',
+        reasonCode: 'external_outcome_unknown',
+        message: reason,
+        evidenceRefs: [`task:${taskId}`],
+        updatedAt: new Date().toISOString(),
+      });
+    } catch {
+      // The durable blocker below still keeps the Task out of running.
+    }
+    this.taskStateAuthority.reconcile({
+      taskId,
+      decisionId: `startup_recovery:${taskId}:${current.stateVersion}`,
+      operationKey: `startup_recovery:${taskId}:${current.stateVersion}`,
+      actor: 'account-startup-recovery',
+      reason,
+    });
+  }
+
+  private lifecyclePort(): TaskLifecycleTransitionPort {
+    return this.lifecycle ??= this.taskLifecyclePort;
   }
 
   private formatTaskRecovery(taskId: string): string {
@@ -2888,17 +3003,7 @@ export class MetaclawSession {
       const blocked: Task[] = [];
       for (const task of this.listLocalTasksByStatus('running')) {
         try {
-          this.lifecyclePort().blockTask({
-            taskId: task.id,
-            dependency: {
-              taskId: task.id,
-              type: 'manual',
-              description: `startup recovery requires handling: ${recoveryBlockedReason}`,
-              status: 'waiting',
-            },
-            actor: 'account-startup-recovery',
-            reason: `startup recovery requires handling: ${recoveryBlockedReason}`,
-          });
+          this.markStartupRecoveryBlocked(task.id, `startup recovery requires handling: ${recoveryBlockedReason}`, task);
         } catch {
           // Keep the in-memory recovery fence even if persistence is unavailable.
         }
@@ -3011,17 +3116,7 @@ export class MetaclawSession {
       const blocked: Task[] = [];
       for (const task of this.listLocalTasksByStatus('running')) {
         try {
-          this.lifecyclePort().blockTask({
-            taskId: task.id,
-            dependency: {
-              taskId: task.id,
-              type: 'manual',
-              description: `startup recovery blocked: ${reason}`,
-              status: 'waiting',
-            },
-            actor: 'account-startup-recovery',
-            reason: `startup recovery blocked: ${reason}`,
-          });
+          this.markStartupRecoveryBlocked(task.id, `startup recovery blocked: ${reason}`, task);
         } catch {
           // Preserve durable attempt ownership if even the diagnostic Task update fails.
         }
@@ -3034,7 +3129,7 @@ export class MetaclawSession {
       );
       return blocked;
     }
-    for (const task of this.listLocalTasksByStatus('blocked')) {
+    for (const task of this.listLocalTasksByStatus('needs_action')) {
       if (recovered.some(item => item.id === task.id)) continue;
       await this.kernelExecutionRuntime.recoverDue(task.id, 'startup due-event drain');
     }

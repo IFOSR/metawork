@@ -63,17 +63,19 @@ describe('blocked task user journey', () => {
     try {
       session.initialize();
       await session.submit('Research report', { awaitAsyncWork: true });
-      const task = taskRepo.findByStatus('blocked')[0]!;
+      const task = taskRepo.findByStatus('needs_action')[0]!;
       expect(task).toBeTruthy();
       expect(backend.create).toHaveBeenCalledTimes(1);
       const original = db.prepare('SELECT * FROM executor_attempt_receipts WHERE task_id = ?').all(task.id);
+      // An interrupted response without a Kernel recovery candidate is a
+      // fail-closed unknown outcome: the user must verify the external effect,
+      // and no new Executor is started blindly.
       await session.submit(`/task resume ${task.id}`, { awaitAsyncWork: true });
-      expect(backend.create).toHaveBeenCalledTimes(2);
-      expect(taskRepo.findById(task.id)?.status).toBe('done');
-      expect(session.getSnapshot().output.join('\n')).toContain('Recovered research report with complete evidence.');
+      expect(backend.create).toHaveBeenCalledTimes(1);
+      expect(taskRepo.findById(task.id)?.status).toBe('needs_action');
+      expect(taskRepo.findById(task.id)?.stateDetail.reason.code).toBe('external_outcome_unknown');
       const receipts = db.prepare('SELECT * FROM executor_attempt_receipts WHERE task_id = ?').all(task.id);
-      expect(receipts).toEqual(expect.arrayContaining(original));
-      expect(receipts).toEqual(expect.arrayContaining([expect.objectContaining({ terminal_state: 'completed' })]));
+      expect(receipts).toEqual(original);
     } finally {
       await session.dispose();
       db.close();
@@ -112,7 +114,7 @@ describe('blocked task user journey', () => {
     session.initialize();
     await session.submit('整理 blocked 任务用户旅程验收报告', { awaitAsyncWork: true });
 
-    const blockedTask = taskRepo.findByStatus('blocked')[0];
+    const blockedTask = taskRepo.findByStatus('needs_action')[0];
     expect(blockedTask).toBeTruthy();
     // The block keeps the Kernel policy reason and adds the Executor failure
     // that caused it, so the user can see why the Task stopped.
@@ -124,20 +126,19 @@ describe('blocked task user journey', () => {
 
     await session.submit(`/task recovery ${blockedTask.id}`, { awaitAsyncWork: true });
     output = session.getSnapshot().output.join('\n');
-    expect(output).toContain(`任务 #${blockedTask.id} 仍需要处理`);
-    expect(output).toContain('没有可供 /task recover 使用的恢复项');
-    expect(output).toContain('系统不会在无法确认外部副作用时自动重试');
+    // The Task is needs_action and has no uncertain Kernel application to
+    // reconcile, so recovery reports exactly that instead of retrying blindly.
+    expect(output).toContain(`Task #${blockedTask.id} has no uncertain or failed recovery items.`);
 
     await session.submit('当前有没有被阻塞的任务？', { awaitAsyncWork: true });
     output = session.getSnapshot().output.join('\n');
     expect(output).toContain('当前有 1 个需要处理的任务');
     expect(output).toContain(`#${blockedTask.id} [NEEDS_ACTION] ${blockedTask.title}`);
-    expect(output).toContain('材料齐全不等于可以安全恢复');
-    expect(output).toContain(`/task recovery ${blockedTask.id}`);
+    expect(output).toContain('上次执行结果不确定');
 
     await session.submit(`/task unblock ${blockedTask.id}`, { awaitAsyncWork: true });
 
-    expect(taskRepo.findById(blockedTask.id)?.status).toBe('blocked');
+    expect(taskRepo.findById(blockedTask.id)?.status).toBe('needs_action');
     expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
 
     output = session.getSnapshot().output.join('\n');

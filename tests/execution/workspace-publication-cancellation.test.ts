@@ -15,6 +15,7 @@ import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-rep
 import { ResultObjectRepo } from '../../src/storage/result-object-repo.js';
 import { SubtaskHandoffRepo } from '../../src/storage/subtask-handoff-repo.js';
 import { pathToFileURL } from 'node:url';
+import { setTaskStatus, recordingTaskLifecyclePort } from '../support/task-state-fixture.js';
 
 const configurationRevision = 'configuration-revision-publication';
 const publicationBinding: AuthorizedExecutorBinding = {
@@ -35,6 +36,7 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
       runMigrations(db);
       const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/publication-result-reference');
       const taskRuntime = new TaskRuntimeService({
+      lifecyclePort: recordingTaskLifecyclePort().port,
         taskEngine,
         taskRepo: new TaskRepo(db),
       });
@@ -43,8 +45,8 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
         title: 'Publication reference',
         goal: 'Publish an authorized result reference',
       });
-      taskEngine.transition(task.id, 'ready');
-      taskEngine.transition(task.id, 'running');
+      setTaskStatus(db, task.id, 'queued');
+      setTaskStatus(db, task.id, 'running');
       insertConfigurationRevision(db, configurationRevision);
       activateGraphRevision(
         db,
@@ -234,14 +236,14 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
     db.pragma('foreign_keys = ON');
     runMigrations(db);
     const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/publication-recovery-order');
-    const taskRuntime = new TaskRuntimeService({ taskEngine, taskRepo: new TaskRepo(db) });
+    const taskRuntime = new TaskRuntimeService({ lifecyclePort: recordingTaskLifecyclePort().port, taskEngine, taskRepo: new TaskRepo(db) });
     const task = taskEngine.create({
       id: 'task-publication-recovery-order',
       title: 'Recovered publication order',
       goal: 'Publish recovered branches',
     });
-    taskEngine.transition(task.id, 'ready');
-    taskEngine.transition(task.id, 'running');
+    setTaskStatus(db, task.id, 'queued');
+    setTaskStatus(db, task.id, 'running');
     insertConfigurationRevision(db, configurationRevision);
     activateGraphRevision(db, task.id, 'generation-publication-recovery-order', configurationRevision);
     const subtasks = new SubtaskRepo(db);
@@ -407,6 +409,7 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
     runMigrations(db);
     const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/publication-cancel');
     const taskRuntime = new TaskRuntimeService({
+      lifecyclePort: recordingTaskLifecyclePort().port,
       taskEngine,
       taskRepo: new TaskRepo(db),
     });
@@ -415,8 +418,8 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
       title: 'Publication cancellation',
       goal: 'Do not publish after cancellation',
     });
-    taskEngine.transition(task.id, 'ready');
-    taskEngine.transition(task.id, 'running');
+    setTaskStatus(db, task.id, 'queued');
+    setTaskStatus(db, task.id, 'running');
     insertConfigurationRevision(db, configurationRevision);
     activateGraphRevision(
       db,
@@ -471,7 +474,7 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
     const cancel = () => {
       publications.requestCancellation({ taskId: task.id, generationId: 'generation-publication-cancel',
         subtaskIds: ['subtask-publication-cancel'], decisionId: 'decision-cancel-race', now });
-      taskEngine.cancel(task.id, `cancel during ${stage}`);
+      setTaskStatus(db, task.id, 'cancelled');
     };
     const worker = new WorkspacePublicationWorker({
       db,
@@ -560,6 +563,7 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
     runMigrations(db);
     const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/publication-conflict');
     const taskRuntime = new TaskRuntimeService({
+      lifecyclePort: recordingTaskLifecyclePort().port,
       taskEngine,
       taskRepo: new TaskRepo(db),
     });
@@ -568,8 +572,8 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
       title: 'Publication conflict',
       goal: 'Preserve source attempt binding',
     });
-    taskEngine.transition(task.id, 'ready');
-    taskEngine.transition(task.id, 'running');
+    setTaskStatus(db, task.id, 'queued');
+    setTaskStatus(db, task.id, 'running');
     const sourceConfigurationRevision = 'configuration-revision-source';
     insertConfigurationRevision(db, sourceConfigurationRevision);
     activateGraphRevision(
@@ -706,6 +710,7 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
     runMigrations(db);
     const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/publication-stale-conflict');
     const taskRuntime = new TaskRuntimeService({
+      lifecyclePort: recordingTaskLifecyclePort().port,
       taskEngine,
       taskRepo: new TaskRepo(db),
     });
@@ -714,8 +719,8 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
       title: 'Publication stale conflict',
       goal: 'Publish only the candidate delta',
     });
-    taskEngine.transition(task.id, 'ready');
-    taskEngine.transition(task.id, 'running');
+    setTaskStatus(db, task.id, 'queued');
+    setTaskStatus(db, task.id, 'running');
     insertConfigurationRevision(db, configurationRevision);
     activateGraphRevision(
       db,
@@ -891,6 +896,7 @@ describe('WorkspacePublicationWorker edge-authoritative handoffs', () => {
       runMigrations(db);
       const taskEngine = new TaskEngine(new TaskRepo(db), '/tmp/publication-synth');
       const taskRuntime = new TaskRuntimeService({
+      lifecyclePort: recordingTaskLifecyclePort().port,
         taskEngine,
         taskRepo: new TaskRepo(db),
       });
@@ -899,8 +905,8 @@ describe('WorkspacePublicationWorker edge-authoritative handoffs', () => {
         title: 'Synthesized handoff',
         goal: 'Materialize edge handoffs without declarations',
       });
-      taskEngine.transition(task.id, 'ready');
-      taskEngine.transition(task.id, 'running');
+      setTaskStatus(db, task.id, 'queued');
+      setTaskStatus(db, task.id, 'running');
       insertConfigurationRevision(db, configurationRevision);
       activateGraphRevision(db, task.id, 'generation-synth', configurationRevision);
       const subtasks = new SubtaskRepo(db);

@@ -60,7 +60,7 @@ describe('Session skill usage observability', () => {
 
     await session.submit('用 TDD 实现一个小功能', { awaitAsyncWork: true });
 
-    const events = new SkillUsageEventRepo(db).listByTask(taskRepo.findByStatus('done')[0].id);
+    const events = new SkillUsageEventRepo(db).listByTask(taskRepo.findByStatus('succeeded')[0].id);
     expect(events).toEqual([]);
     expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
 
