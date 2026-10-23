@@ -1,6 +1,10 @@
 import { capturePublicProjectBaseline } from '../delivery/public-project-baseline.js';
 import type { KernelDecision, KernelEvent } from '../kernel/control-kernel.js';
-import type { KernelRuntime } from '../kernel/kernel-workflow.js';
+import {
+  KernelApplicationRejectionError,
+  KernelApplicationSettledError,
+  type KernelRuntime,
+} from '../kernel/kernel-workflow.js';
 import type { MemoryContextService } from '../memory/memory-context-service.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { ActiveExecutionControl } from '../execution/active-execution-control.js';
@@ -193,13 +197,34 @@ export class SessionKernelRuntime {
     if (decision.action.type !== 'authorize_task_control') return;
     const taskCommand = decision.action.task;
     if (taskCommand.control.startsWith('service_')) {
-      if (!taskCommand.taskId || !this.deps.manageLocalService) throw new Error('受管服务操作不可用');
+      if (!taskCommand.taskId || !this.deps.manageLocalService) {
+        throw new KernelApplicationRejectionError('受管服务操作不可用', 'service_runtime_unavailable');
+      }
       const task = this.deps.taskRuntimeService.findTask(taskCommand.taskId);
-      if (!task || !taskBelongsToConversation(task, conversationId, this.deps.legacyCompatibility)) throw new Error('服务任务不属于当前会话');
+      if (!task || !taskBelongsToConversation(task, conversationId, this.deps.legacyCompatibility)) {
+        // The refusal happens before any Runtime effect: converging is safe and
+        // the user still sees why (2026-10-22 review P0-3/P0-5).
+        throw new KernelApplicationRejectionError(
+          `服务任务不属于当前会话：serviceId=${taskCommand.scope ?? '未指定'} `
+          + `taskId=${taskCommand.taskId} conversationId=${conversationId}`,
+          'service_not_in_conversation',
+        );
+      }
       const operation = taskCommand.control.slice('service_'.length) as 'start' | 'stop' | 'restart';
-      const result = await this.deps.manageLocalService(task.id, operation, taskCommand.scope ?? undefined);
-      this.deps.callbacks.appendOutput(JSON.stringify(result));
-      this.deps.callbacks.refreshRuntimeState();
+      try {
+        const result = await this.deps.manageLocalService(task.id, operation, taskCommand.scope ?? undefined);
+        this.deps.callbacks.appendOutput(JSON.stringify(result));
+      } catch (error) {
+        // The Kernel refuses with the real reason; a settled operation reports
+        // the recorded failure. Both are converged, so neither may vanish.
+        if (error instanceof KernelApplicationRejectionError
+          || error instanceof KernelApplicationSettledError) {
+          this.deps.callbacks.appendOutput(error.message);
+        }
+        throw error;
+      } finally {
+        this.deps.callbacks.refreshRuntimeState();
+      }
       return;
     }
     if (taskCommand.control === 'status_query') {

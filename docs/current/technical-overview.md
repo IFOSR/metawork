@@ -204,7 +204,16 @@ retain stable insertion order. Same-Account Web/TUI/Feishu have equal business
 permissions regardless of which surface originated the Task (ADR-0043).
 
 `createAccountEventJournal` selects the immutable-segment journal with bounded
-background maintenance. Legacy SQLite Turn parsing runs in a worker with a
+background maintenance. A maintenance tick is a bounded sweep over the indexed
+streams: it sleeps on its idle interval (1s) when a complete sweep performed no
+durable work, stays on its active interval (25ms) while a stream reports
+`didWork` or an unfinished batch, yields to the event loop after a bounded
+stream/byte budget, and backs off a damaged stream individually so it cannot
+starve healthy ones. Each pass reports `{done, didWork}` because "this batch is
+converged" cannot distinguish the batch that finished the work from an idle
+pass. Repeated failures are rate-limited per Conversation; the first occurrence,
+a periodic bounded repeat, and recovery are logged with Account, Conversation,
+stage and stack. Legacy SQLite Turn parsing runs in a worker with a
 128 MiB old-generation limit and a ten-second deadline. It reuses the canonical
 projector and notification hooks. Write transactions, including application
 outer transactions, use `BEGIN IMMEDIATE` so concurrent worker commits cannot
@@ -212,6 +221,14 @@ invalidate a read snapshot that a writer later attempts to upgrade. Read-only
 baselines/pages retain deferred snapshot transactions. Legacy file import is
 still maintenance work and can parse an aggregate on the Server; its first
 migration cost is separate from indexed navigation performance.
+
+Periodic task-state reconciliation belongs to a running Server: it runs once
+when the Server branch acquires `runtime.lock` and then every minute. `help`,
+`server status`, `server doctor` and admin commands never enter that writable
+repair path from a status read. Background passes print only what they changed;
+a retained Conversation slot is printed when it appears, when its Task or
+residue changes, on a bounded heartbeat, and when it is released. An explicit
+`metawork maintenance reconcile-tasks` still prints the full report.
 
 Historical Task association uses the Account/Conversation/Turn trace index;
 ambiguous association remains fail-closed. Task activity uses indexed witnesses
@@ -1209,7 +1226,18 @@ periodic Worker owns Timer delivery, so the Decision application never emits
 the Timer directly. `wait_for_partition` remains retry-safe through its
 dedicated recheck path.
 Cancellation, external effects and the merge path keep their dedicated
-reconcilers. An application that cannot converge — declared `unresolved`, or
+reconcilers. A proved outcome that produced no observation converges as
+`applied` with a tagged settlement summary (`kernel_settlement/…`):
+`rejected_without_effect` for a refusal the Runtime can prove wrote nothing and
+started nothing — an unpublished service manifest, a Kernel `reject_request`,
+a service Task outside the Conversation — and `operation_settled` for a
+journaled operation that completed with a recorded error. The postcondition
+sweep reads that tag, so such a Decision can never linger as `uncertain` and
+strand the Conversation slot, while an untagged or genuinely unknown outcome
+still becomes `recovery_required`. Service refusals name the `serviceId`, the
+`ownerTaskId` and the owner Task status in the Kernel reason and in the
+Conversation output. An application that cannot converge — declared
+`unresolved`, or
 `retry_safe` past its bounded `applyAttempts < 3` budget — produces
 `recovery_required`, and the pass drains whatever it re-queued so the next
 verdict is actually observed. A failed Replan Job only blocks the Task when it

@@ -767,3 +767,86 @@ describe('application postcondition inspection', () => {
     }))).toMatchObject({ verdict: 'retry_safe' });
   });
 });
+
+describe('Kernel application settlement recovery', () => {
+  const taskId = 'task-service';
+  function settledApplication(
+    action: KernelDecisionApplicationRecord['decision']['action'],
+    errorSummary: string,
+  ): KernelDecisionApplicationRecord {
+    return {
+      id: 'application-settled',
+      decisionId: 'decision-settled',
+      eventId: 'event-settled',
+      idempotencyKey: 'decision:decision-settled',
+      status: 'uncertain',
+      applyAttempts: 1,
+      observationEvent: null,
+      errorSummary,
+      createdAt: '2026-10-22T00:00:00.000Z',
+      updatedAt: '2026-10-22T00:00:01.000Z',
+      decision: {
+        schemaVersion: 5,
+        configurationRevision: 'revision-a',
+        id: 'decision-settled',
+        eventId: 'event-settled',
+        reason: 'fixture',
+        action,
+      },
+    };
+  }
+  const serviceStartControl = {
+    type: 'authorize_task_control' as const,
+    task: {
+      binding: 'reference' as const,
+      taskId,
+      control: 'service_start',
+      scope: 'systemone-decision',
+      title: null,
+      goal: null,
+      includeRecentConversationContext: false,
+      priority: null,
+    },
+  };
+  function facts(application: KernelDecisionApplicationRecord): ApplicationPostconditionFacts {
+    return {
+      application,
+      task: { id: taskId, status: 'cancelled', dependencies: [] },
+      subtasks: [],
+      dispatchItems: [],
+      workGraphRevision: null,
+      replanRequest: null,
+      queuedReplanRequest: null,
+    };
+  }
+
+  it('converges a tagged effect-free refusal even though authorize_task_control is otherwise unmanaged', () => {
+    const application = settledApplication(
+      serviceStartControl,
+      'kernel_settlement/rejected_without_effect:service_request_rejected 服务归属不匹配',
+    );
+    expect(inspectApplicationPostcondition(facts(application))).toMatchObject({
+      family: 'observation_only',
+      verdict: 'applied',
+    });
+  });
+
+  it('converges a tagged settled operation because its durable record owns retry', () => {
+    const application = settledApplication(
+      serviceStartControl,
+      'kernel_settlement/operation_settled:service_operation_failed 监听端口已被占用',
+    );
+    expect(inspectApplicationPostcondition(facts(application))).toMatchObject({
+      family: 'task_transition',
+      verdict: 'applied',
+    });
+  });
+
+  it('keeps an untagged authorize_task_control refusal for the user, not for silent cleanup', () => {
+    const application = settledApplication(serviceStartControl, '服务与任务归属不匹配');
+    expect(inspectApplicationPostcondition(facts(application))).toMatchObject({
+      family: 'not_managed',
+      verdict: 'not_managed',
+    });
+  });
+});

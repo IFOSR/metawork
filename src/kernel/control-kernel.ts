@@ -830,17 +830,30 @@ export class ControlKernel {
         return this.decideMergeConflict(event, snapshot as Extract<KernelSnapshot, { type: 'dispatch' }>);
       case 'managed_service_requested': {
         const facts = snapshot as Extract<KernelSnapshot, { type: 'service_control' }>;
-        if (!event.taskId || facts.task?.id !== event.taskId || (facts.serviceTaskId && facts.serviceTaskId !== event.taskId)
+        // A refusal must name the facts the user needs to act on: which service,
+        // which Task owns it, and what state that Task is in (§P0-5).
+        const owner = facts.serviceTaskId;
+        const status = facts.task?.status ?? 'missing';
+        if (!event.taskId || facts.task?.id !== event.taskId || (owner && owner !== event.taskId)
           || (event.specification && (event.specification.taskId !== event.taskId || event.specification.serviceId !== event.serviceId))) {
-          return decision(event, { type: 'reject_request' }, '服务与任务归属不匹配');
+          return decision(event, { type: 'reject_request' },
+            `服务归属不匹配：serviceId=${event.serviceId}，请求任务=${event.taskId ?? '未指定'}，`
+            + `服务登记任务=${owner ?? '未登记'}，任务状态=${status}`);
         }
         if (event.operation !== 'stop' && ['cancelled', 'archived', 'failed'].includes(facts.task.status)) {
-          return decision(event, { type: 'reject_request' }, '任务已取消、归档或失败，不能启动服务');
+          return decision(event, { type: 'reject_request' },
+            `任务已取消、归档或失败，不能启动服务：serviceId=${event.serviceId}，`
+            + `taskId=${event.taskId}，任务状态=${facts.task.status}`);
         }
         if (event.operation !== 'stop' && !facts.published) {
-          return decision(event, { type: 'reject_request' }, '代码尚未发布到用户任务目录，不能启动服务');
+          return decision(event, { type: 'reject_request' },
+            `代码尚未发布到用户任务目录，不能启动服务：serviceId=${event.serviceId}，`
+            + `taskId=${event.taskId}，任务状态=${facts.task.status}`);
         }
-        if (event.operation !== 'start' && !facts.serviceTaskId) return decision(event, { type: 'reject_request' }, '服务不存在');
+        if (event.operation !== 'start' && !facts.serviceTaskId) {
+          return decision(event, { type: 'reject_request' },
+            `服务不存在：serviceId=${event.serviceId}，taskId=${event.taskId}`);
+        }
         return decision(event, { type: 'control_managed_service', taskId: event.taskId, serviceId: event.serviceId,
           operation: event.operation, specification: event.specification }, 'explicit managed service action authorized');
       }

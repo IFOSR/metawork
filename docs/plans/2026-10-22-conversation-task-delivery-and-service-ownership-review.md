@@ -1,10 +1,12 @@
 # 会话-任务-交付模型：故障复盘与改造方案
 
 - 日期：2026-10-22。
-- 状态：待评审，未实施。本文只定义问题、判据与改造目标，不代表源码已经符合目标。
+- 状态：P0（止血）已实施并验证；P1/P2/P3 与 §6 数据迁移未实施，依据下方 2026-10-23 复核结论继续挂起，不得据此文直接执行目录/服务/记忆迁移。本文只定义问题、判据与改造目标。
 - 取证对象：本机两套安装（`~/.metawork`、`~/.metawork-guangda`）的日志与 SQLite 数据库副本，以及本地工作区源码（含尚未提交的受管服务与公开交付实现）。
-- 架构边界：[ADR-0020](../adr/0020-core-module-ownership-and-dependency-direction.md)、[ADR-0021](../adr/0021-work-graph-v4-subtask-execution-contract.md)、[ADR-0022](../adr/0022-unified-kernel-control-plane-and-decision-ledger.md)、[ADR-0025](../adr/0025-single-task-concurrency-and-git-publication.md)、[ADR-0035](../adr/0035-workspace-scoped-conversation-organization.md)。实施批准前，现行 ADR 与 [`CONTEXT.md`](../../CONTEXT.md) 仍是现行系统依据。
-- 完成日期、验收证据、关闭提交：待实施完成后补录。
+- 架构边界：[ADR-0020](../adr/0020-core-module-ownership-and-dependency-direction.md)、[ADR-0021](../adr/0021-work-graph-v4-subtask-execution-contract.md)、[ADR-0022](../adr/0022-unified-kernel-control-plane-and-decision-ledger.md)、[ADR-0023](../adr/0023-durable-kernel-workflow-recovery-and-availability.md)、[ADR-0025](../adr/0025-single-task-concurrency-and-git-publication.md)、[ADR-0035](../adr/0035-workspace-scoped-conversation-organization.md)。
+- 完成日期：P0 于 2026-10-23 完成，关闭提交为本记录所在提交（`fix: converge deterministic kernel refusals and stop maintenance churn`，详见 §9）。P1/P2/P3 与迁移未完成。
+
+> 2026-10-23 源码与现场复核：[全面诊断和方案评审](../tech-debt/2026-10-23-conversation-task-delivery-review.md)。评审确认部分故障，但纠正了每轮经验卡、终态服务限制、声明文件运输、关键词验收调用链等结论；本文仍为待修订方案，除 §9 已交付的 P0 项外，不应直接作为实施或迁移依据。
 
 ---
 
@@ -401,3 +403,44 @@ acceptance: [
 | Executor 进程组回收 | `src/executor/local-cli-executor-adapter.ts:20-23,488,513-521` |
 | Planner 路由规则 | `planner/AnyFusion-Pi/packages/coding-agent/src/anyfusion/planner-system-prompt.ts:39-40` |
 | 生产授权闸门 | `src/kernel/production-authorization.ts:12-30` |
+
+---
+
+## 9. 实施记录（2026-10-23）：P0 已落地
+
+实施基线：`1ab8fc45` + `d19e412e`。复核依据：2026-10-23 诊断评审。P1/P2/P3 与 §6 迁移按该评审 §4–§7 的结论继续挂起。
+
+### 9.1 交付内容
+
+| 计划项 | 实际改动 | 位置 |
+| --- | --- | --- |
+| P0-1 维护循环退避 | 一轮 tick 变为**有界 sweep**并返回 `{done, didWork}`；完整 sweep 无工作时睡 1s（`idleIntervalMs`），有工作或未完成时保持 25ms；单次 sweep 受 `maxSweepMs`/`maxStreamsPerSweep` 约束；损坏流按指数退避（500ms→60s）且不饿死其他流；`wake()` 供后续事件驱动唤醒 | `src/gateway/event-journal-maintenance.ts`、`src/server/account-event-journal.ts`、`src/gateway/segmented-event-journal.ts` |
+| P0-1 可判定工作量信号 | `didWork` 不再由 `done` 推断：`journal.maintain` 用 trace/read checkpoint 的前后值报告进度，`search.maintain`/history 的已消费项计入，暴露 `maintainOnce()` 作为同一 pass 的确定性入口 | 同上 |
+| P0-2 错误可定位 | `onError(error, { accountId, conversationId, stage, attempts, suppressed, outcome })`；Composition 打印 stack + conversation + stage；同流重复失败按 `errorReportEvery` 限速，首次必报，恢复时打一条 `Gateway journal maintenance recovered:` | `src/gateway/event-journal-maintenance.ts`、`src/server/server-composition.ts` |
+| P0-2 reconciler 噪声与生命周期 | 周期清理移入 Server 启动分支（先取得 `runtime.lock`），`help`/`server status`/`server doctor`/admin 不再进入可写修复路径；后台 pass 只打印真正改变的状态；retained slot 仅在出现、task/residue 变化、心跳（默认 15 分钟）与释放时打印，并带阻塞时长 | `src/server/server-lifecycle-maintenance.ts`、`src/server/reconciler-log.ts`、`src/server/server-composition.ts`、`src/execution/task-state-reconciler.ts`（新增 `changes`/`changed`） |
+| P0-3 确定性拒绝不污染外层 | 新增 `KernelApplicationRejectionError` / `KernelApplicationSettledError`；Runtime 只对**可证明无副作用**（未发布规格、Kernel `reject_request`、服务任务不属于当前会话）或**已记账并完成**（服务操作记录 phase=completed 且带 error）收敛外层；未知结果仍为 `uncertain` | `src/kernel/kernel-workflow.ts`、`src/kernel/kernel-application-settlement.ts`、`src/storage/kernel-workflow-repo.ts`（`markApplicationSettled`）、`src/execution/kernel-execution-runtime.ts`、`src/session/session-kernel-runtime.ts` |
+| P0-4 拒绝类可收敛 | 结算写入带标签摘要 `kernel_settlement/<kind>:<code> <detail>`；后续条件巡检优先读取该标签，`authorize_task_control` 的拒绝类不再永久停留 `uncertain`。未带标签的历史行**不**按错误文案猜测，仍走 `recovery_required` | `src/execution/kernel-application-recovery.ts`、`src/kernel/kernel-application-settlement.ts` |
+| P0-5 拒绝文案 | Kernel 拒绝带 `serviceId`、请求任务、`ownerTaskId`、owner 任务状态；Session 把拒绝/结算原因写入会话输出，用户能看到真实原因 | `src/kernel/control-kernel.ts`、`src/session/session-kernel-runtime.ts` |
+
+契约记录：`CONTEXT.md` 新增 **Kernel Application Settlement** 词条；`docs/current/technical-overview.md` 更新维护循环与收敛语义；ADR-0023 追加 *Deterministic-refusal settlement amendment (2026-10-23)*。
+
+### 9.2 验证
+
+- `npm run lint`（`tsc --noEmit`）通过。
+- 新增/更新测试：`tests/gateway/event-journal-maintenance.test.ts`（10 例：退避、sweep 预算、失败隔离、限速与恢复、`wake`、兼容旧 boolean pass）、`tests/server/account-event-journal.test.ts`（`didWork` 真实信号、半完成历史行注入）、`tests/server/reconciler-log.test.ts`、`tests/server/server-lifecycle-maintenance.test.ts`、`tests/architecture/maintenance-ownership.test.ts`、`tests/kernel/kernel-workflow.test.ts`、`tests/kernel/kernel-application-settlement.test.ts`、`tests/execution/kernel-application-recovery.test.ts`、`tests/execution/service-rejection-convergence.test.ts`、`tests/storage/kernel-workflow-repo.test.ts`、`tests/kernel/control-kernel.test.ts`。
+- 定向回归：`tests/gateway tests/server tests/kernel tests/execution tests/storage tests/architecture tests/session tests/delivery` → 1438 passed；2 个失败为改动前基线已存在的 `configuration-admission-interlock` 与 `conversation-gateway-runtime`（已在 `git stash` 基线复跑确认）。全量 `npx vitest run` 另有 `tests/web/**`、`tests/e2e/**` 需要 `web/` 依赖、`planner-process-supervisor` 需要 vendored Planner 构建产物，均属环境基线。
+- 空闲 CPU 抽样（200 条已收敛流、5s 真实时钟）：维护循环 2.2ms ≈ 0.04% 单核；对照修复前“零待办 25ms 全表枚举”的 3.7% 量级。该抽样只覆盖维护循环，A1 提到的 100ms/250ms 其他定时器未改动。
+
+### 9.3 对照 §7 验收标准
+
+| 编号 | 状态 | 说明 |
+| --- | --- | --- |
+| V1 空闲退避与日志零增长 | 部分达成 | 维护循环与 reconciler 噪声已达成（有测试与抽样）；其他定时器未在本期范围内 |
+| V2 服务拒绝不新增 `uncertain`、槽位可释放 | 达成 | `tests/execution/service-rejection-convergence.test.ts` 覆盖预检拒绝、Kernel 拒绝、已记账失败三种路径，并断言 residue 为空 |
+| V3–V7（会话目录、服务归属、可执行验收、忽略产物交付、迁移一致性） | 未达成 | 属 P1/P2/§6，未实施 |
+
+### 9.4 未实施与原因
+
+- P1 会话级目录与版本、P2 可执行验收、§6 迁移：按 2026-10-23 复核 §4–§7，需要先补齐版本字节存储、恢复语义、Git 子目录映射、服务规格版本与迁移可中断设计；这些结论未被本次实施推翻。
+- A2 的 `Cannot read properties of null (reading 'length')` 具体解引用仍未定位。本期交付的是可定位性（stack + Conversation + stage + 50% 限速），并新增“半完成历史行”注入测试证明失败会带上下文上报且不饿死其他流；根因定位需要真实中间态数据。
+- A4 Executor 工具链环境、A5 忽略产物交付：属复核建议的 P1 交付闭环，未实施。

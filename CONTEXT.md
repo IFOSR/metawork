@@ -1116,6 +1116,10 @@ _Avoid_: per-module status writes, TaskView-owned repair, one residue rule per c
 The one answer to "can this Task's Conversation slot be released", produced by `TaskResidueReader.blockingReasons()`. Completion, cancellation, startup recovery, periodic recovery and TaskView all read it; a caller that must discount its own in-flight Decision passes that Decision id explicitly. A Task that is blocked with no residue releases its slot; a Task with `pending`/`applying`/`uncertain` applications, a terminal dispatch item without a receipt, an outstanding Replan Job or a live lease keeps it.
 _Avoid_: local residue re-derivation, optimistic release
 
+**Kernel Application Settlement**:
+How an authorized Decision that produced no observation reaches a durable end state. A Runtime apply may prove its outcome without an effect: `rejected_without_effect` (a refusal that wrote and started nothing — unpublished service manifest, Kernel `reject_request`, service Task outside the Conversation) or `operation_settled` (a journaled operation that completed with a recorded error). Both are written by `markApplicationSettled` as `applied` with a tagged summary (`kernel_settlement/<kind>:<code> <detail>`, `src/kernel/kernel-application-settlement.ts`), and the postcondition sweep reads that tag. A refusal or outcome that cannot be proved stays `uncertain` and becomes `recovery_required`, so it still reaches the user. The Kernel reason and the Conversation output name the `serviceId`, the owner Task and the owner Task status.
+_Avoid_: throwing a deterministic refusal into the parent application, matching free-text error summaries to settle historical rows
+
 **Attempt Settlement**:
 An Attempt is `authorized -> launched -> running -> settling -> settled`. Settlement is proven by the immutable `executor_attempt_receipts` row plus the closed dispatch item, and carries a separate immutable outcome (`succeeded | failed | heartbeat_lost | cancelled | unknown`). "Attempt settled" replaces the public phrase "dispatch terminal"; a settled Attempt alone never completes a Task.
 _Avoid_: attempt as Task status, dispatch status as outcome

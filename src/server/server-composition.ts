@@ -422,24 +422,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     cachePath: resolve(paths.root, 'metadata/openrouter-models.json'),
   });
 
-  // Reconcile half-cancelled task state (orphaned dispatch items, stale
-  // conversation slots, zombie schedule entries) at startup and every minute;
-  // see docs/plans/2026-09-03-feishu-task-execution-incident-review.md.
-  {
-    const { runTaskStateReconciler } = await import('../execution/task-state-reconciler.js');
-    const reconcileOnce = async () => {
-      try {
-        const report = await runTaskStateReconciler({ installRoot: paths.root });
-        for (const line of report.lines) console.log(`[reconciler] ${line}`);
-      } catch (error) {
-        console.error(`[reconciler] reconciliation failed: ${(error as Error).message}`);
-      }
-    };
-    await reconcileOnce();
-    const timer = setInterval(() => { void reconcileOnce(); }, 60_000);
-    timer.unref?.();
-  }
-
   if (cliCommand.kind === 'help') {
     process.stdout.write(`${formatCliHelp()}\n`);
     return;
@@ -630,6 +612,18 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     mkdirSync(dataDir, { recursive: true });
     instanceLock = await acquireInstanceLock(resolve(dataDir, 'runtime.lock'));
     process.once('exit', instanceLock.releaseOnExit);
+    // Reconcile half-cancelled task state (orphaned dispatch items, stale
+    // conversation slots, zombie schedule entries) at startup and every minute.
+    // This belongs to the Server lifecycle only: `help`, `server status` and
+    // `maintenance` must never enter the writable repair path from a status
+    // read (2026-10-23 review §3 A2/A3). See
+    // docs/plans/2026-09-03-feishu-task-execution-incident-review.md.
+    const { startServerStateReconciler } = await import('./server-lifecycle-maintenance.js');
+    await startServerStateReconciler({
+      installRoot: paths.root,
+      print: line => console.log(`[reconciler] ${line}`),
+      onError: error => console.error(`[reconciler] reconciliation failed: ${errorStack(error)}`),
+    });
   }
 
   // 2. Load the sole active configuration revision. Legacy *configuration
@@ -1502,7 +1496,25 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
     readModel: conversationReadModel,
     db, root: resolve(accountPaths.gateway, 'events'), accountId: LOCAL_DEFAULT_ACCOUNT_ID,
-    onError: error => console.error(`Gateway journal maintenance failed: ${(error as Error).message}`),
+    // The stack and the failing Conversation are what turn `Cannot read
+    // properties of null` into a locatable defect (§A2/A3).
+    onError: (error, context) => {
+      console.error([
+        'Gateway journal maintenance failed:',
+        `account=${context?.accountId ?? LOCAL_DEFAULT_ACCOUNT_ID}`,
+        `conversation=${context?.conversationId ?? 'unknown'}`,
+        `stage=${context?.stage ?? 'unknown'}`,
+        `attempts=${context?.attempts ?? 1}`,
+        `suppressed=${context?.suppressed ?? 0}`,
+        `outcome=${context?.outcome ?? 'reported'}`,
+        errorStack(error),
+      ].join(' '));
+    },
+    onRecovered: context => console.log(
+      `Gateway journal maintenance recovered: account=${context.accountId} `
+      + `conversation=${context.conversationId} failures=${context.failedAttempts} `
+      + `suppressed=${context.suppressed}`,
+    ),
   });
   const eventJournal = eventJournalRuntime.journal;
   const normalizeHistoryPage = (turns: readonly ConversationTurn[]): ConversationTurn[] => {
@@ -2968,4 +2980,13 @@ function asPayloadRecord(value: unknown): Record<string, unknown> {
 
 function maskApiKey(value: string): string {
   return `••••••••${value.slice(-4)}`;
+}
+
+/** Message plus stack; a stack-less log made the 2026-10 null dereference unreachable. */
+function errorStack(error: unknown): string {
+  if (error instanceof Error) {
+    const stack = error.stack ?? `${error.name}: ${error.message}`;
+    return stack.replace(/[\r\n]+/g, ' | ').slice(0, 4_000);
+  }
+  return String(error).replace(/[\r\n]+/g, ' | ').slice(0, 4_000);
 }

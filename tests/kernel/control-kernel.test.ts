@@ -214,12 +214,28 @@ describe('ControlKernel', () => {
     });
     expect(kernel.decide(event, { ...published, published: false })).toMatchObject({
       action: { type: 'reject_request' },
-      reason: '代码尚未发布到用户任务目录，不能启动服务',
+      reason: '代码尚未发布到用户任务目录，不能启动服务：serviceId=backend，taskId=task_1，任务状态=done',
     });
     expect(kernel.decide(event, { ...published, task: { id: 'task_1', status: 'failed' as const } })).toMatchObject({
       action: { type: 'reject_request' },
-      reason: '任务已取消、归档或失败，不能启动服务',
+      reason: '任务已取消、归档或失败，不能启动服务：serviceId=backend，taskId=task_1，任务状态=failed',
     });
+  });
+
+  it('names the service, the requesting task and the owning task when ownership does not match', () => {
+    const kernel = new ControlKernel();
+    const event = runtimeEvent({ type: 'managed_service_requested', operation: 'start', serviceId: 'backend' });
+    const decision = kernel.decide(event, {
+      schemaVersion: 5,
+      type: 'service_control',
+      task: { id: 'task_1', status: 'done' as const },
+      published: true,
+      serviceTaskId: 'task_owner',
+    } as KernelSnapshot);
+    expect(decision).toMatchObject({ action: { type: 'reject_request' } });
+    expect(decision.reason).toBe(
+      '服务归属不匹配：serviceId=backend，请求任务=task_1，服务登记任务=task_owner，任务状态=done',
+    );
   });
 
   it('queues three independent subtasks durably even when physical slots are occupied', () => {

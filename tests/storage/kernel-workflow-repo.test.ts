@@ -132,6 +132,42 @@ describe('KernelWorkflowRepo', () => {
     expect(repo.claimNext(event.occurredAt)).toBeNull();
   });
 
+  it('settles an application as applied while keeping the tagged refusal reason', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    seedConfigurationRevision(db);
+    const repo = new KernelWorkflowRepo(db);
+    const event = directReplyEvent();
+    const decision = directReplyDecision(event);
+    repo.enqueue(event);
+    repo.claimNext(event.occurredAt);
+    repo.issue(event.id, {
+      id: decision.id, schemaVersion: 5, eventId: event.id, eventType: event.type,
+      correlationId: event.correlationId, causationId: null, sessionId: event.sessionId,
+      taskId: null, subtaskId: null, attemptId: null, event, snapshot: planSnapshot(), decision,
+      action: decision.action.type, reason: decision.reason,
+      configurationRevision: CONFIGURATION_REVISION,
+      authorizedBindings: [],
+      bindingFingerprints: [],
+      createdAt: event.occurredAt,
+    });
+    repo.markApplying(decision.id, event.occurredAt);
+
+    repo.markApplicationSettled(decision.id,
+      'kernel_settlement/rejected_without_effect:service_request_rejected 服务归属不匹配', event.occurredAt);
+
+    expect(repo.findApplication(decision.id)).toMatchObject({
+      status: 'applied',
+      errorSummary: 'kernel_settlement/rejected_without_effect:service_request_rejected 服务归属不匹配',
+    });
+    expect(repo.countByApplicationStatus().uncertain).toBe(0);
+    // A settled application is not recoverable work and creates no observation.
+    expect(repo.listRecoverableApplications()).toEqual([]);
+    expect(() => repo.markApplicationSettled(decision.id, 'kernel_settlement/rejected_without_effect:x y', event.occurredAt))
+      .toThrow('Kernel application cannot be settled');
+    db.close();
+  });
+
   it('fails closed without claiming an event outside the unique v4 contract', () => {
     const db = new Database(':memory:');
     runMigrations(db);

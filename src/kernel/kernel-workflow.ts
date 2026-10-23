@@ -1,4 +1,8 @@
 import { allowsKernelAction, type ProductionAuthorizationFact } from './production-authorization.js';
+import {
+  formatApplicationSettlement,
+  type KernelApplicationSettlement,
+} from './kernel-application-settlement.js';
 import { createHash } from 'node:crypto';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { KernelDecision, KernelDecisionAction, KernelEvent, KernelSnapshot } from './control-kernel.js';
@@ -78,6 +82,12 @@ export interface KernelWorkflowStore {
   listRecoverableApplications(actions?: KernelDecisionAction['type'][], taskId?: string, correlationId?: string): KernelDecisionApplicationRecord[];
   markApplying(decisionId: string, now: string): KernelDecisionApplicationRecord;
   markApplied(decisionId: string, observation: KernelEvent | null, now: string): void;
+  /**
+   * Converges an application whose apply proved an outcome but produced no
+   * observation: a deterministic refusal, or an operation that settled with a
+   * recorded durable error. The tagged summary keeps the reason readable.
+   */
+  markApplicationSettled?(decisionId: string, summary: string, now: string): void;
   isDecisionApplied(decisionId: string): boolean;
   markApplicationFailed(
     decisionId: string,
@@ -129,6 +139,49 @@ export class KernelApplicationInterruptedError extends Error {
     super('kernel application interrupted before producing an observation');
     this.name = 'KernelApplicationInterruptedError';
   }
+}
+
+/**
+ * The Runtime refused the Decision before writing anything durable or starting
+ * any external action. The parent application must converge: retrying the same
+ * Decision cannot change the outcome, and leaving it `uncertain` strands the
+ * Conversation slot (2026-10-22 review P0-3/P0-4).
+ */
+export class KernelApplicationRejectionError extends Error {
+  constructor(
+    message: string,
+    readonly code = 'rejected_without_effect',
+    readonly detail = message,
+  ) {
+    super(message);
+    this.name = 'KernelApplicationRejectionError';
+  }
+}
+
+/**
+ * The Runtime performed the operation and journaled its outcome, which was an
+ * error. The effect is settled, not unknown: the durable operation record owns
+ * retry semantics, so the parent application must not stay `uncertain`.
+ */
+export class KernelApplicationSettledError extends Error {
+  constructor(
+    message: string,
+    readonly code = 'operation_settled',
+    readonly detail = message,
+  ) {
+    super(message);
+    this.name = 'KernelApplicationSettledError';
+  }
+}
+
+function settlementFor(error: unknown): KernelApplicationSettlement | null {
+  if (error instanceof KernelApplicationRejectionError) {
+    return { kind: 'rejected_without_effect', code: error.code, detail: error.detail };
+  }
+  if (error instanceof KernelApplicationSettledError) {
+    return { kind: 'operation_settled', code: error.code, detail: error.detail };
+  }
+  return null;
 }
 
 export class DurableKernelWorkflow implements KernelWorkflow {
@@ -208,12 +261,38 @@ export class DurableKernelWorkflow implements KernelWorkflow {
       // No observation or effect was committed. Keep `applying` for the
       // existing startup reconciliation to retry; shutdown is not cancellation.
       if (error instanceof KernelApplicationInterruptedError) return false;
+      const settlement = settlementFor(error);
+      if (settlement && this.settle(applying.decisionId, settlement)) {
+        // A settled Decision is complete: keep draining so the rejection cannot
+        // hold back the rest of the workflow.
+        return true;
+      }
       this.deps.store.markApplicationFailed(
         applying.decisionId,
         'uncertain',
         boundedError(error),
         this.deps.clock.now(),
       );
+      return false;
+    }
+  }
+
+  /**
+   * A settlement is only written when the store supports it. A store without
+   * the seam keeps the previous conservative behaviour (`uncertain`).
+   */
+  private settle(decisionId: string, settlement: KernelApplicationSettlement): boolean {
+    const markSettled = this.deps.store.markApplicationSettled;
+    if (!markSettled) return false;
+    try {
+      markSettled.call(
+        this.deps.store,
+        decisionId,
+        formatApplicationSettlement(settlement),
+        this.deps.clock.now(),
+      );
+      return true;
+    } catch {
       return false;
     }
   }

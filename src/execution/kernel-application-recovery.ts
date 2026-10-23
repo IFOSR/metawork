@@ -1,4 +1,5 @@
 import type { KernelEvent } from '../kernel/control-kernel.js';
+import { parseApplicationSettlement } from '../kernel/kernel-application-settlement.js';
 import type { KernelDecisionApplicationRecord } from '../kernel/kernel-workflow.js';
 import type {
   KernelAttemptPayload,
@@ -187,6 +188,20 @@ export function inspectApplicationPostcondition(
   facts: ApplicationPostconditionFacts,
 ): ApplicationPostconditionInspection {
   const action = facts.application.decision.action;
+  // A tagged settlement is a proven outcome, not an unknown side effect: the
+  // Runtime refused the Decision before writing anything, or the journaled
+  // operation completed with a recorded error. Leaving these `uncertain` was
+  // the residue that kept a Conversation slot occupied (P0-3/P0-4).
+  const settlement = parseApplicationSettlement(facts.application.errorSummary);
+  if (settlement) {
+    return {
+      family: settlement.kind === 'rejected_without_effect' ? 'observation_only' : 'task_transition',
+      verdict: 'applied',
+      reason: settlement.kind === 'rejected_without_effect'
+        ? `${action.type} was refused without effect (${settlement.code})`
+        : `${action.type} settled with a recorded operation outcome (${settlement.code})`,
+    };
+  }
   if (UNMANAGED_ACTIONS.has(action.type)) {
     return {
       family: 'not_managed',

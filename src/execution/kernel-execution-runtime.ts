@@ -3,7 +3,7 @@ import type { TaskActivityFactsReader } from '../task/task-activity-facts.js';
 import { projectPublicDelivery, type PublicDeliveryView } from '../delivery/public-delivery-view.js';
 import { PUBLISHED_CODE_MISSING_SERVICE_SPECIFICATION } from './managed-local-service.js';
 import type { ManagedLocalServices } from './managed-local-service.js';
-import type { LocalServiceOperation, LocalServiceView } from '../task/local-service.js';
+import type { LocalServiceOperation, LocalServiceSpecification, LocalServiceView } from '../task/local-service.js';
 import type { PendingResultIdentity } from '../task/safe-result-identity.js';
 import { ExecutorProbeError } from './work-unit-claim-service.js';
 // Execution application service: Session supplies facade callbacks but owns no runtime policy.
@@ -44,7 +44,14 @@ import {
   type KernelRetryWakeFact,
   type KernelSnapshot,
 } from '../kernel/control-kernel.js';
-import { DurableKernelWorkflow, KernelApplicationInterruptedError, type KernelWorkflow, type KernelWorkflowStore } from '../kernel/kernel-workflow.js';
+import {
+  DurableKernelWorkflow,
+  KernelApplicationInterruptedError,
+  KernelApplicationRejectionError,
+  KernelApplicationSettledError,
+  type KernelWorkflow,
+  type KernelWorkflowStore,
+} from '../kernel/kernel-workflow.js';
 import type { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import { deriveRecoverySafety } from '../routing/types.js';
 import type { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
@@ -108,6 +115,16 @@ interface FocusContext {
   kind: 'conversation' | 'task';
   taskId: string | null;
 }
+
+/**
+ * Structured result of one authorized managed-service apply. The shape is what
+ * lets the parent application distinguish a provable refusal, a settled (but
+ * failed) operation, and a real observation (2026-10-23 review §B1).
+ */
+type LocalServiceApplyOutcome =
+  | { readonly type: 'result'; readonly view: LocalServiceView | null }
+  | { readonly type: 'rejected'; readonly reason: string }
+  | { readonly type: 'settled'; readonly view: LocalServiceView | null; readonly error: string };
 
 interface DispatchStableFacts {
   executorStatuses: Extract<KernelSnapshot, { type: 'dispatch' }>['executorStatuses'];
@@ -759,12 +776,23 @@ export class KernelExecutionRuntime {
     return logs ? services.logs(serviceId) : services.status(serviceId);
   }
 
-  async manageLocalService(taskId: string, operation: LocalServiceOperation, serviceId?: string, settleTask = true): Promise<LocalServiceView> {
-    const services = this.deps.managedLocalServices;
-    if (!services) throw new Error('当前 Runtime 未配置受管服务');
-    const specification = operation === 'start' ? await services.readSpecification(taskId) : undefined;
+  async manageLocalService(taskId: string, operation: LocalServiceOperation, serviceId?: string, settleTask = true): Promise<LocalServiceView> {    const services = this.deps.managedLocalServices;
+    if (!services) {
+      throw new KernelApplicationRejectionError('当前 Runtime 未配置受管服务', 'service_runtime_unavailable');
+    }
+    let specification: LocalServiceSpecification | undefined;
+    if (operation === 'start') {
+      try {
+        specification = await services.readSpecification(taskId);
+      } catch (error) {
+        // The pre-flight reads the published manifest only; nothing was
+        // started, so the refusal is provably effect-free (review §B1).
+        const message = error instanceof Error ? error.message : String(error);
+        throw new KernelApplicationRejectionError(message, 'service_not_startable', `taskId=${taskId} ${message}`);
+      }
+    }
     const id = specification?.serviceId ?? serviceId;
-    if (!id) throw new Error('请指定服务标识');
+    if (!id) throw new KernelApplicationRejectionError('请指定服务标识', 'service_id_missing', `taskId=${taskId}`);
     const event: Extract<KernelEvent, { type: 'managed_service_requested' }> = {
       schemaVersion: 5, configurationRevision: this.configurationRevisionForTask(taskId),
       type: 'managed_service_requested', id: `service_${generateInteractionId()}`, correlationId: taskId,
@@ -772,13 +800,23 @@ export class KernelExecutionRuntime {
       taskId, operation, serviceId: id, specification,
     };
     const published = await services.isPublished(taskId);
-    let result: LocalServiceView | null = null;
-    let rejection: string | null = null;
-    const workflow = this.localServiceWorkflow(taskId, published, (view, error) => { result = view; rejection = error; });
+    const observed: { outcome: LocalServiceApplyOutcome | null } = { outcome: null };
+    const workflow = this.localServiceWorkflow(taskId, published, value => { observed.outcome = value; });
     await workflow.submit(event);
-    if (rejection) throw new Error(rejection);
+    const settled = observed.outcome;
+    if (settled?.type === 'rejected') {
+      // The Kernel refused the request before any effect; converge the parent
+      // application instead of persisting it as an uncertain side effect.
+      throw new KernelApplicationRejectionError(settled.reason, 'service_request_rejected', settled.reason);
+    }
+    if (settled?.type === 'settled') {
+      // The journaled service operation completed with a durable error. Its
+      // own record owns retry semantics, so the parent must not stay uncertain.
+      throw new KernelApplicationSettledError(settled.error, 'service_operation_failed', settled.error);
+    }
+    const result = settled?.view ?? null;
     if (!result) throw new Error('服务操作未完成，请查询当前状态');
-    if (settleTask && (result as LocalServiceView).state === 'healthy'
+    if (settleTask && result.state === 'healthy'
       && this.deps.taskRuntimeService.findTask(taskId)?.status === 'running') {
       await this.recoverDue(taskId, 'explicit service operation released health gate');
     }
@@ -786,7 +824,7 @@ export class KernelExecutionRuntime {
   }
 
   private localServiceWorkflow(taskId: string, published: boolean,
-    observe: (view: LocalServiceView | null, error: string | null) => void = () => undefined): DurableKernelWorkflow {
+    observe: (value: LocalServiceApplyOutcome | null) => void = () => undefined): DurableKernelWorkflow {
     const services = this.deps.managedLocalServices!;
     return new DurableKernelWorkflow({
       productionAuthorization: this.deps.productionAuthorization,
@@ -802,10 +840,12 @@ export class KernelExecutionRuntime {
       },
       runtime: { apply: async decision => {
         const action = decision.action;
-        if (action.type === 'reject_request') { observe(null, decision.reason); return null; }
+        if (action.type === 'reject_request') { observe({ type: 'rejected', reason: decision.reason }); return null; }
         if (action.type === 'control_managed_service') {
           const effect = await services.applyAuthorizedOperation({ decisionId: decision.id, ...action });
-          observe(effect.result, effect.error);
+          observe(effect.error
+            ? { type: 'settled', view: effect.result, error: effect.error }
+            : { type: 'result', view: effect.result });
         }
         return null;
       } },
