@@ -253,3 +253,24 @@ ownership. Delivery and installed-runtime acceptance remain open.
 ## 2026-10-03 多端观察与控制修订（ADR-0043）
 
 [ADR-0043](0043-explicit-conversation-observation-and-client-read-models.md) 接管客户端详细观察与操作契约：同 Server/Account 的 Web、单一 TUI、Feishu 同权，origin 仅记录来源；查询/命令回执定向请求连接，共享事实发给明确订阅者。浏览和恢复使用有界读模型，不经执行 attach。`cancel_turn` 保持精确 Turn 语义；后台任务使用 Task ID + execution generation 的 `cancel_task`。`permission_resolution_v2` 携带请求 revision 和 generation，经既有 Permission/KernelWorkflow 持久仲裁与恢复应用。通知目的地独立持久化，不随浏览或操作端漂移。源码实施及尚未关闭的发布门见[实施记录](../plans/2026-10-02-frontend-observation-implementation.md)。
+
+## 2026-10-23 就地执行修订（DeepSeek Harness 对齐）
+
+- **状态**：提案已实施于当前工作树，未合入 `main`；需要与本修订一同评审。
+- **范围**：执行根、交付引用、变更记录、服务启动授权。
+
+### 决定
+
+1. **执行模式按 Task 固定**：`tasks.execution_mode`（`worktree` | `in_place`）在创建时写入，之后不可变；`workspace_execution_bindings` 记录每个 generation 的规范路径、模式与授权工作目录，恢复只读这些事实，不再从环境变量重新解释。
+2. **`in_place` 不物化副本**：执行器的授权工作目录就是规范 Workspace 路径或其授权子目录；Attempt 只创建 `inputs`/`handoffs`/`results` 这些 attempt-owned 目录，不创建、恢复、清理或递归修改 managed worktree。`worktree` 模式保持现有 `ManagedGitWorkspaceService` 生命周期与 Git publication。
+3. **交付改为引用**：`in_place` 任务不再写入 `metaclaw-tasks/<task>` 副本。交付文件登记为 `task_artifacts.reference_kind = 'live_file'`，`published_path` 指向 Workspace 内的真实文件，`source_relative_path` 记录 Workspace 相对路径；预览与下载重新解析当前文件并按 Workspace containment、regular-file 与 symlink 校验，保留既有大小与内存上限。历史目录保留 `legacy_published_copy` 语义。
+4. **变更记录是观察事实**：每轮写入 `workspace_change_records`（文件清单、scratch 标记、`coverage ∈ complete|partial|unavailable` 与缺失原因）。记录缺失或降级只影响展示，不改变 `fileOutputs` 认证、handoff 或 receipt 的完成语义。
+5. **写冲突复用既有 ResourceLease**：Workspace 作为 `mount_root` 分区加入 attempt 的 claim 集合；同一物理路径或其祖先/后代路径上任一时刻只有一个 `in_place` 写者。交付目录写入继续由既有的跨进程 Workspace 发布锁串行化。
+6. **服务启动授权**：`in_place` 任务的服务启动只要求规范 Workspace 存在且声明的启动规格由本任务登记为 live 文件，不再逐文件比对历史发布哈希；端口、进程归属与规格校验保持独立。
+
+### 后果
+
+- 普通多轮编辑不再产生整树副本或每任务交付目录，历史 artifact 引用仍可读。
+- 需要固定字节的 handoff、跨 Task 精确输入、下载与审计材料必须显式生成 `artifact_versions` 记录，不能用后续文件变化冒充旧版本。
+- `metaclaw-tasks/*` 的历史目录保留只读；新任务不再创建同名目录。
+- 该修订此前被 2026-10-23 复核列为"证据不足、需修订后实施"，本修订即其落地形态，仍需 `main` 合并评审。

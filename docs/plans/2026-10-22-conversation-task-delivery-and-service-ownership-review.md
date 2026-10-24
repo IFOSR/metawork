@@ -427,8 +427,10 @@ acceptance: [
 ### 9.2 验证
 
 - `npm run lint`（`tsc --noEmit`）通过。
-- 新增/更新测试：`tests/gateway/event-journal-maintenance.test.ts`（10 例：退避、sweep 预算、失败隔离、限速与恢复、`wake`、兼容旧 boolean pass）、`tests/server/account-event-journal.test.ts`（`didWork` 真实信号、半完成历史行注入）、`tests/server/reconciler-log.test.ts`、`tests/server/server-lifecycle-maintenance.test.ts`、`tests/architecture/maintenance-ownership.test.ts`、`tests/kernel/kernel-workflow.test.ts`、`tests/kernel/kernel-application-settlement.test.ts`、`tests/execution/kernel-application-recovery.test.ts`、`tests/execution/service-rejection-convergence.test.ts`、`tests/storage/kernel-workflow-repo.test.ts`、`tests/kernel/control-kernel.test.ts`。
-- 定向回归：`tests/gateway tests/server tests/kernel tests/execution tests/storage tests/architecture tests/session tests/delivery` → 1438 passed；2 个失败为改动前基线已存在的 `configuration-admission-interlock` 与 `conversation-gateway-runtime`（已在 `git stash` 基线复跑确认）。全量 `npx vitest run` 另有 `tests/web/**`、`tests/e2e/**` 需要 `web/` 依赖、`planner-process-supervisor` 需要 vendored Planner 构建产物，均属环境基线。
+- 新增/更新测试：`tests/gateway/event-journal-maintenance.test.ts`（11 例：退避、sweep 预算、失败隔离、限速与恢复、`wake`、兼容旧 boolean pass）、`tests/server/account-event-journal.test.ts`（`didWork` 真实信号、半完成历史行注入、生产回调过滤 suppressed 错误）、`tests/server/reconciler-log.test.ts`、`tests/server/server-lifecycle-maintenance.test.ts`、`tests/architecture/maintenance-ownership.test.ts`、`tests/kernel/kernel-workflow.test.ts`、`tests/kernel/kernel-application-settlement.test.ts`、`tests/execution/kernel-application-recovery.test.ts`、`tests/execution/service-rejection-convergence.test.ts`、`tests/storage/kernel-workflow-repo.test.ts`、`tests/kernel/control-kernel.test.ts`。
+- 改动相关定向回归：5 个文件、41 tests passed；更广的核心域回归为 1443 passed，只有改动前基线已存在的 `configuration-admission-interlock` 与 `conversation-gateway-runtime` 失败（基线复跑同样失败）。补齐 `web/` 依赖后，Web 构建与 Web 测试为 46 files / 301 tests passed。
+- 全量 `npx vitest run`（允许本机监听）为 3832 passed、3 个基线失败（上述两项另加 `planner-process-supervisor` 的 vendored CLI 路径断言），另有 11 个 Web 测试套件因此前缺少 `react-dom` 的环境错误已在补依赖后单独通过；19 个测试按项目配置跳过。
+- 桌面用户视角 smoke：使用短路径隔离安装启动真实 Server + Electron，验证认证、文件/附件/PDF/图表保存、草稿恢复、1440/1100/900 宽度、200% 缩放、菜单快捷操作、Renderer 崩溃恢复与 Server 存活，结果 `Electron production-assets smoke passed; ready=2643ms; Server PID=17737`。
 - 空闲 CPU 抽样（200 条已收敛流、5s 真实时钟）：维护循环 2.2ms ≈ 0.04% 单核；对照修复前“零待办 25ms 全表枚举”的 3.7% 量级。该抽样只覆盖维护循环，A1 提到的 100ms/250ms 其他定时器未改动。
 
 ### 9.3 对照 §7 验收标准
@@ -442,5 +444,5 @@ acceptance: [
 ### 9.4 未实施与原因
 
 - P1 会话级目录与版本、P2 可执行验收、§6 迁移：按 2026-10-23 复核 §4–§7，需要先补齐版本字节存储、恢复语义、Git 子目录映射、服务规格版本与迁移可中断设计；这些结论未被本次实施推翻。
-- A2 的 `Cannot read properties of null (reading 'length')` 具体解引用仍未定位。本期交付的是可定位性（stack + Conversation + stage + 50% 限速），并新增“半完成历史行”注入测试证明失败会带上下文上报且不饿死其他流；根因定位需要真实中间态数据。
+- A2 的 `Cannot read properties of null (reading 'length')` 具体解引用仍未定位。本期交付的是可定位性（stack + Conversation + stage + 按 `errorReportEvery` 限速），并新增“半完成历史行”注入测试证明失败会带上下文上报且不饿死其他流；根因定位需要真实中间态数据。
 - A4 Executor 工具链环境、A5 忽略产物交付：属复核建议的 P1 交付闭环，未实施。
