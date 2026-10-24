@@ -54,6 +54,7 @@ export interface PrioritySignals {
 // ─── 任务对象 ───
 export interface Task {
   id: string;
+  executionMode?: 'worktree' | 'in_place';
   publicTaskDirectory?: string;
   publicDeliveryBaseline?: Record<string, string>;
   publicProject?: boolean;

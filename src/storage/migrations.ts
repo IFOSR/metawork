@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 import { installObservationSchema } from './observation-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 51;
+export const CURRENT_SCHEMA_VERSION = 54;
 
 const MANAGED_SERVICES_SQL = `
   CREATE TABLE IF NOT EXISTS public_workspace_files (
@@ -21,6 +21,63 @@ const MANAGED_SERVICES_SQL = `
   CREATE TABLE IF NOT EXISTS managed_local_service_effects (
     account_id TEXT NOT NULL, decision_id TEXT NOT NULL, effect_json TEXT NOT NULL,
     PRIMARY KEY (account_id, decision_id)
+  );
+`;
+
+const WORKSPACE_EXECUTION_SQL = `
+  CREATE TABLE IF NOT EXISTS workspace_execution_bindings (
+    task_id TEXT NOT NULL,
+    generation_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    execution_mode TEXT NOT NULL CHECK (execution_mode IN ('worktree', 'in_place')),
+    authorized_working_directory TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (task_id, generation_id)
+  );
+`;
+
+const WORKSPACE_CHANGE_RECORD_SQL = `
+  CREATE TABLE IF NOT EXISTS workspace_change_records (
+    record_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    generation_id TEXT,
+    subtask_id TEXT,
+    attempt_id TEXT,
+    conversation_id TEXT,
+    workspace_id TEXT NOT NULL,
+    user_turn_id TEXT,
+    before_tree TEXT,
+    after_tree TEXT,
+    files_json TEXT NOT NULL,
+    total_files INTEGER NOT NULL,
+    added_lines INTEGER NOT NULL,
+    deleted_lines INTEGER NOT NULL,
+    coverage TEXT NOT NULL CHECK (coverage IN ('complete', 'partial', 'unavailable')),
+    missing_reasons_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_workspace_change_records_task
+    ON workspace_change_records(task_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_workspace_change_records_attempt
+    ON workspace_change_records(attempt_id, created_at);
+`;
+
+const ARTIFACT_VERSION_SQL = `
+  CREATE TABLE IF NOT EXISTS artifact_versions (
+    artifact_version_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    source_task_id TEXT,
+    source_attempt_id TEXT,
+    relative_path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    byte_length INTEGER NOT NULL,
+    object_uri TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(workspace_id, relative_path, content_hash)
   );
 `;
 
@@ -841,7 +898,7 @@ CREATE TABLE workspace_records (
             task_id TEXT NOT NULL,
             generation_id TEXT NOT NULL,
             subtask_id TEXT NOT NULL,
-            workspace_kind TEXT NOT NULL CHECK(workspace_kind IN ('git')),
+            workspace_kind TEXT NOT NULL CHECK(workspace_kind IN ('git', 'in_place')),
             root_uri TEXT NOT NULL,
             baseline_json TEXT NOT NULL DEFAULT '{}',
             managed_repository_uri TEXT,
@@ -1642,6 +1699,88 @@ export function runMigrations(
       const changed = db.prepare('UPDATE schema_version SET version = 51 WHERE version = 50').run();
       if (changed.changes !== 1) throw new Error('schema version changed during 50 to 51 migration');
     })();
+    version = 51;
+  }
+  // Schema 52 belongs to the six-state Task migration on main; this branch owns
+  // 53. When both land together this block moves to the next free version.
+  if (version === 51) {
+    db.transaction(() => {
+      if (!columnsOf(db, 'tasks').includes('execution_mode')) {
+        db.exec("ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'worktree'");
+      }
+      const artifactColumns = tableExists(db, 'task_artifacts') ? columnsOf(db, 'task_artifacts') : [];
+      if (artifactColumns.length > 0 && !artifactColumns.includes('reference_kind')) {
+        db.exec("ALTER TABLE task_artifacts ADD COLUMN reference_kind TEXT NOT NULL DEFAULT 'legacy_published_copy'");
+        db.exec('ALTER TABLE task_artifacts ADD COLUMN workspace_id TEXT');
+        db.exec('ALTER TABLE task_artifacts ADD COLUMN artifact_version_id TEXT');
+        db.exec('ALTER TABLE task_artifacts ADD COLUMN source_relative_path TEXT');
+      }
+      db.exec(WORKSPACE_EXECUTION_SQL);
+      db.exec(WORKSPACE_CHANGE_RECORD_SQL);
+      db.exec(ARTIFACT_VERSION_SQL);
+      const changed = db.prepare('UPDATE schema_version SET version = 53 WHERE version = 51').run();
+      if (changed.changes !== 1) throw new Error('schema version changed during 51 to 53 migration');
+    })();
+    version = 53;
+  }
+  // SQLite cannot widen a CHECK constraint in place, so an in-place Workspace
+  // requires rebuilding the parent table. Foreign keys stay off for the swap;
+  // every parent row keeps its id, so child checkpoints stay consistent.
+  if (version === 53 && !tableExists(db, 'workspace_records')) {
+    db.transaction(() => {
+      const changed = db.prepare('UPDATE schema_version SET version = 54 WHERE version = 53').run();
+      if (changed.changes !== 1) throw new Error('schema version changed during 53 to 54 migration');
+    })();
+    version = 54;
+  }
+  if (version === 53) {
+    const priorViolations = new Set(
+      (db.pragma('foreign_key_check') as Array<Record<string, unknown>>).map(row => JSON.stringify(row)),
+    );
+    db.pragma('foreign_keys = OFF');
+    try {
+      db.transaction(() => {
+        db.exec(`
+          CREATE TABLE workspace_records_v54 (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            subtask_id TEXT NOT NULL,
+            workspace_kind TEXT NOT NULL CHECK(workspace_kind IN ('git', 'in_place')),
+            root_uri TEXT NOT NULL,
+            baseline_json TEXT NOT NULL DEFAULT '{}',
+            managed_repository_uri TEXT,
+            managed_branch TEXT,
+            head_commit TEXT,
+            current_checkpoint_id TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            cleanup_after TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(task_id, generation_id, subtask_id)
+          );
+          INSERT INTO workspace_records_v54 SELECT
+            id, task_id, generation_id, subtask_id, workspace_kind, root_uri, baseline_json,
+            managed_repository_uri, managed_branch, head_commit, current_checkpoint_id,
+            status, cleanup_after, created_at, updated_at
+          FROM workspace_records;
+          DROP TABLE workspace_records;
+          ALTER TABLE workspace_records_v54 RENAME TO workspace_records;
+          CREATE INDEX IF NOT EXISTS idx_workspace_records_retention
+            ON workspace_records(status, cleanup_after);
+        `);
+        const changed = db.prepare('UPDATE schema_version SET version = 54 WHERE version = 53').run();
+        if (changed.changes !== 1) throw new Error('schema version changed during 53 to 54 migration');
+      })();
+      const newViolations = (db.pragma('foreign_key_check') as Array<Record<string, unknown>>)
+        .filter(row => !priorViolations.has(JSON.stringify(row)));
+      if (newViolations.length > 0) {
+        throw new Error('workspace_records rebuild broke referential integrity');
+      }
+    } finally {
+      db.pragma('foreign_keys = ON');
+    }
+    version = 54;
   }
   // Current-schema databases may have been created before a new projection
   // invalidation trigger was introduced. Reinstalling the idempotent trigger
@@ -1659,7 +1798,7 @@ function runBaseMigrations(
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
     ).all() as Array<{ version: number }>;
-    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
+    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 53, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 41) {
@@ -1807,6 +1946,14 @@ function runBaseMigrations(
     db.exec("ALTER TABLE tasks ADD COLUMN public_delivery_baseline_json TEXT NOT NULL DEFAULT '{}'");
     db.exec('ALTER TABLE tasks ADD COLUMN start_service_after_publish INTEGER NOT NULL DEFAULT 0');
     db.exec('ALTER TABLE tasks ADD COLUMN public_project INTEGER NOT NULL DEFAULT 0');
+    db.exec("ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'worktree'");
+    db.exec("ALTER TABLE task_artifacts ADD COLUMN reference_kind TEXT NOT NULL DEFAULT 'legacy_published_copy'");
+    db.exec('ALTER TABLE task_artifacts ADD COLUMN workspace_id TEXT');
+    db.exec('ALTER TABLE task_artifacts ADD COLUMN artifact_version_id TEXT');
+    db.exec('ALTER TABLE task_artifacts ADD COLUMN source_relative_path TEXT');
+    db.exec(WORKSPACE_EXECUTION_SQL);
+    db.exec(WORKSPACE_CHANGE_RECORD_SQL);
+    db.exec(ARTIFACT_VERSION_SQL);
     db.exec(MANAGED_SERVICES_SQL);
     db.exec(PUBLICATION_DELIVERY_SQL);
     db.exec(RETRY_WAKE_SQL);

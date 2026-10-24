@@ -995,10 +995,21 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         && item.publishedPath === join(root, LOCAL_SERVICE_SPECIFICATION_FILENAME)),
     resolvePublishedDirectory: async taskId => {
       const task = taskEngine.getTaskRepo().findById(taskId);
-      if (!task || task.accountId !== LOCAL_DEFAULT_ACCOUNT_ID || !task.publicTaskDirectory) return null;
+      if (!task || task.accountId !== LOCAL_DEFAULT_ACCOUNT_ID) return null;
       const workspace = await resolveTaskWorkspacePath(taskId);
       if (!workspace) return null;
       const canonicalWorkspace = await realpath(workspace);
+      if (task.executionMode === 'in_place') {
+        // In-place delivery writes into the Workspace itself and records live
+        // references. Launch authority is the authorized service revision, so an
+        // unrelated user edit must not masquerade as "code not published".
+        const serviceSpec = taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId)
+          .some(item => item.status === 'published'
+            && item.relativePath === LOCAL_SERVICE_SPECIFICATION_FILENAME
+            && item.publishedPath === join(canonicalWorkspace, LOCAL_SERVICE_SPECIFICATION_FILENAME));
+        return serviceSpec ? canonicalWorkspace : null;
+      }
+      if (!task.publicTaskDirectory) return null;
       const root = resolve(canonicalWorkspace, task.publicTaskDirectory);
       if (!root.startsWith(`${canonicalWorkspace}/`)) return null;
       try {

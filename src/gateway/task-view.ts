@@ -50,10 +50,13 @@ export interface GatewayTaskViewSnapshot {
   readonly result: GatewayTaskViewResult | null;
   readonly publicDelivery?: {
     workspace: string;
-    taskDirectory: string;
+    taskDirectory: string | null;
+    mode: 'worktree' | 'in_place';
     state: 'not_published' | 'awaiting_acceptance' | 'publishing' | 'published' | 'failed';
     files: string[];
     conflicts: string[];
+    /** User-facing state sentence resolved on the Server so both clients agree. */
+    stateLabel: string;
   } | null;
   /** 快照水位，属于目标 Conversation 的事件流。 */
   readonly asOfSequence: number;

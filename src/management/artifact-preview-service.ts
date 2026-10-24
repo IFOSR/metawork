@@ -195,9 +195,10 @@ export class ArtifactPreviewService {
   }
 
   /**
-   * 校验已发布路径必须落在用户产物根内：realpath 解析后仍需位于
-   * `<userWorkspaceRoot>/metaclaw-tasks` 下，拒绝穿越、符号链接逃逸
-   * 与任意绝对路径。
+   * 校验路径落在已授权的用户 Workspace 内：先接受历史的
+   * `<userWorkspaceRoot>/metaclaw-tasks` 副本，再接受就地交付的 live 文件
+   * （Workspace 内任意相对路径）。两者都要求 realpath 后仍在根内，并拒绝
+   * 符号链接逃逸；大小与内存上限在校验之后仍由各读取路径执行。
    */
   private async safePublishedPath(publishedPath: string): Promise<string> {
     if (!isAbsolute(publishedPath)) throw new Error('published path must be absolute');
@@ -207,19 +208,23 @@ export class ArtifactPreviewService {
       ...(await this.deps.userWorkspaceRoots?.() ?? []),
     ];
     for (const root of roots) {
-      let artifactsRoot: string;
-      try {
-        artifactsRoot = await realpath(resolve(root, USER_ARTIFACTS_DIRECTORY));
-      } catch {
-        continue;
-      }
-      const rel = relative(artifactsRoot, real);
-      if (rel && !rel.startsWith('..') && !isAbsolute(rel)) {
-        const stat = await lstat(real);
-        if (stat.isSymbolicLink()) throw new Error('published path must not be a symbolic link');
-        return real;
+      const canonicalRoot = await realpath(root).catch(() => null);
+      if (!canonicalRoot) continue;
+      const candidates = [
+        await realpath(resolve(canonicalRoot, USER_ARTIFACTS_DIRECTORY)).catch(() => null),
+        canonicalRoot,
+      ];
+      for (const candidateRoot of candidates) {
+        if (!candidateRoot) continue;
+        const rel = relative(candidateRoot, real);
+        if (!rel.startsWith('..') && !isAbsolute(rel)) {
+          const stat = await lstat(real);
+          if (stat.isSymbolicLink()) throw new Error('published path must not be a symbolic link');
+          if (!stat.isFile()) throw new Error('published path must be a regular file');
+          return real;
+        }
       }
     }
-    throw new Error('published path escapes the user artifacts root');
+    throw new Error('published path escapes the authorized Workspace');
   }
 }

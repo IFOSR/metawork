@@ -56,7 +56,7 @@ describe('schema 50 to 51 public delivery and managed service migration', () => 
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name IN ('managed_local_services','managed_local_service_effects','public_workspace_files')").all()).toEqual([]);
       db.exec('DROP TRIGGER fail_51');
       runMigrations(db);
-      expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 51 });
+      expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: CURRENT_SCHEMA_VERSION });
     } finally { db.close(); }
   });
 

@@ -53,6 +53,7 @@ export class TaskEngine {
     publicTaskDirectory?: string;
     publicDeliveryBaseline?: Record<string, string>;
     startServiceAfterPublish?: boolean;
+    executionMode?: 'worktree' | 'in_place';
   }): Task {
     const now = new Date().toISOString();
     const taskId = input.id?.trim() ? input.id : generateTaskId();
@@ -64,6 +65,7 @@ export class TaskEngine {
       ...(input.ownerPlannerSessionId ? { ownerPlannerSessionId: input.ownerPlannerSessionId } : {}),
       ...(input.admittedAt ? { admittedAt: input.admittedAt } : {}),
       title: input.title,
+      ...(input.executionMode ? { executionMode: input.executionMode } : {}),
       publicTaskDirectory: input.publicTaskDirectory ?? publicTaskRelativeDirectory(input.title, taskId),
       publicDeliveryBaseline: input.publicDeliveryBaseline ?? {},
       publicProject: input.publicTaskDirectory !== undefined,

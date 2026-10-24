@@ -99,7 +99,8 @@ describe('production historical Task view lookup', () => {
     const f = await fixture(true);
     expect((await f.getTaskView(input)).publicDelivery).toEqual({
       workspace: '/user/workspace', taskDirectory: '/user/workspace/project',
-      state: 'published', files: ['server.mjs'], conflicts: [],
+      mode: 'worktree', state: 'published', stateLabel: '已发布到任务目录',
+      files: ['server.mjs'], conflicts: [],
     });
   });
 

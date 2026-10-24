@@ -1113,7 +1113,18 @@ export class KernelExecutionRuntime {
           if (decision.action.type === 'accept_uncertified_result' || decision.action.type === 'retry_uncertified_result') {
             const action = decision.action;
             if (action.type === 'accept_uncertified_result') {
-              await this.deps.attemptRunner.stageAcceptedResult(action);
+              try {
+                await this.deps.attemptRunner.stageAcceptedResult(action);
+              } catch (error) {
+                // Staging validates and then writes in one transaction, so a
+                // throw proves the Decision created no effect. Settle it as a
+                // deterministic refusal instead of stranding the slot as
+                // `uncertain` (2026-10-22 review P0-3/P0-4).
+                throw new KernelApplicationRejectionError(
+                  error instanceof Error ? error.message : String(error),
+                  'result_acceptance_refused',
+                );
+              }
             } else {
               const pending = this.deps.cancellationCoordinator.buildSnapshot(action.taskId).uncertifiedResult;
               if (!pending || pending.attemptId !== action.attemptId || pending.resultId !== action.resultId
@@ -3302,7 +3313,29 @@ export class KernelExecutionRuntime {
           await this.attemptSupervisor.drain(input.taskId);
           return;
         }
-        if (outcome.type === 'cancelled' || outcome.type === 'delivery_failed') continue;
+        if (outcome.type === 'cancelled') continue;
+        if (outcome.type === 'delivery_failed') {
+          // The Executor succeeded but the deliverable never reached the user.
+          // Surface that fact instead of leaving the last "verifying" step as
+          // the panel's permanent state.
+          this.appendExecutionTrace({
+            phase: 'execution',
+            actor: 'runtime',
+            kind: 'delivery_failed',
+            status: 'failed',
+            title: '结果交付失败',
+            summary: '执行已完成，但交付文件未能登记到 Workspace；可在结果卡片重试交付，无需重跑执行器。',
+            details: {
+              taskId: outcome.taskId,
+              publicationId: outcome.publicationId,
+              subtaskId: outcome.subtaskId,
+              deliveryState: 'failed',
+            },
+            eventKey: `${outcome.publicationId}:delivery_failed`,
+            taskId: outcome.taskId,
+          });
+          continue;
+        }
         integrated = true;
         this.projectIntegratedPublication(outcome);
         await this.startRequestedPublishedService(outcome.taskId);

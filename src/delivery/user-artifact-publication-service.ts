@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { copyFile, chmod } from 'node:fs/promises';
 import { publishPublicGitChanges } from './public-workspace-git.js';
 import { publicTaskRelativeDirectory } from '../task/public-task-directory.js';
+import { assertWorkspaceRelativePath } from '../workspace/workspace-path.js';
 /**
  * 用户产物发布服务（Web Workspace 落地方案 Task 2）。
  *
@@ -115,6 +116,83 @@ export class UserArtifactPublicationService {
     }
     const canonicalRoot = await realpath(resolve(userWorkspaceRoot));
     return withWorkspacePublicationLock(canonicalRoot, () => this.publishLocked(input, canonicalRoot));
+  }
+
+  /**
+   * Registers in-place deliverables as live references. Nothing is copied: the
+   * artifact points at the file the Executor already wrote inside the user's
+   * Workspace, so a later round that edits the same file is visible as the
+   * current state instead of a stale duplicate.
+   */
+  async registerLiveWorkspaceReferences(input: {
+    sessionId?: string;
+    accountId: string;
+    taskId: string;
+    taskTitle: string;
+    workspaceId: string;
+    generationId: string | null;
+    subtaskId: string | null;
+    publicationId: string | null;
+    sources: Array<{ sourceRelativePath: string }>;
+  }): Promise<UserArtifactPublicationResult> {
+    const userWorkspaceRoot = input.sessionId
+      ? await this.deps.resolveUserWorkspaceRoot?.(input.sessionId)
+      : undefined;
+    const root = userWorkspaceRoot ?? this.deps.userWorkspaceRoot;
+    if (!root) {
+      throw new Error(`Conversation ${input.sessionId ?? '<unknown>'} has no selected Workspace`);
+    }
+    const canonicalRoot = await realpath(resolve(root));
+    return withWorkspacePublicationLock(canonicalRoot, async () => {
+      const result: UserArtifactPublicationResult = { projections: [], taskDirectory: canonicalRoot, failures: [] };
+      for (const source of input.sources.slice(0, MAX_ARTIFACTS_PER_PUBLICATION)) {
+        try {
+          const resolved = await assertWorkspaceRelativePath(canonicalRoot, source.sourceRelativePath);
+          const bytes = await readFile(resolved.absolutePath);
+          if (bytes.length > MAX_SINGLE_ARTIFACT_BYTES) {
+            throw new Error(`交付文件无效或过大：${source.sourceRelativePath}`);
+          }
+          const contentHash = hashContent(bytes);
+          const record = this.taskArtifactRepo.insert({
+            accountId: input.accountId,
+            taskId: input.taskId,
+            generationId: input.generationId,
+            subtaskId: input.subtaskId,
+            publicationId: input.publicationId,
+            displayName: basename(source.sourceRelativePath),
+            relativePath: source.sourceRelativePath,
+            publishedPath: resolved.absolutePath,
+            mediaType: mediaTypeForRelativePath(source.sourceRelativePath),
+            previewKind: classifyPreviewKind(source.sourceRelativePath),
+            contentHash,
+            byteLength: bytes.length,
+            status: 'published',
+            referenceKind: 'live_file',
+            workspaceId: input.workspaceId,
+            sourceRelativePath: resolved.relativePath,
+            now: this.now(),
+          });
+          this.taskArtifactRepo.publicFiles.record({
+            accountId: input.accountId,
+            taskId: input.taskId,
+            generationId: input.generationId,
+            subtaskId: input.subtaskId,
+            publicationId: input.publicationId,
+            relativePath: source.sourceRelativePath,
+            publishedPath: resolved.absolutePath,
+            contentHash,
+            updatedAt: this.now(),
+          });
+          result.projections.push(this.taskArtifactRepo.toProjection(record));
+        } catch (error) {
+          result.failures.push({
+            sourceRelativePath: source.sourceRelativePath,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      return result;
+    });
   }
 
   private async publishLocked(input: PublishUserArtifactsInput, canonicalRoot: string): Promise<UserArtifactPublicationResult> {

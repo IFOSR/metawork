@@ -1,3 +1,5 @@
+import type { WorkspaceKind } from './workspace-store.js';
+
 export interface AttemptExecutionPersistenceRecord {
   attemptId: string;
   taskId: string;
@@ -35,7 +37,7 @@ export interface WorkspacePersistenceRecord {
   taskId: string;
   generationId: string;
   subtaskId: string;
-  kind: 'git';
+  kind: WorkspaceKind;
   rootUri: string;
   baseline: Record<string, unknown>;
   managedRepositoryUri: string | null;

@@ -341,6 +341,7 @@ export class WorkspacePublicationWorker {
     }
     const applyingAt = new Date().toISOString();
     if (!this.publications.markApplying(publication.id, applyingAt)) return null;
+    if (task.executionMode === 'in_place') return this.publishInPlace(publication);
     const integrationWorkspace = await this.git.ensure({
       taskId: publication.taskId,
       generationId: publication.generationId,
@@ -582,26 +583,87 @@ export class WorkspacePublicationWorker {
     }
   }
 
+  /**
+   * In-place publications own no candidate commit and merge nothing: the
+   * Executor already wrote the deliverable inside the user's Workspace, so the
+   * publication only records the facts and hands over to reference delivery.
+   */
+  private async publishInPlace(
+    publication: WorkspacePublicationRecord,
+  ): Promise<WorkspacePublicationOutcome> {
+    const now = new Date().toISOString();
+    let cancelled = false;
+    this.deps.db.transaction(() => {
+      const currentTask = this.deps.taskRuntimeService.findTask(publication.taskId);
+      const currentSubtask = this.deps.subtaskRepo.findById(publication.subtaskId);
+      if (currentTask?.status === 'cancelled' || currentSubtask?.status === 'cancelled') {
+        cancelled = true;
+        this.publications.markCancelled(publication.id, publication.candidateCommit, now);
+        return;
+      }
+      this.publications.markIntegrated(publication.id, publication.candidateCommit, now);
+      this.publications.beginDelivery(publication.id, now);
+    }).immediate();
+    if (cancelled) {
+      return {
+        type: 'cancelled',
+        publicationId: publication.id,
+        taskId: publication.taskId,
+        subtaskId: publication.subtaskId,
+        observedIntegrationCommit: publication.candidateCommit,
+      };
+    }
+    return await this.deliverIntegrated(this.publications.find(publication.id)!);
+  }
+
   private async deliverIntegrated(publication: WorkspacePublicationRecord): Promise<WorkspacePublicationOutcome> {
     const cancelled = (): boolean => this.deps.taskRuntimeService.findTask(publication.taskId)?.status === 'cancelled'
       || this.deps.subtaskRepo.findById(publication.subtaskId)?.status === 'cancelled';
     const cancellation = (): CancelledWorkspacePublication => ({ type: 'cancelled', publicationId: publication.id,
       taskId: publication.taskId, subtaskId: publication.subtaskId, observedIntegrationCommit: publication.integrationCommit });
     if (cancelled()) return cancellation();
-    const integrationWorkspace = await this.git.ensure({ taskId: publication.taskId, generationId: publication.generationId,
-      subtaskId: '__integration__' }, this.deps.sourceRoot);
+    const task = this.deps.taskRuntimeService.findTask(publication.taskId);
+    const inPlace = task?.executionMode === 'in_place';
+    // In-place deliverables are reported against the user's Workspace, so that
+    // directory is the root for absolute artifact paths.
+    const inPlaceRoot = inPlace
+      ? await this.deps.resolveUserWorkspaceRoot?.(this.sessionId) ?? null
+      : null;
+    const integrationWorkspace = inPlace
+      ? null
+      : await this.git.ensure({ taskId: publication.taskId, generationId: publication.generationId,
+        subtaskId: '__integration__' }, this.deps.sourceRoot);
     let delivery = this.publications.delivery(publication.id)!;
     if (delivery.status !== 'succeeded') {
       let projections = delivery.projections;
       let failures: Array<{ sourceRelativePath: string; reason: string }> = [];
       try {
-        const sources = this.artifactSources(publication, integrationWorkspace);
+        if (inPlace) {
+          if (!this.deps.userArtifactPublication) {
+            throw new Error('User artifact publication service is unavailable');
+          }
+          const sources = this.artifactSources(publication, null, inPlaceRoot);
+          const result = await this.deps.userArtifactPublication.registerLiveWorkspaceReferences({
+            sessionId: this.sessionId,
+            accountId: this.deps.accountId ?? 'local-default',
+            taskId: publication.taskId,
+            taskTitle: task?.title ?? publication.taskId,
+            workspaceId: task?.workspaceId ?? '',
+            generationId: publication.generationId,
+            subtaskId: publication.subtaskId,
+            publicationId: publication.id,
+            sources,
+          });
+          projections = result.projections;
+          failures = result.failures;
+        } else {
+        const sources = this.artifactSources(publication, integrationWorkspace!);
         if (sources.length && !this.deps.userArtifactPublication) {
           throw new Error('User artifact publication service is unavailable');
         }
         if (sources.length && this.deps.userArtifactPublication) {
           const service = this.deps.userArtifactPublication;
-          const result = await this.git.withCommitSnapshot(integrationWorkspace, publication.integrationCommit!, async root => service.publishIntegratedArtifacts({
+          const result = await this.git.withCommitSnapshot(integrationWorkspace!, publication.integrationCommit!, async root => service.publishIntegratedArtifacts({
             sessionId: this.sessionId, accountId: this.deps.accountId ?? 'local-default', taskId: publication.taskId,
             taskTitle: this.deps.taskRuntimeService.findTask(publication.taskId)?.title ?? publication.taskId,
             publicTaskDirectory: this.deps.taskRuntimeService.findTask(publication.taskId)?.publicTaskDirectory,
@@ -612,6 +674,7 @@ export class WorkspacePublicationWorker {
           }));
           projections = result.projections;
           failures = result.failures;
+        }
         }
       } catch (error) {
         failures = [{ sourceRelativePath: '', reason: error instanceof Error ? error.message : String(error) }];
@@ -787,7 +850,8 @@ export class WorkspacePublicationWorker {
 
   private artifactSources(
     publication: WorkspacePublicationRecord,
-    integrationWorkspace: Awaited<ReturnType<ManagedGitWorkspaceService['ensure']>>,
+    integrationWorkspace: Awaited<ReturnType<ManagedGitWorkspaceService['ensure']>> | null,
+    inPlaceRoot: string | null = null,
   ): Array<{ sourceRelativePath: string; remove?: boolean; downloadable?: boolean }> {
     for (const target of this.deps.subtaskRepo.listByTask(publication.taskId)) {
       if (target.generationId !== publication.generationId || target.status === 'cancelled') continue;
@@ -812,7 +876,7 @@ export class WorkspacePublicationWorker {
     const artifacts = publication.originalCompletion.artifacts.flatMap(path => {
       if (typeof path !== 'string' || path.trim().length === 0) throw new Error('Invalid publication artifact path');
       if (!isAbsolute(path)) return [{ sourceRelativePath: path }];
-      for (const root of [sourceFilesRoot, integrationWorkspace.filesPath]) {
+      for (const root of [sourceFilesRoot, integrationWorkspace?.filesPath ?? null, inPlaceRoot]) {
         if (!root) continue;
         const candidate = relative(existsSync(root) ? realpathSync(root) : root, path);
         if (

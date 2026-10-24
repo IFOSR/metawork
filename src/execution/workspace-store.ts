@@ -18,7 +18,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { boundedPathSegment } from '../utils/bounded-path-segment.js';
 
-export type WorkspaceKind = 'git';
+export type WorkspaceKind = 'git' | 'in_place';
 export type CheckpointReason = 'attempt_start' | 'explicit' | 'permission_suspended' | 'success' | 'failure' | 'cancelled';
 
 export interface WorkspaceIdentity {
@@ -145,6 +145,43 @@ export class WorkspaceStore {
       rootPath,
       filesPath,
       checkpointsPath,
+    };
+  }
+
+  /**
+   * Binds one Attempt to the user's Workspace instead of materializing a private
+   * copy. Only the attempt-owned runtime root (inputs, handoffs, results) is
+   * created here; `filesPath` stays the canonical authoring directory, so the
+   * Executor writes where the user sees the files and nothing is copied back.
+   */
+  async bindInPlaceWorkspace(
+    identity: WorkspaceIdentity,
+    canonicalPath: string,
+  ): Promise<WorkspaceHandle> {
+    const taskId = safeIdentitySegment(identity.taskId, 'taskId');
+    const generationId = safeIdentitySegment(identity.generationId, 'generationId');
+    const subtaskId = safeIdentitySegment(identity.subtaskId, 'subtaskId');
+    const rootPath = join(
+      this.workspacesPath,
+      workspaceSegment('task', taskId),
+      workspaceSegment('generation', generationId),
+      workspaceSegment('subtask', subtaskId),
+      'in-place',
+    );
+    await Promise.all([
+      mkdir(join(rootPath, 'inputs'), { recursive: true }),
+      mkdir(join(rootPath, 'handoffs'), { recursive: true }),
+      mkdir(join(rootPath, 'results'), { recursive: true }),
+    ]);
+    return {
+      id: `workspace:in-place:${taskId}:${generationId}:${subtaskId}`,
+      taskId,
+      generationId,
+      subtaskId,
+      kind: 'in_place',
+      rootPath,
+      filesPath: canonicalPath,
+      checkpointsPath: join(rootPath, 'checkpoints'),
     };
   }
 

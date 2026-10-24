@@ -30,7 +30,7 @@ const navigationTables = [
   'workspace_directory_observations', 'workspace_directory_dirty',
 ];
 // Captured from the actual pre-change schema43 migration output, not from a live account.
-const schema43Hash = '35c7783b42f946b28cc710c841ec1d10d1f2613122d57282417a92534a6c76c6';
+const schema43Hash = '4e074ba0fd58a8f95eb9065b431afb2539d8a3a87791b72c07bbea6336d26e92';
 
 afterEach(() => {
   for (const db of databases.splice(0)) if (db.open) db.close();
