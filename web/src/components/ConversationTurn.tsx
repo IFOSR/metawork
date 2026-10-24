@@ -1,6 +1,9 @@
 import type { ArtifactProjection, ConversationTurnProjection } from '../api/session-types';
 import type { ReactNode } from 'react';
 import { ArtifactAwareMarkdownContent } from './ArtifactAwareMarkdownContent';
+import { GuidanceCard } from './GuidanceCard';
+import { splitGuidanceBlock } from '../guidance-block';
+import { parseSystemOutput } from '../system-output';
 import { ArtifactLink } from './ArtifactLink';
 import { TurnBillCard } from './TurnBillCard';
 import { ExecutionNotice, type TurnFailureFacts } from './ExecutionNotice';
@@ -177,16 +180,33 @@ export function ConversationTurnView({
       {showNotice && (
         <ExecutionNotice turn={turn} failure={failure} receipts={output.receipts} />
       )}
-      {isSystemCommand && turn.finalAnswer && (
-        <section className="system-command-result">
-          <header><span>COMMAND RESULT</span></header>
-          <ArtifactAwareMarkdownContent
-            value={turn.finalAnswer}
-            artifacts={artifacts}
-            onOpenArtifact={onOpenArtifact}
-          />
-        </section>
-      )}
+      {isSystemCommand && turn.finalAnswer && (() => {
+        // The presentation service emits one ASCII box for Feishu/CLI parity.
+        // The Web client renders that box as a card and keeps the prose around
+        // it, with long durable ids shortened so wrapped text stays readable.
+        const split = splitGuidanceBlock(turn.finalAnswer);
+        const notes = parseSystemOutput(split.remainder);
+        return (
+          <section className="system-command-result">
+            {split.block && <GuidanceCard block={split.block} />}
+            {notes.structured ? (
+              notes.notes.length > 0 && (
+                <p className="system-command-notes">
+                  {notes.notes.map(note => <span key={note}>{note}</span>)}
+                </p>
+              )
+            ) : (
+              split.remainder && (
+                <ArtifactAwareMarkdownContent
+                  value={split.remainder}
+                  artifacts={artifacts}
+                  onOpenArtifact={onOpenArtifact}
+                />
+              )
+            )}
+          </section>
+        );
+      })()}
       {!isSystemCommand && output.body && (
         <section className="final-answer">
           <ArtifactAwareMarkdownContent
