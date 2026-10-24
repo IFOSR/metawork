@@ -4,6 +4,8 @@ export type PartitionIdentity =
   | { kind: 'repository'; repositoryId: string }
   | { kind: 'worktree'; repositoryId: string; workspaceId: string }
   | { kind: 'path'; mountId: string; normalizedRelativePath: string }
+  /** A whole mount root: covers every path claim registered under the same mountId. */
+  | { kind: 'mount_root'; mountId: string }
   | { kind: 'logical'; namespace: string; key: string }
   | {
       kind: 'external_object';
