@@ -3,6 +3,35 @@ export const PI_WEB_EXTENSION_SOURCE = String.raw`
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
+import { appendFileSync, createHash, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+// File-tool capture channel: the Executor's own writes are recorded beside the
+// attempt home so the Runtime can attribute changes even without Git.
+const WORKSPACE_CAPTURE_FILE = join(process.env.HOME ?? ".", ".metaclaw-workspace-captures.jsonl");
+const CAPTURED_TOOLS = new Set(["write", "edit", "str_replace_editor"]);
+
+function captureToolWrite(phase: "before" | "after", toolName: string, input: unknown): void {
+  if (!CAPTURED_TOOLS.has(toolName)) return;
+  const record = input && typeof input === "object" ? input as Record<string, unknown> : {};
+  const path = typeof record.path === "string" ? record.path : record.file_path;
+  if (typeof path !== "string" || !path) return;
+  let hash: string | null = null;
+  let size: number | null = null;
+  try {
+    const bytes = readFileSync(path);
+    hash = createHash("sha256").update(bytes).digest("hex");
+    size = bytes.length;
+  } catch {
+    // A missing file before the write is a creation, not a capture failure.
+  }
+  try {
+    mkdirSync(process.env.HOME ?? ".", { recursive: true });
+    appendFileSync(WORKSPACE_CAPTURE_FILE, JSON.stringify({ phase, tool: toolName, path, hash, size, at: new Date().toISOString() }) + "\n");
+  } catch {
+    // Capture is observation only; never fail the tool call.
+  }
+}
 
 const SEARCH_CONNECT_TIMEOUT_S = "5";
 const SEARCH_TOTAL_TIMEOUT_S = "15";
@@ -351,6 +380,8 @@ const resultReferenceGetTool = defineTool({
 });
 
 export default function (pi: ExtensionAPI) {
+  pi.on("tool_call", event => { captureToolWrite("before", event.toolName, event.input); });
+  pi.on("tool_result", event => { captureToolWrite("after", event.toolName, event.input); });
   if (process.env.METACLAW_PI_WEB_TOOLS_ENABLED !== "0") {
     pi.registerTool(webSearchTool);
     pi.registerTool(webFetchTool);

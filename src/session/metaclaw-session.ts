@@ -2607,8 +2607,8 @@ export class MetaclawSession {
       if (emptyRecovery) return emptyRecovery;
     }
     return items.length > 0
-      ? `Task #${taskId} recovery items:\n${items.join('\n')}`
-      : `Task #${taskId} has no uncertain or failed recovery items.`;
+      ? `任务 #${taskId} 的恢复项：\n${items.join('\n')}`
+      : `任务 #${taskId} 没有自动恢复项：阻塞不在恢复队列里，请人工核对后取消任务并重新提交需求。`;
   }
 
   private async resolveTaskRecovery(input: {

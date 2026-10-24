@@ -165,6 +165,15 @@ export class TaskArtifactRepo {
     return record;
   }
 
+  /** Marks an existing artifact as backed by a fixed content version. */
+  linkArtifactVersion(artifactId: string, artifactVersionId: string, now: string): void {
+    this.db.prepare(`
+      UPDATE task_artifacts
+      SET reference_kind = 'artifact_version', artifact_version_id = ?, updated_at = ?
+      WHERE artifact_id = ?
+    `).run(artifactVersionId, now, artifactId);
+  }
+
   findById(artifactId: string): TaskArtifactRecord | null {
     const row = this.db.prepare(
       'SELECT * FROM task_artifacts WHERE artifact_id = ?',

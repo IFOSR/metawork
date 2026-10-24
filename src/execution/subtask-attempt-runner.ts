@@ -4,6 +4,7 @@ import { ExecutorProbeError } from './work-unit-claim-service.js';
 import { workspaceRootClaim } from '../resource/workspace-claim.js';
 import { buildWorkspaceChangeRecord } from './workspace-change-recorder.js';
 import { WorkspaceChangeRecordRepo } from '../storage/workspace-change-record-repo.js';
+import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { createHash } from 'node:crypto';
 import { canonicalizeWorkspacePath } from '../workspace/workspace-path.js';
 import { basename, extname, join, resolve } from 'node:path';
@@ -947,8 +948,11 @@ export class SubtaskAttemptRunner {
       if (inPlaceExecution && workspace) {
         // In-place rounds record what changed so the client can show it without
         // any copy. Observation only: a failure here never blocks completion.
+        const capturedPaths = Array.isArray(execution.diagnostics?.workspaceCaptures)
+          ? (execution.diagnostics.workspaceCaptures as string[])
+          : [];
         try {
-          new WorkspaceChangeRecordRepo(this.deps.db).insert(buildWorkspaceChangeRecord({
+          const changeRecord = buildWorkspaceChangeRecord({
             attemptId,
             taskId: task.id,
             generationId: subtask.generationId,
@@ -959,8 +963,26 @@ export class SubtaskAttemptRunner {
             after: afterState,
             delta: workspaceDelta,
             declaredOutputs: subtask.fileOutputs ?? [],
+            capturedPaths,
             createdAt: new Date().toISOString(),
-          }));
+          });
+          new WorkspaceChangeRecordRepo(this.deps.db).insert(changeRecord);
+          // The durable event lets a client read the summary without the table.
+          new TaskEventRepo(this.deps.db).insert({
+            id: `te_change_${attemptId}`,
+            taskId: task.id,
+            subtaskId: subtask.id,
+            eventType: 'workspace_changes_recorded',
+            message: `本轮改动 ${changeRecord.totalFiles} 个文件（${changeRecord.coverage}）`,
+            payload: {
+              recordId: changeRecord.recordId,
+              coverage: changeRecord.coverage,
+              totalFiles: changeRecord.totalFiles,
+              missingReasons: changeRecord.missingReasons,
+              paths: changeRecord.files.slice(0, 200).map(file => file.path),
+            },
+            createdAt: changeRecord.createdAt,
+          });
         } catch {
           // Change observation is best effort.
         }
@@ -1613,7 +1635,15 @@ export class SubtaskAttemptRunner {
         subtask.generationId,
         subtask.id,
       );
-      if (!sourceWorkspace || !sourceWorkspace.rootUri.startsWith('file:')) {
+      const correctionInPlace = task.executionMode === 'in_place';
+      // An in-place correction validates against the real Workspace: the private
+      // `files/` directory only exists for managed worktrees.
+      const correctionWorkspaceRoot = correctionInPlace
+        ? sourceRuntime.workspaceRoot
+        : sourceWorkspace?.rootUri.startsWith('file:')
+          ? join(fileURLToPath(sourceWorkspace.rootUri), 'files')
+          : null;
+      if (!correctionWorkspaceRoot) {
         throw new Error(`response-only correction source workspace is unavailable: ${subtask.id}`);
       }
       const correctionMarkerIndex = correctedOutput.indexOf(COMPLETION_MARKER_V4);
@@ -1625,8 +1655,8 @@ export class SubtaskAttemptRunner {
         subtask,
         outgoingHandoffs,
         // Delta paths and reportPath are relative to the executor output area
-        // (files/), not the workspace root.
-        workspaceRoot: join(fileURLToPath(sourceWorkspace.rootUri), 'files'),
+        // (`files/` for a worktree, the Workspace itself for in-place runs).
+        workspaceRoot: correctionWorkspaceRoot,
         workspaceDelta: sourceRuntime.workspaceDelta,
         incomingUsageByTarget: new Map(outgoingHandoffs.map(contract => [
           contract.toSubtaskId,

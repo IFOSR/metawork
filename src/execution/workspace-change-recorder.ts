@@ -32,6 +32,8 @@ export function buildWorkspaceChangeRecord(input: {
   after: WorkspaceState | null;
   delta: WorkspaceDelta | null;
   declaredOutputs: readonly string[];
+  /** Workspace-relative paths the Executor's file tools reported writing. */
+  capturedPaths?: readonly string[];
   createdAt: string;
 }): WorkspaceChangeRecord {
   const files: WorkspaceChangedFileSummary[] = [];
@@ -49,10 +51,12 @@ export function buildWorkspaceChangeRecord(input: {
     if (change.afterHash !== null) add(change.path);
   }
   for (const output of input.declaredOutputs) add(output);
+  for (const path of input.capturedPaths ?? []) add(path);
 
   const hasGitChannel = input.before !== null && input.after !== null && input.delta !== null;
+  const hasCaptureChannel = (input.capturedPaths?.length ?? 0) > 0;
   const missingReasons: string[] = [];
-  if (!hasGitChannel) missingReasons.push('git_unavailable');
+  if (!hasGitChannel) missingReasons.push(hasCaptureChannel ? 'shell_unobserved' : 'git_unavailable');
   else if (input.delta?.baselineTruncated || input.delta?.finalTruncated) missingReasons.push('output_limited');
 
   return {

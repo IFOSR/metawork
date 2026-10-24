@@ -8,11 +8,18 @@ import { turnStatusFromTimeline } from '../conversation-live-turn';
 
 type Presentation = Pick<ConversationTurnProjection, 'traceEvents' | 'executionTimeline' | 'artifacts' | 'turnBilling'>
   & Partial<Pick<ConversationTurnProjection, 'status' | 'completedAt'>>
-  & { taskLifecycle?: GatewayTaskViewSnapshot['lifecycle']; publicDelivery?: GatewayTaskViewSnapshot['publicDelivery'] };
+  & {
+    taskLifecycle?: GatewayTaskViewSnapshot['lifecycle'];
+    publicDelivery?: GatewayTaskViewSnapshot['publicDelivery'];
+    pendingPermission?: GatewayTaskViewSnapshot['pendingPermission'];
+    workspaceChanges?: GatewayTaskViewSnapshot['workspaceChanges'];
+  };
 interface TaskResource {
   targetConversationId: string; turnId: string; taskId: string;
   lifecycle: GatewayTaskViewSnapshot['lifecycle'];
   publicDelivery?: GatewayTaskViewSnapshot['publicDelivery'];
+  pendingPermission?: GatewayTaskViewSnapshot['pendingPermission'];
+  workspaceChanges?: GatewayTaskViewSnapshot['workspaceChanges'];
   timeline: ConversationTurnProjection['executionTimeline'];
   artifacts: ConversationTurnProjection['artifacts'];
 }
@@ -88,6 +95,8 @@ export function useTurnPresentation(ws: WsClient, http: HttpClient, conversation
           commit({
             taskLifecycle: task.lifecycle,
             publicDelivery: task.publicDelivery,
+            pendingPermission: task.pendingPermission,
+            workspaceChanges: task.workspaceChanges,
             executionTimeline: task.timeline,
             artifacts: task.artifacts,
             ...(projectedStatus ? {

@@ -57,6 +57,17 @@ export interface GatewayTaskViewSnapshot {
     conflicts: string[];
     /** User-facing state sentence resolved on the Server so both clients agree. */
     stateLabel: string;
+    /** True when this is a historical `metaclaw-tasks/<task>` copy tree. */
+    legacy?: boolean;
+  } | null;
+  /** Latest observed round changes (bounded); never a completion certification. */
+  readonly workspaceChanges?: {
+    recordId: string;
+    coverage: 'complete' | 'partial' | 'unavailable';
+    missingReasons: string[];
+    totalFiles: number;
+    recordedAt: string;
+    files: Array<{ path: string; added: number; deleted: number; binary?: boolean; scratch?: boolean }>;
   } | null;
   /** 快照水位，属于目标 Conversation 的事件流。 */
   readonly asOfSequence: number;
@@ -76,6 +87,8 @@ export interface GatewayTaskViewRouting {
 export interface GatewayTaskViewLifecycle {
   readonly lifecycle: string;
   readonly phase: string;
+  /** Active Work Graph generation; per-Turn controls must target it exactly. */
+  readonly executionGeneration?: string | null;
   readonly userState: TaskUserState;
   readonly userStateReason: string;
   readonly activeAttempt: {
@@ -106,6 +119,9 @@ export interface GatewayTaskViewSubtask {
 
 export interface GatewayTaskViewPermission {
   readonly requestId: string;
+  /** Optimistic-concurrency revision the approval must target. */
+  readonly requestRevision?: string;
+  readonly generationId?: string;
   readonly status: 'pending' | 'resolved' | 'expired';
   readonly summary: string | null;
 }

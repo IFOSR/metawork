@@ -163,6 +163,7 @@ import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { projectPublicDelivery } from '../delivery/public-delivery-view.js';
 import { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
+import { WorkspaceChangeRecordRepo } from '../storage/workspace-change-record-repo.js';
 import { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import {
@@ -2011,17 +2012,32 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         findObject: resultId => deliveryResults.findObject(resultId),
         readConfiguration: revisionId => configurationRepository.readSnapshot(revisionId),
       });
-      const lifecycleProjection = projectObservedTask(task, taskPermission?.request.id ?? null, executionFacts.result);
+      const activeGraph = new WorkGraphRevisionRepo(db).findActive(taskId);
+      const lifecycleProjection = {
+        ...projectObservedTask(task, taskPermission?.request.id ?? null, executionFacts.result),
+        // Bound per-Turn controls (cancel/resume) to the generation they saw.
+        executionGeneration: activeGraph?.generationId ?? null,
+      };
       const publicWorkspace = task.workspaceId ? await workspaceCatalogStore.findById(task.workspaceId) : null;
       const publicArtifacts = taskArtifactRepo.listByTask(taskId).filter(item => item.accountId === accountId && item.status === 'published');
       const publications = new WorkspacePublicationRepo(db);
-      const activeGraph = new WorkGraphRevisionRepo(db).findActive(taskId);
       const publicDelivery = projectPublicDelivery({ task, workspace: publicWorkspace?.canonicalPath ?? null,
         pendingDecision: lifecycleProjection.pendingDecision !== null,
         artifacts: [...taskArtifactRepo.publicFiles.list(accountId, taskId), ...publicArtifacts],
         publications: publications.listByTask(taskId).filter(item => item.generationId === activeGraph?.generationId
           && new SubtaskRepo(db).findById(item.subtaskId)?.graphRevision === activeGraph?.revision),
         delivery: id => publications.delivery(id) });
+      const changeRecord = new WorkspaceChangeRecordRepo(db).listByTask(taskId, 1)[0] ?? null;
+      const workspaceChanges = changeRecord
+        ? {
+            recordId: changeRecord.recordId,
+            coverage: changeRecord.coverage,
+            missingReasons: changeRecord.missingReasons,
+            totalFiles: changeRecord.totalFiles,
+            recordedAt: changeRecord.createdAt,
+            files: changeRecord.files.slice(0, 200),
+          }
+        : null;
       const timeline = executionProjector.project(task);
       const publicExecutors = new Map(executionFacts.subtasks.map(subtask => [subtask.id, subtask.executor]));
       for (const stage of timeline.stages) {
@@ -2071,9 +2087,14 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         timeline,
         progressSummary: progressSummary ? progressSummary.slice(0, 500) : null,
         schedulingReason: accountRuntimeComposition.runtimePort.queries.getQueuedTaskReason(taskId),
+        workspaceChanges,
         pendingPermission: taskPermission
           ? {
               requestId: taskPermission.request.id,
+              // Same identity the approval command must carry, so an inline
+              // button can approve without a second round-trip.
+              requestRevision: taskPermission.request.fingerprint,
+              generationId: taskPermission.request.generationId,
               status: 'pending',
               summary: `${taskPermission.request.operation} ${taskPermission.request.resource}`
                 .trim().slice(0, 200) || null,

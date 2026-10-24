@@ -1,12 +1,13 @@
 import { TaskResultActions } from '../components/TaskResultActions';
+import { BlockedActions } from '../components/BlockedActions';
+import { WorkspaceChangesCard } from '../components/WorkspaceChangesCard';
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { HttpClient } from '../api/http';
 import type { WsClient } from '../api/ws';
 import type { ConversationEntityStore } from './conversation-store';
-import { useConversationActivity, useConversationTurn, useConversationWindow } from './use-conversation';
+import { useConversationTurn, useConversationWindow } from './use-conversation';
 import { turnProjection } from './turn-projection';
 import { ConversationTurnView } from '../components/ConversationTurn';
-import { ObservedActivity } from './ObservedActivity';
 import { useCompleteContent } from './use-complete-content';
 import { useTurnPresentation } from './use-turn-presentation';
 import { LiveExecutionPanel } from '../components/LiveExecutionPanel';
@@ -32,7 +33,6 @@ export const ObservedConversationView = memo(function ObservedConversationView({
 }) {
   const store = ws.conversations;
   const window = useConversationWindow(store, conversationId);
-  const activity = useConversationActivity(store, conversationId);
   const root = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState({ top: -1, height: 900 });
@@ -200,7 +200,6 @@ export const ObservedConversationView = memo(function ObservedConversationView({
       <p>{statusMessage}</p>
       {error && <button type="button" onClick={() => setInitialLoadAttempt(value => value + 1)}>重新加载</button>}
     </div>}
-    <ObservedActivity conversationId={conversationId} view={activity} ws={ws} http={http} showTasks={false} />
     {window.olderCursor && <button disabled={loading} onClick={() => void loadOlder()}>{loading ? '正在加载…' : '加载更早的对话'}</button>}
     {!window.atLatest && <button onClick={() => { anchor.current = null; ws.observations.latest(conversationId); }}>返回最新对话</button>}
     {!window.ids.length && window.status === 'ready' && <div className="workspace-empty"><h2>还没有对话内容</h2><p>在下方输入你的目标，开始这个任务。</p></div>}
@@ -254,7 +253,14 @@ const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, htt
       liveExecutionPanel={showExecution ? (plannerActivity(projection)
         ? <LivePlanningPanel turn={projection} />
         : <LiveExecutionPanel turn={projection} onSelectSubtask={(subtaskId, title) => onOpenSubtaskDetail(projection, subtaskId, title)} />) : undefined} />
-    <TaskResultActions ws={ws} conversationId={conversationId} lifecycle={details.taskLifecycle} delivery={details.publicDelivery} refresh={details.refresh} />
+    <BlockedActions ws={ws} http={http} conversationId={conversationId} taskId={turn.taskId ?? null}
+      lifecycle={details.taskLifecycle} permission={details.pendingPermission} />
+    <TaskResultActions ws={ws} conversationId={conversationId} taskId={turn.taskId ?? null}
+      lifecycle={details.taskLifecycle} delivery={details.publicDelivery}
+      pendingPermission={details.pendingPermission} refresh={details.refresh} />
+    {details.workspaceChanges && (
+      <WorkspaceChangesCard changes={details.workspaceChanges} delivered={details.publicDelivery?.files ?? []} />
+    )}
     {(answer.error || prompt.error) && <p role="alert">{answer.error ?? prompt.error}</p>}
   </div>;
 });

@@ -1,11 +1,12 @@
 import { withWorkspacePublicationLock } from './workspace-publication-lock.js';
 import { containsInternalRuntimePath } from '../utils/public-text.js';
 import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, chmod } from 'node:fs/promises';
 import { publishPublicGitChanges } from './public-workspace-git.js';
 import { publicTaskRelativeDirectory } from '../task/public-task-directory.js';
-import { assertWorkspaceRelativePath } from '../workspace/workspace-path.js';
+import { assertWorkspaceRelativePath, WorkspacePathError } from '../workspace/workspace-path.js';
+import { ArtifactVersionRepo, type ArtifactVersion } from '../storage/artifact-version-repo.js';
 /**
  * 用户产物发布服务（Web Workspace 落地方案 Task 2）。
  *
@@ -26,7 +27,7 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   classifyPreviewKind,
   mediaTypeForRelativePath,
@@ -77,6 +78,9 @@ export interface UserArtifactPublicationServiceDeps {
   ) => Promise<string | null> | string | null;
   accountId?: string;
   taskArtifactRepo: TaskArtifactRepo;
+  /** Content-addressed object root for fixed artifact versions (Runtime-owned). */
+  objectRoot?: string;
+  artifactVersionRepo?: ArtifactVersionRepo;
   now?: () => string;
 }
 
@@ -116,6 +120,66 @@ export class UserArtifactPublicationService {
     }
     const canonicalRoot = await realpath(resolve(userWorkspaceRoot));
     return withWorkspacePublicationLock(canonicalRoot, () => this.publishLocked(input, canonicalRoot));
+  }
+
+  /**
+   * Fixed content for cross-Task handoffs, historical downloads and audit: the
+   * bytes are written to the Runtime's content-addressed store, and the artifact
+   * row stops being a live reference. Ordinary rounds never call this.
+   */
+  async materializeArtifactVersions(input: {
+    sessionId?: string;
+    accountId: string;
+    workspaceId: string;
+    taskId: string;
+    attemptId: string | null;
+    /** Overrides the Workspace root, e.g. a worktree Task's delivery directory. */
+    workspaceRoot?: string;
+    relativePaths: readonly string[];
+  }): Promise<ArtifactVersion[]> {
+    const repo = this.deps.artifactVersionRepo;
+    const objectRoot = this.deps.objectRoot;
+    if (!repo || !objectRoot || input.relativePaths.length === 0) return [];
+    const root = input.workspaceRoot ?? (input.sessionId
+      ? await this.deps.resolveUserWorkspaceRoot?.(input.sessionId) ?? this.deps.userWorkspaceRoot
+      : this.deps.userWorkspaceRoot);
+    if (!root) throw new Error('Workspace is unavailable for fixed artifact versions');
+    const canonicalRoot = await realpath(resolve(root));
+    await mkdir(objectRoot, { recursive: true, mode: 0o700 });
+    const versions: ArtifactVersion[] = [];
+    for (const relativePath of [...new Set(input.relativePaths)]) {
+      const resolved = await assertWorkspaceRelativePath(canonicalRoot, relativePath).catch(error => {
+        // A handoff path that vanished between validation and delivery cannot be
+        // pinned; other failures (escape, symlink) still abort the batch.
+        if (error instanceof WorkspacePathError && error.code === 'not_found') return null;
+        throw error;
+      });
+      if (!resolved) continue;
+      const bytes = await readFile(resolved.absolutePath);
+      const contentHash = createHash('sha256').update(bytes).digest('hex');
+      const objectPath = join(objectRoot, contentHash);
+      try {
+        await writeFile(objectPath, bytes, { flag: 'wx', mode: 0o600 });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+      const version = repo.record({
+        accountId: input.accountId,
+        workspaceId: input.workspaceId,
+        sourceTaskId: input.taskId,
+        sourceAttemptId: input.attemptId,
+        relativePath: resolved.relativePath,
+        contentHash,
+        byteLength: bytes.length,
+        objectUri: `sha256:${contentHash}`,
+        mediaType: mediaTypeForRelativePath(resolved.relativePath),
+      });
+      versions.push(version);
+      const artifact = this.taskArtifactRepo.listByTask(input.taskId)
+        .find(item => item.relativePath === resolved.relativePath && item.contentHash.endsWith(contentHash));
+      if (artifact) this.taskArtifactRepo.linkArtifactVersion(artifact.artifactId, version.artifactVersionId, this.now());
+    }
+    return versions;
   }
 
   /**

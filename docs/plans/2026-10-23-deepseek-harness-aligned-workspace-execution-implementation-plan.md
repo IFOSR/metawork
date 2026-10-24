@@ -404,7 +404,7 @@ METAWORK_WORKSPACE_IN_PLACE_ENABLED=true|false
 | 规范路径与 containment | `src/workspace/workspace-path.ts` | `canonicalizeWorkspacePath`（realpath、拒绝相对/缺失/非目录/文件系统根）、`isPathOverlap`（段级祖先/后代、大小写可配）、`assertWorkspaceRelativePath`（拒绝绝对、`..`、symlink、父目录逃逸）、`isWithin` |
 | Workspace 写分区 | `src/resource/partition.ts`、`types.ts`、`workspace-claim.ts` | `PartitionIdentity` 新增 `mount_root`；根 claim 覆盖同 mount 下所有 path claim；`workspace:<workspaceId>` 命名空间与 `integration-*` 隔离 |
 | 执行事实 | `src/execution/execution-context.ts` | `ExecutionMode`、`ExecutionContext`、`parseExecutionMode`、`resolveExecutionModeFromEnvironment`、`assertExecutionContext` |
-| Schema 53 | `src/storage/migrations.ts` | `workspace_execution_bindings`、`workspace_change_records`、`artifact_versions`；`tasks.execution_mode`；`task_artifacts.reference_kind/workspace_id/artifact_version_id/source_relative_path`。52 预留给 `main` 的六态任务迁移，合并时重排 |
+| Schema 53 → 54 | `src/storage/migrations.ts` | 53 建 `workspace_execution_bindings`、`workspace_change_records`、`artifact_versions`、`tasks.execution_mode` 与 artifact 引用列；54 重建 `workspace_records` 让 `workspace_kind` 接受 `in_place`（SQLite 无法原地放宽 CHECK）。52 预留给 `main` 的六态任务迁移，合并时重排 |
 | Repositories | `src/storage/workspace-execution-binding-repo.ts`、`workspace-change-record-repo.ts`、`artifact-version-repo.ts` | 绑定每 generation 不可变；变更记录按 `recordId` 幂等；artifact 版本按 workspace+path+hash 去重 |
 | 执行分流 | `src/execution/subtask-attempt-runner.ts`、`src/execution/workspace-store.ts` | `in_place` 走 `bindInPlaceWorkspace`：无 worktree、无 checkpoint、无清理；inputs/handoffs/results 落在 attempt-owned 目录；工作区根 claim 加入 attempt 租约；非 Git 工作区降级 delta 而不失败 |
 | 交付引用 | `src/delivery/user-artifact-publication-service.ts`、`src/execution/workspace-publication-worker.ts` | `in_place` 跳过 integration/merge，登记 `live_file` 引用（不复制）；worktree 路径保持原状 |
@@ -412,6 +412,10 @@ METAWORK_WORKSPACE_IN_PLACE_ENABLED=true|false
 | 预览授权 | `src/management/artifact-preview-service.ts` | 授权根放宽到 Workspace，但保留 realpath containment、regular-file、symlink 与既有大小/内存上限 |
 | 服务授权 | `src/server/server-composition.ts` | `in_place` 任务的服务启动不再依赖全目录哈希；改为 Workspace 存在 + 本任务登记的启动规格 |
 | 开关 | `METAWORK_WORKSPACE_EXECUTION_DEFAULT=worktree|in_place` | 仅影响新 Task admission；已持久化的模式不被环境变量覆盖 |
+| 非 Git 完成路径 | `subtask-attempt-runner.ts`（`declaredOutputsDelta`） | 非仓库工作区用声明产物构造 delta，完成认证与用户接受都不再要求 Git |
+| 阻塞内联操作 | `web/src/components/BlockedActions.tsx`、`src/gateway/task-view.ts`、`server-composition.ts` | 授权请求（`requestRevision` + `generationId`）与继续/恢复/取消都渲染在对应 Turn 内；会话顶部活动面板不再渲染 |
+| 续跑策略 | `src/kernel/control-kernel.ts`（`decideTaskResume`） | `manual/material/contract/unknown` 不再无条件 block：`workspace_reconcilable`/`read_only` 直接续跑，只有 `external_non_idempotent` 要求确认外部副作用 |
+| 命令结果可读性 | `web/src/guidance-block.ts`、`system-output.ts`、`task-queue.ts`、`components/GuidanceCard.tsx`、`TaskQueueCard.tsx` | 操作指引/操作提案渲染成卡片，任务队列 ASCII 框渲染成行列表，CLI 残留行丢弃，长 id 缩短 |
 
 ### 12.2 验证
 
@@ -419,10 +423,16 @@ METAWORK_WORKSPACE_IN_PLACE_ENABLED=true|false
 - `npx vitest run tests/delivery tests/execution tests/storage tests/server tests/kernel tests/architecture tests/task tests/installation tests/resource tests/workspace tests/session tests/gateway`：**1856 passed / 3 skipped / 2 failed**；两个失败为本分支已存在的基线失败（`configuration-admission-interlock`、`conversation-gateway-runtime`，见 §9.2 记录），与本次改动无关。
 - 新增测试：`tests/workspace/workspace-path.test.ts`（9）、`tests/resource/workspace-claim.test.ts`（5）、`tests/execution/execution-context.test.ts`（3）、`tests/execution/workspace-change-recorder.test.ts`（4）、`tests/storage/workspace-execution-persistence.test.ts`（4）、`tests/delivery/workspace-live-reference.test.ts`（3）。
 
-### 12.3 未交付（明确挂起）
+### 12.3 原挂起项（2026-10-24 全部交付）
 
-1. `ArtifactVersion` 的实际写入路径（handoff/下载/审计的固定字节）——表与仓储已就绪，尚无调用方。
-2. Pi attempt extension 的文件工具捕获（P2）：当前只能覆盖 Git 通道与声明产物通道，`shell_unobserved` 仅作为 coverage 原因标注。
-3. `workspace_change_records` 的 Web 视图（"本轮改动文件"卡片）与 `task_events` 的 `workspace_changes_recorded` 事件：数据已落库，投影未接。
-4. 就地执行的崩溃恢复验收（write-after-crash → `uncertain` 的构造测试）与 in-place 端到端 smoke。
-5. 旧 `metaclaw-tasks/*` 目录的 legacy 登记与清理提示。
+上一版列出的 5 项已在本轮实现，逐项对照如下：
+
+| 项 | 交付内容 | 落点 |
+| --- | --- | --- |
+| `ArtifactVersion` 实际写入 | 跨 Task handoff 的产物把字节写入 Runtime 内容寻址存储（`<objectsPath>/artifacts/<sha256>`），登记 `artifact_versions`，并把 artifact 标记为 `reference_kind=artifact_version`；普通轮次仍是 `live_file`。缺失的 handoff 路径跳过，越界/符号链接仍拒绝 | `user-artifact-publication-service.ts`（`materializeArtifactVersions`）、`workspace-publication-worker.ts`、`task-artifact-repo.ts`（`linkArtifactVersion`）、`account-runtime-composition.ts` |
+| Pi 文件工具捕获 | Pi attempt extension 在 `tool_call` / `tool_result` 记录 `write`/`edit`/`str_replace_editor` 的目标路径与前后哈希到 attempt home 的 `.metaclaw-workspace-captures.jsonl`；适配器读取后作为 `diagnostics.workspaceCaptures` 返回；变更记录合并为 captured 通道，非 Git 工作区的 `missingReasons` 从 `git_unavailable` 变为 `shell_unobserved` | `src/executor/pi-agent.ts`、`local-cli-executor-adapter.ts`、`src/execution/workspace-capture-spool.ts`、`workspace-change-recorder.ts` |
+| Workspace 变更的 Web 投影 | 任务视图新增 `workspaceChanges`（最新一条记录，文件上限 200）；runner 同时写 `task_events` 的 `workspace_changes_recorded`；Turn 内渲染「本轮改动」卡片，区分已交付 / 未交付 / 临时文件并展示 coverage 与缺失原因 | `server-composition.ts`、`gateway/task-view.ts`、`web/src/components/WorkspaceChangesCard.tsx`、`ObservedConversationView.tsx` |
+| in-place 崩溃恢复验收 | 断言 in-place 绑定使用真实 Workspace、attempt-owned 存储可回收且不动用户字节；进程在 receipt 之前死亡时留下可观察的 `workspaceDelta` 且无 receipt；in-place 失败交付不伪造副本目录 | `tests/execution/in-place-attempt-recovery.test.ts` |
+| 旧 `metaclaw-tasks/*` legacy 登记 | 交付投影新增 `legacy` 标志（worktree 轮次为 true），UI 明示"这是历史发布副本（只读），新任务改为就地更新" | `public-delivery-view.ts`、`TaskResultActions.tsx` |
+
+**仍存在的诚实边界**：崩溃注入没有自动化端到端测试（需要一个真实 Executor 被写到一半杀掉），当前用事实层不变量覆盖；shell 写入在非 Git 工作区仍然不可归因，这是 DSH 同样声明的限制。

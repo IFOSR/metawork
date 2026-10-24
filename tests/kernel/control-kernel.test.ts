@@ -1136,9 +1136,10 @@ describe('ControlKernel', () => {
     });
   });
 
-  it('does not clear a manual or contract blocker on explicit resume', () => {
+  it('continues a contract blocker on explicit resume when the Task is Workspace-reconcilable', () => {
     const snapshot = dispatchSnapshot();
     snapshot.task = { id: 'task_1', status: 'blocked' };
+    snapshot.subtasks[0]!.status = 'blocked';
     const result = new ControlKernel().decide({
       schemaVersion: 5,
       configurationRevision,
@@ -1155,10 +1156,10 @@ describe('ControlKernel', () => {
       idempotencyKey: 'resume:task_1:contract',
     }, snapshot);
 
-    expect(result.action).toEqual({
-      type: 'block_work',
-      taskId: 'task_1',
-      subtaskId: null,
+    // User authorization is the policy input: a Workspace-reconcilable Subtask
+    // runs again in the same Workspace instead of dead-ending on the blocker.
+    expect(result.action).toMatchObject({
+      type: 'resume_task', subtaskIds: [snapshot.subtasks[0]!.id],
     });
   });
 
@@ -1176,7 +1177,7 @@ describe('ControlKernel', () => {
     expect(result.reason).toContain('external effect safety');
   });
 
-  it('keeps an unknown blocker fail-closed even for read-only work', () => {
+  it('continues an unknown blocker when the Task cannot produce external effects', () => {
     const snapshot = dispatchSnapshot();
     snapshot.task = { id: 'task_1', status: 'blocked' };
     snapshot.subtasks[0]!.status = 'blocked';
@@ -1197,10 +1198,8 @@ describe('ControlKernel', () => {
       idempotencyKey: 'resume:task_1:read-only-unknown',
     }, snapshot);
 
-    expect(result.action).toEqual({
-      type: 'block_work',
-      taskId: 'task_1',
-      subtaskId: null,
+    expect(result.action).toMatchObject({
+      type: 'resume_task', subtaskIds: [snapshot.subtasks[0]!.id],
     });
   });
 

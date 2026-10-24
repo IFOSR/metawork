@@ -1350,11 +1350,31 @@ export class ControlKernel {
       );
     }
     if (['manual', 'material', 'contract', 'unknown'].includes(event.blockerCategory)) {
-      return decision(
-        event,
-        { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId ?? null },
-        `resume requires resolving the ${event.blockerCategory} blocker first`,
-      );
+      // The blocker has no exact recovery lineage, but that alone must not end
+      // the Task: the user authorized delivery, and a Workspace-reconcilable
+      // Subtask can simply run again in the same Workspace. Only effects we
+      // cannot reconcile (external, non-idempotent) need explicit confirmation.
+      if (snapshot.recoverySafety === 'external_non_idempotent') {
+        return decision(
+          event,
+          { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId ?? null },
+          `resume requires confirming external effects from the ${event.blockerCategory} blocker`,
+        );
+      }
+      const continuable = snapshot.subtasks
+        .filter(subtask => subtask.status === 'blocked' || subtask.status === 'ready')
+        .map(subtask => subtask.id);
+      if (continuable.length === 0) {
+        return decision(event, { type: 'no_op' }, 'resume has no recoverable Subtask');
+      }
+      return decision(event, {
+        type: 'resume_task',
+        taskId: event.taskId,
+        generationId: snapshot.generationId,
+        graphRevision: snapshot.graphRevision,
+        subtaskIds: continuable,
+        blockerCategory: event.blockerCategory,
+      }, 'Kernel authorized continuation of a Workspace-reconcilable Task');
     }
     const recoverableSubtasks = snapshot.subtasks
       .filter(subtask => subtask.status === 'ready' || subtask.status === 'blocked')

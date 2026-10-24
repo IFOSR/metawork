@@ -2,6 +2,8 @@ import type { ArtifactProjection, ConversationTurnProjection } from '../api/sess
 import type { ReactNode } from 'react';
 import { ArtifactAwareMarkdownContent } from './ArtifactAwareMarkdownContent';
 import { GuidanceCard } from './GuidanceCard';
+import { TaskQueueCard } from './TaskQueueCard';
+import { splitTaskQueueBlock } from '../task-queue';
 import { splitGuidanceBlock } from '../guidance-block';
 import { parseSystemOutput } from '../system-output';
 import { ArtifactLink } from './ArtifactLink';
@@ -184,11 +186,13 @@ export function ConversationTurnView({
         // The presentation service emits one ASCII box for Feishu/CLI parity.
         // The Web client renders that box as a card and keeps the prose around
         // it, with long durable ids shortened so wrapped text stays readable.
-        const split = splitGuidanceBlock(turn.finalAnswer);
-        const notes = parseSystemOutput(split.remainder);
+        const guidance = splitGuidanceBlock(turn.finalAnswer);
+        const queue = splitTaskQueueBlock(guidance.remainder);
+        const notes = parseSystemOutput(queue.remainder);
         return (
           <section className="system-command-result">
-            {split.block && <GuidanceCard block={split.block} />}
+            {guidance.block && <GuidanceCard block={guidance.block} />}
+            {queue.block && <TaskQueueCard block={queue.block} />}
             {notes.structured ? (
               notes.notes.length > 0 && (
                 <p className="system-command-notes">
@@ -196,9 +200,9 @@ export function ConversationTurnView({
                 </p>
               )
             ) : (
-              split.remainder && (
+              queue.remainder && (
                 <ArtifactAwareMarkdownContent
-                  value={split.remainder}
+                  value={queue.remainder}
                   artifacts={artifacts}
                   onOpenArtifact={onOpenArtifact}
                 />

@@ -6,8 +6,10 @@ export function TaskResultActions({ ws, conversationId, lifecycle, delivery, ref
   refresh(): void;
   ws: WsClient;
   conversationId: string;
+  taskId?: string | null;
   lifecycle?: GatewayTaskViewSnapshot['lifecycle'];
   delivery?: GatewayTaskViewSnapshot['publicDelivery'];
+  pendingPermission?: GatewayTaskViewSnapshot['pendingPermission'];
 }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -41,6 +43,9 @@ export function TaskResultActions({ ws, conversationId, lifecycle, delivery, ref
           <summary>{delivery.mode === 'in_place' ? '本轮更新文件' : '交付文件'}（{delivery.files.length}）</summary>
           <ul>{delivery.files.map(file => <li key={file}>{file}</li>)}</ul>
         </details>
+      )}
+      {delivery.legacy && delivery.files.length > 0 && (
+        <p className="fact-legacy">这是历史发布副本（只读）：旧版本把交付文件复制到任务目录，新任务改为在工作区就地更新。</p>
       )}
       {delivery.conflicts.length > 0 && (
         <p role="alert">{delivery.mode === 'in_place' ? '未登记文件' : '请处理冲突文件后继续'}：{delivery.conflicts.join('、')}</p>

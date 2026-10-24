@@ -11,6 +11,8 @@ export interface PublicDeliveryView {
   state: 'not_published' | 'awaiting_acceptance' | 'publishing' | 'published' | 'failed';
   /** Resolved, user-facing sentence for `state` in this delivery mode. */
   stateLabel: string;
+  /** A worktree round published a copy tree; in-place rounds never do. */
+  legacy: boolean;
   files: string[];
   conflicts: string[];
 }
@@ -70,7 +72,7 @@ export function projectPublicDelivery(input: {
     : publishing ? 'publishing'
     : input.pendingDecision ? 'awaiting_acceptance'
     : deliveries.some(item => item.status === 'succeeded') || files.length > 0 ? 'published' : 'not_published';
-  return { workspace, taskDirectory, mode, files, state,
+  return { workspace, taskDirectory, mode, files, state, legacy: mode === 'worktree',
     stateLabel: (mode === 'in_place' ? IN_PLACE_DELIVERY_LABELS : PUBLIC_DELIVERY_LABELS)[state],
     conflicts: [...new Set(deliveries.flatMap(item => item.failures.map(failure => failure.sourceRelativePath)).filter(Boolean))],
   };

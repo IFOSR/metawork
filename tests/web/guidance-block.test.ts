@@ -6,6 +6,7 @@ import {
   splitGuidanceBlock,
 } from '../../web/src/guidance-block.js';
 import { parseSystemOutput } from '../../web/src/system-output.js';
+import { splitTaskQueueBlock } from '../../web/src/task-queue.js';
 
 const TASK_ID = 'task_plan_event_proposal_78d021cec7ec82421140e58284103ed0e8d753c175351cb9b4fdeaa74a585ef1';
 
@@ -97,5 +98,36 @@ describe('system output notes', () => {
   it('leaves ordinary prose alone', () => {
     const parsed = parseSystemOutput('已清空全部会话：取消 2 个任务');
     expect(parsed).toEqual({ notes: ['已清空全部会话：取消 2 个任务'], structured: false });
+  });
+});
+
+describe('task queue block', () => {
+  const ID_A = 'task_plan_event_proposal_85eb5b039e99682004c49ecee54b846f5399b090fe0edbb594af55fc12dfc379';
+  const ID_B = 'task_plan_event_proposal_87b433fc2700cea77dc758e0acfc6c84ce20765d624300fb5f0b717e11374ca7';
+  const text = [
+    '┌─ 任务队列前五 ───────────────────────────────────┐',
+    '│ 触发：task state changed',
+    '│ 总览：执行中 0 / 待执行 0 / 挂起 0 / 需要处理 1',
+    `│ 1. [执行中] #${ID_A} 制作上海植物园 3 页 | 优先级 16.0 | 进度 0%`,
+    `│ 2. [需要处理] #${ID_B} 重构 8789 页面 | 优先级 31.0 | 需要处理 | execution result is quarantined`,
+    '└──────────────────────────────────────────────────┘',
+    '请先执行 /task recovery',
+  ].join('\n');
+
+  it('parses the CLI queue into rows without a 64-character id', () => {
+    const parsed = splitTaskQueueBlock(text);
+    expect(parsed.block?.trigger).toBe('task state changed');
+    expect(parsed.block?.overview).toEqual([
+      { label: '执行中', count: 0 }, { label: '待执行', count: 0 },
+      { label: '挂起', count: 0 }, { label: '需要处理', count: 1 },
+    ]);
+    expect(parsed.block?.items).toHaveLength(2);
+    expect(parsed.block?.items[1]).toMatchObject({ state: '需要处理', title: '重构 8789 页面' });
+    expect(parsed.block?.items[1]?.meta.join(' ')).toContain('quarantined');
+    expect(parsed.remainder).toBe('请先执行 /task recovery');
+  });
+
+  it('leaves other output untouched', () => {
+    expect(splitTaskQueueBlock('已清空全部会话')).toEqual({ block: null, remainder: '已清空全部会话' });
   });
 });

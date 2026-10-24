@@ -92,6 +92,8 @@ export type CompletionContractErrorCode =
   /** @deprecated Retained for historical receipt compatibility; never emitted for new attempts. */
   | 'completion_report_workspace_changed'
   | 'completion_subtask_mismatch'
+  /** The authorized Workspace root itself is missing or unreadable: structural, not unsafe. */
+  | 'completion_workspace_unavailable'
   | 'completion_workspace_delta_uncertain';
 
 export interface CompletionContractViolation {
@@ -161,6 +163,7 @@ const CONTENT_VIOLATION_CODES = new Set<CompletionContractErrorCode>([
   'completion_malformed',
   'completion_handoff_mismatch',
   'completion_workspace_delta_uncertain',
+  'completion_workspace_unavailable',
   'completion_artifact_invalid',
   'completion_file_output_missing',
   'completion_file_output_limit',
@@ -628,7 +631,11 @@ function validateWorkspaceDelivery(
   }
 
   if (!existsSync(workspaceRoot)) {
-    violations.push(contractViolation('completion_artifact_invalid', 'workspaceRoot', 'workspace root does not exist'));
+    // A missing Workspace root is an environment/structural fact. Classifying it
+    // as an artifact-path violation turned a deterministic contract failure into
+    // a `safety_blocked` quarantine, which then blocked the Subtask as if the
+    // Executor had produced unsafe content.
+    violations.push(contractViolation('completion_workspace_unavailable', 'workspaceRoot', 'workspace root does not exist'));
     return [];
   }
   const realRoot = realpathSync(workspaceRoot);

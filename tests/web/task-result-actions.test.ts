@@ -34,7 +34,8 @@ describe('Task result action presentation', () => {
 
   it('shows actual user paths, relative files and publication conflicts', () => {
     const html = render([], { workspace: '/user/projects', taskDirectory: '/user/projects/service',
-      state: 'failed', files: ['src/server.ts'], conflicts: ['package.json'] });
+      mode: 'worktree', state: 'failed', stateLabel: '发布失败',
+      files: ['src/server.ts'], conflicts: ['package.json'] });
     expect(html).toContain('/user/projects/service');
     expect(html).toContain('src/server.ts');
     expect(html).toContain('发布失败');

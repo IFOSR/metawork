@@ -656,6 +656,19 @@ export class WorkspacePublicationWorker {
           });
           projections = result.projections;
           failures = result.failures;
+          // Cross-Task handoffs need fixed bytes: a later round may edit the file.
+          const handoffPaths = publication.originalCompletion.handoffs
+            .flatMap(handoff => handoff.items)
+            .filter(item => item.type === 'artifact')
+            .flatMap(item => item.paths);
+          await this.deps.userArtifactPublication.materializeArtifactVersions({
+            sessionId: this.sessionId,
+            accountId: this.deps.accountId ?? 'local-default',
+            workspaceId: task?.workspaceId ?? '',
+            taskId: publication.taskId,
+            attemptId: publication.sourceAttemptId,
+            relativePaths: handoffPaths,
+          });
         } else {
         const sources = this.artifactSources(publication, integrationWorkspace!);
         if (sources.length && !this.deps.userArtifactPublication) {

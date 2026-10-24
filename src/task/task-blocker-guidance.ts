@@ -51,16 +51,18 @@ export function formatEmptyTaskRecovery(
   taskId: string,
   input: { status?: string; blockerReason?: string },
 ): string | null {
-  if (input.status !== 'blocked' || !isUnknownTaskBlocker(input.blockerReason)) {
-    return null;
-  }
-
-  const reason = input.blockerReason!;
+  if (input.status !== 'blocked') return null;
+  const reason = input.blockerReason?.trim();
+  // Blocked Tasks without queue items are a dead end for the user unless the
+  // answer says what to do next. Previously only a narrow "unknown blocker"
+  // phrase produced guidance; everything else fell back to an English line.
+  const unknown = isUnknownTaskBlocker(reason);
   return [
-    `任务 #${taskId} 仍需要处理`,
-    `待处理原因：${formatBlockedTaskReason(reason)}`,
-    '没有可供 /task recover 使用的恢复项。',
-    '系统不会在无法确认外部副作用时自动重试。',
-    `下一步：人工核对外部系统和工作区；确认没有副作用后可执行 /task cancel ${taskId}，再重新提交需求；如果已产生结果，请基于结果创建 follow-up 任务。`,
+    `任务 #${taskId} 没有自动恢复项`,
+    reason ? `待处理原因：${formatBlockedTaskReason(reason)}` : '待处理原因：任务被阻塞，但没有可重放的执行或副作用记录',
+    unknown
+      ? '系统不会在无法确认外部副作用时自动重试。'
+      : '这次阻塞不在恢复队列里，需要你在当前任务上确认继续。',
+    `下一步：执行 /task resume ${taskId} 让系统在同一工作区继续；如果该任务涉及无法重放的外部副作用，系统会先要求你确认。“/task cancel ${taskId}” 会取消任务并保留已有产物。`,
   ].join('\n');
 }

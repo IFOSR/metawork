@@ -7,6 +7,7 @@ import type { ManagedLocalServices } from '../execution/managed-local-service.js
  * kernelExecutionServices 由 ConversationSession 通过端口自行构造。
  */
 
+import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { TaskEngine } from '../task/task-engine.js';
 import type { MemoryEngine } from '../memory/memory-engine.js';
@@ -21,6 +22,7 @@ import type { PlanningAgent } from '../planning/planning-agent.js';
 import type { PlannerProcessController } from '../planning/planner-process-supervisor.js';
 import type { AttemptExecutionBackend } from '../execution/attempt-execution-backend.js';
 import type { ProbeCommandRunner } from '../executor/harness-driver.js';
+import { ArtifactVersionRepo } from '../storage/artifact-version-repo.js';
 import { buildAccountKernelServices } from './account-kernel-services.js';
 import { buildAccountRepositories } from './account-repositories.js';
 import { buildAccountWorkspaceServices } from './account-workspace-services.js';
@@ -179,6 +181,9 @@ export function buildAccountRuntimeComposition(deps: {
         : {}),
       accountId: deps.accountId,
       taskArtifactRepo: new TaskArtifactRepo(deps.db),
+      // Fixed artifact versions live in the Runtime's own content store.
+      objectRoot: join(workspaceServices.workspaceStore.objectsPath, 'artifacts'),
+      artifactVersionRepo: new ArtifactVersionRepo(deps.db),
     })
     : null;
 
