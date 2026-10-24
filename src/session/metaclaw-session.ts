@@ -111,6 +111,7 @@ import {
 } from '../kernel/control-kernel.js';
 import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
 import { AccountKernelCoordinator } from '../account/account-kernel-coordinator.js';
+import { parseApplicationSettlement } from '../kernel/kernel-application-settlement.js';
 import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
 import { buildAccountKernelServices, type AccountKernelServices } from '../account/account-kernel-services.js';
@@ -1162,6 +1163,28 @@ export class MetaclawSession {
             decisionId: kernelResult.decision.id,
             action: 'reject_request',
             reason: kernelResult.decision.reason,
+          },
+        };
+        this.plannerProposalRepo.completeSubmission(
+          normalizedSessionId, normalizedTurnId, submission.submissionId, rejected,
+        );
+        this.recordPlannerProposalTerminalTrace(rejected);
+        return rejected;
+      }
+      const settlement = parseApplicationSettlement(application?.errorSummary);
+      if (settlement) {
+        const reason = settlement.detail || `${settlement.kind}:${settlement.code}`;
+        const rejected: PlannerProposalResult & { status: 'rejected' } = {
+          status: 'rejected',
+          turnId: normalizedTurnId,
+          submissionId: submission.submissionId,
+          planId: plan.id,
+          rejectionType: 'kernel',
+          issues: [reason],
+          kernel: {
+            decisionId: kernelResult.decision.id,
+            action: kernelResult.decision.action.type,
+            reason,
           },
         };
         this.plannerProposalRepo.completeSubmission(

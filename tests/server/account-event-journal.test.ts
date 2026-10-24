@@ -104,3 +104,34 @@ it('surfaces a corrupt half-projected history row as a failing pass with its Con
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it('keeps suppressed maintenance failures out of the production error callback', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'account-journal-suppressed-'));
+  const db = new Database(':memory:');
+  const onError = vi.fn();
+  let runtime: ReturnType<typeof createAccountEventJournal> | undefined;
+  try {
+    runMigrations(db);
+    runtime = createAccountEventJournal({ db, root, accountId: 'local-default', onError });
+    db.prepare(`INSERT INTO conversation_history_streams (account_id, conversation_id, kind, last_sequence)
+      VALUES ('local-default', 'conv_noisy', 'conversation', 1)`).run();
+    db.prepare(`INSERT INTO conversation_history_turns
+      (account_id, conversation_id, kind, sequence, turn_id, body_json, byte_length)
+      VALUES ('local-default', 'conv_noisy', 'conversation', 1, 'turn_1', 'null', 4)`).run();
+
+    runtime.start();
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1), { timeout: 1_000 });
+    // The failed stream is retried after the 500ms backoff. Its repeated
+    // failure is exposed to the maintenance object for metrics, but the
+    // production adapter must suppress that noisy callback.
+    await new Promise(resolve => setTimeout(resolve, 700));
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0]?.[1]).toMatchObject({
+      conversationId: 'conv_noisy', stage: 'maintain', outcome: 'reported',
+    });
+  } finally {
+    await runtime?.stop();
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

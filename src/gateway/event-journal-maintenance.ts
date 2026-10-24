@@ -93,6 +93,8 @@ export class EventJournalMaintenance {
   private consecutiveBatches = 0;
   private idle = false;
   private readonly failures = new Map<string, StreamFailure>();
+  /** Index failures have no Conversation key but need the same report limit. */
+  private indexFailure: StreamFailure | null = null;
   /** Backoff for the stream index itself, so a broken database is not polled. */
   private indexRetryAt = 0;
   private indexFailures = 0;
@@ -210,6 +212,7 @@ export class EventJournalMaintenance {
       // The index answered, so a previous index-wide failure has recovered.
       this.indexFailures = 0;
       this.indexRetryAt = 0;
+      this.indexFailure = null;
       const failure = this.failures.get(candidate);
       if (!failure || failure.retryAt <= now) return candidate;
     }
@@ -223,7 +226,7 @@ export class EventJournalMaintenance {
   ): void {
     if (!conversationId) this.indexFailures += 1;
     const code = error instanceof Error ? error.message : String(error);
-    const known = conversationId ? this.failures.get(conversationId) : undefined;
+    const known = conversationId ? this.failures.get(conversationId) : this.indexFailure;
     const previous = known?.code === code ? known : undefined;
     const attempts = (previous?.attempts ?? 0) + 1;
     const sinceReport = (previous?.suppressed ?? 0) + 1;
@@ -238,6 +241,13 @@ export class EventJournalMaintenance {
         suppressed: reported ? 0 : sinceReport,
         retryAt: Date.now() + Math.min(max, base * 2 ** Math.min(attempts - 1, 20)),
       });
+    } else {
+      this.indexFailure = {
+        code,
+        attempts,
+        suppressed: reported ? 0 : sinceReport,
+        retryAt: Date.now() + Math.min(max, base * 2 ** Math.min(attempts - 1, 20)),
+      };
     }
     if (!conversationId) {
       const indexBackoff = Math.min(max, base * 2 ** Math.min(this.indexFailures - 1, 20));
@@ -248,7 +258,7 @@ export class EventJournalMaintenance {
       conversationId,
       stage,
       attempts,
-      suppressed: reported ? Math.max(0, sinceReport - 1) : 0,
+      suppressed: reported ? Math.max(0, sinceReport - 1) : sinceReport,
       outcome: reported ? 'reported' : 'suppressed',
     });
   }

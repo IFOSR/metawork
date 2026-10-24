@@ -141,8 +141,7 @@ describe('EventJournalMaintenance', () => {
     // First failure is reported with context, repeats are suppressed until the
     // bounded report interval elapses.
     expect(onError.mock.calls[0]![1]).toMatchObject({ conversationId: 'conv_a', stage: 'maintain', attempts: 1, outcome: 'reported' });
-    const suppressed = onError.mock.calls.filter(call => call[1].outcome === 'suppressed');
-    expect(suppressed.length).toBeGreaterThan(0);
+    expect(onError.mock.calls.some(call => call[1].outcome === 'suppressed')).toBe(true);
     expect(onError.mock.calls.some(call => call[1].outcome === 'reported' && call[1].attempts > 1)).toBe(true);
     failing = false;
     await vi.advanceTimersByTimeAsync(400);
@@ -166,6 +165,23 @@ describe('EventJournalMaintenance', () => {
     expect(maintain).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledTimes(1);
     expect(onError.mock.calls[0]![1]).toMatchObject({ stage: 'next_stream', conversationId: null });
+  });
+
+  it('also bounds repeated index failures and applies exponential retry backoff', async () => {
+    vi.useFakeTimers();
+    const nextStream = vi.fn(() => { throw new Error('database is locked'); });
+    const onError = vi.fn();
+    const worker = new EventJournalMaintenance({
+      accountId: 'local-default', nextStream, maintain: vi.fn(), intervalMs: 5, idleIntervalMs: 5,
+      errorBackoffBaseMs: 20, errorBackoffMaxMs: 100, errorReportEvery: 3, onError,
+    });
+    worker.start();
+    await vi.advanceTimersByTimeAsync(500);
+    await worker.stop();
+    expect(nextStream.mock.calls.length).toBeLessThan(15);
+    expect(onError.mock.calls.length).toBeGreaterThan(1);
+    expect(onError.mock.calls.some(call => call[1].outcome === 'suppressed')).toBe(true);
+    expect(onError.mock.calls.some(call => call[1].outcome === 'reported' && call[1].attempts > 1)).toBe(true);
   });
 
   it('sweeps a large converged install once per idle interval, not per stream', async () => {

@@ -84,7 +84,12 @@ export function createAccountEventJournal(input: {
     intervalMs: 25,
     idleIntervalMs: 1_000,
     maintain,
-    onError: input.onError,
+    // The lower-level maintenance object exposes suppressed failures to its
+    // callers, but production logging must only receive report-worthy ones.
+    onError: (error, context) => {
+      if (context.outcome === 'suppressed') return;
+      input.onError(error, context);
+    },
     onRecovered: input.onRecovered,
   });
   return {

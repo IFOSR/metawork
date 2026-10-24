@@ -1,4 +1,5 @@
 import { capturePublicProjectBaseline } from '../delivery/public-project-baseline.js';
+import { resolveExecutionModeFromEnvironment } from '../execution/execution-context.js';
 import type { KernelDecision, KernelEvent } from '../kernel/control-kernel.js';
 import {
   KernelApplicationRejectionError,
@@ -198,17 +199,24 @@ export class SessionKernelRuntime {
     const taskCommand = decision.action.task;
     if (taskCommand.control.startsWith('service_')) {
       if (!taskCommand.taskId || !this.deps.manageLocalService) {
-        throw new KernelApplicationRejectionError('受管服务操作不可用', 'service_runtime_unavailable');
+        const error = new KernelApplicationRejectionError('受管服务操作不可用', 'service_runtime_unavailable');
+        this.deps.callbacks.appendOutput(error.message);
+        this.deps.callbacks.refreshRuntimeState();
+        throw error;
       }
       const task = this.deps.taskRuntimeService.findTask(taskCommand.taskId);
       if (!task || !taskBelongsToConversation(task, conversationId, this.deps.legacyCompatibility)) {
-        // The refusal happens before any Runtime effect: converging is safe and
-        // the user still sees why (2026-10-22 review P0-3/P0-5).
-        throw new KernelApplicationRejectionError(
+        // The refusal happens before any Runtime effect: converging is safe.
+        // Surface it here because this branch runs before the service-operation
+        // try/catch below.
+        const error = new KernelApplicationRejectionError(
           `服务任务不属于当前会话：serviceId=${taskCommand.scope ?? '未指定'} `
           + `taskId=${taskCommand.taskId} conversationId=${conversationId}`,
           'service_not_in_conversation',
         );
+        this.deps.callbacks.appendOutput(error.message);
+        this.deps.callbacks.refreshRuntimeState();
+        throw error;
       }
       const operation = taskCommand.control.slice('service_'.length) as 'start' | 'stop' | 'restart';
       try {
@@ -426,6 +434,7 @@ export class SessionKernelRuntime {
           publicTaskDirectory: command.publicProjectDirectory ?? undefined,
           publicDeliveryBaseline: publicBaseline,
           startServiceAfterPublish: command.startServiceAfterPublish ?? false,
+          executionMode: resolveExecutionModeFromEnvironment(),
           title: (command.title ?? inline.normalizedGoal).slice(0, 50),
           goal: command.goal ?? inline.normalizedGoal,
           resources: inline.resources,

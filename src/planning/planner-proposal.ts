@@ -52,7 +52,7 @@ export type PlannerProposalResult =
       planId: string | null;
       rejectionType: 'validation' | 'kernel';
       issues: string[];
-      kernel: { decisionId: string; action: 'reject_request'; reason: string } | null;
+      kernel: { decisionId: string; action: KernelDecisionAction['type']; reason: string } | null;
     }
   | {
       status: 'conflict';
