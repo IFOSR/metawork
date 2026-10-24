@@ -1434,6 +1434,11 @@ export class ConversationSession {
         }
         this.refreshRuntimeState();
         this.appendOutput(command.kind === 'accept_task_result' ? '已接受结果，正在检查并交付。' : '已请求重新执行，原结果和历史记录保留。');
+        // Accepting drains publication and completes the Task inside this call.
+        // Without settling the Turn here it stays `running` forever and the
+        // client keeps showing an execution spinner although nothing runs.
+        // A retry is a continuation, so its Turn stays open on purpose.
+        if (command.kind === 'accept_task_result') this.settleTurnAfterTaskControl(task.id);
         return;
       }
       case 'cancel_task': {
@@ -1447,6 +1452,7 @@ export class ConversationSession {
         if (!this.kernelExecutionRuntime) throw new Error('task_control_unavailable');
         await this.kernelExecutionRuntime.cancelTask(task.id, '用户请求停止此任务');
         this.appendOutput(`已请求停止任务 ${task.id}；等待执行清理完成。`);
+        this.settleTurnAfterTaskControl(task.id);
         return;
       }
     }
@@ -1522,6 +1528,62 @@ export class ConversationSession {
       this.appendOutput(`取消任务失败：${(error as Error).message}`);
       return false;
     }
+  }
+
+  /**
+   * Closes the Turn when a user decision finished its Task without a new Planner
+   * turn. The decision control drains publication and completes the Task in the
+   * same call, so the Turn must be settled here; otherwise the transcript keeps
+   * reporting `running` while no Attempt, lease or wait exists.
+   */
+  private settleTurnAfterTaskControl(taskId: string): void {
+    this.settleRunningTurnForFinishedTask(taskId, { maxIdleMs: null });
+  }
+
+  /**
+   * Repairs a Turn that was left `running` by an earlier build (or by a control
+   * that finished the Task asynchronously). Only acts when the Task is terminal
+   * and the trace has been idle, so a Turn still producing output is untouched.
+   */
+  private settleStaleTurnAfterRestart(nowMs = Date.now()): void {
+    const taskId = this.currentTaskId;
+    if (!taskId) return;
+    this.settleRunningTurnForFinishedTask(taskId, { maxIdleMs: 15_000, nowMs });
+  }
+
+  private settleRunningTurnForFinishedTask(
+    taskId: string,
+    options: { maxIdleMs: number | null; nowMs?: number },
+  ): void {
+    const trace = this.deps.interactionTraceStream?.getSnapshot() ?? null;
+    if (!trace || trace.status !== 'running' || trace.taskId !== taskId) return;
+    if (options.maxIdleMs !== null) {
+      const lastAt = trace.events.at(-1)?.occurredAt ?? trace.startedAt;
+      const idleMs = (options.nowMs ?? Date.now()) - Date.parse(lastAt);
+      if (!Number.isFinite(idleMs) || idleMs < options.maxIdleMs) return;
+    }
+    const task = this.deps.runtimePort.queries.findTask(taskId);
+    if (!task) return;
+    // Tasks never persist a `failed` status; a failed Task is `blocked` with a
+    // failure blocker, so it stays open for the user's next decision.
+    const traceStatus = task.status === 'cancelled' ? 'cancelled'
+      : ['done', 'archived'].includes(task.status) ? 'completed'
+        : null;
+    if (!traceStatus) return;
+    // `eventKey` makes this idempotent: repeated calls never add a second event.
+    this.appendTrace({
+      phase: 'delivery',
+      actor: 'runtime',
+      kind: 'turn_settled',
+      status: 'completed',
+      title: traceStatus === 'completed' ? 'Turn completed' : `Turn ${traceStatus}`,
+      summary: traceStatus === 'completed'
+        ? '任务已完成，用户决策已应用。'
+        : `任务已结束：${task.status}。`,
+      details: { taskId, taskStatus: task.status },
+      eventKey: 'turn_settled',
+      traceStatus,
+    });
   }
 
   private appendTurnCancelledTrace(summary: string): void {
@@ -2653,6 +2715,8 @@ export class ConversationSession {
   }
 
   async maybeReviewTaskPoolOnTimer(nowMs = Date.now()): Promise<boolean> {
+    // Cheap repair for Turns whose Task finished while the Turn stayed `running`.
+    this.settleStaleTurnAfterRestart(nowMs);
     for (const task of this.deps.runtimePort.queries.listTasksByStatus('blocked')) {
       if (await this.kernelExecutionRuntime?.recoverDue(task.id, 'timer durable recovery drain')) return true;
     }

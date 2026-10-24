@@ -1544,7 +1544,13 @@ describe('SubtaskAttemptRunner', () => {
     const setupResult = setup(validResponse());
     const resourceRoot = `/tmp/metawork-image-context-${randomUUID()}`;
     const currentImagePath = join(resourceRoot, 'current-reference.jpg');
-    const historicalImagePath = join(resourceRoot, 'historical-output.jpg');
+    const historicalImagePath = join(
+      setupResult.sourceRoot,
+      'metaclaw-tasks',
+      'previous',
+      'historical-output.jpg',
+    );
+    mkdirSync(join(setupResult.sourceRoot, 'metaclaw-tasks', 'previous'), { recursive: true });
     mkdirSync(resourceRoot, { recursive: true });
     writeFileSync(currentImagePath, Buffer.from([0xff, 0xd8, 0xff, 0x10]));
     writeFileSync(historicalImagePath, Buffer.from([0xff, 0xd8, 0xff, 0x20]));

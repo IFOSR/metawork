@@ -275,8 +275,15 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
       ? '代码已交付，服务尚未通过健康检查。请查询服务状态，并显式启动或重启服务。'
     : userState === 'needs_action' && (pendingDecision?.reason === 'uncertified_result' || facts.deliveryState === 'failed' || recoveryDiagnosis === 'no_authorized_driver')
       ? (pendingDecision?.reason === 'uncertified_result'
-        ? `结果已安全保存，但完成验收还缺少执行说明。请接受并交付${pendingDecision.actions.includes('retry_attempt') ? '，或重新执行' : ''}。`
-        : facts.deliveryState === 'failed' ? '文件交付失败，请继续未完成部分；已完成的执行不会重跑。' : '没有找到可以继续任务的执行记录。请继续未完成部分。')
+        // Name the recommended button first and say when the other one applies,
+        // so the user never has to guess between accept and retry.
+        ? `结果已通过安全校验并保存，只差完成验收。建议点「接受并交付」直接进入交付；`
+          + `${pendingDecision.actions.includes('retry_attempt')
+            ? '只有你认为这次结果不正确时，才点「重新执行」。'
+            : '本轮没有提供重新执行。'}`
+        : facts.deliveryState === 'failed'
+          ? '文件交付失败，已完成的执行不会重跑。建议点「继续未完成部分」补齐交付。'
+          : '没有找到可以继续任务的执行记录。建议点「继续未完成部分」让系统重新调度。')
       : explanation)
     + (activeAttempt && facts.subtasks.some(subtask => subtask.status === 'blocked')
       ? ' 另有子任务需要处理，独立工作继续。' : '');

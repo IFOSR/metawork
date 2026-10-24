@@ -33,6 +33,14 @@ export interface ConversationObservationDeps {
     workspace?: { id: string; path: string; displayName: string; availability: 'available' | 'unavailable' };
   } | null>;
   readonly activity?: (accountId: string, conversationId: string, cursor?: string, pendingCursor?: string) => Promise<ConversationActivityView>;
+  /**
+   * Read-time truth for a Turn whose Task is already terminal. A Turn cannot
+   * still be running once its Task finished; older builds could leave the
+   * projection behind, which made the client show a spinner and a Stop control
+   * for work that no longer existed.
+   */
+  readonly settleTurn?: (turn: import('../session/conversation-read-types.js').ConversationTurnView)
+    => import('../session/conversation-read-types.js').ConversationTurnView;
 }
 
 /** Shared bounded reads, independent of Planner/Conversation execution lifetime. */
@@ -47,7 +55,10 @@ export class ConversationObservationService {
 
   async page(accountId: string, conversationId: string, cursor?: string, maxBytes?: number, beforeTurnId?: string) {
     if (!await this.deps.authorize(accountId, conversationId)) throw new Error('conversation_denied');
-    return this.deps.model.page(accountId, conversationId, { cursor, maxBytes, beforeTurnId });
+    const page = await this.deps.model.page(accountId, conversationId, { cursor, maxBytes, beforeTurnId });
+    return this.deps.settleTurn
+      ? { ...page, turns: page.turns.map(turn => this.deps.settleTurn!(turn)) }
+      : page;
   }
 
   async search(accountId: string, conversationId: string, query: string, cursor?: string) {
@@ -58,11 +69,13 @@ export class ConversationObservationService {
 
   async locate(accountId: string, conversationId: string, turnId: string, taskId?: string, maxBytes = 240 * 1024) {
     if (!await this.deps.authorize(accountId, conversationId)) throw new Error('conversation_denied');
-    const turn = taskId ? this.deps.model.findTaskTurn(accountId, conversationId, taskId)
+    const raw = taskId ? this.deps.model.findTaskTurn(accountId, conversationId, taskId)
       : this.deps.model.findTurn(accountId, conversationId, turnId);
-    if (!turn) throw new Error('turn_not_found');
-    const page = this.deps.model.page(accountId, conversationId, { beforeTurnId: turn.id, limit: 19, maxBytes });
-    return { ...page, turns: [...page.turns, turn] };
+    if (!raw) throw new Error('turn_not_found');
+    const turn = this.deps.settleTurn ? this.deps.settleTurn(raw) : raw;
+    const page = await this.deps.model.page(accountId, conversationId, { beforeTurnId: turn.id, limit: 19, maxBytes });
+    const turns = this.deps.settleTurn ? page.turns.map(item => this.deps.settleTurn!(item)) : page.turns;
+    return { ...page, turns: [...turns, turn] };
   }
 
   async content(accountId: string, conversationId: string, hash: string, offset: number, maxBytes: number) {

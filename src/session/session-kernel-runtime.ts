@@ -1,5 +1,5 @@
 import { capturePublicProjectBaseline } from '../delivery/public-project-baseline.js';
-import { resolveExecutionModeFromEnvironment } from '../execution/execution-context.js';
+import { resolveAdmittedExecutionMode } from '../execution/execution-context.js';
 import type { KernelDecision, KernelEvent } from '../kernel/control-kernel.js';
 import {
   KernelApplicationRejectionError,
@@ -434,7 +434,7 @@ export class SessionKernelRuntime {
           publicTaskDirectory: command.publicProjectDirectory ?? undefined,
           publicDeliveryBaseline: publicBaseline,
           startServiceAfterPublish: command.startServiceAfterPublish ?? false,
-          executionMode: resolveExecutionModeFromEnvironment(),
+          executionMode: resolveAdmittedExecutionMode(),
           title: (command.title ?? inline.normalizedGoal).slice(0, 50),
           goal: command.goal ?? inline.normalizedGoal,
           resources: inline.resources,

@@ -164,6 +164,7 @@ import { projectPublicDelivery } from '../delivery/public-delivery-view.js';
 import { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { WorkspaceChangeRecordRepo } from '../storage/workspace-change-record-repo.js';
+import { ArtifactVersionRepo } from '../storage/artifact-version-repo.js';
 import { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import {
@@ -994,6 +995,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     isPublishedServiceSpecification: async (taskId, root) => taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId)
       .some(item => item.status === 'published' && item.relativePath === LOCAL_SERVICE_SPECIFICATION_FILENAME
         && item.publishedPath === join(root, LOCAL_SERVICE_SPECIFICATION_FILENAME)),
+    resolveWorkspaceId: async taskId => {
+      const row = db.prepare('SELECT workspace_id FROM tasks WHERE id = ?').get(taskId) as
+        { workspace_id: string | null } | undefined;
+      return row?.workspace_id ?? null;
+    },
     resolvePublishedDirectory: async taskId => {
       const task = taskEngine.getTaskRepo().findById(taskId);
       if (!task || task.accountId !== LOCAL_DEFAULT_ACCOUNT_ID) return null;
@@ -1731,6 +1737,20 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   activityProjectionTimer.unref();
   const conversationObservation = new ConversationObservationService({
     identity: { serverId: conversationReadModel.serverIdentity(), accountId: LOCAL_DEFAULT_ACCOUNT_ID },
+    // A Turn whose Task already finished cannot still be running. Reporting the
+    // truth at read time also repairs Turns left open by earlier builds; a
+    // genuinely live Turn is never overridden.
+    settleTurn: turn => {
+      if (turn.status !== 'running' || !turn.taskId) return turn;
+      const live = conversationRegistry.getIfOpen(turn.conversationId)?.getInteractionTrace() ?? null;
+      if (live?.turnId === turn.id && live.status === 'running') return turn;
+      const task = taskRepo.findById(turn.taskId);
+      if (!task) return turn;
+      const status = task.status === 'cancelled'
+        ? 'cancelled' as const
+        : ['done', 'archived'].includes(task.status) ? 'completed' as const : null;
+      return status ? { ...turn, status, completedAt: turn.completedAt ?? task.updatedAt ?? null } : turn;
+    },
     metadata: async (_accountId, conversationId) => {
       const metadata = await conversationStore.readMetadata(conversationId);
       const workspace = metadata?.workspaceBinding?.workspaceId
@@ -2442,6 +2462,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           (await workspaceCatalogStore.readCatalog()).workspaces
             .filter(workspace => !workspace.archived && workspace.availability === 'available')
             .map(workspace => workspace.canonicalPath)
+        ),
+        artifactVersionRepo: new ArtifactVersionRepo(db),
+        objectRoot: join(accountPaths.workspaceStore, 'objects', 'sha256', 'artifacts'),
+        resolveWorkspaceRoot: async workspaceId => (
+          (await workspaceCatalogStore.findById(workspaceId))?.canonicalPath ?? null
         ),
       }),
       webAuth,

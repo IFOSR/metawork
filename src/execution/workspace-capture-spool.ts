@@ -20,6 +20,8 @@ interface CaptureLine {
 export async function readCapturedWorkspacePaths(
   spoolPath: string,
   workspaceRoot: string,
+  /** Container mount point that aliases `workspaceRoot` (e.g. `/workspace`). */
+  containerWorkspaceRoot?: string,
 ): Promise<string[]> {
   const raw = await readFile(spoolPath, 'utf8').catch(() => null);
   if (!raw) return [];
@@ -30,9 +32,15 @@ export async function readCapturedWorkspacePaths(
     let entry: CaptureLine;
     try { entry = JSON.parse(line) as CaptureLine; } catch { continue; }
     if (typeof entry.path !== 'string' || !isAbsolute(entry.path)) continue;
-    const relativePath = relative(workspaceRoot, entry.path).split('\\').join('/');
+    // Container captures name the mount target, not the host path; translate it
+    // back to the host Workspace before the containment check.
+    const hostPath = containerWorkspaceRoot
+      && (entry.path === containerWorkspaceRoot || entry.path.startsWith(`${containerWorkspaceRoot}/`))
+      ? `${workspaceRoot}${entry.path.slice(containerWorkspaceRoot.length)}`
+      : entry.path;
+    const relativePath = relative(workspaceRoot, hostPath).split('\\').join('/');
     if (!relativePath || relativePath.startsWith('..') || isAbsolute(relativePath)) continue;
-    const hash = typeof entry.hash === 'string' ? entry.hash : currentHash(entry.path);
+    const hash = typeof entry.hash === 'string' ? entry.hash : currentHash(hostPath);
     if (entry.phase === 'before') before.set(relativePath, hash);
     else if (entry.phase === 'after') after.set(relativePath, hash);
   }

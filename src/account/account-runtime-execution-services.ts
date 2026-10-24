@@ -6,6 +6,7 @@
  * conversation callback），按账户构造一次。
  */
 
+import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { ResourceLeaseService } from '../execution/resource-lease-service.js';
 import { SqliteResourceLeaseRepository } from '../storage/resource-lease-repo.js';
@@ -117,6 +118,7 @@ export function buildAccountRuntimeExecutionServices(deps: {
     controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
     accountId: deps.accountId,
     resultRoot: deps.resultRoot,
+    artifactObjectRoot: join(deps.workspaceStore.objectsPath, 'artifacts'),
     attachmentStore: deps.attachmentStore,
     userArtifactPublication: deps.userArtifactPublication ?? null,
     usageObserver: deps.usageObserver,

@@ -144,6 +144,7 @@ export function createV31RepositoryDb(): Database.Database {
       configuration_revision TEXT NOT NULL,
       authorized_binding_json TEXT NOT NULL,
       binding_fingerprint TEXT NOT NULL,
+      execution_binding_fingerprint TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );

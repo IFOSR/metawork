@@ -101,7 +101,8 @@ describe('runtime progress activity projection', () => {
           attempt_kind, source_attempt_id, recovery_mode, attempt_payload_json, resource_grant_json, status,
           work_unit_id, sandbox_container_id, launch_started_at, terminal_at, cancellation_decision_id,
           cancel_requested_at, cancelled_at, error_summary, configuration_revision, authorized_binding_json,
-          binding_fingerprint, created_at, updated_at FROM kernel_dispatch_items WHERE attempt_id = 'attempt-task-1'`);
+          binding_fingerprint, created_at, updated_at, execution_binding_fingerprint
+          FROM kernel_dispatch_items WHERE attempt_id = 'attempt-task-1'`);
       db.transaction(() => { for (let n = 0; n < 10000; n++) insert.run(n); })();
       const facts = reader.read(task, { requestId: 'approval' });
       expect(facts.dispatches).toEqual([]); expect(facts.receipts).toEqual([]);

@@ -718,7 +718,7 @@ facts, service records and operation journal; 50→51 migration is transactional
 ## Current Server Upgrade Baseline
 
 The current implementation uses PlanningAgentPlan v8, Work Graph v7, Kernel wire
-v5 and SQLite schema v51. ADR-0027 through ADR-0030 govern the configuration
+v5 and SQLite schema v56. ADR-0027 through ADR-0030 govern the configuration
 and release baseline; ADR-0032 governs Completion Protocol v4 and result-first
 delivery.
 

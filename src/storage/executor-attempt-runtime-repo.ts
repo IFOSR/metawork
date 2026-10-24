@@ -11,6 +11,16 @@ export interface ExecutorAttemptRuntimeRecord {
   progress: Record<string, unknown>;
   recoverySafety: KernelRecoverySafety;
   externalIdempotencyKey: string | null;
+  /**
+   * Write-after-crash facts. `writeStartedAt` without `receiptPersistedAt`
+   * means the Attempt may have changed the user's Workspace without a durable
+   * completion fact, which is exactly the `uncertain` case.
+   */
+  writeStartedAt: string | null;
+  writeFinishedAt: string | null;
+  receiptPersistedAt: string | null;
+  externalEffectStatus: 'none' | 'unknown' | 'observed';
+  changeRecordId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -34,6 +44,11 @@ interface RuntimeRow {
   progress_json: string;
   recovery_safety: KernelRecoverySafety;
   external_idempotency_key: string | null;
+  write_started_at: string | null;
+  write_finished_at: string | null;
+  receipt_persisted_at: string | null;
+  external_effect_status: 'none' | 'unknown' | 'observed';
+  change_record_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -127,6 +142,66 @@ export class ExecutorAttemptRuntimeRepo {
     `).run(JSON.stringify(delta), now, attemptId);
   }
 
+  /** Records that the Executor was authorized to start writing. */
+  recordWriteStarted(attemptId: string, now: string): void {
+    this.db.prepare(`
+      UPDATE executor_attempt_runtime
+      SET write_started_at = COALESCE(write_started_at, ?),
+          external_effect_status = CASE external_effect_status
+            WHEN 'none' THEN 'unknown' ELSE external_effect_status END,
+          updated_at = ?
+      WHERE attempt_id = ?
+    `).run(now, now, attemptId);
+  }
+
+  /** The Executor process finished; writes it made are now observable. */
+  recordWriteFinished(
+    attemptId: string,
+    status: 'none' | 'unknown' | 'observed',
+    now: string,
+  ): void {
+    this.db.prepare(`
+      UPDATE executor_attempt_runtime
+      SET write_finished_at = ?, external_effect_status = ?, updated_at = ?
+      WHERE attempt_id = ?
+    `).run(now, status, now, attemptId);
+  }
+
+  recordReceiptPersisted(attemptId: string, now: string): void {
+    this.db.prepare(`
+      UPDATE executor_attempt_runtime
+      SET receipt_persisted_at = COALESCE(receipt_persisted_at, ?),
+          external_effect_status = CASE external_effect_status
+            WHEN 'unknown' THEN 'observed' ELSE external_effect_status END,
+          updated_at = ?
+      WHERE attempt_id = ?
+    `).run(now, now, attemptId);
+  }
+
+  recordChangeRecordId(attemptId: string, changeRecordId: string, now: string): void {
+    this.db.prepare(`
+      UPDATE executor_attempt_runtime SET change_record_id = ?, updated_at = ?
+      WHERE attempt_id = ?
+    `).run(changeRecordId, now, attemptId);
+  }
+
+  /**
+   * True when the Attempt may have written user bytes without a durable
+   * receipt. Recovery must observe and fence instead of replaying.
+   */
+  hasUnpersistedWrite(attemptId: string): boolean {
+    const row = this.db.prepare(`
+      SELECT write_started_at, receipt_persisted_at, external_effect_status
+      FROM executor_attempt_runtime WHERE attempt_id = ?
+    `).get(attemptId) as {
+      write_started_at: string | null;
+      receipt_persisted_at: string | null;
+      external_effect_status: string | null;
+    } | undefined;
+    if (!row?.write_started_at || row.receipt_persisted_at) return false;
+    return row.external_effect_status !== 'none';
+  }
+
   find(attemptId: string): ExecutorAttemptRuntimeRecord | null {
     const row = this.db.prepare(`
       SELECT * FROM executor_attempt_runtime WHERE attempt_id = ?
@@ -190,6 +265,11 @@ function rowToRecord(row: RuntimeRow): ExecutorAttemptRuntimeRecord {
     progress: JSON.parse(row.progress_json) as Record<string, unknown>,
     recoverySafety: row.recovery_safety,
     externalIdempotencyKey: row.external_idempotency_key,
+    writeStartedAt: row.write_started_at ?? null,
+    writeFinishedAt: row.write_finished_at ?? null,
+    receiptPersistedAt: row.receipt_persisted_at ?? null,
+    externalEffectStatus: row.external_effect_status ?? 'none',
+    changeRecordId: row.change_record_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

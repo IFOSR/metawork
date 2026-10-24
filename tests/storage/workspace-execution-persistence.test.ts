@@ -16,7 +16,7 @@ describe('workspace execution persistence', () => {
     const db = database();
     const version = db.prepare('SELECT version FROM schema_version').get() as { version: number };
     expect(version.version).toBe(CURRENT_SCHEMA_VERSION);
-    expect(CURRENT_SCHEMA_VERSION).toBe(54);
+    expect(CURRENT_SCHEMA_VERSION).toBe(56);
     const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>)
       .map(row => row.name);
     expect(tables).toEqual(expect.arrayContaining([

@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 import { installObservationSchema } from './observation-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 54;
+export const CURRENT_SCHEMA_VERSION = 56;
 
 const MANAGED_SERVICES_SQL = `
   CREATE TABLE IF NOT EXISTS public_workspace_files (
@@ -13,9 +13,18 @@ const MANAGED_SERVICES_SQL = `
     PRIMARY KEY (account_id, task_id, relative_path)
   );
   CREATE TABLE IF NOT EXISTS managed_local_services (
-    service_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id),
-    specification_json TEXT NOT NULL, state TEXT NOT NULL, process_id INTEGER, process_token TEXT,
-    health_message TEXT, updated_at TEXT NOT NULL
+    service_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT '',
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    specification_revision TEXT NOT NULL DEFAULT '',
+    specification_json TEXT NOT NULL,
+    state TEXT NOT NULL,
+    process_id INTEGER,
+    process_token TEXT,
+    health_message TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, workspace_id, service_id)
   );
   CREATE INDEX IF NOT EXISTS managed_services_task ON managed_local_services(account_id, task_id);
   CREATE TABLE IF NOT EXISTS managed_local_service_effects (
@@ -1701,25 +1710,33 @@ export function runMigrations(
     })();
     version = 51;
   }
-  // Schema 52 belongs to the six-state Task migration on main; this branch owns
-  // 53. When both land together this block moves to the next free version.
+  // Schema numbering: 51 is this branch's pre-release base, 52 is owned by
+  // `main` (the six-state Task projection, which rebuilds `tasks` with a
+  // six-state CHECK and reclassifies every historical row). This branch cannot
+  // reproduce that step — it writes `status='created'`, which main's CHECK
+  // rejects — so 51 upgrades straight to this branch's 53. A database that is
+  // already at 52 came from main and therefore already carries its base; the
+  // 52 step only proves that and then adds this branch's objects.
   if (version === 51) {
     db.transaction(() => {
-      if (!columnsOf(db, 'tasks').includes('execution_mode')) {
-        db.exec("ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'worktree'");
-      }
-      const artifactColumns = tableExists(db, 'task_artifacts') ? columnsOf(db, 'task_artifacts') : [];
-      if (artifactColumns.length > 0 && !artifactColumns.includes('reference_kind')) {
-        db.exec("ALTER TABLE task_artifacts ADD COLUMN reference_kind TEXT NOT NULL DEFAULT 'legacy_published_copy'");
-        db.exec('ALTER TABLE task_artifacts ADD COLUMN workspace_id TEXT');
-        db.exec('ALTER TABLE task_artifacts ADD COLUMN artifact_version_id TEXT');
-        db.exec('ALTER TABLE task_artifacts ADD COLUMN source_relative_path TEXT');
-      }
-      db.exec(WORKSPACE_EXECUTION_SQL);
-      db.exec(WORKSPACE_CHANGE_RECORD_SQL);
-      db.exec(ARTIFACT_VERSION_SQL);
-      const changed = db.prepare('UPDATE schema_version SET version = 53 WHERE version = 51').run();
-      if (changed.changes !== 1) throw new Error('schema version changed during 51 to 53 migration');
+      applyWorkspaceExecutionDdl(db);
+      // 51 -> 52 is this branch's own pre-release bridge. It does not run main's
+      // six-state reclassification, so it records that explicitly; the merged
+      // migration chain replaces this step with main's.
+      recordBranchBridge(db, '51_to_52_branch_bridge');
+      bumpSchemaVersion(db, 51, 52, '51 to 52');
+    })();
+    version = 52;
+  }
+  if (version === 52) {
+    db.transaction(() => {
+      // Fail closed instead of silently bridging a schema we do not own: a 52
+      // database without main's six-state base means the branches were mixed
+      // incorrectly, and continuing would produce a database neither runtime
+      // understands.
+      assertSixStateTaskBase(db);
+      applyWorkspaceExecutionDdl(db);
+      bumpSchemaVersion(db, 52, 53, '52 to 53');
     })();
     version = 53;
   }
@@ -1728,59 +1745,24 @@ export function runMigrations(
   // every parent row keeps its id, so child checkpoints stay consistent.
   if (version === 53 && !tableExists(db, 'workspace_records')) {
     db.transaction(() => {
-      const changed = db.prepare('UPDATE schema_version SET version = 54 WHERE version = 53').run();
-      if (changed.changes !== 1) throw new Error('schema version changed during 53 to 54 migration');
+      bumpSchemaVersion(db, 53, 54, '53 to 54');
     })();
     version = 54;
   }
   if (version === 53) {
-    const priorViolations = new Set(
-      (db.pragma('foreign_key_check') as Array<Record<string, unknown>>).map(row => JSON.stringify(row)),
-    );
-    db.pragma('foreign_keys = OFF');
-    try {
-      db.transaction(() => {
-        db.exec(`
-          CREATE TABLE workspace_records_v54 (
-            id TEXT PRIMARY KEY,
-            task_id TEXT NOT NULL,
-            generation_id TEXT NOT NULL,
-            subtask_id TEXT NOT NULL,
-            workspace_kind TEXT NOT NULL CHECK(workspace_kind IN ('git', 'in_place')),
-            root_uri TEXT NOT NULL,
-            baseline_json TEXT NOT NULL DEFAULT '{}',
-            managed_repository_uri TEXT,
-            managed_branch TEXT,
-            head_commit TEXT,
-            current_checkpoint_id TEXT,
-            status TEXT NOT NULL DEFAULT 'active',
-            cleanup_after TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            UNIQUE(task_id, generation_id, subtask_id)
-          );
-          INSERT INTO workspace_records_v54 SELECT
-            id, task_id, generation_id, subtask_id, workspace_kind, root_uri, baseline_json,
-            managed_repository_uri, managed_branch, head_commit, current_checkpoint_id,
-            status, cleanup_after, created_at, updated_at
-          FROM workspace_records;
-          DROP TABLE workspace_records;
-          ALTER TABLE workspace_records_v54 RENAME TO workspace_records;
-          CREATE INDEX IF NOT EXISTS idx_workspace_records_retention
-            ON workspace_records(status, cleanup_after);
-        `);
-        const changed = db.prepare('UPDATE schema_version SET version = 54 WHERE version = 53').run();
-        if (changed.changes !== 1) throw new Error('schema version changed during 53 to 54 migration');
-      })();
-      const newViolations = (db.pragma('foreign_key_check') as Array<Record<string, unknown>>)
-        .filter(row => !priorViolations.has(JSON.stringify(row)));
-      if (newViolations.length > 0) {
-        throw new Error('workspace_records rebuild broke referential integrity');
-      }
-    } finally {
-      db.pragma('foreign_keys = ON');
-    }
+    rebuildWorkspaceRecordsForInPlace(db);
     version = 54;
+  }
+  if (version === 54) {
+    db.transaction(() => {
+      applySchema55Ddl(db);
+      bumpSchemaVersion(db, 54, 55, '54 to 55');
+    })();
+    version = 55;
+  }
+  if (version === 55) {
+    rebuildManagedServiceIdentity(db);
+    version = 56;
   }
   // Current-schema databases may have been created before a new projection
   // invalidation trigger was introduced. Reinstalling the idempotent trigger
@@ -1788,6 +1770,244 @@ export function runMigrations(
   db.transaction(() => {
     installDirectoryInvalidationTriggers(db);
   })();
+}
+
+/**
+ * Idempotent Workspace execution objects. Applied to 51 (this branch's
+ * pre-release base) and to 52 (main's six-state Task schema), because neither
+ * version is the owner of these tables: they are additive.
+ */
+function applyWorkspaceExecutionDdl(db: Database.Database): void {
+  if (!columnsOf(db, 'tasks').includes('execution_mode')) {
+    db.exec("ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'worktree'");
+  }
+  const artifactColumns = tableExists(db, 'task_artifacts') ? columnsOf(db, 'task_artifacts') : [];
+  if (artifactColumns.length > 0 && !artifactColumns.includes('reference_kind')) {
+    db.exec("ALTER TABLE task_artifacts ADD COLUMN reference_kind TEXT NOT NULL DEFAULT 'legacy_published_copy'");
+    db.exec('ALTER TABLE task_artifacts ADD COLUMN workspace_id TEXT');
+    db.exec('ALTER TABLE task_artifacts ADD COLUMN artifact_version_id TEXT');
+    db.exec('ALTER TABLE task_artifacts ADD COLUMN source_relative_path TEXT');
+  }
+  db.exec(WORKSPACE_EXECUTION_SQL);
+  db.exec(WORKSPACE_CHANGE_RECORD_SQL);
+  db.exec(ARTIFACT_VERSION_SQL);
+}
+
+/**
+ * True when the database carries main's six-state Task base (schema 52). The
+ * branch relies on this to decide whether a 52 database may be upgraded.
+ */
+function hasSixStateTaskBase(db: Database.Database): boolean {
+  if (!tableExists(db, 'task_state_changes')
+    || !columnsOf(db, 'tasks').includes('state_version')
+    || !columnsOf(db, 'tasks').includes('completed_at')) {
+    return false;
+  }
+  // Main's migration rebuilds `tasks` with the six-state CHECK. Merely adding
+  // the projection columns to an older branch database must not be accepted as
+  // an externally-owned schema 52.
+  const sql = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'").get() as { sql?: string } | undefined)?.sql ?? '';
+  const normalized = sql.toLowerCase();
+  return ['queued', 'running', 'needs_action', 'succeeded', 'failed', 'cancelled']
+    .every(state => normalized.includes(`'${state}'`))
+    && !normalized.includes("'created'");
+}
+
+/**
+ * A 52 database is main-owned. Upgrading one without its base would leave a
+ * schema that neither runtime can interpret, so the step refuses instead of
+ * guessing.
+ */
+function assertSixStateTaskBase(db: Database.Database): void {
+  if (hasSixStateTaskBase(db)) return;
+  // A 52 this branch produced itself (51 -> 52 bridge) is known to lack main's
+  // reclassification; only an externally observed 52 has to prove its origin.
+  if (branchBridgeRecorded(db, '51_to_52_branch_bridge')) return;
+  throw new Error(
+    'schema 52 does not carry the six-state Task base (task_state_changes, '
+    + 'tasks.state_version, tasks.completed_at). Schema 52 belongs to main; '
+    + 'merge main before upgrading this database, or recreate it.',
+  );
+}
+
+function branchBridgeRecorded(db: Database.Database, marker: string): boolean {
+  if (!tableExists(db, 'schema_branch_bridges')) return false;
+  return Boolean(db.prepare('SELECT 1 FROM schema_branch_bridges WHERE marker = ?').get(marker));
+}
+
+/**
+ * Records that this branch bridged a version main owns. Post-merge tooling can
+ * see that main's step still has to run instead of assuming it happened.
+ */
+function recordBranchBridge(db: Database.Database, marker: string): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_branch_bridges (
+      marker TEXT PRIMARY KEY,
+      recorded_at TEXT NOT NULL
+    )
+  `);
+  db.prepare('INSERT OR IGNORE INTO schema_branch_bridges (marker, recorded_at) VALUES (?, ?)')
+    .run(marker, new Date().toISOString());
+}
+
+/**
+ * Schema 55 adds the durable facts the in-place contract needs: a wake kind so
+ * partition waits can be re-dispatched, service workspace/revision identity,
+ * and the write-after-crash facts that decide `uncertain` recovery.
+ */
+function applySchema55Ddl(db: Database.Database): void {
+  const retryColumns = tableExists(db, 'retry_wakes') ? columnsOf(db, 'retry_wakes') : [];
+  if (retryColumns.length > 0 && !retryColumns.includes('wake_kind')) {
+    db.exec("ALTER TABLE retry_wakes ADD COLUMN wake_kind TEXT NOT NULL DEFAULT 'retry'");
+  }
+  const serviceColumns = tableExists(db, 'managed_local_services') ? columnsOf(db, 'managed_local_services') : [];
+  if (serviceColumns.length > 0) {
+    if (!serviceColumns.includes('workspace_id')) {
+      db.exec('ALTER TABLE managed_local_services ADD COLUMN workspace_id TEXT');
+    }
+    if (!serviceColumns.includes('specification_revision')) {
+      db.exec("ALTER TABLE managed_local_services ADD COLUMN specification_revision TEXT NOT NULL DEFAULT ''");
+    }
+  }
+  const runtimeColumns = tableExists(db, 'executor_attempt_runtime')
+    ? columnsOf(db, 'executor_attempt_runtime')
+    : [];
+  const dispatchColumns = tableExists(db, 'kernel_dispatch_items')
+    ? columnsOf(db, 'kernel_dispatch_items')
+    : [];
+  if (dispatchColumns.length > 0 && !dispatchColumns.includes('execution_binding_fingerprint')) {
+    db.exec('ALTER TABLE kernel_dispatch_items ADD COLUMN execution_binding_fingerprint TEXT');
+  }
+  if (runtimeColumns.length > 0) {
+    if (!runtimeColumns.includes('write_started_at')) {
+      db.exec('ALTER TABLE executor_attempt_runtime ADD COLUMN write_started_at TEXT');
+      db.exec('ALTER TABLE executor_attempt_runtime ADD COLUMN write_finished_at TEXT');
+      db.exec('ALTER TABLE executor_attempt_runtime ADD COLUMN receipt_persisted_at TEXT');
+      db.exec("ALTER TABLE executor_attempt_runtime ADD COLUMN external_effect_status TEXT NOT NULL DEFAULT 'none'");
+      db.exec('ALTER TABLE executor_attempt_runtime ADD COLUMN change_record_id TEXT');
+    }
+  }
+}
+
+/**
+ * Service identity is (account, workspace, service), not the bare `service_id`.
+ * Two Workspaces may legitimately run a service with the same id, and the
+ * previous primary key made that impossible. SQLite cannot change a primary key
+ * in place, so the table is rebuilt with the composite key.
+ */
+function rebuildManagedServiceIdentity(db: Database.Database): void {
+  if (!tableExists(db, 'managed_local_services')) {
+    db.transaction(() => {
+      db.exec(MANAGED_SERVICES_SQL);
+      bumpSchemaVersion(db, 55, 56, '55 to 56');
+    })();
+    return;
+  }
+  const priorViolations = new Set(
+    (db.pragma('foreign_key_check') as Array<Record<string, unknown>>).map(row => JSON.stringify(row)),
+  );
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE managed_local_services_v56 (
+          service_id TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL DEFAULT '',
+          task_id TEXT NOT NULL REFERENCES tasks(id),
+          specification_revision TEXT NOT NULL DEFAULT '',
+          specification_json TEXT NOT NULL,
+          state TEXT NOT NULL,
+          process_id INTEGER,
+          process_token TEXT,
+          health_message TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (account_id, workspace_id, service_id)
+        );
+        INSERT INTO managed_local_services_v56 (
+          service_id, account_id, workspace_id, task_id, specification_revision,
+          specification_json, state, process_id, process_token, health_message, updated_at
+        )
+        SELECT service_id, account_id, COALESCE(workspace_id, ''), task_id,
+          COALESCE(specification_revision, ''), specification_json, state,
+          process_id, process_token, health_message, updated_at
+        FROM managed_local_services;
+        DROP TABLE managed_local_services;
+        ALTER TABLE managed_local_services_v56 RENAME TO managed_local_services;
+        CREATE INDEX IF NOT EXISTS managed_services_task
+          ON managed_local_services(account_id, task_id);
+        CREATE INDEX IF NOT EXISTS managed_services_workspace
+          ON managed_local_services(account_id, workspace_id, service_id);
+      `);
+      bumpSchemaVersion(db, 55, 56, '55 to 56');
+    })();
+    const newViolations = (db.pragma('foreign_key_check') as Array<Record<string, unknown>>)
+      .filter(row => !priorViolations.has(JSON.stringify(row)));
+    if (newViolations.length > 0) {
+      throw new Error('managed_local_services rebuild broke referential integrity');
+    }
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
+}
+
+function bumpSchemaVersion(
+  db: Database.Database,
+  from: number,
+  to: number,
+  label: string,
+): void {
+  const changed = db.prepare('UPDATE schema_version SET version = ? WHERE version = ?').run(to, from);
+  if (changed.changes !== 1) throw new Error(`schema version changed during ${label} migration`);
+}
+
+/** Widens `workspace_records.workspace_kind` to accept `in_place` by rebuilding. */
+function rebuildWorkspaceRecordsForInPlace(db: Database.Database): void {
+  const priorViolations = new Set(
+    (db.pragma('foreign_key_check') as Array<Record<string, unknown>>).map(row => JSON.stringify(row)),
+  );
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE workspace_records_v54 (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          generation_id TEXT NOT NULL,
+          subtask_id TEXT NOT NULL,
+          workspace_kind TEXT NOT NULL CHECK(workspace_kind IN ('git', 'in_place')),
+          root_uri TEXT NOT NULL,
+          baseline_json TEXT NOT NULL DEFAULT '{}',
+          managed_repository_uri TEXT,
+          managed_branch TEXT,
+          head_commit TEXT,
+          current_checkpoint_id TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          cleanup_after TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(task_id, generation_id, subtask_id)
+        );
+        INSERT INTO workspace_records_v54 SELECT
+          id, task_id, generation_id, subtask_id, workspace_kind, root_uri, baseline_json,
+          managed_repository_uri, managed_branch, head_commit, current_checkpoint_id,
+          status, cleanup_after, created_at, updated_at
+        FROM workspace_records;
+        DROP TABLE workspace_records;
+        ALTER TABLE workspace_records_v54 RENAME TO workspace_records;
+        CREATE INDEX IF NOT EXISTS idx_workspace_records_retention
+          ON workspace_records(status, cleanup_after);
+      `);
+      bumpSchemaVersion(db, 53, 54, '53 to 54');
+    })();
+    const newViolations = (db.pragma('foreign_key_check') as Array<Record<string, unknown>>)
+      .filter(row => !priorViolations.has(JSON.stringify(row)));
+    if (newViolations.length > 0) {
+      throw new Error('workspace_records rebuild broke referential integrity');
+    }
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
 }
 
 function runBaseMigrations(
@@ -1798,7 +2018,7 @@ function runBaseMigrations(
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
     ).all() as Array<{ version: number }>;
-    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 53, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
+    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 41) {
@@ -1954,10 +2174,13 @@ function runBaseMigrations(
     db.exec(WORKSPACE_EXECUTION_SQL);
     db.exec(WORKSPACE_CHANGE_RECORD_SQL);
     db.exec(ARTIFACT_VERSION_SQL);
-    db.exec(MANAGED_SERVICES_SQL);
     db.exec(PUBLICATION_DELIVERY_SQL);
     db.exec(RETRY_WAKE_SQL);
     db.exec(NAVIGATION_PROJECTION_SQL);
+    // Fresh installs get the same columns the upgrade chain adds, without
+    // rewiring the historical base schema.
+    applySchema55Ddl(db);
+    db.exec(MANAGED_SERVICES_SQL);
     installObservationSchema(db);
     db.exec(`CREATE INDEX IF NOT EXISTS kernel_permission_resolution_request ON kernel_events
       (correlation_id) WHERE event_type = 'permission_resolution_received'`);

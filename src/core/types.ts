@@ -405,6 +405,11 @@ export interface WorkspaceContext {
   allowFilesystem: boolean;
   workingDirectory: string;
   targetPaths: string[];
+  /** Workspace identity the Attempt was bound to at admission. */
+  workspaceId?: string;
+  executionMode?: 'worktree' | 'in_place';
+  /** Canonical Workspace root; live file references resolve against this. */
+  canonicalRoot?: string;
 }
 
 export interface ExecutionContextBundleV2 {

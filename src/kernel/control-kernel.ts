@@ -1,4 +1,5 @@
 import type { LocalServiceOperation, LocalServiceSpecification } from '../task/local-service.js';
+import { localServiceSpecificationRevision } from '../core/local-service-revision.js';
 import type { PendingResultIdentity } from '../task/safe-result-identity.js';
 import { allowsKernelAction, type ProductionAuthorizationFact } from './production-authorization.js';
 import { createHash } from 'node:crypto';
@@ -109,7 +110,19 @@ export interface KernelEventEnvelope {
 export type KernelPlanProposal = PlanningAgentPlan;
 
 export type KernelEvent =
-  | (KernelEventEnvelope & { type: 'managed_service_requested'; operation: LocalServiceOperation; serviceId: string; specification?: LocalServiceSpecification })
+  | (KernelEventEnvelope & {
+      type: 'managed_service_requested';
+      operation: LocalServiceOperation;
+      serviceId: string;
+      specification?: LocalServiceSpecification;
+      /**
+       * Workspace the service belongs to and the exact specification revision
+       * this request authorizes. The Kernel refuses a launch whose revision is
+       * not the authorized one unless the operation is an explicit `update`.
+       */
+      workspaceId: string;
+      specificationRevision: string;
+    })
   | (KernelEventEnvelope & {
       type: 'plan_proposed';
       proposal: KernelPlanProposal;
@@ -199,7 +212,7 @@ export type KernelEvent =
     })
   | (KernelEventEnvelope & {
       type: 'timer_tick';
-      wakeKind: 'capacity' | 'retry' | 'availability';
+      wakeKind: 'capacity' | 'retry' | 'availability' | 'partition';
       sourceDecisionId: string;
       scheduledFor: string;
       retry: {
@@ -340,6 +353,7 @@ export interface KernelRetryWakeFact {
   resumeAt: string;
   status: 'armed' | 'fired' | 'consumed' | 'superseded' | 'recovery_required';
   timerEventId: string | null;
+  wakeKind?: 'retry' | 'partition';
 }
 
 export type KernelDependencyReadinessCode =
@@ -438,6 +452,10 @@ export type KernelSnapshot = { productionAuthorization?: ProductionAuthorization
       task: KernelTaskFact | null;
       published: boolean;
       serviceTaskId: string | null;
+      /** Workspace the registered service belongs to. */
+      serviceWorkspaceId: string | null;
+      /** Revision bound at authorization time; a different one needs `update`. */
+      serviceRevision: string | null;
     }
   | {
       schemaVersion: 5;
@@ -553,7 +571,15 @@ export type KernelDecisionAction =
       /** §5.4 abandon-and-create: the exact old Task to abandon before admission. */
       conflictResolution?: { oldTaskId: string };
     }
-  | { type: 'control_managed_service'; taskId: string; serviceId: string; operation: LocalServiceOperation; specification?: LocalServiceSpecification }
+  | {
+      type: 'control_managed_service';
+      taskId: string;
+      serviceId: string;
+      operation: LocalServiceOperation;
+      specification?: LocalServiceSpecification;
+      workspaceId: string;
+      specificationRevision: string;
+    }
   | { type: 'authorize_task_control'; task: KernelPlanProposal['task'] }
   | {
       type: 'dispatch_batch';
@@ -840,10 +866,30 @@ export class ControlKernel {
             `服务归属不匹配：serviceId=${event.serviceId}，请求任务=${event.taskId ?? '未指定'}，`
             + `服务登记任务=${owner ?? '未登记'}，任务状态=${status}`);
         }
+        if (event.specification
+          && localServiceSpecificationRevision(event.specification) !== event.specificationRevision) {
+          return decision(event, { type: 'reject_request' },
+            `服务规格 revision 与请求内容不一致：serviceId=${event.serviceId}`);
+        }
         if (event.operation !== 'stop' && ['cancelled', 'archived', 'failed'].includes(facts.task.status)) {
           return decision(event, { type: 'reject_request' },
             `任务已取消、归档或失败，不能启动服务：serviceId=${event.serviceId}，`
             + `taskId=${event.taskId}，任务状态=${facts.task.status}`);
+        }
+        if (facts.serviceWorkspaceId && facts.serviceWorkspaceId !== event.workspaceId) {
+          return decision(event, { type: 'reject_request' },
+            `服务不属于该 Workspace：serviceId=${event.serviceId}，`
+            + `请求 Workspace=${event.workspaceId}，登记 Workspace=${facts.serviceWorkspaceId}`);
+        }
+        if (
+          event.operation !== 'update'
+          && facts.serviceRevision
+          && facts.serviceRevision !== event.specificationRevision
+        ) {
+          // A rewritten specification is not an authorization. Only an explicit
+          // `update` may replace the revision the Kernel has bound.
+          return decision(event, { type: 'reject_request' },
+            `服务规格 revision 与已授权 revision 不一致，需要显式更新授权：serviceId=${event.serviceId}`);
         }
         if (event.operation !== 'stop' && !facts.published) {
           return decision(event, { type: 'reject_request' },
@@ -854,8 +900,15 @@ export class ControlKernel {
           return decision(event, { type: 'reject_request' },
             `服务不存在：serviceId=${event.serviceId}，taskId=${event.taskId}`);
         }
-        return decision(event, { type: 'control_managed_service', taskId: event.taskId, serviceId: event.serviceId,
-          operation: event.operation, specification: event.specification }, 'explicit managed service action authorized');
+        return decision(event, {
+          type: 'control_managed_service',
+          taskId: event.taskId,
+          serviceId: event.serviceId,
+          operation: event.operation,
+          specification: event.specification,
+          workspaceId: event.workspaceId,
+          specificationRevision: event.specificationRevision,
+        }, 'explicit managed service action authorized');
       }
       case 'task_cancel_requested':
       case 'subtasks_cancel_requested':
@@ -1848,6 +1901,56 @@ export class ControlKernel {
   }
 
   private decideTimer(event: Extract<KernelEvent, { type: 'timer_tick' }>, snapshot: Extract<KernelSnapshot, { type: 'timer' }>): KernelDecision {
+    if (event.wakeKind === 'partition') {
+      const retry = event.retry;
+      const wake = snapshot.retryWake;
+      if (!retry || !wake) {
+        return decision(event, { type: 'no_op' }, 'partition timer has no durable wait identity');
+      }
+      const exactIdentity = wake.wakeId === retry.wakeId
+        && wake.taskId === event.taskId
+        && wake.subtaskId === event.subtaskId
+        && wake.generationId === retry.generationId
+        && wake.bindingFingerprint === retry.bindingFingerprint
+        && wake.timerEventId === event.id;
+      if (!exactIdentity) return decision(event, { type: 'no_op' }, 'partition timer identity is stale');
+      if (wake.wakeKind !== 'partition') {
+        return decision(event, { type: 'no_op' }, 'partition timer references another wake kind');
+      }
+      if (wake.status !== 'fired') return decision(event, { type: 'no_op' }, `partition wake is already ${wake.status}`);
+      if (['done', 'archived', 'cancelled'].includes(snapshot.task?.status ?? '')) {
+        return decision(event, { type: 'supersede_retry_wake', taskId: wake.taskId, wakeId: wake.wakeId },
+          'partition wake is obsolete because the Task is terminal');
+      }
+      if (
+        !event.taskId
+        || !event.subtaskId
+        || !snapshot.task
+        || snapshot.task.id !== event.taskId
+        || !['running', 'blocked'].includes(snapshot.task.status)
+        || !snapshot.wakeAuthorized
+      ) {
+        return decision(event, { type: 'no_op' }, 'partition wake lost its authorized Task blocker');
+      }
+      const available = unavailableAgentClasses(snapshot.executorStatuses, event.occurredAt);
+      const binding = retry.authorizedBinding;
+      if (available.has(binding.agentClassRef)) {
+        // The Executor is still unavailable; the next partition recheck re-arms.
+        return decision(event, { type: 'supersede_retry_wake', taskId: wake.taskId, wakeId: wake.wakeId },
+          'partition wake target AgentClass is unavailable');
+      }
+      return decision(event, singleDispatchBatch(
+        event,
+        event.taskId,
+        event.subtaskId,
+        binding,
+        'primary',
+        null,
+        'fresh',
+        snapshot.defaultResourceGrant,
+        null,
+      ), 'partition recheck re-dispatched the parked Subtask');
+    }
     if (event.wakeKind === 'retry') {
       const retry = event.retry;
       const wake = snapshot.retryWake;
@@ -2109,6 +2212,16 @@ export class ControlKernel {
   ): KernelDecision {
     if (!event.taskId || !event.subtaskId || !snapshot.workspaceExists || snapshot.workspaceId !== event.workspaceId) {
       return decision(event, { type: 'block_work', taskId: event.taskId ?? '', subtaskId: event.subtaskId ?? null }, 'sandbox loss has no recoverable workspace');
+    }
+    if (!snapshot.checkpointId) {
+      // Only a checkpointed (worktree) Attempt can be replayed safely. An
+      // in-place Attempt has no checkpoint and may already have written the
+      // user's files, so a lost sandbox needs an explicit user decision.
+      return decision(event, {
+        type: 'block_work',
+        taskId: event.taskId,
+        subtaskId: event.subtaskId,
+      }, 'sandbox loss has no checkpoint; the Workspace may already contain user-visible writes');
     }
     return decision(event, {
       type: 'recover_workspace_attempt',

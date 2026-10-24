@@ -7,6 +7,12 @@ export interface WorkspaceState {
   kind: 'git_status_v1';
   paths: Record<string, string | null>;
   truncated: boolean;
+  /**
+   * Line counts for the same dirty paths, used to report added/deleted lines
+   * without storing file contents. Absent in states captured before this field
+   * existed, in which case the change record reports zero line deltas.
+   */
+  lineCounts?: Record<string, number | null>;
 }
 
 export interface WorkspaceDeltaEntry {
@@ -40,13 +46,22 @@ export function captureWorkspaceState(workspaceRoot: string): WorkspaceState {
     throw new Error(`workspace state capture failed: ${String(result.stderr || result.error?.message || 'git status failed').trim()}`);
   }
   const paths: Record<string, string | null> = {};
+  const lineCounts: Record<string, number | null> = {};
   const entries = result.stdout.split('\0').filter(Boolean);
   for (const entry of entries.slice(0, MAX_TRACKED_PATHS)) {
     const relativePath = statusPath(entry);
     if (!relativePath) continue;
-    paths[relativePath] = hashPath(resolve(workspaceRoot, relativePath));
+    const absolutePath = resolve(workspaceRoot, relativePath);
+    const sample = inspectPath(absolutePath);
+    paths[relativePath] = sample.hash;
+    lineCounts[relativePath] = sample.lines;
   }
-  return { kind: 'git_status_v1', paths, truncated: entries.length > MAX_TRACKED_PATHS };
+  return {
+    kind: 'git_status_v1',
+    paths,
+    truncated: entries.length > MAX_TRACKED_PATHS,
+    lineCounts,
+  };
 }
 
 export function deriveWorkspaceDelta(before: WorkspaceState, after: WorkspaceState): WorkspaceDelta {
@@ -80,10 +95,18 @@ export function parseWorkspaceState(value: unknown): WorkspaceState | null {
     if (typeof hash !== 'string' && hash !== null) return null;
     paths[path] = hash;
   }
+  const lineCounts: Record<string, number | null> = {};
+  if (record.lineCounts && typeof record.lineCounts === 'object' && !Array.isArray(record.lineCounts)) {
+    for (const [path, lines] of Object.entries(record.lineCounts as Record<string, unknown>)) {
+      if (typeof lines === 'number' && Number.isFinite(lines) && lines >= 0) lineCounts[path] = lines;
+      else lineCounts[path] = null;
+    }
+  }
   return {
     kind: 'git_status_v1',
     paths,
     truncated: record.truncated,
+    lineCounts,
   };
 }
 
@@ -121,14 +144,41 @@ function statusPath(entry: string): string | null {
   return renamed.trim() || null;
 }
 
-function hashPath(path: string): string | null {
-  if (!existsSync(path)) return null;
+interface PathSample {
+  hash: string | null;
+  lines: number | null;
+}
+
+/** One read per path: the content hash and, for text files, the line count. */
+function inspectPath(path: string): PathSample {
+  if (!existsSync(path)) return { hash: null, lines: null };
   try {
     const stat = statSync(path);
-    if (!stat.isFile()) return `non_file:${stat.mode}:${stat.size}`;
-    if (stat.size > MAX_HASH_BYTES) return `large_file:${stat.size}:${stat.mtimeMs}`;
-    return createHash('sha256').update(readFileSync(path)).digest('hex');
+    if (!stat.isFile()) return { hash: `non_file:${stat.mode}:${stat.size}`, lines: null };
+    if (stat.size > MAX_HASH_BYTES) return { hash: `large_file:${stat.size}:${stat.mtimeMs}`, lines: null };
+    const bytes = readFileSync(path);
+    return {
+      hash: createHash('sha256').update(bytes).digest('hex'),
+      lines: countLines(bytes),
+    };
   } catch {
-    return null;
+    return { hash: null, lines: null };
   }
+}
+
+/** Binary-looking content has no meaningful line delta. */
+function countLines(bytes: Buffer): number | null {
+  if (bytes.includes(0)) return null;
+  if (bytes.length === 0) return 0;
+  let lines = 0;
+  for (const byte of bytes) if (byte === 0x0a) lines += 1;
+  return bytes[bytes.length - 1] === 0x0a ? lines : lines + 1;
+}
+
+export type WorkspaceCaptureFailure = 'not_repository' | 'command_failed';
+
+/** Why a Git observation channel is missing, for coverage/failure reasons. */
+export function classifyWorkspaceCaptureFailure(error: unknown): WorkspaceCaptureFailure {
+  const text = error instanceof Error ? error.message : String(error);
+  return /not a git repository/iu.test(text) ? 'not_repository' : 'command_failed';
 }

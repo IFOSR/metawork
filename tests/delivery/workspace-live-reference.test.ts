@@ -129,9 +129,16 @@ describe('in-place live references', () => {
       workspaceId: 'workspace_abc', generationId: 'generation_1', subtaskId: 'subtask_1',
       publicationId: 'publication_1', sources: [{ sourceRelativePath: 'out/deck.pptx' }],
     });
-    const versions = await service.materializeArtifactVersions({
+    // A declared handoff path must be pinnable: a vanished file fails the batch
+    // instead of publishing a handoff that can only degrade later.
+    await expect(service.materializeArtifactVersions({
       sessionId: 'conv_1', accountId: 'local-default', workspaceId: 'workspace_abc',
       taskId: 'task_1', attemptId: 'attempt_1', relativePaths: ['out/deck.pptx', 'out/missing.pptx'],
+    })).rejects.toThrow(/disappeared before it could be pinned/u);
+
+    const versions = await service.materializeArtifactVersions({
+      sessionId: 'conv_1', accountId: 'local-default', workspaceId: 'workspace_abc',
+      taskId: 'task_1', attemptId: 'attempt_1', relativePaths: ['out/deck.pptx'],
     });
     expect(versions).toHaveLength(1);
     const version = versions[0]!;

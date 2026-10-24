@@ -15,6 +15,7 @@ import { normalizeExecutorFailure } from './error-utils.js';
 import { kernelFailure } from '../core/kernel-failure.js';
 import type { HarnessDriver } from './harness-driver.js';
 import { buildExecutorContextPrompt } from './prompt-builder.js';
+import { readCapturedWorkspacePaths } from '../execution/workspace-capture-spool.js';
 import type { ExecutorAffordanceId } from '../routing/types.js';
 
 export interface ContainerCompatibilityAdapterDependencies {
@@ -234,12 +235,34 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
       });
       this.activeContainers.delete(binding.attemptId);
 
+      // The Pi file-tool extension writes its capture spool beside the attempt
+      // home, which is mounted read-write at /runtime-home. Reading it on the
+      // host gives container Executors the same attribution channel as native
+      // ones, instead of falling back to Git or declared outputs only.
+      const workspaceCaptures = await readCapturedWorkspacePaths(
+        join(runtimeHome.environment.HOME ?? runtimeHome.homePath, '.metaclaw-workspace-captures.jsonl'),
+        binding.workspacePath,
+        '/workspace',
+      ).catch(() => []);
+      const diagnostics = {
+        providerRef: this.authorizedBinding.providerRef,
+        modelId: this.modelId,
+        process: {
+          startedAt: new Date(startedAt).toISOString(),
+          completedAt: new Date().toISOString(),
+          exitCode,
+        },
+        harness: null,
+        provisionalOutput: false,
+        workspaceCaptures,
+      };
       if (parsed.success) {
         return {
           success: true,
           output: restoreWorkspacePath(parsed.output, binding.workspacePath),
           exitCode,
           durationMs: Date.now() - startedAt,
+          diagnostics,
         };
       }
       return {
@@ -249,6 +272,7 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
         failure: normalizeExecutorFailure(parsed.error),
         exitCode,
         durationMs: Date.now() - startedAt,
+        diagnostics,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

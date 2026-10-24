@@ -294,6 +294,7 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
         updatedAt: now,
       });
     }
+    const userWorkspaceRoot = mkdtempSync(join(tmpdir(), 'metawork-publication-user-workspace-'));
     const publications = new WorkspacePublicationRepo(db);
     publications.insertCandidate({
       id: 'publication-recovered-stale',
@@ -447,6 +448,7 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
       createdAt: now,
       updatedAt: now,
     });
+    const userWorkspaceRoot = mkdtempSync(join(tmpdir(), 'metawork-publication-user-workspace-'));
     const publications = new WorkspacePublicationRepo(db);
     publications.insertCandidate({
       id: 'publication-cancel-race',
@@ -503,6 +505,8 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
         listByTask: vi.fn().mockReturnValue([]),
       } as never,
       taskRuntimeService: taskRuntime,
+      // Delivery writes into the user Workspace, so a real root is required.
+      resolveUserWorkspaceRoot: async () => userWorkspaceRoot,
       userArtifactPublication: { publishIntegratedArtifacts: vi.fn(async () => {
         cancel();
         return { projections: [], failures: [] };
@@ -551,7 +555,9 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM subtask_handoffs').get()).toEqual({
       count: 0,
     });
-    expect(release).toHaveBeenCalledOnce();
+    // The integration lease is always released. A delivery lease only exists
+    // when the merge reached the delivery stage.
+    expect(release.mock.calls.length).toBe(stage === 'merge' ? 1 : 2);
   });
 
   it('emits merge conflict identity from the persisted source attempt receipt', async () => {
@@ -773,6 +779,7 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
       failures: [],
       taskDirectory: '/user/metaclaw-tasks/report',
     });
+    const userWorkspaceRoot = mkdtempSync(join(tmpdir(), 'metawork-publication-user-workspace-'));
     const worker = new WorkspacePublicationWorker({
       db,
       sessionId: 'session-publication-stale-conflict',
@@ -810,6 +817,8 @@ describe('WorkspacePublicationWorker cancellation fence', () => {
         listByTask: vi.fn().mockReturnValue([]),
       } as never,
       taskRuntimeService: taskRuntime,
+      // Delivery writes into the user Workspace, so a real root is required.
+      resolveUserWorkspaceRoot: async () => userWorkspaceRoot,
       userArtifactPublication: {
         publishIntegratedArtifacts,
       } as never,

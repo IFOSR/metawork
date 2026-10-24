@@ -16,6 +16,7 @@ import { SessionTaskExecutionApplicationService } from '../session/session-task-
 import { SessionKernelRuntime } from '../session/session-kernel-runtime.js';
 import { WorkspacePublicationWorker } from '../execution/workspace-publication-worker.js';
 import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
+import { WorkspaceExecutionBindingRepo } from '../storage/workspace-execution-binding-repo.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { AgentClassService } from '../executor/agent-class-service.js';
 import type { WorkGraphRuntimeService } from '../execution/work-graph-runtime-service.js';
@@ -178,6 +179,9 @@ export function buildAccountKernelExecutionServices(deps: {
     workspaceRepository: deps.workspaceRepository,
     generationReplanRepo: deps.generationReplanRepo,
     retryWakeRepo: deps.retryWakeRepo,
+    resourceLeaseService: deps.resourceLeaseService,
+    workspaceExecutionBindingRepo: new WorkspaceExecutionBindingRepo(deps.db),
+    workspaceStore: deps.workspaceStore,
     runInTransaction: <T>(operation: () => T) => deps.db.transaction(operation).immediate(),
     cancellationCoordinator: deps.cancellationCoordinator,
     executionProgressService: deps.executionProgressService,

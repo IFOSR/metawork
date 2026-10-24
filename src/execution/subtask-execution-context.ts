@@ -15,6 +15,8 @@ import { createHash } from 'node:crypto';
 import { basename, extname, isAbsolute, join } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Subtask, Task, WorkspaceContext } from '../core/types.js';
+import { ArtifactVersionRepo } from '../storage/artifact-version-repo.js';
+import { resolveArtifactContentSync } from '../delivery/artifact-content-resolver.js';
 import { PreferenceRepo } from '../storage/preference-repo.js';
 import type { PersistedSubtaskHandoff } from '../storage/subtask-handoff-repo.js';
 import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
@@ -113,6 +115,10 @@ export class SubtaskExecutionContextBuilder {
       accountId?: string;
       resultRoot: string;
       attachmentStore?: GatewayAttachmentStore;
+      /** `<objectsPath>/artifacts`: fixed ArtifactVersion bytes. */
+      artifactObjectRoot?: string;
+      /** Canonical root of the user Workspace, for `live_file` references. */
+      resolveWorkspaceRoot?: () => Promise<string | null> | string | null;
     },
   ) {
     this.evidenceRepo = new TaskExecutionEvidenceRepo(db);
@@ -125,10 +131,16 @@ export class SubtaskExecutionContextBuilder {
     this.artifactRepo = new TaskArtifactRepo(db);
     this.accountId = options.accountId ?? 'local-default';
     this.attachmentStore = options.attachmentStore;
+    this.artifactObjectRoot = options.artifactObjectRoot;
+    this.artifactVersionRepo = new ArtifactVersionRepo(db);
+    this.resolveWorkspaceRoot = options.resolveWorkspaceRoot;
   }
 
   private readonly accountId: string;
   private readonly attachmentStore?: GatewayAttachmentStore;
+  private readonly artifactObjectRoot?: string;
+  private readonly artifactVersionRepo: ArtifactVersionRepo;
+  private readonly resolveWorkspaceRoot?: () => Promise<string | null> | string | null;
 
   build(input: {
     executionId: string;
@@ -164,7 +176,12 @@ export class SubtaskExecutionContextBuilder {
       return dependency ? [{ toSubtaskId: candidate.id, requiredItems: dependency.requiredItems }] : [];
     });
     const selectedEvidence = this.resolveSelectedEvidence(input);
-    const selectedArtifacts = this.resolveSelectedArtifacts(input);
+    const selectedArtifacts = this.resolveSelectedArtifacts({
+      ...input,
+      // Live references and historical copies are both addressed relative to the
+      // Workspace the Attempt is authorized to read.
+      workspaceRoot: input.workspaceContext.canonicalRoot ?? input.workspaceContext.workingDirectory,
+    });
     const selectedAttachments = this.resolveSelectedAttachments(input, selectedArtifacts.length);
     const exactEvidenceIds = new Set(selectedEvidence
       .filter((item): item is SelectedExecutionEvidence & {
@@ -377,6 +394,7 @@ export class SubtaskExecutionContextBuilder {
     task: Task;
     subtask: Subtask;
     inputFilesPath?: string;
+    workspaceRoot?: string;
   }): SelectedExecutionArtifact[] {
     const refs = input.subtask.contextRefs
       .filter((ref): ref is Extract<ContextRef, { kind: 'artifact' }> => ref.kind === 'artifact')
@@ -411,25 +429,35 @@ export class SubtaskExecutionContextBuilder {
       ) {
         throw new Error(`artifact_context_wrong_conversation: ${ref.artifactId}`);
       }
-      if (!isAbsolute(artifact.publishedPath)) {
-        throw new Error(`artifact_context_source_invalid: ${ref.artifactId}`);
-      }
-      const sourceInfo = lstatSync(artifact.publishedPath, { throwIfNoEntry: false });
-      if (!sourceInfo?.isFile() || sourceInfo.isSymbolicLink()) {
-        throw new Error(`artifact_context_source_invalid: ${ref.artifactId}`);
-      }
-      const bytes = readFileSync(artifact.publishedPath);
-      const actualHash = hashContent(bytes);
-      if (actualHash !== artifact.contentHash) {
-        throw new Error(`artifact_context_content_hash_mismatch: ${ref.artifactId}`);
-      }
+      // Read by reference kind: a fixed version comes from the CAS so a later
+      // edit to the live file cannot change this handoff, while a live
+      // reference reads the current Workspace file and reports its observed
+      // hash instead of pretending the recorded hash still authorizes it.
+      const artifactVersion = artifact.referenceKind === 'artifact_version' && artifact.artifactVersionId
+        ? this.artifactVersionRepo.find(artifact.artifactVersionId)
+        : null;
+      const content = resolveArtifactContentSync({
+        artifact,
+        artifactVersion,
+        objectRoot: this.artifactObjectRoot ?? null,
+        workspaceRoot: artifact.referenceKind === 'live_file'
+          ? (input.workspaceRoot ?? null)
+          : null,
+        // A legacy copy is read from its recorded absolute path, so it must be
+        // proven to live inside an authorized Workspace first.
+        containmentRoots: artifact.referenceKind === 'legacy_published_copy'
+          ? [input.workspaceRoot].filter((root): root is string => Boolean(root))
+          : undefined,
+        expectedAccountId: this.accountId,
+        expectedWorkspaceId: artifact.workspaceId ?? input.task.workspaceId ?? null,
+      });
       const relativeInputPath = safeInputArtifactName(artifact.displayName, index);
       if (input.inputFilesPath) {
         mkdirSync(input.inputFilesPath, { recursive: true });
-        materializeArtifactFile(
-          artifact.publishedPath,
+        materializeArtifactBytes(
+          content.bytes,
           join(input.inputFilesPath, relativeInputPath),
-          actualHash,
+          content.contentHash,
         );
       }
       return {
@@ -438,7 +466,7 @@ export class SubtaskExecutionContextBuilder {
         displayName: artifact.displayName,
         relativeInputPath,
         mediaType: artifact.mediaType,
-        contentHash: actualHash,
+        contentHash: content.contentHash,
       };
     });
   }
@@ -558,8 +586,8 @@ function materializeAttachmentFile(
   writeFileSync(destinationPath, bytes, { flag: 'wx', mode: 0o600 });
 }
 
-function materializeArtifactFile(
-  sourcePath: string,
+function materializeArtifactBytes(
+  bytes: Buffer,
   destinationPath: string,
   expectedHash: string,
 ): void {
@@ -573,7 +601,7 @@ function materializeArtifactFile(
     }
     return;
   }
-  copyFileSync(sourcePath, destinationPath, constants.COPYFILE_EXCL);
+  writeFileSync(destinationPath, bytes, { flag: 'wx', mode: 0o600 });
 }
 
 const BINARY_RESOURCE_EXTENSIONS = new Set([

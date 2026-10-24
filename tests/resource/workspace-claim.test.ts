@@ -1,64 +1,72 @@
 import { describe, expect, it } from 'vitest';
 import {
   defaultMountCaseSensitivity,
-  isWorkspaceMountId,
-  partitionCanonicalKey,
-  partitionCovers,
-  partitionsOverlap,
-  resourceClaimsConflict,
-  workspaceMountId,
   workspacePathClaim,
   workspaceRootClaim,
-} from '../../src/resource/index.js';
+  workspaceVolumeMountId,
+} from '../../src/resource/workspace-claim.js';
+import {
+  partitionCanonicalKey,
+  partitionsOverlap,
+  resourceClaimsConflict,
+} from '../../src/resource/partition.js';
 
 describe('workspace resource claims', () => {
-  it('namespaces workspace mounts apart from integration mounts', () => {
-    expect(workspaceMountId('workspace_abc')).toBe('workspace:workspace_abc');
-    expect(isWorkspaceMountId('workspace:workspace_abc')).toBe(true);
-    expect(isWorkspaceMountId('integration-task-1-generation-1')).toBe(false);
-    // Mount ids are opaque segments, so the namespace separator is URL-encoded in the canonical key.
-    expect(partitionCanonicalKey(workspaceRootClaim('workspace_abc').partition))
-      .toBe('mount_root:workspace%3Aworkspace_abc');
-    expect(() => workspaceMountId('a/b')).toThrow(/mountId/u);
+  it('derives the mount from the filesystem volume, not the Workspace id', () => {
+    // Two Workspace ids on the same volume share one mount, which is what makes
+    // ancestor/descendant claims comparable at all.
+    expect(workspaceVolumeMountId('/repos/a')).toBe(workspaceVolumeMountId('/repos/b'));
+    expect(workspaceVolumeMountId('/repos/a')).toMatch(/^workspacefs:[0-9a-f]{16}$/u);
   });
 
-  it('lets a root claim cover every path claim in the same workspace mount', () => {
-    const root = workspaceRootClaim('workspace_abc');
-    const nested = workspacePathClaim('workspace_abc', 'metaclaw-tasks/deck/out.pptx', 'write', true);
-    const outside = workspacePathClaim('workspace_other', 'metaclaw-tasks/deck/out.pptx', 'write', true);
-
-    expect(partitionCovers(root.partition, nested.partition)).toBe(true);
-    expect(partitionCovers(nested.partition, root.partition)).toBe(false);
-    expect(partitionsOverlap(root.partition, nested.partition)).toBe(true);
-    expect(partitionsOverlap(root.partition, outside.partition)).toBe(false);
-    expect(partitionsOverlap(root.partition, workspaceRootClaim('workspace_other').partition)).toBe(false);
+  it('conflicts a Workspace root with its own descendant Workspace', () => {
+    // Regression for the P0: distinct Workspace ids on nested paths used to be
+    // independent partitions, so an in-place Attempt and a publication could
+    // write the same physical directory concurrently.
+    const outer = workspaceRootClaim('/repos/app');
+    const inner = workspaceRootClaim('/repos/app/sub');
+    expect(partitionsOverlap(outer.partition, inner.partition)).toBe(true);
+    expect(resourceClaimsConflict(outer, inner)).toBe(true);
+    expect(partitionsOverlap(inner.partition, outer.partition)).toBe(true);
   });
 
-  it('serializes writers on the same workspace and lets readers share it', () => {
-    const writer = workspaceRootClaim('workspace_abc', 'write');
-    const nestedWriter = workspacePathClaim('workspace_abc', 'src/index.ts', 'write', true);
-    const nestedReader = workspacePathClaim('workspace_abc', 'src/index.ts', 'read', true);
-
-    expect(resourceClaimsConflict(writer, nestedWriter)).toBe(true);
-    expect(resourceClaimsConflict(nestedWriter, writer)).toBe(true);
-    expect(resourceClaimsConflict(workspaceRootClaim('workspace_abc', 'read'), nestedReader)).toBe(false);
-    expect(resourceClaimsConflict(workspaceRootClaim('workspace_abc', 'read'), nestedWriter)).toBe(true);
+  it('does not conflict sibling Workspaces on the same volume', () => {
+    const left = workspaceRootClaim('/repos/app-one');
+    const right = workspaceRootClaim('/repos/app-two');
+    expect(partitionsOverlap(left.partition, right.partition)).toBe(false);
   });
 
-  it('normalizes relative paths through the workspace mount and rejects escapes', () => {
-    const claim = workspacePathClaim('workspace_abc', 'Src\\Feature//Index.ts', 'write', false);
-    expect(claim.partition).toEqual({
-      kind: 'path',
-      mountId: 'workspace:workspace_abc',
-      normalizedRelativePath: 'src/feature/index.ts',
-    });
-    expect(() => workspacePathClaim('workspace_abc', '../secret')).toThrow(/unsafe segment/u);
-    expect(() => workspacePathClaim('workspace_abc', '/etc/passwd')).toThrow(/relative to a registered mount/u);
+  it('serializes a root writer against a nested path claim', () => {
+    const root = workspaceRootClaim('/repos/app', 'write');
+    const nestedWriter = workspacePathClaim('/repos/app', 'src/index.ts', 'write');
+    const nestedReader = workspacePathClaim('/repos/app', 'src/index.ts', 'read');
+
+    expect(resourceClaimsConflict(root, nestedWriter)).toBe(true);
+    expect(resourceClaimsConflict(workspaceRootClaim('/repos/app', 'read'), nestedReader)).toBe(false);
+    expect(resourceClaimsConflict(workspaceRootClaim('/repos/app', 'read'), nestedWriter)).toBe(true);
   });
 
-  it('folds mount case on platforms whose filesystems are case insensitive by default', () => {
+  it('separates the user Workspace from an integration mount', () => {
+    const workspace = workspaceRootClaim('/repos/app');
+    const integration = {
+      partition: { kind: 'mount_root' as const, mountId: 'integration-task_1-generation_1' },
+      access: 'write' as const,
+    };
+    expect(partitionsOverlap(workspace.partition, integration.partition)).toBe(false);
+  });
+
+  it('folds case on case-insensitive mounts and keeps it on case-sensitive ones', () => {
+    const folded = workspacePathClaim('/repos/app', 'Src\\Feature//Index.ts', 'write', false);
+    const caseSensitive = workspacePathClaim('/repos/app', 'Src/Feature/Index.ts', 'write', true);
+    expect(partitionCanonicalKey(folded.partition)).toContain('src/feature/index.ts');
+    expect(partitionCanonicalKey(caseSensitive.partition)).toContain('Src/Feature/Index.ts');
     expect(defaultMountCaseSensitivity('darwin')).toBe(false);
-    expect(defaultMountCaseSensitivity('win32')).toBe(false);
     expect(defaultMountCaseSensitivity('linux')).toBe(true);
+  });
+
+  it('rejects escapes and relative Workspace paths', () => {
+    expect(() => workspacePathClaim('/repos/app', '../secret')).toThrow(/must not contain/u);
+    expect(() => workspacePathClaim('/repos/app', '/etc/passwd')).toThrow(/mount|absolute|escape/u);
+    expect(() => workspaceRootClaim('relative/path')).toThrow(/must be absolute/u);
   });
 });

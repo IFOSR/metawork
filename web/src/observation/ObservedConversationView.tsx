@@ -254,10 +254,8 @@ const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, htt
         ? <LivePlanningPanel turn={projection} />
         : <LiveExecutionPanel turn={projection} onSelectSubtask={(subtaskId, title) => onOpenSubtaskDetail(projection, subtaskId, title)} />) : undefined} />
     <BlockedActions ws={ws} http={http} conversationId={conversationId} taskId={turn.taskId ?? null}
-      lifecycle={details.taskLifecycle} permission={details.pendingPermission} />
-    <TaskResultActions ws={ws} conversationId={conversationId} taskId={turn.taskId ?? null}
-      lifecycle={details.taskLifecycle} delivery={details.publicDelivery}
-      pendingPermission={details.pendingPermission} refresh={details.refresh} />
+      lifecycle={details.taskLifecycle} permission={details.pendingPermission} refresh={details.refresh} />
+    <TaskResultActions delivery={details.publicDelivery} />
     {details.workspaceChanges && (
       <WorkspaceChangesCard changes={details.workspaceChanges} delivered={details.publicDelivery?.files ?? []} />
     )}

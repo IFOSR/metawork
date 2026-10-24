@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { isAbsolute, parse, relative } from 'node:path';
 import {
   normalizeMountRegistration,
   normalizeMountedRelativePath,
@@ -5,7 +7,7 @@ import {
 import type { AccessMode, MountRegistration, ResourceClaim } from './types.js';
 
 /** Mount-id namespace for user Workspaces; keeps them apart from integration mounts. */
-const WORKSPACE_MOUNT_PREFIX = 'workspace:';
+const WORKSPACE_FS_MOUNT_PREFIX = 'workspacefs:';
 
 /**
  * Default case folding for a mount. Workspace claims and file references must
@@ -16,47 +18,91 @@ export function defaultMountCaseSensitivity(platform: NodeJS.Platform = process.
 }
 
 /**
- * Claims a whole Workspace root. Two roots overlap only inside one mount, and a
- * root claim covers every path claim registered under the same mount (see
- * `partitionCovers`), which is how an in-place Attempt and a publication that
- * writes into the same user directory serialize through `resource_waits`.
+ * One mount per filesystem volume, not per Workspace record. Claims are
+ * expressed as volume-relative paths, so `/repos/app` and `/repos/app/sub`
+ * share a mount and conflict on the ancestor/descendant pair even when they are
+ * two distinct Workspace identities with different ids. A per-Workspace mount
+ * could never express that overlap.
  */
-export function workspaceRootClaim(workspaceId: string, access: AccessMode = 'write'): ResourceClaim {
-  return { partition: { kind: 'mount_root', mountId: workspaceMountId(workspaceId) }, access };
+export function workspaceVolumeMountId(path: string): string {
+  return `${WORKSPACE_FS_MOUNT_PREFIX}${createHash('sha256').update(volumeRoot(path)).digest('hex').slice(0, 16)}`;
+}
+
+export function workspaceVolumeMountRegistration(
+  path: string,
+  caseSensitive: boolean = defaultMountCaseSensitivity(),
+): MountRegistration {
+  return { mountId: workspaceVolumeMountId(path), caseSensitive };
+}
+
+/**
+ * Claims a whole Workspace root. The claim is a `mount_root` only when the
+ * Workspace *is* the volume root; otherwise it is a volume-relative path claim,
+ * which `partitionCovers` already treats as covering every descendant path.
+ */
+export function workspaceRootClaim(
+  canonicalWorkspacePath: string,
+  access: AccessMode = 'write',
+  caseSensitive: boolean = defaultMountCaseSensitivity(),
+): ResourceClaim {
+  const registration = workspaceVolumeMountRegistration(canonicalWorkspacePath, caseSensitive);
+  const segments = volumeRelativeSegments(canonicalWorkspacePath);
+  if (segments.length === 0) {
+    return { partition: { kind: 'mount_root', mountId: registration.mountId }, access };
+  }
+  return { partition: normalizeMountedRelativePath(registration, segments.join('/')), access };
 }
 
 /** Claims one Workspace-relative path (file or directory subtree). */
 export function workspacePathClaim(
-  workspaceId: string,
+  canonicalWorkspacePath: string,
   relativePath: string,
   access: AccessMode = 'write',
   caseSensitive: boolean = defaultMountCaseSensitivity(),
 ): ResourceClaim {
+  if (isAbsolute(relativePath)) {
+    throw new Error('workspace-relative claim path must not be absolute');
+  }
+  const registration = workspaceVolumeMountRegistration(canonicalWorkspacePath, caseSensitive);
+  const rootSegments = volumeRelativeSegments(canonicalWorkspacePath);
+  const childSegments = relativePath
+    .normalize('NFC')
+    .replace(/\\/gu, '/')
+    .split('/')
+    .filter(segment => segment && segment !== '.');
+  if (childSegments.includes('..')) {
+    throw new Error('workspace-relative claim path must not contain ..');
+  }
   return {
-    partition: normalizeMountedRelativePath(workspaceMountRegistration(workspaceId, caseSensitive), relativePath),
+    partition: normalizeMountedRelativePath(registration, [...rootSegments, ...childSegments].join('/')),
     access,
   };
 }
 
-export function workspaceMountRegistration(
-  workspaceId: string,
-  caseSensitive: boolean = defaultMountCaseSensitivity(),
-): MountRegistration {
-  return { mountId: workspaceMountId(workspaceId), caseSensitive };
-}
-
-/**
- * Stable mount id for one Workspace identity. The id is lower-cased by mount
- * normalization, so callers must compare mount ids through this helper.
- */
-export function workspaceMountId(workspaceId: string): string {
-  return normalizeMountRegistration({
-    mountId: `${WORKSPACE_MOUNT_PREFIX}${workspaceId}`,
-    caseSensitive: true,
-  }).mountId;
+/** Workspace-relative path of one canonical path inside its volume mount. */
+export function workspaceVolumeRelativePath(canonicalPath: string): string {
+  return volumeRelativeSegments(canonicalPath).join('/');
 }
 
 export function isWorkspaceMountId(mountId: string): boolean {
   return normalizeMountRegistration({ mountId, caseSensitive: true })
-    .mountId.startsWith(WORKSPACE_MOUNT_PREFIX);
+    .mountId.startsWith(WORKSPACE_FS_MOUNT_PREFIX);
+}
+
+function volumeRoot(path: string): string {
+  if (!isAbsolute(path)) throw new Error(`workspace path must be absolute to build a claim: ${path}`);
+  return parse(path).root.replace(/\\/gu, '/') || '/';
+}
+
+function volumeRelativeSegments(canonicalPath: string): string[] {
+  const relativePath = relative(parse(canonicalPath).root, canonicalPath);
+  const segments = relativePath
+    .normalize('NFC')
+    .replace(/\\/gu, '/')
+    .split('/')
+    .filter(segment => segment && segment !== '.');
+  if (segments.includes('..')) {
+    throw new Error(`workspace path escapes its volume: ${canonicalPath}`);
+  }
+  return segments;
 }

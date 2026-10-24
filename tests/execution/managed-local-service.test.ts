@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { createServer } from 'node:net';
 import Database from 'better-sqlite3';
 import { ManagedLocalServices, validateLocalServiceSpecification, type LocalServiceSpecification } from '../../src/execution/managed-local-service.js';
+import { localServiceSpecificationRevision } from '../../src/core/local-service-revision.js';
 import { ManagedLocalServiceRepo } from '../../src/storage/managed-local-service-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 
@@ -75,6 +76,16 @@ describe('managed local service user scenarios', () => {
       '代码已发布，但任务目录中没有可启动的服务规格（.metawork-service.json）',
     );
   });
+
+  it('allows only an explicit update read to inspect a changed manifest revision', async () => {
+    const { manager, spec, published } = await fixture();
+    await manager.start(spec);
+    const changed = { ...spec, args: ['changed-server.mjs'] };
+    await writeFile(join(published, '.metawork-service.json'), JSON.stringify(changed));
+    await expect(manager.readSpecification('task')).rejects.toThrow('需要显式的服务更新授权');
+    await expect(manager.readSpecification('task', { allowRevisionChange: true })).resolves.toEqual(changed);
+    await manager.stop(spec.serviceId);
+  }, 10000);
 
   it('cleans up a background grandchild when the service command exits unexpectedly', async () => {
     const { manager, spec, published } = await fixture();
@@ -171,7 +182,7 @@ describe('durable authorized service operations', () => {
   it('survives actual Server process exit and is rediscovered without spawning again', async () => {
     const { manager, spec, deps, root, published } = await fixture();
     // Compile only the Runtime adapter for a real, independent Server process.
-    for (const source of ['execution/managed-local-service', 'storage/managed-local-service-repo', 'utils/public-text', 'utils/redact-sensitive-text']) {
+    for (const source of ['core/local-service-revision', 'execution/managed-local-service', 'storage/managed-local-service-repo', 'task/local-service', 'utils/public-text', 'utils/redact-sensitive-text']) {
       const target = join(root, 'compiled', source + '.js');
       await mkdir(join(target, '..'), { recursive: true });
       await writeFile(target, ts.transpileModule(await readFile(join(process.cwd(), 'src', source + '.ts'), 'utf8'),
@@ -207,6 +218,23 @@ console.log(JSON.stringify(result)); db.close(); process.exit(0);`);
     const token = manager.find(spec.serviceId)!.processToken;
     expect(await manager.applyAuthorizedOperation(request)).toEqual(result);
     expect(manager.find(spec.serviceId)!.processToken).toBe(token);
+  });
+
+  it('persists an explicitly authorized specification update after the service is stopped', async () => {
+    const { manager, spec } = await fixture();
+    await manager.start(spec);
+    await manager.stop(spec.serviceId);
+    const changed = { ...spec, args: ['updated-server.mjs'] };
+    const result = await manager.applyAuthorizedOperation({
+      decisionId: 'update-once',
+      operation: 'update',
+      serviceId: spec.serviceId,
+      specification: changed,
+    });
+    expect(result.error).toBeNull();
+    expect(manager.find(spec.serviceId)?.specification).toEqual(changed);
+    expect(manager.find(spec.serviceId)?.specificationRevision).toBe(localServiceSpecificationRevision(changed));
+    expect(manager.find(spec.serviceId)?.state).toBe('stopped');
   });
 
   it('redacts referenced secrets and internal paths in service logs', async () => {

@@ -8,6 +8,31 @@ import { publicTaskRelativeDirectory } from '../task/public-task-directory.js';
 import { assertWorkspaceRelativePath, WorkspacePathError } from '../workspace/workspace-path.js';
 import { ArtifactVersionRepo, type ArtifactVersion } from '../storage/artifact-version-repo.js';
 /**
+ * Writes one content-addressed object atomically. A crash mid-write leaves a
+ * temporary file, never a truncated object at the final digest path, and an
+ * existing object is verified instead of being trusted because it exists.
+ */
+async function writeContentAddressedObject(
+  objectRoot: string,
+  contentHash: string,
+  bytes: Buffer,
+): Promise<void> {
+  const objectPath = join(objectRoot, contentHash);
+  try {
+    await writeFile(objectPath, bytes, { flag: 'wx', mode: 0o600 });
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  }
+  const existing = await readFile(objectPath).catch(() => null);
+  if (existing && createHash('sha256').update(existing).digest('hex') === contentHash) return;
+  // Repair a corrupted or truncated object through a temporary file + rename.
+  const temporary = `${objectPath}.${randomUUID()}.tmp`;
+  await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 });
+  await rename(temporary, objectPath);
+}
+
+/**
  * 用户产物发布服务（Web Workspace 落地方案 Task 2）。
  *
  * 只有经过 Completion Protocol 验证、Git publication 成功并完成用户产物
@@ -148,21 +173,18 @@ export class UserArtifactPublicationService {
     await mkdir(objectRoot, { recursive: true, mode: 0o700 });
     const versions: ArtifactVersion[] = [];
     for (const relativePath of [...new Set(input.relativePaths)]) {
+      // A declared handoff path must be pinnable. Silently skipping it would
+      // publish a round whose cross-Task handoff later degrades to live content
+      // or disappears, so a vanished file fails the delivery instead.
       const resolved = await assertWorkspaceRelativePath(canonicalRoot, relativePath).catch(error => {
-        // A handoff path that vanished between validation and delivery cannot be
-        // pinned; other failures (escape, symlink) still abort the batch.
-        if (error instanceof WorkspacePathError && error.code === 'not_found') return null;
+        if (error instanceof WorkspacePathError && error.code === 'not_found') {
+          throw new Error(`handoff path disappeared before it could be pinned: ${relativePath}`);
+        }
         throw error;
       });
-      if (!resolved) continue;
       const bytes = await readFile(resolved.absolutePath);
       const contentHash = createHash('sha256').update(bytes).digest('hex');
-      const objectPath = join(objectRoot, contentHash);
-      try {
-        await writeFile(objectPath, bytes, { flag: 'wx', mode: 0o600 });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      }
+      await writeContentAddressedObject(objectRoot, contentHash, bytes);
       const version = repo.record({
         accountId: input.accountId,
         workspaceId: input.workspaceId,
@@ -190,6 +212,8 @@ export class UserArtifactPublicationService {
    */
   async registerLiveWorkspaceReferences(input: {
     sessionId?: string;
+    /** Canonical Workspace root chosen by the caller (lease target). */
+    workspaceRoot?: string;
     accountId: string;
     taskId: string;
     taskTitle: string;
@@ -197,11 +221,15 @@ export class UserArtifactPublicationService {
     generationId: string | null;
     subtaskId: string | null;
     publicationId: string | null;
-    sources: Array<{ sourceRelativePath: string }>;
+    /**
+     * `remove` marks a path the Executor deleted, `downloadable: false` marks a
+     * change that is not a declared deliverable (scratch, logs, undeclared build
+     * output). Neither may be registered as a live artifact.
+     */
+    sources: Array<{ sourceRelativePath: string; remove?: boolean; downloadable?: boolean }>;
   }): Promise<UserArtifactPublicationResult> {
-    const userWorkspaceRoot = input.sessionId
-      ? await this.deps.resolveUserWorkspaceRoot?.(input.sessionId)
-      : undefined;
+    const userWorkspaceRoot = input.workspaceRoot
+      ?? (input.sessionId ? await this.deps.resolveUserWorkspaceRoot?.(input.sessionId) : undefined);
     const root = userWorkspaceRoot ?? this.deps.userWorkspaceRoot;
     if (!root) {
       throw new Error(`Conversation ${input.sessionId ?? '<unknown>'} has no selected Workspace`);
@@ -210,6 +238,9 @@ export class UserArtifactPublicationService {
     return withWorkspacePublicationLock(canonicalRoot, async () => {
       const result: UserArtifactPublicationResult = { projections: [], taskDirectory: canonicalRoot, failures: [] };
       for (const source of input.sources.slice(0, MAX_ARTIFACTS_PER_PUBLICATION)) {
+        // A deleted path has no bytes to reference, and an undeclared change is
+        // not a deliverable. Both stay in the change record, not in artifacts.
+        if (source.remove || source.downloadable === false) continue;
         try {
           const resolved = await assertWorkspaceRelativePath(canonicalRoot, source.sourceRelativePath);
           const bytes = await readFile(resolved.absolutePath);
@@ -217,7 +248,14 @@ export class UserArtifactPublicationService {
             throw new Error(`交付文件无效或过大：${source.sourceRelativePath}`);
           }
           const contentHash = hashContent(bytes);
-          const record = this.taskArtifactRepo.insert({
+          // Replays and retries hit UNIQUE(account, task, relativePath,
+          // contentHash). Adopt the existing row instead of failing the round.
+          const existing = this.taskArtifactRepo.listByTask(input.taskId)
+            .find(item => item.accountId === input.accountId
+              && item.relativePath === resolved.relativePath
+              && item.referenceKind === 'live_file'
+              && item.contentHash === contentHash);
+          const record = existing ?? this.taskArtifactRepo.insert({
             accountId: input.accountId,
             taskId: input.taskId,
             generationId: input.generationId,

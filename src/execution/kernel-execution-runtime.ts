@@ -1,3 +1,4 @@
+import { localServiceSpecificationRevision } from '../core/local-service-revision.js';
 import { projectTaskView, type TaskView } from '../task/task-view.js';
 import type { TaskActivityFactsReader } from '../task/task-activity-facts.js';
 import { projectPublicDelivery, type PublicDeliveryView } from '../delivery/public-delivery-view.js';
@@ -66,6 +67,8 @@ import type { KernelDispatchItemRepo, KernelDispatchItemRecord } from '../storag
 import type { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
 import type { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import type { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
+import { canonicalizeWorkspacePath } from '../workspace/workspace-path.js';
+import { workspaceExecutionBindingFingerprint } from './execution-context.js';
 import type { ResultObjectRepo } from '../storage/result-object-repo.js';
 import type { WorkspaceRepositoryPort } from './repositories.js';
 import type { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
@@ -133,6 +136,8 @@ interface DispatchStableFacts {
 }
 
 const DEFAULT_EXECUTION_TRACE_HEARTBEAT_MS = 10_000;
+/** How long a Subtask parked on a busy ResourceLease waits before a recheck. */
+const PARTITION_RECHECK_MS = 15_000;
 
 function defaultResourceGrant(taskId: string, generationId: string, subtaskId: string) {
   return buildDefaultResourceClaims({
@@ -542,6 +547,15 @@ export interface KernelExecutionRuntimeDeps {
   workspaceRepository: WorkspaceRepositoryPort;
   generationReplanRepo: GenerationReplanRequestRepo;
   retryWakeRepo: RetryWakeRepo;
+  /** Optional because focused tests build the Runtime without lease plumbing. */
+  resourceLeaseService?: import('./resource-lease-service.js').ResourceLeaseService;
+  /**
+   * Immutable per-generation Workspace facts. Recovery reads these instead of
+   * re-resolving the current environment.
+   */
+  workspaceExecutionBindingRepo?: import('../storage/workspace-execution-binding-repo.js').WorkspaceExecutionBindingRepo;
+  /** Deterministic workspace layout; required when worktree bindings are used. */
+  workspaceStore?: import('./workspace-store.js').WorkspaceStore;
   /**
    * Task blocker and Retry Wake are one durable wait_for_retry postcondition.
    * The account composition supplies the SQLite transaction; focused legacy
@@ -781,23 +795,36 @@ export class KernelExecutionRuntime {
       throw new KernelApplicationRejectionError('当前 Runtime 未配置受管服务', 'service_runtime_unavailable');
     }
     let specification: LocalServiceSpecification | undefined;
-    if (operation === 'start') {
+    if (operation === 'start' || operation === 'update') {
       try {
-        specification = await services.readSpecification(taskId);
+        // `update` is the one operation allowed to authorize a changed
+        // manifest. It must inspect the new published bytes while bypassing
+        // the normal "already authorized revision" guard; the Kernel then
+        // records the new revision and the Runtime only applies it while the
+        // old process is stopped.
+        specification = await services.readSpecification(taskId, {
+          allowRevisionChange: operation === 'update',
+        });
       } catch (error) {
         // The pre-flight reads the published manifest only; nothing was
-        // started, so the refusal is provably effect-free (review §B1).
+        // started or re-authorized, so the refusal is provably effect-free.
         const message = error instanceof Error ? error.message : String(error);
         throw new KernelApplicationRejectionError(message, 'service_not_startable', `taskId=${taskId} ${message}`);
       }
     }
     const id = specification?.serviceId ?? serviceId;
     if (!id) throw new KernelApplicationRejectionError('请指定服务标识', 'service_id_missing', `taskId=${taskId}`);
+    const workspaceId = await services.resolveServiceWorkspaceId(taskId);
+    // The revision this request authorizes: the manifest's for a start, the bound
+    // one for other operations.
+    const specificationRevision = specification
+      ? localServiceSpecificationRevision(specification)
+      : services.find(id)?.specificationRevision ?? '';
     const event: Extract<KernelEvent, { type: 'managed_service_requested' }> = {
       schemaVersion: 5, configurationRevision: this.configurationRevisionForTask(taskId),
       type: 'managed_service_requested', id: `service_${generateInteractionId()}`, correlationId: taskId,
       causationId: null, occurredAt: new Date().toISOString(), sessionId: this.sessionId,
-      taskId, operation, serviceId: id, specification,
+      taskId, operation, serviceId: id, specification, workspaceId, specificationRevision,
     };
     const published = await services.isPublished(taskId);
     const observed: { outcome: LocalServiceApplyOutcome | null } = { outcome: null };
@@ -835,14 +862,25 @@ export class KernelExecutionRuntime {
       buildSnapshot: event => {
         const task = this.deps.taskRuntimeService.findTask(taskId);
         const id = event.type === 'managed_service_requested' ? event.serviceId : '';
-        return { schemaVersion: 5, type: 'service_control', task: task ? { id: task.id, status: task.status } : null,
-          published, serviceTaskId: services.find(id)?.specification.taskId ?? null };
+        const registered = services.find(id);
+        return {
+          schemaVersion: 5,
+          type: 'service_control',
+          task: task ? { id: task.id, status: task.status } : null,
+          published,
+          serviceTaskId: registered?.specification.taskId ?? null,
+          serviceWorkspaceId: registered?.workspaceId ?? null,
+          serviceRevision: registered?.specificationRevision ?? null,
+        };
       },
       runtime: { apply: async decision => {
         const action = decision.action;
         if (action.type === 'reject_request') { observe({ type: 'rejected', reason: decision.reason }); return null; }
         if (action.type === 'control_managed_service') {
-          const effect = await services.applyAuthorizedOperation({ decisionId: decision.id, ...action });
+          const effect = await services.applyAuthorizedOperation({
+            decisionId: decision.id,
+            ...action,
+          });
           observe(effect.error
             ? { type: 'settled', view: effect.result, error: effect.error }
             : { type: 'result', view: effect.result });
@@ -1338,6 +1376,7 @@ export class KernelExecutionRuntime {
           resumeAt: wake.resumeAt,
           status: wake.status,
           timerEventId: wake.timerEventId,
+          wakeKind: wake.wakeKind ?? 'retry',
         }
       : null;
   }
@@ -1491,7 +1530,7 @@ export class KernelExecutionRuntime {
           ['pending_launch', 'launching', 'running', 'cancelling'].includes(item.status)
         ).length,
       ),
-      resourceConflictSubtaskIds: [],
+      resourceConflictSubtaskIds: this.resourceConflictSubtaskIds(taskId),
       capacityProbeBindingFingerprints,
       executorStatuses: revisionStableFacts.executorStatuses,
       correctionSupportedAgentClasses: revisionStableFacts.correctionSupportedAgentClasses,
@@ -1846,8 +1885,15 @@ export class KernelExecutionRuntime {
     if (action.type === 'dispatch_batch') {
       const generationId = this.deps.workGraphRevisionRepo.findActive(action.taskId)?.generationId
         ?? `generation_${action.taskId}_1`;
+      // Fix the Generation's Workspace facts before the dispatch item exists, so
+      // every persisted item carries the fingerprint the Attempt must match.
+      const executionBinding = await this.bindWorkspaceExecution(action.taskId, generationId);
+      const executionBindingFingerprint = executionBinding
+        ? workspaceExecutionBindingFingerprint(executionBinding)
+        : null;
       const sourceEvent = this.deps.kernelWorkflowStore?.findEvent?.(decision.eventId);
-      const retryWake = sourceEvent?.type === 'timer_tick' && sourceEvent.wakeKind === 'retry'
+      const retryWake = sourceEvent?.type === 'timer_tick'
+        && (sourceEvent.wakeKind === 'retry' || sourceEvent.wakeKind === 'partition')
         ? this.deps.retryWakeRepo?.findById(sourceEvent.retry?.wakeId ?? '')
         : null;
       if (retryWake && sourceEvent?.type === 'timer_tick') {
@@ -1861,6 +1907,7 @@ export class KernelExecutionRuntime {
           {
             generationId,
             configurationRevision: decision.configurationRevision,
+            executionBindingFingerprint,
             attempts: Object.fromEntries(action.items.map(item => [
               item.attemptId,
               {
@@ -1872,9 +1919,13 @@ export class KernelExecutionRuntime {
           new Date().toISOString(),
         );
         const task = this.deps.taskRuntimeService.findTask(action.taskId);
-        if (task?.status === 'blocked' && task.dependencies.every(dependency => (
-          dependency.status !== 'waiting' || dependency.type === 'kernel_retry'
-        ))) {
+        const partitionWake = sourceEvent?.type === 'timer_tick' && sourceEvent.wakeKind === 'partition';
+        if (task?.status === 'blocked' && (
+          partitionWake
+          || task.dependencies.every(dependency => (
+            dependency.status !== 'waiting' || dependency.type === 'kernel_retry'
+          ))
+        )) {
           this.lifecycle.unblockTask({
             taskId: action.taskId,
             actor: 'kernel-execution-runtime',
@@ -1914,6 +1965,7 @@ export class KernelExecutionRuntime {
         {
           generationId,
           configurationRevision: decision.configurationRevision,
+          executionBindingFingerprint,
           attempts,
         },
         input.supervisorContext,
@@ -2015,10 +2067,29 @@ export class KernelExecutionRuntime {
       return null;
     }
     if (action.type === 'supersede_retry_wake') {
+      const wake = this.deps.retryWakeRepo.findById(action.wakeId);
       this.deps.retryWakeRepo.markSuperseded(
         action.wakeId,
         new Date().toISOString(),
       );
+      // A partition wake is a recheck, not a one-shot retry. If the target
+      // Executor is still unavailable, schedule the next durable recheck after
+      // superseding the fired row; otherwise the Task would remain blocked
+      // forever with no timer left to wake it.
+      if (wake?.wakeKind === 'partition') {
+        const now = new Date().toISOString();
+        this.deps.retryWakeRepo.arm({
+          ...wake,
+          wakeId: `partition_wake_${decision.id}`,
+          sourceDecisionId: decision.id,
+          resumeAt: new Date(Date.parse(now) + PARTITION_RECHECK_MS).toISOString(),
+          status: 'armed',
+          timerEventId: null,
+          consumedDecisionId: null,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
       return null;
     }
     if (action.type === 'recover_retry_wake') {
@@ -2035,12 +2106,12 @@ export class KernelExecutionRuntime {
       return null;
     }
     if (action.type === 'wait_for_partition') {
-      await this.blockTask(
-        action.taskId,
-        `resource partition is waiting for leases: ${action.conflictingLeaseIds.join(', ')}`,
-        input.finishExecution,
-        'kernel_capacity',
-      );
+      const reason = `resource partition is waiting for leases: ${action.conflictingLeaseIds.join(', ')}`;
+      await this.blockTask(action.taskId, reason, input.finishExecution, 'kernel_capacity');
+      // The wait itself is not a terminal outcome: arm a durable partition wake
+      // so releasing the conflicting lease reaches the scheduler without a
+      // human resume. The wake is a recheck, not a replay of the failed Attempt.
+      this.armPartitionWake(decision, action);
       return null;
     }
     if (action.type === 'recover_workspace_attempt') {
@@ -2397,7 +2468,14 @@ export class KernelExecutionRuntime {
   }): Promise<KernelEvent> {
     const { item } = input;
     let request = input.request;
-    if (!request.workspacePath && this.deps.resolveWorkspacePath) {
+    // Generation admission fixes the Workspace facts once. Dispatch and
+    // recovery read that binding instead of re-interpreting the current
+    // environment, so a Workspace that moved between attempts cannot silently
+    // redirect an authorized Attempt.
+    const binding = await this.bindWorkspaceExecution(item.taskId, item.generationId);
+    if (binding) {
+      request = { ...request, workspacePath: binding.canonicalPath };
+    } else if (!request.workspacePath && this.deps.resolveWorkspacePath) {
       // Recovery/timer requests do not carry the conversation workspace;
       // resolve it from the task so continuation attempts execute against
       // the real source instead of the workspace-store fallback (P0-5).
@@ -2988,7 +3066,12 @@ export class KernelExecutionRuntime {
   private launchFailureEvent(item: KernelDispatchItemRecord, error: unknown): KernelEvent {
     const summary = error instanceof Error ? error.message : String(error);
     const structured = error && typeof error === 'object' ? error as {
-      code?: unknown; stage?: unknown; retryable?: unknown; userAction?: unknown;
+      code?: unknown;
+      stage?: unknown;
+      retryable?: unknown;
+      userAction?: unknown;
+      attemptStarted?: unknown;
+      externalSideEffect?: unknown;
     } : {};
     const workspaceSourceMissing = /no workspace source|missing its workspacePath/iu.test(summary);
     const code = typeof structured.code === 'string'
@@ -3007,6 +3090,21 @@ export class KernelExecutionRuntime {
         scope: isPreflight ? 'task' : 'attempt',
         code,
         summary,
+        // An unknown external effect (in-place writes without a receipt) must
+        // reach the Kernel: it changes the Attempt from `failed` to `uncertain`
+        // and forbids automatic replay.
+        ...(structured.attemptStarted !== undefined
+          ? { attemptStarted: structured.attemptStarted === true }
+          : {}),
+        ...(structured.externalSideEffect !== undefined
+          ? {
+              externalSideEffect: structured.externalSideEffect === 'unknown'
+                ? 'unknown' as const
+                : structured.externalSideEffect === true,
+            }
+          : {}),
+        ...(structured.retryable !== undefined ? { retryable: structured.retryable === true } : {}),
+        ...(typeof structured.userAction === 'string' ? { userAction: structured.userAction } : {}),
         ...(isPreflight ? {
           label: 'Workspace 配置无效',
           stage: 'workspace_preflight',
@@ -3021,6 +3119,52 @@ export class KernelExecutionRuntime {
     });
   }
 
+
+  /**
+   * Writes the immutable Workspace facts for one Generation, once. Admission is
+   * the only place allowed to resolve the current environment; every later
+   * dispatch and recovery reads the durable row.
+   */
+  async bindWorkspaceExecution(
+    taskId: string,
+    generationId: string,
+    workspaceIdHint?: string | null,
+  ): Promise<import('../storage/workspace-execution-binding-repo.js').WorkspaceExecutionBinding | null> {
+    const repo = this.deps.workspaceExecutionBindingRepo;
+    if (!repo) return null;
+    const task = this.deps.taskRuntimeService.findTask(taskId);
+    if (!task) return null;
+    const existing = repo.find(taskId, generationId);
+    if (existing) return existing;
+    const workspaceId = workspaceIdHint ?? task.workspaceId ?? null;
+    const resolved = this.deps.resolveWorkspacePath
+      ? await this.deps.resolveWorkspacePath(taskId)
+      : null;
+    if (!workspaceId || !resolved) return null;
+    const canonical = await canonicalizeWorkspacePath(resolved).catch(() => null);
+    if (!canonical) return null;
+    const executionMode = task.executionMode ?? 'worktree';
+    const now = new Date().toISOString();
+    // The authorized working directory is where the Executor will actually run:
+    // the user's Workspace for an in-place round, the deterministic managed
+    // worktree for a worktree round. It is fixed here, once, per Generation.
+    const authorizedWorkingDirectory = executionMode === 'in_place'
+      ? canonical.canonicalPath
+      // A Generation binding cannot name one Subtask worktree, so it authorizes
+      // the generation directory that contains all of them. The runner then
+      // proves its own working directory is inside this root.
+      : this.deps.workspaceStore?.planGenerationRoot(taskId, generationId) ?? canonical.canonicalPath;
+    return repo.upsert({
+      taskId,
+      generationId,
+      workspaceId,
+      canonicalPath: canonical.canonicalPath,
+      executionMode,
+      authorizedWorkingDirectory,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
 
   prepareExecution(input: KernelExecutionRuntimeInput): PreparedKernelExecutionInput {
     const task = this.deps.taskRuntimeService.findTask(input.taskId);
@@ -3838,6 +3982,7 @@ export class KernelExecutionRuntime {
         bindingFingerprint: action.bindingFingerprint,
         authorizedBindingJson: JSON.stringify(action.authorizedBinding),
         resumeAt,
+        wakeKind: 'retry',
         status: 'armed',
         timerEventId: null,
         consumedDecisionId: null,
@@ -3882,7 +4027,67 @@ export class KernelExecutionRuntime {
     await finishExecution([`Execution will retry automatically at ${resumeAt}`]);
   }
 
+  /**
+   * Durable recheck for a Subtask parked on a busy ResourceLease. The wake is
+   * idempotent per Kernel decision and carries the binding it will re-dispatch.
+   */
+  private armPartitionWake(
+    decision: import('../kernel/control-kernel.js').KernelDecision,
+    action: Extract<import('../kernel/control-kernel.js').KernelDecision['action'], { type: 'wait_for_partition' }>,
+  ): void {
+    const revision = this.deps.workGraphRevisionRepo.findActive(action.taskId);
+    const subtask = this.deps.subtaskRepo.findById(action.subtaskId);
+    const sourceEvent = this.deps.kernelWorkflowStore.findEvent?.(decision.eventId);
+    const dispatch = sourceEvent?.attemptId
+      ? this.deps.dispatchItemRepo.find(sourceEvent.attemptId)
+      : null;
+    const binding = dispatch?.authorizedBinding ?? subtask?.executorBindings[0] ?? null;
+    if (!revision || !subtask || !binding) return;
+    const now = new Date().toISOString();
+    const resumeAt = new Date(Date.parse(now) + PARTITION_RECHECK_MS).toISOString();
+    this.deps.retryWakeRepo.arm({
+      wakeId: `partition_wake_${decision.id}`,
+      taskId: action.taskId,
+      subtaskId: action.subtaskId,
+      generationId: revision.generationId,
+      sourceDecisionId: decision.id,
+      // A partition wait has no Attempt to continue; the identity is the wait.
+      sourceAttemptId: `partition:${decision.id}`,
+      configurationRevision: decision.configurationRevision,
+      bindingFingerprint: authorizedExecutorBindingFingerprint(binding),
+      authorizedBindingJson: JSON.stringify(binding),
+      resumeAt,
+      wakeKind: 'partition',
+      status: 'armed',
+      timerEventId: null,
+      consumedDecisionId: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  /**
+   * Subtasks the scheduler must not dispatch because a durable ResourceLease
+   * wait is still unresolved. Lease release resolves those waits (see
+   * `ResourceLeaseService.release`), so this set shrinks on its own instead of
+   * being hardcoded empty and letting a conflicting Attempt through.
+   */
+  private resourceConflictSubtaskIds(taskId: string): string[] {
+    const waits = this.deps.resourceLeaseService?.resolveSatisfiedWaits?.(undefined, taskId)
+      ?? this.deps.resourceLeaseService?.findWaiting?.(taskId)
+      ?? [];
+    return [...new Set(waits
+      .filter(wait => wait.taskId === taskId && wait.status === 'waiting')
+      .map(wait => wait.subtaskId))].sort();
+  }
+
   private isKernelWakeAuthorized(task: import('../core/types.js').Task, wakeKind: Extract<KernelEvent, { type: 'timer_tick' }>['wakeKind']): boolean {
+    if (wakeKind === 'partition') {
+      return ['running', 'blocked'].includes(task.status)
+        && task.dependencies.some(dependency => (
+          dependency.status === 'waiting' && dependency.type === 'kernel_capacity'
+        ));
+    }
     if (wakeKind === 'retry') return ['running', 'blocked'].includes(task.status);
     const expectedType = wakeKind === 'capacity'
         ? 'kernel_capacity'

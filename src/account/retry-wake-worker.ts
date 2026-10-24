@@ -101,7 +101,7 @@ function timerEvent(
       taskId: wake.taskId,
       subtaskId: wake.subtaskId,
       attemptId: wake.sourceAttemptId,
-      wakeKind: 'retry',
+      wakeKind: wake.wakeKind ?? 'retry',
       sourceDecisionId: wake.sourceDecisionId,
       scheduledFor: wake.resumeAt,
       retry: {

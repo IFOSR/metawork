@@ -4205,6 +4205,18 @@ select {
   overflow-wrap: anywhere;
 }
 
+.blocked-actions-recommendation {
+  margin: 0;
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.6;
+  padding: 6px 10px;
+  border-left: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+
 .blocked-actions-buttons {
   display: flex;
   gap: 10px;

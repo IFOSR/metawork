@@ -64,12 +64,15 @@ export interface StoredWorkspaceCheckpoint {
 }
 
 function workspaceSegment(
-  level: 'task' | 'generation' | 'subtask',
+  level: 'task' | 'generation' | 'subtask' | 'attempt',
   id: string,
 ): string {
   if (level === 'generation') return boundedPathSegment(id, { prefix: 'g' });
   if (level === 'subtask') {
     return boundedPathSegment(id, { prefix: 's', readable: 24, from: 'end' });
+  }
+  if (level === 'attempt') {
+    return boundedPathSegment(id, { prefix: 'a', readable: 20, from: 'end' });
   }
   return boundedPathSegment(id, { prefix: 't', readable: 12 });
 }
@@ -121,7 +124,32 @@ export class WorkspaceStore {
     ]);
   }
 
-  async ensureWorkspace(identity: WorkspaceIdentity, kind: WorkspaceKind): Promise<WorkspaceHandle> {
+  /**
+   * Directory that contains every worktree Workspace of one Generation. A
+   * Generation-level execution binding authorizes this root, so recovery can
+   * prove that any Attempt's working directory stays inside it.
+   */
+  planGenerationRoot(taskId: string, generationId: string): string {
+    return join(
+      this.workspacesPath,
+      workspaceSegment('task', safeIdentitySegment(taskId, 'taskId')),
+      workspaceSegment('generation', safeIdentitySegment(generationId, 'generationId')),
+    );
+  }
+
+  /**
+   * Deterministic location of a worktree Workspace for one Subtask. Admission
+   * can persist this as the authorized working directory before the directory
+   * exists, so a later Attempt never has to derive it from the environment.
+   */
+  planWorktreePaths(identity: WorkspaceIdentity): {
+    taskId: string;
+    generationId: string;
+    subtaskId: string;
+    rootPath: string;
+    filesPath: string;
+    checkpointsPath: string;
+  } {
     const taskId = safeIdentitySegment(identity.taskId, 'taskId');
     const generationId = safeIdentitySegment(identity.generationId, 'generationId');
     const subtaskId = safeIdentitySegment(identity.subtaskId, 'subtaskId');
@@ -133,8 +161,19 @@ export class WorkspaceStore {
       workspaceSegment('generation', generationId),
       workspaceSegment('subtask', subtaskId),
     );
-    const filesPath = join(rootPath, 'files');
-    const checkpointsPath = join(rootPath, 'checkpoints');
+    return {
+      taskId,
+      generationId,
+      subtaskId,
+      rootPath,
+      filesPath: join(rootPath, 'files'),
+      checkpointsPath: join(rootPath, 'checkpoints'),
+    };
+  }
+
+  async ensureWorkspace(identity: WorkspaceIdentity, kind: WorkspaceKind): Promise<WorkspaceHandle> {
+    const planned = this.planWorktreePaths(identity);
+    const { taskId, generationId, subtaskId, rootPath, filesPath, checkpointsPath } = planned;
     await Promise.all([mkdir(filesPath, { recursive: true }), mkdir(checkpointsPath, { recursive: true })]);
     return {
       id: `workspace:${taskId}:${generationId}:${subtaskId}`,
@@ -157,16 +196,24 @@ export class WorkspaceStore {
   async bindInPlaceWorkspace(
     identity: WorkspaceIdentity,
     canonicalPath: string,
+    /** Attempt that owns the runtime directories; retries must not share them. */
+    attemptId?: string,
   ): Promise<WorkspaceHandle> {
     const taskId = safeIdentitySegment(identity.taskId, 'taskId');
     const generationId = safeIdentitySegment(identity.generationId, 'generationId');
     const subtaskId = safeIdentitySegment(identity.subtaskId, 'subtaskId');
+    // One directory per Attempt: a retry or recovery must never see the previous
+    // Attempt's inputs, handoffs or results.
+    const attemptSegment = attemptId
+      ? workspaceSegment('attempt', safeIdentitySegment(attemptId, 'attemptId'))
+      : 'attempt-shared';
     const rootPath = join(
       this.workspacesPath,
       workspaceSegment('task', taskId),
       workspaceSegment('generation', generationId),
       workspaceSegment('subtask', subtaskId),
       'in-place',
+      attemptSegment,
     );
     await Promise.all([
       mkdir(join(rootPath, 'inputs'), { recursive: true }),
@@ -174,7 +221,7 @@ export class WorkspaceStore {
       mkdir(join(rootPath, 'results'), { recursive: true }),
     ]);
     return {
-      id: `workspace:in-place:${taskId}:${generationId}:${subtaskId}`,
+      id: `workspace:in-place:${taskId}:${generationId}:${subtaskId}:${attemptSegment}`,
       taskId,
       generationId,
       subtaskId,

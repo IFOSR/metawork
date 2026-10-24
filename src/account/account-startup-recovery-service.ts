@@ -526,6 +526,7 @@ export class AccountStartupRecoveryService {
             bindingFingerprint: action.bindingFingerprint,
             authorizedBindingJson: JSON.stringify(action.authorizedBinding),
             resumeAt: action.resumeAt,
+            wakeKind: 'retry',
             status: 'armed',
             timerEventId: null,
             consumedDecisionId: null,

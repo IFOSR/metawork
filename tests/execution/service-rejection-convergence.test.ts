@@ -64,6 +64,7 @@ function compose(input: {
     managedLocalServices: {
       readSpecification: input.readSpecification ?? (async () => PUBLISHED_SPEC),
       isPublished: async () => input.published,
+      resolveServiceWorkspaceId: async () => 'workspace_service',
       find: () => null,
       forTask: () => [],
       applyAuthorizedOperation: input.applyAuthorizedOperation ?? (async () => {
