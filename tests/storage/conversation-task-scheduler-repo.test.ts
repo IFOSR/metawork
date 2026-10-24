@@ -11,13 +11,13 @@ function db(): Database.Database {
     INSERT INTO tasks (
       id, title, goal, status, created_at, updated_at,
       account_id, conversation_id, workspace_id, owner_planner_session_id, admitted_at
-    ) VALUES ('task-a', 'A', 'A', 'ready', ?, ?, 'account', 'conversation-a', 'workspace', 'planner-a', ?)
+    ) VALUES ('task-a', 'A', 'A', 'queued', ?, ?, 'account', 'conversation-a', 'workspace', 'planner-a', ?)
   `).run('2026-08-29T00:00:00.000Z', '2026-08-29T00:00:00.000Z', '2026-08-29T00:00:00.000Z');
   database.prepare(`
     INSERT INTO tasks (
       id, title, goal, status, created_at, updated_at,
       account_id, conversation_id, workspace_id, owner_planner_session_id, admitted_at
-    ) VALUES ('task-b', 'B', 'B', 'ready', ?, ?, 'account', 'conversation-b', 'workspace', 'planner-b', ?)
+    ) VALUES ('task-b', 'B', 'B', 'queued', ?, ?, 'account', 'conversation-b', 'workspace', 'planner-b', ?)
   `).run('2026-08-29T00:00:00.000Z', '2026-08-29T00:00:00.000Z', '2026-08-29T00:00:00.000Z');
   return database;
 }

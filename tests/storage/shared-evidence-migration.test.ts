@@ -16,9 +16,8 @@ function legacyDatabase() {
     );
     CREATE INDEX idx_task_execution_evidence_task ON task_execution_evidence(task_id, created_at, id);
     UPDATE schema_version SET version = 47;
-    INSERT INTO tasks (id, title, goal, status, created_at, updated_at)
-      VALUES ('b', 'B', 'goal', 'ready', '2026-10-13', '2026-10-13'),
-             ('c', 'C', 'goal', 'ready', '2026-10-13', '2026-10-13');
+    INSERT INTO tasks (id, title, goal, status, created_at, updated_at) VALUES ('b', 'B', 'goal', 'queued', '2026-10-13', '2026-10-13'),
+             ('c', 'C', 'goal', 'queued', '2026-10-13', '2026-10-13');
     INSERT INTO task_execution_evidence VALUES
       ('evidence_user_interaction_source', 'b', 'user_input', 'source', 'title', '314159', 0, '2026-10-13'),
       ('evidence_assistant_interaction_source', 'b', 'assistant_ref', 'source', 'reply', 'recorded', 1, '2026-10-13');

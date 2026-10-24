@@ -1,8 +1,11 @@
 import type { ConversationTaskSummary } from '../../../src/session/conversation-activity-types';
 
-/** Render canonical TaskView user states; cancellation permission is not activity. */
-export function taskHasOngoingWork(task: Pick<ConversationTaskSummary, 'userState'>): boolean {
-  return task.userState === 'executing';
+/**
+ * Activity is derived from the committed six-state Task conclusion. The card
+ * never re-interprets operational facts into its own lifecycle.
+ */
+export function taskHasOngoingWork(task: Pick<ConversationTaskSummary, 'status'>): boolean {
+  return task.status === 'running';
 }
 
 export function conversationHasOngoingWork(
@@ -24,10 +27,13 @@ export function turnHasOngoingWork(
   return attached ? taskHasOngoingWork(attached) : true;
 }
 
-export function taskNeedsAttention(task: Pick<ConversationTaskSummary, 'userState'>): boolean {
-  return task.userState === 'needs_action';
+export function taskNeedsAttention(
+  task: Pick<ConversationTaskSummary, 'status' | 'pendingActions'>,
+): boolean {
+  return task.status === 'needs_action' || task.pendingActions.length > 0;
 }
 
-export function taskActivityMessage(task: Pick<ConversationTaskSummary, 'userStateReason'>): string {
-  return task.userStateReason;
+/** One user-facing explanation, taken from the committed Task state. */
+export function taskActivityMessage(task: Pick<ConversationTaskSummary, 'explanation'>): string {
+  return task.explanation;
 }

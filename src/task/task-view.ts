@@ -1,13 +1,14 @@
 /**
- * Unified read-only `TaskView` projection (2026-09-25 Task lifecycle state
- * convergence plan §7).
+ * Unified read-only `TaskView` projection (2026-10-22 Task state simplification §6.1).
  *
- * One projection contract for TUI, Web, Feishu and command output. It is a pure
- * function over durable facts: it never mutates state, never calls a repository
- * and never lets a presentation surface re-derive reconciliation.
+ * Task has one conclusion and this projection does not recompute it. The current
+ * status, reason, phase, pending actions, cleanup summary and version all come
+ * from the persisted `TaskStateSnapshot`; this module only assembles the
+ * operational detail (active Attempt, Subtask states, result, timestamps) that a
+ * surface needs next to that conclusion.
  *
- * The projection never equates `Task.status === 'running'` with "actively
- * executing": `executing` requires an active authorized Attempt.
+ * There is no raw-status fallback and no second lifecycle vocabulary. A surface
+ * that needs "is it finished" reads `state.status`.
  */
 
 import type { SubtaskStatus, TaskStatus } from '../core/types.js';
@@ -18,17 +19,24 @@ import type { KernelDispatchItemStatus } from '../kernel/control-kernel.js';
 import type { GenerationReplanRequestStatus } from '../storage/generation-replan-request-repo.js';
 import {
   isActiveDispatchStatus,
-  isTerminalTaskLifecycle,
   toAttemptLifecycleState,
   toAttemptOutcome,
   toSubtaskLifecycleState,
-  deriveTaskLifecycleState,
   type AttemptLifecycleState,
   type AttemptOutcome,
   type SubtaskLifecycleState,
-  type TaskLifecycleState,
-  type TaskUserFacingPhase,
 } from './task-lifecycle.js';
+import {
+  TASK_STATUS_LABELS,
+  isTerminalTaskStatus,
+  normalizeCleanup,
+  normalizeTaskStateDetail,
+  type TaskCleanupSummary,
+  type TaskPendingAction,
+  type TaskStateDetail,
+  type TaskStateSnapshot,
+  type TaskStatus as TaskStateStatus,
+} from './task-state.js';
 
 export interface TaskViewAttemptFact {
   readonly attemptId: string;
@@ -76,6 +84,11 @@ export interface TaskViewFacts {
   readonly task: {
     readonly id: string;
     readonly status: TaskStatus;
+    readonly stateVersion: number;
+    readonly stateDetail: TaskStateDetail;
+    readonly completedAt?: string | null;
+    readonly archivedAt?: string | null;
+    readonly retryOfTaskId?: string | null;
     readonly updatedAt: string | null;
   };
   readonly subtasks: readonly {
@@ -103,7 +116,7 @@ export interface TaskViewFacts {
     readonly id: string;
     readonly status: string;
   }[];
-  /** Named reasons a Kernel `complete_task` decision would currently be refused. */
+  /** Named reasons the Kernel would currently refuse a `complete_task` decision. */
   readonly completionResidue: readonly string[];
   readonly pendingPermission: { readonly requestId: string } | null;
   /** Durable retry wake scheduled by a Kernel `wait_for_retry` decision. */
@@ -117,17 +130,13 @@ export interface TaskViewFacts {
   readonly pendingDecision?: TaskViewPendingDecisionFact | null;
 }
 
-import type { TaskUserState } from './task-user-state.js';
-export { type TaskUserState, TASK_USER_STATE_LABELS } from './task-user-state.js';
-
 export interface TaskView {
-  readonly userState: TaskUserState;
-  readonly userStateReason: string;
   readonly taskId: string;
-  /** Canonical business lifecycle state. */
-  readonly lifecycle: TaskLifecycleState;
-  /** Internal detail phase; primary presentation uses userState. */
-  readonly phase: TaskUserFacingPhase;
+  /** The one Task conclusion every surface reads. */
+  readonly state: TaskStateSnapshot;
+  /** Convenience mirror of `state.status` for surfaces that only render a label. */
+  readonly status: TaskStateStatus;
+  readonly statusLabel: string;
   readonly activeAttempt: {
     readonly attemptId: string;
     readonly subtaskId: string;
@@ -144,15 +153,16 @@ export interface TaskView {
   readonly currentRecovery: TaskViewRecoveryFact | null;
   /** Bounded operational residue categories still owning the Task. */
   readonly blockingResidue: readonly string[];
-  /** One canonical next authorized action, or `none` in a terminal phase. */
+  /** One canonical next authorized action, or `none` in a terminal state. */
   readonly nextAuthorizedAction: TaskAction;
   /**
-   * Why a `recovery_required` phase was reached, so a surface can offer the
-   * right entry point instead of a generic message.
+   * Why a recovery state was reached, so a surface can offer the right entry
+   * point instead of a generic message.
    */
   readonly recoveryDiagnosis: TaskViewRecoveryDiagnosis | null;
-  readonly pendingDecision: TaskViewPendingDecisionFact | null;
-  /** Why the phase is what it is, in user-facing terms. */
+  readonly pendingActions: readonly TaskPendingAction[];
+  readonly cleanup: TaskCleanupSummary;
+  /** Why the state is what it is, in user-facing terms. */
   readonly explanation: string;
   readonly result: TaskViewResultFact | null;
   readonly timestamps: {
@@ -193,12 +203,8 @@ export const RESIDUAL_PUBLICATION_STATUSES = new Set([
 ]);
 
 /**
- * Deterministic projection priority (plan §7):
- *
- * active Attempt -> executing; retry wake -> retrying; pending Replan Job ->
- * waiting_for_plan; uncertain application -> recovery_required; publication
- * residue -> publishing; terminal lifecycle; pending user decision ->
- * waiting_for_user; remaining residue -> blocked; otherwise canonical queue.
+ * Projects a Task view from the persisted conclusion plus operational details.
+ * It never derives a status of its own.
  */
 export function projectTaskView(facts: TaskViewFacts): TaskView {
   const attempts = orderAttempts(facts);
@@ -206,7 +212,6 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
     isActiveDispatchStatus(attempt.dispatchStatus) && attempt.dispatchStatus !== 'pending_launch'
     && (attempt.settledAt === null || attempt.dispatchStatus === 'cancelling')
   )) ?? null;
-  const queuedAttempts = attempts.filter(attempt => attempt.dispatchStatus === 'pending_launch');
   const replanJob = facts.replanJobs
     .filter(job => ACTIVE_REPLAN_STATUSES.includes(job.status))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null;
@@ -214,15 +219,9 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
     .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))[0] ?? null;
   const publishingResidue = facts.publications
     .filter(publication => RESIDUAL_PUBLICATION_STATUSES.has(publication.status));
-  // Canonical lifecycle comes from durable facts, not the persisted column
-  // alone: a `running` Task with no active Attempt is coordinating work.
-  const lifecycle = deriveTaskLifecycleState({
-    status: facts.task.status,
-    hasActiveAttempt: activeAttempt !== null,
-    hasOutstandingReplanJob: replanJob !== null,
-    hasPendingRetryWake: facts.retryWakeAt !== null,
-    hasPendingUserDecision: facts.pendingPermission !== null,
-  });
+  const detail = normalizeTaskStateDetail(facts.task.stateDetail);
+  const cleanup = normalizeCleanup(detail.cleanup);
+  const status = facts.task.status;
   const blockingResidue = deriveBlockingResidue({
     activeAttempt,
     replanJob,
@@ -231,69 +230,31 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
     publishingResidue: publishingResidue.map(publication => `publication:${publication.status}`),
     completionResidue: facts.completionResidue,
     pendingPermission: facts.pendingPermission,
+    cleanup,
   });
-
-  // A Task can only be `coordinating` when a durable driver exists (an active
-  // Attempt, a retry wake, a Replan Job or a publication). Without one the
-  // phase must say so instead of implying a driver that is not there
-  // (2026-09-25 review fix 6).
   const recoveryDiagnosis: TaskViewRecoveryDiagnosis | null = recovery
     ? 'uncertain_application'
     : facts.retryWakeRecoveryRequired
+      || detail.reason.code === 'no_authorized_driver'
       ? 'no_authorized_driver'
-      : lifecycle === 'coordinating'
-        ? 'no_authorized_driver'
-        : null;
-  const phase = derivePhase({
-    lifecycle,
-    activeAttempt: activeAttempt !== null,
-    queuedAttempt: queuedAttempts.length > 0,
-    retryWakeRecoveryRequired: facts.retryWakeRecoveryRequired === true,
-    retryWakeAt: facts.retryWakeAt,
-    replanJob: replanJob !== null,
-    recovery: recovery !== null,
-    publishing: publishingResidue.length > 0,
-    pendingPermission: facts.pendingPermission !== null,
-    result: facts.result,
-  });
-
-  const automaticPublication = publishingResidue.some(item => ['pending', 'applying', 'cancelling'].includes(item.status));
-  const userState: TaskUserState = isTerminalTaskLifecycle(lifecycle) ? 'finished'
-    : activeAttempt || automaticPublication || facts.deliveryState === 'pending' ? 'executing'
-      : facts.capacityWaiting || queuedAttempts.length > 0 || (facts.retryWakeAt && !facts.retryWakeRecoveryRequired)
-        || (replanJob && replanJob.status !== 'waiting_for_availability') || lifecycle === 'queued' ? 'waiting'
-      : 'needs_action';
-  const pendingDecision = isTerminalTaskLifecycle(lifecycle) ? null
-    : facts.pendingDecision ?? null;
-  const explanation = facts.capacityWaiting || (phase === 'queued' && queuedAttempts.length > 0)
-    ? '等待执行名额；名额释放后系统会自动继续。'
-    : explain({ phase, lifecycle, blockingResidue, recoveryDiagnosis });
-  const userStateReason = (userState === 'finished'
-    ? explain({ phase: lifecycle as 'completed' | 'failed' | 'cancelled', lifecycle, blockingResidue, recoveryDiagnosis })
-    : userState === 'needs_action' && facts.serviceState && facts.serviceState !== 'healthy'
-      && !pendingDecision && facts.subtasks.length > 0 && facts.subtasks.every(item => item.status === 'done')
-      ? '代码已交付，服务尚未通过健康检查。请查询服务状态，并显式启动或重启服务。'
-    : userState === 'needs_action' && (pendingDecision?.reason === 'uncertified_result' || facts.deliveryState === 'failed' || recoveryDiagnosis === 'no_authorized_driver')
-      ? (pendingDecision?.reason === 'uncertified_result'
-        // Name the recommended button first and say when the other one applies,
-        // so the user never has to guess between accept and retry.
-        ? `结果已通过安全校验并保存，只差完成验收。建议点「接受并交付」直接进入交付；`
-          + `${pendingDecision.actions.includes('retry_attempt')
-            ? '只有你认为这次结果不正确时，才点「重新执行」。'
-            : '本轮没有提供重新执行。'}`
-        : facts.deliveryState === 'failed'
-          ? '文件交付失败，已完成的执行不会重跑。建议点「继续未完成部分」补齐交付。'
-          : '没有找到可以继续任务的执行记录。建议点「继续未完成部分」让系统重新调度。')
-      : explanation)
-    + (activeAttempt && facts.subtasks.some(subtask => subtask.status === 'blocked')
-      ? ' 另有子任务需要处理，独立工作继续。' : '');
-
+      : null;
   return {
     taskId: facts.task.id,
-    lifecycle,
-    phase,
-    userState,
-    userStateReason,
+    state: {
+      taskId: facts.task.id,
+      status,
+      stateVersion: facts.task.stateVersion,
+      reason: detail.reason,
+      phase: detail.phase,
+      pendingActions: detail.pendingActions,
+      cleanup,
+      nextWakeAt: detail.nextWakeAt ?? facts.retryWakeAt,
+      completedAt: facts.task.completedAt ?? null,
+      archivedAt: facts.task.archivedAt ?? null,
+      retryOfTaskId: facts.task.retryOfTaskId ?? null,
+    },
+    status,
+    statusLabel: TASK_STATUS_LABELS[status],
     activeAttempt: activeAttempt
       ? {
           attemptId: activeAttempt.attemptId,
@@ -311,15 +272,11 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
     currentReplanJob: replanJob,
     currentRecovery: recovery,
     blockingResidue,
-    nextAuthorizedAction: nextAuthorizedAction(phase, phase === 'recovery_required' ? recoveryDiagnosis : null,
-      isTerminalTaskLifecycle(lifecycle) ? null : pendingDecision),
+    nextAuthorizedAction: nextAuthorizedAction(status, detail, recoveryDiagnosis),
     recoveryDiagnosis,
-    pendingDecision: pendingDecision ?? null,
-    explanation: phase === 'queued' && queuedAttempts.length > 0
-      ? '等待执行名额；名额释放后系统会自动继续。'
-      : explain({ phase, lifecycle, blockingResidue, recoveryDiagnosis })
-        + (activeAttempt && facts.subtasks.some(subtask => subtask.status === 'blocked')
-          ? ` 另有 ${facts.subtasks.filter(subtask => subtask.status === 'blocked').length} 个子任务待处理，其余独立工作继续。` : ''),
+    pendingActions: detail.pendingActions,
+    cleanup,
+    explanation: explain(status, detail),
     result: facts.result,
     timestamps: {
       lastProgressAt: latestTimestamp([
@@ -332,7 +289,7 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
       lastAttemptSettledAt: latestTimestamp(
         facts.receipts.map(item => item.completedAt),
       ),
-      nextWakeAt: facts.retryWakeAt ?? replanJob?.updatedAt ?? null,
+      nextWakeAt: detail.nextWakeAt ?? facts.retryWakeAt ?? replanJob?.updatedAt ?? null,
     },
   };
 }
@@ -369,6 +326,7 @@ function deriveBlockingResidue(input: {
   publishingResidue: readonly string[];
   completionResidue: readonly string[];
   pendingPermission: { readonly requestId: string } | null;
+  cleanup: TaskCleanupSummary;
 }): string[] {
   const residue: string[] = [];
   if (input.activeAttempt) residue.push(`attempt:${input.activeAttempt.attemptId}`);
@@ -378,107 +336,105 @@ function deriveBlockingResidue(input: {
   residue.push(...input.publishingResidue);
   residue.push(...input.completionResidue.map(reason => `completion:${reason}`));
   if (input.pendingPermission) residue.push(`permission:${input.pendingPermission.requestId}`);
+  residue.push(...input.cleanup.objects.map(object => `cleanup:${object}`));
   return residue;
 }
 
-function derivePhase(input: {
-  lifecycle: TaskLifecycleState;
-  activeAttempt: boolean;
-  queuedAttempt: boolean;
-  retryWakeRecoveryRequired: boolean;
-  retryWakeAt: string | null;
-  replanJob: boolean;
-  recovery: boolean;
-  publishing: boolean;
-  pendingPermission: boolean;
-  result: TaskViewResultFact | null;
-}): TaskUserFacingPhase {
-  if (input.activeAttempt) return 'executing';
-  if (input.queuedAttempt) return 'queued';
-  if (input.retryWakeRecoveryRequired) return 'recovery_required';
-  if (input.retryWakeAt) return 'retrying';
-  if (input.replanJob) {
-    return input.lifecycle === 'blocked' ? 'blocked' : 'waiting_for_plan';
-  }
-  if (input.recovery) return 'recovery_required';
-  if (input.publishing) return 'publishing';
-  if (isTerminalTaskLifecycle(input.lifecycle)) return input.lifecycle;
-  if (input.pendingPermission) return 'waiting_for_user';
-  if (input.lifecycle === 'blocked') return 'blocked';
-  if (input.lifecycle === 'waiting_for_user') return 'waiting_for_user';
-  if (input.lifecycle === 'queued') return 'queued';
-  // Nothing above is driving the Task: a persisted `running` Task with no
-  // active Attempt, no retry wake and no Replan Job must not claim it is
-  // waiting for a plan that was never requested. It is a recovery situation.
-  return 'recovery_required';
-}
-
 function nextAuthorizedAction(
-  phase: TaskUserFacingPhase,
+  status: TaskStateStatus,
+  detail: TaskStateDetail,
   diagnosis: TaskViewRecoveryDiagnosis | null,
-  pendingDecision: TaskViewPendingDecisionFact | null | undefined,
 ): TaskAction {
-  if (pendingDecision?.reason === 'uncertified_result') return 'accept_result';
-  switch (phase) {
-    case 'executing':
-      return 'await_attempt_settlement';
-    case 'retrying':
-      return 'await_retry_wake';
-    case 'waiting_for_plan':
-      return 'await_planner_proposal';
-    case 'recovery_required':
-      return diagnosis === 'uncertain_application'
-        ? 'resolve_uncertain_application'
-        : 'explicit_resume_required';
-    case 'publishing':
-      return 'await_publication';
-    case 'waiting_for_user':
-      return 'await_user_input';
+  if (detail.pendingActions.some(action => action.kind === 'accept_result')) return 'accept_result';
+  if (detail.pendingActions.some(action => action.kind === 'retry_attempt')) return 'retry_attempt';
+  if (isTerminalTaskStatus(status)) return 'none';
+  switch (status) {
     case 'queued':
       return 'await_conversation_slot';
-    case 'blocked':
-      return 'explicit_resume_required';
-    case 'completed':
-    case 'failed':
-    case 'cancelled':
+    case 'running':
+      switch (detail.phase) {
+        case 'retrying':
+          return 'await_retry_wake';
+        case 'publishing':
+        case 'delivering':
+          return 'await_publication';
+        case 'verifying':
+          return 'await_planner_proposal';
+        case 'stopping':
+          return 'await_attempt_settlement';
+        default:
+          return 'await_attempt_settlement';
+      }
+    case 'needs_action':
+      if (diagnosis === 'uncertain_application') return 'resolve_uncertain_application';
+      return 'await_user_input';
+    default:
       return 'none';
   }
 }
 
-function explain(input: {
-  phase: TaskUserFacingPhase;
-  lifecycle: TaskLifecycleState;
-  blockingResidue: readonly string[];
-  recoveryDiagnosis: TaskViewRecoveryDiagnosis | null;
-}): string {
-  switch (input.phase) {
-    case 'executing':
-      return 'An authorized Attempt is actively running.';
-    case 'retrying':
-      return 'The Kernel scheduled a bounded retry wake for the next Attempt.';
-    case 'waiting_for_plan':
-      return 'The Kernel requested a Replan Job; a Planner proposal is still outstanding.';
-    case 'recovery_required':
-      return input.recoveryDiagnosis === 'uncertain_application'
-        ? 'A Kernel action outcome is uncertain and must be reconciled before the Task can continue.'
-        : 'No authorized Attempt, retry wake, Replan Job or publication is driving the Task; '
-          + 'explicit recovery is required.';
-    case 'publishing':
-      return 'Execution finished but publication or certification is still pending.';
-    case 'waiting_for_user':
-      return 'The Kernel is waiting for a user decision before continuing.';
-    case 'queued':
-      return 'The Task is admitted and waiting for a Conversation slot.';
-    case 'blocked':
-      return input.blockingResidue.length > 0
-        ? `任务需要处理：${input.blockingResidue.join('、')}。请查看原因并继续。`
-        : '任务需要处理，请选择继续或重新执行。';
-    case 'completed':
-      return 'The Task completed and its certification and publication are clear.';
-    case 'failed':
-      return 'The Task reached a terminal failure.';
-    case 'cancelled':
-      return 'The Task was cancelled.';
+function explain(status: TaskStatus, detail: TaskStateDetail): string {
+  const reasonText = detail.reason.message
+    || defaultReasonText(detail.reason.code);
+  if (isTerminalTaskStatus(status)) {
+    return reasonText || defaultStatusText(status);
+  }
+  const phaseText = detail.phase ? PHASE_TEXT[detail.phase] : '';
+  const base = reasonText || defaultStatusText(status);
+  const cleanupText = detail.cleanup.state === 'none'
+    ? ''
+    : `（${detail.cleanup.state === 'blocked' ? '清理需要核实' : '正在清理'}：${detail.cleanup.objects.join('、') || '无具体对象'}）`;
+  return `${phaseText}${base}${cleanupText}`;
+}
+
+const PHASE_TEXT: Readonly<Record<NonNullable<TaskStateDetail['phase']>, string>> = {
+  executing: '正在执行：',
+  publishing: '正在集成发布：',
+  delivering: '正在交付文件：',
+  starting_service: '正在启动服务：',
+  retrying: '等待自动重试：',
+  stopping: '正在安全停止：',
+  verifying: '正在核实结果：',
+};
+
+function defaultStatusText(status: TaskStatus): string {
+  return `任务${TASK_STATUS_LABELS[status]}。`;
+}
+
+function defaultReasonText(code: TaskStateDetail['reason']['code']): string {
+  switch (code) {
+    case 'none':
+    case 'waiting_for_capacity':
+    case 'cleanup_in_progress':
+      return '';
+    case 'user_cancelled':
+      return '用户取消了任务。';
+    case 'result_acceptance_required':
+      return '结果已安全保存，需要接受后才能继续交付。';
+    case 'input_required':
+      return '需要用户补充信息或确认。';
+    case 'external_outcome_unknown':
+      return '外部操作结果未知，需要核实。';
+    case 'no_authorized_driver':
+      return '没有可以继续的授权工作，需要恢复或重新发起。';
+    case 'port_in_use':
+      return '端口已被占用，代码已保留。';
+    case 'command_not_found':
+      return '所需的命令不存在。';
+    case 'service_start_failed':
+      return '服务未能启动。';
+    case 'service_health_timeout':
+      return '服务未在期限内通过健康检查。';
+    case 'delivery_failed':
+      return '文件交付失败。';
+    case 'execution_failed':
+      return '必需工作失败。';
+    case 'retry_exhausted':
+      return '自动重试已耗尽，任务结束。';
+    case 'requirements_incomplete':
+      return '用户要求的必需工作尚未全部完成。';
+    case 'system_anomaly':
+      return '系统发现异常状态，需要确认。';
   }
 }
 

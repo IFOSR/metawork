@@ -1310,7 +1310,12 @@ export class MetaWorkTuiController {
 			if (
 				view &&
 				turn?.taskId === view.taskId &&
-				view.asOfSequence < (turn.lastTaskSequence ?? turn.startedAtSequence)
+				(view.asOfSequence < (turn.lastTaskSequence ?? turn.startedAtSequence) ||
+					(view.lifecycle &&
+						turn.taskStateVersion !== undefined &&
+						(view.lifecycle.stateVersion < turn.taskStateVersion ||
+							(view.lifecycle.stateVersion === turn.taskStateVersion &&
+								view.lifecycle.status !== turn.taskPhase))))
 			) {
 				this.scheduleTaskRefresh();
 			}

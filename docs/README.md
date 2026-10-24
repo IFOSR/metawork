@@ -19,11 +19,13 @@ This directory contains both current technical documentation and historical plan
 
 ## Current Docs
 
+- [Executor Pi 打包入口修复](plans/2026-10-23-executor-pi-packaging-fix.md)：修正本地 DMG 将 Executor 指向定制 Planner 的错误，增加打包与安装参数校验，修复包已完成本地自动验收。
+
 - [斜杠指令参考](current/commands.md)：唯一的当前指令清单与 Desktop/Web 联想说明；[精简与联想验收记录](plans/2026-10-22-command-simplification-and-desktop-completion.md)。
 
 - [记忆系统接入 TencentDB Agent Memory 设计方案](plans/2026-10-22-memory-system-tdai-integration-design.md)：记忆体系现状审计（采集/晋级/送达三处断链）、以 TDAI 为唯一记忆引擎的目标架构、记忆沉淀契约、证据投递 pull 语义、开关与 Provider 配置、凭证纪律及 ADR 影响；唯一待评审方案，尚未实施。
 
-- [任务状态简化设计](plans/2026-10-22-task-state-simple-design.md)：统一六个状态、转换规则、队列规则及跨模块一致性的产品目标；[技术落地方案](plans/2026-10-22-task-state-implementation-plan.md)细化源码入口、唯一事务提交、操作收尾、恢复迁移与跨端联动验收。两者均待评审，尚未实施。
+- [任务状态简化设计](plans/2026-10-22-task-state-simple-design.md)：统一六个状态、转换规则、队列规则及跨模块一致性的产品目标；[技术落地方案](plans/2026-10-22-task-state-implementation-plan.md)细化源码入口、唯一事务提交、操作收尾、恢复迁移与跨端联动验收。源码实施与评审修复已验证，安装/发布门槛尚未关闭；详见[修复验收记录](plans/2026-10-22-task-state-review-fixes.md)。
 
 - [任务验收、公开交付与受管服务](tech-debt/task-acceptance-and-local-service-findings.md)：接受/重试、稳定公开目录、完整代码发布及服务生命周期已完成源码实施与原生案例验证；[实施与验收记录](plans/2026-10-21-task-acceptance-and-managed-services.md)。安装与平台门槛单独记录。
 

@@ -75,7 +75,7 @@ describe('Kernel durable retry control loop', () => {
     const handled = await session.maybeReviewTaskPoolOnTimer();
 
     expect(handled).toBe(true);
-    expect(taskRepo.findById(task.id)?.status).toBe('done');
+    expect(taskRepo.findById(task.id)?.status).toBe('succeeded');
     expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(2);
     const retryPrompt = attemptExecutionBackend.create.mock.calls[1]![0].args.at(-1);
     expect(retryPrompt).toContain('Recovery mode: recovery_packet');

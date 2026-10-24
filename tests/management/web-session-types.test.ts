@@ -31,11 +31,11 @@ const timeline: ExecutionTimeline = {
   title: 'Summarize AI news',
   status: 'done',
   stages: [
-    { phase: 'planning', status: 'done' },
-    { phase: 'authorization', status: 'done' },
-    { phase: 'execution', status: 'done' },
-    { phase: 'verification', status: 'done' },
-    { phase: 'delivery', status: 'done' },
+    { phase: 'planning', status: 'succeeded' },
+    { phase: 'authorization', status: 'succeeded' },
+    { phase: 'execution', status: 'succeeded' },
+    { phase: 'verification', status: 'succeeded' },
+    { phase: 'delivery', status: 'succeeded' },
   ],
 };
 

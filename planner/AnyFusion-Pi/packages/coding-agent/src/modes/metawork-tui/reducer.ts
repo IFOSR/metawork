@@ -390,6 +390,24 @@ function reduceConnectionStreamEvent(
 		conversation.taskViewWatermarks[view.turnId] ?? 0,
 	);
 	if (view.asOfSequence < appliedSequence) return state;
+	const taskVersion = Math.max(
+		0,
+		...Object.values(conversation.turns)
+			.filter((candidate) => candidate.taskId === view.taskId)
+			.map((candidate) => candidate.taskStateVersion ?? 0),
+	);
+	if (view.lifecycle && view.lifecycle.stateVersion < taskVersion) return state;
+	if (
+		view.lifecycle &&
+		Object.values(conversation.turns).some(
+			(candidate) =>
+				candidate.taskId === view.taskId &&
+				candidate.taskStateVersion === view.lifecycle?.stateVersion &&
+				candidate.taskPhase &&
+				candidate.taskPhase !== view.lifecycle?.status,
+		)
+	)
+		return state;
 	// 快照只丰富对应 Turn 的 Task 投影；终态单调，不用 Task 状态改写 Turn 状态。
 	const subtasks = { ...turn.subtasks };
 	for (const subtask of view.subtasks) {
@@ -420,13 +438,14 @@ function reduceConnectionStreamEvent(
 		taskId: view.taskId,
 		taskTitle: view.title,
 		taskStatus: view.status,
+		taskStateVersion: view.lifecycle?.stateVersion ?? turn.taskStateVersion,
 		// 主状态由 Task Domain 投影；缺少新字段时等待同步。
-		taskPhase: view.lifecycle?.userState ?? turn.taskPhase,
+		taskPhase: view.lifecycle?.status ?? turn.taskPhase,
 		taskNextAction: view.lifecycle?.nextAuthorizedAction ?? turn.taskNextAction,
 		resultDecision: view.resultDecision,
 		publicDelivery: view.publicDelivery,
 		routing: view.routing,
-		progressSummary: view.lifecycle?.userStateReason ?? view.progressSummary ?? turn.progressSummary,
+		progressSummary: view.lifecycle?.explanation ?? view.progressSummary ?? turn.progressSummary,
 		schedulingReason: view.schedulingReason,
 		taskStartedAt: view.startedAt ?? turn.taskStartedAt,
 		taskCompletedAt: view.completedAt ?? turn.taskCompletedAt,

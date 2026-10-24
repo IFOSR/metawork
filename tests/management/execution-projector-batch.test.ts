@@ -72,8 +72,9 @@ function populatedFixture() {
     VALUES ('timeline-config', 'timeline-hash', 'native', 'now')`).run();
   db.prepare(`INSERT INTO work_units (id, agent_class_name, agent_class_kind, created_at, updated_at)
     VALUES ('timeline-work-unit', 'receipt-agent', 'executor', 'now', 'now')`).run();
-  const insertTask = db.prepare(`INSERT INTO tasks (id, title, status, account_id, created_at, updated_at)
-    VALUES (?, ?, ?, 'local-default', 'now', 'now')`);
+  const insertTask = db.prepare(`INSERT INTO tasks
+    (id, title, status, account_id, created_at, updated_at, completed_at)
+    VALUES (?, ?, ?, 'local-default', 'now', 'now', ?)`);
   const insertSubtask = db.prepare(`INSERT INTO subtasks
     (id, task_id, title, goal, status, dependencies_json, required_capabilities_json,
      executor_bindings_json, context_refs_json, acceptance_json, result, verification_json, created_at, updated_at)
@@ -109,7 +110,7 @@ function populatedFixture() {
   for (let n = 0; n < 10; n += 1) {
     const taskId = `populated_${n}`;
     const subtaskId = `${taskId}_main`;
-    insertTask.run(taskId, `Timeline ${n}`, n === 8 ? 'done' : 'running');
+    insertTask.run(taskId, `Timeline ${n}`, n === 8 ? 'succeeded' : 'running', n === 8 ? 'now' : null);
     for (const [index, suffix] of ['main', 'receipt_only', 'unstarted'].entries()) {
       insertSubtask.run(`${taskId}_${suffix}`, taskId, `${suffix} ${n}`, UNUSED_PAYLOAD,
         index === 0 ? statuses[n] : 'done',
@@ -164,7 +165,8 @@ function populatedFixture() {
     }
   }
   const taskRepo = new TaskRepo(db);
-  db.prepare(`UPDATE tasks SET status = 'blocked', dependencies_json = ? WHERE id = 'populated_7'`)
+  db.prepare(`UPDATE tasks SET status = 'needs_action', dependencies_json = ?
+    WHERE id = 'populated_7'`)
     .run(JSON.stringify([{
       taskId: 'populated_7', type: 'kernel_retry', description: 'retry', status: 'waiting', createdAt: 'now',
     }]));
@@ -177,7 +179,9 @@ it('projects narrow Task reads with canonical lifecycle semantics in seven queri
   try {
     const taskRepo = new TaskRepo(db);
     const canonical = tasks.map(task => projector.project(task));
-    expect(canonical[7]!.status).toBe('executing');
+    // populated_7 has a needs_action conclusion recorded in the fixture.
+    expect(canonical[7]!.status).toBe('needs_action');
+    expect(canonical[0]!.status).toBe('running');
     db.exec(`UPDATE tasks SET snapshot_json = 'unused-invalid', resources_json = 'unused-invalid',
       artifacts_json = 'unused-invalid', priority_json = 'unused-invalid', injected_prefs_json = 'unused-invalid'`);
     for (const count of [1, 10]) {
@@ -203,7 +207,9 @@ it('reads narrow columns in six queries for both one and ten populated canonical
     expect(canonical[1]!.stages[4]!.status).toBe('blocked');
     // Even a violation on an attempt outside the displayed last twenty still matters.
     expect(canonical[2]!.stages[3]!.status).toBe('failed');
-    expect(canonical[7]!.status).toBe('executing');
+    // populated_7 has a needs_action conclusion recorded in the fixture.
+    expect(canonical[7]!.status).toBe('needs_action');
+    expect(canonical[0]!.status).toBe('running');
     for (const count of [1, 10]) {
       queries.length = 0;
       const result = projector.projectMany(tasks.slice(0, count));

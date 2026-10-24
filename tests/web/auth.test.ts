@@ -49,7 +49,7 @@ describe('Web Cookie authentication', () => {
     const onError = vi.fn(); const client = new WsClient({ onError }); client.connect();
     const socket = FakeWebSocket.instances[0]!;
     const hello = JSON.stringify({ type: 'hello', sessionId: null,
-      capabilities: ['conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1'],
+      capabilities: ['conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1', 'task_view_v2'],
       identity: { serverId: 'server', accountId: 'account' } });
     socket.onmessage?.({ data: hello });
     const requestId = client.sendCommand('conversation', { kind: 'user_message', text: 'input', attachments: [] });
@@ -67,7 +67,7 @@ describe('Web Cookie authentication', () => {
     vi.stubGlobal('WebSocket', FakeWebSocket);
     const client = new WsClient({});
     const hello = JSON.stringify({ type: 'hello', sessionId: 'different-focus',
-      capabilities: ['conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1'],
+      capabilities: ['conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1', 'task_view_v2'],
       identity: { serverId: 'server', accountId: 'account' } });
     client.connect();
     const first = FakeWebSocket.instances[0]!;
@@ -114,7 +114,7 @@ describe('Web Cookie authentication', () => {
     client.connect();
     const next = FakeWebSocket.instances[1]!;
     next.onmessage?.({ data: JSON.stringify({ type: 'hello', sessionId: null,
-      capabilities: ['conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1'],
+      capabilities: ['conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1', 'task_view_v2'],
       identity: { serverId: 'server', accountId: 'account' } }) });
     expect(next.sent).toEqual([]); client.close();
   });
@@ -144,7 +144,7 @@ describe('Web Cookie authentication', () => {
     const client = new WsClient({ onUnauthorized });
     const purge = vi.spyOn(client.conversations, 'purge');
     const hello = (serverId: string) => JSON.stringify({ type: 'hello', sessionId: null,
-      capabilities: ['conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1'],
+      capabilities: ['conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1', 'task_view_v2'],
       identity: { serverId, accountId: 'account' } });
     client.connect();
     const first = FakeWebSocket.instances[0]!;
@@ -157,7 +157,7 @@ describe('Web Cookie authentication', () => {
     expect(FakeWebSocket.instances[1]!.closeCalls).toBe(1);
   });
 
-  it('fails explicitly when observation capabilities are missing and ignores late messages', () => {
+  it('rejects a Server with only Task View v1 and ignores late messages', () => {
     vi.stubGlobal('window', { location: { protocol: 'http:', host: '127.0.0.1:8788' },
       setTimeout: vi.fn(() => 1), clearTimeout: vi.fn() });
     vi.stubGlobal('WebSocket', FakeWebSocket);
@@ -166,7 +166,8 @@ describe('Web Cookie authentication', () => {
     const purge = vi.spyOn(client.conversations, 'purge');
     client.connect();
     const socket = FakeWebSocket.instances[0]!;
-    socket.onmessage?.({ data: JSON.stringify({ type: 'hello', sessionId: 'old', capabilities: [] }) });
+    socket.onmessage?.({ data: JSON.stringify({ type: 'hello', sessionId: 'old',
+      capabilities: ['conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1', 'task_view_v1'] }) });
     socket.onmessage?.({ data: JSON.stringify({ type: 'hello', sessionId: 'late', capabilities: [] }) });
     expect(onHello).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledOnce();

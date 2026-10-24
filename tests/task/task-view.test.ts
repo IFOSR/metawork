@@ -1,11 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import { projectTaskView, type TaskViewFacts } from '../../src/task/task-view.js';
+import {
+  createTaskReason,
+  EMPTY_TASK_STATE_DETAIL,
+  type TaskStateDetail,
+  type TaskStatus,
+} from '../../src/task/task-state.js';
 
-const NOW = '2026-09-25T00:00:00.000Z';
+const NOW = '2026-10-22T00:00:00.000Z';
+
+function stateDetail(overrides: Partial<TaskStateDetail> = {}): TaskStateDetail {
+  return { ...EMPTY_TASK_STATE_DETAIL, ...overrides };
+}
 
 function facts(overrides: Partial<TaskViewFacts> = {}): TaskViewFacts {
   return {
-    task: { id: 'task_1', status: 'running', updatedAt: NOW },
+    task: {
+      id: 'task_1',
+      status: 'running',
+      stateVersion: 4,
+      stateDetail: stateDetail({
+        reason: createTaskReason('none', ''),
+        phase: 'executing',
+      }),
+      updatedAt: NOW,
+    },
     subtasks: [{ id: 'task_1_execute', status: 'running' }],
     dispatches: [{
       attemptId: 'attempt_1',
@@ -27,32 +46,39 @@ function facts(overrides: Partial<TaskViewFacts> = {}): TaskViewFacts {
   };
 }
 
-describe('unified TaskView projection', () => {
-  it('projects four primary states from durable drivers, with terminal state first', () => {
-    expect(projectTaskView(facts()).userState).toBe('executing');
-    expect(projectTaskView(facts({ task: { id: 'task_1', status: 'cancelled', updatedAt: NOW } })).userState).toBe('finished');
-    expect(projectTaskView(facts({ dispatches: [], retryWakeAt: NOW })).userState).toBe('waiting');
-    expect(projectTaskView(facts({ dispatches: [] })).userState).toBe('needs_action');
-    expect(projectTaskView(facts({ dispatches: [], publications: [{ id: 'p', status: 'conflicted' }] })).userState).toBe('needs_action');
-    expect(projectTaskView(facts({ dispatches: [], publications: [{ id: 'p', status: 'pending' }] })).userState).toBe('executing');
-    const settled = facts({ receipts: [{ attemptId: 'attempt_1', terminalState: 'executor_failed', failure: null, completedAt: NOW }] });
-    expect(projectTaskView(settled).userState).toBe('needs_action');
+function withStatus(status: TaskStatus, detail: TaskStateDetail = stateDetail()) {
+  return facts({ task: { id: 'task_1', status, stateVersion: 7, stateDetail: detail, updatedAt: NOW } });
+}
+
+describe('TaskView v2 projection', () => {
+  it('reads the committed status and version instead of re-deriving a conclusion', () => {
+    for (const status of ['queued', 'running', 'needs_action', 'succeeded', 'failed', 'cancelled'] as const) {
+      const view = projectTaskView(withStatus(status));
+      expect(view.status).toBe(status);
+      expect(view.state.status).toBe(status);
+      expect(view.state.stateVersion).toBe(7);
+    }
   });
 
-  it('reports real execution while a sibling is blocked, and queued capacity without claiming execution', () => {
-    const base = facts({ task: { id: 'task_1', status: 'blocked', updatedAt: NOW },
-      subtasks: [{ id: 'task_1_execute', status: 'running' }, { id: 'sibling', status: 'blocked' }] });
-    expect(projectTaskView(base).phase).toBe('executing');
-    expect(projectTaskView(base).explanation).toContain('1 个子任务待处理');
-    const queued = projectTaskView({ ...base, dispatches: base.dispatches.map(d => ({ ...d, status: 'pending_launch' })) });
-    expect(queued.phase).toBe('queued');
-    expect(queued.activeAttempt).toBeNull();
-    expect(queued.explanation).toContain('名额释放后系统会自动继续');
+  it('never turns a needs_action Task into executing because an Attempt is active', () => {
+    const view = projectTaskView(withStatus('needs_action', stateDetail({
+      reason: createTaskReason('result_acceptance_required', '需要接受结果'),
+      pendingActions: [{
+        actionId: 'accept:a',
+        kind: 'accept_result',
+        label: '接受结果',
+        reason: createTaskReason('result_acceptance_required', '需要接受结果'),
+        result: null,
+      }],
+    })));
+    expect(view.status).toBe('needs_action');
+    expect(view.nextAuthorizedAction).toBe('accept_result');
+    expect(view.pendingActions).toHaveLength(1);
   });
 
-  it('reports executing only while an authorized Attempt is active', () => {
+  it('projects the active Attempt as detail, not as a status', () => {
     const view = projectTaskView(facts());
-    expect(view.phase).toBe('executing');
+    expect(view.status).toBe('running');
     expect(view.activeAttempt).toEqual({
       attemptId: 'attempt_1',
       subtaskId: 'task_1_execute',
@@ -64,239 +90,62 @@ describe('unified TaskView projection', () => {
     expect(view.nextAuthorizedAction).toBe('await_attempt_settlement');
   });
 
-  it('never reports a running Task with no active Attempt as executing', () => {
-    const view = projectTaskView(facts({
-      subtasks: [{ id: 'task_1_execute', status: 'awaiting_decision' }],
-      dispatches: [{
-        attemptId: 'attempt_1',
-        subtaskId: 'task_1_execute',
-        status: 'terminal',
-        attemptKind: 'primary',
-        createdAt: NOW,
-        updatedAt: NOW,
-      }],
-      receipts: [{
-        attemptId: 'attempt_1',
-        terminalState: 'heartbeat_lost',
-        failure: null,
-        completedAt: NOW,
-      }],
-    }));
-    expect(view.lifecycle).toBe('coordinating');
-    expect(view.phase).not.toBe('executing');
-    expect(view.activeAttempt).toBeNull();
-    expect(view.timestamps.lastAttemptSettledAt).toBe(NOW);
+  it('reports the one phase and next action from the committed detail', () => {
+    const retrying = projectTaskView(withStatus('running', stateDetail({
+      phase: 'retrying',
+      nextWakeAt: '2026-10-22T00:05:00.000Z',
+    })));
+    expect(retrying.nextAuthorizedAction).toBe('await_retry_wake');
+    expect(retrying.state.nextWakeAt).toBe('2026-10-22T00:05:00.000Z');
+
+    const publishing = projectTaskView(withStatus('running', stateDetail({ phase: 'publishing' })));
+    expect(publishing.nextAuthorizedAction).toBe('await_publication');
+
+    const queued = projectTaskView(withStatus('queued', stateDetail({
+      reason: createTaskReason('waiting_for_capacity', '等待执行名额'),
+    })));
+    expect(queued.nextAuthorizedAction).toBe('await_conversation_slot');
+
+    const waiting = projectTaskView(withStatus('needs_action'));
+    expect(waiting.nextAuthorizedAction).toBe('await_user_input');
+    expect(waiting.recoveryDiagnosis).toBeNull();
   });
 
-  it('reports retrying when only a bounded retry wake exists', () => {
-    const view = projectTaskView(facts({
-      dispatches: [],
-      retryWakeAt: '2026-09-25T00:05:00.000Z',
-    }));
-    expect(view.phase).toBe('retrying');
-    expect(view.nextAuthorizedAction).toBe('await_retry_wake');
-  });
-
-  it('does not present a recovery-required Wake as automatic retrying', () => {
-    const view = projectTaskView(facts({
-      task: { id: 'task_1', status: 'blocked', updatedAt: NOW },
-      subtasks: [{ id: 'task_1_execute', status: 'awaiting_decision' }],
-      dispatches: [],
-      retryWakeRecoveryRequired: true,
-    }));
-    expect(view.phase).toBe('recovery_required');
-    expect(view.recoveryDiagnosis).toBe('no_authorized_driver');
-    expect(view.blockingResidue).toContain('retry_wake:recovery_required');
-    expect(view.nextAuthorizedAction).toBe('explicit_resume_required');
-  });
-
-  it('reports waiting_for_plan for a pending Replan Job without an attached client', () => {
-    const view = projectTaskView(facts({
-      dispatches: [{
-        attemptId: 'attempt_1',
-        subtaskId: 'task_1_execute',
-        status: 'terminal',
-        attemptKind: 'primary',
-        createdAt: NOW,
-        updatedAt: NOW,
-      }],
-      replanJobs: [{
-        id: 'generation_replan_1',
-        status: 'planning',
-        generationId: 'generation_1',
-        sourceRevision: 1,
-        updatedAt: NOW,
-      }],
-    }));
-    expect(view.phase).toBe('waiting_for_plan');
-    expect(view.currentReplanJob?.id).toBe('generation_replan_1');
-    expect(view.nextAuthorizedAction).toBe('await_planner_proposal');
-    expect(view.blockingResidue).toContain('replan:generation_replan_1');
-  });
-
-  it('reports recovery_required for an uncertain Kernel application', () => {
-    const view = projectTaskView(facts({
-      dispatches: [],
-      uncertainApplications: [{
-        applicationId: 'decision_1',
-        action: 'schedule_replan',
-        errorSummary: 'transport uncertain',
-        updatedAt: NOW,
-      }],
-    }));
-    expect(view.phase).toBe('recovery_required');
-    expect(view.currentRecovery?.applicationId).toBe('decision_1');
-    expect(view.nextAuthorizedAction).toBe('resolve_uncertain_application');
-  });
-
-  it('reports publishing while publication residue remains', () => {
-    const view = projectTaskView(facts({
-      dispatches: [],
-      publications: [{ id: 'publication_1', status: 'applying' }],
-    }));
-    expect(view.phase).toBe('publishing');
-    expect(view.blockingResidue).toContain('publication:applying');
-  });
-
-  it('reports waiting_for_user for a pending permission request', () => {
-    const view = projectTaskView(facts({
-      dispatches: [],
-      pendingPermission: { requestId: 'permission_1' },
-    }));
-    expect(view.phase).toBe('waiting_for_user');
-    expect(view.nextAuthorizedAction).toBe('await_user_input');
-  });
-
-  it('keeps a blocked Task blocked when a Replan Job is still scheduled', () => {
-    const view = projectTaskView(facts({
-      task: { id: 'task_1', status: 'blocked', updatedAt: NOW },
-      dispatches: [],
-      replanJobs: [{
-        id: 'generation_replan_1',
-        status: 'planning',
-        generationId: 'generation_1',
-        sourceRevision: 1,
-        updatedAt: NOW,
-      }],
-    }));
-    expect(view.phase).toBe('blocked');
-    expect(view.nextAuthorizedAction).toBe('explicit_resume_required');
-  });
-
-  it('reports completed only for a terminal Task with no residue', () => {
-    const view = projectTaskView(facts({
-      task: { id: 'task_1', status: 'done', updatedAt: NOW },
-      dispatches: [],
-      result: { resultId: 'result_1', completeness: 'complete', certification: 'certified' },
-    }));
-    expect(view.phase).toBe('completed');
+  it('surfaces the failure reason and cleanup for a failed Task', () => {
+    const view = projectTaskView(withStatus('failed', stateDetail({
+      reason: createTaskReason('port_in_use', '端口已被占用。', ['service:dev']),
+      cleanup: { state: 'pending', objects: ['dispatch'], reason: '正在安全停止' },
+    })));
+    expect(view.status).toBe('failed');
+    expect(view.state.reason.code).toBe('port_in_use');
+    expect(view.explanation).toContain('端口已被占用');
+    expect(view.cleanup.objects).toContain('dispatch');
     expect(view.nextAuthorizedAction).toBe('none');
-    expect(view.result?.certification).toBe('certified');
   });
 
-  it('projects a safe uncertified result as user action with accept and retry choices', () => {
+  it('keeps terminal Tasks terminal for every operational residue', () => {
     const view = projectTaskView(facts({
-      task: { id: 'task_1', status: 'parked', updatedAt: NOW },
-      subtasks: [{ id: 'task_1_execute', status: 'awaiting_decision' }],
-      dispatches: [{
-        attemptId: 'attempt_1', subtaskId: 'task_1_execute', status: 'terminal', attemptKind: 'primary',
-        createdAt: NOW, updatedAt: NOW,
-      }],
-      receipts: [{
-        attemptId: 'attempt_1', terminalState: 'uncertified_result', failure: null, completedAt: NOW,
-      }],
-      result: { resultId: 'result_1', completeness: 'complete', certification: 'uncertified' },
-      pendingDecision: { owner: 'user', reason: 'uncertified_result', resultId: 'result_1', attemptId: 'attempt_1',
-        actions: ['accept_result', 'retry_attempt'], expectedResult: { taskId: 'task_1', generationId: 'gen_1', graphRevision: 1,
-          subtaskId: 'task_1_execute', attemptId: 'attempt_1', resultId: 'result_1' } },
-    }));
-    expect(view.userState).toBe('needs_action');
-    expect(view.userStateReason).toContain('接受并交付');
-    expect(view.nextAuthorizedAction).toBe('accept_result');
-    expect(view.pendingDecision?.actions).toEqual(['accept_result', 'retry_attempt']);
-  });
-
-  it('requires an authorized driver before claiming the Task is waiting for a plan', () => {
-    // Review fix 6: the previous fallback turned "false executing" into "false
-    // waiting_for_plan" for a running Task with no Attempt and no Replan Job.
-    const view = projectTaskView(facts({
-      subtasks: [{ id: 'task_1_execute', status: 'awaiting_decision' }],
-      dispatches: [{
-        attemptId: 'attempt_1',
-        subtaskId: 'task_1_execute',
-        status: 'terminal',
-        attemptKind: 'primary',
-        createdAt: NOW,
+      task: {
+        id: 'task_1',
+        status: 'cancelled',
+        stateVersion: 9,
+        stateDetail: stateDetail({ reason: createTaskReason('user_cancelled', '用户取消了任务。') }),
         updatedAt: NOW,
-      }],
-      receipts: [{
-        attemptId: 'attempt_1',
-        terminalState: 'executor_failed',
-        failure: null,
-        completedAt: NOW,
-      }],
+      },
+      uncertainApplications: [{ applicationId: 'app_1', action: 'dispatch_batch', errorSummary: null, updatedAt: NOW }],
     }));
-    expect(view.phase).toBe('recovery_required');
-    expect(view.recoveryDiagnosis).toBe('no_authorized_driver');
-    expect(view.nextAuthorizedAction).toBe('explicit_resume_required');
-    expect(view.explanation).toContain('No authorized Attempt');
-  });
-
-  it('names the uncertain application as the recovery entry point', () => {
-    const view = projectTaskView(facts({
-      dispatches: [],
-      uncertainApplications: [{
-        applicationId: 'decision_1',
-        action: 'dispatch_batch',
-        errorSummary: 'partial batch',
-        updatedAt: NOW,
-      }],
-    }));
-    expect(view.phase).toBe('recovery_required');
+    expect(view.status).toBe('cancelled');
     expect(view.recoveryDiagnosis).toBe('uncertain_application');
-    expect(view.nextAuthorizedAction).toBe('resolve_uncertain_application');
+    expect(view.blockingResidue).toContain('application:app_1');
+    expect(view.nextAuthorizedAction).toBe('none');
   });
 
-  it('reports queued for an admitted Task awaiting a Conversation slot', () => {
-    const view = projectTaskView(facts({
-      task: { id: 'task_1', status: 'ready', updatedAt: NOW },
-      dispatches: [],
-    }));
-    expect(view.phase).toBe('queued');
-    expect(view.nextAuthorizedAction).toBe('await_conversation_slot');
-  });
-
-  it('orders attempts and reports the active ordinal with settled outcomes', () => {
-    const view = projectTaskView(facts({
-      dispatches: [
-        {
-          attemptId: 'attempt_1',
-          subtaskId: 'task_1_execute',
-          status: 'terminal',
-          attemptKind: 'primary',
-          createdAt: '2026-09-25T00:00:00.000Z',
-          updatedAt: '2026-09-25T00:01:00.000Z',
-        },
-        {
-          attemptId: 'attempt_2',
-          subtaskId: 'task_1_execute',
-          status: 'running',
-          attemptKind: 'fallback',
-          createdAt: '2026-09-25T00:02:00.000Z',
-          updatedAt: '2026-09-25T00:02:00.000Z',
-        },
-      ],
-      receipts: [{
-        attemptId: 'attempt_1',
-        terminalState: 'heartbeat_lost',
-        failure: null,
-        completedAt: '2026-09-25T00:01:00.000Z',
-      }],
-    }));
-    expect(view.activeAttempt?.attemptId).toBe('attempt_2');
-    expect(view.activeAttempt?.ordinal).toBe(2);
-    expect(view.subtaskStates).toEqual([
-      { subtaskId: 'task_1_execute', state: 'executing' },
-    ]);
+  it('reports recovery diagnosis from the committed reason, not a guessed phase', () => {
+    const view = projectTaskView(withStatus('needs_action', stateDetail({
+      reason: createTaskReason('no_authorized_driver', '没有可以继续的授权工作'),
+    })));
+    expect(view.status).toBe('needs_action');
+    expect(view.recoveryDiagnosis).toBe('no_authorized_driver');
+    expect(view.nextAuthorizedAction).toBe('await_user_input');
   });
 });

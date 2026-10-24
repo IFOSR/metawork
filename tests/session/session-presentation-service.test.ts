@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SessionPresentationService } from '../../src/session/session-presentation-service.js';
 import { GuidanceActionType, type GuidanceProposal, type RuntimeState, type Task } from '../../src/core/types.js';
+import { EMPTY_TASK_STATE_DETAIL } from '../../src/task/task-state.js';
 
 const baseTime = '2026-06-24T00:00:00.000Z';
 
@@ -9,7 +10,12 @@ function task(overrides: Partial<Task> = {}): Task {
     id: 'task_1',
     title: '默认任务',
     goal: '完成默认任务',
-    status: 'ready',
+    status: 'queued',
+    stateVersion: 1,
+    stateDetail: EMPTY_TASK_STATE_DETAIL,
+    completedAt: null,
+    archivedAt: null,
+    retryOfTaskId: null,
     summary: '',
     snapshots: [],
     resources: [],
@@ -57,7 +63,7 @@ describe('SessionPresentationService', () => {
     const blocked = task({
       id: 'blocked_1',
       title: '权限任务',
-      status: 'blocked',
+      status: 'needs_action',
       dependencies: [{
         taskId: 'blocked_1',
         type: 'manual',
@@ -69,7 +75,7 @@ describe('SessionPresentationService', () => {
     const parked = task({
       id: 'parked_1',
       title: '挂起任务',
-      status: 'parked',
+      status: 'needs_action',
       lastInterruptionReason: '被高优任务抢占',
       snapshots: [{
         done: ['完成调研'],
@@ -81,9 +87,8 @@ describe('SessionPresentationService', () => {
     });
 
     const lines = presenter.formatTaskPoolWatchdogReminder({
-      blockedTasks: [blocked],
-      parkedTasks: [parked],
-      getWaitingBlockReason: task => task.dependencies[0]?.description ?? null,
+      needsActionTasks: [blocked, parked],
+      getWaitingBlockReason: current => current.dependencies[0]?.description ?? null,
     });
 
     expect(lines.join('\n')).toContain('任务池看护提醒');
@@ -112,8 +117,8 @@ describe('SessionPresentationService', () => {
 
   it('formats last-task automatic decision blocks', () => {
     const lastTaskLines = presenter.formatLastTaskAutoDecisionBlock({
-      completedTask: task({ id: 'done_1', title: '已完成任务', status: 'done' }),
-      unfinishedTask: task({ id: 'parked_1', title: '最近未完成任务', status: 'parked' }),
+      completedTask: task({ id: 'done_1', title: '已完成任务', status: 'succeeded' }),
+      unfinishedTask: task({ id: 'parked_1', title: '最近未完成任务', status: 'needs_action' }),
       decision: 'resume-unfinished',
     });
     expect(lastTaskLines.join('\n')).toContain('恢复最近未完成任务 #parked_1 最近未完成任务');
@@ -123,7 +128,7 @@ describe('SessionPresentationService', () => {
     const parked = task({
       id: 'parked_1',
       title: '报告任务',
-      status: 'parked',
+      status: 'needs_action',
       lastInterruptionReason: '被高优任务抢占',
       snapshots: [{
         done: ['完成大纲'],
@@ -140,9 +145,8 @@ describe('SessionPresentationService', () => {
     const runtimeState: RuntimeState = {
       runningTaskId: 'running_1',
       runningExecutorName: null,
-      readyTaskIds: ['ready_1'],
-      blockedTaskIds: [],
-      parkedTaskIds: ['parked_1'],
+      queuedTaskIds: ['ready_1'],
+      needsActionTaskIds: ['parked_1'],
       lastEvent: null,
     };
     const lines = presenter.formatTaskQueueSnapshot({
@@ -167,7 +171,7 @@ describe('SessionPresentationService', () => {
     const blocked = task({
       id: 'blocked_unknown',
       title: '外部副作用不确定的任务',
-      status: 'blocked',
+      status: 'needs_action',
       dependencies: [{
         taskId: 'blocked_unknown',
         type: 'manual',
@@ -190,8 +194,8 @@ describe('SessionPresentationService', () => {
     expect(entries[0]?.reason).not.toContain('所有输入材料已齐全');
 
     const status = presenter.formatTaskStatus({
-      scope: 'blocked',
-      blockedTasks: [{ ...blocked, blockReason: entries[0]!.reason }],
+      scope: 'needs_action',
+      needsActionTasks: [{ ...blocked, blockReason: entries[0]!.reason }],
       runningTask: null,
       activeTasks: [blocked],
       latestDone: null,
@@ -212,7 +216,7 @@ describe('SessionPresentationService', () => {
     const blocked = task({
       id: 'blocked_unknown',
       title: '外部副作用不确定的任务',
-      status: 'blocked',
+      status: 'needs_action',
       dependencies: [{
         taskId: 'blocked_unknown',
         type: 'manual',
@@ -223,8 +227,7 @@ describe('SessionPresentationService', () => {
     });
 
     const lines = presenter.formatTaskPoolWatchdogReminder({
-      blockedTasks: [blocked],
-      parkedTasks: [],
+      needsActionTasks: [blocked],
       getWaitingBlockReason: current => current.dependencies[0]?.description ?? null,
     });
 

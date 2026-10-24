@@ -118,7 +118,7 @@ export type GatewayCommand =
 /** Gateway v2 显式能力：受限只读命令补全。 */
 export const GATEWAY_CAPABILITY_COMMAND_COMPLETION = "command_completion_v1";
 /** Gateway v2 显式能力：受限只读 Task 视图查询。 */
-export const GATEWAY_CAPABILITY_TASK_VIEW = "task_view_v1";
+export const GATEWAY_CAPABILITY_TASK_VIEW = "task_view_v2";
 /** Gateway v2 显式能力：只读用量与账单投影。 */
 export const GATEWAY_CAPABILITY_USAGE_BILLING = "usage_billing_v1";
 
@@ -166,12 +166,12 @@ export interface GatewayCommandCompletionPayload {
 }
 
 /**
- * task_view_snapshot 响应 payload（task_view_v1）。
+ * task_view_snapshot 响应 payload（task_view_v2）。
  * timeline 与主仓库 ExecutionProjector 投影同构；展示组件按安全字段消费，
  * 不解析未知字段。
  */
 export interface GatewayTaskViewSnapshot {
-	readonly queryVersion: "task_view_v1";
+	readonly queryVersion: "task_view_v2";
 	readonly requestId: string;
 	readonly targetConversationId: string;
 	readonly turnId: string;
@@ -182,14 +182,22 @@ export interface GatewayTaskViewSnapshot {
 	readonly goal: string | null;
 	readonly startedAt: string | null;
 	readonly completedAt: string | null;
-	/**
-	 * 统一只读生命周期投影（task lifecycle 收敛 §7）。展示层必须消费
-	 * `lifecycle.phase`；`status` 仅为历史兼容字段。旧 Server 可能不返回该
-	 * 字段，因此客户端按可选处理。
-	 */
+	/** Committed Task state, negotiated through task_view_v2. */
+	readonly state: {
+		readonly status: "queued" | "running" | "needs_action" | "succeeded" | "failed" | "cancelled";
+		readonly stateVersion: number;
+		readonly reason: { readonly code: string; readonly message: string };
+		readonly phase: string | null;
+		readonly pendingActions: readonly { readonly actionId: string; readonly kind: string; readonly label: string }[];
+		readonly cleanup: { readonly state: string; readonly objects: readonly string[]; readonly reason: string };
+		readonly nextWakeAt: string | null;
+	};
 	readonly lifecycle?: {
-		readonly lifecycle: string;
-		readonly phase: string;
+		readonly status: string;
+		readonly stateVersion: number;
+		readonly phase: string | null;
+		readonly reason: { readonly code: string; readonly message: string };
+		readonly pendingActions: readonly { readonly actionId: string; readonly kind: string; readonly label: string }[];
 		readonly activeAttempt: {
 			readonly attemptId: string;
 			readonly subtaskId: string;
@@ -200,7 +208,6 @@ export interface GatewayTaskViewSnapshot {
 		} | null;
 		readonly blockingResidue: readonly string[];
 		readonly nextAuthorizedAction: string;
-		readonly pendingDecision?: GatewayResultDecision | null;
 		/** `uncertain_application` 或 `no_authorized_driver`；其他情况为 null。 */
 		readonly recoveryDiagnosis?: string | null;
 		readonly explanation: string;

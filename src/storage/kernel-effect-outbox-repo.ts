@@ -78,11 +78,12 @@ export class KernelEffectOutboxRepo {
     if (!effect) throw new Error(`Kernel effect not found: ${id}`);
     if (effect.status === 'sent') return effect;
     if (effect.status === 'sending' || effect.status === 'uncertain') return effect;
-    this.db.prepare(`
+    const claimed = this.db.prepare(`
       UPDATE kernel_effect_outbox
       SET status = 'sending', delivery_attempts = delivery_attempts + 1, updated_at = ?
       WHERE id = ? AND status IN ('pending', 'failed')
     `).run(now(), id);
+    if (claimed.changes !== 1) return this.find(id)!;
     const sending = this.find(id)!;
     try {
       const receipt = await sender(sending);
@@ -107,6 +108,12 @@ export class KernelEffectOutboxRepo {
       SET status = 'uncertain', error_summary = 'process exited while effect delivery was in flight', updated_at = ?
       WHERE status = 'sending'
     `).run(now).changes;
+  }
+
+  listByTaskAndType(taskId: string, effectType: string): KernelEffectRecord[] {
+    return (this.db.prepare(`SELECT * FROM kernel_effect_outbox
+      WHERE task_id = ? AND effect_type = ? ORDER BY created_at, id`)
+      .all(taskId, effectType) as EffectRow[]).map(rowToRecord);
   }
 
   listRecoveryItems(taskId: string): KernelEffectRecord[] {

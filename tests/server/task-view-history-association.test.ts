@@ -70,9 +70,29 @@ async function fixture(publicCode = false) {
     db, SubtaskRepo: EmptyRepo, KernelDispatchItemRepo: EmptyRepo,
     ExecutorAttemptReceiptRepo: EmptyRepo, GenerationReplanRequestRepo: EmptyRepo, WorkspacePublicationRepo: EmptyRepo,
     projectTaskViewFacts: async () => ({ result: null, routing: [], subtasks: [] }),
-    projectTaskView: () => ({ lifecycle: 'terminal', phase: 'completed', pendingDecision: null, timestamps: {} }),
-    projectObservedTask: () => ({ lifecycle: 'terminal', phase: 'completed', pendingDecision: null, timestamps: {} }),
-    executionProjector: { project: () => ({ taskId: input.taskId, status: 'completed', stages: [] }) },
+    projectTaskView: () => ({
+      status: 'succeeded', statusLabel: '成功', stateVersion: 3,
+      state: {
+        taskId: input.taskId, status: 'succeeded', stateVersion: 3,
+        reason: { code: 'none', message: '', evidenceRefs: [] }, phase: null,
+        pendingActions: [], cleanup: { state: 'none', objects: [], reason: '' },
+        nextWakeAt: null, completedAt: null, archivedAt: null, retryOfTaskId: null,
+      },
+      activeAttempt: null, blockingResidue: [], nextAuthorizedAction: 'none', pendingActions: [], cleanup: { state: 'none', objects: [], reason: '' },
+      recoveryDiagnosis: null, explanation: '', timestamps: {},
+    }),
+    projectObservedTask: () => ({
+      status: 'succeeded', statusLabel: '成功', stateVersion: 3,
+      state: {
+        taskId: input.taskId, status: 'succeeded', stateVersion: 3,
+        reason: { code: 'none', message: '', evidenceRefs: [] }, phase: null,
+        pendingActions: [], cleanup: { state: 'none', objects: [], reason: '' },
+        nextWakeAt: null, completedAt: null, archivedAt: null, retryOfTaskId: null,
+      },
+      activeAttempt: null, blockingResidue: [], nextAuthorizedAction: 'none', pendingActions: [], cleanup: { state: 'none', objects: [], reason: '' },
+      recoveryDiagnosis: null, explanation: '', timestamps: {},
+    }),
+    executionProjector: { project: () => ({ taskId: input.taskId, status: 'succeeded', stages: [] }) },
     accountRuntimeComposition: { runtimePort: { queries: {
       listRecoveryApplications: () => [], listCompletionResidue: () => [],
       listCurrentKernelDecisions: () => [], getQueuedTaskReason: () => null,

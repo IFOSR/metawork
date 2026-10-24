@@ -269,7 +269,14 @@ export class SubtaskAttemptRunner {
     const assertCurrent = () => {
       const pending = readPendingTaskResult(this.deps.db, expected.taskId);
       const keys: Array<keyof PendingResultIdentity> = ['taskId', 'generationId', 'graphRevision', 'subtaskId', 'attemptId', 'resultId'];
-      if (!pending || keys.some(key => pending[key] !== expected[key])) {
+      const accepted = Boolean(this.deps.db.prepare(`
+        SELECT 1 FROM task_state_changes
+        WHERE task_id = ? AND operation_key = ? LIMIT 1
+      `).get(expected.taskId, `accept_result:${expected.attemptId}:${expected.resultId}`));
+      // TaskStateAuthority removes an accepted result from the pending-action
+      // projection immediately. The exact operation key is the durable fence
+      // that permits publication to continue after that decision.
+      if ((!pending && !accepted) || (pending && keys.some(key => pending[key] !== expected[key]))) {
         throw new Error('该结果操作已过期，请刷新任务后重试。');
       }
     };
@@ -447,7 +454,7 @@ export class SubtaskAttemptRunner {
     const expectedStatus = attemptKind === 'primary' ? 'ready' : 'awaiting_decision';
     if (
       !task
-      || !['running', 'blocked'].includes(task.status)
+      || !['running', 'queued', 'needs_action'].includes(task.status)
       || !subtask
       || subtask.taskId !== input.taskId
       || subtask.status !== expectedStatus
@@ -2076,7 +2083,7 @@ export class SubtaskAttemptRunner {
     // previous `running`-only check caused exactly that race: one branch
     // blocked the Task while another branch was still completing, so the
     // terminal fence rejected the valid result and left the Subtask stuck.
-    return (task?.status === 'running' || task?.status === 'blocked')
+    return (task?.status === 'running' || task?.status === 'needs_action' || task?.status === 'queued')
       && subtask?.status === 'running'
       && this.deps.workUnitClaimService.isClaimCurrent(workUnitId, attemptId, 'running');
   }

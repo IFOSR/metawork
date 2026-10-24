@@ -1,3 +1,5 @@
+import type { Subtask } from '../../src/core/types.js';
+import { authorizedExecutorBindingFingerprint } from '../../src/core/authorized-executor-binding.js';
 import type Database from 'better-sqlite3';
 import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
 
@@ -48,4 +50,22 @@ export function seedWorkGraphRevision(
     now,
     now,
   );
+}
+
+/** Persist explicit certification evidence for tests which seed an already completed node. */
+export function seedCompletedReceipt(db: Database.Database, subtask: Subtask): void {
+  const binding = subtask.executorBindings[0]!;
+  const now = subtask.updatedAt;
+  const workUnitId = `fixture_work_unit_${subtask.id}`;
+  db.prepare(`INSERT OR IGNORE INTO work_units
+    (id, agent_class_name, agent_class_kind, state, created_at, updated_at)
+    VALUES (?, ?, 'executor', 'idle', ?, ?)`).run(workUnitId, binding.agentClassRef, now, now);
+  db.prepare(`INSERT INTO executor_attempt_receipts
+    (attempt_id, execution_id, task_id, subtask_id, work_unit_id, agent_class_name,
+      started_at, completed_at, terminal_state, raw_response, graph_revision, generation_id,
+      configuration_revision, authorized_binding_json, binding_fingerprint)
+    VALUES (?, 'fixture_execution', ?, ?, ?, ?, ?, ?, 'completed', '', ?, ?, ?, ?, ?)`)
+    .run(`fixture_receipt_${subtask.id}`, subtask.taskId, subtask.id, workUnitId, binding.agentClassRef,
+      now, now, subtask.graphRevision, subtask.generationId, binding.configurationRevision,
+      JSON.stringify(binding), authorizedExecutorBindingFingerprint(binding));
 }

@@ -217,7 +217,7 @@ describe('planner-first executor command acceptance', () => {
     const output = session.getSnapshot().output.join('\n');
     expect(output).toContain('unknown requires explicit recovery');
     expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
-    expect(taskRepo.findByStatus('blocked')).toHaveLength(1);
+    expect(taskRepo.findByStatus('needs_action')).toHaveLength(1);
     expect(db.prepare('SELECT status FROM subtasks ORDER BY created_at DESC LIMIT 1').get()).toEqual({ status: 'blocked' });
     expect(db.prepare('SELECT COUNT(*) AS count FROM executor_route_events').get()).toEqual({ count: 0 });
   });

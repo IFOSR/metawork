@@ -24,13 +24,27 @@ export class SqliteConversationActivitySource implements ConversationActivitySou
         after = value[3];
       } catch { throw new Error('invalid_activity_cursor'); }
     }
-    const rows = this.db.prepare(`SELECT id, substr(title, 1, 160) AS title, status, updated_at AS updatedAt FROM tasks
+    const rows = (this.db.prepare(`SELECT id, substr(title, 1, 160) AS title, status,
+        updated_at AS updatedAt, state_version AS stateVersion, state_detail_json AS stateDetailJson
+      FROM tasks
       WHERE account_id = ? AND conversation_id = ? AND id > ?
-        AND status IN ('created', 'ready', 'running', 'parked', 'blocked')
-      UNION SELECT id, substr(title, 1, 160) AS title, status, updated_at AS updatedAt FROM tasks
+        AND status IN ('queued', 'running', 'needs_action')
+      UNION SELECT id, substr(title, 1, 160) AS title, status,
+        updated_at AS updatedAt, state_version AS stateVersion, state_detail_json AS stateDetailJson
+      FROM tasks
       WHERE account_id = ? AND conversation_id = ? AND id > ?
         AND id = (SELECT active_task_id FROM conversation_task_slots WHERE conversation_id = ?)
-      ORDER BY id LIMIT ?`).all(accountId, conversationId, after, accountId, conversationId, after, conversationId, limit + 1) as ConversationActivityTask[];
+      ORDER BY id LIMIT ?`).all(accountId, conversationId, after, accountId, conversationId, after, conversationId, limit + 1) as Array<{
+        id: string; title: string; status: ConversationActivityTask['status'];
+        updatedAt: string; stateVersion: number; stateDetailJson: string;
+      }>).map(row => ({
+        id: row.id,
+        title: row.title,
+        status: row.status,
+        updatedAt: row.updatedAt,
+        stateVersion: row.stateVersion,
+        stateDetail: JSON.parse(row.stateDetailJson || '{}') as ConversationActivityTask['stateDetail'],
+      }));
     const tasks = rows.slice(0, limit);
     return { tasks, nextCursor: rows.length > limit ? Buffer.from(JSON.stringify([1, accountId, conversationId, tasks.at(-1)!.id])).toString('base64url') : null };
   }

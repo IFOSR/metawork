@@ -58,15 +58,18 @@ export interface ConversationViewChange extends ConversationViewCursor {
 	readonly turn: ConversationTurnView;
 }
 
-/** Small shared descriptors; Task Domain remains the lifecycle/phase authority. */
+/** Small shared descriptor of the committed six-state Task conclusion. */
 export interface ConversationTaskSummary {
 	readonly taskId: string;
 	readonly title: string;
 	readonly executionGeneration: string;
 	readonly graphRevision?: number;
-	readonly phase: string;
-	readonly userState: "waiting" | "executing" | "needs_action" | "finished";
-	readonly userStateReason: string;
+	readonly status: "queued" | "running" | "needs_action" | "succeeded" | "failed" | "cancelled";
+	readonly statusLabel: string;
+	readonly stateVersion: number;
+	readonly reason: { readonly code: string; readonly message: string };
+	readonly phase: string | null;
+	readonly pendingActions: ReadonlyArray<{ readonly actionId: string; readonly kind: string; readonly label: string }>;
 	readonly explanation: string;
 	readonly progressSummary?: string;
 	readonly canCancel: boolean;

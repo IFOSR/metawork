@@ -115,6 +115,7 @@ export function createV31RepositoryDb(): Database.Database {
       status TEXT NOT NULL,
       configuration_revision TEXT NOT NULL,
       completion_kind TEXT,
+      completion_requirements_json TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       UNIQUE(task_id, revision)

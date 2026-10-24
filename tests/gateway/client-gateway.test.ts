@@ -196,6 +196,7 @@ describe('ClientGateway', () => {
     });
     const taskViewEnvelope: GatewayCommandEnvelope = {
       ...envelope,
+      clientCapabilities: ['task_view_v2'],
       requestId: 'req_task_view',
       idempotencyKey: 'idem_task_view',
       scope: {
@@ -211,6 +212,10 @@ describe('ClientGateway', () => {
     };
     const unavailable = await unavailability.handle(taskViewEnvelope, 'local');
     expect(unavailable).toMatchObject({ status: 'rejected', reason: 'readonly_query_unavailable' });
+    for (const clientCapabilities of [[], ['task_view_v1']]) {
+      expect(await unavailability.handle({ ...taskViewEnvelope, clientCapabilities }, 'local'))
+        .toMatchObject({ kind: 'invalid_command', code: 'task_view_version_mismatch' });
+    }
 
     const gateway = new ClientGateway({
       authenticator: { authenticate: async () => ({ kind: 'local', id: 'local-installation' }) },

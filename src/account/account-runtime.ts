@@ -10,6 +10,7 @@
  */
 
 import type { Task } from '../core/types.js';
+import { isTerminalTaskStatus } from '../task/task-state.js';
 import { measureNavigationStageSync } from '../utils/navigation-diagnostics.js';
 import type { AccountKernelCoordinator } from './account-kernel-coordinator.js';
 import type { AccountKernelServices } from './account-kernel-services.js';
@@ -72,7 +73,7 @@ export class WorkAdmissionBlockedError extends Error {
 const MAX_UNFINISHED_WORK_ITEMS = 20;
 
 /** 仍可继续、因此阻止配置写入的任务状态（严格空闲规则）。 */
-const UNFINISHED_TASK_STATUSES = ['created', 'ready', 'parked', 'blocked'] as const;
+const UNFINISHED_TASK_STATUSES = ['queued', 'running', 'needs_action'] as const;
 
 export class AccountRuntime implements AccountRuntimeHandle {
   private initialized = false;
@@ -324,14 +325,23 @@ export class AccountRuntime implements AccountRuntimeHandle {
     const activeAttempts = this.deps.workspaceServices.attemptExecutionRepository.listActive();
     const activeLeases = this.deps.runtimeExecutionServices?.resourceLeaseService.findActive() ?? [];
     const activeTaskIds = new Set<string>(activeTasks.map(task => task.id));
-    for (const item of activeDispatchItems) activeTaskIds.add(item.taskId);
-    for (const attempt of activeAttempts) activeTaskIds.add(attempt.taskId);
-    for (const lease of activeLeases) activeTaskIds.add(lease.taskId);
+    const addOperationalTask = (taskId: string): void => {
+      const task = taskRuntimeService?.findTask(taskId);
+      // A terminal Task can retain a slot briefly while safe cleanup or
+      // recovery converges. That is a runtime blocker, but it is no longer a
+      // background-running Task and must not be reported as one.
+      if (!task || !isTerminalTaskStatus(task.status)) activeTaskIds.add(taskId);
+    };
+    for (const item of activeDispatchItems) addOperationalTask(item.taskId);
+    for (const attempt of activeAttempts) addOperationalTask(attempt.taskId);
+    for (const lease of activeLeases) addOperationalTask(lease.taskId);
     const occupiedConversationIds = new Set<string>();
+    let slotRecoveryInProgress = false;
     for (const slot of this.deps.repositories.conversationTaskSchedulerRepo.listSlots()) {
-      if (slot.state === 'occupied' || slot.state === 'releasing') {
+      if (slot.state === 'occupied' || slot.state === 'releasing' || slot.state === 'recovery_blocked') {
         occupiedConversationIds.add(slot.conversationId);
-        if (slot.activeTaskId) activeTaskIds.add(slot.activeTaskId);
+        if (slot.state === 'releasing' || slot.state === 'recovery_blocked') slotRecoveryInProgress = true;
+        if (slot.activeTaskId) addOperationalTask(slot.activeTaskId);
       }
     }
     const publicationPending = this.deps.runtimeExecutionServices?.publicationRepo
@@ -354,7 +364,7 @@ export class AccountRuntime implements AccountRuntimeHandle {
       activeLeaseCount: activeLeases.length,
       publicationPending,
       recoveryInProgress: Boolean(
-        (this.initialization && !this.initialized) || this.periodicReview,
+        (this.initialization && !this.initialized) || this.periodicReview || slotRecoveryInProgress,
       ),
       pendingWorkRequestCount: this.workReservationCount,
       unfinishedWork: this.getUnfinishedWorkSummary(),

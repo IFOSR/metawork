@@ -1,37 +1,25 @@
 /**
- * Canonical Task/Subtask/Attempt lifecycle contracts (2026-09-25 Task lifecycle
- * state convergence plan §2, §3, §4).
+ * Canonical Subtask/Attempt lifecycle contracts.
  *
- * This module is the single owner of the mapping between the persisted raw
- * status vocabulary and the canonical lifecycle vocabulary. It is pure: no
- * repository, Kernel, Runtime or presentation dependency.
+ * Task has exactly one state model: [`task-state.ts`](./task-state.ts). It owns
+ * the six Task states, the one transition table and the pure summary function.
+ * This module keeps the remaining operational machines only:
  *
- * Two of these machines are business lifecycle state; the rest are operational
- * facts or protocols. Attempt lifecycle and outcome are deliberately separate:
- * an attempt can be `settled` while its outcome is `heartbeat_lost`, and the
- * Task may still be `executing` or `coordinating` because of that fact.
+ * - Subtask node lifecycle, owned by the Task Domain;
+ * - Attempt protocol lifecycle and immutable outcome, owned by the Execution
+ *   Runtime.
+ *
+ * Both are operational facts. They report evidence; they never invent a Task
+ * conclusion.
  */
 
-import type { SubtaskStatus, TaskStatus } from '../core/types.js';
+import type { SubtaskStatus } from '../core/types.js';
 import type {
   KernelDispatchItemStatus,
   KernelSubtaskStatus,
 } from '../kernel/control-kernel.js';
 import type { ExecutorAttemptTerminalState } from '../storage/executor-attempt-receipt-repo.js';
 import type { KernelFailure } from '../core/kernel-failure.js';
-
-/** Business Task lifecycle. Owned by the Task Domain. */
-export const TASK_LIFECYCLE_STATES = [
-  'queued',
-  'executing',
-  'coordinating',
-  'waiting_for_user',
-  'blocked',
-  'completed',
-  'failed',
-  'cancelled',
-] as const;
-export type TaskLifecycleState = (typeof TASK_LIFECYCLE_STATES)[number];
 
 /** Business Subtask node lifecycle. Owned by Work Graph/Task Domain. */
 export const SUBTASK_LIFECYCLE_STATES = [
@@ -64,36 +52,6 @@ export const ATTEMPT_OUTCOMES = [
 ] as const;
 export type AttemptOutcome = (typeof ATTEMPT_OUTCOMES)[number];
 
-/**
- * Read-only user-facing phase (plan §7). Never equates `running` with all
- * non-terminal work; every value answers "what is happening to my Task now".
- */
-export const TASK_USER_FACING_PHASES = [
-  'queued',
-  'executing',
-  'retrying',
-  'waiting_for_plan',
-  'waiting_for_user',
-  'publishing',
-  'recovery_required',
-  'blocked',
-  'completed',
-  'failed',
-  'cancelled',
-] as const;
-export type TaskUserFacingPhase = (typeof TASK_USER_FACING_PHASES)[number];
-
-const TASK_LIFECYCLE_BY_STATUS: Record<TaskStatus, TaskLifecycleState> = {
-  created: 'queued',
-  ready: 'queued',
-  running: 'executing',
-  parked: 'coordinating',
-  blocked: 'blocked',
-  done: 'completed',
-  archived: 'completed',
-  cancelled: 'cancelled',
-};
-
 const SUBTASK_LIFECYCLE_BY_STATUS: Record<KernelSubtaskStatus | SubtaskStatus, SubtaskLifecycleState> = {
   ready: 'pending',
   running: 'executing',
@@ -113,14 +71,6 @@ const ATTEMPT_LIFECYCLE_BY_DISPATCH: Record<KernelDispatchItemStatus, AttemptLif
   cancelled: 'settled',
   uncertain: 'settled',
 };
-
-/**
- * Explicit raw → canonical Task mapping. Callers that need to present Task
- * status must use this instead of passing the persisted column through.
- */
-export function toTaskLifecycleState(status: TaskStatus): TaskLifecycleState {
-  return TASK_LIFECYCLE_BY_STATUS[status] ?? 'coordinating';
-}
 
 export function toSubtaskLifecycleState(
   status: KernelSubtaskStatus | SubtaskStatus,
@@ -168,31 +118,6 @@ export function isSettledDispatchStatus(status: KernelDispatchItemStatus): boole
 }
 
 /**
- * Phase 4 transition guard: the Task Domain owns these transitions and rejects
- * cross-layer writes that skip them. Kept here so every caller shares one rule.
- */
-const TASK_TRANSITIONS: Record<TaskLifecycleState, readonly TaskLifecycleState[]> = {
-  queued: ['executing', 'coordinating', 'waiting_for_user', 'blocked', 'failed', 'cancelled'],
-  executing: ['coordinating', 'waiting_for_user', 'blocked', 'completed', 'failed', 'cancelled'],
-  // `queued` is reachable again after an explicit unblock or resume, which is
-  // how the Kernel clears a resolver blocker without going back to execution.
-  coordinating: ['queued', 'executing', 'waiting_for_user', 'blocked', 'completed', 'failed', 'cancelled'],
-  waiting_for_user: ['queued', 'executing', 'coordinating', 'blocked', 'completed', 'failed', 'cancelled'],
-  blocked: ['queued', 'executing', 'coordinating', 'waiting_for_user', 'completed', 'failed', 'cancelled'],
-  completed: [],
-  failed: [],
-  cancelled: [],
-};
-
-export function isTaskTransitionAllowed(
-  from: TaskLifecycleState,
-  to: TaskLifecycleState,
-): boolean {
-  if (from === to) return true;
-  return TASK_TRANSITIONS[from].includes(to);
-}
-
-/**
  * Subtask node transitions. Owned by Work Graph/Task Domain. A node may not go
  * back to `pending` once it produced an attempt receipt; that requires a new
  * graph revision instead.
@@ -217,38 +142,4 @@ export function isSubtaskTransitionAllowed(
 /** Terminal Subtask node states. */
 export function isTerminalSubtaskLifecycle(state: SubtaskLifecycleState): boolean {
   return state === 'completed' || state === 'cancelled';
-}
-
-/**
- * Fact-aware canonical Task lifecycle (2026-09-25 plan §4).
- *
- * The persisted column cannot express `coordinating`, so the canonical state is
- * refined by durable facts: a Task with no active authorized Attempt is never
- * `executing`, and outstanding coordination work makes it `coordinating`
- * instead of `blocked` or `waiting_for_user`.
- */
-export function deriveTaskLifecycleState(input: {
-  status: TaskStatus;
-  hasActiveAttempt: boolean;
-  hasOutstandingReplanJob: boolean;
-  hasPendingRetryWake: boolean;
-  hasPendingUserDecision: boolean;
-}): TaskLifecycleState {
-  const persisted = toTaskLifecycleState(input.status);
-  if (isTerminalTaskLifecycle(persisted)) return persisted;
-  if (input.hasPendingUserDecision) return 'waiting_for_user';
-  if (persisted === 'blocked') return 'blocked';
-  if (input.hasActiveAttempt) return 'executing';
-  if (input.hasOutstandingReplanJob || input.hasPendingRetryWake) return 'coordinating';
-  if (persisted === 'queued') return 'queued';
-  // A persisted `running` Task without an active Attempt is coordinating the
-  // next authorized action, never executing.
-  return 'coordinating';
-}
-
-/** Terminal business lifecycle states. */
-export function isTerminalTaskLifecycle(
-  state: TaskLifecycleState,
-): state is Extract<TaskLifecycleState, 'completed' | 'failed' | 'cancelled'> {
-  return state === 'completed' || state === 'failed' || state === 'cancelled';
 }

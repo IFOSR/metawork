@@ -140,7 +140,7 @@ export class WsClient {
       }
       switch (message.type) {
         case 'hello':
-          if (!['conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1']
+          if (!['conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1', 'task_view_v2']
             .every(capability => message.capabilities?.includes(capability))) {
             this.handlers.onError?.('客户端与 Server 版本不匹配，请同步升级后重新打开。', { code: 'capability_mismatch' });
             this.close(); return;
@@ -295,7 +295,7 @@ export class WsClient {
     const message = { type: 'command', envelope: {
       protocolVersion: 2, requestId, idempotencyKey: requestId, connectionId: 'web',
       scope: { kind: 'conversation', selection: { mode: 'attach', conversationId } },
-      command, clientCapabilities: ['conversation_observation_v1', 'command_completion_v1'],
+      command, clientCapabilities: ['conversation_observation_v1', 'command_completion_v1', 'task_view_v2'],
     } };
     if (!this.sendMessage(message)) return null;
     if (input) {

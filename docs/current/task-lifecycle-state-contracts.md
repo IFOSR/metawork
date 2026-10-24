@@ -1,16 +1,20 @@
 # Task Lifecycle State Contracts
 
-Status: current. Authority: [ADR-0020](../adr/0020-core-module-ownership-and-dependency-direction.md),
+Status: current. Authority: [ADR-0049](../adr/0049-six-state-task-conclusion.md)
+(Task conclusion), [ADR-0020](../adr/0020-core-module-ownership-and-dependency-direction.md),
 [ADR-0022](../adr/0022-unified-kernel-control-plane-and-decision-ledger.md),
 [ADR-0023](../adr/0023-durable-kernel-workflow-recovery-and-availability.md),
-[ADR-0037](../adr/0037-multi-conversation-task-parallelism.md), and the
-[2026-09-25 Task lifecycle state convergence plan](../plans/2026-09-25-task-lifecycle-state-convergence-implementation-plan.md).
+[ADR-0037](../adr/0037-multi-conversation-task-parallelism.md).
 
 This document is the canonical ownership matrix and transition table for Task,
 Subtask, Attempt, Kernel application, WorkUnit/lease and Conversation slot
 state. The executable form lives in
-[`src/task/task-lifecycle.ts`](../../src/task/task-lifecycle.ts) (pure mapping
-and transition guards) and [`src/task/task-view.ts`](../../src/task/task-view.ts)
+[`src/task/task-state.ts`](../../src/task/task-state.ts) (six states, the one
+transition table and `evaluateTaskState()`),
+[`src/task/task-state-authority.ts`](../../src/task/task-state-authority.ts)
+(facts → conclusion → the one write entry),
+[`src/task/task-lifecycle-transition-port.ts`](../../src/task/task-lifecycle-transition-port.ts)
+(durable write entry) and [`src/task/task-view.ts`](../../src/task/task-view.ts)
 (read projection).
 
 ## 1. Ownership matrix
@@ -21,86 +25,120 @@ Task statuses.
 
 | Domain | Canonical owner | Contract |
 | --- | --- | --- |
-| Task lifecycle | Task Domain, applied only from Kernel-authorized actions | `queued`, `executing`, `coordinating`, `waiting_for_user`, `blocked`, `completed`, `failed`, `cancelled` |
+| Task conclusion | Task Domain; decided by `evaluateTaskState()`, applied only through `TaskLifecyclePort.applyTaskChange()` | `queued`, `running`, `needs_action`, `succeeded`, `failed`, `cancelled` |
 | Subtask node lifecycle | Task Domain | `pending`, `executing`, `awaiting_completion`, `completed`, `blocked`, `cancelled` |
 | Attempt | Execution Runtime | lifecycle `authorized -> launched -> running -> settling -> settled`, plus immutable outcome `succeeded`, `failed`, `heartbeat_lost`, `cancelled`, `unknown` |
 | Kernel application | KernelWorkflow / AccountRuntime | `pending`, `applying`, `applied`, `uncertain`, `failed`; internal recovery state only |
 | WorkUnit / lease | Execution Runtime and Resource Model | claim, lease expiry, release; `heartbeat_lost` is a normalized Attempt/lease fact |
-| Conversation admission | Account scheduler | durable slot claim `free`, `held`, `release_pending`; richer blockers are derived from residue |
-| User-facing view | Read-only projection layer | `queued`, `executing`, `retrying`, `waiting_for_plan`, `waiting_for_user`, `publishing`, `recovery_required`, `blocked`, `completed`, `failed`, `cancelled` |
+| Conversation admission | Account scheduler | durable slot claim `free`, `occupied`, `releasing`, `recovery_blocked`; blockers are derived from residue |
+| Operation phase | Task detail, not a lifecycle | `executing`, `publishing`, `delivering`, `starting_service`, `retrying`, `stopping`, `verifying` |
 
 Raw persisted columns map to the canonical vocabulary through explicit functions
 only:
 
 | Raw fact | Canonical mapping |
 | --- | --- |
-| `tasks.status` | `toTaskLifecycleState()` |
+| `tasks.status` | already canonical (six values, database `CHECK`) |
+| `tasks.state_detail_json` | normalized and bounded by `normalizeTaskStateDetail()` |
 | `subtasks.status` / `KernelSubtaskStatus` | `toSubtaskLifecycleState()` |
 | `kernel_dispatch_items.status` | `toAttemptLifecycleState()` |
 | `executor_attempt_receipts.terminal_state` + `failure` | `toAttemptOutcome()` |
+| `task_operation_results.outcome` | `success` / `definite_failure` / `unknown` evidence for required work |
 | `kernel_decision_applications.status` | not projected to users; only read by recovery |
 | `work_units.state`, `resource_leases` | never projected to users |
 
 ## 2. Task transition table
 
-Owned by the Task Domain. `isTaskTransitionAllowed(from, to)` rejects everything
-not listed; a self-transition is always allowed so idempotent replay is safe.
+Owned by the Task Domain. `isTaskStatusTransitionAllowed(from, to)` rejects
+everything not listed; a self-transition is always allowed so an idempotent
+reason/cleanup update is safe.
 
 | From | Allowed to |
 | --- | --- |
-| `queued` | `executing`, `coordinating`, `waiting_for_user`, `blocked`, `failed`, `cancelled` |
-| `executing` | `coordinating`, `waiting_for_user`, `blocked`, `completed`, `failed`, `cancelled` |
-| `coordinating` | `executing`, `waiting_for_user`, `blocked`, `completed`, `failed`, `cancelled` |
-| `waiting_for_user` | `executing`, `coordinating`, `blocked`, `completed`, `failed`, `cancelled` |
-| `blocked` | `executing`, `coordinating`, `waiting_for_user`, `completed`, `failed`, `cancelled` |
-| `completed`, `failed`, `cancelled` | none (terminal) |
+| `queued` | `running`, `needs_action`, `failed`, `cancelled` |
+| `running` | `queued`, `needs_action`, `succeeded`, `failed`, `cancelled` |
+| `needs_action` | `queued`, `cancelled` |
+| `succeeded`, `failed`, `cancelled` | none (terminal) |
 
-## 2b. Transition ownership
+`running -> queued` is the "only waiting for capacity or a resource" edge: the
+previous operation stopped safely and the Task re-enters scheduling. A terminal
+Task never revives; an explicit retry creates a related Task with
+`retry_of_task_id` and keeps the original conclusion.
 
-Strategic Task and Subtask writes have exactly one owner, the Task Domain per
-ADR-0020:
+Persisted lifecycle fields and their invariants:
 
-- `createTaskLifecyclePort()` owns Task status transitions.
+| Field | Invariant |
+| --- | --- |
+| `status` | one of the six values |
+| `state_version` | positive, monotonic; every status/reason/phase/pending-action/cleanup change increments it |
+| `state_detail_json` | bounded `TaskStateDetail`: primary reason, unresolved reasons, phase, pending actions, required work, cleanup, next wake |
+| `completed_at` | stamped on the first terminal transition; never reset |
+| `archived_at` | independent attribute; never changes the conclusion |
+| `retry_of_task_id` | follow-up linkage; the original row is untouched |
+
+## 2b. Transition and write ownership
+
+The Task Domain owns the conclusion per ADR-0020 and ADR-0049:
+
+- `createTaskLifecyclePort({ store, transaction }).applyTaskChange()` is the only
+  writer of `tasks.status`, `state_version`, `state_detail_json` and
+  `completed_at`.
 - `createSubtaskLifecyclePort()` owns Subtask node transitions.
+- `TaskStateAuthority.reconcile()` reads durable facts, calls
+  `evaluateTaskState()` and applies exactly one real state change. It never
+  synthesizes intermediate transitions or resumes a user pause from passive facts.
+- `TaskRepo.update()` accepts metadata only; lifecycle fields are excluded at the
+  type level.
 
-Work Graph owns proposal topology, node identity, DAG derivation and the
-runnable frontier; it explicitly does **not** own Subtask run state. A Work Graph
-consumer therefore calls the Subtask port for the node transition a Kernel
-Decision requires.
+In one database transaction `applyTaskChange()`:
 
-Every call records `kind`, `id`, `from`, `to`, `actor`, `reason` and `at`, so a
-contradictory status can be attributed to the layer that asked for it. The record
-is an **in-process** observation seam, not a durable audit: the durable evidence
-of a status change remains the Kernel Decision, the attempt receipt and the
-Task/Subtask row the transition produced. The guards
-reject a transition that is invalid in the canonical model — most importantly
-any transition out of a terminal Task or Subtask lifecycle. Replayed
-transitions with the same target are idempotent (`cancelTask` on a terminal
-Task and `blockTask` on a blocked Task are no-ops, not errors), so a Kernel
-application replay can never fail because of its own earlier attempt.
+1. resolves the operation key (`UNIQUE(task_id, operation_key)`): the same key
+   with the same payload is a replay, a different payload is rejected;
+2. validates the Decision identity, the expected `state_version`, the active
+   graph revision and the cancellation fence;
+3. applies the narrowly scoped local facts the command names;
+4. conditionally writes the Task state and appends `task_state_changes`;
+5. appends the durable projection notification (`task_state_projection_outbox`).
+
+The Kernel application record is marked applied in the same transaction through
+the workflow's atomic application seam. External process, Git and filesystem
+effects are committed separately and followed by a bounded convergence
+reconcile.
 
 Actors: `kernel-execution-runtime`, `task-cancellation-coordinator`,
 `work-graph-runtime-service`, `workspace-publication-worker`,
 `subtask-attempt-runner`, `session-kernel-runtime`,
 `account-startup-recovery`, `task-domain`.
 
-User-driven `/task pause` and `/task block` remain Task Domain operations
-through `TaskEngine`, which owns the persisted transition table.
+### The one summary rule
 
-### Fact-aware canonical lifecycle
-
-`deriveTaskLifecycleState()` refines the persisted mapping with durable facts,
-so the canonical state never overstates activity:
+`evaluateTaskState(facts)` is pure and ordered:
 
 ```text
-terminal persisted state            -> completed / failed / cancelled
-pending user decision               -> waiting_for_user
-persisted blocked                   -> blocked
-active authorized Attempt           -> executing
-outstanding Replan Job or retry wake-> coordinating
-persisted created/ready             -> queued
-persisted running, no Attempt       -> coordinating
+1. terminal conclusion                  -> keep it, only record cleanup/audit
+2. committed cancellation fence         -> cancelled
+3. active operation / bounded retry /
+   held slot with runnable work         -> running
+4. required work definitively failed    -> failed (other results preserved)
+5. a user action is required and
+   nothing can advance automatically    -> needs_action
+6. every required work item completed   -> succeeded
+7. runnable work only lacks capacity    -> queued
+8. nothing holds                        -> explicit anomaly
+                                          (needs_action if uncertain, else failed)
 ```
+
+`needs_action` never jumps straight to `running`: the Task re-enters the queue and
+only an admitted dispatch makes it executing.
+
+### Completion requirements
+
+`work_graph_revisions.completion_requirements_json` persists the requirement
+snapshot authorized with that revision: execution evidence per node, required
+file delivery, safety-report delivery and a required local service. Evidence is
+durable — certified or explicitly accepted results, publication and delivery
+checkpoints, service health plus manager handover. A Subtask label is never
+completion evidence, and a re-plan writes a new snapshot.
 
 ## 3. Causal chain
 
@@ -111,7 +149,7 @@ Executor / lease observation
   -> ControlKernel decision
   -> Runtime applies one durable action
   -> normalized observation or durable follow-up job
-  -> Task/Subtask lifecycle projection
+  -> Task conclusion (TaskStateAuthority over durable facts)
   -> residue convergence
   -> Conversation slot release or successor promotion
 ```
@@ -122,12 +160,12 @@ Heartbeat loss follows:
 lease expired
   -> Attempt outcome = heartbeat_lost
   -> Subtask = awaiting_completion
-  -> Task = coordinating
   -> Kernel chooses retry, fallback, replan or block
+  -> the authority derives running / needs_action / failed from those facts
 ```
 
-No step may set `Task = blocked` or release the Conversation slot based only on a
-WorkUnit heartbeat event.
+No step may set a Task status by itself, and no step may release the Conversation
+slot based only on a WorkUnit heartbeat event.
 
 ## 4. Durable Replan Job
 
@@ -239,7 +277,7 @@ observed.
 Slot release is not a Kernel application. It converges as a residue question,
 answered only by `TaskResidueReader.blockingReasons()` — the single reader shared
 by completion, cancellation, startup recovery, periodic recovery and TaskView. A
-slot is released only when the Task is terminal, or blocked, and the reader
+slot is released only when the Task is terminal, or `needs_action`, and the reader
 reports no blocking `dispatch`, `publication`, `execution_backend`, `work_unit`,
 `resource_lease`, `generation_replan`, `retry_wake`, `kernel_application` or `attempt_receipt`
 residue. `generation_replan` covers `pending_quiescence`, `planning`, `submitted`
@@ -265,50 +303,40 @@ uncertain application as `currentRecovery` with
 `phase = 'recovery_required'`. Both read the same inspector the recovery sweep
 acts on (`inspectApplicationAgainstSources`).
 
-## 6. TaskView projection priority
+## 6. TaskView projection
 
-`projectTaskView()` evaluates durable facts in this order:
+`projectTaskView()` does **not** derive the Task conclusion. It reads the
+committed `TaskStateSnapshot` from `tasks.status`, `tasks.state_version` and
+`tasks.state_detail_json` and only assembles operational detail next to it:
+active Attempt, Subtask node states, current Replan Job, recovery fact, blocking
+residue, result and timestamps.
 
 ```text
-active authorized Attempt exists    -> executing
-retry wake requires recovery        -> recovery_required (no_authorized_driver)
-retry wake exists                   -> retrying
-active Replan Job exists            -> waiting_for_plan (blocked if the Task is already blocked)
-uncertain Kernel application exists -> recovery_required (uncertain_application)
-publication residue exists          -> publishing
-terminal Task lifecycle             -> completed / failed / cancelled
-pending user decision               -> waiting_for_user
-Task lifecycle blocked              -> blocked
-Task lifecycle queued               -> queued
-otherwise (coordinating, no driver) -> recovery_required (no_authorized_driver)
+state.status         queued | running | needs_action | succeeded | failed | cancelled
+state.stateVersion   the version every surface compares
+state.reason         stable code + bounded message + evidence refs
+state.phase          executing | publishing | delivering | starting_service | retrying | stopping | verifying
+state.pendingActions exact user actions (accept_result, retry_attempt, provide_input, resolve_recovery, start_service)
+state.cleanup        none | pending | blocked, with the objects being cleaned
+state.nextWakeAt     the next bounded wake, when one exists
 ```
 
-A `running` Task with no active Attempt is never projected as `executing`, and
-`waiting_for_plan` is only reported when a durable Replan Job actually exists. A
-Task with no active Attempt, no retry wake, no Replan Job and no publication has
-no authorized driver, so it is projected as `recovery_required` with
-`recoveryDiagnosis = 'no_authorized_driver'` and
-`nextAuthorizedAction = 'explicit_resume_required'`; when the cause is an
-uncertain application the diagnosis is `uncertain_application` and the action is
-`resolve_uncertain_application`.
+`nextAuthorizedAction` maps the committed state to the one next step a surface may
+offer; a surface must never re-derive a status from logs, dispatch rows, receipts
+or a raw column. There is no raw fallback and no second lifecycle vocabulary.
 
-Presentation surfaces must render `TaskView.phase`, never `tasks.status`,
-`dispatch.status`, `work_units.state` or `kernel_decision_applications.status`.
-The Feishu/Web activity card consumes the same facts (`openReplanJobTaskIds`,
-`pendingRetryWakeTaskIds`, `activeAttemptTaskIds`) and the same
-`deriveTaskLifecycleState()`, so it cannot disagree with TaskView about whether a
-Conversation is idle.
-
-The Gateway wire form is `GatewayTaskViewSnapshot.lifecycle` in
-[`src/gateway/task-view.ts`](../../src/gateway/task-view.ts); the vendored
-AnyFusion-Pi mirror treats it as an optional additive extension.
+The Gateway wire form is `GatewayTaskViewSnapshot.state` (query version
+`task_view_v2`) in [`src/gateway/task-view.ts`](../../src/gateway/task-view.ts);
+the vendored AnyFusion-Pi protocol adapter mirrors the same shape and rejects an
+older query version instead of guessing.
 
 ## 7. Verification
 
 Focused tests:
 
-- `tests/task/task-lifecycle.test.ts` — canonical mapping, Subtask table and transition guards.
-- `tests/task/task-view.test.ts` — projection priority, fact-aware lifecycle and residue.
+- `tests/task/task-lifecycle.test.ts` — the six states, the one transition table, `evaluateTaskState()` order, Subtask/Attempt contracts and bounded detail.
+- `tests/task/task-lifecycle-transition-port.test.ts` — idempotency, CAS, cancel fence, graph mismatch, completion timestamp and the narrow-fact transaction boundary.
+- `tests/task/task-view.test.ts` — the projection reads the committed snapshot and never re-derives a status.
 - `tests/task/task-lifecycle-transition-port.test.ts` — single-owner audit trail,
   rejected cross-layer and terminal transitions, idempotent replay, Subtask/Task
   port separation.
@@ -341,3 +369,6 @@ The Workspace directory materializes account/Conversation-scoped activity and
 uses durable invalidation plus a resumable rebuild. Conversation history and
 Gateway snapshots are presentation records, never scheduling or slot-release
 evidence. See ADR-0035's navigation amendment and the active September 26 plan.
+
+The 2026-10-22 review fixes and their recovery/upgrade validation are recorded in
+[the fix record](../plans/2026-10-22-task-state-review-fixes.md).

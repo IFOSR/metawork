@@ -634,6 +634,21 @@ export class WorkspacePublicationWorker {
     return await this.deliverIntegrated(this.publications.find(publication.id)!);
   }
 
+  /** Re-delivers an immutable integrated publication for a follow-up Task. */
+  async redeliverForRetry(taskId: string, publicationId: string, assertCurrent: () => void): Promise<boolean> {
+    const task = this.deps.taskRuntimeService.findTask(taskId);
+    const publication = this.publications.find(publicationId);
+    if (!task?.retryOfTaskId || publication?.taskId !== task.retryOfTaskId
+      || publication.status !== 'integrated' || !publication.integrationCommit) {
+      throw new Error('重试成果归属不匹配');
+    }
+    assertCurrent();
+    this.publications.retryDelivery(publication.id, publication.taskId, publication.generationId, new Date().toISOString());
+    await this.deliverIntegrated(publication);
+    assertCurrent();
+    return this.publications.delivery(publicationId)?.status === 'succeeded';
+  }
+
   private async deliverIntegrated(
     publication: WorkspacePublicationRecord,
   ): Promise<WorkspacePublicationOutcome | null> {

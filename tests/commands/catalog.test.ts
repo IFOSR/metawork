@@ -22,8 +22,8 @@ function createCatalog(): CommandCatalog {
           name: 'list',
           summary: '列表',
           effect: '列出任务',
-          usages: ['/task list [all|done]'],
-          examples: ['/task list done'],
+          usages: ['/task list [all|succeeded]'],
+          examples: ['/task list succeeded'],
           arguments: [{
             name: 'scope',
             kind: 'enum',
@@ -31,7 +31,7 @@ function createCatalog(): CommandCatalog {
             optional: true,
             values: [
               { value: 'all', description: '全部' },
-              { value: 'done', description: '完成' },
+              { value: 'succeeded', description: '完成' },
             ],
           }],
           execute: vi.fn(async args => ({
@@ -85,7 +85,7 @@ describe('CommandCatalog', () => {
       .toBe('task-1:等待 review');
     expect((await createCatalog().execute('/task block task-1 等待\\ review', context)).content)
       .toBe('task-1:等待 review');
-    expect((await createCatalog().execute('/task list done', context)).content).toBe('done');
+    expect((await createCatalog().execute('/task list succeeded', context)).content).toBe('succeeded');
     expect((await createCatalog().execute('/task list invalid', context)).content).toContain('值无效');
     expect((await createCatalog().execute('/task block task-1 "未闭合', context)).content).toContain('未闭合');
   });
@@ -243,6 +243,7 @@ describe('CommandCatalog', () => {
 /service stop
 /service restart
 /task retry-result
+/task retry
 /task dashboard
 /task list
 /task clear

@@ -22,6 +22,9 @@ import { reconcileUncertainCancellations } from '../../src/execution/cancellatio
 import type { KernelDecision, KernelEvent } from '../../src/kernel/control-kernel.js';
 import type { AttemptExecutionBackend } from '../../src/execution/attempt-execution-backend.js';
 import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
+import { setTaskStatus, recordingTaskStateAuthority, recordingTaskLifecyclePort } from '../support/task-state-fixture.js';
+import { createSqliteTaskLifecyclePort } from '../../src/storage/task-lifecycle-port-adapter.js';
+import { TaskStateChangeRepo, TaskStateProjectionOutbox } from '../../src/storage/task-state-change-repo.js';
 
 const now = '2026-09-06T07:00:00.000Z';
 const binding: AuthorizedExecutorBinding = {
@@ -124,17 +127,12 @@ function setup(options: {
     goal: 'Reconcile cancellation',
     conversationId: options.conversationId,
   });
-  taskEngine.transition(options.taskId, 'ready');
-  taskEngine.transition(options.taskId, 'running');
+  setTaskStatus(db, options.taskId, 'queued');
+  setTaskStatus(db, options.taskId, 'running');
   if (options.taskStatus === 'blocked') {
-    taskEngine.block(options.taskId, {
-      taskId: options.taskId,
-      type: 'manual',
-      description: 'uncertain cancellation residue',
-      status: 'waiting',
-    });
+    setTaskStatus(db, options.taskId, 'needs_action');
   } else {
-    taskEngine.cancel(options.taskId);
+    setTaskStatus(db, options.taskId, 'cancelled');
   }
   const revisions = new WorkGraphRevisionRepo(db);
   revisions.activate({
@@ -178,9 +176,18 @@ function setup(options: {
     scheduler.claimSlot(options.conversationId, options.taskId, 'decision-admission', now);
     scheduler.markRunning(options.taskId, now);
   }
+  const durableLifecyclePort = createSqliteTaskLifecyclePort(db, {
+    taskRepo,
+    subtaskRepo: subtasks,
+    stateChanges: new TaskStateChangeRepo(db),
+    projectionOutbox: new TaskStateProjectionOutbox(db),
+    workGraphRevisionRepo: revisions,
+  });
   const coordinator = new TaskCancellationCoordinator({
+    ...recordingCoordinatorTaskState(),
+    taskLifecyclePort: durableLifecyclePort,
     db,
-    taskRuntimeService: new TaskRuntimeService({ taskEngine, taskRepo }),
+    taskRuntimeService: new TaskRuntimeService({ lifecyclePort: durableLifecyclePort, taskEngine, taskRepo }),
     subtaskRepo: subtasks,
     taskEventRepo: new TaskEventRepo(db),
     workGraphRevisionRepo: revisions,
@@ -198,10 +205,16 @@ function setup(options: {
     db,
     store: new KernelWorkflowRepo(db),
     coordinator,
-    taskRuntime: new TaskRuntimeService({ taskEngine, taskRepo }),
+    taskRuntime: new TaskRuntimeService({ lifecyclePort: durableLifecyclePort, taskEngine, taskRepo }),
     taskRepo,
     scheduler,
   };
+}
+
+function recordingCoordinatorTaskState() {
+  const { authority } = recordingTaskStateAuthority();
+  const { port } = recordingTaskLifecyclePort();
+  return { taskStateAuthority: authority, taskLifecyclePort: port };
 }
 
 describe('reconcileUncertainCancellations (2026-09-06 plan §5.3.5)', () => {

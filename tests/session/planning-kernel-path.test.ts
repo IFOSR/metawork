@@ -1076,7 +1076,7 @@ describe('natural-language planning/kernel path', () => {
     releaseSubtask('subtask_a');
     await submission;
 
-    expect(harness.taskRepo.findAll()[0]).toMatchObject({ status: 'done' });
+    expect(harness.taskRepo.findAll()[0]).toMatchObject({ status: 'succeeded' });
     expect((harness.db.prepare(`
       SELECT subtask_id, status, batch_order
       FROM kernel_dispatch_items
@@ -1208,7 +1208,7 @@ describe('natural-language planning/kernel path', () => {
     expect(replanRequest).not.toContain('must not leak into the current generation');
     expect(contextBuildCalls).toBe(3);
     expect(harness.attemptExecutionBackend.create, replanDiagnostics).toHaveBeenCalledTimes(2);
-    expect(harness.taskRepo.findAll()[0], replanDiagnostics).toMatchObject({ status: 'done' });
+    expect(harness.taskRepo.findAll()[0], replanDiagnostics).toMatchObject({ status: 'succeeded' });
     expect(harness.db.prepare(`
       SELECT revision, status, automatic_replan FROM work_graph_revisions ORDER BY revision
     `).all()).toEqual([

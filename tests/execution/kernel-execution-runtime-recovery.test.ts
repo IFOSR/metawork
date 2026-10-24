@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { pathToFileURL } from 'node:url';
+import { recordingTaskStateAuthority, recordingTaskLifecyclePort } from '../support/task-state-fixture.js';
 import { describe, expect, it, vi } from 'vitest';
 import {
   authorizedExecutorBindingFingerprint,
@@ -15,10 +16,21 @@ import { runMigrations } from '../../src/storage/migrations.js';
 const NOW = '2026-08-13T00:00:00.000Z';
 const AGENT_CLASS = 'codex-engineering';
 
+function recordingRuntimeTaskState() {
+  const { authority } = recordingTaskStateAuthority();
+  const { port } = recordingTaskLifecyclePort();
+  return {
+    taskStateAuthority: authority,
+    taskLifecyclePort: port,
+    taskOperationResults: { record: () => undefined },
+  };
+}
+
 describe('KernelExecutionRuntime executor recovery', () => {
   it('delivers the newest safe partial result and explains the newest failure', () => {
     const recordResultDelivery = vi.fn();
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       callbacks: { recordResultDelivery, appendOutput: vi.fn() },
       cancellationCoordinator: { buildSnapshot: () => ({ uncertifiedResult: { resultId: 'new-result' } }) },
       attemptReceiptRepo: { listByTask: () => [
@@ -50,12 +62,17 @@ describe('KernelExecutionRuntime executor recovery', () => {
   });
 
   it('keeps an awaiting-decision Subtask error when a follow-up dispatch has no frontier', async () => {
-    const blockTask = vi.fn();
+    const updateTask = vi.fn();
     const finishExecution = vi.fn().mockResolvedValue(undefined);
+    const taskState = recordingTaskStateAuthority();
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
+      taskStateAuthority: taskState.authority,
       taskRuntimeService: {
-        findTask: vi.fn().mockReturnValue({ id: 'task-contract', status: 'running' }),
-        blockTask,
+        findTask: vi.fn().mockReturnValue({
+          id: 'task-contract', status: 'running', dependencies: [], stateVersion: 3,
+        }),
+        updateTask,
       },
       subtaskRepo: {
         listByTask: vi.fn().mockReturnValue([{
@@ -77,9 +94,19 @@ describe('KernelExecutionRuntime executor recovery', () => {
       blockTask(taskId: string, reason: string, finish: (lines: string[]) => Promise<void>): Promise<void>;
     }).blockTask('task-contract', 'no runnable Subtask while work remains', finishExecution);
 
-    expect(blockTask).toHaveBeenCalledWith('task-contract', expect.objectContaining({
-      description: expect.stringContaining('completion_acceptance_mismatch:acceptance evidence is missing'),
-    }));
+    // The authority invokes local facts inside its transaction; the recording
+    // test double deliberately does not execute them itself.
+    taskState.calls[0]?.facts?.();
+    expect(updateTask).toHaveBeenCalledWith('task-contract', {
+      dependencies: [expect.objectContaining({
+        type: 'manual',
+        status: 'waiting',
+        description: expect.stringContaining('completion_acceptance_mismatch:acceptance evidence is missing'),
+      })],
+    });
+    // The Runtime reports the fact; the authority concludes the Task state.
+    expect(taskState.calls).toHaveLength(1);
+    expect(taskState.calls[0]).toMatchObject({ taskId: 'task-contract' });
   });
 
   it('preserves the execution Task identity when projecting a no_op decision', async () => {
@@ -88,6 +115,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
     const appendExecutionTrace = vi.fn((input: ExecutionTraceAppendInput) => trace.append(input));
     const finishExecution = vi.fn();
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       callbacks: { appendExecutionTrace },
       taskEventRepo: {},
       dispatchItemRepo: {},
@@ -143,6 +171,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
     const formatExecutorDispatch = vi.fn().mockReturnValue([]);
     const appendExecutionTrace = vi.fn();
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       getRuntimeConfiguration: () => ({
         revisionId: 'revision-a', models: {}, providers: {}, harnesses: {},
         agentClasses: { [AGENT_CLASS]: { displayName: 'Research assistant' } },
@@ -239,6 +268,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
     });
     const appendExecutionTrace = vi.fn();
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       executionTraceHeartbeatMs: 5,
       attemptReceiptRepo: {
         findByAttemptId: vi.fn().mockReturnValue(null),
@@ -345,6 +375,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
   it('does not project a safe uncertified receipt as an Executor health failure', () => {
     const recordExecutionOutcome = vi.fn();
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       kernelExecutorStatusProjector: { recordExecutionOutcome },
       taskEventRepo: {},
       dispatchItemRepo: {},
@@ -365,11 +396,12 @@ describe('KernelExecutionRuntime executor recovery', () => {
     expect(recordExecutionOutcome).not.toHaveBeenCalled();
   });
 
-  it.each(['running', 'blocked'])('arms a subtask retry without replacing a %s Task or sibling blocker', async taskStatus => {
+  it.each(['running', 'needs_action'])('arms a subtask retry without replacing a %s Task or sibling blocker', async taskStatus => {
     const blockTask = vi.fn();
     const finishExecution = vi.fn().mockResolvedValue(undefined);
     const retryBinding = binding('revision-a');
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       taskRuntimeService: {
         findTask: vi.fn().mockReturnValue({
           id: 'task-retry-wait',
@@ -438,6 +470,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
     const appendOutput = vi.fn();
     const runAttempt = vi.fn();
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       taskRuntimeService: {
         findTask: vi.fn().mockReturnValue(null),
       },
@@ -506,6 +539,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
       conflictReplansUsed: 0,
     };
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       attemptReceiptRepo: {
         findByAttemptId: vi.fn().mockReturnValue(null),
       },
@@ -588,6 +622,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
     const updateStatus = vi.fn();
     const enqueue = vi.fn();
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       workGraphRevisionRepo: {
         findActive: vi.fn().mockReturnValue({
           generationId: 'generation-merge',
@@ -674,6 +709,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
     const appendExecutionTrace = vi.fn();
     const finishExecution = vi.fn();
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       taskRuntimeService: {
         findTask: vi.fn().mockImplementation(() => ({
           id: 'task-blocked',
@@ -755,6 +791,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
     const unblockTask = vi.fn();
     const transitionTask = vi.fn();
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       taskRuntimeService: {
         findTask: vi.fn().mockReturnValue({ id: 'task-resume', status: 'running' }),
         unblockTask,
@@ -836,6 +873,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
   it('does not treat missing workspace-change facts as metadata-only recovery', () => {
     const authorizedBinding = binding('revision-a');
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       taskRuntimeService: {
         findTask: vi.fn().mockReturnValue({ id: 'task-resume', status: 'blocked' }),
         getCurrentRunningTask: vi.fn().mockReturnValue(null),
@@ -933,6 +971,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
   it('projects a malformed completion report from a legacy blocked Subtask as a repair candidate', () => {
     const authorizedBinding = binding('revision-a');
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       taskRuntimeService: {
         findTask: vi.fn().mockReturnValue({ id: 'task-resume', status: 'blocked' }),
         getCurrentRunningTask: vi.fn().mockReturnValue(null),
@@ -1061,8 +1100,10 @@ describe('KernelExecutionRuntime executor recovery', () => {
       workGraph: requests[0]!.deferredPlan!.proposal.workGraph,
       subtasks: [],
     });
-    const unblockTask = vi.fn();
+    const taskState = recordingTaskStateAuthority();
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
+      taskStateAuthority: taskState.authority,
       sessionId: 'session-recovery',
       generationReplanRepo: {
         listWaitingForAvailability: vi.fn().mockReturnValue(requests),
@@ -1074,9 +1115,11 @@ describe('KernelExecutionRuntime executor recovery', () => {
           id: taskId,
           title: taskId,
           goal: `Recover ${taskId}`,
-          status: 'blocked',
+          status: 'needs_action',
+          stateVersion: 2,
+          dependencies: [],
         })),
-        unblockTask,
+        updateTask: vi.fn(),
       },
       workGraphRevisionRepo: {
         findActive: vi.fn((taskId: string) => ({
@@ -1142,8 +1185,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
         'subtask-task-a': [binding('revision-a')],
       },
     }));
-    expect(unblockTask).toHaveBeenCalledWith('task-a');
-    expect(unblockTask).not.toHaveBeenCalledWith('task-b');
+    expect(taskState.calls.map(call => call.taskId)).toEqual(['task-a']);
 
     const persistedEvents = db.prepare(`
       SELECT correlation_id, configuration_revision
@@ -1185,6 +1227,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
       },
     };
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       workGraphRevisionRepo: {
         findActive: vi.fn().mockReturnValue({
           taskId: 'task-merge-replan',

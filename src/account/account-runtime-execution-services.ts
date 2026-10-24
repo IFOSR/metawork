@@ -33,6 +33,7 @@ import type { GatewayAttachmentStore } from '../gateway/attachment-store-port.js
 import type { RawUsageEvent } from '../metering/usage-normalizer.js';
 import type { Payer } from '../billing/cost-policy.js';
 import { RetryWakeRepo } from '../storage/retry-wake-repo.js';
+import { WorkspaceExecutionBindingRepo } from '../storage/workspace-execution-binding-repo.js';
 
 export interface AccountRuntimeExecutionServices {
   readonly resourceLeaseService: ResourceLeaseService;
@@ -50,6 +51,8 @@ export function buildAccountRuntimeExecutionServices(deps: {
   getSessionId?: () => string;
   sourceRoot: string;
   taskRuntimeService: TaskRuntimeService;
+  taskStateAuthority: import('../task/task-state-authority.js').TaskStateAuthority;
+  taskLifecyclePort: Pick<import('../task/task-lifecycle-transition-port.js').TaskLifecyclePort, 'applyTaskChange'>;
   subtaskRepo: SubtaskRepo;
   taskEventRepo: TaskEventRepo;
   workGraphRevisionRepo: WorkGraphRevisionRepo;
@@ -79,10 +82,13 @@ export function buildAccountRuntimeExecutionServices(deps: {
   const publicationRepo = new WorkspacePublicationRepo(deps.db);
   const generationReplanRepo = new GenerationReplanRequestRepo(deps.db);
   const retryWakeRepo = new RetryWakeRepo(deps.db);
+  const workspaceExecutionBindingRepo = new WorkspaceExecutionBindingRepo(deps.db);
 
   const cancellationCoordinator = new TaskCancellationCoordinator({
     db: deps.db,
     taskRuntimeService: deps.taskRuntimeService,
+    taskStateAuthority: deps.taskStateAuthority,
+    taskLifecyclePort: deps.taskLifecyclePort,
     subtaskRepo: deps.subtaskRepo,
     taskEventRepo: deps.taskEventRepo,
     workGraphRevisionRepo: deps.workGraphRevisionRepo,
@@ -111,6 +117,7 @@ export function buildAccountRuntimeExecutionServices(deps: {
     workspaceStore: deps.workspaceStore,
     attemptExecutionBackend: deps.attemptExecutionBackend,
     resourceLeaseService,
+    workspaceExecutionBindingRepo,
     permissionRepository: deps.permissionRepository,
     kernelWorkflowStore: deps.kernelWorkflowRepo,
     workspaceRepository: deps.workspaceRepository,

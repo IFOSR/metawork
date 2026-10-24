@@ -11,7 +11,19 @@ import { KernelEffectOutboxRepo } from '../../src/storage/kernel-effect-outbox-r
 import { TaskEventRepo } from '../../src/storage/task-event-repo.js';
 import type { KernelDecision } from '../../src/kernel/control-kernel.js';
 import type { Subtask } from '../../src/core/types.js';
-import { seedWorkGraphRevision, testExecutorBinding } from '../support/seed-work-graph.js';
+import { seedWorkGraphRevision, testExecutorBinding, seedCompletedReceipt } from '../support/seed-work-graph.js';
+import { setTaskStatus, recordingTaskStateAuthority, recordingTaskLifecyclePort } from '../support/task-state-fixture.js';
+import { createTaskStateAuthority } from '../../src/account/task-state-composition.js';
+
+function recordingRuntimeTaskState() {
+  const { authority } = recordingTaskStateAuthority();
+  const { port } = recordingTaskLifecyclePort();
+  return {
+    taskStateAuthority: authority,
+    taskLifecyclePort: port,
+    taskOperationResults: { record: () => undefined },
+  };
+}
 
 describe('Task completion atomicity', () => {
   it('rolls back revision completion with Task and outbox when the completion effect cannot persist', async () => {
@@ -19,14 +31,14 @@ describe('Task completion atomicity', () => {
     runMigrations(db);
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-completion-atomicity');
-    const taskRuntimeService = new TaskRuntimeService({ taskEngine, taskRepo });
+    const taskRuntimeService = new TaskRuntimeService({ lifecyclePort: recordingTaskLifecyclePort().port, taskEngine, taskRepo });
     const task = taskEngine.create({
       id: 'task-completion-atomicity',
       title: 'Atomic completion',
       goal: 'Complete everything or nothing',
     });
-    taskEngine.transition(task.id, 'ready');
-    taskEngine.transition(task.id, 'running');
+    setTaskStatus(db, task.id, 'queued');
+    setTaskStatus(db, task.id, 'running');
     seedWorkGraphRevision(db, { taskId: task.id, generationId: 'generation-completion-atomicity', configurationRevision: 'revision-completion-atomicity' });
     const subtaskRepo = new SubtaskRepo(db);
     const subtask: Subtask = {
@@ -52,6 +64,7 @@ describe('Task completion atomicity', () => {
       updatedAt: '2026-07-28T00:00:00.000Z',
     };
     subtaskRepo.upsert(subtask);
+    seedCompletedReceipt(db, subtask);
     const revisions = new WorkGraphRevisionRepo(db);
     const effects = new KernelEffectOutboxRepo(db);
     db.exec(`
@@ -62,7 +75,19 @@ describe('Task completion atomicity', () => {
         SELECT RAISE(ABORT, 'injected completion outbox failure');
       END
     `);
+    // A real Task state authority so the completion gate can prove `succeeded`
+    // before the revision and the notification effect commit.
+    const taskStateAuthority = createTaskStateAuthority({
+      db,
+      taskRepo,
+      subtaskRepo,
+      workGraphRevisionRepo: revisions,
+      workUnitClaimService: { hasClaimedByTask: () => false },
+    });
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
+      taskStateAuthority,
+      taskOperationResults: { record: () => undefined },
       sessionId: 'session-completion-atomicity',
       taskRuntimeService,
       subtaskRepo,

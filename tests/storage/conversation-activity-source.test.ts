@@ -93,8 +93,16 @@ describe('runtime progress activity projection', () => {
       repo.insertBatch(decision as never, { generationId: 'generation-1', configurationRevision: binding.configurationRevision,
         attempts: { 'attempt-task-1': { authorizedBinding: binding, bindingFingerprint: 'sha256:abc' } } }, '2026-10-03T00:00:00Z');
       const reader = new SqliteTaskActivityFacts(db);
-      const task = { id: 'task-1', status: 'running' as const, updatedAt: '' };
-      expect(projectTaskView(reader.read(task, null)).userState).toBe('waiting');
+      const task = {
+        id: 'task-1', status: 'running' as const, updatedAt: '',
+        stateVersion: 2,
+        stateDetail: {
+          reason: { code: 'none' as const, message: '', evidenceRefs: [] },
+          unresolved: [], phase: 'executing' as const, pendingActions: [], requiredWork: [],
+          cleanup: { state: 'none' as const, objects: [], reason: '' }, nextWakeAt: null,
+        },
+      };
+      expect(projectTaskView(reader.read(task, null)).status).toBe('running');
       db.prepare("UPDATE kernel_dispatch_items SET status = 'terminal' WHERE task_id = ?").run(task.id);
       const insert = db.prepare(`INSERT INTO kernel_dispatch_items
         SELECT 'old-' || ?, decision_id, batch_order, task_id, generation_id, subtask_id, agent_class_name,
@@ -106,7 +114,8 @@ describe('runtime progress activity projection', () => {
       db.transaction(() => { for (let n = 0; n < 10000; n++) insert.run(n); })();
       const facts = reader.read(task, { requestId: 'approval' });
       expect(facts.dispatches).toEqual([]); expect(facts.receipts).toEqual([]);
-      expect(projectTaskView(facts).phase).toBe('waiting_for_user');
+      // The projection never re-derives the Task status from operational facts.
+      expect(projectTaskView(facts).status).toBe('running');
       expect(Buffer.byteLength(JSON.stringify(facts))).toBeLessThan(1024);
       expect(db.prepare(`EXPLAIN QUERY PLAN SELECT attempt_id FROM kernel_dispatch_items
         WHERE task_id = ? AND status IN ('pending_launch', 'launching', 'running', 'cancelling') LIMIT 1`).all(task.id))

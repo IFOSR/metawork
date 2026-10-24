@@ -1,4 +1,6 @@
 import type Database from 'better-sqlite3';
+import type { CompletionRequirementSpec } from '../task/task-state-facts.js';
+import { parseCompletionRequirements } from '../task/task-completion-requirements.js';
 
 export type WorkGraphRevisionStatus = 'active' | 'superseded' | 'completed';
 
@@ -13,6 +15,8 @@ export interface WorkGraphRevisionRecord {
   automaticReplan: boolean;
   status: WorkGraphRevisionStatus;
   completionKind: 'full' | 'partial_accepted' | null;
+  /** Requirement snapshot compiled when this revision was authorized. */
+  completionRequirements: CompletionRequirementSpec[];
   createdAt: string;
   updatedAt: string;
 }
@@ -28,8 +32,17 @@ interface RevisionRow {
   automatic_replan: number;
   status: WorkGraphRevisionStatus;
   completion_kind: 'full' | 'partial_accepted' | null;
+  completion_requirements_json: string | null;
   created_at: string;
   updated_at: string;
+}
+
+function safeJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return [];
+  }
 }
 
 export class WorkGraphRevisionRepo {
@@ -46,6 +59,15 @@ export class WorkGraphRevisionRepo {
     return row ? rowToRecord(row) : null;
   }
 
+  /** Most recent revision, used after a Task's graph is completed. */
+  findLatest(taskId: string): WorkGraphRevisionRecord | null {
+    const row = this.db.prepare(`
+      SELECT * FROM work_graph_revisions WHERE task_id = ?
+      ORDER BY revision DESC LIMIT 1
+    `).get(taskId) as RevisionRow | undefined;
+    return row ? rowToRecord(row) : null;
+  }
+
   find(taskId: string, revision: number): WorkGraphRevisionRecord | null {
     const row = this.db.prepare(`
       SELECT * FROM work_graph_revisions WHERE task_id = ? AND revision = ?
@@ -53,7 +75,12 @@ export class WorkGraphRevisionRepo {
     return row ? rowToRecord(row) : null;
   }
 
-  activate(input: Omit<WorkGraphRevisionRecord, 'status' | 'completionKind'>): WorkGraphRevisionRecord {
+  activate(
+    input: Omit<
+      WorkGraphRevisionRecord,
+      'status' | 'completionKind' | 'completionRequirements'
+    > & { completionRequirements?: CompletionRequirementSpec[] },
+  ): WorkGraphRevisionRecord {
     const existing = this.find(input.taskId, input.revision);
     if (
       existing
@@ -73,8 +100,9 @@ export class WorkGraphRevisionRepo {
     this.db.prepare(`
       INSERT INTO work_graph_revisions (
         id, task_id, revision, generation_id, configuration_revision, authorized_decision_id,
-        proposal_source, automatic_replan, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+        proposal_source, automatic_replan, status, created_at, updated_at,
+        completion_requirements_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
       ON CONFLICT(task_id, revision) DO UPDATE SET
         generation_id = excluded.generation_id,
         configuration_revision = excluded.configuration_revision,
@@ -82,13 +110,30 @@ export class WorkGraphRevisionRepo {
         proposal_source = excluded.proposal_source,
         automatic_replan = excluded.automatic_replan,
         status = 'active',
-        updated_at = excluded.updated_at
+        updated_at = excluded.updated_at,
+        completion_requirements_json = excluded.completion_requirements_json
     `).run(
       input.id, input.taskId, input.revision, input.generationId, input.configurationRevision,
       input.authorizedDecisionId, input.proposalSource, input.automaticReplan ? 1 : 0,
-      input.createdAt, input.updatedAt,
+      input.createdAt, input.updatedAt, JSON.stringify(input.completionRequirements ?? []),
     );
     return this.find(input.taskId, input.revision)!;
+  }
+
+  /**
+   * Records the requirement snapshot for an already-activated revision. It runs
+   * in the same transaction as activation and Subtask materialization, so the
+   * snapshot always references the persisted canonical Subtask ids.
+   */
+  setCompletionRequirements(
+    taskId: string,
+    revision: number,
+    requirements: CompletionRequirementSpec[],
+  ): void {
+    this.db.prepare(`
+      UPDATE work_graph_revisions SET completion_requirements_json = ?
+      WHERE task_id = ? AND revision = ?
+    `).run(JSON.stringify(requirements), taskId, revision);
   }
 
   complete(
@@ -125,6 +170,9 @@ function rowToRecord(row: RevisionRow): WorkGraphRevisionRecord {
     automaticReplan: row.automatic_replan === 1,
     status: row.status,
     completionKind: row.completion_kind,
+    completionRequirements: parseCompletionRequirements(
+      row.completion_requirements_json ? safeJson(row.completion_requirements_json) : [],
+    ),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

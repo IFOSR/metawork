@@ -154,11 +154,18 @@ export function installObservationSchema(db: Database.Database): void {
     ['kernel_decisions', 'task_id, id'],
   ]) if (tables.has(table!)) db.exec(`CREATE INDEX IF NOT EXISTS observation_witness_${table} ON ${table}(${columns})`);
   db.exec(`CREATE INDEX IF NOT EXISTS conversation_activity_tasks ON tasks(account_id, conversation_id, id)
-    WHERE status IN ('created', 'ready', 'running', 'parked', 'blocked')`);
+    WHERE status IN ('queued', 'running', 'needs_action')`);
   for (const table of ['tasks', 'subtasks', 'kernel_dispatch_items', 'executor_attempt_receipts', 'executor_attempt_runtime',
     'work_graph_revisions', 'resource_leases', 'resource_waits', 'conversation_task_slots', 'task_schedule_entries',
     'generation_replan_requests', 'workspace_publications', 'retry_wakes', 'permission_requests', 'kernel_events', 'kernel_decision_applications']) {
     if (!tables.has(table)) continue;
+    // Older pre-release schemas contained a few witness tables without the
+    // task foreign-key column yet. Do not install a trigger that references
+    // NEW.task_id before that table's owning migration has added it.
+    const tableColumns = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(row => row.name));
+    if (table !== 'tasks' && table !== 'conversation_task_slots'
+      && table !== 'executor_attempt_runtime' && table !== 'kernel_decision_applications'
+      && !tableColumns.has('task_id')) continue;
     for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
       const ref = operation === 'DELETE' ? 'OLD' : 'NEW';
       const taskId = table === 'executor_attempt_runtime' ? `(SELECT task_id FROM kernel_dispatch_items WHERE attempt_id = ${ref}.attempt_id)`
@@ -178,5 +185,5 @@ export function installObservationSchema(db: Database.Database): void {
       ON CONFLICT(task_id) DO UPDATE SET version = version + 1;
     END`);
   db.exec(`INSERT OR IGNORE INTO conversation_activity_dirty(task_id)
-    SELECT id FROM tasks WHERE status IN ('created', 'ready', 'running', 'parked', 'blocked')`);
+    SELECT id FROM tasks WHERE status IN ('queued', 'running', 'needs_action')`);
 }

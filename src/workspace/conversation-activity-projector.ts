@@ -1,5 +1,4 @@
 import type { TaskStatus } from '../core/types.js';
-import { deriveTaskLifecycleState } from '../task/task-lifecycle.js';
 import type { ConversationActivityState } from './workspace-conversation-projector.js';
 
 const MAX_TASK_ID_LENGTH = 160;
@@ -112,30 +111,26 @@ export class ConversationActivityProjector {
 
 function taskState(
   task: ConversationActivityTaskFact,
-  input: {
+  _input: {
     hasActiveAttempt: boolean;
     hasOutstandingReplanJob: boolean;
     hasPendingRetryWake: boolean;
   },
 ): ConversationActivityState | null {
-  // 2026-09-25 plan §7: the activity card consumes the same canonical lifecycle
-  // as TaskView instead of re-deriving its own rule, so a persisted `running`
-  // Task with no authorized Attempt is never "executing" and an outstanding
-  // Replan Job is never reported as idle.
-  const lifecycle = deriveTaskLifecycleState({
-    status: task.status,
-    hasActiveAttempt: input.hasActiveAttempt,
-    hasOutstandingReplanJob: input.hasOutstandingReplanJob,
-    hasPendingRetryWake: input.hasPendingRetryWake,
-    hasPendingUserDecision: false,
-  });
-  if (lifecycle === 'blocked') return 'blocked';
-  if (lifecycle === 'executing') return 'executing';
-  // Coordinating work (Plan, retry wake, user decision) is reported as waiting;
-  // the card must not claim the Conversation is idle.
-  if (lifecycle === 'coordinating' || lifecycle === 'waiting_for_user') return 'waiting';
-  if (lifecycle === 'queued') return 'queued';
-  return null;
+  // The activity card aggregates the committed six-state Task conclusion. It
+  // does not re-interpret operational facts into its own lifecycle.
+  switch (task.status) {
+    case 'needs_action':
+      return 'blocked';
+    case 'running':
+      return 'executing';
+    case 'queued':
+      return 'queued';
+    case 'succeeded':
+    case 'failed':
+    case 'cancelled':
+      return null;
+  }
 }
 
 function candidate(

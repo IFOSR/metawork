@@ -20,6 +20,7 @@ import {
 } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
 import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
+import { setTaskStatus } from '../support/task-state-fixture.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -83,14 +84,9 @@ describe('scripted session', () => {
     const contextRecaller = new ContextRecaller(db);
 
     const blockedTask = taskEngine.create({ title: '起诉书草稿', goal: '补齐起诉材料' });
-    taskEngine.transition(blockedTask.id, 'ready');
-    taskEngine.transition(blockedTask.id, 'running');
-    taskEngine.block(blockedTask.id, {
-      taskId: blockedTask.id,
-      type: 'manual',
-      description: '等待客户补充证据文件',
-      status: 'waiting',
-    });
+    setTaskStatus(db, blockedTask.id, 'queued');
+    setTaskStatus(db, blockedTask.id, 'running');
+    setTaskStatus(db, blockedTask.id, 'needs_action');
 
     db.prepare(
       'INSERT INTO interactions (id, task_id, session_id, user_input, system_output, executor_used, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -123,7 +119,7 @@ describe('scripted session', () => {
     expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
     expect(result.output.join('\n')).toContain(`任务 #${blockedTask.id} 已提交恢复请求，并附带资源 /tmp/evidence-v3.pdf`);
     expect(result.output.join('\n')).toContain('work graph is missing; replanning is required');
-    expect(taskRepo.findById(blockedTask.id)?.status).toBe('parked');
+    expect(taskRepo.findById(blockedTask.id)?.status).toBe('needs_action');
   });
 
   it('resolves the last task id placeholder so scripted acceptance can open task detail after creation', async () => {
@@ -239,7 +235,7 @@ describe('scripted session', () => {
       ),
     });
 
-    const doneTask = taskEngine.list().find(task => task.status === 'done');
+    const doneTask = taskEngine.list().find(task => task.status === 'succeeded');
     expect((doneTask as any)?.artifacts).toHaveLength(1);
     // Managed workspace directories are bounded segments of the durable IDs.
     expect((doneTask as any)?.artifacts[0]).toMatch(
@@ -317,7 +313,7 @@ describe('scripted session', () => {
       ),
     });
 
-    const doneTask = taskEngine.list().find(task => task.status === 'done');
+    const doneTask = taskEngine.list().find(task => task.status === 'succeeded');
     expect(doneTask).toBeTruthy();
     expect(doneTask?.artifacts).toEqual([]);
     expect(result.output.join('\n')).not.toContain('已记录 1 个任务产物');

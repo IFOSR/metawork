@@ -13,6 +13,7 @@ import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { showTask } from '../../src/commands/task-commands.js';
 import type { CommandContext } from '../../src/commands/catalog.js';
 import type { Config } from '../../src/core/types.js';
+import { setTaskStatus, withReason } from '../support/task-state-fixture.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -109,14 +110,9 @@ describe('showTask detail view', () => {
       goal: '整理证据并补齐起诉材料',
       resources: ['/tmp/evidence-a.pdf'],
     });
-    taskEngine.transition(task.id, 'ready');
-    taskEngine.transition(task.id, 'running');
-    taskEngine.block(task.id, {
-      taskId: task.id,
-      type: 'manual',
-      description: '等待客户补充证据文件',
-      status: 'waiting',
-    });
+    setTaskStatus(db, task.id, 'queued');
+    setTaskStatus(db, task.id, 'running');
+    setTaskStatus(db, task.id, 'needs_action');
     taskEngine['taskRepo'].appendSnapshot(task.id, {
       done: ['已整理现有证据目录'],
       pending: ['等待新增证据后补齐起诉书'],
@@ -161,14 +157,9 @@ describe('showTask detail view', () => {
       goal: '继续整理 Phoenix 行业分析',
       resources: ['/tmp/phoenix-notes.md'],
     });
-    taskEngine.transition(task.id, 'ready');
-    taskEngine.transition(task.id, 'running');
-    taskEngine.park(task.id, '用户手动暂停', {
-      done: ['已完成行业格局整理'],
-      pending: ['继续补齐竞争对手对比'],
-      nextStep: '先补齐主要竞争对手对比表',
-      pauseReason: '用户手动暂停',
-    });
+    setTaskStatus(db, task.id, 'queued');
+    setTaskStatus(db, task.id, 'running');
+    setTaskStatus(db, task.id, 'needs_action', withReason('用户手动暂停'));
     taskEngine['taskRepo'].update(task.id, {
       summary: '已完成行业格局整理',
       lastInterruptionReason: '用户手动暂停',
@@ -176,7 +167,7 @@ describe('showTask detail view', () => {
 
     const result = await showTask({ positionals: { taskId: task.id }, options: {} }, context);
 
-    expect(result.content).toContain('当前状态: 需要处理');
+    expect(result.content).toContain('当前状态: 待处理（版本 3）');
     expect(result.content).toContain('上次做到');
     expect(result.content).toContain('已完成行业格局整理');
     expect(result.content).toContain('恢复操作');
@@ -189,14 +180,9 @@ describe('showTask detail view', () => {
       goal: '整理 Phoenix 周报',
       resources: ['/tmp/phoenix-weekly.md', 'https://example.com/phoenix-weekly'],
     });
-    taskEngine.transition(task.id, 'ready');
-    taskEngine.transition(task.id, 'running');
-    taskEngine.block(task.id, {
-      taskId: task.id,
-      type: 'manual',
-      description: '等待确认现有材料是否足以继续',
-      status: 'waiting',
-    });
+    setTaskStatus(db, task.id, 'queued');
+    setTaskStatus(db, task.id, 'running');
+    setTaskStatus(db, task.id, 'needs_action');
 
     const result = await showTask({ positionals: { taskId: task.id }, options: {} }, context);
 
@@ -215,18 +201,22 @@ describe('showTask detail view', () => {
       goal: '确认上次执行是否产生外部副作用',
       resources: ['/tmp/already-readable.md'],
     });
-    taskEngine.transition(task.id, 'ready');
-    taskEngine.transition(task.id, 'running');
-    taskEngine.block(task.id, {
-      taskId: task.id,
-      type: 'manual',
-      description: 'unknown requires explicit recovery: unknown_executor_failure',
-      status: 'waiting',
+    setTaskStatus(db, task.id, 'queued');
+    setTaskStatus(db, task.id, 'running');
+    setTaskStatus(db, task.id, 'needs_action');
+    taskEngine.getTaskRepo().update(task.id, {
+      dependencies: [{
+        taskId: task.id,
+        type: 'manual',
+        description: 'unknown requires explicit recovery: unknown_executor_failure',
+        status: 'waiting',
+        createdAt: new Date().toISOString(),
+      }],
     });
 
     const result = await showTask({ positionals: { taskId: task.id }, options: {} }, context);
 
-    expect(result.content).toContain('当前状态: 需要处理');
+    expect(result.content).toContain('当前状态: 待处理（版本 3）');
     expect(result.content).toContain('最新下一步: 材料齐全不等于可以安全恢复');
     expect(result.content).toContain('材料齐全不等于可以安全恢复');
     expect(result.content).toContain(`/task recovery ${task.id}`);

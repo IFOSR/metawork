@@ -26,7 +26,7 @@ async function loadSmokeScript() {
 function authoritativeSuccessState(artifactPath: string) {
   return {
     acceptedProposalCount: 1,
-    tasks: [{ id: 'task-1', status: 'done' }],
+    tasks: [{ id: 'task-1', status: 'succeeded' }],
     subtasks: [{
       id: 'subtask-1',
       taskId: 'task-1',

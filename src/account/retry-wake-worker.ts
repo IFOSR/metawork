@@ -101,7 +101,8 @@ function timerEvent(
       taskId: wake.taskId,
       subtaskId: wake.subtaskId,
       attemptId: wake.sourceAttemptId,
-      wakeKind: wake.wakeKind ?? 'retry',
+      // Resource partition wakes use the Kernel's capacity timer protocol.
+      wakeKind: wake.wakeKind === 'partition' ? 'capacity' : (wake.wakeKind ?? 'retry'),
       sourceDecisionId: wake.sourceDecisionId,
       scheduledFor: wake.resumeAt,
       retry: {

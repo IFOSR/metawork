@@ -222,6 +222,11 @@ export class TaskSearchIndexRepo {
         title: string;
         goal: string;
         status: string;
+        state_version: number;
+        state_detail_json: string;
+        completed_at: string | null;
+        archived_at: string | null;
+        retry_of_task_id: string | null;
         summary: string;
         snapshot_json: string;
         resources_json: string;
@@ -242,6 +247,11 @@ export class TaskSearchIndexRepo {
           title: row.title,
           goal: row.goal,
           status: row.status as Task['status'],
+          stateVersion: row.state_version,
+          stateDetail: JSON.parse(row.state_detail_json || '{}'),
+          completedAt: row.completed_at,
+          archivedAt: row.archived_at,
+          retryOfTaskId: row.retry_of_task_id,
           summary: row.summary,
           snapshots: JSON.parse(row.snapshot_json || '[]'),
           resources: JSON.parse(row.resources_json || '[]'),

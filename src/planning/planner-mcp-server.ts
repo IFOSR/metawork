@@ -243,7 +243,7 @@ export class PlannerDataReader {
     ).all(this.conversationId) as Array<Record<string, unknown>>;
     const activeTasks = this.db.prepare(`
       SELECT id, title, status, updated_at FROM tasks
-      WHERE conversation_id = ? AND status IN ('created', 'ready', 'running', 'parked', 'blocked')
+      WHERE conversation_id = ? AND status IN ('queued', 'running', 'needs_action')
       ORDER BY updated_at DESC LIMIT ?
     `).all(this.conversationId, MAX_RESULTS) as Array<Record<string, unknown>>;
     return {

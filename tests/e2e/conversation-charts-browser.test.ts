@@ -41,8 +41,7 @@ describe.runIf(process.env.RUN_BROWSER_E2E === '1')('Conversation tables and cha
     const evidence = '.tmp/conversation-charts-evidence'; await mkdir(evidence, { recursive: true });
     try {
       const now = new Date().toISOString();
-      db.prepare(`INSERT INTO tasks(id,title,goal,status,account_id,conversation_id,workspace_id,owner_planner_session_id,admitted_at,created_at,updated_at)
-        VALUES ('chart-test','图表验收','charts','done','local-default','conv_acceptance_10','workspace_acceptance','conv_acceptance_10',?,?,?)`).run(now, now, now);
+      db.prepare(`INSERT INTO tasks (id,title,goal,status,account_id,conversation_id,workspace_id,owner_planner_session_id,admitted_at,created_at,updated_at) VALUES ('chart-test', '图表验收', 'charts', 'succeeded', 'local-default', 'conv_acceptance_10', 'workspace_acceptance', 'conv_acceptance_10', ?, ?, ?)`).run(now, now, now);
       const directory = join(server.workspace, 'metaclaw-tasks', 'chart-test'); await mkdir(directory, { recursive: true });
       const path = join(directory, 'sales.csv'); const bytes = Buffer.from('季度,收入\n一季度,120\n'); await writeFile(path, bytes);
       const artifact = new TaskArtifactRepo(db).insert({ accountId: 'local-default', taskId: 'chart-test', displayName: 'sales.csv', relativePath: 'sales.csv',

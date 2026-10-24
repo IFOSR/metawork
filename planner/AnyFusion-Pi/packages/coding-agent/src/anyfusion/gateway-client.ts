@@ -26,7 +26,7 @@ export interface GatewayClientDeps extends Partial<GatewayObservationPort> {
 	subscribe(listener: (event: GatewayEventEnvelope) => void): () => void;
 	onDisconnect?(listener: () => void): () => void;
 	createId?(prefix: string): string;
-	/** Server hello 公布的安全能力清单（command_completion_v1 / task_view_v1 等）。 */
+	/** Server hello 公布的安全能力清单（command_completion_v1 / task_view_v2 等）。 */
 	getServerCapabilities?(): string[];
 	getServerIdentity?(): string | null;
 }
@@ -226,7 +226,7 @@ export class GatewayClient {
 		);
 	}
 
-	/** 受限只读 Task 视图查询（task_view_v1）。 */
+	/** 受限只读 Task 视图查询（task_view_v2）。 */
 	getTaskView(conversationId: string, turnId: string, taskId: string): Promise<GatewayCommandReceipt> {
 		return this.submit(
 			{ kind: "get_task_view", conversationId, turnId, taskId },
@@ -309,7 +309,7 @@ export class GatewayClient {
 			connectionId: this.connectionId,
 			scope,
 			command,
-			clientCapabilities: ["trace_v1"],
+			clientCapabilities: ["trace_v1", "task_view_v2"],
 		};
 	}
 

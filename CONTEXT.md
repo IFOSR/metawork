@@ -160,8 +160,8 @@ ordinary Kernel completion evaluation is re-triggered for all-done running Tasks
 See ADR-0023 and the [task blocking and status simplification plan](docs/plans/2026-10-15-task-execution-reliability-unified-plan.md)
 for the remaining simplification work; the 2026-10-14 completed case remains historical evidence.
 
-Blocked Task interaction (2026-10-14): Web derives ongoing activity from the
-canonical TaskView userState, not cancellation eligibility. A blocked Task remains
+Blocked Task interaction (2026-10-14, amended by ADR-0049): Web derives ongoing
+activity from the committed Task status (`running`), not cancellation eligibility. A blocked Task remains
 unfinished but does not disable message submission. Task queries preserve the
 active turn's cancellation controller and complete independently of background
 work. Explicit resume uses the existing Gateway/Kernel path; ADR-0037 residue
@@ -1101,15 +1101,17 @@ A decomposed piece of work inside a Task, planned so it can have at most one pen
 _Avoid_: work unit, executor instance, raw prompt
 
 **Task State**:
-The persisted top-level Task lifecycle: created, ready, running, parked, blocked, done, archived, and cancelled. It never contains `awaiting_decision`. The canonical business lifecycle is `queued | executing | coordinating | waiting_for_user | blocked | completed | failed | cancelled`, owned by the Task Domain in `src/task/task-lifecycle.ts`; a persisted `running` Task with no active authorized Attempt is `coordinating`, never `executing`. Presentation surfaces render `TaskView.userState`, not this column.
+The persisted Task conclusion, owned by the Task Domain in `src/task/task-state.ts` (ADR-0049): `queued | running | needs_action | succeeded | failed | cancelled`. There is no second mapping: no raw-status table, no `userState`, no `coordinating`/`waiting_for_user` duplicate vocabulary. `state_version`, `state_detail_json` (reason, phase, pending actions, required work, cleanup, next wake), `completed_at`, `archived_at` and `retry_of_task_id` travel with it. Archiving is an attribute, never a status; a retry is a related Task that keeps the original conclusion.
 _Avoid_: executor state, work unit state, raw status as user-facing prose
 
 **Task View**:
-The one read-only projection of a Task's lifecycle for TUI, Web, Feishu and command output (`src/task/task-view.ts`). Its primary display contract is `userState` (`waiting | executing | needs_action | finished`) and `userStateReason`. It also derives the internal `phase` (`queued | executing | retrying | waiting_for_plan | waiting_for_user | publishing | recovery_required | blocked | completed | failed | cancelled`), the active Attempt, the blocking residue categories, the next authorized action and the relevant timestamps from durable facts only. It never mutates state and never equates `running` with active work. The Gateway exposes it additively as `GatewayTaskViewSnapshot.lifecycle`.
+The one read-only projection of a Task for TUI, Web, Feishu and command output (`src/task/task-view.ts`). Its contract is the committed `TaskStateSnapshot` (`status`, `stateVersion`, `reason`, `phase`, `pendingActions`, `cleanup`, `nextWakeAt`) plus operational detail: the active Attempt, Subtask node states, current Replan Job, recovery fact, blocking residue, result and timestamps. It never derives a status from logs, dispatch rows or a raw column.
 _Avoid_: per-surface status mapping, dashboard-owned reconciliation
 
+**Task State Authority** (`src/task/task-state-authority.ts`): reads durable facts, calls the pure `evaluateTaskState()` and applies one state change. Runtime handlers report operation facts and ask it to reconcile; they never pick a status. No synthetic transition paths are allowed. Acceptance/retry records, the Kernel application, continuation outbox and queue entry commit atomically; publication waits for a fresh reservation and validates its token/version. Definite delivery/service failure keeps the original Task terminal; `/task retry` creates a linked Task for reusable unfinished delivery/service work. The state projection outbox feeds the existing durable activity queue. Web/TUI require Task View v2 and reject lower Task versions.
+
 **Task Lifecycle Transition Port**:
-The single owner of strategic Task and Subtask status writes (`src/task/task-lifecycle-transition-port.ts`), both assigned to the Task Domain by ADR-0020; Work Graph owns proposal topology, node identity and the runnable frontier, not Subtask run state. Runtime handlers apply one Kernel-authorized action; they call this port instead of writing a status directly. It validates every transition against the canonical lifecycle contract, records the requesting actor and reason, treats a replayed cancellation or block as idempotent, and rejects a cross-layer transition out of a terminal state. `listTransitions()` is an in-process observation seam, not a durable audit. User-driven `/task` commands remain Task Domain operations through `TaskEngine`.
+The single durable writer of Task state (`src/task/task-lifecycle-transition-port.ts`) and the owner of Subtask node transitions; both assigned to the Task Domain by ADR-0020, with Work Graph owning proposal topology, node identity and the runnable frontier. `applyTaskChange()` resolves the operation key (idempotent replay), validates the Decision identity, expected `state_version`, active graph and cancellation fence, applies narrowly scoped local facts, writes the state and the `task_state_changes` audit row, and appends a durable projection notification in one transaction. External process/Git effects are never inside it.
 _Avoid_: per-module status writes, TaskView-owned repair, one residue rule per caller
 
 **Task Residue**:

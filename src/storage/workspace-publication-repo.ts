@@ -146,9 +146,13 @@ export class WorkspacePublicationRepo {
   }
 
   unfinishedDeliveries(taskId: string, generationId: string): WorkspacePublicationRecord[] {
+    // An integrated publication whose delivery has not succeeded is unfinished
+    // work regardless of the Subtask node label: a failed delivery is retried by
+    // the publication chain (design §5.3: 交付失败保留成果, 只补交付).
     return (this.db.prepare(`SELECT p.* FROM workspace_publications p JOIN workspace_publication_deliveries d ON d.publication_id = p.id
-      JOIN subtasks s ON s.id = p.subtask_id WHERE p.task_id = ? AND p.generation_id = ? AND p.status = 'integrated'
-      AND s.status = 'awaiting_integration' ORDER BY p.topology_layer, p.first_dispatch_order, p.id`).all(taskId, generationId) as PublicationRow[]).map(rowToPublication);
+      WHERE p.task_id = ? AND p.generation_id = ? AND p.status = 'integrated'
+      AND d.status IN ('pending', 'failed')
+      ORDER BY p.topology_layer, p.first_dispatch_order, p.id`).all(taskId, generationId) as PublicationRow[]).map(rowToPublication);
   }
 
   insertCandidate(input: {
@@ -432,7 +436,7 @@ export class WorkspacePublicationRepo {
       WHERE task_id = ?${generationFilter}
         AND (status IN ('pending', 'applying', 'conflicted', 'cancelling', 'uncertain')
           OR (status = 'integrated' AND EXISTS (SELECT 1 FROM workspace_publication_deliveries d
-            JOIN subtasks s ON s.id = workspace_publications.subtask_id WHERE d.publication_id = workspace_publications.id AND s.status = 'awaiting_integration')))
+            JOIN subtasks s ON s.id = workspace_publications.subtask_id WHERE d.publication_id = workspace_publications.id AND d.status <> 'failed' AND s.status = 'awaiting_integration')))
       LIMIT 1
     `).get(taskId, ...(generationId ? [generationId] : [])));
   }
@@ -441,7 +445,7 @@ export class WorkspacePublicationRepo {
     return Boolean(this.db.prepare(`
       SELECT 1 FROM workspace_publications
       WHERE status IN ('pending', 'applying', 'conflicted', 'cancelling', 'uncertain')
-        OR (status = 'integrated' AND EXISTS (SELECT 1 FROM workspace_publication_deliveries d JOIN subtasks s ON s.id = workspace_publications.subtask_id WHERE d.publication_id = workspace_publications.id AND s.status = 'awaiting_integration'))
+        OR (status = 'integrated' AND EXISTS (SELECT 1 FROM workspace_publication_deliveries d JOIN subtasks s ON s.id = workspace_publications.subtask_id WHERE d.publication_id = workspace_publications.id AND d.status <> 'failed' AND s.status = 'awaiting_integration'))
       LIMIT 1
     `).get());
   }

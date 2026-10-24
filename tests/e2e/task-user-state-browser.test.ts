@@ -10,8 +10,7 @@ browserTests('Task primary state through production Server and browser', () => {
     const server = await startProductionObservationServer();
     const db = new Database(resolveAccountPaths('local-default', server.root).database);
     const now = new Date().toISOString();
-    db.prepare(`INSERT INTO tasks(id,title,goal,status,account_id,conversation_id,workspace_id,owner_planner_session_id,admitted_at,created_at,updated_at)
-      VALUES ('state-test','可靠性状态验收','state test','blocked','local-default','conv_acceptance_10','workspace_acceptance','conv_acceptance_10',?,?,?)`).run(now, now, now);
+    db.prepare(`INSERT INTO tasks (id,title,goal,status,account_id,conversation_id,workspace_id,owner_planner_session_id,admitted_at,created_at,updated_at) VALUES ('state-test', '可靠性状态验收', 'state test', 'needs_action', 'local-default', 'conv_acceptance_10', 'workspace_acceptance', 'conv_acceptance_10', ?, ?, ?)`).run(now, now, now);
     const browser = await launchBrowser(server.port, 'task-state');
     try {
       await waitForExpression(browser.cdp, `Boolean(document.querySelector('#workspace-select option[value="workspace_acceptance"]'))`);
@@ -21,8 +20,8 @@ browserTests('Task primary state through production Server and browser', () => {
       for (let reconnect = 0; reconnect < 2; reconnect++) {
         await waitForExpression(browser.cdp, `document.body.innerText.includes('可靠性状态验收') && document.body.innerText.includes('继续未完成部分')`);
         const summary = JSON.parse((db.prepare('SELECT body_json FROM conversation_activity_views WHERE task_id = ?').get('state-test') as { body_json: string }).body_json);
-        expect(summary.userState).toBe('needs_action');
-        expect(summary.userStateReason).toBeTruthy();
+        expect(summary.status).toBe('needs_action');
+        expect(summary.explanation).toBeTruthy();
         expect(await browser.cdp.evaluate(`Boolean(document.querySelector('button[type="submit"]:not(:disabled)'))`)).toBe(true);
         if (reconnect === 0) await browser.cdp.send('Page.reload');
       }

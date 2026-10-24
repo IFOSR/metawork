@@ -285,13 +285,16 @@ describe("metawork-tui task dashboard", () => {
 				conversationTitle: `会话${index}`,
 				executionGeneration: "g",
 				phase,
-				userState:
+				status:
 					phase === "queued"
-						? ("waiting" as const)
+						? ("queued" as const)
 						: phase === "blocked"
 							? ("needs_action" as const)
-							: ("executing" as const),
-				userStateReason: "来自服务端",
+							: ("running" as const),
+				statusLabel: "来自服务端",
+				stateVersion: 2,
+				reason: { code: "none", message: "来自服务端" },
+				pendingActions: [],
 				explanation: "",
 				canCancel: true,
 			})),
@@ -304,7 +307,7 @@ describe("metawork-tui task dashboard", () => {
 			hasMoreConversations: false,
 		}));
 		const text = plain(dashboard.render(80)).join("\n");
-		expect(text).toContain("执行中 2 · 等待中 1 · 需要处理 1");
+		expect(text).toContain("执行中 2 · 排队 1 · 待处理 1");
 		expect(text).toContain("任务3");
 		expect(text).toContain("会话2");
 		expect(text).not.toMatch(/Subtasks|账单|运行时长/);
@@ -406,7 +409,7 @@ describe("metawork-tui status bar", () => {
 
 		const incompatible = new MetaWorkHeader(() => ({
 			connection: "incompatible",
-			serverCapabilitiesMissing: ["task_view_v1"],
+			serverCapabilitiesMissing: ["task_view_v2"],
 			workspacePath: null,
 			workspaceDisplayName: null,
 			workspaceAvailability: null,
@@ -418,7 +421,7 @@ describe("metawork-tui status bar", () => {
 		}));
 		const incompatibleText = plain(incompatible.render(120)).join("\n");
 		expect(incompatibleText).toContain("请升级 Server");
-		expect(incompatibleText).toContain("task_view_v1");
+		expect(incompatibleText).toContain("task_view_v2");
 	});
 
 	it("shows cancel request state without claiming executor exit", () => {

@@ -62,6 +62,12 @@ Native install/update/rollback also switches the account-scoped
 database, configuration, SecretStore and generated-runtime pointers rather than
 the legacy installation-global authority.
 
+ADR-0049 is the current authority for the Task conclusion: six persisted states,
+one transition table, one pure summary function, one durable write entry,
+authorized completion requirements and the separation between a Task result and
+safe slot release. It supersedes the raw-status/lifecycle/`userState` triple
+projection.
+
 ADR-0032 governs result-first delivery and completion certification. It
 separates safe business-result delivery from completion metadata, Kernel
 certification, authorized downstream handoffs and safety disposition.

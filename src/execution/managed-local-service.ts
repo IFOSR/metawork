@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, open, realpath, lstat, readFile, rm, writeFile } from 'node:fs/promises';
@@ -125,6 +125,19 @@ export class ManagedLocalServices {
     return spec;
   }
 
+  async verifyPublishedFiles(taskId: string, files: readonly { relativePath: string; contentHash: string }[]): Promise<void> {
+    const root = await this.deps.resolvePublishedDirectory(taskId);
+    if (!root || files.length === 0) throw new Error('缺少可核实的已交付成果');
+    const canonical = await realpath(root);
+    for (const file of files) {
+      const path = await realpath(resolve(root, file.relativePath));
+      const rel = relative(canonical, path);
+      if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error('成果越过授权目录');
+      const hash = `sha256:${createHash('sha256').update(await readFile(path)).digest('hex')}`;
+      if (hash !== file.contentHash) throw new Error(`成果已改变，需要重新规划：${file.relativePath}`);
+    }
+  }
+
   async isPublished(taskId: string): Promise<boolean> { return Boolean(await this.deps.resolvePublishedDirectory(taskId)); }
 
 
@@ -231,7 +244,7 @@ export class ManagedLocalServices {
       if (previous && await this.ownedProcess(previous)) return this.check(previous);
       await new Promise<void>((accept, reject) => {
         const probe = createServer();
-        probe.once('error', () => reject(new Error('监听端口已被占用，请停止原服务或更换端口')));
+        probe.once('error', reject);
         probe.listen(spec.port, spec.host, () => probe.close(error => error ? reject(error) : accept()));
       });
       const root = await this.deps.resolvePublishedDirectory(spec.taskId);
@@ -285,7 +298,16 @@ export class ManagedLocalServices {
         if (view.state === 'healthy' || view.state === 'failed') return view;
         await new Promise(accept => setTimeout(accept, 100));
       } while (Date.now() < deadline);
-      return this.check(record);
+      // A bounded startup deadline that is still unhealthy is a definite
+      // failure: stop the process this task started and record the reason
+      // instead of keeping "waiting for health" as a completion blocker.
+      await this.stopNow(spec.serviceId);
+      const timedOut = this.require(spec.serviceId);
+      timedOut.state = 'failed';
+      timedOut.healthMessage = 'service_health_timeout';
+      timedOut.updatedAt = new Date().toISOString();
+      this.deps.store.save(timedOut);
+      return this.view(timedOut);
   }
 
   async status(serviceId: string): Promise<LocalServiceView> {

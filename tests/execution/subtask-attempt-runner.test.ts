@@ -1,8 +1,14 @@
+import { createTaskStateAuthority } from '../../src/account/task-state-composition.js';
+import { TaskOperationKeys } from '../../src/storage/task-state-change-repo.js';
+import { ConversationTaskSchedulerRepo } from '../../src/storage/conversation-task-scheduler-repo.js';
 import Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { cancelFixtureTask } from '../support/task-state-fixture.js';
+import { createSqliteTaskLifecyclePort } from '../../src/storage/task-lifecycle-port-adapter.js';
+import { TaskStateChangeRepo, TaskStateProjectionOutbox } from '../../src/storage/task-state-change-repo.js';
 import { describe, expect, it, vi } from 'vitest';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
@@ -108,7 +114,15 @@ function setup(
     ) VALUES (?, ?, ?, ?, '', '[]', '[]', '[]', '[]', '{}', '[]', '', '', 0, ?, ?)
   `).run('task_phase2', 'Phase 2', 'complete the graph', 'running', '2026-07-17T00:00:00.000Z', '2026-07-17T00:00:00.000Z');
   const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-phase2-attempt-runner');
+  const taskLifecyclePort = createSqliteTaskLifecyclePort(db, {
+    taskRepo,
+    subtaskRepo: new SubtaskRepo(db),
+    stateChanges: new TaskStateChangeRepo(db),
+    projectionOutbox: new TaskStateProjectionOutbox(db),
+    workGraphRevisionRepo: new WorkGraphRevisionRepo(db),
+  });
   const taskRuntimeService = new TaskRuntimeService({
+    lifecyclePort: taskLifecyclePort,
     taskEngine,
     taskRepo,
     orchestration: new OrchestrationEngine(taskEngine),
@@ -352,7 +366,7 @@ describe('SubtaskAttemptRunner', () => {
         id: 'executor-custom', agentClassName: binding.agentClassRef,
       });
       fixture.b.dependencies = [];
-      fixture.b.status = 'done';
+      fixture.b.status = 'succeeded';
       fixture.a.executorBindings = [binding];
       fixture.a.dependencies = [{
         fromSubtaskId: fixture.b.id,
@@ -429,7 +443,7 @@ describe('SubtaskAttemptRunner', () => {
       // A Task-level blocker describes another branch. It must not invalidate
       // this already-authorized Attempt or turn its valid completion into a
       // stale result.
-      fixture.db.prepare(`UPDATE tasks SET status = 'blocked' WHERE id = 'task_phase2'`).run();
+      fixture.db.prepare(`UPDATE tasks SET status = 'needs_action' WHERE id = 'task_phase2'`).run();
       authorizeRunningAttempt(fixture, 'attempt_blocked_task_completion');
 
       const result = await fixture.runner.run({
@@ -495,7 +509,7 @@ describe('SubtaskAttemptRunner', () => {
     vi.spyOn(fixture.workspaceStore, 'createCheckpoint').mockImplementation(async (...args) => {
       const checkpoint = await original(...args);
       if (args[1].reason === 'attempt_start') {
-        fixture.taskRuntimeService.cancelTask('task_phase2', 'cancel during preparation');
+        cancelFixtureTask(fixture.db, 'task_phase2', 'cancel during preparation');
         fixture.subtaskRepo.updateStatus(fixture.a.id, 'cancelled');
         fixture.dispatchItems.requestCancellation({
           taskId: 'task_phase2', generationId: fixture.a.generationId, subtaskIds: null,
@@ -835,7 +849,7 @@ describe('SubtaskAttemptRunner', () => {
   it('terminates a stale attempt without leaving its Subtask running or releasing its WorkUnit as idle', async () => {
     const setupResult = setup(validResponse());
     setupResult.executionRuntime.run.mockImplementationOnce(async () => {
-      setupResult.taskRuntimeService.cancelTask('task_phase2', 'cancelled while executor was running');
+      cancelFixtureTask(setupResult.db, 'task_phase2', 'cancelled while executor was running');
       setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'cancelled', {
         error: 'cancelled while executor was running',
       });
@@ -875,7 +889,7 @@ describe('SubtaskAttemptRunner', () => {
   it('does not resurrect a cancelled Subtask when the running Executor reports cancellation', async () => {
     const setupResult = setup(validResponse());
     setupResult.executionRuntime.run.mockImplementationOnce(async () => {
-      setupResult.taskRuntimeService.cancelTask('task_phase2', 'cancelled while executor was running');
+      cancelFixtureTask(setupResult.db, 'task_phase2', 'cancelled while executor was running');
       setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'cancelled', {
         error: 'cancelled while executor was running',
       });
@@ -1277,7 +1291,7 @@ describe('SubtaskAttemptRunner', () => {
   it('does not start a stale fallback after the Task was cancelled', async () => {
     const setupResult = setup(validResponse());
     setupResult.subtaskRepo.updateStatus(setupResult.a.id, 'awaiting_decision', { error: 'source attempt failed' });
-    setupResult.taskRuntimeService.cancelTask('task_phase2', 'cancelled before retry wake');
+    cancelFixtureTask(setupResult.db, 'task_phase2', 'cancelled before retry wake');
 
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_stale_fallback', sourceAttemptId: 'attempt_source', attemptKind: 'fallback',
@@ -1306,11 +1320,18 @@ describe('SubtaskAttemptRunner', () => {
     const { readPendingTaskResult } = await import('../../src/storage/pending-task-result.js');
     const pending = readPendingTaskResult(fixture.db, 'task_phase2');
     expect(pending?.attemptId).toBe(correction ? 'accept_correction' : 'accept_primary');
+    const authority = createTaskStateAuthority({ db: fixture.db,
+      workUnitClaimService: { hasClaimedByTask: () => false } });
+    authority.reconcile({ taskId: 'task_phase2', decisionId: 'fixture_accept',
+      operationKey: TaskOperationKeys.acceptResult(pending!.attemptId, pending!.resultId),
+      actor: 'task-domain', reason: 'explicit user acceptance', resolvedResult: pending! });
+    const task = fixture.taskRuntimeService.findTask('task_phase2')!;
+    new ConversationTaskSchedulerRepo(fixture.db).claimSlot(task.conversationId!, task.id, 'fixture_accept_slot', new Date().toISOString());
     await fixture.attemptRunner.stageAcceptedResult(pending!);
     await fixture.attemptRunner.stageAcceptedResult(pending!);
     expect(fixture.executionRuntime.run).toHaveBeenCalledTimes(1);
     expect(fixture.subtaskRepo.findById(fixture.a.id)?.status).toBe('awaiting_integration');
-    expect(fixture.taskRuntimeService.findTask('task_phase2')?.status).toBe('running');
+    expect(fixture.taskRuntimeService.findTask('task_phase2')?.status).not.toBe('succeeded');
     expect(fixture.db.prepare('SELECT count(*) AS n FROM workspace_publications').get()).toEqual({ n: 1 });
     expect(readPendingTaskResult(fixture.db, 'task_phase2')).toBeNull();
   });

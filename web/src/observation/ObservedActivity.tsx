@@ -18,8 +18,7 @@ export function ObservedActivity({ conversationId, view, ws, http, showTasks = t
   useEffect(() => { sequence.current++; cursors.current = {}; setPage(null); setLoading(false); }, [view, conversationId]);
   useEffect(() => () => { sequence.current++; }, []);
   const shown = page ?? view;
-  const attention = shown.tasks.filter(task => taskNeedsAttention(task) || task.executionSettling
-    || task.userState === 'waiting');
+  const attention = shown.tasks.filter(task => taskNeedsAttention(task) || task.executionSettling);
   const load = async (kind: 'task' | 'pending') => {
     const cursor = kind === 'task' ? shown.nextCursor : shown.pendingNextCursor;
     if (!cursor || loading) return;
@@ -35,7 +34,7 @@ export function ObservedActivity({ conversationId, view, ws, http, showTasks = t
     finally { if (sequence.current === ticket) setLoading(false); }
   };
   return <>
-    {attention.map(task => <section className="task-attention" aria-label="任务等待处理" key={`${task.taskId}:${task.executionGeneration}:${task.userState}`}>
+    {attention.map(task => <section className="task-attention" aria-label="任务等待处理" key={`${task.taskId}:${task.executionGeneration}:${task.stateVersion}`}>
       <strong>{task.title}</strong>
       <p role="status">{taskActivityMessage(task)}</p>
       {task.progressSummary && <p>最近进度：{task.progressSummary}</p>}
@@ -48,7 +47,7 @@ export function ObservedActivity({ conversationId, view, ws, http, showTasks = t
     </section>)}
     {showTasks && shown.tasks.length > 0 && <section aria-label="活动任务">
       {shown.tasks.map(task => <div key={task.taskId}>
-        <strong>{task.title}</strong> <span>{task.userStateReason}</span>
+        <strong>{task.title}</strong> <span>{task.explanation}</span>
         {task.progressSummary && <p>{task.progressSummary}</p>}
         {task.canCancel && <TaskControl key={`${task.taskId}:${task.executionGeneration}`} ws={ws} conversationId={conversationId} command={{
           kind: 'cancel_task', taskId: task.taskId, expectedExecutionGeneration: task.executionGeneration,
@@ -73,7 +72,7 @@ function TaskActions({ conversationId, task, ws }: {
     setMessage(requestId ? '请求已发送，请查看会话中的处理结果。' : '连接尚未就绪，请连接恢复后重试。');
   };
   return <>
-    {task.userState === 'needs_action' && <button onClick={() => send(`/task resume ${task.taskId} --generation ${task.executionGeneration}${task.graphRevision ? ` --revision ${task.graphRevision}` : ''}`)}>继续未完成部分</button>}
+    {task.status === 'needs_action' && <button onClick={() => send(`/task resume ${task.taskId} --generation ${task.executionGeneration}${task.graphRevision ? ` --revision ${task.graphRevision}` : ''}`)}>继续未完成部分</button>}
     <button onClick={() => send(`/task show ${task.taskId}`)}>查看任务详情</button>
     <button onClick={() => send('/task dashboard')}>查看 Dashboard</button>
     {message && <p role="status">{message}</p>}

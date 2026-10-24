@@ -32,9 +32,13 @@ export async function runPdfProcess(args, options = {}) {
     + 'exec(compile(sys.argv.pop(1),"<pi-pdf>","exec")) if a=="-c" else runpy.run_path(a,run_name="__main__")';
   return new Promise((resolveResult, reject) => {
     const child = spawn(resolve(root, process.platform === 'win32' ? 'python/python.exe' : 'python/bin/python3'),
-      ['-I', '-u', '-c', bootstrap, resolve(root, 'site-packages'), ...args],
+      ['-I', '-B', '-u', '-c', bootstrap, resolve(root, 'site-packages'), ...args],
       // Inherit Pi's process group so Kernel-authorized group cleanup includes this worker.
-      { cwd: options.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      {
+        cwd: options.cwd,
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
     let stdout = '', stderr = '', pending = '', failure, killTimer;
     const signal = name => {
       if (!child.pid) return;

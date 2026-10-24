@@ -14,6 +14,7 @@ import { seedWorkGraphRevision, testExecutorBinding } from '../support/seed-work
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { FileAttachmentStore } from '../../src/storage/file-attachment-store.js';
+import { EMPTY_TASK_STATE_DETAIL } from '../../src/task/task-state.js';
 
 function node(id: string, title: string, dependencies: Subtask['dependencies'] = []): Subtask {
   return {
@@ -40,7 +41,7 @@ describe('SubtaskExecutionContextBuilder', () => {
     `).run('2026-07-17T00:00:00.000Z', '2026-07-17T00:00:00.000Z');
     seedWorkGraphRevision(db, { taskId: 'task_context', generationId: 'generation_context', configurationRevision: 'revision_context' });
     const a = node('a', 'A');
-    a.status = 'done';
+    a.status = 'succeeded';
     const b = node('b', 'B', [{ fromSubtaskId: 'a', requiredItems: [{ key: 'summary', type: 'text', description: 'A summary' }] }]);
     const c = node('c', 'C', [{ fromSubtaskId: 'b', requiredItems: [{ key: 'summary', type: 'text', description: 'B summary' }] }]);
     const repo = new SubtaskRepo(db);
@@ -89,6 +90,8 @@ describe('SubtaskExecutionContextBuilder', () => {
     });
     const task: Task = {
       id: 'task_context', title: 'Task background', goal: 'top-level background only', status: 'running', summary: '',
+      stateVersion: 1, stateDetail: EMPTY_TASK_STATE_DETAIL, completedAt: null, archivedAt: null,
+      retryOfTaskId: null,
       snapshots: [], resources: [], artifacts: [], dependencies: [],
       prioritySignals: { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
       injectedPreferences: [], lastSchedulingReason: '', lastInterruptionReason: '', interruptionCount: 0,
@@ -154,7 +157,7 @@ describe('SubtaskExecutionContextBuilder', () => {
     upstream.executorBindings = [testExecutorBinding({
       configurationRevision: 'revision_context_missing_result',
     })];
-    upstream.status = 'done';
+    upstream.status = 'succeeded';
     const downstream = node('downstream_missing_result', 'Downstream', [{
       fromSubtaskId: upstream.id,
       requiredItems: [{ key: 'summary', type: 'text', description: 'summary' }],

@@ -60,7 +60,7 @@ MetaWork 是一个本地优先的 AI Task OS。它把自然语言需求变成可
 
 ## 核心能力
 
-- 持久任务状态：created、ready、running、parked、blocked、done、archived、cancelled。
+- 唯一持久任务结论：queued、running、needs_action、succeeded、failed、cancelled；归档是独立属性。
 - 中断后通过 resume context 继续，不从头重做。
 - timer 仅重查由 decision ledger 标记的容量阻塞；Executor `error` 恢复使用重要节点触发的结构化 probe，不做周期轮询。
 - Kernel v5 根据纯 runnable frontier 一次授权确定性的 batch；Runtime 可并行运行最多四个 sibling attempt，但不运行多 Task 优先级调度。
@@ -1146,3 +1146,12 @@ src/
 MetaWork 是闭源商业软件。对外分发前必须由公司提供正式批准的商业许可条款。
 AnyFusion 衍生组件及其他第三方开源组件继续遵守各自的许可证与 NOTICE；根目录
 `LICENSE` 暂时保留用于历史和第三方审查，不代表 MetaWork 整体采用该许可证。
+
+### 任务状态评审修复（2026-10-22）
+
+接受结果将决定、Task 审计、持久续跑和排队一并提交；发布前后校验当前图与
+预约 token/version。确定交付或服务失败保持原任务失败，`/task retry` 创建关联
+任务，仅补已有可复用成果的交付/服务。投影 outbox 接入既有 activity dirty 队列，
+Web/TUI 要求 Task View v2 并比较 Task 版本。schema 51→52 按证据分类、写入不可变
+迁移审计，并隔离旧版尚未应用的非取消操作。验证范围见
+[修复记录](../plans/2026-10-22-task-state-review-fixes.md)，源码验证不代表安装包验收。

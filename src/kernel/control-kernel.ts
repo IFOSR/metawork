@@ -1,5 +1,5 @@
 import type { LocalServiceOperation, LocalServiceSpecification } from '../task/local-service.js';
-import { localServiceSpecificationRevision } from '../core/local-service-revision.js';
+import { localServiceSpecificationRevision } from '../task/local-service.js';
 import type { PendingResultIdentity } from '../task/safe-result-identity.js';
 import { allowsKernelAction, type ProductionAuthorizationFact } from './production-authorization.js';
 import { createHash } from 'node:crypto';
@@ -21,6 +21,8 @@ import {
 import type { WorkGraphProposal, WorkGraphSubtask } from '../work-graph/types.js';
 import { contextRefKey } from '../work-graph/index.js';
 import type { KernelExecutorStatusProjection } from './executor-status-projection.js';
+import { isTerminalTaskStatus } from '../task/task-state.js';
+import type { TaskStatus } from '../task/task-state.js';
 import { unavailableAgentClasses } from './plan-routing-eligibility.js';
 import { resolvePreferredModelRef } from '../routing/plan-routing-candidates.js';
 import {
@@ -53,7 +55,8 @@ import {
   type ResourceClaim,
 } from '../resource/index.js';
 
-export type KernelTaskStatus = 'created' | 'ready' | 'running' | 'parked' | 'blocked' | 'done' | 'archived' | 'cancelled';
+/** The six-state Task contract. Owned by the Task Domain and re-used by the Kernel. */
+export type KernelTaskStatus = TaskStatus;
 export type KernelSubtaskStatus = 'ready' | 'running' | 'awaiting_integration' | 'awaiting_decision' | 'blocked' | 'done' | 'cancelled';
 export type KernelAttemptKind = 'primary' | 'continuation' | 'fallback' | 'contract_correction' | 'merge_repair';
 export type KernelRecoveryMode = 'native_session' | 'recovery_packet' | 'fresh';
@@ -64,6 +67,7 @@ export type KernelResumeBlockerCategory =
   | 'dependency_publication'
   | 'explicit_resource'
   | 'parked'
+  | 'user_wait'
   | 'manual'
   | 'material'
   | 'contract'
@@ -109,20 +113,18 @@ export interface KernelEventEnvelope {
 
 export type KernelPlanProposal = PlanningAgentPlan;
 
+export interface RemainingTaskWork {
+  sourceTaskId: string;
+  sourceVersion: number;
+  generationId: string;
+  graphRevision: number;
+  publicationIds: string[];
+  startService: boolean;
+}
+
 export type KernelEvent =
-  | (KernelEventEnvelope & {
-      type: 'managed_service_requested';
-      operation: LocalServiceOperation;
-      serviceId: string;
-      specification?: LocalServiceSpecification;
-      /**
-       * Workspace the service belongs to and the exact specification revision
-       * this request authorizes. The Kernel refuses a launch whose revision is
-       * not the authorized one unless the operation is an explicit `update`.
-       */
-      workspaceId: string;
-      specificationRevision: string;
-    })
+  | (KernelEventEnvelope & { type: 'task_remaining_work_retry_requested'; expectedVersion: number })
+  | (KernelEventEnvelope & { type: 'managed_service_requested'; operation: LocalServiceOperation; serviceId: string; specification?: LocalServiceSpecification; workspaceId?: string; specificationRevision?: string })
   | (KernelEventEnvelope & {
       type: 'plan_proposed';
       proposal: KernelPlanProposal;
@@ -212,7 +214,7 @@ export type KernelEvent =
     })
   | (KernelEventEnvelope & {
       type: 'timer_tick';
-      wakeKind: 'capacity' | 'retry' | 'availability' | 'partition';
+      wakeKind: 'capacity' | 'retry' | 'availability';
       sourceDecisionId: string;
       scheduledFor: string;
       retry: {
@@ -353,7 +355,6 @@ export interface KernelRetryWakeFact {
   resumeAt: string;
   status: 'armed' | 'fired' | 'consumed' | 'superseded' | 'recovery_required';
   timerEventId: string | null;
-  wakeKind?: 'retry' | 'partition';
 }
 
 export type KernelDependencyReadinessCode =
@@ -446,16 +447,18 @@ export type KernelSnapshot = { productionAuthorization?: ProductionAuthorization
       } | null;
       generationQuiescent: boolean;
     }
+  | { schemaVersion: 5; type: 'remaining_work_retry'; task: KernelTaskFact | null;
+      remaining: RemainingTaskWork | null; safeToRetry: boolean }
   | {
       schemaVersion: 5;
       type: 'service_control';
+      retryOfTaskId?: string | null;
+      serviceHandedOver?: boolean;
       task: KernelTaskFact | null;
       published: boolean;
       serviceTaskId: string | null;
-      /** Workspace the registered service belongs to. */
-      serviceWorkspaceId: string | null;
-      /** Revision bound at authorization time; a different one needs `update`. */
-      serviceRevision: string | null;
+      serviceWorkspaceId?: string | null;
+      serviceRevision?: string | null;
     }
   | {
       schemaVersion: 5;
@@ -547,6 +550,7 @@ export type KernelSnapshot = { productionAuthorization?: ProductionAuthorization
     });
 
 export type KernelDecisionAction =
+  | { type: 'retry_remaining_work'; taskId: string; remaining: RemainingTaskWork }
   | { type: 'reject_request' }
   | { type: 'request_clarification'; question: string }
   | { type: 'deliver_direct_reply'; response: string }
@@ -571,15 +575,7 @@ export type KernelDecisionAction =
       /** §5.4 abandon-and-create: the exact old Task to abandon before admission. */
       conflictResolution?: { oldTaskId: string };
     }
-  | {
-      type: 'control_managed_service';
-      taskId: string;
-      serviceId: string;
-      operation: LocalServiceOperation;
-      specification?: LocalServiceSpecification;
-      workspaceId: string;
-      specificationRevision: string;
-    }
+  | { type: 'control_managed_service'; taskId: string; serviceId: string; operation: LocalServiceOperation; specification?: LocalServiceSpecification; workspaceId?: string; specificationRevision?: string }
   | { type: 'authorize_task_control'; task: KernelPlanProposal['task'] }
   | {
       type: 'dispatch_batch';
@@ -854,60 +850,54 @@ export class ControlKernel {
         return this.decideSandboxRecovery(event, snapshot as Extract<KernelSnapshot, { type: 'sandbox_recovery' }>);
       case 'merge_conflict_observed':
         return this.decideMergeConflict(event, snapshot as Extract<KernelSnapshot, { type: 'dispatch' }>);
+      case 'task_remaining_work_retry_requested': {
+        const facts = snapshot as Extract<KernelSnapshot, { type: 'remaining_work_retry' }>;
+        if (facts.task?.id !== event.taskId || facts.task?.status !== 'failed'
+          || !facts.safeToRetry || !facts.remaining || facts.remaining.sourceVersion !== event.expectedVersion
+          || facts.remaining.sourceTaskId !== event.taskId
+          || (!facts.remaining.startService && facts.remaining.publicationIds.length === 0)) {
+          return decision(event, { type: 'reject_request' }, '未完成工作缺少可安全复用的成果，请基于原任务重新规划。');
+        }
+        return decision(event, { type: 'retry_remaining_work',
+          taskId: `task_retry_${facts.remaining.sourceTaskId}_${facts.remaining.sourceVersion}`,
+          remaining: facts.remaining }, 'explicit retry authorizes only remaining delivery and service work');
+      }
       case 'managed_service_requested': {
         const facts = snapshot as Extract<KernelSnapshot, { type: 'service_control' }>;
-        // A refusal must name the facts the user needs to act on: which service,
-        // which Task owns it, and what state that Task is in (§P0-5).
-        const owner = facts.serviceTaskId;
-        const status = facts.task?.status ?? 'missing';
-        if (!event.taskId || facts.task?.id !== event.taskId || (owner && owner !== event.taskId)
-          || (event.specification && (event.specification.taskId !== event.taskId || event.specification.serviceId !== event.serviceId))) {
+        const resourceTaskId = facts.retryOfTaskId ?? event.taskId;
+        if (!event.taskId || facts.task?.id !== event.taskId || (facts.serviceTaskId && facts.serviceTaskId !== resourceTaskId)
+          || (event.specification && (event.specification.taskId !== resourceTaskId || event.specification.serviceId !== event.serviceId))) {
           return decision(event, { type: 'reject_request' },
             `服务归属不匹配：serviceId=${event.serviceId}，请求任务=${event.taskId ?? '未指定'}，`
-            + `服务登记任务=${owner ?? '未登记'}，任务状态=${status}`);
+            + `服务登记任务=${facts.serviceTaskId ?? '未登记'}，任务状态=${facts.task?.status ?? 'missing'}`);
         }
-        if (event.specification
+        if (event.specification && event.specificationRevision
           && localServiceSpecificationRevision(event.specification) !== event.specificationRevision) {
-          return decision(event, { type: 'reject_request' },
-            `服务规格 revision 与请求内容不一致：serviceId=${event.serviceId}`);
+          return decision(event, { type: 'reject_request' }, `服务规格 revision 与请求内容不一致：serviceId=${event.serviceId}`);
         }
-        if (event.operation !== 'stop' && ['cancelled', 'archived', 'failed'].includes(facts.task.status)) {
-          return decision(event, { type: 'reject_request' },
-            `任务已取消、归档或失败，不能启动服务：serviceId=${event.serviceId}，`
-            + `taskId=${event.taskId}，任务状态=${facts.task.status}`);
+        if (event.workspaceId && facts.serviceWorkspaceId && facts.serviceWorkspaceId !== event.workspaceId) {
+          return decision(event, { type: 'reject_request' }, `服务不属于该 Workspace：serviceId=${event.serviceId}`);
         }
-        if (facts.serviceWorkspaceId && facts.serviceWorkspaceId !== event.workspaceId) {
-          return decision(event, { type: 'reject_request' },
-            `服务不属于该 Workspace：serviceId=${event.serviceId}，`
-            + `请求 Workspace=${event.workspaceId}，登记 Workspace=${facts.serviceWorkspaceId}`);
+        if (event.operation !== 'update' && event.specificationRevision
+          && facts.serviceRevision && facts.serviceRevision !== event.specificationRevision) {
+          return decision(event, { type: 'reject_request' }, `服务规格 revision 与已授权 revision 不一致，需要显式更新授权：serviceId=${event.serviceId}`);
         }
-        if (
-          event.operation !== 'update'
-          && facts.serviceRevision
-          && facts.serviceRevision !== event.specificationRevision
-        ) {
-          // A rewritten specification is not an authorization. Only an explicit
-          // `update` may replace the revision the Kernel has bound.
+        const terminalServiceRefusal = ['cancelled', 'failed', 'archived'].includes(String(facts.task.status))
+          || (facts.task.status === 'succeeded'
+            && !facts.serviceHandedOver
+            && facts.serviceTaskId !== resourceTaskId);
+        if (event.operation !== 'stop' && terminalServiceRefusal) {
           return decision(event, { type: 'reject_request' },
-            `服务规格 revision 与已授权 revision 不一致，需要显式更新授权：serviceId=${event.serviceId}`);
+            `任务已结束，不能启动服务：serviceId=${event.serviceId}，taskId=${event.taskId}，任务状态=${facts.task.status}`);
         }
         if (event.operation !== 'stop' && !facts.published) {
-          return decision(event, { type: 'reject_request' },
-            `代码尚未发布到用户任务目录，不能启动服务：serviceId=${event.serviceId}，`
-            + `taskId=${event.taskId}，任务状态=${facts.task.status}`);
+          return decision(event, { type: 'reject_request' }, '代码尚未发布到用户任务目录，不能启动服务');
         }
-        if (event.operation !== 'start' && !facts.serviceTaskId) {
-          return decision(event, { type: 'reject_request' },
-            `服务不存在：serviceId=${event.serviceId}，taskId=${event.taskId}`);
-        }
-        return decision(event, {
-          type: 'control_managed_service',
-          taskId: event.taskId,
-          serviceId: event.serviceId,
-          operation: event.operation,
-          specification: event.specification,
-          workspaceId: event.workspaceId,
-          specificationRevision: event.specificationRevision,
+        if (event.operation !== 'start' && !facts.serviceTaskId) return decision(event, { type: 'reject_request' }, '服务不存在');
+        return decision(event, { type: 'control_managed_service', taskId: event.taskId, serviceId: event.serviceId,
+          operation: event.operation, specification: event.specification,
+          ...(event.workspaceId ? { workspaceId: event.workspaceId } : {}),
+          ...(event.specificationRevision ? { specificationRevision: event.specificationRevision } : {}),
         }, 'explicit managed service action authorized');
       }
       case 'task_cancel_requested':
@@ -1117,7 +1107,7 @@ export class ControlKernel {
       if (!oldTask) {
         return decision(event, { type: 'reject_request' }, `conflictResolution targets an unknown Task: ${proposal.conflictResolution.oldTaskId}`);
       }
-      if (['cancelled', 'done', 'failed', 'archived'].includes(oldTask.status)) {
+      if (isTerminalTaskStatus(oldTask.status)) {
         return decision(event, { type: 'reject_request' }, `conflictResolution targets an already-terminal Task: ${oldTask.status}`);
       }
     }
@@ -1225,7 +1215,7 @@ export class ControlKernel {
       if (snapshot.generationReplanRequest?.status === 'failed') {
         // Bounded Planner retry budget exhausted. The Task converges to an
         // explicit block instead of remaining `running` with an occupied slot.
-        return snapshot.task?.status === 'blocked'
+        return snapshot.task?.status === 'needs_action'
           ? decision(event, { type: 'no_op' }, 'planner_unavailable blocker is already recorded')
           : decision(event, {
               type: 'block_work',
@@ -1278,7 +1268,7 @@ export class ControlKernel {
       !event.taskId
       || !snapshot.task
       || snapshot.task.id !== event.taskId
-      || !['blocked', 'parked', 'running'].includes(snapshot.task.status)
+      || !['needs_action', 'running'].includes(snapshot.task.status)
     ) {
       return decision(event, { type: 'no_op' }, 'resume target is not an active recoverable Task');
     }
@@ -1403,31 +1393,11 @@ export class ControlKernel {
       );
     }
     if (['manual', 'material', 'contract', 'unknown'].includes(event.blockerCategory)) {
-      // The blocker has no exact recovery lineage, but that alone must not end
-      // the Task: the user authorized delivery, and a Workspace-reconcilable
-      // Subtask can simply run again in the same Workspace. Only effects we
-      // cannot reconcile (external, non-idempotent) need explicit confirmation.
-      if (snapshot.recoverySafety === 'external_non_idempotent') {
-        return decision(
-          event,
-          { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId ?? null },
-          `resume requires confirming external effects from the ${event.blockerCategory} blocker`,
-        );
-      }
-      const continuable = snapshot.subtasks
-        .filter(subtask => subtask.status === 'blocked' || subtask.status === 'ready')
-        .map(subtask => subtask.id);
-      if (continuable.length === 0) {
-        return decision(event, { type: 'no_op' }, 'resume has no recoverable Subtask');
-      }
-      return decision(event, {
-        type: 'resume_task',
-        taskId: event.taskId,
-        generationId: snapshot.generationId,
-        graphRevision: snapshot.graphRevision,
-        subtaskIds: continuable,
-        blockerCategory: event.blockerCategory,
-      }, 'Kernel authorized continuation of a Workspace-reconcilable Task');
+      return decision(
+        event,
+        { type: 'block_work', taskId: event.taskId, subtaskId: event.subtaskId ?? null },
+        `resume requires resolving the ${event.blockerCategory} blocker first`,
+      );
     }
     const recoverableSubtasks = snapshot.subtasks
       .filter(subtask => subtask.status === 'ready' || subtask.status === 'blocked')
@@ -1454,7 +1424,7 @@ export class ControlKernel {
       !event.taskId
       || !snapshot.task
       || snapshot.task.id !== event.taskId
-      || !['running', 'blocked'].includes(snapshot.task.status)
+      || !['running', 'needs_action'].includes(snapshot.task.status)
       || !deferred
       || deferred.taskId !== event.taskId
       || deferred.proposalSource !== 'replan'
@@ -1670,7 +1640,7 @@ export class ControlKernel {
       return decision(event, { type: 'reject_request' }, 'Task control target is missing or stale');
     }
     if (event.type === 'task_cancel_requested') {
-      if (['done', 'archived', 'cancelled'].includes(snapshot.task.status)) {
+      if (isTerminalTaskStatus(snapshot.task.status)) {
         return decision(event, { type: 'reject_request' }, `Task is already ${snapshot.task.status}`);
       }
       return decision(event, {
@@ -1686,12 +1656,12 @@ export class ControlKernel {
       const expected = event.expectedResult;
       const accepted = snapshot.acceptedResult;
       if (event.type === 'partial_result_acceptance_requested' && expected && accepted
-        && !['cancelled', 'archived', 'failed'].includes(snapshot.task.status)
+        && !isTerminalTaskStatus(snapshot.task.status)
         && Object.keys(expected).every(key => expected[key as keyof PendingResultIdentity] === accepted[key as keyof PendingResultIdentity])) {
         return decision(event, { type: 'accept_uncertified_result', ...accepted }, 'previously authorized result acceptance replay');
       }
       const pending = snapshot.uncertifiedResult;
-      if (['done', 'archived', 'cancelled'].includes(snapshot.task.status)
+      if (isTerminalTaskStatus(snapshot.task.status)
         || (expected && (!pending || expected.taskId !== event.taskId
           || expected.generationId !== snapshot.generationId || expected.graphRevision !== snapshot.graphRevision
           || expected.subtaskId !== pending.subtaskId || expected.attemptId !== pending.attemptId
@@ -1761,7 +1731,7 @@ export class ControlKernel {
       .map(subtask => subtask.id)
       .sort();
     if (
-      snapshot.task.status !== 'blocked'
+      snapshot.task.status !== 'needs_action'
       || !snapshot.partialCancellation
       || completedSubtaskIds.length === 0
       || snapshot.subtasks.some(subtask => !['done', 'cancelled'].includes(subtask.status))
@@ -1901,56 +1871,6 @@ export class ControlKernel {
   }
 
   private decideTimer(event: Extract<KernelEvent, { type: 'timer_tick' }>, snapshot: Extract<KernelSnapshot, { type: 'timer' }>): KernelDecision {
-    if (event.wakeKind === 'partition') {
-      const retry = event.retry;
-      const wake = snapshot.retryWake;
-      if (!retry || !wake) {
-        return decision(event, { type: 'no_op' }, 'partition timer has no durable wait identity');
-      }
-      const exactIdentity = wake.wakeId === retry.wakeId
-        && wake.taskId === event.taskId
-        && wake.subtaskId === event.subtaskId
-        && wake.generationId === retry.generationId
-        && wake.bindingFingerprint === retry.bindingFingerprint
-        && wake.timerEventId === event.id;
-      if (!exactIdentity) return decision(event, { type: 'no_op' }, 'partition timer identity is stale');
-      if (wake.wakeKind !== 'partition') {
-        return decision(event, { type: 'no_op' }, 'partition timer references another wake kind');
-      }
-      if (wake.status !== 'fired') return decision(event, { type: 'no_op' }, `partition wake is already ${wake.status}`);
-      if (['done', 'archived', 'cancelled'].includes(snapshot.task?.status ?? '')) {
-        return decision(event, { type: 'supersede_retry_wake', taskId: wake.taskId, wakeId: wake.wakeId },
-          'partition wake is obsolete because the Task is terminal');
-      }
-      if (
-        !event.taskId
-        || !event.subtaskId
-        || !snapshot.task
-        || snapshot.task.id !== event.taskId
-        || !['running', 'blocked'].includes(snapshot.task.status)
-        || !snapshot.wakeAuthorized
-      ) {
-        return decision(event, { type: 'no_op' }, 'partition wake lost its authorized Task blocker');
-      }
-      const available = unavailableAgentClasses(snapshot.executorStatuses, event.occurredAt);
-      const binding = retry.authorizedBinding;
-      if (available.has(binding.agentClassRef)) {
-        // The Executor is still unavailable; the next partition recheck re-arms.
-        return decision(event, { type: 'supersede_retry_wake', taskId: wake.taskId, wakeId: wake.wakeId },
-          'partition wake target AgentClass is unavailable');
-      }
-      return decision(event, singleDispatchBatch(
-        event,
-        event.taskId,
-        event.subtaskId,
-        binding,
-        'primary',
-        null,
-        'fresh',
-        snapshot.defaultResourceGrant,
-        null,
-      ), 'partition recheck re-dispatched the parked Subtask');
-    }
     if (event.wakeKind === 'retry') {
       const retry = event.retry;
       const wake = snapshot.retryWake;
@@ -1999,7 +1919,7 @@ export class ControlKernel {
       ) {
         return decision(event, { type: 'no_op' }, 'retry wake arrived before its scheduled time');
       }
-      if (['done', 'archived', 'cancelled'].includes(snapshot.task?.status ?? '')) {
+      if (snapshot.task && isTerminalTaskStatus(snapshot.task.status)) {
         return decision(event, {
           type: 'supersede_retry_wake',
           taskId: wake.taskId,
@@ -2012,7 +1932,7 @@ export class ControlKernel {
         || !event.subtaskId
         || !snapshot.task
         || snapshot.task.id !== event.taskId
-        || !['running', 'blocked'].includes(snapshot.task.status)
+        || !['running', 'needs_action'].includes(snapshot.task.status)
         || !snapshot.wakeAuthorized
       ) {
         return decision(event, {
@@ -2040,7 +1960,7 @@ export class ControlKernel {
       !event.taskId
       || !snapshot.task
       || snapshot.task.id !== event.taskId
-      || !['running', 'blocked'].includes(snapshot.task.status)
+      || !['running', 'needs_action'].includes(snapshot.task.status)
       || !snapshot.wakeAuthorized
     ) {
       return decision(event, { type: 'no_op' }, 'timer wake is stale or no longer authorized by Task state');
@@ -2092,10 +2012,10 @@ export class ControlKernel {
     if (!snapshot.task || snapshot.task.id !== event.taskId) {
       return decision(event, { type: 'no_op' }, 'recovery_required observation has no matching Task');
     }
-    if (snapshot.task.status === 'blocked') {
+    if (snapshot.task.status === 'needs_action') {
       return decision(event, { type: 'no_op' }, 'recovery_required blocker is already recorded');
     }
-    if (['done', 'archived', 'cancelled'].includes(snapshot.task.status)) {
+    if (isTerminalTaskStatus(snapshot.task.status)) {
       return decision(event, { type: 'no_op' }, 'recovery_required observation arrived after the Task terminal state');
     }
     return decision(event, {
@@ -2213,16 +2133,6 @@ export class ControlKernel {
     if (!event.taskId || !event.subtaskId || !snapshot.workspaceExists || snapshot.workspaceId !== event.workspaceId) {
       return decision(event, { type: 'block_work', taskId: event.taskId ?? '', subtaskId: event.subtaskId ?? null }, 'sandbox loss has no recoverable workspace');
     }
-    if (!snapshot.checkpointId) {
-      // Only a checkpointed (worktree) Attempt can be replayed safely. An
-      // in-place Attempt has no checkpoint and may already have written the
-      // user's files, so a lost sandbox needs an explicit user decision.
-      return decision(event, {
-        type: 'block_work',
-        taskId: event.taskId,
-        subtaskId: event.subtaskId,
-      }, 'sandbox loss has no checkpoint; the Workspace may already contain user-visible writes');
-    }
     return decision(event, {
       type: 'recover_workspace_attempt',
       taskId: event.taskId,
@@ -2302,6 +2212,7 @@ function decision(event: KernelEvent, action: KernelDecisionAction, reason: stri
 }
 
 function snapshotMatches(event: KernelEvent, snapshot: KernelSnapshot): boolean {
+  if (event.type === 'task_remaining_work_retry_requested') return snapshot.type === 'remaining_work_retry';
   if (event.type === 'managed_service_requested') return snapshot.type === 'service_control';
   if (event.type === 'plan_proposed') return snapshot.type === 'plan_admission';
   if (event.type === 'executor_recovered') return snapshot.type === 'availability_recovery';

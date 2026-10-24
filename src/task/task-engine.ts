@@ -1,44 +1,58 @@
 import { publicTaskRelativeDirectory } from './public-task-directory.js';
-// Owns the core task state machine and snapshot persistence primitives.
-import type { Task, TaskStatus, TaskSnapshot, Dependency, ResumeSummary } from '../core/types.js';
+// Owns Task creation primitives and non-lifecycle metadata bookkeeping.
+//
+// The Task status machine is not here: `TaskLifecyclePort.applyTaskChange()` in
+// `task-lifecycle-transition-port.ts` is the only writer of `tasks.status`.
+import type { Task, TaskSnapshot } from '../core/types.js';
 import type { TaskRepo } from '../storage/task-repo.js';
+import type { TaskStateChangeRepo } from '../storage/task-state-change-repo.js';
 import { generateTaskId } from '../utils/id.js';
-import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'fs';
+import { createTaskReason, type TaskStateDetail } from './task-state.js';
+import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { resolve } from 'path';
-import dayjs from 'dayjs';
 
-// 合法状态迁移表
-const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
-  created: ['ready', 'parked', 'cancelled'],
-  ready: ['running', 'parked', 'cancelled'],
-  running: ['parked', 'blocked', 'done'],
-  parked: ['ready', 'cancelled'],
-  blocked: ['ready', 'parked', 'done'],
-  done: ['archived'],
-  archived: [],
-  cancelled: [],
-};
+export interface TaskEngineDeps {
+  taskRepo: TaskRepo;
+  snapshotDir: string;
+  /** Durable state change ledger; the creation baseline is version 1. */
+  stateChanges?: TaskStateChangeRepo;
+}
 
-/** Encapsulates task creation, state transitions, blocking, parking, resuming, and resource attachment. */
+/** Encapsulates Task creation, snapshot persistence and non-lifecycle metadata. */
 export class TaskEngine {
+  private readonly taskRepo: TaskRepo;
+  private readonly snapshotDir: string;
+  private readonly stateChanges?: TaskStateChangeRepo;
+
+  constructor(deps: TaskEngineDeps);
+  constructor(taskRepo: TaskRepo, snapshotDir: string, stateChanges?: TaskStateChangeRepo);
   constructor(
-    private taskRepo: TaskRepo,
-    private snapshotDir: string,
-  ) {}
+    deps: TaskEngineDeps | TaskRepo,
+    snapshotDir?: string,
+    stateChanges?: TaskStateChangeRepo,
+  ) {
+    if (deps instanceof Object && 'taskRepo' in deps) {
+      this.taskRepo = deps.taskRepo;
+      this.snapshotDir = deps.snapshotDir;
+      this.stateChanges = deps.stateChanges;
+    } else {
+      this.taskRepo = deps as TaskRepo;
+      this.snapshotDir = snapshotDir!;
+      this.stateChanges = stateChanges;
+    }
+  }
 
   getTaskRepo(): TaskRepo {
     return this.taskRepo;
   }
 
-  /**
-   * 列出所有任务
-   */
   list(): Task[] {
     return this.taskRepo.findAll();
   }
 
   /**
-   * 创建任务
+   * Creates a Task already in `queued`. A half-created Task with no authorized
+   * work never exists, so creation is not a status transition.
    */
   create(input: {
     id?: string;
@@ -54,9 +68,20 @@ export class TaskEngine {
     publicDeliveryBaseline?: Record<string, string>;
     startServiceAfterPublish?: boolean;
     executionMode?: 'worktree' | 'in_place';
+    retryOfTaskId?: string | null;
+    stateDetail?: TaskStateDetail;
   }): Task {
     const now = new Date().toISOString();
     const taskId = input.id?.trim() ? input.id : generateTaskId();
+    const stateDetail = input.stateDetail ?? {
+      reason: createTaskReason('waiting_for_capacity', '等待执行名额。'),
+      unresolved: [],
+      phase: null,
+      pendingActions: [],
+      requiredWork: [],
+      cleanup: { state: 'none', objects: [], reason: '' },
+      nextWakeAt: null,
+    };
     const task: Task = {
       id: taskId,
       ...(input.accountId ? { accountId: input.accountId } : {}),
@@ -65,13 +90,18 @@ export class TaskEngine {
       ...(input.ownerPlannerSessionId ? { ownerPlannerSessionId: input.ownerPlannerSessionId } : {}),
       ...(input.admittedAt ? { admittedAt: input.admittedAt } : {}),
       title: input.title,
-      ...(input.executionMode ? { executionMode: input.executionMode } : {}),
       publicTaskDirectory: input.publicTaskDirectory ?? publicTaskRelativeDirectory(input.title, taskId),
       publicDeliveryBaseline: input.publicDeliveryBaseline ?? {},
       publicProject: input.publicTaskDirectory !== undefined,
       startServiceAfterPublish: input.startServiceAfterPublish ?? false,
+      executionMode: input.executionMode ?? 'worktree',
       goal: input.goal,
-      status: 'created',
+      status: 'queued',
+      stateVersion: 1,
+      stateDetail,
+      completedAt: null,
+      archivedAt: null,
+      retryOfTaskId: input.retryOfTaskId ?? null,
       summary: '',
       snapshots: [],
       resources: input.resources || [],
@@ -93,137 +123,22 @@ export class TaskEngine {
     };
 
     this.taskRepo.insert(task);
+    this.stateChanges?.insert({
+      taskId,
+      version: 1,
+      operationKey: `create:${taskId}`,
+      decisionId: `create:${taskId}`,
+      fromStatus: 'queued',
+      toStatus: 'queued',
+      detail: stateDetail,
+      evidenceRefs: [],
+      createdAt: now,
+    });
     return task;
   }
 
   /**
-   * 状态迁移
-   */
-  transition(taskId: string, targetStatus: TaskStatus, context?: object): Task {
-    const task = this.taskRepo.findById(taskId);
-    if (!task) throw new Error(`任务不存在: ${taskId}`);
-
-    const validTargets = VALID_TRANSITIONS[task.status];
-    if (!validTargets.includes(targetStatus)) {
-      throw new Error(`非法状态迁移: ${task.status} -> ${targetStatus}`);
-    }
-
-    this.taskRepo.updateStatus(taskId, targetStatus);
-    return this.taskRepo.findById(taskId)!;
-  }
-
-  /**
-   * 取消任务。用于批量清理时保留任务审计记录，同时阻止后续调度继续执行。
-   */
-  cancel(taskId: string, reason = '用户取消任务'): Task {
-    const task = this.taskRepo.findById(taskId);
-    if (!task) throw new Error(`任务不存在: ${taskId}`);
-    if (['done', 'archived', 'cancelled'].includes(task.status)) {
-      throw new Error(`只能取消未完成任务，当前状态: ${task.status}`);
-    }
-
-    this.taskRepo.update(taskId, {
-      status: 'cancelled',
-      lastInterruptionReason: reason,
-    });
-    return this.taskRepo.findById(taskId)!;
-  }
-
-  /**
-   * 挂起任务：RUNNING → PARKED
-   */
-  park(taskId: string, reason: string, snapshot: Omit<TaskSnapshot, 'createdAt'>): Task {
-    const task = this.taskRepo.findById(taskId);
-    if (!task) throw new Error(`任务不存在: ${taskId}`);
-    if (task.status !== 'running') {
-      throw new Error(`只能挂起 RUNNING 状态的任务，当前状态: ${task.status}`);
-    }
-
-    // 生成快照
-    const fullSnapshot: TaskSnapshot = {
-      ...snapshot,
-      createdAt: new Date().toISOString(),
-    };
-
-    // 保存快照到文件
-    this.saveSnapshot(taskId, fullSnapshot);
-
-    // 更新任务
-    this.taskRepo.appendSnapshot(taskId, fullSnapshot);
-    this.taskRepo.updateStatus(taskId, 'parked');
-
-    return this.taskRepo.findById(taskId)!;
-  }
-
-  /**
-   * 恢复任务：PARKED → READY
-   */
-  resume(taskId: string): { task: Task; resumeSummary: ResumeSummary } {
-    const task = this.taskRepo.findById(taskId);
-    if (!task) throw new Error(`任务不存在: ${taskId}`);
-    if (task.status !== 'parked') {
-      throw new Error(`只能恢复 PARKED 状态的任务，当前状态: ${task.status}`);
-    }
-
-    const latestSnapshot = this.getLatestSnapshot(taskId);
-    const idleHours = dayjs().diff(dayjs(task.updatedAt), 'hour');
-
-    const resumeSummary: ResumeSummary = {
-      taskTitle: task.title,
-      lastProgress: latestSnapshot?.done.join('; ') || '尚未开始',
-      pauseReason: latestSnapshot?.pauseReason || '未知',
-      currentStatus: '已恢复，可以继续',
-      nextStep: latestSnapshot?.nextStep || '继续推进任务',
-      resources: task.resources,
-      idleHours,
-    };
-
-    this.taskRepo.updateStatus(taskId, 'ready');
-    return { task: this.taskRepo.findById(taskId)!, resumeSummary };
-  }
-
-  /**
-   * 标记阻塞：RUNNING → BLOCKED
-   */
-  block(taskId: string, dependency: Omit<Dependency, 'createdAt'>): Task {
-    const task = this.taskRepo.findById(taskId);
-    if (!task) throw new Error(`任务不存在: ${taskId}`);
-    if (task.status !== 'running') {
-      throw new Error(`只能阻塞 RUNNING 状态的任务，当前状态: ${task.status}`);
-    }
-
-    const fullDep: Dependency = {
-      ...dependency,
-      createdAt: new Date().toISOString(),
-    };
-
-    const dependencies = [...task.dependencies, fullDep];
-    this.taskRepo.update(taskId, { dependencies });
-    this.taskRepo.updateStatus(taskId, 'blocked');
-
-    return this.taskRepo.findById(taskId)!;
-  }
-
-  /**
-   * 解除阻塞：BLOCKED → READY
-   */
-  unblock(taskId: string): Task {
-    const task = this.taskRepo.findById(taskId);
-    if (!task) throw new Error(`任务不存在: ${taskId}`);
-    if (task.status !== 'blocked') {
-      throw new Error(`只能继续处理需要处理的任务，当前状态: ${task.status}`);
-    }
-
-    // 标记所有依赖为已解决
-    const dependencies = task.dependencies.map(d => ({ ...d, status: 'resolved' as const }));
-    this.taskRepo.update(taskId, { dependencies });
-    this.taskRepo.updateStatus(taskId, 'ready');
-
-    return this.taskRepo.findById(taskId)!;
-  }
-
-  /**
-   * 关联资源
+   * Associate a resource. Metadata only: it never changes the Task conclusion.
    */
   attachResource(taskId: string, resourcePath: string): Task {
     const task = this.taskRepo.findById(taskId);
@@ -235,19 +150,13 @@ export class TaskEngine {
     return this.taskRepo.findById(taskId)!;
   }
 
-  /**
-   * 获取最新快照
-   */
   getLatestSnapshot(taskId: string): TaskSnapshot | null {
     const task = this.taskRepo.findById(taskId);
     if (!task || task.snapshots.length === 0) return null;
     return task.snapshots[task.snapshots.length - 1];
   }
 
-  /**
-   * 保存快照到文件
-   */
-  private saveSnapshot(taskId: string, snapshot: TaskSnapshot): void {
+  saveSnapshot(taskId: string, snapshot: TaskSnapshot): void {
     const taskSnapshotDir = resolve(this.snapshotDir, taskId);
     if (!existsSync(taskSnapshotDir)) {
       mkdirSync(taskSnapshotDir, { recursive: true });

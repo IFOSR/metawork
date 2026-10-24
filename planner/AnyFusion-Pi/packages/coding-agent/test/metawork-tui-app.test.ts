@@ -121,7 +121,7 @@ function fakeGateway() {
 			status: "accepted",
 			conversationId: null,
 		}),
-		serverCapabilities: ["command_completion_v1", "task_view_v1"],
+		serverCapabilities: ["command_completion_v1", "task_view_v2"],
 		dispose: () => undefined,
 	};
 	return {
@@ -418,7 +418,7 @@ describe("metawork-tui app startup", () => {
 		let app: MetaWorkTuiApp | null = null;
 		const controller = new MetaWorkTuiController({
 			gateway,
-			requiredCapabilities: ["command_completion_v1", "task_view_v1"],
+			requiredCapabilities: ["command_completion_v1", "task_view_v2"],
 			onStateChange: (view) => app?.handleView(view),
 			onExit: () => undefined,
 		});
@@ -483,30 +483,51 @@ describe("workspace task switching through the terminal", () => {
 				conversationId: string;
 				taskId: string;
 				phase: string;
-				userState: "executing" | "waiting" | "needs_action";
-				userStateReason: string;
+				status: "running" | "queued" | "needs_action";
+				statusLabel: string;
+				stateVersion: number;
+				reason: { code: string; message: string };
+				pendingActions: Array<{ actionId: string; kind: string; label: string }>;
 			}> = [
 				{
 					conversationId: "a",
 					taskId: "a1",
 					phase: "executing",
-					userState: "executing",
-					userStateReason: "执行中",
+					status: "running",
+					statusLabel: "执行中",
+					stateVersion: 2,
+					reason: { code: "none", message: "执行中" },
+					pendingActions: [],
 				},
 				{
 					conversationId: "b",
 					taskId: "b1",
 					phase: "executing",
-					userState: "executing",
-					userStateReason: "执行中",
+					status: "running",
+					statusLabel: "执行中",
+					stateVersion: 2,
+					reason: { code: "none", message: "执行中" },
+					pendingActions: [],
 				},
-				{ conversationId: "b", taskId: "b2", phase: "queued", userState: "waiting", userStateReason: "等待中" },
+				{
+					conversationId: "b",
+					taskId: "b2",
+					phase: "queued",
+					status: "queued",
+					statusLabel: "排队",
+					stateVersion: 2,
+					reason: { code: "waiting_for_capacity", message: "等待中" },
+					pendingActions: [],
+				},
 				{
 					conversationId: "c",
 					taskId: "c1",
-					phase: "blocked",
-					userState: "needs_action",
-					userStateReason: "需要处理",
+					phase: "needs_action",
+					status: "needs_action",
+					statusLabel: "待处理",
+					stateVersion: 2,
+					reason: { code: "input_required", message: "需要处理" },
+					pendingActions: [],
 				},
 			];
 			const activity = (id: string) => ({

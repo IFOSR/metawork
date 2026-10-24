@@ -148,7 +148,7 @@ describe('MetaclawSession planning-agent routing', () => {
     await session.submit('修改仓库代码实现一个功能', { awaitAsyncWork: true });
 
     const [task] = taskRepo.findAll();
-    expect(task.status).toBe('done');
+    expect(task.status).toBe('succeeded');
     expect(task.dependencies).toEqual([]);
     expect(db.prepare('SELECT status, result FROM subtasks WHERE task_id = ?').get(task.id)).toEqual({
       status: 'done',

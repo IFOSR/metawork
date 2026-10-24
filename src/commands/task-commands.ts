@@ -1,7 +1,7 @@
 import { publicText } from '../utils/public-text.js';
 import type { TaskView } from '../task/task-view.js';
 import { publicDeliveryLines } from '../delivery/public-delivery-view.js';
-import { TASK_USER_STATE_LABELS } from '../task/task-user-state.js';
+import { TASK_STATUS_LABELS, isTerminalTaskStatus } from '../task/task-state.js';
 import { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import {
   optionalStringArg,
@@ -23,16 +23,20 @@ import {
   isUnknownTaskBlocker,
 } from '../task/task-blocker-guidance.js';
 
+/**
+ * Both legacy scope names select `needs_action`: `parked` and `blocked` are one
+ * user-facing state now. The scope names stay for command compatibility.
+ */
 const CLEAR_SCOPE_STATUSES: Record<TaskClearScope, TaskStatus[]> = {
   all: MANAGEABLE_TASK_STATUSES,
-  parked: ['parked'],
-  blocked: ['blocked'],
+  parked: ['needs_action'],
+  blocked: ['needs_action'],
 };
 
 const CLEAR_SCOPE_LABELS: Record<TaskClearScope, string> = {
   all: '所有未完成任务',
-  parked: '挂起任务',
-  blocked: '需要处理',
+  parked: '待处理任务',
+  blocked: '待处理任务',
 };
 
 function parseClearScope(value: string | undefined): TaskClearScope | null {
@@ -84,14 +88,18 @@ export function formatTaskClearResult(scope: TaskClearScope, cancelled: Task[], 
   }
 
   lines.push(
-    ...cancelled.map(task => `  - #${task.id} [已结束] ${task.title}`),
+    ...cancelled.map(task => `  - #${task.id} [${TASK_STATUS_LABELS[task.status]}] ${task.title}`),
   );
   lines.push('→ 相关会话任务槽、调度队列与执行派发已同步释放；新任务可立即执行');
   return lines.join('\n');
 }
 
 function formatTaskLine(task: Task, view: TaskView | null): string {
-  return publicText(`  #${task.id} [${TASK_USER_STATE_LABELS[view?.userState ?? 'needs_action']}] ${task.title}\n    → ${view?.userStateReason ?? '任务视图暂不可用，请重新查询'}`);
+  const label = view?.statusLabel ?? TASK_STATUS_LABELS[task.status];
+  const reason = view?.state.reason.message
+    || task.stateDetail.reason.message
+    || '暂无补充说明';
+  return publicText(`  #${task.id} [${label}] ${task.title}\n    → ${reason}`);
 }
 
 function buildLatestNextStep(task: {
@@ -105,13 +113,13 @@ function buildLatestNextStep(task: {
     return latestSnapshot.nextStep;
   }
 
-  if (task.status === 'blocked') {
+  if (task.status === 'needs_action') {
     const blocker = task.dependencies.find(dep => dep.status === 'waiting')?.description;
     return blocker ? formatBlockedTaskNextStep(task.id, blocker) : '先确认需要处理的条件';
   }
 
-  if (task.status === 'done') {
-    return '如需延续，可基于当前结果创建 follow-up 任务';
+  if (task.status === 'succeeded' || task.status === 'failed' || task.status === 'cancelled') {
+    return '如需延续，可直接输入新的要求创建 follow-up 任务';
   }
 
   return '继续推进当前任务';
@@ -124,7 +132,7 @@ function buildRecoveryAction(task: {
   materialSummary?: { status: 'missing' | 'partial' | 'ready'; sufficiency: string };
   blockerReason?: string;
 }): string {
-  if (task.status === 'blocked') {
+  if (task.status === 'needs_action') {
     if (task.blockerReason && isUnknownTaskBlocker(task.blockerReason)) {
       return formatBlockedTaskRecoveryAction(task.id, task.blockerReason);
     }
@@ -138,11 +146,7 @@ function buildRecoveryAction(task: {
     return `/task resume ${task.id} [材料路径]`;
   }
 
-  if (task.status === 'parked') {
-    return `/task resume ${task.id}`;
-  }
-
-  if (task.status === 'done') {
+  if (task.status === 'failed' || task.status === 'cancelled' || task.status === 'succeeded') {
     return '直接输入 follow-up 指令，基于当前结果继续';
   }
 
@@ -154,19 +158,25 @@ export async function listTasks(args: ResolvedCommandArgs, context: CommandConte
   const legacyStatus = scope === 'active' ? 'active'
     : scope === 'ready' || scope === 'parked' || scope === 'blocked' || scope === 'done' ? scope
       : undefined;
-  const filter = scope === 'needs-action' || scope === 'blocked' ? 'needs_action'
-    : scope === 'executing' || scope === 'active' || scope === 'running' ? 'executing'
-      : scope === 'waiting' || scope === 'ready' || scope === 'parked' ? 'waiting'
-        : scope === 'finished' || scope === 'done' ? 'finished'
-          : undefined;
+  // Scope names map onto the six states directly. Legacy names stay accepted so
+  // an old client cannot silently show an empty list.
+  const filter: TaskStatus | 'active' | 'finished' | undefined =
+    scope === 'needs-action' || scope === 'blocked' || scope === 'parked' ? 'needs_action'
+      : scope === 'executing' || scope === 'running' ? 'running'
+        : scope === 'waiting' || scope === 'ready' || scope === 'queued' ? 'queued'
+          : scope === 'active' ? 'active'
+            : scope === 'finished' || scope === 'done' || scope === 'succeeded' ? 'finished'
+              : undefined;
   const repo = context.taskEngine.getTaskRepo();
   const tasks = repo.findAll();
   const views = new Map(tasks.map(task => [task.id, context.taskControl?.taskView?.(task.id) ?? null]));
-  const visibleTasks = legacyStatus
-    ? (legacyStatus === 'active' ? tasks.filter(task => task.status === 'running') : tasks.filter(task => task.status === legacyStatus))
-    : filter
-      ? tasks.filter(task => (views.get(task.id)?.userState ?? 'needs_action') === filter)
-    : tasks;
+  const matches = (task: Task): boolean => {
+    if (filter === 'active') return !isTerminalTaskStatus(task.status);
+    if (filter === 'finished') return isTerminalTaskStatus(task.status);
+    if (filter) return task.status === filter;
+    return true;
+  };
+  const visibleTasks = tasks.filter(matches);
 
   if (visibleTasks.length === 0) {
     return { type: 'text', content: '暂无任务' };
@@ -177,8 +187,11 @@ export async function listTasks(args: ResolvedCommandArgs, context: CommandConte
     return { type: 'text', content: `任务列表：\n${lines.join('\n')}` };
   }
 
-  const groups = (['executing', 'waiting', 'needs_action', 'finished'] as const).map(state => ({
-    title: TASK_USER_STATE_LABELS[state], tasks: visibleTasks.filter(task => (views.get(task.id)?.userState ?? 'needs_action') === state),
+  const groups = ([
+    'running', 'queued', 'needs_action', 'succeeded', 'failed', 'cancelled',
+  ] as const).map(status => ({
+    title: TASK_STATUS_LABELS[status],
+    tasks: visibleTasks.filter(task => task.status === status),
   })).filter(group => group.tasks.length > 0);
 
   const lines = ['任务清单：', ''];
@@ -238,11 +251,13 @@ export async function showTask(args: ResolvedCommandArgs, context: CommandContex
     `标题: ${task.title}`,
     `目标: ${task.goal}`,
     '',
-    `当前状态: ${TASK_USER_STATE_LABELS[taskView?.userState ?? 'needs_action']}`,
-    `状态说明: ${taskView?.userStateReason ?? '任务视图暂不可用，请重新查询'}`,
+    `当前状态: ${TASK_STATUS_LABELS[taskView?.status ?? task.status]}（版本 ${taskView?.state.stateVersion ?? task.stateVersion}）`,
+    `状态说明: ${taskView?.explanation || task.stateDetail.reason.message || '暂无补充说明'}`,
     ...publicDeliveryLines(delivery),
-    ...(taskView?.pendingDecision?.actions.includes('accept_result') ? [`接受并交付: /task accept-result ${taskId}`] : []),
-    ...(taskView?.pendingDecision?.actions.includes('retry_attempt') ? [`重新执行: /task retry-result ${taskId}`] : []),
+    ...(taskView?.pendingActions.some(action => action.kind === 'accept_result')
+      ? [`接受并交付: /task accept-result ${taskId}`] : []),
+    ...(taskView?.pendingActions.some(action => action.kind === 'retry_attempt')
+      ? [`重新执行: /task retry-result ${taskId}`] : []),
     `上次做到: ${lastProgress}`,
     `最新结果摘要: ${latestResult}`,
     `最新下一步: ${latestNextStep}`,
@@ -281,14 +296,12 @@ export async function pauseTask(args: ResolvedCommandArgs, context: CommandConte
 
   try {
     const wasRunning = task.status === 'running';
-    context.taskEngine.park(taskId, '用户手动暂停', {
-      done: [task.summary || '进行中'],
-      pending: ['待继续'],
-      nextStep: '恢复后继续',
-      pauseReason: '用户手动暂停',
-    });
+    if (!context.taskControl?.blockTask) {
+      return { type: 'text', content: '操作失败: 当前环境不支持安全暂停' };
+    }
+    await context.taskControl.blockTask(taskId, '用户手动暂停');
     if (wasRunning) context.activeExecutions?.abortTask(taskId);
-    return { type: 'text', content: `任务 #${taskId} 已暂停` };
+    return { type: 'text', content: `任务 #${taskId} 已暂停（待处理）` };
   } catch (error) {
     return { type: 'text', content: `操作失败: ${(error as Error).message}` };
   }
@@ -319,7 +332,7 @@ export async function resumeTask(args: ResolvedCommandArgs, context: CommandCont
       taskId,
       expectedGenerationId,
       expectedGraphRevision,
-      mode: task.status === 'blocked' ? 'resume-blocked' : 'resume-parked',
+      mode: task.status === 'needs_action' ? 'resume-blocked' : 'resume-parked',
       newlyProvidedResources,
     },
   };
@@ -335,14 +348,12 @@ export async function blockTask(args: ResolvedCommandArgs, context: CommandConte
   try {
     const wasRunning = task.status === 'running';
     const reason = stringArg(args, 'reason') || '未指定原因';
-    context.taskEngine.block(taskId, {
-      taskId,
-      type: 'manual',
-      description: reason,
-      status: 'waiting',
-    });
+    if (!context.taskControl?.blockTask) {
+      return { type: 'text', content: '操作失败: 当前环境不支持安全标记' };
+    }
+    await context.taskControl.blockTask(taskId, reason);
     if (wasRunning) context.activeExecutions?.abortTask(taskId);
-    return { type: 'text', content: `任务 #${taskId} 已标记为需要处理: ${reason}` };
+    return { type: 'text', content: `任务 #${taskId} 已标记为待处理: ${reason}` };
   } catch (error) {
     return { type: 'text', content: `操作失败: ${(error as Error).message}` };
   }
@@ -450,6 +461,16 @@ export async function acceptPartialResult(
 
 export async function acceptResult(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
   return decideResult(args, context, false);
+}
+
+export async function retryRemainingWork(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
+  try {
+    if (!context.taskControl.retryRemainingWork) throw new Error('当前 Runtime 不支持剩余工作重试');
+    const result = await context.taskControl.retryRemainingWork(stringArg(args, 'taskId'));
+    return { type: 'text', content: `已创建关联重试任务 #${result.taskId}，原任务结论与成果保留。` };
+  } catch (error) {
+    return { type: 'text', content: `操作失败: ${(error as Error).message}` };
+  }
 }
 
 export async function retryResult(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {

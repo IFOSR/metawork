@@ -69,7 +69,7 @@ describe('Round 4 task view acceptance', () => {
     session.initialize();
     await session.submit('整理 Phoenix 项目的周报，输出一个简短结论', { awaitAsyncWork: true });
 
-    const completedTask = taskRepo.findByStatus('done')[0];
+    const completedTask = taskRepo.findByStatus('succeeded')[0];
     expect(completedTask).toBeDefined();
 
     const detail = await createDefaultCommandCatalog().execute(`/task show ${completedTask.id}`, {
