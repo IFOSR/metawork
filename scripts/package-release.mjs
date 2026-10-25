@@ -182,7 +182,7 @@ function gitSourceUrl(sourceRoot) {
 function assertPackagableTree(options) {
   const required = [
     join(options.sourceRoot, 'dist', 'install-cli.js'),
-    join(options.sourceRoot, 'dist', 'planning-agent-plan-v8.schema.json'),
+    join(options.sourceRoot, 'dist', 'planning-agent-plan-v9.schema.json'),
     join(options.sourceRoot, 'web', 'dist'),
     join(options.sourceRoot, 'node_modules'),
     join(options.plannerRoot, 'package.json'),
@@ -362,9 +362,9 @@ function defaultCompatibility(sourceRoot) {
     configurationSchema: 2,
     // plannerHostProtocol: anyfusion-planner-host-v2 driver contract
     plannerHostProtocol: 2,
-    // planningPlanSchema: planning-agent-plan-v8
+    // planningPlanSchema: planning-agent-plan-v9
     planningPlanSchema: 8,
-    planningPlanSchemaHash: 'planning-agent-plan-v8',
+    planningPlanSchemaHash: 'planning-agent-plan-v9',
     // workGraphSchema / kernelDecisionSchema: release metadata reviewed per release
     workGraphSchema: 7,
     kernelDecisionSchema: 6,

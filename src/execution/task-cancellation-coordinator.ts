@@ -110,6 +110,13 @@ export class TaskCancellationCoordinator {
       uncertifiedResult: pending,
       acceptedResult: expectedResult && this.previouslyAccepted(expectedResult) ? expectedResult : null,
       resultRetrySafe: Boolean(pendingSubtask && deriveRecoverySafety(pendingSubtask.requiredCapabilities) !== 'external_non_idempotent'),
+      candidateDeliveries: revision
+        ? this.deps.publicationRepo.listAwaitingAcceptance(taskId, revision.generationId)
+          .map(publication => ({
+            publicationId: publication.id,
+            subtaskId: publication.subtaskId,
+          }))
+        : [],
     };
   }
 

@@ -176,7 +176,6 @@ export function buildAccountKernelExecutionServices(deps: {
       dispatchItemRepo: deps.dispatchItemRepo,
       taskRuntimeService: deps.taskRuntimeService,
       userArtifactPublication: deps.userArtifactPublication,
-      resolveUserWorkspaceRoot: deps.resolveUserWorkspaceRoot,
     }),
     publicationRepo: deps.publicationRepo,
     resultObjectRepo: new ResultObjectRepo(deps.db, deps.resultRoot),

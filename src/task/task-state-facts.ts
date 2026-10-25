@@ -74,6 +74,8 @@ export interface TaskRawPublicationFact {
     | 'cancelled'
     | 'uncertain';
   readonly deliveryStatus: 'pending' | 'failed' | 'succeeded' | null;
+  /** Candidate change set ready inside isolation; awaiting explicit acceptance. */
+  readonly awaitingAcceptance?: boolean;
 }
 
 export interface TaskRawRetryWakeFact {
@@ -224,6 +226,22 @@ export function readTaskEvaluationInput(raw: TaskStateRawFacts): TaskEvaluationI
   // Only an unknown outcome requires verification on this Task. A definite
   // delivery failure is terminal; explicit retry belongs to a new Task.
   for (const publication of raw.publications) {
+    if (publication.awaitingAcceptance && !pendingActions.some(
+      action => action.actionId === `accept_delivery:${publication.id}`,
+    )) {
+      pendingActions.push({
+        actionId: `accept_delivery:${publication.id}`,
+        kind: 'accept_result',
+        label: '接受候选变更并发布到工作区',
+        reason: createTaskReason(
+          'input_required',
+          '候选变更已在隔离环境完成，等待你接受后才会写入目标工作区。',
+          [`publication:${publication.id}`],
+        ),
+        result: null,
+        publicationId: publication.id,
+      });
+    }
     if (publication.status !== 'uncertain') continue;
     if (pendingActions.some(action => action.actionId === `delivery:${publication.id}`)) continue;
     pendingActions.push({
@@ -294,7 +312,9 @@ export function readTaskEvaluationInput(raw: TaskStateRawFacts): TaskEvaluationI
   const publishing = raw.publications.some(publication => (
     publication.status === 'pending' || publication.status === 'applying'
   ));
-  const delivering = raw.publications.some(publication => publication.deliveryStatus === 'pending');
+  const delivering = raw.publications.some(
+    publication => publication.deliveryStatus === 'pending' && !publication.awaitingAcceptance,
+  );
   // An unverified external outcome is not a live operation: the driver must be
   // reconciled before the Task can claim it is doing work.
   const activeOperation = raw.externalOutcomeUnknown ? null : activeDispatch

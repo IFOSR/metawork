@@ -15,6 +15,13 @@ import {
 import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import {
+  type WorkspaceDeliveryPolicy,
+  type WorkspaceExecutionDecision,
+  type WorkspaceExecutionMode,
+  type WorkspaceIntent,
+} from '../core/workspace-execution.js';
+import { resolveWorkspaceExecutionDecision } from './workspace-execution-decision.js';
+import {
   deriveCancellationClosure,
   validateWorkGraph as validateWorkGraphStructure,
 } from '../work-graph/index.js';
@@ -134,6 +141,17 @@ export type KernelEvent =
       targetGraphRevision: number;
       attachmentIds?: string[];
       availabilityExplanation?: string | null;
+      /**
+       * Server-projected Workspace admission facts (2026-10-25 Planner-owned
+       * Workspace mode design §3). The Application Shell canonicalizes the
+       * Conversation-bound Workspace; Kernel never reads the filesystem. The
+       * facts live on the durable event so an admission replay reaches the same
+       * decision without re-asking the Planner.
+       */
+      workspaceAdmission?: {
+        targetWorkspace: { workspaceId: string; canonicalPath: string } | null;
+        worktreeAvailable: boolean;
+      };
       /**
        * Bounded, server-produced Span routing observation (ADR-0033
        * amendment). Absent for every revision created before this field
@@ -310,6 +328,10 @@ export interface KernelTaskFact {
   status: KernelTaskStatus;
   conversationId?: string;
   workspaceId?: string;
+  /** Immutable Workspace execution mode fixed when the Task was admitted. */
+  executionMode?: WorkspaceExecutionMode;
+  /** Authorized delivery policy fixed when the Task was admitted. */
+  deliveryPolicy?: WorkspaceDeliveryPolicy;
 }
 
 export interface KernelSubtaskFact {
@@ -472,6 +494,8 @@ export type KernelSnapshot = { productionAuthorization?: ProductionAuthorization
       uncertifiedResult?: { subtaskId: string; attemptId: string; resultId: string } | null;
       resultRetrySafe?: boolean;
       acceptedResult?: PendingResultIdentity | null;
+      /** Integrated candidates whose Workspace delivery awaits the user. */
+      candidateDeliveries?: Array<{ publicationId: string; subtaskId: string }>;
     }
   | {
       schemaVersion: 5;
@@ -572,6 +596,10 @@ export type KernelDecisionAction =
       graphRevision: number;
       proposalSource: 'initial' | 'replan' | 'conflict_replan';
       routing?: Record<string, RoutingResolutionAudit[]>;
+      /** Kernel-authorized Workspace execution facts for this Task. */
+      workspaceExecution: WorkspaceExecutionDecision;
+      /** Planner-owned semantics validated with the decision (null for legacy plans). */
+      workspaceIntent?: WorkspaceIntent | null;
       /** §5.4 abandon-and-create: the exact old Task to abandon before admission. */
       conflictResolution?: { oldTaskId: string };
     }
@@ -670,6 +698,7 @@ export type KernelDecisionAction =
       authorizedBindingsBySubtask: Record<string, AuthorizedExecutorBinding[]>;
       unavailableAgentClassNames: string[];
       explanation: string;
+      workspaceExecution?: WorkspaceExecutionDecision;
     }
   | {
       type: 'activate_deferred_task_plan';
@@ -681,6 +710,7 @@ export type KernelDecisionAction =
       generationId: string;
       graphRevision: number;
       proposalSource: 'replan';
+      workspaceExecution?: WorkspaceExecutionDecision;
     }
   | {
       type: 'cancel_task';
@@ -694,6 +724,17 @@ export type KernelDecisionAction =
       graphRevision: number;
       subtaskIds: string[];
       expectedStatuses: Array<{ subtaskId: string; status: KernelSubtaskStatus }>;
+    }
+  | {
+      /**
+       * Explicit acceptance of one or more isolated candidate deliveries. The
+       * Workspace write happens only after this authorization.
+       */
+      type: 'authorize_workspace_delivery';
+      taskId: string;
+      generationId: string;
+      graphRevision: number;
+      publicationIds: string[];
     }
   | {
       type: 'accept_partial_result';
@@ -1052,6 +1093,40 @@ export class ControlKernel {
       workGraph: proposal.workGraph,
     });
     const unavailable = unavailableAgentClasses(snapshot.executorStatuses, event.occurredAt);
+    const workspaceWrites = proposal.workGraph.subtasks.some(subtask => (
+      subtask.deliveryKind !== 'report' || (subtask.fileOutputs?.length ?? 0) > 0
+    ));
+    const workspaceResolution = resolveWorkspaceExecutionDecision({
+      intent: proposal.workspaceIntent ?? null,
+      riskLevel: proposal.risk.level,
+      writes: workspaceWrites,
+      declaredOutputPaths: proposal.workGraph.subtasks.flatMap(subtask => subtask.fileOutputs ?? []),
+      facts: {
+        fallbackMode: snapshot.kernelConfiguration.workspaceExecution?.fallbackMode,
+        targetWorkspace: event.workspaceAdmission?.targetWorkspace ?? null,
+        worktreeAvailable: event.workspaceAdmission?.worktreeAvailable ?? true,
+        existingTaskBinding: (() => {
+          if (!proposal.task.taskId) return null;
+          const existingTask = snapshot.tasks.find(task => task.id === proposal.task.taskId);
+          if (!existingTask?.executionMode) return null;
+          return {
+            workspaceId: existingTask.workspaceId ?? '',
+            executionMode: existingTask.executionMode,
+            deliveryPolicy: existingTask.deliveryPolicy ?? 'await_acceptance',
+          };
+        })(),
+      },
+    });
+    if (workspaceResolution.status === 'clarification') {
+      // A clarification creates no Task, Attempt, Worktree or write lease.
+      return decision(event, {
+        type: 'request_clarification',
+        question: proposal.clarificationQuestion ?? workspaceResolution.question,
+      }, workspaceResolution.reason);
+    }
+    if (workspaceResolution.status === 'rejected') {
+      return decision(event, { type: 'reject_request' }, workspaceResolution.reason);
+    }
     const resolved = resolveAuthorizedBindings(
       proposal.workGraph,
       snapshot.kernelConfiguration,
@@ -1089,6 +1164,7 @@ export class ControlKernel {
           unavailableAgentClassNames,
           explanation: event.availabilityExplanation
             ?? 'The revised plan is waiting because every eligible Executor for at least one Subtask is unavailable.',
+          workspaceExecution: workspaceResolution.decision,
         }, 'latest replan proposal deferred until Executor availability recovers');
       }
       return decision(event, { type: 'reject_request' }, 'no healthy canonical AgentClass remains');
@@ -1130,6 +1206,8 @@ export class ControlKernel {
       graphRevision: event.targetGraphRevision,
       proposalSource: event.proposalSource,
       routing: resolved.routing,
+      workspaceExecution: workspaceResolution.decision,
+      workspaceIntent: workspaceResolution.intent,
       ...(proposal.conflictResolution
         ? { conflictResolution: { oldTaskId: proposal.conflictResolution.oldTaskId } }
         : {}),
@@ -1449,6 +1527,29 @@ export class ControlKernel {
     if (violations.length > 0) {
       return decision(event, { type: 'no_op' }, 'deferred availability proposal no longer validates');
     }
+    const workspaceWrites = deferred.proposal.workGraph.subtasks.some(subtask => (
+      subtask.deliveryKind !== 'report' || (subtask.fileOutputs?.length ?? 0) > 0
+    ));
+    const workspaceResolution = resolveWorkspaceExecutionDecision({
+      intent: deferred.proposal.workspaceIntent ?? null,
+      riskLevel: deferred.proposal.risk.level,
+      writes: workspaceWrites,
+      declaredOutputPaths: deferred.proposal.workGraph.subtasks.flatMap(subtask => subtask.fileOutputs ?? []),
+      facts: {
+        targetWorkspace: deferred.workspaceAdmission?.targetWorkspace ?? null,
+        worktreeAvailable: deferred.workspaceAdmission?.worktreeAvailable ?? true,
+        existingTaskBinding: snapshot.task.executionMode
+          ? {
+              workspaceId: snapshot.task.workspaceId ?? '',
+              executionMode: snapshot.task.executionMode,
+              deliveryPolicy: snapshot.task.deliveryPolicy ?? 'await_acceptance',
+            }
+          : null,
+      },
+    });
+    if (workspaceResolution.status !== 'resolved') {
+      return decision(event, { type: 'no_op' }, `deferred Workspace execution cannot be authorized: ${workspaceResolution.reason}`);
+    }
     return decision(event, {
       type: 'activate_deferred_task_plan',
       taskId: event.taskId,
@@ -1459,6 +1560,7 @@ export class ControlKernel {
       generationId: deferred.generationId,
       graphRevision: deferred.targetGraphRevision,
       proposalSource: deferred.proposalSource,
+      workspaceExecution: workspaceResolution.decision,
     }, 'deferred availability proposal is executable again');
   }
 
@@ -1651,6 +1753,18 @@ export class ControlKernel {
     }
     if (!snapshot.generationId || snapshot.graphRevision === null) {
       return decision(event, { type: 'reject_request' }, 'active Work Graph generation is missing');
+    }
+    if (event.type === 'partial_result_acceptance_requested'
+      && !snapshot.uncertifiedResult
+      && (snapshot.candidateDeliveries?.length ?? 0) > 0
+      && !isTerminalTaskStatus(snapshot.task.status)) {
+      return decision(event, {
+        type: 'authorize_workspace_delivery',
+        taskId: event.taskId,
+        generationId: snapshot.generationId,
+        graphRevision: snapshot.graphRevision,
+        publicationIds: snapshot.candidateDeliveries!.map(candidate => candidate.publicationId),
+      }, 'explicit acceptance of isolated candidate changes authorized');
     }
     if (event.type === 'partial_result_acceptance_requested' || event.type === 'task_result_retry_requested') {
       const expected = event.expectedResult;

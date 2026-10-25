@@ -57,8 +57,12 @@ function fixture(responder: FakeAttemptExecutionResponder, service = false, exis
     logRoot: join(root, '..', 'service-logs'), resolveEnvironment: async () => null,
     resolvePublishedDirectory: async taskId => {
       const task = repo.findById(taskId);
-      return task?.publicTaskDirectory && artifacts.publicFiles.list('local-default', taskId).length > 0
-        ? join(root, task.publicTaskDirectory) : null;
+      if (!task || artifacts.publicFiles.list('local-default', taskId).length === 0) return null;
+      // Delivery applies the authorized change set inside the target Workspace;
+      // only an explicitly selected project keeps its own directory root.
+      return task.publicProject && task.publicTaskDirectory
+        ? join(root, task.publicTaskDirectory)
+        : root;
     } });
   const session = new MetaclawSession({ taskEngine: engine, userArtifactPublication: delivery, managedLocalServices: services,
     memoryEngine: new MemoryEngine(new PreferenceRepo(db)), orchestration: new OrchestrationEngine(engine),
@@ -99,7 +103,7 @@ describe('user acceptance through the real Session / Kernel / publication loop',
     expect(after).toEqual(expect.arrayContaining(before));
     expect(f.task().publicTaskDirectory).toBe(directory);
     expect(f.task().status).toBe('succeeded');
-    expect(readFileSync(join(f.root, directory!, 'answer.md'), 'utf8')).toBe('verified answer');
+    expect(readFileSync(join(f.root, 'answer.md'), 'utf8')).toBe('verified answer');
   });
 
   it('runs a real backend API smoke while the independent UI waits for user acceptance', async () => {
@@ -144,7 +148,7 @@ describe('user acceptance through the real Session / Kernel / publication loop',
     // eslint-disable-next-line no-console
     console.error('ACCEPT', f.task().status, f.task().stateDetail.reason.code, JSON.stringify(f.session.getSnapshot().output.slice(-8)));
     expect(f.task().status).toBe('succeeded');
-    expect(readFileSync(join(f.root, f.task().publicTaskDirectory!, 'answer.md'), 'utf8')).toBe('accepted answer');
+    expect(readFileSync(join(f.root, 'answer.md'), 'utf8')).toBe('accepted answer');
     await f.session.submit(`/task accept-result ${f.task().id}`, { awaitAsyncWork: true });
     expect(f.backend.create).toHaveBeenCalledTimes(calls);
   });
@@ -180,7 +184,7 @@ http.createServer((req,res)=>{res.statusCode=fs.existsSync('ready')?200:503;res.
     if (healthy) {
       const response = await fetch(status.url + '/health');
       expect(response.status).toBe(200);
-      expect(await response.text()).toBe(realpathSync(join(f.root, f.task().publicTaskDirectory!)));
+      expect(await response.text()).toBe(realpathSync(f.root));
     }
     // A required service that fails its health check is a definite business
     // failure; the delivered code is preserved and the Task does not revive.

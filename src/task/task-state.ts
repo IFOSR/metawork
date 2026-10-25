@@ -181,6 +181,8 @@ export interface TaskPendingAction {
   readonly label: string;
   readonly reason: TaskReason;
   readonly result: TaskPendingResultIdentity | null;
+  /** Isolated Workspace publication that this action accepts. */
+  readonly publicationId?: string;
 }
 
 export type TaskCleanupState = 'none' | 'pending' | 'blocked';
@@ -572,6 +574,7 @@ function normalizePendingAction(value: unknown): TaskPendingAction | null {
     ),
     reason,
     result: normalizePendingResultIdentity(source.result),
+    ...(typeof source.publicationId === 'string' ? { publicationId: boundedText(source.publicationId, TASK_STATE_DETAIL_LIMITS.evidenceRefLength) } : {}),
   };
 }
 

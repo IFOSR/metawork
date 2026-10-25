@@ -447,6 +447,14 @@ export class AccountStartupRecoveryService {
     const signalled = await this.convergeRecoveryRequired(now);
     await this.convergeConversationSlots(now);
     await this.promoteAvailableQueuedTasks(now);
+    // Internal Worktree directories are Runtime state: retire the ones whose
+    // Generation is terminal and residue-free, keep the rest for recovery.
+    try {
+      await this.deps.kernelExecutionServices.kernelExecutionRuntime
+        .cleanupWorktreeExecutions?.();
+    } catch {
+      // Cleanup diagnostics are durable; a failed sweep must not block startup.
+    }
     return signalled
       || retriedTaskIds.length > 0
       || retryWakeResidue > 0
@@ -1202,6 +1210,8 @@ export class AccountStartupRecoveryService {
             status: task.status,
             ...(task.conversationId ? { conversationId: task.conversationId } : {}),
             ...(task.workspaceId ? { workspaceId: task.workspaceId } : {}),
+            ...(task.executionMode ? { executionMode: task.executionMode } : {}),
+            ...(task.workspaceDeliveryPolicy ? { deliveryPolicy: task.workspaceDeliveryPolicy } : {}),
           })),
         activeTaskByConversation: Object.fromEntries(
           this.deps.repositories.conversationTaskSchedulerRepo.listSlots().map(slot => [

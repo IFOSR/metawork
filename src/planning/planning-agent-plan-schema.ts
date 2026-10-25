@@ -166,9 +166,46 @@ const ConflictResolutionSchema = z.object({
   oldTaskId: z.string().trim().min(1),
 }).strict();
 
-const PlanShapeSchema = z.object({
+/**
+ * Planner-owned Workspace intent (2026-10-25 design §4). It is a semantic
+ * proposal only: the target Workspace must resolve through the trusted
+ * Conversation binding, and every target path stays Workspace-relative.
+ */
+const WorkspaceIntentSchema = z.object({
+  targetWorkspaceId: z.string().trim().min(1).max(240).nullable(),
+  targetPaths: z.array(
+    z.string().trim().min(1).max(500).refine(
+      value => !value.startsWith('/')
+        && !value.includes('\\')
+        && !value.split('/').some(part => !part || part === '.' || part === '..'),
+      'Use Workspace-relative paths without absolute roots, backslashes, empty or traversing segments.',
+    ),
+  ).max(50),
+  operation: z.enum([
+    'modify_existing',
+    'continue_existing_edit',
+    'create_in_target',
+    'run_in_target',
+    'read_only',
+    'isolated_experiment',
+    'high_risk_change',
+    'ambiguous',
+  ]).describe(
+    'modify_existing: change an existing target file; continue_existing_edit: keep editing a file this Conversation already changed; create_in_target: add a new file in the target Workspace; run_in_target: run a command or process in the target Workspace; read_only: answer without workspace writes; isolated_experiment: try work in isolation first; high_risk_change: broad or destructive change; ambiguous: the side effect needs a user decision.',
+  ),
+  originalFilePolicy: z.enum(['may_replace', 'must_preserve', 'unknown']),
+  isolationPolicy: z.enum(['requested', 'not_requested', 'required', 'unknown']),
+  proposedMode: z.enum(['in_place', 'worktree']).nullable().describe(
+    'in_place: execute directly in the target Workspace; worktree: execute in an internal isolated directory and publish only authorized changes; null: no opinion, Kernel may use the configured fallback for low-risk requests.',
+  ),
+  confidence: z.number().min(0).max(1),
+  reason: z.string().trim().min(1).max(1000),
+}).strict();
+
+const WorkspaceIntentOutputSchema = WorkspaceIntentSchema;
+
+const PlanFieldsSchema = z.object({
   id: z.string().trim().min(1),
-  schemaVersion: z.literal(8),
   action: z.enum(ACTION_VALUES),
   confidence: z.number().min(0).max(1),
   reason: z.string(),
@@ -180,7 +217,22 @@ const PlanShapeSchema = z.object({
   conflictResolution: ConflictResolutionSchema.nullable().optional(),
   workGraph: WorkGraphSchema.nullable(),
   source: z.literal(PLANNER_SOURCE),
-}).strict().superRefine((plan, context) => {
+});
+
+type PlanCoherenceShape = {
+  action: z.infer<typeof PlanFieldsSchema>['action'];
+  workGraph: unknown;
+  authorizationResolution: unknown;
+  conflictResolution?: unknown;
+  task: { taskId: string | null };
+  workspaceIntent?: unknown;
+};
+
+/** Action/work-graph coherence shared by every supported plan version. */
+function applyPlanCoherence(
+  plan: PlanCoherenceShape,
+  context: z.RefinementCtx,
+): void {
   if (plan.action === 'plan_work_graph' && plan.workGraph === null) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['workGraph'], message: 'plan_work_graph requires workGraph' });
   }
@@ -199,12 +251,56 @@ const PlanShapeSchema = z.object({
   if (plan.conflictResolution != null && plan.task.taskId !== null) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['conflictResolution'], message: 'conflictResolution targets a NEW Task (taskId must be null)' });
   }
+}
+
+const PlanShapeV9FieldsSchema = PlanFieldsSchema.extend({
+  schemaVersion: z.literal(9),
+  workspaceIntent: WorkspaceIntentOutputSchema.nullable(),
 });
 
-/** Strict parser for raw Planner JSON. It never supplies semantic defaults. */
-export const PlanningAgentPlanSchema = PlanShapeSchema;
+/** Current contract: schema 9 requires a Workspace intent for executable work. */
+const PlanShapeV9Schema = PlanShapeV9FieldsSchema.strict().superRefine((plan, context) => {
+  applyPlanCoherence(plan, context);
+  if (plan.action === 'plan_work_graph' && plan.workspaceIntent === null) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['workspaceIntent'],
+      message: 'plan_work_graph requires workspaceIntent',
+    });
+  }
+  if (plan.action !== 'plan_work_graph' && plan.workspaceIntent?.proposedMode) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['workspaceIntent', 'proposedMode'],
+      message: 'non-work-graph actions cannot propose an execution mode',
+    });
+  }
+});
 
-/** Canonical structured-output contract shared by AnyFusion Planner transports. */
-export const PlanningAgentPlanOutputSchema = PlanShapeSchema;
+/** Legacy schema 8: no Workspace intent; Kernel keeps the isolated safe default. */
+const PlanShapeSchema = PlanFieldsSchema.extend({
+  schemaVersion: z.literal(8),
+}).strict().superRefine((plan, context) => {
+  applyPlanCoherence(plan, context);
+});
+
+/**
+ * Canonical structured-output contract shared by AnyFusion Planner transports.
+ * A union is used because Responses structured output accepts `anyOf` but
+ * rejects the `oneOf` emitted by `discriminatedUnion`.
+ */
+const PlanVersionedShapeSchema = z.union([PlanShapeV9Schema, PlanShapeSchema]);
+
+/**
+ * Supported plan versions are checked first so an unsupported version is
+ * reported as a `schemaVersion` problem instead of an opaque union failure.
+ * The output contract above stays a plain `anyOf` for the tool schema.
+ */
+export const PlanningAgentPlanSchema = z
+  .object({ schemaVersion: z.union([z.literal(9), z.literal(8)]) })
+  .loose()
+  .pipe(PlanVersionedShapeSchema);
+
+export const PlanningAgentPlanOutputSchema = PlanVersionedShapeSchema;
 
 export type PlanningAgentPlanCandidate = z.infer<typeof PlanningAgentPlanSchema>;

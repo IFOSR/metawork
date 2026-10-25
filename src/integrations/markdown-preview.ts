@@ -60,6 +60,12 @@ export function createMarkdownPreviewLinks(
   return links;
 }
 
+/**
+ * Serves Markdown from an *authorized user Workspace* root. Since the
+ * Planner-owned Workspace execution mode contract (ADR-0050) delivery writes
+ * inside the target Workspace, the root is never the internal execution store:
+ * the caller must pass the canonical user Workspace path it is allowed to serve.
+ */
 export class MarkdownPreviewServer {
   private server: Server | null = null;
   private readonly allowedRoot: string;
@@ -68,7 +74,7 @@ export class MarkdownPreviewServer {
     private readonly config: MarkdownPreviewConfig,
     private readonly workspaceRoot: string,
   ) {
-    this.allowedRoot = resolve(workspaceRoot, 'metaclaw-tasks');
+    this.allowedRoot = resolve(workspaceRoot);
   }
 
   start(): Promise<void> {
@@ -146,9 +152,6 @@ function toSafeWorkspaceRelativePath(workspaceRoot: string, filePath: string): s
   const resolvedPath = resolve(filePath);
   const relativePath = relative(resolvedWorkspace, resolvedPath);
   if (!relativePath || relativePath.startsWith('..') || relativePath.split(sep).includes('..')) {
-    return null;
-  }
-  if (!relativePath.startsWith(`metaclaw-tasks${sep}`) && relativePath !== 'metaclaw-tasks') {
     return null;
   }
   return relativePath.split(sep).join('/');

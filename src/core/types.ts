@@ -63,6 +63,16 @@ export interface PrioritySignals {
 export interface Task {
   id: string;
   executionMode?: 'worktree' | 'in_place';
+  /**
+   * Kernel-authorized Workspace execution facts fixed at admission
+   * (2026-10-25 design §10). Retry, recovery and follow-up rounds inherit them;
+   * they are never re-derived from the environment or the current settings.
+   */
+  workspaceExecutionSource?: 'explicit_user' | 'planner' | 'fallback' | 'kernel_safety';
+  workspaceDeliveryPolicy?: 'none' | 'auto_publish' | 'await_acceptance';
+  workspaceTargetPaths?: string[];
+  /** Planner-owned Workspace semantics fixed at admission (schema 9 plans). */
+  workspaceIntent?: import('./workspace-execution.js').WorkspaceIntent | null;
   publicTaskDirectory?: string;
   publicDeliveryBaseline?: Record<string, string>;
   publicProject?: boolean;

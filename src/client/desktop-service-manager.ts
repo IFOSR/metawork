@@ -161,8 +161,8 @@ export class DesktopServiceManager {
       METACLAW_EXECUTOR_BACKEND: 'worktree',
       ANYFUSION_PI_SOURCE_ROOT: join(root, 'planner'),
       METACLAW_PLANNER_COMMAND: join(root, 'planner', 'packages', 'coding-agent', 'dist', 'cli.js'),
-      METACLAW_PLANNER_SCHEMA_PATH: join(root, 'dist', 'planning-agent-plan-v8.schema.json'),
-      ANYFUSION_PLANNER_SCHEMA_PATH: join(root, 'dist', 'planning-agent-plan-v8.schema.json'),
+      METACLAW_PLANNER_SCHEMA_PATH: join(root, 'dist', 'planning-agent-plan-v9.schema.json'),
+      ANYFUSION_PLANNER_SCHEMA_PATH: join(root, 'dist', 'planning-agent-plan-v9.schema.json'),
       METACLAW_PI_ATTEMPT_EXTENSION: join(root, 'dist', 'pi-attempt-tools.ts'),
       PI_SKIP_VERSION_CHECK: '1', PI_TELEMETRY: '0',
     };

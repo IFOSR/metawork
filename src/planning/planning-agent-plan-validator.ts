@@ -50,6 +50,7 @@ export function validatePlanningAgentPlan(
   validateTaskControlScope(plan, errors);
   validateTaskPriority(plan, errors);
   validateAuthorizationResolution(plan, pendingAuthorizationRequest, errors);
+  validateWorkspaceIntent(plan, errors);
 
   if (plan.workGraph) {
     errors.push(...validateWorkGraph(plan.workGraph).map(
@@ -136,6 +137,79 @@ function validateActionSemantics(plan: PlanningAgentPlan, errors: string[]): voi
   if (plan.action === 'task_control' && plan.task.control === 'none') {
     errors.push('task_control requires a control kind');
   }
+}
+
+/**
+ * Planner owns the Workspace semantics; this only rejects a proposal that
+ * cannot be authorized mechanically. Ownership, containment and lease checks
+ * stay in Kernel admission.
+ */
+function validateWorkspaceIntent(plan: PlanningAgentPlan, errors: string[]): void {
+  const intent = plan.workspaceIntent ?? null;
+  // Legacy schema 8 plans carry no intent; Kernel keeps the isolated safe
+  // default for them instead of rejecting historical events on replay.
+  if (plan.schemaVersion === 8) return;
+  if (plan.action === 'plan_work_graph') {
+    if (!intent) {
+      errors.push('plan_work_graph requires workspaceIntent in PlanningAgentPlan schema 9');
+      return;
+    }
+    if (intent.operation === 'ambiguous') {
+      errors.push('an ambiguous Workspace intent cannot authorize plan_work_graph');
+    }
+    if (intent.operation === 'read_only') {
+      const writes = plan.workGraph?.subtasks.some(
+        subtask => subtask.deliveryKind !== 'report' || (subtask.fileOutputs?.length ?? 0) > 0,
+      ) ?? false;
+      if (writes) {
+        errors.push('a read-only Workspace intent cannot authorize a write Work Graph');
+      }
+    }
+    if (intent.operation !== 'read_only' && intent.targetPaths.length === 0) {
+      errors.push('a writing Workspace intent must declare at least one target path');
+    }
+    if (intent.proposedMode === 'worktree' && !hasIsolationRationale(intent)) {
+      errors.push(
+        'proposedMode worktree requires an isolation, risk, candidate or acceptance rationale',
+      );
+    }
+    if (intent.isolationPolicy === 'required' && intent.proposedMode === 'in_place') {
+      errors.push('proposedMode in_place contradicts isolationPolicy required');
+    }
+    for (const path of intent.targetPaths) {
+      if (path.startsWith('/') || path.includes('\\')
+        || path.split('/').some(part => !part || part === '.' || part === '..')) {
+        errors.push(`workspaceIntent.targetPaths must stay Workspace-relative: ${path}`);
+      }
+    }
+    const targetPaths = intent.targetPaths;
+    for (const output of plan.workGraph?.subtasks.flatMap(subtask => subtask.fileOutputs ?? []) ?? []) {
+      if (output.startsWith('/') || output.includes('\\')
+        || output.split('/').some(part => !part || part === '.' || part === '..')) {
+        errors.push(`subtask.fileOutputs must stay Workspace-relative: ${output}`);
+        continue;
+      }
+      if (!targetPaths.some(target => output === target || output.startsWith(`${target}/`))) {
+        errors.push(`subtask.fileOutputs must be covered by workspaceIntent.targetPaths: ${output}`);
+      }
+    }
+    if (intent.targetWorkspaceId !== null && !/^workspace_[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(intent.targetWorkspaceId)) {
+      errors.push('workspaceIntent.targetWorkspaceId must be a supplied Workspace identity');
+    }
+  }
+  if (!intent) return;
+  if (intent.operation === 'ambiguous' && plan.action !== 'clarification') {
+    errors.push('an ambiguous Workspace intent requires action clarification');
+  }
+}
+
+function hasIsolationRationale(intent: NonNullable<PlanningAgentPlan['workspaceIntent']>): boolean {
+  return intent.isolationPolicy === 'requested'
+    || intent.isolationPolicy === 'required'
+    || intent.operation === 'isolated_experiment'
+    || intent.operation === 'high_risk_change'
+    || intent.originalFilePolicy === 'must_preserve'
+    || /(候选|接受|审核|隔离|保留原文件)/u.test(intent.reason);
 }
 
 function validateTaskControlScope(plan: PlanningAgentPlan, errors: string[]): void {

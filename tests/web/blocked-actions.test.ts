@@ -57,4 +57,27 @@ describe('inline blocked actions', () => {
     }));
     expect(html).not.toContain('blocked-actions');
   });
+
+  it('offers the isolated candidate acceptance action', () => {
+    const html = renderToStaticMarkup(createElement(BlockedActions, {
+      ws,
+      conversationId: 'conv_1',
+      taskId: 'task_1',
+      lifecycle: {
+        status: 'needs_action',
+        reason: { code: 'input_required', message: '候选变更等待接受', evidenceRefs: [] },
+        pendingActions: [{
+          actionId: 'accept_delivery:publication_1',
+          kind: 'accept_result',
+          label: '接受候选变更并发布到工作区',
+          reason: { code: 'input_required', message: '候选变更等待接受', evidenceRefs: [] },
+          result: null,
+          publicationId: 'publication_1',
+        }],
+        nextAuthorizedAction: 'accept_result',
+      },
+      permission: null,
+    } as never));
+    expect(html).toContain('接受候选并发布');
+  });
 });

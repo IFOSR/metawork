@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, chmod } from 'node:fs/promises';
 import { publishPublicGitChanges } from './public-workspace-git.js';
-import { publicTaskRelativeDirectory } from '../task/public-task-directory.js';
 import { assertWorkspaceRelativePath, WorkspacePathError } from '../workspace/workspace-path.js';
 import { ArtifactVersionRepo, type ArtifactVersion } from '../storage/artifact-version-repo.js';
 /**
@@ -37,8 +36,8 @@ async function writeContentAddressedObject(
  *
  * 只有经过 Completion Protocol 验证、Git publication 成功并完成用户产物
  * 复制的文件才成为用户可见 artifact。服务把已集成的 artifact 从内部
- * Git integration workspace 原子复制到用户 Workspace 的
- * `metaclaw-tasks/<task-slug>-<short-task-id>/` 下，并生成安全的
+ * Git integration workspace 原子应用到当前 Conversation 绑定的用户
+ * Workspace 根（或用户明确选择的项目子目录），并生成安全的
  * `ArtifactProjection`。来源校验拒绝符号链接与路径穿越。
  */
 
@@ -67,6 +66,8 @@ import {
 export interface UserArtifactSource {
   /** 已集成 workspace 内的相对路径（来自 Completion artifacts）。 */
   sourceRelativePath: string;
+  /** Optional path relative to the selected delivery project in the user Workspace. */
+  destinationRelativePath?: string;
   remove?: boolean;
   /** Code publication is independent of explicitly declared downloadable files. */
   downloadable?: boolean;
@@ -77,7 +78,13 @@ export interface PublishUserArtifactsInput {
   accountId: string;
   taskId: string;
   taskTitle: string;
-  publicTaskDirectory?: string;
+  /**
+   * Workspace-relative directory that receives the authorized change set.
+   * `null`/absent means the Workspace root, which is the normal case: Worktree
+   * publication applies only the authorized files at their declared paths and
+   * never creates a generated `metaclaw-tasks/<slug>` directory.
+   */
+  deliveryRelativeRoot?: string | null;
   publicDeliveryBaseline?: Record<string, string>;
   generationId: string | null;
   subtaskId: string | null;
@@ -298,8 +305,9 @@ export class UserArtifactPublicationService {
   }
 
   private async publishLocked(input: PublishUserArtifactsInput, canonicalRoot: string): Promise<UserArtifactPublicationResult> {
-    const taskDirectory = this.safeJoinWithin(canonicalRoot,
-      input.publicTaskDirectory ?? publicTaskRelativeDirectory(input.taskTitle, input.taskId));
+    const taskDirectory = input.deliveryRelativeRoot
+      ? this.safeJoinWithin(canonicalRoot, input.deliveryRelativeRoot)
+      : canonicalRoot;
     await rejectSymlinkParents(canonicalRoot, taskDirectory);
     const result: UserArtifactPublicationResult = {
       projections: [],
@@ -313,7 +321,15 @@ export class UserArtifactPublicationService {
     // Validate the entire batch before making any visible change. The last
     // published hash is the baseline; a user's edit is never overwritten.
     for (const source of sources) {
-      try { await this.preflight(input, source.sourceRelativePath, taskDirectory, source.remove); }
+      try {
+        await this.preflight(
+          input,
+          source.sourceRelativePath,
+          taskDirectory,
+          source.remove,
+          source.destinationRelativePath,
+        );
+      }
       catch (error) { result.failures.push({ sourceRelativePath: source.sourceRelativePath,
         reason: error instanceof Error ? error.message : String(error) }); }
     }
@@ -326,7 +342,8 @@ export class UserArtifactPublicationService {
     const backups: Array<{ path: string; bytes: Buffer | null; mode: number }> = [];
     try {
       for (const [index, source] of sources.entries()) {
-        const path = this.safeJoinWithin(taskDirectory, source.sourceRelativePath);
+        const destinationPath = source.destinationRelativePath ?? source.sourceRelativePath;
+        const path = this.safeJoinWithin(taskDirectory, destinationPath);
         const origin = this.safeJoinWithin(await realpath(input.integratedWorkspaceRoot), source.sourceRelativePath);
         const mode = source.remove ? 0o644 : (await lstat(origin)).mode & 0o777;
         const stage = resolve(stagedRoot, String(index));
@@ -341,7 +358,15 @@ export class UserArtifactPublicationService {
       }
       // The staging directory is intentionally outside the Git Workspace, so
       // it cannot contaminate status checks or become a delivered file.
-      for (const source of sources) await this.preflight(input, source.sourceRelativePath, taskDirectory, source.remove);
+      for (const source of sources) {
+        await this.preflight(
+          input,
+          source.sourceRelativePath,
+          taskDirectory,
+          source.remove,
+          source.destinationRelativePath,
+        );
+      }
       if (!await publishPublicGitChanges(canonicalRoot, input.taskId, changes)) {
         const absent = !await lstat(taskDirectory).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
         if (absent) {
@@ -389,24 +414,31 @@ export class UserArtifactPublicationService {
     } finally { await rm(stagedRoot, { recursive: true, force: true }); }
     for (const source of sources) {
       try {
-        await this.preflight(input, source.sourceRelativePath, taskDirectory, source.remove);
+        const destinationPath = source.destinationRelativePath ?? source.sourceRelativePath;
+        await this.preflight(
+          input,
+          source.sourceRelativePath,
+          taskDirectory,
+          source.remove,
+          destinationPath,
+        );
         if (source.remove) {
-          this.taskArtifactRepo.publicFiles.remove(input.accountId, input.taskId, source.sourceRelativePath);
-          await rm(this.safeJoinWithin(taskDirectory, source.sourceRelativePath), { force: true });
-          for (const record of this.taskArtifactRepo.listByTask(input.taskId).filter(item => item.relativePath === source.sourceRelativePath)) {
+          this.taskArtifactRepo.publicFiles.remove(input.accountId, input.taskId, destinationPath);
+          await rm(this.safeJoinWithin(taskDirectory, destinationPath), { force: true });
+          for (const record of this.taskArtifactRepo.listByTask(input.taskId).filter(item => item.relativePath === destinationPath)) {
             this.taskArtifactRepo.markUnavailable(record.artifactId, this.now());
           }
           continue;
         }
-        const publishedPath = this.safeJoinWithin(taskDirectory, source.sourceRelativePath);
+        const publishedPath = this.safeJoinWithin(taskDirectory, destinationPath);
         const contentHash = hashContent(await readFile(publishedPath));
         this.taskArtifactRepo.publicFiles.record({ accountId: input.accountId, taskId: input.taskId,
           generationId: input.generationId, subtaskId: input.subtaskId, publicationId: input.publicationId,
-          relativePath: source.sourceRelativePath, publishedPath,
+          relativePath: destinationPath, publishedPath,
           contentHash, updatedAt: this.now() });
         if (source.downloadable === false) {
           for (const record of this.taskArtifactRepo.listByTask(input.taskId)) {
-            if (record.relativePath === source.sourceRelativePath && record.contentHash !== contentHash) {
+            if (record.relativePath === destinationPath && record.contentHash !== contentHash) {
               this.taskArtifactRepo.markUnavailable(record.artifactId, this.now());
             }
           }
@@ -416,6 +448,7 @@ export class UserArtifactPublicationService {
           input,
           source.sourceRelativePath,
           taskDirectory,
+          destinationPath,
         );
         if (projection) result.projections.push(projection);
       } catch (error) {
@@ -428,40 +461,47 @@ export class UserArtifactPublicationService {
     return result;
   }
 
-  private async preflight(input: PublishUserArtifactsInput, path: string, taskDirectory: string, remove = false): Promise<void> {
+  private async preflight(
+    input: PublishUserArtifactsInput,
+    sourcePath: string,
+    taskDirectory: string,
+    remove = false,
+    destinationPath = sourcePath,
+  ): Promise<void> {
     const root = await realpath(resolve(input.integratedWorkspaceRoot));
-    const source = this.safeJoinWithin(root, path);
+    const source = this.safeJoinWithin(root, sourcePath);
     await rejectSymlinkParents(root, source);
     const info = remove ? null : await lstat(source);
-    if (info && (!info.isFile() || info.size > MAX_SINGLE_ARTIFACT_BYTES)) throw new Error(`交付文件无效或过大：${path}`);
+    if (info && (!info.isFile() || info.size > MAX_SINGLE_ARTIFACT_BYTES)) throw new Error(`交付文件无效或过大：${sourcePath}`);
     const sourceBytes = remove ? null : await readFile(source);
     if (sourceBytes && !sourceBytes.includes(0) && containsInternalRuntimePath(sourceBytes.toString('utf8'))) {
-      throw new Error(`交付文件包含内部执行路径，请修正后重新发布：${path}`);
+      throw new Error(`交付文件包含内部执行路径，请修正后重新发布：${sourcePath}`);
     }
     const expected = sourceBytes ? hashContent(sourceBytes) : null;
-    const target = this.safeJoinWithin(taskDirectory, path);
+    const target = this.safeJoinWithin(taskDirectory, destinationPath);
     await rejectSymlinkParents(taskDirectory, target);
     let actual: string;
     try { actual = hashContent(await readFile(target)); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      const baseline = [...this.taskArtifactRepo.publicFiles.list(input.accountId, input.taskId), ...this.taskArtifactRepo.listByTask(input.taskId)].find(record => record.relativePath === path
+      const baseline = [...this.taskArtifactRepo.publicFiles.list(input.accountId, input.taskId), ...this.taskArtifactRepo.listByTask(input.taskId)].find(record => record.relativePath === destinationPath
         && record.status === 'published' && record.publishedPath === target);
-      if (!remove && (baseline || input.publicDeliveryBaseline?.[path])) {
-        throw new Error(`发布冲突，文件已被删除：${path}`);
+      if (!remove && (baseline || input.publicDeliveryBaseline?.[destinationPath])) {
+        throw new Error(`发布冲突，文件已被删除：${destinationPath}`);
       }
       return;
     }
     if (actual === expected) return;
     const baseline = [...this.taskArtifactRepo.publicFiles.list(input.accountId, input.taskId), ...this.taskArtifactRepo.listByTask(input.taskId)]
-      .find(record => record.relativePath === path && record.status === 'published' && record.publishedPath === target);
-    if (actual !== (baseline?.contentHash ?? input.publicDeliveryBaseline?.[path])) throw new Error(`发布冲突，文件已被修改：${path}`);
+      .find(record => record.relativePath === destinationPath && record.status === 'published' && record.publishedPath === target);
+    if (actual !== (baseline?.contentHash ?? input.publicDeliveryBaseline?.[destinationPath])) throw new Error(`发布冲突，文件已被修改：${destinationPath}`);
   }
 
   private async publishOne(
     input: PublishUserArtifactsInput,
     sourceRelativePath: string,
     taskDirectory: string,
+    destinationRelativePath = sourceRelativePath,
   ): Promise<ArtifactProjection> {
     const workspaceRoot = await realpath(resolve(input.integratedWorkspaceRoot));
     const safeSource = this.safeJoinWithin(workspaceRoot, sourceRelativePath);
@@ -481,7 +521,7 @@ export class UserArtifactPublicationService {
     const contentHash = hashContent(bytes);
     const existing = this.taskArtifactRepo.findByTaskAndRelativePath(
       input.taskId,
-      sourceRelativePath,
+      destinationRelativePath,
       contentHash,
     );
     if (
@@ -492,7 +532,7 @@ export class UserArtifactPublicationService {
       return this.taskArtifactRepo.toProjection(existing);
     }
 
-    const targetPath = this.safeJoinWithin(taskDirectory, sourceRelativePath);
+    const targetPath = this.safeJoinWithin(taskDirectory, destinationRelativePath);
     await rejectSymlinkParents(taskDirectory, targetPath);
     // A crash may leave the complete file without its SQLite row. Verify its
     // bytes before adopting it, so recovery only registers that durable copy.
@@ -518,11 +558,11 @@ export class UserArtifactPublicationService {
           generationId: input.generationId,
           subtaskId: input.subtaskId,
           publicationId: input.publicationId,
-          displayName: basename(sourceRelativePath),
-          relativePath: sourceRelativePath,
+          displayName: basename(destinationRelativePath),
+          relativePath: destinationRelativePath,
           publishedPath: targetPath,
-          mediaType: mediaTypeForRelativePath(sourceRelativePath),
-          previewKind: classifyPreviewKind(sourceRelativePath),
+          mediaType: mediaTypeForRelativePath(destinationRelativePath),
+          previewKind: classifyPreviewKind(destinationRelativePath),
           contentHash,
           byteLength: bytes.byteLength,
           status: 'published',
@@ -531,7 +571,7 @@ export class UserArtifactPublicationService {
     if (!record) throw new Error(`artifact record disappeared: ${sourceRelativePath}`);
     this.taskArtifactRepo.markSupersededExcept(
       input.taskId,
-      sourceRelativePath,
+      destinationRelativePath,
       record.artifactId,
       now,
     );

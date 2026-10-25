@@ -560,11 +560,34 @@ export function normalizeTaskView(payload: Record<string, unknown>): NormalizedT
 			: null;
 	const delivery = asRecord(payload.publicDelivery);
 	const publicDelivery: GatewayPublicDelivery | null =
-		delivery && typeof delivery.workspace === "string" && typeof delivery.taskDirectory === "string"
+		delivery && typeof delivery.workspace === "string"
 			? {
 					workspace: asString(delivery.workspace)!,
-					taskDirectory: asString(delivery.taskDirectory)!,
+					taskDirectory: asString(delivery.taskDirectory) ?? null,
+					mode: delivery.mode === "in_place" ? "in_place" : "worktree",
+					modeSource:
+						delivery.modeSource === "explicit_user" ||
+						delivery.modeSource === "planner" ||
+						delivery.modeSource === "fallback" ||
+						delivery.modeSource === "kernel_safety"
+							? delivery.modeSource
+							: null,
+					deliveryPolicy:
+						delivery.deliveryPolicy === "none" ||
+						delivery.deliveryPolicy === "auto_publish" ||
+						delivery.deliveryPolicy === "await_acceptance"
+							? delivery.deliveryPolicy
+							: null,
 					state: asString(delivery.state) ?? "not_published",
+					candidate:
+						delivery.candidate === "executing" ||
+						delivery.candidate === "awaiting_acceptance" ||
+						delivery.candidate === "conflict" ||
+						delivery.candidate === "published" ||
+						delivery.candidate === "cleaned"
+							? delivery.candidate
+							: "none",
+					stateLabel: asString(delivery.stateLabel) ?? "",
 					files: asStringArray(delivery.files),
 					conflicts: asStringArray(delivery.conflicts),
 				}

@@ -155,19 +155,37 @@ export class MetaWorkConversationPanel implements Component {
 		lines.push(...this.renderResult(turn, width));
 		if (turn.publicDelivery) {
 			const delivery = turn.publicDelivery;
-			const labels: Record<string, string> = {
-				not_published: "待发布",
-				awaiting_acceptance: "等待用户接受",
-				publishing: "正在发布到任务目录",
-				published: "已发布到任务目录",
-				failed: "发布失败",
+			const modeLabels: Record<string, string> = {
+				in_place: "In-place",
+				worktree: "Worktree",
 			};
-			lines.push(
-				...wrapTextWithAnsi(
-					`Workspace: ${delivery.workspace}\n任务目录: ${delivery.taskDirectory}\n代码状态: ${labels[delivery.state] ?? "待发布"}`,
-					width,
-				),
-			);
+			const sourceLabels: Record<string, string> = {
+				explicit_user: "用户明确要求",
+				planner: "Planner 判断",
+				fallback: "高级设置默认",
+				kernel_safety: "Kernel 安全规则",
+			};
+			const candidateLabels: Record<string, string> = {
+				executing: "隔离执行中，目标工作区未改变",
+				awaiting_acceptance: "候选已生成，等待你接受后发布",
+				conflict: "发布冲突，需要处理后继续",
+				published: "已发布到目标工作区",
+				cleaned: "隔离执行目录已清理",
+			};
+			const target = delivery.taskDirectory
+				? `目标项目目录: ${delivery.taskDirectory}`
+				: `目标 Workspace: ${delivery.workspace}`;
+			const linesForDelivery = [
+				`Workspace: ${delivery.workspace}`,
+				target,
+				`执行模式: ${modeLabels[delivery.mode] ?? delivery.mode}`,
+				...(delivery.modeSource ? [`模式来源: ${sourceLabels[delivery.modeSource] ?? delivery.modeSource}`] : []),
+				`${delivery.mode === "in_place" ? "工作区文件" : "候选状态"}: ${delivery.stateLabel || delivery.state}`,
+			];
+			if (delivery.mode === "worktree" && delivery.candidate !== "none") {
+				linesForDelivery.push(`候选: ${candidateLabels[delivery.candidate] ?? delivery.candidate}`);
+			}
+			lines.push(...wrapTextWithAnsi(linesForDelivery.join("\n"), width));
 			if (expanded) lines.push(...wrapTextWithAnsi(`交付文件: ${delivery.files.join("、") || "暂无"}`, width));
 			if (delivery.conflicts.length)
 				lines.push(...wrapTextWithAnsi(`冲突文件: ${delivery.conflicts.join("、")}`, width));

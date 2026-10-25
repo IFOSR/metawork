@@ -189,3 +189,22 @@ export function planningAgentFromPlanMock(plan: ReturnType<typeof vi.fn>): Plann
     submit: ReturnType<typeof vi.fn>;
   };
 }
+
+/** Planner-owned Workspace intent for schema-9 plan fixtures. */
+export function workspaceIntentFixture(
+  overrides: Partial<import('../../src/core/workspace-execution.js').WorkspaceIntent> = {},
+): import('../../src/core/workspace-execution.js').WorkspaceIntent {
+  return {
+    targetWorkspaceId: null,
+    // Schema-9 write plans must scope the Workspace side effect. Tests that
+    // model a read-only report may override this with an empty list.
+    targetPaths: ['workspace-target'],
+    operation: 'modify_existing',
+    originalFilePolicy: 'may_replace',
+    isolationPolicy: 'not_requested',
+    proposedMode: null,
+    confidence: 0.9,
+    reason: 'test workspace intent',
+    ...overrides,
+  };
+}

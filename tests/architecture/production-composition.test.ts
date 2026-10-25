@@ -66,9 +66,11 @@ describe('production composition root', () => {
     expect(index).not.toContain('process.cwd()');
     expect(index).toContain('userWorkspaceRoot: accountPaths.workspaceStore');
     expect(index).toContain('workspaceRoot: accountPaths.workspaceStore');
-    expect(index).toContain(
-      'new MarkdownPreviewServer(markdownPreviewConfig, accountPaths.workspaceStore)',
-    );
+    // ADR-0050: the legacy preview server was rooted at the internal workspace
+    // store and served `metaclaw-tasks` copies. It must not be constructed at
+    // all; delivered files are previewed through the Workspace artifact preview.
+    expect(index).not.toContain('new MarkdownPreviewServer(');
+    expect(index).toContain('Markdown preview server is retired');
     expect(composition).toContain("userWorkspaceRoot?: string");
     expect(composition).toContain('workspaceRoot: string;');
     // The managed store root is the caller-provided account-scoped root; the

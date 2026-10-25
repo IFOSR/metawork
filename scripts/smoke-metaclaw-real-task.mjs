@@ -604,7 +604,7 @@ function runManagedSmoke(rawArgs, env, overlayEnv = null) {
       METAWORK_INSTALL_ROOT: installRoot,
       METACLAW_HOME: metaclawHome,
       METACLAW_PLANNER_SESSION_DIR: plannerSessionDir,
-      METACLAW_PLANNER_SCHEMA_PATH: join(repoRoot, 'dist', 'planning-agent-plan-v8.schema.json'),
+      METACLAW_PLANNER_SCHEMA_PATH: join(repoRoot, 'dist', 'planning-agent-plan-v9.schema.json'),
       METACLAW_PLANNER_HOST_SOCKET: bridgeSocketPath,
       METACLAW_PLANNER_TUI_SOCKET: bridgeSocketPath,
       METACLAW_DISABLE_MARKDOWN_PREVIEW: '1',

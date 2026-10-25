@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { GatewayTaskViewSnapshot } from '../../../src/gateway/task-view';
+import type { TaskPendingAction, TaskPendingResultIdentity } from '../../../src/task/task-state';
 import type { HttpClient } from '../api/http';
 import type { WsClient } from '../api/ws';
 
@@ -27,9 +28,41 @@ export function BlockedActions({ ws, http, conversationId, taskId, lifecycle, pe
   const [details, setDetails] = useState<{ text: string; truncated: boolean } | null>(null);
   const [reviewRequired, setReviewRequired] = useState(false);
 
-  const reason = lifecycle?.userStateReason?.trim() ?? '';
-  const needsAction = lifecycle?.userState === 'needs_action';
-  const pendingDecision = lifecycle?.pendingDecision ?? null;
+  // Keep the card tolerant of an older read-model projection while the Server
+  // and Web bundle are rolled forward independently. New projections always
+  // provide status/reason/pendingActions; the fallback only maps the old
+  // pendingDecision shape into the same action model.
+  const legacy = lifecycle as (GatewayTaskViewSnapshot['lifecycle'] & {
+    userState?: string;
+    userStateReason?: string;
+    pendingDecision?: {
+      expectedResult?: TaskPendingResultIdentity | null;
+      actions?: readonly string[];
+    } | null;
+  } | undefined);
+  const reason = lifecycle?.reason?.message?.trim() ?? legacy?.userStateReason?.trim() ?? '';
+  const needsAction = lifecycle?.status === 'needs_action' || legacy?.userState === 'needs_action';
+  const pendingActions = lifecycle?.pendingActions ?? (legacy?.pendingDecision?.actions ?? []).map(action => ({
+    actionId: `legacy:${action}`,
+    kind: action === 'retry_attempt' ? 'retry_attempt' : 'accept_result',
+    label: action === 'retry_attempt' ? '重新执行' : '接受并交付',
+    reason: { code: 'input_required', message: reason, evidenceRefs: [] },
+    result: legacy?.pendingDecision?.expectedResult ?? null,
+  } as TaskPendingAction));
+  const candidateAction = pendingActions.find(action => action.kind === 'accept_result'
+    && (Boolean(action.publicationId) || action.actionId.startsWith('accept_partial:'))) ?? null;
+  const acceptAction = pendingActions.find(action => action.kind === 'accept_result' && !action.publicationId) ?? null;
+  const retryAction = pendingActions.find(action => action.kind === 'retry_attempt') ?? null;
+  const recoveryAction = pendingActions.find(action => action.kind === 'resolve_recovery') ?? null;
+  const pendingDecision = acceptAction || retryAction
+    ? {
+        expectedResult: acceptAction?.result ?? retryAction?.result ?? undefined,
+        actions: [
+          ...(acceptAction ? ['accept_result' as const] : []),
+          ...(retryAction ? ['retry_attempt' as const] : []),
+        ],
+      }
+    : null;
   const hasPermission = permission?.status === 'pending' && Boolean(permission.requestId);
   const canAcceptResult = Boolean(pendingDecision?.expectedResult)
     && Boolean(pendingDecision?.actions.includes('accept_result'));
@@ -37,10 +70,11 @@ export function BlockedActions({ ws, http, conversationId, taskId, lifecycle, pe
     && Boolean(pendingDecision?.actions.includes('retry_attempt'));
   // A pending result decision *is* the blocker: resume/recovery would only add
   // noise next to accept/retry.
-  const canResume = Boolean(taskId) && !pendingDecision;
-  const canResolveRecovery = Boolean(taskId)
-    && (!pendingDecision || pendingDecision.actions.includes('resolve_recovery'));
+  const canAcceptCandidate = Boolean(taskId) && Boolean(candidateAction);
+  const canResume = Boolean(taskId) && !pendingDecision && !canAcceptCandidate && needsAction;
+  const canResolveRecovery = Boolean(taskId) && (Boolean(recoveryAction) || Boolean(legacy?.recoveryDiagnosis));
   const primaryAction = primaryActionFor(lifecycle?.nextAuthorizedAction, {
+    canAcceptCandidate,
     canAcceptResult,
     canRetryAttempt,
     canResume,
@@ -175,6 +209,12 @@ export function BlockedActions({ ws, http, conversationId, taskId, lifecycle, pe
               <button type="button" className={primaryAction === 'accept_result' ? 'primary' : undefined}
                 disabled={busy} onClick={() => void resolveResult('accept_task_result')}>接受并交付</button>
             )}
+            {canAcceptCandidate && (
+              <button type="button" className={primaryAction === 'accept_candidate' ? 'primary' : undefined}
+                disabled={busy} onClick={() => runCommand(`/task accept-partial ${taskId}`)}>
+                {candidateAction?.publicationId ? '接受候选并发布' : '接受部分结果并继续'}
+              </button>
+            )}
             {canRetryAttempt && (
               <button type="button" className={primaryAction === 'retry_attempt' ? 'primary' : undefined}
                 disabled={busy} onClick={() => void resolveResult('retry_task_attempt')}>重新执行</button>
@@ -200,7 +240,7 @@ export function BlockedActions({ ws, http, conversationId, taskId, lifecycle, pe
   );
 }
 
-type BlockedPrimaryAction = 'accept_result' | 'retry_attempt' | 'resume' | 'resolve_recovery' | null;
+type BlockedPrimaryAction = 'accept_result' | 'accept_candidate' | 'retry_attempt' | 'resume' | 'resolve_recovery' | null;
 
 /**
  * Picks the one highlighted action from the Kernel's own `nextAuthorizedAction`,
@@ -209,17 +249,22 @@ type BlockedPrimaryAction = 'accept_result' | 'retry_attempt' | 'resume' | 'reso
 function primaryActionFor(
   nextAuthorizedAction: string | undefined,
   available: {
+    canAcceptCandidate: boolean;
     canAcceptResult: boolean;
     canRetryAttempt: boolean;
     canResume: boolean;
     canResolveRecovery: boolean;
   },
 ): BlockedPrimaryAction {
-  const candidate: BlockedPrimaryAction = nextAuthorizedAction === 'accept_result' && available.canAcceptResult
-    ? 'accept_result'
+  const candidate: BlockedPrimaryAction = nextAuthorizedAction === 'accept_result'
+    ? available.canAcceptResult
+      ? 'accept_result'
+      : available.canAcceptCandidate
+        ? 'accept_candidate'
+        : null
     : nextAuthorizedAction === 'retry_attempt' && available.canRetryAttempt
       ? 'retry_attempt'
-      : nextAuthorizedAction === 'explicit_resume_required' && available.canResume
+      : (nextAuthorizedAction === 'explicit_resume_required' || nextAuthorizedAction === 'await_user_input') && available.canResume
         ? 'resume'
         : nextAuthorizedAction === 'resolve_uncertain_application' && available.canResolveRecovery
           ? 'resolve_recovery'
@@ -227,6 +272,7 @@ function primaryActionFor(
   if (candidate) return candidate;
   // Fall back to the only available action when the Kernel named none of them.
   if (available.canAcceptResult) return 'accept_result';
+  if (available.canAcceptCandidate) return 'accept_candidate';
   if (available.canResume) return 'resume';
   if (available.canResolveRecovery) return 'resolve_recovery';
   if (available.canRetryAttempt) return 'retry_attempt';
@@ -238,6 +284,8 @@ function recommendationFor(action: BlockedPrimaryAction): string {
   switch (action) {
     case 'accept_result':
       return '下一步：点「接受并交付」。结果已通过安全校验，接受后直接进入交付；只有你认为结果不正确时才选「重新执行」。';
+    case 'accept_candidate':
+      return '下一步：点「接受候选并发布」，候选变更才会写入目标 Workspace。';
     case 'retry_attempt':
       return '下一步：点「重新执行」，让系统用当前任务图再跑一次这一步。';
     case 'resume':

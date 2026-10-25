@@ -68,6 +68,10 @@ export class TaskEngine {
     publicDeliveryBaseline?: Record<string, string>;
     startServiceAfterPublish?: boolean;
     executionMode?: 'worktree' | 'in_place';
+    workspaceExecutionSource?: Task['workspaceExecutionSource'];
+    workspaceDeliveryPolicy?: Task['workspaceDeliveryPolicy'];
+    workspaceTargetPaths?: string[];
+    workspaceIntent?: Task['workspaceIntent'];
     retryOfTaskId?: string | null;
     stateDetail?: TaskStateDetail;
   }): Task {
@@ -95,6 +99,13 @@ export class TaskEngine {
       publicProject: input.publicTaskDirectory !== undefined,
       startServiceAfterPublish: input.startServiceAfterPublish ?? false,
       executionMode: input.executionMode ?? 'worktree',
+      ...(input.workspaceExecutionSource
+        ? { workspaceExecutionSource: input.workspaceExecutionSource } : {}),
+      ...(input.workspaceDeliveryPolicy
+        ? { workspaceDeliveryPolicy: input.workspaceDeliveryPolicy } : {}),
+      ...(input.workspaceTargetPaths
+        ? { workspaceTargetPaths: [...input.workspaceTargetPaths] } : {}),
+      ...(input.workspaceIntent ? { workspaceIntent: input.workspaceIntent } : {}),
       goal: input.goal,
       status: 'queued',
       stateVersion: 1,

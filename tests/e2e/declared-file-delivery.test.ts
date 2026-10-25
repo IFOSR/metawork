@@ -3,7 +3,8 @@ import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import type { Config } from '../../src/core/types.js';
-import { UserArtifactPublicationService, userTaskDirectorySlug } from '../../src/delivery/user-artifact-publication-service.js';
+import { UserArtifactPublicationService } from '../../src/delivery/user-artifact-publication-service.js';
+import { USER_ARTIFACTS_DIRECTORY } from '../../src/delivery/user-artifact-types.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskArtifactRepo } from '../../src/storage/task-artifact-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
@@ -54,6 +55,8 @@ describe('Planner-declared delivery end-to-end', () => {
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, join(root, 'tasks'));
     let actualWorkspace = '';
+    let workspaceListing: string[] = [];
+    let seededReadme: Buffer | null = null;
     let actionCount = 0;
     const backend = new FakeAttemptExecutionBackend((input, attemptIndex) => {
       if (attemptIndex === 1 && handoff) {
@@ -68,6 +71,10 @@ describe('Planner-declared delivery end-to-end', () => {
         mkdirSync(dirname(join(actualWorkspace, file)), { recursive: true });
         writeFileSync(join(actualWorkspace, file), bytes(file));
       }
+      // The internal Worktree execution directory is retired once the Task is
+      // terminal and residue-free, so the round's observation is captured here.
+      workspaceListing = readdirSync(actualWorkspace).filter(file => !['.git', '.metaclaw'].includes(file));
+      seededReadme = readFileSync(join(actualWorkspace, 'README.md'));
       return { body: '操作已完成，结果已核对。', artifacts: [...testCase.files] };
     });
     const config: Config = {
@@ -114,15 +121,21 @@ describe('Planner-declared delivery end-to-end', () => {
       const expectedFiles = testCase.name === 'existing file delivery without rewrite' ? ['README.md']
         : testCase.missing ? [] : files.filter(file => outputs.some(output => output.endsWith('/') ? file.startsWith(output) : file === output));
       expect(delivered.map(row => row.relative_path).sort()).toEqual([...expectedFiles].sort());
-      const destination = join(userRoot, 'metaclaw-tasks', userTaskDirectorySlug(task!.title, task!.id));
-      if (!expectedFiles.length && testCase.kind !== 'edit') expect(existsSync(destination)).toBe(false);
+      // Publication applies only the authorized change set at the declared
+      // Workspace-relative paths. No generated `metaclaw-tasks/<slug>` directory.
+      const destination = userRoot;
+      expect(existsSync(join(userRoot, USER_ARTIFACTS_DIRECTORY))).toBe(false);
+      if (!expectedFiles.length && testCase.kind !== 'edit') {
+        for (const file of testCase.files) expect(existsSync(join(destination, file))).toBe(false);
+      }
       if (testCase.kind === 'edit') for (const file of testCase.files) expect(readFileSync(join(destination, file))).toEqual(bytes(file));
       for (const file of expectedFiles) expect(readFileSync(join(destination, file))).toEqual(file === 'README.md'
-        ? readFileSync(join(actualWorkspace, file)) : bytes(file));
-      if (testCase.files.length === 0) expect(readdirSync(actualWorkspace).filter(file => !['.git', '.metaclaw'].includes(file))).toEqual(['README.md']);
+        ? seededReadme! : bytes(file));
+      if (testCase.files.length === 0) expect(workspaceListing).toEqual(['README.md']);
       if (testCase.kind === 'edit') {
-        // The edit remains present even though [] produces no downloadable artifacts.
-        expect(readFileSync(join(actualWorkspace, testCase.files[0]!), 'utf8')).toBe(`bytes:${testCase.files[0]}`);
+        // The authorized edit is applied in the target Workspace even when `[]`
+        // produces no downloadable artifacts.
+        expect(readFileSync(join(destination, testCase.files[0]!), 'utf8')).toBe(`bytes:${testCase.files[0]}`);
         expect(db.prepare("SELECT count(*) AS n FROM workspace_publications WHERE status='integrated'").get()).toEqual({ n: 1 });
       }
       await session.maybeReviewTaskPoolOnTimer();

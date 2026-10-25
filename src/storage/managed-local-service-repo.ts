@@ -79,12 +79,14 @@ export class ManagedLocalServiceRepo implements LocalServiceStore {
       service_id, account_id, workspace_id, task_id, specification_revision, specification_json,
       state, process_id, process_token, health_message, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(account_id, workspace_id, service_id) DO UPDATE
-      SET specification_revision=CASE WHEN ? THEN excluded.specification_revision ELSE managed_local_services.specification_revision END,
+      SET specification_revision=CASE WHEN ? OR managed_local_services.specification_revision = ''
+        THEN excluded.specification_revision ELSE managed_local_services.specification_revision END,
           specification_json=CASE WHEN ? THEN excluded.specification_json ELSE managed_local_services.specification_json END,
           state=excluded.state, process_id=excluded.process_id,
           process_token=excluded.process_token, health_message=excluded.health_message, updated_at=excluded.updated_at
       WHERE (? OR (managed_local_services.specification_json=excluded.specification_json
-        AND managed_local_services.specification_revision=excluded.specification_revision))`)
+        AND (managed_local_services.specification_revision=excluded.specification_revision
+          OR managed_local_services.specification_revision='')))`)
       .run(record.specification.serviceId, this.accountId, record.workspaceId ?? '',
         record.specification.taskId, revision, JSON.stringify(record.specification),
         record.state, record.processId, record.processToken, record.healthMessage, record.updatedAt,

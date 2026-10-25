@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { vi } from 'vitest';
-import { UserArtifactPublicationService, userTaskDirectorySlug } from '../../src/delivery/user-artifact-publication-service.js';
+import { UserArtifactPublicationService } from '../../src/delivery/user-artifact-publication-service.js';
 import { TaskArtifactRepo } from '../../src/storage/task-artifact-repo.js';
 import { WorkspacePublicationRepo } from '../../src/storage/workspace-publication-repo.js';
 import { SqliteTaskActivityFacts } from '../../src/storage/task-activity-facts-repo.js';
@@ -120,10 +120,16 @@ describe('Durable delivery end-to-end control loop', () => {
       if (mode !== 'copy_before_save') {
         const retries = taskRepo.findAll().filter(item => item.retryOfTaskId === task.id);
         expect(retries, JSON.stringify(session.getSnapshot().output)).toHaveLength(1);
-        expect(retries[0]!.status, JSON.stringify(retries[0]!.stateDetail)).toBe('succeeded');
+        expect(retries[0]!.status, JSON.stringify({
+          detail: retries[0]!.stateDetail,
+          deliv: publications.delivery(publication.id),
+          bindings: db.prepare('SELECT generation_id, execution_mode, authorized_working_directory, cleaned_at FROM workspace_execution_bindings').all(),
+          publications: db.prepare('SELECT id, status, error_summary, delivery_authorized_at FROM workspace_publications').all(),
+        })).toBe('succeeded');
       }
       expect(copy).toHaveBeenCalledTimes(2);
-      expect(readFileSync(join(userRoot, 'metaclaw-tasks', userTaskDirectorySlug(task.title, task.id), 'answer.md'), 'utf8')).toBe('# Persisted answer');
+      // Authorized change set applied at the Workspace-relative path.
+      expect(readFileSync(join(userRoot, 'answer.md'), 'utf8')).toBe('# Persisted answer');
       expect(db.prepare('SELECT count(*) AS n FROM task_artifacts').get()).toEqual({ n: 1 });
       expect(publications.countMergeAttempts(publication.id)).toBe(1);
     } else {

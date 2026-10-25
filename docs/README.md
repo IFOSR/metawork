@@ -21,6 +21,8 @@ This directory contains both current technical documentation and historical plan
 
 - [Executor Pi 打包入口修复](plans/2026-10-23-executor-pi-packaging-fix.md)：修正本地 DMG 将 Executor 指向定制 Planner 的错误，增加打包与安装参数校验，修复包已完成本地自动验收。
 
+- [Planner 主导的 Workspace 执行模式与临时 Worktree 设计](plans/2026-10-25-planner-owned-workspace-mode-design.md)：统一 In-place 与隔离 Worktree 的产品契约、Planner 单一语义判断、临时执行目录生命周期和旧自动复制 publication 的删除边界；[技术实施方案](plans/2026-10-25-planner-owned-workspace-mode-implementation-plan.md)记录分阶段落地、迁移、发布和验收步骤。已于 2026-10-25 实施（ADR-0050）。
+
 - [斜杠指令参考](current/commands.md)：唯一的当前指令清单与 Desktop/Web 联想说明；[精简与联想验收记录](plans/2026-10-22-command-simplification-and-desktop-completion.md)。
 
 - [记忆系统接入 TencentDB Agent Memory 设计方案](plans/2026-10-22-memory-system-tdai-integration-design.md)：记忆体系现状审计（采集/晋级/送达三处断链）、以 TDAI 为唯一记忆引擎的目标架构、记忆沉淀契约、证据投递 pull 语义、开关与 Provider 配置、凭证纪律及 ADR 影响；唯一待评审方案，尚未实施。

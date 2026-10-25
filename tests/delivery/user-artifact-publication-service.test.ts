@@ -73,7 +73,7 @@ describe('UserArtifactPublicationService', () => {
     expect(existsSync(join(first.taskDirectory, 'report.md'))).toBe(false);
     expect(service.taskArtifactRepo.publicFiles.list('local-default', 'code-task')).toEqual([]);
   });
-  it('publishes verified artifacts under the user workspace metaclaw-tasks directory with safe projections', async () => {
+  it('publishes verified artifacts at the Workspace-relative declared paths with safe projections', async () => {
     const root = mkdtempSync(join(tmpdir(), 'anyfusion-user-artifacts-'));
     roots.push(root);
     const service = createService(root, ['task_ab12cd34']);
@@ -95,9 +95,9 @@ describe('UserArtifactPublicationService', () => {
     });
 
     expect(outcome.failures).toEqual([]);
-    expect(outcome.taskDirectory.startsWith(
-      join(realpathSync(root), 'startup', USER_ARTIFACTS_DIRECTORY),
-    )).toBe(true);
+    // Without an explicitly selected project directory the authorized change
+    // set is applied at the Workspace root; no generated task directory.
+    expect(outcome.taskDirectory).toBe(realpathSync(join(root, 'startup')));
     expect(outcome.projections).toHaveLength(3);
 
     const report = outcome.projections[0];
@@ -199,7 +199,8 @@ describe('UserArtifactPublicationService', () => {
       .map(record => service.taskArtifactRepo.toProjection(record));
     const available = projections.filter(projection => projection.previewable);
     expect(available).toHaveLength(1);
-    expect(existsSync(join(service.userWorkspaceRoot, USER_ARTIFACTS_DIRECTORY))).toBe(true);
+    expect(service.taskArtifactRepo.publicFiles.list('local-default', 'task_supersede')
+      .map(record => record.relativePath)).toContain('report.md');
   });
 
   it('reactivates a previously superseded artifact when the same content is published again', async () => {
@@ -337,7 +338,9 @@ describe('public Workspace delivery safety', () => {
     writeFileSync(join(service.userWorkspaceRoot, '.git'), 'gitdir: /does/not/exist');
     const result = await service.publishIntegratedArtifacts(input);
     expect(result.failures[0]?.reason).toContain('Git Workspace 无效');
-    expect(existsSync(result.taskDirectory)).toBe(false);
+    // The delivery root is the existing Workspace itself; nothing new may appear.
+    expect(existsSync(join(result.taskDirectory, 'report.md'))).toBe(false);
+    expect(service.taskArtifactRepo.publicFiles.list('local-default', 'seeded')).toEqual([]);
   });
   it('serializes two publisher instances and preserves the externally deleted file conflict', async () => {
     const { service, input, origin } = setup();
@@ -356,6 +359,6 @@ describe('public Workspace delivery safety', () => {
     writeFileSync(join(origin, 'report.md'), 'Code is at /Users/example/.metawork/accounts/local-default/workspace-store/workspaces/worktree/server');
     const result = await service.publishIntegratedArtifacts(input);
     expect(result.failures[0]?.reason).toContain('内部执行路径');
-    expect(existsSync(result.taskDirectory)).toBe(false);
+    expect(existsSync(join(result.taskDirectory, 'report.md'))).toBe(false);
   });
 });

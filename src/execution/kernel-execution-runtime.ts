@@ -10,9 +10,8 @@ import { ExecutorProbeError } from './work-unit-claim-service.js';
 // Execution application service: Session supplies facade callbacks but owns no runtime policy.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync } from 'node:fs';
-import { realpath } from 'node:fs/promises';
-import { resolve, relative, isAbsolute, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { ExecutionProgressService } from '../execution/execution-progress-service.js';
@@ -70,6 +69,12 @@ import type { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import type { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { canonicalizeWorkspacePath } from '../workspace/workspace-path.js';
 import { workspaceExecutionBindingFingerprint } from './execution-context.js';
+import {
+  WorktreeExecutionCleanupService,
+  type WorktreeCleanupOutcome,
+} from './worktree-execution-cleanup.js';
+import { ManagedGitWorkspaceService } from './managed-git-workspace.js';
+import { TERMINAL_TASK_STATUSES } from '../task/task-state.js';
 import type { ResultObjectRepo } from '../storage/result-object-repo.js';
 import type { WorkspaceRepositoryPort } from './repositories.js';
 import type { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
@@ -728,6 +733,7 @@ export class KernelExecutionRuntime {
       } else {
         this.deps.cancellationCoordinator.releaseAdmission(taskId);
       }
+      await this.cleanupWorktreeExecutions(taskId);
       return {
         taskId,
         status: alreadyCancelled ? 'already_cleared' : 'cleared',
@@ -808,8 +814,22 @@ export class KernelExecutionRuntime {
           const task = this.deps.taskRuntimeService.createTask({ id: action.taskId,
             title: `重试剩余工作：${source.title}`, goal: source.goal, retryOfTaskId: source.id,
             accountId: source.accountId, conversationId: source.conversationId, workspaceId: source.workspaceId,
-            ownerPlannerSessionId: source.ownerPlannerSessionId, publicTaskDirectory: source.publicTaskDirectory ?? undefined,
-            publicDeliveryBaseline: source.publicDeliveryBaseline, startServiceAfterPublish: action.remaining.startService });
+            ownerPlannerSessionId: source.ownerPlannerSessionId,
+            // Remaining-work retry is a new Task identity, but it is the same
+            // authorized Workspace operation. Carry every immutable Workspace
+            // fact forward instead of letting TaskEngine defaults reselect
+            // Worktree or revive the historical generated task directory.
+            ...(source.publicProject && source.publicTaskDirectory
+              ? { publicTaskDirectory: source.publicTaskDirectory }
+              : {}),
+            publicDeliveryBaseline: source.publicDeliveryBaseline,
+            startServiceAfterPublish: action.remaining.startService,
+            executionMode: source.executionMode,
+            workspaceExecutionSource: source.workspaceExecutionSource,
+            workspaceDeliveryPolicy: source.workspaceDeliveryPolicy,
+            workspaceTargetPaths: source.workspaceTargetPaths,
+            workspaceIntent: source.workspaceIntent,
+          });
           const generationId = `generation_${task.id}`;
           this.deps.workGraphRevisionRepo.activate({ id: `revision_${task.id}_1`, taskId: task.id,
             revision: 1, generationId, configurationRevision: decision.configurationRevision,
@@ -965,9 +985,20 @@ export class KernelExecutionRuntime {
   async publicTaskDelivery(taskId: string): Promise<PublicDeliveryView | null> {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     if (!task) return null;
-    const workspace = (task.conversationId ? await this.deps.resolveUserWorkspaceRoot?.(task.conversationId) : null)
-      ?? this.deps.userArtifactPublication?.userWorkspaceRoot ?? null;
     const graph = this.deps.workGraphRevisionRepo.findActive(taskId);
+    const binding = graph
+      ? this.deps.workspaceExecutionBindingRepo?.find(task.id, graph.generationId) ?? null
+      : this.deps.workspaceExecutionBindingRepo?.findLatestForTask(task.id) ?? null;
+    // A Task view must describe the Workspace that was authorized for that
+    // Generation. Once the durable binding repository is wired, a missing
+    // binding is an unavailable view rather than a reason to use the current
+    // Conversation root (which may have changed since admission). Focused
+    // fixtures without the repository retain their local resolver fallback.
+    const workspace = binding?.canonicalPath
+      ?? (this.deps.workspaceExecutionBindingRepo
+        ? null
+        : (task.conversationId ? await this.deps.resolveUserWorkspaceRoot?.(task.conversationId) : null)
+          ?? this.deps.userArtifactPublication?.userWorkspaceRoot ?? null);
     return projectPublicDelivery({ task, workspace, pendingDecision: this.pendingTaskResult(taskId) !== null,
       artifacts: [...(this.deps.userArtifactPublication?.taskArtifactRepo.publicFiles.list(task.accountId ?? 'local-default', taskId) ?? []),
         ...(this.deps.userArtifactPublication?.taskArtifactRepo.listByTask(taskId).filter(item => item.accountId === (task.accountId ?? 'local-default')) ?? [])],
@@ -1095,16 +1126,30 @@ export class KernelExecutionRuntime {
     const canonical = await canonicalizeWorkspacePath(resolved).catch(() => null);
     if (!canonical) return null;
     const executionMode = task.executionMode ?? 'worktree';
+    // A replan of an existing Task keeps the mode of its first generation; a
+    // later generation never reinterprets the current settings.
+    const inherited = repo.findLatestForTask(taskId);
+    if (inherited && inherited.executionMode !== executionMode) {
+      throw new Error(
+        `workspace execution mode is immutable for Task ${taskId}: `
+        + `binding=${inherited.executionMode}, task=${executionMode}`,
+      );
+    }
     const now = new Date().toISOString();
+    const authorizedWorkingDirectory = executionMode === 'in_place'
+      ? canonical.canonicalPath
+      : this.deps.workspaceStore?.planGenerationRoot(taskId, generationId) ?? canonical.canonicalPath;
     return repo.upsert({
       taskId,
       generationId,
       workspaceId,
       canonicalPath: canonical.canonicalPath,
       executionMode,
-      authorizedWorkingDirectory: executionMode === 'in_place'
-        ? canonical.canonicalPath
-        : this.deps.workspaceStore?.planGenerationRoot(taskId, generationId) ?? canonical.canonicalPath,
+      authorizedWorkingDirectory,
+      modeSource: task.workspaceExecutionSource ?? inherited?.modeSource ?? null,
+      deliveryPolicy: task.workspaceDeliveryPolicy ?? inherited?.deliveryPolicy ?? null,
+      workspaceIntent: task.workspaceIntent ?? inherited?.workspaceIntent ?? null,
+      targetPaths: task.workspaceTargetPaths ?? inherited?.targetPaths ?? [],
       createdAt: now,
       updatedAt: now,
     });
@@ -1208,7 +1253,13 @@ export class KernelExecutionRuntime {
         buildSnapshot: () => ({
           schemaVersion: 5,
           type: 'availability_recovery',
-          task: task ? { id: task.id, status: task.status } : null,
+          task: task ? {
+            id: task.id,
+            status: task.status,
+            ...(task.workspaceId ? { workspaceId: task.workspaceId } : {}),
+            ...(task.executionMode ? { executionMode: task.executionMode } : {}),
+            ...(task.workspaceDeliveryPolicy ? { deliveryPolicy: task.workspaceDeliveryPolicy } : {}),
+          } : null,
           activeGenerationId: activeRevision?.generationId ?? null,
           activeGraphRevision: activeRevision?.revision ?? null,
           deferredPlan: request.deferredPlan,
@@ -1280,6 +1331,7 @@ export class KernelExecutionRuntime {
   ): Promise<CancellationReceipt> {
     let receipt: CancellationReceipt | null = null;
     let controlError: string | null = null;
+    let authorizedPublicationIds = 0;
     const workflow = new DurableKernelWorkflow({
       productionAuthorization: this.deps.productionAuthorization,
       kernel: this.deps.controlKernel,
@@ -1416,6 +1468,32 @@ export class KernelExecutionRuntime {
             receipt = { taskId: action.taskId, affectedSubtaskIds: [action.subtaskId], cleanupAttemptIds: [] };
             return observation;
           }
+          if (decision.action.type === 'authorize_workspace_delivery') {
+            const action = decision.action;
+            const graph = this.deps.workGraphRevisionRepo.findActive(action.taskId);
+            const candidates = this.deps.publicationRepo
+              .listAwaitingAcceptance(action.taskId, action.generationId);
+            const expected = new Set(action.publicationIds);
+            if (
+              graph?.generationId !== action.generationId
+              || graph.revision !== action.graphRevision
+              || candidates.length !== expected.size
+              || candidates.some(candidate => !expected.has(candidate.id))
+            ) {
+              controlError = '候选变更已变化，请刷新任务后重试。';
+              return null;
+            }
+            authorizedPublicationIds = this.deps.publicationRepo.authorizeDelivery(
+              action.publicationIds,
+              new Date().toISOString(),
+            );
+            receipt = { taskId: action.taskId, affectedSubtaskIds: [], cleanupAttemptIds: [] };
+            return this.eventFromDecision(decision, {
+              type: 'dispatch_requested',
+              taskId: action.taskId,
+              reason: 'explicit acceptance released the candidate Workspace delivery',
+            });
+          }
           if (decision.action.type === 'reject_request' || decision.action.type === 'block_work') {
             controlError = decision.reason;
             return null;
@@ -1436,6 +1514,7 @@ export class KernelExecutionRuntime {
         'accept_partial_result',
         'accept_uncertified_result',
         'retry_uncertified_result',
+        'authorize_workspace_delivery',
         'reject_request',
         'block_work',
         'no_op',
@@ -1447,7 +1526,12 @@ export class KernelExecutionRuntime {
     if (!receipt) throw new Error('Task control decision produced no receipt');
     if (event.type === 'partial_result_acceptance_requested' || event.type === 'task_result_retry_requested') {
       if (!['succeeded', 'cancelled', 'failed'].includes(this.deps.taskRuntimeService.findTask(event.taskId!)?.status ?? '')) {
-        await this.recoverDue(event.taskId!, 'user result decision released publication or retry');
+        await this.recoverDue(
+          event.taskId!,
+          authorizedPublicationIds > 0
+            ? 'explicit acceptance released candidate Workspace delivery'
+            : 'user result decision released publication or retry',
+        );
       }
     }
     return receipt;
@@ -1596,6 +1680,63 @@ export class KernelExecutionRuntime {
         operationKey: `result_started:${effect.id}`, reason: 'reserved result continuation started' });
     }
     return true;
+  }
+
+  /**
+   * Retires internal Worktree execution directories that can no longer produce
+   * a side effect. Never deletes a user Workspace and never removes a directory
+   * while any publication, lease, dispatch, wake, replan or uncertain
+   * application is still open.
+   */
+  async cleanupWorktreeExecutions(taskId?: string): Promise<WorktreeCleanupOutcome> {
+    const service = this.worktreeCleanupService();
+    if (!service) return { removed: [], retained: [], failures: [] };
+    if (taskId) return service.cleanupTask(taskId);
+    return service.cleanupTerminalTasks();
+  }
+
+  private worktreeCleanupService(): WorktreeExecutionCleanupService | null {
+    const store = this.deps.workspaceStore;
+    const bindings = this.deps.workspaceExecutionBindingRepo;
+    if (!store || !bindings) return null;
+    return new WorktreeExecutionCleanupService({
+      workspaceStore: store,
+      bindingRepo: bindings,
+      subtaskRepo: this.deps.subtaskRepo,
+      publicationReader: {
+        hasUndecidedDelivery: (taskId, generationId) => (
+          this.deps.publicationRepo.hasUndecidedDelivery(taskId, generationId)
+        ),
+      },
+      // The coordinator exposes exactly the safe-shutdown residue categories
+      // (dispatch, publication, leases, wakes, replans, uncertain applications).
+      residueReader: {
+        blockingReasons: (taskId, generationId) => (
+          this.deps.cancellationCoordinator.completionBlockedReasons(taskId, generationId ?? null)
+        ),
+      },
+      findTask: taskId => this.deps.taskRuntimeService.findTask(taskId),
+      pruneManagedWorktrees: async (taskId, generationId) => {
+        await new ManagedGitWorkspaceService(store).pruneMissingWorktrees({ taskId, generationId });
+      },
+      removeManagedRepository: async (taskId, generationId) => {
+        const git = new ManagedGitWorkspaceService(store);
+        await store.removeManagedRepositoryUri(
+          pathToFileURL(git.repositoryPathFor({ taskId, generationId })).href,
+        );
+      },
+      recordDiagnostic: input => this.appendExecutionTrace({
+        phase: 'verification',
+        actor: 'runtime',
+        kind: input.kind,
+        status: input.kind === 'cleanup_failed' ? 'failed' : 'blocked',
+        title: 'Worktree execution directory cleanup',
+        summary: input.reason,
+        details: { taskId: input.taskId, generationId: input.generationId },
+        eventKey: `${input.taskId}:${input.generationId}:${input.kind}`,
+        taskId: input.taskId,
+      }),
+    });
   }
 
   async recoverDue(taskId: string, reason = 'durable workflow recovery'): Promise<boolean> {
@@ -2567,6 +2708,9 @@ export class KernelExecutionRuntime {
         } : undefined,
         finishExecution: input.finishExecution,
       });
+      // Terminal Task: retire the internal Worktree execution directory when no
+      // residue can still produce a side effect.
+      await this.cleanupWorktreeExecutions(action.taskId);
       return null;
     }
     if (action.type === 'queue_generation_replan') {
@@ -2731,15 +2875,6 @@ export class KernelExecutionRuntime {
       throw new Error(`attempt ${item.attemptId} has no workspace source: dispatch payload is missing its workspacePath`);
     }
     const sourceTask = this.deps.taskRuntimeService.findTask(item.taskId);
-    if (sourceTask?.publicProject && sourceTask.publicTaskDirectory) {
-      const workspace = await realpath(request.workspacePath);
-      const project = resolve(workspace, sourceTask.publicTaskDirectory);
-      const rel = relative(workspace, project);
-      if (!rel || isAbsolute(rel) || rel.split(sep).includes('..') || await realpath(project) !== project) {
-        throw new Error('现有项目目录不可用或超出 Workspace');
-      }
-      request = { ...request, workspacePath: project };
-    }
     if (this.deps.preflightWorkspacePath) {
       request = { ...request, workspacePath: await this.deps.preflightWorkspacePath(request.workspacePath!) };
     }
@@ -3596,6 +3731,16 @@ export class KernelExecutionRuntime {
         });
       }
     }
+    // A Task can reach a terminal conclusion through the state authority (for
+    // example a delivered publication satisfies the last requirement) without a
+    // separate `complete_task` decision. Retiring the internal Worktree
+    // execution directory belongs to that same work chain, so it is awaited
+    // here instead of racing the authority.
+    if (TERMINAL_TASK_STATUSES.includes(
+      this.deps.taskRuntimeService.findTask(taskId)?.status as 'succeeded',
+    )) {
+      await this.cleanupWorktreeExecutions(taskId);
+    }
   }
 
   private async drainPublications(input: {
@@ -3622,6 +3767,18 @@ export class KernelExecutionRuntime {
           return;
         }
         if (outcome.type === 'cancelled') continue;
+        if (outcome.type === 'awaiting_acceptance') {
+          // The candidate change set is ready but the target Workspace must stay
+          // untouched until the user accepts it. The Task converges to
+          // `needs_action` with the durable acceptance action; re-draining would
+          // just rediscover the same undecided candidate.
+          this.reconcileTaskState(outcome.taskId, {
+            decisionId: `publication_acceptance_${outcome.publicationId}`,
+            operationKey: `publication_acceptance:${outcome.publicationId}`,
+            reason: 'candidate Workspace changes await explicit acceptance',
+          });
+          continue;
+        }
         if (outcome.type === 'delivery_failed') {
           // A failed delivery is a durable operation result: record it and let
           // the authority expose the explicit delivery recovery action.
@@ -3697,6 +3854,11 @@ export class KernelExecutionRuntime {
           reason: 'publication drain converged',
         });
       }
+      // Only an integration can unblock the next publication in the serial
+      // ordering. A candidate awaiting acceptance, a cancelled publication and a
+      // settled delivery failure are stable states that an explicit user action
+      // re-drives; re-draining them here would spin forever on the same row.
+      if (!integrated) return;
     }
   }
 

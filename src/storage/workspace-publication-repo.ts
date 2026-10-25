@@ -45,6 +45,11 @@ export interface WorkspacePublicationRecord {
   cancelRequestedAt: string | null;
   cancelledAt: string | null;
   errorSummary: string | null;
+  /**
+   * Set only when an explicit, Kernel-authorized acceptance released a
+   * `await_acceptance` candidate into the target Workspace (design §9).
+   */
+  deliveryAuthorizedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -70,6 +75,7 @@ interface PublicationRow {
   cancel_requested_at: string | null;
   cancelled_at: string | null;
   error_summary: string | null;
+  delivery_authorized_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -233,6 +239,63 @@ export class WorkspacePublicationRepo {
       FROM workspace_publications WHERE task_id IN (${taskIds.map(() => '?').join(',')}) GROUP BY task_id
     `).all(...taskIds) as { task_id: string; integrated: number; blocking: number }[];
     return new Map(rows.map(row => [row.task_id, { integrated: Boolean(row.integrated), blocking: Boolean(row.blocking) }]));
+  }
+
+  /**
+   * True while a Generation still owns publication work that is not decided:
+   * an unfinished publication state, or an integrated publication whose
+   * delivery has not succeeded. Cleanup must retain the execution directory in
+   * that case (design §8).
+   */
+  hasUndecidedDelivery(taskId: string, generationId: string): boolean {
+    return Boolean(this.db.prepare(`
+      SELECT 1
+      FROM workspace_publications AS publication
+      LEFT JOIN workspace_publication_deliveries AS delivery
+        ON delivery.publication_id = publication.id
+      WHERE publication.task_id = ? AND publication.generation_id = ?
+        AND (
+          publication.status IN ('pending', 'applying', 'conflicted', 'parked', 'cancelling', 'uncertain')
+          OR (publication.status = 'integrated'
+            AND (delivery.status IS NULL OR delivery.status IN ('pending', 'failed')))
+        )
+      LIMIT 1
+    `).get(taskId, generationId));
+  }
+
+  /** Candidates whose delivery is waiting for an explicit user acceptance. */
+  listAwaitingAcceptance(taskId: string, generationId?: string): WorkspacePublicationRecord[] {
+    const generationFilter = generationId ? ' AND generation_id = ?' : '';
+    return (this.db.prepare(`
+      SELECT publication.* FROM workspace_publications AS publication
+      JOIN tasks AS task ON task.id = publication.task_id
+      LEFT JOIN workspace_publication_deliveries AS delivery
+        ON delivery.publication_id = publication.id
+      WHERE publication.task_id = ?${generationFilter}
+        AND publication.status = 'integrated'
+        AND publication.delivery_authorized_at IS NULL
+        AND task.workspace_delivery_policy = 'await_acceptance'
+        AND (delivery.status IS NULL OR delivery.status = 'pending')
+      ORDER BY topology_layer ASC, first_dispatch_order ASC, subtask_id ASC
+    `).all(taskId, ...(generationId ? [generationId] : [])) as PublicationRow[]).map(rowToPublication);
+  }
+
+  /**
+   * Durable release of a candidate delivery. The Runtime only calls this after
+   * an explicit Kernel authorization; it never authorizes a publication itself.
+   */
+  authorizeDelivery(publicationIds: readonly string[], now: string): number {
+    let authorized = 0;
+    this.db.transaction(() => {
+      for (const id of publicationIds) {
+        authorized += this.db.prepare(`
+          UPDATE workspace_publications
+          SET delivery_authorized_at = ?, updated_at = ?
+          WHERE id = ? AND status = 'integrated' AND delivery_authorized_at IS NULL
+        `).run(now, now, id).changes;
+      }
+    }).immediate();
+    return authorized;
   }
 
   findNextBlocking(taskId: string, generationId: string): WorkspacePublicationRecord | null {
@@ -536,6 +599,7 @@ function rowToPublication(row: PublicationRow): WorkspacePublicationRecord {
     cancelRequestedAt: row.cancel_requested_at,
     cancelledAt: row.cancelled_at,
     errorSummary: row.error_summary,
+    deliveryAuthorizedAt: row.delivery_authorized_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

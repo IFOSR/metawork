@@ -30,6 +30,7 @@ import { AgentClassService } from '../executor/agent-class-service.js';
 import { ExecutionProgressService } from '../execution/execution-progress-service.js';
 import { WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
 import { WorkspaceStore } from '../execution/workspace-store.js';
+import { canonicalizeWorkspacePath } from '../workspace/workspace-path.js';
 import { WorkspaceRetentionService } from '../execution/workspace-retention-service.js';
 import { DockerCliAttemptExecutionBackend } from '../execution/docker-cli-attempt-execution-backend.js';
 import { WorktreeAttemptExecutionBackend } from '../execution/worktree-attempt-execution-backend.js';
@@ -405,6 +406,8 @@ export class MetaclawSession {
   private readonly workUnitClaimService: WorkUnitClaimService;
   private readonly attemptRunner: SubtaskAttemptRunner;
   private readonly workspaceStore: WorkspaceStore;
+  /** Read-only Workspace root this legacy facade executes against. */
+  private readonly sourceRoot: string;
   private readonly workspaceRetentionService: WorkspaceRetentionService;
   private workspaceRetentionSweep: Promise<void> | null = null;
   private readonly attemptExecutionBackend: AttemptExecutionBackend;
@@ -576,6 +579,7 @@ export class MetaclawSession {
       ?? (process.env.NODE_ENV === 'test' && process.env.ANYFUSION_TEST_WORKSPACE_SOURCE
         ? resolve(process.env.ANYFUSION_TEST_WORKSPACE_SOURCE)
         : process.cwd());
+    this.sourceRoot = sourceRoot;
     const resultsRoot = deps.resultsRoot
       ?? resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID).results;
     const runtimeExecutionServices = deps.accountRuntimeExecutionServices ?? buildAccountRuntimeExecutionServices({
@@ -1111,7 +1115,7 @@ export class MetaclawSession {
         ? validation.errors
         : !parsedPlan.success
           ? parsedPlan.error.issues.map(issue => issue.message)
-        : ['PlanningAgentPlan v8 validation failed'];
+        : ['PlanningAgentPlan v9 validation failed'];
       const rejected: PlannerProposalResult & { status: 'rejected' } = {
         status: 'rejected',
         turnId: normalizedTurnId,
@@ -1151,7 +1155,7 @@ export class MetaclawSession {
         submissionId: submission.submissionId,
         planId: plan.id,
         outcome: 'proposal_validated',
-        displayText: 'PlanningAgentPlan v8 proposal validated by MetaClaw.',
+        displayText: 'PlanningAgentPlan v9 proposal validated by MetaClaw.',
         taskId: plan.task.taskId,
         kernel: null,
       };
@@ -1384,7 +1388,11 @@ export class MetaclawSession {
 
   async waitForAsyncWork(): Promise<void> {
     await this.initialization;
+    let loops = 0;
     while (this.backgroundWork.size > 0) {
+      loops += 1;
+      if (loops % 50 === 0) {
+      }
       await Promise.allSettled(Array.from(this.backgroundWork));
     }
   }
@@ -1654,6 +1662,30 @@ export class MetaclawSession {
     });
   }
 
+  /**
+   * Legacy facade Workspace facts. The retained MetaclawSession owns no
+   * Conversation Workspace binding, so it pins its single authorized root as the
+   * target Workspace identity; production Conversations resolve theirs from the
+   * Workspace catalog instead.
+   */
+  private async buildWorkspaceAdmission(
+    plan: PlanningAgentPlan,
+  ): Promise<{ targetWorkspace: { workspaceId: string; canonicalPath: string } | null; worktreeAvailable: boolean }> {
+    const root = this.deps.userArtifactPublication?.userWorkspaceRoot || this.sourceRoot;
+    const canonical = await canonicalizeWorkspacePath(root).catch(() => null);
+    if (!canonical) return { targetWorkspace: null, worktreeAvailable: Boolean(this.workspaceStore) };
+    const existingTask = plan.task.taskId
+      ? this.taskRuntimeService.findTask(plan.task.taskId)
+      : null;
+    return {
+      targetWorkspace: {
+        workspaceId: existingTask?.workspaceId ?? 'legacy-workspace',
+        canonicalPath: canonical.canonicalPath,
+      },
+      worktreeAvailable: Boolean(this.workspaceStore),
+    };
+  }
+
   private async submitValidatedPlanningAgentPlan(
     userInput: string,
     plan: PlanningAgentPlan,
@@ -1675,6 +1707,7 @@ export class MetaclawSession {
       generationId: `generation_${eventId}`,
       proposalSource: 'initial',
       targetGraphRevision: 1,
+      workspaceAdmission: await this.buildWorkspaceAdmission(plan),
     };
     const workflowResult = await this.kernelCoordinator.submit(event, {
       buildSnapshot: claimed => this.buildPlanAdmissionSnapshot(
@@ -2256,6 +2289,8 @@ export class MetaclawSession {
             }
           : {}),
         ...(task.workspaceId ? { workspaceId: task.workspaceId } : {}),
+        ...(task.executionMode ? { executionMode: task.executionMode } : {}),
+        ...(task.workspaceDeliveryPolicy ? { deliveryPolicy: task.workspaceDeliveryPolicy } : {}),
       })),
       activeTaskByConversation: Object.fromEntries(
         this.taskRuntimeService.listTasks().map(task => {

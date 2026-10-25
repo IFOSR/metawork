@@ -27,7 +27,8 @@ historical unless a current authority explicitly cites it.
 
 Architecture shortcuts:
 
-- Planner: [ADR-0015](docs/adr/0015-planner-owned-semantics-and-tool-mediated-context.md)
+- Planner: [ADR-0015](docs/adr/0015-planner-owned-semantics-and-tool-mediated-context.md),
+  [Workspace execution mode ADR-0050](docs/adr/0050-planner-owned-workspace-execution-mode.md)
 - AgentClass definitions/status: [ADR-0018](docs/adr/0018-supported-routing-contracts-and-unified-executor-definitions.md), [ADR-0017](docs/adr/0017-kernel-executor-status-projection.md)
 - Work Graph/publication: [ADR-0021](docs/adr/0021-work-graph-v4-subtask-execution-contract.md), [ADR-0025](docs/adr/0025-single-task-concurrency-and-git-publication.md), [ADR-0026](docs/adr/0026-phase-6-single-task-reliability-closure.md)
 - Kernel/recovery: [ADR-0022](docs/adr/0022-unified-kernel-control-plane-and-decision-ledger.md), [ADR-0023](docs/adr/0023-durable-kernel-workflow-recovery-and-availability.md)

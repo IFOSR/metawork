@@ -60,11 +60,24 @@ export interface GatewayTaskViewSnapshot {
     workspace: string;
     taskDirectory: string | null;
     mode: 'worktree' | 'in_place';
+    /** Admission fact that authorized the mode. */
+    modeSource: 'explicit_user' | 'planner' | 'fallback' | 'kernel_safety' | null;
+    deliveryPolicy: 'none' | 'auto_publish' | 'await_acceptance' | null;
     state: 'not_published' | 'awaiting_acceptance' | 'publishing' | 'published' | 'failed';
+    /** Isolated candidate lifecycle: executing/awaiting/conflict/published/cleaned. */
+    candidate: 'none' | 'executing' | 'awaiting_acceptance' | 'conflict' | 'published' | 'cleaned';
     files: string[];
     conflicts: string[];
     stateLabel: string;
-    legacy?: boolean;
+  } | null;
+  /** Latest observed round changes (bounded); never a completion certification. */
+  readonly workspaceChanges?: {
+    recordId: string;
+    coverage: 'complete' | 'partial' | 'unavailable';
+    missingReasons: string[];
+    totalFiles: number;
+    recordedAt: string;
+    files: Array<{ path: string; added: number; deleted: number; binary?: boolean; scratch?: boolean }>;
   } | null;
   /** 快照水位，属于目标 Conversation 的事件流。 */
   readonly asOfSequence: number;
@@ -89,6 +102,8 @@ export interface GatewayTaskViewLifecycle {
   readonly reason: TaskReason;
   readonly pendingActions: readonly TaskPendingAction[];
   readonly cleanup: TaskStateSnapshot['cleanup'];
+  /** Active Work Graph generation; per-Turn controls must target it exactly. */
+  readonly executionGeneration?: string | null;
   readonly activeAttempt: {
     readonly attemptId: string;
     readonly subtaskId: string;
@@ -116,6 +131,9 @@ export interface GatewayTaskViewSubtask {
 
 export interface GatewayTaskViewPermission {
   readonly requestId: string;
+  /** Optimistic-concurrency revision the approval must target. */
+  readonly requestRevision?: string;
+  readonly generationId?: string;
   readonly status: 'pending' | 'resolved' | 'expired';
   readonly summary: string | null;
 }

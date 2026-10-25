@@ -1429,7 +1429,7 @@ describe('PlannerProcessSupervisor', () => {
       sessionDir: join(root, 'planner-sessions'),
       envFile: '',
       socketPath: join(root, 'planner.sock'),
-      schemaPath: '/release/planning-agent-plan-v8.schema.json',
+      schemaPath: '/release/planning-agent-plan-v9.schema.json',
       configurationRevision: 'revision-runtime',
       expectedModel: {
         provider: 'deepseek',
@@ -1471,7 +1471,7 @@ describe('PlannerProcessSupervisor', () => {
           METACLAW_PLANNER_SESSION_ID: 'session-1',
           ANYFUSION_BRIDGE_SOCKET: join(root, 'planner.sock'),
           METACLAW_PLANNER_TUI_SOCKET: join(root, 'planner.sock'),
-          ANYFUSION_PLANNER_SCHEMA_PATH: '/release/planning-agent-plan-v8.schema.json',
+          ANYFUSION_PLANNER_SCHEMA_PATH: '/release/planning-agent-plan-v9.schema.json',
           METACLAW_CONFIGURATION_REVISION: 'revision-runtime',
         });
       }
@@ -1490,7 +1490,7 @@ describe('PlannerProcessSupervisor', () => {
             ANYFUSION_PLANNER_HOME: join(root, 'planner-home'),
             ANYFUSION_PLANNER_SESSION_DIR: join(root, 'planner-sessions'),
             ANYFUSION_BRIDGE_SOCKET: join(root, 'planner.sock'),
-            ANYFUSION_PLANNER_SCHEMA_PATH: '/release/planning-agent-plan-v8.schema.json',
+            ANYFUSION_PLANNER_SCHEMA_PATH: '/release/planning-agent-plan-v9.schema.json',
           }),
         },
       });

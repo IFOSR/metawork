@@ -132,6 +132,7 @@ const kernelConfiguration: KernelConfigurationView = {
   runtimePolicy: {
     maxConcurrentAttempts: 4,
   },
+  workspaceExecution: { fallbackMode: 'in_place' },
 };
 
 const codexBinding: AuthorizedExecutorBinding = {

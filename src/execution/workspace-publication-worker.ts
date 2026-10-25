@@ -14,11 +14,11 @@ import type { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-rec
 import type { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import { workspacePathClaim, workspaceRootClaim } from '../resource/workspace-claim.js';
 import type { ResourceClaim } from '../resource/types.js';
-import { publicTaskRelativeDirectory } from '../task/public-task-directory.js';
 import {
   WorkspacePublicationRepo,
   type WorkspacePublicationRecord,
 } from '../storage/workspace-publication-repo.js';
+import { WorkspaceExecutionBindingRepo } from '../storage/workspace-execution-binding-repo.js';
 import type { WorkspaceRepositoryPort } from './repositories.js';
 import type { WorkspaceStore } from './workspace-store.js';
 import type { ResourceLeaseService } from './resource-lease-service.js';
@@ -65,10 +65,20 @@ export interface CancelledWorkspacePublication {
   observedIntegrationCommit: string | null;
 }
 
+export interface AwaitingAcceptanceWorkspacePublication {
+  type: 'awaiting_acceptance';
+  publicationId: string;
+  taskId: string;
+  subtaskId: string;
+  /** Candidate change set is ready; the Workspace was not touched. */
+  observedIntegrationCommit: string | null;
+}
+
 export type WorkspacePublicationOutcome =
   | IntegratedWorkspacePublication
   | ConflictedWorkspacePublication
   | CancelledWorkspacePublication
+  | AwaitingAcceptanceWorkspacePublication
   | { type: 'delivery_failed'; publicationId: string; taskId: string; subtaskId: string };
 
 export interface WorkspacePublicationWorkerDeps {
@@ -103,6 +113,7 @@ export class WorkspacePublicationWorker {
   private readonly handoffs: SubtaskHandoffRepo;
   private readonly git: ManagedGitWorkspaceService;
   private readonly results: ResultObjectRepo;
+  private readonly workspaceBindings: WorkspaceExecutionBindingRepo;
   private readonly reconciledGenerations = new Set<string>();
   private readonly activeDrains = new Map<string, Promise<WorkspacePublicationOutcome[]>>();
   private readonly lifecycle: SubtaskLifecyclePort;
@@ -110,6 +121,7 @@ export class WorkspacePublicationWorker {
   constructor(private readonly deps: WorkspacePublicationWorkerDeps) {
     this.lifecycle = createSubtaskLifecyclePort({ subtaskRepo: deps.subtaskRepo });
     this.publications = new WorkspacePublicationRepo(deps.db);
+    this.workspaceBindings = new WorkspaceExecutionBindingRepo(deps.db);
     this.handoffs = new SubtaskHandoffRepo(deps.db);
     this.git = new ManagedGitWorkspaceService(deps.workspaceStore);
     this.results = new ResultObjectRepo(
@@ -659,11 +671,29 @@ export class WorkspacePublicationWorker {
     if (cancelled()) return cancellation();
     const task = this.deps.taskRuntimeService.findTask(publication.taskId);
     const inPlace = task?.executionMode === 'in_place';
+    // A candidate round explicitly requested by the user stays inside the
+    // internal execution directory until an explicit, Kernel-authorized
+    // acceptance releases it. Nothing is written to the target Workspace and no
+    // delivery lease is claimed in this state.
+    if (!inPlace
+      && task?.workspaceDeliveryPolicy === 'await_acceptance'
+      && !publication.deliveryAuthorizedAt) {
+      return {
+        type: 'awaiting_acceptance',
+        publicationId: publication.id,
+        taskId: publication.taskId,
+        subtaskId: publication.subtaskId,
+        observedIntegrationCommit: publication.integrationCommit,
+      };
+    }
+    const suppressWorkspaceDelivery = !inPlace && task?.workspaceDeliveryPolicy === 'none';
     // The delivery root is resolved exactly once and then threaded into the
     // claim and into the writers, so the lease and the write can never disagree
     // about which physical Workspace is being modified.
-    const deliveryRoot = await this.resolveDeliveryRoot();
-    if (!deliveryRoot && this.deps.userArtifactPublication) {
+    const deliveryRoot = suppressWorkspaceDelivery
+      ? null
+      : await this.resolveDeliveryRoot(publication, task);
+    if (!suppressWorkspaceDelivery && !deliveryRoot && this.deps.userArtifactPublication) {
       // There is a user-visible delivery configured but no Workspace to write
       // it into: park instead of writing without a lease.
       this.publications.markPending(
@@ -727,10 +757,19 @@ export class WorkspacePublicationWorker {
   }
 
   /** Canonical user Workspace root for this delivery, or null when unavailable. */
-  private async resolveDeliveryRoot(): Promise<string | null> {
-    const root = await this.deps.resolveUserWorkspaceRoot?.(this.sessionId) ?? null;
-    if (!root) return null;
-    return realpath(root).catch(() => null);
+  private async resolveDeliveryRoot(
+    publication: WorkspacePublicationRecord,
+    task: Task | null,
+  ): Promise<string | null> {
+    if (!task?.workspaceId) return null;
+    const binding = this.workspaceBindings.find(task.id, publication.generationId);
+    if (binding && binding.workspaceId !== task.workspaceId) return null;
+    if (binding) return realpath(binding.canonicalPath).catch(() => null);
+    // The production composition intentionally does not provide this resolver.
+    // It remains injectable for focused publication fixtures only; new Tasks
+    // must always have a durable binding before publication can write.
+    const legacyFixtureRoot = await this.deps.resolveUserWorkspaceRoot?.(task.conversationId ?? this.sessionId) ?? null;
+    return legacyFixtureRoot ? realpath(legacyFixtureRoot).catch(() => null) : null;
   }
 
   /**
@@ -753,16 +792,14 @@ export class WorkspacePublicationWorker {
     if (!sourceReceipt) {
       return { type: 'unavailable', reason: `missing source receipt ${publication.sourceAttemptId}` };
     }
-    const targetClaim: ResourceClaim = inPlace
+    // Both modes write inside the target Workspace. A Worktree round applies
+    // only its authorized change set, at the declared Workspace-relative paths;
+    // an explicitly selected project subdirectory keeps that directory as its
+    // root. No generated `metaclaw-tasks/<slug>` directory is ever created.
+    const deliveryRelativeRoot = task?.publicProject ? task.publicTaskDirectory ?? null : null;
+    const targetClaim: ResourceClaim = inPlace || !deliveryRelativeRoot
       ? workspaceRootClaim(canonicalRoot, 'write')
-      : workspacePathClaim(
-          canonicalRoot,
-          task?.publicTaskDirectory ?? publicTaskRelativeDirectory(
-            task?.title ?? publication.taskId,
-            publication.taskId,
-          ),
-          'write',
-        );
+      : workspacePathClaim(canonicalRoot, deliveryRelativeRoot, 'write');
     const attemptId = `publication-delivery:${publication.id}`;
     const leaseToken = `publication_delivery_${randomUUID()}`;
     const lease = this.deps.resourceLeaseService.claim({
@@ -791,7 +828,12 @@ export class WorkspacePublicationWorker {
     const cancellation = (): CancelledWorkspacePublication => ({ type: 'cancelled', publicationId: publication.id,
       taskId: publication.taskId, subtaskId: publication.subtaskId, observedIntegrationCommit: publication.integrationCommit });
     if (cancelled()) return cancellation();
-    const integrationWorkspace = inPlace
+    // A read-only/report graph may still produce internal files for evidence,
+    // but its Kernel decision explicitly forbids Workspace delivery. Keep the
+    // candidate and audit facts while avoiding both a delivery lease and any
+    // user-directory write.
+    const suppressWorkspaceDelivery = !inPlace && task?.workspaceDeliveryPolicy === 'none';
+    const integrationWorkspace = inPlace || suppressWorkspaceDelivery
       ? null
       : await this.git.ensure({ taskId: publication.taskId, generationId: publication.generationId,
         subtaskId: '__integration__' }, this.deps.sourceRoot);
@@ -800,12 +842,20 @@ export class WorkspacePublicationWorker {
       let projections = delivery.projections;
       let failures: Array<{ sourceRelativePath: string; reason: string }> = [];
       try {
-        if (inPlace) {
+        if (suppressWorkspaceDelivery) {
+          projections = [];
+          failures = [];
+        } else if (inPlace) {
           if (!this.deps.userArtifactPublication) {
             throw new Error('User artifact publication service is unavailable');
           }
           assertLease?.();
-          const sources = this.artifactSources(publication, null, deliveryRoot);
+          const sources = this.artifactSources(
+            publication,
+            null,
+            deliveryRoot,
+            task?.workspaceTargetPaths ?? [],
+          );
           assertLease?.();
           const result = await this.deps.userArtifactPublication.registerLiveWorkspaceReferences({
             sessionId: this.sessionId,
@@ -836,7 +886,16 @@ export class WorkspacePublicationWorker {
             relativePaths: handoffPaths,
           });
         } else {
-        const sources = this.artifactSources(publication, integrationWorkspace!);
+        const deliveredTask = this.deps.taskRuntimeService.findTask(publication.taskId);
+        const deliveryRelativeRoot = deliveredTask?.publicProject ? deliveredTask.publicTaskDirectory ?? null : null;
+        const sources = this.artifactSources(
+          publication,
+          integrationWorkspace!,
+          null,
+          task?.workspaceTargetPaths ?? [],
+        ).map(source => deliveryRelativeRoot
+          ? relativizeDeliverySource(source, deliveryRelativeRoot)
+          : source);
         if (sources.length && !this.deps.userArtifactPublication) {
           throw new Error('User artifact publication service is unavailable');
         }
@@ -845,9 +904,12 @@ export class WorkspacePublicationWorker {
           assertLease?.();
           const result = await this.git.withCommitSnapshot(integrationWorkspace!, publication.integrationCommit!, async root => service.publishIntegratedArtifacts({
             sessionId: this.sessionId, accountId: this.deps.accountId ?? 'local-default', taskId: publication.taskId,
-            taskTitle: this.deps.taskRuntimeService.findTask(publication.taskId)?.title ?? publication.taskId,
-            publicTaskDirectory: this.deps.taskRuntimeService.findTask(publication.taskId)?.publicTaskDirectory,
-            publicDeliveryBaseline: this.deps.taskRuntimeService.findTask(publication.taskId)?.publicDeliveryBaseline,
+            taskTitle: deliveredTask?.title ?? publication.taskId,
+            // Only an explicitly selected existing project keeps a subdirectory
+            // root; every other round applies its authorized change set at the
+            // Workspace-relative paths it declared.
+            deliveryRelativeRoot,
+            publicDeliveryBaseline: deliveredTask?.publicDeliveryBaseline,
             generationId: publication.generationId, subtaskId: publication.subtaskId, publicationId: publication.id,
             integratedWorkspaceRoot: root,
             ...(deliveryRoot ? { userWorkspaceRoot: deliveryRoot } : {}), sources,
@@ -1033,6 +1095,7 @@ export class WorkspacePublicationWorker {
     publication: WorkspacePublicationRecord,
     integrationWorkspace: Awaited<ReturnType<ManagedGitWorkspaceService['ensure']>> | null,
     inPlaceRoot: string | null = null,
+    targetPaths: readonly string[] = [],
   ): Array<{ sourceRelativePath: string; remove?: boolean; downloadable?: boolean }> {
     for (const target of this.deps.subtaskRepo.listByTask(publication.taskId)) {
       if (target.generationId !== publication.generationId || target.status === 'cancelled') continue;
@@ -1079,8 +1142,14 @@ export class WorkspacePublicationWorker {
     const delta = parseWorkspaceDelta(new ExecutorAttemptRuntimeRepo(this.deps.db)
       .find(pair?.resultOwnerAttemptId ?? publication.sourceAttemptId)?.workspaceDelta);
     if (!delta || delta.baselineTruncated || delta.finalTruncated) throw new Error('无法确认完整代码变更，发布暂停');
-    const changes = delta.changed.map(item => ({ sourceRelativePath: item.path, remove: item.afterHash === null,
-      downloadable: artifacts.some(artifact => artifact.sourceRelativePath === item.path) }));
+    // A Worktree change set is authorized by the immutable Workspace intent.
+    // The Git delta can also contain logs, scratch output or build residue;
+    // those paths remain in the change record but are never copied into the
+    // user's Workspace unless they were explicitly declared as an artifact.
+    const changes = delta.changed
+      .filter(item => pathMatchesWorkspaceTarget(item.path, targetPaths))
+      .map(item => ({ sourceRelativePath: item.path, remove: item.afterHash === null,
+        downloadable: artifacts.some(artifact => artifact.sourceRelativePath === item.path) }));
     return [...changes, ...artifacts.filter(item => !changes.some(change => change.sourceRelativePath === item.sourceRelativePath))];
   }
 
@@ -1148,4 +1217,23 @@ function pathsOverlap(left: string, right: string): boolean {
   return left === right
     || left.startsWith(`${right}/`)
     || right.startsWith(`${left}/`);
+}
+
+function pathMatchesWorkspaceTarget(path: string, targetPaths: readonly string[]): boolean {
+  return targetPaths.some(target => pathsOverlap(path, target) && (
+    path === target || path.startsWith(`${target}/`)
+  ));
+}
+
+/** Publication service paths are relative to an explicitly selected project. */
+function relativizeDeliverySource(
+  source: { sourceRelativePath: string; remove?: boolean; downloadable?: boolean },
+  deliveryRoot: string,
+): { sourceRelativePath: string; destinationRelativePath?: string; remove?: boolean; downloadable?: boolean } {
+  const prefix = `${deliveryRoot.replace(/\/+$/u, '')}/`;
+  if (!source.sourceRelativePath.startsWith(prefix)) return source;
+  return {
+    ...source,
+    destinationRelativePath: source.sourceRelativePath.slice(prefix.length),
+  };
 }

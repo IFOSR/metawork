@@ -179,6 +179,12 @@ export interface ConversationSessionDeps {
   readonly plannerProposalRepo?: PlannerProposalRepo;
   readonly dispose?: () => Promise<void>;
   readonly workspace?: ConversationWorkspacePort;
+  /**
+   * Whether the isolated Worktree backend can create an internal execution
+   * root for this Conversation. Kernel rejects/asks instead of promising
+   * isolation it cannot provide.
+   */
+  readonly workspaceExecutionAvailability?: () => { worktreeAvailable: boolean };
   readonly queryUsage?: {
     readonly lifecycle: QueryUsageLifecycle;
     readonly externalAccountRef: string | null;
@@ -688,7 +694,13 @@ export class ConversationSession {
     return {
       schemaVersion: 5,
       type: 'plan_admission',
-      tasks: port.queries.listTasks().map(task => ({ id: task.id, status: task.status })),
+      tasks: port.queries.listTasks().map(task => ({
+        id: task.id,
+        status: task.status,
+        ...(task.workspaceId ? { workspaceId: task.workspaceId } : {}),
+        ...(task.executionMode ? { executionMode: task.executionMode } : {}),
+        ...(task.workspaceDeliveryPolicy ? { deliveryPolicy: task.workspaceDeliveryPolicy } : {}),
+      })),
       activeTaskByConversation: {
         [event.conversationId ?? this.deps.conversationId]: port.queries.getConversationTaskSlot?.(
           event.conversationId ?? this.deps.conversationId,
@@ -778,9 +790,14 @@ export class ConversationSession {
     return snapshot;
   }
 
-  private async prepareNewPlanEvent(event: PlanProposedEvent, signal: AbortSignal): Promise<PlanProposedEvent | null> {
-    if (this.preparationCancelled(event, signal)) return null;
-    const pinned = await this.loadConfigurationSnapshot(event.configurationRevision);
+  private async prepareNewPlanEvent(original: PlanProposedEvent, signal: AbortSignal): Promise<PlanProposedEvent | null> {
+    if (this.preparationCancelled(original, signal)) return null;
+    const pinned = await this.loadConfigurationSnapshot(original.configurationRevision);
+    if (this.preparationCancelled(original, signal)) return null;
+    // Pin the trusted Workspace admission facts on the durable event before any
+    // Kernel decision: the target Workspace identity never comes from Planner
+    // text, and a replay reaches the same decision without asking again.
+    const event = await this.attachWorkspaceAdmission(original);
     if (this.preparationCancelled(event, signal)) return null;
     const evaluator = this.deps.spanRoutingEvaluator;
     if (!evaluator) return event;
@@ -819,6 +836,28 @@ export class ConversationSession {
       if (error instanceof Error && error.name === 'AbortError') return event;
       throw error;
     }
+  }
+
+  /**
+   * Resolves the Conversation-bound Workspace into the facts Kernel validates.
+   * A missing or unavailable binding is projected as `null` so admission asks
+   * for a Workspace instead of guessing one.
+   */
+  private async attachWorkspaceAdmission(
+    event: PlanProposedEvent,
+  ): Promise<PlanProposedEvent> {
+    if (event.workspaceAdmission) return event;
+    const workspace = await this.deps.workspace?.getWorkspace() ?? null;
+    const targetWorkspace = workspace
+      ? { workspaceId: workspace.workspaceId, canonicalPath: workspace.path }
+      : null;
+    return {
+      ...event,
+      workspaceAdmission: {
+        targetWorkspace,
+        worktreeAvailable: this.deps.workspaceExecutionAvailability?.().worktreeAvailable ?? true,
+      },
+    };
   }
 
   /**
@@ -1866,7 +1905,7 @@ export class ConversationSession {
         submissionId: submission.submissionId,
         planId: parsed.data.id,
         outcome: 'proposal_validated',
-        displayText: 'PlanningAgentPlan v8 proposal validated by MetaWork.',
+        displayText: 'PlanningAgentPlan v9 proposal validated by MetaWork.',
         taskId: parsed.data.task.taskId,
         kernel: null,
       };
@@ -2883,7 +2922,15 @@ export class ConversationSession {
 }
 
 function planEventIdentity(event: PlanProposedEvent): string {
-  const { occurredAt: _time, spanRouting: _observation, ...identity } = event;
+  // Server-projected facts (`occurredAt`, Span observation, Workspace
+  // admission) are not part of the Planner proposal identity: a replay of the
+  // same proposal may resolve them again without becoming a different event.
+  const {
+    occurredAt: _time,
+    spanRouting: _observation,
+    workspaceAdmission: _admission,
+    ...identity
+  } = event;
   const canonical = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(canonical);
     if (value && typeof value === 'object') {

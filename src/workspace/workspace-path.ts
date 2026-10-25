@@ -127,6 +127,43 @@ export function isWithin(root: string, candidate: string): boolean {
   return candidate === root || candidate.startsWith(`${root}${sep}`);
 }
 
+/**
+ * Lexical Workspace-relative path check used before any filesystem access.
+ *
+ * Planner output and persisted intents are untrusted: absolute paths, Windows
+ * paths, `.`/`..` segments, control characters and empty segments are rejected
+ * instead of being normalized into something surprising. The canonical
+ * `realpath`, symlink and regular-file rules stay in
+ * `assertWorkspaceRelativePath`, which can only run once a file exists.
+ */
+export function isWorkspaceRelativePath(value: string): boolean {
+  try {
+    relativeSegments(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Normalizes declared Workspace-relative target paths (NFC, `/` separators) and
+ * rejects anything that is not strictly inside the Workspace.
+ */
+export function normalizeWorkspaceTargetPaths(paths: readonly string[]): string[] {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const path of paths) {
+    if (typeof path !== 'string') {
+      throw new WorkspacePathError('escape', 'workspace target path must be a string');
+    }
+    const value = relativeSegments(path).join('/');
+    if (seen.has(value)) continue;
+    seen.add(value);
+    normalized.push(value);
+  }
+  return normalized;
+}
+
 function relativeSegments(relativePath: string): string[] {
   if (isAbsolute(relativePath) || WINDOWS_ABSOLUTE_PATH.test(relativePath) || relativePath.startsWith('\\\\')) {
     throw new WorkspacePathError('not_absolute', `workspace path must be relative: ${relativePath}`);

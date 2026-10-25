@@ -1,6 +1,7 @@
 import { buildConfigurationCatalog } from '../routing/configuration-catalog.js';
 import { compileExecutorCapabilityProfile } from '../routing/executor-capability-profile.js';
 import { mergeKnownModelCapabilities } from './model-capability-catalog.js';
+import { workspaceFallbackMode } from './workspace-execution-policy.js';
 import type {
   ConfigurationSnapshot,
   KernelConfigurationView,
@@ -180,6 +181,7 @@ export function buildKernelConfigurationView(
     providers,
     permissionProfiles,
     runtimePolicy: { ...snapshot.config.runtimePolicy },
+    workspaceExecution: { fallbackMode: workspaceFallbackMode(snapshot.config) },
     // Kernel-safe Span policy only: no credential reference, no plaintext key.
     ...(snapshot.config.routing?.span ? {
       spanRouting: {

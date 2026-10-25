@@ -16,14 +16,24 @@ describe('workspace execution persistence', () => {
     const db = database();
     const version = db.prepare('SELECT version FROM schema_version').get() as { version: number };
     expect(version.version).toBe(CURRENT_SCHEMA_VERSION);
-    expect(CURRENT_SCHEMA_VERSION).toBe(56);
+    expect(CURRENT_SCHEMA_VERSION).toBe(57);
     const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>)
       .map(row => row.name);
     expect(tables).toEqual(expect.arrayContaining([
       'workspace_execution_bindings', 'workspace_change_records', 'artifact_versions',
     ]));
     expect((db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>)
-      .map(column => column.name)).toContain('execution_mode');
+      .map(column => column.name)).toEqual(expect.arrayContaining([
+        'execution_mode',
+        'workspace_execution_source',
+        'workspace_delivery_policy',
+        'workspace_target_paths_json',
+        'workspace_intent_json',
+      ]));
+    expect((db.prepare('PRAGMA table_info(workspace_execution_bindings)').all() as Array<{ name: string }>)
+      .map(column => column.name)).toEqual(expect.arrayContaining([
+        'mode_source', 'delivery_policy', 'workspace_intent_json', 'targeted_paths_json', 'cleaned_at',
+      ]));
     expect((db.prepare('PRAGMA table_info(task_artifacts)').all() as Array<{ name: string }>)
       .map(column => column.name)).toEqual(expect.arrayContaining([
         'reference_kind', 'workspace_id', 'artifact_version_id', 'source_relative_path',
@@ -41,10 +51,15 @@ describe('workspace execution persistence', () => {
       canonicalPath: '/Users/me/project',
       executionMode: 'in_place',
       authorizedWorkingDirectory: '/Users/me/project',
+      modeSource: 'planner',
+      deliveryPolicy: 'none',
+      targetPaths: ['docs/readme.md'],
       createdAt: '2026-10-23T00:00:00.000Z',
       updatedAt: '2026-10-23T00:00:00.000Z',
     });
     expect(binding.executionMode).toBe('in_place');
+    expect(binding.modeSource).toBe('planner');
+    expect(binding.targetPaths).toEqual(['docs/readme.md']);
     const second = repo.upsert({
       taskId: 'task_1',
       generationId: 'generation_1',

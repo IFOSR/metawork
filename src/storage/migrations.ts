@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 import { installObservationSchema } from './observation-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 56;
+export const CURRENT_SCHEMA_VERSION = 57;
 
 const MANAGED_SERVICES_SQL = `
   CREATE TABLE IF NOT EXISTS public_workspace_files (
@@ -41,6 +41,11 @@ const WORKSPACE_EXECUTION_SQL = `
     canonical_path TEXT NOT NULL,
     execution_mode TEXT NOT NULL CHECK (execution_mode IN ('worktree', 'in_place')),
     authorized_working_directory TEXT NOT NULL,
+    mode_source TEXT NOT NULL DEFAULT '',
+    delivery_policy TEXT NOT NULL DEFAULT '',
+    workspace_intent_json TEXT,
+    targeted_paths_json TEXT NOT NULL DEFAULT '[]',
+    cleaned_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (task_id, generation_id)
@@ -1821,6 +1826,13 @@ export function runMigrations(
     rebuildManagedServiceIdentity(db);
     version = 56;
   }
+  if (version === 56) {
+    db.transaction(() => {
+      applyWorkspaceExecutionDecisionDdl(db);
+      bumpSchemaVersion(db, 56, 57, '56 to 57');
+    })();
+    version = 57;
+  }
   // Current-schema databases may have been created before a new projection
   // invalidation trigger was introduced. Reinstalling the idempotent trigger
   // set on every open upgrades those databases without requiring a rebuild.
@@ -1848,6 +1860,53 @@ function applyWorkspaceExecutionDdl(db: Database.Database): void {
   db.exec(WORKSPACE_EXECUTION_SQL);
   db.exec(WORKSPACE_CHANGE_RECORD_SQL);
   db.exec(ARTIFACT_VERSION_SQL);
+}
+
+/**
+ * Schema 57 pins the Kernel-authorized Workspace execution decision on the Task
+ * and on the per-Generation binding, so retry/recovery/follow-up rounds inherit
+ * the mode instead of re-reading the environment or current settings. It also
+ * retires legacy worktree publications that would otherwise be replayed by the
+ * old copy path: those are parked for an explicit decision, never silently
+ * copied into the user's Workspace.
+ */
+function applyWorkspaceExecutionDecisionDdl(db: Database.Database): void {
+  const taskColumns = columnsOf(db, 'tasks');
+  const addTaskColumn = (name: string, ddl: string): void => {
+    if (!taskColumns.includes(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${ddl}`);
+  };
+  addTaskColumn('workspace_execution_source', "workspace_execution_source TEXT NOT NULL DEFAULT ''");
+  addTaskColumn('workspace_delivery_policy', "workspace_delivery_policy TEXT NOT NULL DEFAULT ''");
+  addTaskColumn('workspace_target_paths_json', "workspace_target_paths_json TEXT NOT NULL DEFAULT '[]'");
+  addTaskColumn('workspace_intent_json', 'workspace_intent_json TEXT');
+
+  if (tableExists(db, 'workspace_execution_bindings')) {
+    const bindingColumns = columnsOf(db, 'workspace_execution_bindings');
+    const addBindingColumn = (name: string, ddl: string): void => {
+      if (!bindingColumns.includes(name)) db.exec(`ALTER TABLE workspace_execution_bindings ADD COLUMN ${ddl}`);
+    };
+    addBindingColumn('mode_source', "mode_source TEXT NOT NULL DEFAULT ''");
+    addBindingColumn('delivery_policy', "delivery_policy TEXT NOT NULL DEFAULT ''");
+    addBindingColumn('workspace_intent_json', 'workspace_intent_json TEXT');
+    addBindingColumn('targeted_paths_json', "targeted_paths_json TEXT NOT NULL DEFAULT '[]'");
+    addBindingColumn('cleaned_at', 'cleaned_at TEXT');
+  }
+
+  if (tableExists(db, 'workspace_publications')) {
+    if (!columnsOf(db, 'workspace_publications').includes('delivery_authorized_at')) {
+      db.exec('ALTER TABLE workspace_publications ADD COLUMN delivery_authorized_at TEXT');
+    }
+  }
+
+  if (tableExists(db, 'workspace_publications') && tableExists(db, 'tasks')) {
+    db.prepare(`
+      UPDATE workspace_publications
+      SET status = 'parked',
+          error_summary = 'legacy worktree publication retired by schema 57; re-accept or re-execute explicitly'
+      WHERE status IN ('pending', 'applying')
+        AND task_id IN (SELECT id FROM tasks WHERE execution_mode = 'worktree')
+    `).run();
+  }
 }
 
 /**
@@ -2530,7 +2589,7 @@ function runBaseMigrations(
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
     ).all() as Array<{ version: number }>;
-    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
+    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 41) {
@@ -2687,6 +2746,7 @@ function runBaseMigrations(
     db.exec(WORKSPACE_CHANGE_RECORD_SQL);
     db.exec(ARTIFACT_VERSION_SQL);
     db.exec(PUBLICATION_DELIVERY_SQL);
+    applyWorkspaceExecutionDecisionDdl(db);
     db.exec(RETRY_WAKE_SQL);
     db.exec(NAVIGATION_PROJECTION_SQL);
     // Fresh installs get the same columns the upgrade chain adds, without

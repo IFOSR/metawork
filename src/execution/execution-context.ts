@@ -34,13 +34,13 @@ export interface WorkspaceExecutionBindingFacts {
 }
 
 export const DEFAULT_EXECUTION_MODE: ExecutionMode = 'worktree';
-export const EXECUTION_MODE_ENVIRONMENT = 'METAWORK_WORKSPACE_EXECUTION_DEFAULT';
 /**
- * Independent release gate for in-place execution. Setting the default to
- * `in_place` alone must not silently enable the experimental path: both the
- * default *and* this switch have to agree.
+ * Migration-compatibility input only. Since the Planner-owned Workspace mode
+ * contract, the Kernel-authorized decision is the sole source of the mode for a
+ * new Task (`WorkspaceExecutionDecision`), and the environment no longer admits
+ * work. The parser stays for legacy configuration/import tooling.
  */
-export const IN_PLACE_ENABLED_ENVIRONMENT = 'METAWORK_WORKSPACE_IN_PLACE_ENABLED';
+export const EXECUTION_MODE_ENVIRONMENT = 'METAWORK_WORKSPACE_EXECUTION_DEFAULT';
 
 export class ExecutionContextError extends Error {
   constructor(readonly field: string, message: string) {
@@ -57,20 +57,6 @@ export function resolveExecutionModeFromEnvironment(
   return parseExecutionMode(raw);
 }
 
-/** True only when the release gate explicitly allows in-place admission. */
-export function isInPlaceAdmissionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env[IN_PLACE_ENABLED_ENVIRONMENT]?.trim().toLowerCase() === 'true';
-}
-
-/**
- * Mode for a *new* Task: the environment proposal, downgraded to `worktree`
- * unless the in-place gate is open. Existing Tasks keep their persisted mode.
- */
-export function resolveAdmittedExecutionMode(env: NodeJS.ProcessEnv = process.env): ExecutionMode {
-  const requested = resolveExecutionModeFromEnvironment(env);
-  if (requested !== 'in_place') return requested;
-  return isInPlaceAdmissionEnabled(env) ? 'in_place' : 'worktree';
-}
 
 export function parseExecutionMode(value: string | undefined): ExecutionMode {
   if (value === undefined || value === '') return DEFAULT_EXECUTION_MODE;

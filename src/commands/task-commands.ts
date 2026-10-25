@@ -254,7 +254,10 @@ export async function showTask(args: ResolvedCommandArgs, context: CommandContex
     `当前状态: ${TASK_STATUS_LABELS[taskView?.status ?? task.status]}（版本 ${taskView?.state.stateVersion ?? task.stateVersion}）`,
     `状态说明: ${taskView?.explanation || task.stateDetail.reason.message || '暂无补充说明'}`,
     ...publicDeliveryLines(delivery),
-    ...(taskView?.pendingActions.some(action => action.kind === 'accept_result')
+    ...(taskView?.pendingActions.some(action => action.kind === 'accept_result'
+      && (action.publicationId || action.actionId.startsWith('accept_partial:')))
+      ? [`接受候选并发布: /task accept-partial ${taskId}`] : []),
+    ...(taskView?.pendingActions.some(action => action.kind === 'accept_result' && !action.publicationId)
       ? [`接受并交付: /task accept-result ${taskId}`] : []),
     ...(taskView?.pendingActions.some(action => action.kind === 'retry_attempt')
       ? [`重新执行: /task retry-result ${taskId}`] : []),
@@ -449,10 +452,14 @@ export async function acceptPartialResult(
   }
 
   try {
+    const view = context.taskControl.taskView?.(taskId);
+    const acceptsCandidate = view?.pendingActions.some(action => action.publicationId) ?? false;
     const receipt = await context.taskControl.acceptPartialResult(taskId);
     return {
       type: 'text',
-      content: `任务 #${taskId} 已显式接受部分结果；取消节点 ${receipt.affectedSubtaskIds.length} 个`,
+      content: acceptsCandidate
+        ? `任务 #${taskId} 已接受候选变更，正在发布到目标 Workspace。`
+        : `任务 #${taskId} 已显式接受部分结果；取消节点 ${receipt.affectedSubtaskIds.length} 个`,
     };
   } catch (error) {
     return { type: 'text', content: `操作失败: ${(error as Error).message}` };

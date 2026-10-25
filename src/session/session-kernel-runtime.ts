@@ -1,5 +1,7 @@
-import { capturePublicProjectBaseline } from '../delivery/public-project-baseline.js';
-import { resolveAdmittedExecutionMode } from '../execution/execution-context.js';
+import {
+  capturePublicProjectBaseline,
+  captureWorkspaceTargetBaseline,
+} from '../delivery/public-project-baseline.js';
 import type { KernelDecision, KernelEvent } from '../kernel/control-kernel.js';
 import {
   KernelApplicationRejectionError,
@@ -14,6 +16,7 @@ import type { SessionPresentationService } from './session-presentation-service.
 import type { QueuedExecutionRequest } from './session-helpers.js';
 import type { TaskClearOutcome, TaskClearScope, TaskStatusQueryScope } from '../task/task-control-types.js';
 import type { Task } from '../core/types.js';
+import type { WorkspaceExecutionDecision } from '../core/workspace-execution.js';
 import type {
   ConversationTaskSchedulerRepo,
   QueuedTaskPayload,
@@ -183,6 +186,7 @@ export class SessionKernelRuntime {
         }
         return null;
       }
+      case 'authorize_workspace_delivery':
       case 'wait_for_capacity':
       case 'wait_for_retry':
       case 'supersede_retry_wake':
@@ -496,12 +500,28 @@ export class SessionKernelRuntime {
     // is the Planner/runtime process identity and may be different from the
     // Conversation that owns this plan.
     const ownerConversationId = conversationId ?? decision.action.owner.conversationId;
-    const publicWorkspace = command.publicProjectDirectory
-      ? await this.deps.resolveUserWorkspaceRoot?.(ownerConversationId)
-      : null;
+    // The Kernel-authorized decision is the only source of the execution mode
+    // and delivery policy for a new Task; the Runtime never reads the
+    // environment or the current settings to reinterpret it. A Decision
+    // persisted before this contract existed cannot be re-derived, so it falls
+    // back to the isolated backend instead of guessing a user Workspace.
+    const workspaceExecution = decision.action.workspaceExecution
+      ?? LEGACY_WORKSPACE_EXECUTION;
+    const workspaceRoot = await this.deps.resolveUserWorkspaceRoot?.(ownerConversationId) ?? null;
+    const publicWorkspace = command.publicProjectDirectory ? workspaceRoot : null;
     if (command.publicProjectDirectory && !publicWorkspace) throw new Error('无法确认现有项目的 Workspace');
+    // Publication protection needs the admission-time state of the files this
+    // Task is authorized to touch: a user edit made after admission is a
+    // conflict, while a file that still matches may be replaced by the
+    // authorized change set. An explicitly selected project keeps its own tree
+    // baseline; every other Workspace round snapshots the declared paths.
     const publicBaseline = command.publicProjectDirectory && publicWorkspace
-      ? await capturePublicProjectBaseline(publicWorkspace, command.publicProjectDirectory) : {};
+      ? await capturePublicProjectBaseline(publicWorkspace, command.publicProjectDirectory)
+      : workspaceRoot
+        && workspaceExecution.executionMode === 'worktree'
+        && workspaceExecution.targetPaths.length > 0
+        ? await captureWorkspaceTargetBaseline(workspaceRoot, workspaceExecution.targetPaths)
+        : {};
     const task = command.taskId
       ? this.deps.taskRuntimeService.findTask(command.taskId)
       : this.deps.taskRuntimeService.createTask({
@@ -509,7 +529,11 @@ export class SessionKernelRuntime {
           publicTaskDirectory: command.publicProjectDirectory ?? undefined,
           publicDeliveryBaseline: publicBaseline,
           startServiceAfterPublish: command.startServiceAfterPublish ?? false,
-          executionMode: resolveAdmittedExecutionMode(),
+          executionMode: workspaceExecution.executionMode,
+          workspaceExecutionSource: workspaceExecution.source,
+          workspaceDeliveryPolicy: workspaceExecution.deliveryPolicy,
+          workspaceTargetPaths: workspaceExecution.targetPaths,
+          workspaceIntent: decision.action.workspaceIntent ?? null,
           title: (command.title ?? inline.normalizedGoal).slice(0, 50),
           goal: command.goal ?? inline.normalizedGoal,
           resources: inline.resources,
@@ -601,6 +625,15 @@ export class SessionKernelRuntime {
     });
   }
 }
+
+/** Isolated, non-destructive default for Decisions persisted before schema 57. */
+const LEGACY_WORKSPACE_EXECUTION: WorkspaceExecutionDecision = {
+  executionMode: 'worktree',
+  source: 'kernel_safety',
+  reason: 'legacy Decision without a Workspace execution decision',
+  deliveryPolicy: 'await_acceptance',
+  targetPaths: [],
+};
 
 function scopeDashboard(
   dashboard: ReturnType<OrchestrationEngine['getDashboard']>,

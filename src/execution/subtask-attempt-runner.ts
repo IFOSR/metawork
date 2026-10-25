@@ -6,7 +6,7 @@ import { buildWorkspaceChangeRecord } from './workspace-change-recorder.js';
 import { WorkspaceChangeRecordRepo } from '../storage/workspace-change-record-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { createHash } from 'node:crypto';
-import { canonicalizeWorkspacePath, isWithin } from '../workspace/workspace-path.js';
+import { canonicalizeWorkspacePath, isWithin, isWorkspaceRelativePath } from '../workspace/workspace-path.js';
 import { basename, extname, join, resolve } from 'node:path';
 import { chmod, copyFile, lstat, mkdir } from 'node:fs/promises';
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
@@ -809,6 +809,27 @@ export class SubtaskAttemptRunner {
         });
       }
       const targetPath = workspace.filesPath;
+      // Planner authorization is Workspace-relative and durable on the
+      // Generation binding. The Executor context must receive those paths
+      // resolved against the actual execution root; passing the whole root as
+      // the only target silently widened the model's declared scope.
+      const declaredTargetPaths = task.workspaceTargetPaths
+        ?? workspaceBinding?.targetPaths
+        ?? [];
+      const executorTargetPaths = declaredTargetPaths.length > 0
+        ? declaredTargetPaths.map(path => {
+            if (!isWorkspaceRelativePath(path)) {
+              throw new Error(`authorized Workspace target path is unsafe: ${path}`);
+            }
+            const resolved = resolve(targetPath, path);
+            if (!isWithin(targetPath, resolved)) {
+              throw new Error(`authorized Workspace target path escapes execution root: ${path}`);
+            }
+            return resolved;
+          })
+        // Legacy bindings had no target scope. Keep their isolated execution
+        // runnable while schema-9 Tasks always carry at least one path.
+        : [targetPath];
       const sourceRuntime = sourceAttemptId
         ? this.attemptRuntimeRepo.find(sourceAttemptId)
         : null;
@@ -860,7 +881,7 @@ export class SubtaskAttemptRunner {
         workspaceContext: {
           allowFilesystem: true,
           workingDirectory: workspace.filesPath,
-          targetPaths: [targetPath],
+          targetPaths: executorTargetPaths,
           ...(workspaceId ? { workspaceId } : {}),
           executionMode: inPlaceExecution ? 'in_place' : 'worktree',
           ...(inPlaceExecution
@@ -1692,6 +1713,15 @@ export class SubtaskAttemptRunner {
       if (this.hasSealedTerminal(attemptId)) {
         this.deps.resourceLeaseService.release(attemptId, leaseToken);
         claim.release();
+        if (workspace && inPlaceExecution) {
+          // Inputs, handoffs and result staging belong to this Attempt, not to
+          // the user's Workspace. Once the terminal receipt is sealed they no
+          // longer participate in recovery and can be retired safely. An
+          // uncertain in-place write has no sealed receipt and is retained.
+          await this.deps.workspaceStore.removeWorkspaceUri(
+            pathToFileURL(workspace.rootPath).href,
+          ).catch(() => undefined);
+        }
       }
       if (gitSnapshotScratch) {
         rmSync(gitSnapshotScratch, { recursive: true, force: true });

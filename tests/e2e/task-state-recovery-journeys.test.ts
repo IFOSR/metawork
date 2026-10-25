@@ -61,8 +61,12 @@ function fixture(responder: FakeAttemptExecutionResponder, service = false, exis
     logRoot: join(root, '..', 'service-logs'), resolveEnvironment: async () => null,
     resolvePublishedDirectory: async taskId => {
       const task = repo.findById(taskId);
-      return task?.publicTaskDirectory && artifacts.publicFiles.list('local-default', taskId).length > 0
-        ? join(root, task.publicTaskDirectory) : null;
+      if (!task || artifacts.publicFiles.list('local-default', taskId).length === 0) return null;
+      // Published paths are Workspace-relative unless the user selected an
+      // existing project directory.
+      return task.publicProject && task.publicTaskDirectory
+        ? join(root, task.publicTaskDirectory)
+        : root;
     } });
   const session = new MetaclawSession({ taskEngine: engine, userArtifactPublication: delivery, managedLocalServices: services,
     memoryEngine: new MemoryEngine(new PreferenceRepo(db)), orchestration: new OrchestrationEngine(engine),
@@ -131,7 +135,7 @@ describe('user result and service recovery journeys', () => {
     expect(reopened.repo.findById(id)?.status).toBe('succeeded');
     expect(reopened.db.prepare("SELECT count(*) AS n FROM workspace_publications WHERE id LIKE 'publication_accepted_%'").get()).toEqual({ n: 1 });
     expect(reopened.backend.create).not.toHaveBeenCalled();
-    expect(readFileSync(join(reopened.root, reopened.repo.findById(id)!.publicTaskDirectory!, 'answer.md'), 'utf8')).toBe('durable answer');
+    expect(readFileSync(join(reopened.root, 'answer.md'), 'utf8')).toBe('durable answer');
     expect(reopened.view().state.status).toBe('succeeded');
   });
   it('recovers acceptance after state commit but before result staging', async () => {
@@ -194,7 +198,7 @@ describe('user result and service recovery journeys', () => {
     expect(f.task().stateDetail.reason.code).toBe('port_in_use');
     const original = f.task();
     const attempts = f.backend.create.mock.calls.length;
-    const code = readFileSync(join(f.root, original.publicTaskDirectory!, 'server.mjs'), 'utf8');
+    const code = readFileSync(join(f.root, 'server.mjs'), 'utf8');
     await new Promise<void>(resolve => occupied.close(() => resolve()));
     await f.session.submit(`/task retry ${original.id}`, { awaitAsyncWork: true });
     const retries = f.repo.findAll().filter(task => task.retryOfTaskId === original.id);
@@ -203,7 +207,7 @@ describe('user result and service recovery journeys', () => {
     expect(f.repo.findById(original.id)?.status).toBe('failed');
     expect(f.repo.findById(original.id)?.stateDetail.reason.code).toBe('port_in_use');
     expect(f.backend.create.mock.calls.length).toBe(attempts);
-    expect(readFileSync(join(f.root, original.publicTaskDirectory!, 'server.mjs'), 'utf8')).toBe(code);
+    expect(readFileSync(join(f.root, 'server.mjs'), 'utf8')).toBe(code);
     expect(f.db.prepare('SELECT count(*) AS n FROM subtasks WHERE task_id = ?').get(retries[0]!.id)).toEqual({ n: 0 });
     await f.session.submit(`/task retry ${original.id}`, { awaitAsyncWork: true });
     expect(f.repo.findAll().filter(task => task.retryOfTaskId === original.id)).toHaveLength(1);

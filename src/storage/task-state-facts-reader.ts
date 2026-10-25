@@ -176,20 +176,30 @@ export class SqliteTaskStateFactsReader implements TaskStateFactsPort {
 
   private readPublications(taskId: string, generationId: string | null, revision: number | null): TaskRawPublicationFact[] {
     return (this.deps.db.prepare(`SELECT publication.id, publication.subtask_id, publication.status,
-        delivery.status AS delivery_status
+        publication.delivery_authorized_at, delivery.status AS delivery_status,
+        task.workspace_delivery_policy
       FROM workspace_publications AS publication
+      JOIN tasks AS task ON task.id = publication.task_id
       LEFT JOIN workspace_publication_deliveries AS delivery
         ON delivery.publication_id = publication.id
       WHERE publication.task_id = ? AND publication.generation_id = ?
         AND publication.subtask_id IN (SELECT id FROM subtasks WHERE task_id = ? AND graph_revision = ?)
       ORDER BY publication.created_at`).all(taskId, generationId, taskId, revision) as Array<{
       id: string; subtask_id: string; status: TaskRawPublicationFact['status'];
+      delivery_authorized_at: string | null;
       delivery_status: 'pending' | 'failed' | 'succeeded' | null;
+      workspace_delivery_policy: string | null;
     }>).map(row => ({
       id: row.id,
       subtaskId: row.subtask_id,
       status: row.status,
       deliveryStatus: row.delivery_status,
+      // An integrated candidate whose delivery was never authorized is waiting
+      // for an explicit user decision, not for Runtime work.
+      awaitingAcceptance: row.status === 'integrated'
+        && row.delivery_authorized_at === null
+        && row.delivery_status === 'pending'
+        && row.workspace_delivery_policy === 'await_acceptance',
     }));
   }
 

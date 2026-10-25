@@ -1,6 +1,7 @@
 import { publicTaskRelativeDirectory } from '../task/public-task-directory.js';
 import type Database from 'better-sqlite3';
 import type { Task, TaskSnapshot, TaskStatus, Dependency } from '../core/types.js';
+import { parseWorkspaceIntent } from '../core/workspace-execution.js';
 import {
   isTaskStatus,
   normalizeTaskStateDetail,
@@ -64,6 +65,10 @@ interface TaskRow {
   public_project: number;
   start_service_after_publish: number;
   execution_mode: 'worktree' | 'in_place' | null;
+  workspace_execution_source: string | null;
+  workspace_delivery_policy: string | null;
+  workspace_target_paths_json: string | null;
+  workspace_intent_json: string | null;
 }
 
 function rowToTask(row: TaskRow): Task {
@@ -74,6 +79,18 @@ function rowToTask(row: TaskRow): Task {
     publicProject: row.public_project === 1,
     startServiceAfterPublish: row.start_service_after_publish === 1,
     executionMode: row.execution_mode === 'in_place' ? 'in_place' : 'worktree',
+    ...(row.workspace_execution_source
+      ? { workspaceExecutionSource: row.workspace_execution_source as Task['workspaceExecutionSource'] }
+      : {}),
+    ...(row.workspace_delivery_policy
+      ? { workspaceDeliveryPolicy: row.workspace_delivery_policy as Task['workspaceDeliveryPolicy'] }
+      : {}),
+    ...(row.workspace_target_paths_json
+      ? { workspaceTargetPaths: safeJson(row.workspace_target_paths_json) as string[] }
+      : {}),
+    ...(row.workspace_intent_json
+      ? { workspaceIntent: parseWorkspaceIntent(safeJson(row.workspace_intent_json)) }
+      : {}),
     accountId: row.account_id,
     conversationId: row.conversation_id,
     workspaceId: row.workspace_id,
@@ -140,8 +157,9 @@ export class TaskRepo {
         last_interruption_reason, interruption_count, created_at, updated_at,
         account_id, conversation_id, workspace_id, owner_planner_session_id, admitted_at,
         public_task_directory, public_delivery_baseline_json, start_service_after_publish,
-        public_project, execution_mode)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        public_project, execution_mode, workspace_execution_source, workspace_delivery_policy,
+        workspace_target_paths_json, workspace_intent_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       task.id, task.title, task.goal, task.status, task.stateVersion,
       JSON.stringify(task.stateDetail), task.completedAt, task.archivedAt, task.retryOfTaskId,
@@ -157,6 +175,10 @@ export class TaskRepo {
       task.publicTaskDirectory ?? publicTaskRelativeDirectory(task.title, task.id),
       JSON.stringify(task.publicDeliveryBaseline ?? {}), task.startServiceAfterPublish ? 1 : 0, task.publicProject ? 1 : 0,
       task.executionMode ?? 'worktree',
+      task.workspaceExecutionSource ?? '',
+      task.workspaceDeliveryPolicy ?? '',
+      JSON.stringify(task.workspaceTargetPaths ?? []),
+      task.workspaceIntent ? JSON.stringify(task.workspaceIntent) : null,
     );
     this.taskSearchIndexRepo?.indexTask(task);
   }
@@ -246,6 +268,10 @@ export class TaskRepo {
     if (changes.lastInterruptionReason !== undefined) { sets.push('last_interruption_reason = ?'); values.push(changes.lastInterruptionReason); }
     if (changes.interruptionCount !== undefined) { sets.push('interruption_count = ?'); values.push(changes.interruptionCount); }
     if (changes.publicDeliveryBaseline !== undefined) { sets.push('public_delivery_baseline_json = ?'); values.push(JSON.stringify(changes.publicDeliveryBaseline)); }
+    if (changes.workspaceExecutionSource !== undefined) { sets.push('workspace_execution_source = ?'); values.push(changes.workspaceExecutionSource ?? ''); }
+    if (changes.workspaceDeliveryPolicy !== undefined) { sets.push('workspace_delivery_policy = ?'); values.push(changes.workspaceDeliveryPolicy ?? ''); }
+    if (changes.workspaceTargetPaths !== undefined) { sets.push('workspace_target_paths_json = ?'); values.push(JSON.stringify(changes.workspaceTargetPaths)); }
+    if (changes.workspaceIntent !== undefined) { sets.push('workspace_intent_json = ?'); values.push(changes.workspaceIntent ? JSON.stringify(changes.workspaceIntent) : null); }
     if (changes.startServiceAfterPublish !== undefined) { sets.push('start_service_after_publish = ?'); values.push(changes.startServiceAfterPublish ? 1 : 0); }
     if (changes.publicProject !== undefined) { sets.push('public_project = ?'); values.push(changes.publicProject ? 1 : 0); }
 

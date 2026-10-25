@@ -79,7 +79,6 @@ import { nanoid } from 'nanoid';
 import { MetaclawGatewayServer } from '../gateway/server.js';
 import { resolveGatewaySocketPath } from '../gateway/gateway-paths.js';
 import { resolveLocalEndpointPath } from '../platform/local-endpoint.js';
-import { MarkdownPreviewServer } from '../integrations/markdown-preview.js';
 import { FeishuRuntimeManager } from '../gateway/feishu-runtime.js';
 import { FeishuGatewayAdapter } from '../gateway/feishu-gateway-adapter.js';
 import { FeishuConversationRouting } from '../gateway/feishu-conversation-routing.js';
@@ -650,22 +649,15 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   }
   const migratedSnapshot = await configurationRepository.getActiveSnapshot();
   const config = buildApplicationConfig(migratedSnapshot);
-  const markdownPreviewConfig = config.integrations?.markdown_preview;
-  const markdownPreviewServer = markdownPreviewConfig?.enabled
-    && process.env.METACLAW_DISABLE_MARKDOWN_PREVIEW !== '1'
-    ? new MarkdownPreviewServer(markdownPreviewConfig, accountPaths.workspaceStore)
-    : null;
-  if (markdownPreviewServer && markdownPreviewConfig) {
-    try {
-      await markdownPreviewServer.start();
-      const markdownPreviewBaseUrl = (markdownPreviewConfig.public_base_url
-        ?? `http://${markdownPreviewConfig.host}:${markdownPreviewConfig.port}`).replace(/\/+$/, '');
-      console.log(
-        `Markdown preview listening: ${markdownPreviewBaseUrl}`,
-      );
-    } catch (error) {
-      console.error(`Markdown preview start failed: ${(error as Error).message}`);
-    }
+  // The legacy Markdown preview server served copies under the internal
+  // workspace store. Delivery now writes into the user Workspace (ADR-0050), so
+  // no Server-wide root is authorized to serve; clients use the Workspace
+  // artifact preview instead. The retired setting is reported instead of
+  // silently exposing internal execution paths.
+  if (config.integrations?.markdown_preview?.enabled) {
+    console.log(
+      'Markdown preview server is retired: use the Workspace artifact preview (ADR-0050).',
+    );
   }
 
   // 3. Bind Planner, Kernel and Runtime to the exact active revision.
@@ -897,7 +889,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     plannerRuntimeRoot: accountPaths.plannerRuntime,
     databasePath: accountPaths.database,
     configurationRoot: accountPaths.config,
-    schemaPath: resolve(applicationRoot, 'dist', 'planning-agent-plan-v8.schema.json'),
+    schemaPath: resolve(applicationRoot, 'dist', 'planning-agent-plan-v9.schema.json'),
     sessionDir: accountPaths.plannerSessions,
     runtimeEnvironment: plannerRuntimeEnvironment,
     expectedModel: stagedConfiguration.plannerBinding && plannerModel ? {
@@ -1016,9 +1008,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             && item.publishedPath === join(canonicalWorkspace, LOCAL_SERVICE_SPECIFICATION_FILENAME));
         return serviceSpec ? canonicalWorkspace : null;
       }
-      if (!task.publicTaskDirectory) return null;
-      const root = resolve(canonicalWorkspace, task.publicTaskDirectory);
-      if (!root.startsWith(`${canonicalWorkspace}/`)) return null;
+      // A Worktree round applies its authorized change set inside the target
+      // Workspace unless the user explicitly selected an existing project
+      // directory. There is no generated task directory to fall back to.
+      const root = task.publicProject && task.publicTaskDirectory
+        ? resolve(canonicalWorkspace, task.publicTaskDirectory)
+        : canonicalWorkspace;
+      if (root !== canonicalWorkspace && !root.startsWith(`${canonicalWorkspace}/`)) return null;
       try {
         if ((await lstat(root)).isSymbolicLink() || await realpath(root) !== root) return null;
         const artifacts = taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId).filter(item => item.status === 'published');
@@ -2105,6 +2101,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           reason: lifecycleProjection.state.reason,
           pendingActions: lifecycleProjection.state.pendingActions,
           cleanup: lifecycleProjection.state.cleanup,
+          executionGeneration: lifecycleProjection.executionGeneration,
           activeAttempt: lifecycleProjection.activeAttempt
             ? {
                 attemptId: lifecycleProjection.activeAttempt.attemptId,
@@ -2990,7 +2987,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           managementServer?.stop() ?? Promise.resolve(),
           gatewayFeishuManager?.stop() ?? Promise.resolve(),
           gatewayServer.stop(),
-          markdownPreviewServer?.stop() ?? Promise.resolve(),
+          Promise.resolve(),
         ]);
         await officialLogout;
       },
