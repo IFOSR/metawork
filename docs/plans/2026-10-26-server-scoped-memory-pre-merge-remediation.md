@@ -1,7 +1,7 @@
 # Server 级 Memory 合并前修复方案
 
 - 计划日期：2026-10-26
-- 状态：待确认，尚未实施
+- 状态：已实施（2026-10-26）
 - 适用分支：`IFOSR/metawork-memory-tdai`
 - 目标：在不引入当前产品尚未支持的“同一 Server 多客户 Memory 隔离”前提下，完成 TDAI memory 与主干的安全合并。
 - 关联设计：[TDAI memory integration design](2026-10-22-memory-system-tdai-integration-design.md)、[ADR-0031](../adr/0031-account-runtime-and-unified-client-gateway.md)、[ADR-0049](../adr/0049-long-term-memory-ownership-deposition-and-delivery.md)。
@@ -294,3 +294,57 @@ git diff --check
 如果未来产品真的支持同一 Server 内多个本地客户，再单独启动 account-scoped memory 设计：届时需要把 controller、sidecar、user key、MCP read model 和 shutdown 生命周期下沉到 AccountRuntime，并更新 ADR-0031、CONTEXT、当前技术总览和本方案。
 
 在当前“一台客户机器一个 Server 一个本地客户”的产品边界下，提前引入该重构会扩大合并范围，且与现有 Server composition、local-default 数据根和部署模型不一致。
+
+## 10. 实施记录
+
+### 10.1 交付行为
+
+- 合并 `origin/main`（`035594a2`）到 `IFOSR/metawork-memory-tdai`；主干 schema
+  51→58 链、Gateway 命令语义、六态 Task、in-place Workspace 和 publication/recovery
+  保持权威，memory 增量进入 schema 59。
+- `MemoryRuntimeController` 保持 Server-owned；`server-composition` 仍只创建一次，
+  配置热激活只在 `memory` 段变化时重建。新增 `stopServerRuntimes()` 固定
+  Planner → AccountRuntimes → memory drain/scheduler/sidecar 的关闭顺序，并加回归测试。
+- schema 59：创建 `memory_bindings`、`memory_recall_candidates`、`memory_flush_state`、
+  `memory_recall_state`、`memory_runtime_state`；删除旧
+  `preferences`/`preference_usage`/`reflection_events`/`learning_candidates` 表与索引，
+  删除 `tasks.injected_prefs_json`，清理旧 preference evidence 与 ContextRef，并让仍含
+  旧引用的 pending `plan_proposed`、deferred replan payload 和活动 Task fail-closed。
+  memory 分支 schema 53 缺少主干六态事实时显式拒绝。
+- 旧链路退役：删除 `MemoryEngine`、`ContextRecaller`、`MemoryContextService`、
+  `MemoryVaultExporter`、`PreferenceRepo`、learning/reflection/promotion 模块及测试；
+  删除 `/memory`、`/learning` 与 profile preference 命令；inline resource 解析迁移到
+  `src/intent/inline-resource-normalization.ts`。
+- 召回门禁：disabled/needs-model/degraded 时清空当前 conversation 的 recall
+  candidates，并写入 `memory_runtime_state`；`search_memory` 与
+  `list_memory_assets` 以该持久化 mode 与 recall state 做门禁。
+- 管理面：`listAssets()` 返回 `mode`/`degraded`/`degradedReason`；Web 设置页显示
+  “记忆引擎不可用”及原因。新增管理 API、Web API 与视图状态测试。
+- 沉淀兜底：completed turn 达到阈值或距上次成功沉淀超过两小时时强制 flush；失败
+  不推进 `memory_flush_state.updated_at`；新增“少于 20 轮但超过两小时”、
+  “失败重试不推进时间”和“含失败/取消 turn”回归。
+- `MEMORY_INSTALLATION_USER_KEY_SECRET_REFERENCE` 明确为安装级/Server 级 secret；
+  memory binding 的查询全部保留 `account_id` 条件。
+- 重新生成 Planner schema fixture；`task8-cross-repository-contract` 哈希更新为
+  `89386bc828f4dc66b942e6a515609a6dd5c66b1238b0203f45088f99f8b84b5a`。
+
+### 10.2 验证
+
+```text
+npm run lint       通过
+npm run build      通过（含 Web 构建与 Planner schema 生成）
+npm run test:memory-e2e   4 个文件 / 20 项通过
+联合聚焦测试         26 个文件 / 292 项通过
+git diff --check   通过
+npm test           57 项失败，均为 origin/main 既有失败（control-kernel 旧状态夹具、
+                   未迁移的 session/e2e 夹具、declared-file-delivery 的 in-place
+                   attempt 目录等）；本分支新增/修改的 memory、schema、管理面、
+                   Planner MCP、Gateway migration 与命令目录测试全部通过。
+```
+
+已知 `npm test` 的失败集合与 `origin/main` 对照后没有新增失败；主干侧失败按
+“不把无关主干遗留问题混入本次记忆合并”的原则保留，另行处理。
+
+### 10.3 Closing commit
+
+- `dd913153` `feat: finalize server-scoped memory and retire the local memory chain`
