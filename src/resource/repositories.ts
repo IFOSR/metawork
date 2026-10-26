@@ -61,6 +61,10 @@ export interface ResourceLeaseRepositoryPort {
   releaseReconciledAttempt(attemptId: string, releasedAt: string): number;
   findActive(now: string): ResourceLeaseRecord[];
   findWaits(attemptId: string): ResourceWaitRecord[];
+  /** Waits whose conflicting leases disappeared; resolves and returns them. */
+  resolveSatisfiedWaits?(now: string, taskId?: string): ResourceWaitRecord[];
+  /** Unresolved waits, optionally scoped to one Task. */
+  findWaiting?(taskId?: string): ResourceWaitRecord[];
   requestRevocation?(
     taskId: string,
     generationId: string | null,

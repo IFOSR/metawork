@@ -12,6 +12,7 @@ import {
   createSubtaskLifecyclePort,
   type SubtaskLifecyclePort,
 } from '../task/task-lifecycle-transition-port.js';
+import { compileCompletionRequirements } from '../task/task-completion-requirements.js';
 
 export interface WorkGraphAuthorization {
   decisionId: string;
@@ -118,6 +119,22 @@ export class WorkGraphRuntimeService {
           proposedGraph,
           authorizedBindings,
           authorization,
+        );
+        // The requirement snapshot is part of the authorization and must name
+        // the persisted canonical Subtask ids; a re-plan persists a new list.
+        this.revisionRepo.setCompletionRequirements(
+          input.task.id,
+          authorization.revision,
+          compileCompletionRequirements({
+            subtasks: subtasks.map(subtask => ({
+              id: subtask.id,
+              title: subtask.title,
+              ...(subtask.deliveryKind ? { deliveryKind: subtask.deliveryKind } : {}),
+              ...(subtask.fileOutputs ? { fileOutputs: subtask.fileOutputs } : {}),
+            })),
+            publicProject: input.task.publicProject === true,
+            startServiceAfterPublish: input.task.startServiceAfterPublish === true,
+          }),
         );
         return { outcome: 'applied', workGraph: proposedGraph, subtasks } as const;
       });

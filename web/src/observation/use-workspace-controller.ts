@@ -48,6 +48,16 @@ export function useWorkspaceController() {
   const searchRef = useRef(search);
   searchRef.current = search;
   const [activationNotice, setActivationNotice] = useState<string | null>(null);
+  // Stop feedback is transient: it must be visible, then get out of the way.
+  const noticeTimerRef = useRef<number | null>(null);
+  const showStopNotice = (text: string): void => {
+    setActivationNotice(text);
+    if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = window.setTimeout(() => {
+      noticeTimerRef.current = null;
+      setActivationNotice(current => (current === text ? null : current));
+    }, 8_000);
+  };
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [workspaceCreatorOpen, setWorkspaceCreatorOpen] = useState(false);
   const [configurationRuntime, setConfigurationRuntime] = useState<ConfigurationRuntimeState | null>(null);
@@ -873,6 +883,11 @@ export function useWorkspaceController() {
       ? cancellable.filter(task => task.taskId === attachedTaskId)
       : cancellable;
     if (target && wsRef.current && (tasks.length > 0 || turnId)) {
+      // Feedback first: the request is acknowledged before any await, so a slow
+      // or rejected control never looks like a dead button.
+      showStopNotice(tasks.length === 0
+        ? '正在请求停止当前轮…'
+        : tasks.length === 1 ? '正在请求停止当前任务…' : `正在请求停止 ${tasks.length} 个任务…`);
       const requests = tasks.map(task => wsRef.current!.control(target, {
         kind: 'cancel_task', taskId: task.taskId,
         expectedExecutionGeneration: task.executionGeneration,
@@ -881,26 +896,33 @@ export function useWorkspaceController() {
       // executing. Send both controls so stopping the Executor also aborts a
       // Planner that has not closed its turn yet.
       if (turnId) requests.push(wsRef.current.control(target, { kind: 'cancel_turn', turnId }, () => undefined));
-      setActivationNotice(tasks.length === 0
-        ? '已请求停止当前轮。'
-        : tasks.length === 1
-          ? '已请求停止当前任务。'
-          : `已请求停止 ${tasks.length} 个任务。`);
       void Promise.allSettled(requests).then(results => {
         if (browsedConversationRef.current !== target) return;
         const failed = results.find(result => result.status === 'rejected')
           ?? results.find(result => result.status === 'fulfilled' && result.value.status !== 'completed');
-        if (!failed) setActivationNotice('停止请求已处理。');
-        else if (failed.status === 'rejected') setActivationNotice((failed.reason as Error)?.message ?? '停止请求未完成。');
-        else setActivationNotice(`操作未完成：${failed.value.reason ?? '请刷新状态后重试。'}`);
+        if (!failed) {
+          showStopNotice(tasks.length === 0
+            ? '已请求停止当前轮；后台清理完成后状态会刷新。'
+            : '已请求停止，正在终止执行；结果与历史会保留。');
+          return;
+        }
+        if (failed.status === 'rejected') {
+          showStopNotice(`停止请求未完成：${(failed.reason as Error)?.message ?? '请刷新后重试。'}`);
+          return;
+        }
+        const reason = failed.value.reason ?? '请刷新状态后重试。';
+        showStopNotice(reason.includes('generation')
+          ? `停止请求未生效：${reason}（任务状态已变化，请刷新后重试）`
+          : `停止请求未生效：${reason}`);
       });
       return;
     }
     if (!target || !wsRef.current) {
-      setActivationNotice('WebSocket 尚未连接，无法停止当前轮。');
+      showStopNotice('WebSocket 尚未连接，无法停止；恢复连接后请重试。');
       return;
     }
-    setActivationNotice('当前没有可定位的运行任务，请刷新状态后重试。');
+    // Nothing is executing: say so instead of pretending a request was sent.
+    showStopNotice('当前没有正在执行的任务或轮次，无需停止。');
   };
   const activeWorkspace = workspaces.find(workspace => workspace.id === activeWorkspaceId) ?? null;
   const activeConversationInWorkspace = activeSessionId

@@ -213,9 +213,8 @@ export class ConversationSession {
   private runtimeState: RuntimeState = {
     runningTaskId: null,
     runningExecutorName: null,
-    readyTaskIds: [],
-    blockedTaskIds: [],
-    parkedTaskIds: [],
+    queuedTaskIds: [],
+    needsActionTaskIds: [],
     lastEvent: null,
   };
   private focusContext: { kind: 'conversation' | 'task'; taskId: string | null } | null = null;
@@ -698,7 +697,13 @@ export class ConversationSession {
     return {
       schemaVersion: 5,
       type: 'plan_admission',
-      tasks: port.queries.listTasks().map(task => ({ id: task.id, status: task.status })),
+      tasks: port.queries.listTasks().map(task => ({
+        id: task.id,
+        status: task.status,
+        ...(task.workspaceId ? { workspaceId: task.workspaceId } : {}),
+        ...(task.executionMode ? { executionMode: task.executionMode } : {}),
+        ...(task.workspaceDeliveryPolicy ? { deliveryPolicy: task.workspaceDeliveryPolicy } : {}),
+      })),
       activeTaskByConversation: {
         [event.conversationId ?? this.deps.conversationId]: port.queries.getConversationTaskSlot?.(
           event.conversationId ?? this.deps.conversationId,
@@ -788,9 +793,14 @@ export class ConversationSession {
     return snapshot;
   }
 
-  private async prepareNewPlanEvent(event: PlanProposedEvent, signal: AbortSignal): Promise<PlanProposedEvent | null> {
-    if (this.preparationCancelled(event, signal)) return null;
-    const pinned = await this.loadConfigurationSnapshot(event.configurationRevision);
+  private async prepareNewPlanEvent(original: PlanProposedEvent, signal: AbortSignal): Promise<PlanProposedEvent | null> {
+    if (this.preparationCancelled(original, signal)) return null;
+    const pinned = await this.loadConfigurationSnapshot(original.configurationRevision);
+    if (this.preparationCancelled(original, signal)) return null;
+    // Pin the trusted Workspace admission facts on the durable event before any
+    // Kernel decision: the target Workspace identity never comes from Planner
+    // text, and a replay reaches the same decision without asking again.
+    const event = await this.attachWorkspaceAdmission(original);
     if (this.preparationCancelled(event, signal)) return null;
     const evaluator = this.deps.spanRoutingEvaluator;
     if (!evaluator) return event;
@@ -829,6 +839,27 @@ export class ConversationSession {
       if (error instanceof Error && error.name === 'AbortError') return event;
       throw error;
     }
+  }
+
+  /**
+   * Resolves the Conversation-bound Workspace into the facts Kernel validates.
+   * A missing or unavailable binding is projected as `null` so admission asks
+   * for a Workspace instead of guessing one.
+   */
+  private async attachWorkspaceAdmission(
+    event: PlanProposedEvent,
+  ): Promise<PlanProposedEvent> {
+    if (event.workspaceAdmission) return event;
+    const workspace = await this.deps.workspace?.getWorkspace() ?? null;
+    const targetWorkspace = workspace
+      ? { workspaceId: workspace.workspaceId, canonicalPath: workspace.path }
+      : null;
+    return {
+      ...event,
+      workspaceAdmission: {
+        targetWorkspace,
+      },
+    };
   }
 
   /**
@@ -1272,7 +1303,7 @@ export class ConversationSession {
     const task = this.deps.runtimePort.queries.findTask(this.currentTaskId);
     return task?.status === 'running'
       || Boolean(
-        task?.status === 'blocked'
+        task?.status === 'needs_action'
         && task.dependencies.some(dependency =>
           dependency.type === 'kernel_retry' && dependency.status === 'waiting'
         ),
@@ -1331,9 +1362,8 @@ export class ConversationSession {
     this.runtimeState = {
       runningTaskId: runningTask?.id ?? null,
       runningExecutorName: null,
-      readyTaskIds: tasks.filter(task => task.status === 'ready').map(task => task.id),
-      blockedTaskIds: tasks.filter(task => task.status === 'blocked').map(task => task.id),
-      parkedTaskIds: tasks.filter(task => task.status === 'parked').map(task => task.id),
+      queuedTaskIds: tasks.filter(task => task.status === 'queued').map(task => task.id),
+      needsActionTaskIds: tasks.filter(task => task.status === 'needs_action').map(task => task.id),
       lastEvent: this.runtimeState.lastEvent,
     };
     this.notify();
@@ -1359,9 +1389,8 @@ export class ConversationSession {
         : null,
       runtimeState: {
         ...this.runtimeState,
-        readyTaskIds: [...this.runtimeState.readyTaskIds],
-        blockedTaskIds: [...this.runtimeState.blockedTaskIds],
-        parkedTaskIds: [...this.runtimeState.parkedTaskIds],
+        queuedTaskIds: [...this.runtimeState.queuedTaskIds],
+        needsActionTaskIds: [...this.runtimeState.needsActionTaskIds],
       },
       plannerState: {
         status: this.activePlannerRuns > 0 ? 'running' : 'idle',
@@ -1459,6 +1488,7 @@ export class ConversationSession {
         }
         this.refreshRuntimeState();
         this.appendOutput(command.kind === 'accept_task_result' ? '已接受结果，正在检查并交付。' : '已请求重新执行，原结果和历史记录保留。');
+        if (command.kind === 'accept_task_result') this.settleTurnAfterTaskControl(task.id);
         return;
       }
       case 'cancel_task': {
@@ -1472,6 +1502,7 @@ export class ConversationSession {
         if (!this.kernelExecutionRuntime) throw new Error('task_control_unavailable');
         await this.kernelExecutionRuntime.cancelTask(task.id, '用户请求停止此任务');
         this.appendOutput(`已请求停止任务 ${task.id}；等待执行清理完成。`);
+        this.settleTurnAfterTaskControl(task.id);
         return;
       }
     }
@@ -1560,6 +1591,43 @@ export class ConversationSession {
       details: {},
       eventKey: 'turn_cancelled',
       traceStatus: 'cancelled',
+    });
+  }
+
+  /** Close a user control Turn when the durable Task has already reached a terminal conclusion. */
+  private settleTurnAfterTaskControl(taskId: string): void {
+    this.settleRunningTurnForFinishedTask(taskId, { maxIdleMs: null });
+  }
+
+  /** Repair stale running Turns left by an earlier process or asynchronous control completion. */
+  private settleStaleTurnAfterRestart(nowMs = Date.now()): void {
+    const taskId = this.currentTaskId;
+    if (!taskId) return;
+    this.settleRunningTurnForFinishedTask(taskId, { maxIdleMs: 15_000, nowMs });
+  }
+
+  private settleRunningTurnForFinishedTask(
+    taskId: string,
+    options: { maxIdleMs: number | null; nowMs?: number },
+  ): void {
+    const trace = this.deps.interactionTraceStream?.getSnapshot() ?? null;
+    if (!trace || trace.status !== 'running' || trace.taskId !== taskId) return;
+    if (options.maxIdleMs !== null) {
+      const lastAt = trace.events.at(-1)?.occurredAt ?? trace.startedAt;
+      const idleMs = (options.nowMs ?? Date.now()) - Date.parse(lastAt);
+      if (!Number.isFinite(idleMs) || idleMs < options.maxIdleMs) return;
+    }
+    const task = this.deps.runtimePort.queries.findTask(taskId);
+    if (!task) return;
+    const traceStatus = task.status === 'cancelled' ? 'cancelled'
+      : task.status === 'succeeded' ? 'completed'
+        : task.status === 'failed' ? 'failed' : null;
+    if (!traceStatus) return;
+    this.appendTrace({
+      phase: 'delivery', actor: 'runtime', kind: 'turn_settled', status: traceStatus === 'failed' ? 'failed' : 'completed',
+      title: traceStatus === 'completed' ? 'Turn completed' : `Turn ${traceStatus}`,
+      summary: traceStatus === 'completed' ? '任务已完成，用户决策已应用。' : `任务已结束：${task.status}。`,
+      details: { taskId, taskStatus: task.status }, eventKey: 'turn_settled', traceStatus,
     });
   }
 
@@ -1855,7 +1923,7 @@ export class ConversationSession {
         submissionId: submission.submissionId,
         planId: parsed.data.id,
         outcome: 'proposal_validated',
-        displayText: 'PlanningAgentPlan v8 proposal validated by MetaWork.',
+        displayText: 'PlanningAgentPlan v9 proposal validated by MetaWork.',
         taskId: parsed.data.task.taskId,
         kernel: null,
       };
@@ -2678,7 +2746,8 @@ export class ConversationSession {
   }
 
   async maybeReviewTaskPoolOnTimer(nowMs = Date.now()): Promise<boolean> {
-    for (const task of this.deps.runtimePort.queries.listTasksByStatus('blocked')) {
+    this.settleStaleTurnAfterRestart(nowMs);
+    for (const task of this.deps.runtimePort.queries.listTasksByStatus('needs_action')) {
       if (await this.kernelExecutionRuntime?.recoverDue(task.id, 'timer durable recovery drain')) return true;
     }
     if (await this.maybeReconcileBlockedTasksOnTimer(nowMs)) {
@@ -2723,13 +2792,13 @@ export class ConversationSession {
   private maybeEmitTaskPoolWatchdogReminder(nowMs: number): boolean {
     if (!this.deps.config?.orchestration.reminder_enabled) return false;
     const tasks = this.deps.runtimePort.queries.listTasks();
-    const blockedTasks = tasks.filter(task => task.status === 'blocked');
-    const parkedTasks = tasks.filter(task => task.status === 'parked');
-    if (blockedTasks.length === 0 && parkedTasks.length === 0) return false;
-    const fingerprint = [
-      ...blockedTasks.map(task => `b:${task.id}:${this.getWaitingBlockReason(task)}`),
-      ...parkedTasks.map(task => `p:${task.id}:${task.lastInterruptionReason}:${task.snapshots.at(-1)?.nextStep ?? ''}`),
-    ].join('|');
+    const needsActionTasks = tasks.filter(task => task.status === 'needs_action');
+    if (needsActionTasks.length === 0) return false;
+    // One state, one reminder fingerprint: the waiting reason and the last
+    // progress hint are the durable facts a user needs to act on.
+    const fingerprint = needsActionTasks.map(task =>
+      `n:${task.id}:${this.getWaitingBlockReason(task)}:${task.stateDetail.reason.code}`
+    ).join('|');
     const throttleMs = (this.deps.config?.orchestration.reminder_throttle ?? 0) * 1000;
     if (
       this.lastTaskPoolWatchdogFingerprint === fingerprint
@@ -2741,8 +2810,7 @@ export class ConversationSession {
     this.lastTaskPoolWatchdogFingerprint = fingerprint;
     this.lastTaskPoolWatchdogReminderAt = nowMs;
     this.appendOutput(...this.deps.presentation!.formatTaskPoolWatchdogReminder({
-      blockedTasks,
-      parkedTasks,
+      needsActionTasks,
       getWaitingBlockReason: task => this.getWaitingBlockReason(task),
     }));
     return true;
@@ -2872,7 +2940,15 @@ export class ConversationSession {
 }
 
 function planEventIdentity(event: PlanProposedEvent): string {
-  const { occurredAt: _time, spanRouting: _observation, ...identity } = event;
+  // Server-projected facts (`occurredAt`, Span observation, Workspace
+  // admission) are not part of the Planner proposal identity: a replay of the
+  // same proposal may resolve them again without becoming a different event.
+  const {
+    occurredAt: _time,
+    spanRouting: _observation,
+    workspaceAdmission: _admission,
+    ...identity
+  } = event;
   const canonical = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(canonical);
     if (value && typeof value === 'object') {

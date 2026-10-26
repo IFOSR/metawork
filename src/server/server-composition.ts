@@ -5,7 +5,7 @@ import { resolveExecutorTool } from '../utils/executor-tool-path.js';
 import { validateCodexCommand } from '../executor/tool-validation.js';
 import { defaultVersionProbe } from '../management/agent-installation-readiness-service.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { realpath, lstat, readFile } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 import { DesktopSessionService } from '../management/desktop-session.js';
 import { ClientNotificationFeed, type ClientNotificationPage } from '../gateway/client-notification-feed.js';
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
@@ -79,7 +79,6 @@ import { nanoid } from 'nanoid';
 import { MetaclawGatewayServer } from '../gateway/server.js';
 import { resolveGatewaySocketPath } from '../gateway/gateway-paths.js';
 import { resolveLocalEndpointPath } from '../platform/local-endpoint.js';
-import { MarkdownPreviewServer } from '../integrations/markdown-preview.js';
 import { FeishuRuntimeManager } from '../gateway/feishu-runtime.js';
 import { FeishuGatewayAdapter } from '../gateway/feishu-gateway-adapter.js';
 import { FeishuConversationRouting } from '../gateway/feishu-conversation-routing.js';
@@ -98,7 +97,7 @@ import { createConversationReadModel } from './conversation-read-model-compositi
 import { ConversationReadProjector } from '../session/conversation-read-projector.js';
 import { SqliteConversationActivitySource } from '../storage/conversation-activity-source.js';
 import type { ConversationActivityTask } from '../session/conversation-activity-source.js';
-import { isTerminalTaskLifecycle, toTaskLifecycleState } from '../task/task-lifecycle.js';
+import { TASK_STATUS_LABELS, isTerminalTaskStatus } from '../task/task-state.js';
 import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
 import { GatewaySubscriptions } from '../gateway/gateway-subscriptions.js';
 import { ConversationGatewayRuntime } from '../gateway/conversation-gateway-runtime.js';
@@ -163,6 +162,8 @@ import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { projectPublicDelivery } from '../delivery/public-delivery-view.js';
 import { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
+import { WorkspaceChangeRecordRepo } from '../storage/workspace-change-record-repo.js';
+import { ArtifactVersionRepo } from '../storage/artifact-version-repo.js';
 import { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import {
@@ -431,24 +432,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     cachePath: resolve(paths.root, 'metadata/openrouter-models.json'),
   });
 
-  // Reconcile half-cancelled task state (orphaned dispatch items, stale
-  // conversation slots, zombie schedule entries) at startup and every minute;
-  // see docs/plans/2026-09-03-feishu-task-execution-incident-review.md.
-  {
-    const { runTaskStateReconciler } = await import('../execution/task-state-reconciler.js');
-    const reconcileOnce = async () => {
-      try {
-        const report = await runTaskStateReconciler({ installRoot: paths.root });
-        for (const line of report.lines) console.log(`[reconciler] ${line}`);
-      } catch (error) {
-        console.error(`[reconciler] reconciliation failed: ${(error as Error).message}`);
-      }
-    };
-    await reconcileOnce();
-    const timer = setInterval(() => { void reconcileOnce(); }, 60_000);
-    timer.unref?.();
-  }
-
   if (cliCommand.kind === 'help') {
     process.stdout.write(`${formatCliHelp()}\n`);
     return;
@@ -639,6 +622,18 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     mkdirSync(dataDir, { recursive: true });
     instanceLock = await acquireInstanceLock(resolve(dataDir, 'runtime.lock'));
     process.once('exit', instanceLock.releaseOnExit);
+    // Reconcile half-cancelled task state (orphaned dispatch items, stale
+    // conversation slots, zombie schedule entries) at startup and every minute.
+    // This belongs to the Server lifecycle only: `help`, `server status` and
+    // `maintenance` must never enter the writable repair path from a status
+    // read (2026-10-23 review §3 A2/A3). See
+    // docs/plans/2026-09-03-feishu-task-execution-incident-review.md.
+    const { startServerStateReconciler } = await import('./server-lifecycle-maintenance.js');
+    await startServerStateReconciler({
+      installRoot: paths.root,
+      print: line => console.log(`[reconciler] ${line}`),
+      onError: error => console.error(`[reconciler] reconciliation failed: ${errorStack(error)}`),
+    });
   }
 
   // 2. Load the sole active configuration revision. Legacy *configuration
@@ -663,22 +658,15 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   }
   const migratedSnapshot = await configurationRepository.getActiveSnapshot();
   const config = buildApplicationConfig(migratedSnapshot);
-  const markdownPreviewConfig = config.integrations?.markdown_preview;
-  const markdownPreviewServer = markdownPreviewConfig?.enabled
-    && process.env.METACLAW_DISABLE_MARKDOWN_PREVIEW !== '1'
-    ? new MarkdownPreviewServer(markdownPreviewConfig, accountPaths.workspaceStore)
-    : null;
-  if (markdownPreviewServer && markdownPreviewConfig) {
-    try {
-      await markdownPreviewServer.start();
-      const markdownPreviewBaseUrl = (markdownPreviewConfig.public_base_url
-        ?? `http://${markdownPreviewConfig.host}:${markdownPreviewConfig.port}`).replace(/\/+$/, '');
-      console.log(
-        `Markdown preview listening: ${markdownPreviewBaseUrl}`,
-      );
-    } catch (error) {
-      console.error(`Markdown preview start failed: ${(error as Error).message}`);
-    }
+  // The legacy Markdown preview server served copies under the internal
+  // workspace store. Delivery now writes into the user Workspace (ADR-0050), so
+  // no Server-wide root is authorized to serve; clients use the Workspace
+  // artifact preview instead. The retired setting is reported instead of
+  // silently exposing internal execution paths.
+  if (config.integrations?.markdown_preview?.enabled) {
+    console.log(
+      'Markdown preview server is retired: use the Workspace artifact preview (ADR-0050).',
+    );
   }
 
   // 3. Bind Planner, Kernel and Runtime to the exact active revision.
@@ -954,7 +942,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     plannerRuntimeRoot: accountPaths.plannerRuntime,
     databasePath: accountPaths.database,
     configurationRoot: accountPaths.config,
-    schemaPath: resolve(applicationRoot, 'dist', 'planning-agent-plan-v8.schema.json'),
+    schemaPath: resolve(applicationRoot, 'dist', 'planning-agent-plan-v9.schema.json'),
     sessionDir: accountPaths.plannerSessions,
     runtimeEnvironment: plannerRuntimeEnvironment,
     expectedModel: stagedConfiguration.plannerBinding && plannerModel ? {
@@ -1052,30 +1040,26 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     isPublishedServiceSpecification: async (taskId, root) => taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId)
       .some(item => item.status === 'published' && item.relativePath === LOCAL_SERVICE_SPECIFICATION_FILENAME
         && item.publishedPath === join(root, LOCAL_SERVICE_SPECIFICATION_FILENAME)),
+    resolveWorkspaceId: async taskId => {
+      const row = db.prepare('SELECT workspace_id FROM tasks WHERE id = ?').get(taskId) as
+        { workspace_id: string | null } | undefined;
+      return row?.workspace_id ?? null;
+    },
     resolvePublishedDirectory: async taskId => {
       const task = taskEngine.getTaskRepo().findById(taskId);
-      if (!task || task.accountId !== LOCAL_DEFAULT_ACCOUNT_ID || !task.publicTaskDirectory) return null;
+      if (!task || task.accountId !== LOCAL_DEFAULT_ACCOUNT_ID) return null;
       const workspace = await resolveTaskWorkspacePath(taskId);
       if (!workspace) return null;
       const canonicalWorkspace = await realpath(workspace);
-      const root = resolve(canonicalWorkspace, task.publicTaskDirectory);
-      if (!root.startsWith(`${canonicalWorkspace}/`)) return null;
-      try {
-        if ((await lstat(root)).isSymbolicLink() || await realpath(root) !== root) return null;
-        const artifacts = taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId).filter(item => item.status === 'published');
-        if (!artifacts.length) return null;
-        for (const item of artifacts) {
-          if (!item.publishedPath.startsWith(`${root}/`) || item.publishedPath !== resolve(root, item.relativePath)
-            || (await lstat(item.publishedPath)).isSymbolicLink()
-            || await realpath(item.publishedPath) !== item.publishedPath
-            || createHash('sha256').update(await readFile(item.publishedPath)).digest('hex') !== item.contentHash.replace(/^sha256:/u, '')) return null;
-        }
-        const publicationRepo = new WorkspacePublicationRepo(db);
-        for (const publicationId of new Set(artifacts.map(item => item.publicationId).filter((id): id is string => Boolean(id)))) {
-          if (publicationRepo.delivery(publicationId)?.status !== 'succeeded') return null;
-        }
-        return root;
-      } catch { return null; }
+      // In-place delivery writes into the Conversation Workspace itself and
+      // records live references. Launch authority is the authorized service
+      // revision, so an unrelated user edit must not masquerade as "not
+      // published".
+      const serviceSpec = taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId)
+        .some(item => item.status === 'published'
+          && item.relativePath === LOCAL_SERVICE_SPECIFICATION_FILENAME
+          && item.publishedPath === join(canonicalWorkspace, LOCAL_SERVICE_SPECIFICATION_FILENAME));
+      return serviceSpec ? canonicalWorkspace : null;
     },
   });
   await managedLocalServices.recover();
@@ -1590,7 +1574,25 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
     readModel: conversationReadModel,
     db, root: resolve(accountPaths.gateway, 'events'), accountId: LOCAL_DEFAULT_ACCOUNT_ID,
-    onError: error => console.error(`Gateway journal maintenance failed: ${(error as Error).message}`),
+    // The stack and the failing Conversation are what turn `Cannot read
+    // properties of null` into a locatable defect (§A2/A3).
+    onError: (error, context) => {
+      console.error([
+        'Gateway journal maintenance failed:',
+        `account=${context?.accountId ?? LOCAL_DEFAULT_ACCOUNT_ID}`,
+        `conversation=${context?.conversationId ?? 'unknown'}`,
+        `stage=${context?.stage ?? 'unknown'}`,
+        `attempts=${context?.attempts ?? 1}`,
+        `suppressed=${context?.suppressed ?? 0}`,
+        `outcome=${context?.outcome ?? 'reported'}`,
+        errorStack(error),
+      ].join(' '));
+    },
+    onRecovered: context => console.log(
+      `Gateway journal maintenance recovered: account=${context.accountId} `
+      + `conversation=${context.conversationId} failures=${context.failedAttempts} `
+      + `suppressed=${context.suppressed}`,
+    ),
   });
   const eventJournal = eventJournalRuntime.journal;
   const normalizeHistoryPage = (turns: readonly ConversationTurn[]): ConversationTurn[] => {
@@ -1672,7 +1674,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     const taskId = task.id;
     return projectTaskView({
         ...new SqliteTaskActivityFacts(db).read(task, permissionRequestId ? { requestId: permissionRequestId } : null),
-        task: { id: task.id, status: task.status, updatedAt: task.updatedAt },
+        task: {
+          id: task.id,
+          status: task.status,
+          stateVersion: task.stateVersion,
+          stateDetail: task.stateDetail,
+          updatedAt: task.updatedAt,
+        },
         subtasks: new SubtaskRepo(db).listByTask(taskId)
           .map(subtask => ({ id: subtask.id, status: subtask.status })),
         dispatches: new KernelDispatchItemRepo(db).listByTask(taskId).map(item => ({
@@ -1756,8 +1764,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     // Run after the projection transaction. Confirm its committed value before issuing a UI hint.
     queueMicrotask(() => {
       if (!db.open || JSON.stringify(activityProjection.read(taskId)) !== JSON.stringify(summary)) return;
-      const kind = summary.phase === 'completed' ? 'completed' : summary.phase === 'failed' ? 'failed'
-        : summary.phase === 'waiting_for_user' ? 'approval' : null;
+      const kind = summary.status === 'succeeded' ? 'completed'
+        : summary.status === 'failed' ? 'failed'
+          : summary.status === 'needs_action' ? 'approval' : null;
       if (!kind || !task.workspaceId) return;
       clientNotifications.publish(task.accountId!, {
         workspaceId: task.workspaceId, conversationId: task.conversationId!, taskId,
@@ -1777,11 +1786,12 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       executionGeneration: generation,
       graphRevision: accountRuntimeComposition.runtimePort.queries.findActiveWorkGraphRevision(task.id)?.revision,
       ...(progress ? { progressSummary: redactSensitiveText(progress).slice(0, 1024) } : {}),
-      phase: view.phase, explanation: view.explanation,
-      userState: view.userState, userStateReason: view.userStateReason,
-      pendingDecision: view.pendingDecision,
+      status: view.status, statusLabel: view.statusLabel,
+      stateVersion: view.state.stateVersion, reason: view.state.reason,
+      phase: view.state.phase, pendingActions: view.state.pendingActions,
+      explanation: view.explanation,
       executionSettling: view.activeAttempt?.lifecycle === 'settling',
-      canCancel: !isTerminalTaskLifecycle(view.lifecycle) };
+      canCancel: !isTerminalTaskStatus(view.status) };
   });
   const activityProjectionTimer = setInterval(() => {
     try {
@@ -1795,6 +1805,20 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   activityProjectionTimer.unref();
   const conversationObservation = new ConversationObservationService({
     identity: { serverId: conversationReadModel.serverIdentity(), accountId: LOCAL_DEFAULT_ACCOUNT_ID },
+    // A Turn whose Task already finished cannot still be running. Reporting the
+    // truth at read time also repairs Turns left open by earlier builds; a
+    // genuinely live Turn is never overridden.
+    settleTurn: turn => {
+      if (turn.status !== 'running' || !turn.taskId) return turn;
+      const live = conversationRegistry.getIfOpen(turn.conversationId)?.getInteractionTrace() ?? null;
+      if (live?.turnId === turn.id && live.status === 'running') return turn;
+      const task = taskRepo.findById(turn.taskId);
+      if (!task) return turn;
+      const status = task.status === 'cancelled'
+        ? 'cancelled' as const
+        : ['done', 'archived'].includes(task.status) ? 'completed' as const : null;
+      return status ? { ...turn, status, completedAt: turn.completedAt ?? task.updatedAt ?? null } : turn;
+    },
     metadata: async (_accountId, conversationId) => {
       const metadata = await conversationStore.readMetadata(conversationId);
       const workspace = metadata?.workspaceBinding?.workspaceId
@@ -1815,10 +1839,19 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       const page = new SqliteConversationActivitySource(db).page(accountId, conversationId, cursor);
       return {
         tasks: page.tasks.map(task => activityProjection.read(task.id) ?? {
-          taskId: task.id, title: task.title, executionGeneration: '',
-          phase: 'preparing', explanation: '正在同步任务进度…', canCancel: false,
-          userState: projectTaskView(new SqliteTaskActivityFacts(db).read(task, null)).userState,
-          userStateReason: '正在同步任务进度…',
+          // A pending projection still carries the committed Task conclusion;
+          // only the narrative text is provisional.
+          taskId: task.id,
+          title: task.title,
+          executionGeneration: '',
+          status: task.status,
+          statusLabel: TASK_STATUS_LABELS[task.status],
+          stateVersion: task.stateVersion,
+          reason: task.stateDetail.reason,
+          phase: task.stateDetail.phase,
+          pendingActions: task.stateDetail.pendingActions,
+          explanation: '正在同步任务进度…',
+          canCancel: !isTerminalTaskStatus(task.status),
         }),
         nextCursor: page.nextCursor,
         pendingNextCursor: requests.length > 8 ? requests[7]!.permissionRequestId : null,
@@ -1917,7 +1950,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   }
   // Older system bindings discarded the presentation callback. Recover only
   // safe result objects of completed queued Tasks, never raw attempt output.
-  for (const task of taskRepo.findByStatus('done')) {
+  for (const task of taskRepo.findByStatus('succeeded')) {
     const queued = deliveryScheduler.getQueuedPayload(task.id);
     if (!task.conversationId || !queued?.queryId
       || !['account_task_capacity', 'conversation_slot_occupied'].includes(queued.schedulingReason ?? '')) continue;
@@ -2076,17 +2109,37 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         findObject: resultId => deliveryResults.findObject(resultId),
         readConfiguration: revisionId => configurationRepository.readSnapshot(revisionId),
       });
-      const lifecycleProjection = projectObservedTask(task, taskPermission?.request.id ?? null, executionFacts.result);
+      const activeGraph = new WorkGraphRevisionRepo(db).findActive(taskId);
+      const lifecycleProjection = {
+        ...projectObservedTask(task, taskPermission?.request.id ?? null, executionFacts.result),
+        // Bound per-Turn controls (cancel/resume) to the generation they saw.
+        executionGeneration: activeGraph?.generationId ?? null,
+      };
       const publicWorkspace = task.workspaceId ? await workspaceCatalogStore.findById(task.workspaceId) : null;
       const publicArtifacts = taskArtifactRepo.listByTask(taskId).filter(item => item.accountId === accountId && item.status === 'published');
       const publications = new WorkspacePublicationRepo(db);
-      const activeGraph = new WorkGraphRevisionRepo(db).findActive(taskId);
       const publicDelivery = projectPublicDelivery({ task, workspace: publicWorkspace?.canonicalPath ?? null,
-        pendingDecision: lifecycleProjection.pendingDecision !== null,
+        pendingDecision: lifecycleProjection.state.pendingActions.length > 0,
         artifacts: [...taskArtifactRepo.publicFiles.list(accountId, taskId), ...publicArtifacts],
         publications: publications.listByTask(taskId).filter(item => item.generationId === activeGraph?.generationId
           && new SubtaskRepo(db).findById(item.subtaskId)?.graphRevision === activeGraph?.revision),
         delivery: id => publications.delivery(id) });
+      // Historical query fixtures and older embedded callers may not inject
+      // the optional change-record repository yet. Keep that read model
+      // additive: publication/task history remains queryable without it.
+      const changeRecord = typeof WorkspaceChangeRecordRepo === 'undefined'
+        ? null
+        : new WorkspaceChangeRecordRepo(db).listByTask(taskId, 1)[0] ?? null;
+      const workspaceChanges = changeRecord
+        ? {
+            recordId: changeRecord.recordId,
+            coverage: changeRecord.coverage,
+            missingReasons: changeRecord.missingReasons,
+            totalFiles: changeRecord.totalFiles,
+            recordedAt: changeRecord.createdAt,
+            files: changeRecord.files.slice(0, 200),
+          }
+        : null;
       const timeline = executionProjector.project(task);
       const publicExecutors = new Map(executionFacts.subtasks.map(subtask => [subtask.id, subtask.executor]));
       for (const stage of timeline.stages) {
@@ -2103,10 +2156,16 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         taskId,
         title: task.title,
         status: timeline.status,
+        state: lifecycleProjection.state,
         lifecycle: {
-          lifecycle: lifecycleProjection.lifecycle,
-          phase: lifecycleProjection.phase,
-          userState: lifecycleProjection.userState, userStateReason: lifecycleProjection.userStateReason,
+          status: lifecycleProjection.status,
+          statusLabel: lifecycleProjection.statusLabel,
+          stateVersion: lifecycleProjection.state.stateVersion,
+          phase: lifecycleProjection.state.phase,
+          reason: lifecycleProjection.state.reason,
+          pendingActions: lifecycleProjection.state.pendingActions,
+          cleanup: lifecycleProjection.state.cleanup,
+          executionGeneration: lifecycleProjection.executionGeneration,
           activeAttempt: lifecycleProjection.activeAttempt
             ? {
                 attemptId: lifecycleProjection.activeAttempt.attemptId,
@@ -2119,7 +2178,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             : null,
           blockingResidue: lifecycleProjection.blockingResidue,
           nextAuthorizedAction: lifecycleProjection.nextAuthorizedAction,
-          pendingDecision: lifecycleProjection.pendingDecision,
           recoveryDiagnosis: lifecycleProjection.recoveryDiagnosis,
           explanation: lifecycleProjection.explanation,
           lastProgressAt: lifecycleProjection.timestamps.lastProgressAt,
@@ -2136,9 +2194,14 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         timeline,
         progressSummary: progressSummary ? progressSummary.slice(0, 500) : null,
         schedulingReason: accountRuntimeComposition.runtimePort.queries.getQueuedTaskReason(taskId),
+        workspaceChanges,
         pendingPermission: taskPermission
           ? {
               requestId: taskPermission.request.id,
+              // Same identity the approval command must carry, so an inline
+              // button can approve without a second round-trip.
+              requestRevision: taskPermission.request.fingerprint,
+              generationId: taskPermission.request.generationId,
               status: 'pending',
               summary: `${taskPermission.request.operation} ${taskPermission.request.resource}`
                 .trim().slice(0, 200) || null,
@@ -2355,7 +2418,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         const task = request && taskRepo.findById(request.request.taskId);
         const revision = request && accountRuntimeComposition.runtimePort.queries.findActiveWorkGraphRevision(request.request.taskId);
         return Boolean(request?.status === 'escalated'
-          && task && !isTerminalTaskLifecycle(toTaskLifecycleState(task.status))
+          && task && !isTerminalTaskStatus(task.status)
           && revision?.generationId === request.request.generationId
           && request.request.fingerprint === job.fact.version
           && Date.parse(request.createdAt) + 24 * 60 * 60 * 1000 > Date.now()
@@ -2486,6 +2549,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           (await workspaceCatalogStore.readCatalog()).workspaces
             .filter(workspace => !workspace.archived && workspace.availability === 'available')
             .map(workspace => workspace.canonicalPath)
+        ),
+        artifactVersionRepo: new ArtifactVersionRepo(db),
+        objectRoot: join(accountPaths.workspaceStore, 'objects', 'sha256', 'artifacts'),
+        resolveWorkspaceRoot: async workspaceId => (
+          (await workspaceCatalogStore.findById(workspaceId))?.canonicalPath ?? null
         ),
       }),
       webAuth,
@@ -2991,7 +3059,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           managementServer?.stop() ?? Promise.resolve(),
           gatewayFeishuManager?.stop() ?? Promise.resolve(),
           gatewayServer.stop(),
-          markdownPreviewServer?.stop() ?? Promise.resolve(),
+          Promise.resolve(),
         ]);
         await officialLogout;
       },
@@ -3066,4 +3134,13 @@ function asPayloadRecord(value: unknown): Record<string, unknown> {
 
 function maskApiKey(value: string): string {
   return `••••••••${value.slice(-4)}`;
+}
+
+/** Message plus stack; a stack-less log made the 2026-10 null dereference unreachable. */
+function errorStack(error: unknown): string {
+  if (error instanceof Error) {
+    const stack = error.stack ?? `${error.name}: ${error.message}`;
+    return stack.replace(/[\r\n]+/g, ' | ').slice(0, 4_000);
+  }
+  return String(error).replace(/[\r\n]+/g, ' | ').slice(0, 4_000);
 }

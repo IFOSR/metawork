@@ -7,6 +7,7 @@ import type { ManagedLocalServices } from '../execution/managed-local-service.js
  * kernelExecutionServices 由 ConversationSession 通过端口自行构造。
  */
 
+import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { TaskEngine } from '../task/task-engine.js';
 import type { MemoryEngine } from '../memory/memory-engine.js';
@@ -21,10 +22,12 @@ import type { PlanningAgent } from '../planning/planning-agent.js';
 import type { PlannerProcessController } from '../planning/planner-process-supervisor.js';
 import type { AttemptExecutionBackend } from '../execution/attempt-execution-backend.js';
 import type { ProbeCommandRunner } from '../executor/harness-driver.js';
+import { ArtifactVersionRepo } from '../storage/artifact-version-repo.js';
 import { buildAccountKernelServices } from './account-kernel-services.js';
 import { buildAccountRepositories } from './account-repositories.js';
 import { buildAccountWorkspaceServices } from './account-workspace-services.js';
 import { buildAccountTaskServices } from './account-task-services.js';
+import { createTaskLifecyclePort, createTaskStateAuthority } from './task-state-composition.js';
 import { buildAccountExecutionServices } from './account-execution-services.js';
 import { buildAccountCoordinatorServices } from './account-coordinator-services.js';
 import { buildAccountRuntimeExecutionServices } from './account-runtime-execution-services.js';
@@ -153,8 +156,10 @@ export function buildAccountRuntimeComposition(deps: {
   const workspaceServices = buildAccountWorkspaceServices(deps.db, deps.workspaceRoot);
   const conversationExecutionBinder = createAccountConversationExecutionBinder();
   let startupRecovery!: AccountStartupRecoveryService;
+  const taskLifecyclePort = createTaskLifecyclePort(deps.db);
   const taskServices = buildAccountTaskServices({
     taskEngine: deps.taskEngine,
+    lifecyclePort: taskLifecyclePort,
     getAgentClasses: () => deps.stagedConfiguration.snapshot.config.agentClasses,
     attemptExecutionBackend: deps.attemptExecutionBackend,
   });
@@ -176,6 +181,19 @@ export function buildAccountRuntimeComposition(deps: {
     kernelExecutorStatusRepo: repositories.kernelExecutorStatusRepo,
     getConfigurationRevision: deps.getConfigurationRevision,
   });
+  const taskStateAuthority = createTaskStateAuthority({
+    db: deps.db,
+    taskRepo: deps.taskEngine.getTaskRepo(),
+    subtaskRepo: repositories.subtaskRepo,
+    workGraphRevisionRepo: repositories.workGraphRevisionRepo,
+    workUnitClaimService: coordinatorServices.workUnitClaimService,
+    // A Task that stops to wait for the user releases its Conversation slot so a
+    // later answer is never queued behind it. `startupRecovery` is assigned
+    // below; the closure resolves it at call time.
+    onWaitingForUser: task => {
+      void startupRecovery?.onWaitingForUser(task.id);
+    },
+  });
   const userArtifactPublication = deps.userWorkspaceRoot || deps.resolveUserWorkspaceRoot
     ? new UserArtifactPublicationService({
       ...(deps.userWorkspaceRoot ? { userWorkspaceRoot: deps.userWorkspaceRoot } : {}),
@@ -184,6 +202,9 @@ export function buildAccountRuntimeComposition(deps: {
         : {}),
       accountId: deps.accountId,
       taskArtifactRepo: new TaskArtifactRepo(deps.db),
+      // Fixed artifact versions live in the Runtime's own content store.
+      objectRoot: join(workspaceServices.workspaceStore.objectsPath, 'artifacts'),
+      artifactVersionRepo: new ArtifactVersionRepo(deps.db),
     })
     : null;
 
@@ -196,6 +217,8 @@ export function buildAccountRuntimeComposition(deps: {
     attachmentStore: deps.attachmentStore,
     sourceRoot: deps.sourceRoot,
     taskRuntimeService: taskServices.taskRuntimeService,
+    taskStateAuthority,
+    taskLifecyclePort,
     subtaskRepo: repositories.subtaskRepo,
     taskEventRepo: repositories.taskEventRepo,
     workGraphRevisionRepo: repositories.workGraphRevisionRepo,
@@ -256,6 +279,7 @@ export function buildAccountRuntimeComposition(deps: {
     getConfigurationRevision: deps.getConfigurationRevision,
     getRuntimeConfiguration: deps.getRuntimeConfiguration,
     taskRuntimeService: taskServices.taskRuntimeService,
+    taskStateAuthority,
     ...(deps.resolveWorkspacePath ? { resolveWorkspacePath: deps.resolveWorkspacePath } : {}),
     ...(deps.preflightWorkspacePath ? { preflightWorkspacePath: deps.preflightWorkspacePath } : {}),
     ...(deps.productionAuthorization ? { productionAuthorization: deps.productionAuthorization } : {}),
@@ -333,6 +357,7 @@ export function buildAccountRuntimeComposition(deps: {
     repositories,
     workspaceServices,
     taskServices,
+    taskStateAuthority,
     coordinatorServices,
     runtimeExecutionServices,
     kernelExecutionServices,

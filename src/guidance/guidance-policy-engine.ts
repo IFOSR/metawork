@@ -20,7 +20,7 @@ export class GuidancePolicyEngine {
     const proposals: GuidanceProposal[] = [];
 
     for (const signal of signals) {
-      if (signal.status === 'parked' && signal.resumability === 'high') {
+      if (signal.status === 'needs_action' && signal.resumability === 'high') {
         proposals.push(
           this.createProposal({
             signal,
@@ -36,7 +36,7 @@ export class GuidancePolicyEngine {
         continue;
       }
 
-      if (signal.status === 'blocked' && signal.hasNewMaterials) {
+      if (signal.status === 'needs_action' && signal.hasNewMaterials) {
         proposals.push(
           this.createProposal({
             signal,

@@ -60,7 +60,7 @@ export function buildAccountExecutionServices(deps: {
 
   const registerLocalDriver = (driver: CodexCliDriver | PiCliDriver) => {
     driverRegistry.register(driver, input => {
-      if ((deps.attemptExecutionBackend.kind ?? 'container') === 'worktree') {
+      if ((deps.attemptExecutionBackend.kind ?? 'container') === 'in_place') {
         const command = resolveExecutorTool(input.harness.transport === 'local-cli'
           ? input.harness.command : driver.id === 'pi-cli' ? 'pi' : 'codex');
         const boundDriver = driver.id === 'pi-cli'

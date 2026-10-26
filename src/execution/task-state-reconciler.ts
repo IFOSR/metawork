@@ -18,7 +18,15 @@ import { resolveMetaWorkPaths } from '../installation/paths.js';
 
 export interface TaskStateReconcilerReport {
   ok: boolean;
+  /** Human-readable lines for an explicit `maintenance reconcile-tasks` run. */
   lines: string[];
+  /**
+   * Lines describing state this pass actually changed. Background callers print
+   * only these: a no-op pass has nothing to say (§A3 of the 2026-10-22 review).
+   */
+  changes: string[];
+  /** True when this pass wrote any reconciled state. */
+  changed: boolean;
   closedDispatchItems: number;
   releasedSlots: number;
   /** Slots retained because live or uncertain residue has not converged. */
@@ -50,6 +58,8 @@ export async function runTaskStateReconciler(input: {
     return {
       ok: true,
       lines: ['no reconcilable database found; nothing to do'],
+      changes: [],
+      changed: false,
       closedDispatchItems: 0,
       releasedSlots: 0,
       retainedSlots: 0,
@@ -76,6 +86,12 @@ function reconcile(
     workUnitClaimService: new WorkUnitClaimService(new WorkUnitRepo(db)),
   });
   const lines: string[] = [];
+  const changes: string[] = [];
+
+  const record = (line: string): void => {
+    lines.push(line);
+    changes.push(line);
+  };
 
   // 1. Dispatch items for terminal tasks that never reached a live backend.
   //    `cancelling`, `uncertain` and backend-backed items are left alone: they
@@ -93,11 +109,11 @@ function reconcile(
       AND item.sandbox_container_id IS NULL
       AND EXISTS (
         SELECT 1 FROM tasks
-        WHERE tasks.id = item.task_id AND tasks.status IN ('cancelled', 'done', 'failed', 'archived')
+        WHERE tasks.id = item.task_id AND tasks.status IN ('cancelled', 'succeeded', 'failed')
       )
   `).run(now(), now(), now(), now()).changes;
   if (closedDispatchItems > 0) {
-    lines.push(`closed ${closedDispatchItems} orphaned dispatch item(s) for terminal tasks`);
+    record(`closed ${closedDispatchItems} orphaned dispatch item(s) for terminal tasks`);
   }
 
   // 2. Conversation slots held by terminal tasks (blocked tasks keep their
@@ -108,7 +124,7 @@ function reconcile(
       AND EXISTS (
         SELECT 1 FROM tasks
         WHERE tasks.id = conversation_task_slots.active_task_id
-          AND tasks.status IN ('cancelled', 'done', 'failed', 'archived')
+          AND tasks.status IN ('cancelled', 'succeeded', 'failed')
       )
   `).all() as Array<{ conversation_id: string; active_task_id: string }>;
   let releasedSlots = 0;
@@ -137,12 +153,16 @@ function reconcile(
     // release stale capacity, but it must not reserve a successor that it
     // cannot launch. AccountStartupRecoveryService performs promotion and
     // Kernel-authorized launch through the normal account path.
-    const released = scheduler.releaseSlot(slot.conversation_id, slot.active_task_id, now());
+    const released = db.transaction(() => {
+      const current = scheduler.getSlot(slot.conversation_id);
+      if (current.activeTaskId !== slot.active_task_id || residueReader.hasResidue(slot.active_task_id)) return false;
+      return scheduler.releaseSlot(slot.conversation_id, slot.active_task_id, now(), current);
+    }).immediate();
     releasedSlots += 1;
-    if (released) lines.push(`released stale conversation slot in ${slot.conversation_id}`);
+    if (released) record(`released stale conversation slot in ${slot.conversation_id}`);
   }
   if (releasedSlots > 0) {
-    lines.push(`released ${releasedSlots} conversation slot(s) held by terminal tasks`);
+    record(`released ${releasedSlots} conversation slot(s) held by terminal tasks`);
   }
 
   // 3. Schedule entries still marked running/queued for terminal tasks.
@@ -152,11 +172,11 @@ function reconcile(
     WHERE entry.state IN ('queued', 'eligible', 'reserved', 'running')
       AND EXISTS (
         SELECT 1 FROM tasks
-        WHERE tasks.id = entry.task_id AND tasks.status IN ('cancelled', 'done', 'failed', 'archived')
+        WHERE tasks.id = entry.task_id AND tasks.status IN ('cancelled', 'succeeded', 'failed')
       )
   `).run(now()).changes;
   if (closedScheduleEntries > 0) {
-    lines.push(`closed ${closedScheduleEntries} schedule entr(ies) for terminal tasks`);
+    record(`closed ${closedScheduleEntries} schedule entr(ies) for terminal tasks`);
   }
 
   const ok = true;
@@ -164,6 +184,8 @@ function reconcile(
   return {
     ok,
     lines,
+    changes,
+    changed: changes.length > 0,
     closedDispatchItems,
     releasedSlots,
     retainedSlots: retainedSlotResidue.length,

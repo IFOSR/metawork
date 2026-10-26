@@ -1,3 +1,5 @@
+> 当前 Workspace 执行模型（ADR-0050）：新任务统一在 Conversation 绑定 Workspace 内就地执行。写入 Attempt 启动前申请物理路径 ResourceLease，成功后直接完成 Subtask；只读 Attempt 使用受控 scratch 和只读源边界，不申请 Workspace write lease、不创建候选 publication。历史 Worktree binding 只停放并拒绝重新 dispatch。
+
 # MetaWork
 
 Upstream-input recovery (2026-10-17): explicit Resume may continue a settled
@@ -37,7 +39,7 @@ failed Attempt is never rewritten as successful. See the [task blocking and stat
 
 Blocked-task interaction (2026-10-14): Web keeps submission and task queries
 available during execution and after blocking. Cancellation eligibility is not
-an execution-status signal. TaskView userState/userStateReason drive activity display; explicit
+an execution-status signal. The committed Task status and reason drive activity display; explicit
 retry uses the existing `/task resume` Gateway command, while live or uncertain
 residue continues to hold the Conversation execution slot under ADR-0037.
 See [implementation record](../plans/2026-10-14-blocked-task-interaction-fix.md).
@@ -96,9 +98,9 @@ MetaWork is a local AI Task OS for agentic work. It turns natural-language reque
 
 It is built for teams who need agents to do more than answer the current turn. MetaWork gives long-running AI work a task state machine, memory boundary, unified ControlKernel decision plane, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
 
-> Current implementation baseline (2026-10-21): PlanningAgentPlan v8, Work
+> Current implementation baseline (2026-10-25): PlanningAgentPlan v9, Work
 > Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
-> and SQLite schema v51 with transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51 upgrade support.
+> and SQLite schema v58 with transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51→52→53→54→55→56→57→58 upgrade support.
 > Schema v39/v40 adds the Query usage/billing facts (Query attribution contexts,
 > metering spans/observations, immutable price versions, cost entries, per-Query
 > bills and lines, the consumption outbox/receipts and bill adjustments) that
@@ -186,7 +188,9 @@ Schema 51 adds immutable public directory/baseline and service intent fields,
 
 ### Navigation And Observation Status (2026-10-03)
 
-The current source schema is 51. Web and the single native TUI browse indexed metadata
+The current source schema is 56. Version 52 belongs to `main` (the six-state
+Task projection); this branch upgrades 51 → 52 (branch bridge) → 53 → 54 → 55 → 56
+and refuses a schema-52 database that does not carry main's six-state base. Web and the single native TUI browse indexed metadata
 and a bounded Conversation read model, independently of execution attachment.
 A baseline contains at most 20 recent Turn summaries within 256 KiB; long
 bodies, history pages, trace, Task details and billing load separately. An
@@ -204,7 +208,16 @@ retain stable insertion order. Same-Account Web/TUI/Feishu have equal business
 permissions regardless of which surface originated the Task (ADR-0043).
 
 `createAccountEventJournal` selects the immutable-segment journal with bounded
-background maintenance. Legacy SQLite Turn parsing runs in a worker with a
+background maintenance. A maintenance tick is a bounded sweep over the indexed
+streams: it sleeps on its idle interval (1s) when a complete sweep performed no
+durable work, stays on its active interval (25ms) while a stream reports
+`didWork` or an unfinished batch, yields to the event loop after a bounded
+stream/byte budget, and backs off a damaged stream individually so it cannot
+starve healthy ones. Each pass reports `{done, didWork}` because "this batch is
+converged" cannot distinguish the batch that finished the work from an idle
+pass. Repeated failures are rate-limited per Conversation; the first occurrence,
+a periodic bounded repeat, and recovery are logged with Account, Conversation,
+stage and stack. Legacy SQLite Turn parsing runs in a worker with a
 128 MiB old-generation limit and a ten-second deadline. It reuses the canonical
 projector and notification hooks. Write transactions, including application
 outer transactions, use `BEGIN IMMEDIATE` so concurrent worker commits cannot
@@ -212,6 +225,14 @@ invalidate a read snapshot that a writer later attempts to upgrade. Read-only
 baselines/pages retain deferred snapshot transactions. Legacy file import is
 still maintenance work and can parse an aggregate on the Server; its first
 migration cost is separate from indexed navigation performance.
+
+Periodic task-state reconciliation belongs to a running Server: it runs once
+when the Server branch acquires `runtime.lock` and then every minute. `help`,
+`server status`, `server doctor` and admin commands never enter that writable
+repair path from a status read. Background passes print only what they changed;
+a retained Conversation slot is printed when it appears, when its Task or
+residue changes, on a bounded heartbeat, and when it is released. An explicit
+`metawork maintenance reconcile-tasks` still prints the full report.
 
 Historical Task association uses the Account/Conversation/Turn trace index;
 ambiguous association remains fail-closed. Task activity uses indexed witnesses
@@ -240,7 +261,7 @@ See [implementation and validation](../plans/2026-10-03-tui-workspace-task-dashb
 
 ### Product Capabilities
 
-- Keeps durable tasks with explicit states: created, ready, running, parked, blocked, done, archived, and cancelled.
+- Keeps one durable Task conclusion: queued, running, needs_action, succeeded, failed, or cancelled. Archiving is metadata.
 - Restores interrupted work with resume context instead of restarting from scratch.
 - Enforces one active or cleaning-up top-level Task per Conversation through durable Conversation slots, while one AccountRuntime schedules Tasks from different Conversations concurrently and Phase 6 authorizes deterministic batches of isolated child attempts.
 - Keeps Planning and Runtime authorization in one append-only `kernel_decisions` ledger while durable inbox/application/outbox state owns recoverable execution.
@@ -337,7 +358,7 @@ flowchart LR
   Conversation --> Account[AccountRuntime<br/>shared runtime owner]
   Conversation --> MemoryFast[Explicit memory and preference fast path]
   Conversation --> Planning[Planner Work Unit<br/>PlanningAgent]
-  Planning --> Plan[PlanningAgentPlan v8<br/>intent, target, risk,<br/>v7 graph or authorization resolution]
+  Planning --> Plan[PlanningAgentPlan v9<br/>workspace intent, target, risk,<br/>v7 graph or authorization resolution]
   Plan --> Event[KernelEvent<br/>plan_proposed]
   Event --> Loop[Durable KernelWorkflow v5<br/>inbox, snapshot, decide, application, apply]
   Loop --> Kernel[ControlKernel<br/>one pure decide interface]
@@ -353,10 +374,9 @@ flowchart LR
   Batch --> Supervisor[AttemptSupervisor<br/>up to four attempts]
   Supervisor --> Attempt[SubtaskAttemptRunner<br/>one attempt, one WorkUnit]
   Attempt --> Context[SubtaskExecutionContext<br/>direct handoffs and selected evidence]
-  Context --> Executors[ExecutionRuntime<br/>one worktree Executor process]
+  Context --> Executors[ExecutionRuntime<br/>authorized In-place Executor process]
   Executors --> Verify[Completion Protocol v4<br/>result-first assessment,<br/>authoritative workspace delta]
-  Verify --> Publication[Git publication gate<br/>stable integration order]
-  Publication --> Delivery[Delivery and UI<br/>TUI progress, Feishu, files, preview links]
+  Verify --> Delivery[Workspace delivery and UI<br/>TUI progress, Feishu, files, preview links]
   Delivery --> User
 
   Account <--> Store[(Account SQLite<br/>tasks, subtasks, agent classes,<br/>work units, events, memory)]
@@ -365,7 +385,7 @@ flowchart LR
   Attempt <--> Store
 ```
 
-Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, publication conflict, permission, partition, execution-backend or contract facts. `ControlKernel` validates Planning admission, derives one deterministic dispatch batch from the runnable frontier, and remains the sole authority for recovery, retry, fallback, merge repair, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
+Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, Workspace change, permission, partition, execution-backend or contract facts. `ControlKernel` validates Planning admission, derives one deterministic dispatch batch from the runnable frontier, and remains the sole authority for recovery, retry, fallback, merge repair, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
 
 The AnyFusion-Pi `PlanningAgent` uses a dedicated process runner rather than an Executor adapter. One Conversation maps to one persisted Pi session file. Semantic turns launch the Planner with `--mode rpc`, exchange JSONL over stdin/stdout, and serialize writers per Conversation so only one process writes that file at a time. The interactive Pi process is separate: it is launched with `--gateway-socket` and `--conversation-id`, creates no local model/tool/session runtime, and submits raw user commands to the Server Gateway. The fork owns dialogue history for server-side Planner RPC, a small stable system prompt and exactly one fixed `metaclaw-planner/SKILL.md`; MetaWork does not rebuild history from SQLite interactions. Dynamic facts are queried through exactly seven read-only MetaWork MCP tools: `search_tasks`, `get_task_context`, `get_current_session_context`, `get_planning_context`, `get_runtime_state`, `list_executor_status` and `get_executor_diagnostics`. Semantic RPC mode exposes no Pi-native repository readers, preventing source inspection from being used to reverse-engineer Runtime or Kernel semantics. The interactive client-only TUI may retain read-only `read`, `grep`, `find` and `ls` for workspace questions; `bash`, `edit` and `write` remain disabled in every mode. Provider/model selection, external Skills/extensions/MCP configuration, prompt templates, installation and updates are fixed or disabled by MetaWork. Every semantic turn uses the restricted native `submit_planning_proposal({ plan })` tool. Runtime identity is injected outside the model, rejection is structured feedback in the current ReAct turn, and proposal-host transport uncertainty remains distinct from MCP unavailability. A missing fixed MCP tool fails startup; mid-turn MCP loss locks proposal submission and aborts that loop. There is no assistant-text proposal parser, proposal-specific retry count, repair prompt or outer validation loop.
 
@@ -535,15 +555,14 @@ flowchart LR
   WorkGraph --> Ready[Runnable frontier<br/>published direct dependencies]
   Ready --> Batch[dispatch_batch<br/>durable attempt items]
   Batch --> Attempt[Attempt supervisor<br/>claim and run independently]
-  Attempt --> Run[ExecutionRuntime<br/>transport and execute]
-  Run --> Verify[Completion Protocol v4<br/>result objects, delta and candidate commit]
-  Verify --> Integrate[Git publication gate<br/>deterministic order]
-  Integrate --> Done{Integrated?}
-  Done -->|yes| Result[Atomically publish result,<br/>handoffs, artifacts and done]
-  Done -->|conflict| Repair[Kernel-authorized merge repair]
+  Attempt --> Run[ExecutionRuntime<br/>authorized in-place execution]
+  Run --> Verify[Completion Protocol v4<br/>result objects, delta and receipt]
+  Verify --> Done{Workspace result sealed?}
+  Done -->|yes| Result[Atomically record result,<br/>handoffs, live files and done]
+  Done -->|uncertain| Repair[Kernel-authorized recovery]
 ```
 
-This is the Task OS path. It is where task state, resume context, policy authorization, subtask state, work-unit leases, artifact capture, verification and Git publication matter. ADR-0037 permits independent top-level Tasks from different Conversations to run concurrently, while independent Subtasks inside each Task retain their existing concurrency.
+This is the Task OS path. It is where task state, resume context, policy authorization, subtask state, work-unit leases, artifact capture, verification and direct Workspace delivery matter. ADR-0037 permits independent top-level Tasks from different Conversations to run concurrently, while independent Subtasks inside each Task retain their existing concurrency.
 
 ADR-0037 replaces the account-wide single-active rule with one durable execution slot per Conversation. Same-Conversation Tasks are persistently queued; different Conversations are selected by the account-scoped Kernel scheduler using configured capacity, priority, aging and fairness. Clarifications and non-executing domain commands remain available; new semantic Planner turns do not complete through `direct_reply`. Both natural-language and deterministic execution entrypoints cross the persisted ControlKernel seam; there is no `TaskAdmissionGate` shortcut.
 
@@ -582,8 +601,9 @@ availability, and recovery remain explicit Kernel policy.
 ## Current Executors
 
 MetaWork ships two canonical Executor AgentClasses. The default Runtime
-executes them as child processes in the Subtask worktree. The legacy Docker
-attempt backend remains available explicitly for compatibility:
+executes them as child processes in the authorized Conversation Workspace or a
+Runtime-owned read-only scratch directory. The Docker attempt backend remains
+available explicitly for compatibility:
 
 | Executor | Command | Best For | Install Requirement |
 | --- | --- | --- | --- |
@@ -591,10 +611,10 @@ attempt backend remains available explicitly for compatibility:
 | Pi Agent | `pi` | Research tasks, report generation, multi-step synthesis, agentic CLI workflows, image generation and editing when an authorized image model is selected | Native install reuses the existing command without changing its installation or personal home; MetaWork supplies the image runner |
 
 `codex-cli` and `pi-agent` are canonical AgentClasses with permission-profile
-bindings. In `METACLAW_EXECUTOR_BACKEND=worktree` mode, their trusted CLI
-commands run as child processes inside the unified Runtime and use the Subtask
-Git worktree as their working directory. In `docker` mode, the AgentClass also
-requires its immutable image pin and internal control network. No executor
+bindings. In the default in-place mode, their trusted CLI commands run as child
+processes inside the unified Runtime with `cwd` set to the Kernel-authorized
+Workspace path (or Runtime scratch for read-only work). In `docker` mode, the
+AgentClass also requires its immutable image pin and internal control network. No executor
 WorkUnit is pre-seeded. After authorization, `WorkUnitClaimService` claims or
 provisions a WorkUnit, and `ExecutorRegistry` resolves the AgentClass through
 the backend-aware `BackendExecutorAdapter`.
@@ -633,7 +653,7 @@ sudo apt-get install -y build-essential python3 make g++
 
 Executor prerequisites:
 
-- Native worktree mode: existing `codex` and `pi` commands must already be on
+- Native in-place mode: existing `codex` and `pi` commands must already be on
   `PATH`; setup does not install, upgrade, downgrade, or reconfigure them.
 - Docker compatibility mode: build or pull the canonical Codex and Pi executor
   images used by the configured AgentClasses.
@@ -647,10 +667,16 @@ Feishu prerequisites, only if you use Feishu Gateway integration:
 - WebSocket event delivery is recommended because it does not require a public callback URL.
 - A public reverse proxy or tunnel is only required for webhook mode or external Markdown preview links.
 
-Markdown preview prerequisites:
+Markdown preview (retired in the Server, 2026-10-25 / ADR-0050):
 
-- `integrations.markdown_preview.enabled: true`.
-- A reachable `public_base_url` if users open preview links outside the host machine.
+- The legacy standalone preview server served copies under the internal workspace
+  store. Delivery now writes inside the user Workspace, so the Server no longer
+  starts that server; the setting is reported and ignored.
+- Users preview and download delivered files through the Workspace artifact
+  preview, which resolves `workspaceId + relativePath` live references or fixed
+  artifact versions. `createMarkdownPreviewUrl` / `createMarkdownPreviewLinks`
+  remain available to callers that pass an explicit authorized user Workspace
+  root.
 
 ## Install
 
@@ -825,8 +851,9 @@ which codex
 codex --help
 ```
 
-Codex attempts use `BackendExecutorAdapter`: worktree mode runs the trusted local
-`codex` process with an isolated attempt `CODEX_HOME`; Docker compatibility mode
+Codex attempts use `BackendExecutorAdapter`: in-place mode runs the trusted local
+`codex` process with an isolated attempt `CODEX_HOME` and the authorized Workspace
+`cwd`; Docker compatibility mode
 runs the canonical `metaclaw-executor-codex:phase5` image.
 
 ### Pi Agent
@@ -845,8 +872,8 @@ pi -p "<prompt>"
 ```
 
 Pi attempts use the same execution seam in either backend. Docker compatibility
-mode runs them in `metaclaw-executor-pi:phase5`; worktree mode runs the trusted
-`pi` binary in the current Subtask worktree.
+mode runs them in `metaclaw-executor-pi:phase5`; in-place mode runs the trusted
+`pi` binary in the Kernel-authorized Workspace or Runtime scratch directory.
 
 ## Run
 
@@ -1153,16 +1180,19 @@ structured transport uncertainty and partial tool audit.
 
 ### Task lifecycle state convergence (2026-09-25)
 
-Attempt settlement, Kernel application and Task lifecycle are separated by
-explicit ownership. The canonical Task/Subtask/Attempt lifecycle vocabulary,
-its transition table and the raw-status mapping functions live in
-`src/task/task-lifecycle.ts`; the read-only `TaskView` projection lives in
-`src/task/task-view.ts`. Presentation surfaces render
-`TaskView.userState` (`waiting`, `executing`, `needs_action`, `finished`) and
-`userStateReason`; internal phases remain available in details. Surfaces never interpret raw `tasks.status`,
-`kernel_dispatch_items.status`, `work_units.state` or
-`kernel_decision_applications.status`. The Gateway exposes the same projection
-additively as `GatewayTaskViewSnapshot.lifecycle`.
+Attempt settlement, Kernel application and Task conclusion are separated by
+explicit ownership. The six Task states, the one transition table and the pure
+`evaluateTaskState()` summary live in `src/task/task-state.ts`
+([ADR-0049](../adr/0049-six-state-task-conclusion.md)); Subtask/Attempt
+contracts remain in `src/task/task-lifecycle.ts`. `TaskStateAuthority` turns
+durable facts into the conclusion and applies it through the single
+`TaskLifecyclePort.applyTaskChange()` entry; the read-only `TaskView` projection
+in `src/task/task-view.ts` only assembles operational detail next to the
+committed `TaskStateSnapshot`. Surfaces render that snapshot (`status`,
+`stateVersion`, `reason`, `phase`, `pendingActions`, `cleanup`, `nextWakeAt`) and
+never interpret `kernel_dispatch_items.status`, `work_units.state` or
+`kernel_decision_applications.status`. The Gateway exposes the same snapshot as
+`GatewayTaskViewSnapshot.state` under `task_view_v2`.
 
 Automatic replan no longer invokes a foreground Conversation Planner callback.
 ControlKernel authorizes `schedule_replan`, whose only Runtime postcondition is
@@ -1187,7 +1217,7 @@ into an explicit `block_work` — the Task cannot stay `running`.
 
 One shared convergence entry runs at startup and on the account periodic review,
 selected from durable pending facts rather than a blocked-only Task scan, so a
-Task that never reaches `blocked` still converges. It inspects each action
+Task that never reaches `needs_action` still converges. It inspects each action
 family's declared postcondition. The replan postcondition inspector marks an
 uncertain `schedule_replan`/`request_replan` application `applied` once the Job
 carries `quiescence_<decisionId>`, and retries the same Decision only while the
@@ -1209,7 +1239,18 @@ periodic Worker owns Timer delivery, so the Decision application never emits
 the Timer directly. `wait_for_partition` remains retry-safe through its
 dedicated recheck path.
 Cancellation, external effects and the merge path keep their dedicated
-reconcilers. An application that cannot converge — declared `unresolved`, or
+reconcilers. A proved outcome that produced no observation converges as
+`applied` with a tagged settlement summary (`kernel_settlement/…`):
+`rejected_without_effect` for a refusal the Runtime can prove wrote nothing and
+started nothing — an unpublished service manifest, a Kernel `reject_request`,
+a service Task outside the Conversation — and `operation_settled` for a
+journaled operation that completed with a recorded error. The postcondition
+sweep reads that tag, so such a Decision can never linger as `uncertain` and
+strand the Conversation slot, while an untagged or genuinely unknown outcome
+still becomes `recovery_required`. Service refusals name the `serviceId`, the
+`ownerTaskId` and the owner Task status in the Kernel reason and in the
+Conversation output. An application that cannot converge — declared
+`unresolved`, or
 `retry_safe` past its bounded `applyAttempts < 3` budget — produces
 `recovery_required`, and the pass drains whatever it re-queued so the next
 verdict is actually observed. A failed Replan Job only blocks the Task when it
@@ -1230,7 +1271,7 @@ graph runtime, publication worker, attempt runner and session Kernel runtime no
 longer write a status directly.
 
 Conversation slot release is a residue question. A slot is released only when
-the Task is terminal, or blocked, and no blocking dispatch, publication,
+the Task is terminal, or `needs_action`, and no blocking dispatch, publication,
 backend execution, lease, WorkUnit claim, uncertain Kernel application or
 outstanding Replan Job remains; the released slot promotes the next
 same-Conversation Task exactly once. The Feishu/Web activity card and the
@@ -1258,7 +1299,7 @@ and Pi Auto may use all enabled Provider models. The gate
 rechecks Planner turns, running Tasks, blocking Dispatch/Attempt facts, child
 processes, leases, publication/merge work, recovery, and concurrent activation
 inside the backend transaction; connected idle clients do not block it, but
-continuable ready/parked/blocked Tasks do. Application releases, schema, Harness/process
+continuable queued/needs_action Tasks do. Application releases, schema, Harness/process
 artifacts, Permission Profile semantics, Planner RPC, and runtime directory
 protocol changes remain restart-required.
 
@@ -1401,7 +1442,7 @@ and the final image keeps the MetaClaw control process and Planner process
 isolated with separate dependency trees. The Docker attempt path is
 compatibility-only and is not started by the native launcher.
 
-The Runtime image contains the MetaClaw CLI, generated v8 schema, versioned host bridge, compiled Planner MCP server, built AnyFusion-Pi application, Codex/Pi CLIs and their attempt configuration. `docker/Dockerfile.runtime` builds the checked-in MetaClaw and vendored planner sources and copies two independent application trees into the final image. The Planner launcher and MetaClaw-injected `/app/dist/planner-mcp.js` command both use `/usr/local/bin/node`; `/opt/anyfusion-planner/node` is forbidden. Worktree mode runs the trusted Executor CLI in the managed Subtask worktree and uses loopback attempt services; it does not require sibling Executor images or a Docker socket. Source changes require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for Docker + SSH compatibility validation.
+The Runtime image contains the MetaClaw CLI, generated v9 schema, versioned host bridge, compiled Planner MCP server, built AnyFusion-Pi application, Codex/Pi CLIs and their attempt configuration. `docker/Dockerfile.runtime` builds the checked-in MetaClaw and vendored planner sources and copies two independent application trees into the final image. The Planner launcher and MetaClaw-injected `/app/dist/planner-mcp.js` command both use `/usr/local/bin/node`; `/opt/anyfusion-planner/node` is forbidden. The in-place mode runs the trusted Executor CLI in the authorized Workspace or Runtime scratch directory and uses loopback attempt services; it does not require sibling Executor images or a Docker socket. Source changes require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for Docker + SSH compatibility validation.
 
 Local validation covers TypeScript lint/build, focused Planner RPC and host-protocol tests, the Docker Vitest suite, Unix-socket bridge behavior, Session validation, and unchanged Kernel/Execution/Executor regressions. Linux container smoke additionally verifies the single Node 22.19+ executable, isolated application dependency trees and processes, absence of an embedded Planner Node, Planner RPC JSONL, entrypoint config separation, and the final unified image.
 
@@ -1664,7 +1705,7 @@ direct-dependency authorization and closes when the attempt ends.
 
 MetaWork can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The source uses SQLite schema v51 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51 upgrades; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers; v45 adds durable Retry Wake continuation facts for timeout recovery; v46 adds the indexed latest Task-creation timestamp used to order Conversation history; v47 adds body-separated Conversation entities, projection checkpoints/tail/staging rebuild, activity invalidation and witness indexes, trace/content-search indexes, client navigation, durable approval acceptance/application and notification routes/outbox. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The source uses SQLite schema v58 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51→52→53→54→55→56→57 upgrades; schema 52 is main-owned and must carry the six-state Task base, while schema 58 pins the single In-place Workspace binding and retires implicit legacy Worktree copying; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers; v45 adds durable Retry Wake continuation facts for timeout recovery; v46 adds the indexed latest Task-creation timestamp used to order Conversation history; v47 adds body-separated Conversation entities, projection checkpoints/tail/staging rebuild, activity invalidation and witness indexes, trace/content-search indexes, client navigation, durable approval acceptance/application and notification routes/outbox. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Historical Artifact refs are validated against Account/Conversation/Workspace ownership, publication status, regular-file safety and content hash, then copied to attempt-local `inputs/` with stable `input-XX-*` names. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; image-capable adapters consume only the materialized input directory.
 
@@ -1684,8 +1725,9 @@ Executors and Skills are different layers of the ecosystem.
 An Executor is who does the work. A Skill is the method, knowledge, or operating guide the worker uses while doing it.
 
 Executors are AgentClass runtimes such as the canonical Codex CLI and Pi Agent.
-They may be launched as trusted child processes in a managed worktree or as
-Docker-sandboxed attempts during compatibility operation. An executor
+They are launched as trusted child processes in the Kernel-authorized Workspace
+or Runtime scratch directory; Docker-sandboxed attempts remain compatibility
+operation. An executor
 determines the model, toolchain, permissions, runtime environment, context
 window, file access, non-interactive command, cost profile, and reliability
 boundary.
@@ -2125,10 +2167,12 @@ adapter，配置验证拒绝 Codex/Anthropic 绑定；独立图像 Runner 继续
 
 ### Task execution reliability implementation (2026-10-15)
 
-The primary display contract is Task Domain `userState` / `userStateReason`:
-waiting, executing, needs_action, finished. Internal phases and cancellation
-eligibility remain separate facts. Web, Gateway, TUI and Feishu consume this
-projection; historic cached activity lacking it is invalidated for rebuild.
+The primary display contract is the Task Domain `TaskStateSnapshot`:
+`queued | running | needs_action | succeeded | failed | cancelled` plus reason,
+phase, pending actions and cleanup ([ADR-0049](../adr/0049-six-state-task-conclusion.md)).
+Operation phases and cancellation eligibility remain separate facts. Web,
+Gateway, TUI and Feishu consume this snapshot; historic cached activity lacking
+it is invalidated for rebuild by the schema-52 migration.
 
 Schema 49 adds `workspace_publication_deliveries`. Failed delivery remains
 queryable and requires `/task resume`; pending or interrupted finalization replays
@@ -2148,3 +2192,16 @@ Source validation, native CLI protocol probes, browser/TUI tests, Desktop shell,
 Docker and installed-package acceptance are recorded independently in the
 [reliability technical design](../plans/2026-10-15-task-execution-reliability-technical-design.md).
 A successful source build is not an installed commercial-release acceptance.
+
+### Task state review fixes (2026-10-22)
+
+Result acceptance atomically commits its decision, Task audit and durable queued
+continuation. Publication requires the current graph and reservation token/version;
+restart drains the existing outbox without rerunning the Executor. Definite delivery
+or required-service failure ends the original Task; `/task retry` creates a linked
+Task for remaining reusable delivery/service work. Task notifications feed the
+existing durable activity projector. Web/TUI negotiate Task View v2 and compare
+Task versions. Schema 51→52 classifies legacy evidence with immutable audit and
+quarantines unapplied legacy non-cancellation operations. See the
+[validation record](../plans/2026-10-22-task-state-review-fixes.md); installed/runtime
+packaging verification remains distinct from source validation.

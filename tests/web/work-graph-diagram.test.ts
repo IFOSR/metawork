@@ -34,7 +34,7 @@ describe('inline Work Graph DAG', () => {
     const projection = graph([
       node('done'), node('running', 1), node('ready', 2), node('blocked', 3), node('failed', 4),
     ]);
-    projection.nodes[0]!.status = 'done';
+    projection.nodes[0]!.status = 'succeeded';
     projection.nodes[1]!.status = 'running';
     projection.nodes[2]!.status = 'ready';
     projection.nodes[3]!.status = 'blocked';

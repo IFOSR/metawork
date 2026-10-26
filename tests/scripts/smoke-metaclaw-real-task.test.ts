@@ -26,7 +26,7 @@ async function loadSmokeScript() {
 function authoritativeSuccessState(artifactPath: string) {
   return {
     acceptedProposalCount: 1,
-    tasks: [{ id: 'task-1', status: 'done' }],
+    tasks: [{ id: 'task-1', status: 'succeeded' }],
     subtasks: [{
       id: 'subtask-1',
       taskId: 'task-1',
@@ -124,7 +124,7 @@ describe('smoke-metaclaw-real-task helpers', () => {
 
     expect(overlay.METACLAW_PLANNER_COMMAND).toBe(plannerCli);
     expect(overlay.METACLAW_PLANNER_ENV_FILE).toBe(join(configHome, 'provider.env'));
-    expect(overlay.METACLAW_EXECUTOR_BACKEND).toBe('worktree');
+    expect(overlay.METACLAW_EXECUTOR_BACKEND).toBe('in_place');
     expect(overlay.METACLAW_EXECUTOR_CODEX_HOME).toBe(join(configHome, 'codex'));
     expect(overlay.METACLAW_EXECUTOR_PI_HOME).toBe(join(configHome, 'pi-home'));
     expect(overlay.METACLAW_CODEX_EXECUTOR_ENV_FILE).toBe(join(configHome, 'provider.env'));

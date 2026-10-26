@@ -193,14 +193,28 @@ export class SegmentedEventJournal implements EventJournal {
   }
 
   /** One maintenance pass bounds both metadata/body work and directory entries. */
-  maintain(accountId: string, conversationId: string): Promise<boolean> {
+  maintain(accountId: string, conversationId: string): Promise<{ done: boolean; didWork: boolean }> {
     return this.serialized(accountId, conversationId, async () => {
       const state = await this.ensureStream(accountId, conversationId);
+      // `done` alone cannot tell an idle pass from the batch that finally
+      // converges a stream, so the pass reports the durable progress it made.
+      const traceBefore = this.index.traceCheckpoint(accountId, conversationId) ?? 0;
+      const viewBefore = this.readModel?.head(accountId, conversationId)?.journalSequence ?? 0;
       const indexed = await this.rebuildTraceBatch(accountId, conversationId, state.lastSequence);
       const projected = await this.rebuildViewBatch(accountId, conversationId, state.lastSequence);
       await this.compactBatch(accountId, conversationId);
       await this.cleanupOrphans(accountId, conversationId);
-      return indexed && projected && !this.cleanupDirectories.has(this.directory(accountId, conversationId));
+      const pendingCleanup = this.cleanupDirectories.has(this.directory(accountId, conversationId));
+      const done = indexed && projected && !pendingCleanup;
+      const traceAfter = this.index.traceCheckpoint(accountId, conversationId) ?? 0;
+      const viewAfter = this.readModel?.head(accountId, conversationId)?.journalSequence ?? 0;
+      return {
+        done,
+        didWork: !done
+          || traceAfter !== traceBefore
+          || viewAfter !== viewBefore
+          || pendingCleanup,
+      };
     });
   }
 

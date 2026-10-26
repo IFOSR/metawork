@@ -362,10 +362,17 @@ export interface NormalizedTaskView {
 	 * 为 null，展示层等待服务端状态。
 	 */
 	readonly lifecycle: {
-		readonly lifecycle: string;
-		readonly phase: string;
-		readonly userState: string | null;
-		readonly userStateReason: string | null;
+		/** The committed six-state Task status (task_view_v2). */
+		readonly status: string;
+		readonly statusLabel: string;
+		readonly stateVersion: number;
+		readonly phase: string | null;
+		readonly reasonCode: string;
+		readonly pendingActions: ReadonlyArray<{
+			readonly actionId: string;
+			readonly kind: string;
+			readonly label: string;
+		}>;
 		readonly nextAuthorizedAction: string;
 		readonly explanation: string;
 		readonly activeAttempt: {
@@ -413,7 +420,7 @@ export interface NormalizedTaskView {
 }
 
 export function normalizeTaskView(payload: Record<string, unknown>): NormalizedTaskView | null {
-	if (payload.queryVersion !== "task_view_v1") return null;
+	if (payload.queryVersion !== "task_view_v2") return null;
 	const requestId = asString(payload.requestId);
 	const targetConversationId = asString(payload.targetConversationId);
 	const turnId = asString(payload.turnId);
@@ -509,8 +516,28 @@ export function normalizeTaskView(payload: Record<string, unknown>): NormalizedT
 		}
 	}
 	const lifecycleRecord = asRecord(payload.lifecycle);
-	const decision = asRecord(lifecycleRecord?.pendingDecision);
-	const identity = asRecord(decision?.expectedResult);
+	const pendingActions = Array.isArray(lifecycleRecord?.pendingActions)
+		? lifecycleRecord.pendingActions.flatMap((raw) => {
+				const action = asRecord(raw);
+				const actionId = asString(action?.actionId);
+				const kind = asString(action?.kind);
+				if (!action || !actionId || !kind) return [];
+				const result = asRecord(action.result);
+				return [
+					{
+						actionId,
+						kind,
+						label: asString(action.label) ?? kind,
+						...(result ? { result } : {}),
+					},
+				];
+			})
+		: [];
+	const decision =
+		pendingActions.find((action) => action.kind === "accept_result") ??
+		pendingActions.find((action) => action.kind === "retry_attempt") ??
+		null;
+	const identity = asRecord(decision?.result);
 	const resultDecision: GatewayResultDecision | null =
 		identity &&
 		["taskId", "generationId", "subtaskId", "attemptId", "resultId"].every(
@@ -528,27 +555,45 @@ export function normalizeTaskView(payload: Record<string, unknown>): NormalizedT
 						attemptId: identity.attemptId as string,
 						resultId: identity.resultId as string,
 					},
-					actions: asStringArray(decision?.actions),
+					actions: pendingActions.map((action) => action.kind),
 				}
 			: null;
 	const delivery = asRecord(payload.publicDelivery);
 	const publicDelivery: GatewayPublicDelivery | null =
-		delivery && typeof delivery.workspace === "string" && typeof delivery.taskDirectory === "string"
+		delivery && typeof delivery.workspace === "string"
 			? {
 					workspace: asString(delivery.workspace)!,
-					taskDirectory: asString(delivery.taskDirectory)!,
+					taskDirectory: asString(delivery.taskDirectory) ?? null,
+					mode: "in_place",
+					modeSource:
+						delivery.modeSource === "explicit_user" ||
+						delivery.modeSource === "planner" ||
+						delivery.modeSource === "fallback" ||
+						delivery.modeSource === "kernel_safety"
+							? delivery.modeSource
+							: null,
+					deliveryPolicy:
+						delivery.deliveryPolicy === "none" ||
+						delivery.deliveryPolicy === "auto_publish" ||
+						delivery.deliveryPolicy === "await_acceptance"
+							? delivery.deliveryPolicy
+							: null,
 					state: asString(delivery.state) ?? "not_published",
+					candidate: "none",
+					stateLabel: asString(delivery.stateLabel) ?? "",
 					files: asStringArray(delivery.files),
 					conflicts: asStringArray(delivery.conflicts),
 				}
 			: null;
 	const lifecycle: NormalizedTaskView["lifecycle"] =
-		lifecycleRecord && asString(lifecycleRecord.phase)
+		lifecycleRecord && asString(lifecycleRecord.status)
 			? {
-					lifecycle: asString(lifecycleRecord.lifecycle) ?? "",
-					phase: asString(lifecycleRecord.phase)!,
-					userState: asString(lifecycleRecord.userState),
-					userStateReason: asString(lifecycleRecord.userStateReason),
+					status: asString(lifecycleRecord.status)!,
+					statusLabel: asString(lifecycleRecord.statusLabel) ?? "",
+					stateVersion: asNumber(lifecycleRecord.stateVersion) ?? 0,
+					phase: asString(lifecycleRecord.phase),
+					reasonCode: asString(asRecord(lifecycleRecord.reason)?.code) ?? "none",
+					pendingActions,
 					nextAuthorizedAction: asString(lifecycleRecord.nextAuthorizedAction) ?? "",
 					explanation: asString(lifecycleRecord.explanation) ?? "",
 					activeAttempt: (() => {

@@ -62,6 +62,12 @@ Native install/update/rollback also switches the account-scoped
 database, configuration, SecretStore and generated-runtime pointers rather than
 the legacy installation-global authority.
 
+ADR-0049 is the current authority for the Task conclusion: six persisted states,
+one transition table, one pure summary function, one durable write entry,
+authorized completion requirements and the separation between a Task result and
+safe slot release. It supersedes the raw-status/lifecycle/`userState` triple
+projection.
+
 ADR-0032 governs result-first delivery and completion certification. It
 separates safe business-result delivery from completion metadata, Kernel
 certification, authorized downstream handoffs and safety disposition.
@@ -128,6 +134,7 @@ complete; the linked plan retains the real Docker acceptance gate.
 | Executor baseline operations (local implementation; Docker acceptance open) | [ADR-0046](0046-agent-baseline-operations-and-responsibility-separation.md), amending ADR-0024/0028/0033 | System-owned ordinary operations; duties do not grant authority; exact profile migration via unified activation; historical, Planner and custom restrictions preserved |
 | Task lifecycle state contracts | [ADR-0020](0020-core-module-ownership-and-dependency-direction.md) §2026-09-25 amendment, [ADR-0022](0022-unified-kernel-control-plane-and-decision-ledger.md), [ADR-0023](0023-durable-kernel-workflow-recovery-and-availability.md), [ADR-0037](0037-multi-conversation-task-parallelism.md) | Canonical Task/Subtask/Attempt lifecycle ownership, the single Task/Work Graph transition port, durable Replan Jobs and per-family uncertain-application postconditions, residue-based slot release, and the read-only TaskView projection consumed by TUI/Web/Feishu |
 | Multi-client observation and control | [ADR-0043](0043-explicit-conversation-observation-and-client-read-models.md) | Equal Account-scoped rights; bounded read models, explicit observers, exact cancellation, durable approval arbitration and independent notification routes; supersedes ADR-0036 |
+| Planner 主导的 Workspace 执行模式 | [ADR-0050](0050-planner-owned-workspace-execution-mode.md) | Planner 唯一语义判断、Kernel 确定性准入、`in_place` 主路径、内部 Worktree 隔离执行、授权变更集发布、模式对 Task 不可变 |
 | Workspace-scoped Conversation organization | [ADR-0035](0035-workspace-scoped-conversation-organization.md) | Workspace Catalog identity, Account -> Workspace -> Conversations navigation, immutable Conversation binding, Client Workspace selection, bounded directory projection and migration |
 | Independent Server and Client lifecycle | [ADR-0034](0034-independent-server-and-client-process-lifecycle.md) | Persistent Server ownership, independent TUI/Web launch, endpoint manifest, Client-default and durable Conversation Workspace admission, protocol/draining, and Server-owned Feishu lifecycle |
 | Hot configuration activation and Auto model routing | [ADR-0033](0033-hot-configuration-activation-and-auto-model-routing.md) | AccountRuntime activation gate, revision-aware Planner/Executor concrete routing, unified Executor capability profile activation, completion facts, and read-only DAG projection |
@@ -162,6 +169,10 @@ complete; the linked plan retains the real Docker acceptance gate.
 When two current ADRs appear to overlap, the more specific topic ADR defines its data contract while ADR-0020 defines module ownership and dependency direction. A newer ADR must explicitly amend or supersede an older one; implementation plans cannot silently override ADRs.
 
 ## Active implementation
+
+- [ADR-0050](0050-planner-owned-workspace-execution-mode.md), accepted 2026-10-25:
+  Planner-owned Workspace execution mode. See the [design](../plans/2026-10-25-planner-owned-workspace-mode-design.md)
+  and [implementation record](../plans/2026-10-25-planner-owned-workspace-mode-implementation-plan.md).
 
 - [ADR-0047](0047-account-license-and-official-ai.md), accepted 2026-10-09:
   official account sessions, entitlement admission and managed internal AI.

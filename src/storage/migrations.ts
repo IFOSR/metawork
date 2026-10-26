@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 import { installObservationSchema } from './observation-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 53;
+export const CURRENT_SCHEMA_VERSION = 59;
 
 /**
  * Local memory index (design §4.2).
@@ -80,14 +80,85 @@ const MANAGED_SERVICES_SQL = `
     PRIMARY KEY (account_id, task_id, relative_path)
   );
   CREATE TABLE IF NOT EXISTS managed_local_services (
-    service_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id),
-    specification_json TEXT NOT NULL, state TEXT NOT NULL, process_id INTEGER, process_token TEXT,
-    health_message TEXT, updated_at TEXT NOT NULL
+    service_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT '',
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    specification_revision TEXT NOT NULL DEFAULT '',
+    specification_json TEXT NOT NULL,
+    state TEXT NOT NULL,
+    process_id INTEGER,
+    process_token TEXT,
+    health_message TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, workspace_id, service_id)
   );
   CREATE INDEX IF NOT EXISTS managed_services_task ON managed_local_services(account_id, task_id);
   CREATE TABLE IF NOT EXISTS managed_local_service_effects (
     account_id TEXT NOT NULL, decision_id TEXT NOT NULL, effect_json TEXT NOT NULL,
     PRIMARY KEY (account_id, decision_id)
+  );
+`;
+
+const WORKSPACE_EXECUTION_SQL = `
+  CREATE TABLE IF NOT EXISTS workspace_execution_bindings (
+    task_id TEXT NOT NULL,
+    generation_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    execution_mode TEXT NOT NULL CHECK (execution_mode = 'in_place'),
+    authorized_working_directory TEXT NOT NULL,
+    mode_source TEXT NOT NULL DEFAULT '',
+    delivery_policy TEXT NOT NULL DEFAULT '',
+    workspace_intent_json TEXT,
+    targeted_paths_json TEXT NOT NULL DEFAULT '[]',
+    cleaned_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (task_id, generation_id)
+  );
+`;
+
+const WORKSPACE_CHANGE_RECORD_SQL = `
+  CREATE TABLE IF NOT EXISTS workspace_change_records (
+    record_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    generation_id TEXT,
+    subtask_id TEXT,
+    attempt_id TEXT,
+    conversation_id TEXT,
+    workspace_id TEXT NOT NULL,
+    user_turn_id TEXT,
+    before_tree TEXT,
+    after_tree TEXT,
+    files_json TEXT NOT NULL,
+    total_files INTEGER NOT NULL,
+    added_lines INTEGER NOT NULL,
+    deleted_lines INTEGER NOT NULL,
+    coverage TEXT NOT NULL CHECK (coverage IN ('complete', 'partial', 'unavailable')),
+    missing_reasons_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_workspace_change_records_task
+    ON workspace_change_records(task_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_workspace_change_records_attempt
+    ON workspace_change_records(attempt_id, created_at);
+`;
+
+const ARTIFACT_VERSION_SQL = `
+  CREATE TABLE IF NOT EXISTS artifact_versions (
+    artifact_version_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    source_task_id TEXT,
+    source_attempt_id TEXT,
+    relative_path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    byte_length INTEGER NOT NULL,
+    object_uri TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(workspace_id, relative_path, content_hash)
   );
 `;
 
@@ -279,12 +350,73 @@ function installDirectoryInvalidationTriggers(db: Database.Database): void {
   }
 }
 
+const TASK_STATE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS task_state_changes (
+  task_id TEXT NOT NULL,
+  version INTEGER NOT NULL CHECK (version > 0),
+  operation_key TEXT NOT NULL,
+  decision_id TEXT NOT NULL,
+  from_status TEXT NOT NULL,
+  to_status TEXT NOT NULL CHECK (to_status IN (
+    'queued', 'running', 'needs_action', 'succeeded', 'failed', 'cancelled'
+  )),
+  detail_json TEXT NOT NULL,
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (task_id, version),
+  UNIQUE (task_id, operation_key),
+  FOREIGN KEY (task_id) REFERENCES tasks(id)
+);
+CREATE INDEX IF NOT EXISTS task_state_changes_task_created
+  ON task_state_changes(task_id, created_at, version);
+CREATE INDEX IF NOT EXISTS task_state_changes_decision
+  ON task_state_changes(decision_id);
+
+CREATE TABLE IF NOT EXISTS task_operation_results (
+  task_id TEXT NOT NULL,
+  operation_key TEXT NOT NULL,
+  operation_kind TEXT NOT NULL CHECK (operation_kind IN (
+    'execution', 'integration', 'delivery', 'safety_report', 'service'
+  )),
+  outcome TEXT NOT NULL CHECK (outcome IN ('success', 'definite_failure', 'unknown')),
+  reason_code TEXT,
+  message TEXT NOT NULL DEFAULT '',
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (task_id, operation_key),
+  FOREIGN KEY (task_id) REFERENCES tasks(id)
+);
+CREATE INDEX IF NOT EXISTS task_operation_results_task
+  ON task_operation_results(task_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS task_state_projection_outbox (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  state_version INTEGER NOT NULL CHECK (state_version > 0),
+  status TEXT NOT NULL,
+  detail_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  dispatched_at TEXT
+);
+CREATE INDEX IF NOT EXISTS task_state_projection_outbox_pending
+  ON task_state_projection_outbox(sequence) WHERE dispatched_at IS NULL;
+`;
+
 const CURRENT_SCHEMA_SQL = `
 CREATE TABLE tasks (
           id TEXT PRIMARY KEY,
           title TEXT NOT NULL,
           goal TEXT,
-          status TEXT NOT NULL DEFAULT 'created',
+          status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN (
+            'queued', 'running', 'needs_action', 'succeeded', 'failed', 'cancelled'
+          )),
+          state_version INTEGER NOT NULL DEFAULT 1 CHECK (state_version > 0),
+          state_detail_json TEXT NOT NULL DEFAULT '{}',
+          completed_at TEXT,
+          archived_at TEXT,
+          retry_of_task_id TEXT,
           summary TEXT DEFAULT '',
           snapshot_json TEXT DEFAULT '[]',
           resources_json TEXT DEFAULT '[]',
@@ -298,7 +430,14 @@ CREATE TABLE tasks (
           conversation_id TEXT NOT NULL DEFAULT 'legacy-conversation',
           workspace_id TEXT NOT NULL DEFAULT 'legacy-workspace',
           owner_planner_session_id TEXT NOT NULL DEFAULT 'legacy-planner-session',
-          admitted_at TEXT NOT NULL DEFAULT '');
+          admitted_at TEXT NOT NULL DEFAULT '',
+          -- A completion time only exists for a terminal Task. The other
+          -- direction (terminal => completed_at) is guaranteed by the single
+          -- state entry, which always stamps it on a terminal transition.
+          CHECK (completed_at IS NULL
+            OR status IN ('succeeded', 'failed', 'cancelled')));
+
+${TASK_STATE_SCHEMA_SQL}
 
 CREATE TABLE preferences (
           id TEXT PRIMARY KEY,
@@ -861,6 +1000,7 @@ CREATE TABLE work_graph_revisions (
             configuration_revision TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL, completion_kind TEXT CHECK(completion_kind IN ('full', 'partial_accepted')),
+            completion_requirements_json TEXT NOT NULL DEFAULT '[]',
             UNIQUE(task_id, revision),
             FOREIGN KEY (task_id) REFERENCES tasks(id),
             FOREIGN KEY (authorized_decision_id) REFERENCES kernel_decisions(id),
@@ -908,7 +1048,7 @@ CREATE TABLE workspace_records (
             task_id TEXT NOT NULL,
             generation_id TEXT NOT NULL,
             subtask_id TEXT NOT NULL,
-            workspace_kind TEXT NOT NULL CHECK(workspace_kind IN ('git')),
+            workspace_kind TEXT NOT NULL CHECK(workspace_kind IN ('git', 'in_place')),
             root_uri TEXT NOT NULL,
             baseline_json TEXT NOT NULL DEFAULT '{}',
             managed_repository_uri TEXT,
@@ -1063,6 +1203,7 @@ CREATE TABLE conversation_task_slots (
           state TEXT NOT NULL CHECK(state IN ('free', 'occupied', 'releasing', 'recovery_blocked')),
           reservation_id TEXT,
           fairness_sequence INTEGER NOT NULL DEFAULT 0,
+          slot_version INTEGER NOT NULL DEFAULT 0,
           last_served_at TEXT,
           updated_at TEXT NOT NULL,
           FOREIGN KEY (active_task_id) REFERENCES tasks(id)
@@ -1711,28 +1852,83 @@ export function runMigrations(
     })();
     version = 51;
   }
+  // Schema 51 -> 52 is owned by main's six-state Task migration. The
+  // Workspace execution objects are added only after that classification so the
+  // historical Task table is rebuilt under the six-state CHECK first.
   if (version === 51) {
-    db.transaction(() => {
-      db.exec(MEMORY_BINDINGS_SQL);
-      const changed = db.prepare('UPDATE schema_version SET version = 52 WHERE version = 51').run();
-      if (changed.changes !== 1) throw new Error('schema version changed during 51 to 52 migration');
-    })();
+    migrateSchema51To52(db);
     version = 52;
   }
   if (version === 52) {
     db.transaction(() => {
-      db.exec(MEMORY_STATE_SQL);
-      // Carry an already-deposited cursor forward so an installation that ran
-      // the previous schema does not deposit the same segment twice.
-      db.exec(`
-        INSERT OR IGNORE INTO memory_flush_state
-          (account_id, conversation_id, last_sequence, sanitized, updated_at)
-        SELECT account_id, conversation_id, last_sequence, 0, datetime('now')
-        FROM conversation_history_streams WHERE kind = 'memory';
-      `);
-      const changed = db.prepare('UPDATE schema_version SET version = 53 WHERE version = 52').run();
-      if (changed.changes !== 1) throw new Error('schema version changed during 52 to 53 migration');
+      // A database stamped as 52 must carry main's six-state base. We do not
+      // silently reinterpret a version number from an unrelated branch.
+      assertSixStateTaskBase(db);
+      applyWorkspaceExecutionDdl(db);
+      bumpSchemaVersion(db, 52, 53, '52 to 53');
     })();
+    version = 53;
+  }
+  // A memory-branch database stamped 53 has no six-state Task base. Fail closed
+  // instead of silently treating it as main's 53.
+  if (version === 53) {
+    assertSixStateTaskBase(db);
+  }
+  // SQLite cannot widen a CHECK constraint in place, so an in-place Workspace
+  // requires rebuilding the parent table. Foreign keys stay off for the swap;
+  // every parent row keeps its id, so child checkpoints stay consistent.
+  if (version === 53 && !tableExists(db, 'workspace_records')) {
+    db.transaction(() => {
+      bumpSchemaVersion(db, 53, 54, '53 to 54');
+    })();
+    version = 54;
+  }
+  if (version === 53) {
+    rebuildWorkspaceRecordsForInPlace(db);
+    version = 54;
+  }
+  if (version === 54) {
+    db.transaction(() => {
+      applySchema55Ddl(db);
+      bumpSchemaVersion(db, 54, 55, '54 to 55');
+    })();
+    version = 55;
+  }
+  if (version === 55) {
+    rebuildManagedServiceIdentity(db);
+    version = 56;
+  }
+  if (version === 56) {
+    db.transaction(() => {
+      applyWorkspaceExecutionDecisionDdl(db);
+      bumpSchemaVersion(db, 56, 57, '56 to 57');
+    })();
+    version = 57;
+  }
+  if (version === 57) {
+    db.transaction(() => {
+      // Worktree generations are historical facts. Keep them visible for
+      // diagnosis, but prevent any pending candidate from being replayed by
+      // the single-Workspace runtime.
+      if (tableExists(db, 'workspace_publications')) {
+        db.prepare(`
+          UPDATE workspace_publications
+          SET status = 'parked',
+              error_summary = 'retired Worktree publication; explicit re-execution in the target Workspace is required'
+          WHERE status IN ('pending', 'applying')
+        `).run();
+      }
+      bumpSchemaVersion(db, 57, 58, '57 to 58');
+    })();
+    version = 58;
+  }
+  if (version === 58) {
+    db.transaction(() => {
+      db.exec(MEMORY_BINDINGS_SQL);
+      db.exec(MEMORY_STATE_SQL);
+      bumpSchemaVersion(db, 58, 59, '58 to 59');
+    })();
+    version = 59;
   }
   // Current-schema databases may have been created before a new projection
   // invalidation trigger was introduced. Reinstalling the idempotent trigger
@@ -1740,6 +1936,746 @@ export function runMigrations(
   db.transaction(() => {
     installDirectoryInvalidationTriggers(db);
   })();
+}
+
+/**
+ * Idempotent Workspace execution objects. Applied to 51 (this branch's
+ * pre-release base) and to 52 (main's six-state Task schema), because neither
+ * version is the owner of these tables: they are additive.
+ */
+function applyWorkspaceExecutionDdl(db: Database.Database): void {
+  if (!columnsOf(db, 'tasks').includes('execution_mode')) {
+    db.exec("ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'in_place'");
+  }
+  const artifactColumns = tableExists(db, 'task_artifacts') ? columnsOf(db, 'task_artifacts') : [];
+  if (artifactColumns.length > 0 && !artifactColumns.includes('reference_kind')) {
+    db.exec("ALTER TABLE task_artifacts ADD COLUMN reference_kind TEXT NOT NULL DEFAULT 'legacy_published_copy'");
+    db.exec('ALTER TABLE task_artifacts ADD COLUMN workspace_id TEXT');
+    db.exec('ALTER TABLE task_artifacts ADD COLUMN artifact_version_id TEXT');
+    db.exec('ALTER TABLE task_artifacts ADD COLUMN source_relative_path TEXT');
+  }
+  db.exec(WORKSPACE_EXECUTION_SQL);
+  db.exec(WORKSPACE_CHANGE_RECORD_SQL);
+  db.exec(ARTIFACT_VERSION_SQL);
+}
+
+/**
+ * Schema 57 pins the Kernel-authorized Workspace execution decision on the Task
+ * and on the per-Generation binding, so retry/recovery/follow-up rounds inherit
+ * the mode instead of re-reading the environment or current settings. It also
+ * retires legacy worktree publications that would otherwise be replayed by the
+ * old copy path: those are parked for an explicit decision, never silently
+ * copied into the user's Workspace.
+ */
+function applyWorkspaceExecutionDecisionDdl(db: Database.Database): void {
+  const taskColumns = columnsOf(db, 'tasks');
+  const addTaskColumn = (name: string, ddl: string): void => {
+    if (!taskColumns.includes(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${ddl}`);
+  };
+  addTaskColumn('workspace_execution_source', "workspace_execution_source TEXT NOT NULL DEFAULT ''");
+  addTaskColumn('workspace_delivery_policy', "workspace_delivery_policy TEXT NOT NULL DEFAULT ''");
+  addTaskColumn('workspace_target_paths_json', "workspace_target_paths_json TEXT NOT NULL DEFAULT '[]'");
+  addTaskColumn('workspace_intent_json', 'workspace_intent_json TEXT');
+
+  if (tableExists(db, 'workspace_execution_bindings')) {
+    const bindingColumns = columnsOf(db, 'workspace_execution_bindings');
+    const addBindingColumn = (name: string, ddl: string): void => {
+      if (!bindingColumns.includes(name)) db.exec(`ALTER TABLE workspace_execution_bindings ADD COLUMN ${ddl}`);
+    };
+    addBindingColumn('mode_source', "mode_source TEXT NOT NULL DEFAULT ''");
+    addBindingColumn('delivery_policy', "delivery_policy TEXT NOT NULL DEFAULT ''");
+    addBindingColumn('workspace_intent_json', 'workspace_intent_json TEXT');
+    addBindingColumn('targeted_paths_json', "targeted_paths_json TEXT NOT NULL DEFAULT '[]'");
+    addBindingColumn('cleaned_at', 'cleaned_at TEXT');
+  }
+
+  if (tableExists(db, 'workspace_publications')) {
+    if (!columnsOf(db, 'workspace_publications').includes('delivery_authorized_at')) {
+      db.exec('ALTER TABLE workspace_publications ADD COLUMN delivery_authorized_at TEXT');
+    }
+  }
+
+  if (tableExists(db, 'workspace_publications') && tableExists(db, 'tasks')) {
+    db.prepare(`
+      UPDATE workspace_publications
+      SET status = 'parked',
+          error_summary = 'legacy worktree publication retired by schema 57; re-accept or re-execute explicitly'
+      WHERE status IN ('pending', 'applying')
+        AND task_id IN (SELECT id FROM tasks WHERE execution_mode = 'worktree')
+    `).run();
+  }
+}
+
+/**
+ * True when the database carries main's six-state Task base (schema 52). The
+ * branch relies on this to decide whether a 52 database may be upgraded.
+ */
+function hasSixStateTaskBase(db: Database.Database): boolean {
+  if (!tableExists(db, 'task_state_changes')
+    || !columnsOf(db, 'tasks').includes('state_version')
+    || !columnsOf(db, 'tasks').includes('completed_at')) {
+    return false;
+  }
+  // Main's migration rebuilds `tasks` with the six-state CHECK. Merely adding
+  // the projection columns to an older branch database must not be accepted as
+  // an externally-owned schema 52.
+  const sql = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'").get() as { sql?: string } | undefined)?.sql ?? '';
+  const normalized = sql.toLowerCase();
+  return ['queued', 'running', 'needs_action', 'succeeded', 'failed', 'cancelled']
+    .every(state => normalized.includes(`'${state}'`))
+    && !normalized.includes("'created'");
+}
+
+/**
+ * A 52 database is main-owned. Upgrading one without its base would leave a
+ * schema that neither runtime can interpret, so the step refuses instead of
+ * guessing.
+ */
+function assertSixStateTaskBase(db: Database.Database): void {
+  if (hasSixStateTaskBase(db)) return;
+  // A 52 this branch produced itself (51 -> 52 bridge) is known to lack main's
+  // reclassification; only an externally observed 52 has to prove its origin.
+  if (branchBridgeRecorded(db, '51_to_52_branch_bridge')) return;
+  throw new Error(
+    'schema 52 does not carry the six-state Task base (task_state_changes, '
+    + 'tasks.state_version, tasks.completed_at). Schema 52 belongs to main; '
+    + 'merge main before upgrading this database, or recreate it.',
+  );
+}
+
+function branchBridgeRecorded(db: Database.Database, marker: string): boolean {
+  if (!tableExists(db, 'schema_branch_bridges')) return false;
+  return Boolean(db.prepare('SELECT 1 FROM schema_branch_bridges WHERE marker = ?').get(marker));
+}
+
+/**
+ * Records that this branch bridged a version main owns. Post-merge tooling can
+ * see that main's step still has to run instead of assuming it happened.
+ */
+function recordBranchBridge(db: Database.Database, marker: string): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_branch_bridges (
+      marker TEXT PRIMARY KEY,
+      recorded_at TEXT NOT NULL
+    )
+  `);
+  db.prepare('INSERT OR IGNORE INTO schema_branch_bridges (marker, recorded_at) VALUES (?, ?)')
+    .run(marker, new Date().toISOString());
+}
+
+/**
+ * Schema 55 adds the durable facts the in-place contract needs: a wake kind so
+ * partition waits can be re-dispatched, service workspace/revision identity,
+ * and the write-after-crash facts that decide `uncertain` recovery.
+ */
+function applySchema55Ddl(db: Database.Database): void {
+  const retryColumns = tableExists(db, 'retry_wakes') ? columnsOf(db, 'retry_wakes') : [];
+  if (retryColumns.length > 0 && !retryColumns.includes('wake_kind')) {
+    db.exec("ALTER TABLE retry_wakes ADD COLUMN wake_kind TEXT NOT NULL DEFAULT 'retry'");
+  }
+  const serviceColumns = tableExists(db, 'managed_local_services') ? columnsOf(db, 'managed_local_services') : [];
+  if (serviceColumns.length > 0) {
+    if (!serviceColumns.includes('workspace_id')) {
+      db.exec('ALTER TABLE managed_local_services ADD COLUMN workspace_id TEXT');
+    }
+    if (!serviceColumns.includes('specification_revision')) {
+      db.exec("ALTER TABLE managed_local_services ADD COLUMN specification_revision TEXT NOT NULL DEFAULT ''");
+    }
+  }
+  const runtimeColumns = tableExists(db, 'executor_attempt_runtime')
+    ? columnsOf(db, 'executor_attempt_runtime')
+    : [];
+  const dispatchColumns = tableExists(db, 'kernel_dispatch_items')
+    ? columnsOf(db, 'kernel_dispatch_items')
+    : [];
+  if (dispatchColumns.length > 0 && !dispatchColumns.includes('execution_binding_fingerprint')) {
+    db.exec('ALTER TABLE kernel_dispatch_items ADD COLUMN execution_binding_fingerprint TEXT');
+  }
+  if (runtimeColumns.length > 0) {
+    if (!runtimeColumns.includes('write_started_at')) {
+      db.exec('ALTER TABLE executor_attempt_runtime ADD COLUMN write_started_at TEXT');
+      db.exec('ALTER TABLE executor_attempt_runtime ADD COLUMN write_finished_at TEXT');
+      db.exec('ALTER TABLE executor_attempt_runtime ADD COLUMN receipt_persisted_at TEXT');
+      db.exec("ALTER TABLE executor_attempt_runtime ADD COLUMN external_effect_status TEXT NOT NULL DEFAULT 'none'");
+      db.exec('ALTER TABLE executor_attempt_runtime ADD COLUMN change_record_id TEXT');
+    }
+  }
+}
+
+/**
+ * Service identity is (account, workspace, service), not the bare `service_id`.
+ * Two Workspaces may legitimately run a service with the same id, and the
+ * previous primary key made that impossible. SQLite cannot change a primary key
+ * in place, so the table is rebuilt with the composite key.
+ */
+function rebuildManagedServiceIdentity(db: Database.Database): void {
+  if (!tableExists(db, 'managed_local_services')) {
+    db.transaction(() => {
+      db.exec(MANAGED_SERVICES_SQL);
+      bumpSchemaVersion(db, 55, 56, '55 to 56');
+    })();
+    return;
+  }
+  const priorViolations = new Set(
+    (db.pragma('foreign_key_check') as Array<Record<string, unknown>>).map(row => JSON.stringify(row)),
+  );
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE managed_local_services_v56 (
+          service_id TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL DEFAULT '',
+          task_id TEXT NOT NULL REFERENCES tasks(id),
+          specification_revision TEXT NOT NULL DEFAULT '',
+          specification_json TEXT NOT NULL,
+          state TEXT NOT NULL,
+          process_id INTEGER,
+          process_token TEXT,
+          health_message TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (account_id, workspace_id, service_id)
+        );
+        INSERT INTO managed_local_services_v56 (
+          service_id, account_id, workspace_id, task_id, specification_revision,
+          specification_json, state, process_id, process_token, health_message, updated_at
+        )
+        SELECT service_id, account_id, COALESCE(workspace_id, ''), task_id,
+          COALESCE(specification_revision, ''), specification_json, state,
+          process_id, process_token, health_message, updated_at
+        FROM managed_local_services;
+        DROP TABLE managed_local_services;
+        ALTER TABLE managed_local_services_v56 RENAME TO managed_local_services;
+        CREATE INDEX IF NOT EXISTS managed_services_task
+          ON managed_local_services(account_id, task_id);
+        CREATE INDEX IF NOT EXISTS managed_services_workspace
+          ON managed_local_services(account_id, workspace_id, service_id);
+      `);
+      bumpSchemaVersion(db, 55, 56, '55 to 56');
+    })();
+    const newViolations = (db.pragma('foreign_key_check') as Array<Record<string, unknown>>)
+      .filter(row => !priorViolations.has(JSON.stringify(row)));
+    if (newViolations.length > 0) {
+      throw new Error('managed_local_services rebuild broke referential integrity');
+    }
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
+}
+
+function bumpSchemaVersion(
+  db: Database.Database,
+  from: number,
+  to: number,
+  label: string,
+): void {
+  const changed = db.prepare('UPDATE schema_version SET version = ? WHERE version = ?').run(to, from);
+  if (changed.changes !== 1) throw new Error(`schema version changed during ${label} migration`);
+}
+
+/** Widens `workspace_records.workspace_kind` to accept `in_place` by rebuilding. */
+function rebuildWorkspaceRecordsForInPlace(db: Database.Database): void {
+  const priorViolations = new Set(
+    (db.pragma('foreign_key_check') as Array<Record<string, unknown>>).map(row => JSON.stringify(row)),
+  );
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE workspace_records_v54 (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          generation_id TEXT NOT NULL,
+          subtask_id TEXT NOT NULL,
+          workspace_kind TEXT NOT NULL CHECK(workspace_kind IN ('git', 'in_place')),
+          root_uri TEXT NOT NULL,
+          baseline_json TEXT NOT NULL DEFAULT '{}',
+          managed_repository_uri TEXT,
+          managed_branch TEXT,
+          head_commit TEXT,
+          current_checkpoint_id TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          cleanup_after TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(task_id, generation_id, subtask_id)
+        );
+        INSERT INTO workspace_records_v54 SELECT
+          id, task_id, generation_id, subtask_id, workspace_kind, root_uri, baseline_json,
+          managed_repository_uri, managed_branch, head_commit, current_checkpoint_id,
+          status, cleanup_after, created_at, updated_at
+        FROM workspace_records;
+        DROP TABLE workspace_records;
+        ALTER TABLE workspace_records_v54 RENAME TO workspace_records;
+        CREATE INDEX IF NOT EXISTS idx_workspace_records_retention
+          ON workspace_records(status, cleanup_after);
+      `);
+      bumpSchemaVersion(db, 53, 54, '53 to 54');
+    })();
+    const newViolations = (db.pragma('foreign_key_check') as Array<Record<string, unknown>>)
+      .filter(row => !priorViolations.has(JSON.stringify(row)));
+    if (newViolations.length > 0) {
+      throw new Error('workspace_records rebuild broke referential integrity');
+    }
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
+}
+
+const SIX_STATE_STATUSES = new Set([
+  'queued', 'running', 'needs_action', 'succeeded', 'failed', 'cancelled',
+]);
+
+function migrateSchema51To52(db: Database.Database): void {
+  const foreignKeysEnabled = db.pragma('foreign_keys', { simple: true }) === 1;
+  if (foreignKeysEnabled) db.pragma('foreign_keys = OFF');
+  const before = new Set(
+    (db.pragma('foreign_key_check') as unknown[]).map(row => JSON.stringify(row)),
+  );
+  const migrate = db.transaction(() => {
+    if (tableExists(db, 'work_graph_revisions')
+      && !columnsOf(db, 'work_graph_revisions').includes('completion_requirements_json')) {
+      db.exec("ALTER TABLE work_graph_revisions ADD COLUMN completion_requirements_json TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (tableExists(db, 'conversation_task_slots')
+      && !columnsOf(db, 'conversation_task_slots').includes('slot_version')) {
+      db.exec('ALTER TABLE conversation_task_slots ADD COLUMN slot_version INTEGER NOT NULL DEFAULT 0');
+    }
+    db.exec(TASK_STATE_SCHEMA_SQL);
+
+    // Legacy fixtures and very old databases may not carry every operational
+    // table. A missing table means "no evidence", never a guessed conclusion.
+    const hasTable = (table: string) => tableExists(db, table);
+    const hasRow = (table: string, sql: string, ...parameters: unknown[]): boolean => {
+      if (!hasTable(table)) return false;
+      try {
+        return Boolean(db.prepare(sql).get(...parameters));
+      } catch {
+        return false;
+      }
+    };
+    const taskColumns = new Set(columnsOf(db, 'tasks'));
+    const taskColumn = (name: string): string | null => (taskColumns.has(name) ? `t.${name}` : null);
+
+    const classifications = (db.prepare('SELECT * FROM tasks').all() as Array<Record<string, unknown>>)
+      .map(row => ({
+        id: String(row.id),
+        status: String(row.status ?? 'queued'),
+        updated_at: typeof row.updated_at === 'string' && row.updated_at.length > 0
+          ? row.updated_at
+          : '1970-01-01T00:00:00.000Z',
+        state_detail_json: typeof row.state_detail_json === 'string' ? row.state_detail_json : null,
+        completed_at: typeof row.completed_at === 'string' ? row.completed_at : null,
+        archived_at: typeof row.archived_at === 'string' ? row.archived_at : null,
+      }));
+    interface Classification {
+      status: string;
+      detail: string;
+      completedAt: string | null;
+      archivedAt: string | null;
+    }
+    const classify = (task: {
+      id: string;
+      status: string;
+      updated_at: string;
+      state_detail_json: string | null;
+      completed_at: string | null;
+      archived_at: string | null;
+    }): Classification => {
+      // A row already written with the six-state contract is kept as-is; this
+      // makes the migration idempotent for re-opened or reconstructed databases.
+      if (taskColumns.has('state_version') && SIX_STATE_STATUSES.has(task.status)) {
+        return {
+          status: task.status,
+          detail: task.state_detail_json ?? '{}',
+          // Never invent a completion timestamp for a row that already carries
+          // the six-state contract; the state entry stamps it on transitions.
+          completedAt: task.completed_at,
+          archivedAt: task.archived_at,
+        };
+      }
+      const evidence = {
+        activeDispatch: hasRow('kernel_dispatch_items', `SELECT 1 FROM kernel_dispatch_items
+          WHERE task_id = ? AND status IN ('pending_launch', 'launching', 'running', 'cancelling') LIMIT 1`,
+        task.id),
+        armedRetry: hasRow('retry_wakes', `SELECT 1 FROM retry_wakes
+          WHERE task_id = ? AND status IN ('armed', 'fired') LIMIT 1`, task.id),
+        uncertainResidue: hasRow('kernel_dispatch_items', `SELECT 1 FROM kernel_dispatch_items
+          WHERE task_id = ? AND status = 'uncertain' LIMIT 1`, task.id)
+          || hasRow('kernel_events', `SELECT 1 FROM kernel_events WHERE task_id = ?
+            AND status IN ('pending', 'processing') LIMIT 1`, task.id)
+          || hasRow('kernel_decision_applications', `SELECT 1 FROM kernel_decision_applications AS application
+            INNER JOIN kernel_events AS event ON event.id = application.event_id
+            WHERE event.task_id = ? AND application.status IN ('pending', 'applying', 'uncertain') LIMIT 1`,
+            task.id),
+        publication: hasRow('workspace_publications', `SELECT 1 FROM workspace_publications
+          WHERE task_id = ? AND status IN ('pending', 'applying', 'cancelling') LIMIT 1`, task.id),
+        replan: hasRow('generation_replan_requests', `SELECT 1 FROM generation_replan_requests
+          WHERE task_id = ? AND status IN ('pending_quiescence', 'planning', 'submitted') LIMIT 1`,
+          task.id),
+        awaitingAvailability: hasRow('generation_replan_requests', `SELECT 1 FROM generation_replan_requests
+          WHERE task_id = ? AND status = 'waiting_for_availability' LIMIT 1`, task.id),
+        completeRevision: hasRow('work_graph_revisions', `SELECT 1 FROM work_graph_revisions
+          WHERE task_id = ? AND completion_kind = 'full' LIMIT 1`, task.id),
+        hasSubtasks: hasRow('subtasks', 'SELECT 1 FROM subtasks WHERE task_id = ? LIMIT 1', task.id),
+        unfinishedSubtasks: hasRow('subtasks', `SELECT 1 FROM subtasks
+          WHERE task_id = ? AND status NOT IN ('done', 'cancelled') LIMIT 1`, task.id),
+        definiteFailure: hasRow('executor_attempt_receipts', `SELECT 1 FROM executor_attempt_receipts r
+          WHERE r.task_id = ? AND r.terminal_state IN ('executor_failed', 'contract_blocked', 'heartbeat_lost')
+            AND NOT EXISTS (SELECT 1 FROM executor_attempt_receipts newer
+              WHERE newer.subtask_id = r.subtask_id AND newer.completed_at > r.completed_at)
+          LIMIT 1`, task.id),
+        activeService: hasRow('managed_local_services', `SELECT 1 FROM managed_local_services
+          WHERE task_id = ? AND state IN ('starting', 'stopping') LIMIT 1`, task.id),
+      };
+      const terminalTime = ['done', 'archived', 'cancelled'].includes(task.status)
+        ? task.updated_at
+        : null;
+      const archivedAt = task.status === 'archived' ? task.updated_at : null;
+      const detail = (
+        code: string,
+        message: string,
+        phase: string | null = null,
+      ): string => JSON.stringify({
+        reason: { code, message, evidenceRefs: [] },
+        unresolved: [],
+        phase,
+        pendingActions: [],
+        requiredWork: [],
+        cleanup: { state: 'none', objects: [], reason: '' },
+        nextWakeAt: null,
+        migration: {
+          from: task.status,
+          at: new Date().toISOString(),
+          note: 'schema-51-to-52 evidence classification',
+        },
+      });
+      if (task.status === 'cancelled') {
+        return {
+          status: 'cancelled',
+          detail: detail('user_cancelled', '用户取消了任务。'),
+          completedAt: terminalTime,
+          archivedAt: null,
+        };
+      }
+      if (task.status === 'done' || task.status === 'archived') {
+        const proven = ['executor_attempt_receipts', 'work_graph_revisions', 'workspace_publications',
+          'workspace_publication_deliveries', 'managed_local_services', 'kernel_decisions',
+          'kernel_decision_applications'].every(hasTable)
+          && evidence.hasSubtasks && !evidence.unfinishedSubtasks
+          && !evidence.uncertainResidue
+          && !hasRow('subtasks', `SELECT 1 FROM subtasks s
+            WHERE s.task_id = ? AND s.graph_revision = (SELECT MAX(revision) FROM work_graph_revisions WHERE task_id = s.task_id)
+              AND (s.status <> 'done' OR NOT EXISTS (
+                SELECT 1 FROM executor_attempt_receipts r WHERE r.subtask_id = s.id
+                  AND r.generation_id = s.generation_id AND r.graph_revision = s.graph_revision
+                  AND (r.terminal_state = 'completed' OR EXISTS (
+                    SELECT 1 FROM kernel_decisions d JOIN kernel_decision_applications a ON a.decision_id = d.id
+                    WHERE d.task_id = r.task_id AND d.action = 'accept_uncertified_result' AND a.status = 'applied'
+                      AND json_extract(d.decision_json, '$.action.attemptId') = r.attempt_id
+                      AND json_extract(d.decision_json, '$.action.resultId') = json_extract(r.parsing_json, '$.resultObjects.safeProjectionId')
+                  )))) LIMIT 1`, task.id)
+          && hasRow('work_graph_revisions', `SELECT 1 FROM work_graph_revisions
+            WHERE task_id = ? AND revision = (SELECT MAX(revision) FROM work_graph_revisions WHERE task_id = ?)
+              AND completion_kind IN ('full', 'partial_accepted')`, task.id, task.id)
+          && !hasRow('tasks', `SELECT 1 FROM tasks t WHERE t.id = ?
+            AND t.start_service_after_publish = 1 AND NOT EXISTS (
+              SELECT 1 FROM managed_local_services svc WHERE svc.task_id = t.id AND svc.state = 'healthy')`, task.id)
+          && !hasRow('subtasks', `SELECT 1 FROM subtasks s JOIN tasks t ON t.id = s.task_id
+            WHERE s.task_id = ? AND s.graph_revision = (SELECT MAX(revision) FROM work_graph_revisions WHERE task_id = s.task_id)
+              AND (t.public_project = 1 OR s.file_outputs_json NOT IN ('[]', '', 'null'))
+              AND NOT EXISTS (SELECT 1 FROM workspace_publications p
+                JOIN workspace_publication_deliveries d ON d.publication_id = p.id
+                WHERE p.subtask_id = s.id AND p.generation_id = s.generation_id
+                  AND p.status = 'integrated' AND d.status = 'succeeded') LIMIT 1`, task.id);
+        if (proven) {
+          return {
+            status: 'succeeded',
+            detail: detail('none', '用户要求的必需工作已全部完成。'),
+            completedAt: terminalTime,
+            archivedAt,
+          };
+        }
+        return {
+          status: 'needs_action',
+          detail: detail(
+            'system_anomaly',
+            `旧的 ${task.status} 结论缺少可核实的完成证据，需要确认。`,
+          ),
+          completedAt: null,
+          archivedAt,
+        };
+      }
+      if (task.status === 'created' || task.status === 'ready') {
+        if (evidence.uncertainResidue) return {
+          status: 'needs_action', detail: detail('external_outcome_unknown', '旧版未完成操作需要核实后重新授权。'),
+          completedAt: null, archivedAt: null,
+        };
+        return {
+          status: 'queued',
+          detail: detail('waiting_for_capacity', '等待执行名额。'),
+          completedAt: null,
+          archivedAt: null,
+        };
+      }
+      const runningDrivers = evidence.activeDispatch || evidence.armedRetry
+        || evidence.publication || evidence.replan || evidence.activeService;
+      if (runningDrivers) {
+        return {
+          status: 'running',
+          detail: detail(
+            'none',
+            '系统正在执行任务。',
+            evidence.publication ? 'publishing' : evidence.replan ? 'verifying'
+              : evidence.armedRetry ? 'retrying' : evidence.activeService ? 'starting_service' : 'executing',
+          ),
+          completedAt: null,
+          archivedAt: null,
+        };
+      }
+      if (evidence.definiteFailure) {
+        return {
+          status: 'failed',
+          detail: detail('execution_failed', '必需工作确定失败。'),
+          completedAt: terminalTime ?? task.updated_at,
+          archivedAt: null,
+        };
+      }
+      if (evidence.awaitingAvailability) {
+        return {
+          status: 'queued',
+          detail: detail('waiting_for_capacity', '等待可用的执行容量。'),
+          completedAt: null,
+          archivedAt: null,
+        };
+      }
+      return {
+        status: 'needs_action',
+        detail: detail(
+          evidence.uncertainResidue ? 'external_outcome_unknown' : 'no_authorized_driver',
+          evidence.uncertainResidue
+            ? '存在结果不明的操作，需要核实后才能继续。'
+            : '旧的阻塞状态没有可核实的继续条件，需要确认。',
+        ),
+        completedAt: null,
+        archivedAt: null,
+      };
+    };
+
+    db.exec(`
+      CREATE TEMP TABLE _task_state_migration (
+        task_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        state_detail_json TEXT NOT NULL,
+        completed_at TEXT,
+        archived_at TEXT
+      );
+    `);
+    const insertClassification = db.prepare(`INSERT INTO _task_state_migration
+      (task_id, status, state_detail_json, completed_at, archived_at) VALUES (?, ?, ?, ?, ?)`);
+    for (const task of classifications) {
+      const result = classify(task);
+      insertClassification.run(
+        task.id, result.status, result.detail, result.completedAt, result.archivedAt,
+      );
+    }
+
+    // A table rebuild re-parses every schema object. Any trigger that still
+    // refers to the rebuilt table would fail to resolve while it is detached, so
+    // drop all triggers first; the idempotent installers recreate them below.
+    const triggers = db.prepare(
+      "SELECT name, sql FROM sqlite_master WHERE type = 'trigger'",
+    ).all() as Array<{ name: string; sql: string | null }>;
+    for (const trigger of triggers) {
+      if (!/\btasks\b/u.test(trigger.sql ?? '')) continue;
+      db.exec(`DROP TRIGGER IF EXISTS "${trigger.name.replace(/"/gu, '""')}"`);
+    }
+    db.exec(`
+      CREATE TABLE tasks_v52 (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        goal TEXT,
+        status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN (
+          'queued', 'running', 'needs_action', 'succeeded', 'failed', 'cancelled'
+        )),
+        state_version INTEGER NOT NULL DEFAULT 1 CHECK (state_version > 0),
+        state_detail_json TEXT NOT NULL DEFAULT '{}',
+        completed_at TEXT,
+        archived_at TEXT,
+        retry_of_task_id TEXT,
+        summary TEXT DEFAULT '',
+        snapshot_json TEXT DEFAULT '[]',
+        resources_json TEXT DEFAULT '[]',
+        dependencies_json TEXT DEFAULT '[]',
+        priority_json TEXT,
+        injected_prefs_json TEXT DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_scheduling_reason TEXT DEFAULT '',
+        last_interruption_reason TEXT DEFAULT '',
+        interruption_count INTEGER DEFAULT 0,
+        artifacts_json TEXT DEFAULT '[]',
+        account_id TEXT NOT NULL DEFAULT 'legacy-account',
+        conversation_id TEXT NOT NULL DEFAULT 'legacy-conversation',
+        workspace_id TEXT NOT NULL DEFAULT 'legacy-workspace',
+        owner_planner_session_id TEXT NOT NULL DEFAULT 'legacy-planner-session',
+        admitted_at TEXT NOT NULL DEFAULT '',
+        public_task_directory TEXT,
+        public_delivery_baseline_json TEXT NOT NULL DEFAULT '{}',
+        start_service_after_publish INTEGER NOT NULL DEFAULT 0,
+        public_project INTEGER NOT NULL DEFAULT 0,
+        CHECK (completed_at IS NULL
+          OR status IN ('succeeded', 'failed', 'cancelled'))
+      );
+      INSERT INTO tasks_v52 (
+        id, title, goal, status, state_version, state_detail_json, completed_at, archived_at,
+        retry_of_task_id, summary, snapshot_json, resources_json, dependencies_json, priority_json,
+        injected_prefs_json, created_at, updated_at, last_scheduling_reason,
+        last_interruption_reason, interruption_count, artifacts_json, account_id, conversation_id,
+        workspace_id, owner_planner_session_id, admitted_at, public_task_directory,
+        public_delivery_baseline_json, start_service_after_publish, public_project
+      )
+      SELECT t.id, t.title,
+        ${taskColumn('goal') ?? 'NULL'},
+        m.status, 1, m.state_detail_json, m.completed_at, m.archived_at,
+        NULL,
+        ${taskColumn('summary') ?? "''"},
+        ${taskColumn('snapshot_json') ?? "'[]'"},
+        ${taskColumn('resources_json') ?? "'[]'"},
+        ${taskColumn('dependencies_json') ?? "'[]'"},
+        ${taskColumn('priority_json') ?? 'NULL'},
+        ${taskColumn('injected_prefs_json') ?? "'[]'"},
+        ${taskColumn('created_at') ?? "'1970-01-01T00:00:00.000Z'"},
+        ${taskColumn('updated_at') ?? "'1970-01-01T00:00:00.000Z'"},
+        ${taskColumn('last_scheduling_reason') ?? "''"},
+        ${taskColumn('last_interruption_reason') ?? "''"},
+        ${taskColumn('interruption_count') ?? '0'},
+        ${taskColumn('artifacts_json') ?? "'[]'"},
+        ${taskColumn('account_id') ?? "'legacy-account'"},
+        ${taskColumn('conversation_id') ?? "'legacy-conversation'"},
+        ${taskColumn('workspace_id') ?? "'legacy-workspace'"},
+        ${taskColumn('owner_planner_session_id') ?? "'legacy-planner-session'"},
+        ${taskColumn('admitted_at') ?? "'1970-01-01T00:00:00.000Z'"},
+        ${taskColumn('public_task_directory') ?? 'NULL'},
+        ${taskColumn('public_delivery_baseline_json') ?? "'{}'"},
+        ${taskColumn('start_service_after_publish') ?? '0'},
+        ${taskColumn('public_project') ?? '0'}
+      FROM tasks AS t
+      INNER JOIN _task_state_migration AS m ON m.task_id = t.id;
+      DROP TABLE tasks;
+      ALTER TABLE tasks_v52 RENAME TO tasks;
+      CREATE INDEX idx_tasks_status ON tasks(status);
+      CREATE INDEX idx_tasks_conversation_status
+        ON tasks(conversation_id, status, updated_at, id);
+      DROP TABLE _task_state_migration;
+    `);
+    // A migration decision is immutable audit, not an extension of the UI detail.
+    for (const task of classifications) {
+      const migrated = db.prepare('SELECT status, state_detail_json FROM tasks WHERE id = ?').get(task.id) as
+        { status: string; state_detail_json: string };
+      db.prepare(`INSERT OR IGNORE INTO task_state_changes
+        (task_id, version, operation_key, decision_id, from_status, to_status, detail_json, evidence_refs_json, created_at)
+        VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(task.id, `migration:${task.id}`, 'schema-51-to-52', migrated.status, migrated.status,
+          migrated.state_detail_json, JSON.stringify([`legacy_status:${task.status}`, 'schema:51']), task.updated_at);
+    }
+    // Old Decisions retain their immutable payload for inspection. Their
+    // unapplied effects cannot be replayed as six-state authorization. Explicit
+    // cancellation keeps its dedicated recovery path so cleanup can finish.
+    if (!taskColumns.has('state_version') && hasTable('kernel_decision_applications') && hasTable('kernel_decisions')) {
+      db.prepare(`UPDATE kernel_decision_applications SET status = 'uncertain',
+        error_summary = 'task_state_upgrade_requires_reauthorization', updated_at = ?
+        WHERE status <> 'applied' AND decision_id IN (
+          SELECT id FROM kernel_decisions WHERE task_id IS NOT NULL
+            AND action NOT IN ('cancel_task', 'cancel_subtasks'))`).run(new Date().toISOString());
+    }
+    if (!taskColumns.has('state_version') && hasTable('kernel_events')) {
+      db.prepare(`UPDATE kernel_events SET status = 'failed',
+        last_error = 'task_state_upgrade_requires_reauthorization', updated_at = ?
+        WHERE status IN ('pending', 'processing') AND task_id IS NOT NULL
+          AND event_type NOT IN ('task_cancel_requested', 'subtasks_cancel_requested')`)
+        .run(new Date().toISOString());
+    }
+    // Backfill the requirement snapshot for revisions authorized before it
+    // existed, from that revision's own persisted Subtasks.
+    if (tableExists(db, 'subtasks') && tableExists(db, 'work_graph_revisions')) {
+      const subtaskColumns = columnsOf(db, 'subtasks');
+      const hasDelivery = subtaskColumns.includes('delivery_kind');
+      const hasOutputs = subtaskColumns.includes('file_outputs_json');
+      const revisions = db.prepare(`SELECT r.task_id AS taskId, r.revision AS revision
+        FROM work_graph_revisions r
+        WHERE r.completion_requirements_json IS NULL OR r.completion_requirements_json IN ('', '[]')`)
+        .all() as Array<{ taskId: string; revision: number }>;
+      const selectSubtasks = db.prepare(`SELECT id, title${hasDelivery ? ', delivery_kind' : ''}${hasOutputs ? ', file_outputs_json' : ''}
+        FROM subtasks WHERE task_id = ? AND graph_revision = ? ORDER BY created_at`);
+      const update = db.prepare(`UPDATE work_graph_revisions SET completion_requirements_json = ?
+        WHERE task_id = ? AND revision = ?`);
+      const taskFlags = db.prepare('SELECT public_project, start_service_after_publish FROM tasks WHERE id = ?');
+      for (const revision of revisions) {
+        const rows = selectSubtasks.all(revision.taskId, revision.revision) as Array<Record<string, unknown>>;
+        const flags = taskFlags.get(revision.taskId) as
+          { public_project: number; start_service_after_publish: number } | undefined;
+        const requirements = rows.flatMap(row => {
+          const entries: Array<Record<string, unknown>> = [{
+            key: `execution:${String(row.id)}`,
+            kind: 'execution',
+            label: String(row.title),
+            subtaskId: String(row.id),
+            serviceId: null,
+          }];
+          const fileOutputs = row.file_outputs_json ? JSON.parse(String(row.file_outputs_json)) as unknown[] : [];
+          if ((flags?.public_project ?? 0) === 1 || fileOutputs.length > 0) {
+            entries.push({
+              key: `delivery:${String(row.id)}`,
+              kind: 'delivery',
+              label: `${String(row.title)} 的文件交付`,
+              subtaskId: String(row.id),
+              serviceId: null,
+            });
+          }
+          if (row.delivery_kind === 'report') {
+            entries.push({
+              key: `safety_report:${String(row.id)}`,
+              kind: 'safety_report',
+              label: `${String(row.title)} 的安全报告交付`,
+              subtaskId: String(row.id),
+              serviceId: null,
+            });
+          }
+          return entries;
+        });
+        if ((flags?.start_service_after_publish ?? 0) === 1) {
+          requirements.push({
+            key: 'service',
+            kind: 'service',
+            label: '启动并接管本地服务',
+            subtaskId: null,
+            serviceId: null,
+          });
+        }
+        if (requirements.length === 0) continue;
+        update.run(JSON.stringify(requirements), revision.taskId, revision.revision);
+      }
+    }
+    installObservationSchema(db);
+    installDirectoryInvalidationTriggers(db);
+    // Only violations introduced by this migration are fatal; a legacy fixture
+    // that already had them cannot block the state migration.
+    const fingerprint = (rows: unknown[]) => new Set(rows.map(row => JSON.stringify(row)));
+    const introduced = [...fingerprint(db.pragma('foreign_key_check') as unknown[])]
+      .filter(row => !before.has(row));
+    if (introduced.length > 0) {
+      throw new Error('schema 51 to 52 migration produced foreign key violations');
+    }
+    const changed = db.prepare('UPDATE schema_version SET version = 52 WHERE version = 51').run();
+    if (changed.changes !== 1) throw new Error('schema version changed during 51 to 52 migration');
+  });
+  try {
+    migrate();
+  } finally {
+    if (foreignKeysEnabled) db.pragma('foreign_keys = ON');
+  }
 }
 
 function runBaseMigrations(
@@ -1750,7 +2686,7 @@ function runBaseMigrations(
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
     ).all() as Array<{ version: number }>;
-    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
+    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 41) {
@@ -1898,10 +2834,22 @@ function runBaseMigrations(
     db.exec("ALTER TABLE tasks ADD COLUMN public_delivery_baseline_json TEXT NOT NULL DEFAULT '{}'");
     db.exec('ALTER TABLE tasks ADD COLUMN start_service_after_publish INTEGER NOT NULL DEFAULT 0');
     db.exec('ALTER TABLE tasks ADD COLUMN public_project INTEGER NOT NULL DEFAULT 0');
-    db.exec(MANAGED_SERVICES_SQL);
+    db.exec("ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'in_place'");
+    db.exec("ALTER TABLE task_artifacts ADD COLUMN reference_kind TEXT NOT NULL DEFAULT 'legacy_published_copy'");
+    db.exec('ALTER TABLE task_artifacts ADD COLUMN workspace_id TEXT');
+    db.exec('ALTER TABLE task_artifacts ADD COLUMN artifact_version_id TEXT');
+    db.exec('ALTER TABLE task_artifacts ADD COLUMN source_relative_path TEXT');
+    db.exec(WORKSPACE_EXECUTION_SQL);
+    db.exec(WORKSPACE_CHANGE_RECORD_SQL);
+    db.exec(ARTIFACT_VERSION_SQL);
     db.exec(PUBLICATION_DELIVERY_SQL);
+    applyWorkspaceExecutionDecisionDdl(db);
     db.exec(RETRY_WAKE_SQL);
     db.exec(NAVIGATION_PROJECTION_SQL);
+    // Fresh installs get the same columns the upgrade chain adds, without
+    // rewiring the historical base schema.
+    applySchema55Ddl(db);
+    db.exec(MANAGED_SERVICES_SQL);
     db.exec(MEMORY_BINDINGS_SQL);
     db.exec(MEMORY_STATE_SQL);
     installObservationSchema(db);

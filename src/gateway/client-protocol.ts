@@ -17,7 +17,7 @@ export const MAX_GATEWAY_COMPLETION_SUGGESTIONS = 50;
 /** Gateway v2 显式能力声明：受限只读命令补全。 */
 export const GATEWAY_CAPABILITY_COMMAND_COMPLETION = 'command_completion_v1';
 /** Gateway v2 显式能力声明：受限只读 Task 视图查询。 */
-export const GATEWAY_CAPABILITY_TASK_VIEW = 'task_view_v1';
+export const GATEWAY_CAPABILITY_TASK_VIEW = 'task_view_v2';
 /** Gateway v2 显式能力声明：只读用量与账单投影。 */
 export const GATEWAY_CAPABILITY_USAGE_BILLING = 'usage_billing_v1';
 /** Server 在 hello 安全元数据中公布的能力清单。 */

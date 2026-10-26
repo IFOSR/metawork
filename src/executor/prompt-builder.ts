@@ -170,6 +170,15 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     '',
     `Working directory: ${context.workspaceContext.workingDirectory}`,
     `Authorized target paths: ${context.workspaceContext.targetPaths.join(', ') || '(none)'}`,
+    ...(context.workspaceContext.accessMode === 'read'
+      ? [
+          ...(context.workspaceContext.readOnlySourcePath
+            ? [`Read-only source Workspace: ${context.workspaceContext.readOnlySourcePath}`]
+            : []),
+          'Workspace access: read-only. Inspect the source Workspace through the provided read-only boundary; write temporary files only under the attempt scratch directory.',
+          'Do not modify, delete, rename, or create files in the source Workspace.',
+        ]
+      : []),
     `Evidence tool: ${context.evidenceTools.availability} — ${context.evidenceTools.reason}`,
     ...(context.recovery && context.recovery.mode !== 'fresh' ? [
       '',

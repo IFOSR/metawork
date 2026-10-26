@@ -296,3 +296,28 @@ Planner turn, before consuming the durable proposal. Kernel still performs final
 eligibility checks. New task-evidence IDs hash the complete source identity;
 already-persisted references for the same source are retained. No schema migration
 or fuzzy reference matching is introduced.
+
+### Deterministic-refusal settlement amendment (2026-10-23)
+
+A Runtime apply may prove that an authorized Decision reached its end state
+without producing an observation. This covers two cases and nothing else:
+
+- `rejected_without_effect`: the Decision was refused before any durable write
+  or external action — an unpublished service manifest, a Kernel
+  `reject_request`, or a service Task outside the requesting Conversation.
+- `operation_settled`: a journaled operation (for example a managed-service
+  effect) completed with a recorded error, so its own durable record owns retry.
+
+Both settle as `applied` through `markApplicationSettled` with a tagged summary
+(`kernel_settlement/<kind>:<code> <detail>`), and the postcondition sweep reads
+that tag. Before this amendment the refusal escaped into the parent
+`authorize_task_control` application, which became `uncertain`; generic recovery
+could not prove a postcondition for that action family, so the Conversation slot
+stayed occupied. The reference model and evidence are in
+[the 2026-10-22 review](../../plans/2026-10-22-conversation-task-delivery-and-service-ownership-review.md)
+and its [diagnostic review](../tech-debt/2026-10-23-conversation-task-delivery-review.md).
+
+The "unknown effects stay uncertain" rule is unchanged: an unproved outcome is
+never settled, never matched from free-text error summaries, and still becomes
+`recovery_required`. Service refusals name the `serviceId`, the owner Task and
+the owner Task status in the Kernel reason and in the Conversation output.

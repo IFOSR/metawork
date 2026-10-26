@@ -21,6 +21,7 @@ import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, taskControlPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
 import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
+import { setTaskStatus, withReason } from '../support/task-state-fixture.js';
 
 const databases: Database.Database[] = [];
 
@@ -70,14 +71,9 @@ describe('persisted task execution context on resume', () => {
 
     const parkedTask = taskEngine.create({ title: '行业分析', goal: '完成分析摘要' });
     seedPersistedWorkGraph(db, parkedTask.id, parkedTask.title);
-    taskEngine.transition(parkedTask.id, 'ready');
-    taskEngine.transition(parkedTask.id, 'running');
-    taskEngine.park(parkedTask.id, '被高优任务抢占', {
-      done: ['报告 A 已完成'],
-      pending: ['报告 B 待分析'],
-      nextStep: '继续分析报告 B',
-      pauseReason: '被高优任务抢占',
-    });
+    setTaskStatus(db, parkedTask.id, 'queued');
+    setTaskStatus(db, parkedTask.id, 'running');
+    setTaskStatus(db, parkedTask.id, 'needs_action', withReason('被高优任务抢占'));
     taskRepo.update(parkedTask.id, { lastInterruptionReason: '被任务 #task_high 抢占' });
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '恢复完成' }));
@@ -120,14 +116,9 @@ describe('persisted task execution context on resume', () => {
 
     const blockedTask = taskEngine.create({ title: '起诉书草稿', goal: '补齐起诉材料' });
     seedPersistedWorkGraph(db, blockedTask.id, blockedTask.title);
-    taskEngine.transition(blockedTask.id, 'ready');
-    taskEngine.transition(blockedTask.id, 'running');
-    taskEngine.block(blockedTask.id, {
-      taskId: blockedTask.id,
-      type: 'manual',
-      description: '等待客户补充证据文件',
-      status: 'waiting',
-    });
+    setTaskStatus(db, blockedTask.id, 'queued');
+    setTaskStatus(db, blockedTask.id, 'running');
+    setTaskStatus(db, blockedTask.id, 'needs_action');
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '已恢复处理' }));
     const session = new MetaclawSession({

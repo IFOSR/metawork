@@ -21,7 +21,7 @@ function fixture(claimed = false) {
     INSERT INTO tasks (
       id, title, goal, status, created_at, updated_at,
       account_id, conversation_id, workspace_id, owner_planner_session_id, admitted_at
-    ) VALUES (?, 'Residue task', 'goal', 'blocked', ?, ?, 'a', 'c', 'w', 'c', ?)
+    ) VALUES (?, 'Residue task', 'goal', 'needs_action', ?, ?, 'a', 'c', 'w', 'c', ?)
   `).run(TASK_ID, NOW, NOW, NOW);
   db.prepare(`
     INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)

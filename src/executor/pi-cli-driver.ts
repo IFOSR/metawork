@@ -126,7 +126,7 @@ export class PiCliDriver implements HarnessDriver {
       args: [
         '--mode',
         'json',
-        ...(input.responseOnly ? ['--no-session', '--tools', ''] : []),
+        ...(input.responseOnly ? ['--no-session', '--tools', 'read'] : []),
         ...(input.providerRef && input.modelId
           ? ['--provider', input.providerRef, '--model', input.modelId]
           : []),
@@ -137,6 +137,7 @@ export class PiCliDriver implements HarnessDriver {
         HOME: input.runtimeHomePath,
         PI_CODING_AGENT_DIR: agentPath,
         PI_CODING_AGENT_SESSION_DIR: `${agentPath}/sessions`,
+        PYTHONDONTWRITEBYTECODE: '1',
       },
     };
   }
@@ -564,7 +565,7 @@ function assistantTerminalError(message: Record<string, unknown>): string | null
 async function defaultProbeCommand(command: string, args: readonly string[]) {
   try {
     const result = await execFileAsync(command, [...args], {
-      env: safeHostEnvironment(process.env),
+      env: { ...safeHostEnvironment(process.env), PYTHONDONTWRITEBYTECODE: '1' },
       timeout: 5000, maxBuffer: 64 * 1024,
     });
     return { code: 0, stdout: result.stdout, stderr: result.stderr };

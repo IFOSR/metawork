@@ -18,6 +18,7 @@ import type {
   SpanRoutingEvaluator,
   SpanSubtaskEvaluationRequest,
 } from '../../src/routing/span-routing-types.js';
+import { workspaceIntentFixture } from '../support/planning-agent-plans.js';
 
 const configurationRevision = 'revision-span-e2e';
 
@@ -80,7 +81,7 @@ const workGraph: WorkGraphProposal = {
 };
 
 const proposal: PlanningAgentPlan = {
-  id: 'plan_span_e2e', schemaVersion: 8, action: 'plan_work_graph', confidence: 0.9,
+  id: 'plan_span_e2e', schemaVersion: 9, action: 'plan_work_graph', confidence: 0.9,
   reason: 'span e2e', clarificationQuestion: null, response: { directReply: null },
   task: {
     binding: 'new', taskId: null, control: 'none', scope: null,
@@ -88,7 +89,7 @@ const proposal: PlanningAgentPlan = {
     includeRecentConversationContext: false, priority: { level: 'normal', reason: 'test' },
   },
   risk: { level: 'low', requiresConfirmation: false, reasons: [] },
-  authorizationResolution: null, workGraph, source: 'anyfusion-planner',
+  authorizationResolution: null, workspaceIntent: workspaceIntentFixture({ targetPaths: ['workspace-target'] }), workGraph, source: 'anyfusion-planner',
 };
 
 function planEvent(id = 'event_span_e2e'): Extract<KernelEvent, { type: 'plan_proposed' }> {
@@ -98,7 +99,9 @@ function planEvent(id = 'event_span_e2e'): Extract<KernelEvent, { type: 'plan_pr
     occurredAt: '2026-09-27T00:00:00.000Z', sessionId: 'session_span_e2e',
     conversationId: 'conversation_span_e2e', proposal, requestText: 'Implement the parser',
     generationId: 'generation_span_e2e', proposalSource: 'initial', targetGraphRevision: 1,
-    attachmentIds: [],
+    attachmentIds: [], workspaceAdmission: {
+      targetWorkspace: { workspaceId: 'workspace_span', canonicalPath: '/workspace' },
+    },
   };
 }
 

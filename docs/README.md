@@ -19,11 +19,16 @@ This directory contains both current technical documentation and historical plan
 
 ## Current Docs
 
+- [Executor Pi 打包入口修复](plans/2026-10-23-executor-pi-packaging-fix.md)：修正本地 DMG 将 Executor 指向定制 Planner 的错误，增加打包与安装参数校验，修复包已完成本地自动验收。
+
+- [单一 In-place Workspace 技术实施方案](plans/2026-10-25-in-place-only-workspace-execution-implementation-plan.md)：已于 2026-10-25 实施。新任务直接在 Conversation 绑定 Workspace 执行；只读任务使用受控 scratch，不申请写租约，不创建 publication；旧 Worktree 事实只停放并拒绝恢复（ADR-0050）。
+- [被取代的 Planner Workspace 模式设计](plans/2026-10-25-planner-owned-workspace-mode-design.md)：历史方案，仅用于理解迁移背景。
+
 - [斜杠指令参考](current/commands.md)：唯一的当前指令清单与 Desktop/Web 联想说明；[精简与联想验收记录](plans/2026-10-22-command-simplification-and-desktop-completion.md)。
 
 - [记忆系统接入 TencentDB Agent Memory 设计方案](plans/2026-10-22-memory-system-tdai-integration-design.md)：记忆体系现状审计（采集/晋级/送达三处断链）、以 TDAI 为唯一记忆引擎的目标架构、记忆沉淀契约、证据投递 pull 语义、开关与 Provider 配置、凭证纪律及 ADR 影响；已实施，见 [ADR-0049](../adr/0049-long-term-memory-ownership-deposition-and-delivery.md) 与文档末尾的实施记录。
 
-- [任务状态简化设计](plans/2026-10-22-task-state-simple-design.md)：统一六个状态、转换规则、队列规则及跨模块一致性的产品目标；[技术落地方案](plans/2026-10-22-task-state-implementation-plan.md)细化源码入口、唯一事务提交、操作收尾、恢复迁移与跨端联动验收。两者均待评审，尚未实施。
+- [任务状态简化设计](plans/2026-10-22-task-state-simple-design.md)：统一六个状态、转换规则、队列规则及跨模块一致性的产品目标；[技术落地方案](plans/2026-10-22-task-state-implementation-plan.md)细化源码入口、唯一事务提交、操作收尾、恢复迁移与跨端联动验收。源码实施与评审修复已验证，安装/发布门槛尚未关闭；详见[修复验收记录](plans/2026-10-22-task-state-review-fixes.md)。
 
 - [任务验收、公开交付与受管服务](tech-debt/task-acceptance-and-local-service-findings.md)：接受/重试、稳定公开目录、完整代码发布及服务生命周期已完成源码实施与原生案例验证；[实施与验收记录](plans/2026-10-21-task-acceptance-and-managed-services.md)。安装与平台门槛单独记录。
 
@@ -58,7 +63,7 @@ This directory contains both current technical documentation and historical plan
   validation rules.
 - [Technical Overview](current/technical-overview.md): the previous long-form README, preserved as the current deep architecture and runtime reference.
 - [中文技术总览](current/technical-overview.zh-CN.md): the previous long-form Chinese README, preserved as the Chinese deep architecture and runtime reference.
-- [Phase 5 Runtime Security And AgentClass Operations](current/phase-5-runtime-security.md): worktree Executor processes, Docker compatibility attempts, persistent workspace retention, image profiles, and runtime elevation operations.
+- [Phase 5 Runtime Security And AgentClass Operations](current/phase-5-runtime-security.md): In-place Executor 进程、只读 scratch、Docker 兼容尝试、镜像 profile 和运行时权限操作。
 - [Account Runtime And Gateway Operations](current/account-runtime-and-gateway-operations.md): unified Server lifecycle, account data paths, Gateway replay, restart/recovery diagnostics, and the future App transport contract.
 - [Query Usage And Billing Operations](current/query-billing-operations.md): ADR-0042 delivery status, `observe -> shadow -> export` stage gates, per-resource capability matrix, price/payer operations, external consumption protocol and rollback/restore rules.
 - [Task Lifecycle State Contracts](current/task-lifecycle-state-contracts.md): canonical Task/Subtask/Attempt/Kernel-application/WorkUnit/slot state ownership, Task transition table, durable Replan Job idempotency rules, uncertain-application postconditions, and the unified TaskView projection priority.
@@ -278,3 +283,4 @@ Desktop implementation: [isolated branch progress](plans/2026-10-05-metawork-des
 - [Desktop update recovery loop](plans/2026-10-08-desktop-update-recovery-loop.md) — lock-release ordering and repair-only source correction validated and included in v0.1.8.
 
 - [Provider 协议选择与 GPT Responses 切换（2026-10-13）](plans/2026-10-13-provider-protocol-selection.md)
+- [会话-任务-交付模型故障复盘与改造方案（2026-10-22，待评审）](plans/2026-10-22-conversation-task-delivery-and-service-ownership-review.md) — 平台级空转与日志失明（A）、启动服务四层闸门与永久死锁（B）、"每轮新工单/新目录/新服务/新经验"的作用域错位，以及"会话即目录 + 验收可执行"的目标模型与分期计划。

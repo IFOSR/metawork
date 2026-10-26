@@ -9,6 +9,7 @@ import { authorizedExecutorBindingFingerprint, type AuthorizedExecutorBinding } 
 import type { ExecutorResult } from '../core/types.js';
 import type { ExecutorAdapter, ExecutorInput, ExecutorProbeResult } from './adapter.js';
 import { normalizeExecutorFailure, type ExecutorFailureContext } from './error-utils.js';
+import { readCapturedWorkspacePaths } from '../execution/workspace-capture-spool.js';
 import type {
   HarnessActivitySignal,
   HarnessDriver,
@@ -156,9 +157,13 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
       if (cancellation.cancelled) return cancelledResult(startedAt);
       const launch = this.driver.buildLaunch({
         prompt: buildExecutorContextPrompt(input),
-        cwd: executionBinding.workspacePath,
+        cwd: input.context.workspaceContext.accessMode === 'read'
+          && input.context.workspaceContext.readOnlySourcePath
+          ? input.context.workspaceContext.readOnlySourcePath
+          : executionBinding.workspacePath,
         runtimeHomePath: runtimeHome.homePath,
         executionTarget: 'host',
+        responseOnly: input.context.workspaceContext.accessMode === 'read',
         providerRef: this.authorizedBinding.providerRef,
         modelId: this.modelId,
         ...(input.context.currentSubtask.requiredCapabilities.length > 0
@@ -166,7 +171,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           : {}),
       });
       await this.verifyRuntimeHome(runtimeHome.homePath);
-      if (launch.cwd !== executionBinding.workspacePath
+      if ((input.context.workspaceContext.accessMode !== 'read' && launch.cwd !== executionBinding.workspacePath)
         || input.context.identity.attemptId !== executionBinding.attemptId
         || input.context.workspaceContext.workingDirectory !== executionBinding.workspacePath) {
         return configurationFailure('Executor workspace or attempt binding mismatch', 'executor_workspace_mismatch', startedAt);
@@ -207,6 +212,9 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           METACLAW_EVIDENCE_JSON_URL: input.context.evidenceTools.binding?.jsonUrl ?? '',
           METACLAW_EVIDENCE_TOKEN: input.context.evidenceTools.binding?.bearerToken ?? '',
           METACLAW_INPUTS_PATH: executionBinding.inputsPath,
+          ...(input.context.workspaceContext.accessMode === 'read' && input.context.workspaceContext.readOnlySourcePath
+            ? { METACLAW_READ_ONLY_WORKSPACE: input.context.workspaceContext.readOnlySourcePath }
+            : {}),
           METACLAW_IMAGE_OPERATION: input.context.currentSubtask.requiredCapabilities.includes('image-editing')
             ? 'editing'
             : 'generation',
@@ -260,12 +268,19 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           }
         : parsedResult;
       const exitCode = rawResult.exitCode ?? (result.success ? 0 : 1);
+      // File-tool capture channel: the Pi extension writes beside the attempt
+      // home, so the Runtime can attribute Executor writes even without Git.
+      const workspaceCaptures = await readCapturedWorkspacePaths(
+        join(runtimeHome.environment.HOME ?? '', '.metaclaw-workspace-captures.jsonl'),
+        launch.cwd,
+      ).catch(() => []);
       const diagnostics = {
         providerRef: this.authorizedBinding.providerRef,
         modelId: this.modelId,
         process: rawResult.diagnostics ?? null,
         harness: streamSnapshot?.diagnostics ?? null,
         provisionalOutput: streamSnapshot?.provisional ?? false,
+        workspaceCaptures,
       };
       if (cancellation.cancelled) {
         return { ...cancelledResult(startedAt), output: result.output, diagnostics };

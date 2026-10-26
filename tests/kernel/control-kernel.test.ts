@@ -132,6 +132,7 @@ const kernelConfiguration: KernelConfigurationView = {
   runtimePolicy: {
     maxConcurrentAttempts: 4,
   },
+  workspaceExecution: { fallbackMode: 'in_place' },
 };
 
 const codexBinding: AuthorizedExecutorBinding = {
@@ -166,6 +167,12 @@ const event: KernelEvent = {
   generationId: 'generation_event_plan_1',
   proposalSource: 'initial',
   targetGraphRevision: 1,
+  workspaceAdmission: {
+    targetWorkspace: {
+      workspaceId: 'workspace-1',
+      canonicalPath: '/tmp/metawork-test-workspace',
+    },
+  },
   proposal: {
     id: 'plan_1',
     schemaVersion: 8,
@@ -214,12 +221,28 @@ describe('ControlKernel', () => {
     });
     expect(kernel.decide(event, { ...published, published: false })).toMatchObject({
       action: { type: 'reject_request' },
-      reason: '代码尚未发布到用户任务目录，不能启动服务',
+      reason: '代码尚未发布到用户任务目录，不能启动服务：serviceId=backend，taskId=task_1，任务状态=done',
     });
     expect(kernel.decide(event, { ...published, task: { id: 'task_1', status: 'failed' as const } })).toMatchObject({
       action: { type: 'reject_request' },
-      reason: '任务已取消、归档或失败，不能启动服务',
+      reason: '任务已取消、归档或失败，不能启动服务：serviceId=backend，taskId=task_1，任务状态=failed',
     });
+  });
+
+  it('names the service, the requesting task and the owning task when ownership does not match', () => {
+    const kernel = new ControlKernel();
+    const event = runtimeEvent({ type: 'managed_service_requested', operation: 'start', serviceId: 'backend' });
+    const decision = kernel.decide(event, {
+      schemaVersion: 5,
+      type: 'service_control',
+      task: { id: 'task_1', status: 'done' as const },
+      published: true,
+      serviceTaskId: 'task_owner',
+    } as KernelSnapshot);
+    expect(decision).toMatchObject({ action: { type: 'reject_request' } });
+    expect(decision.reason).toBe(
+      '服务归属不匹配：serviceId=backend，请求任务=task_1，服务登记任务=task_owner，任务状态=done',
+    );
   });
 
   it('queues three independent subtasks durably even when physical slots are occupied', () => {
@@ -494,7 +517,7 @@ describe('ControlKernel', () => {
       goal: '生成一张产品概念图',
       executor: 'pi-agent',
       deliveryKind: 'edit',
-      fileOutputs: ['images/'],
+      fileOutputs: ['images'],
     });
     const subtask = proposal.workGraph!.subtasks[0]!;
     subtask.contextRefs = [];
@@ -1120,9 +1143,10 @@ describe('ControlKernel', () => {
     });
   });
 
-  it('does not clear a manual or contract blocker on explicit resume', () => {
+  it('continues a contract blocker on explicit resume when the Task is Workspace-reconcilable', () => {
     const snapshot = dispatchSnapshot();
     snapshot.task = { id: 'task_1', status: 'blocked' };
+    snapshot.subtasks[0]!.status = 'blocked';
     const result = new ControlKernel().decide({
       schemaVersion: 5,
       configurationRevision,
@@ -1139,10 +1163,10 @@ describe('ControlKernel', () => {
       idempotencyKey: 'resume:task_1:contract',
     }, snapshot);
 
-    expect(result.action).toEqual({
-      type: 'block_work',
-      taskId: 'task_1',
-      subtaskId: null,
+    // User authorization is the policy input: a Workspace-reconcilable Subtask
+    // runs again in the same Workspace instead of dead-ending on the blocker.
+    expect(result.action).toMatchObject({
+      type: 'resume_task', subtaskIds: [snapshot.subtasks[0]!.id],
     });
   });
 
@@ -1160,7 +1184,7 @@ describe('ControlKernel', () => {
     expect(result.reason).toContain('external effect safety');
   });
 
-  it('keeps an unknown blocker fail-closed even for read-only work', () => {
+  it('continues an unknown blocker when the Task cannot produce external effects', () => {
     const snapshot = dispatchSnapshot();
     snapshot.task = { id: 'task_1', status: 'blocked' };
     snapshot.subtasks[0]!.status = 'blocked';
@@ -1181,10 +1205,8 @@ describe('ControlKernel', () => {
       idempotencyKey: 'resume:task_1:read-only-unknown',
     }, snapshot);
 
-    expect(result.action).toEqual({
-      type: 'block_work',
-      taskId: 'task_1',
-      subtaskId: null,
+    expect(result.action).toMatchObject({
+      type: 'resume_task', subtaskIds: [snapshot.subtasks[0]!.id],
     });
   });
 

@@ -4,6 +4,60 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
 
+// File-tool capture channel: the Executor's own writes are recorded beside the
+// attempt home so the Runtime can attribute changes even without Git.
+// The extension is also loaded by lightweight Pi test/runtime hosts that do
+// not expose Node's filesystem modules. Capture is best-effort observation;
+// keep the extension usable when that optional seam is unavailable.
+const optionalFs = (() => {
+  try {
+    return require("node:fs") as typeof import("node:fs");
+  } catch {
+    return null;
+  }
+})();
+const optionalCrypto = (() => {
+  try {
+    return require("node:crypto") as typeof import("node:crypto");
+  } catch {
+    return null;
+  }
+})();
+const optionalJoin = (() => {
+  try {
+    return (require("node:path") as typeof import("node:path")).join;
+  } catch {
+    return null;
+  }
+})();
+const WORKSPACE_CAPTURE_FILE = optionalJoin
+  ? optionalJoin(process.env.HOME ?? ".", ".metaclaw-workspace-captures.jsonl")
+  : null;
+const CAPTURED_TOOLS = new Set(["write", "edit", "str_replace_editor"]);
+
+function captureToolWrite(phase: "before" | "after", toolName: string, input: unknown): void {
+  if (!optionalFs || !WORKSPACE_CAPTURE_FILE) return;
+  if (!CAPTURED_TOOLS.has(toolName)) return;
+  const record = input && typeof input === "object" ? input as Record<string, unknown> : {};
+  const path = typeof record.path === "string" ? record.path : record.file_path;
+  if (typeof path !== "string" || !path) return;
+  let hash: string | null = null;
+  let size: number | null = null;
+  try {
+    const bytes = optionalFs.readFileSync(path);
+    hash = optionalCrypto?.createHash("sha256").update(bytes).digest("hex") ?? null;
+    size = bytes.length;
+  } catch {
+    // A missing file before the write is a creation, not a capture failure.
+  }
+  try {
+    optionalFs.mkdirSync(process.env.HOME ?? ".", { recursive: true });
+    optionalFs.appendFileSync(WORKSPACE_CAPTURE_FILE, JSON.stringify({ phase, tool: toolName, path, hash, size, at: new Date().toISOString() }) + "\n");
+  } catch {
+    // Capture is observation only; never fail the tool call.
+  }
+}
+
 const SEARCH_CONNECT_TIMEOUT_S = "5";
 const SEARCH_TOTAL_TIMEOUT_S = "15";
 const FETCH_TOTAL_TIMEOUT_S = "30";
@@ -351,6 +405,10 @@ const resultReferenceGetTool = defineTool({
 });
 
 export default function (pi: ExtensionAPI) {
+  if (typeof pi.on === "function") {
+    pi.on("tool_call", event => { captureToolWrite("before", event.toolName, event.input); });
+    pi.on("tool_result", event => { captureToolWrite("after", event.toolName, event.input); });
+  }
   if (process.env.METACLAW_PI_WEB_TOOLS_ENABLED !== "0") {
     pi.registerTool(webSearchTool);
     pi.registerTool(webFetchTool);

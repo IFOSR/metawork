@@ -1,17 +1,28 @@
-import type { TaskUserState } from '../task/task-user-state.js';
-/** Small shared descriptors; Task Domain remains the lifecycle/phase authority. */
+import type {
+  TaskOperationPhase,
+  TaskPendingAction,
+  TaskReason,
+  TaskStatus,
+} from '../task/task-state.js';
+/**
+ * Small shared descriptor for the Conversation activity card. It carries the
+ * same committed Task state version every other surface reads; it never
+ * re-derives a Task conclusion.
+ */
 export interface ConversationTaskSummary {
   readonly taskId: string;
   readonly title: string;
   readonly executionGeneration: string;
   readonly graphRevision?: number;
-  readonly phase: string;
-  readonly userState: TaskUserState;
-  readonly userStateReason: string;
+  readonly status: TaskStatus;
+  readonly statusLabel: string;
+  readonly stateVersion: number;
+  readonly reason: TaskReason;
+  readonly phase: TaskOperationPhase | null;
+  readonly pendingActions: readonly TaskPendingAction[];
   readonly explanation: string;
   readonly progressSummary?: string;
   readonly canCancel: boolean;
-  readonly pendingDecision?: import('../task/task-view.js').TaskViewPendingDecisionFact | null;
   /** An attempt is settling; cancellation has not yet released execution. */
   readonly executionSettling?: boolean;
 }

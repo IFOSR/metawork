@@ -211,6 +211,12 @@ export class ClientGateway {
       return gatewayError('authorization', 'unauthorized', account.reason, envelope.requestId);
     }
 
+    if (envelope.command.kind === 'get_task_view'
+      && !envelope.clientCapabilities.includes('task_view_v2')) {
+      return gatewayError('invalid_command', 'task_view_version_mismatch',
+        'Task View v2 is required. Upgrade the client.', envelope.requestId);
+    }
+
     if (isReadOnlyQuery(envelope.command)) {
       return this.handleReadOnly(envelope, account.accountId, `${principal.kind}:${principal.id}`);
     }

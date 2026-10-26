@@ -2,6 +2,7 @@ import { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-
 import { parseWorkspaceDelta } from './workspace-change-tracker.js';
 import { resolveSafeResult } from '../task/safe-result-identity.js';
 import { existsSync, realpathSync } from 'node:fs';
+import { realpath } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,10 +12,13 @@ import type { SubtaskRepo } from '../storage/subtask-repo.js';
 import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
 import type { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
 import type { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
+import { workspacePathClaim, workspaceRootClaim } from '../resource/workspace-claim.js';
+import type { ResourceClaim } from '../resource/types.js';
 import {
   WorkspacePublicationRepo,
   type WorkspacePublicationRecord,
 } from '../storage/workspace-publication-repo.js';
+import { WorkspaceExecutionBindingRepo } from '../storage/workspace-execution-binding-repo.js';
 import type { WorkspaceRepositoryPort } from './repositories.js';
 import type { WorkspaceStore } from './workspace-store.js';
 import type { ResourceLeaseService } from './resource-lease-service.js';
@@ -24,6 +28,7 @@ import {
   type SubtaskLifecyclePort,
 } from '../task/task-lifecycle-transition-port.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
+import type { Task } from '../core/types.js';
 import { ResultObjectRepo } from '../storage/result-object-repo.js';
 import type { PersistedSubtaskHandoffItem } from '../storage/subtask-handoff-repo.js';
 import type {
@@ -60,10 +65,20 @@ export interface CancelledWorkspacePublication {
   observedIntegrationCommit: string | null;
 }
 
+export interface AwaitingAcceptanceWorkspacePublication {
+  type: 'awaiting_acceptance';
+  publicationId: string;
+  taskId: string;
+  subtaskId: string;
+  /** Candidate change set is ready; the Workspace was not touched. */
+  observedIntegrationCommit: string | null;
+}
+
 export type WorkspacePublicationOutcome =
   | IntegratedWorkspacePublication
   | ConflictedWorkspacePublication
   | CancelledWorkspacePublication
+  | AwaitingAcceptanceWorkspacePublication
   | { type: 'delivery_failed'; publicationId: string; taskId: string; subtaskId: string };
 
 export interface WorkspacePublicationWorkerDeps {
@@ -98,6 +113,7 @@ export class WorkspacePublicationWorker {
   private readonly handoffs: SubtaskHandoffRepo;
   private readonly git: ManagedGitWorkspaceService;
   private readonly results: ResultObjectRepo;
+  private readonly workspaceBindings: WorkspaceExecutionBindingRepo;
   private readonly reconciledGenerations = new Set<string>();
   private readonly activeDrains = new Map<string, Promise<WorkspacePublicationOutcome[]>>();
   private readonly lifecycle: SubtaskLifecyclePort;
@@ -105,6 +121,7 @@ export class WorkspacePublicationWorker {
   constructor(private readonly deps: WorkspacePublicationWorkerDeps) {
     this.lifecycle = createSubtaskLifecyclePort({ subtaskRepo: deps.subtaskRepo });
     this.publications = new WorkspacePublicationRepo(deps.db);
+    this.workspaceBindings = new WorkspaceExecutionBindingRepo(deps.db);
     this.handoffs = new SubtaskHandoffRepo(deps.db);
     this.git = new ManagedGitWorkspaceService(deps.workspaceStore);
     this.results = new ResultObjectRepo(
@@ -146,7 +163,11 @@ export class WorkspacePublicationWorker {
     this.cancelSupersededPublications(taskId, generationId);
     for (const publication of this.publications.unfinishedDeliveries(taskId, generationId)) {
       if (this.publications.delivery(publication.id)?.status === 'failed') continue;
-      outcomes.push(await this.deliverIntegrated(publication));
+      const delivered = await this.deliverIntegrated(publication);
+      // A busy Workspace delivery lease parks the replay; the publication stays
+      // pending and this drain returns instead of spinning on the same row.
+      if (!delivered) return outcomes;
+      outcomes.push(delivered);
     }
     while (true) {
       const publication = this.publications.findNextBlocking(taskId, generationId);
@@ -341,6 +362,7 @@ export class WorkspacePublicationWorker {
     }
     const applyingAt = new Date().toISOString();
     if (!this.publications.markApplying(publication.id, applyingAt)) return null;
+    if (task.executionMode === 'in_place') return this.publishInPlace(publication);
     const integrationWorkspace = await this.git.ensure({
       taskId: publication.taskId,
       generationId: publication.generationId,
@@ -377,21 +399,30 @@ export class WorkspacePublicationWorker {
     const safeProjection = this.findSafeProjection(publication, sourceReceipt);
     const leaseToken = `publication_${randomUUID()}`;
     const publicationAttemptId = `publication:${publication.id}`;
+    const integrationMountId = `integration-${publication.taskId}-${publication.generationId}`;
+    // The integration mount claim serializes concurrent merges. When the merged
+    // candidate has no binary path there is nothing to name, and an empty claim
+    // list would make the whole lease a no-op, so the mount root is claimed
+    // instead. The user-Workspace delivery claim is taken in `deliverIntegrated`
+    // where the final target is actually written.
+    const integrationClaims: ResourceClaim[] = binaryPaths.length > 0
+      ? binaryPaths.map(path => ({
+          partition: {
+            kind: 'path' as const,
+            mountId: integrationMountId,
+            normalizedRelativePath: path,
+          },
+          access: 'write' as const,
+        }))
+      : [{ partition: { kind: 'mount_root' as const, mountId: integrationMountId }, access: 'write' }];
     const lease = this.deps.resourceLeaseService.claim({
       taskId: publication.taskId,
       generationId: publication.generationId,
       subtaskId: publication.subtaskId,
       attemptId: publicationAttemptId,
       workUnitId: sourceReceipt.workUnitId,
+      claims: integrationClaims,
       leaseToken,
-      claims: binaryPaths.map(path => ({
-        partition: {
-          kind: 'path' as const,
-          mountId: `integration-${publication.taskId}-${publication.generationId}`,
-          normalizedRelativePath: path,
-        },
-        access: 'write' as const,
-      })),
     });
     if (lease.type === 'conflict') {
       this.publications.markPending(
@@ -582,36 +613,310 @@ export class WorkspacePublicationWorker {
     }
   }
 
-  private async deliverIntegrated(publication: WorkspacePublicationRecord): Promise<WorkspacePublicationOutcome> {
+  /**
+   * In-place publications own no candidate commit and merge nothing: the
+   * Executor already wrote the deliverable inside the user's Workspace, so the
+   * publication only records the facts and hands over to reference delivery.
+   */
+  private async publishInPlace(
+    publication: WorkspacePublicationRecord,
+  ): Promise<WorkspacePublicationOutcome | null> {
+    const now = new Date().toISOString();
+    let cancelled = false;
+    this.deps.db.transaction(() => {
+      const currentTask = this.deps.taskRuntimeService.findTask(publication.taskId);
+      const currentSubtask = this.deps.subtaskRepo.findById(publication.subtaskId);
+      if (currentTask?.status === 'cancelled' || currentSubtask?.status === 'cancelled') {
+        cancelled = true;
+        this.publications.markCancelled(publication.id, publication.candidateCommit, now);
+        return;
+      }
+      this.publications.markIntegrated(publication.id, publication.candidateCommit, now);
+      this.publications.beginDelivery(publication.id, now);
+    }).immediate();
+    if (cancelled) {
+      return {
+        type: 'cancelled',
+        publicationId: publication.id,
+        taskId: publication.taskId,
+        subtaskId: publication.subtaskId,
+        observedIntegrationCommit: publication.candidateCommit,
+      };
+    }
+    return await this.deliverIntegrated(this.publications.find(publication.id)!);
+  }
+
+  /** Re-delivers an immutable integrated publication for a follow-up Task. */
+  async redeliverForRetry(taskId: string, publicationId: string, assertCurrent: () => void): Promise<boolean> {
+    const task = this.deps.taskRuntimeService.findTask(taskId);
+    const publication = this.publications.find(publicationId);
+    if (!task?.retryOfTaskId || publication?.taskId !== task.retryOfTaskId
+      || publication.status !== 'integrated' || !publication.integrationCommit) {
+      throw new Error('重试成果归属不匹配');
+    }
+    assertCurrent();
+    this.publications.retryDelivery(publication.id, publication.taskId, publication.generationId, new Date().toISOString());
+    await this.deliverIntegrated(publication);
+    assertCurrent();
+    return this.publications.delivery(publicationId)?.status === 'succeeded';
+  }
+
+  private async deliverIntegrated(
+    publication: WorkspacePublicationRecord,
+  ): Promise<WorkspacePublicationOutcome | null> {
     const cancelled = (): boolean => this.deps.taskRuntimeService.findTask(publication.taskId)?.status === 'cancelled'
       || this.deps.subtaskRepo.findById(publication.subtaskId)?.status === 'cancelled';
     const cancellation = (): CancelledWorkspacePublication => ({ type: 'cancelled', publicationId: publication.id,
       taskId: publication.taskId, subtaskId: publication.subtaskId, observedIntegrationCommit: publication.integrationCommit });
     if (cancelled()) return cancellation();
-    const integrationWorkspace = await this.git.ensure({ taskId: publication.taskId, generationId: publication.generationId,
-      subtaskId: '__integration__' }, this.deps.sourceRoot);
+    const task = this.deps.taskRuntimeService.findTask(publication.taskId);
+    const inPlace = task?.executionMode === 'in_place';
+    // A candidate round explicitly requested by the user stays inside the
+    // internal execution directory until an explicit, Kernel-authorized
+    // acceptance releases it. Nothing is written to the target Workspace and no
+    // delivery lease is claimed in this state.
+    if (!inPlace
+      && task?.workspaceDeliveryPolicy === 'await_acceptance'
+      && !publication.deliveryAuthorizedAt) {
+      return {
+        type: 'awaiting_acceptance',
+        publicationId: publication.id,
+        taskId: publication.taskId,
+        subtaskId: publication.subtaskId,
+        observedIntegrationCommit: publication.integrationCommit,
+      };
+    }
+    const suppressWorkspaceDelivery = !inPlace && task?.workspaceDeliveryPolicy === 'none';
+    // The delivery root is resolved exactly once and then threaded into the
+    // claim and into the writers, so the lease and the write can never disagree
+    // about which physical Workspace is being modified.
+    const deliveryRoot = suppressWorkspaceDelivery
+      ? null
+      : await this.resolveDeliveryRoot(publication, task);
+    if (!suppressWorkspaceDelivery && !deliveryRoot && this.deps.userArtifactPublication) {
+      // There is a user-visible delivery configured but no Workspace to write
+      // it into: park instead of writing without a lease.
+      this.publications.markPending(
+        publication.id,
+        'user Workspace is unavailable for delivery',
+        new Date().toISOString(),
+      );
+      return null;
+    }
+    // Delivery writes into the *user's* Workspace in both modes: in-place rounds
+    // own the Workspace root, worktree rounds own the published task directory.
+    // Holding that claim here (rather than only around the integration merge) is
+    // what makes publication conflict with an in-place Attempt through the same
+    // ResourceLease facts instead of only with another publication.
+    const deliveryLease = deliveryRoot
+      ? await this.claimDeliveryWorkspace(publication, task, inPlace, deliveryRoot)
+      : { type: 'skipped' as const };
+    if (deliveryLease.type === 'unavailable') {
+      // Fail closed: writing without a Workspace lease would reintroduce the
+      // double-writer bug this claim exists to prevent.
+      this.publications.markPending(publication.id, deliveryLease.reason, new Date().toISOString());
+      return null;
+    }
+    if (deliveryLease.type === 'conflict') {
+      this.publications.markPending(
+        publication.id,
+        `workspace delivery lease is busy: ${deliveryLease.lease.conflictingLeases.map(item => item.id).join(', ')}`,
+        new Date().toISOString(),
+      );
+      return null;
+    }
+    // A delivery can outlive the 60s lease window (copies, hashing, artifact
+    // versions), so the claim is kept alive for as long as we hold it.
+    let leaseLost = false;
+    const heartbeat = deliveryLease.type === 'claimed'
+      ? setInterval(() => {
+          try {
+            const renewed = this.deps.resourceLeaseService.heartbeat?.(deliveryLease.attemptId, deliveryLease.leaseToken) ?? 0;
+            if (renewed < 1) leaseLost = true;
+          } catch {
+            leaseLost = true;
+          }
+        }, 15_000)
+      : null;
+    try {
+      return await this.deliverIntegratedLocked(
+        publication,
+        task,
+        inPlace,
+        deliveryRoot,
+        () => {
+          if (leaseLost) throw new Error('workspace delivery lease was lost during publication');
+        },
+      );
+    } finally {
+      if (heartbeat) clearInterval(heartbeat);
+      if (deliveryLease.type === 'claimed') {
+        this.deps.resourceLeaseService.release(deliveryLease.attemptId, deliveryLease.leaseToken);
+      }
+    }
+  }
+
+  /** Canonical user Workspace root for this delivery, or null when unavailable. */
+  private async resolveDeliveryRoot(
+    publication: WorkspacePublicationRecord,
+    task: Task | null,
+  ): Promise<string | null> {
+    if (!task?.workspaceId) return null;
+    const binding = this.workspaceBindings.find(task.id, publication.generationId);
+    if (binding && binding.workspaceId !== task.workspaceId) return null;
+    if (binding) return realpath(binding.canonicalPath).catch(() => null);
+    // The production composition intentionally does not provide this resolver.
+    // It remains injectable for focused publication fixtures only; new Tasks
+    // must always have a durable binding before publication can write.
+    const legacyFixtureRoot = await this.deps.resolveUserWorkspaceRoot?.(task.conversationId ?? this.sessionId) ?? null;
+    return legacyFixtureRoot ? realpath(legacyFixtureRoot).catch(() => null) : null;
+  }
+
+  /**
+   * ResourceLease claim over the physical directory delivery will write. The
+   * partition is built from the canonical Workspace path, so an in-place
+   * Attempt on the same directory (or on an ancestor/descendant of it) conflicts
+   * even when the two carry different Workspace ids.
+   */
+  private async claimDeliveryWorkspace(
+    publication: WorkspacePublicationRecord,
+    task: Task | null,
+    inPlace: boolean,
+    canonicalRoot: string,
+  ): Promise<
+    | { type: 'claimed'; attemptId: string; leaseToken: string }
+    | { type: 'conflict'; lease: { conflictingLeases: Array<{ id: string }> } }
+    | { type: 'unavailable'; reason: string }
+  > {
+    const sourceReceipt = this.deps.attemptReceiptRepo.findByAttemptId(publication.sourceAttemptId);
+    if (!sourceReceipt) {
+      return { type: 'unavailable', reason: `missing source receipt ${publication.sourceAttemptId}` };
+    }
+    // Both modes write inside the target Workspace. A Worktree round applies
+    // only its authorized change set, at the declared Workspace-relative paths;
+    // an explicitly selected project subdirectory keeps that directory as its
+    // root. No generated `metaclaw-tasks/<slug>` directory is ever created.
+    const deliveryRelativeRoot = task?.publicProject ? task.publicTaskDirectory ?? null : null;
+    const targetClaim: ResourceClaim = inPlace || !deliveryRelativeRoot
+      ? workspaceRootClaim(canonicalRoot, 'write')
+      : workspacePathClaim(canonicalRoot, deliveryRelativeRoot, 'write');
+    const attemptId = `publication-delivery:${publication.id}`;
+    const leaseToken = `publication_delivery_${randomUUID()}`;
+    const lease = this.deps.resourceLeaseService.claim({
+      taskId: publication.taskId,
+      generationId: publication.generationId,
+      subtaskId: publication.subtaskId,
+      attemptId,
+      workUnitId: sourceReceipt.workUnitId,
+      claims: [targetClaim],
+      leaseToken,
+    });
+    return lease.type === 'conflict'
+      ? { type: 'conflict', lease }
+      : { type: 'claimed', attemptId, leaseToken };
+  }
+
+  private async deliverIntegratedLocked(
+    publication: WorkspacePublicationRecord,
+    task: Task | null,
+    inPlace: boolean,
+    deliveryRoot: string | null,
+    assertLease?: () => void,
+  ): Promise<WorkspacePublicationOutcome> {
+    const cancelled = (): boolean => this.deps.taskRuntimeService.findTask(publication.taskId)?.status === 'cancelled'
+      || this.deps.subtaskRepo.findById(publication.subtaskId)?.status === 'cancelled';
+    const cancellation = (): CancelledWorkspacePublication => ({ type: 'cancelled', publicationId: publication.id,
+      taskId: publication.taskId, subtaskId: publication.subtaskId, observedIntegrationCommit: publication.integrationCommit });
+    if (cancelled()) return cancellation();
+    // A read-only/report graph may still produce internal files for evidence,
+    // but its Kernel decision explicitly forbids Workspace delivery. Keep the
+    // candidate and audit facts while avoiding both a delivery lease and any
+    // user-directory write.
+    const suppressWorkspaceDelivery = !inPlace && task?.workspaceDeliveryPolicy === 'none';
+    const integrationWorkspace = inPlace || suppressWorkspaceDelivery
+      ? null
+      : await this.git.ensure({ taskId: publication.taskId, generationId: publication.generationId,
+        subtaskId: '__integration__' }, this.deps.sourceRoot);
     let delivery = this.publications.delivery(publication.id)!;
     if (delivery.status !== 'succeeded') {
       let projections = delivery.projections;
       let failures: Array<{ sourceRelativePath: string; reason: string }> = [];
       try {
-        const sources = this.artifactSources(publication, integrationWorkspace);
+        if (suppressWorkspaceDelivery) {
+          projections = [];
+          failures = [];
+        } else if (inPlace) {
+          if (!this.deps.userArtifactPublication) {
+            throw new Error('User artifact publication service is unavailable');
+          }
+          assertLease?.();
+          const sources = this.artifactSources(
+            publication,
+            null,
+            deliveryRoot,
+            task?.workspaceTargetPaths ?? [],
+          );
+          assertLease?.();
+          const result = await this.deps.userArtifactPublication.registerLiveWorkspaceReferences({
+            sessionId: this.sessionId,
+            ...(deliveryRoot ? { workspaceRoot: deliveryRoot } : {}),
+            accountId: this.deps.accountId ?? 'local-default',
+            taskId: publication.taskId,
+            taskTitle: task?.title ?? publication.taskId,
+            workspaceId: task?.workspaceId ?? '',
+            generationId: publication.generationId,
+            subtaskId: publication.subtaskId,
+            publicationId: publication.id,
+            sources,
+          });
+          projections = result.projections;
+          failures = result.failures;
+          // Cross-Task handoffs need fixed bytes: a later round may edit the file.
+          const handoffPaths = publication.originalCompletion.handoffs
+            .flatMap(handoff => handoff.items)
+            .filter(item => item.type === 'artifact')
+            .flatMap(item => item.paths);
+          assertLease?.();
+          await this.deps.userArtifactPublication.materializeArtifactVersions({
+            sessionId: this.sessionId,
+            accountId: this.deps.accountId ?? 'local-default',
+            workspaceId: task?.workspaceId ?? '',
+            taskId: publication.taskId,
+            attemptId: publication.sourceAttemptId,
+            relativePaths: handoffPaths,
+          });
+        } else {
+        const deliveredTask = this.deps.taskRuntimeService.findTask(publication.taskId);
+        const deliveryRelativeRoot = deliveredTask?.publicProject ? deliveredTask.publicTaskDirectory ?? null : null;
+        const sources = this.artifactSources(
+          publication,
+          integrationWorkspace!,
+          null,
+          task?.workspaceTargetPaths ?? [],
+        ).map(source => deliveryRelativeRoot
+          ? relativizeDeliverySource(source, deliveryRelativeRoot)
+          : source);
         if (sources.length && !this.deps.userArtifactPublication) {
           throw new Error('User artifact publication service is unavailable');
         }
         if (sources.length && this.deps.userArtifactPublication) {
           const service = this.deps.userArtifactPublication;
-          const result = await this.git.withCommitSnapshot(integrationWorkspace, publication.integrationCommit!, async root => service.publishIntegratedArtifacts({
+          assertLease?.();
+          const result = await this.git.withCommitSnapshot(integrationWorkspace!, publication.integrationCommit!, async root => service.publishIntegratedArtifacts({
             sessionId: this.sessionId, accountId: this.deps.accountId ?? 'local-default', taskId: publication.taskId,
-            taskTitle: this.deps.taskRuntimeService.findTask(publication.taskId)?.title ?? publication.taskId,
-            publicTaskDirectory: this.deps.taskRuntimeService.findTask(publication.taskId)?.publicTaskDirectory,
-            publicDeliveryBaseline: this.deps.taskRuntimeService.findTask(publication.taskId)?.publicDeliveryBaseline,
+            taskTitle: deliveredTask?.title ?? publication.taskId,
+            // Only an explicitly selected existing project keeps a subdirectory
+            // root; every other round applies its authorized change set at the
+            // Workspace-relative paths it declared.
+            deliveryRelativeRoot,
+            publicDeliveryBaseline: deliveredTask?.publicDeliveryBaseline,
             generationId: publication.generationId, subtaskId: publication.subtaskId, publicationId: publication.id,
             integratedWorkspaceRoot: root,
-            userWorkspaceRoot: await this.deps.resolveUserWorkspaceRoot?.(this.sessionId) ?? undefined, sources,
+            ...(deliveryRoot ? { userWorkspaceRoot: deliveryRoot } : {}), sources,
           }));
           projections = result.projections;
           failures = result.failures;
+        }
         }
       } catch (error) {
         failures = [{ sourceRelativePath: '', reason: error instanceof Error ? error.message : String(error) }];
@@ -624,6 +929,7 @@ export class WorkspacePublicationWorker {
       taskId: publication.taskId, subtaskId: publication.subtaskId };
     const receipt = this.deps.attemptReceiptRepo.findByAttemptId(publication.sourceAttemptId);
     if (!receipt) throw new Error(`missing publication receipt ${publication.sourceAttemptId}`);
+    assertLease?.();
     const safeProjection = this.findSafeProjection(publication, receipt);
     const workspace = this.deps.workspaceRepository.findByIdentity(publication.taskId, publication.generationId, publication.subtaskId);
     const now = new Date().toISOString();
@@ -787,7 +1093,9 @@ export class WorkspacePublicationWorker {
 
   private artifactSources(
     publication: WorkspacePublicationRecord,
-    integrationWorkspace: Awaited<ReturnType<ManagedGitWorkspaceService['ensure']>>,
+    integrationWorkspace: Awaited<ReturnType<ManagedGitWorkspaceService['ensure']>> | null,
+    inPlaceRoot: string | null = null,
+    targetPaths: readonly string[] = [],
   ): Array<{ sourceRelativePath: string; remove?: boolean; downloadable?: boolean }> {
     for (const target of this.deps.subtaskRepo.listByTask(publication.taskId)) {
       if (target.generationId !== publication.generationId || target.status === 'cancelled') continue;
@@ -812,7 +1120,7 @@ export class WorkspacePublicationWorker {
     const artifacts = publication.originalCompletion.artifacts.flatMap(path => {
       if (typeof path !== 'string' || path.trim().length === 0) throw new Error('Invalid publication artifact path');
       if (!isAbsolute(path)) return [{ sourceRelativePath: path }];
-      for (const root of [sourceFilesRoot, integrationWorkspace.filesPath]) {
+      for (const root of [sourceFilesRoot, integrationWorkspace?.filesPath ?? null, inPlaceRoot]) {
         if (!root) continue;
         const candidate = relative(existsSync(root) ? realpathSync(root) : root, path);
         if (
@@ -834,8 +1142,14 @@ export class WorkspacePublicationWorker {
     const delta = parseWorkspaceDelta(new ExecutorAttemptRuntimeRepo(this.deps.db)
       .find(pair?.resultOwnerAttemptId ?? publication.sourceAttemptId)?.workspaceDelta);
     if (!delta || delta.baselineTruncated || delta.finalTruncated) throw new Error('无法确认完整代码变更，发布暂停');
-    const changes = delta.changed.map(item => ({ sourceRelativePath: item.path, remove: item.afterHash === null,
-      downloadable: artifacts.some(artifact => artifact.sourceRelativePath === item.path) }));
+    // A Worktree change set is authorized by the immutable Workspace intent.
+    // The Git delta can also contain logs, scratch output or build residue;
+    // those paths remain in the change record but are never copied into the
+    // user's Workspace unless they were explicitly declared as an artifact.
+    const changes = delta.changed
+      .filter(item => pathMatchesWorkspaceTarget(item.path, targetPaths))
+      .map(item => ({ sourceRelativePath: item.path, remove: item.afterHash === null,
+        downloadable: artifacts.some(artifact => artifact.sourceRelativePath === item.path) }));
     return [...changes, ...artifacts.filter(item => !changes.some(change => change.sourceRelativePath === item.sourceRelativePath))];
   }
 
@@ -903,4 +1217,23 @@ function pathsOverlap(left: string, right: string): boolean {
   return left === right
     || left.startsWith(`${right}/`)
     || right.startsWith(`${left}/`);
+}
+
+function pathMatchesWorkspaceTarget(path: string, targetPaths: readonly string[]): boolean {
+  return targetPaths.some(target => pathsOverlap(path, target) && (
+    path === target || path.startsWith(`${target}/`)
+  ));
+}
+
+/** Publication service paths are relative to an explicitly selected project. */
+function relativizeDeliverySource(
+  source: { sourceRelativePath: string; remove?: boolean; downloadable?: boolean },
+  deliveryRoot: string,
+): { sourceRelativePath: string; destinationRelativePath?: string; remove?: boolean; downloadable?: boolean } {
+  const prefix = `${deliveryRoot.replace(/\/+$/u, '')}/`;
+  if (!source.sourceRelativePath.startsWith(prefix)) return source;
+  return {
+    ...source,
+    destinationRelativePath: source.sourceRelativePath.slice(prefix.length),
+  };
 }

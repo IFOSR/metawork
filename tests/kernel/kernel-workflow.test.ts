@@ -4,9 +4,15 @@ import type { KernelDecision, KernelEvent, KernelSnapshot } from '../../src/kern
 import {
   DurableKernelWorkflow,
   KernelApplicationInterruptedError,
+  KernelApplicationRejectionError,
+  KernelApplicationSettledError,
   type KernelDecisionApplicationRecord,
   type KernelWorkflowStore,
 } from '../../src/kernel/kernel-workflow.js';
+import {
+  formatApplicationSettlement,
+  parseApplicationSettlement,
+} from '../../src/kernel/kernel-application-settlement.js';
 import type { KernelDecisionLedgerRecord } from '../../src/kernel/kernel-workflow.js';
 
 const CONFIGURATION_REVISION = 'revision_31';
@@ -138,6 +144,70 @@ describe('DurableKernelWorkflow', () => {
     expect(store.application?.status).toBe('applying');
   });
 
+  it('settles a deterministic refusal as applied instead of leaving it uncertain', async () => {
+    const store = new MemoryWorkflowStore();
+    const order: string[] = [];
+    const workflow = new DurableKernelWorkflow({
+      kernel: { decide: () => directReplyDecision(directReplyEvent()) },
+      store,
+      clock: { now: () => '2026-07-21T00:00:00.000Z' },
+      buildSnapshot: () => planSnapshot(),
+      runtime: { apply: async () => { throw new KernelApplicationRejectionError('代码尚未发布到用户任务目录', 'service_not_startable'); } },
+    });
+    store.onOperation = value => order.push(value);
+
+    const result = await workflow.submit(directReplyEvent());
+
+    expect(store.application?.status).toBe('applied');
+    expect(order).toEqual(['enqueue:event_1', 'issue:event_1', 'applying:decision_event_1', 'settled:decision_event_1']);
+    expect(parseApplicationSettlement(store.application?.errorSummary)).toEqual({
+      kind: 'rejected_without_effect',
+      code: 'service_not_startable',
+      detail: '代码尚未发布到用户任务目录',
+    });
+    // A settled Decision is complete, so the workflow reports quiescence.
+    expect(result).toMatchObject({ quiescent: true, pendingRecovery: 0 });
+  });
+
+  it('settles an operation that completed with a recorded error', async () => {
+    const store = new MemoryWorkflowStore();
+    const workflow = new DurableKernelWorkflow({
+      kernel: { decide: () => directReplyDecision(directReplyEvent()) },
+      store,
+      clock: { now: () => '2026-07-21T00:00:00.000Z' },
+      buildSnapshot: () => planSnapshot(),
+      runtime: { apply: async () => { throw new KernelApplicationSettledError('服务标识已绑定其他启动规格', 'service_operation_failed'); } },
+    });
+
+    await workflow.submit(directReplyEvent());
+
+    expect(store.application?.status).toBe('applied');
+    expect(parseApplicationSettlement(store.application?.errorSummary)?.kind).toBe('operation_settled');
+  });
+
+  it('keeps an unknown apply outcome uncertain so recovery reaches the user', async () => {
+    const store = new MemoryWorkflowStore();
+    const workflow = new DurableKernelWorkflow({
+      kernel: { decide: () => directReplyDecision(directReplyEvent()) },
+      store,
+      clock: { now: () => '2026-07-21T00:00:00.000Z' },
+      buildSnapshot: () => planSnapshot(),
+      runtime: { apply: async () => { throw new Error('服务操作未完成，请查询当前状态'); } },
+    });
+
+    const result = await workflow.submit(directReplyEvent());
+
+    expect(store.application?.status).toBe('uncertain');
+    expect(store.application?.errorSummary).toBe('服务操作未完成，请查询当前状态');
+    expect(result.pendingRecovery).toBe(1);
+  });
+
+  it('keeps a settlement-aware store honest about its tagged summary', () => {
+    expect(parseApplicationSettlement(formatApplicationSettlement({
+      kind: 'rejected_without_effect', code: 'service_request_rejected', detail: '服务归属不匹配：serviceId=x',
+    }))).toEqual({ kind: 'rejected_without_effect', code: 'service_request_rejected', detail: '服务归属不匹配：serviceId=x' });
+  });
+
   it('requeues interrupted applying work only during explicit recovery', async () => {
     const store = new MemoryWorkflowStore();
     const order: string[] = [];
@@ -251,7 +321,13 @@ class MemoryWorkflowStore implements KernelWorkflowStore {
   }
 
   markApplicationFailed(decisionId: string, status: 'uncertain' | 'failed', errorSummary: string, now: string): void {
+    this.onOperation(`failed:${decisionId}`);
     this.application = { ...this.application!, status, errorSummary, updatedAt: now };
+  }
+
+  markApplicationSettled(decisionId: string, summary: string, now: string): void {
+    this.onOperation(`settled:${decisionId}`);
+    this.application = { ...this.application!, status: 'applied', errorSummary: summary, updatedAt: now };
   }
 
   reconcileProcessing(): number {

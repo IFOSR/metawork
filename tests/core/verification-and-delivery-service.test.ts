@@ -16,6 +16,7 @@ import type {
   ExecutionSubtask,
   SubtaskResult,
 } from '../../src/execution/execution-aggregator.js';
+import { EMPTY_TASK_STATE_DETAIL } from '../../src/task/task-state.js';
 
 function createAggregationSubtask(overrides: Partial<ExecutionSubtask>): ExecutionSubtask {
   return {
@@ -340,7 +341,12 @@ describe('VerificationAndDeliveryService', () => {
         title: '旧任务',
         goal: '完成旧任务',
         summary: '',
-        status: 'done',
+        status: 'succeeded',
+        stateVersion: 1,
+        stateDetail: EMPTY_TASK_STATE_DETAIL,
+        completedAt: '2026-10-22T00:00:00.000Z',
+        archivedAt: null,
+        retryOfTaskId: null,
         prioritySignals: {},
         resources: [],
         injectedPreferences: [],

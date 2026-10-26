@@ -281,7 +281,7 @@ describe('AttemptTerminalService', () => {
     expect(setupResult.workflow.findEvent('event_attempt-terminal_execution_outcome')).toBeNull();
   });
 
-  it.each(['running', 'blocked'] as const)('lands terminal facts while Task is %s, including a sibling blocker', taskStatus => {
+  it.each(['running', 'needs_action'] as const)('lands terminal facts while Task is %s, including a sibling blocker', taskStatus => {
     const setupResult = setup();
     setupResult.db.prepare('UPDATE tasks SET status = ? WHERE id = ?').run(taskStatus, 'task-terminal');
     setupResult.dispatch.markUncertain(

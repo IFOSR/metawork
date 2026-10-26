@@ -14,6 +14,7 @@ import { SubtaskExecutionContextBuilder } from '../../src/execution/subtask-exec
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { EMPTY_TASK_STATE_DETAIL } from '../../src/task/task-state.js';
 
 const now = '2026-07-16T00:00:00.000Z';
 const configurationRevision = 'configuration_revision_1';
@@ -42,6 +43,8 @@ function createDb(): Database.Database {
 function task(id = 'task_1'): Task {
   return {
     id, title: 'Task', goal: 'Do work', status: 'running', summary: '', snapshots: [],
+    stateVersion: 1, stateDetail: EMPTY_TASK_STATE_DETAIL, completedAt: null,
+    archivedAt: null, retryOfTaskId: null,
     resources: [], artifacts: [], dependencies: [],
     prioritySignals: { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
     injectedPreferences: [], lastSchedulingReason: '', lastInterruptionReason: '', interruptionCount: 0,

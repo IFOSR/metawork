@@ -52,6 +52,6 @@ describe('release package matrix', () => {
   it('requires the Planner proposal schema in the Runtime archive', () => {
     const script = readFileSync(resolve('scripts/package-release.mjs'), 'utf8');
 
-    expect(script).toContain("dist', 'planning-agent-plan-v8.schema.json");
+    expect(script).toContain("dist', 'planning-agent-plan-v9.schema.json");
   });
 });

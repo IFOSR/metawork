@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { selectTaskDispatches, type SchedulerPriority } from '../kernel/task-scheduler.js';
 import type Database from 'better-sqlite3';
 
 export type ConversationTaskSlotState = 'free' | 'occupied' | 'releasing' | 'recovery_blocked';
@@ -8,11 +10,13 @@ export interface ConversationTaskSlot {
   state: ConversationTaskSlotState;
   reservationId: string | null;
   fairnessSequence: number;
+  slotVersion: number;
   lastServedAt: string | null;
   updatedAt: string;
 }
 
 export interface QueuedTaskPayload {
+  remainingWork?: boolean;
   requestText: string;
   /** Query that admitted this Task; retained for delayed Executor metering. */
   queryId?: string | null;
@@ -35,6 +39,7 @@ interface SlotRow {
   state: ConversationTaskSlotState;
   reservation_id: string | null;
   fairness_sequence: number;
+  slot_version: number;
   last_served_at: string | null;
   updated_at: string;
 }
@@ -97,27 +102,30 @@ export class ConversationTaskSchedulerRepo {
     reservationId: string,
     now: string,
   ): boolean {
-    this.ensureSlot(conversationId, now);
-    const result = this.db.prepare(`
-      UPDATE conversation_task_slots
-      SET active_task_id = ?, state = 'occupied', reservation_id = ?,
-          fairness_sequence = fairness_sequence + 1, last_served_at = ?, updated_at = ?
-      WHERE conversation_id = ? AND state = 'free' AND active_task_id IS NULL
-    `).run(taskId, reservationId, now, now, conversationId);
-    if (result.changes !== 1) return false;
-    this.db.prepare(`
-      UPDATE task_schedule_entries SET state = 'running', last_scheduled_at = ?
-      WHERE task_id = ? AND state IN ('queued', 'eligible', 'reserved')
-    `).run(now, taskId);
-    return true;
+    return this.db.transaction(() => {
+      this.ensureSlot(conversationId, now);
+      const result = this.db.prepare(`
+        UPDATE conversation_task_slots
+        SET active_task_id = ?, state = 'occupied', reservation_id = ?, slot_version = slot_version + 1,
+            fairness_sequence = fairness_sequence + 1, last_served_at = ?, updated_at = ?
+        WHERE conversation_id = ? AND state = 'free' AND active_task_id IS NULL
+      `).run(taskId, reservationId, now, now, conversationId);
+      if (result.changes !== 1) return false;
+      this.db.prepare(`
+        UPDATE task_schedule_entries SET state = 'running', last_scheduled_at = ?
+        WHERE task_id = ? AND state IN ('queued', 'eligible', 'reserved')
+      `).run(now, taskId);
+      return true;
+    }).immediate();
   }
 
-  releaseSlot(conversationId: string, taskId: string, now: string): boolean {
+  releaseSlot(conversationId: string, taskId: string, now: string, expected?: ConversationTaskSlot): boolean {
     const result = this.db.prepare(`
       UPDATE conversation_task_slots
-      SET active_task_id = NULL, state = 'free', reservation_id = NULL, updated_at = ?
+      SET active_task_id = NULL, state = 'free', reservation_id = NULL, slot_version = slot_version + 1, updated_at = ?
       WHERE conversation_id = ? AND active_task_id = ?
-    `).run(now, conversationId, taskId);
+        AND (? IS NULL OR (reservation_id = ? AND slot_version = ?))
+    `).run(now, conversationId, taskId, expected?.reservationId ?? null, expected?.reservationId ?? null, expected?.slotVersion ?? null);
     return result.changes === 1;
   }
 
@@ -125,11 +133,19 @@ export class ConversationTaskSchedulerRepo {
     conversationId: string,
     taskId: string,
     now: string,
-    hasResidue = false,
+    hasResidue: boolean | (() => boolean) = false,
     allowPromotion = true,
+    expected?: { reservationId: string | null; slotVersion: number; taskVersion: number },
   ): { taskId: string; reservationId: string } | null {
     return this.db.transaction(() => {
-      if (hasResidue) {
+      if (expected) {
+        const slot = this.getSlot(conversationId);
+        const task = this.db.prepare('SELECT state_version FROM tasks WHERE id = ?').get(taskId) as
+          { state_version: number } | undefined;
+        if (slot.activeTaskId !== taskId || slot.reservationId !== expected.reservationId
+          || slot.slotVersion !== expected.slotVersion || task?.state_version !== expected.taskVersion) return null;
+      }
+      if (typeof hasResidue === 'function' ? hasResidue() : hasResidue) {
         this.db.prepare(`
           UPDATE conversation_task_slots
           SET state = 'releasing', updated_at = ?
@@ -139,7 +155,7 @@ export class ConversationTaskSchedulerRepo {
       }
       const released = this.db.prepare(`
         UPDATE conversation_task_slots
-        SET active_task_id = NULL, state = 'free', reservation_id = NULL, updated_at = ?
+        SET active_task_id = NULL, state = 'free', reservation_id = NULL, slot_version = slot_version + 1, updated_at = ?
         WHERE conversation_id = ? AND active_task_id = ? AND state IN ('occupied', 'releasing')
       `).run(now, conversationId, taskId);
       if (released.changes !== 1) return null;
@@ -165,7 +181,7 @@ export class ConversationTaskSchedulerRepo {
       if (!slot) return null;
       const released = this.db.prepare(`
         UPDATE conversation_task_slots
-        SET active_task_id = NULL, state = 'free', reservation_id = NULL, updated_at = ?
+        SET active_task_id = NULL, state = 'free', reservation_id = NULL, slot_version = slot_version + 1, updated_at = ?
         WHERE conversation_id = ? AND active_task_id = ? AND state IN ('occupied', 'releasing')
       `).run(now, slot.conversation_id, taskId);
       if (released.changes !== 1) return { conversationId: slot.conversation_id, promotedTaskId: null };
@@ -222,23 +238,16 @@ export class ConversationTaskSchedulerRepo {
           JOIN tasks ON tasks.id = entry.task_id
           JOIN conversation_task_slots slot
             ON slot.conversation_id = entry.conversation_id
-          WHERE entry.state = 'queued'
+          WHERE entry.state = 'queued' AND tasks.status IN ('queued', 'running')
             AND slot.state = 'free'
             AND slot.active_task_id IS NULL
         `).all() as CandidateRow[];
-        const candidate = candidates.sort((left, right) => (
-          Number(isAged(right.eligible_since, now)) - Number(isAged(left.eligible_since, now))
-          || priorityOf(right.priority_json) - priorityOf(left.priority_json)
-          || left.fairness_sequence - right.fairness_sequence
-          || left.eligible_since.localeCompare(right.eligible_since)
-          || left.enqueued_at.localeCompare(right.enqueued_at)
-          || left.task_id.localeCompare(right.task_id)
-        ))[0];
+        const candidate = selectCandidate(candidates, now);
         if (!candidate) break;
-        const reservationId = `reservation_${candidate.conversation_id}_${candidate.task_id}`;
+        const reservationId = `reservation_${randomUUID()}`;
         const claimed = this.db.prepare(`
           UPDATE conversation_task_slots
-          SET active_task_id = ?, state = 'occupied', reservation_id = ?,
+          SET active_task_id = ?, state = 'occupied', reservation_id = ?, slot_version = slot_version + 1,
               fairness_sequence = fairness_sequence + 1,
               last_served_at = ?, updated_at = ?
           WHERE conversation_id = ? AND state = 'free' AND active_task_id IS NULL
@@ -285,16 +294,18 @@ export class ConversationTaskSchedulerRepo {
   ): { taskId: string; reservationId: string } | null {
     const slot = this.getSlot(conversationId);
     if (slot.state !== 'free' || slot.activeTaskId !== null) return null;
-    const next = this.db.prepare(`
-      SELECT task_id FROM task_schedule_entries
-      WHERE conversation_id = ? AND state = 'queued'
-      ORDER BY enqueued_at ASC, task_id ASC LIMIT 1
-    `).get(conversationId) as { task_id: string } | undefined;
+    const rows = this.db.prepare(`SELECT e.task_id, e.conversation_id, e.eligible_since,
+      e.enqueued_at, t.priority_json, s.fairness_sequence
+      FROM task_schedule_entries e JOIN tasks t ON t.id = e.task_id
+      JOIN conversation_task_slots s ON s.conversation_id = e.conversation_id
+      WHERE e.conversation_id = ? AND e.state = 'queued'
+        AND t.status IN ('queued', 'running')`).all(conversationId) as CandidateRow[];
+    const next = selectCandidate(rows, now);
     if (!next) return null;
-    const reservationId = `reservation_${conversationId}_${next.task_id}`;
+    const reservationId = `reservation_${randomUUID()}`;
     const claimed = this.db.prepare(`
       UPDATE conversation_task_slots
-      SET active_task_id = ?, state = 'occupied', reservation_id = ?,
+      SET active_task_id = ?, state = 'occupied', reservation_id = ?, slot_version = slot_version + 1,
           fairness_sequence = fairness_sequence + 1, last_served_at = ?, updated_at = ?
       WHERE conversation_id = ? AND state = 'free' AND active_task_id IS NULL
     `).run(next.task_id, reservationId, now, now, conversationId);
@@ -325,6 +336,7 @@ export class ConversationTaskSchedulerRepo {
       ON CONFLICT(task_id) DO UPDATE SET
         conversation_id = excluded.conversation_id,
         state = 'queued',
+        enqueued_at = excluded.enqueued_at, eligible_since = excluded.eligible_since,
         scheduling_reason = excluded.scheduling_reason,
         payload_json = excluded.payload_json
     `).run(taskId, conversationId, now, now, reason, JSON.stringify(queuedPayload ?? {}));
@@ -397,6 +409,16 @@ export class ConversationTaskSchedulerRepo {
     `).run(now, taskId).changes === 1;
   }
 
+  /**
+   * Closes the runnable schedule entry of a Task that stopped to wait for the
+   * user. The entry is not terminal in the Task sense: `enqueueTask()` resets it
+   * to `queued` when the user resolves the item and the Task re-enters
+   * scheduling (design §1: 待处理不占执行名额, 用户处理后重新排队).
+   */
+  parkScheduleEntry(taskId: string, now: string): boolean {
+    return this.markTerminal(taskId, now);
+  }
+
   listReservedTasks(): string[] {
     const rows = this.db.prepare(`
       SELECT task_id FROM task_schedule_entries
@@ -430,8 +452,24 @@ export class ConversationTaskSchedulerRepo {
       state: row.state,
       reservationId: row.reservation_id,
       fairnessSequence: row.fairness_sequence,
+      slotVersion: row.slot_version,
       lastServedAt: row.last_served_at,
       updatedAt: row.updated_at,
     };
   }
+}
+
+function selectCandidate(rows: CandidateRow[], now: string): CandidateRow | undefined {
+  const selected = selectTaskDispatches({
+          account: { maxConcurrentTasks: 1, activeTaskCount: 0,
+            maxConcurrentAttempts: 0, maxConcurrentAttemptsPerTask: 0, activeAttemptCount: 0 },
+          conversations: rows.map(item => ({ conversationId: item.conversation_id,
+            slotState: 'free', fairnessSequence: item.fairness_sequence })),
+          candidates: rows.map(item => ({ taskId: item.task_id,
+            conversationId: item.conversation_id, eligibleSince: item.eligible_since,
+            priority: (['normal', 'high', 'urgent'][priorityOf(item.priority_json)] ?? 'normal') as SchedulerPriority,
+            aged: isAged(item.eligible_since, now), runnableAttemptCount: 0,
+            runnableOperation: true, activeAttemptCount: 0, resourceConflict: false })),
+        }).dispatches[0];
+  return rows.find(item => item.task_id === selected?.taskId);
 }

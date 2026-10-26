@@ -8,11 +8,18 @@ import { turnStatusFromTimeline } from '../conversation-live-turn';
 
 type Presentation = Pick<ConversationTurnProjection, 'traceEvents' | 'executionTimeline' | 'artifacts' | 'turnBilling'>
   & Partial<Pick<ConversationTurnProjection, 'status' | 'completedAt'>>
-  & { taskLifecycle?: GatewayTaskViewSnapshot['lifecycle']; publicDelivery?: GatewayTaskViewSnapshot['publicDelivery'] };
+  & {
+    taskLifecycle?: GatewayTaskViewSnapshot['lifecycle'];
+    publicDelivery?: GatewayTaskViewSnapshot['publicDelivery'];
+    pendingPermission?: GatewayTaskViewSnapshot['pendingPermission'];
+    workspaceChanges?: GatewayTaskViewSnapshot['workspaceChanges'];
+  };
 interface TaskResource {
   targetConversationId: string; turnId: string; taskId: string;
   lifecycle: GatewayTaskViewSnapshot['lifecycle'];
   publicDelivery?: GatewayTaskViewSnapshot['publicDelivery'];
+  pendingPermission?: GatewayTaskViewSnapshot['pendingPermission'];
+  workspaceChanges?: GatewayTaskViewSnapshot['workspaceChanges'];
   timeline: ConversationTurnProjection['executionTimeline'];
   artifacts: ConversationTurnProjection['artifacts'];
 }
@@ -63,6 +70,7 @@ export function useTurnPresentation(ws: WsClient, http: HttpClient, conversation
     let active = true;
     let busy = false;
     let refreshAgain = false;
+    let conflictingVersion: number | null = null;
     const current = () => active && generation === ws.conversations.currentGeneration();
     let value = cacheFor(ws).get(key) ?? EMPTY;
     setState({ key, value });
@@ -84,10 +92,20 @@ export function useTurnPresentation(ws: WsClient, http: HttpClient, conversation
         if (taskId) jobs.push(ws.query<TaskResource>(conversationId,
           { kind: 'get_task_view', conversationId, turnId: turn.id, taskId }).then(task => {
           if (task.targetConversationId !== conversationId || task.turnId !== turn.id || task.taskId !== taskId) return;
+          if (value.taskLifecycle && task.lifecycle.stateVersion < value.taskLifecycle.stateVersion) return;
+          if (value.taskLifecycle && task.lifecycle.stateVersion === value.taskLifecycle.stateVersion
+            && task.lifecycle.status !== value.taskLifecycle.status) {
+            if (conflictingVersion !== task.lifecycle.stateVersion) {
+              conflictingVersion = task.lifecycle.stateVersion; refreshAgain = true;
+            }
+            return;
+          }
           const projectedStatus = task.timeline ? turnStatusFromTimeline(task.timeline) : null;
           commit({
             taskLifecycle: task.lifecycle,
             publicDelivery: task.publicDelivery,
+            pendingPermission: task.pendingPermission,
+            workspaceChanges: task.workspaceChanges,
             executionTimeline: task.timeline,
             artifacts: task.artifacts,
             ...(projectedStatus ? {

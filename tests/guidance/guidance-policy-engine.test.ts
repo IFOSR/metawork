@@ -7,15 +7,16 @@ import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { GuidancePolicyEngine } from '../../src/guidance/guidance-policy-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
+import { setTaskStatus } from '../support/task-state-fixture.js';
 
 describe('GuidancePolicyEngine', () => {
-  it('proposes resume_task for a high-value parked task with ready materials', () => {
+  it('proposes resume_task for a high-value needs_action task with ready materials', () => {
     const engine = new GuidancePolicyEngine();
 
     const proposals = engine.build([
       {
         taskId: 'task_1',
-        status: 'parked',
+        status: 'needs_action',
         isReady: true,
         progressRatio: 0.7,
         idleHours: 3,
@@ -30,13 +31,13 @@ describe('GuidancePolicyEngine', () => {
     expect(proposals[0]?.requiresConfirmation).toBe(false);
   });
 
-  it('proposes unblock_and_resume when a blocked task has new materials', () => {
+  it('proposes unblock_and_resume when a needs_action task has new materials', () => {
     const engine = new GuidancePolicyEngine();
 
     const proposals = engine.build([
       {
         taskId: 'task_2',
-        status: 'blocked',
+        status: 'needs_action',
         isReady: false,
         progressRatio: 0.2,
         idleHours: 8,
@@ -55,9 +56,10 @@ describe('GuidancePolicyEngine', () => {
 describe('OrchestrationEngine proposals', () => {
   let orchestration: OrchestrationEngine;
   let taskEngine: TaskEngine;
+  let db: Database.Database;
 
   beforeEach(() => {
-    const db = new Database(':memory:');
+    db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
 
@@ -77,7 +79,7 @@ describe('OrchestrationEngine proposals', () => {
         idleHours: 2,
       },
     });
-    taskEngine.transition(task.id, 'ready');
+    setTaskStatus(db, task.id, 'queued');
 
     const proposals = orchestration.generateProposals('idle');
 

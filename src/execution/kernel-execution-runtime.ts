@@ -1,17 +1,17 @@
+import { TaskOperationKeys } from '../storage/task-state-change-repo.js';
 import { projectTaskView, type TaskView } from '../task/task-view.js';
 import type { TaskActivityFactsReader } from '../task/task-activity-facts.js';
 import { projectPublicDelivery, type PublicDeliveryView } from '../delivery/public-delivery-view.js';
 import { PUBLISHED_CODE_MISSING_SERVICE_SPECIFICATION } from './managed-local-service.js';
 import type { ManagedLocalServices } from './managed-local-service.js';
-import type { LocalServiceOperation, LocalServiceView } from '../task/local-service.js';
+import { localServiceSpecificationRevision, type LocalServiceOperation, type LocalServiceView } from '../task/local-service.js';
 import type { PendingResultIdentity } from '../task/safe-result-identity.js';
 import { ExecutorProbeError } from './work-unit-claim-service.js';
 // Execution application service: Session supplies facade callbacks but owns no runtime policy.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync } from 'node:fs';
-import { realpath } from 'node:fs/promises';
-import { resolve, relative, isAbsolute, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { ExecutionProgressService } from '../execution/execution-progress-service.js';
@@ -43,8 +43,16 @@ import {
   type KernelEvent,
   type KernelRetryWakeFact,
   type KernelSnapshot,
+  type RemainingTaskWork,
 } from '../kernel/control-kernel.js';
-import { DurableKernelWorkflow, KernelApplicationInterruptedError, type KernelWorkflow, type KernelWorkflowStore } from '../kernel/kernel-workflow.js';
+import {
+  DurableKernelWorkflow,
+  KernelApplicationInterruptedError,
+  KernelApplicationRejectionError,
+  KernelApplicationSettledError,
+  type KernelWorkflow,
+  type KernelWorkflowStore,
+} from '../kernel/kernel-workflow.js';
 import type { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import type { MemoryEvidencePort } from '../memory/memory-evidence-service.js';
 import { deriveRecoverySafety } from '../routing/types.js';
@@ -60,6 +68,14 @@ import type { KernelDispatchItemRepo, KernelDispatchItemRecord } from '../storag
 import type { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
 import type { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import type { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
+import { canonicalizeWorkspacePath } from '../workspace/workspace-path.js';
+import { workspaceExecutionBindingFingerprint } from './execution-context.js';
+import {
+  WorktreeExecutionCleanupService,
+  type WorktreeCleanupOutcome,
+} from './worktree-execution-cleanup.js';
+import { ManagedGitWorkspaceService } from './managed-git-workspace.js';
+import { TERMINAL_TASK_STATUSES } from '../task/task-state.js';
 import type { ResultObjectRepo } from '../storage/result-object-repo.js';
 import type { WorkspaceRepositoryPort } from './repositories.js';
 import type { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
@@ -74,8 +90,8 @@ import {
   type CancellationReconciliationEntry,
 } from './cancellation-reconciliation.js';
 import {
-  createTaskLifecycleTransitionPort,
-  type TaskLifecycleTransitionPort,
+  createSubtaskLifecyclePort,
+  type SubtaskLifecyclePort,
 } from '../task/task-lifecycle-transition-port.js';
 import type { TaskClearOutcome } from '../task/task-control-types.js';
 import type {
@@ -115,6 +131,11 @@ interface DispatchStableFacts {
   correctionSupportedAgentClasses: string[];
   nativeContinuationAgentClasses: string[];
 }
+
+type LocalServiceApplyOutcome =
+  | { readonly type: 'result'; readonly view: LocalServiceView | null }
+  | { readonly type: 'rejected'; readonly reason: string }
+  | { readonly type: 'settled'; readonly view: LocalServiceView | null; readonly error: string };
 
 const DEFAULT_EXECUTION_TRACE_HEARTBEAT_MS = 10_000;
 
@@ -402,8 +423,16 @@ function resumeRecoveryCandidates(input: {
 export function classifyResumeBlocker(
   reason: string | undefined,
   latestFailure?: import('../core/kernel-failure.js').KernelFailure | null,
+  committedReasonCode?: import('../task/task-state.js').TaskReasonCode,
 ): import('../kernel/control-kernel.js').KernelResumeBlockerCategory {
   const normalized = reason?.toLowerCase() ?? '';
+  // The committed Task reason is authoritative: a purely user-facing wait has no
+  // unresolved external blocker, and the explicit resume is its resolution.
+  // A committed unknown external outcome is fail-closed: resume must first
+  // reconcile the effect, whatever the raw failure text says.
+  if (committedReasonCode === 'external_outcome_unknown') return 'unknown';
+  if (normalized && committedReasonCode === 'input_required') return 'user_wait';
+  if (normalized && committedReasonCode === 'system_anomaly') return 'user_wait';
   // 启动恢复对“活跃但无 authorized dispatch”的 Subtask 只做 fail-closed 手动阻塞；
   // 描述里的 "authorized" 指 dispatch 授权，而不是缺材料/权限，不能归为 explicit_resource。
   if (normalized.includes('executor environment unavailable') || normalized.includes('no healthy authorized executor')) return 'availability';
@@ -435,6 +464,9 @@ export function classifyResumeBlocker(
   if (normalized.includes('publication') || normalized.includes('handoff') || normalized.includes('依赖')) {
     return 'dependency_publication';
   }
+  // A user pause (or a Task waiting only for its user) has no unresolved
+  // fail-closed external blocker; the explicit resume command is the resolution.
+  if (!normalized || normalized === '未知原因') return 'user_wait';
   if (
     normalized.includes('explicit resource')
     || normalized.includes('explicit_resource')
@@ -480,6 +512,13 @@ export interface KernelExecutionRuntimeDeps {
   orchestration: OrchestrationEngine;
   notifier: NotificationService;
   taskRuntimeService: TaskRuntimeService;
+  /** Recomputes the one Task conclusion from durable facts (six-state model). */
+  taskStateAuthority: import('../task/task-state-authority.js').TaskStateAuthority;
+  /** Normalized operation results (service start, delivery, integration). */
+  taskOperationResults: Pick<
+    import('../storage/task-operation-result-repo.js').TaskOperationResultRepo,
+    'record'
+  >;
   /** Resolves a task's conversation workspace path when the queued request
    *  does not carry one (timer/recovery requests historically omitted it,
    *  which broke continuation dispatches with a missing workspace source). */
@@ -532,6 +571,9 @@ export interface KernelExecutionRuntimeDeps {
   workspaceRepository: WorkspaceRepositoryPort;
   generationReplanRepo: GenerationReplanRequestRepo;
   retryWakeRepo: RetryWakeRepo;
+  resourceLeaseService?: import('./resource-lease-service.js').ResourceLeaseService;
+  workspaceExecutionBindingRepo?: import('../storage/workspace-execution-binding-repo.js').WorkspaceExecutionBindingRepo;
+  workspaceStore?: import('./workspace-store.js').WorkspaceStore;
   /**
    * Task blocker and Retry Wake are one durable wait_for_retry postcondition.
    * The account composition supplies the SQLite transaction; focused legacy
@@ -582,18 +624,14 @@ export class KernelExecutionRuntime {
   private disposed = false;
   private disposePromise: Promise<void> | null = null;
   /**
-   * The single owner of strategic Task/Subtask lifecycle writes
-   * (2026-09-25 plan §8 Phase 4). This Runtime applies one Kernel-authorized
-   * action; it never writes a Task/Subtask status directly.
+   * Subtask node lifecycle, owned by the Task Domain. Task state itself goes
+   * through `TaskStateAuthority`; this Runtime never picks a Task status.
    */
-  private readonly lifecycle: TaskLifecycleTransitionPort;
+  private readonly lifecycle: SubtaskLifecyclePort;
 
   constructor(private readonly deps: KernelExecutionRuntimeDeps) {
     this.taskEvents = new TaskEventRecorder(deps.taskEventRepo);
-    this.lifecycle = createTaskLifecycleTransitionPort({
-      taskRuntimeService: deps.taskRuntimeService,
-      subtaskRepo: deps.subtaskRepo,
-    });
+    this.lifecycle = createSubtaskLifecyclePort({ subtaskRepo: deps.subtaskRepo });
     this.attemptSupervisor = new AttemptSupervisor(
       deps.dispatchItemRepo,
       deps.maxConcurrentAttempts,
@@ -606,6 +644,31 @@ export class KernelExecutionRuntime {
     return this.decisionSession.getStore()
       ?? this.deps.getSessionId?.()
       ?? this.deps.sessionId;
+  }
+
+  /**
+   * Asks the Task state authority to recompute the Task conclusion from the
+   * durable facts this Runtime just wrote. The Runtime never picks a status.
+   */
+  private reconcileTaskState(
+    taskId: string,
+    input: {
+      decisionId: string;
+      operationKey: string;
+      reason: string;
+      facts?: () => readonly string[];
+      resumeAuthorized?: boolean;
+    },
+  ): void {
+    this.deps.taskStateAuthority.reconcile({
+      taskId,
+      decisionId: input.decisionId,
+      operationKey: input.operationKey,
+      actor: 'kernel-execution-runtime',
+      reason: input.reason,
+      resumeAuthorized: input.resumeAuthorized,
+      ...(input.facts ? { facts: input.facts } : {}),
+    });
   }
 
   private appendExecutionTrace(input: ExecutionTraceAppendInput): void {
@@ -677,6 +740,7 @@ export class KernelExecutionRuntime {
       } else {
         this.deps.cancellationCoordinator.releaseAdmission(taskId);
       }
+      await this.cleanupWorktreeExecutions(taskId);
       return {
         taskId,
         status: alreadyCancelled ? 'already_cleared' : 'cleared',
@@ -708,6 +772,189 @@ export class KernelExecutionRuntime {
       targetSubtaskIds,
       reason,
     });
+  }
+
+  async retryRemainingWork(taskId: string): Promise<CancellationReceipt> {
+    const source = this.deps.taskRuntimeService.findTask(taskId);
+    if (!source) throw new Error('任务不存在');
+    const retryId = `task_retry_${taskId}_${source.stateVersion}`;
+    const existing = this.deps.taskRuntimeService.listTasks().find(task => task.retryOfTaskId === taskId);
+    if (existing) return { taskId: existing.id, affectedSubtaskIds: [], cleanupAttemptIds: [] };
+    const graph = this.deps.workGraphRevisionRepo.findActive(taskId)
+      ?? this.deps.workGraphRevisionRepo.findLatest(taskId);
+    const facts = this.deps.taskStateAuthority.readFacts(taskId);
+    const publications = this.deps.publicationRepo.listByTask(taskId)
+      .filter(item => item.generationId === graph?.generationId && item.status === 'integrated'
+        && this.deps.subtaskRepo.findById(item.subtaskId)?.graphRevision === graph?.revision);
+    const nodes = this.deps.subtaskRepo.listActiveByTask(taskId);
+    const remaining: RemainingTaskWork | null = graph ? {
+      sourceTaskId: taskId, sourceVersion: source.stateVersion,
+      generationId: graph.generationId, graphRevision: graph.revision,
+      publicationIds: publications.filter(item => this.deps.publicationRepo.delivery(item.id)?.status === 'failed')
+        .map(item => item.id),
+      startService: source.startServiceAfterPublish === true
+        && !facts?.operationResults.some(item => item.operationKey === 'service:start' && item.outcome === 'success'),
+    } : null;
+    // Never infer reusable output from a done label. Every node must have an
+    // integrated immutable candidate, and no unsafe external operation may remain.
+    const safeToRetry = nodes.length > 0 && nodes.every(node => publications.some(item => item.subtaskId === node.id))
+      && !facts?.externalOutcomeUnknown
+      && this.deps.cancellationCoordinator.completionBlockedReasons(taskId, null).length === 0;
+    let rejected: string | null = null;
+    const event: KernelEvent = { schemaVersion: 5, type: 'task_remaining_work_retry_requested',
+      id: `retry_remaining:${taskId}:${source.stateVersion}`, configurationRevision: this.configurationRevisionForTask(taskId),
+      taskId, expectedVersion: source.stateVersion, correlationId: taskId, causationId: null,
+      sessionId: this.sessionId, occurredAt: new Date().toISOString() };
+    const workflow = new DurableKernelWorkflow({ kernel: this.deps.controlKernel,
+      productionAuthorization: this.deps.productionAuthorization, store: this.deps.kernelWorkflowStore,
+      clock: { now: () => new Date().toISOString() }, taskId,
+      acceptedEventTypes: ['task_remaining_work_retry_requested'],
+      acceptedActions: ['retry_remaining_work', 'reject_request'],
+      buildSnapshot: () => ({ schemaVersion: 5, type: 'remaining_work_retry',
+        task: { id: source.id, status: source.status }, remaining, safeToRetry }),
+      runtime: { apply: async decision => {
+        if (decision.action.type === 'reject_request') { rejected = decision.reason; return null; }
+        if (decision.action.type !== 'retry_remaining_work') return null;
+        const action = decision.action;
+        this.deps.effectOutboxRepo.transaction(() => {
+          const now = new Date().toISOString();
+          const task = this.deps.taskRuntimeService.createTask({ id: action.taskId,
+            title: `重试剩余工作：${source.title}`, goal: source.goal, retryOfTaskId: source.id,
+            accountId: source.accountId, conversationId: source.conversationId, workspaceId: source.workspaceId,
+            ownerPlannerSessionId: source.ownerPlannerSessionId,
+            // Remaining-work retry is a new Task identity, but it is the same
+            // authorized Workspace operation. Carry every immutable Workspace
+            // fact forward instead of letting TaskEngine defaults reselect
+            // Worktree or revive the historical generated task directory.
+            ...(source.publicProject && source.publicTaskDirectory
+              ? { publicTaskDirectory: source.publicTaskDirectory }
+              : {}),
+            publicDeliveryBaseline: source.publicDeliveryBaseline,
+            startServiceAfterPublish: action.remaining.startService,
+            executionMode: source.executionMode,
+            workspaceExecutionSource: source.workspaceExecutionSource,
+            workspaceDeliveryPolicy: source.workspaceDeliveryPolicy,
+            workspaceTargetPaths: source.workspaceTargetPaths,
+            workspaceIntent: source.workspaceIntent,
+          });
+          const generationId = `generation_${task.id}`;
+          this.deps.workGraphRevisionRepo.activate({ id: `revision_${task.id}_1`, taskId: task.id,
+            revision: 1, generationId, configurationRevision: decision.configurationRevision,
+            authorizedDecisionId: decision.id, proposalSource: 'initial', automaticReplan: false,
+            createdAt: now, updatedAt: now, completionRequirements: [
+              ...action.remaining.publicationIds.map(id => ({ key: `delivery:${id}`, kind: 'delivery' as const,
+                label: '补交付已生成的文件', subtaskId: null, serviceId: null })),
+              ...(action.remaining.startService ? [{ key: 'service', kind: 'service' as const,
+                label: '启动已交付的服务', subtaskId: null, serviceId: null }] : []),
+            ] });
+          this.deps.effectOutboxRepo.enqueue({ id: `remaining_work:${task.id}`, decisionId: decision.id,
+            taskId: task.id, effectType: 'task_remaining_work', payload: { remaining: action.remaining }, availableAt: now });
+          this.deps.conversationTaskSchedulerRepo!.enqueueTask(task.id, task.conversationId!, now, {
+            requestText: source.goal, generationId, graphRevision: 1, workGraph: null,
+            authorizedBindingsBySubtask: null, workspaceId: task.workspaceId ?? null,
+            plannerSessionId: task.ownerPlannerSessionId ?? this.sessionId, executionMode: 'follow-up',
+            remainingWork: true, schedulingReason: 'explicit remaining work retry',
+          });
+          this.deps.kernelWorkflowStore.markApplied(decision.id, null, now);
+        });
+        return null;
+      } },
+    });
+    await workflow.submit(event);
+    if (rejected) throw new Error(rejected);
+    if (!this.deps.taskRuntimeService.findTask(retryId)) throw new Error('重试尚未获批');
+    if (this.deps.onTaskTerminal) await this.deps.onTaskTerminal(taskId);
+    else this.deps.cancellationCoordinator.releaseAdmission(taskId);
+    await this.recoverDue(retryId, 'explicit remaining work retry');
+    return { taskId: retryId, affectedSubtaskIds: [], cleanupAttemptIds: [] };
+  }
+
+  private async resumeRemainingWork(taskId: string): Promise<boolean> {
+    const effect = this.deps.effectOutboxRepo?.listByTaskAndType?.(taskId, 'task_remaining_work')[0];
+    if (!effect) return false;
+    const task = this.deps.taskRuntimeService.findTask(taskId)!;
+    if (effect.status === 'sent' || !['queued', 'running'].includes(task.status)) return true;
+    const scheduler = this.deps.conversationTaskSchedulerRepo!;
+    const conversationId = task.conversationId!;
+    let slot = scheduler.getSlot(conversationId);
+    if (slot.state === 'free' && !this.deps.onTaskTerminal
+      && !scheduler.listSlots().some(item => item.activeTaskId !== null)) {
+      scheduler.promoteNextQueued(conversationId, new Date().toISOString());
+      slot = scheduler.getSlot(conversationId);
+    }
+    if (slot.activeTaskId !== taskId || slot.state !== 'occupied') return true;
+    const remaining = effect.payload.remaining as RemainingTaskWork;
+    const assertCurrent = () => {
+      const current = scheduler.getSlot(conversationId);
+      const owner = this.deps.taskRuntimeService.findTask(taskId);
+      if (owner?.retryOfTaskId !== remaining.sourceTaskId
+        || !['queued', 'running'].includes(owner.status)
+        || current.activeTaskId !== taskId || current.reservationId !== slot.reservationId
+        || current.slotVersion !== slot.slotVersion || current.state !== 'occupied') {
+        throw new Error('剩余工作预约已过期');
+      }
+    };
+    assertCurrent();
+    scheduler.markRunning(taskId, new Date().toISOString());
+    this.reconcileTaskState(taskId, { decisionId: effect.decisionId,
+      operationKey: `remaining_started:${effect.id}`, reason: 'reserved remaining work started' });
+    if (effect.status === 'uncertain' || effect.status === 'failed') {
+      this.deps.effectOutboxRepo.resolve(effect.id, 'retry', new Date().toISOString());
+    }
+    const delivered = await this.deps.effectOutboxRepo.deliver(effect.id, async () => {
+      for (const publicationId of remaining.publicationIds) {
+        assertCurrent();
+        const success = await this.deps.publicationWorker.redeliverForRetry(taskId, publicationId, assertCurrent);
+        assertCurrent();
+        this.recordOperationResult({ taskId, operationKey: `delivery:${publicationId}`, operationKind: 'delivery',
+          outcome: success ? 'success' : 'definite_failure', reasonCode: success ? null : 'delivery_failed',
+          message: success ? '文件补交付成功。' : '文件补交付失败。', evidenceRefs: [`publication:${publicationId}`] });
+        if (!success) return taskId;
+      }
+      if (remaining.startService) {
+        assertCurrent();
+        const manager = this.deps.managedLocalServices;
+        if (!manager) throw new Error('受管服务能力不可用');
+        const source = this.deps.taskRuntimeService.findTask(remaining.sourceTaskId)!;
+        const files = this.deps.userArtifactPublication?.taskArtifactRepo.publicFiles
+          .list(source.accountId ?? 'local-default', source.id) ?? [];
+        await manager.verifyPublishedFiles(source.id, files);
+        assertCurrent();
+        await this.startRequestedPublishedService(taskId);
+      }
+      return taskId;
+    }, () => new Date().toISOString());
+    if (delivered.status === 'uncertain') {
+      this.recordOperationResult({ taskId, operationKey: `remaining_unknown:${effect.id}`, operationKind: 'execution',
+        outcome: 'unknown', reasonCode: 'external_outcome_unknown', message: delivered.errorSummary ?? '剩余工作需要核实', evidenceRefs: [effect.id] });
+      this.reconcileTaskState(taskId, { decisionId: effect.decisionId, operationKey: `remaining_unknown:${effect.id}`,
+        reason: delivered.errorSummary ?? 'remaining work requires verification' });
+    }
+    if (delivered.status === 'sent') {
+      this.reconcileTaskState(taskId, { decisionId: effect.decisionId,
+        operationKey: `remaining_finished:${effect.id}`, reason: 'remaining work settled' });
+      const settled = this.deps.taskRuntimeService.findTask(taskId)!;
+      if (['succeeded', 'failed'].includes(settled.status)) {
+        if (settled.status === 'succeeded') this.deps.workGraphRevisionRepo.complete(taskId, 1, new Date().toISOString(), 'full');
+        if (this.deps.onTaskTerminal) await this.deps.onTaskTerminal(taskId);
+        else this.deps.cancellationCoordinator.releaseAdmission(taskId);
+      }
+    }
+    return true;
+  }
+
+  /** User-facing manual block. Records the durable blocker, then reconciles. */
+  async blockTask(taskId: string, reason: string): Promise<void> {
+    await this.manualBlockTask(taskId, reason);
+  }
+
+  private async manualBlockTask(taskId: string, reason: string): Promise<void> {
+    const task = this.deps.taskRuntimeService.findTask(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (task.status === 'succeeded' || task.status === 'failed' || task.status === 'cancelled') {
+      throw new Error(`任务已结束，无法标记为待处理: ${task.status}`);
+    }
+    await this.blockTaskInternal(taskId, reason || '用户标记为需要处理');
   }
 
   async acceptPartialResult(taskId: string, expectedResult?: PendingResultIdentity): Promise<CancellationReceipt> {
@@ -745,9 +992,20 @@ export class KernelExecutionRuntime {
   async publicTaskDelivery(taskId: string): Promise<PublicDeliveryView | null> {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     if (!task) return null;
-    const workspace = (task.conversationId ? await this.deps.resolveUserWorkspaceRoot?.(task.conversationId) : null)
-      ?? this.deps.userArtifactPublication?.userWorkspaceRoot ?? null;
     const graph = this.deps.workGraphRevisionRepo.findActive(taskId);
+    const binding = graph
+      ? this.deps.workspaceExecutionBindingRepo?.find(task.id, graph.generationId) ?? null
+      : this.deps.workspaceExecutionBindingRepo?.findLatestForTask(task.id) ?? null;
+    // A Task view must describe the Workspace that was authorized for that
+    // Generation. Once the durable binding repository is wired, a missing
+    // binding is an unavailable view rather than a reason to use the current
+    // Conversation root (which may have changed since admission). Focused
+    // fixtures without the repository retain their local resolver fallback.
+    const workspace = binding?.canonicalPath
+      ?? (this.deps.workspaceExecutionBindingRepo
+        ? null
+        : (task.conversationId ? await this.deps.resolveUserWorkspaceRoot?.(task.conversationId) : null)
+          ?? this.deps.userArtifactPublication?.userWorkspaceRoot ?? null);
     return projectPublicDelivery({ task, workspace, pendingDecision: this.pendingTaskResult(taskId) !== null,
       artifacts: [...(this.deps.userArtifactPublication?.taskArtifactRepo.publicFiles.list(task.accountId ?? 'local-default', taskId) ?? []),
         ...(this.deps.userArtifactPublication?.taskArtifactRepo.listByTask(taskId).filter(item => item.accountId === (task.accountId ?? 'local-default')) ?? [])],
@@ -768,24 +1026,39 @@ export class KernelExecutionRuntime {
 
   async manageLocalService(taskId: string, operation: LocalServiceOperation, serviceId?: string, settleTask = true): Promise<LocalServiceView> {
     const services = this.deps.managedLocalServices;
-    if (!services) throw new Error('当前 Runtime 未配置受管服务');
-    const specification = operation === 'start' ? await services.readSpecification(taskId) : undefined;
+    if (!services) throw new KernelApplicationRejectionError('当前 Runtime 未配置受管服务', 'service_runtime_unavailable');
+    const resourceTaskId = this.deps.taskRuntimeService.findTask(taskId)?.retryOfTaskId ?? taskId;
+    let specification: import('../task/local-service.js').LocalServiceSpecification | undefined;
+    if (operation === 'start' || operation === 'update') {
+      try {
+        specification = await services.readSpecification(resourceTaskId, { allowRevisionChange: operation === 'update' });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new KernelApplicationRejectionError(message, 'service_not_startable', `taskId=${taskId} ${message}`);
+      }
+    }
     const id = specification?.serviceId ?? serviceId;
-    if (!id) throw new Error('请指定服务标识');
+    if (!id) throw new KernelApplicationRejectionError('请指定服务标识', 'service_id_missing', `taskId=${taskId}`);
+    const workspaceId = await services.resolveServiceWorkspaceId(resourceTaskId);
+    const specificationRevision = specification
+      ? localServiceSpecificationRevision(specification)
+      : services.find(id)?.specificationRevision ?? '';
     const event: Extract<KernelEvent, { type: 'managed_service_requested' }> = {
       schemaVersion: 5, configurationRevision: this.configurationRevisionForTask(taskId),
-      type: 'managed_service_requested', id: `service_${generateInteractionId()}`, correlationId: taskId,
+      type: 'managed_service_requested', id: resourceTaskId !== taskId
+        ? `service_retry:${taskId}` : `service_${generateInteractionId()}`, correlationId: taskId,
       causationId: null, occurredAt: new Date().toISOString(), sessionId: this.sessionId,
-      taskId, operation, serviceId: id, specification,
+      taskId, operation, serviceId: id, specification, workspaceId, specificationRevision,
     };
-    const published = await services.isPublished(taskId);
-    let result: LocalServiceView | null = null;
-    let rejection: string | null = null;
-    const workflow = this.localServiceWorkflow(taskId, published, (view, error) => { result = view; rejection = error; });
+    const published = await services.isPublished(resourceTaskId);
+    const observed: { outcome: LocalServiceApplyOutcome | null } = { outcome: null };
+    const workflow = this.localServiceWorkflow(taskId, published, value => { observed.outcome = value; });
     await workflow.submit(event);
-    if (rejection) throw new Error(rejection);
+    if (observed.outcome?.type === 'rejected') throw new KernelApplicationRejectionError(observed.outcome.reason, 'service_request_rejected', observed.outcome.reason);
+    if (observed.outcome?.type === 'settled') throw new KernelApplicationSettledError(observed.outcome.error, 'service_operation_failed', observed.outcome.error);
+    const result = observed.outcome?.view ?? null;
     if (!result) throw new Error('服务操作未完成，请查询当前状态');
-    if (settleTask && (result as LocalServiceView).state === 'healthy'
+    if (settleTask && result.state === 'healthy'
       && this.deps.taskRuntimeService.findTask(taskId)?.status === 'running') {
       await this.recoverDue(taskId, 'explicit service operation released health gate');
     }
@@ -793,7 +1066,7 @@ export class KernelExecutionRuntime {
   }
 
   private localServiceWorkflow(taskId: string, published: boolean,
-    observe: (view: LocalServiceView | null, error: string | null) => void = () => undefined): DurableKernelWorkflow {
+    observe: (value: LocalServiceApplyOutcome | null) => void = () => undefined): DurableKernelWorkflow {
     const services = this.deps.managedLocalServices!;
     return new DurableKernelWorkflow({
       productionAuthorization: this.deps.productionAuthorization,
@@ -804,15 +1077,24 @@ export class KernelExecutionRuntime {
       buildSnapshot: event => {
         const task = this.deps.taskRuntimeService.findTask(taskId);
         const id = event.type === 'managed_service_requested' ? event.serviceId : '';
+        const registered = services.find(id);
         return { schemaVersion: 5, type: 'service_control', task: task ? { id: task.id, status: task.status } : null,
-          published, serviceTaskId: services.find(id)?.specification.taskId ?? null };
+          serviceHandedOver: (this.deps.taskRuntimeService.listTasks?.() ?? []).some(candidate =>
+            candidate.retryOfTaskId === taskId && candidate.status === 'succeeded'
+              && candidate.startServiceAfterPublish === true),
+          published, retryOfTaskId: task?.retryOfTaskId,
+          serviceTaskId: registered?.specification.taskId ?? null,
+          serviceWorkspaceId: registered?.workspaceId ?? null,
+          serviceRevision: registered?.specificationRevision ?? null };
       },
       runtime: { apply: async decision => {
         const action = decision.action;
-        if (action.type === 'reject_request') { observe(null, decision.reason); return null; }
+        if (action.type === 'reject_request') { observe({ type: 'rejected', reason: decision.reason }); return null; }
         if (action.type === 'control_managed_service') {
           const effect = await services.applyAuthorizedOperation({ decisionId: decision.id, ...action });
-          observe(effect.result, effect.error);
+          observe(effect.error
+            ? { type: 'settled', view: effect.result, error: effect.error }
+            : { type: 'result', view: effect.result });
         }
         return null;
       } },
@@ -829,6 +1111,56 @@ export class KernelExecutionRuntime {
     }
     await this.localServiceWorkflow(taskId, await services.isPublished(taskId)).recover();
     for (const record of services.forTask(taskId)) await services.status(record.specification.serviceId);
+  }
+
+  /** Persist the Workspace facts that authorize a Generation before dispatch. */
+  async bindWorkspaceExecution(
+    taskId: string,
+    generationId: string,
+    workspaceIdHint?: string | null,
+  ): Promise<import('../storage/workspace-execution-binding-repo.js').WorkspaceExecutionBinding | null> {
+    const repo = this.deps.workspaceExecutionBindingRepo;
+    if (!repo) return null;
+    const task = this.deps.taskRuntimeService.findTask(taskId);
+    if (!task) return null;
+    const existing = repo.find(taskId, generationId);
+    if (existing) return existing;
+    const workspaceId = workspaceIdHint ?? task.workspaceId ?? null;
+    const resolved = this.deps.resolveWorkspacePath
+      ? await this.deps.resolveWorkspacePath(taskId)
+      : null;
+    if (!workspaceId || !resolved) return null;
+    const canonical = await canonicalizeWorkspacePath(resolved).catch(() => null);
+    if (!canonical) return null;
+    const executionMode = task.executionMode ?? 'in_place';
+    if (executionMode === 'worktree') {
+      throw new Error(`Task ${taskId} uses a retired Worktree binding and cannot be dispatched`);
+    }
+    // A replan of an existing Task keeps the mode of its first generation; a
+    // later generation never reinterprets the current settings.
+    const inherited = repo.findLatestForTask(taskId);
+    if (inherited && inherited.executionMode !== executionMode) {
+      throw new Error(
+        `workspace execution mode is immutable for Task ${taskId}: `
+        + `binding=${inherited.executionMode}, task=${executionMode}`,
+      );
+    }
+    const now = new Date().toISOString();
+    const authorizedWorkingDirectory = canonical.canonicalPath;
+    return repo.upsert({
+      taskId,
+      generationId,
+      workspaceId,
+      canonicalPath: canonical.canonicalPath,
+      executionMode,
+      authorizedWorkingDirectory,
+      modeSource: task.workspaceExecutionSource ?? inherited?.modeSource ?? null,
+      deliveryPolicy: task.workspaceDeliveryPolicy ?? inherited?.deliveryPolicy ?? null,
+      workspaceIntent: task.workspaceIntent ?? inherited?.workspaceIntent ?? null,
+      targetPaths: task.workspaceTargetPaths ?? inherited?.targetPaths ?? [],
+      createdAt: now,
+      updatedAt: now,
+    });
   }
 
   async recoverCancellations(taskId?: string): Promise<void> {
@@ -885,7 +1217,7 @@ export class KernelExecutionRuntime {
     const task = this.deps.taskRuntimeService.findTask(activeTaskId);
     if (!task) return { releasedStaleSlot: false, reconciliation: [] };
     const reconciliation = this.reconcileCancellationApplications(activeTaskId);
-    if (['cancelled', 'done', 'failed', 'archived'].includes(task.status)) {
+    if (['cancelled', 'succeeded', 'failed'].includes(task.status)) {
       // §4.1: never release the slot while dispatch/publication/backend/lease
       // residue remains — releaseAdmission re-checks every blocking category.
       const released = this.deps.onTaskTerminal
@@ -929,7 +1261,13 @@ export class KernelExecutionRuntime {
         buildSnapshot: () => ({
           schemaVersion: 5,
           type: 'availability_recovery',
-          task: task ? { id: task.id, status: task.status } : null,
+          task: task ? {
+            id: task.id,
+            status: task.status,
+            ...(task.workspaceId ? { workspaceId: task.workspaceId } : {}),
+            ...(task.executionMode ? { executionMode: task.executionMode } : {}),
+            ...(task.workspaceDeliveryPolicy ? { deliveryPolicy: task.workspaceDeliveryPolicy } : {}),
+          } : null,
           activeGenerationId: activeRevision?.generationId ?? null,
           activeGraphRevision: activeRevision?.revision ?? null,
           deferredPlan: request.deferredPlan,
@@ -948,7 +1286,11 @@ export class KernelExecutionRuntime {
             }
             const currentRequest = this.deps.generationReplanRepo.find(decision.action.replanRequestId);
             const currentTask = this.deps.taskRuntimeService.findTask(decision.action.taskId);
-            if (currentRequest?.status !== 'waiting_for_availability' || currentTask?.status !== 'blocked') {
+            if (currentRequest?.status !== 'waiting_for_availability'
+              || !currentTask
+              || currentTask.status === 'succeeded'
+              || currentTask.status === 'failed'
+              || currentTask.status === 'cancelled') {
               return null;
             }
             const result = this.deps.workGraphRuntimeService.apply({
@@ -967,9 +1309,9 @@ export class KernelExecutionRuntime {
             });
             if (result.outcome === 'not_executable') return null;
             this.deps.generationReplanRepo.resolve(currentRequest.id, new Date().toISOString());
-            this.lifecycle.unblockTask({
-              taskId: currentTask.id,
-              actor: 'kernel-execution-runtime',
+            this.reconcileTaskState(currentTask.id, {
+              decisionId: decision.id,
+              operationKey: `availability_activated:${currentRequest.id}`,
               reason: 'deferred availability proposal activated',
             });
             this.deps.callbacks.refreshRuntimeState();
@@ -997,6 +1339,7 @@ export class KernelExecutionRuntime {
   ): Promise<CancellationReceipt> {
     let receipt: CancellationReceipt | null = null;
     let controlError: string | null = null;
+    let authorizedPublicationIds = 0;
     const workflow = new DurableKernelWorkflow({
       productionAuthorization: this.deps.productionAuthorization,
       kernel: this.deps.controlKernel,
@@ -1079,31 +1422,85 @@ export class KernelExecutionRuntime {
           }
           if (decision.action.type === 'accept_uncertified_result' || decision.action.type === 'retry_uncertified_result') {
             const action = decision.action;
-            if (action.type === 'accept_uncertified_result') {
-              await this.deps.attemptRunner.stageAcceptedResult(action);
-            } else {
-              const pending = this.deps.cancellationCoordinator.buildSnapshot(action.taskId).uncertifiedResult;
-              if (!pending || pending.attemptId !== action.attemptId || pending.resultId !== action.resultId
-                || this.deps.workGraphRevisionRepo.findActive(action.taskId)?.generationId !== action.generationId
-                || this.deps.workGraphRevisionRepo.findActive(action.taskId)?.revision !== action.graphRevision) {
-                controlError = '该结果操作已过期，请刷新任务后重试。';
-                return null;
-              }
-              this.lifecycle.transitionSubtask({ subtaskId: action.subtaskId, to: 'ready',
-                actor: 'kernel-execution-runtime', reason: 'explicit user retry authorized by Kernel', changes: { error: null } });
+            const pending = this.deps.cancellationCoordinator.buildSnapshot(action.taskId).uncertifiedResult;
+            const graph = this.deps.workGraphRevisionRepo.findActive(action.taskId);
+            if (!pending || pending.attemptId !== action.attemptId || pending.resultId !== action.resultId
+              || graph?.generationId !== action.generationId || graph.revision !== action.graphRevision) {
+              controlError = '该结果操作已过期，请刷新任务后重试。';
+              return null;
             }
-            const task = this.deps.taskRuntimeService.findTask(action.taskId);
-            if (task?.status === 'blocked') this.lifecycle.unblockTask({ taskId: task.id,
-              actor: 'kernel-execution-runtime', reason: decision.reason });
-            if (task?.status === 'parked') this.lifecycle.resumeParkedTask({ taskId: task.id,
-              actor: 'kernel-execution-runtime', reason: decision.reason });
-            if (this.deps.taskRuntimeService.findTask(action.taskId)?.status === 'ready') {
-              this.lifecycle.transitionTask({ taskId: action.taskId, to: 'running',
-                actor: 'kernel-execution-runtime', reason: decision.reason });
-            }
+            const operationKey = action.type === 'accept_uncertified_result'
+              ? TaskOperationKeys.acceptResult(action.attemptId, action.resultId)
+              : TaskOperationKeys.retryResult(action.attemptId, action.resultId);
+            const observation = this.eventFromDecision(decision, {
+              type: 'dispatch_requested', taskId: action.taskId,
+              reason: 'explicit result decision released the authorized frontier',
+            });
+            // Only local durable writes here. Acceptance, continuation, queue,
+            // application and observation either all commit or all roll back.
+            this.deps.effectOutboxRepo.transaction(() => {
+              this.deps.taskStateAuthority.reconcile({
+                taskId: action.taskId, decisionId: decision.id, operationKey,
+                actor: 'kernel-execution-runtime', reason: decision.reason,
+                resolvedResult: { attemptId: action.attemptId, resultId: action.resultId },
+                facts: () => {
+                  if (action.type === 'retry_uncertified_result') {
+                    this.lifecycle.transitionSubtask({ subtaskId: action.subtaskId, to: 'ready',
+                      actor: 'kernel-execution-runtime', reason: 'explicit user retry authorized by Kernel',
+                      changes: { error: null } });
+                  }
+                  this.deps.effectOutboxRepo.enqueue({
+                    id: `result_continuation:${operationKey}`, decisionId: decision.id,
+                    taskId: action.taskId, effectType: 'task_result_continuation',
+                    payload: { action }, availableAt: new Date().toISOString(),
+                  });
+                  const task = this.deps.taskRuntimeService.findTask(action.taskId)!;
+                  const scheduler = this.deps.conversationTaskSchedulerRepo;
+                  if (scheduler && task.conversationId) {
+                    const payload = scheduler.getQueuedPayload(task.id);
+                    scheduler.enqueueTask(task.id, task.conversationId, new Date().toISOString(), {
+                      ...(payload ?? {}), requestText: payload?.requestText ?? task.goal,
+                      generationId: action.generationId, graphRevision: action.graphRevision,
+                      workGraph: payload?.workGraph ?? null,
+                      authorizedBindingsBySubtask: payload?.authorizedBindingsBySubtask ?? null,
+                      workspaceId: task.workspaceId ?? null,
+                      plannerSessionId: task.ownerPlannerSessionId ?? this.sessionId,
+                      executionMode: 'follow-up', schedulingReason: 'explicit result decision',
+                    });
+                  }
+                  return [`result:${action.resultId}`];
+                },
+              });
+              this.deps.kernelWorkflowStore.markApplied(decision.id, observation, new Date().toISOString());
+            });
             receipt = { taskId: action.taskId, affectedSubtaskIds: [action.subtaskId], cleanupAttemptIds: [] };
-            return this.eventFromDecision(decision, { type: 'dispatch_requested', taskId: action.taskId,
-              reason: 'explicit result decision released the authorized frontier' });
+            return observation;
+          }
+          if (decision.action.type === 'authorize_workspace_delivery') {
+            const action = decision.action;
+            const graph = this.deps.workGraphRevisionRepo.findActive(action.taskId);
+            const candidates = this.deps.publicationRepo
+              .listAwaitingAcceptance(action.taskId, action.generationId);
+            const expected = new Set(action.publicationIds);
+            if (
+              graph?.generationId !== action.generationId
+              || graph.revision !== action.graphRevision
+              || candidates.length !== expected.size
+              || candidates.some(candidate => !expected.has(candidate.id))
+            ) {
+              controlError = '候选变更已变化，请刷新任务后重试。';
+              return null;
+            }
+            authorizedPublicationIds = this.deps.publicationRepo.authorizeDelivery(
+              action.publicationIds,
+              new Date().toISOString(),
+            );
+            receipt = { taskId: action.taskId, affectedSubtaskIds: [], cleanupAttemptIds: [] };
+            return this.eventFromDecision(decision, {
+              type: 'dispatch_requested',
+              taskId: action.taskId,
+              reason: 'explicit acceptance released the candidate Workspace delivery',
+            });
           }
           if (decision.action.type === 'reject_request' || decision.action.type === 'block_work') {
             controlError = decision.reason;
@@ -1125,6 +1522,7 @@ export class KernelExecutionRuntime {
         'accept_partial_result',
         'accept_uncertified_result',
         'retry_uncertified_result',
+        'authorize_workspace_delivery',
         'reject_request',
         'block_work',
         'no_op',
@@ -1135,8 +1533,13 @@ export class KernelExecutionRuntime {
     if (controlError) throw new Error(controlError);
     if (!receipt) throw new Error('Task control decision produced no receipt');
     if (event.type === 'partial_result_acceptance_requested' || event.type === 'task_result_retry_requested') {
-      if (!['done', 'cancelled', 'archived', 'failed'].includes(this.deps.taskRuntimeService.findTask(event.taskId!)?.status ?? '')) {
-        await this.recoverDue(event.taskId!, 'user result decision released publication or retry');
+      if (!['succeeded', 'cancelled', 'failed'].includes(this.deps.taskRuntimeService.findTask(event.taskId!)?.status ?? '')) {
+        await this.recoverDue(
+          event.taskId!,
+          authorizedPublicationIds > 0
+            ? 'explicit acceptance released candidate Workspace delivery'
+            : 'user result decision released publication or retry',
+        );
       }
     }
     return receipt;
@@ -1236,18 +1639,128 @@ export class KernelExecutionRuntime {
     return this.disposePromise;
   }
 
+  private readonly resultContinuations = new Map<string, Promise<boolean>>();
+
+  private resumeResultContinuations(taskId: string): Promise<boolean> {
+    const running = this.resultContinuations.get(taskId);
+    if (running) return running;
+    const work = this.drainResultContinuations(taskId).finally(() => this.resultContinuations.delete(taskId));
+    this.resultContinuations.set(taskId, work);
+    return work;
+  }
+
+  private async drainResultContinuations(taskId: string): Promise<boolean> {
+    const effects = (this.deps.effectOutboxRepo?.listByTaskAndType?.(taskId, 'task_result_continuation') ?? [])
+      .filter(effect => effect.status !== 'sent');
+    if (effects.length === 0) return true;
+    const task = this.deps.taskRuntimeService.findTask(taskId);
+    const scheduler = this.deps.conversationTaskSchedulerRepo;
+    if (!task || !['queued', 'running'].includes(task.status)) return false;
+    if (!scheduler || !task.conversationId) return false;
+    let slot = scheduler.getSlot(task.conversationId);
+    if (slot.state === 'free') {
+      // The existing account scheduler owns promotion when installed. A local
+      // single-Task Session uses the same durable queue and reservation path.
+      if (this.deps.onTaskTerminal) return false;
+      if (scheduler.listSlots().some(item => item.activeTaskId !== null)) return false;
+      scheduler.promoteNextQueued(task.conversationId, new Date().toISOString());
+      slot = scheduler.getSlot(task.conversationId);
+    }
+    if (slot.activeTaskId !== taskId || slot.state !== 'occupied') return false;
+    scheduler.markRunning(taskId, new Date().toISOString());
+    for (const effect of effects) {
+      const action = effect.payload.action as Extract<KernelDecision['action'],
+        { type: 'accept_uncertified_result' | 'retry_uncertified_result' }>;
+      const revision = this.deps.workGraphRevisionRepo.findActive(taskId);
+      if (action.taskId !== taskId || revision?.generationId !== action.generationId
+        || revision.revision !== action.graphRevision) return false;
+      // Staging is idempotent by publication id and validates the current slot
+      // before/after Git. Retrying this local effect does not re-run an Executor.
+      if (effect.status === 'uncertain' || effect.status === 'failed') {
+        this.deps.effectOutboxRepo.resolve(effect.id, 'retry', new Date().toISOString());
+      }
+      const delivered = await this.deps.effectOutboxRepo.deliver(effect.id, async () => {
+        if (action.type === 'accept_uncertified_result') await this.deps.attemptRunner.stageAcceptedResult(action);
+        return action.resultId;
+      }, () => new Date().toISOString());
+      if (delivered.status !== 'sent') return false;
+      this.reconcileTaskState(taskId, { decisionId: effect.decisionId,
+        operationKey: `result_started:${effect.id}`, reason: 'reserved result continuation started' });
+    }
+    return true;
+  }
+
+  /**
+   * Retires internal Worktree execution directories that can no longer produce
+   * a side effect. Never deletes a user Workspace and never removes a directory
+   * while any publication, lease, dispatch, wake, replan or uncertain
+   * application is still open.
+   */
+  async cleanupWorktreeExecutions(taskId?: string): Promise<WorktreeCleanupOutcome> {
+    const service = this.worktreeCleanupService();
+    if (!service) return { removed: [], retained: [], failures: [] };
+    if (taskId) return service.cleanupTask(taskId);
+    return service.cleanupTerminalTasks();
+  }
+
+  private worktreeCleanupService(): WorktreeExecutionCleanupService | null {
+    const store = this.deps.workspaceStore;
+    const bindings = this.deps.workspaceExecutionBindingRepo;
+    if (!store || !bindings) return null;
+    return new WorktreeExecutionCleanupService({
+      workspaceStore: store,
+      bindingRepo: bindings,
+      subtaskRepo: this.deps.subtaskRepo,
+      publicationReader: {
+        hasUndecidedDelivery: (taskId, generationId) => (
+          this.deps.publicationRepo.hasUndecidedDelivery(taskId, generationId)
+        ),
+      },
+      // The coordinator exposes exactly the safe-shutdown residue categories
+      // (dispatch, publication, leases, wakes, replans, uncertain applications).
+      residueReader: {
+        blockingReasons: (taskId, generationId) => (
+          this.deps.cancellationCoordinator.completionBlockedReasons(taskId, generationId ?? null)
+        ),
+      },
+      findTask: taskId => this.deps.taskRuntimeService.findTask(taskId),
+      pruneManagedWorktrees: async (taskId, generationId) => {
+        await new ManagedGitWorkspaceService(store).pruneMissingWorktrees({ taskId, generationId });
+      },
+      removeManagedRepository: async (taskId, generationId) => {
+        const git = new ManagedGitWorkspaceService(store);
+        await store.removeManagedRepositoryUri(
+          pathToFileURL(git.repositoryPathFor({ taskId, generationId })).href,
+        );
+      },
+      recordDiagnostic: input => this.appendExecutionTrace({
+        phase: 'verification',
+        actor: 'runtime',
+        kind: input.kind,
+        status: input.kind === 'cleanup_failed' ? 'failed' : 'blocked',
+        title: 'Worktree execution directory cleanup',
+        summary: input.reason,
+        details: { taskId: input.taskId, generationId: input.generationId },
+        eventKey: `${input.taskId}:${input.generationId}:${input.kind}`,
+        taskId: input.taskId,
+      }),
+    });
+  }
+
   async recoverDue(taskId: string, reason = 'durable workflow recovery'): Promise<boolean> {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     if (!task) return false;
+    if (await this.resumeRemainingWork(taskId)) return true;
     const beforeStatus = task.status;
     const beforeUpdatedAt = task.updatedAt;
+    if (!await this.resumeResultContinuations(taskId)) return false;
     await this.recoverLocalServiceOperations(taskId);
     await this.execute(this.prepareExecution({
       taskId,
       request: {
         userPrompt: task.goal,
         contextTaskId: task.id,
-        executionMode: task.status === 'blocked' ? 'resume-blocked' : 'follow-up',
+        executionMode: task.status === 'needs_action' ? 'resume-blocked' : 'follow-up',
         origin: 'system',
         schedulingReason: reason,
       },
@@ -1703,11 +2216,9 @@ export class KernelExecutionRuntime {
       // observation. Returning early there would strand the Task, so the guard
       // only excludes terminal states; the observation event id is derived from
       // the Decision and is deduplicated by the Kernel inbox.
-      if (['done', 'archived', 'cancelled'].includes(task.status)) return null;
-      if (
-        !['blocked', 'parked', 'ready', 'running'].includes(task.status)
-        && !(task.status === 'created' && action.recovery)
-      ) return null;
+      if (task.status === 'succeeded' || task.status === 'failed' || task.status === 'cancelled') {
+        return null;
+      }
       const resumeRevision = this.deps.workGraphRevisionRepo.findActive(action.taskId);
       if (!resumeRevision || resumeRevision.generationId !== action.generationId || resumeRevision.revision !== action.graphRevision) return null;
       if (action.retireReplanRequestId) {
@@ -1738,28 +2249,12 @@ export class KernelExecutionRuntime {
           });
         }
       }
-      if (task.status === 'parked') {
-        this.lifecycle.resumeParkedTask({
-          taskId: task.id,
-          actor: 'kernel-execution-runtime',
-          reason: `Kernel-authorized resume after ${action.blockerCategory} blocker`,
-        });
-      } else if (task.status === 'blocked') {
-        this.lifecycle.unblockTask({
-          taskId: task.id,
-          actor: 'kernel-execution-runtime',
-          reason: `Kernel-authorized resume after ${action.blockerCategory} blocker`,
-        });
-      }
-      const current = this.deps.taskRuntimeService.findTask(task.id);
-      if (current?.status === 'ready') {
-        this.lifecycle.transitionTask({
-          taskId: task.id,
-          to: 'running',
-          actor: 'kernel-execution-runtime',
-          reason: 'authorized resume re-entered execution',
-        });
-      }
+      this.reconcileTaskState(task.id, {
+        decisionId: decision.id,
+        operationKey: `resume:${decision.id}`,
+        resumeAuthorized: true,
+        reason: `Kernel-authorized resume after ${action.blockerCategory} blocker`,
+      });
       this.deps.callbacks.refreshRuntimeState();
       if (action.recovery) {
         const recoverySubtask = this.deps.subtaskRepo.findById(action.recovery.subtaskId);
@@ -1800,8 +2295,15 @@ export class KernelExecutionRuntime {
       });
     }
     if (action.type === 'dispatch_batch') {
+      this.reconcileTaskState(action.taskId, { decisionId: decision.id,
+        operationKey: `dispatch_resume:${decision.id}`, resumeAuthorized: true,
+        reason: 'Kernel authorized this runnable frontier' });
       const generationId = this.deps.workGraphRevisionRepo.findActive(action.taskId)?.generationId
         ?? `generation_${action.taskId}_1`;
+      const executionBinding = await this.bindWorkspaceExecution(action.taskId, generationId);
+      const executionBindingFingerprint = executionBinding
+        ? workspaceExecutionBindingFingerprint(executionBinding)
+        : null;
       const sourceEvent = this.deps.kernelWorkflowStore?.findEvent?.(decision.eventId);
       const retryWake = sourceEvent?.type === 'timer_tick' && sourceEvent.wakeKind === 'retry'
         ? this.deps.retryWakeRepo?.findById(sourceEvent.retry?.wakeId ?? '')
@@ -1817,6 +2319,7 @@ export class KernelExecutionRuntime {
           {
             generationId,
             configurationRevision: decision.configurationRevision,
+            executionBindingFingerprint,
             attempts: Object.fromEntries(action.items.map(item => [
               item.attemptId,
               {
@@ -1828,12 +2331,12 @@ export class KernelExecutionRuntime {
           new Date().toISOString(),
         );
         const task = this.deps.taskRuntimeService.findTask(action.taskId);
-        if (task?.status === 'blocked' && task.dependencies.every(dependency => (
+        if (task && (task.status === 'needs_action' || task.status === 'queued') && task.dependencies.every(dependency => (
           dependency.status !== 'waiting' || dependency.type === 'kernel_retry'
         ))) {
-          this.lifecycle.unblockTask({
-            taskId: action.taskId,
-            actor: 'kernel-execution-runtime',
+          this.reconcileTaskState(action.taskId, {
+            decisionId: decision.id,
+            operationKey: `retry_wake:${retryWake.wakeId}`,
             reason: `Retry Wake ${retryWake.wakeId} authorized continuation`,
           });
         }
@@ -1870,6 +2373,7 @@ export class KernelExecutionRuntime {
         {
           generationId,
           configurationRevision: decision.configurationRevision,
+          executionBindingFingerprint,
           attempts,
         },
         input.supervisorContext,
@@ -1946,7 +2450,7 @@ export class KernelExecutionRuntime {
       // branch, retain the durable Task-level wait for the existing timer
       // wake and recovery path.
       if (!activeSibling) {
-        await this.blockTask(
+        await this.blockTaskInternal(
           action.taskId, waitingReason,
           input.finishExecution, 'kernel_capacity',
         );
@@ -1982,7 +2486,7 @@ export class KernelExecutionRuntime {
         action.wakeId,
         new Date().toISOString(),
       );
-      await this.blockTask(
+      await this.blockTaskInternal(
         action.taskId,
         action.reason,
         input.finishExecution,
@@ -1991,7 +2495,7 @@ export class KernelExecutionRuntime {
       return null;
     }
     if (action.type === 'wait_for_partition') {
-      await this.blockTask(
+      await this.blockTaskInternal(
         action.taskId,
         `resource partition is waiting for leases: ${action.conflictingLeaseIds.join(', ')}`,
         input.finishExecution,
@@ -2045,10 +2549,10 @@ export class KernelExecutionRuntime {
             },
           });
         }
-        if (task.status === 'blocked') {
-          this.lifecycle.unblockTask({
-            taskId: task.id,
-            actor: 'kernel-execution-runtime',
+        if (task.status === 'needs_action' || task.status === 'queued') {
+          this.reconcileTaskState(task.id, {
+            decisionId: decision.id,
+            operationKey: `workspace_recovery:${decision.id}`,
             reason: `workspace recovery for ${action.workspaceId}`,
           });
         }
@@ -2078,10 +2582,10 @@ export class KernelExecutionRuntime {
           },
         });
       }
-      if (task.status === 'blocked') {
-        this.lifecycle.unblockTask({
-          taskId: task.id,
-          actor: 'kernel-execution-runtime',
+      if (task.status === 'needs_action' || task.status === 'queued') {
+        this.reconcileTaskState(task.id, {
+          decisionId: decision.id,
+          operationKey: `workspace_recovery:${decision.id}`,
           reason: `recovering workspace ${action.workspaceId}`,
         });
       }
@@ -2111,7 +2615,7 @@ export class KernelExecutionRuntime {
       // A local blocker must not freeze sibling attempts or their completion.
       // The next Kernel dispatch evaluates the remaining independent frontier.
       if (!action.subtaskId) {
-        await this.blockTask(action.taskId, decision.reason, input.finishExecution);
+        await this.blockTaskInternal(action.taskId, decision.reason, input.finishExecution);
       }
       this.appendExecutionTrace({
         phase: 'verification',
@@ -2151,6 +2655,13 @@ export class KernelExecutionRuntime {
         '',
         '结果已安全保存，完成验收待处理。请选择接受并交付或重新执行。',
       );
+      // The uncertified result is a durable pending action: the authority turns
+      // it into `needs_action` (or keeps `running` while a sibling continues).
+      this.reconcileTaskState(action.taskId, {
+        decisionId: decision.id,
+        operationKey: `await_user_decision:${decision.id}`,
+        reason: decision.reason,
+      });
       this.deps.callbacks.refreshRuntimeState();
       return this.eventFromDecision(decision, {
         type: 'dispatch_requested', taskId: action.taskId,
@@ -2159,11 +2670,10 @@ export class KernelExecutionRuntime {
     }
     if (action.type === 'park_for_replan') {
       const task = this.deps.taskRuntimeService.findTask(action.taskId);
-      if (task && task.status !== 'parked') {
-        this.lifecycle.transitionTask({
-          taskId: task.id,
-          to: 'parked',
-          actor: 'kernel-execution-runtime',
+      if (task && task.status !== 'needs_action' && task.status !== 'running') {
+        this.reconcileTaskState(task.id, {
+          decisionId: decision.id,
+          operationKey: `replan_park:${decision.id}`,
           reason: decision.reason,
         });
       }
@@ -2173,7 +2683,7 @@ export class KernelExecutionRuntime {
     if (action.type === 'complete_task') {
       const effectId = `effect_${decision.id}_task_completion`;
       if (
-        this.deps.taskRuntimeService.findTask(action.taskId)?.status === 'done'
+        this.deps.taskRuntimeService.findTask(action.taskId)?.status === 'succeeded'
         && this.deps.effectOutboxRepo.find(effectId)
       ) {
         return null;
@@ -2186,7 +2696,7 @@ export class KernelExecutionRuntime {
           decision.id,
         );
       if (completionBlockedReasons.length > 0) {
-        await this.blockTask(
+        await this.blockTaskInternal(
           action.taskId,
           `Task completion blocked by runtime residue: ${completionBlockedReasons.join(', ')}`,
           input.finishExecution,
@@ -2206,6 +2716,9 @@ export class KernelExecutionRuntime {
         } : undefined,
         finishExecution: input.finishExecution,
       });
+      // Terminal Task: retire the internal Worktree execution directory when no
+      // residue can still produce a side effect.
+      await this.cleanupWorktreeExecutions(action.taskId);
       return null;
     }
     if (action.type === 'queue_generation_replan') {
@@ -2283,7 +2796,7 @@ export class KernelExecutionRuntime {
         // authorized by this Decision.
         return null;
       }
-      await this.blockTask(
+      await this.blockTaskInternal(
         action.taskId,
         action.explanation,
         input.finishExecution,
@@ -2353,6 +2866,10 @@ export class KernelExecutionRuntime {
   }): Promise<KernelEvent> {
     const { item } = input;
     let request = input.request;
+    const binding = await this.bindWorkspaceExecution(item.taskId, item.generationId);
+    if (binding) {
+      request = { ...request, workspacePath: binding.canonicalPath };
+    }
     if (!request.workspacePath && this.deps.resolveWorkspacePath) {
       // Recovery/timer requests do not carry the conversation workspace;
       // resolve it from the task so continuation attempts execute against
@@ -2366,15 +2883,6 @@ export class KernelExecutionRuntime {
       throw new Error(`attempt ${item.attemptId} has no workspace source: dispatch payload is missing its workspacePath`);
     }
     const sourceTask = this.deps.taskRuntimeService.findTask(item.taskId);
-    if (sourceTask?.publicProject && sourceTask.publicTaskDirectory) {
-      const workspace = await realpath(request.workspacePath);
-      const project = resolve(workspace, sourceTask.publicTaskDirectory);
-      const rel = relative(workspace, project);
-      if (!rel || isAbsolute(rel) || rel.split(sep).includes('..') || await realpath(project) !== project) {
-        throw new Error('现有项目目录不可用或超出 Workspace');
-      }
-      request = { ...request, workspacePath: project };
-    }
     if (this.deps.preflightWorkspacePath) {
       request = { ...request, workspacePath: await this.deps.preflightWorkspacePath(request.workspacePath!) };
     }
@@ -2461,32 +2969,17 @@ export class KernelExecutionRuntime {
     if (!subtask) throw new Error(`Kernel-authorized Subtask not found: ${item.subtaskId}`);
     const task = this.deps.taskRuntimeService.findTask(item.taskId);
     if (!task) throw new Error(`Kernel-authorized Task not found: ${item.taskId}`);
-    const resumedFromBlocked = task.status === 'blocked';
+    const resumedFromBlocked = task.status === 'needs_action';
     for (const resource of input.request.newlyProvidedResources ?? []) {
       this.deps.taskRuntimeService.attachResource(task.id, resource);
     }
-    if (task.status === 'created') {
-      this.lifecycle.transitionTask({
-        taskId: task.id,
-        to: 'ready',
-        actor: 'kernel-execution-runtime',
-        reason: 'authorized dispatch admitted the Task',
-      });
-    } else if (task.status === 'parked') {
-      this.lifecycle.resumeParkedTask({
-        taskId: task.id,
-        actor: 'kernel-execution-runtime',
-        reason: 'authorized dispatch resumed the parked Task',
-      });
-    }
-    if (this.deps.taskRuntimeService.findTask(task.id)?.status === 'ready') {
-      this.lifecycle.transitionTask({
-        taskId: task.id,
-        to: 'running',
-        actor: 'kernel-execution-runtime',
-        reason: 'attempt dispatch re-entered execution',
-      });
-    }
+    // The slot is already held here, so the authority concludes `running` for a
+    // Task with runnable work and `queued`/`needs_action` otherwise.
+    this.reconcileTaskState(task.id, {
+      decisionId: item.decisionId,
+      operationKey: `dispatch_admitted:${item.attemptId}`,
+      reason: 'authorized attempt dispatch entered execution',
+    });
     this.deps.callbacks.setRunningExecutorName(
       item.taskId,
       item.subtaskId,
@@ -3029,6 +3522,7 @@ export class KernelExecutionRuntime {
       this.deps.callbacks.appendOutput(`Error: task not found ${taskId}`);
       return;
     }
+    if (!await this.resumeResultContinuations(taskId)) return;
     const graphState = input.graphState;
 
     const executionId = `exec_${generateInteractionId()}`;
@@ -3062,6 +3556,7 @@ export class KernelExecutionRuntime {
               : classifyResumeBlocker(
                   request.recoveryTrigger?.blockedReason,
                   this.deps.attemptReceiptRepo.listByTask(taskId)[0]?.failure,
+                  this.deps.taskRuntimeService.findTask(taskId)?.stateDetail.reason.code,
                 ),
           sourceInputExcerpt: request.recoveryTrigger?.sourceInputExcerpt
             ?? request.userPrompt.slice(0, 500),
@@ -3244,6 +3739,16 @@ export class KernelExecutionRuntime {
         });
       }
     }
+    // A Task can reach a terminal conclusion through the state authority (for
+    // example a delivered publication satisfies the last requirement) without a
+    // separate `complete_task` decision. Retiring the internal Worktree
+    // execution directory belongs to that same work chain, so it is awaited
+    // here instead of racing the authority.
+    if (TERMINAL_TASK_STATUSES.includes(
+      this.deps.taskRuntimeService.findTask(taskId)?.status as 'succeeded',
+    )) {
+      await this.cleanupWorktreeExecutions(taskId);
+    }
   }
 
   private async drainPublications(input: {
@@ -3269,10 +3774,61 @@ export class KernelExecutionRuntime {
           await this.attemptSupervisor.drain(input.taskId);
           return;
         }
-        if (outcome.type === 'cancelled' || outcome.type === 'delivery_failed') continue;
+        if (outcome.type === 'cancelled') continue;
+        if (outcome.type === 'awaiting_acceptance') {
+          // The candidate change set is ready but the target Workspace must stay
+          // untouched until the user accepts it. The Task converges to
+          // `needs_action` with the durable acceptance action; re-draining would
+          // just rediscover the same undecided candidate.
+          this.reconcileTaskState(outcome.taskId, {
+            decisionId: `publication_acceptance_${outcome.publicationId}`,
+            operationKey: `publication_acceptance:${outcome.publicationId}`,
+            reason: 'candidate Workspace changes await explicit acceptance',
+          });
+          continue;
+        }
+        if (outcome.type === 'delivery_failed') {
+          // A failed delivery is a durable operation result: record it and let
+          // the authority expose the explicit delivery recovery action.
+          this.recordOperationResult({
+            taskId: outcome.taskId,
+            operationKey: `delivery:${outcome.publicationId}`,
+            operationKind: 'delivery',
+            outcome: 'definite_failure',
+            reasonCode: 'delivery_failed',
+            message: '文件交付失败。',
+            evidenceRefs: [`publication:${outcome.publicationId}`],
+          });
+          this.reconcileTaskState(outcome.taskId, {
+            decisionId: `publication_delivery_${outcome.publicationId}`,
+            operationKey: `publication_delivery:${outcome.publicationId}`,
+            reason: 'publication delivery failed',
+          });
+          continue;
+        }
         integrated = true;
+        // A successful delivery is a durable operation result, so the Task
+        // conclusion can be derived from it (design §5.1: 操作统一上报事实).
+        if (this.deps.publicationRepo.delivery(outcome.publicationId)?.status === 'succeeded') {
+          this.recordOperationResult({
+            taskId: outcome.taskId,
+            operationKey: `delivery:${outcome.publicationId}`,
+            operationKind: 'delivery',
+            outcome: 'success',
+            reasonCode: null,
+            message: '文件交付成功。',
+            evidenceRefs: [`publication:${outcome.publicationId}`],
+          });
+        }
         this.projectIntegratedPublication(outcome);
         await this.startRequestedPublishedService(outcome.taskId);
+        // Integrated publication and successful delivery are durable facts; the
+        // authority recomputes the conclusion from them.
+        this.reconcileTaskState(outcome.taskId, {
+          decisionId: `publication_integrated_${outcome.publicationId}`,
+          operationKey: `publication_integrated:${outcome.publicationId}`,
+          reason: 'publication integrated',
+        });
       }
       if (integrated) {
         const lastIntegrated = [...outcomes].reverse().find(
@@ -3295,33 +3851,126 @@ export class KernelExecutionRuntime {
         });
         await this.attemptSupervisor.drain(input.taskId);
       }
+      // The drain changed a publication/delivery fact (integrated, or a delivery
+      // that was retried here), so the Task conclusion must be re-derived from
+      // it in the same work chain (design §5.1: 统一操作收尾). A drain that
+      // changed nothing leaves the surrounding decision to conclude.
+      if (outcomes.length > 0) {
+        this.reconcileTaskState(input.taskId, {
+          decisionId: `publication_drain:${input.executionId}`,
+          operationKey: `publication_drain:${input.executionId}:${this.deps.taskRuntimeService.findTask(input.taskId)?.stateVersion}`,
+          reason: 'publication drain converged',
+        });
+      }
+      // Only an integration can unblock the next publication in the serial
+      // ordering. A candidate awaiting acceptance, a cancelled publication and a
+      // settled delivery failure are stable states that an explicit user action
+      // re-drives; re-draining them here would spin forever on the same row.
+      if (!integrated) return;
     }
   }
 
   private async startRequestedPublishedService(taskId: string): Promise<void> {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     const manager = this.deps.managedLocalServices;
-    if (!task?.startServiceAfterPublish || ['done', 'cancelled', 'failed', 'archived'].includes(task.status)) return;
-    if (!manager || !await manager.isPublished(taskId)) {
+    if (!task?.startServiceAfterPublish) return;
+    if (task.status === 'succeeded' || task.status === 'failed' || task.status === 'cancelled') return;
+    const resourceTaskId = task.retryOfTaskId ?? taskId;
+    const inPlaceWorkspace = task.executionMode === 'in_place';
+    if (!manager || (!inPlaceWorkspace && !await manager.isPublished(resourceTaskId))) {
       if (this.deps.subtaskRepo.listActiveByTask(taskId).every(subtask => subtask.status === 'done')) {
         this.deps.callbacks.appendOutput('代码已交付，但缺少可启动的服务规格或受管服务能力；服务尚未就绪。');
+        // A missing required service specification is an execution contract
+        // failure, not a generic blocker: record it as a durable result.
+        this.recordOperationResult({
+          taskId,
+          operationKey: 'service:start',
+          operationKind: 'service',
+          outcome: this.deps.managedLocalServices ? 'definite_failure' : 'unknown',
+          reasonCode: this.deps.managedLocalServices
+            ? 'service_start_failed'
+            : 'external_outcome_unknown',
+          message: this.deps.managedLocalServices
+            ? PUBLISHED_CODE_MISSING_SERVICE_SPECIFICATION
+            : '缺少受管服务能力，无法确认服务是否启动。',
+          evidenceRefs: [`task:${taskId}`],
+        });
+        this.reconcileTaskState(taskId, {
+          decisionId: `service_start:${taskId}`,
+          operationKey: `service_start:${taskId}`,
+          reason: 'required local service could not be started',
+        });
       }
       return;
     }
     try {
-      const spec = await manager.readSpecification(taskId);
+      const spec = await manager.readSpecification(resourceTaskId);
       // A failed or stopped service is never implicitly repeated. The explicit
       // restart operation is the only owner of a second launch.
       const previous = manager.find(spec.serviceId);
-      const view = previous ? await manager.status(spec.serviceId) : await this.manageLocalService(taskId, 'start', undefined, false);
+      const view = previous && !task.retryOfTaskId ? await manager.status(spec.serviceId)
+        : await this.manageLocalService(taskId, previous ? 'restart' : 'start', previous?.specification.serviceId, false);
       this.deps.callbacks.appendOutput(`服务 ${view.serviceId}：${view.state}；${view.message ?? ''}；${view.url}`);
+      this.recordOperationResult({
+        taskId,
+        operationKey: 'service:start',
+        operationKind: 'service',
+        outcome: view.state === 'healthy' ? 'success'
+          : view.state === 'failed' ? 'definite_failure' : 'unknown',
+        reasonCode: view.state === 'healthy' ? null
+          : view.state === 'failed'
+            ? (/health/u.test(view.message ?? '') ? 'service_health_timeout' : 'service_start_failed')
+            : 'external_outcome_unknown',
+        message: view.message ?? view.state,
+        evidenceRefs: [`service:${view.serviceId}`],
+      });
+      this.reconcileTaskState(taskId, {
+        decisionId: `service_start:${taskId}:${spec.serviceId}:${view.state}`,
+        operationKey: `service_start:${taskId}:${spec.serviceId}:${view.state}`,
+        reason: `local service ${spec.serviceId} is ${view.state}`,
+      });
     } catch (error) {
-      if (error instanceof Error && error.message === PUBLISHED_CODE_MISSING_SERVICE_SPECIFICATION) {
-        this.deps.callbacks.appendOutput(`${error.message}；服务尚未就绪。`);
+      const message = error instanceof Error ? error.message : String(error);
+      const normalized = normalizeExecutorFailure(message);
+      const code = /EADDRINUSE|port_in_use/iu.test(message) ? 'port_in_use'
+        : /ENOENT/iu.test(message) ? 'command_not_found'
+        : /环境引用不可用|credential|authentication/iu.test(message) ? 'input_required'
+        : normalized.code;
+      if (message === PUBLISHED_CODE_MISSING_SERVICE_SPECIFICATION) {
+        this.deps.callbacks.appendOutput(`${message}；服务尚未就绪。`);
       } else {
         this.deps.callbacks.appendOutput('代码已交付，但服务启动失败。请查看 /service status 或显式重试启动。');
       }
+      // A definite start failure (including a port conflict) ends the required
+      // work as `failed`; the delivered code is preserved.
+      this.recordOperationResult({
+        taskId,
+        operationKey: 'service:start',
+        operationKind: 'service',
+        outcome: code === 'unknown' || code === 'input_required' ? 'unknown' : 'definite_failure',
+        reasonCode: code === 'port_in_use' || code === 'command_not_found' || code === 'input_required'
+          ? code : code === 'unknown' ? 'external_outcome_unknown' : 'service_start_failed',
+        message,
+        evidenceRefs: [`task:${taskId}`],
+      });
+      this.reconcileTaskState(taskId, {
+        decisionId: `service_start_failed:${taskId}:${code}`,
+        operationKey: `service_start:${taskId}:failed`,
+        reason: `local service start failed: ${code}`,
+      });
     }
+  }
+
+  private recordOperationResult(input: {
+    taskId: string;
+    operationKey: string;
+    operationKind: 'execution' | 'integration' | 'delivery' | 'safety_report' | 'service';
+    outcome: 'success' | 'definite_failure' | 'unknown';
+    reasonCode: import('../task/task-state.js').TaskReasonCode | null;
+    message: string;
+    evidenceRefs: readonly string[];
+  }): void {
+    this.deps.taskOperationResults.record({ ...input, updatedAt: new Date().toISOString() });
   }
 
   private projectIntegratedPublication(
@@ -3680,10 +4329,10 @@ export class KernelExecutionRuntime {
     }
   }
 
-  private async blockTask(
+  private async blockTaskInternal(
     taskId: string,
     reason: string,
-    finishExecution: (lines: string[], scheduleNext?: boolean) => Promise<void>,
+    finishExecution: (lines: string[], scheduleNext?: boolean) => Promise<void> = async () => undefined,
     dependencyType: import('../core/types.js').Dependency['type'] = 'manual',
   ): Promise<void> {
     const localBlockers = this.deps.subtaskRepo.listByTask?.(taskId)
@@ -3696,17 +4345,27 @@ export class KernelExecutionRuntime {
       ) && subtask.error)
       .map(subtask => `${subtask.title}: ${subtask.error}`).slice(0, 4) ?? [];
     const blockedReason = this.blockReasonWithCause(taskId, [reason, ...localBlockers].join('; '));
-    if (this.deps.taskRuntimeService.findTask(taskId)?.status === 'running') {
-      this.lifecycle.blockTask({
-        taskId,
-        dependency: {
-          taskId,
-          type: dependencyType,
-          description: blockedReason,
-          status: 'waiting',
-        },
-        actor: 'kernel-execution-runtime',
+    const current = this.deps.taskRuntimeService.findTask(taskId);
+    if (current && current.status !== 'succeeded' && current.status !== 'failed'
+      && current.status !== 'cancelled') {
+      // The blocker is a durable Task fact; the authority turns it into the one
+      // conclusion (needs_action, queued for capacity, or failed).
+      const operationId = `block:${taskId}:${dependencyType}:${current.stateVersion}`;
+      this.reconcileTaskState(taskId, {
+        decisionId: operationId,
+        operationKey: operationId,
         reason: blockedReason,
+        facts: () => {
+          this.deps.taskRuntimeService.updateTask(taskId, {
+            dependencies: [
+              ...current.dependencies.filter(dependency => !(dependency.status === 'waiting'
+                && dependency.type === dependencyType && dependency.description === blockedReason)),
+              { taskId, type: dependencyType, description: blockedReason,
+                status: 'waiting', createdAt: new Date().toISOString() },
+            ],
+          });
+          return [];
+        },
       });
     }
     this.recordTaskEvent(taskId, null, 'phase2_execution_blocked', blockedReason, {});
@@ -3753,7 +4412,7 @@ export class KernelExecutionRuntime {
     if (['done', 'cancelled'].includes(subtask.status)) {
       throw new Error(`Retry Wake target Subtask is terminal: ${taskId}/${subtaskId}`);
     }
-    if (task.status !== 'running' && task.status !== 'blocked') {
+    if (task.status !== 'running' && task.status !== 'needs_action' && task.status !== 'queued') {
       throw new Error(`Retry Wake target Task is not recoverable: ${taskId}/${task.status}`);
     }
     const revision = this.deps.workGraphRevisionRepo.findActive(taskId);
@@ -3772,6 +4431,7 @@ export class KernelExecutionRuntime {
         bindingFingerprint: action.bindingFingerprint,
         authorizedBindingJson: JSON.stringify(action.authorizedBinding),
         resumeAt,
+        wakeKind: 'retry',
         status: 'armed',
         timerEventId: null,
         consumedDecisionId: null,
@@ -3877,7 +4537,21 @@ export class KernelExecutionRuntime {
       completionKind,
       cancelledSubtaskIds: cancelledSubtasks.map(subtask => subtask.id),
     };
+    let completed = false;
     this.deps.effectOutboxRepo.transaction(() => {
+      this.deps.taskRuntimeService.updateTask(input.taskId, { summary: cleanAggregate, artifacts });
+      // Completion gate (design §3.4): closing the authorized graph and telling
+      // the user the Task finished is only allowed when the required work — code,
+      // file delivery, safety report and a required service — is proven complete.
+      // Otherwise the Task keeps its derived conclusion (e.g. `needs_action` with
+      // a delivery recovery action) and the graph stays active for the retry.
+      this.reconcileTaskState(input.taskId, {
+        decisionId: input.decisionId,
+        operationKey: `complete:${input.decisionId}`,
+        reason: `Kernel decision ${input.decisionId} completed the Task`,
+      });
+      if (this.deps.taskRuntimeService.findTask(input.taskId)?.status !== 'succeeded') return;
+      completed = true;
       if (input.revisionCompletion) {
         this.deps.workGraphRevisionRepo.complete(
           input.taskId,
@@ -3886,7 +4560,6 @@ export class KernelExecutionRuntime {
           input.revisionCompletion.completionKind,
         );
       }
-      this.deps.taskRuntimeService.updateTask(input.taskId, { summary: cleanAggregate, artifacts });
       this.deps.persistenceService.recordInteraction({
         taskId: input.taskId,
         sessionId: this.sessionId,
@@ -3896,16 +4569,6 @@ export class KernelExecutionRuntime {
           ? input.subtasks[0]!.executorBindings[0]?.agentClassRef ?? 'executor'
           : 'work-graph',
       });
-      if (['running', 'blocked'].includes(
-        this.deps.taskRuntimeService.findTask(input.taskId)?.status ?? '',
-      )) {
-        this.lifecycle.transitionTask({
-          taskId: input.taskId,
-          to: 'done',
-          actor: 'kernel-execution-runtime',
-          reason: `Kernel decision ${input.decisionId} completed the Task`,
-        });
-      }
       const now = new Date().toISOString();
       this.deps.effectOutboxRepo.enqueue({
         id: effectId,
@@ -3916,6 +4579,14 @@ export class KernelExecutionRuntime {
         availableAt: now,
       });
     });
+    if (!completed) {
+      const pending = this.deps.taskRuntimeService.findTask(input.taskId);
+      await input.finishExecution([
+        `Task #${input.taskId} 尚未完成：${pending?.stateDetail.reason.message || '必需工作尚未全部完成'}。`,
+      ]);
+      this.deps.callbacks.refreshRuntimeState();
+      return;
+    }
     const completionLines: string[] = [];
     this.deps.callbacks.setFocusContext({ kind: 'task', taskId: input.taskId });
     this.deps.callbacks.persistSessionState({ lastFocusedTaskId: input.taskId, lastCompletedTaskId: input.taskId });
@@ -3949,6 +4620,14 @@ export class KernelExecutionRuntime {
       traceStatus: 'completed',
     });
 
+    // A completion decision can be applied while the last dispatch fact is
+    // still settling; one post-commit reconciliation converges the conclusion
+    // from the now-final facts (a no-op when it already reached `succeeded`).
+    this.reconcileTaskState(input.taskId, {
+      decisionId: input.decisionId,
+      operationKey: `complete_settle:${input.decisionId}`,
+      reason: `post-commit convergence for ${input.decisionId}`,
+    });
     await input.finishExecution(completionLines);
     await this.deps.onTaskTerminal?.(input.taskId);
   }

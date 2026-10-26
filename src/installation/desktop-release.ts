@@ -38,9 +38,16 @@ export async function desktopInventory(root: string): Promise<DesktopRelease['fi
   async function visit(directory: string): Promise<void> {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
-      if (entry.isDirectory()) await visit(path);
+      // Python bytecode caches are derived, mutable files and must not be part
+      // of the signed Desktop payload inventory; otherwise a normal launch
+      // changes the payload and the next integrity check fails.
+      if (entry.isDirectory()) {
+        if (entry.name === '__pycache__') continue;
+        await visit(path);
+      }
       else {
         if (!entry.isFile()) throw new Error('Desktop payload cannot contain links or special files');
+        if (entry.name.endsWith('.pyc')) continue;
         const name = relative(root, path).split(sep).join('/');
         pathSchema.parse(name);
         files[name] = await hashReleaseFile(path);
@@ -82,7 +89,7 @@ export async function verifyDesktopRelease(resources: string, options: {
   }
   for (const required of ['metawork/dist/index.js', 'metawork/dist/desktop-install-cli.js',
     'metawork/dist/desktop-update-cli.js', 'metawork/web/dist/index.html',
-    'metawork/dist/planning-agent-plan-v8.schema.json',
+    'metawork/dist/planning-agent-plan-v9.schema.json',
     'metawork/desktop-tools/node/bin/node', 'metawork/desktop-tools/git/bin/git',
     'metawork/desktop-tools/executor/bin/pi', 'planner/packages/coding-agent/dist/cli.js']) {
     if (!inventory[required]) throw new Error('Required Desktop runtime dependency is missing');

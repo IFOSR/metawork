@@ -69,8 +69,8 @@ const timeline: ExecutionTimeline = {
   title: 'Execution flow',
   status: 'running',
   stages: [
-    { phase: 'planning', status: 'done' },
-    { phase: 'authorization', status: 'done' },
+    { phase: 'planning', status: 'succeeded' },
+    { phase: 'authorization', status: 'succeeded' },
     { phase: 'execution', status: 'running' },
     { phase: 'verification', status: 'pending' },
     { phase: 'delivery', status: 'pending' },
@@ -201,7 +201,7 @@ describe('WebConversationProjector', () => {
     await projector.applyTimeline({
       ...timeline,
       status: 'done',
-      stages: timeline.stages.map(stage => ({ ...stage, status: 'done' })),
+      stages: timeline.stages.map(stage => ({ ...stage, status: 'succeeded' })),
     });
 
     expect(projector.getSnapshot()?.status).toBe('completed');
@@ -217,7 +217,7 @@ describe('WebConversationProjector', () => {
     await projector.applyTimeline({
       ...timeline,
       status: 'done',
-      stages: timeline.stages.map(stage => ({ ...stage, status: 'done' })),
+      stages: timeline.stages.map(stage => ({ ...stage, status: 'succeeded' })),
     });
     await projector.applyTimeline(timeline);
 

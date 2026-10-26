@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { verifyExecutorPi } from '../apps/desktop/packaging/verify-executor-pi.mjs';
 
 // The reviewed archive contains node/, git/ and executor/ with complete licenses
 // and libraries. Its checksum is release configuration, never supplied by the download.
@@ -23,6 +24,10 @@ try {
   if (details.some(line => !['-', 'd', 'h'].includes(line[0]))) throw new Error('Desktop tools must not contain links or special entries');
   execFileSync('/usr/bin/tar', ['-xzf', archive, '-C', output]);
   await rm(archive);
+  verifyExecutorPi(join(output, 'executor/bin/pi'), {
+    cwd: output,
+    env: { ...process.env, PATH: [join(output, 'node/bin'), join(output, 'git/bin'), join(output, 'executor/bin'), '/usr/bin', '/bin'].join(':') },
+  });
 } catch (error) {
   await rm(output, { recursive: true, force: true });
   throw error;

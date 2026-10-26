@@ -1,3 +1,5 @@
+> 当前 Workspace 执行模型（ADR-0050）：新任务统一在 Conversation 绑定 Workspace 内就地执行。写入 Attempt 启动前申请物理路径 ResourceLease，成功后直接完成 Subtask；只读 Attempt 使用受控 scratch 和只读源边界，不申请 Workspace write lease、不创建候选 publication。历史 Worktree binding 只停放并拒绝重新 dispatch。
+
 # MetaWork
 
 [English Technical Overview](technical-overview.md) | [中文首页](../../README.zh-CN.md)
@@ -6,26 +8,9 @@ MetaWork 是本仓库统一呈现的闭源商业产品。AnyFusion 是独立的�
 `AnyFusion-Pi` 及其他 AnyFusion 名称用于标识已归属组件或兼容契约，不代表本仓库的
 产品身份。
 
-> 导航优化仍在交付中，尚未完成全部安装验收。schema 43 已通过唯一正式部署升级，
-> 在原有升级链上
-> 增加 Workspace 目录、Conversation 元数据/历史分页和 Gateway 分段索引，不改变
-> Task/Kernel/账单状态所有权。源码唯一 Server composition 已接入分段日志与有界后台
-> 整理，旧 JSON 仅作只读迁移来源；重连游标过期、超前或超预算时显式重置快照并读取
-> 分页历史，不回退到全量审计回放。历史页的 Task/时间线/产物/账单采用批量读取。
-> 历史 Task 关联从 Account/Conversation/Turn 精确索引读取，与日志事务一起落盘，
-> 保留歧义证据，不将当前轮快照当作全部历史；后台活动更新仅查询 Workspace 绑定元数据。
-> 当前源码 schema 46 另以 43→44→45→46 事务增加 Gateway 命令准入索引、durable Retry Wake
-> 与按会话最近 Task 创建时间排序的目录键：
-> 点查，恢复只读取非终态记录；旧 JSON 的全部回执与账户导入标记原子迁移后只读保留，
-> 不增加第二个写入者或绕过持久准入。schema 44 已完成正式安装，Web 重新登录恢复和
-> TUI 真实断线重连检查通过。首页之外的会话恢复先经服务端 Workspace 校验激活，
-> 再读取分页历史，不放开未激活会话的历史访问。最终验收及新建会话暂定预算仍未关闭。
-> 当前源码实现为 schema 46；canonical 安装版本仍为 schema 44，交付门禁见
-> [导航性能实施方案](../plans/2026-09-26-navigation-performance-architecture-remediation.md)。
-
-> 当前实现基线（2026-09-26）：PlanningAgentPlan v8、Work Graph
+> 当前实现基线（2026-10-25）：PlanningAgentPlan v9、Work Graph
 > v7、Kernel event/snapshot/decision contract v5、Completion Protocol v4，
-> 以及支持事务式 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46 升级路径的 SQLite schema v46。
+> 以及支持事务式 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51→52→53→54→55→56→57→58 升级路径的 SQLite schema v58。
 > v39/v40 新增 ADR-0042 定义的 Query 用量与账单事实（Query 归因上下文、计量
 > span/观测、不可变价格版本、成本记录、每 Query 最终单及明细、消费 outbox/
 > 回执、账单调整和稳定实例标识）；计量、账单与外部消费导出在发布门禁通过前
@@ -60,7 +45,7 @@ MetaWork 是一个本地优先的 AI Task OS。它把自然语言需求变成可
 
 ## 核心能力
 
-- 持久任务状态：created、ready、running、parked、blocked、done、archived、cancelled。
+- 唯一持久任务结论：queued、running、needs_action、succeeded、failed、cancelled；归档是独立属性。
 - 中断后通过 resume context 继续，不从头重做。
 - timer 仅重查由 decision ledger 标记的容量阻塞；Executor `error` 恢复使用重要节点触发的结构化 probe，不做周期轮询。
 - Kernel v5 根据纯 runnable frontier 一次授权确定性的 batch；Runtime 可并行运行最多四个 sibling attempt，但不运行多 Task 优先级调度。
@@ -134,7 +119,7 @@ flowchart LR
   Conversation --> Account[AccountRuntime<br/>共享 runtime owner]
   Conversation --> MemoryFast[显式记忆和偏好快路]
   Conversation --> Planning[Planner Work Unit<br/>PlanningAgent]
-  Planning --> Plan[PlanningAgentPlan v8<br/>意图、目标、候选、<br/>v7 graph 或授权确认]
+  Planning --> Plan[PlanningAgentPlan v9<br/>Workspace 意图、目标、风险、<br/>v7 graph 或授权确认]
   Plan --> Event[KernelEvent<br/>plan_proposed]
   Event --> Workflow[Durable KernelWorkflow v5<br/>inbox、snapshot、decision、application]
   Workflow --> Kernel[ControlKernel<br/>frontier、batch、资源、<br/>permission 与恢复]
@@ -156,8 +141,7 @@ flowchart LR
   Attempt --> Context[SubtaskExecutionContext<br/>直接 handoff 与选定 evidence]
   Context --> Executors[ExecutionRuntime<br/>canonical Codex / Pi execution backend]
   Executors --> Verify[Completion Protocol v4<br/>result-first assessment、delta 与 receipt]
-  Verify --> Publish[Git publication gate<br/>稳定顺序集成]
-  Publish --> Delivery[交付和 UI<br/>TUI 进度、飞书、文件、预览链接]
+  Verify --> Delivery[Workspace 交付和 UI<br/>TUI 进度、飞书、文件、预览链接]
   Conversation --> Delivery
   Clarify --> Delivery
   Control --> Delivery
@@ -285,13 +269,12 @@ flowchart LR
   Batch --> Attempt[Attempt supervisor<br/>独立 claim 与运行]
   Attempt --> Run[ExecutionRuntime<br/>传输并执行]
   Run --> Verify[Completion Protocol v4<br/>result objects、delta 与 candidate]
-  Verify --> Publish[Git publication gate]
-  Publish --> Done{是否集成？}
-  Done -->|是| Result[原子发布 result、handoff、<br/>artifact、workspace state 与 done]
-  Done -->|冲突| Repair[Kernel 授权原 AgentClass repair]
+  Verify --> Done{Workspace 结果是否封存？}
+  Done -->|是| Result[原子记录 result、handoff、<br/>live 文件与 done]
+  Done -->|不确定| Repair[Kernel 授权恢复]
 ```
 
-这就是 Task OS 路径。任务状态、恢复上下文、Kernel 授权、Subtask 状态、WorkUnit/resource lease、产物捕获、验收和 Git publication 都在这里发生。ADR-0037 允许不同 Conversation 的顶层 Task 并行，同时每个 Task 内互不依赖的 Subtasks 仍可并行。
+这就是 Task OS 路径。任务状态、恢复上下文、Kernel 授权、Subtask 状态、WorkUnit/resource lease、产物捕获、验收和 Workspace 就地交付都在这里发生。ADR-0037 允许不同 Conversation 的顶层 Task 并行，同时每个 Task 内互不依赖的 Subtasks 仍可并行。
 
 当前自然语言路径由 Conversation slot 约束：同一 Conversation 同时只能有一个执行或清理中的顶层 Task，后续 Task 持久化排队；不同 Conversation 的 Task 由 AccountRuntime 统一调度并可并行。普通问答、澄清、状态查询和清理命令仍可通过。调度受系统配置的 Task/attempt 上限、优先级、aging 和公平性约束，采用非抢占策略；跨 Conversation 详细上下文仍严格隔离。
 
@@ -333,7 +316,7 @@ PlanningAgent → ControlKernel → Runtime 链处理；已删除 script Client�
 | Codex CLI | `codex` | 仓库修改、测试、确定性实现、带 patch 的代码审查 | 原生安装复用现有命令，不改变其安装或个人 home |
 | Pi Agent | `pi` | 调研、报告生成、多步骤信息综合、agentic CLI 工作流；授权图片模型后也负责图片生成与编辑 | 原生安装复用现有命令，不改变其安装或个人 home；图片执行由 MetaWork 提供 Runner |
 
-默认 worktree 后端只执行 canonical `codex-cli` 与 `pi-agent`。获批后，Runtime claim 或创建 WorkUnit，再把对应 CLI 作为统一 Runtime 的子进程启动，并把 `cwd` 设为当前 Subtask Git worktree。该路径不扩展第三方 Executor 注册；旧 Docker attempt 后端仍可通过 `METACLAW_EXECUTOR_BACKEND=docker` 显式启用。
+默认 In-place 后端只执行 canonical `codex-cli` 与 `pi-agent`。获批后，Runtime claim 或创建 WorkUnit，再把对应 CLI 作为统一 Runtime 的子进程启动，并把 `cwd` 设为 Kernel 授权的 Conversation Workspace；只读任务使用 Runtime scratch。该路径不扩展第三方 Executor 注册；旧 Docker attempt 后端仍可通过 `METACLAW_EXECUTOR_BACKEND=docker` 显式启用。
 
 `pi-agent` 仍是用户可见的一个 Executor，但内部包含两个确定性的执行引擎：
 普通任务使用用户本机提供的标准 `pi --mode json` 子进程；需要
@@ -367,7 +350,7 @@ sudo apt-get install -y build-essential python3 make g++
 
 执行器前提：
 
-- 原生 worktree 模式要求现有 `codex` 和 `pi` 命令已在 `PATH` 中；
+- 原生 In-place 模式要求现有 `codex` 和 `pi` 命令已在 `PATH` 中；
   setup 不安装、升级、降级或重新配置它们。
 - 只有 Docker 兼容模式才需要构建或拉取 canonical attempt 镜像。
 
@@ -568,7 +551,7 @@ MetaWork 调用方式：
 pi -p "<prompt>"
 ```
 
-Pi attempt 默认通过统一的 `BackendExecutorAdapter` seam 在当前 Subtask worktree 中运行 `pi` 子进程；Docker 兼容模式仍使用 canonical `metaclaw-executor-pi:phase5` 镜像。
+Pi attempt 默认通过统一的 `BackendExecutorAdapter` seam 在 Kernel 授权的 Workspace 或 Runtime scratch 中运行 `pi` 子进程；Docker 兼容模式仍使用 canonical `metaclaw-executor-pi:phase5` 镜像。
 
 ## Executor 与 Skill 的差异
 
@@ -576,7 +559,7 @@ Executor 和 Skill 是生态里的不同层。
 
 Executor 是“谁来干活”。Skill 是“干活时带什么方法、知识和工具规范”。
 
-Executor 是 AgentClass runtime，例如 canonical Codex CLI 与 Pi Agent。它可以作为 worktree 子进程运行，也可以走 Docker 兼容后端；它决定模型、工具链、权限、运行环境、上下文窗口、文件读写能力、非交互执行方式、成本和可靠性边界。
+Executor 是 AgentClass runtime，例如 canonical Codex CLI 与 Pi Agent。它可以作为 In-place 子进程运行，也可以走 Docker 兼容后端；它决定模型、工具链、权限、运行环境、上下文窗口、文件读写能力、非交互执行方式、成本和可靠性边界。
 
 Skill 更像轻量能力包。它描述某一类工作应该怎么做：怎么做期货分析、怎么做代码审查、怎么跑调研流程、怎么输出报告格式。Skill 可以改善某个 Executor 的表现，但不会自动改变这个 Executor 的 runtime、权限、工具或安装状态。
 
@@ -1057,7 +1040,7 @@ MetaWork 可以把复杂需求表示成 work graph，而不是把整段需求一
 
 `SubtaskExecutionContext` 是唯一生产 Executor 输入。Task 标题/目标仅作背景，当前 Subtask 目标是唯一操作指令，越界 sibling 只暴露标题。Runtime 不把 Task/Subtask/attempt/WorkUnit 身份及 acceptance/handoff key 交给模型复制。Completion Protocol v4 将正文交付、完成认证和安全处置分轴评估：marker、trailer、evidence 数量/长度和物理传输限制不能丢弃安全正文；普通 Workspace 和用户态文件操作允许 Executor 按任务需要执行，系统控制面、凭据、提权、设备、Docker 控制面和未授权 ResultReference 仍 fail-closed。Runtime 以 Result Object 保存 raw stream、business result 和 safe projection，并以 Gateway 分块事件交付 safe projection。
 
-在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 Work Graph v7 `Subtask` revision。源码使用 SQLite schema v46，支持事务式 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46 升级路径，unsupported older schema 会拒绝启动。v39/v40 保存 ADR-0042 的 Query 用量与账单事实：`query_usage_contexts`（请求作用域幂等键唯一）、`query_task_links`、`execution_usage_contexts`、`metering_spans`、`usage_observations`（`(source_id, source_event_key, metric)` 唯一）、`usage_normalization_issues`、`billing_price_versions`、`cost_entries`、`query_bills`/`query_bill_lines`、`consumption_outbox`/`consumption_receipts`、`bill_adjustments` 与稳定实例标识表 `billing_source_instance`；v41 增加 usage observation 的 resolved routing identity 字段，v42 增加 `generation_replan_requests.planner_claim_token` fencing token。v43 增加导航投影、分页历史和 Gateway 分段日志及 Turn 关联索引；v44 增加 Gateway 命令准入索引与原子旧数据导入标记；v45 增加 timeout retry 的 durable Retry Wake continuation fact；v46 增加按会话最近 Task 创建时间排序的目录索引键。金额以有约束的十进制文本保存，聚合在精确金额层完成，不使用 SQLite 浮点求和。v38 用 `planner_turn_inputs` 保存一个 Planner Turn 的附件事实，使 host-bridge 提交在 Server 重启后仍可通过准入。当前 schema 还包含 immutable Result Objects、direct-edge ResultReferences、revision-pinned `artifact` ContextRefs、Planner proposal configuration-revision pin 和结果分块交付事实；v37 同时允许 `task_artifacts` 记录图片预览类型。下游只有在直接依赖 publication 成功后才进入 frontier，并通过授权引用按需读取上游结果；integration branch 不会隐式成为 sibling 基线。Certified Executor 成功先进入 `awaiting_integration`，publication 成功后才原子发布 completion facts；safe uncertified body 可以先交付给用户，但不会释放下游。
+在 active session path 中，proposal 只有在 `ControlKernel` 授权并创建 durable application 后才会成为持久化 Work Graph v7 `Subtask` revision。源码使用 SQLite schema v58，支持事务式 31→…→56→57→58 升级路径，unsupported older schema 会拒绝启动。v39/v40 保存 ADR-0042 的 Query 用量与账单事实：`query_usage_contexts`（请求作用域幂等键唯一）、`query_task_links`、`execution_usage_contexts`、`metering_spans`、`usage_observations`（`(source_id, source_event_key, metric)` 唯一）、`usage_normalization_issues`、`billing_price_versions`、`cost_entries`、`query_bills`/`query_bill_lines`、`consumption_outbox`/`consumption_receipts`、`bill_adjustments` 与稳定实例标识表 `billing_source_instance`；v41 增加 usage observation 的 resolved routing identity 字段，v42 增加 `generation_replan_requests.planner_claim_token` fencing token。v43 增加导航投影、分页历史和 Gateway 分段日志及 Turn 关联索引；v44 增加 Gateway 命令准入索引与原子旧数据导入标记；v45 增加 timeout retry 的 durable Retry Wake continuation fact；v46 增加按会话最近 Task 创建时间排序的目录索引键。金额以有约束的十进制文本保存，聚合在精确金额层完成，不使用 SQLite 浮点求和。v38 用 `planner_turn_inputs` 保存一个 Planner Turn 的附件事实，使 host-bridge 提交在 Server 重启后仍可通过准入。当前 schema 还包含 immutable Result Objects、direct-edge ResultReferences、revision-pinned `artifact` ContextRefs、Planner proposal configuration-revision pin 和结果分块交付事实；v37 同时允许 `task_artifacts` 记录图片预览类型。下游只有在直接依赖 publication 成功后才进入 frontier，并通过授权引用按需读取上游结果；integration branch 不会隐式成为 sibling 基线。Certified In-place Executor 成功保存 terminal receipt、变更记录和 Workspace 引用后直接完成 Subtask；新任务不创建 isolated publication。safe uncertified body 可以先交付给用户，但不会释放下游。
 
 已经脱离生产链路的 `ExecutionStrategyPlanner`、`ExecutionPolicy`、`MultiExecutorOrchestrator` 和 `AgenticLoopController` 实现已删除。work graph 与 work unit dispatch 成为权威路径后，这些旧实现不再参与运行时。`ExecutionAggregator` 继续供验证流水线执行结构化的多结果证据检查。
 
@@ -1146,3 +1129,12 @@ src/
 MetaWork 是闭源商业软件。对外分发前必须由公司提供正式批准的商业许可条款。
 AnyFusion 衍生组件及其他第三方开源组件继续遵守各自的许可证与 NOTICE；根目录
 `LICENSE` 暂时保留用于历史和第三方审查，不代表 MetaWork 整体采用该许可证。
+
+### 任务状态评审修复（2026-10-22）
+
+接受结果将决定、Task 审计、持久续跑和排队一并提交；发布前后校验当前图与
+预约 token/version。确定交付或服务失败保持原任务失败，`/task retry` 创建关联
+任务，仅补已有可复用成果的交付/服务。投影 outbox 接入既有 activity dirty 队列，
+Web/TUI 要求 Task View v2 并比较 Task 版本。schema 51→52 按证据分类、写入不可变
+迁移审计，并隔离旧版尚未应用的非取消操作。验证范围见
+[修复记录](../plans/2026-10-22-task-state-review-fixes.md)，源码验证不代表安装包验收。

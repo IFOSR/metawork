@@ -19,6 +19,11 @@ export interface KernelDispatchItemRecord {
   configurationRevision: string;
   authorizedBinding: AuthorizedExecutorBinding;
   bindingFingerprint: string;
+  /**
+   * Fingerprint of the immutable Workspace binding fixed at Generation
+   * admission; the Attempt refuses to run when it no longer matches.
+   */
+  executionBindingFingerprint: string | null;
   attemptKind: KernelAttemptKind;
   sourceAttemptId: string | null;
   recoveryMode: KernelRecoveryMode;
@@ -56,6 +61,7 @@ interface DispatchItemRow {
   configuration_revision: string;
   authorized_binding_json: string;
   binding_fingerprint: string;
+  execution_binding_fingerprint: string | null;
   attempt_kind: KernelAttemptKind;
   source_attempt_id: string | null;
   recovery_mode: KernelRecoveryMode;
@@ -84,6 +90,7 @@ export class KernelDispatchItemRepo {
     bindingContext: {
       generationId: string;
       configurationRevision: string;
+      executionBindingFingerprint?: string | null;
       attempts: Readonly<Record<string, {
         authorizedBinding: AuthorizedExecutorBinding;
         bindingFingerprint: string;
@@ -160,9 +167,9 @@ export class KernelDispatchItemRepo {
               attempt_id, decision_id, batch_order, task_id, generation_id, subtask_id,
               agent_class_name, attempt_kind, source_attempt_id, recovery_mode,
               attempt_payload_json, resource_grant_json, status, configuration_revision,
-              authorized_binding_json, binding_fingerprint, created_at, updated_at,
-              terminal_at, error_summary
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              authorized_binding_json, binding_fingerprint, execution_binding_fingerprint,
+              created_at, updated_at, terminal_at, error_summary
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
             item.attemptId,
             decision.id,
@@ -180,6 +187,7 @@ export class KernelDispatchItemRepo {
             decision.configurationRevision,
             JSON.stringify(item.authorizedBinding),
             item.bindingFingerprint,
+            bindingContext.executionBindingFingerprint ?? null,
             now,
             now,
             cancelled ? now : null,
@@ -597,6 +605,7 @@ function rowToDispatchItem(row: DispatchItemRow): KernelDispatchItemRecord {
     configurationRevision: row.configuration_revision,
     authorizedBinding,
     bindingFingerprint: row.binding_fingerprint,
+    executionBindingFingerprint: row.execution_binding_fingerprint ?? null,
     attemptKind: row.attempt_kind,
     sourceAttemptId: row.source_attempt_id,
     recoveryMode: row.recovery_mode,

@@ -957,7 +957,7 @@ export function SettingsPanel({
         ...(memorySection ? { memory: memorySection } : {}),
         runtimePolicy: {
           ...asRecord(originalConfig.runtimePolicy),
-          ...runtimePolicy,
+          maxConcurrentTasks: runtimePolicy.maxConcurrentTasks,
         },
       },
       activationSecrets,
@@ -2609,6 +2609,7 @@ export function SettingsPanel({
                     </div>
                     <div className="routing-section-note">
                       降低上限不会取消当前运行中的任务，只影响下一轮调度。
+                      写入任务直接在目标 Workspace 执行，重试和恢复沿用同一 Workspace 绑定。
                     </div>
                   </section>
                   <SpanRoutingSettings

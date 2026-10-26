@@ -1,10 +1,22 @@
+import { recordingTaskStateAuthority, recordingTaskLifecyclePort } from '../support/task-state-fixture.js';
 import { describe, expect, it, vi } from 'vitest';
 import { KernelExecutionRuntime } from '../../src/execution/kernel-execution-runtime.js';
 import { ControlKernel, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
 
+function recordingRuntimeTaskState() {
+  const { authority } = recordingTaskStateAuthority();
+  const { port } = recordingTaskLifecyclePort();
+  return {
+    taskStateAuthority: authority,
+    taskLifecyclePort: port,
+    taskOperationResults: { record: () => undefined },
+  };
+}
+
 describe('KernelExecutionRuntime dispatch snapshots', () => {
   it('uses the persisted decision Conversation while recovering derived events', async () => {
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       sessionId: 'bootstrap-session',
       getSessionId: () => 'task-level-session',
       kernelDecisionRepo: {
@@ -46,6 +58,7 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
       outcome: 'recovered', workGraph: { reason: 'existing', subtasks: [] }, subtasks: [],
     });
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       taskRuntimeService: { findTask },
       workGraphRuntimeService: { apply: applyWorkGraph },
       taskEventRepo: {},
@@ -73,6 +86,7 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
       requiredCapabilities: ['unknown-capability'],
     };
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       taskRuntimeService: {
         findTask: vi.fn().mockReturnValue(task),
         getCurrentRunningTask: vi.fn().mockReturnValue(task),
@@ -156,6 +170,7 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
     const findCleanupTaskId = vi.fn().mockReturnValue(null);
     const refreshRuntimeState = vi.fn();
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       taskEventRepo: {},
       taskRuntimeService: { findTask: vi.fn().mockReturnValue(null) },
       dispatchItemRepo: {
@@ -190,6 +205,7 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
     const cleanup = deferred<void>();
     const recover = vi.fn(async () => cleanup.promise);
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       taskEventRepo: {},
       dispatchItemRepo: {
         listPending: vi.fn().mockReturnValue([]),
@@ -221,6 +237,7 @@ describe('KernelExecutionRuntime dispatch snapshots', () => {
     vi.useFakeTimers();
     const recover = vi.fn().mockRejectedValue(new Error('still unavailable'));
     const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
       taskEventRepo: {},
       dispatchItemRepo: {
         listPending: vi.fn().mockReturnValue([]),

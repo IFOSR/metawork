@@ -11,6 +11,7 @@ export function applyObservedConversation(
 	for (const turn of view.turns) {
 		const old = previous.turns[turn.id];
 		const task = view.activity.tasks.find((task) => task.taskId === turn.taskId);
+		const currentTask = task && task.stateVersion >= (old?.taskStateVersion ?? 0) ? task : undefined;
 		const pending = view.activity.pendingInteractions.find((request) => request.taskId === turn.taskId);
 		turns[turn.id] = {
 			...old,
@@ -21,9 +22,10 @@ export function applyObservedConversation(
 			status: turn.status,
 			stage: turn.deliveryStatus === "streaming" ? "delivery" : "execution",
 			taskId: turn.taskId,
-			progressSummary: task?.progressSummary ?? task?.userStateReason ?? null,
+			progressSummary: currentTask?.progressSummary ?? currentTask?.explanation ?? old?.progressSummary ?? null,
 			taskTitle: task?.title ?? old?.taskTitle,
-			taskPhase: task?.userState ?? old?.taskPhase,
+			taskStateVersion: currentTask?.stateVersion ?? old?.taskStateVersion,
+			taskPhase: currentTask?.status ?? old?.taskPhase,
 			taskStartedAt: turn.startedAt,
 			taskCompletedAt: turn.completedAt,
 			lastEventAt: turn.completedAt ?? turn.startedAt,

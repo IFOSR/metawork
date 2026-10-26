@@ -152,6 +152,9 @@ export function safeHostEnvironment(environment: NodeJS.ProcessEnv): NodeJS.Proc
     'TEMP',
     'TMP',
     'TMPDIR',
+    // Embedded Python helpers must not create mutable __pycache__ files in
+    // the signed Desktop payload after launch.
+    'PYTHONDONTWRITEBYTECODE',
   ] as const;
   return Object.fromEntries(allowed.flatMap(key => {
     const value = environment[key];

@@ -79,9 +79,12 @@ export interface TimelineStage {
 export interface ExecutionTimeline {
   taskId: string;
   title: string;
-  status: string;
-  userState: TaskView['userState'];
-  userStateReason: string;
+  /** The committed six-state Task status. */
+  status: import('../task/task-state.js').TaskStatus;
+  statusLabel: string;
+  stateVersion: number;
+  reasonCode: string;
+  explanation: string;
   stages: TimelineStage[];
 }
 
@@ -145,16 +148,28 @@ export class ExecutionProjector {
     publication?: { integrated: boolean; blocking: boolean },
   ): ExecutionTimeline {
     const view = this.deps.taskView?.(task) ?? projectTaskView({
-      task: { ...task, updatedAt: null }, subtasks, dispatches: dispatchItems, receipts: [], replanJobs: [],
+      task: {
+        id: task.id,
+        status: task.status,
+        stateVersion: task.stateVersion,
+        stateDetail: task.stateDetail,
+        completedAt: task.completedAt ?? null,
+        archivedAt: task.archivedAt ?? null,
+        retryOfTaskId: task.retryOfTaskId ?? null,
+        updatedAt: null,
+      },
+      subtasks, dispatches: dispatchItems, receipts: [], replanJobs: [],
       uncertainApplications: [], publications: [], completionResidue: [],
       pendingPermission: null, retryWakeAt: null, result: null,
     });
     return {
       taskId: task.id,
       title: task.title,
-      status: view.phase,
-      userState: view.userState,
-      userStateReason: view.userStateReason,
+      status: view.status,
+      statusLabel: view.statusLabel,
+      stateVersion: view.state.stateVersion,
+      reasonCode: view.state.reason.code,
+      explanation: view.explanation,
       stages: [
         this.projectPlanning(subtasks),
         this.projectAuthorization(decisions),
@@ -331,7 +346,7 @@ export class ExecutionProjector {
     if (publication?.blocking ?? this.deps.publicationRepo.hasBlockingResidue(task.id)) {
       return { phase: 'delivery', status: 'blocked' };
     }
-    if (task.status === 'done') {
+    if (task.status === 'succeeded' || task.status === 'failed' || task.status === 'cancelled') {
       return { phase: 'delivery', status: 'done' };
     }
     const hasFinishedSubtask = subtasks.some(

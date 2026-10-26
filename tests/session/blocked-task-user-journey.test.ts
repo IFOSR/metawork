@@ -80,7 +80,7 @@ describe('blocked task user journey', () => {
     }
   });
 
-  it('lets the user inspect a fail-closed attempt but does not retry unknown work through /task unblock', async () => {
+  it('lets the user inspect a fail-closed attempt and continues Workspace-only work on /task unblock', async () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-blocked-user-journey');
@@ -124,9 +124,11 @@ describe('blocked task user journey', () => {
 
     await session.submit(`/task recovery ${blockedTask.id}`, { awaitAsyncWork: true });
     output = session.getSnapshot().output.join('\n');
-    expect(output).toContain(`任务 #${blockedTask.id} 仍需要处理`);
-    expect(output).toContain('没有可供 /task recover 使用的恢复项');
+    expect(output).toContain(`任务 #${blockedTask.id} 没有自动恢复项`);
+    expect(output).toContain('待处理原因：');
     expect(output).toContain('系统不会在无法确认外部副作用时自动重试');
+    // A dead end must tell the user the concrete next step.
+    expect(output).toContain(`/task cancel ${blockedTask.id}`);
 
     await session.submit('当前有没有被阻塞的任务？', { awaitAsyncWork: true });
     output = session.getSnapshot().output.join('\n');
@@ -137,15 +139,14 @@ describe('blocked task user journey', () => {
 
     await session.submit(`/task unblock ${blockedTask.id}`, { awaitAsyncWork: true });
 
-    expect(taskRepo.findById(blockedTask.id)?.status).toBe('blocked');
-    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
+    // The user authorized delivery. This Subtask only touches the Workspace, so
+    // the Kernel continues it with a fresh attempt instead of dead-ending on an
+    // "unknown" blocker (external, non-idempotent effects stay fail-closed).
+    expect(taskRepo.findById(blockedTask.id)?.status).toBe('done');
+    expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(2);
 
     output = session.getSnapshot().output.join('\n');
-    expect(output).toContain(`任务 #${blockedTask.id} 未重新执行`);
-    expect(output).toContain('上次执行结果不确定');
-    expect(output).toContain(`/task recovery ${blockedTask.id}`);
-    expect(output).toContain('resume requires resolving the unknown blocker first');
-    expect(output).not.toContain('阻塞解除后已完成用户旅程验收报告');
-    expect(notifier.notifyTaskCompleted).not.toHaveBeenCalled();
+    expect(output).toContain('阻塞解除后已完成用户旅程验收报告');
+    expect(notifier.notifyTaskCompleted).toHaveBeenCalled();
   });
 });

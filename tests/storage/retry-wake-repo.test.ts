@@ -14,6 +14,7 @@ const wake: RetryWakeRecord = {
   bindingFingerprint: 'fingerprint_1',
   authorizedBindingJson: JSON.stringify({ agentClassRef: 'executor-1' }),
   resumeAt: '2026-09-27T01:00:00.000Z',
+  wakeKind: 'retry',
   status: 'armed',
   timerEventId: null,
   consumedDecisionId: null,

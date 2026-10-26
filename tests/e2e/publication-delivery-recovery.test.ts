@@ -1,12 +1,13 @@
 import { mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { vi } from 'vitest';
-import { UserArtifactPublicationService, userTaskDirectorySlug } from '../../src/delivery/user-artifact-publication-service.js';
+import { UserArtifactPublicationService } from '../../src/delivery/user-artifact-publication-service.js';
 import { TaskArtifactRepo } from '../../src/storage/task-artifact-repo.js';
 import { WorkspacePublicationRepo } from '../../src/storage/workspace-publication-repo.js';
 import { SqliteTaskActivityFacts } from '../../src/storage/task-activity-facts-repo.js';
 import { projectTaskView } from '../../src/task/task-view.js';
 import Database from 'better-sqlite3';
+import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
 import { describe, expect, it } from 'vitest';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
@@ -88,7 +89,13 @@ describe('Durable delivery end-to-end control loop', () => {
     expect(publications.delivery(publication.id)).toMatchObject(mode === 'copy_before_save'
       ? { status: 'pending' } : { status: 'failed', failures: [expect.any(Object)] });
     expect(db.prepare('SELECT status FROM subtasks WHERE task_id = ?').get(task.id)).toEqual({ status: 'awaiting_integration' });
-    if (mode !== 'copy_before_save') expect(view()).toMatchObject({ userState: 'needs_action', userStateReason: expect.stringContaining('文件交付失败') });
+    if (mode !== 'copy_before_save') {
+      expect(view()).toMatchObject({
+        status: 'failed',
+        state: { reason: { code: 'delivery_failed', message: expect.stringContaining('文件交付失败') } },
+      });
+      expect(view().pendingActions.some(action => action.kind === 'resolve_recovery')).toBe(false);
+    }
     expect(db.prepare('SELECT count(*) AS n FROM subtask_handoffs').get()).toEqual({ n: 0 });
     if (mode !== 'copy_before_save') await session.maybeReviewTaskPoolOnTimer();
     expect(copy).toHaveBeenCalledTimes(1);
@@ -103,23 +110,36 @@ describe('Durable delivery end-to-end control loop', () => {
     }
     await session.submit(`/task resume ${task.id} --generation obsolete --revision 99`, { awaitAsyncWork: true });
     if (mode !== 'copy_before_save') expect(copy).toHaveBeenCalledTimes(1);
-    await session.submit(`/task resume ${task.id}`, { awaitAsyncWork: true });
-    await session.submit(`/task resume ${task.id}`, { awaitAsyncWork: true });
+    const command = mode === 'copy_before_save' ? 'resume' : mode === 'cancel' ? 'cancel' : 'retry';
+    await session.submit(`/task ${command} ${task.id}`, { awaitAsyncWork: true });
+    await session.submit(`/task ${command} ${task.id}`, { awaitAsyncWork: true });
     expect(attemptExecutionBackend.create).toHaveBeenCalledTimes(1);
     if (mode !== 'cancel') {
-      expect(publications.delivery(publication.id)?.status).toBe('succeeded');
-      expect(taskRepo.findById(task.id)?.status).toBe('done');
+      expect(publications.delivery(publication.id)?.status, JSON.stringify({output:session.getSnapshot().output, effects:db.prepare("SELECT status, error_summary FROM kernel_effect_outbox WHERE effect_type='task_remaining_work'").all()})).toBe('succeeded');
+      expect(taskRepo.findById(task.id)?.status).toBe(mode === 'copy_before_save' ? 'succeeded' : 'failed');
+      if (mode !== 'copy_before_save') {
+        const retries = taskRepo.findAll().filter(item => item.retryOfTaskId === task.id);
+        expect(retries, JSON.stringify(session.getSnapshot().output)).toHaveLength(1);
+        expect(retries[0]!.status, JSON.stringify({
+          detail: retries[0]!.stateDetail,
+          deliv: publications.delivery(publication.id),
+          bindings: db.prepare('SELECT generation_id, execution_mode, authorized_working_directory, cleaned_at FROM workspace_execution_bindings').all(),
+          publications: db.prepare('SELECT id, status, error_summary, delivery_authorized_at FROM workspace_publications').all(),
+        })).toBe('succeeded');
+      }
       expect(copy).toHaveBeenCalledTimes(2);
-      expect(readFileSync(join(userRoot, 'metaclaw-tasks', userTaskDirectorySlug(task.title, task.id), 'answer.md'), 'utf8')).toBe('# Persisted answer');
+      // Authorized change set applied at the Workspace-relative path.
+      expect(readFileSync(join(userRoot, 'answer.md'), 'utf8')).toBe('# Persisted answer');
       expect(db.prepare('SELECT count(*) AS n FROM task_artifacts').get()).toEqual({ n: 1 });
       expect(publications.countMergeAttempts(publication.id)).toBe(1);
     } else {
-      expect(taskRepo.findById(task.id)?.status).toBe('cancelled');
+      expect(taskRepo.findById(task.id)?.status).toBe('failed');
       expect(copy).toHaveBeenCalledTimes(1);
       expect(db.prepare('SELECT count(*) AS n FROM subtask_handoffs').get()).toEqual({ n: 0 });
-      expect(db.prepare("SELECT count(*) AS n FROM subtasks WHERE task_id = ? AND status = 'done'").get(task.id)).toEqual({ n: 0 });
+      expect(db.prepare("SELECT count(*) AS n FROM subtasks WHERE task_id = ? AND status = 'succeeded'").get(task.id)).toEqual({ n: 0 });
     }
-    expect(view().userState).toBe('finished');
+    // The original failure is immutable; successful retries have their own Task.
+    expect(view().status).toBe(mode === 'copy_before_save' ? 'succeeded' : 'failed');
     db.close();
   });
 });

@@ -399,6 +399,24 @@ describe('Completion Protocol result-first assessment', () => {
     });
   });
 
+  it('treats a missing Workspace root as a structural gap, not a safety boundary', () => {
+    // A missing root is an environment fact. Classifying it as an artifact-path
+    // violation used to project `safety_blocked`, blocking the Subtask as if the
+    // Executor had produced unsafe content.
+    const result = validate({
+      rawResponse: response(report({ artifacts: ['out.md'] })),
+      workspaceRoot: join(root(), 'does-not-exist'),
+      workspaceDelta: delta([]),
+      current: subtask({ deliveryKind: 'edit', fileOutputs: ['out.md'] }),
+    });
+    // Safe text stays visible; the structural gap only withholds certification
+    // and must never be reported as an artifact-path (safety) violation.
+    expect(result.assessment.safety.status).toBe('safe');
+    expect(result.assessment.deliverability.status).toBe('deliverable');
+    expect(result.assessment.certification.violations.map(item => item.code))
+      .not.toContain('completion_artifact_invalid');
+  });
+
   it('keeps an empty body without reportPath correctable instead of quarantined', () => {
     // Quarantine is reserved for safety boundaries. A format gap must route
     // to the response-only correction loop (the trailer can declare

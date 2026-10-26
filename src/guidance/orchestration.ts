@@ -34,21 +34,25 @@ export class OrchestrationEngine {
   getDashboard(): Dashboard {
     const tasks = this.taskEngine['taskRepo'].findActive();
 
+    // One six-state vocabulary: a dashboard count is a count of Task states,
+    // never a second interpretation of them.
     const summary = {
-      active: tasks.filter(t => ['created', 'ready', 'running', 'parked'].includes(t.status)).length,
-      blocked: tasks.filter(t => t.status === 'blocked').length,
-      parked: tasks.filter(t => t.status === 'parked').length,
-      done: this.taskEngine['taskRepo'].findByStatus('done').length,
+      active: tasks.filter(t => t.status === 'running').length,
+      blocked: tasks.filter(t => t.status === 'needs_action').length,
+      parked: 0,
+      done: this.taskEngine['taskRepo'].findByStatus('succeeded').length,
     };
 
-    const readyTasks = tasks.filter(t => t.status === 'ready');
-    const blockedTasks = tasks.filter(t => t.status === 'blocked');
+    const readyTasks = tasks.filter(t => t.status === 'queued');
+    const blockedTasks = tasks.filter(t => t.status === 'needs_action');
 
     const priorityTask = readyTasks.length > 0 ? readyTasks[0] : null;
 
     const blockedWithReasons = blockedTasks.map(t => ({
       ...t,
-      blockReason: t.dependencies.find(d => d.status === 'waiting')?.description || '未知原因',
+      blockReason: t.stateDetail.reason.message
+        || t.dependencies.find(d => d.status === 'waiting')?.description
+        || '未知原因',
     }));
 
     return {
@@ -69,10 +73,12 @@ export class OrchestrationEngine {
    * 获取所有 BLOCKED 任务及卡点原因
    */
   getBlockedTasks(): Array<Task & { blockReason: string }> {
-    const tasks = this.taskEngine['taskRepo'].findByStatus('blocked');
+    const tasks = this.taskEngine['taskRepo'].findByStatus('needs_action');
     return tasks.map(t => ({
       ...t,
-      blockReason: t.dependencies.find(d => d.status === 'waiting')?.description || '未知原因',
+      blockReason: t.stateDetail.reason.message
+        || t.dependencies.find(d => d.status === 'waiting')?.description
+        || '未知原因',
     }));
   }
 

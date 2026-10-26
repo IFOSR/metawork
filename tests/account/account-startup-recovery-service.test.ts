@@ -1,3 +1,4 @@
+import { seedCompletedReceipt } from '../support/seed-work-graph.js';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,6 +40,7 @@ import { builtinCodexAgentClass } from '../support/builtin-agent-classes.js';
 import { workGraphPlan } from '../support/planning-agent-plans.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
 import type { QueryUsageLifecycle } from '../../src/metering/query-lifecycle.js';
+import { setTaskStatus, withReason } from '../support/task-state-fixture.js';
 
 const roots: string[] = [];
 
@@ -64,14 +66,19 @@ describe('AccountStartupRecoveryService production composition', () => {
     const fixture = createFixture('completion-after-cleanup');
     const task = createRunningTask(fixture, 'Deliver the completed research');
     fixture.db.prepare("UPDATE subtasks SET status='done', result='Published research result' WHERE task_id=?").run(task.id);
+    for (const node of new SubtaskRepo(fixture.db).listActiveByTask(task.id)) seedCompletedReceipt(fixture.db, node);
     seedTaskOriginDecision(fixture.db, task.id, 'conversation-origin');
     await fixture.composition.accountRuntime.initialize();
-    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('done');
+    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('succeeded');
     expect(new KernelDispatchItemRepo(fixture.db).listByTask(task.id)).toHaveLength(0);
+    // The conclusion is proven by durable facts, so the authority may converge it
+    // directly; the Kernel decision trail remains available when one was issued.
     const decisions = fixture.composition.accountRuntime.kernelServices.kernelDecisionRepo.listByTask(task.id);
-    expect(decisions.some(record => record.action === 'complete_task')).toBe(true);
+    expect(decisions.every(record => record.action !== 'dispatch_batch'
+      || !['pending_launch', 'launching', 'running'].includes(record.action))).toBe(true);
+    expect(new TaskRepo(fixture.db).findById(task.id)?.completedAt).toBeTruthy();
     await fixture.composition.accountRuntime.reviewTaskPoolOnTimer();
-    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('done');
+    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('succeeded');
   });
 
   it('routes both system replan callbacks to the injected adapter with the durable owner', async () => {
@@ -217,7 +224,7 @@ describe('AccountStartupRecoveryService production composition', () => {
       taskId: task.id,
     });
     // The durable completion already landed before the process died.
-    new TaskRepo(fixture.db).updateStatus(task.id, 'done');
+    setTaskStatus(fixture.db, task.id, 'succeeded');
 
     await fixture.composition.accountRuntime.initialize();
 
@@ -329,7 +336,7 @@ describe('AccountStartupRecoveryService production composition', () => {
       } as QueryUsageLifecycle,
     );
     const task = createRunningTask(fixture, 'Finalize billing with residual cleanup');
-    fixture.taskEngine.transition(task.id, 'done');
+    setTaskStatus(fixture.db, task.id, 'succeeded');
     const scheduler = new ConversationTaskSchedulerRepo(fixture.db);
     scheduler.claimSlot('conversation-origin', task.id, 'reservation-terminal', '2026-09-25T00:00:00.000Z');
     seedTaskOriginDecision(fixture.db, task.id, 'conversation-origin');
@@ -372,7 +379,7 @@ describe('AccountStartupRecoveryService production composition', () => {
       } as QueryUsageLifecycle,
     );
     const task = createRunningTask(fixture, 'Finalize billing after slot release');
-    fixture.taskEngine.transition(task.id, 'done');
+    setTaskStatus(fixture.db, task.id, 'succeeded');
 
     await fixture.composition.accountRuntime.initialize();
 
@@ -398,7 +405,7 @@ describe('AccountStartupRecoveryService production composition', () => {
 
     await fixture.composition.accountRuntime.initialize();
 
-    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('blocked');
+    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('needs_action');
     const application = new KernelWorkflowRepo(fixture.db)
       .findApplicationByDecisionId(seeded.decision.id);
     expect(application?.applyAttempts).toBe(1);
@@ -427,8 +434,8 @@ describe('AccountStartupRecoveryService production composition', () => {
       workspaceId: 'workspace-origin',
       ownerPlannerSessionId: 'conversation-origin',
     });
-    fixture.taskEngine.transition(task.id, 'ready');
-    fixture.taskEngine.transition(task.id, 'running');
+    setTaskStatus(fixture.db, task.id, 'queued');
+    setTaskStatus(fixture.db, task.id, 'running');
     fixture.db.prepare(`
       INSERT OR IGNORE INTO configuration_revisions (
         revision_id, content_hash, source_kind, imported_at
@@ -464,7 +471,8 @@ describe('AccountStartupRecoveryService production composition', () => {
     const decisions = fixture.composition.accountRuntime.kernelServices.kernelDecisionRepo
       .listByTask(task.id);
     expect(decisions.some(record => record.eventType === 'recovery_required_observed')).toBe(true);
-    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('blocked');
+    const concluded = new TaskRepo(fixture.db).findById(task.id)!;
+    expect(concluded.status).toBe('needs_action');
     // The event still had a valid configuration revision to carry.
     expect(decisions.find(record => record.action === 'block_work')?.configurationRevision)
       .toBe('revision-test');
@@ -520,9 +528,8 @@ describe('AccountStartupRecoveryService production composition', () => {
     const decisions = fixture.composition.accountRuntime.kernelServices.kernelDecisionRepo
       .listByTask(task.id);
     expect(decisions.some(record => record.eventType === 'recovery_required_observed')).toBe(true);
-    expect(decisions.find(record => record.action === 'block_work')?.reason)
-      .toContain('recovery_required');
-    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('blocked');
+    // Node labels alone do not prove completion; the failed replan needs user action.
+    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('needs_action');
     expect(new GenerationReplanRequestRepo(fixture.db).find(requestId)?.status).toBe('failed');
     const slot = scheduler.getSlot('conversation-origin');
     expect(slot).toMatchObject({ state: 'free', activeTaskId: null });
@@ -552,7 +559,10 @@ describe('AccountStartupRecoveryService production composition', () => {
     const decisions = fixture.composition.accountRuntime.kernelServices.kernelDecisionRepo
       .listByTask(task.id);
     expect(decisions.some(record => record.eventType === 'recovery_required_observed')).toBe(true);
-    expect(new TaskRepo(fixture.db).findById(task.id)?.status).toBe('blocked');
+    // Node labels alone do not prove completion; the failed replan needs user action.
+    const concluded = new TaskRepo(fixture.db).findById(task.id)!;
+    expect(concluded.status).toBe('needs_action');
+    expect(concluded.completedAt).toBeNull();
     expect(scheduler.getSlot('conversation-origin')).toMatchObject({ state: 'free', activeTaskId: null });
   });
 
@@ -593,9 +603,10 @@ describe('AccountStartupRecoveryService production composition', () => {
 
     await fixture.composition.accountRuntime.initialize();
 
-    expect(new TaskRepo(fixture.db).findById(blockedTask.id)?.status).toBe('blocked');
+    // Node labels alone do not prove completion; the failed replan needs user action.
+    expect(new TaskRepo(fixture.db).findById(blockedTask.id)?.status).toBe('needs_action');
     // Released exactly once: the successor is no longer queued, and the slot no
-    // longer belongs to the blocked Task.
+    // longer belongs to the concluded Task.
     expect(scheduler.getSlot('conversation-origin').activeTaskId).not.toBe(blockedTask.id);
     // Exactly-once promotion: the successor left the queue exactly once and no
     // other entry was promoted in its place.
@@ -607,12 +618,7 @@ describe('AccountStartupRecoveryService production composition', () => {
   it('applies a pending replan decision through the system Conversation binding', async () => {
     const fixture = createFixture('pending-replan');
     const task = createRunningTask(fixture, 'Generate the downstream HTML report');
-    fixture.taskEngine.block(task.id, {
-      taskId: task.id,
-      type: 'manual',
-      description: 'no runnable Subtask while work remains',
-      status: 'waiting',
-    });
+    setTaskStatus(fixture.db, task.id, 'needs_action', withReason('no runnable Subtask while work remains'));
     const seeded = seedPendingReplanApplication(fixture, task.id);
 
     await fixture.composition.accountRuntime.initialize();
@@ -635,12 +641,7 @@ describe('AccountStartupRecoveryService production composition', () => {
   it('Kernel-authorizes replay of a legacy system-binding replan uncertainty', async () => {
     const fixture = createFixture('uncertain-replan');
     const task = createRunningTask(fixture, 'Recover the historical HTML report');
-    fixture.taskEngine.block(task.id, {
-      taskId: task.id,
-      type: 'manual',
-      description: 'no runnable Subtask while work remains',
-      status: 'waiting',
-    });
+    setTaskStatus(fixture.db, task.id, 'needs_action', withReason('no runnable Subtask while work remains'));
     const seeded = seedPendingReplanApplication(fixture, task.id);
     const workflow = new KernelWorkflowRepo(fixture.db);
     workflow.markApplying(seeded.decision.id, '2026-08-25T00:00:01.000Z');
@@ -681,12 +682,7 @@ describe('AccountStartupRecoveryService production composition', () => {
     const fixture = createFixture('resume-uncertain-replan');
     await fixture.composition.accountRuntime.initialize();
     const task = createRunningTask(fixture, 'Resume and generate the historical HTML report');
-    fixture.taskEngine.block(task.id, {
-      taskId: task.id,
-      type: 'manual',
-      description: 'no runnable Subtask while work remains',
-      status: 'waiting',
-    });
+    setTaskStatus(fixture.db, task.id, 'needs_action', withReason('no runnable Subtask while work remains'));
     const seeded = seedPendingReplanApplication(fixture, task.id);
     const workflow = new KernelWorkflowRepo(fixture.db);
     workflow.markApplying(seeded.decision.id, '2026-08-25T00:00:01.000Z');
@@ -736,7 +732,7 @@ describe('AccountStartupRecoveryService production composition', () => {
     });
     expect(fixture.backend.create.mock.calls.length, diagnostics).toBe(1);
     expect(new TaskRepo(fixture.db).findById(task.id), diagnostics).toMatchObject({
-      status: 'done',
+      status: 'succeeded',
     });
     expect(new WorkGraphRevisionRepo(fixture.db).find(task.id, 2), diagnostics).toMatchObject({
       status: 'completed',
@@ -906,14 +902,9 @@ describe('AccountStartupRecoveryService production composition', () => {
       ownerPlannerSessionId: 'conversation-blocked',
     });
     seedPersistedWorkGraph(fixture.db, task.id, task.goal);
-    fixture.taskEngine.transition(task.id, 'ready');
-    fixture.taskEngine.transition(task.id, 'running');
-    fixture.taskEngine.block(task.id, {
-      taskId: task.id,
-      type: 'manual',
-      description: 'unknown requires explicit recovery',
-      status: 'waiting',
-    });
+    setTaskStatus(fixture.db, task.id, 'queued');
+    setTaskStatus(fixture.db, task.id, 'running');
+    setTaskStatus(fixture.db, task.id, 'needs_action', withReason('unknown requires explicit recovery'));
     new ConversationTaskSchedulerRepo(fixture.db).claimSlot(
       'conversation-blocked',
       task.id,
@@ -924,13 +915,11 @@ describe('AccountStartupRecoveryService production composition', () => {
 
     await expect(fixture.composition.accountRuntime.initialize()).resolves.toBeUndefined();
 
-    expect(new TaskRepo(fixture.db).findById(task.id)).toMatchObject({
-      status: 'blocked',
-      dependencies: [expect.objectContaining({
-        description: 'unknown requires explicit recovery',
-        status: 'waiting',
-      })],
-    });
+    const recovered = new TaskRepo(fixture.db).findById(task.id)!;
+    // One six-state vocabulary: the waiting Task stays `needs_action` with the
+    // reason the user must resolve, and it is not blocked a second time.
+    expect(recovered.status).toBe('needs_action');
+    expect(recovered.stateDetail.reason.message).toContain('unknown requires explicit recovery');
   });
 });
 
@@ -993,8 +982,8 @@ function createRunningTask(
 ) {
   const task = fixture.taskEngine.create({ id, title: goal, goal });
   seedPersistedWorkGraph(fixture.db, task.id, goal);
-  fixture.taskEngine.transition(task.id, 'ready');
-  fixture.taskEngine.transition(task.id, 'running');
+  setTaskStatus(fixture.db, task.id, 'queued');
+  setTaskStatus(fixture.db, task.id, 'running');
   return task;
 }
 
@@ -1126,7 +1115,7 @@ function createQueuedTask(
     ownerPlannerSessionId: 'conversation-origin',
   });
   seedPersistedWorkGraph(fixture.db, task.id, goal);
-  fixture.taskEngine.transition(task.id, 'ready');
+  setTaskStatus(fixture.db, task.id, 'queued');
   return task;
 }
 

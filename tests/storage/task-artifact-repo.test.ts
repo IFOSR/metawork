@@ -22,9 +22,7 @@ function createRepo(taskIds: string[] = ['task_a']) {
   for (const taskId of taskIds) {
     db.prepare(`
       INSERT INTO tasks (id, title, goal, status, summary, snapshot_json, resources_json,
-        dependencies_json, injected_prefs_json, created_at, updated_at)
-      VALUES (?, ?, '', 'created', '', '[]', '[]', '[]', '[]',
-        '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z')
+        dependencies_json, injected_prefs_json, created_at, updated_at) VALUES (?, ?, '', 'queued', '', '[]', '[]', '[]', '[]', '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z')
     `).run(taskId, taskId);
   }
   return { db, repo: new TaskArtifactRepo(db) };

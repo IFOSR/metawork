@@ -15,6 +15,7 @@ import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import type { PlannerExecutorCapabilityManual } from '../../src/configuration/types.js';
 import type { PlannerAttachmentView } from '../../src/planning/planning-types.js';
+import { setTaskStatus } from '../support/task-state-fixture.js';
 
 function createHarness(
   sessionId = 'sess_current',
@@ -104,7 +105,7 @@ describe('PlannerDataReader', () => {
   });
 
   it('bounds task search results and truncates summaries', () => {
-    const { taskEngine, taskRepo, reader } = createHarness();
+    const { db, taskEngine, taskRepo, reader } = createHarness();
     for (let index = 0; index < 25; index += 1) {
       const task = taskEngine.create({ title: `research ${index}`, goal: `goal ${index}` });
       taskRepo.update(task.id, { summary: 'x'.repeat(600) });
@@ -118,7 +119,7 @@ describe('PlannerDataReader', () => {
   });
 
   it('never exposes another Conversation Task through Planner reads', () => {
-    const { taskEngine, reader } = createHarness('sess-a', 'conversation-a');
+    const { db, taskEngine, reader } = createHarness('sess-a', 'conversation-a');
     taskEngine.create({
       id: 'task-a',
       title: 'private A task',
@@ -255,7 +256,7 @@ describe('PlannerDataReader', () => {
   });
 
   it('truncates model-generated priority reasons in planner task reads', () => {
-    const { taskEngine, taskRepo, reader } = createHarness();
+    const { db, taskEngine, taskRepo, reader } = createHarness();
     const task = taskEngine.create({ title: 'urgent research', goal: 'finish report' });
     taskRepo.update(task.id, {
       prioritySignals: {
@@ -276,7 +277,7 @@ describe('PlannerDataReader', () => {
   });
 
   it('keeps truncated planner text within its limit without splitting surrogate pairs', () => {
-    const { taskEngine, taskRepo, reader } = createHarness();
+    const { db, taskEngine, taskRepo, reader } = createHarness();
     const task = taskEngine.create({ title: 'unicode research', goal: 'finish report' });
     taskRepo.update(task.id, { summary: `${'a'.repeat(319)}😀tail` });
 
@@ -287,22 +288,24 @@ describe('PlannerDataReader', () => {
   });
 
   it('returns bounded recovery context for one explicit task id', () => {
-    const { taskEngine, taskRepo, reader } = createHarness();
+    const { db, taskEngine, taskRepo, reader } = createHarness();
     const task = taskEngine.create({ title: 'blocked research', goal: 'finish report' });
-    taskEngine.transition(task.id, 'ready');
-    taskEngine.transition(task.id, 'running');
-    taskEngine.block(task.id, {
-      taskId: task.id,
-      type: 'manual',
-      description: 'waiting for authorization',
-      status: 'waiting',
-    });
+    setTaskStatus(db, task.id, 'queued');
+    setTaskStatus(db, task.id, 'running');
+    setTaskStatus(db, task.id, 'needs_action');
     taskRepo.update(task.id, {
       snapshots: [{
         done: ['outline'],
         pending: ['final report'],
         nextStep: 'request authorization',
         pauseReason: 'blocked',
+        createdAt: '2026-07-10T00:00:00.000Z',
+      }],
+      dependencies: [{
+        taskId: task.id,
+        type: 'manual',
+        description: 'waiting for authorization',
+        status: 'waiting',
         createdAt: '2026-07-10T00:00:00.000Z',
       }],
     });
@@ -313,7 +316,7 @@ describe('PlannerDataReader', () => {
       found: true,
       task: {
         id: task.id,
-        status: 'blocked',
+        status: 'needs_action',
         latestSnapshot: { done: ['outline'], pending: ['final report'], nextStep: 'request authorization' },
         blockers: [{ taskId: task.id, description: 'waiting for authorization' }],
       },
@@ -322,12 +325,12 @@ describe('PlannerDataReader', () => {
   });
 
   it('excludes cancelled tasks from the current runtime snapshot', () => {
-    const { taskEngine, reader } = createHarness();
+    const { db, taskEngine, reader } = createHarness();
     const task = taskEngine.create({
       title: '烧碱产业链与价格走势研究分析',
       goal: '研究当前公开信息',
     });
-    taskEngine.cancel(task.id, 'durable cancellation fence authorized');
+    setTaskStatus(db, task.id, 'cancelled');
 
     const runtime = reader.getRuntimeState();
 
@@ -550,7 +553,7 @@ describe('PlannerDataReader', () => {
   it('returns dynamic executor status without static catalog or runtime configuration', () => {
     const { db, taskEngine, reader } = createHarness();
     const task = taskEngine.create({ title: 'active task', goal: 'work' });
-    taskEngine.transition(task.id, 'ready');
+    setTaskStatus(db, task.id, 'queued');
     db.prepare(`
       INSERT INTO session_state (
         id, last_focused_task_id, last_completed_task_id, last_session_id, updated_at
@@ -579,8 +582,8 @@ describe('PlannerDataReader', () => {
 
     expect(reader.getRuntimeState()).toMatchObject({
       focus: { taskId: task.id },
-      taskCounts: { ready: 1 },
-      activeTasks: [expect.objectContaining({ id: task.id, status: 'ready' })],
+      taskCounts: { queued: 1 },
+      activeTasks: [expect.objectContaining({ id: task.id, status: 'queued' })],
     });
     const status = reader.listExecutorStatus();
     expect(status.executorStatuses).toEqual(expect.arrayContaining([

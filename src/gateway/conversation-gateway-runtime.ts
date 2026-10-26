@@ -572,12 +572,10 @@ export class ConversationGatewayRuntime {
           delivery.content, delivery.certification, delivery.completeness, delivery.resultId, origin,
         );
       }
-      // A query/control reply is complete even while another Task continues; a
-      // control command that hands work to the runtime reports that the work
-      // continues after the reply (ADR-0037).
-      const backgroundWorkPending = (mailboxCommand.command.kind === 'user_message'
-        || startsBackgroundWork(mailboxCommand))
-        && conversation.hasBackgroundWork();
+      // A query/control reply is complete even while another Task continues.
+      const backgroundWorkPending = conversation.hasBackgroundWork()
+        && (!isControlCommand(mailboxCommand) || (mailboxCommand.command.kind === 'slash_command'
+          && /^\/task\s+(?:resume|unblock|retry|retry-result|accept-result|recover)(?:\s|$)/u.test(mailboxCommand.command.text.trim())));
       const result = await this.publishResultDelivery(
         conversation.conversationId,
         mailboxCommand.requestId,

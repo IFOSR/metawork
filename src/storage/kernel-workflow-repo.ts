@@ -256,6 +256,22 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
     complete.immediate();
   }
 
+  /**
+   * Converges an application whose apply proved an outcome without producing an
+   * observation. The summary keeps the machine-readable settlement tag, so
+   * recovery can read the classification instead of guessing from prose.
+   */
+  markApplicationSettled(decisionId: string, summary: string, now: string): void {
+    const result = this.db.prepare(`
+      UPDATE kernel_decision_applications
+      SET status = 'applied', error_summary = ?, applied_at = ?, updated_at = ?
+      WHERE decision_id = ? AND status = 'applying'
+    `).run(summary, now, now, decisionId);
+    if (result.changes !== 1) {
+      throw new Error(`Kernel application cannot be settled: ${decisionId}`);
+    }
+  }
+
   isDecisionApplied(decisionId: string): boolean {
     const row = this.db.prepare(`
       SELECT status FROM kernel_decision_applications WHERE decision_id = ?

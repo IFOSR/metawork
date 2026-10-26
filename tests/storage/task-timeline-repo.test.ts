@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { Dependency, Task } from '../../src/core/types.js';
+import type { Dependency } from '../../src/core/types.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 
@@ -21,10 +21,8 @@ beforeEach(() => {
   db = new Database(':memory:', { verbose: sql => queries.push(String(sql)) });
   runMigrations(db);
   repo = new TaskRepo(db);
-  const insert = db.prepare(`INSERT INTO tasks
-    (id, title, status, account_id, dependencies_json, snapshot_json, resources_json,
-     artifacts_json, priority_json, injected_prefs_json, created_at, updated_at)
-    VALUES (?, ?, 'blocked', ?, ?, ?, ?, ?, ?, ?, 'now', 'now')`);
+  const insert = db.prepare(`INSERT INTO tasks (id, title, status, account_id, dependencies_json, snapshot_json, resources_json,
+     artifacts_json, priority_json, injected_prefs_json, created_at, updated_at) VALUES (?, ?, 'needs_action', ?, ?, ?, ?, ?, ?, ?, 'now', 'now')`);
   const body = JSON.stringify([UNUSED_PAYLOAD]);
   for (let n = 0; n < 10; n += 1) {
     insert.run(`task_${n}`, `Task ${n}`, 'local-default', JSON.stringify(dependencies),
@@ -42,17 +40,21 @@ afterEach(() => {
 it('reads only typed timeline Task columns in one query for one or ten IDs', () => {
   for (const count of [1, 10]) {
     const ids = Array.from({ length: count }, (_, n) => `task_${n}`);
-    const canonical = repo.findByIds('local-default', ids)
-      .map(({ id, title, status, dependencies }) => ({ id, title, status, dependencies }));
+    const canonical = repo.findByIds('local-default', ids).map(({
+      id, title, status, dependencies, stateVersion, stateDetail, completedAt, archivedAt, retryOfTaskId,
+    }) => ({
+      id, title, status, dependencies, stateVersion, stateDetail,
+      completedAt, archivedAt, retryOfTaskId,
+    }));
     queries.length = 0;
     const parse = vi.spyOn(JSON, 'parse');
-    const actual: Pick<Task, 'id' | 'title' | 'status' | 'dependencies'>[] =
-      repo.findTimelineByIds('local-default', ids);
+    const actual = repo.findTimelineByIds('local-default', ids);
     expect(actual).toEqual(canonical);
     expect(queries).toHaveLength(1);
-    expect(queries[0]).toMatch(/SELECT id, title, status, dependencies_json FROM tasks/i);
-    expect(parse.mock.calls).toHaveLength(count);
-    expect(parse.mock.calls.every(([raw]) => raw === JSON.stringify(dependencies))).toBe(true);
+    expect(queries[0]).toMatch(/SELECT id, title, status, dependencies_json,\s+state_version, state_detail_json,/i);
+    // Dependencies and the bounded state detail are the only JSON bodies parsed.
+    expect(parse.mock.calls).toHaveLength(count * 2);
+    expect(parse.mock.calls.some(([raw]) => String(raw).includes('UNUSED_TASK_BODY'))).toBe(false);
     parse.mockRestore();
   }
 });
@@ -62,7 +64,19 @@ it('ignores unrelated malformed Task bodies while retaining account isolation an
     artifacts_json = 'invalid-unused', priority_json = 'invalid-unused', injected_prefs_json = 'invalid-unused'`);
   expect(repo.findTimelineByIds('local-default', ['task_9', 'foreign_task', 'missing', 'task_0', 'task_9']))
     .toEqual(['task_0', 'task_9'].map(id => ({
-      id, title: `Task ${id.slice(-1)}`, status: 'blocked', dependencies,
+      id,
+      title: `Task ${id.slice(-1)}`,
+      status: 'needs_action',
+      dependencies,
+      stateVersion: 1,
+      stateDetail: {
+        reason: { code: 'none', message: '', evidenceRefs: [] },
+        unresolved: [], phase: null, pendingActions: [], requiredWork: [],
+        cleanup: { state: 'none', objects: [], reason: '' }, nextWakeAt: null,
+      },
+      completedAt: null,
+      archivedAt: null,
+      retryOfTaskId: null,
     })));
   expect(repo.findTimelineByIds('unknown-account', ['task_0', 'foreign_task'])).toEqual([]);
 });

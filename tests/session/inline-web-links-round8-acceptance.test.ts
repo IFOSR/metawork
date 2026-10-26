@@ -78,7 +78,7 @@ describe('Round 8 inline web links acceptance', () => {
     session.initialize();
     await session.submit(`基于 ${weeklyPath} 和 ${weeklyUrl} 整理 Phoenix 周报，输出一个简短结论`, { awaitAsyncWork: true });
 
-    const doneTask = taskRepo.findByStatus('done')[0];
+    const doneTask = taskRepo.findByStatus('succeeded')[0];
     expect(doneTask).toBeDefined();
     expect(doneTask.resources).toEqual([weeklyPath, weeklyUrl]);
 

@@ -1,3 +1,4 @@
+import { recordingTaskStateAuthority, recordingTaskLifecyclePort } from '../support/task-state-fixture.js';
 import { describe, expect, it, vi } from 'vitest';
 import { KernelExecutionRuntime } from '../../src/execution/kernel-execution-runtime.js';
 
@@ -40,6 +41,7 @@ async function applyReplan(runtime: KernelExecutionRuntime): Promise<unknown> {
 function runtimeWith(scheduleResult = true) {
   const scheduleForPlanner = vi.fn(() => scheduleResult);
   const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
     callbacks: {},
     generationReplanRepo: {
       scheduleForPlanner,
@@ -47,6 +49,16 @@ function runtimeWith(scheduleResult = true) {
     maxConcurrentAttempts: 4,
   } as never);
   return { runtime, scheduleForPlanner };
+}
+
+function recordingRuntimeTaskState() {
+  const { authority } = recordingTaskStateAuthority();
+  const { port } = recordingTaskLifecyclePort();
+  return {
+    taskStateAuthority: authority,
+    taskLifecyclePort: port,
+    taskOperationResults: { record: () => undefined },
+  };
 }
 
 describe('KernelExecutionRuntime durable replan scheduling', () => {

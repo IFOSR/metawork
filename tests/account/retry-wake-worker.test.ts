@@ -30,6 +30,7 @@ function wake(): RetryWakeRecord {
     bindingFingerprint: 'fingerprint-1',
     authorizedBindingJson: JSON.stringify(binding),
     resumeAt: '2026-09-27T00:00:00.000Z',
+    wakeKind: 'retry',
     status: 'armed',
     timerEventId: null,
     consumedDecisionId: null,

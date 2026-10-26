@@ -4,7 +4,7 @@ import type {
   ResourceClaim,
   ResourceLeaseRepositoryPort,
 } from '../resource/index.js';
-import type { ResourceLeaseRecord } from '../resource/index.js';
+import type { ResourceLeaseRecord, ResourceWaitRecord } from '../resource/index.js';
 
 export class ResourceLeaseService {
   constructor(
@@ -43,11 +43,32 @@ export class ResourceLeaseService {
   }
 
   release(attemptId: string, leaseToken: string, now = new Date().toISOString()): number {
-    return this.repository.releaseAttempt(attemptId, leaseToken, now);
+    const released = this.repository.releaseAttempt(attemptId, leaseToken, now);
+    // A release is the event that unblocks waiters. Resolve them here so the
+    // scheduling snapshot stops excluding the Subtask immediately, even when
+    // the releasing Attempt lives in another Server process.
+    if (released > 0) this.resolveSatisfiedWaits(now);
+    return released;
+  }
+
+  /** Resolves waits whose conflicting leases are gone and returns them. */
+  resolveSatisfiedWaits(now = new Date().toISOString(), taskId?: string): ResourceWaitRecord[] {
+    return this.repository.resolveSatisfiedWaits?.(now, taskId) ?? [];
+  }
+
+  /** Unresolved waits, optionally scoped to one Task. */
+  findWaiting(taskId?: string): ResourceWaitRecord[] {
+    return this.repository.findWaiting?.(taskId) ?? [];
+  }
+
+  findWaits(attemptId: string): ResourceWaitRecord[] {
+    return this.repository.findWaits(attemptId);
   }
 
   releaseReconciledAttempt(attemptId: string, now = new Date().toISOString()): number {
-    return this.repository.releaseReconciledAttempt(attemptId, now);
+    const released = this.repository.releaseReconciledAttempt(attemptId, now);
+    if (released > 0) this.resolveSatisfiedWaits(now);
+    return released;
   }
 
   requestRevocation(input: {
@@ -81,7 +102,11 @@ export class ResourceLeaseService {
   }
 
   releaseRevokedAttempt(attemptId: string, now = new Date().toISOString()): number {
-    return this.repository.releaseRevokedAttempt?.(attemptId, now) ?? 0;
+    const released = this.repository.releaseRevokedAttempt?.(attemptId, now) ?? 0;
+    // Revocation releases a writer exactly like a normal release, so waiters
+    // must be unblocked here too instead of waiting for the next timer sweep.
+    if (released > 0) this.resolveSatisfiedWaits(now);
+    return released;
   }
 
   findActive(now = new Date().toISOString()): ResourceLeaseRecord[] {

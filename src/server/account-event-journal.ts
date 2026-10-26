@@ -2,7 +2,11 @@ import { SqliteConversationHistorySearch } from '../storage/conversation-history
 import type Database from 'better-sqlite3';
 import { FileEventJournal } from '../gateway/file-event-journal.js';
 import { SegmentedEventJournal } from '../gateway/segmented-event-journal.js';
-import { EventJournalMaintenance } from '../gateway/event-journal-maintenance.js';
+import {
+  EventJournalMaintenance,
+  type JournalMaintenanceErrorContext,
+  type JournalMaintenanceRecoveryContext,
+} from '../gateway/event-journal-maintenance.js';
 import { SqliteEventJournalSegmentIndex } from '../storage/event-journal-segment-index-repo.js';
 import { SqliteConversationReadModel } from '../storage/conversation-read-model-repo.js';
 import { SqliteConversationHistoryProjectionSource } from '../storage/conversation-history-projection-source.js';
@@ -17,7 +21,9 @@ export function createAccountEventJournal(input: {
   db: Database.Database;
   root: string;
   accountId: string;
-  onError: (error: unknown) => void;
+  /** The context carries the Conversation and stage the stack alone cannot name. */
+  onError: (error: unknown, context?: JournalMaintenanceErrorContext) => void;
+  onRecovered?: (context: JournalMaintenanceRecoveryContext) => void;
   readModel?: ConversationReadModel;
   /** Legacy import is maintenance work, never part of an observation request. */
   prepareHistory?: (conversationId: string) => Promise<void>;
@@ -36,31 +42,55 @@ export function createAccountEventJournal(input: {
     (accountId, conversationId, view) => journal.projectReadBatch(accountId, conversationId, view),
     (accountId, conversationId) => index.headSequence(accountId, conversationId) ?? 0,
     historyWorker ? (conversationId, epoch) => historyWorker.run(conversationId, epoch) : undefined);
+  /** The single bounded maintenance pass shared by the loop and diagnostics. */
+  const maintain = async (accountId: string, conversationId: string) => {
+    await input.prepareHistory?.(conversationId);
+    const started = performance.now();
+    let historyWorked = false;
+    if (historyWorker) historyWorked = await historyWorker.run(conversationId);
+    for (let n = 0; !historyWorker && n < 16 && performance.now() - started < 20; n++) {
+      if (history.primeRecent(accountId, conversationId,
+        (turn, sequence) => projector.applyHistory(accountId, conversationId, turn, sequence))) {
+        historyWorked = true;
+        continue;
+      }
+      if (history.drainDirty(accountId, conversationId,
+        (turn, sequence) => projector.applyHistory(accountId, conversationId, turn, sequence),
+        turnId => readModel.remove(accountId, conversationId, turnId))) {
+        historyWorked = true;
+        continue;
+      }
+      const next = history.next(accountId, conversationId);
+      if (!next) break;
+      history.commit(accountId, conversationId, next.sequence,
+        () => projector.applyHistory(accountId, conversationId, next.turn, next.sequence));
+      historyWorked = true;
+    }
+    const journalPass = await journal.maintain(accountId, conversationId);
+    const rebuiltDone = await rebuilder.maintain(accountId, conversationId);
+    // `search.maintain` returns true only when it consumed a queued chunk.
+    const indexed = search.maintain(accountId, conversationId);
+    const pending = history.hasPending(accountId, conversationId);
+    const done = journalPass.done && rebuiltDone && !indexed && !pending;
+    return {
+      done,
+      didWork: journalPass.didWork || !done || historyWorked || indexed,
+    };
+  };
   const maintenance = new EventJournalMaintenance({
     accountId: input.accountId,
     nextStream: (accountId, after) => index.nextStream(accountId, after),
+    // Active work keeps the small batch rate; a converged sweep sleeps.
     intervalMs: 25,
-    maintain: async (accountId, conversationId) => {
-      await input.prepareHistory?.(conversationId);
-      const started = performance.now();
-      if (historyWorker) await historyWorker.run(conversationId);
-      for (let n = 0; !historyWorker && n < 16 && performance.now() - started < 20; n++) {
-        if (history.primeRecent(accountId, conversationId,
-          (turn, sequence) => projector.applyHistory(accountId, conversationId, turn, sequence))) continue;
-        if (history.drainDirty(accountId, conversationId,
-          (turn, sequence) => projector.applyHistory(accountId, conversationId, turn, sequence),
-          turnId => readModel.remove(accountId, conversationId, turnId))) continue;
-        const next = history.next(accountId, conversationId);
-        if (!next) break;
-        history.commit(accountId, conversationId, next.sequence,
-          () => projector.applyHistory(accountId, conversationId, next.turn, next.sequence));
-      }
-      const done = await journal.maintain(accountId, conversationId);
-      const rebuilt = await rebuilder.maintain(accountId, conversationId);
-      const indexed = search.maintain(accountId, conversationId);
-      return done && rebuilt && !indexed && !history.hasPending(accountId, conversationId);
+    idleIntervalMs: 1_000,
+    maintain,
+    // The lower-level maintenance object exposes suppressed failures to its
+    // callers, but production logging must only receive report-worthy ones.
+    onError: (error, context) => {
+      if (context.outcome === 'suppressed') return;
+      input.onError(error, context);
     },
-    onError: input.onError,
+    onRecovered: input.onRecovered,
   });
   return {
     journal,
@@ -70,6 +100,10 @@ export function createAccountEventJournal(input: {
     sourceSequence: (accountId: string, conversationId: string) => rebuilds.pending(accountId, conversationId) || history.hasPending(accountId, conversationId)
       ? null : index.headSequence(accountId, conversationId),
     start: () => maintenance.start(),
+    /** Publish-and-wake seams call this when a stream gains work while idle. */
+    wake: () => maintenance.wake(),
+    /** One deterministic pass, the same unit the background loop runs. */
+    maintainOnce: maintain,
     async stop() {
       await maintenance.stop();
       await historyWorker?.close();

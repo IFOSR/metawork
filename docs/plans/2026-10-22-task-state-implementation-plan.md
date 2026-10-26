@@ -1,11 +1,13 @@
 # 任务状态简化：技术落地方案
 
 - 日期：2026-10-22。
-- 状态：待评审，未实施。本文只定义技术实施与验收，不代表源码已经符合目标。
+- 状态：源码实施与评审修复已验证；完整安装/发布验收未关闭。实际结果见[修复记录](2026-10-22-task-state-review-fixes.md)。
 - 产品目标：[任务状态简化设计](2026-10-22-task-state-simple-design.md)。本文是该设计的技术细化，不建立第二套任务规则。
 - 现状依据：本地工作区源码，包含尚未提交的结果接受、公开交付和受管服务实现；不是仅依据 HEAD。
 - 架构边界：[ADR-0020](../adr/0020-core-module-ownership-and-dependency-direction.md)、[ADR-0022](../adr/0022-unified-kernel-control-plane-and-decision-ledger.md)、[ADR-0023](../adr/0023-durable-kernel-workflow-recovery-and-availability.md)、[ADR-0032](../adr/0032-result-first-delivery-and-completion-certification.md)、[ADR-0037](../adr/0037-multi-conversation-task-parallelism.md)。实施批准前，现行 ADR 与[当前状态契约](../current/task-lifecycle-state-contracts.md)仍是现行系统依据。
-- 完成日期、验收证据、关闭提交：待实施完成后补录。本轮不安装、不发布、不改运行代码。
+- 完成日期：2026-10-22（源码实施与定向/全量回归，未安装、未发布）。
+- 关闭提交：无；当前为未提交工作区，用户未要求提交或发布。
+- 实施记录（唯一入口与验证证据）见本文第 9 节。
 
 ## 1. 技术核心只有三件事
 
@@ -396,3 +398,14 @@ interface TaskStateSnapshot {
 各批运行归属 seam 的定向测试。最终运行 lint/build、服务与 Web/TUI 相关套件、Docker SQLite/迁移测试及原生 smoke；用真实临时服务制造端口冲突、启动失败、健康超时和重启，覆盖原案例。Desktop 打包验证共享前端、Task View 版本协商及安装升级，不能把源码测试通过当作已安装生效。
 
 通过这些门槛并删除旧状态判断后，才能将简化设计和本计划标为已实施。安装/发布是否完成另行记录，不能与源码完成混称。
+
+## 9. 实施与评审修复记录（2026-10-22）
+
+原始实施经评审发现接受绕过 slot、应用事务断点、证据误匹配、迁移误判与客户端
+版本不一致等问题。原先“本次改造自身回归为 0”的结论不再作为完成依据。
+
+完整交付内容、F01–F15 对照、真实进程故障注入、用户案例、全量测试和环境限制统一
+记录在[修复与验收记录](2026-10-22-task-state-review-fixes.md)。
+
+当前 schema 为 52，Task View 为 v2。核心源码修复已完成；安装包、Docker、真实
+安装版 smoke 与全部 §8 崩溃检查点仍须独立验收，不能据此将整个发布计划关闭。

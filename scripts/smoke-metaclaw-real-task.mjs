@@ -218,7 +218,7 @@ export function verifyAuthoritativeTaskState(state) {
   }
 
   const task = state.tasks[0];
-  if (task.status !== 'done') {
+  if (task.status !== 'succeeded') {
     throw new Error([
       `Smoke failed: authoritative Task ${task.id} is ${task.status}, not done.`,
       `Authoritative state: ${formatAuthoritativeFailure(state)}`,
@@ -490,7 +490,7 @@ export function buildNativeSmokeOverlay(env = process.env, repoRoot = resolve(pr
     METACLAW_PLANNER_HOME: plannerHome,
     ANYFUSION_PLANNER_HOME: plannerHome,
     METACLAW_PLANNER_ENV_FILE: providerEnvFile,
-    METACLAW_EXECUTOR_BACKEND: 'worktree',
+    METACLAW_EXECUTOR_BACKEND: 'in_place',
     METACLAW_EXECUTOR_CODEX_HOME: codexHome,
     METACLAW_CODEX_EXECUTOR_ENV_FILE: providerEnvFile,
     METACLAW_EXECUTOR_PI_HOME: piHome,
@@ -604,7 +604,7 @@ function runManagedSmoke(rawArgs, env, overlayEnv = null) {
       METAWORK_INSTALL_ROOT: installRoot,
       METACLAW_HOME: metaclawHome,
       METACLAW_PLANNER_SESSION_DIR: plannerSessionDir,
-      METACLAW_PLANNER_SCHEMA_PATH: join(repoRoot, 'dist', 'planning-agent-plan-v8.schema.json'),
+      METACLAW_PLANNER_SCHEMA_PATH: join(repoRoot, 'dist', 'planning-agent-plan-v9.schema.json'),
       METACLAW_PLANNER_HOST_SOCKET: bridgeSocketPath,
       METACLAW_PLANNER_TUI_SOCKET: bridgeSocketPath,
       METACLAW_DISABLE_MARKDOWN_PREVIEW: '1',
@@ -769,7 +769,7 @@ function runDockerSmoke(rawArgs, env) {
       '-e', 'METACLAW_SMOKE_MANAGED_BY_HOST=true',
       '-e', 'METAWORK_INSTALL_ROOT=/data/metawork',
       '-e', `METACLAW_PLANNER_TIMEOUT_MS=${plannerTimeoutMs}`,
-      '-e', 'METACLAW_EXECUTOR_BACKEND=worktree',
+      '-e', 'METACLAW_EXECUTOR_BACKEND=in_place',
       runtimeImage,
       'node', '/app/scripts/smoke-metaclaw-real-task.mjs',
       ...rawArgs,

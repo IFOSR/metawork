@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { createServer } from 'node:net';
 import Database from 'better-sqlite3';
 import { ManagedLocalServices, validateLocalServiceSpecification, type LocalServiceSpecification } from '../../src/execution/managed-local-service.js';
+import { localServiceSpecificationRevision } from '../../src/core/local-service-revision.js';
 import { ManagedLocalServiceRepo } from '../../src/storage/managed-local-service-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 
@@ -22,7 +23,7 @@ async function fixture(health = '/health') {
   await mkdir(published, { recursive: true });
   const db = new Database(join(root, 'state.db'));
   runMigrations(db);
-  db.prepare("INSERT INTO tasks(id,title,goal,status,created_at,updated_at) VALUES ('task','Service','Service','done','now','now')").run();
+  db.prepare("INSERT INTO tasks (id,title,goal,status,created_at,updated_at) VALUES ('task', 'Service', 'Service', 'succeeded', 'now', 'now')").run();
   const port = await new Promise<number>(accept => {
     const probe = createServer(); probe.listen(0, '127.0.0.1', () => {
       const address = probe.address(); const value = typeof address === 'object' && address ? address.port : 0;
@@ -75,6 +76,16 @@ describe('managed local service user scenarios', () => {
       '代码已发布，但任务目录中没有可启动的服务规格（.metawork-service.json）',
     );
   });
+
+  it('allows only an explicit update read to inspect a changed manifest revision', async () => {
+    const { manager, spec, published } = await fixture();
+    await manager.start(spec);
+    const changed = { ...spec, args: ['changed-server.mjs'] };
+    await writeFile(join(published, '.metawork-service.json'), JSON.stringify(changed));
+    await expect(manager.readSpecification('task')).rejects.toThrow('需要显式的服务更新授权');
+    await expect(manager.readSpecification('task', { allowRevisionChange: true })).resolves.toEqual(changed);
+    await manager.stop(spec.serviceId);
+  }, 10000);
 
   it('cleans up a background grandchild when the service command exits unexpectedly', async () => {
     const { manager, spec, published } = await fixture();
@@ -130,12 +141,14 @@ spawn(process.execPath,['child.mjs'],{stdio:'inherit'});process.on('SIGTERM',()=
     expect(recovered.find('backend')!.processId).not.toBe(processId);
   }, 15000);
 
-  it('reports a live but unhealthy service truthfully and preserves its stop control', async () => {
+  it('records a bounded startup timeout as a definite failure and stops the process', async () => {
     const { manager, spec } = await fixture('/missing');
     const result = await manager.start(spec);
-    expect(result.state).toBe('unhealthy');
-    expect(result.message).toContain('503');
-    expect((await manager.stop('backend')).state).toBe('stopped');
+    // Health never passed inside startupTimeoutMs: the task-owned start is a
+    // definite failure and its process is stopped, never left half-running.
+    expect(result.state).toBe('failed');
+    expect(result.message).toBe('service_health_timeout');
+    expect(manager.find('backend')?.processId ?? null).toBeNull();
   });
 
   it('refuses an occupied port and an unpublished task', async () => {
@@ -144,7 +157,7 @@ spawn(process.execPath,['child.mjs'],{stdio:'inherit'});process.on('SIGTERM',()=
     // Publication refusal is checked with a fresh service ID, before any command runs.
     const unavailable = new ManagedLocalServices({ ...deps, resolvePublishedDirectory: async () => null });
     await expect(unavailable.start({ ...spec, serviceId: 'unpublished', port: spec.port + 1 })).rejects.toThrow('尚未发布');
-    await expect(manager.start({ ...spec, serviceId: 'occupied' })).rejects.toThrow('端口已被占用');
+    await expect(manager.start({ ...spec, serviceId: 'occupied' })).rejects.toMatchObject({ code: 'EADDRINUSE' });
   });
 });
 
@@ -171,7 +184,7 @@ describe('durable authorized service operations', () => {
   it('survives actual Server process exit and is rediscovered without spawning again', async () => {
     const { manager, spec, deps, root, published } = await fixture();
     // Compile only the Runtime adapter for a real, independent Server process.
-    for (const source of ['execution/managed-local-service', 'storage/managed-local-service-repo', 'utils/public-text', 'utils/redact-sensitive-text']) {
+    for (const source of ['core/local-service-revision', 'execution/managed-local-service', 'storage/managed-local-service-repo', 'task/local-service', 'utils/public-text', 'utils/redact-sensitive-text']) {
       const target = join(root, 'compiled', source + '.js');
       await mkdir(join(target, '..'), { recursive: true });
       await writeFile(target, ts.transpileModule(await readFile(join(process.cwd(), 'src', source + '.ts'), 'utf8'),
@@ -207,6 +220,23 @@ console.log(JSON.stringify(result)); db.close(); process.exit(0);`);
     const token = manager.find(spec.serviceId)!.processToken;
     expect(await manager.applyAuthorizedOperation(request)).toEqual(result);
     expect(manager.find(spec.serviceId)!.processToken).toBe(token);
+  });
+
+  it('persists an explicitly authorized specification update after the service is stopped', async () => {
+    const { manager, spec } = await fixture();
+    await manager.start(spec);
+    await manager.stop(spec.serviceId);
+    const changed = { ...spec, args: ['updated-server.mjs'] };
+    const result = await manager.applyAuthorizedOperation({
+      decisionId: 'update-once',
+      operation: 'update',
+      serviceId: spec.serviceId,
+      specification: changed,
+    });
+    expect(result.error).toBeNull();
+    expect(manager.find(spec.serviceId)?.specification).toEqual(changed);
+    expect(manager.find(spec.serviceId)?.specificationRevision).toBe(localServiceSpecificationRevision(changed));
+    expect(manager.find(spec.serviceId)?.state).toBe('stopped');
   });
 
   it('redacts referenced secrets and internal paths in service logs', async () => {

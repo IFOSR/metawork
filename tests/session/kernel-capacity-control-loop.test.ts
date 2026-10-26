@@ -61,7 +61,7 @@ describe('Kernel capacity control loop', () => {
     await session.submit('run after capacity recovers', { awaitAsyncWork: true });
 
     const [task] = taskRepo.findAll();
-    expect(task.status).toBe('blocked');
+    expect(task.status).toBe('needs_action');
     expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
     expect(db.prepare(`SELECT action FROM kernel_decisions WHERE task_id = ? ORDER BY rowid`).all(task.id))
       .toEqual(expect.arrayContaining([{ action: 'block_work' }]));

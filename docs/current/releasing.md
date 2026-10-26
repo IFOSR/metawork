@@ -29,6 +29,10 @@ Include complete libraries, Git templates/libexec, package dependencies and
 licenses. Dereference symlinks when creating the archive. Node must be 22.x/ABI
 127 and match the native runner. Homebrew links, host `/usr/bin/git`, credentials
 and tools requiring downloads on the user's machine are not valid inputs.
+`executor/bin/pi` must be the normal Pi Agent CLI, separate from the vendored
+AnyFusion Planner under `planner/`. Packaging probes it with the same JSON,
+no-session, Provider and Model arguments used by Executor; a Planner launcher or
+any CLI that rejects those arguments fails preparation and cannot enter a DMG.
 Desktop preparation automatically applies the minimal Node allowlist before
 inventory/signing: `bin/node`, `LICENSE` and optional `README.md`. Unlike Git
 and Executor dependency closures, Node global packages, npm/corepack, headers

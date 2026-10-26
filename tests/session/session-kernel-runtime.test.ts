@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
@@ -11,9 +11,178 @@ import { ConversationTaskSchedulerRepo } from '../../src/storage/conversation-ta
 import { SessionKernelRuntime } from '../../src/session/session-kernel-runtime.js';
 import { SessionPresentationService } from '../../src/session/session-presentation-service.js';
 import { workGraphPlan } from '../support/planning-agent-plans.js';
-import type { KernelDecision } from '../../src/kernel/control-kernel.js';
+import type { KernelDecision, KernelEvent } from '../../src/kernel/control-kernel.js';
+import { DurableKernelWorkflow } from '../../src/kernel/kernel-workflow.js';
+import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
+import { parseApplicationSettlement } from '../../src/kernel/kernel-application-settlement.js';
 
 describe('SessionKernelRuntime parallel admission', () => {
+  it('surfaces a cross-Conversation service refusal before settling the parent application', async () => {
+    const database = new Database(':memory:');
+    runMigrations(database);
+    database.prepare(`INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)
+      VALUES ('revision-test', 'test-content', 'native', '2026-10-23T00:00:00.000Z')`).run();
+    const taskRepo = new TaskRepo(database);
+    const taskRuntimeService = new TaskRuntimeService({
+      taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-test-snapshots'),
+      taskRepo,
+    });
+    taskRuntimeService.createTask({
+      id: 'service-owner',
+      title: 'service owner',
+      goal: 'service owner',
+      accountId: 'account-a',
+      conversationId: 'conversation-other',
+    });
+    const output: string[] = [];
+    const refreshRuntimeState = vi.fn();
+    const runtime = new SessionKernelRuntime({
+      sessionId: 'planner-current',
+      conversationId: 'conversation-current',
+      accountId: 'account-a',
+      taskRuntimeService,
+      memoryContextService: {} as never,
+      orchestration: {} as never,
+      activeExecutions: {} as never,
+      presentation: new SessionPresentationService(),
+      manageLocalService: vi.fn(),
+      callbacks: {
+        appendOutput: (...lines: string[]) => output.push(...lines),
+        refreshRuntimeState,
+        prepareTaskExecution: () => undefined,
+        setCurrentTaskId: () => undefined,
+        getCurrentTaskId: () => null,
+        setFocusContext: () => undefined,
+        resolveRequestText: () => '',
+        deliverDirectReply: () => undefined,
+        cancelTask: async () => undefined,
+      },
+    });
+
+    await expect(runtime.forInput('start the service', 'conversation-current').apply({
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      id: 'decision-service-cross-conversation',
+      eventId: 'event-service-cross-conversation',
+      reason: 'service control authorized',
+      action: {
+        type: 'authorize_task_control',
+        task: {
+          binding: 'reference',
+          taskId: 'service-owner',
+          control: 'service_start',
+          scope: 'service-one',
+          title: null,
+          goal: null,
+          includeRecentConversationContext: false,
+          priority: null,
+        },
+      },
+    } as KernelDecision)).rejects.toMatchObject({ code: 'service_not_in_conversation' });
+
+    expect(output).toHaveLength(1);
+    expect(output[0]).toContain('serviceId=service-one');
+    expect(output[0]).toContain('taskId=service-owner');
+    expect(refreshRuntimeState).toHaveBeenCalledTimes(1);
+    database.close();
+  });
+
+  it('settles the parent application and preserves the user-visible refusal end to end', async () => {
+    const database = new Database(':memory:');
+    runMigrations(database);
+    database.prepare(`INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)
+      VALUES ('revision-test', 'test-content', 'native', '2026-10-23T00:00:00.000Z')`).run();
+    const taskRepo = new TaskRepo(database);
+    const taskRuntimeService = new TaskRuntimeService({
+      taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-test-snapshots'),
+      taskRepo,
+    });
+    taskRuntimeService.createTask({
+      id: 'service-owner-e2e',
+      title: 'service owner',
+      goal: 'service owner',
+      accountId: 'account-a',
+      conversationId: 'conversation-other',
+    });
+    const output: string[] = [];
+    const workflowStore = new KernelWorkflowRepo(database);
+    const sessionRuntime = new SessionKernelRuntime({
+      sessionId: 'planner-current',
+      conversationId: 'conversation-current',
+      accountId: 'account-a',
+      taskRuntimeService,
+      memoryContextService: {} as never,
+      orchestration: {} as never,
+      activeExecutions: {} as never,
+      presentation: new SessionPresentationService(),
+      manageLocalService: vi.fn(),
+      callbacks: {
+        appendOutput: (...lines: string[]) => output.push(...lines),
+        refreshRuntimeState: () => undefined,
+        prepareTaskExecution: () => undefined,
+        setCurrentTaskId: () => undefined,
+        getCurrentTaskId: () => null,
+        setFocusContext: () => undefined,
+        resolveRequestText: () => '',
+        deliverDirectReply: () => undefined,
+        cancelTask: async () => undefined,
+      },
+    });
+    const event = {
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      type: 'managed_service_requested',
+      id: 'event-service-cross-conversation-e2e',
+      correlationId: 'service-owner-e2e',
+      causationId: null,
+      occurredAt: '2026-10-23T00:00:00.000Z',
+      sessionId: 'planner-current',
+      taskId: 'service-owner-e2e',
+      operation: 'start',
+      serviceId: 'service-one',
+    } as KernelEvent;
+    const decision = {
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      id: 'decision-service-cross-conversation-e2e',
+      eventId: event.id,
+      reason: 'service control authorized',
+      action: {
+        type: 'authorize_task_control',
+        task: {
+          binding: 'reference',
+          taskId: 'service-owner-e2e',
+          control: 'service_start',
+          scope: 'service-one',
+          title: null,
+          goal: null,
+          includeRecentConversationContext: false,
+          priority: null,
+        },
+      },
+    } as KernelDecision;
+    const workflow = new DurableKernelWorkflow({
+      kernel: { decide: () => decision },
+      buildSnapshot: () => ({}) as never,
+      store: workflowStore,
+      runtime: sessionRuntime.forInput('start the service', 'conversation-current'),
+      clock: { now: () => '2026-10-23T00:00:00.000Z' },
+      acceptedEventTypes: ['managed_service_requested'],
+      acceptedActions: ['authorize_task_control'],
+    });
+
+    await workflow.submit(event);
+
+    const application = workflowStore.findApplicationByDecisionId(decision.id);
+    expect(application).toMatchObject({ status: 'applied' });
+    expect(parseApplicationSettlement(application?.errorSummary)).toMatchObject({
+      kind: 'rejected_without_effect',
+      code: 'service_not_in_conversation',
+    });
+    expect(output[0]).toContain('服务任务不属于当前会话');
+    database.close();
+  });
+
   it('resolves an existing project Workspace by Conversation id, not Planner session id', async () => {
     const database = new Database(':memory:');
     runMigrations(database);

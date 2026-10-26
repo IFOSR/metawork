@@ -66,7 +66,7 @@ $workspaceVolume = 'metaclaw-shell-workspace'
 # Pre-release schemas are intentionally not migrated. Scope the persistent data
 # volume to the current schema so -Rebuild starts clean after a schema break
 # while preserving the previous volume for manual recovery.
- $dataVolume = 'metaclaw-shell-data-v53-anyfusion-planner'
+ $dataVolume = 'metaclaw-shell-data-v59-anyfusion-planner'
 $knownHosts  = Join-Path $repoRoot '.tmp\ssh_known_hosts'
 # Key-based passwordless login. A dedicated key pair lives under .tmp (gitignored)
 # so the global ~/.ssh is untouched. The public key is injected into the
@@ -235,7 +235,7 @@ function Start-ShellContainer {
     Write-Host ("Starting persistent SSH container '" + $container + "' ...") -ForegroundColor Cyan
     # Main process: render provider config, then exec sshd -D so the container
     # stays up as an SSH server. Executor CLIs are installed in this image and
-    # launched as child processes in their managed worktrees.
+    # launched as child processes in the Conversation-bound Workspace.
     #
     docker run -d --name $container `
       --network bridge `
@@ -252,7 +252,7 @@ function Start-ShellContainer {
       -e METACLAW_PI_EXECUTOR_ENV_FILE=$piExecutorEnvContainerPath `
       -e METACLAW_HOME=/data/anyfusion/data `
       -e ANYFUSION_INSTALL_ROOT=/data/anyfusion `
-      -e METACLAW_EXECUTOR_BACKEND=worktree `
+      -e METACLAW_EXECUTOR_BACKEND=in_place `
       -e METACLAW_EXECUTOR_CODEX_HOME=/var/lib/metaclaw/codex/executor `
       -e METACLAW_EXECUTOR_PI_HOME=/root `
       -e PI_SKIP_VERSION_CHECK=1 `

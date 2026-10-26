@@ -1,5 +1,8 @@
 import type { PlannerConfigurationView } from '../configuration/index.js';
+import type { WorkspaceIntent } from '../core/workspace-execution.js';
 import type { WorkGraphProposal, WorkGraphSubtask } from '../work-graph/index.js';
+
+export type { WorkspaceIntent };
 
 export type PlanningAction =
   | 'direct_reply'
@@ -31,7 +34,11 @@ export type { WorkGraphProposal };
 
 export interface PlanningAgentPlan {
   id: string;
-  schemaVersion: 8;
+  /**
+   * 8 = historical plan persisted before the Workspace intent contract.
+   * 9 = current contract with a validated single-Workspace `workspaceIntent`.
+   */
+  schemaVersion: 8 | 9;
   action: PlanningAction;
   confidence: number;
   reason: string;
@@ -66,6 +73,8 @@ export interface PlanningAgentPlan {
   conflictResolution?: {
     oldTaskId: string;
   } | null;
+  /** Planner-owned Workspace semantics (schema 9). Required for `plan_work_graph`. */
+  workspaceIntent?: WorkspaceIntent | null;
   workGraph: WorkGraphProposal | null;
   source: string;
 }

@@ -940,8 +940,8 @@ describe('WebGatewaySessionRuntime', () => {
       title: '生成 HTML',
       status: 'done',
       stages: [
-        { phase: 'planning', status: 'done' },
-        { phase: 'authorization', status: 'done' },
+        { phase: 'planning', status: 'succeeded' },
+        { phase: 'authorization', status: 'succeeded' },
         {
           phase: 'execution',
           status: 'done',
@@ -961,8 +961,8 @@ describe('WebGatewaySessionRuntime', () => {
             }],
           }],
         },
-        { phase: 'verification', status: 'done' },
-        { phase: 'delivery', status: 'done' },
+        { phase: 'verification', status: 'succeeded' },
+        { phase: 'delivery', status: 'succeeded' },
       ],
     };
     let timelineProjectionCount = 0;
@@ -1095,8 +1095,8 @@ describe('WebGatewaySessionRuntime', () => {
             title: '执行任务',
             status: 'waiting_retry',
             stages: [
-              { phase: 'planning', status: 'done' },
-              { phase: 'authorization', status: 'done' },
+              { phase: 'planning', status: 'succeeded' },
+              { phase: 'authorization', status: 'succeeded' },
               { phase: 'execution', status: 'running' },
               { phase: 'verification', status: 'pending' },
               { phase: 'delivery', status: 'pending' },

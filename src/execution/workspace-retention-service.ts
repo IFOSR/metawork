@@ -16,8 +16,16 @@ export class WorkspaceRetentionService {
     const cleanupAfter = new Date(now.getTime() + this.retentionMs).toISOString();
     let scheduled = 0;
     for (const task of tasks) {
-      if (task.status !== 'archived' && task.status !== 'cancelled') continue;
-      scheduled += this.repository.scheduleTaskCleanup(task.id, task.status, cleanupAfter, now.toISOString());
+      // Any terminal conclusion frees the workspace. The workspace record keeps
+      // its own operational state: a cancelled Task retires as `cancelled`, and
+      // every other conclusion retires as `archived`.
+      if (task.status !== 'succeeded' && task.status !== 'failed' && task.status !== 'cancelled') continue;
+      scheduled += this.repository.scheduleTaskCleanup(
+        task.id,
+        task.status === 'cancelled' ? 'cancelled' : 'archived',
+        cleanupAfter,
+        now.toISOString(),
+      );
     }
     return scheduled;
   }

@@ -249,6 +249,55 @@ export class SqliteResourceLeaseRepository implements ResourceLeaseRepositoryPor
     `).run(now, attemptId).changes;
   }
 
+  /**
+   * Waits whose conflicting leases are gone. Returns the rows it resolved so a
+   * caller can schedule the durable continuation instead of leaving the block
+   * parked until a human clicks resume. Cross-process safe: the comparison runs
+   * against the durable lease table, so a release in another Server process is
+   * observed by whoever asks next.
+   */
+  resolveSatisfiedWaits(now: string, taskId?: string): ResourceWaitRecord[] {
+    return this.db.transaction((): ResourceWaitRecord[] => {
+      const active = (this.db.prepare(`
+        SELECT * FROM resource_leases
+        WHERE released_at IS NULL AND expires_at > ?
+      `).all(now) as ResourceLeaseRow[]).map(leaseFromRow);
+      const rows = (taskId
+        ? this.db.prepare(`SELECT * FROM resource_waits WHERE status = 'waiting' AND task_id = ? ORDER BY requested_at, id`)
+            .all(taskId)
+        : this.db.prepare(`SELECT * FROM resource_waits WHERE status = 'waiting' ORDER BY requested_at, id`).all()) as ResourceWaitRow[];
+      const resolved: ResourceWaitRecord[] = [];
+      for (const row of rows) {
+        const wait = waitFromRow(row);
+        const conflict = active.find(lease => resourceClaimsConflict(
+          { partition: wait.partition, access: wait.access },
+          { partition: lease.partition, access: lease.access },
+        ));
+        if (conflict) {
+          this.db.prepare(`
+            UPDATE resource_waits SET conflicting_lease_ids_json = ?
+            WHERE id = ? AND status = 'waiting'
+          `).run(JSON.stringify([conflict.id]), wait.id);
+          continue;
+        }
+        const changed = this.db.prepare(`
+          UPDATE resource_waits SET status = 'resolved', resolved_at = ?
+          WHERE id = ? AND status = 'waiting'
+        `).run(now, wait.id).changes;
+        if (changed === 1) resolved.push({ ...wait, status: 'resolved', resolvedAt: now });
+      }
+      return resolved;
+    }).immediate();
+  }
+
+  /** Unresolved waits, optionally scoped to one Task, for scheduling exclusion. */
+  findWaiting(taskId?: string): ResourceWaitRecord[] {
+    const rows = (taskId
+      ? this.db.prepare(`SELECT * FROM resource_waits WHERE status = 'waiting' AND task_id = ? ORDER BY requested_at, id`).all(taskId)
+      : this.db.prepare(`SELECT * FROM resource_waits WHERE status = 'waiting' ORDER BY requested_at, id`).all()) as ResourceWaitRow[];
+    return rows.map(waitFromRow);
+  }
+
   private upsertWait(
     input: ClaimResourceLeasesInput,
     partition: PartitionIdentity,

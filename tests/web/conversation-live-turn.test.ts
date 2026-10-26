@@ -38,13 +38,13 @@ describe('Conversation live Turn ownership', () => {
     const result = mergeExecutionTimeline(running, running.id, {
       taskId: running.taskId!,
       title: 'task-convergence',
-      status: 'done',
+      status: 'succeeded',
       stages: [],
     });
     expect(result).toMatchObject({
       status: 'completed',
       taskId: running.taskId,
-      executionTimeline: { status: 'done' },
+      executionTimeline: { status: 'succeeded' },
     });
     expect(result?.completedAt).toEqual(expect.any(String));
   });
@@ -52,7 +52,7 @@ describe('Conversation live Turn ownership', () => {
   it('keeps a Turn live when its top-level status is terminal but execution facts are still active', () => {
     const running = liveTurn('conversation-a');
     const result = mergeExecutionTimeline(running, running.id, {
-      taskId: running.taskId!, title: 'task-convergence', status: 'done', stages: [{
+      taskId: running.taskId!, title: 'task-convergence', status: 'succeeded', stages: [{
         phase: 'execution', status: 'running', subtasks: [{
           id: 'subtask-a', title: '仍在生成', status: 'running', attempts: [],
         }],
@@ -66,7 +66,7 @@ describe('Conversation live Turn ownership', () => {
     const completed = mergeExecutionTimeline(running, running.id, {
       taskId: running.taskId!,
       title: 'task-convergence',
-      status: 'done',
+      status: 'succeeded',
       stages: [],
     });
     const result = mergeExecutionTimeline(completed, running.id, {
@@ -89,7 +89,7 @@ describe('Conversation live Turn ownership', () => {
     const blocked = mergeExecutionTimeline(resume, resume.id, {
       taskId: resume.taskId!,
       title: 'task-convergence',
-      status: 'blocked',
+      status: 'needs_action',
       stages: [],
     });
     expect(blocked?.status).toBe('blocked');
@@ -112,7 +112,7 @@ describe('Conversation live Turn ownership', () => {
     const blocked = mergeExecutionTimeline(running, running.id, {
       taskId: running.taskId!,
       title: 'task-convergence',
-      status: 'blocked',
+      status: 'needs_action',
       stages: [],
     });
 
@@ -177,7 +177,7 @@ describe('Conversation live Turn ownership', () => {
     });
     const completed = mergeLiveTurnEvent(streaming, {
       type: 'execution', turnId: running.id, taskId: running.taskId!,
-      timeline: { taskId: running.taskId!, title: 'task', status: 'done', stages: [] },
+      timeline: { taskId: running.taskId!, title: 'task', status: 'succeeded', stages: [] },
     });
     expect(completed).toMatchObject({ status: 'completed', deliveryStatus: 'streaming' });
     expect(completed?.finalAnswer).toBeNull();

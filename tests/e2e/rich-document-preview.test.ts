@@ -23,8 +23,7 @@ describe.runIf(process.env.RUN_BROWSER_E2E === '1')('Rich document preview throu
     page.on('console', message => { if (message.type() === 'error') consoleErrors.push(message.text()); });
     try {
       const now = new Date().toISOString();
-      db.prepare(`INSERT INTO tasks(id,title,goal,status,account_id,conversation_id,workspace_id,owner_planner_session_id,admitted_at,created_at,updated_at)
-        VALUES ('preview-test','文档预览验收','preview','done','local-default','conv_acceptance_10','workspace_acceptance','conv_acceptance_10',?,?,?)`).run(now, now, now);
+      db.prepare(`INSERT INTO tasks (id,title,goal,status,account_id,conversation_id,workspace_id,owner_planner_session_id,admitted_at,created_at,updated_at) VALUES ('preview-test', '文档预览验收', 'preview', 'succeeded', 'local-default', 'conv_acceptance_10', 'workspace_acceptance', 'conv_acceptance_10', ?, ?, ?)`).run(now, now, now);
       const files = await richDocumentFiles();
       const directory = join(server.workspace, 'metaclaw-tasks', 'preview-test'); await mkdir(directory, { recursive: true });
       const artifacts = new TaskArtifactRepo(db);

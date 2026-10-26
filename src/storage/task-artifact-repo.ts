@@ -22,6 +22,11 @@ export interface TaskArtifactRecord {
   contentHash: string;
   byteLength: number;
   status: TaskArtifactStatus;
+  /** `live_file` references the Workspace in place; legacy rows are copies. */
+  referenceKind: 'live_file' | 'artifact_version' | 'legacy_published_copy';
+  workspaceId: string | null;
+  artifactVersionId: string | null;
+  sourceRelativePath: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -41,6 +46,10 @@ interface TaskArtifactRow {
   content_hash: string;
   byte_length: number;
   status: string;
+  reference_kind: 'live_file' | 'artifact_version' | 'legacy_published_copy' | null;
+  workspace_id: string | null;
+  artifact_version_id: string | null;
+  source_relative_path: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -61,6 +70,10 @@ function rowToRecord(row: TaskArtifactRow): TaskArtifactRecord {
     contentHash: row.content_hash,
     byteLength: row.byte_length,
     status: row.status as TaskArtifactStatus,
+    referenceKind: row.reference_kind ?? 'legacy_published_copy',
+    workspaceId: row.workspace_id,
+    artifactVersionId: row.artifact_version_id,
+    sourceRelativePath: row.source_relative_path,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -80,6 +93,10 @@ export interface InsertTaskArtifactInput {
   contentHash: string;
   byteLength: number;
   status?: TaskArtifactStatus;
+  referenceKind?: TaskArtifactRecord['referenceKind'];
+  workspaceId?: string | null;
+  artifactVersionId?: string | null;
+  sourceRelativePath?: string | null;
   now: string;
 }
 
@@ -108,6 +125,10 @@ export class TaskArtifactRepo {
       contentHash: input.contentHash,
       byteLength: input.byteLength,
       status: input.status ?? 'published',
+      referenceKind: input.referenceKind ?? 'legacy_published_copy',
+      workspaceId: input.workspaceId ?? null,
+      artifactVersionId: input.artifactVersionId ?? null,
+      sourceRelativePath: input.sourceRelativePath ?? null,
       createdAt: input.now,
       updatedAt: input.now,
     };
@@ -116,8 +137,9 @@ export class TaskArtifactRepo {
         artifact_id, account_id, task_id, generation_id, subtask_id,
         publication_id, display_name, relative_path, published_path,
         media_type, preview_kind, content_hash, byte_length, status,
+        reference_kind, workspace_id, artifact_version_id, source_relative_path,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       record.artifactId,
       record.accountId,
@@ -133,10 +155,23 @@ export class TaskArtifactRepo {
       record.contentHash,
       record.byteLength,
       record.status,
+      record.referenceKind,
+      record.workspaceId,
+      record.artifactVersionId,
+      record.sourceRelativePath,
       record.createdAt,
       record.updatedAt,
     );
     return record;
+  }
+
+  /** Marks an existing artifact as backed by a fixed content version. */
+  linkArtifactVersion(artifactId: string, artifactVersionId: string, now: string): void {
+    this.db.prepare(`
+      UPDATE task_artifacts
+      SET reference_kind = 'artifact_version', artifact_version_id = ?, updated_at = ?
+      WHERE artifact_id = ?
+    `).run(artifactVersionId, now, artifactId);
   }
 
   findById(artifactId: string): TaskArtifactRecord | null {

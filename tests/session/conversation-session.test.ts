@@ -149,7 +149,7 @@ describe('ConversationSession', () => {
             conversationId: 'conversation-b',
           },
           {
-            id: 'task-a', title: 'local task', goal: 'local task', status: 'ready',
+            id: 'task-a', title: 'local task', goal: 'local task', status: 'queued',
             conversationId: 'conversation-a',
           },
         ] as never,
@@ -160,7 +160,7 @@ describe('ConversationSession', () => {
 
     expect(session.getSnapshot().runtimeState).toMatchObject({
       runningTaskId: null,
-      readyTaskIds: ['task-a'],
+      queuedTaskIds: ['task-a'],
     });
   });
 
@@ -889,7 +889,13 @@ describe('ConversationSession', () => {
     const task = {
       id: 'task_retry_wait',
       conversationId: 'conv_retry_wait',
-      status: 'blocked',
+      // A bounded retry keeps the Task running with its durable wake.
+      status: 'running',
+      stateDetail: {
+        reason: { code: 'none', message: '', evidenceRefs: [] },
+        unresolved: [], phase: 'retrying', pendingActions: [], requiredWork: [],
+        cleanup: { state: 'none', objects: [], reason: '' }, nextWakeAt: null,
+      },
       dependencies: [{
         taskId: 'task_retry_wait',
         type: 'kernel_retry',
@@ -919,7 +925,7 @@ describe('ConversationSession', () => {
       plannerSessionId: 'conv_queued',
       runtimePort: makePort('local-default', {
         queries: {
-          findTask: () => ({ id: 'task_queued', status: 'ready', dependencies: [] }),
+          findTask: () => ({ id: 'task_queued', status: 'queued', dependencies: [] }),
           listQueuedTaskIds: () => ['task_queued'],
         } as never,
       }),

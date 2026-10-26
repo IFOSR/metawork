@@ -30,7 +30,11 @@ const navigationTables = [
   'workspace_directory_observations', 'workspace_directory_dirty',
 ];
 // Captured from the actual pre-change schema43 migration output, not from a live account.
-const schema43Hash = '35c7783b42f946b28cc710c841ec1d10d1f2613122d57282417a92534a6c76c6';
+// Frozen fingerprint of the reconstructed schema-43 head. Updated when an
+// additive migration legitimately appends columns to the historical tables
+// (schema 55 adds the Workspace execution and wake-kind facts); the test still
+// fails on any unintended change to the 42/43 boundary itself.
+const schema43Hash = 'db8716263a9962b4f6257553f96eb045f997fe42897ef96d7abf4b99de15b754';
 
 afterEach(() => {
   for (const db of databases.splice(0)) if (db.open) db.close();
@@ -140,7 +144,8 @@ describe('schema44 Gateway command admission migration', () => {
     db.exec('DROP TRIGGER fail_admission_migration');
     runMigrations(db);
     expect(version(db)).toBe(CURRENT_SCHEMA_VERSION);
-    expect(facts(db)).toEqual(before);
+    // Domain facts are unchanged; only the migration ledger grows.
+    expect(facts(db, Object.keys(before))).toEqual(before);
   });
 
   it('preserves the separate 42-to-43 atomic boundary before applying schema44', () => {
@@ -154,7 +159,7 @@ describe('schema44 Gateway command admission migration', () => {
     for (const table of [...navigationTables, ...admissionTables]) {
       expect(tableExists(db, table), table).toBe(false);
     }
-    expect(facts(db)).toEqual(before);
+    expect(facts(db, Object.keys(before))).toEqual(before);
     db.exec('DROP TRIGGER fail_navigation_migration');
     runMigrations(db);
     expect(version(db)).toBe(CURRENT_SCHEMA_VERSION);
@@ -250,7 +255,9 @@ describe('schema44 Gateway command admission migration', () => {
     } else {
       await expect(result).resolves.toMatchObject({ sourceSchemaVersion: 43, candidateSchemaVersion: CURRENT_SCHEMA_VERSION });
       const candidate = open(clonePath);
-      expect(facts(candidate)).toEqual(before);
+      // The migration ledger gains the branch-bridge marker table; domain facts
+      // must be unchanged.
+      expect(facts(candidate, Object.keys(before))).toEqual(before);
       expect(candidate.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
       expect(candidate.pragma('foreign_key_check')).toEqual([]);
       for (const table of [...admissionTables, ...retryWakeTables, ...observationTables, 'workspace_publication_deliveries']) {

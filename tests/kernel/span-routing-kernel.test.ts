@@ -16,6 +16,7 @@ import {
   SPAN_QUESTION_VERSION,
   type SpanRoutingObservation,
 } from '../../src/routing/span-routing-types.js';
+import { workspaceIntentFixture } from '../support/planning-agent-plans.js';
 
 const configurationRevision = 'revision-span-kernel';
 
@@ -99,7 +100,7 @@ const workGraph: WorkGraphProposal = {
 
 const proposal: PlanningAgentPlan = {
   id: 'plan_span',
-  schemaVersion: 8,
+  schemaVersion: 9,
   action: 'plan_work_graph',
   confidence: 0.9,
   reason: 'span kernel test',
@@ -117,6 +118,7 @@ const proposal: PlanningAgentPlan = {
   },
   risk: { level: 'low', requiresConfirmation: false, reasons: [] },
   authorizationResolution: null,
+  workspaceIntent: workspaceIntentFixture({ targetPaths: ['workspace-target'] }),
   workGraph,
   source: 'anyfusion-planner',
 };
@@ -137,6 +139,9 @@ const event: Extract<KernelEvent, { type: 'plan_proposed' }> = {
   proposalSource: 'initial',
   targetGraphRevision: 1,
   attachmentIds: [],
+  workspaceAdmission: {
+    targetWorkspace: { workspaceId: 'workspace_span', canonicalPath: '/workspace' },
+  },
 };
 
 const proposalFingerprint = planProposalFingerprint({

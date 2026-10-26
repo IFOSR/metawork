@@ -5,7 +5,12 @@ describe('ControlKernel architecture', () => {
   it('does not import Session, Task Runtime, Execution, or Storage modules', () => {
     const source = readFileSync('src/kernel/control-kernel.ts', 'utf8');
     // Kernel may depend on these pure Task value contracts, never Task Runtime.
-    const withoutValueImports = source.replace(/import type \{[^}]+\} from '\.\.\/task\/(?:local-service|safe-result-identity)\.js';/gu, '');
+    // `task-state.ts` is the six-state value contract: it has no imports at all,
+    // and the Kernel is its documented policy caller.
+    const withoutValueImports = source
+      .replace(/import type \{[^}]+\} from '\.\.\/task\/(?:local-service|safe-result-identity)\.js';/gu, '')
+      .replace(/import \{ isTerminalTaskStatus \} from '\.\.\/task\/task-state\.js';\n/gu, '')
+      .replace(/import type \{ TaskStatus \} from '\.\.\/task\/task-state\.js';\n/gu, '');
     expect(withoutValueImports).not.toMatch(/\.\.\/(session|task|execution|storage)\//);
     expect(source).not.toContain('Date.now');
     expect(source).not.toContain('generateInteractionId');

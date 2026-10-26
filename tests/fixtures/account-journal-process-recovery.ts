@@ -125,7 +125,7 @@ async function main() {
     let complete = false;
     let passes = 0;
     while (!complete && passes++ < 10) {
-      complete = await runtime.journal.maintain(accountId, conversationId);
+      complete = (await runtime.journal.maintain(accountId, conversationId)).done;
     }
     if (!complete) throw new Error('fixture maintenance did not converge');
     emit({

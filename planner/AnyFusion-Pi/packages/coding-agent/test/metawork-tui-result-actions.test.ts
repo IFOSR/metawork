@@ -44,7 +44,12 @@ describe("public result controls in the native TUI", () => {
 			publicDelivery: {
 				workspace: "/user/repo",
 				taskDirectory: "/user/repo/backend",
+				mode: "worktree",
+				modeSource: "planner",
+				deliveryPolicy: "auto_publish",
 				state: "failed",
+				candidate: "conflict",
+				stateLabel: "发布失败",
 				files: ["server.mjs"],
 				conflicts: ["package.json"],
 			},
@@ -66,6 +71,9 @@ describe("public result controls in the native TUI", () => {
 			expect(text).toContain("/user/repo/backend");
 			expect(text).toContain("server.mjs");
 			expect(text).toContain("发布失败");
+			expect(text).toContain("执行模式: Worktree");
+			expect(text).toContain("模式来源: Planner 判断");
+			expect(text).toContain("候选: 发布冲突，需要处理后继续");
 			expect(text).toContain("package.json");
 			expect(text).toContain("接受并交付");
 			expect(text).toContain("/task accept-result task");

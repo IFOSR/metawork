@@ -30,6 +30,10 @@ interface FixtureRecord {
   byteLength: number;
   status: string;
   createdAt: string;
+  referenceKind?: 'live_file' | 'artifact_version' | 'legacy_published_copy';
+  workspaceId?: string | null;
+  artifactVersionId?: string | null;
+  sourceRelativePath?: string | null;
 }
 
 function recordFixture(overrides: Partial<FixtureRecord>): FixtureRecord {
@@ -133,6 +137,24 @@ describe('ArtifactPreviewService', () => {
     expect(JSON.stringify(result)).not.toContain(USER_ARTIFACTS_DIRECTORY);
   });
 
+  it('resolves live metadata from Workspace identity when the historical path is stale', async () => {
+    const { userWorkspaceRoot, taskDirectory } = createFixture({});
+    const live = recordFixture({
+      referenceKind: 'live_file',
+      workspaceId: 'workspace_live',
+      sourceRelativePath: 'metaclaw-tasks/demo-task_ab12cd/report.md',
+      publishedPath: '/old/metaclaw-tasks/report.md',
+    });
+    const service = new ArtifactPreviewService({
+      taskArtifactSource: { findById: async id => id === 'artifact_live' ? live : null },
+      query: { authorize: () => true, currentAccountId: () => 'local-default' },
+      userWorkspaceRoot,
+      resolveWorkspaceRoot: id => id === 'workspace_live' ? userWorkspaceRoot : null,
+    });
+    expect(await service.getMetadata('artifact_live')).toMatchObject({ ok: true });
+    void taskDirectory;
+  });
+
   it('returns markdown content through the same-origin preview contract', async () => {
     const { service } = createFixture({});
 
@@ -180,24 +202,19 @@ describe('ArtifactPreviewService', () => {
   });
 
   it('refuses unsupported kinds while metadata stays available', async () => {
-    const { taskDirectory, service } = createFixture({});
+    const { taskDirectory, service: binaryService, records } = createFixture({});
     const binaryPath = join(taskDirectory, 'assets', 'model.bin');
     mkdirSync(join(taskDirectory, 'assets'), { recursive: true });
     writeFileSync(binaryPath, Buffer.from([1, 2, 3]));
-
-    const { service: binaryService } = createFixture({
-      extraRecords: {
-        artifact_binary: recordFixture({
-          publicationId: null,
-          displayName: 'model.bin',
-          relativePath: 'assets/model.bin',
-          publishedPath: binaryPath,
-          mediaType: 'application/octet-stream',
-          previewKind: 'unsupported',
-          contentHash: 'sha256:bin',
-          byteLength: 3,
-        }),
-      },
+    records.artifact_binary = recordFixture({
+      publicationId: null,
+      displayName: 'model.bin',
+      relativePath: 'assets/model.bin',
+      publishedPath: binaryPath,
+      mediaType: 'application/octet-stream',
+      previewKind: 'unsupported',
+      contentHash: 'sha256:bin',
+      byteLength: 3,
     });
 
     await expect(binaryService.readPreview('artifact_binary')).resolves
@@ -205,7 +222,6 @@ describe('ArtifactPreviewService', () => {
     await expect(binaryService.getMetadata('artifact_binary')).resolves.toMatchObject({
       ok: true,
     });
-    void service;
   });
 
   it('returns image artifacts as a base64 data URL for same-origin preview', async () => {
@@ -249,8 +265,10 @@ describe('ArtifactPreviewService', () => {
     const { root, taskDirectory } = createFixture({});
     const outsideFile = join(root, 'outside-secret.md');
     writeFileSync(outsideFile, 'secret');
+    const insideFile = join(taskDirectory, 'real.md');
+    writeFileSync(insideFile, 'inside');
     const linkedPath = join(taskDirectory, 'linked.md');
-    symlinkSync(outsideFile, linkedPath);
+    symlinkSync(insideFile, linkedPath);
 
     const linkedService = new ArtifactPreviewService({
       taskArtifactSource: {

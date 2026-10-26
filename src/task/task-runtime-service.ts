@@ -1,20 +1,33 @@
-import type { TaskRepo } from '../storage/task-repo.js';
+import type { TaskRepo, TaskMetadataChanges } from '../storage/task-repo.js';
 import type { TaskEngine } from './task-engine.js';
 import type { TaskClearScope } from './task-control-types.js';
-import type { Dependency, Task, TaskSnapshot, TaskStatus } from '../core/types.js';
+import type { Task, TaskStatus } from '../core/types.js';
+import type {
+  ApplyTaskChangeCommand,
+  TaskLifecyclePort,
+  TaskStateApplyResult,
+} from './task-lifecycle-transition-port.js';
 
 export interface TaskRuntimeServiceDeps {
   taskEngine: TaskEngine;
   taskRepo: TaskRepo;
+  /** The single durable Task state entry. */
+  lifecyclePort: Pick<TaskLifecyclePort, 'applyTaskChange'>;
 }
 
 const CLEAR_SCOPE_STATUSES: Record<TaskClearScope, TaskStatus[]> = {
-  all: ['created', 'ready', 'running', 'parked', 'blocked'],
-  parked: ['parked'],
-  blocked: ['blocked'],
+  all: ['queued', 'running', 'needs_action'],
+  parked: ['needs_action'],
+  blocked: ['needs_action'],
 };
 
-/** Task Domain facade. It owns lifecycle commands but contains no scheduling policy. */
+/**
+ * Task Domain facade.
+ *
+ * It owns Task queries, creation and non-lifecycle metadata. It cannot write a
+ * Task status by itself: lifecycle writes go through `applyTaskChange()`, which
+ * is the only entry and validates the transition, version and facts.
+ */
 export class TaskRuntimeService {
   constructor(private readonly deps: TaskRuntimeServiceDeps) {}
 
@@ -42,51 +55,35 @@ export class TaskRuntimeService {
     return this.deps.taskEngine.create(input);
   }
 
-  updateTask(taskId: string, changes: Partial<Task>): Task | null {
+  /** Metadata only. Lifecycle fields are rejected at the repository boundary. */
+  updateTask(taskId: string, changes: TaskMetadataChanges): Task | null {
     if (!this.findTask(taskId)) return null;
     this.deps.taskRepo.update(taskId, changes);
     return this.findTask(taskId);
   }
 
-  transitionTask(taskId: string, status: TaskStatus): Task {
-    return this.deps.taskEngine.transition(taskId, status);
-  }
-
-  cancelTask(taskId: string, reason?: string): Task {
-    return this.deps.taskEngine.cancel(taskId, reason);
-  }
-
-  parkTask(taskId: string, reason: string, snapshot: Omit<TaskSnapshot, 'createdAt'>): Task {
-    return this.deps.taskEngine.park(taskId, reason, snapshot);
-  }
-
-  blockTask(taskId: string, dependency: Omit<Dependency, 'createdAt'>): Task {
-    return this.deps.taskEngine.block(taskId, dependency);
-  }
-
-  unblockTask(taskId: string): Task {
-    return this.deps.taskEngine.unblock(taskId);
-  }
-
-  resumeParkedTask(taskId: string): Task {
-    return this.deps.taskEngine.resume(taskId).task;
+  applyTaskChange(command: ApplyTaskChangeCommand): TaskStateApplyResult {
+    return this.deps.lifecyclePort.applyTaskChange(command);
   }
 
   attachResource(taskId: string, resourcePath: string): Task {
     return this.deps.taskEngine.attachResource(taskId, resourcePath);
   }
 
+  /** The Task that currently owns an execution slot. */
   getCurrentRunningTask(): Task | null {
     return this.listTasksByStatus('running')[0] ?? null;
   }
 
-  clearTasks(scope: TaskClearScope, reason = `user cleared ${scope} tasks`): {
-    cancelled: Task[];
-    runningCancelled: boolean;
-  } {
-    const candidates = this.listTasks().filter(task => CLEAR_SCOPE_STATUSES[scope].includes(task.status));
-    const runningCancelled = candidates.some(task => task.status === 'running');
-    for (const task of candidates) this.deps.taskEngine.cancel(task.id, reason);
-    return { cancelled: candidates, runningCancelled };
+  /**
+   * Candidate Tasks for `/task clear`. Cancellation itself is a Kernel decision
+   * applied by the runtime; this only selects the scope.
+   */
+  clearCandidates(scope: TaskClearScope): Task[] {
+    return this.listTasks().filter(task => CLEAR_SCOPE_STATUSES[scope].includes(task.status));
+  }
+
+  isClearScopeRunning(scope: TaskClearScope): boolean {
+    return this.clearCandidates(scope).some(task => task.status === 'running');
   }
 }

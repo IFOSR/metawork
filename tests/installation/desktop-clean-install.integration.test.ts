@@ -31,7 +31,7 @@ describe.skipIf(process.platform === 'win32')('clean Desktop installer transacti
         'metawork/package.json': '{"name":"metawork","version":"0.1.5"}',
         'planner/package.json': '{"name":"planner"}',
         'metawork/dist/index.js': '// runtime fixture',
-        'metawork/dist/planning-agent-plan-v8.schema.json': '{}',
+        'metawork/dist/planning-agent-plan-v9.schema.json': '{}',
         'metawork/dist/desktop-install-cli.js': '// fixture',
         'metawork/dist/desktop-update-cli.js': '// fixture',
         'metawork/web/dist/index.html': '<html>Web fixture</html>',

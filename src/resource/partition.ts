@@ -80,6 +80,11 @@ export function normalizePartitionIdentity(identity: PartitionIdentity): Partiti
         mountId: normalizeOpaqueSegment(identity.mountId, 'mountId').toLowerCase(),
         normalizedRelativePath: normalizeSegmentedValue(identity.normalizedRelativePath, 'path', false),
       };
+    case 'mount_root':
+      return {
+        kind: 'mount_root',
+        mountId: normalizeOpaqueSegment(identity.mountId, 'mountId').toLowerCase(),
+      };
     case 'logical':
       return {
         kind: 'logical',
@@ -110,6 +115,8 @@ export function partitionCanonicalKey(identity: PartitionIdentity): string {
       return `worktree:${encode(normalized.repositoryId)}:${encode(normalized.workspaceId)}`;
     case 'path':
       return `path:${encode(normalized.mountId)}:${encode(normalized.normalizedRelativePath)}`;
+    case 'mount_root':
+      return `mount_root:${encode(normalized.mountId)}`;
     case 'logical':
       return `logical:${encode(normalized.namespace)}:${encode(normalized.key)}`;
     case 'external_object':
@@ -148,6 +155,10 @@ export function partitionCovers(parentInput: PartitionIdentity, childInput: Part
     return child.kind === 'worktree'
       && parent.repositoryId === child.repositoryId
       && parent.workspaceId === child.workspaceId;
+  }
+  if (parent.kind === 'mount_root') {
+    return (child.kind === 'mount_root' || child.kind === 'path')
+      && parent.mountId === child.mountId;
   }
   if (parent.kind === 'path' && child.kind === 'path') {
     return parent.mountId === child.mountId

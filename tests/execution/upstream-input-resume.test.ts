@@ -20,7 +20,7 @@ function fixture() {
   const reference = { referenceId: 'ref', taskId: 'task', generationId: 'gen',
     sourceSubtaskId: 'source', targetSubtaskId: 'target', resultId: 'result' };
   const deps = {
-    taskRuntimeService: { findTask: () => ({ id: 'task', status: 'blocked', dependencies: [
+    taskRuntimeService: { findTask: () => ({ id: 'task', status: 'needs_action', dependencies: [
       { type: 'manual', status: 'waiting', description: 'startup recovery found running work without authorized dispatch' },
     ] }) },
     workGraphRevisionRepo: { findActive: () => ({ generationId: 'gen', revision: 1, configurationRevision: 'revision' }), countAutomaticReplans: () => 0 },

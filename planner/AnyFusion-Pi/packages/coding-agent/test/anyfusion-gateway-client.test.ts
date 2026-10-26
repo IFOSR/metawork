@@ -308,7 +308,7 @@ describe("GatewayClient", () => {
 	it("exposes server capabilities reported by the transport hello", async () => {
 		const { client } = fixture();
 		expect(client.serverCapabilities).toEqual([]);
-		expect(client.hasServerCapability("task_view_v1")).toBe(false);
+		expect(client.hasServerCapability("task_view_v2")).toBe(false);
 
 		const withCapabilities = new GatewayClient({
 			submit: async (envelope) => ({
@@ -317,10 +317,10 @@ describe("GatewayClient", () => {
 				conversationId: null,
 			}),
 			subscribe: () => () => undefined,
-			getServerCapabilities: () => ["command_completion_v1", "task_view_v1"],
+			getServerCapabilities: () => ["command_completion_v1", "task_view_v2"],
 		});
-		expect(withCapabilities.serverCapabilities).toEqual(["command_completion_v1", "task_view_v1"]);
-		expect(withCapabilities.hasServerCapability("task_view_v1")).toBe(true);
+		expect(withCapabilities.serverCapabilities).toEqual(["command_completion_v1", "task_view_v2"]);
+		expect(withCapabilities.hasServerCapability("task_view_v2")).toBe(true);
 	});
 });
 

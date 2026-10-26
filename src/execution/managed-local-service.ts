@@ -1,9 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, open, realpath, lstat, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve, relative, isAbsolute, sep } from 'node:path';
 
+import { localServiceSpecificationRevision } from '../task/local-service.js';
 import type { LocalServiceSpecification, LocalServiceRecord, LocalServiceStore, LocalServiceView, LocalServiceOperation, LocalServiceEffect } from '../task/local-service.js';
 import { publicText } from '../utils/public-text.js';
 import { createServer } from 'node:net';
@@ -52,20 +53,36 @@ export class ManagedLocalServices {
   private readonly operations = new Map<string, Promise<unknown>>();
   constructor(private readonly deps: {
     accountId: string;
+    /** Workspace identity of the owning service set, when the host knows it. */
+    workspaceId?: string;
     store: LocalServiceStore;
     logRoot: string;
     resolvePublishedDirectory(taskId: string): Promise<string | null>;
+    /** Workspace identity the service belongs to, for (account, workspace, service) keys. */
+    resolveWorkspaceId?(taskId: string): Promise<string | null> | string | null;
     isPublishedServiceSpecification?(taskId: string, root: string): Promise<boolean>;
     resolveEnvironment(reference: string): Promise<string | null>;
   }) {}
 
   find(serviceId: string): LocalServiceRecord | null { return this.deps.store.find(serviceId); }
 
+  /**
+   * Workspace the service belongs to; service identity includes it. Tasks that
+   * predate Workspace bindings use the empty segment, which the Kernel treats as
+   * "unscoped" rather than as a different Workspace.
+   */
+  async resolveServiceWorkspaceId(taskId: string): Promise<string> {
+    return await this.deps.resolveWorkspaceId?.(taskId) ?? this.deps.workspaceId ?? '';
+  }
+
   forTask(taskId: string): LocalServiceRecord[] {
     return this.deps.store.list().filter(record => record.accountId === this.deps.accountId && record.specification.taskId === taskId);
   }
 
-  async readSpecification(taskId: string): Promise<LocalServiceSpecification> {
+  async readSpecification(
+    taskId: string,
+    options: { allowRevisionChange?: boolean } = {},
+  ): Promise<LocalServiceSpecification> {
     const root = await this.deps.resolvePublishedDirectory(taskId);
     if (!root) throw new Error('代码尚未发布到用户任务目录');
     const path = join(root, LOCAL_SERVICE_SPECIFICATION_FILENAME);
@@ -92,7 +109,33 @@ export class ManagedLocalServices {
       ? { taskId, ...manifest } : manifest;
     const spec = validateLocalServiceSpecification(bound);
     if (spec.taskId !== taskId) throw new Error('服务规格不属于当前任务');
+    // A spec that was already authorized keeps its revision. A rewritten
+    // manifest is not a new authorization, so it must not be picked up by a
+    // later round that merely re-reads the file.
+    const authorizedRevision = this.deps.store.findAuthorizedRevision?.(
+      this.deps.accountId,
+      taskId,
+      spec.serviceId,
+    );
+    if (!options.allowRevisionChange
+      && authorizedRevision
+      && authorizedRevision !== localServiceSpecificationRevision(spec)) {
+      throw new Error('服务规格已被修改；需要显式的服务更新授权');
+    }
     return spec;
+  }
+
+  async verifyPublishedFiles(taskId: string, files: readonly { relativePath: string; contentHash: string }[]): Promise<void> {
+    const root = await this.deps.resolvePublishedDirectory(taskId);
+    if (!root || files.length === 0) throw new Error('缺少可核实的已交付成果');
+    const canonical = await realpath(root);
+    for (const file of files) {
+      const path = await realpath(resolve(root, file.relativePath));
+      const rel = relative(canonical, path);
+      if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error('成果越过授权目录');
+      const hash = `sha256:${createHash('sha256').update(await readFile(path)).digest('hex')}`;
+      if (hash !== file.contentHash) throw new Error(`成果已改变，需要重新规划：${file.relativePath}`);
+    }
   }
 
   async isPublished(taskId: string): Promise<boolean> { return Boolean(await this.deps.resolvePublishedDirectory(taskId)); }
@@ -102,8 +145,15 @@ export class ManagedLocalServices {
     for (const record of this.deps.store.list()) await this.status(record.specification.serviceId);
   }
 
-  applyAuthorizedOperation(input: { decisionId: string; operation: LocalServiceOperation;
-    serviceId: string; specification?: LocalServiceSpecification }): Promise<LocalServiceEffect> {
+  applyAuthorizedOperation(input: {
+    decisionId: string;
+    operation: LocalServiceOperation;
+    serviceId: string;
+    specification?: LocalServiceSpecification;
+    /** Workspace and revision the Kernel authorized for this operation. */
+    workspaceId?: string;
+    specificationRevision?: string;
+  }): Promise<LocalServiceEffect> {
     return this.serialize(input.serviceId, async () => {
       const store = this.deps.store;
       let effect = store.findOperation(input.decisionId);
@@ -118,6 +168,33 @@ export class ManagedLocalServices {
         store.saveOperation(effect);
       }
       try {
+        if (input.operation === 'update') {
+          // Explicit authorization to bind a different specification revision.
+          // Only a stopped service may be re-authorized; the process token is
+          // cleared so the next start cannot reuse the previous launch.
+          const current = store.find(input.serviceId);
+          if (!current) throw new Error('服务不存在，无法更新授权规格');
+          if (await this.ownedProcess(current)) throw new Error('请先停止服务再更新授权规格');
+          const nextRevision = input.specification
+            ? localServiceSpecificationRevision(input.specification)
+            : (input.specificationRevision ?? '');
+          if (!nextRevision) throw new Error('服务更新缺少目标规格 revision');
+          store.save({
+            ...current,
+            workspaceId: input.workspaceId ?? current.workspaceId,
+            specificationRevision: nextRevision,
+            specification: input.specification ?? current.specification,
+            state: 'stopped',
+            processId: null,
+            processToken: null,
+            healthMessage: null,
+            updatedAt: new Date().toISOString(),
+          }, { allowSpecificationChange: true });
+          effect.result = this.view(store.find(input.serviceId)!);
+          effect.phase = 'completed';
+          store.saveOperation(effect);
+          return effect;
+        }
         if (effect.phase === 'stopping') {
           effect.result = await this.stopNow(input.serviceId);
           effect.phase = input.operation === 'stop' ? 'completed' : 'starting';
@@ -153,13 +230,21 @@ export class ManagedLocalServices {
       // exact specification it is allowed to execute (and Kernel validates
       // its task/service identity before reaching this seam).
       await this.readSpecification(spec.taskId);
+      const requestedRevision = localServiceSpecificationRevision(spec);
+      // The launch is authorized for exactly this revision. `readSpecification`
+      // already rejects a manifest that drifted from the authorized revision, so
+      // a rewritten `.metawork-service.json` cannot become the new launch spec
+      // without an explicit update decision.
       const previous = this.deps.store.find(spec.serviceId);
       if (previous && previous.accountId !== this.deps.accountId) throw new Error('服务不存在');
+      if (previous && previous.specificationRevision !== requestedRevision) {
+        throw new Error('服务标识已绑定其他启动规格');
+      }
       if (previous && JSON.stringify(previous.specification) !== JSON.stringify(spec)) throw new Error('服务标识已绑定其他启动规格');
       if (previous && await this.ownedProcess(previous)) return this.check(previous);
       await new Promise<void>((accept, reject) => {
         const probe = createServer();
-        probe.once('error', () => reject(new Error('监听端口已被占用，请停止原服务或更换端口')));
+        probe.once('error', reject);
         probe.listen(spec.port, spec.host, () => probe.close(error => error ? reject(error) : accept()));
       });
       const root = await this.deps.resolvePublishedDirectory(spec.taskId);
@@ -182,8 +267,18 @@ export class ManagedLocalServices {
       }
       await mkdir(this.deps.logRoot, { recursive: true, mode: 0o700 });
       const token = `metawork-service-${randomUUID()}`;
-      const record: LocalServiceRecord = { accountId: this.deps.accountId, specification: spec, state: 'starting',
-        processId: null, processToken: token, healthMessage: '正在启动', updatedAt: new Date().toISOString() };
+      const record: LocalServiceRecord = {
+        accountId: this.deps.accountId,
+        workspaceId: this.deps.workspaceId
+          ?? (await this.deps.resolveWorkspaceId?.(spec.taskId) ?? null),
+        specificationRevision: requestedRevision,
+        specification: spec,
+        state: 'starting',
+        processId: null,
+        processToken: token,
+        healthMessage: '正在启动',
+        updatedAt: new Date().toISOString(),
+      };
       this.deps.store.save(record);
       const log = await open(join(this.deps.logRoot, `${spec.serviceId}.log`), 'a', 0o600);
       try {
@@ -203,7 +298,16 @@ export class ManagedLocalServices {
         if (view.state === 'healthy' || view.state === 'failed') return view;
         await new Promise(accept => setTimeout(accept, 100));
       } while (Date.now() < deadline);
-      return this.check(record);
+      // A bounded startup deadline that is still unhealthy is a definite
+      // failure: stop the process this task started and record the reason
+      // instead of keeping "waiting for health" as a completion blocker.
+      await this.stopNow(spec.serviceId);
+      const timedOut = this.require(spec.serviceId);
+      timedOut.state = 'failed';
+      timedOut.healthMessage = 'service_health_timeout';
+      timedOut.updatedAt = new Date().toISOString();
+      this.deps.store.save(timedOut);
+      return this.view(timedOut);
   }
 
   async status(serviceId: string): Promise<LocalServiceView> {

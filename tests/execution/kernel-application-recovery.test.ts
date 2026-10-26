@@ -382,7 +382,7 @@ describe('application postcondition inspection', () => {
     const complete = app({ type: 'complete_task', taskId });
     expect(inspectApplicationPostcondition(facts({
       application: complete,
-      task: { id: taskId, status: 'done' },
+      task: { id: taskId, status: 'succeeded' },
     }))).toMatchObject({ family: 'task_transition', verdict: 'applied' });
     expect(inspectApplicationPostcondition(facts({ application: complete })))
       .toMatchObject({ family: 'task_transition', verdict: 'retry_safe' });
@@ -390,7 +390,7 @@ describe('application postcondition inspection', () => {
     const block = app({ type: 'block_work', taskId, subtaskId: 'subtask-a' });
     expect(inspectApplicationPostcondition(facts({
       application: block,
-      task: { id: taskId, status: 'blocked' },
+      task: { id: taskId, status: 'needs_action' },
       subtasks: [{ id: 'subtask-a', status: 'blocked' }],
     }))).toMatchObject({ family: 'task_transition', verdict: 'applied' });
     // The Runtime writes the Subtask blocker before the Task block, so a
@@ -402,19 +402,19 @@ describe('application postcondition inspection', () => {
     }))).toMatchObject({ family: 'task_transition', verdict: 'retry_safe' });
     expect(inspectApplicationPostcondition(facts({
       application: block,
-      task: { id: taskId, status: 'blocked' },
+      task: { id: taskId, status: 'needs_action' },
       subtasks: [{ id: 'subtask-a', status: 'awaiting_decision' }],
     }))).toMatchObject({ family: 'task_transition', verdict: 'retry_safe' });
     // A Task-level block with no named Subtask is complete on its own.
     const taskWideBlock = app({ type: 'block_work', taskId, subtaskId: null });
     expect(inspectApplicationPostcondition(facts({
       application: taskWideBlock,
-      task: { id: taskId, status: 'blocked' },
+      task: { id: taskId, status: 'needs_action' },
     }))).toMatchObject({ family: 'task_transition', verdict: 'applied' });
     // A named Subtask that no longer exists cannot be verified.
     expect(inspectApplicationPostcondition(facts({
       application: block,
-      task: { id: taskId, status: 'blocked' },
+      task: { id: taskId, status: 'needs_action' },
       subtasks: [],
     }))).toMatchObject({ family: 'task_transition', verdict: 'unresolved' });
     expect(inspectApplicationPostcondition(facts({
@@ -471,7 +471,7 @@ describe('application postcondition inspection', () => {
     const parked = app({ type: 'park_for_replan', taskId });
     expect(inspectApplicationPostcondition(facts({
       application: parked,
-      task: { id: taskId, status: 'parked', dependencies: [] },
+      task: { id: taskId, status: 'needs_action', dependencies: [] },
     }))).toMatchObject({ verdict: 'applied' });
     expect(inspectApplicationPostcondition(facts({ application: parked })))
       .toMatchObject({ verdict: 'retry_safe' });
@@ -486,7 +486,7 @@ describe('application postcondition inspection', () => {
     });
     expect(inspectApplicationPostcondition(facts({
       application: defer,
-      task: { id: taskId, status: 'blocked', dependencies: [] },
+      task: { id: taskId, status: 'needs_action', dependencies: [] },
       replanRequest: replanRequest('waiting_for_availability'),
     }))).toMatchObject({ verdict: 'applied' });
     // Half-applied: the deferral landed but the Task block did not.
@@ -503,7 +503,7 @@ describe('application postcondition inspection', () => {
     });
     expect(inspectApplicationPostcondition(facts({
       application: capacity,
-      task: { id: taskId, status: 'blocked', dependencies: [] },
+      task: { id: taskId, status: 'needs_action', dependencies: [] },
     }))).toMatchObject({ verdict: 'applied' });
     const retryWait = app({
       type: 'wait_for_retry',
@@ -518,11 +518,11 @@ describe('application postcondition inspection', () => {
     // Decision-derived Retry Wake to be durable.
     expect(inspectApplicationPostcondition(facts({
       application: retryWait,
-      task: { id: taskId, status: 'blocked', dependencies: [{ type: 'kernel_retry', status: 'waiting' }] },
+      task: { id: taskId, status: 'needs_action', dependencies: [{ type: 'kernel_retry', status: 'waiting' }] },
     }))).toMatchObject({ verdict: 'retry_safe' });
     expect(inspectApplicationPostcondition(facts({
       application: retryWait,
-      task: { id: taskId, status: 'blocked', dependencies: [{ type: 'kernel_retry', status: 'waiting' }] },
+      task: { id: taskId, status: 'needs_action', dependencies: [{ type: 'kernel_retry', status: 'waiting' }] },
       retryWake: {
         wakeId: 'retry_wake_decision-1',
         taskId,
@@ -537,7 +537,7 @@ describe('application postcondition inspection', () => {
     }))).toMatchObject({ verdict: 'applied' });
     expect(inspectApplicationPostcondition(facts({
       application: retryWait,
-      task: { id: taskId, status: 'blocked', dependencies: [{ type: 'kernel_retry', status: 'waiting' }] },
+      task: { id: taskId, status: 'needs_action', dependencies: [{ type: 'kernel_retry', status: 'waiting' }] },
       retryWake: {
         wakeId: 'retry_wake_decision-1',
         taskId,
@@ -564,7 +564,7 @@ describe('application postcondition inspection', () => {
     }))).toMatchObject({ verdict: 'retry_safe' });
     expect(inspectApplicationPostcondition(facts({
       application: queued,
-      task: { id: taskId, status: 'blocked', dependencies: [] },
+      task: { id: taskId, status: 'needs_action', dependencies: [] },
       queuedReplanRequest: replanRequest('pending_quiescence', { id: 'job-1' }),
     }))).toMatchObject({ verdict: 'applied' });
     expect(inspectApplicationPostcondition(facts({
@@ -688,7 +688,7 @@ describe('application postcondition inspection', () => {
     });
     const request = replanRequest('waiting_for_availability');
     const inspection = inspectApplicationAgainstSources(application, {
-      findTask: id => ({ id, status: 'blocked', dependencies: [] }),
+      findTask: id => ({ id, status: 'needs_action', dependencies: [] }),
       listSubtasks: () => [],
       listDispatchItems: () => [],
       findWorkGraphRevision: () => null,
@@ -765,5 +765,93 @@ describe('application postcondition inspection', () => {
     expect(inspectApplicationPostcondition(facts({ application: retry,
       subtasks: [{ id: 'other', status: 'done' }], retryWake: null,
     }))).toMatchObject({ verdict: 'retry_safe' });
+  });
+  it('does not automatically replay a decision quarantined by the task state upgrade', () => {
+    const application = { ...app({ type: 'no_op' } as never),
+      errorSummary: 'task_state_upgrade_requires_reauthorization' };
+    expect(inspectApplicationPostcondition(facts({ application }))).toMatchObject({ verdict: 'unresolved' });
+  });
+});
+
+describe('Kernel application settlement recovery', () => {
+  const taskId = 'task-service';
+  function settledApplication(
+    action: KernelDecisionApplicationRecord['decision']['action'],
+    errorSummary: string,
+  ): KernelDecisionApplicationRecord {
+    return {
+      id: 'application-settled',
+      decisionId: 'decision-settled',
+      eventId: 'event-settled',
+      idempotencyKey: 'decision:decision-settled',
+      status: 'uncertain',
+      applyAttempts: 1,
+      observationEvent: null,
+      errorSummary,
+      createdAt: '2026-10-22T00:00:00.000Z',
+      updatedAt: '2026-10-22T00:00:01.000Z',
+      decision: {
+        schemaVersion: 5,
+        configurationRevision: 'revision-a',
+        id: 'decision-settled',
+        eventId: 'event-settled',
+        reason: 'fixture',
+        action,
+      },
+    };
+  }
+  const serviceStartControl = {
+    type: 'authorize_task_control' as const,
+    task: {
+      binding: 'reference' as const,
+      taskId,
+      control: 'service_start',
+      scope: 'systemone-decision',
+      title: null,
+      goal: null,
+      includeRecentConversationContext: false,
+      priority: null,
+    },
+  };
+  function facts(application: KernelDecisionApplicationRecord): ApplicationPostconditionFacts {
+    return {
+      application,
+      task: { id: taskId, status: 'cancelled', dependencies: [] },
+      subtasks: [],
+      dispatchItems: [],
+      workGraphRevision: null,
+      replanRequest: null,
+      queuedReplanRequest: null,
+    };
+  }
+
+  it('converges a tagged effect-free refusal even though authorize_task_control is otherwise unmanaged', () => {
+    const application = settledApplication(
+      serviceStartControl,
+      'kernel_settlement/rejected_without_effect:service_request_rejected 服务归属不匹配',
+    );
+    expect(inspectApplicationPostcondition(facts(application))).toMatchObject({
+      family: 'observation_only',
+      verdict: 'applied',
+    });
+  });
+
+  it('converges a tagged settled operation because its durable record owns retry', () => {
+    const application = settledApplication(
+      serviceStartControl,
+      'kernel_settlement/operation_settled:service_operation_failed 监听端口已被占用',
+    );
+    expect(inspectApplicationPostcondition(facts(application))).toMatchObject({
+      family: 'task_transition',
+      verdict: 'applied',
+    });
+  });
+
+  it('keeps an untagged authorize_task_control refusal for the user, not for silent cleanup', () => {
+    const application = settledApplication(serviceStartControl, '服务与任务归属不匹配');
+    expect(inspectApplicationPostcondition(facts(application))).toMatchObject({
+      family: 'not_managed',
+      verdict: 'not_managed',
+    });
   });
 });

@@ -16,6 +16,8 @@ import { SessionTaskExecutionApplicationService } from '../session/session-task-
 import { SessionKernelRuntime } from '../session/session-kernel-runtime.js';
 import { WorkspacePublicationWorker } from '../execution/workspace-publication-worker.js';
 import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
+import { WorkspaceExecutionBindingRepo } from '../storage/workspace-execution-binding-repo.js';
+import { TaskOperationResultRepo } from '../storage/task-operation-result-repo.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { AgentClassService } from '../executor/agent-class-service.js';
 import type { WorkGraphRuntimeService } from '../execution/work-graph-runtime-service.js';
@@ -77,6 +79,7 @@ export function buildAccountKernelExecutionServices(deps: {
   getConfigurationRevision: () => string;
   getRuntimeConfiguration?: (revisionId: string) => RuntimeConfigurationView | null;
   taskRuntimeService: TaskRuntimeService;
+  taskStateAuthority: import('../task/task-state-authority.js').TaskStateAuthority;
   agentClassService: AgentClassService;
   workGraphRuntimeService: WorkGraphRuntimeService;
   subtaskRepo: SubtaskRepo;
@@ -129,6 +132,8 @@ export function buildAccountKernelExecutionServices(deps: {
     orchestration: deps.orchestration,
     notifier: deps.notifier,
     taskRuntimeService: deps.taskRuntimeService,
+    taskStateAuthority: deps.taskStateAuthority,
+    taskOperationResults: new TaskOperationResultRepo(deps.db),
     ...(deps.resolveWorkspacePath ? { resolveWorkspacePath: deps.resolveWorkspacePath } : {}),
     ...(deps.preflightWorkspacePath ? { preflightWorkspacePath: deps.preflightWorkspacePath } : {}),
     ...(deps.productionAuthorization ? { productionAuthorization: deps.productionAuthorization } : {}),
@@ -171,13 +176,15 @@ export function buildAccountKernelExecutionServices(deps: {
       dispatchItemRepo: deps.dispatchItemRepo,
       taskRuntimeService: deps.taskRuntimeService,
       userArtifactPublication: deps.userArtifactPublication,
-      resolveUserWorkspaceRoot: deps.resolveUserWorkspaceRoot,
     }),
     publicationRepo: deps.publicationRepo,
     resultObjectRepo: new ResultObjectRepo(deps.db, deps.resultRoot),
     workspaceRepository: deps.workspaceRepository,
     generationReplanRepo: deps.generationReplanRepo,
     retryWakeRepo: deps.retryWakeRepo,
+    resourceLeaseService: deps.resourceLeaseService,
+    workspaceExecutionBindingRepo: new WorkspaceExecutionBindingRepo(deps.db),
+    workspaceStore: deps.workspaceStore,
     runInTransaction: <T>(operation: () => T) => deps.db.transaction(operation).immediate(),
     cancellationCoordinator: deps.cancellationCoordinator,
     executionProgressService: deps.executionProgressService,
@@ -202,6 +209,7 @@ export function buildAccountKernelExecutionServices(deps: {
     legacyCompatibility: deps.legacyCompatibility,
     accountId: deps.accountId,
     taskRuntimeService: deps.taskRuntimeService,
+    taskStateAuthority: deps.taskStateAuthority,
     memoryContextService: deps.memoryContextService,
     orchestration: deps.orchestration,
     activeExecutions: deps.executionRuntime,

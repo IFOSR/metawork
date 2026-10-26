@@ -64,12 +64,23 @@ export interface SubtaskCard {
   }>;
 }
 
+export type TaskStatus =
+  | 'queued'
+  | 'running'
+  | 'needs_action'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled';
+
 export interface ExecutionTimeline {
-  userState: 'waiting' | 'executing' | 'needs_action' | 'finished';
-  userStateReason: string;
+  /** The committed six-state Task status; the client never derives its own. */
+  status: TaskStatus;
+  statusLabel: string;
+  stateVersion: number;
+  reasonCode: string;
+  explanation: string;
   taskId: string;
   title: string;
-  status: string;
   stages: TimelineStage[];
 }
 

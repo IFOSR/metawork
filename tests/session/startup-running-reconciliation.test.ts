@@ -20,6 +20,7 @@ import { ResourceLeaseService } from '../../src/execution/resource-lease-service
 import { SqliteResourceLeaseRepository } from '../../src/storage/resource-lease-repo.js';
 import { buildDefaultResourceClaims } from '../../src/resource/index.js';
 import { authorizedExecutorBindingFingerprint } from '../../src/core/authorized-executor-binding.js';
+import { setTaskStatus } from '../support/task-state-fixture.js';
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -59,8 +60,8 @@ describe('session startup running-task reconciliation', () => {
 
     const runningTask = taskEngine.create({ title: '长时间调研任务', goal: '继续调研产业链' });
     seedPersistedWorkGraph(db, runningTask.id, runningTask.goal);
-    taskEngine.transition(runningTask.id, 'ready');
-    taskEngine.transition(runningTask.id, 'running');
+    setTaskStatus(db, runningTask.id, 'queued');
+    setTaskStatus(db, runningTask.id, 'running');
     taskRepo.update(runningTask.id, {
       summary: '已完成一半',
     });
@@ -86,7 +87,7 @@ describe('session startup running-task reconciliation', () => {
 
     expect(attemptExecutionBackend.listManaged).not.toHaveBeenCalled();
     expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
-    expect(taskRepo.findById(runningTask.id)?.status).toBe('blocked');
+    expect(taskRepo.findById(runningTask.id)?.status).toBe('needs_action');
     expect(snapshot.output.join('\n')).toContain(`检测到上次异常退出，任务 #${runningTask.id} 需要处理`);
     expect(db.prepare("SELECT action FROM kernel_decisions WHERE task_id = ?").get(runningTask.id))
       .toBeUndefined();
@@ -101,8 +102,8 @@ describe('session startup running-task reconciliation', () => {
       goal: 'Preserve ownership until Docker can be inspected',
     });
     seedPersistedWorkGraph(db, runningTask.id, runningTask.goal);
-    taskEngine.transition(runningTask.id, 'ready');
-    taskEngine.transition(runningTask.id, 'running');
+    setTaskStatus(db, runningTask.id, 'queued');
+    setTaskStatus(db, runningTask.id, 'running');
     new AgentClassRepo(db).upsert(
       builtinCodexAgentClass(),
     );
@@ -143,7 +144,7 @@ describe('session startup running-task reconciliation', () => {
       claimedSubtaskId: `${runningTask.id}_execute`,
       claimedAttemptId: 'attempt-recovery-blocked',
     });
-    expect(taskRepo.findById(runningTask.id)?.status).toBe('blocked');
+    expect(taskRepo.findById(runningTask.id)?.status).toBe('needs_action');
     expect(session.getSnapshot().output.join('\n')).toContain('恢复任务');
   });
 
@@ -156,8 +157,8 @@ describe('session startup running-task reconciliation', () => {
       goal: 'Preserve ownership when terminal persistence fails',
     });
     seedPersistedWorkGraph(db, runningTask.id, runningTask.goal);
-    taskEngine.transition(runningTask.id, 'ready');
-    taskEngine.transition(runningTask.id, 'running');
+    setTaskStatus(db, runningTask.id, 'queued');
+    setTaskStatus(db, runningTask.id, 'running');
     const subtaskRepo = new SubtaskRepo(db);
     const subtask = subtaskRepo.listActiveByTask(runningTask.id)[0]!;
     subtaskRepo.updateStatus(subtask.id, 'running');
@@ -267,7 +268,7 @@ describe('session startup running-task reconciliation', () => {
     expect(activeLeases).toHaveLength(resourceGrant.length);
     expect(activeLeases.every(lease => lease.attemptId === attemptId && lease.releasedAt === null)).toBe(true);
     expect(dispatch.find(attemptId)?.status).toBe('running');
-    expect(taskRepo.findById(runningTask.id)?.status).toBe('blocked');
+    expect(taskRepo.findById(runningTask.id)?.status).toBe('needs_action');
     expect(session.getSnapshot().output.join('\n')).toContain('恢复任务');
   });
 
@@ -280,8 +281,8 @@ describe('session startup running-task reconciliation', () => {
       goal: 'Preserve the exact fallback attempt identity',
     });
     seedPersistedWorkGraph(db, runningTask.id, runningTask.goal);
-    taskEngine.transition(runningTask.id, 'ready');
-    taskEngine.transition(runningTask.id, 'running');
+    setTaskStatus(db, runningTask.id, 'queued');
+    setTaskStatus(db, runningTask.id, 'running');
     const subtaskRepo = new SubtaskRepo(db);
     const subtask = subtaskRepo.listActiveByTask(runningTask.id)[0]!;
     subtaskRepo.updateStatus(subtask.id, 'running');

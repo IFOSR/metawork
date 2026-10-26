@@ -104,6 +104,7 @@ export function workGraphPlan(input: {
   const deliveryKind = input.deliveryKind ?? (capabilityClass === 'code_edit' ? 'edit' : 'report');
   return {
     ...basePlan(),
+    schemaVersion: 9,
     action: 'plan_work_graph',
     reason: 'planner 产出工作图',
     task: {
@@ -121,6 +122,14 @@ export function workGraphPlan(input: {
       deliveryKind,
       fileOutputs: input.fileOutputs,
       contextRefs: input.contextRefs,
+    }),
+    workspaceIntent: workspaceIntentFixture({
+      operation: capabilityClass === 'code_edit'
+        ? 'modify_existing'
+        : (input.fileOutputs && input.fileOutputs.length > 0 ? 'create_in_target' : 'read_only'),
+      targetPaths: input.fileOutputs && input.fileOutputs.length > 0
+        ? [...input.fileOutputs]
+        : (capabilityClass === 'code_edit' ? ['workspace-target'] : []),
     }),
     ...input.overrides,
   };
@@ -187,5 +196,30 @@ export function planningAgentFromPlanMock(plan: ReturnType<typeof vi.fn>): Plann
   return { plan, submit } as PlanningAgent & {
     plan: ReturnType<typeof vi.fn>;
     submit: ReturnType<typeof vi.fn>;
+  };
+}
+
+/** Planner-owned Workspace intent for schema-9 plan fixtures. */
+export function workspaceIntentFixture(
+  overrides: Partial<import('../../src/core/workspace-execution.js').WorkspaceIntent> = {},
+): import('../../src/core/workspace-execution.js').WorkspaceIntent {
+  // Keep fixtures strict even when an older test passes retired Worktree-only
+  // fields such as proposedMode or isolationPolicy.
+  const intent = overrides as Record<string, unknown>;
+  return {
+    targetWorkspaceId: typeof intent.targetWorkspaceId === 'string' || intent.targetWorkspaceId === null
+      ? intent.targetWorkspaceId as string | null
+      : null,
+    // Schema-9 write plans must scope the Workspace side effect. Tests that
+    // model a read-only report may override this with an empty list.
+    targetPaths: Array.isArray(intent.targetPaths) ? [...intent.targetPaths] as string[] : ['workspace-target'],
+    operation: typeof intent.operation === 'string'
+      ? intent.operation as import('../../src/core/workspace-execution.js').WorkspaceOperation
+      : 'modify_existing',
+    originalFilePolicy: typeof intent.originalFilePolicy === 'string'
+      ? intent.originalFilePolicy as import('../../src/core/workspace-execution.js').WorkspaceOriginalFilePolicy
+      : 'may_replace',
+    confidence: typeof intent.confidence === 'number' ? intent.confidence : 0.9,
+    reason: typeof intent.reason === 'string' ? intent.reason : 'test workspace intent',
   };
 }

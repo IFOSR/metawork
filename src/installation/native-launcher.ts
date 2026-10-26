@@ -84,7 +84,7 @@ unset METAWORK_RELEASE_ID
 if [[ -f "$METAWORK_INSTALL_ROOT/app/current/release-identity.json" ]]; then
   export METAWORK_RELEASE_ID="\$("$METAWORK_NODE_EXECUTABLE" -p 'require(process.argv[1]).releaseId' "$METAWORK_INSTALL_ROOT/app/current/release-identity.json")"
 fi
-export METACLAW_EXECUTOR_BACKEND=worktree
+export METACLAW_EXECUTOR_BACKEND=in_place
 # The Server is Workspace-neutral. Planner RPC receives its Runtime-owned
 # safety root from the Server composition; the Client passes the user's
 # Workspace as a separate, explicit hint.
@@ -93,7 +93,7 @@ export ANYFUSION_PI_SOURCE_ROOT="$METAWORK_INSTALL_ROOT/app/current/planner"
 export METACLAW_PLANNER_COMMAND="$ANYFUSION_PI_SOURCE_ROOT/packages/coding-agent/dist/cli.js"
 export METACLAW_PLANNER_TUI_COMMAND="$METACLAW_PLANNER_COMMAND"
 export METACLAW_PLANNER_SESSION_DIR="$METAWORK_INSTALL_ROOT/data/planner-sessions"
-export METACLAW_PLANNER_SCHEMA_PATH="$METAWORK_INSTALL_ROOT/app/current/dist/planning-agent-plan-v8.schema.json"
+export METACLAW_PLANNER_SCHEMA_PATH="$METAWORK_INSTALL_ROOT/app/current/dist/planning-agent-plan-v9.schema.json"
 export ANYFUSION_PLANNER_SCHEMA_PATH="$METACLAW_PLANNER_SCHEMA_PATH"
 export METACLAW_PI_ATTEMPT_EXTENSION="$METAWORK_INSTALL_ROOT/app/current/dist/pi-attempt-tools.ts"
 export PI_SKIP_VERSION_CHECK=1
@@ -110,7 +110,7 @@ REM MetaWork managed launcher
 set "METAWORK_INSTALL_ROOT=%METAWORK_INSTALL_ROOT%"
 if not defined METAWORK_INSTALL_ROOT set "METAWORK_INSTALL_ROOT=${root}"
 set "ANYFUSION_INSTALL_ROOT=%METAWORK_INSTALL_ROOT%"
-set "METACLAW_EXECUTOR_BACKEND=worktree"
+set "METACLAW_EXECUTOR_BACKEND=in_place"
 set "METAWORK_SECRET_STORE=file"
 set "ANYFUSION_PLANNER_WORKSPACE="
 set "METACLAW_PLANNER_WORKDIR="
@@ -118,7 +118,7 @@ set "ANYFUSION_PI_SOURCE_ROOT=%METAWORK_INSTALL_ROOT%\\app\\current\\planner"
 set "METACLAW_PLANNER_COMMAND=%ANYFUSION_PI_SOURCE_ROOT%\\packages\\coding-agent\\dist\\cli.js"
 set "METACLAW_PLANNER_TUI_COMMAND=%METACLAW_PLANNER_COMMAND%"
 set "METACLAW_PLANNER_SESSION_DIR=%METAWORK_INSTALL_ROOT%\\data\\planner-sessions"
-set "METACLAW_PLANNER_SCHEMA_PATH=%METAWORK_INSTALL_ROOT%\\app\\current\\dist\\planning-agent-plan-v8.schema.json"
+set "METACLAW_PLANNER_SCHEMA_PATH=%METAWORK_INSTALL_ROOT%\\app\\current\\dist\\planning-agent-plan-v9.schema.json"
 set "ANYFUSION_PLANNER_SCHEMA_PATH=%METACLAW_PLANNER_SCHEMA_PATH%"
 set "METACLAW_PI_ATTEMPT_EXTENSION=%METAWORK_INSTALL_ROOT%\\app\\current\\dist\\pi-attempt-tools.ts"
 set "PI_SKIP_VERSION_CHECK=1"

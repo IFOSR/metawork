@@ -20,10 +20,12 @@ export interface TaskDashboardActions {
 	changed(): void;
 }
 const LABELS: Record<string, string> = {
-	waiting: "等待中",
-	executing: "执行中",
-	needs_action: "需要处理",
-	finished: "已结束",
+	queued: "排队",
+	running: "执行中",
+	needs_action: "待处理",
+	succeeded: "成功",
+	failed: "失败",
+	cancelled: "取消",
 };
 
 export class MetaWorkTaskDashboard implements Component, Focusable {
@@ -48,7 +50,7 @@ export class MetaWorkTaskDashboard implements Component, Focusable {
 				key: `${row.conversationId}\0${row.taskId}`,
 				title: row.title,
 				subtitle: row.conversationTitle,
-				phase: row.userState,
+				phase: row.status,
 				current: state.selectedConversationId === row.conversationId && state.selectedTaskId === row.taskId,
 				run: () => this.actions?.open(row),
 			})),
@@ -118,7 +120,7 @@ export class MetaWorkTaskDashboard implements Component, Focusable {
 		if (!entries.some((row) => row.key === this.selectedKey))
 			this.selectedKey = entries.find((row) => row.current)?.key ?? entries[0]?.key ?? null;
 		const counts = new Map<string, number>();
-		for (const row of state.rows) counts.set(row.userState, (counts.get(row.userState) ?? 0) + 1);
+		for (const row of state.rows) counts.set(row.status, (counts.get(row.status) ?? 0) + 1);
 		const lines = [
 			theme.fg("accent", theme.bold("Task Dashboard")),
 			theme.fg("dim", "当前 Workspace · 已加载任务"),

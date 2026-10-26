@@ -404,7 +404,7 @@ describe("metawork-tui reducer", () => {
 	});
 
 	const taskView = (asOfSequence: number, overrides: Record<string, unknown> = {}) => ({
-		queryVersion: "task_view_v1",
+		queryVersion: "task_view_v2",
 		requestId: "view",
 		targetConversationId: "conv_1",
 		turnId: "turn_1",
@@ -735,7 +735,7 @@ describe("metawork-tui reducer", () => {
 		state = reduceGatewayEvent(
 			state,
 			event("client_connection_x", 1, "task_view_snapshot", {
-				queryVersion: "task_view_v1",
+				queryVersion: "task_view_v2",
 				requestId: "req_view",
 				targetConversationId: "conv_1",
 				turnId: "turn_1",

@@ -155,19 +155,26 @@ export class MetaWorkConversationPanel implements Component {
 		lines.push(...this.renderResult(turn, width));
 		if (turn.publicDelivery) {
 			const delivery = turn.publicDelivery;
-			const labels: Record<string, string> = {
-				not_published: "待发布",
-				awaiting_acceptance: "等待用户接受",
-				publishing: "正在发布到任务目录",
-				published: "已发布到任务目录",
-				failed: "发布失败",
+			const modeLabels: Record<string, string> = {
+				in_place: "目标 Workspace 就地执行",
 			};
-			lines.push(
-				...wrapTextWithAnsi(
-					`Workspace: ${delivery.workspace}\n任务目录: ${delivery.taskDirectory}\n代码状态: ${labels[delivery.state] ?? "待发布"}`,
-					width,
-				),
-			);
+			const sourceLabels: Record<string, string> = {
+				explicit_user: "用户明确要求",
+				planner: "Planner 判断",
+				fallback: "系统默认规则",
+				kernel_safety: "Kernel 规则",
+			};
+			const target = delivery.taskDirectory
+				? `目标项目目录: ${delivery.taskDirectory}`
+				: `目标 Workspace: ${delivery.workspace}`;
+			const linesForDelivery = [
+				`Workspace: ${delivery.workspace}`,
+				target,
+				`执行模式: ${modeLabels[delivery.mode] ?? delivery.mode}`,
+				...(delivery.modeSource ? [`模式来源: ${sourceLabels[delivery.modeSource] ?? delivery.modeSource}`] : []),
+				`工作区文件: ${delivery.stateLabel || delivery.state}`,
+			];
+			lines.push(...wrapTextWithAnsi(linesForDelivery.join("\n"), width));
 			if (expanded) lines.push(...wrapTextWithAnsi(`交付文件: ${delivery.files.join("、") || "暂无"}`, width));
 			if (delivery.conflicts.length)
 				lines.push(...wrapTextWithAnsi(`冲突文件: ${delivery.conflicts.join("、")}`, width));

@@ -11,6 +11,7 @@ import type {
   GenerationReplanRequestStatus,
 } from '../storage/generation-replan-request-repo.js';
 import type { WorkGraphRevisionRecord } from '../storage/work-graph-revision-repo.js';
+import { parseApplicationSettlement } from '../kernel/kernel-application-settlement.js';
 
 export const LEGACY_SYSTEM_BINDING_CALLBACK_ERROR =
   'Conversation execution callback is unavailable: onDecisionApplying';
@@ -187,6 +188,30 @@ export function inspectApplicationPostcondition(
   facts: ApplicationPostconditionFacts,
 ): ApplicationPostconditionInspection {
   const action = facts.application.decision.action;
+  if (facts.application.errorSummary === 'task_state_upgrade_requires_reauthorization') {
+    return { family: 'task_transition', verdict: 'unresolved',
+      reason: 'legacy Task authorization requires inspection and a new six-state decision' };
+  }
+  // A settled local-service application records its durable settlement tag in
+  // errorSummary. The tag is the postcondition owned by the service workflow;
+  // recover it before the generic unmanaged-action guard below.
+  if (action.type === 'authorize_task_control') {
+    const settlement = parseApplicationSettlement(facts.application.errorSummary);
+    if (settlement?.kind === 'rejected_without_effect') {
+      return {
+        family: 'observation_only',
+        verdict: 'applied',
+        reason: 'the service workflow durably recorded an effect-free refusal',
+      };
+    }
+    if (settlement?.kind === 'operation_settled') {
+      return {
+        family: 'task_transition',
+        verdict: 'applied',
+        reason: 'the service workflow durably settled the operation',
+      };
+    }
+  }
   if (UNMANAGED_ACTIONS.has(action.type)) {
     return {
       family: 'not_managed',
@@ -255,7 +280,7 @@ function inspectRetryWait(
       reason: 'the retry target is terminal and no Retry Wake was created; no retry remains to apply',
     };
   }
-  const blocked = facts.task !== null && ['running', 'blocked'].includes(facts.task.status);
+  const blocked = facts.task !== null && ['running', 'needs_action'].includes(facts.task.status);
   const wake = facts.retryWake;
   if (
     blocked
@@ -477,7 +502,7 @@ function inspectTaskTransition(
   const action = facts.application.decision.action;
   const taskStatus = facts.task?.status ?? null;
   if (action.type === 'complete_task' || action.type === 'accept_partial_result') {
-    return taskStatus === 'done' || taskStatus === 'archived'
+    return taskStatus === 'succeeded'
       ? { family: 'task_transition', verdict: 'applied', reason: 'the Task reached its terminal state' }
       : { family: 'task_transition', verdict: 'retry_safe', reason: 'the Task is not terminal yet' };
   }
@@ -501,19 +526,19 @@ function inspectTaskTransition(
     const subtaskIncomplete = action.subtaskId !== null
       && action.preserveSubtaskState !== true
       && !['blocked', 'done', 'cancelled'].includes(namedSubtask!.status);
-    if (taskStatus === 'blocked' && !subtaskIncomplete) {
+    if (taskStatus === 'needs_action' && !subtaskIncomplete) {
       return { family: 'task_transition', verdict: 'applied', reason: 'the Task block is durable' };
     }
     return {
       family: 'task_transition',
       verdict: 'retry_safe',
-      reason: taskStatus === 'blocked'
+      reason: taskStatus === 'needs_action'
         ? `the Task is blocked but Subtask ${action.subtaskId} is still ${namedSubtask?.status}`
         : 'the Task block is not durable yet',
     };
   }
   if (action.type === 'park_for_replan') {
-    return taskStatus === 'parked' || taskStatus === 'blocked'
+    return taskStatus === 'needs_action'
       ? { family: 'task_transition', verdict: 'applied', reason: 'the Task is parked for replan' }
       : { family: 'task_transition', verdict: 'retry_safe', reason: 'the Task is not parked yet' };
   }
@@ -532,10 +557,10 @@ function inspectParkedForReplan(
   facts: ApplicationPostconditionFacts,
 ): ApplicationPostconditionInspection {
   const taskStatus = facts.task?.status ?? null;
-  if (taskStatus === 'parked') {
+  if (taskStatus === 'needs_action') {
     return { family: 'task_transition', verdict: 'applied', reason: 'the Task is parked' };
   }
-  if (taskStatus !== null && ['done', 'archived', 'cancelled'].includes(taskStatus)) {
+  if (taskStatus !== null && ['succeeded', 'failed', 'cancelled'].includes(taskStatus)) {
     return {
       family: 'task_transition',
       verdict: 'applied',
@@ -559,7 +584,7 @@ function inspectAvailabilityDeferral(
 ): ApplicationPostconditionInspection {
   const deferred = facts.replanRequest?.status === 'waiting_for_availability';
   const taskStatus = facts.task?.status ?? null;
-  if (deferred && taskStatus === 'blocked') {
+  if (deferred && (taskStatus === 'needs_action' || taskStatus === 'queued')) {
     return {
       family: 'task_transition',
       verdict: 'applied',
@@ -601,7 +626,7 @@ function inspectQueuedGenerationReplan(
     };
   }
   const taskStatus = facts.task?.status ?? null;
-  if (taskStatus !== null && ['blocked', 'parked', 'done', 'archived', 'cancelled'].includes(taskStatus)) {
+  if (taskStatus !== null && ['needs_action', 'queued', 'succeeded', 'failed', 'cancelled'].includes(taskStatus)) {
     return {
       family: 'replan',
       verdict: 'applied',
@@ -627,14 +652,14 @@ function inspectCapacityWait(
   if (facts.dispatchItems.some(item => ['pending_launch', 'launching', 'running', 'cancelling'].includes(item.status))) {
     return { family: 'task_transition', verdict: 'applied', reason: 'authorized dispatch retains the capacity wait; sibling execution remains live' };
   }
-  if (task?.status === 'blocked') {
+  if (task?.status === 'needs_action' || task?.status === 'queued') {
     return {
       family: 'task_transition',
       verdict: 'applied',
       reason: 'the capacity blocker is durable and the periodic recheck owns the wake',
     };
   }
-  if (task !== null && ['done', 'archived', 'cancelled'].includes(task.status)) {
+  if (task !== null && ['succeeded', 'failed', 'cancelled'].includes(task.status)) {
     return { family: 'task_transition', verdict: 'applied', reason: 'the Task is terminal' };
   }
   return {

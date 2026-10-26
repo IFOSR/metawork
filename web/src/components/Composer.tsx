@@ -260,12 +260,12 @@ export function Composer({
                 type="button"
                 className="stop-button"
                 disabled={disabled}
-                title="停止当前轮：终止运行中的 Planner 与执行器，不会创建新任务"
-                onClick={() => {
-                  if (window.confirm('确定停止当前轮？运行中的 Planner 与执行器会被终止。')) {
-                    onCancel();
-                  }
-                }}
+                title="停止当前轮：终止运行中的 Planner 与执行器，不会创建新任务（结果与历史会保留）"
+                // No blocking `window.confirm`: browsers suppress repeated
+                // dialogs, which turned this button into a silent no-op. The
+                // stop is reversible-by-history and reports its outcome in the
+                // composer notice instead.
+                onClick={() => onCancel()}
               >
                 ⏹ 停止
               </button>

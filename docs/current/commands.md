@@ -25,6 +25,7 @@ Desktop 与 Web 共用输入组件，通过 Gateway 的 `complete_command` 只�
 /task cancel <taskId>
 /task accept-result <taskId>
 /task retry-result <taskId>
+/task retry <failedTaskId>
 
 /memory list
 /memory search <关键词...>
@@ -37,9 +38,11 @@ Desktop 与 Web 共用输入组件，通过 Gateway 的 `complete_command` 只�
 /exit
 ```
 
-`/task resume` 是继续任务的唯一日常入口；需要补材料时直接把路径放在同一条指令后面。旧的 `/task unblock` 仍可识别，但只作为兼容入口，不再出现在常用帮助中。`/task block` 同样只保留兼容和诊断用途。
+`/task resume` 是继续未终结任务的日常入口；需要补材料时直接把路径放在同一条指令后面。旧的 `/task unblock` 仍可识别，但只作为兼容入口，不再出现在常用帮助中。`/task block` 同样只保留兼容和诊断用途。
 
 结果出现“接受结果”或“重新执行”时，分别使用 `/task accept-result` 或 `/task retry-result`。接受只进行发布与交付检查，不会重跑 Executor；重新执行会保留历史结果并创建新的 Attempt。
+
+确定交付或服务启动失败后，使用 `/task retry <failedTaskId>` 创建关联任务，只补未完成的交付/服务，原任务保留失败结论。重复提交不会创建多个后续任务。若没有可核实的已集成成果，需重新规划，不能直接重放未知工作。
 
 ## 高级指令
 

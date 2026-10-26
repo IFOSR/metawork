@@ -42,3 +42,96 @@ it('uses a single segmented writer, retaining the legacy file only for import an
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it('reports whether a maintenance pass did work so the loop can idle', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'account-journal-work-'));
+  const db = new Database(':memory:');
+  let runtime: ReturnType<typeof createAccountEventJournal> | undefined;
+  try {
+    runMigrations(db);
+    runtime = createAccountEventJournal({ db, root, accountId: 'local-default', onError: vi.fn() });
+    const base: GatewayEventEnvelope = {
+      protocolVersion: 2, accountId: 'local-default', conversationId: 'conv_work', eventId: 'event_1',
+      turnId: 'turn_one', requestId: 'request_one', sequence: 0, kind: 'final_answer',
+      occurredAt: '2026-09-26T00:00:00Z', payload: { lines: ['answer'] },
+    };
+    await runtime.journal.append(base);
+    await runtime.journal.append({ ...base, eventId: 'event_2', sequence: 1 });
+    let done = false;
+    const passes: { done: boolean; didWork: boolean }[] = [];
+    for (let n = 0; n < 20 && !done; n += 1) {
+      const pass = await runtime.maintainOnce('local-default', 'conv_work');
+      passes.push(pass);
+      done = pass.done;
+    }
+    expect(done).toBe(true);
+    expect(passes.some(pass => pass.didWork)).toBe(true);
+    // A converged stream performs no durable work, so the loop may sleep.
+    expect(await runtime.maintainOnce('local-default', 'conv_work'))
+      .toEqual({ done: true, didWork: false });
+    // Steady state stays idle: the loop may now back off to its idle interval.
+    expect(await runtime.maintainOnce('local-default', 'conv_work'))
+      .toEqual({ done: true, didWork: false });
+  } finally {
+    await runtime?.stop();
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('surfaces a corrupt half-projected history row as a failing pass with its Conversation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'account-journal-corrupt-'));
+  const db = new Database(':memory:');
+  let runtime: ReturnType<typeof createAccountEventJournal> | undefined;
+  try {
+    runMigrations(db);
+    runtime = createAccountEventJournal({ db, root, accountId: 'local-default', onError: vi.fn() });
+    // A half-completed import: the stream exists and the checkpoint is behind,
+    // but the stored body cannot be projected.
+    db.prepare(`INSERT INTO conversation_history_streams (account_id, conversation_id, kind, last_sequence)
+      VALUES ('local-default', 'conv_corrupt', 'conversation', 1)`).run();
+    db.prepare(`INSERT INTO conversation_history_turns
+      (account_id, conversation_id, kind, sequence, turn_id, body_json, byte_length)
+      VALUES ('local-default', 'conv_corrupt', 'conversation', 1, 'turn_1', 'null', 4)`).run();
+    // The pass fails loudly instead of silently dropping the stream: the loop
+    // wrapper adds the Conversation and stack to the report.
+    await expect(runtime.maintainOnce('local-default', 'conv_corrupt')).rejects.toThrow();
+    // A healthy stream is unaffected by the damaged one.
+    expect((await runtime.maintainOnce('local-default', 'conv_healthy')).done).toBe(true);
+  } finally {
+    await runtime?.stop();
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('keeps suppressed maintenance failures out of the production error callback', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'account-journal-suppressed-'));
+  const db = new Database(':memory:');
+  const onError = vi.fn();
+  let runtime: ReturnType<typeof createAccountEventJournal> | undefined;
+  try {
+    runMigrations(db);
+    runtime = createAccountEventJournal({ db, root, accountId: 'local-default', onError });
+    db.prepare(`INSERT INTO conversation_history_streams (account_id, conversation_id, kind, last_sequence)
+      VALUES ('local-default', 'conv_noisy', 'conversation', 1)`).run();
+    db.prepare(`INSERT INTO conversation_history_turns
+      (account_id, conversation_id, kind, sequence, turn_id, body_json, byte_length)
+      VALUES ('local-default', 'conv_noisy', 'conversation', 1, 'turn_1', 'null', 4)`).run();
+
+    runtime.start();
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1), { timeout: 1_000 });
+    // The failed stream is retried after the 500ms backoff. Its repeated
+    // failure is exposed to the maintenance object for metrics, but the
+    // production adapter must suppress that noisy callback.
+    await new Promise(resolve => setTimeout(resolve, 700));
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0]?.[1]).toMatchObject({
+      conversationId: 'conv_noisy', stage: 'maintain', outcome: 'reported',
+    });
+  } finally {
+    await runtime?.stop();
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

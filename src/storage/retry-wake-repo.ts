@@ -1,5 +1,12 @@
 import type Database from 'better-sqlite3';
 
+/**
+ * `retry` continues a failed Attempt after its backoff; `partition` re-dispatches
+ * a Subtask that was parked on a busy ResourceLease. Both are durable wakes so a
+ * released lease reaches the scheduler without a human resume.
+ */
+export type RetryWakeKind = 'retry' | 'partition';
+
 export type RetryWakeStatus =
   | 'armed'
   | 'fired'
@@ -18,6 +25,7 @@ export interface RetryWakeRecord {
   bindingFingerprint: string;
   authorizedBindingJson: string;
   resumeAt: string;
+  wakeKind: RetryWakeKind;
   status: RetryWakeStatus;
   timerEventId: string | null;
   consumedDecisionId: string | null;
@@ -36,6 +44,7 @@ interface RetryWakeRow {
   binding_fingerprint: string;
   authorized_binding_json: string;
   resume_at: string;
+  wake_kind: RetryWakeKind;
   status: RetryWakeStatus;
   timer_event_id: string | null;
   consumed_decision_id: string | null;
@@ -51,9 +60,9 @@ export class RetryWakeRepo {
       INSERT OR IGNORE INTO retry_wakes (
         wake_id, task_id, subtask_id, generation_id, source_decision_id,
         source_attempt_id, configuration_revision, binding_fingerprint,
-        authorized_binding_json, resume_at, status, timer_event_id,
+        authorized_binding_json, resume_at, wake_kind, status, timer_event_id,
         consumed_decision_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'armed', NULL, NULL, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'armed', NULL, NULL, ?, ?)
     `).run(
       record.wakeId,
       record.taskId,
@@ -65,6 +74,7 @@ export class RetryWakeRepo {
       record.bindingFingerprint,
       record.authorizedBindingJson,
       record.resumeAt,
+      record.wakeKind,
       record.createdAt,
       record.updatedAt,
     );
@@ -219,6 +229,7 @@ function rowToRecord(row: RetryWakeRow): RetryWakeRecord {
     bindingFingerprint: row.binding_fingerprint,
     authorizedBindingJson: row.authorized_binding_json,
     resumeAt: row.resume_at,
+    wakeKind: row.wake_kind ?? 'retry',
     status: row.status,
     timerEventId: row.timer_event_id,
     consumedDecisionId: row.consumed_decision_id,

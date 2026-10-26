@@ -20,6 +20,7 @@ type AttemptSupervisorRepository = Pick<
 export interface AttemptSupervisorBindingContext {
   generationId: string;
   configurationRevision: string;
+  executionBindingFingerprint?: string | null;
   attempts: Readonly<Record<string, {
     authorizedBinding: AuthorizedExecutorBinding;
     bindingFingerprint: string;

@@ -124,6 +124,34 @@ export class ManagedGitWorkspaceService {
     }
   }
 
+  /**
+   * Repository that owns the worktrees of one Generation. The layout is owned
+   * here so cleanup never guesses a Git path.
+   */
+  repositoryPathFor(identity: Pick<WorkspaceIdentity, 'taskId' | 'generationId'>): string {
+    return join(
+      this.repositoriesPath,
+      boundedPathSegment(identity.taskId, { prefix: 't', readable: 12 }),
+      `${boundedPathSegment(identity.generationId, { prefix: 'g' })}.git`,
+    );
+  }
+
+  /**
+   * Drops Git worktree registrations whose directories no longer exist. Retiring
+   * an internal execution directory without this leaves a stale registration and
+   * a later retry cannot re-add a worktree at the same path. Only metadata is
+   * pruned: commits, refs and objects used by published results stay intact.
+   */
+  async pruneMissingWorktrees(
+    identity: Pick<WorkspaceIdentity, 'taskId' | 'generationId'>,
+  ): Promise<void> {
+    const repositoryPath = this.repositoryPathFor(identity);
+    if (!(await exists(repositoryPath))) return;
+    await this.withRepositoryOperation(repositoryPath, async () => {
+      await git(['--git-dir', repositoryPath, 'worktree', 'prune']).catch(() => undefined);
+    });
+  }
+
   async detectSource(sourcePath: string): Promise<{ root: string; commit: string } | null> {
     try {
       const root = await realpath(await git(['-C', sourcePath, 'rev-parse', '--show-toplevel']));
@@ -143,11 +171,7 @@ export class ManagedGitWorkspaceService {
     const workspace = await this.store.ensureWorkspace(identity, 'git');
     // Directory names are bounded like the workspace tree; Git ref and branch
     // names keep the durable readable identities.
-    const repositoryPath = join(
-      this.repositoriesPath,
-      boundedPathSegment(identity.taskId, { prefix: 't', readable: 12 }),
-      `${boundedPathSegment(identity.generationId, { prefix: 'g' })}.git`,
-    );
+    const repositoryPath = this.repositoryPathFor(identity);
     const branch = `metaclaw/${safeRefSegment(identity.taskId)}/${safeRefSegment(identity.generationId)}/${safeRefSegment(identity.subtaskId)}`;
     const generationRefPrefix = `refs/metaclaw/generations/${safeRefSegment(identity.taskId)}/${safeRefSegment(identity.generationId)}`;
     const sourceRef = `${generationRefPrefix}/source`;

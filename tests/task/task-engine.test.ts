@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
+import { TaskStateChangeRepo } from '../../src/storage/task-state-change-repo.js';
 import { tmpdir } from 'os';
 import { resolve } from 'path';
 
@@ -16,87 +17,64 @@ function createTestDb() {
 describe('TaskEngine', () => {
   let engine: TaskEngine;
   let repo: TaskRepo;
+  let stateChanges: TaskStateChangeRepo;
 
   beforeEach(() => {
     const db = createTestDb();
     repo = new TaskRepo(db);
-    engine = new TaskEngine(repo, resolve(tmpdir(), 'metaclaw-test-snapshots'));
+    stateChanges = new TaskStateChangeRepo(db);
+    engine = new TaskEngine({
+      taskRepo: repo,
+      snapshotDir: resolve(tmpdir(), 'metaclaw-test-snapshots'),
+      stateChanges,
+    });
   });
 
-  it('should create a task', () => {
+  it('creates a Task already in the single queued state', () => {
     const task = engine.create({ title: '测试任务', goal: '验证创建功能' });
     expect(task.id).toMatch(/^task_/);
     expect(task.title).toBe('测试任务');
-    expect(task.status).toBe('created');
+    expect(task.status).toBe('queued');
+    expect(task.stateVersion).toBe(1);
+    expect(task.completedAt).toBeNull();
+    expect(task.archivedAt).toBeNull();
+    expect(task.retryOfTaskId).toBeNull();
   });
 
-  it.each(['', '   '])('should replace a blank explicit task id with a generated id', id => {
+  it.each(['', '   '])('replaces a blank explicit task id with a generated id', id => {
     const task = engine.create({ id, title: '测试任务', goal: '拒绝空主键' });
 
     expect(task.id).toMatch(/^task_/);
     expect(repo.findById(id)).toBeNull();
   });
 
-  it('should transition task status', () => {
-    const task = engine.create({ title: '测试', goal: '测试' });
-    const ready = engine.transition(task.id, 'ready');
-    expect(ready.status).toBe('ready');
-
-    const running = engine.transition(task.id, 'running');
-    expect(running.status).toBe('running');
+  it('records the creation baseline in the durable state ledger', () => {
+    const task = engine.create({ title: '测试', goal: '基线' });
+    const history = stateChanges.listForTask(task.id);
+    expect(history).toHaveLength(1);
+    expect(history[0]!.version).toBe(1);
+    expect(history[0]!.operationKey).toBe(`create:${task.id}`);
+    expect(history[0]!.toStatus).toBe('queued');
   });
 
-  it('should reject invalid transitions', () => {
-    const task = engine.create({ title: '测试', goal: '测试' });
-    expect(() => engine.transition(task.id, 'done')).toThrow('非法状态迁移');
+  it('has no status transition API: lifecycle writes belong to the state port', () => {
+    expect('transition' in engine).toBe(false);
+    expect('cancel' in engine).toBe(false);
+    expect('park' in engine).toBe(false);
+    expect('block' in engine).toBe(false);
+    expect('unblock' in engine).toBe(false);
+    expect('resume' in engine).toBe(false);
   });
 
-  it('should park and resume a task', () => {
-    const task = engine.create({ title: '测试', goal: '测试' });
-    engine.transition(task.id, 'ready');
-    engine.transition(task.id, 'running');
-
-    const parked = engine.park(task.id, '临时切换', {
-      done: ['步骤1完成'],
-      pending: ['步骤2'],
-      nextStep: '继续步骤2',
-      pauseReason: '临时切换',
-    });
-    expect(parked.status).toBe('parked');
-    expect(parked.snapshots).toHaveLength(1);
-
-    const { task: resumed, resumeSummary } = engine.resume(task.id);
-    expect(resumed.status).toBe('ready');
-    expect(resumeSummary.lastProgress).toContain('步骤1完成');
-    expect(resumeSummary.nextStep).toBe('继续步骤2');
-  });
-
-  it('should block and unblock a task', () => {
-    const task = engine.create({ title: '测试', goal: '测试' });
-    engine.transition(task.id, 'ready');
-    engine.transition(task.id, 'running');
-
-    const blocked = engine.block(task.id, {
-      taskId: task.id,
-      type: 'manual',
-      description: '等待客户资料',
-      status: 'waiting',
-    });
-    expect(blocked.status).toBe('blocked');
-    expect(blocked.dependencies).toHaveLength(1);
-
-    const unblocked = engine.unblock(task.id);
-    expect(unblocked.status).toBe('ready');
-    expect(unblocked.dependencies[0].status).toBe('resolved');
-  });
-
-  it('should attach resources', () => {
+  it('attaches resources without changing the conclusion', () => {
     const task = engine.create({ title: '测试', goal: '测试' });
     const updated = engine.attachResource(task.id, '/path/to/file.pdf');
     expect(updated.resources).toContain('/path/to/file.pdf');
+    expect(updated.status).toBe('queued');
+    expect(updated.stateVersion).toBe(1);
   });
 
-  it('should persist scheduler metadata on tasks', () => {
+  it('persists scheduler metadata on tasks', () => {
     const task = engine.create({ title: '测试', goal: '测试' });
 
     repo.update(task.id, {
@@ -109,5 +87,24 @@ describe('TaskEngine', () => {
     expect(updated?.lastSchedulingReason).toBe('截止时间临近');
     expect(updated?.lastInterruptionReason).toBe('被更高优先级任务抢占');
     expect(updated?.interruptionCount).toBe(2);
+    // Metadata cannot change the Task version.
+    expect(updated?.stateVersion).toBe(1);
+  });
+
+  it('rejects a lifecycle field in the generic metadata update at the type level', () => {
+    const task = engine.create({ title: '测试', goal: '测试' });
+    // @ts-expect-error `status` is a protected lifecycle field.
+    expect(() => repo.update(task.id, { status: 'running' })).not.toThrow();
+    // The runtime guard is the type; a cast would be required to bypass it.
+    expect(repo.findById(task.id)!.status).toBe('queued');
+  });
+
+  it('archives by attribute without changing the conclusion or version', () => {
+    const task = engine.create({ title: '测试', goal: '测试' });
+    repo.setArchivedAt(task.id, '2026-10-22T00:00:00.000Z');
+    const archived = repo.findById(task.id)!;
+    expect(archived.archivedAt).toBe('2026-10-22T00:00:00.000Z');
+    expect(archived.status).toBe('queued');
+    expect(archived.stateVersion).toBe(1);
   });
 });
