@@ -10,9 +10,7 @@ import type { ManagedLocalServices } from '../execution/managed-local-service.js
 import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { TaskEngine } from '../task/task-engine.js';
-import type { MemoryEngine } from '../memory/memory-engine.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
-import type { ContextRecaller } from '../memory/context-recaller.js';
 import type { NotificationService } from '../notifications/types.js';
 import type { StagedLegacyConfiguration } from '../configuration/staged-legacy-configuration.js';
 import type { RuntimePrivateConfigurationBinding } from '../configuration/index.js';
@@ -92,14 +90,12 @@ export function buildAccountRuntimeComposition(deps: {
   resolveConfigurationSnapshot?: (revisionId: string) => Promise<import('../configuration/types.js').ConfigurationSnapshot>;
   db: Database.Database;
   taskEngine: TaskEngine;
-  memoryEngine: MemoryEngine;
   /**
    * Long-term memory delivery. Optional: without it the Executor never sees a
    * memory asset, and the memory seam stays closed.
    */
   memoryEvidence?: import('../memory/memory-evidence-service.js').MemoryEvidencePort;
   orchestration: OrchestrationEngine;
-  contextRecaller: ContextRecaller;
   notifier: NotificationService;
   /** 任务 → 会话工作区解析（恢复/定时请求缺 workspacePath 时兜底）。 */
   resolveWorkspacePath?: (taskId: string) => Promise<string | null>;
@@ -248,8 +244,6 @@ export function buildAccountRuntimeComposition(deps: {
   }
   const plannerServices = buildAccountPlannerServices({
     db: deps.db,
-    memoryEngine: deps.memoryEngine,
-    contextRecaller: deps.contextRecaller,
     plannerBinding: deps.plannerBinding,
     plannerBindingFingerprint: deps.plannerBindingFingerprint,
     plannerModelId: plannerModel?.modelId,
@@ -314,7 +308,6 @@ export function buildAccountRuntimeComposition(deps: {
     workspaceStore: workspaceServices.workspaceStore,
     workspaceRepository: workspaceServices.workspaceRepository,
     resourceLeaseService: runtimeExecutionServices.resourceLeaseService,
-    memoryContextService: plannerServices.memoryContextService,
     executionRuntime: executionServices.executionRuntime,
     kernelExecutionCallbacks: conversationExecutionBinder.routedKernelCallbacks(),
     taskExecutionCallbacks: conversationExecutionBinder.routedTaskCallbacks(),

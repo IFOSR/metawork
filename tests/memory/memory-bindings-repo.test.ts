@@ -40,7 +40,7 @@ describe('MemoryBindingsRepo', () => {
     const record = repo.upsert({ tdaiMemoryId: 'tdai-1', accountId: 'local-default' });
     repo.setEnabled(record.memoryId, 'local-default', false);
     expect(repo.findEnabledForAccount(record.memoryId, 'local-default')).toBeNull();
-    expect(repo.findByMemoryId(record.memoryId)?.enabled).toBe(false);
+    expect(repo.findByMemoryId(record.memoryId, 'local-default')?.enabled).toBe(false);
   });
 
   it('re-enables an asset for the owning account only', () => {
@@ -52,8 +52,8 @@ describe('MemoryBindingsRepo', () => {
 
   it('resolves a binding by the engine id', () => {
     repo.upsert({ tdaiMemoryId: 'tdai-1', accountId: 'local-default' });
-    expect(repo.findByTdaiMemoryId('tdai-1')?.accountId).toBe('local-default');
-    expect(repo.findByTdaiMemoryId('tdai-missing')).toBeNull();
+    expect(repo.findByTdaiMemoryId('tdai-1', 'local-default')?.accountId).toBe('local-default');
+    expect(repo.findByTdaiMemoryId('tdai-missing', 'local-default')).toBeNull();
   });
 
   it('lists only the account assets and honours the disabled filter', () => {
@@ -74,7 +74,7 @@ describe('MemoryBindingsRepo', () => {
     const record = repo.upsert({ tdaiMemoryId: 'tdai-1', accountId: 'local-default' });
     expect(repo.delete(record.memoryId, 'account-b')).toBe(false);
     expect(repo.delete(record.memoryId, 'local-default')).toBe(true);
-    expect(repo.findByMemoryId(record.memoryId)).toBeNull();
+    expect(repo.findByMemoryId(record.memoryId, 'local-default')).toBeNull();
   });
 
   it('reuses the local id when the same engine asset is bound again', () => {
@@ -104,8 +104,8 @@ describe('MemoryBindingsRepo', () => {
       accountId: 'local-default',
       confidence: 0.9,
     });
-    expect(repo.findByMemoryId(record.memoryId)?.contentDigest).toBe(memoryContentDigest('原始内容'));
-    expect(repo.findByMemoryId(record.memoryId)?.confidence).toBe(0.9);
+    expect(repo.findByMemoryId(record.memoryId, 'local-default')?.contentDigest).toBe(memoryContentDigest('原始内容'));
+    expect(repo.findByMemoryId(record.memoryId, 'local-default')?.confidence).toBe(0.9);
   });
 
   it('projects a management summary without the body', () => {

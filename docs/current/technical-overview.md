@@ -269,7 +269,7 @@ See [implementation and validation](../plans/2026-10-03-tui-workspace-task-dashb
 - Plans complex work as explicit subtasks with acceptance criteria and aggregation rules.
 - Plans work as a task-owned capability-handoff graph, authorizes a complete ordered canonical AgentClass list per subtask, and lets idle executor work units claim ready subtasks.
 - Validates every Subtask through Completion Protocol v4, persists immutable Result Objects and direct-edge references, and separates safe result delivery from completion certification.
-- Binds each Conversation to one persisted AnyFusion-Pi Planner session; MetaWork-owned preferences and runtime facts may cross only bounded read-only Planner query contracts and are not replayed as conversation history.
+- Binds each Conversation to one persisted AnyFusion-Pi Planner session; MetaWork-owned runtime facts and projected memory candidates may cross only bounded read-only Planner query contracts and are not replayed as conversation history.
 - Captures generated files as task artifacts.
 - Sends Feishu chat replies, file artifacts, and Markdown preview links through the backend delivery layer.
 - Provides a local Gateway so multiple terminals can connect to one MetaWork runtime.
@@ -356,7 +356,7 @@ flowchart LR
   Surfaces --> Gateway[ClientGateway<br/>versioned command/event plane]
   Gateway --> Conversation[ConversationSession<br/>mailbox and presentation]
   Conversation --> Account[AccountRuntime<br/>shared runtime owner]
-  Conversation --> MemoryFast[Explicit memory and preference fast path]
+  Conversation --> MemoryRecall[Server-projected memory recall<br/>bounded candidates, no engine credential]
   Conversation --> Planning[Planner Work Unit<br/>PlanningAgent]
   Planning --> Plan[PlanningAgentPlan v9<br/>workspace intent, target, risk,<br/>v7 graph or authorization resolution]
   Plan --> Event[KernelEvent<br/>plan_proposed]
@@ -1771,10 +1771,16 @@ the only extraction and retrieval implementation. MetaWork owns the seam around
 it: the **Memory Port** (`src/memory/memory-port.ts`) is the single place where
 memory crosses a process boundary, and no module talks to the engine directly.
 
-The account is the only isolation boundary: one account owns one fixed engine
-scope triple, and every AgentClass of that account shares it, so a practice
-learned in one role is recallable from every other role. Workspaces, agent
-roles and conversations are provenance labels only. The local
+One MetaWork installation is one local Server for one local customer. The
+`MemoryRuntimeController` is therefore Server-owned: the Server composition
+creates it once, a configuration activation rebuilds it only when the `memory`
+section changed, and shutdown stops the AccountRuntimes, then performs one final
+drain, then stops the scheduler and the sidecar. It is not created per
+AccountRuntime. The account identity remains the durable persistence namespace:
+every memory query keeps its `account_id` predicate, and every recalled asset is
+validated against the owning account.
+
+Workspaces, agent roles and conversations are provenance labels only. The local
 `memory_bindings` table keeps ownership, the user switch, the provenance
 workspace and a content digest — never a memory body — so the engine can be
 discarded and rebuilt without losing the user's decisions.
@@ -1784,8 +1790,10 @@ every completed turn since the previous deposition as one conversation segment,
 because only the whole segment lets the engine recognize a cross-turn
 preference. Failed, cancelled and blocked rounds never become durable
 experience, and the deposition cursor advances only after the engine accepted
-the batch. Secrets are redacted before deposition; content whose secret cannot
-be masked is refused.
+the batch. A conversation with a completed turn also flushes when two hours
+have passed since the last successful deposition; a failed deposition never
+moves that timestamp. Secrets are redacted before deposition; content whose
+secret cannot be masked is refused.
 
 Delivery is pull-only. The Planner references a memory with
 `ContextRef{kind:'memory', memoryId}` and reads candidates through the bounded
@@ -1801,31 +1809,49 @@ system only enforces the hard constraints (openai-compatible Provider, enabled
 Provider and Model, matching Provider, `structured-output` capability) and
 never recommends or downgrades a model. Engine credentials live in the
 SecretStore and the sidecar environment only — never in the Server
-`process.env`, which the Planner process tree inherits. The engine's FTS5
-availability is a blocking health gate because BM25 silently returns empty
-without it.
+`process.env`, which the Planner process tree inherits. The fixed user-key
+reference is an installation/Server secret, not a per-account credential. The
+engine's FTS5 availability is a blocking health gate because BM25 silently
+returns empty without it.
 
-## Explicit Memory (retired pipeline)
+When the runtime is disabled, needs-model or degraded it clears the
+conversation's recall candidates and records the mode in
+`memory_runtime_state`. The Planner tools gate on that durable state, and the
+management API returns a structured degraded result (`mode`, `degraded`,
+`degradedReason`) so the settings page shows an unavailable engine rather than
+an empty asset list.
 
-MetaWork still stores explicitly confirmed preferences in SQLite and still
-supports the `/memory` and `/learning` commands. This is the pre-ADR-0049
-pipeline: it is no longer the live memory path, and `ContextRef{kind:'preference'}`
-remains only as a compatibility alias. New memory behavior belongs to the
-long-term memory capability above.
+Schema 59 is the memory migration on top of main's schema 58. It creates
+`memory_bindings`, `memory_recall_candidates`, `memory_flush_state`,
+`memory_recall_state` and `memory_runtime_state`; it also retires the
+pre-TDAI local chain (see below). A memory-branch schema-53 database that lacks
+main's six-state Task base fails closed instead of being reinterpreted as
+main's 53.
 
-Natural-language requests never create, promote, or apply memory through a code-side heuristic. Users manage preferences through explicit `/memory` commands. Bounded confirmed global preferences are provided to the PlanningAgent, which may reference an exact confirmed preference in a Subtask `contextRef`.
+## Retired Local Memory And Learning Chain
 
-Commands:
+The pre-TDAI local memory and learning chain is retired from production and
+from the schema. `MemoryEngine`, `ContextRecaller`, `MemoryContextService`,
+`PreferenceRepo`, the memory vault exporter, the learning/reflection/promotion
+automation, `/memory`, `/learning` and profile-preference commands no longer
+exist. `preferences`, `preference_usage`, `reflection_events` and
+`learning_candidates` are dropped by schema 59, and `tasks.injected_prefs_json`
+is removed.
 
-See the [current slash-command reference](commands.md) for memory commands.
+`ContextRef{kind:'preference'}` is no longer a supported reference. A persisted
+Planner payload that still contains one fails closed: preference columns are
+removed from stored work graphs, pending `plan_proposed` events and deferred
+replan payloads are failed, and an affected active Task is moved to
+`needs_action` with a reason that requires a new plan. Old data is never
+converted into a TDAI binding or replayed as preference evidence.
 
-## Learning Loop
+Inline resource parsing moved to
+`src/intent/inline-resource-normalization.ts`; it has no memory dependency.
+Executor Skill usage summaries remain an independent diagnostic surface and do
+not depend on the retired learning tables.
 
-MetaWork can turn successful tasks, failures, artifacts, and executor skill usage into learning candidates.
-
-Commands:
-
-See the [current slash-command reference](commands.md) for learning commands.
+Memory settings and asset management are part of the Web settings surface; see
+the [current slash-command reference](commands.md) for the remaining commands.
 
 ## Development
 

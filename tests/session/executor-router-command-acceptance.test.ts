@@ -2,11 +2,8 @@ import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
 import type { PlanningAgent } from '../../src/planning/planning-agent.js';
@@ -31,20 +28,17 @@ function createConfig(): Config {
 function createSession(input: {
   db: Database.Database;
   taskEngine: TaskEngine;
-  memoryEngine: MemoryEngine;
   attemptExecutionBackend: FakeAttemptExecutionBackend;
   sessionId: string;
   planningAgent?: PlanningAgent;
 }) {
   return new MetaclawSession({
     taskEngine: input.taskEngine,
-    memoryEngine: input.memoryEngine,
     orchestration: new OrchestrationEngine(input.taskEngine),
     attemptExecutionBackend: input.attemptExecutionBackend,
     db: input.db,
     config: createConfig(),
     sessionId: input.sessionId,
-    contextRecaller: new ContextRecaller(input.db),
     planningAgent: input.planningAgent,
     getRuntimeBinding: async binding => ({
       revisionId: binding.configurationRevision,
@@ -63,9 +57,8 @@ describe('planner-first executor command acceptance', () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-executor-wizard');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const attemptExecutionBackend = new FakeAttemptExecutionBackend();
-    const session = createSession({ db, taskEngine, memoryEngine, attemptExecutionBackend, sessionId: 'sess_agent_class_register_wizard' });
+    const session = createSession({ db, taskEngine, attemptExecutionBackend, sessionId: 'sess_agent_class_register_wizard' });
 
     session.initialize();
     await session.submit('/executor register wizard');
@@ -78,9 +71,8 @@ describe('planner-first executor command acceptance', () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-executor-oneline');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const attemptExecutionBackend = new FakeAttemptExecutionBackend();
-    const session = createSession({ db, taskEngine, memoryEngine, attemptExecutionBackend, sessionId: 'sess_agent_class_register_oneline' });
+    const session = createSession({ db, taskEngine, attemptExecutionBackend, sessionId: 'sess_agent_class_register_oneline' });
 
     session.initialize();
     await session.submit(`/executor register research-bot --image registry.example/research-bot:1.0.0 --image-id sha256:${'a'.repeat(64)} --permission-profile restricted-custom --command research-bot --args "run --prompt {prompt}" --check "research-bot --version" --domains research --capabilities report_generation`);
@@ -94,12 +86,10 @@ describe('planner-first executor command acceptance', () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-planner-exec');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'code task done' }));
     const session = createSession({
       db,
       taskEngine,
-      memoryEngine,
       attemptExecutionBackend,
       sessionId: 'sess_planner_exec',
       planningAgent: stubPlanningAgent(
@@ -125,18 +115,15 @@ describe('planner-first executor command acceptance', () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-fixed-executor');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'default executor completed research' }));
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration: new OrchestrationEngine(taskEngine),
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_fixed_executor',
-      contextRecaller: new ContextRecaller(db),
-      planningAgent: stubPlanningAgent(
+        planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '请调研这个方案并进行自动化分析，输出报告', executor: 'codex-cli' }),
       ),
       getRuntimeBinding: async binding => ({
@@ -169,14 +156,12 @@ describe('planner-first executor command acceptance', () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-actual-executor-output');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'fallback completed' }));
     const planned = workGraphPlan({ goal: '执行带受控路由的任务' });
 
     const session = createSession({
       db,
       taskEngine,
-      memoryEngine,
       attemptExecutionBackend,
       sessionId: 'sess_actual_executor_output',
       planningAgent: stubPlanningAgent(planned),
@@ -195,7 +180,6 @@ describe('planner-first executor command acceptance', () => {
     const db = createDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-no-platform-fallback');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: 'executor returned an unclassified failure',
       exitCode: 1,
@@ -203,7 +187,6 @@ describe('planner-first executor command acceptance', () => {
     const session = createSession({
       db,
       taskEngine,
-      memoryEngine,
       attemptExecutionBackend,
       sessionId: 'sess_no_platform_fallback',
       planningAgent: stubPlanningAgent(

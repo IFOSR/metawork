@@ -1,6 +1,5 @@
 import type Database from 'better-sqlite3';
 import type { TaskEngine } from '../task/task-engine.js';
-import type { MemoryEngine } from '../memory/memory-engine.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { Config } from '../core/types.js';
 import type { ActiveExecutionControl } from '../execution/active-execution-control.js';
@@ -11,7 +10,6 @@ import type { TaskControlPort } from './task-control-port.js';
 export interface CommandCompletionContext {
   conversationId?: string;
   taskEngine: Pick<TaskEngine, 'getTaskRepo'>;
-  memoryEngine: Pick<MemoryEngine, 'list'>;
   currentTaskId: string | null;
   db: Database.Database;
   executorAgentClassNames?: string[];
@@ -19,7 +17,6 @@ export interface CommandCompletionContext {
 
 export interface CommandContext extends CommandCompletionContext {
   taskEngine: TaskEngine;
-  memoryEngine: MemoryEngine;
   orchestration: OrchestrationEngine;
   activeExecutions: ActiveExecutionControl;
   taskControl: TaskControlPort;

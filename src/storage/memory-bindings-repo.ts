@@ -59,7 +59,7 @@ export class MemoryBindingsRepo {
     const timestamp = this.now().toISOString();
     // The engine id is unique: binding the same asset twice must reuse the
     // existing local id instead of colliding with the unique index.
-    const existing = this.findByTdaiMemoryId(input.tdaiMemoryId);
+    const existing = this.findByTdaiMemoryId(input.tdaiMemoryId, input.accountId);
     const memoryId = input.memoryId ?? existing?.memoryId ?? `mem_${randomUUID().replace(/-/gu, '')}`;
     const digest = input.content ? memoryContentDigest(input.content) : null;
     // The user's switch is a governance decision: a re-bind must not silently
@@ -90,18 +90,20 @@ export class MemoryBindingsRepo {
       timestamp,
       timestamp,
     );
-    return this.findByMemoryId(memoryId)!;
+    return this.findByMemoryId(memoryId, input.accountId)!;
   }
 
-  findByMemoryId(memoryId: string): MemoryBindingRecord | null {
-    const row = this.db.prepare('SELECT * FROM memory_bindings WHERE memory_id = ?')
-      .get(memoryId) as BindingRow | undefined;
+  findByMemoryId(memoryId: string, accountId: string): MemoryBindingRecord | null {
+    const row = this.db.prepare(
+      'SELECT * FROM memory_bindings WHERE memory_id = ? AND account_id = ?',
+    ).get(memoryId, accountId) as BindingRow | undefined;
     return row ? toRecord(row) : null;
   }
 
-  findByTdaiMemoryId(tdaiMemoryId: string): MemoryBindingRecord | null {
-    const row = this.db.prepare('SELECT * FROM memory_bindings WHERE tdai_memory_id = ?')
-      .get(tdaiMemoryId) as BindingRow | undefined;
+  findByTdaiMemoryId(tdaiMemoryId: string, accountId: string): MemoryBindingRecord | null {
+    const row = this.db.prepare(
+      'SELECT * FROM memory_bindings WHERE tdai_memory_id = ? AND account_id = ?',
+    ).get(tdaiMemoryId, accountId) as BindingRow | undefined;
     return row ? toRecord(row) : null;
   }
 
@@ -140,7 +142,7 @@ export class MemoryBindingsRepo {
       'UPDATE memory_bindings SET enabled = ?, updated_at = ? WHERE memory_id = ? AND account_id = ?',
     ).run(enabled ? 1 : 0, this.now().toISOString(), memoryId, accountId);
     if (changed.changes === 0) return null;
-    return this.findByMemoryId(memoryId);
+    return this.findByMemoryId(memoryId, accountId);
   }
 
   delete(memoryId: string, accountId: string): boolean {

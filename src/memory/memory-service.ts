@@ -35,6 +35,8 @@ export interface MemoryFlushThresholds {
   idleAfterMs: number;
   /** Unflushed turns that force a flush even when the conversation is active. */
   maxUnflushedTurns: number;
+  /** Time since the last successful deposition that forces a flush. */
+  fallbackAfterMs: number;
   /**
    * Maximum **turns** deposited in one batch. Capped by the engine's message
    * budget (one turn is two messages), so this can never produce an oversized
@@ -48,6 +50,7 @@ export interface MemoryFlushThresholds {
 export const MEMORY_FLUSH_THRESHOLDS: MemoryFlushThresholds = {
   idleAfterMs: 10 * 60 * 1000,
   maxUnflushedTurns: 20,
+  fallbackAfterMs: 2 * 60 * 60 * 1000,
   maxBatchTurns: MEMORY_MAX_TURNS_PER_DEPOSIT,
   maxConversationsPerTick: 25,
 };
@@ -142,7 +145,7 @@ export class MemoryService {
       // Everything was refused. The cursor still advances past the refused turns
       // so a poisoned turn is not retried forever.
       const advancedTo = this.highestSequence(candidates);
-      this.cursors.advance(input.accountId, input.conversationId, advancedTo, true);
+      this.cursors.advance(input.accountId, input.conversationId, advancedTo, true, { deposition: false });
       return {
         conversationId: input.conversationId,
         flushed: 0,
@@ -163,7 +166,7 @@ export class MemoryService {
       // Sticky provenance: a segment that needed redaction marks this
       // conversation, so assets recalled from it carry `source='sanitized'`
       // (design §8.2, review P2-4).
-      this.cursors.advance(input.accountId, input.conversationId, advancedTo, sanitized.sanitized > 0);
+      this.cursors.advance(input.accountId, input.conversationId, advancedTo, sanitized.sanitized > 0, { deposition: result.accepted > 0 });
       return {
         conversationId: input.conversationId,
         flushed: result.accepted,
@@ -202,6 +205,8 @@ export class MemoryService {
       accountId: input.accountId,
       limit: this.thresholds.maxConversationsPerTick,
       minUnflushedTurns: this.thresholds.maxUnflushedTurns,
+      now,
+      fallbackAfterMs: this.thresholds.fallbackAfterMs,
     });
     const conversations = [...new Set([...idle, ...overflow])]
       .slice(0, this.thresholds.maxConversationsPerTick);
@@ -270,7 +275,7 @@ export class MemoryService {
     // Only move forward when the newest turn itself is ineligible; otherwise the
     // eligible turns between the cursor and the newest one would be skipped.
     if (!this.isTrailingTurnIneligible(accountId, conversationId, newest)) return cursor;
-    this.cursors.advance(accountId, conversationId, newest);
+    this.cursors.advance(accountId, conversationId, newest, false, { deposition: false });
     return newest;
   }
 
@@ -380,7 +385,7 @@ export class MemoryService {
       includeDisabled: input.includeDisabled,
     }, scope);
     const items = remote.items.map(asset => {
-      const binding = this.bindings.findByTdaiMemoryId(asset.id);
+      const binding = this.bindings.findByTdaiMemoryId(asset.id, input.accountId);
       return {
         ...asset,
         memoryId: binding?.memoryId ?? asset.id,
@@ -413,7 +418,7 @@ export class MemoryService {
   }
 
   async deleteAsset(input: { accountId: string; memoryId: string }): Promise<boolean> {
-    const binding = this.bindings.findByMemoryId(input.memoryId);
+    const binding = this.bindings.findByMemoryId(input.memoryId, input.accountId);
     if (!binding || binding.accountId !== input.accountId) return false;
     const scope = this.scopeFor(input.accountId);
     await this.port.deleteAsset(binding.tdaiMemoryId, scope);

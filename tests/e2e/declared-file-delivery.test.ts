@@ -10,10 +10,7 @@ import { TaskArtifactRepo } from '../../src/storage/task-artifact-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
 import { singleSubtaskWorkGraph, stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
@@ -93,8 +90,7 @@ describe('Planner-declared delivery end-to-end', () => {
     }
     const session = new MetaclawSession({
       taskEngine, db, config, sessionId: 'declared-delivery',
-      memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
-      orchestration: new OrchestrationEngine(taskEngine), contextRecaller: new ContextRecaller(db),
+        orchestration: new OrchestrationEngine(taskEngine),
       userArtifactPublication: new UserArtifactPublicationService({ userWorkspaceRoot: userRoot, taskArtifactRepo: new TaskArtifactRepo(db) }),
       attemptExecutionBackend: backend,
       planningAgent: stubPlanningAgent(plan),

@@ -4,7 +4,7 @@ const candidate = (start: number, end: number, text: string) => ({ value: text, 
 describe('server command replacement', () => {
   it('preserves the suffix, unicode and UTF-16 cursor offsets during middle edits', () => {
     expect(applyCommandSuggestion('/ta show 🙂', candidate(0, 3, '/task'))).toEqual({ text: '/task show 🙂', cursor: 5 });
-    expect(applyCommandSuggestion('/memory edit 🙂 内容', candidate(13, 15, 'id'))).toEqual({ text: '/memory edit id 内容', cursor: 15 });
+    expect(applyCommandSuggestion('/task show 🙂 内容', candidate(11, 13, 'id'))).toEqual({ text: '/task show id 内容', cursor: 13 });
     expect(applyCommandSuggestion('/task sh', candidate(6, 8, 'show'))).toEqual({ text: '/task show ', cursor: 11 });
   });
   it('rejects invalid server ranges instead of corrupting the draft', () => {

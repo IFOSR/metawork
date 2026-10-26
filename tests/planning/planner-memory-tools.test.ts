@@ -46,12 +46,21 @@ function projectRecall(input: {
   return bound.map(item => item.memoryId);
 }
 
+function recordRuntimeMode(db: Database.Database, mode: string, detail: string | null = null) {
+  db.prepare(`
+    INSERT INTO memory_runtime_state (account_id, mode, detail, updated_at)
+    VALUES (?, ?, ?, '2026-10-26T00:00:00.000Z')
+    ON CONFLICT(account_id) DO UPDATE SET mode = excluded.mode, detail = excluded.detail
+  `).run(ACCOUNT, mode, detail);
+}
+
 describe('Planner memory tools', () => {
   let db: Database.Database;
   let reader: PlannerDataReader;
 
   beforeEach(() => {
     db = createTestDb();
+    recordRuntimeMode(db, 'enabled');
     reader = new PlannerDataReader(
       db,
       'session-1',
@@ -95,6 +104,7 @@ describe('Planner memory tools', () => {
     recall.recordDegraded({
       accountId: ACCOUNT, conversationId: CONVERSATION, degraded: true, reason: 'engine down',
     });
+    recordRuntimeMode(db, 'degraded', 'engine down');
     const result = reader.searchMemory({});
     expect(result.degraded).toBe(true);
     expect(result.degradedReason).toBe('engine down');

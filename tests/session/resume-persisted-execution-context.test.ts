@@ -11,11 +11,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, taskControlPlan } from '../support/planning-agent-plans.js';
@@ -65,9 +62,7 @@ describe('persisted task execution context on resume', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const parkedTask = taskEngine.create({ title: '行业分析', goal: '完成分析摘要' });
     seedPersistedWorkGraph(db, parkedTask.id, parkedTask.title);
@@ -79,13 +74,11 @@ describe('persisted task execution context on resume', () => {
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '恢复完成' }));
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_resume_context',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'resume_task', taskId: parkedTask.id }),
       ),
@@ -110,9 +103,7 @@ describe('persisted task execution context on resume', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const blockedTask = taskEngine.create({ title: '起诉书草稿', goal: '补齐起诉材料' });
     seedPersistedWorkGraph(db, blockedTask.id, blockedTask.title);
@@ -123,13 +114,11 @@ describe('persisted task execution context on resume', () => {
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '已恢复处理' }));
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_unblock_resources',
-      contextRecaller,
     });
 
     session.initialize();

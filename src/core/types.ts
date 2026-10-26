@@ -101,7 +101,6 @@ export interface Task {
   artifacts: string[];
   dependencies: Dependency[];
   prioritySignals: PrioritySignals;
-  injectedPreferences: string[];
   lastSchedulingReason: string;
   lastInterruptionReason: string;
   interruptionCount: number;
@@ -238,45 +237,6 @@ export interface Dependency {
   createdAt: string;
 }
 
-// ─── 偏好作用域 ───
-export const PreferenceScope = {
-  GLOBAL: 'global',
-  PROJECT: 'project',
-  CONTACT: 'contact',
-  TASK_LOCAL: 'task-local',
-} as const;
-
-export type PreferenceScope = (typeof PreferenceScope)[keyof typeof PreferenceScope];
-
-// ─── 偏好状态 ───
-export const PreferenceStatus = {
-  OBSERVED: 'observed',
-  CANDIDATE: 'candidate',
-  CONFIRMED: 'confirmed',
-  DORMANT: 'dormant',
-  ARCHIVED: 'archived',
-  DISCARDED: 'discarded',
-} as const;
-
-export type PreferenceStatus = (typeof PreferenceStatus)[keyof typeof PreferenceStatus];
-
-// ─── 偏好对象 ───
-export interface Preference {
-  id: string;
-  type: string;             // contact / style / domain / workflow
-  scope: PreferenceScope;
-  subject: string | null;
-  content: string;
-  status: PreferenceStatus;
-  confidence: number;
-  occurrenceCount: number;
-  sourceTasks: string[];
-  lastUsedAt: string | null;
-  confirmedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
 // ─── 主动建议 ───
 export interface Suggestion {
   taskId: string;
@@ -357,19 +317,6 @@ export interface ResumeContext {
   schedulingReason?: string;
 }
 
-export interface ResolvedPreference {
-  id: string;
-  content: string;
-  scope: PreferenceScope;
-  confidence: number;
-  reason: string;
-}
-
-export interface MemoryContext {
-  explicitUserInstruction: string;
-  resolvedPreferences: ResolvedPreference[];
-}
-
 export interface HistoryContext {
   currentConversationTurns?: Array<{
     taskId: string;
@@ -447,7 +394,6 @@ export interface ExecutionContextBundleV2 {
   mode: 'fresh' | 'resume-parked' | 'resume-blocked' | 'follow-up';
   taskBrief: TaskBrief;
   resumeContext?: ResumeContext;
-  memoryContext: MemoryContext;
   historyContext: HistoryContext;
   materialContext: MaterialContext;
   workspaceContext?: WorkspaceContext;

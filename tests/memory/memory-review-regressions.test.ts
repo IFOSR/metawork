@@ -219,7 +219,80 @@ describe('P2-1 the scheduler ignores fully deposited conversations', () => {
     })).toEqual([]);
     expect(cursors.listOverflowCandidates({
       accountId: ACCOUNT, limit: 10, minUnflushedTurns: 1,
+      now: Date.now(), fallbackAfterMs: 2 * 60 * 60 * 1000,
     })).toEqual([]);
+    db.close();
+  });
+
+  it('forces a flush after two hours even below the turn threshold', () => {
+    const db = createDb();
+    for (let sequence = 1; sequence <= 3; sequence++) {
+      seedTurn(db, 'conv-slow', {
+        id: `t${sequence}`, sequence, completedAt: '2026-10-22T00:00:00.000Z',
+      });
+    }
+    const { cursors } = buildService(db, new RecordingPort());
+    const now = Date.parse('2026-10-22T02:00:01.000Z');
+    expect(cursors.listOverflowCandidates({
+      accountId: ACCOUNT, limit: 10, minUnflushedTurns: 20,
+      now, fallbackAfterMs: 2 * 60 * 60 * 1000,
+    })).toEqual(['conv-slow']);
+    // Just before the window it is still outside the fallback.
+    expect(cursors.listOverflowCandidates({
+      accountId: ACCOUNT, limit: 10, minUnflushedTurns: 20,
+      now: now - 2_000, fallbackAfterMs: 2 * 60 * 60 * 1000,
+    })).toEqual([]);
+    db.close();
+  });
+
+  it('ignores failed and cancelled turns for the fallback', () => {
+    const db = createDb();
+    seedTurn(db, 'conv-failures', {
+      id: 't1', sequence: 1, status: 'failed', completedAt: '2026-10-22T00:00:00.000Z',
+    });
+    seedTurn(db, 'conv-failures', {
+      id: 't2', sequence: 2, status: 'cancelled', completedAt: '2026-10-22T00:00:00.000Z',
+    });
+    const { cursors } = buildService(db, new RecordingPort());
+    expect(cursors.listOverflowCandidates({
+      accountId: ACCOUNT, limit: 10, minUnflushedTurns: 20,
+      now: Date.parse('2026-10-23T00:00:00.000Z'), fallbackAfterMs: 2 * 60 * 60 * 1000,
+    })).toEqual([]);
+    db.close();
+  });
+
+  it('does not move the fallback clock when a deposition fails', async () => {
+    const db = createDb();
+    seedTurn(db, 'conv-retry', { id: 't1', sequence: 1 });
+    const port = new RecordingPort();
+    const { service, cursors } = buildService(db, port, {
+      idleAfterMs: 0, maxUnflushedTurns: 20,
+    });
+    await service.flushConversation({ accountId: ACCOUNT, conversationId: 'conv-retry', force: true });
+    const depositedAt = (db.prepare(`SELECT updated_at FROM memory_flush_state
+      WHERE account_id = ? AND conversation_id = ?`).get(ACCOUNT, 'conv-retry') as {
+        updated_at: string;
+      }).updated_at;
+    expect(depositedAt).not.toBe('');
+
+    seedTurn(db, 'conv-retry', { id: 't2', sequence: 2 });
+    port.fail = true;
+    const failed = await service.flushConversation({
+      accountId: ACCOUNT, conversationId: 'conv-retry', force: true,
+    });
+    expect(failed.error).toBeDefined();
+    const afterFailure = (db.prepare(`SELECT updated_at FROM memory_flush_state
+      WHERE account_id = ? AND conversation_id = ?`).get(ACCOUNT, 'conv-retry') as {
+        updated_at: string;
+      }).updated_at;
+    expect(afterFailure).toBe(depositedAt);
+
+    // Two hours after the successful deposition the still-pending turn is due.
+    expect(cursors.listOverflowCandidates({
+      accountId: ACCOUNT, limit: 10, minUnflushedTurns: 20,
+      now: Date.parse(depositedAt) + 2 * 60 * 60 * 1000 + 1,
+      fallbackAfterMs: 2 * 60 * 60 * 1000,
+    })).toEqual(['conv-retry']);
     db.close();
   });
 
@@ -261,7 +334,46 @@ describe('P2-4 sanitized provenance reaches the asset', () => {
 });
 
 describe('P2-2/P2-3 the Planner sees degradation and only enabled assets', () => {
-  it('reports degraded recall and hides disabled assets', () => {
+  function recordRuntimeMode(db: Database.Database, mode: string, detail: string | null = null) {
+    db.prepare(`
+      INSERT INTO memory_runtime_state (account_id, mode, detail, updated_at)
+      VALUES (?, ?, ?, '2026-10-26T00:00:00.000Z')
+      ON CONFLICT(account_id) DO UPDATE SET mode = excluded.mode, detail = excluded.detail
+    `).run(ACCOUNT, mode, detail);
+  }
+
+  it('reports a degraded runtime and never offers a stale candidate', () => {
+    const db = createDb();
+    const bindings = new MemoryBindingsRepo(db);
+    const recall = new MemoryRecallRepo(db);
+    const first = bindings.upsert({ tdaiMemoryId: 'tdai-1', accountId: ACCOUNT, content: '偏好中文' });
+    recall.replace({
+      accountId: ACCOUNT,
+      conversationId: 'conv-1',
+      candidates: [
+        { memoryId: first.memoryId, type: 'instruction', preview: '偏好中文', score: 0.9 },
+      ],
+    });
+    recall.recordDegraded({
+      accountId: ACCOUNT, conversationId: 'conv-1', degraded: true, reason: 'engine down',
+    });
+    recordRuntimeMode(db, 'degraded', 'engine down');
+
+    const reader = new PlannerDataReader(
+      db, 'session-1', () => ({ capabilities: [], agents: [] }) as never,
+      'conv-1', () => [], ACCOUNT, [],
+    );
+    const result = reader.searchMemory({});
+    // A degraded engine owns no candidate set, even if a previous projection
+    // still sits in the database.
+    expect(result.items).toEqual([]);
+    expect(result.degraded).toBe(true);
+    expect(result.degradedReason).toContain('engine down');
+    expect(reader.listMemoryAssets().items).toEqual([]);
+    db.close();
+  });
+
+  it('offers only enabled assets when the runtime is healthy', () => {
     const db = createDb();
     const bindings = new MemoryBindingsRepo(db);
     const recall = new MemoryRecallRepo(db);
@@ -276,32 +388,14 @@ describe('P2-2/P2-3 the Planner sees degradation and only enabled assets', () =>
         { memoryId: second.memoryId, type: 'instruction', preview: '偏好表格', score: 0.8 },
       ],
     });
-    recall.recordDegraded({
-      accountId: ACCOUNT, conversationId: 'conv-1', degraded: true, reason: 'engine down',
-    });
-
-    const reader = new PlannerDataReader(
-      db, 'session-1', () => ({ capabilities: [], agents: [] }) as never,
-      'conv-1', () => [], ACCOUNT, [],
-    );
-    const result = reader.searchMemory({});
-    // Only the enabled asset is offered.
-    expect(result.items.map(item => item.memoryId)).toEqual([first.memoryId]);
-    // Degradation is visible instead of looking like "no memory".
-    expect(result.degraded).toBe(true);
-    expect(result.degradedReason).toContain('engine down');
-    db.close();
-  });
-
-  it('reports a healthy recall as not degraded', () => {
-    const db = createDb();
-    const recall = new MemoryRecallRepo(db);
     recall.recordDegraded({ accountId: ACCOUNT, conversationId: 'conv-1', degraded: false });
+    recordRuntimeMode(db, 'enabled');
     const reader = new PlannerDataReader(
       db, 'session-1', () => ({ capabilities: [], agents: [] }) as never,
       'conv-1', () => [], ACCOUNT, [],
     );
     const result = reader.searchMemory({});
+    expect(result.items.map(item => item.memoryId)).toEqual([first.memoryId]);
     expect(result.degraded).toBe(false);
     db.close();
   });

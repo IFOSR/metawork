@@ -65,10 +65,8 @@ describe('memory context ref eligibility', () => {
     })).toEqual([]);
   });
 
-  it('keeps the preference kind working as a compatibility alias', () => {
-    db.prepare(`INSERT INTO preferences
-      (id, type, scope, content, status, created_at, updated_at)
-      VALUES ('pref-1', 'style', 'global', '用中文', 'confirmed', '2026-10-22T00:00:00.000Z', '2026-10-22T00:00:00.000Z')`).run();
-    expect(keys([{ kind: 'preference', preferenceId: 'pref-1' }])).toEqual(['preference:pref-1']);
+  it('fails closed on a retired preference ContextRef instead of reading a removed table', () => {
+    expect(() => keys([{ kind: 'preference', preferenceId: 'pref-1' } as never]))
+      .toThrow('context_ref_not_supported: preference');
   });
 });

@@ -32,9 +32,10 @@ const navigationTables = [
 // Captured from the actual pre-change schema43 migration output, not from a live account.
 // Frozen fingerprint of the reconstructed schema-43 head. Updated when an
 // additive migration legitimately appends columns to the historical tables
-// (schema 55 adds the Workspace execution and wake-kind facts); the test still
-// fails on any unintended change to the 42/43 boundary itself.
-const schema43Hash = 'db8716263a9962b4f6257553f96eb045f997fe42897ef96d7abf4b99de15b754';
+// (schema 55 adds the Workspace execution and wake-kind facts, schema 59 retires
+// the pre-TDAI preference/learning tables); the test still fails on any
+// unintended change to the 42/43 boundary itself.
+const schema43Hash = '9e554b3e058e4e2fb624cd3020d403db89906e69ef3b7bca6b1729ba42d5aa59';
 
 afterEach(() => {
   for (const db of databases.splice(0)) if (db.open) db.close();
@@ -330,7 +331,7 @@ function schema43(path?: string): Database.Database {
   expect(schemaHash(db)).toBe(schema43Hash);
   db.exec(`
     INSERT INTO tasks (id, title, status, created_at, updated_at)
-      VALUES ('task_done', 'Retained task', 'done', '2026-09-26', '2026-09-26');
+      VALUES ('task_done', 'Retained task', 'succeeded', '2026-09-26', '2026-09-26');
     INSERT INTO conversation_metadata_projection VALUES ('account_one', 'conv_one', '{"title":"retained"}');
     INSERT INTO gateway_journal_streams VALUES ('account_one', 'conv_one', 7, '{"lastSequence":7}', 2);
     INSERT INTO gateway_journal_segments VALUES ('account_one', 'conv_one', 'segment_one', 3, 7, 128);
@@ -367,6 +368,8 @@ function facts(db: Database.Database, tables?: string[]): Record<string, string[
     WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).all() as { name: string }[])
     .map(row => row.name).filter(name => (
       name !== 'schema_version'
+      // The 51 -> 52 reclassification is a migration ledger, like schema_version.
+      && name !== 'task_state_changes'
       && !admissionTables.includes(name)
       && !retryWakeTables.includes(name)
       && !['workspace_publication_deliveries', 'public_workspace_files', 'managed_local_services', 'managed_local_service_effects', 'workspace_directory_dirty'].includes(name)

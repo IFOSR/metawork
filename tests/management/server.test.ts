@@ -2600,6 +2600,8 @@ describe('long-term memory management API', () => {
             enabled: true, createdAt: '', updatedAt: '',
           }],
           total: 1,
+          mode: 'enabled' as const,
+          degraded: false,
         };
       },
       setEnabled: async (input: { memoryId: string; enabled: boolean }) => {
@@ -2635,6 +2637,28 @@ describe('long-term memory management API', () => {
     const result = await request(server, '/api/memory/status');
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ enabled: true, mode: 'enabled', ftsAvailable: true });
+  });
+
+  it('returns the degraded asset state instead of an empty asset list', async () => {
+    const server = createManagementServer(0, {
+      memoryQuery: {
+        ...memoryQuery([]),
+        listAssets: async () => ({
+          items: [],
+          total: 0,
+          mode: 'degraded' as const,
+          degraded: true,
+          degradedReason: 'memory_engine_unreachable',
+        }),
+      },
+    });
+    const result = await request(server, '/api/memory/assets');
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({
+      mode: 'degraded',
+      degraded: true,
+      degradedReason: 'memory_engine_unreachable',
+    });
   });
 
   it('bounds the asset page size', async () => {

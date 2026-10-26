@@ -5,11 +5,8 @@ import { tmpdir } from 'os';
 import { resolve } from 'path';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
@@ -47,9 +44,7 @@ describe('Round 8 inline web links acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const fixturesDir = resolve(tmpdir(), 'metaclaw-inline-web-links-round8');
     mkdirSync(fixturesDir, { recursive: true });
@@ -65,13 +60,11 @@ describe('Round 8 inline web links acceptance', () => {
     }));
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_round8_inline_links',
-      contextRecaller,
       planningAgent: stubPlanningAgent(plan),
     });
 

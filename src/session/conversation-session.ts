@@ -23,7 +23,6 @@ import {
 } from './session-task-execution-application-service.js';
 import type { QueuedExecutionRequest } from './session-helpers.js';
 import type { TaskEngine } from '../task/task-engine.js';
-import type { MemoryEngine } from '../memory/memory-engine.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import type { CommandCatalog, CommandContext } from '../commands/catalog.js';
 import type { CommandReadServices } from '../commands/command-read-services.js';
@@ -171,7 +170,6 @@ export interface ConversationSessionDeps {
   readonly commandCatalog?: CommandCatalog;
   readonly commandReadServices?: CommandReadServices;
   readonly taskEngine?: TaskEngine;
-  readonly memoryEngine?: MemoryEngine;
   /**
    * Long-term memory recall. The Server refreshes the Planner-facing candidate
    * set before a planning turn so that the Planner can reference a memory by
@@ -2883,7 +2881,6 @@ export class ConversationSession {
     }
     return {
       taskEngine: this.deps.taskEngine!,
-      memoryEngine: this.deps.memoryEngine!,
       orchestration: this.deps.orchestration!,
       activeExecutions: port.execution.activeExecutions,
       conversationId: this.deps.conversationId,

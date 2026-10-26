@@ -124,7 +124,6 @@ export class TaskEngine {
         blocksOthers: false,
         idleHours: 0,
       },
-      injectedPreferences: [],
       lastSchedulingReason: '',
       lastInterruptionReason: '',
       interruptionCount: 0,

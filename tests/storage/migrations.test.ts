@@ -736,9 +736,9 @@ function seedSchema30Runtime(db: Database.Database): void {
   db.prepare(`
     INSERT INTO tasks (
       id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
-      dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
+      dependencies_json, priority_json, last_scheduling_reason,
       last_interruption_reason, interruption_count, created_at, updated_at
-    ) VALUES ('task', 'Task', 'Goal', 'running', '', '[]', '[]', '[]', '[]', '{}', '[]', '', '', 0, ?, ?)
+    ) VALUES ('task', 'Task', 'Goal', 'running', '', '[]', '[]', '[]', '[]', '{}', '', '', 0, ?, ?)
   `).run(NOW, NOW);
   db.prepare(`
     INSERT INTO agent_classes (

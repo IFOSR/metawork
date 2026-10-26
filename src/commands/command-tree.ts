@@ -1,7 +1,6 @@
 import { serviceCommand } from './service-commands.js';
 import type { TaskStatus } from '../core/types.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
-import { LearningCandidateRepo } from '../storage/learning-candidate-repo.js';
 import {
   CommandCatalog,
   stringArg,
@@ -29,32 +28,10 @@ import {
   unblockTask,
 } from './task-commands.js';
 import {
-  addMemory,
-  deleteMemory,
-  editMemory,
-  exportMemoryVault,
-  listMemories,
-  searchMemories,
-  showMemoryStats,
-  showMemoryVaultStatus,
-} from './memory-commands.js';
-import {
   listExecutors,
   refreshExecutors,
 } from './executor-commands.js';
-import {
-  approveLearningCandidate,
-  approvePatchCandidate,
-  buildLearningWeeklyReview,
-  generateSkillFeedback,
-  listLearningCandidates,
-  listPatchCandidates,
-  listSkillEffects,
-  listTaskMemoryCards,
-  rejectLearningCandidate,
-  showLearningSummary,
-} from './learning-commands.js';
-import { showExecutorProfile, showProjectProfile, showUserProfile } from './profile-commands.js';
+import { showExecutorProfile } from './profile-commands.js';
 import { attachTaskResources, exitSession, showConfig, showDashboard } from './global-commands.js';
 
 interface ActionInput {
@@ -345,63 +322,9 @@ function executorNodes(): CommandNode[] {
   ];
 }
 
-function memoryNodes(): CommandNode[] {
-  const memoryValues = (context: CommandCompletionContext) => context.memoryEngine.list().map(item => ({ id: item.id, label: `#${item.id}`, description: item.content }));
-  const memoryRef = () => dynamicReference('memoryId', '记忆', memoryValues);
-  const scopeOption = option('--scope', '记忆作用域', enumArg('scope', '作用域', ['global', 'project', 'contact', 'task-local']));
-  const typeOption = option('--type', '记忆类型', text('type', '记忆类型'));
-  const subjectOption = option('--subject', '记忆主题', text('subject', '主题'));
-  const editOptions = [scopeOption, typeOption, subjectOption];
-  return [
-    action({ name: 'list', summary: '列出已确认记忆', effect: '读取并展示已确认偏好。', usage: '/memory list', run: listMemories }),
-    action({ name: 'search', summary: '搜索记忆', effect: '按关键词搜索偏好记忆。', usage: '/memory search <query...>', arguments: [rest('query', '搜索内容')], run: searchMemories }),
-    action({ name: 'add', summary: '添加记忆', effect: '新增手工确认的偏好记忆。', usage: '/memory add [options] <content...>', arguments: [rest('content', '记忆内容')], options: editOptions, run: addMemory }),
-    action({ name: 'edit', summary: '编辑记忆', effect: '修改记忆的内容或元数据。', usage: '/memory edit <memoryId> [options] [content...]', arguments: [memoryRef(), rest('content', '新内容', true)], options: editOptions, run: editMemory }),
-    action({ name: 'delete', summary: '删除记忆', effect: '删除指定记忆。', usage: '/memory delete <memoryId>', arguments: [memoryRef()], run: deleteMemory }),
-    action({ name: 'stats', summary: '查看记忆统计', effect: '统计已确认的偏好记忆。', usage: '/memory stats', category: 'advanced', run: showMemoryStats }),
-    {
-      kind: 'group', name: 'vault', summary: '记忆 Vault', category: 'advanced', children: (['export', 'status'] as const).map(name => action({
-        name, summary: `${name === 'export' ? '导出' : '查看'} Vault`, effect: `${name === 'export' ? '导出' : '统计'}记忆 Vault 文件。`,
-        usage: `/memory vault ${name} [--dir <path>]`, options: [option('--dir', 'Vault 目录', text('dir', '目录路径'))],
-        run: name === 'export' ? exportMemoryVault : showMemoryVaultStatus,
-      })),
-    },
-  ];
-}
-
-function learningNodes(): CommandNode[] {
-  const values = (context: CommandCompletionContext) => new LearningCandidateRepo(context.db).listPending().map(item => ({ id: item.id, label: `#${item.id}`, description: `${item.kind} · ${item.title}` }));
-  const candidateRef = () => dynamicReference('candidateId', '学习候选', values);
-  const candidateAction = (name: 'approve' | 'reject', tailName: string) => action({
-    name, summary: `${name === 'approve' ? '批准' : '拒绝'}学习候选`, effect: `审查并${name === 'approve' ? '批准' : '拒绝'}候选。`,
-    usage: `/learning ${name} <candidateId> [${tailName}...]`, arguments: [candidateRef(), rest(tailName, tailName, true)],
-    run: name === 'approve' ? approveLearningCandidate : rejectLearningCandidate,
-  });
-  const simple = (name: string, summary: string, run: CommandAction['execute']) =>
-    action({ name, summary, effect: summary, usage: `/learning ${name}`, run });
-  return [
-    simple('candidates', '列出学习候选', listLearningCandidates),
-    candidateAction('approve', 'note'),
-    candidateAction('reject', 'reason'),
-    simple('skill-feedback', '生成 Skill 运行反馈候选', generateSkillFeedback),
-    {
-      kind: 'group', name: 'patch', summary: 'Skill Patch 治理', children: [
-        action({ name: 'candidates', summary: '列出 Patch 候选', effect: '列出待审核 Skill Patch 候选。', usage: '/learning patch candidates', run: listPatchCandidates }),
-        action({ name: 'approve', summary: '批准 Patch 候选', effect: '批准指定 Skill Patch 候选。', usage: '/learning patch approve <candidateId> [note...]', arguments: [candidateRef(), rest('note', '备注', true)], run: approvePatchCandidate }),
-      ],
-    },
-    simple('cards', '查看任务记忆卡', listTaskMemoryCards),
-    simple('skills', '查看 Skill 效果', listSkillEffects),
-    simple('weekly', '生成学习周报', buildLearningWeeklyReview),
-    simple('summary', '查看学习汇总', showLearningSummary),
-  ];
-}
-
 function profileNodes(): CommandNode[] {
   const executorValues = (context: CommandCompletionContext) => new AgentClassRepo(context.db).findAll().map(item => ({ id: item.name, label: item.name, description: item.domains.join(',') || item.kind }));
   return [
-    action({ name: 'user', summary: '查看用户画像', effect: '汇总长期记忆和自动化事件。', usage: '/profile user', run: showUserProfile }),
-    action({ name: 'project', summary: '查看项目画像', effect: '按项目主题汇总项目记忆。', usage: '/profile project <name>', arguments: [text('name', '项目名称')], run: showProjectProfile }),
     action({ name: 'executor', summary: '查看 Executor 画像', effect: '展示 AgentClass 静态画像与 Skill 使用效果。', usage: '/profile executor <executorName>', arguments: [dynamicReference('executorName', 'Executor', executorValues)], run: showExecutorProfile }),
   ];
 }
@@ -416,9 +339,7 @@ export function createDefaultCommandCatalog(): CommandCatalog {
     })) },
     { kind: 'group', name: 'task', summary: '任务查看与控制', category: 'common', children: taskNodes() },
     { kind: 'group', name: 'executor', summary: 'Executor 运行诊断', category: 'advanced', children: executorNodes() },
-    { kind: 'group', name: 'memory', summary: '已确认偏好', category: 'common', children: memoryNodes() },
-    { kind: 'group', name: 'profile', summary: '用户、项目和 Executor 画像', category: 'advanced', children: profileNodes() },
-    { kind: 'group', name: 'learning', summary: '学习候选与 Skill 治理', category: 'advanced', children: learningNodes() },
+    { kind: 'group', name: 'profile', summary: 'Executor 画像', category: 'advanced', children: profileNodes() },
     action({ name: 'config', summary: '查看当前配置', effect: '以 YAML 展示当前生效配置。', usage: '/config', category: 'advanced', run: showConfig }),
     action({ name: 'help', summary: '查看常用命令', effect: '从 CommandCatalog 静态命令树生成帮助。', usage: '/help [<commandPath...>]', arguments: [{ name: 'commandPath', kind: 'command-path', description: '命令路径', optional: true }], category: 'common', builtin: 'help' }),
     action({ name: 'exit', summary: '退出 MetaWork', effect: '持久化会话状态并请求客户端退出。', usage: '/exit', category: 'common', run: exitSession }),

@@ -233,7 +233,6 @@ export class TaskSearchIndexRepo {
         artifacts_json: string | null;
         dependencies_json: string;
         priority_json: string | null;
-        injected_prefs_json: string;
         last_scheduling_reason: string | null;
         last_interruption_reason: string | null;
         interruption_count: number | null;
@@ -260,7 +259,6 @@ export class TaskSearchIndexRepo {
           prioritySignals: row.priority_json
             ? JSON.parse(row.priority_json)
             : { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
-          injectedPreferences: JSON.parse(row.injected_prefs_json || '[]'),
           lastSchedulingReason: row.last_scheduling_reason ?? '',
           lastInterruptionReason: row.last_interruption_reason ?? '',
           interruptionCount: row.interruption_count ?? 0,

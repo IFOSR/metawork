@@ -10,42 +10,6 @@ function formatList(values: string[] | null | undefined): string {
   return values && values.length > 0 ? values.join(', ') : '-';
 }
 
-export async function showUserProfile(
-  _args: ResolvedCommandArgs,
-  context: CommandContext,
-): Promise<CommandResult> {
-  const preferences = context.memoryEngine.list({ status: 'confirmed' });
-  return {
-    type: 'text',
-    content: [
-      '用户工作画像',
-      `长期记忆 ${preferences.length}`,
-      ...preferences.slice(0, 10).map(preference => `  - [${preference.scope}] ${preference.content}`),
-    ].join('\n'),
-  };
-}
-
-export async function showProjectProfile(
-  args: ResolvedCommandArgs,
-  context: CommandContext,
-): Promise<CommandResult> {
-  const subject = stringArg(args, 'name');
-  if (!subject) {
-    return { type: 'text', content: '用法: /profile project <name>' };
-  }
-  const projectPreferences = context.memoryEngine
-    .list({ status: 'confirmed' })
-    .filter(preference => preference.scope === 'project' && preference.subject === subject);
-  return {
-    type: 'text',
-    content: [
-      `项目画像：${subject}`,
-      `长期记忆 ${projectPreferences.length}`,
-      ...projectPreferences.map(preference => `  - ${preference.content}`),
-    ].join('\n'),
-  };
-}
-
 export async function showExecutorProfile(
   args: ResolvedCommandArgs,
   context: CommandContext,

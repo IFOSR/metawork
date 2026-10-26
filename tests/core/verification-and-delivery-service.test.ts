@@ -349,8 +349,7 @@ describe('VerificationAndDeliveryService', () => {
         retryOfTaskId: null,
         prioritySignals: {},
         resources: [],
-        injectedPreferences: [],
-        artifacts: [],
+          artifacts: [],
         dependencies: [{
           taskId: 'task_blocked',
           type: 'manual',

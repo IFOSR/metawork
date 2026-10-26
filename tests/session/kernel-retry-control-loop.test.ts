@@ -3,10 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
@@ -40,14 +37,12 @@ describe('Kernel durable retry control loop', () => {
     };
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
-      orchestration: new OrchestrationEngine(taskEngine),
+        orchestration: new OrchestrationEngine(taskEngine),
       attemptExecutionBackend,
       db,
       config,
       sessionId: 'session_retry',
-      contextRecaller: new ContextRecaller(db),
-      planningAgent: stubPlanningAgent(workGraphPlan({ goal: 'continue after a transient network failure' })),
+        planningAgent: stubPlanningAgent(workGraphPlan({ goal: 'continue after a transient network failure' })),
       getRuntimeBinding: async binding => ({
         revisionId: binding.configurationRevision,
         bindingFingerprint: 'test-fingerprint',

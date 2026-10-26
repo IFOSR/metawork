@@ -63,16 +63,30 @@ export class MemoryFlushCursorRepo {
    * `sanitized` is sticky: once a segment needed redaction, later recalls of
    * this conversation keep the sanitized provenance.
    */
-  advance(accountId: string, conversationId: string, sequence: number, sanitized = false): void {
+  advance(
+    accountId: string,
+    conversationId: string,
+    sequence: number,
+    sanitized = false,
+    options: { deposition?: boolean } = {},
+  ): void {
     if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error('invalid_memory_cursor');
+    // Only a real deposition updates `updated_at`. Skipping refused or
+    // ineligible turns moves the cursor but must not look like a successful
+    // deposition to the two-hour fallback.
+    const deposition = options.deposition ?? true;
     this.db.prepare(`INSERT INTO memory_flush_state
       (account_id, conversation_id, last_sequence, sanitized, updated_at)
       VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(account_id, conversation_id) DO UPDATE SET
         last_sequence = MAX(memory_flush_state.last_sequence, excluded.last_sequence),
         sanitized = MAX(memory_flush_state.sanitized, excluded.sanitized),
-        updated_at = excluded.updated_at`)
-      .run(accountId, conversationId, sequence, sanitized ? 1 : 0, this.now().toISOString());
+        updated_at = CASE WHEN ? = 1
+          THEN excluded.updated_at
+          ELSE memory_flush_state.updated_at
+        END`)
+      .run(accountId, conversationId, sequence, sanitized ? 1 : 0,
+        deposition ? this.now().toISOString() : '', deposition ? 1 : 0);
   }
 
   /**
@@ -113,16 +127,32 @@ export class MemoryFlushCursorRepo {
     return conversations.slice(0, Math.max(1, Math.min(500, input.limit)));
   }
 
-  /** Conversations whose undeposited completed-turn count reached the fallback threshold. */
+  /**
+   * Conversations due for a forced flush.
+   *
+   * Design §5.3: the fallback is either the unflushed completed-turn threshold
+   * or two hours since the last successful deposition, whichever comes first.
+   * Only completed turns count, so a conversation full of failed or cancelled
+   * rounds is never flushed on every tick.
+   *
+   * The reference time is `memory_flush_state.updated_at`; when a conversation
+   * has no row yet it is the first still-pending completed turn.
+   */
   listOverflowCandidates(input: {
     accountId: string;
     limit: number;
     minUnflushedTurns: number;
+    now: number;
+    fallbackAfterMs: number;
   }): string[] {
-    // Only completed turns count: a conversation full of failed rounds must not
-    // be flushed on every tick.
     const rows = this.db.prepare(`
-      SELECT t.conversation_id AS conversation_id, COUNT(*) AS pending
+      SELECT t.conversation_id AS conversation_id,
+             COUNT(*) AS pending,
+             MIN(COALESCE(json_extract(t.body_json, '$.completedAt'),
+                          json_extract(t.body_json, '$.startedAt'))) AS first_pending_at,
+             (SELECT s.updated_at FROM memory_flush_state s
+              WHERE s.account_id = t.account_id AND s.conversation_id = t.conversation_id
+             ) AS last_deposition_at
       FROM conversation_read_turns t
       WHERE t.account_id = ?
         AND t.first_sequence > COALESCE((
@@ -131,12 +161,27 @@ export class MemoryFlushCursorRepo {
         ), 0)
         AND ${COMPLETED_TURN_PREDICATE}
       GROUP BY t.conversation_id
-      HAVING pending >= ?
       ORDER BY pending DESC
       LIMIT ?
-    `).all(input.accountId, Math.max(1, input.minUnflushedTurns),
-      Math.max(1, Math.min(500, input.limit))) as Array<{ conversation_id: string; pending: number }>;
-    return rows.map(row => row.conversation_id);
+    `).all(input.accountId, Math.max(1, Math.min(500, input.limit))) as Array<{
+      conversation_id: string;
+      pending: number;
+      first_pending_at: string | null;
+      last_deposition_at: string | null;
+    }>;
+    const threshold = Math.max(1, input.minUnflushedTurns);
+    return rows
+      .filter(row => {
+        if (row.pending >= threshold) return true;
+        if (row.pending <= 0) return false;
+        let reference = row.last_deposition_at
+          ? Date.parse(row.last_deposition_at)
+          : Number.NaN;
+        if (Number.isNaN(reference)) reference = Date.parse(row.first_pending_at ?? '');
+        if (Number.isNaN(reference)) return false;
+        return input.now - reference >= input.fallbackAfterMs;
+      })
+      .map(row => row.conversation_id);
   }
 
   /**

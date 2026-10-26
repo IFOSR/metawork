@@ -6,7 +6,7 @@ import type {
   ExecutorProbeResult,
   ExecutorProgressEvent,
 } from '../executor/adapter.js';
-import type { ExecutorResult, ResolvedPreference, Subtask, WorkUnit } from '../core/types.js';
+import type { ExecutorResult, Subtask, WorkUnit } from '../core/types.js';
 import type { SubtaskExecutionContext } from './subtask-execution-context.js';
 import type { SubtaskResult } from './execution-aggregator.js';
 import type { ActiveExecutionControl } from './active-execution-control.js';
@@ -38,7 +38,6 @@ export interface ExecutionResult {
   subtaskResults: SubtaskResult[];
   durationMs: number;
   userPrompt: string;
-  preferences: ResolvedPreference[];
   context: SubtaskExecutionContext;
   diagnostics?: Record<string, unknown>;
 }
@@ -363,8 +362,7 @@ export class ExecutionRuntime implements ActiveExecutionControl {
           subtaskResults: [],
           durationMs: 0,
           userPrompt: input.executorInput.context.currentSubtask.goal,
-          preferences: [],
-          context: input.executorInput.context,
+            context: input.executorInput.context,
         };
       }
       const summary = error instanceof Error ? error.message : String(error);
@@ -385,7 +383,6 @@ export class ExecutionRuntime implements ActiveExecutionControl {
         subtaskResults: [],
         durationMs: 0,
         userPrompt: input.executorInput.context.currentSubtask.goal,
-        preferences: [],
         context: input.executorInput.context,
       };
     }
@@ -408,7 +405,6 @@ export class ExecutionRuntime implements ActiveExecutionControl {
         subtaskResults: [],
         durationMs: 0,
         userPrompt: input.executorInput.context.currentSubtask.goal,
-        preferences: [],
         context: input.executorInput.context,
       };
     }
@@ -506,7 +502,6 @@ export class ExecutionRuntime implements ActiveExecutionControl {
       subtaskResults: input.subtaskResults,
       durationMs: input.result.durationMs,
       userPrompt: input.input.executorInput.context.currentSubtask.goal,
-      preferences: [],
       context: input.input.executorInput.context,
       ...(input.result.diagnostics ? { diagnostics: input.result.diagnostics } : {}),
     };

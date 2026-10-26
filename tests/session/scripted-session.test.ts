@@ -4,11 +4,8 @@ import { mkdirSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import {
   parseScriptInputs,
@@ -79,9 +76,7 @@ describe('scripted session', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const blockedTask = taskEngine.create({ title: '起诉书草稿', goal: '补齐起诉材料' });
     setTaskStatus(db, blockedTask.id, 'queued');
@@ -107,13 +102,11 @@ describe('scripted session', () => {
         '/task list done',
       ],
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted',
-      contextRecaller,
     });
 
     expect(attemptExecutionBackend.create).not.toHaveBeenCalled();
@@ -126,9 +119,7 @@ describe('scripted session', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: 'Phoenix 周报结论：本周主线推进稳定，主要风险在跨团队依赖。',
@@ -139,13 +130,11 @@ describe('scripted session', () => {
         '/task show {{last_task_id}}',
       ],
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_detail',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '整理 Phoenix 项目的周报，输出一个简短结论' }),
       ),
@@ -169,9 +158,7 @@ describe('scripted session', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '已发送给客户' }));
     const result = await runSessionInputsForTest({
@@ -179,13 +166,11 @@ describe('scripted session', () => {
         '直接把邮件发给客户',
       ],
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_risky_gate',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         workGraphPlan({
           goal: '直接把邮件发给客户',
@@ -205,9 +190,7 @@ describe('scripted session', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(input => {
         const artifactDir = input.mounts.find(mount => mount.target === '/workspace')?.source;
         const artifactPath = resolve(artifactDir!, 'artifact-note.md');
@@ -223,13 +206,11 @@ describe('scripted session', () => {
         '写一段测试内容，保存成 markdown 文件',
       ],
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_artifact',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '写一段测试内容，保存成 markdown 文件', capabilityClass: 'code_edit', fileOutputs: ['artifact-note.md'] }),
       ),
@@ -245,9 +226,7 @@ describe('scripted session', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(input => {
         const targetDir = input.mounts.find(mount => mount.target === '/workspace')?.source;
@@ -264,13 +243,11 @@ describe('scripted session', () => {
         '生成一个报名落地页 html 文件',
       ],
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_html_artifact',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '生成一个报名落地页 html 文件', capabilityClass: 'code_edit', fileOutputs: ['landing-page.html'] }),
       ),
@@ -286,9 +263,7 @@ describe('scripted session', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       body: '# 调研报告\n\n正文内容。不要误报缺少飞书云文档 API。',
@@ -298,13 +273,11 @@ describe('scripted session', () => {
         '请产出飞书云文档和在线预览',
       ],
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_feishu_doc_fallback',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '请产出飞书云文档和在线预览' }),
       ),
@@ -320,9 +293,7 @@ describe('scripted session', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
       rawOutput: [
@@ -344,13 +315,11 @@ describe('scripted session', () => {
         '请调研 pi Agent，产出飞书云文档和在线预览',
       ],
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_scripted_feishu_doc_undeliverable',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '请调研 pi Agent，产出飞书云文档和在线预览' }),
       ),

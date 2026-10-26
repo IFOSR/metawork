@@ -8,8 +8,6 @@ import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { clearTasks, listTasks } from '../../src/commands/task-commands.js';
 import type { CommandContext } from '../../src/commands/catalog.js';
 import type { Config } from '../../src/core/types.js';
@@ -54,11 +52,9 @@ describe('task list commands', () => {
     taskRepo = new TaskRepo(db);
     taskEngine = new TaskEngine(taskRepo, resolve(tmpdir(), 'metaclaw-test-snapshots'));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
 
     context = {
       taskEngine,
-      memoryEngine,
       orchestration,
       taskControl: {
         taskView: (id: string) => projectTaskView(new SqliteTaskActivityFacts(db).read(taskRepo.findById(id)!, null)),

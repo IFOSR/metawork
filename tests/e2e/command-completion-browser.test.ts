@@ -54,10 +54,10 @@ describe.runIf(process.env.RUN_BROWSER_E2E === '1')('Desktop/Web shared command 
       await input.fill('/');
       const options = page.getByRole('listbox', { name: '指令联想' }).getByRole('option');
       await options.filter({ hasText: '/task' }).waitFor();
-      expect(await options.count()).toBe(4);
+      expect(await options.count()).toBe(3);
       expect(commands.some(command => command.kind === 'complete_command' && command.text === '/')).toBe(true);
-      await input.press('ArrowDown'); await input.press('Tab');
-      expect(await input.inputValue()).toBe('/memory ');
+      await input.press('Enter');
+      expect(await input.inputValue()).toBe('/task ');
       await options.filter({ hasText: 'list' }).first().waitFor();
       await input.fill('/task');
       await page.waitForFunction(() => document.querySelector('[role="status"]')?.textContent?.includes('正在查找'));
@@ -66,10 +66,10 @@ describe.runIf(process.env.RUN_BROWSER_E2E === '1')('Desktop/Web shared command 
       await input.press('Enter');
       expect(await input.inputValue()).toBe('/task');
       expect(commands.some(command => command.kind === 'slash_command')).toBe(false);
-      await input.fill('/memory');
-      await options.filter({ hasText: '/memory' }).waitFor();
+      await input.fill('/config');
+      await options.filter({ hasText: '/config' }).waitFor();
       await page.waitForTimeout(850);
-      expect(await options.allTextContents()).toEqual([expect.stringContaining('/memory')]);
+      expect(await options.allTextContents()).toEqual([expect.stringContaining('/config')]);
       await input.fill('/ta');
       await options.filter({ hasText: '/task' }).waitFor();
       await input.press('Enter'); expect(await input.inputValue()).toBe('/task ');

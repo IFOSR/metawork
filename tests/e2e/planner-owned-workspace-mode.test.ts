@@ -11,10 +11,7 @@ import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { WorkspaceExecutionBindingRepo } from '../../src/storage/workspace-execution-binding-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { WorkspaceIntent } from '../../src/core/workspace-execution.js';
 import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
@@ -99,9 +96,7 @@ function harness(options: {
     config,
     sessionId: 'planner-workspace-mode',
     sourceRoot: userRoot,
-    memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
     orchestration: new OrchestrationEngine(engine),
-    contextRecaller: new ContextRecaller(db),
     userArtifactPublication: new UserArtifactPublicationService({
       userWorkspaceRoot: userRoot,
       taskArtifactRepo: new TaskArtifactRepo(db),

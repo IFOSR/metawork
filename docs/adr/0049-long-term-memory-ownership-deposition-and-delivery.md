@@ -1,6 +1,6 @@
 ---
 status: accepted
-last_updated: 2026-10-22
+last_updated: 2026-10-26
 ---
 
 # Long-Term Memory Ownership, Deposition And Delivery
@@ -33,11 +33,12 @@ used. MemoryProxy, MemoryPanel and MemoryKnowledge are explicitly out of scope.
 ### 1. One engine, one port
 
 TDAI MemoryCore is the **only** memory engine. MetaWork does not implement
-extraction, retrieval, ranking or persona synthesis of its own. The retired
-`preferences` projection, `preference_usage`, `learning_candidates`,
-`reflection-engine`, `promotion-gate`, `context-recaller` and the unused part of
-`memory-context-service` remain only as compatibility aliases for the retired
-`ContextRef{kind:'preference'}` contract; they are not a second memory system.
+extraction, retrieval, ranking or persona synthesis of its own. The former
+local chain — `preferences`, `preference_usage`, `learning_candidates`,
+`reflection_events`, `MemoryEngine`, `context-recaller`, `memory-context-service`,
+`reflection-engine`, `promotion-gate` and `ContextRef{kind:'preference'}` — is
+retired from production and from the schema. The 2026-10-26 amendment below
+supersedes the earlier compatibility-alias decision.
 
 All cross-process memory access happens behind one **Memory Port**
 (`src/memory/memory-port.ts`). No module talks to the engine directly. The port
@@ -119,8 +120,8 @@ The Planner process tree may not hold engine credentials and may not talk to
 the engine. The Server owns the adapter, performs the recall and projects a
 bounded preview into the account database; the Planner reads that read model
 through the `search_memory` and `list_memory_assets` MCP tools, exactly as it
-already reads tasks, interactions and preferences from the database. The
-full body only ever reaches the Runtime through the evidence channel.
+already reads tasks, interactions and the memory read model from the database.
+The full body only ever reaches the Runtime through the evidence channel.
 
 ### 7. Sanitization happens before deposition
 
@@ -156,8 +157,9 @@ appearing to work.
    `task_execution_evidence`.
 6. **Degradation contract** — an unavailable engine yields empty recall with a
    `degraded` flag and never fails the task chain.
-7. **Permission discipline** — the account scope is the only isolation
-   boundary; a user-level key is read-only and revocable.
+7. **Permission discipline** — the account identity is the durable namespace
+   inside one installation. The installation/Server user key is read-only and
+   revocable and is not a per-account credential.
 8. **Single write direction** — MetaWork writes the L0 conversation layer only;
    L1/L2/L3 are produced by the engine and only indexed locally.
 
@@ -179,9 +181,9 @@ behavior: memory exists to understand the user, not to partition them. Only
 conversationally derived preferences and practices are stored — never file
 contents and never artifact bodies.
 
-`preferences` and the retired learning tables remain in the schema for
-compatibility with the historical `ContextRef{kind:'preference'}` contract and
-with existing installations. They are no longer a live pipeline.
+The retired local memory tables no longer exist after schema 59. A persisted
+payload that still references `ContextRef{kind:'preference'}` fails closed and
+requires a new plan; it is never converted into a TDAI binding or evidence.
 
 ## Related authority
 
@@ -197,3 +199,58 @@ with existing installations. They are no longer a live pipeline.
   upgrade, stop and Desktop lifecycle transactions.
 - ADR-0042 is reused: extraction is external consumption and is accounted
   separately.
+
+## Amendment 2026-10-26 — Server-owned runtime, schema 59, and removal of the local chain
+
+The product boundary is one MetaWork installation per local customer: one local
+Server, one `local-default` AccountRuntime and one TDAI sidecar. The
+`MemoryRuntimeController` therefore stays Server-owned and is created once by
+`src/server/server-composition.ts`; it is not moved down into each
+AccountRuntime. `accountId` remains the durable persistence, Port, eligibility
+and evidence namespace, and every memory SQL query keeps its `account_id`
+predicate.
+
+The fixed SecretStore reference is renamed to
+`MEMORY_INSTALLATION_USER_KEY_SECRET_REFERENCE` to state that it is an
+installation/Server secret, not evidence that per-account user keys already
+exist. The SecretStore lives in the installation's own data directory, so
+different installations never share it.
+
+The earlier compatibility decision is withdrawn. The following are removed
+from production composition and from the normal conversation path:
+
+- `MemoryEngine`, `PreferenceRepo`, `ContextRecaller`, `MemoryContextService`
+  (`src/memory/memory-context-service.ts`), `memory-vault-exporter`, the
+  learning/reflection/promotion modules and the `/memory`, `/learning` and
+  profile-preference commands;
+- `ContextRef{kind:'preference'}`, preference evidence and
+  `tasks.injected_prefs_json`;
+- the `preferences`, `preference_usage`, `reflection_events` and
+  `learning_candidates` tables and indexes.
+
+`src/intent/inline-resource-normalization.ts` owns inline-resource parsing that
+was previously reached through `MemoryContextService`; it has no memory
+dependency. The only automatic deposition path is
+`MemoryFlushScheduler → MemoryService → MemoryPort → TDAI`; the only long-term
+memory planning path is
+`refreshRecall → memory_recall_candidates → search_memory → ContextRef{kind:'memory'}`.
+
+Schema 59 is the memory migration on top of main's schema 58. A database stamped
+53 by the memory branch is identified explicitly and fails closed when it lacks
+main's six-state Task base; it is never silently treated as main's 53. The
+58 → 59 migration drops the legacy tables and `tasks.injected_prefs_json`,
+deletes preference evidence, removes preference ContextRefs from stored work
+graphs, fails pending/replan Planner payloads that still contain one, and marks
+an affected active Task `needs_action` with a reason that explicitly requires a
+new plan.
+
+A disabled, needs-model or degraded runtime clears the conversation's recall
+candidates and records the runtime mode in `memory_runtime_state`; the Planner
+tools gate on that durable mode rather than on local bindings alone. The manager
+view returns a structured degraded state so the settings page never renders
+"no assets" for an unavailable engine. The deposition fallback forces a flush
+when a conversation has at least one completed turn and two hours have passed
+since the last successful deposition; failures never move that clock.
+
+See
+[`docs/plans/2026-10-26-server-scoped-memory-pre-merge-remediation.md`](../plans/2026-10-26-server-scoped-memory-pre-merge-remediation.md).

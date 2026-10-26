@@ -4,8 +4,6 @@ import { createDefaultCommandCatalog } from '../../src/commands/command-tree.js'
 import { CommandReadServices } from '../../src/commands/command-read-services.js';
 import { seedAgentClasses } from '../support/seed-agent-classes.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
@@ -36,7 +34,6 @@ function createHarness() {
   const context = {
     db,
     taskEngine,
-    memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
     orchestration: new OrchestrationEngine(taskEngine),
     activeExecutions: { abortTask: vi.fn() },
     readServices: new CommandReadServices(

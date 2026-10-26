@@ -22,9 +22,9 @@ describe('ExecutionEvidenceToolServer', () => {
     db.prepare(`
       INSERT INTO tasks (
         id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
-        dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
+        dependencies_json, priority_json, last_scheduling_reason,
         last_interruption_reason, interruption_count, created_at, updated_at
-      ) VALUES ('task_tools', 'Tools', 'goal', 'running', '', '[]', '[]', '[]', '[]', '{}', '[]', '', '', 0, ?, ?)
+      ) VALUES ('task_tools', 'Tools', 'goal', 'running', '', '[]', '[]', '[]', '[]', '{}', '', '', 0, ?, ?)
     `).run('2026-07-17T00:00:00.000Z', '2026-07-17T00:00:00.000Z');
     const repo = new TaskExecutionEvidenceRepo(db);
     repo.upsert({

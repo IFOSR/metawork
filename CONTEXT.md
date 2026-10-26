@@ -117,11 +117,17 @@ safe text visibility, and file-delivery-only recovery retain their existing owne
 
 ## Current Implementation Notes
 
-Long-term memory (2026-10-22, ADR-0049): long-term memory is an optional
-capability backed by one external memory engine behind a single Memory Port.
-The account is the only isolation boundary: one account owns one engine scope
-triple, and every AgentClass of that account shares it, so a practice learned in
-one role is recallable from every other role. Workspaces, agent roles and
+Long-term memory (2026-10-22, amended 2026-10-26, ADR-0049): long-term memory
+is an optional capability backed by one external memory engine behind a single
+Memory Port. One MetaWork installation is one local Server for one local
+customer, so `MemoryRuntimeController` is Server-owned: the Server composition
+creates it once, configuration activation rebuilds it only when the `memory`
+section changes, and shutdown stops the AccountRuntimes before the final memory
+drain, scheduler stop and sidecar stop. It is not per-AccountRuntime.
+
+The account identity is the durable persistence namespace and future extension
+point. Every memory query keeps its `account_id` predicate, and every recalled
+asset is validated against the owning account. Workspaces, agent roles and
 conversations are provenance labels only. The local `memory_bindings` table
 holds ownership, the user switch and a content digest; it never holds a memory
 body, so the engine can be discarded and rebuilt without losing the user's
@@ -132,7 +138,9 @@ every turn since the last deposition is written to the L0 conversation layer in
 one call, because only the whole segment lets the engine recognize a cross-turn
 preference. Turn-by-turn deposition is rejected. Failed, cancelled and blocked
 rounds never become durable experience. The deposition cursor advances only
-after the engine accepted the batch.
+after the engine accepted the batch. A conversation with a completed turn is
+also flushed when two hours have passed since the last successful deposition;
+a failed deposition never moves that timestamp.
 
 Delivery is pull-only. The Planner references a memory with
 `ContextRef{kind:'memory', memoryId}`; the Runtime re-validates account
@@ -146,11 +154,20 @@ than empty content.
 The Planner never reaches the engine. The Server owns the adapter and projects a
 bounded preview into the account database; the Planner reads that read model
 through the `search_memory` and `list_memory_assets` MCP tools, exactly as it
-reads tasks and interactions from the database. Engine credentials are read
+reads tasks and interactions from the database. `search_memory` is not a
+full-text search over every asset: it reads the current turn's bounded
+candidates and returns the `memoryId` to reference. Engine credentials are read
 from the SecretStore on demand and injected into the sidecar environment only;
 they never enter the Server `process.env`, which the Planner process tree
 inherits, and the Executor container has neither a memory credential nor a
-memory network route.
+memory network route. The fixed SecretStore user-key reference is an
+installation/Server secret, not a per-account credential.
+
+When the runtime is disabled, needs-model or degraded it clears the
+conversation's recall candidates and records its mode in
+`memory_runtime_state`. The Planner tools gate on that durable mode, so a stale
+projection from a previous runtime is never offered, and the management view
+reports the degraded reason instead of an empty asset list.
 
 `memory.enabled=false` means no sidecar, no request, no model cost and no
 index. The extraction model is chosen explicitly by the user from the providers
@@ -158,6 +175,18 @@ they already configured; the system enforces only hard constraints (the
 Provider protocol must be `openai-compatible`, the Provider and Model must be
 enabled, the Model must belong to that Provider and must declare
 `structured-output`) and never recommends, downgrades or fills in a model.
+
+The pre-TDAI local memory chain is retired (schema 59). `MemoryEngine`,
+`ContextRecaller`, `MemoryContextService`, the preference repository, memory
+vault export, learning/reflection/promotion automation, `/memory`, `/learning`
+and profile-preference commands are not production capabilities. The
+`preferences`, `preference_usage`, `reflection_events` and `learning_candidates`
+tables no longer exist, and `ContextRef{kind:'preference'}` is not a supported
+reference: a persisted payload that contains one fails closed and requires a new
+plan. The only automatic deposition path is
+`MemoryFlushScheduler → MemoryService → MemoryPort → TDAI`; the only long-term
+memory planning path is
+`refreshRecall → memory_recall_candidates → search_memory → ContextRef{kind:'memory'}`.
 Extraction spend belongs to the user-selected Provider.
 
 Deposition is sanitized first: secret-like content is redacted before it
@@ -1296,7 +1325,7 @@ Objects; clients receive the safe projection through bounded Gateway chunks.
 _Avoid_: model-supplied identity/key fields, legacy envelope fallback, best-effort trailer, visible machine block
 
 **Execution Evidence**:
-The attempt-bound, Task-scoped read-only port for eligible user input, user materials, and confirmed preferences. Ordinary assistant/Executor output and dependency results are not generally searchable; an explicitly authorized assistant interaction is exact-get only.
+The attempt-bound, Task-scoped read-only port for eligible user input, user materials, and materialized long-term memory evidence. Ordinary assistant/Executor output and dependency results are not generally searchable; an explicitly authorized assistant interaction is exact-get only.
 _Avoid_: conversation transcript, cross-task search, dependency output channel
 
 **Attempt Receipt**:

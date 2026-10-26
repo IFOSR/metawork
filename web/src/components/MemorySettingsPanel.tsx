@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { MemoryApiClient, MemoryAssetView, MemoryStatusView } from '../api/memory';
+import { memoryAssetViewState } from '../api/memory';
+import type { MemoryApiClient, MemoryAssetListView, MemoryStatusView } from '../api/memory';
 
 export interface MemorySettingsDraft {
   enabled: boolean;
@@ -24,7 +25,8 @@ export interface MemorySettingsPanelProps {
  */
 export function MemorySettingsPanel({ api, draft, onChange, disabled }: MemorySettingsPanelProps) {
   const [status, setStatus] = useState<MemoryStatusView | null>(null);
-  const [assets, setAssets] = useState<MemoryAssetView[]>([]);
+  const [assetView, setAssetView] = useState<MemoryAssetListView | null>(null);
+  const assetState = memoryAssetViewState(assetView);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -35,7 +37,7 @@ export function MemorySettingsPanel({ api, draft, onChange, disabled }: MemorySe
         api.listAssets(),
       ]);
       setStatus(nextStatus);
-      setAssets(nextAssets.items);
+      setAssetView(nextAssets);
       setError(null);
     } catch (loadError) {
       setError((loadError as Error).message);
@@ -153,11 +155,20 @@ export function MemorySettingsPanel({ api, draft, onChange, disabled }: MemorySe
 
       <div className="memory-assets">
         <h4>记忆资产</h4>
-        {assets.length === 0
+        {assetState.kind === 'degraded'
+          ? (
+            <p role="status" className="memory-note memory-note-warning">
+              记忆引擎不可用：{assetState.reason}。
+              引擎恢复前无法显示或管理记忆资产。
+            </p>
+          )
+          : assetState.kind === 'loading'
+          ? <p role="status">正在加载记忆资产…</p>
+          : assetState.kind === 'empty'
           ? <p role="status">还没有记忆资产。完成几轮对话后，沉淀出的偏好与做法会出现在这里。</p>
           : (
             <ul className="memory-asset-list">
-              {assets.map(asset => (
+              {assetState.items.map(asset => (
                 <li key={asset.memoryId}>
                   <div className="memory-asset-body">
                     <span className="memory-asset-preview">{asset.preview}</span>

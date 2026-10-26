@@ -70,6 +70,12 @@ const MEMORY_STATE_SQL = `
     updated_at      TEXT NOT NULL,
     PRIMARY KEY (account_id, conversation_id)
   );
+  CREATE TABLE IF NOT EXISTS memory_runtime_state (
+    account_id TEXT PRIMARY KEY,
+    mode       TEXT NOT NULL,
+    detail     TEXT,
+    updated_at TEXT NOT NULL
+  );
 `;
 
 const MANAGED_SERVICES_SQL = `
@@ -422,7 +428,6 @@ CREATE TABLE tasks (
           resources_json TEXT DEFAULT '[]',
           dependencies_json TEXT DEFAULT '[]',
           priority_json TEXT,
-          injected_prefs_json TEXT DEFAULT '[]',
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         , last_scheduling_reason TEXT DEFAULT '', last_interruption_reason TEXT DEFAULT '', interruption_count INTEGER DEFAULT 0, artifacts_json TEXT DEFAULT '[]',
@@ -439,32 +444,6 @@ CREATE TABLE tasks (
 
 ${TASK_STATE_SCHEMA_SQL}
 
-CREATE TABLE preferences (
-          id TEXT PRIMARY KEY,
-          type TEXT NOT NULL,
-          scope TEXT NOT NULL,
-          subject TEXT,
-          content TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'observed',
-          confidence REAL DEFAULT 0,
-          occurrence_count INTEGER DEFAULT 1,
-          source_tasks TEXT DEFAULT '[]',
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          last_used_at TEXT,
-          confirmed_at TEXT
-        );
-
-CREATE TABLE preference_usage (
-          id TEXT PRIMARY KEY,
-          preference_id TEXT NOT NULL,
-          task_id TEXT NOT NULL,
-          injected_at TEXT NOT NULL,
-          was_overridden INTEGER DEFAULT 0,
-          FOREIGN KEY (preference_id) REFERENCES preferences(id),
-          FOREIGN KEY (task_id) REFERENCES tasks(id)
-        );
-
 CREATE TABLE interactions (
           id TEXT PRIMARY KEY,
           task_id TEXT,
@@ -479,32 +458,6 @@ CREATE TABLE session_state (
         last_focused_task_id TEXT,
         last_completed_task_id TEXT,
         last_session_id TEXT,
-        updated_at TEXT NOT NULL
-      );
-
-CREATE TABLE reflection_events (
-        id TEXT PRIMARY KEY,
-        source_type TEXT NOT NULL,
-        source_id TEXT,
-        task_id TEXT,
-        summary TEXT NOT NULL,
-        evidence_json TEXT NOT NULL DEFAULT '{}',
-        created_at TEXT NOT NULL
-      );
-
-CREATE TABLE learning_candidates (
-        id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending',
-        title TEXT NOT NULL,
-        content TEXT NOT NULL,
-        source_reflection_id TEXT,
-        source_task_id TEXT,
-        safety_status TEXT NOT NULL DEFAULT 'pending',
-        safety_reasons_json TEXT NOT NULL DEFAULT '[]',
-        review_note TEXT,
-        promoted_asset_id TEXT,
-        created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
 
@@ -1328,25 +1281,9 @@ CREATE TABLE generation_replan_requests (
 
 CREATE INDEX idx_tasks_status ON tasks(status);
 
-CREATE INDEX idx_preferences_scope ON preferences(scope);
-
-CREATE INDEX idx_preferences_status ON preferences(status);
-
 CREATE INDEX idx_interactions_session ON interactions(session_id, created_at);
 
 CREATE INDEX idx_interactions_task ON interactions(task_id, created_at);
-
-CREATE INDEX idx_reflection_events_task
-        ON reflection_events(task_id, created_at);
-
-CREATE INDEX idx_reflection_events_source
-        ON reflection_events(source_type, source_id);
-
-CREATE INDEX idx_learning_candidates_status
-        ON learning_candidates(status, created_at);
-
-CREATE INDEX idx_learning_candidates_source_task
-        ON learning_candidates(source_task_id, created_at);
 
 CREATE INDEX idx_skill_usage_events_task
         ON executor_skill_usage_events(task_id, created_at);
@@ -1926,6 +1863,7 @@ export function runMigrations(
     db.transaction(() => {
       db.exec(MEMORY_BINDINGS_SQL);
       db.exec(MEMORY_STATE_SQL);
+      retireLegacyMemoryState(db);
       bumpSchemaVersion(db, 58, 59, '58 to 59');
     })();
     version = 59;
@@ -2676,6 +2614,171 @@ function migrateSchema51To52(db: Database.Database): void {
   } finally {
     if (foreignKeysEnabled) db.pragma('foreign_keys = ON');
   }
+}
+
+
+/**
+ * Retires the pre-TDAI local memory chain at schema 59.
+ *
+ * The TDAI sidecar is the only automatic memory engine (ADR-0049 amendment).
+ * The historical `preferences` and learning/reflection tables are dropped, and
+ * every persisted Planner payload that could still drive that chain is made
+ * non-executable:
+ *
+ *   - `preference` ContextRefs are removed from stored work graphs; an active
+ *     Task that referenced one is stopped in `needs_action` and requires a new
+ *     plan instead of silently executing without the retired asset;
+ *   - preference evidence is deleted so evidence lookups cannot resurrect the
+ *     body;
+ *   - pending/processing `plan_proposed` events and deferred replan payloads
+ *     that contain a `preference` reference fail closed rather than replaying.
+ */
+function retireLegacyMemoryState(db: Database.Database): void {
+  const retiredMessage = '旧偏好记忆引用已失效，需要重新规划';
+  const changedTasks = new Set<string>();
+
+  const subtaskColumns = tableExists(db, 'subtasks') ? columnsOf(db, 'subtasks') : [];
+  if (subtaskColumns.includes('task_id') && subtaskColumns.includes('context_refs_json')) {
+    const rows = db.prepare('SELECT id, task_id, context_refs_json FROM subtasks')
+      .all() as Array<{ id: string; task_id: string; context_refs_json: string }>;
+    const update = db.prepare('UPDATE subtasks SET context_refs_json = ? WHERE id = ?');
+    for (const row of rows) {
+      const refs = parseJsonArray(row.context_refs_json);
+      if (!refs) continue;
+      const kept = refs.filter(ref => (ref as { kind?: unknown } | null)?.kind !== 'preference');
+      if (kept.length === refs.length) continue;
+      update.run(JSON.stringify(kept), row.id);
+      changedTasks.add(row.task_id);
+    }
+  }
+
+  if (tableExists(db, 'task_execution_evidence')) {
+    db.prepare("DELETE FROM task_execution_evidence WHERE kind = 'preference'").run();
+  }
+
+  if (tableExists(db, 'generation_replan_requests')) {
+    const rows = db.prepare(`
+      SELECT id, deferred_plan_json FROM generation_replan_requests
+      WHERE deferred_plan_json IS NOT NULL AND status NOT IN ('resolved', 'cancelled', 'failed')
+    `).all() as Array<{ id: string; deferred_plan_json: string }>;
+    const fail = db.prepare(`
+      UPDATE generation_replan_requests
+      SET deferred_plan_json = NULL, status = 'failed',
+          error_summary = ?, updated_at = ?
+      WHERE id = ?
+    `);
+    const now = new Date().toISOString();
+    for (const row of rows) {
+      let payload: unknown;
+      try {
+        payload = JSON.parse(row.deferred_plan_json);
+      } catch {
+        continue;
+      }
+      if (!planPayloadHasPreferenceRef(payload)) continue;
+      fail.run(`legacy_preference_context_ref_retired: ${retiredMessage}`, now, row.id);
+    }
+  }
+
+  if (tableExists(db, 'kernel_events')) {
+    const rows = db.prepare(`
+      SELECT id, event_json FROM kernel_events
+      WHERE event_type = 'plan_proposed' AND status IN ('pending', 'processing')
+    `).all() as Array<{ id: string; event_json: string }>;
+    const fail = db.prepare(`
+      UPDATE kernel_events
+      SET status = 'failed', last_error = ?, processed_at = ?, updated_at = ?
+      WHERE id = ? AND status IN ('pending', 'processing')
+    `);
+    const now = new Date().toISOString();
+    for (const row of rows) {
+      let payload: unknown;
+      try {
+        payload = JSON.parse(row.event_json);
+      } catch {
+        continue;
+      }
+      if (!planPayloadHasPreferenceRef(payload)) continue;
+      fail.run(`legacy_preference_context_ref_retired: ${retiredMessage}`, now, now, row.id);
+    }
+  }
+
+  if (changedTasks.size > 0) {
+    const now = new Date().toISOString();
+    const read = db.prepare('SELECT status, state_detail_json FROM tasks WHERE id = ?');
+    const mark = db.prepare(`
+      UPDATE tasks
+      SET status = 'needs_action', state_version = state_version + 1,
+          state_detail_json = ?, updated_at = ?
+      WHERE id = ? AND status IN ('queued', 'running', 'needs_action')
+    `);
+    for (const taskId of changedTasks) {
+      const task = read.get(taskId) as { status: string; state_detail_json: string } | undefined;
+      if (!task) continue;
+      if (!['queued', 'running', 'needs_action'].includes(task.status)) continue;
+      const detail = parseObject(task.state_detail_json) ?? {};
+      detail.reason = {
+        code: 'requirements_incomplete',
+        message: retiredMessage,
+        evidenceRefs: [],
+      };
+      detail.phase = null;
+      detail.pendingActions = [];
+      detail.nextWakeAt = null;
+      mark.run(JSON.stringify(detail), now, taskId);
+    }
+  }
+
+  db.exec(`
+    DROP INDEX IF EXISTS idx_preferences_scope;
+    DROP INDEX IF EXISTS idx_preferences_status;
+    DROP INDEX IF EXISTS idx_reflection_events_task;
+    DROP INDEX IF EXISTS idx_reflection_events_source;
+    DROP INDEX IF EXISTS idx_learning_candidates_status;
+    DROP INDEX IF EXISTS idx_learning_candidates_source_task;
+    DROP TABLE IF EXISTS preference_usage;
+    DROP TABLE IF EXISTS preferences;
+    DROP TABLE IF EXISTS reflection_events;
+    DROP TABLE IF EXISTS learning_candidates;
+  `);
+  if (columnsOf(db, 'tasks').includes('injected_prefs_json')) {
+    db.exec('ALTER TABLE tasks DROP COLUMN injected_prefs_json');
+  }
+}
+
+function parseJsonArray(value: string): unknown[] | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseObject(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether a persisted plan payload contains a retired `preference` ContextRef. */
+function planPayloadHasPreferenceRef(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object') return false;
+  const proposal = (payload as { proposal?: unknown }).proposal ?? payload;
+  if (!proposal || typeof proposal !== 'object') return false;
+  const subtasks = (proposal as { subtasks?: unknown }).subtasks;
+  if (!Array.isArray(subtasks)) return false;
+  return subtasks.some(subtask => {
+    if (!subtask || typeof subtask !== 'object') return false;
+    const refs = (subtask as { contextRefs?: unknown }).contextRefs;
+    return Array.isArray(refs)
+      && refs.some(ref => (ref as { kind?: unknown } | null)?.kind === 'preference');
+  });
 }
 
 function runBaseMigrations(

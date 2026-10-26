@@ -139,7 +139,7 @@
 
 ```
 ✓ task_execution_evidence 通道（新增 kind='long_term_memory'）
-✓ ContextRef 契约（新增 kind='memory'；preference 保留为兼容别名）
+✓ ContextRef 契约（新增 kind='memory'；preference 已在 schema 59 移除）
 ✓ ADR-0021 的 4k/24k 预算、截断标记、executor_evidence_accessed 审计
 ✓ safety-scanner（改造为沉淀前净化器）
 ✓ revisioned configuration（新增 memory 段）+ 设置面板
@@ -448,7 +448,7 @@ Planner 在 proposal 中引用 memory ref
 |---|---|---|
 | **ADR-0015** | ⚠️ **修订**（不能只加新 ADR） | 原文 `:37` 废止自然语言记忆捕获 fast path；`:45` 明写 "Cross-session semantic search remains unavailable"——TDAI 引入的自动抽取与跨会话语义召回正好命中这两句 |
 | **新 ADR** | 拟写 | 记忆归属/开关/投递模型、沉淀契约、pull 语义、凭证纪律、降级契约、sidecar 生命周期、Provider 约束 |
-| ADR-0021 | ✅ **不动** | 保留 preferences 投影替代物 + evidence 通道，预算与审计不变 |
+| ADR-0021 | ✅ **不动** | 保留 evidence 通道与召回读模型，预算与审计不变；旧 preferences 投影已退役 |
 | ADR-0020 | 微调 | `src/memory/` 领域归属从"自研记忆"改为"记忆绑定、治理与投递" |
 | ADR-0031 / 0047 | 对齐 | 记忆隔离域 = 账号（跨工作区共享、跨账号不共享）、记忆内容数据边界、抽取模型出口与计费归属 |
 | ADR-0034 / 0045 | 对齐 | sidecar 纳入安装/升级/停止/Desktop 生命周期 |
@@ -506,7 +506,7 @@ ADR-0015 修订草案 + 新 ADR 草案（含 §6.6 八条契约与 §5.2 沉淀�
 | R5 | 记忆内容外送第三方部署 | TDAI 本机 sidecar，数据不出机器；抽取模型走用户自选 Provider；记忆正文不落 MetaWork 权威库 |
 | R6 | 中文分词与 BM25 效果 | `bm25.language: zh` + jieba；Phase 0 实测；必要时开 embedding（成本另计） |
 | R7 | sidecar 引入新的进程生命周期面 | 纳入 ADR-0034/0045 的安装/升级/停止事务与有界清理 |
-| R8 | 退役 `preferences` 影响既有 Planner 行为 | `ContextRef` 的 `preference` kind 保留为兼容别名，过渡期后再评估清理 |
+| R8 | 退役 `preferences` 影响既有 Planner 行为 | 已按 2026-10-26 修订处理：`preference` kind 与旧表在 schema 59 一并移除；旧 payload fail-closed 并要求重新规划 |
 | R9 | 用户体感仍弱（记忆不可见） | 薄视图与开关是 Phase 3 必交付项，不因技术链路完成而顺延 |
 | R10 | 跨工作区与跨智能体共享使一个上下文的偏好影响账号内所有上下文 | 这是目标行为；记忆只存对话中提炼的偏好与做法，不存文件正文与产物内容；记忆资产视图显示来源并可禁用 |
 | R11 | 账号即作用域意味着每个账号需一组固定的 team + agent 标识 | 若数据面接受未注册标识则无需注册；否则首次使用时经 `/v3/meta/*` 创建并持久化（见 §6.5） |
@@ -623,7 +623,7 @@ ADR-0015 修订草案 + 新 ADR 草案（含 §6.6 八条契约与 §5.2 沉淀�
 **与设计的偏差（已记录）**
 
 1. **S3 接口**：TDAI v3 没有 `/v3/atomic/get`（L1 原子只能按 id 更新/删除）。物化改为对 `/v3/atomic/query` 的**有界分页扫描**（最多 10 页 × 100 条），找不到即报 `memory_asset_not_found`，绝不返回空正文。偏差被完全收敛在防腐层内。
-2. **Planner 侧检索通道**：设计 §6.1 让 Planner MCP 直接调 TDAI，§6.2 又禁止 Planner 进程直连（凭证继承泄漏面）。落地方案是**两侧都满足**：Server 持有适配器并把**有界预览**投影到账号库的召回读模型，Planner 通过只读 MCP 工具读取该读模型——与它读取 task/interaction/preference 的既有模式一致。引擎访问只发生在 Server 侧，Planner 进程树不持有任何引擎凭证。
+2. **Planner 侧检索通道**：设计 §6.1 让 Planner MCP 直接调 TDAI，§6.2 又禁止 Planner 进程直连（凭证继承泄漏面）。落地方案是**两侧都满足**：Server 持有适配器并把**有界预览**投影到账号库的召回读模型，Planner 通过只读 MCP 工具读取该读模型——与它读取 task/interaction 的既有模式一致。引擎访问只发生在 Server 侧，Planner 进程树不持有任何引擎凭证。
 3. **记忆正文存储**：`task_execution_evidence` 存完整正文（上限 8,192 字符），提示词预由既有 4k 预算截断并附 `[TRUNCATED: use evidence get for remaining content]`，使 Executor 仍可用证据工具翻页。截断标记计入预算，预览长度不再超过 4,000 字符。
 
 ### Phase 3｜体感与治理：完成
@@ -703,9 +703,9 @@ Bearer 闸门），并跑通：
    （记忆功能，本轮引入）
 3. **基线既有产品缺陷**：`/task resume` 这类会启动工作的控制命令，回复里
    `backgroundWorkPending` 被 `!isControlCommand(...)` 强制为 `false`，客户端因此
-   不知道恢复的工作仍在继续。改为按命令是否真的把工作交给运行时判定
-   （`startsBackgroundWork`），并在 `tests/session/conversation-input-mailbox.test.ts`
-   补了分类回归测试。
+   不知道恢复的工作仍在继续。该修复未纳入主干合并：主干现有的
+   `isControlCommand()` 与命令目录是 Gateway 的权威语义（2026-10-26 修复方案 §2/§7.4），
+   本分支的 `startsBackgroundWork()` 及其命令路径已删除。
 4. **基线既有陈旧测试**：`configuration-admission-interlock` 断言 `/status` 在配置
    事务期间仍被接收，但 `/status` 从不在命令目录中（`docs/current/commands.md`
    也没有）。改为断言目录真实拥有的只读命令（`/config`、`/task dashboard`）。
@@ -719,7 +719,7 @@ Bearer 闸门），并跑通：
 
 其中一项（P1-5 `x-tdai-user-key`）的事实成立但后果被高估：该 header 只在
 `/v3/meta/*` 元数据面必需，而适配层只调用数据面，因此不会出现“请求全部鉴权失败”。
-已按设计补齐账号级只读 user key 的 SecretStore 读取与下发，并把它重分类为 P2。
+已按设计补齐只读 user key 的 SecretStore 读取与下发，并把它重分类为 P2。2026-10-26 起该常量明确为安装级/Server 级 secret（`MEMORY_INSTALLATION_USER_KEY_SECRET_REFERENCE`）：当前部署是一个安装一个本地 Server，因此不是账号级 key 已实现的证据。
 
 **关键修正**
 
@@ -745,3 +745,36 @@ Bearer 闸门），并跑通：
 （`tests/memory/memory-review-regressions.test.ts`）、运行时生命周期 9 项
 （`tests/memory/memory-runtime-controller.test.ts`），以及真实引擎上的设置激活
 旅程 5 项（`tests/e2e/memory-settings-activation.test.ts`）。
+
+---
+
+## 2026-10-26 合并前修订（Server 级记忆运行时）
+
+合并前的修复方案见
+[Server 级 Memory 合并前修复方案](2026-10-26-server-scoped-memory-pre-merge-remediation.md)。
+
+- **部署前提**：当前产品是一个安装一个本地 Server、一个 `local-default`
+  AccountRuntime。`MemoryRuntimeController` 保持 Server-owned，一次创建、随 Server
+  生命周期；不下沉到每个 AccountRuntime。`accountId` 继续是持久化、Port、eligibility
+  与 evidence 的命名空间。
+- **schema**：主干 schema 58 是权威，memory 增量进入 schema 59。schema 59 删除旧
+  `preferences`、`preference_usage`、`reflection_events`、`learning_candidates`
+  表/索引，删除 `tasks.injected_prefs_json`，清理旧 preference evidence 与 ContextRef，
+  并让仍含旧引用的 pending `plan_proposed`、deferred replan payload 与活动 Task
+  fail-closed（活动 Task 进入 `needs_action` 并要求重新规划）。memory 分支的 schema
+  53 若缺少主干六态 Task 事实则显式拒绝。
+- **旧链路退役**：`MemoryEngine`、`ContextRecaller`、`MemoryContextService`、
+  `PreferenceRepo`、memory vault exporter、learning/reflection/promotion 自动路径、
+  `/memory`、`/learning` 与 profile preference 命令均从生产组合根和命令目录移除；
+  inline resource 解析改由 `src/intent/inline-resource-normalization.ts` 承担。
+- **召回门禁**：关闭、needs-model、degraded 时按 `accountId + conversationId` 清空
+  `memory_recall_candidates`，并写入 `memory_runtime_state`；`search_memory` 与
+  `list_memory_assets` 以该持久化运行时状态做门禁，而不是只看本地 binding。
+- **管理面**：`listAssets()` 在 degraded 时返回结构化状态（`mode`、`degraded`、
+  `degradedReason`），Web 设置页显示“记忆引擎不可用”而不是“暂无资产”。
+- **沉淀兜底**：未沉淀 completed turns 达到阈值，或存在 completed turn 且距上次成功
+  沉淀超过两小时时强制 flush；失败不推进 `memory_flush_state.updated_at`。
+- **TDAI scope**：`team_id`/`user_id` 使用 `local-default` 派生的稳定 identity，
+  `agent_id` 使用 Server 级统一 memory agent identity；一个 Server 一个 sidecar。
+- **凭证命名**：`MEMORY_INSTALLATION_USER_KEY_SECRET_REFERENCE` 明确为安装级/Server
+  级 secret，是当前本地部署的边界，不代表同 Server 多客户隔离已经实现。

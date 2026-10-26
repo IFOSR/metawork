@@ -2,11 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
 import type { NotificationService } from '../../src/notifications/types.js';
@@ -51,11 +48,10 @@ describe('blocked task user journey', () => {
       ? { body: 'Stream ended without finish_reason', exitCode: 1 }
       : { body: 'Recovered research report with complete evidence.' });
     const session = new MetaclawSession({
-      taskEngine, memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
+      taskEngine,
       orchestration: new OrchestrationEngine(taskEngine), attemptExecutionBackend: backend,
       db, config: createConfig(), sessionId: 'session-incomplete-response',
-      contextRecaller: new ContextRecaller(db),
-      notifier: { notifyTaskCompleted: vi.fn().mockResolvedValue(undefined) },
+        notifier: { notifyTaskCompleted: vi.fn().mockResolvedValue(undefined) },
       planningAgent: stubPlanningAgent(workGraphPlan({
         goal: 'Research report', executor: 'codex-cli', matchedBoundary: ['general'],
       })),
@@ -84,9 +80,7 @@ describe('blocked task user journey', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-blocked-user-journey');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
     const notifier: NotificationService = {
       notifyTaskCompleted: vi.fn().mockResolvedValue(undefined),
     };
@@ -95,13 +89,11 @@ describe('blocked task user journey', () => {
       : { body: '阻塞解除后已完成用户旅程验收报告' });
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_blocked_user_journey',
-      contextRecaller,
       notifier,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '整理 blocked 任务用户旅程验收报告', executor: 'codex-cli', matchedBoundary: ['general'] }),

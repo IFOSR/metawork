@@ -284,13 +284,6 @@ export class PlannerDataReader {
   }
 
   getPlanningContext() {
-    const preferences = this.db.prepare(`
-      SELECT id, type, scope, subject, content, confirmed_at
-      FROM preferences
-      WHERE status = 'confirmed' AND scope = 'global'
-      ORDER BY COALESCE(confirmed_at, updated_at) DESC
-      LIMIT ?
-    `).all(MAX_RESULTS) as Array<Record<string, unknown>>;
     const pending = this.db.prepare(`
       SELECT p.id, p.task_id, p.capability, p.resource_text, p.operation, p.reason, p.created_at
       FROM permission_requests p
@@ -307,14 +300,6 @@ export class PlannerDataReader {
         mime: attachment.mime,
         size: attachment.size,
         availability: attachment.availability,
-      })),
-      confirmedPreferences: preferences.map(row => ({
-        id: row.id,
-        type: row.type,
-        scope: row.scope,
-        subject: row.subject,
-        content: truncateText(String(row.content ?? ''), 1_000),
-        confirmedAt: row.confirmed_at,
       })),
       pendingAuthorizationRequest: pending ? {
         requestId: pending.id,
@@ -338,8 +323,36 @@ export class PlannerDataReader {
    * reads a bounded preview and references an asset by `memoryId`; the body is
    * materialized later as execution evidence.
    */
+  /** Durable runtime gate: the Planner never trusts a local binding alone. */
+  private memoryRuntimeGate(): { available: boolean; mode: string; reason: string | null } {
+    const row = this.db.prepare(`
+      SELECT mode, detail FROM memory_runtime_state WHERE account_id = ?
+    `).get(this.accountId) as { mode: string; detail: string | null } | undefined;
+    if (!row) {
+      // No runtime has recorded a state yet: the capability is not open.
+      return { available: false, mode: 'disabled', reason: 'memory_runtime_unavailable' };
+    }
+    return {
+      available: row.mode === 'enabled',
+      mode: row.mode,
+      reason: row.detail ?? `memory_${row.mode.replace(/-/gu, '_')}`,
+    };
+  }
+
   searchMemory(input: { query?: string; limit?: number }) {
     const limit = boundedLimit(input.limit);
+    const gate = this.memoryRuntimeGate();
+    if (!gate.available) {
+      // Disabled, needs-model and degraded runtimes own no candidates. Return a
+      // structured unavailable answer instead of an empty "no memory" result.
+      return {
+        count: 0,
+        items: [],
+        degraded: true,
+        degradedReason: truncateText(gate.reason ?? gate.mode, 300),
+        advice: '长期记忆暂不可用；请基于当前请求规划，并在回复中说明未能参考历史记忆。',
+      };
+    }
     // Only assets the user still allows: a memory disabled after the recall was
     // projected must not be offered to the Planner, or it would pick a reference
     // the Runtime then rejects (review P2-3).
@@ -387,6 +400,15 @@ export class PlannerDataReader {
 
   /** The account memory assets the Planner may reference. */
   listMemoryAssets(limit?: number) {
+    const gate = this.memoryRuntimeGate();
+    if (!gate.available) {
+      return {
+        count: 0,
+        items: [],
+        degraded: true,
+        degradedReason: truncateText(gate.reason ?? gate.mode, 300),
+      };
+    }
     const bounded = boundedLimit(limit);
     const rows = this.db.prepare(`
       SELECT memory_id, tdai_memory_id, source, enabled, confidence, created_at, updated_at
@@ -464,7 +486,7 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
     inputSchema: { limit: z.number().int().min(1).max(MAX_RESULTS).optional() },
   }, async input => toolResult(reader.getCurrentSessionContext(input.limit)));
   server.registerTool('get_planning_context', {
-    description: 'Read current session Planner facts: bounded confirmed preferences, the exact pending authorization request, canonical routing capabilities and AgentClasses, and one complete revision-scoped capability manual per enabled Executor. Call before executable planning, preference-dependent replies, or authorization resolution.',
+    description: 'Read current session Planner facts: the exact pending authorization request, canonical routing capabilities and AgentClasses, and one complete revision-scoped capability manual per enabled Executor. Call before executable planning or authorization resolution.',
     inputSchema: {},
   }, async () => toolResult(reader.getPlanningContext()));
   server.registerTool('get_session_interaction', {
@@ -490,7 +512,7 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
     },
   }, async input => toolResult(reader.getExecutorDiagnostics(input)));
   server.registerTool('search_memory', {
-    description: 'Search the account long-term memory for durable preferences, practices and prior experience. Call it when the request depends on how the user likes to work, on a recurring procedure, or on a decision made in an earlier session. Reference a result with contextRefs [{kind:"memory", memoryId}]; the body is delivered to the Executor as evidence, never pasted into the prompt. When the result carries degraded:true the memory engine was unavailable, so plan without it and tell the user memory could not be consulted.',
+    description: 'Search the current turn\'s bounded long-term memory candidates for durable practices and prior experience. The Server has already queried the memory engine for this user request; this tool reads the projected previews and returns the memoryId a ContextRef may reference. It is not a full-text search over every stored memory asset. Reference a result with contextRefs [{kind:"memory", memoryId}]; the body is delivered to the Executor as evidence, never pasted into the prompt. When the result carries degraded:true the memory engine was unavailable, so plan without it and tell the user memory could not be consulted.',
     inputSchema: {
       query: z.string().min(1).max(500).optional(),
       limit: z.number().int().min(1).max(MAX_RESULTS).optional(),

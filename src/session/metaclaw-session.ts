@@ -10,11 +10,8 @@ import type {
   TaskRecoveryTrigger,
 } from '../core/types.js';
 import type { TaskEngine } from '../task/task-engine.js';
-import type { MemoryEngine } from '../memory/memory-engine.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
 import { NoopNotificationService, type NotificationService } from '../notifications/types.js';
-import type { ContextRecaller } from '../memory/context-recaller.js';
-import { MemoryContextService } from '../memory/memory-context-service.js';
 import { SessionPersistenceService } from './session-persistence-service.js';
 import { createDefaultCommandCatalog } from '../commands/command-tree.js';
 import { CommandReadServices } from '../commands/command-read-services.js';
@@ -185,12 +182,10 @@ export interface PlannerHostRegistrar {
 
 export interface MetaclawSessionDeps {
   taskEngine: TaskEngine;
-  memoryEngine: MemoryEngine;
   orchestration: OrchestrationEngine;
   db: Database.Database;
   config: Config;
   sessionId: string;
-  contextRecaller: ContextRecaller;
   planningAgent?: PlanningAgent;
   notifier?: NotificationService;
   sourceRoot?: string;
@@ -377,7 +372,6 @@ export class MetaclawSession {
   private backgroundWork = new Set<Promise<void>>();
   private currentTaskId: string | null = null;
   private focusContext: FocusContext | null = null;
-  private readonly memoryContextService: MemoryContextService;
   private readonly commandCatalog: CommandCatalog;
   private readonly sessionStateRepo: SessionStateRepo;
   private readonly notifier: NotificationService;
@@ -534,15 +528,12 @@ export class MetaclawSession {
     }
     const plannerServices = deps.accountPlannerServices ?? buildAccountPlannerServices({
       db: deps.db,
-      memoryEngine: deps.memoryEngine,
-      contextRecaller: deps.contextRecaller,
       plannerBinding: this.plannerBinding,
       plannerBindingFingerprint: this.plannerBindingFingerprint,
       plannerModelId: plannerModel.modelId,
       plannerSupervisor: deps.plannerSupervisor,
       planningAgent: deps.planningAgent,
     });
-    this.memoryContextService = plannerServices.memoryContextService;
     this.planningContextBuilder = new PlanningContextBuilder({
       sessionId: deps.sessionId,
       conversationId: deps.sessionId,
@@ -661,7 +652,6 @@ export class MetaclawSession {
       workspaceStore: this.workspaceStore,
       workspaceRepository: this.workspaceRepository,
       resourceLeaseService,
-      memoryContextService: this.memoryContextService,
       executionRuntime: this.executionRuntime,
       kernelExecutionCallbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
@@ -1369,7 +1359,6 @@ export class MetaclawSession {
       commandCatalog: this.commandCatalog,
       commandReadServices: this.commandReadServices,
       taskEngine: this.deps.taskEngine,
-      memoryEngine: this.deps.memoryEngine,
       orchestration: this.deps.orchestration,
       config: this.deps.config,
       taskExecutionApplicationService: this.taskExecutionApplicationService,
@@ -2855,7 +2844,6 @@ export class MetaclawSession {
   private getCommandContext(): CommandContext {
     return {
       taskEngine: this.deps.taskEngine,
-      memoryEngine: this.deps.memoryEngine,
       orchestration: this.deps.orchestration,
       activeExecutions: this.executionRuntime,
       conversationId: this.deps.sessionId,

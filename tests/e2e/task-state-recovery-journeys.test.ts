@@ -8,10 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { UserArtifactPublicationService } from '../../src/delivery/user-artifact-publication-service.js';
 import { TaskArtifactRepo } from '../../src/storage/task-artifact-repo.js';
@@ -69,8 +66,8 @@ function fixture(responder: FakeAttemptExecutionResponder, service = false, exis
         : root;
     } });
   const session = new MetaclawSession({ taskEngine: engine, userArtifactPublication: delivery, managedLocalServices: services,
-    memoryEngine: new MemoryEngine(new PreferenceRepo(db)), orchestration: new OrchestrationEngine(engine),
-    sourceRoot: existing ? root : undefined, attemptExecutionBackend: backend, db, config, sessionId: 'session_acceptance', contextRecaller: new ContextRecaller(db),
+    orchestration: new OrchestrationEngine(engine),
+    sourceRoot: existing ? root : undefined, attemptExecutionBackend: backend, db, config, sessionId: 'session_acceptance',
     planningAgent: stubPlanningAgent(plan), getRuntimeBinding: async binding => ({ revisionId: binding.configurationRevision,
       bindingFingerprint: 'test-fingerprint', environment: { OPENAI_BASE_URL: 'https://test.invalid/v1', OPENAI_API_KEY: 'sk-test', ANTHROPIC_API_KEY: 'sk-test', OPENAI_MODEL: 'test-model' } }) });
   session.initialize({ resumeStartupTasks: false, showDashboard: false });

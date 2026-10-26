@@ -29,7 +29,6 @@ function task(overrides: Partial<Task> = {}): Task {
       idleHours: 0,
       semanticPriorityReason: undefined,
     },
-    injectedPreferences: [],
     lastSchedulingReason: '等待调度',
     lastInterruptionReason: '',
     interruptionCount: 0,

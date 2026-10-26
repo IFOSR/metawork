@@ -6,8 +6,6 @@ import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { rebuildTaskIndex, searchTaskIndex } from '../../src/commands/task-commands.js';
 import { TaskSearchIndexRepo } from '../../src/storage/task-search-index-repo.js';
 import type { CommandContext } from '../../src/commands/catalog.js';
@@ -45,11 +43,9 @@ describe('task index command', () => {
     const taskRepo = new TaskRepo(db);
     taskEngine = new TaskEngine(taskRepo, resolve(tmpdir(), 'metaclaw-test-snapshots'));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
 
     context = {
       taskEngine,
-      memoryEngine,
       orchestration,
       currentTaskId: null,
       db,

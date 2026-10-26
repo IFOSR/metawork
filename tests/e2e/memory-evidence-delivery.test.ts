@@ -38,9 +38,9 @@ function createDb() {
   db.prepare(`
     INSERT INTO tasks (
       id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
-      dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
+      dependencies_json, priority_json, last_scheduling_reason,
       last_interruption_reason, interruption_count, created_at, updated_at
-    ) VALUES ('task_memory', '销售报告', '整理销售数据', 'running', '', '[]', '[]', '[]', '[]', '{}', '[]', '', '', 0, ?, ?)
+    ) VALUES ('task_memory', '销售报告', '整理销售数据', 'running', '', '[]', '[]', '[]', '[]', '{}', '', '', 0, ?, ?)
   `).run('2026-10-22T00:00:00.000Z', '2026-10-22T00:00:00.000Z');
   return db;
 }
@@ -61,7 +61,7 @@ const task: Task = {
   id: 'task_memory', title: '销售报告', goal: '整理销售数据', status: 'running', summary: '',
   snapshots: [], resources: [], artifacts: [], dependencies: [],
   prioritySignals: { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
-  injectedPreferences: [], lastSchedulingReason: '', lastInterruptionReason: '', interruptionCount: 0,
+  lastSchedulingReason: '', lastInterruptionReason: '', interruptionCount: 0,
   createdAt: '2026-10-22T00:00:00.000Z', updatedAt: '2026-10-22T00:00:00.000Z',
 };
 

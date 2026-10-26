@@ -524,26 +524,14 @@ describe('PlannerDataReader', () => {
     }
   });
 
-  it('exposes bounded Planner-owned facts through MCP instead of prompt injection', () => {
-    const { db, reader } = createHarness();
-    db.prepare(`
-      INSERT INTO preferences (
-        id, type, scope, subject, content, status, confidence,
-        occurrence_count, source_tasks, created_at, updated_at, confirmed_at
-      ) VALUES (?, 'instruction', 'global', NULL, ?, 'confirmed', 1, 1, '[]', ?, ?, ?)
-    `).run(
-      'pref_planner',
-      'Prefer concise answers.',
-      '2026-07-30T00:00:00.000Z',
-      '2026-07-30T00:00:00.000Z',
-      '2026-07-30T00:00:00.000Z',
-    );
+  it('exposes bounded Planner-owned facts through MCP without a retired preference projection', () => {
+    const { reader } = createHarness();
 
     const result = reader.getPlanningContext();
 
-    expect(result.confirmedPreferences).toEqual([
-      expect.objectContaining({ id: 'pref_planner', content: 'Prefer concise answers.' }),
-    ]);
+    // The pre-TDAI preference store is retired; the Planner reaches durable
+    // memory only through the memory recall read model.
+    expect(result).not.toHaveProperty('confirmedPreferences');
     expect(result.routingCatalog.agentClasses).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'codex-cli', routingCapabilities: ['workspace-engineering'] }),
     ]));

@@ -183,7 +183,7 @@ it('projects narrow Task reads with canonical lifecycle semantics in seven queri
     expect(canonical[7]!.status).toBe('needs_action');
     expect(canonical[0]!.status).toBe('running');
     db.exec(`UPDATE tasks SET snapshot_json = 'unused-invalid', resources_json = 'unused-invalid',
-      artifacts_json = 'unused-invalid', priority_json = 'unused-invalid', injected_prefs_json = 'unused-invalid'`);
+      artifacts_json = 'unused-invalid', priority_json = 'unused-invalid'`);
     for (const count of [1, 10]) {
       queries.length = 0;
       const narrow = taskRepo.findTimelineByIds('local-default', tasks.slice(0, count).map(task => task.id));

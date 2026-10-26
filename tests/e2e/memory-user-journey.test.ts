@@ -189,7 +189,7 @@ describeEngine('long-term memory user journey', () => {
       id: 'task-session-2', title: '销售报告', goal: '整理销售数据', status: 'running', summary: '',
       snapshots: [], resources: [], artifacts: [], dependencies: [],
       prioritySignals: { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
-      injectedPreferences: [], lastSchedulingReason: '', lastInterruptionReason: '', interruptionCount: 0,
+      lastSchedulingReason: '', lastInterruptionReason: '', interruptionCount: 0,
       createdAt: '2026-10-22T00:00:00.000Z', updatedAt: '2026-10-22T00:00:00.000Z',
     };
     const subtask: Subtask = {

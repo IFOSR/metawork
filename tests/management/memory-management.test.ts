@@ -86,9 +86,26 @@ describe('memory management view', () => {
     expect(status.enabled).toBe(false);
     expect(status.mode).toBe('disabled');
     expect(status.providerRef).toBeNull();
-    expect(await query.listAssets({ limit: 20, offset: 0 })).toEqual({ items: [], total: 0 });
+    expect(await query.listAssets({ limit: 20, offset: 0 })).toEqual({
+      items: [], total: 0, mode: 'disabled', degraded: false,
+    });
     expect(await query.setEnabled({ memoryId: 'mem-1', enabled: false })).toBeNull();
     expect(await query.deleteAsset({ memoryId: 'mem-1' })).toBe(false);
+  });
+
+  it('never presents a degraded engine as an empty asset list', async () => {
+    const query = createMemoryManagementQuery({
+      resolveRuntime: () => stubRuntime('degraded'),
+      accountId: ACCOUNT,
+      readConfiguration: async () => configuration,
+    });
+    expect(await query.listAssets({ limit: 20, offset: 0 })).toEqual({
+      items: [],
+      total: 0,
+      mode: 'degraded',
+      degraded: true,
+      degradedReason: 'memory_engine_unreachable',
+    });
   });
 
   it('asks for an extraction model when the switch is on without one', async () => {
@@ -161,6 +178,8 @@ describe('memory management view', () => {
     });
 
     const assets = await query.listAssets({ limit: 20, offset: 0 });
+    expect(assets.mode).toBe('enabled');
+    expect(assets.degraded).toBe(false);
     expect(assets.total).toBe(1);
     expect(assets.items[0]!.preview).toContain('中文表格');
     expect(assets.items[0]!.workspaceId).toBe('ws-1');
@@ -168,7 +187,7 @@ describe('memory management view', () => {
     expect(await query.setEnabled({ memoryId: first.memoryId, enabled: false }))
       .toMatchObject({ enabled: false });
     // Another account's asset is invisible to this one.
-    const foreign = bindings.findByTdaiMemoryId('tdai-2')!;
+    const foreign = bindings.findByTdaiMemoryId('tdai-2', 'account-b')!;
     expect(await query.setEnabled({ memoryId: foreign.memoryId, enabled: false })).toBeNull();
     expect(await query.deleteAsset({ memoryId: foreign.memoryId })).toBe(false);
 

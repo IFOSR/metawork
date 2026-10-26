@@ -3,9 +3,7 @@ import Database from 'better-sqlite3';
 import { exitSession, attachTaskResources } from '../../src/commands/global-commands.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import type { ResolvedCommandArgs } from '../../src/commands/catalog.js';
 import type { Config } from '../../src/core/types.js';
@@ -58,7 +56,6 @@ describe('global commands', () => {
       attachArgs(task.id, ['file-a.md', 'file-b.md']),
       {
         taskEngine,
-        memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
         orchestration: new OrchestrationEngine(taskEngine),
         currentTaskId: task.id,
         db,
@@ -85,7 +82,6 @@ describe('global commands', () => {
       attachArgs(task.id, ['evidence-a.pdf', 'evidence-b.pdf']),
       {
         taskEngine,
-        memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
         orchestration: new OrchestrationEngine(taskEngine),
         currentTaskId: null,
         db,

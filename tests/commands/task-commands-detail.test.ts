@@ -8,8 +8,6 @@ import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { showTask } from '../../src/commands/task-commands.js';
 import type { CommandContext } from '../../src/commands/catalog.js';
 import type { Config } from '../../src/core/types.js';
@@ -45,19 +43,16 @@ function createConfig(): Config {
 describe('showTask detail view', () => {
   let db: Database.Database;
   let taskEngine: TaskEngine;
-  let memoryEngine: MemoryEngine;
   let context: CommandContext;
 
   beforeEach(() => {
     db = createTestDb();
     const taskRepo = new TaskRepo(db);
     taskEngine = new TaskEngine(taskRepo, resolve(tmpdir(), 'metaclaw-test-snapshots'));
-    memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
 
     context = {
       taskEngine,
-      memoryEngine,
       orchestration,
       taskControl: { taskView: (id: string) => projectTaskView(new SqliteTaskActivityFacts(db).read(taskEngine.getTaskRepo().findById(id)!, null)) },
       currentTaskId: null,
@@ -66,17 +61,9 @@ describe('showTask detail view', () => {
     } as never;
   });
 
-  it('shows latest executor and injected memory details in task detail output', async () => {
-    const preference = memoryEngine.addManual({
-      content: 'Phoenix 项目材料统一使用 Phoenix 术语体系',
-      scope: 'project',
-      type: 'domain',
-      subject: 'Phoenix',
-    });
-
+  it('shows latest executor and scheduling details in task detail output', async () => {
     const task = taskEngine.create({ title: 'Phoenix 周报', goal: '整理 Phoenix 项目周报' });
     taskEngine['taskRepo'].update(task.id, {
-      injectedPreferences: [preference.id],
       lastSchedulingReason: '用户提交',
       lastInterruptionReason: '被高优任务抢占：紧急会议纪要',
       summary: '已整理 Phoenix 周报摘要',
@@ -99,9 +86,7 @@ describe('showTask detail view', () => {
     expect(result.content).toContain('最近执行器: codex-cli');
     expect(result.content).toContain('最近调度原因: 用户提交');
     expect(result.content).toContain('最近中断原因: 被高优任务抢占：紧急会议纪要');
-    expect(result.content).toContain('注入偏好');
-    expect(result.content).toContain('[project]');
-    expect(result.content).toContain('Phoenix');
+    expect(result.content).not.toContain('注入偏好');
   });
 
   it('renders task detail as a structured task view with latest result, next step, resources, and blocker', async () => {

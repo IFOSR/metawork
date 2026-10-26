@@ -17,7 +17,6 @@ import type Database from 'better-sqlite3';
 import type { Subtask, Task, WorkspaceContext } from '../core/types.js';
 import { ArtifactVersionRepo } from '../storage/artifact-version-repo.js';
 import { resolveArtifactContentSync } from '../delivery/artifact-content-resolver.js';
-import { PreferenceRepo } from '../storage/preference-repo.js';
 import type { PersistedSubtaskHandoff } from '../storage/subtask-handoff-repo.js';
 import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
 import type { ContextRef, WorkGraphRequiredItem } from '../work-graph/index.js';
@@ -104,7 +103,6 @@ export interface SubtaskExecutionContext {
 export class SubtaskExecutionContextBuilder {
   private readonly evidenceRepo: TaskExecutionEvidenceRepo;
   private readonly handoffRepo: SubtaskHandoffRepo;
-  private readonly preferenceRepo: PreferenceRepo;
 
   private readonly resultObjectRepo: ResultObjectRepo;
   private readonly artifactRepo: TaskArtifactRepo;
@@ -123,7 +121,6 @@ export class SubtaskExecutionContextBuilder {
   ) {
     this.evidenceRepo = new TaskExecutionEvidenceRepo(db);
     this.handoffRepo = new SubtaskHandoffRepo(db);
-    this.preferenceRepo = new PreferenceRepo(db);
     this.resultObjectRepo = new ResultObjectRepo(
       db,
       options.resultRoot,
@@ -286,22 +283,6 @@ export class SubtaskExecutionContextBuilder {
         sourceId: locator,
         title: locator,
         content: readTaskResource(locator),
-      });
-    }
-    // `task.injectedPreferences` holds preference ids, not preference bodies.
-    // Comparing against the body never matched, so the automatic injection
-    // path was dead (design §10).
-    const injected = new Set(task.injectedPreferences);
-    for (const preference of this.preferenceRepo.findByStatus('confirmed')) {
-      if (!injected.has(preference.id) && !preference.sourceTasks.includes(task.id)) continue;
-      this.evidenceRepo.upsert({
-        id: createEvidenceId('preference', preference.id),
-        taskId: task.id,
-        kind: 'preference',
-        sourceId: preference.id,
-        title: `Confirmed preference ${preference.id}`,
-        content: preference.content,
-        createdAt: preference.createdAt,
       });
     }
   }
@@ -496,13 +477,6 @@ export class SubtaskExecutionContextBuilder {
       title = ref.locator;
       content = readTaskResource(ref.locator);
       this.evidenceRepo.upsert({ id: evidenceId, taskId: task.id, kind: 'task_resource', sourceId: ref.locator, title, content });
-    } else if (ref.kind === 'preference') {
-      const preference = this.preferenceRepo.findById(ref.preferenceId);
-      if (!preference || preference.status !== 'confirmed') throw new Error(`preference_not_authorized: ${ref.preferenceId}`);
-      evidenceId = createEvidenceId('preference', preference.id);
-      title = `Confirmed preference ${preference.id}`;
-      content = preference.content;
-      this.evidenceRepo.upsert({ id: evidenceId, taskId: task.id, kind: 'preference', sourceId: preference.id, title, content });
     } else if (ref.kind === 'memory') {
       // Long-term memory is materialized by the Runtime before the attempt
       // starts. If it is missing, the evidence is unavailable and the attempt

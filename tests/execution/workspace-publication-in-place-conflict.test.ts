@@ -13,9 +13,9 @@ function seedLeaseOwners(db: Database.Database, taskIds: readonly string[]): voi
   seedAgentClasses(db);
   const insertTask = db.prepare(`INSERT INTO tasks (
     id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
-    dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
+    dependencies_json, priority_json, last_scheduling_reason,
     last_interruption_reason, interruption_count, created_at, updated_at
-  ) VALUES (?, 'task', 'task', 'running', '', '[]', '[]', '[]', '[]', '{}', '[]', '', '', 0, ?, ?)`);
+  ) VALUES (?, 'task', 'task', 'running', '', '[]', '[]', '[]', '[]', '{}', '', '', 0, ?, ?)`);
   const insertSubtask = db.prepare(`INSERT INTO subtasks (
     id, task_id, graph_revision, generation_id, title, goal, status, dependencies_json,
     context_refs_json, required_capabilities_json, executor_bindings_json,

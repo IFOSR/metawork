@@ -22,11 +22,11 @@ beforeEach(async () => {
   runMigrations(db);
   db.prepare(`
     INSERT INTO tasks (id, title, goal, status, summary, snapshot_json, resources_json,
-      artifacts_json, dependencies_json, priority_json, injected_prefs_json,
+      artifacts_json, dependencies_json, priority_json,
       last_scheduling_reason, last_interruption_reason, interruption_count,
       created_at, updated_at, account_id, conversation_id, workspace_id,
       owner_planner_session_id, admitted_at, execution_mode)
-    VALUES ('task_1', 'Deck', 'goal', 'running', '', '[]', '[]', '[]', '[]', NULL, '[]',
+    VALUES ('task_1', 'Deck', 'goal', 'running', '', '[]', '[]', '[]', '[]', NULL,
       '', '', 0, '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z',
       'local-default', 'conv_1', 'workspace_abc', 'conv_1', '2026-10-23T00:00:00.000Z', 'in_place')
   `).run();

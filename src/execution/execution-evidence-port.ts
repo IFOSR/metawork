@@ -18,7 +18,6 @@ export type ExecutionEvidenceKind =
   | 'user_input'
   | 'task_resource'
   | 'task_evidence'
-  | 'preference'
   /** Long-term memory recalled from the memory engine (design §10). */
   | 'long_term_memory'
   | 'assistant_ref';

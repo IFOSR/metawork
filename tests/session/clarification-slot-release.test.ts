@@ -3,10 +3,7 @@ import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { ConversationTaskSchedulerRepo } from '../../src/storage/conversation-task-scheduler-repo.js';
 import { setTaskStatus } from '../support/task-state-fixture.js';
@@ -49,14 +46,12 @@ describe('Planner clarification releases the Conversation', () => {
     const scheduler = new ConversationTaskSchedulerRepo(db);
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
-      orchestration: new OrchestrationEngine(taskEngine),
+        orchestration: new OrchestrationEngine(taskEngine),
       attemptExecutionBackend: backend,
       db,
       config: createConfig(),
       sessionId: 'session-clarification-slot',
-      contextRecaller: new ContextRecaller(db),
-      notifier: { notifyTaskCompleted: vi.fn().mockResolvedValue(undefined) },
+        notifier: { notifyTaskCompleted: vi.fn().mockResolvedValue(undefined) },
       planningAgent: stubPlanningAgent(
         clarificationPlan('页面错误卡片还会显示 error.code 与 message。请把这两个值发我。'),
       ),
@@ -108,14 +103,12 @@ describe('Planner clarification releases the Conversation', () => {
     const scheduler = new ConversationTaskSchedulerRepo(db);
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
-      orchestration: new OrchestrationEngine(taskEngine),
+        orchestration: new OrchestrationEngine(taskEngine),
       attemptExecutionBackend: new FakeAttemptExecutionBackend(() => ({ body: 'done' })),
       db,
       config: createConfig(),
       sessionId: 'session-clarification-residue',
-      contextRecaller: new ContextRecaller(db),
-      notifier: { notifyTaskCompleted: vi.fn().mockResolvedValue(undefined) },
+        notifier: { notifyTaskCompleted: vi.fn().mockResolvedValue(undefined) },
       planningAgent: stubPlanningAgent(clarificationPlan('还需要更多信息。')),
     });
     try {

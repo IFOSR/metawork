@@ -2,11 +2,8 @@ import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan, taskControlPlan } from '../support/planning-agent-plans.js';
@@ -46,20 +43,16 @@ describe('cross-session last-task continuation', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend1 = new FakeAttemptExecutionBackend(() => ({ body: '智谱投资分析已完成' }));
     const session1 = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend: attemptExecutionBackend1,
       db,
       config: createConfig(),
       sessionId: 'sess_round12_a',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '智谱这家公司从现在看是否值得投资？你怎么看？' }),
       ),
@@ -76,13 +69,11 @@ describe('cross-session last-task continuation', () => {
     const completedTaskId = taskRepo.findByStatus('succeeded')[0]!.id;
     const session2 = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend: attemptExecutionBackend2,
       db,
       config: createConfig(),
       sessionId: 'sess_round12_b',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: `继续已完成任务 ${completedTaskId} 的后续工作` }),
       ),
@@ -100,9 +91,7 @@ describe('cross-session last-task continuation', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const parkedTask = taskEngine.create({
       title: '历史未完成调研',
@@ -116,13 +105,11 @@ describe('cross-session last-task continuation', () => {
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '历史任务已恢复' }));
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_round12_e',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'resume_task', taskId: parkedTask.id }),
       ),

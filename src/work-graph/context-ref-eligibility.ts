@@ -6,6 +6,11 @@ import type { ContextRef } from './types.js';
 import { contextRefKey } from './validation.js';
 import { hashContent } from '../storage/task-artifact-repo.js';
 
+const SUPPORTED_CONTEXT_REF_KINDS: ReadonlySet<string> = new Set([
+  'current_user_input', 'interaction', 'attachment', 'artifact',
+  'task_resource', 'task_evidence', 'memory',
+]);
+
 interface InteractionReferenceRow {
   id: string;
   session_id: string | null;
@@ -55,6 +60,11 @@ export function buildEligibleContextRefKeys(input: {
 }): string[] {
   const eligible = new Set<string>();
   for (const ref of input.refs) {
+    // Persisted payloads can carry a retired kind (e.g. `preference`). They
+    // must fail closed instead of being skipped or treated as an interaction.
+    if (!SUPPORTED_CONTEXT_REF_KINDS.has((ref as { kind?: string }).kind ?? '')) {
+      throw new Error(`context_ref_not_supported: ${(ref as { kind?: string }).kind ?? ''}`);
+    }
     if (ref.kind === 'current_user_input') {
       eligible.add(contextRefKey(ref));
       continue;
@@ -82,13 +92,6 @@ export function buildEligibleContextRefKeys(input: {
       })) {
         eligible.add(contextRefKey(ref));
       }
-      continue;
-    }
-    if (ref.kind === 'preference') {
-      if (!input.db) continue;
-      const row = input.db.prepare('SELECT status FROM preferences WHERE id = ?')
-        .get(ref.preferenceId) as { status: string } | undefined;
-      if (row?.status === 'confirmed') eligible.add(contextRefKey(ref));
       continue;
     }
     if (ref.kind === 'memory') {

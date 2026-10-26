@@ -2,11 +2,8 @@ import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { seedPersistedWorkGraph } from '../support/persisted-work-graph.js';
@@ -54,9 +51,7 @@ describe('session startup running-task reconciliation', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const runningTask = taskEngine.create({ title: '长时间调研任务', goal: '继续调研产业链' });
     seedPersistedWorkGraph(db, runningTask.id, runningTask.goal);
@@ -72,13 +67,11 @@ describe('session startup running-task reconciliation', () => {
     );
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_startup_reconcile',
-      contextRecaller,
     });
 
     session.initialize();
@@ -125,14 +118,12 @@ describe('session startup running-task reconciliation', () => {
     attemptExecutionBackend.listManaged.mockRejectedValue(new Error('Docker daemon unavailable'));
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
-      orchestration: new OrchestrationEngine(taskEngine),
+        orchestration: new OrchestrationEngine(taskEngine),
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_recovery_blocked',
-      contextRecaller: new ContextRecaller(db),
-    });
+      });
 
     session.initialize();
     await session.waitForAsyncWork();
@@ -246,14 +237,12 @@ describe('session startup running-task reconciliation', () => {
     const attemptExecutionBackend = new FakeAttemptExecutionBackend();
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
-      orchestration: new OrchestrationEngine(taskEngine),
+        orchestration: new OrchestrationEngine(taskEngine),
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_terminal_seal_blocked',
-      contextRecaller: new ContextRecaller(db),
-    });
+      });
 
     session.initialize();
     await expect(session.waitForAsyncWork()).resolves.toBeUndefined();
@@ -349,14 +338,12 @@ describe('session startup running-task reconciliation', () => {
     expect(dispatch.markRunning(attemptId, workUnitId, '2026-07-28T00:00:00.000Z')).toBe(true);
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
-      orchestration: new OrchestrationEngine(taskEngine),
+        orchestration: new OrchestrationEngine(taskEngine),
       attemptExecutionBackend: new FakeAttemptExecutionBackend(),
       db,
       config: createConfig(),
       sessionId: 'sess_startup_fallback',
-      contextRecaller: new ContextRecaller(db),
-    });
+      });
 
     session.initialize();
     await session.waitForAsyncWork();

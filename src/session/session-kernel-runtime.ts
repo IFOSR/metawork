@@ -8,7 +8,7 @@ import {
   KernelApplicationSettledError,
   type KernelRuntime,
 } from '../kernel/kernel-workflow.js';
-import type { MemoryContextService } from '../memory/memory-context-service.js';
+import { normalizeInlineResourcesFromInput } from '../intent/inline-resource-normalization.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { ActiveExecutionControl } from '../execution/active-execution-control.js';
 import type { OrchestrationEngine } from '../guidance/orchestration.js';
@@ -40,7 +40,6 @@ export interface SessionKernelRuntimeDeps {
   accountId?: string;
   taskRuntimeService: TaskRuntimeService;
   taskStateAuthority: TaskStateAuthority;
-  memoryContextService: MemoryContextService;
   orchestration: OrchestrationEngine;
   activeExecutions: ActiveExecutionControl;
   conversationTaskSchedulerRepo?: ConversationTaskSchedulerRepo;
@@ -494,7 +493,7 @@ export class SessionKernelRuntime {
         return;
       }
     }
-    const inline = this.deps.memoryContextService.normalizeInlineResourcesFromInput(userInput);
+    const inline = normalizeInlineResourcesFromInput(userInput);
     // The resolver is account-runtime scoped by Conversation id. `sessionId`
     // is the Planner/runtime process identity and may be different from the
     // Conversation that owns this plan.

@@ -14,8 +14,6 @@ import { buildStagedLegacyConfiguration } from '../../src/configuration/staged-l
 import { authorizedExecutorBindingFingerprint } from '../../src/core/authorized-executor-binding.js';
 import type { KernelDecision, KernelEvent, KernelSnapshot } from '../../src/kernel/control-kernel.js';
 import { buildDefaultResourceClaims } from '../../src/resource/index.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { ResourceLeaseService } from '../../src/execution/resource-lease-service.js';
 import { SessionPersistenceService } from '../../src/session/session-persistence-service.js';
@@ -24,7 +22,6 @@ import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { GenerationReplanRequestRepo } from '../../src/storage/generation-replan-request-repo.js';
 import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-repo.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { SqliteResourceLeaseRepository } from '../../src/storage/resource-lease-repo.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
@@ -753,9 +750,7 @@ describe('AccountStartupRecoveryService production composition', () => {
       accountId: 'local-default',
       db: fixture.db,
       taskEngine: fixture.taskEngine,
-      memoryEngine: new MemoryEngine(new PreferenceRepo(fixture.db)),
       orchestration: new OrchestrationEngine(fixture.taskEngine),
-      contextRecaller: new ContextRecaller(fixture.db),
       notifier: { notifyTaskCompleted: async () => undefined },
       // 用户可见 Workspace（启动目录）与内部 worktree store 是不同依赖。
       userWorkspaceRoot,
@@ -948,9 +943,7 @@ function createFixture(
     accountId: 'local-default',
     db,
     taskEngine,
-    memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
     orchestration: new OrchestrationEngine(taskEngine),
-    contextRecaller: new ContextRecaller(db),
     notifier: { notifyTaskCompleted: async () => undefined },
     workspaceRoot: join(root, 'workspaces'),
     attemptsRoot: join(root, 'attempts'),

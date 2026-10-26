@@ -48,7 +48,6 @@ interface TaskRow {
   artifacts_json: string | null;
   dependencies_json: string;
   priority_json: string | null;
-  injected_prefs_json: string;
   last_scheduling_reason: string | null;
   last_interruption_reason: string | null;
   interruption_count: number | null;
@@ -111,7 +110,6 @@ function rowToTask(row: TaskRow): Task {
     prioritySignals: row.priority_json
       ? JSON.parse(row.priority_json)
       : { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
-    injectedPreferences: JSON.parse(row.injected_prefs_json),
     lastSchedulingReason: row.last_scheduling_reason ?? '',
     lastInterruptionReason: row.last_interruption_reason ?? '',
     interruptionCount: row.interruption_count ?? 0,
@@ -152,13 +150,13 @@ export class TaskRepo {
     this.db.prepare(`
       INSERT INTO tasks (id, title, goal, status, state_version, state_detail_json, completed_at,
         archived_at, retry_of_task_id, summary, snapshot_json, resources_json, artifacts_json,
-        dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
+        dependencies_json, priority_json, last_scheduling_reason,
         last_interruption_reason, interruption_count, created_at, updated_at,
         account_id, conversation_id, workspace_id, owner_planner_session_id, admitted_at,
         public_task_directory, public_delivery_baseline_json, start_service_after_publish,
         public_project, execution_mode, workspace_execution_source, workspace_delivery_policy,
         workspace_target_paths_json, workspace_intent_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       task.id, task.title, task.goal, task.status, task.stateVersion,
       JSON.stringify(task.stateDetail), task.completedAt, task.archivedAt, task.retryOfTaskId,
@@ -166,7 +164,7 @@ export class TaskRepo {
       JSON.stringify(task.snapshots), JSON.stringify(task.resources),
       JSON.stringify(task.artifacts),
       JSON.stringify(task.dependencies), JSON.stringify(task.prioritySignals),
-      JSON.stringify(task.injectedPreferences), task.lastSchedulingReason,
+      task.lastSchedulingReason,
       task.lastInterruptionReason, task.interruptionCount, task.createdAt, task.updatedAt,
       task.accountId ?? 'legacy-account', task.conversationId ?? 'legacy-conversation',
       task.workspaceId ?? 'legacy-workspace', task.ownerPlannerSessionId ?? 'legacy-planner-session',
@@ -262,7 +260,6 @@ export class TaskRepo {
     if (changes.artifacts !== undefined) { sets.push('artifacts_json = ?'); values.push(JSON.stringify(changes.artifacts)); }
     if (changes.dependencies !== undefined) { sets.push('dependencies_json = ?'); values.push(JSON.stringify(changes.dependencies)); }
     if (changes.prioritySignals !== undefined) { sets.push('priority_json = ?'); values.push(JSON.stringify(changes.prioritySignals)); }
-    if (changes.injectedPreferences !== undefined) { sets.push('injected_prefs_json = ?'); values.push(JSON.stringify(changes.injectedPreferences)); }
     if (changes.lastSchedulingReason !== undefined) { sets.push('last_scheduling_reason = ?'); values.push(changes.lastSchedulingReason); }
     if (changes.lastInterruptionReason !== undefined) { sets.push('last_interruption_reason = ?'); values.push(changes.lastInterruptionReason); }
     if (changes.interruptionCount !== undefined) { sets.push('interruption_count = ?'); values.push(changes.interruptionCount); }

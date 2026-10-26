@@ -80,7 +80,6 @@ const ContextRefSchema = z.union([
   z.object({ kind: z.literal('task_resource'), locator: z.string().trim().min(1) }).strict(),
   z.object({ kind: z.literal('task_evidence'), evidenceId: z.string().trim().min(1) }).strict(),
   z.object({ kind: z.literal('memory'), memoryId: z.string().trim().min(1).max(240) }).strict(),
-  z.object({ kind: z.literal('preference'), preferenceId: z.string().trim().min(1) }).strict(),
 ]);
 
 const DependencySchema = z.object({

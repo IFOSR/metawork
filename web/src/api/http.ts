@@ -30,7 +30,7 @@ import type {
 } from './session-types';
 import { documentPreviewFormat, MAX_DOCUMENT_PREVIEW_BYTES } from '../../../src/delivery/document-preview-format';
 import type { ConversationAttachment } from './session-types';
-import type { MemoryAssetView, MemoryStatusView } from './memory';
+import type { MemoryAssetListView, MemoryStatusView } from './memory';
 
 class HttpError extends Error {
   constructor(readonly status: number, readonly body: string) {
@@ -72,8 +72,8 @@ export class HttpClient {
     return this.request<MemoryStatusView>('/api/memory/status');
   }
 
-  getMemoryAssets(): Promise<{ items: MemoryAssetView[]; total: number }> {
-    return this.request<{ items: MemoryAssetView[]; total: number }>('/api/memory/assets');
+  getMemoryAssets(): Promise<MemoryAssetListView> {
+    return this.request<MemoryAssetListView>('/api/memory/assets');
   }
 
   setMemoryAssetEnabled(memoryId: string, enabled: boolean): Promise<unknown> {

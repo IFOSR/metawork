@@ -23,12 +23,9 @@ import { homedir } from 'os';
 import { loadEnvFileIfExists } from '../utils/env-file.js';
 import { createDatabase } from '../storage/database.js';
 import { TaskRepo } from '../storage/task-repo.js';
-import { PreferenceRepo } from '../storage/preference-repo.js';
 import { TaskSearchIndexRepo } from '../storage/task-search-index-repo.js';
 import { TaskEngine } from '../task/task-engine.js';
-import { MemoryEngine } from '../memory/memory-engine.js';
 import { OrchestrationEngine } from '../guidance/orchestration.js';
-import { ContextRecaller } from '../memory/context-recaller.js';
 import { resolveMetaclawDir } from '../utils/paths.js';
 import { formatCliHelp, parseCliArgs } from '../cli/args.js';
 import { runConfigurationAdmin, type ConfigurationMutationResult } from '../commands/configuration-admin.js';
@@ -231,6 +228,7 @@ import {
   createServerApplication,
 } from './server-application.js';
 import { createServerComposition } from './server-composition-contract.js';
+import { stopServerRuntimes } from './server-runtime-shutdown.js';
 import {
   billingModelPriceInputs,
   createServerBillingServices,
@@ -828,11 +826,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   // 4. 初始化 Repos
   const taskSearchIndexRepo = new TaskSearchIndexRepo(db);
   const taskRepo = new TaskRepo(db, taskSearchIndexRepo);
-  const prefRepo = new PreferenceRepo(db);
 
   // 5. 初始化引擎
   const taskEngine = new TaskEngine(taskRepo, snapshotDir);
-  const memoryEngine = new MemoryEngine(prefRepo);
   const orchestration = new OrchestrationEngine(taskEngine);
 
   // 7. Executor availability is resolved at dispatch time by the selected
@@ -841,7 +837,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
 
   // 8. 初始化上下文召回器
   const sessionId = `sess_${nanoid(10)}`;
-  const contextRecaller = new ContextRecaller(db);
   const directoryProjection = new SqliteWorkspaceDirectoryProjectionRepo(db, LOCAL_DEFAULT_ACCOUNT_ID);
   let directoryProjector: WorkspaceDirectoryProjector | null = null;
   const notificationStore = new SqliteNotificationRoutingStore(db);
@@ -1175,9 +1170,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         ? { allowed: true }
         : { allowed: false, reason: status.reason ?? `official authorization state: ${status.state}` };
     },
-    memoryEngine,
     orchestration,
-    contextRecaller,
     // Evidence delivery resolves the live runtime on every reference, so a
     // configuration activation that rebuilds the memory runtime keeps working.
     memoryEvidence: memoryEvidenceProxy,
@@ -1518,7 +1511,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       commandCatalog,
       commandReadServices,
       taskEngine,
-      memoryEngine,
       orchestration,
       config,
       plannerProposalRepo: new PlannerProposalRepo(db),
@@ -2049,7 +2041,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           conversationId: scope.selection.conversationId,
           currentTaskId: conversationRegistry.getIfOpen(scope.selection.conversationId)?.getCurrentTaskId() ?? null,
           taskEngine,
-          memoryEngine,
           db,
           executorAgentClassNames: runtimePort.execution?.listExecutorAgentClassNames(),
         },
@@ -3077,13 +3068,17 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         await eventJournalRuntime.stop();
       },
       stopRuntime: async () => {
-        await Promise.all([
-          plannerHost.stop(),
-          plannerSupervisor.stop(),
-        ]);
-        await accountRegistry.shutdown();
-        // Final deposition before the Server stops (design §5.2).
-        await memoryRuntimeController.stop();
+        await stopServerRuntimes({
+          stopPlanner: async () => {
+            await Promise.all([
+              plannerHost.stop(),
+              plannerSupervisor.stop(),
+            ]);
+          },
+          shutdownAccounts: () => accountRegistry.shutdown(),
+          // Final deposition before the Server stops (design §5.2).
+          stopMemory: () => memoryRuntimeController.stop(),
+        });
       },
     });
     serverApplication = createServerApplication(composition, {

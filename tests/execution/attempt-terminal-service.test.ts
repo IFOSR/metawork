@@ -35,11 +35,11 @@ function setup(workflowMode: 'capturing' | 'real' = 'capturing') {
   db.prepare(`
     INSERT INTO tasks (
       id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
-      dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
+      dependencies_json, priority_json, last_scheduling_reason,
       last_interruption_reason, interruption_count, created_at, updated_at
     ) VALUES (
       'task-terminal', 'Terminal', 'Land terminal facts', 'running', '', '[]', '[]', '[]',
-      '[]', '{}', '[]', '', '', 0, ?, ?
+      '[]', '{}', '', '', 0, ?, ?
     )
   `).run(now, now);
   db.prepare(`

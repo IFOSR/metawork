@@ -73,15 +73,18 @@ const RECALL_PREVIEW_CHARS = 240;
 /** Secret reference that holds the memory engine Bearer gate. */
 export const MEMORY_KERNEL_AUTH_SECRET_REFERENCE = 'file-secret:anyfusion/memory/kernel-auth-token' as const;
 /**
- * Secret reference for the account-scoped, read-only engine user key.
+ * Secret reference for the installation-level, read-only engine user key.
  *
- * It is optional: the v3 data plane is gated by the Bearer token plus
- * `x-tdai-service-id`, and MetaWork isolates by the account-derived scope
- * triple. When the reference exists the runtime sends it, so a deployment that
- * requires the user key (or a future meta-plane call) authenticates correctly,
- * and the key can be revoked independently of the Server.
+ * One MetaWork installation is one local Server for one local customer, and the
+ * SecretStore lives inside that installation's own data directory. The key is
+ * therefore an installation/Server secret, not a shared global credential and
+ * not yet a per-account credential. It is optional: the v3 data plane is gated
+ * by the Bearer token plus `x-tdai-service-id`, and MetaWork isolates by the
+ * account-derived scope triple. When the reference exists the runtime sends it,
+ * so a deployment that requires the user key authenticates correctly, and the
+ * key can be revoked independently of the Server.
  */
-export const MEMORY_USER_KEY_SECRET_REFERENCE = 'file-secret:anyfusion/memory/user-key' as const;
+export const MEMORY_INSTALLATION_USER_KEY_SECRET_REFERENCE = 'file-secret:anyfusion/memory/user-key' as const;
 
 export class MemoryRuntime {
   private scheduler: MemoryFlushScheduler | null = null;
@@ -100,35 +103,40 @@ export class MemoryRuntime {
   static async create(options: MemoryRuntimeOptions): Promise<MemoryRuntime> {
     const logger = options.logger ?? ((message: string) => console.error(message));
     const policy = resolveMemoryRuntimePolicy(options.configuration);
-    const runtime = new MemoryRuntime(null, null, null, policy, undefined, logger, options.accountId);
+    // The recall read model exists even when the engine does not, so turning
+    // memory off can retire candidates projected by the previous runtime.
+    const recallRepo = new MemoryRecallRepo(options.db);
+    const runtime = new MemoryRuntime(null, null, recallRepo, policy, undefined, logger, options.accountId);
 
     if (policy.mode === 'disabled') {
       runtime.detail = 'memory_disabled';
+      runtime.recordRuntimeState(options.db);
       return runtime;
     }
     if (policy.mode === 'needs-model') {
       // Design §7.2: the switch is on but no extraction model is chosen. The
       // settings page asks for one; nothing is deposited or extracted.
       runtime.detail = 'memory_extraction_model_required';
+      runtime.recordRuntimeState(options.db);
       return runtime;
     }
 
     const bindings = new MemoryBindingsRepo(options.db);
     const cursors = new MemoryFlushCursorRepo(options.db);
     const turns = new SqliteMemoryTurnSource(options.db);
-    const recallRepo = new MemoryRecallRepo(options.db);
 
     const extractionKey = policy.apiKeyRef
       ? await readSecret(options.secretStore, policy.apiKeyRef, logger, 'extraction credential')
       : '';
     if (!extractionKey) {
       runtime.detail = 'memory_extraction_credential_missing';
+      runtime.recordRuntimeState(options.db);
       return runtime;
     }
 
     // Design §6.5/§6.4: optional account-level read-only user key.
     const userKey = await readSecret(
-      options.secretStore, MEMORY_USER_KEY_SECRET_REFERENCE, logger, 'user key',
+      options.secretStore, MEMORY_INSTALLATION_USER_KEY_SECRET_REFERENCE, logger, 'user key',
     );
     const kernelAuthToken = await resolveKernelAuthToken(options);
 
@@ -183,6 +191,7 @@ export class MemoryRuntime {
       logger(`memory engine is not usable: ${reason}`);
       await runtime.stopSidecar();
       runtime.detail = reason;
+      runtime.recordRuntimeState(options.db);
       return runtime;
     }
 
@@ -215,7 +224,23 @@ export class MemoryRuntime {
     ready.sidecar = runtime.sidecar;
     runtime.sidecar = null;
     ready.attachScheduler(options);
+    ready.recordRuntimeState(options.db);
     return ready;
+  }
+
+  /**
+   * Persist the runtime mode for the Planner and management readers. The
+   * Planner process cannot ask the Server directly, and a disabled runtime has
+   * no per-conversation recall row yet, so the gate needs its own durable fact.
+   */
+  private recordRuntimeState(db: Database.Database): void {
+    const status = this.status;
+    db.prepare(`
+      INSERT INTO memory_runtime_state (account_id, mode, detail, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(account_id) DO UPDATE SET
+        mode = excluded.mode, detail = excluded.detail, updated_at = excluded.updated_at
+    `).run(this.accountId, status.mode, status.detail ?? null, new Date().toISOString());
   }
 
   private attachScheduler(options: MemoryRuntimeOptions): void {
@@ -252,7 +277,20 @@ export class MemoryRuntime {
     query: string;
     workspaceId?: string | null;
   }): Promise<void> {
-    if (!this.service || !this.recall) return;
+    if (!this.recall) return;
+    if (!this.service) {
+      // Disabled, needs-model and degraded runtimes own no asset. A candidate
+      // projected by a previous runtime must never stay readable by the
+      // Planner, and the state must say why the list is empty.
+      this.recall.clear(input.accountId, input.conversationId);
+      this.recall.recordDegraded({
+        accountId: input.accountId,
+        conversationId: input.conversationId,
+        degraded: true,
+        reason: this.detail ?? this.status.mode,
+      });
+      return;
+    }
     try {
       const result = await this.service.search({
         accountId: input.accountId,
@@ -267,6 +305,12 @@ export class MemoryRuntime {
         degraded: result.degraded,
         ...(result.degradedReason ? { reason: result.degradedReason } : {}),
       });
+      if (result.degraded) {
+        // An unavailable engine owns no valid candidate set either; keeping the
+        // previous projection would offer assets the Runtime cannot materialize.
+        this.recall.clear(input.accountId, input.conversationId);
+        return;
+      }
       if (!result.items.length) {
         this.recall.replace({
           accountId: input.accountId,
@@ -298,6 +342,7 @@ export class MemoryRuntime {
       });
     } catch (error) {
       this.logger(`memory recall refresh failed: ${(error as Error).message}`);
+      this.recall.clear(input.accountId, input.conversationId);
       this.recall.recordDegraded({
         accountId: input.accountId,
         conversationId: input.conversationId,

@@ -191,7 +191,12 @@ export function contextRefKey(ref: ContextRef): string {
     case 'task_resource': return `${ref.kind}:${ref.locator}`;
     case 'task_evidence': return `${ref.kind}:${ref.evidenceId}`;
     case 'memory': return `${ref.kind}:${ref.memoryId}`;
-    case 'preference': return `${ref.kind}:${ref.preferenceId}`;
+    default: {
+      // Persisted pre-schema-59 payloads can still carry a retired kind. Fail
+      // closed instead of returning an undefined key that would be treated as
+      // an eligible reference.
+      throw new Error(`context_ref_not_supported: ${(ref as { kind?: unknown }).kind as string}`);
+    }
   }
 }
 

@@ -1,6 +1,6 @@
 import { existsSync, statSync } from 'fs';
 import { resolve, sep } from 'path';
-import type { ResolvedPreference, Task, TaskRecoveryTrigger, WorkspaceContext } from '../core/types.js';
+import type { Task, TaskRecoveryTrigger, WorkspaceContext } from '../core/types.js';
 import type { NotificationService } from '../notifications/types.js';
 import {
   ExecutionAggregator,
@@ -30,7 +30,6 @@ export interface DeliveryPreparationInput {
   durationMs: number;
   userPrompt: string;
   workspaceContext?: WorkspaceContext;
-  preferences: ResolvedPreference[];
   nextStep: string;
   acceptanceCriteria?: AcceptanceCriterion[];
   evidenceText?: string[];

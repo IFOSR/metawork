@@ -65,6 +65,9 @@ describeAcceptance('long-term memory acceptance (user perspective)', () => {
     db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     runMigrations(db);
+    // The Server records the live runtime mode; the Planner readers gate on it.
+    db.prepare(`INSERT INTO memory_runtime_state (account_id, mode, detail, updated_at)
+      VALUES (?, 'enabled', NULL, '2026-10-26T00:00:00.000Z')`).run(ACCOUNT);
 
     adapter = new TdaiMemoryAdapter({
       baseUrl: `http://127.0.0.1:${engine.port}`,
@@ -144,7 +147,7 @@ describeAcceptance('long-term memory acceptance (user perspective)', () => {
       id, title: '销售周报', goal: '整理销售数据', status: 'running', summary: '',
       snapshots: [], resources: [], artifacts: [], dependencies: [],
       prioritySignals: { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
-      injectedPreferences: [], lastSchedulingReason: '', lastInterruptionReason: '', interruptionCount: 0,
+      lastSchedulingReason: '', lastInterruptionReason: '', interruptionCount: 0,
       createdAt: '2026-10-22T00:00:00.000Z', updatedAt: '2026-10-22T00:00:00.000Z',
     };
   }
@@ -251,7 +254,7 @@ describeAcceptance('long-term memory acceptance (user perspective)', () => {
 
   it('delivers the remembered preference to the Executor as evidence in a later session', async () => {
     const items = await recallEventually('中文表格');
-    const binding = bindings.findByTdaiMemoryId(items[0]!.id);
+    const binding = bindings.findByTdaiMemoryId(items[0]!.id, ACCOUNT);
     expect(binding).not.toBeNull();
 
     const target = task('task-session-2', SESSION_TWO);
@@ -287,7 +290,7 @@ describeAcceptance('long-term memory acceptance (user perspective)', () => {
 
   it('stops delivering a memory as soon as the user disables it', async () => {
     const items = await recallEventually('中文表格');
-    const binding = bindings.findByTdaiMemoryId(items[0]!.id)!;
+    const binding = bindings.findByTdaiMemoryId(items[0]!.id, ACCOUNT)!;
     expect(service.setEnabled({ accountId: ACCOUNT, memoryId: binding.memoryId, enabled: false }))
       .not.toBeNull();
 

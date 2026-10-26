@@ -2,11 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { NotificationService } from '../../src/notifications/types.js';
@@ -48,19 +45,15 @@ function createSession(config: Config, notifier?: NotificationService) {
   const db = createTestDb();
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-  const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
   const orchestration = new OrchestrationEngine(taskEngine);
-  const contextRecaller = new ContextRecaller(db);
   const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'ok' }));
   const session = new MetaclawSession({
     taskEngine,
-    memoryEngine,
     orchestration,
     attemptExecutionBackend,
     db,
     config,
     sessionId: 'sess_guidance_round2',
-    contextRecaller,
     notifier,
   });
 

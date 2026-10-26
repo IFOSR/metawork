@@ -2,11 +2,8 @@ import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { stubPlanningAgent, workGraphPlan } from '../support/planning-agent-plans.js';
@@ -44,27 +41,18 @@ describe('global style scene gating', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
-    memoryEngine.addManual({
-      content: '用活泼的语气',
-      scope: 'global',
-      type: 'style',
-    });
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'PPT 大纲已整理完成' }));
 
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_round13_global_style_scene',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '直接把刚才我们讨论的内容整理成ppt' }),
       ),
@@ -83,32 +71,17 @@ describe('global style scene gating', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
-
-    memoryEngine.addManual({
-      content: '用活泼欢快的语气',
-      scope: 'global',
-      type: 'style',
-    });
-    memoryEngine.addManual({
-      content: '使用正式严谨的表达',
-      scope: 'global',
-      type: 'style',
-    });
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '调研报告已完成' }));
 
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_round13_formal_research_style_gate',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '帮我写一份正式的行业调研报告' }),
       ),

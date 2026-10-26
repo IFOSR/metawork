@@ -44,7 +44,6 @@ import type { SessionPresentationService } from '../session/session-presentation
 import type { WorkspaceStore } from '../execution/workspace-store.js';
 import type { SqliteWorkspaceRepository } from '../storage/workspace-repo.js';
 import type { ResourceLeaseService } from '../execution/resource-lease-service.js';
-import type { MemoryContextService } from '../memory/memory-context-service.js';
 import type { ExecutionRuntime } from '../execution/execution-runtime.js';
 import { HistoricalResultUpgrader } from '../execution/historical-result-upgrader.js';
 import { ResultObjectRepo } from '../storage/result-object-repo.js';
@@ -109,7 +108,6 @@ export function buildAccountKernelExecutionServices(deps: {
   workspaceStore: WorkspaceStore;
   workspaceRepository: SqliteWorkspaceRepository;
   resourceLeaseService: ResourceLeaseService;
-  memoryContextService: MemoryContextService;
   executionRuntime: ExecutionRuntime;
   kernelExecutionCallbacks: KernelExecutionRuntimeCallbacks;
   taskExecutionCallbacks: TaskExecutionApplicationCallbacks;
@@ -210,7 +208,6 @@ export function buildAccountKernelExecutionServices(deps: {
     accountId: deps.accountId,
     taskRuntimeService: deps.taskRuntimeService,
     taskStateAuthority: deps.taskStateAuthority,
-    memoryContextService: deps.memoryContextService,
     orchestration: deps.orchestration,
     activeExecutions: deps.executionRuntime,
     presentation: deps.presentation,

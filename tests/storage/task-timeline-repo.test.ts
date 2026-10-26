@@ -22,13 +22,13 @@ beforeEach(() => {
   runMigrations(db);
   repo = new TaskRepo(db);
   const insert = db.prepare(`INSERT INTO tasks (id, title, status, account_id, dependencies_json, snapshot_json, resources_json,
-     artifacts_json, priority_json, injected_prefs_json, created_at, updated_at) VALUES (?, ?, 'needs_action', ?, ?, ?, ?, ?, ?, ?, 'now', 'now')`);
+     artifacts_json, priority_json, created_at, updated_at) VALUES (?, ?, 'needs_action', ?, ?, ?, ?, ?, ?, 'now', 'now')`);
   const body = JSON.stringify([UNUSED_PAYLOAD]);
   for (let n = 0; n < 10; n += 1) {
     insert.run(`task_${n}`, `Task ${n}`, 'local-default', JSON.stringify(dependencies),
-      body, body, body, body, body);
+      body, body, body, body);
   }
-  insert.run('foreign_task', 'Foreign', 'other-account', '[]', body, body, body, body, body);
+  insert.run('foreign_task', 'Foreign', 'other-account', '[]', body, body, body, body);
   queries.length = 0;
 });
 
@@ -61,7 +61,7 @@ it('reads only typed timeline Task columns in one query for one or ten IDs', () 
 
 it('ignores unrelated malformed Task bodies while retaining account isolation and ID ordering', () => {
   db.exec(`UPDATE tasks SET snapshot_json = 'invalid-unused', resources_json = 'invalid-unused',
-    artifacts_json = 'invalid-unused', priority_json = 'invalid-unused', injected_prefs_json = 'invalid-unused'`);
+    artifacts_json = 'invalid-unused', priority_json = 'invalid-unused'`);
   expect(repo.findTimelineByIds('local-default', ['task_9', 'foreign_task', 'missing', 'task_0', 'task_9']))
     .toEqual(['task_0', 'task_9'].map(id => ({
       id,

@@ -4,12 +4,9 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { KernelDecisionRepo } from '../../src/storage/kernel-decision-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import { ControlKernel } from '../../src/kernel/control-kernel.js';
 import type { Config } from '../../src/core/types.js';
@@ -102,19 +99,16 @@ function createSession(
   runMigrations(db);
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, `/tmp/metaclaw-planning-kernel-path/${sessionId}`);
-  const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
   const attemptExecutionBackend = new FakeAttemptExecutionBackend(
     (input, attemptIndex) => responder?.(input, attemptIndex, db) ?? { body: 'done' },
   );
   const session = new MetaclawSession({
     taskEngine,
-    memoryEngine,
     orchestration: new OrchestrationEngine(taskEngine),
     attemptExecutionBackend,
     db,
     config: createConfig(),
     sessionId,
-    contextRecaller: new ContextRecaller(db),
     planningAgent: planningAgentFromPlanMock(
       typeof planningPlan === 'function'
         ? vi.fn().mockImplementation(planningPlan)
@@ -127,7 +121,6 @@ function createSession(
     db,
     session,
     taskRepo,
-    memoryEngine,
     attemptExecutionBackend,
     kernelDecisionRepo: new KernelDecisionRepo(db),
     sessionId,
@@ -618,40 +611,6 @@ describe('natural-language planning/kernel path', () => {
       .toEqual(['reject_request', 'deliver_direct_reply']);
   });
 
-  it('does not inject confirmed global memory into the Planner model input', async () => {
-    const harness = createSession('sess_direct_memory', context => plan({
-      action: 'direct_reply',
-      reason: '确认宿主不注入偏好',
-      response: {
-        directReply: JSON.stringify(context).includes('我的名字是咸蛋超人')
-          ? '宿主注入了偏好。'
-          : '偏好需要通过 Planner MCP 查询。',
-      },
-      task: {
-        binding: 'none',
-        taskId: null,
-        control: 'none',
-        scope: null,
-        title: null,
-        goal: null,
-        includeRecentConversationContext: false,
-        priority: null,
-      },
-      workGraph: null,
-    }));
-    harness.memoryEngine.addManual({
-      content: '我的名字是咸蛋超人',
-      scope: 'global',
-      type: 'identity',
-    });
-
-    await harness.session.submit('我的名字是什么？', { awaitAsyncWork: true });
-
-    const output = harness.session.getSnapshot().output.join('\n');
-    expect(output).toContain('偏好需要通过 Planner MCP 查询。');
-    expect(output).not.toContain('宿主注入了偏好。');
-  });
-
   it('streams query intake before Planner start and Kernel authorization before final delivery', async () => {
     const direct = plan({
       id: 'plan_streamed_trace',
@@ -793,35 +752,6 @@ describe('natural-language planning/kernel path', () => {
     });
     expect(harness.session.getSnapshot().output.join('\n'))
       .toContain('未进入 Kernel，也没有启动 Executor');
-  });
-
-  it('does not expose an unconfirmed global memory to a direct reply', async () => {
-    const harness = createSession('sess_direct_pending_memory', context => plan({
-      action: 'direct_reply',
-      reason: '回答是否存在未确认记忆',
-      response: {
-        directReply: JSON.stringify(context).includes('未确认的秘密')
-          ? '泄露了未确认记忆。'
-          : '没有使用未确认记忆。',
-      },
-      task: {
-        binding: 'none', taskId: null, control: 'none', scope: null,
-        title: null, goal: null, includeRecentConversationContext: false, priority: null,
-      },
-      workGraph: null,
-    }));
-    const pending = harness.memoryEngine.addManual({
-      content: '未确认的秘密',
-      scope: 'global',
-      type: 'identity',
-    });
-    harness.memoryEngine.update(pending.id, { status: 'pending' });
-
-    await harness.session.submit('你知道什么？', { awaitAsyncWork: true });
-
-    const output = harness.session.getSnapshot().output.join('\n');
-    expect(output).toContain('没有使用未确认记忆。');
-    expect(output).not.toContain('泄露了未确认记忆。');
   });
 
   it('lets the PlanningAgent own dialogue memory without replaying persisted history', async () => {

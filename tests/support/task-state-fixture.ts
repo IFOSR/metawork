@@ -150,7 +150,6 @@ export function taskRecord(overrides: Partial<Task> = {}): Task {
     artifacts: [],
     dependencies: [],
     prioritySignals: { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
-    injectedPreferences: [],
     lastSchedulingReason: '',
     lastInterruptionReason: '',
     interruptionCount: 0,

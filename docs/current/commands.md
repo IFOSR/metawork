@@ -27,16 +27,13 @@ Desktop 与 Web 共用输入组件，通过 Gateway 的 `complete_command` 只�
 /task retry-result <taskId>
 /task retry <failedTaskId>
 
-/memory list
-/memory search <关键词...>
-/memory add <内容...>
-/memory edit <memoryId> [options] [新内容...]
-/memory delete <memoryId>
-
 /help
 /help <命令路径>
 /exit
 ```
+
+长期记忆通过设置页的“记忆”开关与抽取模型选择管理；`/memory`、`/learning`
+和 profile preference 指令已退役，解析器会把它们当作未知指令，不写入任何记忆存储。
 
 `/task resume` 是继续未终结任务的日常入口；需要补材料时直接把路径放在同一条指令后面。旧的 `/task unblock` 仍可识别，但只作为兼容入口，不再出现在常用帮助中。`/task block` 同样只保留兼容和诊断用途。
 
@@ -68,24 +65,7 @@ Desktop 与 Web 共用输入组件，通过 Gateway 的 `complete_command` 只�
 /executor refresh [name|all]
 /executor feedback <taskId>
 
-/memory stats
-/memory vault export [--dir <path>]
-/memory vault status [--dir <path>]
-
-/profile user
-/profile project <name>
 /profile executor <name>
-
-/learning candidates
-/learning approve <candidateId> [note...]
-/learning reject <candidateId> [reason...]
-/learning skill-feedback
-/learning patch candidates
-/learning patch approve <candidateId> [note...]
-/learning cards
-/learning skills
-/learning weekly
-/learning summary
 
 /service start <taskId>
 /service status <serviceId>

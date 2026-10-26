@@ -122,19 +122,12 @@ describe('CommandCatalog', () => {
       replacement: { start: 10, end: 10, text: 'show' },
     });
 
-    const learning = catalog.complete({ text: '/learning ', cursor: 10, context });
-    expect(learning.suggestions.find(item => item.value === 'patch')).toMatchObject({
-      label: 'patch',
-      replacement: { start: 10, end: 10, text: 'patch' },
-    });
+    // The retired memory/learning command groups are unknown commands and
+    // therefore have no completion tree.
+    expect(catalog.complete({ text: '/learning ', cursor: 10, context }).suggestions).toEqual([]);
+    expect(catalog.complete({ text: '/memory ', cursor: 8, context }).suggestions).toEqual([]);
 
-    const patch = catalog.complete({ text: '/learning patch ', cursor: 16, context });
-    expect(patch.suggestions.find(item => item.value === 'approve')).toMatchObject({
-      label: 'approve',
-      replacement: { start: 16, end: 16, text: 'approve' },
-    });
-
-    for (const completion of [root, configRoot, executor, learning, patch]) {
+    for (const completion of [root, configRoot, executor]) {
       for (const suggestion of completion.suggestions) {
         if (suggestion.value === suggestion.label.replace(/^\//, '')) {
           expect(suggestion.label).toBe(suggestion.replacement.text);
@@ -233,6 +226,18 @@ describe('CommandCatalog', () => {
     expect(catalog.complete({ text: '/task block task-1 reason', cursor: 25, context }).state).toBe('executable');
   });
 
+  it('treats retired memory, learning and profile-preference commands as unknown', async () => {
+    const catalog = createDefaultCommandCatalog();
+    for (const command of ['/memory list', '/learning candidates', '/profile user', '/profile project phoenix']) {
+      expect(catalog.listActions(), command).not.toContain(command);
+      const result = await catalog.execute(command, {} as CommandContext);
+      expect(result.type, command).toBe('error');
+      expect(result.content, command).toMatch(/未知命令|未找到命令路径/u);
+    }
+    expect(catalog.owns('/memory list')).toBe(false);
+    expect(catalog.owns('/learning candidates')).toBe(false);
+  });
+
   it('contains the migrated command tree without old roots or aliases', () => {
     const catalog = createDefaultCommandCatalog();
     const actions = catalog.listActions();
@@ -267,37 +272,19 @@ describe('CommandCatalog', () => {
 /executor refresh
 /executor show
 /executor feedback
-/memory list
-/memory search
-/memory add
-/memory edit
-/memory delete
-/memory stats
-/memory vault export
-/memory vault status
-/profile user
-/profile project
 /profile executor
-/learning candidates
-/learning approve
-/learning reject
-/learning skill-feedback
-/learning patch candidates
-/learning patch approve
-/learning cards
-/learning skills
-/learning weekly
-/learning summary
 /config
 /help
 /exit
 `.trim().split('\n');
     expect(new Set(actions)).toEqual(new Set(expectedActions));
     const help = catalog.describe();
-    for (const commandPath of ['/task list', '/task show', '/task resume', '/task cancel', '/memory list', '/help', '/exit']) {
+    for (const commandPath of ['/task list', '/task show', '/task resume', '/task cancel', '/help', '/exit']) {
       expect(help).toContain(commandPath);
     }
     expect(help).not.toContain('/executor list');
+    expect(help).not.toContain('/memory');
+    expect(help).not.toContain('/learning');
     expect(actions).toContain('/task dashboard');
     expect(actions).toContain('/task search');
     expect(actions).toContain('/task index search');
@@ -305,9 +292,11 @@ describe('CommandCatalog', () => {
     expect(actions).not.toContain('/executor register <executorName>');
     expect(actions).not.toContain('/executor register wizard');
     expect(actions).not.toContain('/executor unregister');
-    expect(actions).not.toContain('/learning promote');
-    expect(actions).not.toContain('/learning patch promote');
-    expect(actions).toContain('/profile user');
+    expect(actions).not.toContain('/learning');
+    expect(actions).not.toContain('/memory');
+    expect(actions).not.toContain('/profile user');
+    expect(actions).not.toContain('/profile project');
+    expect(actions).toContain('/profile executor');
     expect(actions).toContain('/config');
     expect(actions).toContain('/help');
     expect(actions).toContain('/exit');
@@ -333,7 +322,7 @@ describe('shared read-only command completion', () => {
       taskEngine: { getTaskRepo: () => ({ findAll: () => [local, foreign] }) },
     } as CommandCompletionContext;
     expect(catalog.complete({ text: '/', cursor: 1, context: reads }).suggestions.map(item => item.value))
-      .toEqual(['task', 'memory', 'help', 'exit']);
+      .toEqual(['task', 'help', 'exit']);
     expect(catalog.complete({ text: '/task show ', cursor: 11, context: reads }).suggestions.map(item => item.value)).toEqual(['local']);
     expect(catalog.complete({ text: '/task list ', cursor: 11, context: reads }).suggestions.map(item => item.value))
       .toEqual(['all', 'waiting', 'executing', 'needs-action', 'finished']);
@@ -341,7 +330,7 @@ describe('shared read-only command completion', () => {
     expect(catalog.owns('/settings')).toBe(false);
     expect(catalog.owns('/taskish')).toBe(false);
     expect(catalog.owns('task list')).toBe(false);
-    expect(catalog.describe(['memory'])).toContain('/help advanced memory');
-    expect(catalog.describe(['memory'])).not.toContain('/help advanced task');
+    expect(catalog.describe(['profile'])).toContain('/help advanced profile');
+    expect(catalog.describe(['profile'])).not.toContain('/help advanced task');
   });
 });

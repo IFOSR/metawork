@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 const projectRoot = resolve(__dirname, '../..');
 
-const MEMORY_FILES = [
+const RETIRED_MEMORY_FILES = [
   'memory-engine',
   'memory-context-service',
   'memory-vault-exporter',
@@ -12,10 +12,25 @@ const MEMORY_FILES = [
 ];
 
 describe('memory module architecture boundaries', () => {
-  it('keeps the memory domain implementation in src/memory and out of core', () => {
-    for (const file of MEMORY_FILES) {
-      expect(existsSync(resolve(projectRoot, `src/memory/${file}.ts`))).toBe(true);
+  it('keeps the retired local memory chain out of the production tree (ADR-0049)', () => {
+    for (const file of RETIRED_MEMORY_FILES) {
+      expect(existsSync(resolve(projectRoot, `src/memory/${file}.ts`))).toBe(false);
       expect(existsSync(resolve(projectRoot, `src/core/${file}.ts`))).toBe(false);
+    }
+  });
+
+  it('keeps every retired memory dependency out of the Server, Planner and Executor composition', () => {
+    const retiredPattern = /memory-engine|context-recaller|memory-context-service|preference-repo|learning-candidate-repo|reflection-event-repo|reflection-engine|promotion-gate|memory-vault-exporter/u;
+    const roots = ['src/server', 'src/account', 'src/session', 'src/planning', 'src/execution', 'src/commands', 'src/learning'];
+    const files = roots.flatMap(root => {
+      if (!existsSync(resolve(projectRoot, root))) return [];
+      return readdirSync(resolve(projectRoot, root))
+        .filter(name => name.endsWith('.ts'))
+        .map(name => `${root}/${name}`);
+    });
+    for (const file of files) {
+      const source = readFileSync(resolve(projectRoot, file), 'utf8');
+      expect(source, `${file} must not import a retired memory module`).not.toMatch(retiredPattern);
     }
   });
 });

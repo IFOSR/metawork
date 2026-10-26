@@ -41,7 +41,6 @@ describe('SessionKernelRuntime parallel admission', () => {
       conversationId: 'conversation-current',
       accountId: 'account-a',
       taskRuntimeService,
-      memoryContextService: {} as never,
       orchestration: {} as never,
       activeExecutions: {} as never,
       presentation: new SessionPresentationService(),
@@ -111,7 +110,6 @@ describe('SessionKernelRuntime parallel admission', () => {
       conversationId: 'conversation-current',
       accountId: 'account-a',
       taskRuntimeService,
-      memoryContextService: {} as never,
       orchestration: {} as never,
       activeExecutions: {} as never,
       presentation: new SessionPresentationService(),
@@ -209,12 +207,15 @@ describe('SessionKernelRuntime parallel admission', () => {
         owner: { conversationId: 'conversation-owner', workspaceId: 'workspace-a', plannerSessionId: 'planner-runtime' },
         authorizedBindingsBySubtask: {}, generationId: 'generation-existing-project', graphRevision: 1,
         proposalSource: 'initial',
+        workspaceExecution: {
+          executionMode: 'in_place', source: 'planner', reason: 'test',
+          deliveryPolicy: 'none', targetPaths: [],
+        },
       },
     } as KernelDecision;
     const runtime = new SessionKernelRuntime({
       sessionId: 'planner-runtime',
       taskRuntimeService,
-      memoryContextService: { normalizeInlineResourcesFromInput: () => ({ normalizedGoal: 'update existing project', resources: [] }) } as never,
       orchestration: {} as never,
       activeExecutions: {} as never,
       presentation: new SessionPresentationService(),
@@ -280,15 +281,16 @@ describe('SessionKernelRuntime parallel admission', () => {
         generationId: 'generation-b',
         graphRevision: 1,
         proposalSource: 'initial',
+        workspaceExecution: {
+          executionMode: 'in_place', source: 'planner', reason: 'test',
+          deliveryPolicy: 'none', targetPaths: [],
+        },
       },
     } as KernelDecision;
     const runtime = new SessionKernelRuntime({
       sessionId: 'planner-a',
       conversationId: 'conversation-a',
       taskRuntimeService,
-      memoryContextService: {
-        normalizeInlineResourcesFromInput: () => ({ normalizedGoal: 'queued task', resources: [] }),
-      } as never,
       orchestration: {} as never,
       activeExecutions: {} as never,
       presentation: new SessionPresentationService(),
@@ -345,9 +347,6 @@ describe('SessionKernelRuntime parallel admission', () => {
       conversationId: 'conversation-a',
       accountId: 'account-a',
       taskRuntimeService,
-      memoryContextService: {
-        normalizeInlineResourcesFromInput: () => ({ normalizedGoal: '', resources: [] }),
-      } as never,
       orchestration: {} as never,
       activeExecutions: {} as never,
       presentation: new SessionPresentationService(),
@@ -404,9 +403,6 @@ describe('SessionKernelRuntime parallel admission', () => {
       sessionId: 'planner-b',
       accountId: 'account-a',
       taskRuntimeService,
-      memoryContextService: {
-        normalizeInlineResourcesFromInput: () => ({ normalizedGoal: 'capacity queued task', resources: [] }),
-      } as never,
       orchestration: {} as never,
       activeExecutions: {} as never,
       presentation: new SessionPresentationService(),
@@ -445,6 +441,10 @@ describe('SessionKernelRuntime parallel admission', () => {
         generationId: 'generation-capacity-queued',
         graphRevision: 1,
         proposalSource: 'initial',
+        workspaceExecution: {
+          executionMode: 'in_place', source: 'planner', reason: 'test',
+          deliveryPolicy: 'none', targetPaths: [],
+        },
       },
     } as KernelDecision;
 
@@ -484,9 +484,6 @@ describe('SessionKernelRuntime abandon_task and durable clear outcomes (2026-09-
       conversationId: 'conversation-a',
       accountId: 'account-a',
       taskRuntimeService,
-      memoryContextService: {
-        normalizeInlineResourcesFromInput: () => ({ normalizedGoal: '', resources: [] }),
-      } as never,
       orchestration: {} as never,
       activeExecutions: {} as never,
       presentation: new SessionPresentationService(),
@@ -508,7 +505,7 @@ describe('SessionKernelRuntime abandon_task and durable clear outcomes (2026-09-
         },
       },
     });
-    return { runtime, output, cancelCalls, taskRuntimeService };
+    return { runtime, output, cancelCalls, taskRuntimeService, database };
   }
 
   const abandonDecision = (taskId: string) => ({
@@ -581,10 +578,10 @@ describe('SessionKernelRuntime abandon_task and durable clear outcomes (2026-09-
   });
 
   it('skips cancellation for an already-terminal old Task', async () => {
-    const { runtime, output, cancelCalls, taskRuntimeService } = setupRuntime();
-    taskRuntimeService.transitionTask('task-old', 'ready');
-    taskRuntimeService.transitionTask('task-old', 'running');
-    taskRuntimeService.cancelTask('task-old');
+    const { runtime, output, cancelCalls, database } = setupRuntime();
+    database.prepare(`UPDATE tasks
+      SET status = 'cancelled', state_version = state_version + 1, completed_at = ?
+      WHERE id = 'task-old'`).run(new Date().toISOString());
     await runtime.forInput('放弃旧任务').apply(abandonDecision('task-old'));
     expect(cancelCalls).toHaveLength(0);
     expect(output.join('\n')).toContain('已处于终态');
@@ -652,9 +649,6 @@ describe('SessionKernelRuntime abandon-and-create (2026-09-06 plan §5.4)', () =
       conversationId: 'conversation-a',
       accountId: 'account-a',
       taskRuntimeService,
-      memoryContextService: {
-        normalizeInlineResourcesFromInput: () => ({ normalizedGoal: 'new work', resources: [] }),
-      } as never,
       orchestration: {} as never,
       activeExecutions: {} as never,
       presentation: new SessionPresentationService(),
@@ -701,6 +695,10 @@ describe('SessionKernelRuntime abandon-and-create (2026-09-06 plan §5.4)', () =
         generationId: 'generation-new',
         graphRevision: 1,
         proposalSource: 'initial',
+        workspaceExecution: {
+          executionMode: 'in_place', source: 'planner', reason: 'test',
+          deliveryPolicy: 'none', targetPaths: [],
+        },
         conflictResolution: { oldTaskId: 'task-old' },
       },
     } as KernelDecision;
@@ -769,9 +767,6 @@ describe('SessionKernelRuntime abandon-and-create holds during cleanup (closure 
       conversationId: 'conversation-a',
       accountId: 'account-a',
       taskRuntimeService,
-      memoryContextService: {
-        normalizeInlineResourcesFromInput: () => ({ normalizedGoal: 'new', resources: [] }),
-      } as never,
       orchestration: {} as never,
       activeExecutions: {} as never,
       presentation: new SessionPresentationService(),
@@ -811,6 +806,10 @@ describe('SessionKernelRuntime abandon-and-create holds during cleanup (closure 
         generationId: 'generation-new',
         graphRevision: 1,
         proposalSource: 'initial',
+        workspaceExecution: {
+          executionMode: 'in_place', source: 'planner', reason: 'test',
+          deliveryPolicy: 'none', targetPaths: [],
+        },
         conflictResolution: { oldTaskId: 'task-old' },
       },
     } as KernelDecision);

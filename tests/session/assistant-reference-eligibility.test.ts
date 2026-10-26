@@ -24,29 +24,25 @@ function insertInteraction(
 }
 
 describe('assistant interaction reference eligibility', () => {
-  it('qualifies current input and confirmed references for Kernel admission', () => {
+  it('qualifies current input and fails closed on a retired preference reference', () => {
     const db = new Database(':memory:');
     runMigrations(db);
-    db.prepare(`
-      INSERT INTO preferences (
-        id, type, scope, subject, content, status, confirmed_at, created_at, updated_at
-      ) VALUES ('preference_1', 'user', 'global', 'user', 'confirmed', 'confirmed', ?, ?, ?)
-    `).run(
-      '2026-08-20T00:00:00.000Z',
-      '2026-08-20T00:00:00.000Z',
-      '2026-08-20T00:00:00.000Z',
-    );
 
     expect(buildEligibleContextRefKeys({
       db,
       sessionId: 'session_current',
-      refs: [
-        { kind: 'current_user_input' },
-        { kind: 'preference', preferenceId: 'preference_1' },
-      ],
+      refs: [{ kind: 'current_user_input' }],
       targetTask: null,
       userInput: '当前请求',
-    })).toEqual(['current_user_input', 'preference:preference_1']);
+    })).toEqual(['current_user_input']);
+
+    expect(() => buildEligibleContextRefKeys({
+      db,
+      sessionId: 'session_current',
+      refs: [{ kind: 'preference', preferenceId: 'preference_1' } as never],
+      targetTask: null,
+      userInput: '当前请求',
+    })).toThrow('context_ref_not_supported: preference');
   });
 
   it('allows Planner-selected assistant interaction without an explicit user quote', () => {

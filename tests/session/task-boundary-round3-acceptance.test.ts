@@ -2,11 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import type { Config } from '../../src/core/types.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import {
@@ -52,19 +49,15 @@ describe('Round 3 task boundary acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests-direct-reply-runtime-state');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
     const attemptExecutionBackend = new FakeAttemptExecutionBackend();
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_direct_reply_runtime_state',
-      contextRecaller,
       planningAgent: stubPlanningAgent(directReplyPlan({
         reason: '普通问答',
         response: { directReply: '最终回答' },
@@ -109,9 +102,7 @@ describe('Round 3 task boundary acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
     let parkedTaskId = '';
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({
@@ -119,13 +110,11 @@ describe('Round 3 task boundary acceptance', () => {
     }));
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_round3_boundary',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         directReplyPlan({ reason: '普通讨论' }),
         workGraphPlan({
@@ -180,20 +169,16 @@ describe('Round 3 task boundary acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_clear_blocked_tasks',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'clear_tasks', scope: 'blocked' }),
       ),
@@ -224,20 +209,16 @@ describe('Round 3 task boundary acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_query_blocked_tasks',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'status_query', scope: 'blocked' }),
       ),
@@ -265,20 +246,16 @@ describe('Round 3 task boundary acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_query_no_blocked_tasks',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'status_query', scope: 'blocked' }),
       ),
@@ -298,20 +275,16 @@ describe('Round 3 task boundary acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_query_running_task',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'status_query', scope: 'running' }),
       ),
@@ -338,20 +311,16 @@ describe('Round 3 task boundary acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_query_completion_no_running',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'status_query', scope: 'running' }),
       ),
@@ -379,20 +348,16 @@ describe('Round 3 task boundary acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_semantic_scheduler_state',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'status_query', scope: 'running' }),
       ),
@@ -412,20 +377,16 @@ describe('Round 3 task boundary acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '检查完成：文档内容完整。' }));
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_deliverable_check_executor',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '检查这个任务生成的 Markdown 文档内容是否完整' }),
       ),
@@ -446,20 +407,16 @@ describe('Round 3 task boundary acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '已继续生成预览版。' }));
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_generation_executor',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         workGraphPlan({ goal: '继续把这个任务的预览版生成出来' }),
       ),
@@ -479,20 +436,16 @@ describe('Round 3 task boundary acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '不应执行' }));
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_clear_all_tasks',
-      contextRecaller,
       planningAgent: stubPlanningAgent(
         taskControlPlan({ control: 'clear_tasks', scope: 'all' }),
       ),
@@ -532,21 +485,17 @@ describe('Round 3 task boundary acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '挂起任务已恢复' }));
     let parkedTaskId = '';
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_resume_parked_without_new_task',
-      contextRecaller,
       planningAgent: planningAgentFromPlanMock(
         vi.fn(async () => taskControlPlan({ control: 'resume_task', taskId: parkedTaskId })),
       ),
@@ -575,21 +524,17 @@ describe('Round 3 task boundary acceptance', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-os-tests');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
 
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: '阻塞任务已恢复' }));
     let blockedTaskId = '';
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_resume_blocked_without_new_task',
-      contextRecaller,
       planningAgent: planningAgentFromPlanMock(
         vi.fn(async () => taskControlPlan({ control: 'recover_blocked', taskId: blockedTaskId })),
       ),

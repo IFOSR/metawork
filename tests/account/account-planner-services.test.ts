@@ -1,13 +1,10 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 import { buildAccountPlannerServices } from '../../src/account/account-planner-services.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import {
   getDefaultPlannerProcessSupervisor,
   PlannerProcessSupervisor,
 } from '../../src/planning/planner-process-supervisor.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 
 describe('buildAccountPlannerServices', () => {
@@ -19,8 +16,7 @@ describe('buildAccountPlannerServices', () => {
         throw new Error('Planner is not configured');
       } });
       const services = buildAccountPlannerServices({
-        db, memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
-        contextRecaller: new ContextRecaller(db), plannerBinding: null,
+        db, plannerBinding: null,
         plannerBindingFingerprint: '', plannerSupervisor: supervisor,
       });
       expect(services.plannerSupervisor).toBe(supervisor);
@@ -36,9 +32,7 @@ describe('buildAccountPlannerServices', () => {
     try {
       expect(() => buildAccountPlannerServices({
         db,
-        memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
-        contextRecaller: new ContextRecaller(db),
-        plannerBinding: {
+            plannerBinding: {
           agentClassRef: 'planner',
           harnessRef: 'anyfusion-planner',
           providerRef: 'deepseek',
@@ -66,9 +60,7 @@ describe('buildAccountPlannerServices', () => {
     try {
       expect(() => buildAccountPlannerServices({
         db,
-        memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
-        contextRecaller: new ContextRecaller(db),
-        plannerBinding: {
+            plannerBinding: {
           agentClassRef: 'planner',
           harnessRef: 'anyfusion-planner',
           providerRef: 'deepseek',
@@ -111,9 +103,7 @@ describe('buildAccountPlannerServices', () => {
     try {
       expect(() => buildAccountPlannerServices({
         db,
-        memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
-        contextRecaller: new ContextRecaller(db),
-        plannerBinding: {
+            plannerBinding: {
           agentClassRef: 'planner',
           harnessRef: 'anyfusion-planner',
           providerRef: 'deepseek',
@@ -150,9 +140,7 @@ describe('buildAccountPlannerServices', () => {
     try {
       expect(() => buildAccountPlannerServices({
         db,
-        memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
-        contextRecaller: new ContextRecaller(db),
-        plannerBinding: {
+            plannerBinding: {
           agentClassRef: 'planner',
           harnessRef: 'anyfusion-planner',
           providerRef: 'deepseek',
@@ -195,9 +183,7 @@ describe('buildAccountPlannerServices', () => {
     try {
       expect(() => buildAccountPlannerServices({
         db,
-        memoryEngine: new MemoryEngine(new PreferenceRepo(db)),
-        contextRecaller: new ContextRecaller(db),
-        plannerBinding: {
+            plannerBinding: {
           agentClassRef: 'planner',
           harnessRef: 'anyfusion-planner',
           providerRef: 'deepseek',

@@ -47,7 +47,7 @@ function task(id = 'task_1'): Task {
     archivedAt: null, retryOfTaskId: null,
     resources: [], artifacts: [], dependencies: [],
     prioritySignals: { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
-    injectedPreferences: [], lastSchedulingReason: '', lastInterruptionReason: '', interruptionCount: 0,
+    lastSchedulingReason: '', lastInterruptionReason: '', interruptionCount: 0,
     createdAt: now, updatedAt: now,
   };
 }

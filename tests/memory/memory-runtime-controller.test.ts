@@ -13,6 +13,8 @@ import { runMigrations } from '../../src/storage/migrations.js';
 import { MemoryRuntime } from '../../src/memory/memory-runtime.js';
 import { MemoryRuntimeController } from '../../src/memory/memory-runtime-controller.js';
 import { MemorySidecar } from '../../src/memory/memory-sidecar.js';
+import { MemoryBindingsRepo } from '../../src/storage/memory-bindings-repo.js';
+import { MemoryRecallRepo } from '../../src/storage/memory-recall-repo.js';
 import type { SecretReference, SecretStore } from '../../src/configuration/secret-store.js';
 import type { AnyFusionConfigurationV2 } from '../../src/configuration/types.js';
 
@@ -112,6 +114,58 @@ setInterval(() => {}, 1 << 30);
     },
   };
 }
+
+describe('memory switch owns the Planner-facing recall read model', () => {
+  it('clears stale candidates when memory is turned off and never resurrects them after re-enable', async () => {
+    const db = createDb();
+    const bindings = new MemoryBindingsRepo(db);
+    const recall = new MemoryRecallRepo(db);
+    const stale = bindings.upsert({ tdaiMemoryId: 'tdai-stale', accountId: 'local-default', content: '旧资产' });
+    recall.replace({
+      accountId: 'local-default',
+      conversationId: 'conv-1',
+      candidates: [{ memoryId: stale.memoryId, type: 'instruction', preview: '旧资产', score: 0.9 }],
+    });
+    recall.recordDegraded({ accountId: 'local-default', conversationId: 'conv-1', degraded: false });
+
+    const controller = await MemoryRuntimeController.create({
+      configuration: configuration({ enabled: false }),
+      options: {
+        accountId: 'local-default',
+        db,
+        secretStore: new MemorySecretStore(),
+        dataDir: tempRoot(),
+      },
+    });
+    await controller.runtime.refreshRecall({
+      accountId: 'local-default',
+      conversationId: 'conv-1',
+      query: '旧资产',
+    });
+    expect(recall.list({ accountId: 'local-default', conversationId: 'conv-1', limit: 10 })).toEqual([]);
+    expect(recall.readDegraded({ accountId: 'local-default', conversationId: 'conv-1' }))
+      .toEqual({ degraded: true, reason: 'memory_disabled' });
+
+    // Turning it back on does not restore the retired projection. The enabled
+    // runtime has no extraction credential here, so the blocking gate leaves it
+    // degraded and the read model stays empty.
+    await controller.applyConfiguration(configuration({ enabled: true }));
+    expect(controller.status.mode).toBe('degraded');
+    expect(controller.status.detail).toBe('memory_extraction_credential_missing');
+    await controller.runtime.refreshRecall({
+      accountId: 'local-default',
+      conversationId: 'conv-1',
+      query: '旧资产',
+    });
+    expect(recall.list({ accountId: 'local-default', conversationId: 'conv-1', limit: 10 })).toEqual([]);
+    expect(recall.readDegraded({ accountId: 'local-default', conversationId: 'conv-1' }))
+      .toEqual({ degraded: true, reason: 'memory_extraction_credential_missing' });
+    expect(db.prepare('SELECT mode FROM memory_runtime_state WHERE account_id = ?')
+      .get('local-default')).toEqual({ mode: 'degraded' });
+    await controller.stop();
+    db.close();
+  });
+});
 
 describe('P1-1 the runtime is rebuilt when the memory section changes', () => {
   it('does not rebuild for an unrelated configuration change', async () => {

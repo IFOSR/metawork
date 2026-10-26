@@ -2,11 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { PreferenceRepo } from '../../src/storage/preference-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
-import { MemoryEngine } from '../../src/memory/memory-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { ContextRecaller } from '../../src/memory/context-recaller.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
 import {
@@ -48,9 +45,7 @@ describe('MetaclawSession planning-agent routing', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-planning-agent-route');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'done' }));
     const planningAgent = planningAgentFromPlanMock(vi.fn().mockResolvedValue(workGraphPlan({
       goal: '实现一个普通功能',
@@ -60,13 +55,11 @@ describe('MetaclawSession planning-agent routing', () => {
 
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_planning_agent_route',
-      contextRecaller,
       planningAgent,
     });
     session.initialize({ resumeStartupTasks: false });
@@ -82,9 +75,7 @@ describe('MetaclawSession planning-agent routing', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-planning-agent-clarify');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
     const attemptExecutionBackend = new FakeAttemptExecutionBackend();
     const planningAgent = planningAgentFromPlanMock(vi.fn().mockResolvedValue(
       clarificationPlan('请明确是聊天还是创建任务。'),
@@ -92,13 +83,11 @@ describe('MetaclawSession planning-agent routing', () => {
 
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_planning_agent_clarify',
-      contextRecaller,
       planningAgent,
     });
     session.initialize({ resumeStartupTasks: false });
@@ -115,9 +104,7 @@ describe('MetaclawSession planning-agent routing', () => {
     const db = createTestDb();
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-planning-agent-verifier');
-    const memoryEngine = new MemoryEngine(new PreferenceRepo(db));
     const orchestration = new OrchestrationEngine(taskEngine);
-    const contextRecaller = new ContextRecaller(db);
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(input => ({
       rawOutput: completionResponseFromExecutionInput(input, '已修改代码并完成实现。')
         .replace(
@@ -134,13 +121,11 @@ describe('MetaclawSession planning-agent routing', () => {
 
     const session = new MetaclawSession({
       taskEngine,
-      memoryEngine,
       orchestration,
       attemptExecutionBackend,
       db,
       config: createConfig(),
       sessionId: 'sess_planning_agent_verifier',
-      contextRecaller,
       planningAgent,
     });
     session.initialize({ resumeStartupTasks: false });

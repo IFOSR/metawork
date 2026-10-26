@@ -97,7 +97,11 @@ describe('MemoryRuntime', () => {
     expect(runtime.status.mode).toBe('disabled');
     expect(runtime.service).toBeNull();
     expect(runtime.evidence).toBeNull();
-    expect(runtime.recall).toBeNull();
+    // The recall read model exists so disabling memory can retire candidates
+    // projected by the previous runtime.
+    expect(runtime.recall).not.toBeNull();
+    expect(db.prepare('SELECT mode FROM memory_runtime_state WHERE account_id = ?')
+      .get('local-default')).toEqual({ mode: 'disabled' });
     db.close();
   });
 

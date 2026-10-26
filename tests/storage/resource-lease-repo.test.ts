@@ -8,9 +8,9 @@ function seedForeignKeys(db: Database.Database): void {
   const now = '2026-07-22T00:00:00.000Z';
   db.prepare(`INSERT INTO tasks (
     id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
-    dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
+    dependencies_json, priority_json, last_scheduling_reason,
     last_interruption_reason, interruption_count, created_at, updated_at
-  ) VALUES ('task', 'task', 'task', 'running', '', '[]', '[]', '[]', '[]', '{}', '[]', '', '', 0, ?, ?)`)
+  ) VALUES ('task', 'task', 'task', 'running', '', '[]', '[]', '[]', '[]', '{}', '', '', 0, ?, ?)`)
     .run(now, now);
   const insertSubtask = db.prepare(`INSERT INTO subtasks (
     id, task_id, graph_revision, generation_id, title, goal, status, dependencies_json,

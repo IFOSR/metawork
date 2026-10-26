@@ -58,9 +58,19 @@ export interface MemoryAssetView {
   updatedAt: string;
 }
 
+export interface MemoryAssetListView {
+  items: MemoryAssetView[];
+  total: number;
+  /** Runtime mode that produced this list. */
+  mode: MemoryStatusView['mode'];
+  /** True when the engine is unavailable, so an empty list is not "no assets". */
+  degraded: boolean;
+  degradedReason?: string;
+}
+
 export interface MemoryManagementQuery {
   status(): Promise<MemoryStatusView>;
-  listAssets(input: { limit: number; offset: number }): Promise<{ items: MemoryAssetView[]; total: number }>;
+  listAssets(input: { limit: number; offset: number }): Promise<MemoryAssetListView>;
   setEnabled(input: { memoryId: string; enabled: boolean }): Promise<MemoryAssetSummary | null>;
   deleteAsset(input: { memoryId: string }): Promise<boolean>;
 }
@@ -150,8 +160,22 @@ export function createMemoryManagementQuery(options: MemoryManagementOptions): M
     },
 
     async listAssets(input: { limit: number; offset: number }) {
-      const service = currentRuntime()?.service ?? null;
-      if (!service) return { items: [], total: 0 };
+      const runtime = currentRuntime();
+      const service = runtime?.service ?? null;
+      if (!service) {
+        const mode = runtime?.status.mode ?? 'disabled';
+        // Disabled and needs-model legitimately have no assets. A degraded
+        // engine must not be rendered as "no assets yet".
+        return mode === 'degraded'
+          ? {
+            items: [],
+            total: 0,
+            mode,
+            degraded: true,
+            degradedReason: runtime?.status.detail ?? 'memory_engine_unavailable',
+          }
+          : { items: [], total: 0, mode, degraded: false };
+      }
       const page = await service.listAssets({
         accountId,
         limit: input.limit,
@@ -171,6 +195,8 @@ export function createMemoryManagementQuery(options: MemoryManagementOptions): M
           updatedAt: asset.updatedAt,
         })),
         total: page.total,
+        mode: 'enabled',
+        degraded: false,
       };
     },
 

@@ -229,9 +229,6 @@ export async function showTask(args: ResolvedCommandArgs, context: CommandContex
   const latestInteraction = context.db.prepare(
     'SELECT executor_used, system_output, created_at FROM interactions WHERE task_id = ? ORDER BY created_at DESC LIMIT 1'
   ).get(taskId) as { executor_used: string | null; system_output: string | null; created_at: string } | undefined;
-  const injectedPreferences = context.memoryEngine
-    .list()
-    .filter(preference => task.injectedPreferences.includes(preference.id));
   const latestSnapshot = task.snapshots[task.snapshots.length - 1] ?? null;
   const blocker = task.dependencies.find(dep => dep.status === 'waiting')?.description || '无';
   const latestResult = task.summary || latestInteraction?.system_output || '无';
@@ -280,13 +277,6 @@ export async function showTask(args: ResolvedCommandArgs, context: CommandContex
     `创建时间: ${task.createdAt}`,
     `更新时间: ${task.updatedAt}`,
   ];
-  if (injectedPreferences.length > 0) {
-    lines.push('', '注入偏好:');
-    injectedPreferences.forEach(preference => {
-      const subjectText = preference.subject ? ` (${preference.subject})` : '';
-      lines.push(`  - [${preference.scope}]${subjectText} ${preference.content}`);
-    });
-  }
   return { type: 'text', content: publicText(lines.join('\n')) };
 }
 

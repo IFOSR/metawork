@@ -35,9 +35,9 @@ describe('SubtaskExecutionContextBuilder', () => {
     db.prepare(`
       INSERT INTO tasks (
         id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
-        dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
+        dependencies_json, priority_json, last_scheduling_reason,
         last_interruption_reason, interruption_count, created_at, updated_at
-      ) VALUES ('task_context', 'Task background', 'top-level background only', 'running', '', '[]', '[]', '[]', '[]', '{}', '[]', '', '', 0, ?, ?)
+      ) VALUES ('task_context', 'Task background', 'top-level background only', 'running', '', '[]', '[]', '[]', '[]', '{}', '', '', 0, ?, ?)
     `).run('2026-07-17T00:00:00.000Z', '2026-07-17T00:00:00.000Z');
     seedWorkGraphRevision(db, { taskId: 'task_context', generationId: 'generation_context', configurationRevision: 'revision_context' });
     const a = node('a', 'A');
@@ -94,7 +94,7 @@ describe('SubtaskExecutionContextBuilder', () => {
       retryOfTaskId: null,
       snapshots: [], resources: [], artifacts: [], dependencies: [],
       prioritySignals: { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
-      injectedPreferences: [], lastSchedulingReason: '', lastInterruptionReason: '', interruptionCount: 0,
+      lastSchedulingReason: '', lastInterruptionReason: '', interruptionCount: 0,
       createdAt: '2026-07-17T00:00:00.000Z', updatedAt: '2026-07-17T00:00:00.000Z',
     };
 
@@ -141,9 +141,9 @@ describe('SubtaskExecutionContextBuilder', () => {
     db.prepare(`
       INSERT INTO tasks (
         id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
-        dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
+        dependencies_json, priority_json, last_scheduling_reason,
         last_interruption_reason, interruption_count, created_at, updated_at
-      ) VALUES ('task_context_missing_result', 'Task', 'Goal', 'running', '', '[]', '[]', '[]', '[]', '{}', '[]', '', '', 0, ?, ?)
+      ) VALUES ('task_context_missing_result', 'Task', 'Goal', 'running', '', '[]', '[]', '[]', '[]', '{}', '', '', 0, ?, ?)
     `).run('2026-07-17T00:00:00.000Z', '2026-07-17T00:00:00.000Z');
     seedWorkGraphRevision(db, {
       taskId: 'task_context_missing_result',
@@ -226,7 +226,6 @@ describe('SubtaskExecutionContextBuilder', () => {
         blocksOthers: false,
         idleHours: 0,
       },
-      injectedPreferences: [],
       lastSchedulingReason: '',
       lastInterruptionReason: '',
       interruptionCount: 0,
@@ -260,9 +259,9 @@ describe('SubtaskExecutionContextBuilder', () => {
     db.prepare(`
       INSERT INTO tasks (
         id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
-        dependencies_json, priority_json, injected_prefs_json, last_scheduling_reason,
+        dependencies_json, priority_json, last_scheduling_reason,
         last_interruption_reason, interruption_count, created_at, updated_at
-      ) VALUES ('task_context_binary', 'Task', 'Goal', 'running', '', '[]', '[]', '[]', '[]', '{}', '[]', '', '', 0, ?, ?)
+      ) VALUES ('task_context_binary', 'Task', 'Goal', 'running', '', '[]', '[]', '[]', '[]', '{}', '', '', 0, ?, ?)
     `).run('2026-07-17T00:00:00.000Z', '2026-07-17T00:00:00.000Z');
     seedWorkGraphRevision(db, {
       taskId: 'task_context_binary',
@@ -290,8 +289,7 @@ describe('SubtaskExecutionContextBuilder', () => {
         artifacts: [],
         dependencies: [],
         prioritySignals: { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
-        injectedPreferences: [],
-        lastSchedulingReason: '',
+          lastSchedulingReason: '',
         lastInterruptionReason: '',
         interruptionCount: 0,
         createdAt: '2026-07-17T00:00:00.000Z',
