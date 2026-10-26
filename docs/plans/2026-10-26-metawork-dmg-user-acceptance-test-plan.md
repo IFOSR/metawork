@@ -173,15 +173,33 @@ sidecar 不可用降级、结构化 Memory evidence、Desktop/Web 并行、旧�
 
 ### Provider 显示和凭据回填
 
-`/api/config` 是已激活配置的权威来源；`/api/config/completion` 还会返回
-公开 Provider preset。因此页面里出现一个没有模型的 `deepseek`，可能只是
-“可添加的公开 preset”，不一定是激活配置中的第二条 Provider。回归时同时检查
-这两个接口，确认 UI 能区分“已配置连接”和“可添加 preset”。
+Provider 没有系统拥有者，也没有不可删除的内置连接。安装器里用户填写的
+Provider 只是第一份用户配置，和设置页后来新增的 Provider 完全使用同一套
+数据模型、编辑路径和删除规则。Planner 使用哪个模型，也必须来自这份用户配置。
+
+因此设置页不应把 Provider 分成“系统连接”和“用户连接”，也不应把安装时的
+Provider 标成不可删除。`/api/config` 是已激活配置的唯一权威来源；
+`/api/config/completion` 不应凭空把 `deepseek`、`kimi` 或其他名称添加成
+Provider 卡片。若需要快捷填写某个厂商的 base URL 或模型列表，它只能是新增
+Provider 表单里的可选填写帮助，不是配置记录，也不能影响已激活配置。
+
+回归时确认：
+
+1. 安装时填写的 Provider 能在设置页正常编辑和删除。
+2. 设置页新增的 Provider 与安装时 Provider 的行为完全一致。
+3. 删除 Provider 后，`/api/config` 中不再存在该记录；重启不会自动恢复。
+4. `openai-responses` 和 `openai-compatible` 仍然是同一 Provider 身份中的协议
+   字段，不能因为显示名相同就互相覆盖。
 
 当前启动流程仍会对 `code-cli`、`kimi`、`deepseek` 这三个固定 ref 尝试从本机
-Agent 导入凭据。修正时应让导入只服务于已配置或明确启用的连接，避免启动过程
-制造孤立的凭据记录。删除 Provider 的凭据清理必须在“保存并激活”成功后执行，
-并且只清理没有被其他模型或 Provider 引用的 secret。
+Agent 导入凭据。修正时应移除这种固定 ref 回填，改为只对当前激活配置中的
+Provider ref 导入或更新凭据。安装器已有的 Provider 凭据也走同一条配置路径，
+不能额外生成一个隐藏 Provider。
+
+删除 Provider 的凭据清理必须在“保存并激活”成功后执行，并且只清理没有被其他
+模型或 Provider 引用的 secret。若内部设置助手仍保留独立的运行时配置，它不能
+在设置页伪装成 Provider；更合理的后续收敛方式是让它引用用户已配置的 Provider
+和模型，或者在没有可用模型时明确禁用。
 
 ### 激活落盘
 
