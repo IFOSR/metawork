@@ -101,6 +101,6 @@ describe('Task result action presentation', () => {
     expect(html).toContain('/user/projects/service');
     expect(html).toContain('src/server.ts');
     expect(html).toContain('发布失败');
-    expect(html).toContain('请处理冲突文件后继续：package.json');
+    expect(html).toContain('未登记文件：package.json');
   });
 });

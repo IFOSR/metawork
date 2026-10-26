@@ -5,7 +5,7 @@ import { resolveExecutorTool } from '../utils/executor-tool-path.js';
 import { validateCodexCommand } from '../executor/tool-validation.js';
 import { defaultVersionProbe } from '../management/agent-installation-readiness-service.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { realpath, lstat, readFile } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 import { DesktopSessionService } from '../management/desktop-session.js';
 import { ClientNotificationFeed, type ClientNotificationPage } from '../gateway/client-notification-feed.js';
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
@@ -998,39 +998,15 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       const workspace = await resolveTaskWorkspacePath(taskId);
       if (!workspace) return null;
       const canonicalWorkspace = await realpath(workspace);
-      if (task.executionMode === 'in_place') {
-        // In-place delivery writes into the Workspace itself and records live
-        // references. Launch authority is the authorized service revision, so an
-        // unrelated user edit must not masquerade as "code not published".
-        const serviceSpec = taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId)
-          .some(item => item.status === 'published'
-            && item.relativePath === LOCAL_SERVICE_SPECIFICATION_FILENAME
-            && item.publishedPath === join(canonicalWorkspace, LOCAL_SERVICE_SPECIFICATION_FILENAME));
-        return serviceSpec ? canonicalWorkspace : null;
-      }
-      // A Worktree round applies its authorized change set inside the target
-      // Workspace unless the user explicitly selected an existing project
-      // directory. There is no generated task directory to fall back to.
-      const root = task.publicProject && task.publicTaskDirectory
-        ? resolve(canonicalWorkspace, task.publicTaskDirectory)
-        : canonicalWorkspace;
-      if (root !== canonicalWorkspace && !root.startsWith(`${canonicalWorkspace}/`)) return null;
-      try {
-        if ((await lstat(root)).isSymbolicLink() || await realpath(root) !== root) return null;
-        const artifacts = taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId).filter(item => item.status === 'published');
-        if (!artifacts.length) return null;
-        for (const item of artifacts) {
-          if (!item.publishedPath.startsWith(`${root}/`) || item.publishedPath !== resolve(root, item.relativePath)
-            || (await lstat(item.publishedPath)).isSymbolicLink()
-            || await realpath(item.publishedPath) !== item.publishedPath
-            || createHash('sha256').update(await readFile(item.publishedPath)).digest('hex') !== item.contentHash.replace(/^sha256:/u, '')) return null;
-        }
-        const publicationRepo = new WorkspacePublicationRepo(db);
-        for (const publicationId of new Set(artifacts.map(item => item.publicationId).filter((id): id is string => Boolean(id)))) {
-          if (publicationRepo.delivery(publicationId)?.status !== 'succeeded') return null;
-        }
-        return root;
-      } catch { return null; }
+      // In-place delivery writes into the Conversation Workspace itself and
+      // records live references. Launch authority is the authorized service
+      // revision, so an unrelated user edit must not masquerade as "not
+      // published".
+      const serviceSpec = taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId)
+        .some(item => item.status === 'published'
+          && item.relativePath === LOCAL_SERVICE_SPECIFICATION_FILENAME
+          && item.publishedPath === join(canonicalWorkspace, LOCAL_SERVICE_SPECIFICATION_FILENAME));
+      return serviceSpec ? canonicalWorkspace : null;
     },
   });
   await managedLocalServices.recover();

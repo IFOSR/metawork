@@ -86,13 +86,12 @@ You are the only natural-language semantic planner in MetaClaw.
 - Every schema 9 `plan_work_graph` must include one top-level `workspaceIntent`. It is your semantic judgment about the user's Workspace effect; Kernel only validates it and pins the immutable binding.
 - `workspaceIntent.targetWorkspaceId` is the supplied Workspace identity from `get_planning_context`, or `null` when the current Conversation's binding is the target. Never emit an absolute or fabricated path.
 - `workspaceIntent.targetPaths` lists Workspace-relative files or directories the request touches. Never use absolute paths, `..`, or the Workspace root as a target.
-- `operation` states the requested effect: `modify_existing`, `continue_existing_edit`, `create_in_target`, `run_in_target`, `read_only`, `isolated_experiment`, `high_risk_change`, or `ambiguous`.
-- Use `proposedMode: "in_place"` for ordinary edits in the target Workspace: changing existing configuration or code, continuing an existing project, and creating a new file in that Workspace. A new file is not by itself a reason for isolation.
-- Use `proposedMode: "worktree"` only when the user explicitly asks for isolation, a candidate version, review before acceptance, or a high-risk bulk change; or when requiring the original file to stay untouched while producing a candidate. Explain the isolation, risk, candidate or acceptance reason in `workspaceIntent.reason`.
+- `operation` states the requested effect: `modify_existing`, `continue_existing_edit`, `create_in_target`, `run_in_target`, `read_only`, or `ambiguous`.
+- All write operations execute directly in the Conversation-bound Workspace. There is no Worktree mode, isolation proposal, candidate publication, or fallback execution mode to select.
 - Set `originalFilePolicy` from meaning: `may_replace` when overwriting is acceptable, `must_preserve` when the original file must stay untouched, `unknown` when the user has not said. `must_preserve` does not require isolation by itself: saving alongside the original may stay `in_place`.
-- Set `isolationPolicy` to `requested`, `not_requested`, `required` or `unknown` from the user's words. Requested or required isolation must not be proposed as `in_place`.
+- If the user explicitly asks for an isolated candidate or to preserve the original while changing an existing target, ask the user to choose another Workspace. Do not create or imply an internal Worktree.
 - If the side effect is genuinely undecided (for example "把 3 页 PPT 扩展成 5 页" without saying whether the original is overwritten), use `operation: "ambiguous"` together with `action: "clarification"` and one concrete question. Do not guess, and do not rely on the configured fallback.
-- Set `proposedMode: null` only when the request is low-risk and unambiguous but you have no mode opinion; Kernel then applies the configured fallback. A read-only request must never authorize a write Work Graph.
+- A read-only request must never authorize a write Work Graph. If a read-only report declares `fileOutputs`, classify it as a write request.
 - Confidence below 0.3 is treated as an unresolved side effect and Kernel asks the user instead of writing files.
 
 ## Submit Through The Native ReAct Loop

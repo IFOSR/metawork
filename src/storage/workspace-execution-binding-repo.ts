@@ -140,15 +140,10 @@ export class WorkspaceExecutionBindingRepo {
     return this.find(binding.taskId, binding.generationId) ?? binding;
   }
 
-  /** Tasks that still own an uncleaned internal Worktree generation directory. */
+  /** Retired Worktree cleanup queue. New bindings never enter this queue. */
   listTasksWithUncleanedWorktrees(limit = 50): string[] {
-    const rows = this.db.prepare(`
-      SELECT DISTINCT task_id FROM workspace_execution_bindings
-      WHERE execution_mode = 'worktree' AND cleaned_at IS NULL
-      ORDER BY task_id
-      LIMIT ?
-    `).all(limit) as Array<{ task_id: string }>;
-    return rows.map(row => row.task_id);
+    void limit;
+    return [];
   }
 
   markCleaned(taskId: string, generationId: string, cleanedAt: string): void {

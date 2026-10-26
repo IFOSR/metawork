@@ -4,23 +4,13 @@ import type { TaskArtifactRecord } from '../storage/task-artifact-repo.js';
 import type { WorkspacePublicationRecord, WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 
 /** Where an isolated candidate round currently stands (design §9). */
-export type CandidateDeliveryState =
-  | 'none'
-  | 'executing'
-  | 'awaiting_acceptance'
-  | 'conflict'
-  | 'published'
-  | 'cleaned';
+export type CandidateDeliveryState = 'none';
 
 export interface PublicDeliveryView {
   workspace: string;
-  /**
-   * `null` unless the Task explicitly targets an existing project directory.
-   * A generated `metaclaw-tasks/<slug>` directory is no longer a delivery
-   * target: Worktree publication applies only its authorized change set.
-   */
+  /** `null` unless the user explicitly selected an existing Workspace subdirectory. */
   taskDirectory: string | null;
-  mode: 'worktree' | 'in_place';
+  mode: 'in_place';
   /** Which admission fact authorized the mode. */
   modeSource: 'explicit_user' | 'planner' | 'fallback' | 'kernel_safety' | null;
   deliveryPolicy: 'none' | 'auto_publish' | 'await_acceptance' | null;
@@ -48,14 +38,13 @@ export const IN_PLACE_DELIVERY_LABELS: Record<PublicDeliveryView['state'], strin
 };
 
 const MODE_LABELS: Record<PublicDeliveryView['mode'], string> = {
-  in_place: 'In-place',
-  worktree: 'Worktree',
+  in_place: '目标 Workspace 就地执行',
 };
 
 const SOURCE_LABELS: Record<NonNullable<PublicDeliveryView['modeSource']>, string> = {
   explicit_user: '用户明确要求',
   planner: 'Planner 判断',
-  fallback: '高级设置默认',
+  fallback: '系统默认规则',
   kernel_safety: 'Kernel 安全规则',
 };
 
@@ -69,7 +58,7 @@ export function publicDeliverySourceLabel(
   return view.modeSource ? SOURCE_LABELS[view.modeSource] : '未知来源';
 }
 
-/** Public paths and delivery facts; internal worktrees are never an input. */
+/** Public paths and delivery facts for the single Workspace model. */
 export function projectPublicDelivery(input: {
   task: Pick<Task, 'id' | 'publicTaskDirectory' | 'executionMode' | 'publicProject'> & {
     workspaceExecutionSource?: Task['workspaceExecutionSource'];
@@ -81,7 +70,9 @@ export function projectPublicDelivery(input: {
   publications: readonly WorkspacePublicationRecord[];
   delivery(id: string): ReturnType<WorkspacePublicationRepo['delivery']>;
 }): PublicDeliveryView | null {
-  const mode = input.task.executionMode === 'in_place' ? 'in_place' : 'worktree';
+  // Public projections expose the single current Workspace model and never
+  // present a candidate lifecycle.
+  const mode = 'in_place' as const;
   if (!input.workspace) return null;
   const workspace = resolve(input.workspace);
   // Only an explicitly selected existing project keeps a subdirectory root.
@@ -91,38 +82,22 @@ export function projectPublicDelivery(input: {
     const rel = relative(workspace, taskDirectory);
     if (!rel || rel.split(/[\\/]/u).includes('..') || isAbsolute(rel)) return null;
   }
-  const latest = new Map<string, WorkspacePublicationRecord>();
-  for (const publication of [...input.publications].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))) {
-    latest.set(publication.subtaskId, publication);
-  }
-  const publications = [...latest.values()];
-  const deliveries = publications.map(item => input.delivery(item.id)).filter(item => item !== null);
+  // Publication rows belong to the retired Worktree lifecycle. They remain
+  // queryable for migration/audit, but never affect the current In-place view.
+  const publications: WorkspacePublicationRecord[] = [];
+  const deliveries: NonNullable<ReturnType<WorkspacePublicationRepo['delivery']>>[] = [];
   const files = [...new Set(input.artifacts.filter(item => item.status === 'published' && item.taskId === input.task.id
     && (taskDirectory === null || item.publishedPath === resolve(taskDirectory, item.relativePath)))
     .map(item => item.relativePath))].sort();
-  const failed = publications.some(item => ['conflicted', 'uncertain'].includes(item.status))
-    || deliveries.some(item => item.status === 'failed');
-  const awaiting = input.task.workspaceDeliveryPolicy === 'await_acceptance'
-    && publications.some(item => (
-      item.status === 'integrated' && item.deliveryAuthorizedAt === null
-    ));
+  const failed = false;
+  const awaiting = false;
   const publishing = publications.some(item => ['pending', 'applying'].includes(item.status))
     || deliveries.some(item => item.status === 'pending' && !awaiting);
   const state: PublicDeliveryView['state'] = failed ? 'failed'
     : publishing ? 'publishing'
     : awaiting || input.pendingDecision ? 'awaiting_acceptance'
     : deliveries.some(item => item.status === 'succeeded') || files.length > 0 ? 'published' : 'not_published';
-  const candidate: CandidateDeliveryState = mode === 'in_place'
-    ? 'none'
-    : failed
-      ? 'conflict'
-      : awaiting
-        ? 'awaiting_acceptance'
-        : publishing
-          ? 'executing'
-          : state === 'published'
-            ? 'published'
-            : 'none';
+  const candidate: CandidateDeliveryState = 'none';
   return {
     workspace,
     taskDirectory,
@@ -132,27 +107,23 @@ export function projectPublicDelivery(input: {
     files,
     state,
     candidate,
-    stateLabel: (mode === 'in_place' ? IN_PLACE_DELIVERY_LABELS : PUBLIC_DELIVERY_LABELS)[state],
+    stateLabel: IN_PLACE_DELIVERY_LABELS[state],
     conflicts: [...new Set(deliveries.flatMap(item => item.failures.map(failure => failure.sourceRelativePath)).filter(Boolean))],
   };
 }
 
 export function publicDeliveryStateLabel(view: PublicDeliveryView): string {
-  return view.mode === 'in_place' ? IN_PLACE_DELIVERY_LABELS[view.state] : PUBLIC_DELIVERY_LABELS[view.state];
+  return IN_PLACE_DELIVERY_LABELS[view.state];
 }
 
 export function publicDeliveryLines(view: PublicDeliveryView | null): string[] {
   if (!view) return [];
   const stateLabel = publicDeliveryStateLabel(view);
-  const modeLine = `执行模式: ${publicDeliveryModeLabel(view)}（${publicDeliverySourceLabel(view)}）`;
+  const modeLine = `执行方式: ${publicDeliveryModeLabel(view)}（${publicDeliverySourceLabel(view)}）`;
   const targetLine = view.taskDirectory
     ? `目标目录: ${view.taskDirectory}`
     : `目标 Workspace: ${view.workspace}`;
-  return view.mode === 'in_place'
-    ? [modeLine, targetLine, `工作区文件: ${stateLabel}`,
-      `交付文件: ${view.files.join('、') || '无'}`,
-      ...(view.conflicts.length ? [`未登记文件: ${view.conflicts.join('、')}`] : [])]
-    : [modeLine, targetLine, `候选状态: ${stateLabel}`,
-      `交付文件: ${view.files.join('、') || '无'}`,
-      ...(view.conflicts.length ? [`冲突文件: ${view.conflicts.join('、')}`] : [])];
+  return [modeLine, targetLine, `工作区文件: ${stateLabel}`,
+    `交付文件: ${view.files.join('、') || '无'}`,
+    ...(view.conflicts.length ? [`未登记文件: ${view.conflicts.join('、')}`] : [])];
 }

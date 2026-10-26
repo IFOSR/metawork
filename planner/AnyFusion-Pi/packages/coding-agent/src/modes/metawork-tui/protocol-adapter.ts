@@ -564,7 +564,7 @@ export function normalizeTaskView(payload: Record<string, unknown>): NormalizedT
 			? {
 					workspace: asString(delivery.workspace)!,
 					taskDirectory: asString(delivery.taskDirectory) ?? null,
-					mode: delivery.mode === "in_place" ? "in_place" : "worktree",
+					mode: "in_place",
 					modeSource:
 						delivery.modeSource === "explicit_user" ||
 						delivery.modeSource === "planner" ||
@@ -579,14 +579,7 @@ export function normalizeTaskView(payload: Record<string, unknown>): NormalizedT
 							? delivery.deliveryPolicy
 							: null,
 					state: asString(delivery.state) ?? "not_published",
-					candidate:
-						delivery.candidate === "executing" ||
-						delivery.candidate === "awaiting_acceptance" ||
-						delivery.candidate === "conflict" ||
-						delivery.candidate === "published" ||
-						delivery.candidate === "cleaned"
-							? delivery.candidate
-							: "none",
+					candidate: "none",
 					stateLabel: asString(delivery.stateLabel) ?? "",
 					files: asStringArray(delivery.files),
 					conflicts: asStringArray(delivery.conflicts),

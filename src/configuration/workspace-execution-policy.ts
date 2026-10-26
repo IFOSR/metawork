@@ -1,35 +1,14 @@
-import {
-  DEFAULT_WORKSPACE_FALLBACK_MODE,
-  type WorkspaceExecutionMode,
-} from '../core/workspace-execution.js';
-import type {
-  AnyFusionConfigurationV2,
-  KernelConfigurationView,
-  WorkspaceExecutionConfiguration,
-} from './types.js';
-
 /**
- * Effective fallback for new Task admission.
- *
- * Revisions written before the Workspace execution policy existed carry no
- * `workspaceExecution` object (keeping their content hash stable), so the
- * default is resolved here instead of being injected by the schema.
+ * Workspace execution is deliberately not configurable. The only supported
+ * write admission is direct execution in the Conversation-bound Workspace.
+ * This parser remains as a fail-closed reader for old configuration files.
  */
-export function workspaceFallbackMode(
-  configuration: Pick<AnyFusionConfigurationV2, 'workspaceExecution'>
-    | Pick<KernelConfigurationView, 'workspaceExecution'>,
-): WorkspaceExecutionMode {
-  return configuration.workspaceExecution?.fallbackMode ?? DEFAULT_WORKSPACE_FALLBACK_MODE;
-}
-
-/** Parses a submitted setting; only the two documented modes are accepted. */
-export function parseWorkspaceExecutionConfiguration(value: unknown): WorkspaceExecutionConfiguration {
+export function parseWorkspaceExecutionConfiguration(value: unknown): Record<string, never> {
   const record = value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
-  const fallbackMode = record?.fallbackMode;
-  if (fallbackMode !== 'in_place' && fallbackMode !== 'worktree') {
-    throw new Error('workspaceExecution.fallbackMode must be in_place or worktree');
+  if (record && Object.hasOwn(record, 'fallbackMode') && record.fallbackMode !== undefined) {
+    throw new Error('workspaceExecution.fallbackMode is retired; Workspace writes always run in place');
   }
-  return { fallbackMode };
+  return {};
 }

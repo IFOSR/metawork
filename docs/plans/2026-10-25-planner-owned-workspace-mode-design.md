@@ -1,9 +1,9 @@
 # Planner 主导的 Workspace 执行模式与临时 Worktree 设计
 
 - 日期：2026-10-25。
-- 状态：已确认并实施（2026-10-25，ADR-0050）。
+- 状态：已被[单一 In-place Workspace 执行模型技术实施方案](2026-10-25-in-place-only-workspace-execution-implementation-plan.md)取代（2026-10-25）。本文保留为历史设计记录，不再作为当前产品契约；当前新任务统一使用 Conversation 绑定 Workspace 的 In-place 执行，Worktree 段落仅描述被停放的历史实现。
 - 依据：DeepSeek Harness 对齐的工作区执行与变更记录方案，以及当前 MetaWork 的 Planner、Kernel、Workspace、Attempt 和 ResourceLease 实现。
-- 实施记录：[技术实施方案](2026-10-25-planner-owned-workspace-mode-implementation-plan.md)；架构决定：[ADR-0050](../adr/0050-planner-owned-workspace-execution-mode.md)。
+- 实施记录：[技术实施方案](2026-10-25-in-place-only-workspace-execution-implementation-plan.md)；架构决定：[ADR-0050](../adr/0050-planner-owned-workspace-execution-mode.md)。
 
 ## 1. 决策摘要
 

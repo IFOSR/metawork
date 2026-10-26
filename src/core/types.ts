@@ -435,6 +435,10 @@ export interface WorkspaceContext {
   /** Workspace identity the Attempt was bound to at admission. */
   workspaceId?: string;
   executionMode?: 'worktree' | 'in_place';
+  /** Workspace access granted for this Attempt. Read admissions never receive a write mount. */
+  accessMode?: 'read' | 'write';
+  /** Trusted Conversation Workspace root exposed read-only to a read Attempt. */
+  readOnlySourcePath?: string;
   /** Canonical Workspace root; live file references resolve against this. */
   canonicalRoot?: string;
 }

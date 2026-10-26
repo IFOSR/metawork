@@ -1,4 +1,3 @@
-import type { WorkspaceExecutionMode } from '../core/workspace-execution.js';
 import type { PermissionProfileId } from '../resource/types.js';
 import type {
   ConfigurationRoutingCatalog,
@@ -226,24 +225,6 @@ export interface RuntimePolicy {
   probeTimeoutMs?: number;
 }
 
-/**
- * Workspace execution policy (2026-10-25 design §6).
- *
- * Only the fallback is configurable: Planner's explicit Workspace intent always
- * wins, and Kernel safety rules always win over this setting. The object stays
- * optional so already-persisted revisions keep their exact content hash;
- * consumers read the effective value through `workspaceFallbackMode`.
- */
-export interface WorkspaceExecutionConfiguration {
-  /** Absent only for revisions persisted before this policy existed. */
-  fallbackMode?: WorkspaceExecutionMode;
-}
-
-/** Effective policy projected to Kernel admission (always fully resolved). */
-export interface EffectiveWorkspaceExecutionPolicy {
-  fallbackMode: WorkspaceExecutionMode;
-}
-
 export interface FeishuGatewayAccessPolicy {
   dm_policy: 'pairing' | 'allow_all' | 'allowlist';
   allowed_users: string[];
@@ -313,11 +294,6 @@ export interface AnyFusionConfigurationV2 {
   agentClasses: Record<string, AgentClassDefinition>;
   permissionProfiles: Record<string, PermissionProfile>;
   runtimePolicy: RuntimePolicy;
-  /**
-   * Optional additive Workspace execution policy. Revisions created before this
-   * field existed parse unchanged and keep their original content hash.
-   */
-  workspaceExecution?: WorkspaceExecutionConfiguration;
   gateway: GatewayConfig;
   /**
    * Optional additive routing section. Revisions created before this field
@@ -438,8 +414,6 @@ export type KernelConfigurationView = Readonly<{
   }>;
   permissionProfiles: Record<string, PermissionProfile>;
   runtimePolicy: RuntimePolicy;
-  /** Effective Workspace execution policy for new Task admission. */
-  workspaceExecution: EffectiveWorkspaceExecutionPolicy;
   /**
    * Kernel-safe Span policy. Deliberately excludes `apiKeyRef`: only the
    * Server-side Span adapter may resolve the credential for a revision.
@@ -464,8 +438,6 @@ export type RuntimeConfigurationView = Readonly<{
   agentClasses: Record<string, AgentClassDefinition>;
   permissionProfiles: Record<string, PermissionProfile>;
   runtimePolicy: RuntimePolicy;
-  /** Additive Workspace execution policy; absent revisions read as the default. */
-  workspaceExecution?: WorkspaceExecutionConfiguration;
   gateway: GatewayConfig;
   /** Server-only: carries the Span credential reference for the adapter. */
   routing?: RoutingConfiguration;

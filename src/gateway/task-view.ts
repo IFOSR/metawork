@@ -59,13 +59,13 @@ export interface GatewayTaskViewSnapshot {
   readonly publicDelivery?: {
     workspace: string;
     taskDirectory: string | null;
-    mode: 'worktree' | 'in_place';
+    mode: 'in_place';
     /** Admission fact that authorized the mode. */
     modeSource: 'explicit_user' | 'planner' | 'fallback' | 'kernel_safety' | null;
     deliveryPolicy: 'none' | 'auto_publish' | 'await_acceptance' | null;
     state: 'not_published' | 'awaiting_acceptance' | 'publishing' | 'published' | 'failed';
-    /** Isolated candidate lifecycle: executing/awaiting/conflict/published/cleaned. */
-    candidate: 'none' | 'executing' | 'awaiting_acceptance' | 'conflict' | 'published' | 'cleaned';
+    /** Retained as a stable empty projection for older clients. */
+    candidate: 'none';
     files: string[];
     conflicts: string[];
     stateLabel: string;

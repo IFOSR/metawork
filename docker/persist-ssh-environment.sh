@@ -15,7 +15,7 @@ persist_ssh_environment() {
     "ANYFUSION_INSTALL_ROOT=${ANYFUSION_INSTALL_ROOT:-/data/anyfusion}" \
     "ANYFUSION_PLANNER_HOME=${ANYFUSION_PLANNER_HOME:-/var/lib/metaclaw/anyfusion-planner/agent}" \
     "METACLAW_PLANNER_HOME=${METACLAW_PLANNER_HOME:-${ANYFUSION_PLANNER_HOME:-/var/lib/metaclaw/anyfusion-planner/agent}}" \
-    "METACLAW_EXECUTOR_BACKEND=${METACLAW_EXECUTOR_BACKEND:-worktree}" \
+    "METACLAW_EXECUTOR_BACKEND=${METACLAW_EXECUTOR_BACKEND:-in_place}" \
     "METACLAW_EXECUTOR_CODEX_HOME=${METACLAW_EXECUTOR_CODEX_HOME:-/var/lib/metaclaw/codex/executor}" \
     "METACLAW_EXECUTOR_PI_HOME=${METACLAW_EXECUTOR_PI_HOME:-/root}" \
     "METACLAW_PLANNER_SESSION_DIR=${METACLAW_PLANNER_SESSION_DIR:-/var/lib/metaclaw/anyfusion-planner/sessions}" \

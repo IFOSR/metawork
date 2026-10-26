@@ -41,7 +41,6 @@ export type {
   ProviderProtocol,
   RuntimeConfigurationView,
   RuntimePolicy,
-  WorkspaceExecutionConfiguration,
 } from './types.js';
 export {
   fingerprintExecutorManualSemantics,

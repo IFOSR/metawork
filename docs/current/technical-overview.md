@@ -1,3 +1,5 @@
+> 当前 Workspace 执行模型（ADR-0050）：新任务统一在 Conversation 绑定 Workspace 内就地执行。写入 Attempt 启动前申请物理路径 ResourceLease，成功后直接完成 Subtask；只读 Attempt 使用受控 scratch 和只读源边界，不申请 Workspace write lease、不创建候选 publication。历史 Worktree binding 只停放并拒绝重新 dispatch。
+
 # MetaWork
 
 Upstream-input recovery (2026-10-17): explicit Resume may continue a settled
@@ -98,7 +100,7 @@ It is built for teams who need agents to do more than answer the current turn. M
 
 > Current implementation baseline (2026-10-25): PlanningAgentPlan v9, Work
 > Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
-> and SQLite schema v57 with transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51→52→53→54→55→56→57 upgrade support.
+> and SQLite schema v58 with transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51→52→53→54→55→56→57→58 upgrade support.
 > Schema v39/v40 adds the Query usage/billing facts (Query attribution contexts,
 > metering spans/observations, immutable price versions, cost entries, per-Query
 > bills and lines, the consumption outbox/receipts and bill adjustments) that
@@ -372,10 +374,9 @@ flowchart LR
   Batch --> Supervisor[AttemptSupervisor<br/>up to four attempts]
   Supervisor --> Attempt[SubtaskAttemptRunner<br/>one attempt, one WorkUnit]
   Attempt --> Context[SubtaskExecutionContext<br/>direct handoffs and selected evidence]
-  Context --> Executors[ExecutionRuntime<br/>one worktree Executor process]
+  Context --> Executors[ExecutionRuntime<br/>authorized In-place Executor process]
   Executors --> Verify[Completion Protocol v4<br/>result-first assessment,<br/>authoritative workspace delta]
-  Verify --> Publication[Git publication gate<br/>stable integration order]
-  Publication --> Delivery[Delivery and UI<br/>TUI progress, Feishu, files, preview links]
+  Verify --> Delivery[Workspace delivery and UI<br/>TUI progress, Feishu, files, preview links]
   Delivery --> User
 
   Account <--> Store[(Account SQLite<br/>tasks, subtasks, agent classes,<br/>work units, events, memory)]
@@ -384,7 +385,7 @@ flowchart LR
   Attempt <--> Store
 ```
 
-Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, publication conflict, permission, partition, execution-backend or contract facts. `ControlKernel` validates Planning admission, derives one deterministic dispatch batch from the runnable frontier, and remains the sole authority for recovery, retry, fallback, merge repair, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
+Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, Workspace change, permission, partition, execution-backend or contract facts. `ControlKernel` validates Planning admission, derives one deterministic dispatch batch from the runnable frontier, and remains the sole authority for recovery, retry, fallback, merge repair, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
 
 The AnyFusion-Pi `PlanningAgent` uses a dedicated process runner rather than an Executor adapter. One Conversation maps to one persisted Pi session file. Semantic turns launch the Planner with `--mode rpc`, exchange JSONL over stdin/stdout, and serialize writers per Conversation so only one process writes that file at a time. The interactive Pi process is separate: it is launched with `--gateway-socket` and `--conversation-id`, creates no local model/tool/session runtime, and submits raw user commands to the Server Gateway. The fork owns dialogue history for server-side Planner RPC, a small stable system prompt and exactly one fixed `metaclaw-planner/SKILL.md`; MetaWork does not rebuild history from SQLite interactions. Dynamic facts are queried through exactly seven read-only MetaWork MCP tools: `search_tasks`, `get_task_context`, `get_current_session_context`, `get_planning_context`, `get_runtime_state`, `list_executor_status` and `get_executor_diagnostics`. Semantic RPC mode exposes no Pi-native repository readers, preventing source inspection from being used to reverse-engineer Runtime or Kernel semantics. The interactive client-only TUI may retain read-only `read`, `grep`, `find` and `ls` for workspace questions; `bash`, `edit` and `write` remain disabled in every mode. Provider/model selection, external Skills/extensions/MCP configuration, prompt templates, installation and updates are fixed or disabled by MetaWork. Every semantic turn uses the restricted native `submit_planning_proposal({ plan })` tool. Runtime identity is injected outside the model, rejection is structured feedback in the current ReAct turn, and proposal-host transport uncertainty remains distinct from MCP unavailability. A missing fixed MCP tool fails startup; mid-turn MCP loss locks proposal submission and aborts that loop. There is no assistant-text proposal parser, proposal-specific retry count, repair prompt or outer validation loop.
 
@@ -554,15 +555,14 @@ flowchart LR
   WorkGraph --> Ready[Runnable frontier<br/>published direct dependencies]
   Ready --> Batch[dispatch_batch<br/>durable attempt items]
   Batch --> Attempt[Attempt supervisor<br/>claim and run independently]
-  Attempt --> Run[ExecutionRuntime<br/>transport and execute]
-  Run --> Verify[Completion Protocol v4<br/>result objects, delta and candidate commit]
-  Verify --> Integrate[Git publication gate<br/>deterministic order]
-  Integrate --> Done{Integrated?}
-  Done -->|yes| Result[Atomically publish result,<br/>handoffs, artifacts and done]
-  Done -->|conflict| Repair[Kernel-authorized merge repair]
+  Attempt --> Run[ExecutionRuntime<br/>authorized in-place execution]
+  Run --> Verify[Completion Protocol v4<br/>result objects, delta and receipt]
+  Verify --> Done{Workspace result sealed?}
+  Done -->|yes| Result[Atomically record result,<br/>handoffs, live files and done]
+  Done -->|uncertain| Repair[Kernel-authorized recovery]
 ```
 
-This is the Task OS path. It is where task state, resume context, policy authorization, subtask state, work-unit leases, artifact capture, verification and Git publication matter. ADR-0037 permits independent top-level Tasks from different Conversations to run concurrently, while independent Subtasks inside each Task retain their existing concurrency.
+This is the Task OS path. It is where task state, resume context, policy authorization, subtask state, work-unit leases, artifact capture, verification and direct Workspace delivery matter. ADR-0037 permits independent top-level Tasks from different Conversations to run concurrently, while independent Subtasks inside each Task retain their existing concurrency.
 
 ADR-0037 replaces the account-wide single-active rule with one durable execution slot per Conversation. Same-Conversation Tasks are persistently queued; different Conversations are selected by the account-scoped Kernel scheduler using configured capacity, priority, aging and fairness. Clarifications and non-executing domain commands remain available; new semantic Planner turns do not complete through `direct_reply`. Both natural-language and deterministic execution entrypoints cross the persisted ControlKernel seam; there is no `TaskAdmissionGate` shortcut.
 
@@ -601,8 +601,9 @@ availability, and recovery remain explicit Kernel policy.
 ## Current Executors
 
 MetaWork ships two canonical Executor AgentClasses. The default Runtime
-executes them as child processes in the Subtask worktree. The legacy Docker
-attempt backend remains available explicitly for compatibility:
+executes them as child processes in the authorized Conversation Workspace or a
+Runtime-owned read-only scratch directory. The Docker attempt backend remains
+available explicitly for compatibility:
 
 | Executor | Command | Best For | Install Requirement |
 | --- | --- | --- | --- |
@@ -610,10 +611,10 @@ attempt backend remains available explicitly for compatibility:
 | Pi Agent | `pi` | Research tasks, report generation, multi-step synthesis, agentic CLI workflows, image generation and editing when an authorized image model is selected | Native install reuses the existing command without changing its installation or personal home; MetaWork supplies the image runner |
 
 `codex-cli` and `pi-agent` are canonical AgentClasses with permission-profile
-bindings. In `METACLAW_EXECUTOR_BACKEND=worktree` mode, their trusted CLI
-commands run as child processes inside the unified Runtime and use the Subtask
-Git worktree as their working directory. In `docker` mode, the AgentClass also
-requires its immutable image pin and internal control network. No executor
+bindings. In the default in-place mode, their trusted CLI commands run as child
+processes inside the unified Runtime with `cwd` set to the Kernel-authorized
+Workspace path (or Runtime scratch for read-only work). In `docker` mode, the
+AgentClass also requires its immutable image pin and internal control network. No executor
 WorkUnit is pre-seeded. After authorization, `WorkUnitClaimService` claims or
 provisions a WorkUnit, and `ExecutorRegistry` resolves the AgentClass through
 the backend-aware `BackendExecutorAdapter`.
@@ -652,7 +653,7 @@ sudo apt-get install -y build-essential python3 make g++
 
 Executor prerequisites:
 
-- Native worktree mode: existing `codex` and `pi` commands must already be on
+- Native in-place mode: existing `codex` and `pi` commands must already be on
   `PATH`; setup does not install, upgrade, downgrade, or reconfigure them.
 - Docker compatibility mode: build or pull the canonical Codex and Pi executor
   images used by the configured AgentClasses.
@@ -850,8 +851,9 @@ which codex
 codex --help
 ```
 
-Codex attempts use `BackendExecutorAdapter`: worktree mode runs the trusted local
-`codex` process with an isolated attempt `CODEX_HOME`; Docker compatibility mode
+Codex attempts use `BackendExecutorAdapter`: in-place mode runs the trusted local
+`codex` process with an isolated attempt `CODEX_HOME` and the authorized Workspace
+`cwd`; Docker compatibility mode
 runs the canonical `metaclaw-executor-codex:phase5` image.
 
 ### Pi Agent
@@ -870,8 +872,8 @@ pi -p "<prompt>"
 ```
 
 Pi attempts use the same execution seam in either backend. Docker compatibility
-mode runs them in `metaclaw-executor-pi:phase5`; worktree mode runs the trusted
-`pi` binary in the current Subtask worktree.
+mode runs them in `metaclaw-executor-pi:phase5`; in-place mode runs the trusted
+`pi` binary in the Kernel-authorized Workspace or Runtime scratch directory.
 
 ## Run
 
@@ -1440,7 +1442,7 @@ and the final image keeps the MetaClaw control process and Planner process
 isolated with separate dependency trees. The Docker attempt path is
 compatibility-only and is not started by the native launcher.
 
-The Runtime image contains the MetaClaw CLI, generated v9 schema, versioned host bridge, compiled Planner MCP server, built AnyFusion-Pi application, Codex/Pi CLIs and their attempt configuration. `docker/Dockerfile.runtime` builds the checked-in MetaClaw and vendored planner sources and copies two independent application trees into the final image. The Planner launcher and MetaClaw-injected `/app/dist/planner-mcp.js` command both use `/usr/local/bin/node`; `/opt/anyfusion-planner/node` is forbidden. Worktree mode runs the trusted Executor CLI in the managed Subtask worktree and uses loopback attempt services; it does not require sibling Executor images or a Docker socket. Source changes require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for Docker + SSH compatibility validation.
+The Runtime image contains the MetaClaw CLI, generated v9 schema, versioned host bridge, compiled Planner MCP server, built AnyFusion-Pi application, Codex/Pi CLIs and their attempt configuration. `docker/Dockerfile.runtime` builds the checked-in MetaClaw and vendored planner sources and copies two independent application trees into the final image. The Planner launcher and MetaClaw-injected `/app/dist/planner-mcp.js` command both use `/usr/local/bin/node`; `/opt/anyfusion-planner/node` is forbidden. The in-place mode runs the trusted Executor CLI in the authorized Workspace or Runtime scratch directory and uses loopback attempt services; it does not require sibling Executor images or a Docker socket. Source changes require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for Docker + SSH compatibility validation.
 
 Local validation covers TypeScript lint/build, focused Planner RPC and host-protocol tests, the Docker Vitest suite, Unix-socket bridge behavior, Session validation, and unchanged Kernel/Execution/Executor regressions. Linux container smoke additionally verifies the single Node 22.19+ executable, isolated application dependency trees and processes, absence of an embedded Planner Node, Planner RPC JSONL, entrypoint config separation, and the final unified image.
 
@@ -1703,7 +1705,7 @@ direct-dependency authorization and closes when the attempt ends.
 
 MetaWork can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The source uses SQLite schema v57 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51→52→53→54→55→56→57 upgrades; schema 52 is main-owned and must carry the six-state Task base, while schema 57 pins Planner-owned Workspace execution facts and retires implicit legacy Worktree copying; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers; v45 adds durable Retry Wake continuation facts for timeout recovery; v46 adds the indexed latest Task-creation timestamp used to order Conversation history; v47 adds body-separated Conversation entities, projection checkpoints/tail/staging rebuild, activity invalidation and witness indexes, trace/content-search indexes, client navigation, durable approval acceptance/application and notification routes/outbox. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The source uses SQLite schema v58 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51→52→53→54→55→56→57 upgrades; schema 52 is main-owned and must carry the six-state Task base, while schema 58 pins the single In-place Workspace binding and retires implicit legacy Worktree copying; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers; v45 adds durable Retry Wake continuation facts for timeout recovery; v46 adds the indexed latest Task-creation timestamp used to order Conversation history; v47 adds body-separated Conversation entities, projection checkpoints/tail/staging rebuild, activity invalidation and witness indexes, trace/content-search indexes, client navigation, durable approval acceptance/application and notification routes/outbox. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Historical Artifact refs are validated against Account/Conversation/Workspace ownership, publication status, regular-file safety and content hash, then copied to attempt-local `inputs/` with stable `input-XX-*` names. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; image-capable adapters consume only the materialized input directory.
 
@@ -1723,8 +1725,9 @@ Executors and Skills are different layers of the ecosystem.
 An Executor is who does the work. A Skill is the method, knowledge, or operating guide the worker uses while doing it.
 
 Executors are AgentClass runtimes such as the canonical Codex CLI and Pi Agent.
-They may be launched as trusted child processes in a managed worktree or as
-Docker-sandboxed attempts during compatibility operation. An executor
+They are launched as trusted child processes in the Kernel-authorized Workspace
+or Runtime scratch directory; Docker-sandboxed attempts remain compatibility
+operation. An executor
 determines the model, toolchain, permissions, runtime environment, context
 window, file access, non-interactive command, cost profile, and reliability
 boundary.

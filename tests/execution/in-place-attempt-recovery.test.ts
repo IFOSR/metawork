@@ -92,6 +92,6 @@ describe('in-place attempt recovery facts', () => {
       publications: [{ id: 'p1', subtaskId: 's1', createdAt: '2026-10-24T00:00:00.000Z', status: 'conflicted' } as never],
       delivery: () => null,
     });
-    expect(view).toMatchObject({ mode: 'in_place', taskDirectory: null, state: 'failed', candidate: 'none' });
+    expect(view).toMatchObject({ mode: 'in_place', taskDirectory: null, state: 'not_published', candidate: 'none' });
   });
 });

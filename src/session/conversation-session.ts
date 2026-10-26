@@ -179,12 +179,6 @@ export interface ConversationSessionDeps {
   readonly plannerProposalRepo?: PlannerProposalRepo;
   readonly dispose?: () => Promise<void>;
   readonly workspace?: ConversationWorkspacePort;
-  /**
-   * Whether the isolated Worktree backend can create an internal execution
-   * root for this Conversation. Kernel rejects/asks instead of promising
-   * isolation it cannot provide.
-   */
-  readonly workspaceExecutionAvailability?: () => { worktreeAvailable: boolean };
   readonly queryUsage?: {
     readonly lifecycle: QueryUsageLifecycle;
     readonly externalAccountRef: string | null;
@@ -855,7 +849,6 @@ export class ConversationSession {
       ...event,
       workspaceAdmission: {
         targetWorkspace,
-        worktreeAvailable: this.deps.workspaceExecutionAvailability?.().worktreeAvailable ?? true,
       },
     };
   }

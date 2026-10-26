@@ -21,7 +21,8 @@ This directory contains both current technical documentation and historical plan
 
 - [Executor Pi 打包入口修复](plans/2026-10-23-executor-pi-packaging-fix.md)：修正本地 DMG 将 Executor 指向定制 Planner 的错误，增加打包与安装参数校验，修复包已完成本地自动验收。
 
-- [Planner 主导的 Workspace 执行模式与临时 Worktree 设计](plans/2026-10-25-planner-owned-workspace-mode-design.md)：统一 In-place 与隔离 Worktree 的产品契约、Planner 单一语义判断、临时执行目录生命周期和旧自动复制 publication 的删除边界；[技术实施方案](plans/2026-10-25-planner-owned-workspace-mode-implementation-plan.md)记录分阶段落地、迁移、发布和验收步骤。已于 2026-10-25 实施（ADR-0050）。
+- [单一 In-place Workspace 技术实施方案](plans/2026-10-25-in-place-only-workspace-execution-implementation-plan.md)：已于 2026-10-25 实施。新任务直接在 Conversation 绑定 Workspace 执行；只读任务使用受控 scratch，不申请写租约，不创建 publication；旧 Worktree 事实只停放并拒绝恢复（ADR-0050）。
+- [被取代的 Planner Workspace 模式设计](plans/2026-10-25-planner-owned-workspace-mode-design.md)：历史方案，仅用于理解迁移背景。
 
 - [斜杠指令参考](current/commands.md)：唯一的当前指令清单与 Desktop/Web 联想说明；[精简与联想验收记录](plans/2026-10-22-command-simplification-and-desktop-completion.md)。
 
@@ -62,7 +63,7 @@ This directory contains both current technical documentation and historical plan
   validation rules.
 - [Technical Overview](current/technical-overview.md): the previous long-form README, preserved as the current deep architecture and runtime reference.
 - [中文技术总览](current/technical-overview.zh-CN.md): the previous long-form Chinese README, preserved as the Chinese deep architecture and runtime reference.
-- [Phase 5 Runtime Security And AgentClass Operations](current/phase-5-runtime-security.md): worktree Executor processes, Docker compatibility attempts, persistent workspace retention, image profiles, and runtime elevation operations.
+- [Phase 5 Runtime Security And AgentClass Operations](current/phase-5-runtime-security.md): In-place Executor 进程、只读 scratch、Docker 兼容尝试、镜像 profile 和运行时权限操作。
 - [Account Runtime And Gateway Operations](current/account-runtime-and-gateway-operations.md): unified Server lifecycle, account data paths, Gateway replay, restart/recovery diagnostics, and the future App transport contract.
 - [Query Usage And Billing Operations](current/query-billing-operations.md): ADR-0042 delivery status, `observe -> shadow -> export` stage gates, per-resource capability matrix, price/payer operations, external consumption protocol and rollback/restore rules.
 - [Task Lifecycle State Contracts](current/task-lifecycle-state-contracts.md): canonical Task/Subtask/Attempt/Kernel-application/WorkUnit/slot state ownership, Task transition table, durable Replan Job idempotency rules, uncertain-application postconditions, and the unified TaskView projection priority.

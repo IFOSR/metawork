@@ -481,6 +481,14 @@ function resolveRequiredWork(input: {
       : { fact: { ...base, state: 'pending', reason: null }, failureReason: null };
   }
   if (requirement.kind === 'delivery') {
+    // In-place attempts write the Conversation Workspace directly and never
+    // create a publication row. A completed receipt plus a done Subtask is
+    // the durable delivery fact for declared file outputs.
+    if (input.raw.task.executionMode === 'in_place'
+      && subtask.status === 'done'
+      && (latestReceipt?.terminalState === 'completed' || latestReceipt?.accepted === true)) {
+      return { fact: { ...base, state: 'completed', reason: null }, failureReason: null };
+    }
     // The normalized operation result is the latest word on delivery, so a
     // successful retry settles the requirement even while the publication row
     // still carries the earlier failure.

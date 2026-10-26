@@ -126,7 +126,7 @@ export class PiCliDriver implements HarnessDriver {
       args: [
         '--mode',
         'json',
-        ...(input.responseOnly ? ['--no-session', '--tools', ''] : []),
+        ...(input.responseOnly ? ['--no-session', '--tools', 'read'] : []),
         ...(input.providerRef && input.modelId
           ? ['--provider', input.providerRef, '--model', input.modelId]
           : []),

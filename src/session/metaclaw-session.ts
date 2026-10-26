@@ -33,7 +33,7 @@ import { WorkspaceStore } from '../execution/workspace-store.js';
 import { canonicalizeWorkspacePath } from '../workspace/workspace-path.js';
 import { WorkspaceRetentionService } from '../execution/workspace-retention-service.js';
 import { DockerCliAttemptExecutionBackend } from '../execution/docker-cli-attempt-execution-backend.js';
-import { WorktreeAttemptExecutionBackend } from '../execution/worktree-attempt-execution-backend.js';
+import { InPlaceAttemptExecutionBackend } from '../execution/in-place-attempt-execution-backend.js';
 import type { AttemptExecutionBackend } from '../execution/attempt-execution-backend.js';
 import { ResourceLeaseService } from '../execution/resource-lease-service.js';
 import { WorkspacePublicationWorker } from '../execution/workspace-publication-worker.js';
@@ -341,9 +341,10 @@ interface FocusContext {
 const DEFAULT_PLANNER_TIMEOUT_MS = 180_000;
 
 function createDefaultAttemptExecutionBackend(): AttemptExecutionBackend {
-  const backend = (process.env.METACLAW_EXECUTOR_BACKEND ?? 'worktree').trim().toLowerCase();
+  const backend = (process.env.METACLAW_EXECUTOR_BACKEND ?? 'in_place').trim().toLowerCase();
   if (backend === 'docker' || backend === 'container') return new DockerCliAttemptExecutionBackend();
-  if (backend === 'worktree' || backend === 'native' || backend === '') return new WorktreeAttemptExecutionBackend();
+  if (backend === 'in_place' || backend === 'native' || backend === '') return new InPlaceAttemptExecutionBackend();
+  if (backend === 'worktree') throw new Error('METACLAW_EXECUTOR_BACKEND=worktree has been retired; use in_place');
   throw new Error(`Unsupported METACLAW_EXECUTOR_BACKEND: ${backend}`);
 }
 
@@ -603,6 +604,7 @@ export class MetaclawSession {
       workspaceRepository: this.workspaceRepository,
       attemptExecutionRepository: this.attemptExecutionRepository,
       conversationTaskSchedulerRepo: this.conversationTaskSchedulerRepo,
+      ...(deps.userArtifactPublication ? { userArtifactPublication: deps.userArtifactPublication } : {}),
     });
     const resourceLeaseService = runtimeExecutionServices.resourceLeaseService;
     const dispatchItemRepo = runtimeExecutionServices.dispatchItemRepo;
@@ -1670,10 +1672,10 @@ export class MetaclawSession {
    */
   private async buildWorkspaceAdmission(
     plan: PlanningAgentPlan,
-  ): Promise<{ targetWorkspace: { workspaceId: string; canonicalPath: string } | null; worktreeAvailable: boolean }> {
+  ): Promise<{ targetWorkspace: { workspaceId: string; canonicalPath: string } | null }> {
     const root = this.deps.userArtifactPublication?.userWorkspaceRoot || this.sourceRoot;
     const canonical = await canonicalizeWorkspacePath(root).catch(() => null);
-    if (!canonical) return { targetWorkspace: null, worktreeAvailable: Boolean(this.workspaceStore) };
+    if (!canonical) return { targetWorkspace: null };
     const existingTask = plan.task.taskId
       ? this.taskRuntimeService.findTask(plan.task.taskId)
       : null;
@@ -1682,7 +1684,6 @@ export class MetaclawSession {
         workspaceId: existingTask?.workspaceId ?? 'legacy-workspace',
         canonicalPath: canonical.canonicalPath,
       },
-      worktreeAvailable: Boolean(this.workspaceStore),
     };
   }
 

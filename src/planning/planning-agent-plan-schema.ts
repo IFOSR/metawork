@@ -187,17 +187,9 @@ const WorkspaceIntentSchema = z.object({
     'create_in_target',
     'run_in_target',
     'read_only',
-    'isolated_experiment',
-    'high_risk_change',
     'ambiguous',
-  ]).describe(
-    'modify_existing: change an existing target file; continue_existing_edit: keep editing a file this Conversation already changed; create_in_target: add a new file in the target Workspace; run_in_target: run a command or process in the target Workspace; read_only: answer without workspace writes; isolated_experiment: try work in isolation first; high_risk_change: broad or destructive change; ambiguous: the side effect needs a user decision.',
-  ),
+  ]).describe('modify_existing: change an existing target file; continue_existing_edit: keep editing a file this Conversation already changed; create_in_target: add a new file in the target Workspace; run_in_target: run a command or process in the target Workspace; read_only: answer without workspace writes; ambiguous: the side effect needs a user decision.'),
   originalFilePolicy: z.enum(['may_replace', 'must_preserve', 'unknown']),
-  isolationPolicy: z.enum(['requested', 'not_requested', 'required', 'unknown']),
-  proposedMode: z.enum(['in_place', 'worktree']).nullable().describe(
-    'in_place: execute directly in the target Workspace; worktree: execute in an internal isolated directory and publish only authorized changes; null: no opinion, Kernel may use the configured fallback for low-risk requests.',
-  ),
   confidence: z.number().min(0).max(1),
   reason: z.string().trim().min(1).max(1000),
 }).strict();
@@ -266,13 +258,6 @@ const PlanShapeV9Schema = PlanShapeV9FieldsSchema.strict().superRefine((plan, co
       code: z.ZodIssueCode.custom,
       path: ['workspaceIntent'],
       message: 'plan_work_graph requires workspaceIntent',
-    });
-  }
-  if (plan.action !== 'plan_work_graph' && plan.workspaceIntent?.proposedMode) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['workspaceIntent', 'proposedMode'],
-      message: 'non-work-graph actions cannot propose an execution mode',
     });
   }
 });

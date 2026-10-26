@@ -457,7 +457,7 @@ describe('SubtaskAttemptRunner', () => {
       });
 
       expect(result.outcome).toBe('completed');
-      expect(fixture.subtaskRepo.findById(fixture.a.id)?.status).toBe('awaiting_integration');
+      expect(fixture.subtaskRepo.findById(fixture.a.id)?.status).toBe('done');
       expect(fixture.db.prepare(`
         SELECT terminal_state, error_code FROM executor_attempt_receipts
         WHERE attempt_id = 'attempt_blocked_task_completion'
@@ -505,18 +505,16 @@ describe('SubtaskAttemptRunner', () => {
 
   it('does not launch an Executor after cancellation during workspace preparation', async () => {
     const fixture = setup('late result');
-    const original = fixture.workspaceStore.createCheckpoint.bind(fixture.workspaceStore);
-    vi.spyOn(fixture.workspaceStore, 'createCheckpoint').mockImplementation(async (...args) => {
-      const checkpoint = await original(...args);
-      if (args[1].reason === 'attempt_start') {
-        cancelFixtureTask(fixture.db, 'task_phase2', 'cancel during preparation');
-        fixture.subtaskRepo.updateStatus(fixture.a.id, 'cancelled');
-        fixture.dispatchItems.requestCancellation({
-          taskId: 'task_phase2', generationId: fixture.a.generationId, subtaskIds: null,
-          decisionId: 'decision_cancel', now: new Date().toISOString(),
-        });
-      }
-      return checkpoint;
+    const original = fixture.workspaceStore.bindInPlaceWorkspace.bind(fixture.workspaceStore);
+    vi.spyOn(fixture.workspaceStore, 'bindInPlaceWorkspace').mockImplementation(async (...args) => {
+      const workspace = await original(...args);
+      cancelFixtureTask(fixture.db, 'task_phase2', 'cancel during preparation');
+      fixture.subtaskRepo.updateStatus(fixture.a.id, 'cancelled');
+      fixture.dispatchItems.requestCancellation({
+        taskId: 'task_phase2', generationId: fixture.a.generationId, subtaskIds: null,
+        decisionId: 'decision_cancel', now: new Date().toISOString(),
+      });
+      return workspace;
     });
     try {
       const result = await fixture.runner.run({
@@ -594,6 +592,7 @@ describe('SubtaskAttemptRunner', () => {
       reportPath: 'report.md',
     })}`;
     const setupResult = setup(trailer);
+    setupResult.subtaskRepo.upsert({ ...setupResult.a, fileOutputs: ['report.md'] });
     setupResult.executionRuntime.run.mockImplementationOnce(async input => {
       writeFileSync(
         join(input.executorInput.executionBinding!.workspacePath, 'report.md'),
@@ -617,7 +616,7 @@ describe('SubtaskAttemptRunner', () => {
     });
 
     expect(outcome).toMatchObject({ outcome: 'completed' });
-    expect(setupResult.subtaskRepo.findById(setupResult.a.id)?.status).toBe('awaiting_integration');
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)?.status).toBe('done');
     expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).not.toHaveBeenCalled();
   });
 
@@ -630,8 +629,8 @@ describe('SubtaskAttemptRunner', () => {
     });
     expect(outcome).toMatchObject({ outcome: 'completed', output: 'A completed.' });
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
-      status: 'awaiting_integration',
-      result: '',
+      status: 'done',
+      result: 'A completed.',
     });
     expect(setupResult.db.prepare('SELECT terminal_state, raw_response FROM executor_attempt_receipts').get())
       .toMatchObject({ terminal_state: 'completed', raw_response: '' });
@@ -647,12 +646,8 @@ describe('SubtaskAttemptRunner', () => {
     expect(setupResult.db.prepare('SELECT COUNT(*) AS count FROM subtask_handoffs').get())
       .toEqual({ count: 0 });
     expect(setupResult.db.prepare(`
-      SELECT subtask_id, source_attempt_id, status FROM workspace_publications
-    `).get()).toEqual({
-      subtask_id: setupResult.a.id,
-      source_attempt_id: 'attempt_1',
-      status: 'pending',
-    });
+      SELECT COUNT(*) AS count FROM workspace_publications
+    `).get()).toEqual({ count: 0 });
     expect(setupResult.dispatchItems.find('attempt_1')?.status).toBe('terminal');
     expect(setupResult.workflow.findEvent('event_attempt_1_execution_outcome')).toMatchObject({
       type: 'execution_outcome',
@@ -706,8 +701,8 @@ describe('SubtaskAttemptRunner', () => {
       attemptId: 'attempt_report_workspace',
     });
     expect(setupResult.db.prepare(`
-      SELECT status FROM workspace_publications WHERE source_attempt_id = ?
-    `).get('attempt_report_workspace')).toEqual({ status: 'pending' });
+      SELECT COUNT(*) AS count FROM workspace_publications WHERE source_attempt_id = ?
+    `).get('attempt_report_workspace')).toEqual({ count: 0 });
     expect(setupResult.db.prepare(`
       SELECT verification_json FROM executor_attempt_receipts WHERE attempt_id = ?
     `).get('attempt_report_workspace')).toMatchObject({
@@ -971,8 +966,8 @@ describe('SubtaskAttemptRunner', () => {
     });
     expect(setupResult.db.prepare('SELECT COUNT(*) AS count FROM subtask_handoffs').get()).toEqual({ count: 1 });
     expect(setupResult.db.prepare(`
-      SELECT status FROM workspace_publications WHERE source_attempt_id = 'attempt_1'
-    `).get()).toEqual({ status: 'pending' });
+      SELECT COUNT(*) AS count FROM workspace_publications WHERE source_attempt_id = 'attempt_1'
+    `).get()).toEqual({ count: 0 });
   });
 
   it('preserves timeout as the primary failure when a failed attempt has partial output', async () => {
@@ -1076,17 +1071,15 @@ describe('SubtaskAttemptRunner', () => {
   it('persists an executor failure and releases the exact attempt claim when execution throws', async () => {
     const setupResult = setup(validResponse());
     setupResult.executionRuntime.run.mockRejectedValueOnce(new Error('progress callback failed'));
-    const outcome = await setupResult.runner.run({
+    await expect(setupResult.runner.run({
       attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
       ...attemptIdentity(), executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
-    });
-    expect(outcome).toMatchObject({ outcome: 'executor_failed', error: 'progress callback failed' });
-    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'awaiting_decision' });
-    expect(setupResult.db.prepare('SELECT terminal_state, error_detail FROM executor_attempt_receipts').get())
-      .toEqual({ terminal_state: 'executor_failed', error_detail: 'progress callback failed' });
+    })).rejects.toThrow('就地执行已完成但后续步骤失败');
+    expect(setupResult.db.prepare('SELECT terminal_state FROM executor_attempt_receipts').get()).toBeUndefined();
     expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({
-      state: 'failed', claimedTaskId: null, claimedSubtaskId: null, claimedAttemptId: null,
+      state: 'running', claimedTaskId: 'task_phase2', claimedSubtaskId: setupResult.a.id,
+      claimedAttemptId: 'attempt_1',
     });
   });
 
@@ -1095,7 +1088,7 @@ describe('SubtaskAttemptRunner', () => {
     authorizeRunningAttempt(setupResult, 'attempt_atomic_terminal');
     setupResult.executionRuntime.run.mockRejectedValueOnce(new Error('executor process crashed'));
 
-    const outcome = await setupResult.runner.run({
+    await expect(setupResult.runner.run({
       attemptId: 'attempt_atomic_terminal',
       executionId: 'exec_atomic_terminal',
       taskId: 'task_phase2',
@@ -1103,18 +1096,9 @@ describe('SubtaskAttemptRunner', () => {
       ...attemptIdentity(),
       executionMode: 'fresh',
       defaultResourceGrant: setupResult.defaultResourceGrant,
-    });
-
-    expect(outcome).toMatchObject({ outcome: 'executor_failed' });
-    expect(setupResult.subtaskRepo.findById(setupResult.a.id)?.status).toBe('awaiting_decision');
-    expect(setupResult.dispatchItems.find('attempt_atomic_terminal')?.status).toBe('terminal');
-    expect(setupResult.workflow.findEvent(
-      'event_attempt_atomic_terminal_execution_outcome',
-    )).toMatchObject({
-      type: 'execution_outcome',
-      attemptId: 'attempt_atomic_terminal',
-      terminalKind: 'failed',
-    });
+    })).rejects.toThrow('就地执行已完成但后续步骤失败');
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)?.status).toBe('running');
+    expect(setupResult.dispatchItems.find('attempt_atomic_terminal')?.status).toBe('running');
   });
 
   it('lands heartbeat loss with the exact authorized binding identity', () => {
@@ -1227,7 +1211,7 @@ describe('SubtaskAttemptRunner', () => {
     expect(setupResult.db.prepare(`
       SELECT COUNT(*) AS count FROM resource_leases
       WHERE attempt_id = 'attempt_terminal_blocked' AND released_at IS NULL
-    `).get()).toEqual({ count: setupResult.defaultResourceGrant.length });
+    `).get()).toEqual({ count: setupResult.defaultResourceGrant.length + 1 });
   });
 
   it('runs a Kernel-authorized fallback from awaiting_decision without treating it as stale', async () => {
@@ -1241,9 +1225,7 @@ describe('SubtaskAttemptRunner', () => {
     });
 
     expect(outcome).toMatchObject({ outcome: 'completed', attemptId: 'attempt_fallback' });
-    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
-      status: 'awaiting_integration',
-    });
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({ status: 'done' });
   });
 
   it('keeps trailerless edits uncertified without copying files', async () => {

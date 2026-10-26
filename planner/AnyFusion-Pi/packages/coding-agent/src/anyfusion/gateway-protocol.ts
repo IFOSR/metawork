@@ -140,13 +140,13 @@ export interface GatewayPublicDelivery {
 	readonly workspace: string;
 	/** Only set when the Task explicitly targets an existing project directory. */
 	readonly taskDirectory: string | null;
-	readonly mode: "in_place" | "worktree";
-	/** Which admission fact authorized the mode: Planner, user, fallback or Kernel safety. */
+	readonly mode: "in_place";
+	/** Which admission fact authorized the Workspace access. */
 	readonly modeSource: "explicit_user" | "planner" | "fallback" | "kernel_safety" | null;
 	readonly deliveryPolicy: "none" | "auto_publish" | "await_acceptance" | null;
 	readonly state: string;
-	/** Isolated candidate lifecycle, worktree rounds only. */
-	readonly candidate: "none" | "executing" | "awaiting_acceptance" | "conflict" | "published" | "cleaned";
+	/** Candidate publication is retired for new Tasks. */
+	readonly candidate: "none";
 	readonly stateLabel: string;
 	readonly files: readonly string[];
 	readonly conflicts: readonly string[];

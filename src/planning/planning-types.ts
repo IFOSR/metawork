@@ -35,9 +35,8 @@ export type { WorkGraphProposal };
 export interface PlanningAgentPlan {
   id: string;
   /**
-   * 8 = legacy plan persisted before the Workspace intent contract; its
-   * `workspaceIntent` is absent and Kernel keeps the safe isolated default.
-   * 9 = current contract with a validated `workspaceIntent`.
+   * 8 = historical plan persisted before the Workspace intent contract.
+   * 9 = current contract with a validated single-Workspace `workspaceIntent`.
    */
   schemaVersion: 8 | 9;
   action: PlanningAction;

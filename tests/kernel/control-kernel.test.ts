@@ -167,6 +167,12 @@ const event: KernelEvent = {
   generationId: 'generation_event_plan_1',
   proposalSource: 'initial',
   targetGraphRevision: 1,
+  workspaceAdmission: {
+    targetWorkspace: {
+      workspaceId: 'workspace-1',
+      canonicalPath: '/tmp/metawork-test-workspace',
+    },
+  },
   proposal: {
     id: 'plan_1',
     schemaVersion: 8,
@@ -511,7 +517,7 @@ describe('ControlKernel', () => {
       goal: '生成一张产品概念图',
       executor: 'pi-agent',
       deliveryKind: 'edit',
-      fileOutputs: ['images/'],
+      fileOutputs: ['images'],
     });
     const subtask = proposal.workGraph!.subtasks[0]!;
     subtask.contextRefs = [];

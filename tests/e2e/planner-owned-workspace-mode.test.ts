@@ -5,7 +5,6 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Config } from '../../src/core/types.js';
 import { UserArtifactPublicationService } from '../../src/delivery/user-artifact-publication-service.js';
-import { USER_ARTIFACTS_DIRECTORY } from '../../src/delivery/user-artifact-types.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskArtifactRepo } from '../../src/storage/task-artifact-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
@@ -152,7 +151,7 @@ describe('Planner-owned Workspace execution mode end-to-end', () => {
     try {
       await run(h, '分析项目并返回结论，不修改工作区');
       const task = h.repo.findAll()[0]!;
-      expect(task.executionMode).toBe('worktree');
+      expect(task.executionMode).toBe('in_place');
       expect(task.workspaceDeliveryPolicy).toBe('none');
       expect(task.status).toBe('succeeded');
       expect(h.mounts[0]).not.toBe(realpathSync(h.userRoot));
@@ -208,115 +207,70 @@ describe('Planner-owned Workspace execution mode end-to-end', () => {
     }
   }, 60_000);
 
-  it('keeps the target Workspace untouched while an isolated candidate runs, then publishes it after acceptance', async () => {
+  it('writes an ordinary edit directly into the target Workspace', async () => {
     const h = harness({
-      goal: '先生成候选版本，等我接受后再写入 app.txt',
+      goal: '直接修改 app.txt',
       fileOutputs: ['app.txt'],
       intent: {
-        operation: 'isolated_experiment',
+        operation: 'modify_existing',
         targetPaths: ['app.txt'],
-        originalFilePolicy: 'must_preserve',
-        isolationPolicy: 'requested',
-        proposedMode: 'worktree',
-        reason: '用户要求先生成候选版本，接受后才写入目标工作区',
+        originalFilePolicy: 'may_replace',
+        reason: '用户要求直接修改目标工作区',
       },
       responder: (_input, workspace) => {
-        // The Executor must never receive the user's Workspace as its root.
-        expect(workspace).not.toBe(realpathSync(h.userRoot));
         writeFileSync(join(workspace, 'app.txt'), 'candidate');
-        return { body: '候选版本已生成。', artifacts: ['app.txt'] };
+        return { body: '已直接修改。', artifacts: ['app.txt'] };
       },
     });
     try {
-      await run(h, '先生成候选版本，等我接受后再写入 app.txt');
+      await run(h, '直接修改 app.txt');
       const task = h.repo.findAll()[0]!;
-      expect(task.executionMode).toBe('worktree');
-      expect(task.workspaceDeliveryPolicy).toBe('await_acceptance');
-      expect(task.status).toBe('needs_action');
-      // Zero writes to the target Workspace before acceptance.
-      expect(readFileSync(join(h.userRoot, 'app.txt'), 'utf8')).toBe('before');
-      expect(existsSync(join(h.userRoot, USER_ARTIFACTS_DIRECTORY))).toBe(false);
-      expect(new TaskArtifactRepo(h.db).listByTask(task.id).filter(item => item.status === 'published'))
-        .toEqual([]);
-      const publication = h.db.prepare(
-        "SELECT id, status, delivery_authorized_at FROM workspace_publications WHERE task_id = ?",
-      ).get(task.id) as { id: string; status: string; delivery_authorized_at: string | null };
-      expect(publication.status).toBe('integrated');
-      expect(publication.delivery_authorized_at).toBeNull();
-      expect(task.stateDetail.pendingActions.map(action => action.kind)).toContain('accept_result');
-      const internalRoot = h.mounts[0]!;
-      expect(existsSync(internalRoot)).toBe(true);
-
-      // Explicit acceptance is the only way the candidate reaches the Workspace.
-      const runtime = (h.session as unknown as {
-        kernelExecutionRuntime: { acceptPartialResult(taskId: string): Promise<unknown>; recoverDue(taskId: string): Promise<boolean> };
-      }).kernelExecutionRuntime;
-      await runtime.acceptPartialResult(task.id);
-      await runtime.recoverDue(task.id, 'test acceptance');
-      await h.session.maybeReviewTaskPoolOnTimer();
+      expect(task.executionMode).toBe('in_place');
+      expect(task.workspaceDeliveryPolicy).toBe('none');
+      expect(task.status).toBe('succeeded');
+      expect(h.mounts).toEqual([realpathSync(h.userRoot)]);
       expect(readFileSync(join(h.userRoot, 'app.txt'), 'utf8')).toBe('candidate');
-      const authorized = h.db.prepare(
-        'SELECT delivery_authorized_at FROM workspace_publications WHERE id = ?',
-      ).get(publication.id) as { delivery_authorized_at: string | null };
-      expect(authorized.delivery_authorized_at).not.toBeNull();
-      const settled = h.repo.findById(task.id)!;
-      expect(['succeeded', 'needs_action']).toContain(settled.status);
-      expect(settled.workspaceDeliveryPolicy).toBe('await_acceptance');
-      const settledBindings = new WorkspaceExecutionBindingRepo(h.db).listByTask(task.id);
-      if (settled.status === 'succeeded') {
-        // Accepted and delivered: no residue remains, so the internal execution
-        // directory is retired.
-        expect(settledBindings[0]?.cleanedAt).not.toBeNull();
-        expect(existsSync(settledBindings[0]!.authorizedWorkingDirectory)).toBe(false);
-      } else {
-        // Still waiting on the user: the candidate directory is retained.
-        expect(settledBindings[0]?.cleanedAt).toBeNull();
-        expect(existsSync(settledBindings[0]!.authorizedWorkingDirectory)).toBe(true);
-      }
+      expect(h.db.prepare('SELECT COUNT(*) AS count FROM workspace_publications WHERE task_id = ?').get(task.id)).toMatchObject({ count: 0 });
     } finally {
       h.db.close();
     }
   }, 60_000);
 
-  it('publishes an isolated change set into the target Workspace without a generated task directory', async () => {
+  it('applies multiple declared changes directly without a publication phase', async () => {
     const h = harness({
-      goal: '在高风险修改前先隔离执行，完成后写入工作区',
+      goal: '直接修改 notes.md 和 app.txt',
       fileOutputs: ['notes.md'],
       intent: {
-        operation: 'high_risk_change',
+        operation: 'modify_existing',
         targetPaths: ['notes.md', 'app.txt'],
         originalFilePolicy: 'may_replace',
-        isolationPolicy: 'required',
-        proposedMode: 'worktree',
-        reason: '批量高风险修改需要隔离执行，完成后经 Kernel 授权发布',
+        reason: '用户要求直接修改目标工作区中的文件',
       },
       responder: (_input, workspace) => {
-        expect(workspace).not.toBe(realpathSync(h.userRoot));
         writeFileSync(join(workspace, 'notes.md'), '# notes');
         writeFileSync(join(workspace, 'app.txt'), 'after-isolation');
         return { body: '已完成隔离修改。', artifacts: ['notes.md'] };
       },
     });
     try {
-      await run(h, '在高风险修改前先隔离执行，完成后写入工作区');
+      await run(h, '直接修改 notes.md 和 app.txt');
       const task = h.repo.findAll()[0]!;
-      expect(task.executionMode).toBe('worktree');
-      expect(task.workspaceDeliveryPolicy).toBe('auto_publish');
+      expect(task.executionMode).toBe('in_place');
+      expect(task.workspaceDeliveryPolicy).toBe('none');
       expect(task.status).toBe('succeeded');
-      // Authorized change set applied at the declared relative paths.
+      // The authorized changes are already in the target Workspace.
       expect(readFileSync(join(h.userRoot, 'notes.md'), 'utf8')).toBe('# notes');
       expect(readFileSync(join(h.userRoot, 'app.txt'), 'utf8')).toBe('after-isolation');
       expect(readdirSync(h.userRoot).filter(name => name.startsWith('metaclaw-tasks'))).toEqual([]);
       const artifacts = new TaskArtifactRepo(h.db).listByTask(task.id);
       expect(artifacts.map(item => item.relativePath)).toContain('notes.md');
       expect(artifacts.every(item => item.publishedPath.startsWith(realpathSync(h.userRoot)))).toBe(true);
-      // Terminal, residue-free generation: the internal execution directory is
-      // retired and the binding records the cleanup.
+      expect(h.mounts).toEqual([realpathSync(h.userRoot)]);
+      expect(h.db.prepare('SELECT COUNT(*) AS count FROM workspace_publications WHERE task_id = ?').get(task.id)).toMatchObject({ count: 0 });
       const bindings = new WorkspaceExecutionBindingRepo(h.db).listByTask(task.id);
       expect(bindings[0]?.modeSource).toBe('planner');
-      expect(bindings[0]?.deliveryPolicy).toBe('auto_publish');
-      expect(bindings[0]?.cleanedAt).not.toBeNull();
-      expect(existsSync(bindings[0]!.authorizedWorkingDirectory)).toBe(false);
+      expect(bindings[0]?.deliveryPolicy).toBe('none');
+      expect(bindings[0]?.authorizedWorkingDirectory).toBe(realpathSync(h.userRoot));
     } finally {
       h.db.close();
     }

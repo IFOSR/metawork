@@ -74,8 +74,6 @@ type RoutingDraft = RoutingDraftMap;
 type RoutingFacts = Record<string, AgentClassRoutingFacts>;
 type RuntimePolicyDraft = {
   maxConcurrentTasks: number;
-  /** Planner 无法判断时的默认 Workspace 执行模式。 */
-  workspaceFallbackMode: 'in_place' | 'worktree';
 };
 
 type RawRecord = Record<string, unknown>;
@@ -317,10 +315,8 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
 
 function loadRuntimePolicy(config: RawRecord): RuntimePolicyDraft {
   const policy = asRecord(config.runtimePolicy);
-  const workspaceExecution = asRecord(config.workspaceExecution);
   return {
     maxConcurrentTasks: typeof policy.maxConcurrentTasks === 'number' ? policy.maxConcurrentTasks : 2,
-    workspaceFallbackMode: workspaceExecution.fallbackMode === 'worktree' ? 'worktree' : 'in_place',
   };
 }
 
@@ -950,10 +946,6 @@ export function SettingsPanel({
         runtimePolicy: {
           ...asRecord(originalConfig.runtimePolicy),
           maxConcurrentTasks: runtimePolicy.maxConcurrentTasks,
-        },
-        workspaceExecution: {
-          ...asRecord(originalConfig.workspaceExecution),
-          fallbackMode: runtimePolicy.workspaceFallbackMode,
         },
       },
       activationSecrets,
@@ -2591,28 +2583,10 @@ export function SettingsPanel({
                         />
                         <small>最多同时运行多少个会话任务；同一会话内仍按顺序执行。</small>
                       </label>
-                      <label className="settings-field">
-                        <span>Planner 无法判断时的默认 Workspace 执行模式</span>
-                        <select
-                          className="text-input"
-                          value={runtimePolicy.workspaceFallbackMode}
-                          onChange={event => setRuntimePolicy(current => current ? {
-                            ...current,
-                            workspaceFallbackMode: event.target.value === 'worktree' ? 'worktree' : 'in_place',
-                          } : current)}
-                        >
-                          <option value="in_place">In-place：直接在目标 Workspace 执行</option>
-                          <option value="worktree">Worktree：先在隔离执行目录中执行</option>
-                        </select>
-                        <small>
-                          Planner 的明确判断优先于该设置；Kernel 的安全规则优先于两者。
-                          高风险或副作用不明确时仍会先向你确认。
-                        </small>
-                      </label>
                     </div>
                     <div className="routing-section-note">
                       降低上限不会取消当前运行中的任务，只影响下一轮调度。
-                      执行模式只在任务创建时固定，重试和恢复沿用原模式。
+                      写入任务直接在目标 Workspace 执行，重试和恢复沿用同一 Workspace 绑定。
                     </div>
                   </section>
                   <SpanRoutingSettings

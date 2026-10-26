@@ -55,6 +55,8 @@ export interface AttemptTerminalLanding {
   subtaskResult?: string;
   subtaskArtifacts?: string[];
   subtaskVerification?: Subtask['verification'];
+  /** In-place execution lands the result directly; no publication row is created. */
+  directCompletion?: boolean;
   now: string;
 }
 
@@ -190,7 +192,7 @@ export class AttemptTerminalService {
               WHERE tasks.id = subtasks.task_id AND tasks.status IN ('running', 'needs_action', 'queued')
             )
         `).run(
-          input.nextSubtaskStatus,
+          input.directCompletion ? 'done' : input.nextSubtaskStatus,
           input.subtaskResult ?? null,
           input.subtaskArtifacts ? JSON.stringify(input.subtaskArtifacts) : null,
           input.subtaskVerification ? JSON.stringify(input.subtaskVerification) : null,
@@ -203,10 +205,10 @@ export class AttemptTerminalService {
         if (changed !== 1) {
           throw new Error(`attempt terminal fence changed: ${input.receipt.attemptId}`);
         }
-        if (input.publication) {
+        if (input.publication && !input.directCompletion) {
           this.publications.insertCandidate(input.publication);
         }
-        if (input.repairPublication) {
+        if (input.repairPublication && !input.directCompletion) {
           this.publications.markPendingAfterRepair(
             input.repairPublication.publicationId,
             input.repairPublication.candidateCommit,

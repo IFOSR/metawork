@@ -128,6 +128,7 @@ describe('PiCliDriver', () => {
       cwd: '/workspace/task',
       environment: {
         HOME: '/attempt/home',
+        PYTHONDONTWRITEBYTECODE: '1',
         PI_CODING_AGENT_DIR: '/attempt/home/.pi/agent',
         PI_CODING_AGENT_SESSION_DIR: '/attempt/home/.pi/agent/sessions',
       },
@@ -187,7 +188,7 @@ describe('PiCliDriver', () => {
     }
   });
 
-  it('builds a response-only launch with no tools and no durable session', () => {
+  it('builds a read-only launch with read tools and no durable session', () => {
     const driver = new PiCliDriver({
       probeCommand: vi.fn(),
       piCommand: { command: 'pi', args: [] },
@@ -207,7 +208,7 @@ describe('PiCliDriver', () => {
       'json',
       '--no-session',
       '--tools',
-      '',
+      'read',
       '--provider',
       'deepseek',
       '--model',

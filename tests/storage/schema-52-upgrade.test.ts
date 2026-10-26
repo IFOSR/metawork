@@ -172,7 +172,7 @@ describe('schema 51/52 upgrade paths', () => {
       Array<{ name: string; pk: number }>).filter(column => column.pk > 0)
       .sort((left, right) => left.pk - right.pk).map(column => column.name);
     expect(servicePrimaryKey).toEqual(['account_id', 'workspace_id', 'service_id']);
-    expect(CURRENT_SCHEMA_VERSION).toBe(57);
+    expect(CURRENT_SCHEMA_VERSION).toBe(58);
     db.close();
   });
 

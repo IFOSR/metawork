@@ -30,7 +30,7 @@ describe('public delivery projection', () => {
       stateLabel: IN_PLACE_DELIVERY_LABELS.published,
     });
     expect(publicDeliveryLines(view)).toEqual([
-      '执行模式: In-place（未知来源）',
+      '执行方式: 目标 Workspace 就地执行（未知来源）',
       `目标 Workspace: ${workspace}`,
       `工作区文件: ${IN_PLACE_DELIVERY_LABELS.published}`,
       '交付文件: out/deck.pptx',
@@ -52,7 +52,7 @@ describe('public delivery projection', () => {
     expect(publicDeliveryLines(view).join('\n')).not.toContain('任务目录');
   });
 
-  it('publishes an ordinary worktree round into the target Workspace, not a task directory', () => {
+  it('projects historical Worktree rows as the single In-place Workspace view', () => {
     const view = projectPublicDelivery({
       task: {
         id: 'task_1',
@@ -68,23 +68,23 @@ describe('public delivery projection', () => {
       delivery: () => null,
     });
     expect(view).toMatchObject({
-      mode: 'worktree',
+      mode: 'in_place',
       taskDirectory: null,
       modeSource: 'planner',
       deliveryPolicy: 'auto_publish',
       files: ['out.pptx'],
-      stateLabel: '已发布到工作区',
-      candidate: 'published',
+      stateLabel: IN_PLACE_DELIVERY_LABELS.published,
+      candidate: 'none',
     });
     const lines = publicDeliveryLines(view).join('\n');
-    expect(lines).toContain('执行模式: Worktree（Planner 判断）');
+    expect(lines).toContain('执行方式: 目标 Workspace 就地执行（Planner 判断）');
     expect(lines).toContain(`目标 Workspace: ${workspace}`);
     expect(lines).not.toContain('metaclaw-tasks');
   });
 
   it('keeps an explicitly selected project directory as the delivery root', () => {
     const view = projectPublicDelivery({
-      task: { id: 'task_1', publicTaskDirectory: 'project', publicProject: true, executionMode: 'worktree' },
+      task: { id: 'task_1', publicTaskDirectory: 'project', publicProject: true, executionMode: 'in_place' },
       workspace,
       pendingDecision: false,
       artifacts: [artifact('out.pptx', `${workspace}/project/out.pptx`)],
@@ -94,11 +94,11 @@ describe('public delivery projection', () => {
     expect(view).toMatchObject({ taskDirectory: `${workspace}/project`, files: ['out.pptx'] });
   });
 
-  it('reports an isolated candidate as awaiting acceptance without touching the Workspace', () => {
+  it('does not expose historical candidate acceptance in the current Workspace view', () => {
     const view = projectPublicDelivery({
       task: {
         id: 'task_1',
-        executionMode: 'worktree',
+      executionMode: 'in_place',
         workspaceExecutionSource: 'planner',
         workspaceDeliveryPolicy: 'await_acceptance',
       },
@@ -113,12 +113,12 @@ describe('public delivery projection', () => {
     });
     expect(view).toMatchObject({
       state: 'awaiting_acceptance',
-      candidate: 'awaiting_acceptance',
+      candidate: 'none',
       deliveryPolicy: 'await_acceptance',
     });
   });
 
-  it('surfaces a failed delivery in both modes', () => {
+  it('ignores historical publication failures in the current Workspace view', () => {
     const failed = projectPublicDelivery({
       task: { id: 'task_1', executionMode: 'in_place' },
       workspace,
@@ -127,7 +127,7 @@ describe('public delivery projection', () => {
       publications: [{ id: 'p1', subtaskId: 's1', createdAt: '2026-10-23T00:00:00.000Z', status: 'conflicted' } as never],
       delivery: () => null,
     });
-    expect(failed?.state).toBe('failed');
-    expect(publicDeliveryStateLabel(failed!)).toBe(IN_PLACE_DELIVERY_LABELS.failed);
+    expect(failed?.state).toBe('not_published');
+    expect(publicDeliveryStateLabel(failed!)).toBe(IN_PLACE_DELIVERY_LABELS.not_published);
   });
 });

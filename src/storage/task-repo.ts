@@ -1,4 +1,3 @@
-import { publicTaskRelativeDirectory } from '../task/public-task-directory.js';
 import type Database from 'better-sqlite3';
 import type { Task, TaskSnapshot, TaskStatus, Dependency } from '../core/types.js';
 import { parseWorkspaceIntent } from '../core/workspace-execution.js';
@@ -74,11 +73,11 @@ interface TaskRow {
 function rowToTask(row: TaskRow): Task {
   return {
     id: row.id,
-    publicTaskDirectory: row.public_task_directory ?? publicTaskRelativeDirectory(row.title, row.id),
+    ...(row.public_task_directory ? { publicTaskDirectory: row.public_task_directory } : {}),
     publicDeliveryBaseline: JSON.parse(row.public_delivery_baseline_json ?? '{}'),
     publicProject: row.public_project === 1,
     startServiceAfterPublish: row.start_service_after_publish === 1,
-    executionMode: row.execution_mode === 'in_place' ? 'in_place' : 'worktree',
+    ...(row.execution_mode ? { executionMode: row.execution_mode } : {}),
     ...(row.workspace_execution_source
       ? { workspaceExecutionSource: row.workspace_execution_source as Task['workspaceExecutionSource'] }
       : {}),
@@ -172,9 +171,9 @@ export class TaskRepo {
       task.accountId ?? 'legacy-account', task.conversationId ?? 'legacy-conversation',
       task.workspaceId ?? 'legacy-workspace', task.ownerPlannerSessionId ?? 'legacy-planner-session',
       task.admittedAt ?? task.createdAt,
-      task.publicTaskDirectory ?? publicTaskRelativeDirectory(task.title, task.id),
+      task.publicTaskDirectory ?? null,
       JSON.stringify(task.publicDeliveryBaseline ?? {}), task.startServiceAfterPublish ? 1 : 0, task.publicProject ? 1 : 0,
-      task.executionMode ?? 'worktree',
+      task.executionMode ?? 'in_place',
       task.workspaceExecutionSource ?? '',
       task.workspaceDeliveryPolicy ?? '',
       JSON.stringify(task.workspaceTargetPaths ?? []),

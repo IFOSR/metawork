@@ -27,15 +27,16 @@ function context(overrides: Partial<ExecutionContext> = {}): ExecutionContext {
 }
 
 describe('execution context', () => {
-  it('defaults new admissions to worktree and accepts only known modes', () => {
-    expect(DEFAULT_EXECUTION_MODE).toBe('worktree');
-    expect(parseExecutionMode(undefined)).toBe('worktree');
-    expect(parseExecutionMode('')).toBe('worktree');
+  it('defaults new admissions to in-place and rejects the retired mode', () => {
+    expect(DEFAULT_EXECUTION_MODE).toBe('in_place');
+    expect(parseExecutionMode(undefined)).toBe('in_place');
+    expect(parseExecutionMode('')).toBe('in_place');
     expect(parseExecutionMode('in_place')).toBe('in_place');
     expect(() => parseExecutionMode('in-place')).toThrow(ExecutionContextError);
     expect(resolveExecutionModeFromEnvironment({ [EXECUTION_MODE_ENVIRONMENT]: ' in_place ' }))
       .toBe('in_place');
-    expect(resolveExecutionModeFromEnvironment({})).toBe('worktree');
+    expect(resolveExecutionModeFromEnvironment({})).toBe('in_place');
+    expect(() => parseExecutionMode('worktree')).toThrow(/retired/u);
   });
 
   it('requires absolute paths and non-empty identities', () => {
@@ -53,10 +54,9 @@ describe('execution context', () => {
       .toBeDefined();
     expect(() => assertExecutionContext(context({ authorizedWorkingDirectory: '/Users/me/project-other' })))
       .toThrow(/inside its Workspace/u);
-    // A managed worktree lives outside the Workspace by design.
-    expect(assertExecutionContext(context({
+    expect(() => assertExecutionContext(context({
       executionMode: 'worktree',
       authorizedWorkingDirectory: '/Users/me/.metawork/workspace-store/worktrees/abc/files',
-    }))).toBeDefined();
+    }))).toThrow(/retired/u);
   });
 });

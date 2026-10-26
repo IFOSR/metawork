@@ -106,12 +106,12 @@ describe('Docker shell SQLite schema isolation', () => {
     );
   });
 
-  it('uses the worktree backend without mounting the Docker socket', () => {
+  it('uses the in-place backend without mounting the Docker socket', () => {
     const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
     const runtimeDockerfile = readFileSync(resolve('docker/Dockerfile.runtime'), 'utf-8');
 
-    expect(shell).toContain('-e METACLAW_EXECUTOR_BACKEND=worktree');
-    expect(runtimeDockerfile).toContain('METACLAW_EXECUTOR_BACKEND=worktree');
+    expect(shell).toContain('-e METACLAW_EXECUTOR_BACKEND=in_place');
+    expect(runtimeDockerfile).toContain('METACLAW_EXECUTOR_BACKEND=in_place');
     expect(shell).not.toContain('/var/run/docker.sock');
     expect(shell).not.toContain('function Test-ContainerHasDockerSocket');
     expect(shell).toContain('Start-ShellContainer');
@@ -143,7 +143,7 @@ describe('Docker shell SQLite schema isolation', () => {
     expect(shell).not.toContain('function Ensure-AttemptImages');
     expect(shell).not.toContain('Dockerfile.attempt-codex');
     expect(shell).not.toContain('Dockerfile.attempt-pi');
-    expect(smoke).toContain("'-e', 'METACLAW_EXECUTOR_BACKEND=worktree'");
+    expect(smoke).toContain("'-e', 'METACLAW_EXECUTOR_BACKEND=in_place'");
     expect(smoke).toContain("'-e', `METACLAW_PLANNER_TIMEOUT_MS=${plannerTimeoutMs}`");
     expect(smoke).not.toContain('src=//var/run/docker.sock');
     expect(smoke).not.toContain("['network', 'create', '--internal'");
@@ -154,7 +154,7 @@ describe('Docker shell SQLite schema isolation', () => {
     expect(persistEnv).not.toContain('METACLAW_DOCKER_HOST_PATH_MAP');
   });
 
-  it('does not mutate persisted Executor image pins in worktree mode', () => {
+  it('does not mutate persisted Executor image pins in in-place mode', () => {
     const shell = readFileSync(resolve('docker/shell.ps1'), 'utf-8');
 
     expect(shell).not.toContain('function Reset-BuiltinExecutorImagePins');

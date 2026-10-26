@@ -1125,7 +1125,10 @@ export class KernelExecutionRuntime {
     if (!workspaceId || !resolved) return null;
     const canonical = await canonicalizeWorkspacePath(resolved).catch(() => null);
     if (!canonical) return null;
-    const executionMode = task.executionMode ?? 'worktree';
+    const executionMode = task.executionMode ?? 'in_place';
+    if (executionMode === 'worktree') {
+      throw new Error(`Task ${taskId} uses a retired Worktree binding and cannot be dispatched`);
+    }
     // A replan of an existing Task keeps the mode of its first generation; a
     // later generation never reinterprets the current settings.
     const inherited = repo.findLatestForTask(taskId);
@@ -1136,9 +1139,7 @@ export class KernelExecutionRuntime {
       );
     }
     const now = new Date().toISOString();
-    const authorizedWorkingDirectory = executionMode === 'in_place'
-      ? canonical.canonicalPath
-      : this.deps.workspaceStore?.planGenerationRoot(taskId, generationId) ?? canonical.canonicalPath;
+    const authorizedWorkingDirectory = canonical.canonicalPath;
     return repo.upsert({
       taskId,
       generationId,
@@ -3868,7 +3869,8 @@ export class KernelExecutionRuntime {
     if (!task?.startServiceAfterPublish) return;
     if (task.status === 'succeeded' || task.status === 'failed' || task.status === 'cancelled') return;
     const resourceTaskId = task.retryOfTaskId ?? taskId;
-    if (!manager || !await manager.isPublished(resourceTaskId)) {
+    const inPlaceWorkspace = task.executionMode === 'in_place';
+    if (!manager || (!inPlaceWorkspace && !await manager.isPublished(resourceTaskId))) {
       if (this.deps.subtaskRepo.listActiveByTask(taskId).every(subtask => subtask.status === 'done')) {
         this.deps.callbacks.appendOutput('代码已交付，但缺少可启动的服务规格或受管服务能力；服务尚未就绪。');
         // A missing required service specification is an execution contract

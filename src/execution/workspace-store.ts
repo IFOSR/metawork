@@ -221,13 +221,58 @@ export class WorkspaceStore {
       mkdir(join(rootPath, 'results'), { recursive: true }),
     ]);
     return {
-      id: `workspace:in-place:${taskId}:${generationId}:${subtaskId}:${attemptSegment}`,
+      // The durable Workspace record is Generation/Subtask scoped. Runtime
+      // scratch directories remain Attempt scoped, but their persistence and
+      // FK identity must stay stable across retry/recovery Attempts.
+      id: `workspace:in-place:${taskId}:${generationId}:${subtaskId}`,
       taskId,
       generationId,
       subtaskId,
       kind: 'in_place',
       rootPath,
       filesPath: canonicalPath,
+      checkpointsPath: join(rootPath, 'checkpoints'),
+    };
+  }
+
+  /**
+   * Creates only the Runtime scratch area for a read admission. The returned
+   * filesPath is never the user Workspace, so accidental tool writes cannot
+   * modify Conversation files.
+   */
+  async bindReadOnlyWorkspace(
+    identity: WorkspaceIdentity,
+    attemptId: string,
+  ): Promise<WorkspaceHandle> {
+    const taskId = safeIdentitySegment(identity.taskId, 'taskId');
+    const generationId = safeIdentitySegment(identity.generationId, 'generationId');
+    const subtaskId = safeIdentitySegment(identity.subtaskId, 'subtaskId');
+    const attemptSegment = workspaceSegment('attempt', safeIdentitySegment(attemptId, 'attemptId'));
+    const rootPath = join(
+      this.workspacesPath,
+      workspaceSegment('task', taskId),
+      workspaceSegment('generation', generationId),
+      workspaceSegment('subtask', subtaskId),
+      'read-only',
+      attemptSegment,
+    );
+    const filesPath = join(rootPath, 'files');
+    await Promise.all([
+      mkdir(filesPath, { recursive: true }),
+      mkdir(join(rootPath, 'inputs'), { recursive: true }),
+      mkdir(join(rootPath, 'handoffs'), { recursive: true }),
+      mkdir(join(rootPath, 'results'), { recursive: true }),
+    ]);
+    return {
+      // Keep the persisted Workspace record stable across retry Attempts; the
+      // scratch root remains Attempt scoped and is represented by rootPath.
+      id: `workspace:read-only:${taskId}:${generationId}:${subtaskId}`,
+      taskId,
+      generationId,
+      subtaskId,
+      kind: 'in_place',
+      rootPath,
+      filesPath,
       checkpointsPath: join(rootPath, 'checkpoints'),
     };
   }

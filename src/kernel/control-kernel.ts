@@ -1,5 +1,5 @@
 import type { LocalServiceOperation, LocalServiceSpecification } from '../task/local-service.js';
-import { localServiceSpecificationRevision } from '../task/local-service.js';
+import { localServiceSpecificationRevision } from '../core/local-service-revision.js';
 import type { PendingResultIdentity } from '../task/safe-result-identity.js';
 import { allowsKernelAction, type ProductionAuthorizationFact } from './production-authorization.js';
 import { createHash } from 'node:crypto';
@@ -15,6 +15,7 @@ import {
 import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-validator.js';
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import {
+  type WorkspaceAdmission,
   type WorkspaceDeliveryPolicy,
   type WorkspaceExecutionDecision,
   type WorkspaceExecutionMode,
@@ -150,7 +151,6 @@ export type KernelEvent =
        */
       workspaceAdmission?: {
         targetWorkspace: { workspaceId: string; canonicalPath: string } | null;
-        worktreeAvailable: boolean;
       };
       /**
        * Bounded, server-produced Span routing observation (ADR-0033
@@ -598,6 +598,8 @@ export type KernelDecisionAction =
       routing?: Record<string, RoutingResolutionAudit[]>;
       /** Kernel-authorized Workspace execution facts for this Task. */
       workspaceExecution: WorkspaceExecutionDecision;
+      /** Current single-Workspace access fact; the legacy decision is retained for event replay. */
+      workspaceAdmission?: Extract<WorkspaceAdmission, { kind: 'read' | 'write' }>;
       /** Planner-owned semantics validated with the decision (null for legacy plans). */
       workspaceIntent?: WorkspaceIntent | null;
       /** §5.4 abandon-and-create: the exact old Task to abandon before admission. */
@@ -699,6 +701,7 @@ export type KernelDecisionAction =
       unavailableAgentClassNames: string[];
       explanation: string;
       workspaceExecution?: WorkspaceExecutionDecision;
+      workspaceAdmission?: Extract<WorkspaceAdmission, { kind: 'read' | 'write' }>;
     }
   | {
       type: 'activate_deferred_task_plan';
@@ -711,6 +714,7 @@ export type KernelDecisionAction =
       graphRevision: number;
       proposalSource: 'replan';
       workspaceExecution?: WorkspaceExecutionDecision;
+      workspaceAdmission?: Extract<WorkspaceAdmission, { kind: 'read' | 'write' }>;
     }
   | {
       type: 'cancel_task';
@@ -1102,9 +1106,7 @@ export class ControlKernel {
       writes: workspaceWrites,
       declaredOutputPaths: proposal.workGraph.subtasks.flatMap(subtask => subtask.fileOutputs ?? []),
       facts: {
-        fallbackMode: snapshot.kernelConfiguration.workspaceExecution?.fallbackMode,
         targetWorkspace: event.workspaceAdmission?.targetWorkspace ?? null,
-        worktreeAvailable: event.workspaceAdmission?.worktreeAvailable ?? true,
         existingTaskBinding: (() => {
           if (!proposal.task.taskId) return null;
           const existingTask = snapshot.tasks.find(task => task.id === proposal.task.taskId);
@@ -1165,6 +1167,7 @@ export class ControlKernel {
           explanation: event.availabilityExplanation
             ?? 'The revised plan is waiting because every eligible Executor for at least one Subtask is unavailable.',
           workspaceExecution: workspaceResolution.decision,
+          workspaceAdmission: workspaceResolution.admission,
         }, 'latest replan proposal deferred until Executor availability recovers');
       }
       return decision(event, { type: 'reject_request' }, 'no healthy canonical AgentClass remains');
@@ -1207,6 +1210,7 @@ export class ControlKernel {
       proposalSource: event.proposalSource,
       routing: resolved.routing,
       workspaceExecution: workspaceResolution.decision,
+      workspaceAdmission: workspaceResolution.admission,
       workspaceIntent: workspaceResolution.intent,
       ...(proposal.conflictResolution
         ? { conflictResolution: { oldTaskId: proposal.conflictResolution.oldTaskId } }
@@ -1537,7 +1541,6 @@ export class ControlKernel {
       declaredOutputPaths: deferred.proposal.workGraph.subtasks.flatMap(subtask => subtask.fileOutputs ?? []),
       facts: {
         targetWorkspace: deferred.workspaceAdmission?.targetWorkspace ?? null,
-        worktreeAvailable: deferred.workspaceAdmission?.worktreeAvailable ?? true,
         existingTaskBinding: snapshot.task.executionMode
           ? {
               workspaceId: snapshot.task.workspaceId ?? '',
@@ -1561,6 +1564,7 @@ export class ControlKernel {
       graphRevision: deferred.targetGraphRevision,
       proposalSource: deferred.proposalSource,
       workspaceExecution: workspaceResolution.decision,
+      workspaceAdmission: workspaceResolution.admission,
     }, 'deferred availability proposal is executable again');
   }
 

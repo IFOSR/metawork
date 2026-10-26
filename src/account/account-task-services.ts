@@ -11,7 +11,7 @@ import type { TaskLifecyclePort } from '../task/task-lifecycle-transition-port.j
 import { AgentClassService } from '../executor/agent-class-service.js';
 import type { AttemptExecutionBackend } from '../execution/attempt-execution-backend.js';
 import { DockerCliAttemptExecutionBackend } from '../execution/docker-cli-attempt-execution-backend.js';
-import { WorktreeAttemptExecutionBackend } from '../execution/worktree-attempt-execution-backend.js';
+import { InPlaceAttemptExecutionBackend } from '../execution/in-place-attempt-execution-backend.js';
 
 export interface AccountTaskServices {
   readonly taskRuntimeService: TaskRuntimeService;
@@ -42,8 +42,9 @@ export function buildAccountTaskServices(deps: {
 }
 
 function createDefaultAttemptExecutionBackend(): AttemptExecutionBackend {
-  const backend = (process.env.METACLAW_EXECUTOR_BACKEND ?? 'worktree').trim().toLowerCase();
+  const backend = (process.env.METACLAW_EXECUTOR_BACKEND ?? 'in_place').trim().toLowerCase();
   if (backend === 'docker' || backend === 'container') return new DockerCliAttemptExecutionBackend();
-  if (backend === 'worktree' || backend === 'native' || backend === '') return new WorktreeAttemptExecutionBackend();
+  if (backend === 'in_place' || backend === 'native' || backend === '') return new InPlaceAttemptExecutionBackend();
+  if (backend === 'worktree') throw new Error('METACLAW_EXECUTOR_BACKEND=worktree has been retired; use in_place');
   throw new Error(`Unsupported METACLAW_EXECUTOR_BACKEND: ${backend}`);
 }

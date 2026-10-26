@@ -48,7 +48,6 @@ describe('Planner Workspace intent contract (schema 9)', () => {
     const plan = v9Plan(workspaceIntentFixture({
       operation: 'modify_existing',
       targetPaths: ['config/app.yaml'],
-      proposedMode: 'in_place',
       reason: '直接修改目标项目中的配置',
     }));
     expect(PlanShapeV9Acceptance(plan)).toBe(true);
@@ -64,15 +63,16 @@ describe('Planner Workspace intent contract (schema 9)', () => {
       workspaceIntent: workspaceIntentFixture({
         operation: 'modify_existing',
         targetPaths: ['src'],
-        proposedMode: 'in_place',
-        reason: '直接修改 src 目录中的文件',
+          reason: '直接修改 src 目录中的文件',
       }),
     };
     expect(errorsFor(plan).join('\n')).toContain('secrets.env');
   });
 
-  it('still accepts a legacy schema-8 plan without an intent', () => {
-    const plan = workGraphPlan({ goal: '修改目标项目配置', deliveryKind: 'edit' });
+  it('accepts a legacy schema-8 plan for replay validation', () => {
+    const current = workGraphPlan({ goal: '修改目标项目配置', deliveryKind: 'edit' });
+    const { workspaceIntent: _intent, ...legacy } = current;
+    const plan: PlanningAgentPlan = { ...legacy, schemaVersion: 8 };
     expect(plan.schemaVersion).toBe(8);
     expect(validatePlanningAgentPlan(plan, configuration)).toEqual({ valid: true, errors: [] });
   });
@@ -107,56 +107,19 @@ describe('Planner Workspace intent contract (schema 9)', () => {
       ...base,
       schemaVersion: 9,
       workGraph: base.workGraph ? { ...base.workGraph, configurationRevision: 'revision-test' } : null,
-      workspaceIntent: workspaceIntentFixture({ operation: 'read_only', proposedMode: null }),
+      workspaceIntent: workspaceIntentFixture({ operation: 'read_only' }),
     };
     expect(validatePlanningAgentPlan(plan, configuration)).toEqual({ valid: true, errors: [] });
-  });
-
-  it('requires an isolation rationale for a worktree proposal', () => {
-    const errors = errorsFor(v9Plan(workspaceIntentFixture({
-      operation: 'modify_existing',
-      isolationPolicy: 'not_requested',
-      proposedMode: 'worktree',
-      reason: 'because',
-    })));
-    expect(errors.join('\n')).toContain('worktree requires an isolation');
-  });
-
-  it('accepts a candidate request that needs acceptance after review', () => {
-    const plan = v9Plan(workspaceIntentFixture({
-      operation: 'isolated_experiment',
-      originalFilePolicy: 'must_preserve',
-      isolationPolicy: 'requested',
-      proposedMode: 'worktree',
-      reason: '先生成候选版本，用户接受后再写入',
-    }));
-    expect(validatePlanningAgentPlan(plan, configuration)).toEqual({ valid: true, errors: [] });
-  });
-
-  it('rejects in_place when isolation is required, and unsafe target paths', () => {
-    const contradiction = errorsFor(v9Plan(workspaceIntentFixture({
-      isolationPolicy: 'required',
-      proposedMode: 'in_place',
-    })));
-    expect(contradiction.join('\n')).toContain('contradicts isolationPolicy required');
-
-    const unsafe = errorsFor(v9Plan(workspaceIntentFixture({
-      operation: 'modify_existing',
-      targetPaths: ['../escape.md'],
-      proposedMode: 'in_place',
-    })));
-    expect(unsafe.length).toBeGreaterThan(0);
   });
 
   it('rejects a fabricated target Workspace identity', () => {
     const errors = errorsFor(v9Plan(workspaceIntentFixture({
       targetWorkspaceId: '/Users/me/project',
-      proposedMode: 'in_place',
     })));
     expect(errors.join('\n')).toContain('Workspace identity');
   });
 
-  it('does not allow a non-work action to propose an execution mode', () => {
+  it('keeps Workspace intent out of the non-work action contract', () => {
     const plan: PlanningAgentPlan = {
       ...workGraphPlan({ goal: '回答问题' }),
       schemaVersion: 9,
@@ -165,10 +128,9 @@ describe('Planner Workspace intent contract (schema 9)', () => {
       workGraph: null,
       workspaceIntent: workspaceIntentFixture({
         operation: 'ambiguous',
-        proposedMode: 'in_place',
-      }),
+        }),
     };
-    expect(PlanningAgentPlanSchema.safeParse(plan).success).toBe(false);
+    expect(PlanningAgentPlanSchema.safeParse(plan).success).toBe(true);
   });
 
   it('keeps the turn on the clarification path for an ambiguous request', () => {
@@ -183,9 +145,7 @@ describe('Planner Workspace intent contract (schema 9)', () => {
       workspaceIntent: workspaceIntentFixture({
         operation: 'ambiguous',
         originalFilePolicy: 'unknown',
-        isolationPolicy: 'unknown',
-        proposedMode: null,
-        confidence: 0.4,
+          confidence: 0.4,
       }),
     };
     expect(validatePlanningAgentPlan(plan, configuration)).toEqual({ valid: true, errors: [] });

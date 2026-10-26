@@ -54,7 +54,7 @@ export interface ExecutorRegistryDeps {
 
 export interface ExecutorRegistrationInspection {
   configured: boolean;
-  bindingSource: 'container' | 'worktree' | 'unbound';
+  bindingSource: 'container' | 'in_place' | 'unbound';
   adapterName: string | null;
 }
 
@@ -122,7 +122,7 @@ export class ExecutorRegistry {
     const bindingSource = harness?.transport === 'container'
       ? 'container'
       : harness?.transport === 'local-cli'
-        ? 'worktree'
+        ? 'in_place'
         : 'unbound';
     return {
       configured,

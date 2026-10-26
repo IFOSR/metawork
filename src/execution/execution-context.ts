@@ -33,7 +33,7 @@ export interface WorkspaceExecutionBindingFacts {
   authorizedWorkingDirectory: string;
 }
 
-export const DEFAULT_EXECUTION_MODE: ExecutionMode = 'worktree';
+export const DEFAULT_EXECUTION_MODE: ExecutionMode = 'in_place';
 /**
  * Migration-compatibility input only. Since the Planner-owned Workspace mode
  * contract, the Kernel-authorized decision is the sole source of the mode for a
@@ -60,10 +60,16 @@ export function resolveExecutionModeFromEnvironment(
 
 export function parseExecutionMode(value: string | undefined): ExecutionMode {
   if (value === undefined || value === '') return DEFAULT_EXECUTION_MODE;
-  if (value === 'worktree' || value === 'in_place') return value;
+  if (value === 'in_place') return value;
+  if (value === 'worktree') {
+    throw new ExecutionContextError(
+      'executionMode',
+      'worktree execution has been retired; choose the Conversation-bound Workspace',
+    );
+  }
   throw new ExecutionContextError(
     'executionMode',
-    `${EXECUTION_MODE_ENVIRONMENT} must be worktree or in_place`,
+    `${EXECUTION_MODE_ENVIRONMENT} must be in_place`,
   );
 }
 
@@ -83,6 +89,9 @@ export function assertExecutionContext(context: ExecutionContext): ExecutionCont
   }
   if (!isAbsolute(context.authorizedWorkingDirectory)) {
     throw new ExecutionContextError('authorizedWorkingDirectory', 'authorized working directory must be absolute');
+  }
+  if (context.executionMode === 'worktree') {
+    throw new ExecutionContextError('executionMode', 'worktree execution bindings are retired');
   }
   if (
     context.executionMode === 'in_place'

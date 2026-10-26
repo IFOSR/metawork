@@ -168,14 +168,6 @@ function validateWorkspaceIntent(plan: PlanningAgentPlan, errors: string[]): voi
     if (intent.operation !== 'read_only' && intent.targetPaths.length === 0) {
       errors.push('a writing Workspace intent must declare at least one target path');
     }
-    if (intent.proposedMode === 'worktree' && !hasIsolationRationale(intent)) {
-      errors.push(
-        'proposedMode worktree requires an isolation, risk, candidate or acceptance rationale',
-      );
-    }
-    if (intent.isolationPolicy === 'required' && intent.proposedMode === 'in_place') {
-      errors.push('proposedMode in_place contradicts isolationPolicy required');
-    }
     for (const path of intent.targetPaths) {
       if (path.startsWith('/') || path.includes('\\')
         || path.split('/').some(part => !part || part === '.' || part === '..')) {
@@ -201,15 +193,6 @@ function validateWorkspaceIntent(plan: PlanningAgentPlan, errors: string[]): voi
   if (intent.operation === 'ambiguous' && plan.action !== 'clarification') {
     errors.push('an ambiguous Workspace intent requires action clarification');
   }
-}
-
-function hasIsolationRationale(intent: NonNullable<PlanningAgentPlan['workspaceIntent']>): boolean {
-  return intent.isolationPolicy === 'requested'
-    || intent.isolationPolicy === 'required'
-    || intent.operation === 'isolated_experiment'
-    || intent.operation === 'high_risk_change'
-    || intent.originalFilePolicy === 'must_preserve'
-    || /(候选|接受|审核|隔离|保留原文件)/u.test(intent.reason);
 }
 
 function validateTaskControlScope(plan: PlanningAgentPlan, errors: string[]): void {

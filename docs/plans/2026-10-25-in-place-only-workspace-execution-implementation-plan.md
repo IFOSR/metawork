@@ -1,12 +1,12 @@
 # 单一 In-place Workspace 执行模型技术实施方案
 
 - 日期：2026-10-25
-- 状态：待实施
+- 状态：已实施
 - 依据：[Planner 主导的 Workspace 执行模式设计](2026-10-25-planner-owned-workspace-mode-design.md)、DeepSeek Harness/Pi 的现有实现和 MetaWork 当前 ResourceLease 机制。
 - 目标：删除产品级 Worktree 执行模式，统一采用 In-place Workspace 执行，以租约、等待队列、文件变更队列和变更记录解决并发、恢复和可追溯问题。
-- 完成日期：待实施完成后填写。
-- 交付验证：待实施完成后填写。
-- Closing commit：待实施完成后填写。
+- 完成日期：2026-10-25
+- 交付验证：`npm run lint`、`npm run build`、`npm run build:web`、In-place Workspace 聚焦测试和 `tests/storage/migrations.test.ts` 通过。
+- Closing commit：待提交。
 
 ## 1. 决策摘要
 

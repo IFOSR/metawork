@@ -156,21 +156,13 @@ export class MetaWorkConversationPanel implements Component {
 		if (turn.publicDelivery) {
 			const delivery = turn.publicDelivery;
 			const modeLabels: Record<string, string> = {
-				in_place: "In-place",
-				worktree: "Worktree",
+				in_place: "目标 Workspace 就地执行",
 			};
 			const sourceLabels: Record<string, string> = {
 				explicit_user: "用户明确要求",
 				planner: "Planner 判断",
-				fallback: "高级设置默认",
-				kernel_safety: "Kernel 安全规则",
-			};
-			const candidateLabels: Record<string, string> = {
-				executing: "隔离执行中，目标工作区未改变",
-				awaiting_acceptance: "候选已生成，等待你接受后发布",
-				conflict: "发布冲突，需要处理后继续",
-				published: "已发布到目标工作区",
-				cleaned: "隔离执行目录已清理",
+				fallback: "系统默认规则",
+				kernel_safety: "Kernel 规则",
 			};
 			const target = delivery.taskDirectory
 				? `目标项目目录: ${delivery.taskDirectory}`
@@ -180,11 +172,8 @@ export class MetaWorkConversationPanel implements Component {
 				target,
 				`执行模式: ${modeLabels[delivery.mode] ?? delivery.mode}`,
 				...(delivery.modeSource ? [`模式来源: ${sourceLabels[delivery.modeSource] ?? delivery.modeSource}`] : []),
-				`${delivery.mode === "in_place" ? "工作区文件" : "候选状态"}: ${delivery.stateLabel || delivery.state}`,
+				`工作区文件: ${delivery.stateLabel || delivery.state}`,
 			];
-			if (delivery.mode === "worktree" && delivery.candidate !== "none") {
-				linesForDelivery.push(`候选: ${candidateLabels[delivery.candidate] ?? delivery.candidate}`);
-			}
 			lines.push(...wrapTextWithAnsi(linesForDelivery.join("\n"), width));
 			if (expanded) lines.push(...wrapTextWithAnsi(`交付文件: ${delivery.files.join("、") || "暂无"}`, width));
 			if (delivery.conflicts.length)

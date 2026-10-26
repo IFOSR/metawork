@@ -16,7 +16,6 @@ import type { SessionPresentationService } from './session-presentation-service.
 import type { QueuedExecutionRequest } from './session-helpers.js';
 import type { TaskClearOutcome, TaskClearScope, TaskStatusQueryScope } from '../task/task-control-types.js';
 import type { Task } from '../core/types.js';
-import type { WorkspaceExecutionDecision } from '../core/workspace-execution.js';
 import type {
   ConversationTaskSchedulerRepo,
   QueuedTaskPayload,
@@ -505,23 +504,18 @@ export class SessionKernelRuntime {
     // environment or the current settings to reinterpret it. A Decision
     // persisted before this contract existed cannot be re-derived, so it falls
     // back to the isolated backend instead of guessing a user Workspace.
-    const workspaceExecution = decision.action.workspaceExecution
-      ?? LEGACY_WORKSPACE_EXECUTION;
+    const workspaceExecution = decision.action.workspaceExecution;
+    if (!workspaceExecution) {
+      throw new Error('legacy Kernel decision has no Workspace admission and cannot be dispatched');
+    }
     const workspaceRoot = await this.deps.resolveUserWorkspaceRoot?.(ownerConversationId) ?? null;
     const publicWorkspace = command.publicProjectDirectory ? workspaceRoot : null;
     if (command.publicProjectDirectory && !publicWorkspace) throw new Error('无法确认现有项目的 Workspace');
-    // Publication protection needs the admission-time state of the files this
-    // Task is authorized to touch: a user edit made after admission is a
-    // conflict, while a file that still matches may be replaced by the
-    // authorized change set. An explicitly selected project keeps its own tree
-    // baseline; every other Workspace round snapshots the declared paths.
+    // In-place execution observes the target Workspace directly. A baseline is
+    // only retained for the legacy public-project delivery projection.
     const publicBaseline = command.publicProjectDirectory && publicWorkspace
       ? await capturePublicProjectBaseline(publicWorkspace, command.publicProjectDirectory)
-      : workspaceRoot
-        && workspaceExecution.executionMode === 'worktree'
-        && workspaceExecution.targetPaths.length > 0
-        ? await captureWorkspaceTargetBaseline(workspaceRoot, workspaceExecution.targetPaths)
-        : {};
+      : {};
     const task = command.taskId
       ? this.deps.taskRuntimeService.findTask(command.taskId)
       : this.deps.taskRuntimeService.createTask({
@@ -625,15 +619,6 @@ export class SessionKernelRuntime {
     });
   }
 }
-
-/** Isolated, non-destructive default for Decisions persisted before schema 57. */
-const LEGACY_WORKSPACE_EXECUTION: WorkspaceExecutionDecision = {
-  executionMode: 'worktree',
-  source: 'kernel_safety',
-  reason: 'legacy Decision without a Workspace execution decision',
-  deliveryPolicy: 'await_acceptance',
-  targetPaths: [],
-};
 
 function scopeDashboard(
   dashboard: ReturnType<OrchestrationEngine['getDashboard']>,

@@ -11,6 +11,7 @@ import type {
   GenerationReplanRequestStatus,
 } from '../storage/generation-replan-request-repo.js';
 import type { WorkGraphRevisionRecord } from '../storage/work-graph-revision-repo.js';
+import { parseApplicationSettlement } from '../kernel/kernel-application-settlement.js';
 
 export const LEGACY_SYSTEM_BINDING_CALLBACK_ERROR =
   'Conversation execution callback is unavailable: onDecisionApplying';
@@ -190,6 +191,26 @@ export function inspectApplicationPostcondition(
   if (facts.application.errorSummary === 'task_state_upgrade_requires_reauthorization') {
     return { family: 'task_transition', verdict: 'unresolved',
       reason: 'legacy Task authorization requires inspection and a new six-state decision' };
+  }
+  // A settled local-service application records its durable settlement tag in
+  // errorSummary. The tag is the postcondition owned by the service workflow;
+  // recover it before the generic unmanaged-action guard below.
+  if (action.type === 'authorize_task_control') {
+    const settlement = parseApplicationSettlement(facts.application.errorSummary);
+    if (settlement?.kind === 'rejected_without_effect') {
+      return {
+        family: 'observation_only',
+        verdict: 'applied',
+        reason: 'the service workflow durably recorded an effect-free refusal',
+      };
+    }
+    if (settlement?.kind === 'operation_settled') {
+      return {
+        family: 'task_transition',
+        verdict: 'applied',
+        reason: 'the service workflow durably settled the operation',
+      };
+    }
   }
   if (UNMANAGED_ACTIONS.has(action.type)) {
     return {

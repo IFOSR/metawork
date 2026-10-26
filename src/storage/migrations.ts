@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 import { installObservationSchema } from './observation-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 57;
+export const CURRENT_SCHEMA_VERSION = 58;
 
 const MANAGED_SERVICES_SQL = `
   CREATE TABLE IF NOT EXISTS public_workspace_files (
@@ -39,7 +39,7 @@ const WORKSPACE_EXECUTION_SQL = `
     generation_id TEXT NOT NULL,
     workspace_id TEXT NOT NULL,
     canonical_path TEXT NOT NULL,
-    execution_mode TEXT NOT NULL CHECK (execution_mode IN ('worktree', 'in_place')),
+    execution_mode TEXT NOT NULL CHECK (execution_mode = 'in_place'),
     authorized_working_directory TEXT NOT NULL,
     mode_source TEXT NOT NULL DEFAULT '',
     delivery_policy TEXT NOT NULL DEFAULT '',
@@ -1833,6 +1833,23 @@ export function runMigrations(
     })();
     version = 57;
   }
+  if (version === 57) {
+    db.transaction(() => {
+      // Worktree generations are historical facts. Keep them visible for
+      // diagnosis, but prevent any pending candidate from being replayed by
+      // the single-Workspace runtime.
+      if (tableExists(db, 'workspace_publications')) {
+        db.prepare(`
+          UPDATE workspace_publications
+          SET status = 'parked',
+              error_summary = 'retired Worktree publication; explicit re-execution in the target Workspace is required'
+          WHERE status IN ('pending', 'applying')
+        `).run();
+      }
+      bumpSchemaVersion(db, 57, 58, '57 to 58');
+    })();
+    version = 58;
+  }
   // Current-schema databases may have been created before a new projection
   // invalidation trigger was introduced. Reinstalling the idempotent trigger
   // set on every open upgrades those databases without requiring a rebuild.
@@ -1848,7 +1865,7 @@ export function runMigrations(
  */
 function applyWorkspaceExecutionDdl(db: Database.Database): void {
   if (!columnsOf(db, 'tasks').includes('execution_mode')) {
-    db.exec("ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'worktree'");
+    db.exec("ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'in_place'");
   }
   const artifactColumns = tableExists(db, 'task_artifacts') ? columnsOf(db, 'task_artifacts') : [];
   if (artifactColumns.length > 0 && !artifactColumns.includes('reference_kind')) {
@@ -2737,7 +2754,7 @@ function runBaseMigrations(
     db.exec("ALTER TABLE tasks ADD COLUMN public_delivery_baseline_json TEXT NOT NULL DEFAULT '{}'");
     db.exec('ALTER TABLE tasks ADD COLUMN start_service_after_publish INTEGER NOT NULL DEFAULT 0');
     db.exec('ALTER TABLE tasks ADD COLUMN public_project INTEGER NOT NULL DEFAULT 0');
-    db.exec("ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'worktree'");
+    db.exec("ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'in_place'");
     db.exec("ALTER TABLE task_artifacts ADD COLUMN reference_kind TEXT NOT NULL DEFAULT 'legacy_published_copy'");
     db.exec('ALTER TABLE task_artifacts ADD COLUMN workspace_id TEXT');
     db.exec('ALTER TABLE task_artifacts ADD COLUMN artifact_version_id TEXT');

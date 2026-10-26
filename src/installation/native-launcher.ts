@@ -84,7 +84,7 @@ unset METAWORK_RELEASE_ID
 if [[ -f "$METAWORK_INSTALL_ROOT/app/current/release-identity.json" ]]; then
   export METAWORK_RELEASE_ID="\$("$METAWORK_NODE_EXECUTABLE" -p 'require(process.argv[1]).releaseId' "$METAWORK_INSTALL_ROOT/app/current/release-identity.json")"
 fi
-export METACLAW_EXECUTOR_BACKEND=worktree
+export METACLAW_EXECUTOR_BACKEND=in_place
 # The Server is Workspace-neutral. Planner RPC receives its Runtime-owned
 # safety root from the Server composition; the Client passes the user's
 # Workspace as a separate, explicit hint.
@@ -110,7 +110,7 @@ REM MetaWork managed launcher
 set "METAWORK_INSTALL_ROOT=%METAWORK_INSTALL_ROOT%"
 if not defined METAWORK_INSTALL_ROOT set "METAWORK_INSTALL_ROOT=${root}"
 set "ANYFUSION_INSTALL_ROOT=%METAWORK_INSTALL_ROOT%"
-set "METACLAW_EXECUTOR_BACKEND=worktree"
+set "METACLAW_EXECUTOR_BACKEND=in_place"
 set "METAWORK_SECRET_STORE=file"
 set "ANYFUSION_PLANNER_WORKSPACE="
 set "METACLAW_PLANNER_WORKDIR="

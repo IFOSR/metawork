@@ -494,12 +494,6 @@ const RuntimePolicySchema = z.object({
   }
 });
 
-const WorkspaceExecutionPolicySchema = z.object({
-  // Optional on read so revisions persisted before this policy keep their exact
-  // content hash; the effective default is resolved by `workspaceFallbackMode`.
-  fallbackMode: z.enum(['in_place', 'worktree']).optional(),
-}).strict();
-
 const FeishuGatewayAccessPolicySchema = z.object({
   dm_policy: z.enum(['pairing', 'allow_all', 'allowlist']),
   allowed_users: z.array(z.string().trim().min(1)),
@@ -566,7 +560,6 @@ export const AnyFusionConfigurationV2Schema = z.object({
   agentClasses: z.record(ReferenceIdSchema, AgentClassDefinitionSchema),
   permissionProfiles: z.record(ReferenceIdSchema, PermissionProfileSchema),
   runtimePolicy: RuntimePolicySchema,
-  workspaceExecution: WorkspaceExecutionPolicySchema.optional(),
   gateway: GatewayConfigSchema,
   routing: RoutingConfigurationSchema.optional(),
 }).strict().superRefine((configuration, context) => {

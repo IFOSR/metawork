@@ -1,4 +1,3 @@
-import { publicTaskRelativeDirectory } from './public-task-directory.js';
 // Owns Task creation primitives and non-lifecycle metadata bookkeeping.
 //
 // The Task status machine is not here: `TaskLifecyclePort.applyTaskChange()` in
@@ -94,11 +93,11 @@ export class TaskEngine {
       ...(input.ownerPlannerSessionId ? { ownerPlannerSessionId: input.ownerPlannerSessionId } : {}),
       ...(input.admittedAt ? { admittedAt: input.admittedAt } : {}),
       title: input.title,
-      publicTaskDirectory: input.publicTaskDirectory ?? publicTaskRelativeDirectory(input.title, taskId),
+      ...(input.publicTaskDirectory ? { publicTaskDirectory: input.publicTaskDirectory } : {}),
       publicDeliveryBaseline: input.publicDeliveryBaseline ?? {},
       publicProject: input.publicTaskDirectory !== undefined,
       startServiceAfterPublish: input.startServiceAfterPublish ?? false,
-      executionMode: input.executionMode ?? 'worktree',
+      executionMode: input.executionMode ?? 'in_place',
       ...(input.workspaceExecutionSource
         ? { workspaceExecutionSource: input.workspaceExecutionSource } : {}),
       ...(input.workspaceDeliveryPolicy
