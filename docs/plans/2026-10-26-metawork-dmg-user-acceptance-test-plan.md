@@ -188,8 +188,13 @@ Provider 表单里的可选填写帮助，不是配置记录，也不能影响�
 1. 安装时填写的 Provider 能在设置页正常编辑和删除。
 2. 设置页新增的 Provider 与安装时 Provider 的行为完全一致。
 3. 删除 Provider 后，`/api/config` 中不再存在该记录；重启不会自动恢复。
-4. `openai-responses` 和 `openai-compatible` 仍然是同一 Provider 身份中的协议
-   字段，不能因为显示名相同就互相覆盖。
+4. Provider 的协议是配置的一部分，`openai-responses` 和
+   `openai-compatible` 不能因为显示名或 URL 相同就互相覆盖。
+
+实现上，设置页加载目录时只能以已激活配置里的 `config.providers` 为卡片来源。
+不要把 completion 返回的本机发现项、公开目录项或 preset 项直接追加成新的
+Provider。新增连接已经有独立的“新增模型”表单，用户提交后才进入草稿；厂商
+名称、URL 和模型列表只能帮助填写表单，不能在后台创建配置。
 
 当前启动流程仍会对 `code-cli`、`kimi`、`deepseek` 这三个固定 ref 尝试从本机
 Agent 导入凭据。修正时应移除这种固定 ref 回填，改为只对当前激活配置中的
