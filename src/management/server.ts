@@ -32,6 +32,7 @@ import type { WebLaunchContextService } from './web-launch-context.js';
 import type { WorkspaceDirectoryBrowser } from './workspace-directory-browser.js';
 import type { ManagementWebSessionRuntime } from './web-session-runtime-types.js';
 import type { LocalAuthorizationService } from '../authorization/local-authorization-service.js';
+import type { MemoryManagementQuery } from './memory-management.js';
 import type {
   ArtifactDownloadResult,
   ArtifactMetadataResult,
@@ -293,6 +294,8 @@ export interface ManagementServerDeps {
   };
   /** Official account authorization is owned by the Server and projected to clients. */
   officialAuthorization?: LocalAuthorizationService;
+  /** Long-term memory management view (optional capability). */
+  memoryQuery?: MemoryManagementQuery;
 }
 
 const MIME: Record<string, string> = {
@@ -1270,8 +1273,70 @@ export class ManagementServer {
       return;
     }
 
-    if (request.method === 'GET' && url.pathname === '/api/config/activation-status') {
-      const runtime = this.deps.configurationRuntime?.getState();
+    if (request.method === 'GET' && url.pathname === '/api/memory/status') {
+      if (!this.deps.memoryQuery) {
+        this.sendJson(response, 503, { error: 'memory management unavailable' });
+        return;
+      }
+      this.sendJson(response, 200, await this.deps.memoryQuery.status());
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/memory/assets') {
+      if (!this.deps.memoryQuery) {
+        this.sendJson(response, 503, { error: 'memory management unavailable' });
+        return;
+      }
+      const limit = boundedQueryInt(url.searchParams.get('limit'), 50, 1, 200);
+      const offset = boundedQueryInt(url.searchParams.get('offset'), 0, 0, 100_000);
+      this.sendJson(response, 200, await this.deps.memoryQuery.listAssets({ limit, offset }));
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/memory/assets/enabled') {
+      if (!this.deps.memoryQuery) {
+        this.sendJson(response, 503, { error: 'memory management unavailable' });
+        return;
+      }
+      const body = await readRequestBody(request);
+      const memoryId = typeof body.memoryId === 'string' ? body.memoryId.trim() : '';
+      if (!memoryId) {
+        this.sendJson(response, 400, { error: 'memoryId is required' });
+        return;
+      }
+      if (typeof body.enabled !== 'boolean') {
+        this.sendJson(response, 400, { error: 'enabled must be a boolean' });
+        return;
+      }
+      const updated = await this.deps.memoryQuery.setEnabled({ memoryId, enabled: body.enabled });
+      if (!updated) {
+        this.sendJson(response, 404, { error: 'memory asset not found' });
+        return;
+      }
+      this.sendJson(response, 200, updated);
+      return;
+    }
+
+    if (request.method === 'DELETE' && url.pathname.startsWith('/api/memory/assets/')) {
+      if (!this.deps.memoryQuery) {
+        this.sendJson(response, 503, { error: 'memory management unavailable' });
+        return;
+      }
+      const memoryId = decodeURIComponent(url.pathname.slice('/api/memory/assets/'.length)).trim();
+      if (!memoryId) {
+        this.sendJson(response, 400, { error: 'memoryId is required' });
+        return;
+      }
+      const deleted = await this.deps.memoryQuery.deleteAsset({ memoryId });
+      if (!deleted) {
+        this.sendJson(response, 404, { error: 'memory asset not found' });
+        return;
+      }
+      this.sendJson(response, 200, { deleted: true });
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/config/activation-status') {      const runtime = this.deps.configurationRuntime?.getState();
       if (!runtime) {
         this.sendJson(response, 503, { error: 'configuration runtime status unavailable' });
         return;
@@ -1963,6 +2028,9 @@ interface RequestBody {
   secrets?: Record<string, string>;
   title?: string;
   path?: string;
+  /** Long-term memory management. */
+  memoryId?: string;
+  enabled?: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -2057,6 +2125,13 @@ interface WebSocketDiagnostic {
   status: number;
   reason: 'ready' | 'forbidden_origin' | 'unauthorized';
   message: string;
+}
+
+/** Bounded integer query parameter with a safe default. */
+function boundedQueryInt(raw: string | null, fallback: number, min: number, max: number): number {
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
 }
 
 function readRequestBody(request: IncomingMessage): Promise<RequestBody> {

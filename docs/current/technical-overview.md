@@ -1721,9 +1721,55 @@ Skill tradeoffs:
 
 MetaWork uses executor registration when the missing capability is a different worker or runtime. It uses Skills when the worker exists but needs better procedure, domain knowledge, or formatting discipline.
 
-## Explicit Memory
+## Long-Term Memory
 
-MetaWork stores explicitly confirmed preferences, task memory cards, and learning candidates in SQLite.
+MetaWork has an optional long-term memory capability (ADR-0049). An external
+memory engine (TencentDB Agent Memory MemoryCore) runs as a local sidecar and is
+the only extraction and retrieval implementation. MetaWork owns the seam around
+it: the **Memory Port** (`src/memory/memory-port.ts`) is the single place where
+memory crosses a process boundary, and no module talks to the engine directly.
+
+The account is the only isolation boundary: one account owns one fixed engine
+scope triple, and every AgentClass of that account shares it, so a practice
+learned in one role is recallable from every other role. Workspaces, agent
+roles and conversations are provenance labels only. The local
+`memory_bindings` table keeps ownership, the user switch, the provenance
+workspace and a content digest — never a memory body — so the engine can be
+discarded and rebuilt without losing the user's decisions.
+
+Deposition is batched and completed-turns only. A background tick deposits
+every completed turn since the previous deposition as one conversation segment,
+because only the whole segment lets the engine recognize a cross-turn
+preference. Failed, cancelled and blocked rounds never become durable
+experience, and the deposition cursor advances only after the engine accepted
+the batch. Secrets are redacted before deposition; content whose secret cannot
+be masked is refused.
+
+Delivery is pull-only. The Planner references a memory with
+`ContextRef{kind:'memory', memoryId}` and reads candidates through the bounded
+`search_memory` / `list_memory_assets` MCP tools over a Server-projected read
+model. The Runtime re-validates the reference, materializes the body on the
+host side, and the Executor receives it as
+`task_execution_evidence(kind='long_term_memory')` under the existing ADR-0021
+budget and audit. Memory is never spliced into the prompt body.
+
+`memory.enabled=false` means no sidecar, no request, no model cost and no index.
+The extraction model is user-chosen from the already configured providers; the
+system only enforces the hard constraints (openai-compatible Provider, enabled
+Provider and Model, matching Provider, `structured-output` capability) and
+never recommends or downgrades a model. Engine credentials live in the
+SecretStore and the sidecar environment only — never in the Server
+`process.env`, which the Planner process tree inherits. The engine's FTS5
+availability is a blocking health gate because BM25 silently returns empty
+without it.
+
+## Explicit Memory (retired pipeline)
+
+MetaWork still stores explicitly confirmed preferences in SQLite and still
+supports the `/memory` and `/learning` commands. This is the pre-ADR-0049
+pipeline: it is no longer the live memory path, and `ContextRef{kind:'preference'}`
+remains only as a compatibility alias. New memory behavior belongs to the
+long-term memory capability above.
 
 Natural-language requests never create, promote, or apply memory through a code-side heuristic. Users manage preferences through explicit `/memory` commands. Bounded confirmed global preferences are provided to the PlanningAgent, which may reference an exact confirmed preference in a Subtask `contextRef`.
 
@@ -1786,7 +1832,7 @@ src/
 ├── intent/         # Inline resource normalization and non-routing intent/material helpers
 ├── kernel/         # Pure ControlKernel v5 contracts/decisions and durable workflow seam
 ├── learning/       # Reflection, weekly review, skill governance, promotion gates, safety scanning
-├── memory/         # Explicit preferences, deterministic conversation context, vault export
+├── memory/         # Memory Port, TDAI anti-corruption layer, deposition/growth orchestration, evidence delivery, sidecar lifecycle
 ├── notifications/  # Notification adapters such as Feishu notifications
 ├── server/         # Persistent Server composition, lifecycle, and manifest
 ├── planning/       # PlanningAgent interface (AnyFusionPlanningAgent), context builder, plan schema/vocabulary, validation

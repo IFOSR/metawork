@@ -116,5 +116,11 @@ export class PreferenceRepo {
     `).run(generateUsageId(), prefId, taskId, new Date().toISOString());
 
     this.update(prefId, { lastUsedAt: new Date().toISOString() });
+    // Keep the task provenance list in sync so the automatic injection path can
+    // find the preference again (design §10).
+    const current = this.findById(prefId);
+    if (current && !current.sourceTasks.includes(taskId)) {
+      this.update(prefId, { sourceTasks: [...current.sourceTasks, taskId] });
+    }
   }
 }

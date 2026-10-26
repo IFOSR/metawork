@@ -34,6 +34,8 @@ export interface AccountPaths {
   readonly attempts: string;
   readonly results: string;
   readonly gateway: string;
+  /** Long-term memory engine data and configuration. */
+  readonly memory: string;
 }
 
 export function resolveAccountPaths(accountId: string, installRoot?: string): AccountPaths {
@@ -69,5 +71,6 @@ export function resolveAccountPaths(accountId: string, installRoot?: string): Ac
     attempts: resolve(root, 'attempts'),
     results: resolve(data, 'results'),
     gateway: resolve(root, 'gateway'),
+    memory: resolve(data, 'memory'),
   };
 }

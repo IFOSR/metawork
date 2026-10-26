@@ -117,6 +117,61 @@ safe text visibility, and file-delivery-only recovery retain their existing owne
 
 ## Current Implementation Notes
 
+Long-term memory (2026-10-22, ADR-0049): long-term memory is an optional
+capability backed by one external memory engine behind a single Memory Port.
+The account is the only isolation boundary: one account owns one engine scope
+triple, and every AgentClass of that account shares it, so a practice learned in
+one role is recallable from every other role. Workspaces, agent roles and
+conversations are provenance labels only. The local `memory_bindings` table
+holds ownership, the user switch and a content digest; it never holds a memory
+body, so the engine can be discarded and rebuilt without losing the user's
+decisions.
+
+Deposition is batched and completed-turns only: a conversation goes idle, and
+every turn since the last deposition is written to the L0 conversation layer in
+one call, because only the whole segment lets the engine recognize a cross-turn
+preference. Turn-by-turn deposition is rejected. Failed, cancelled and blocked
+rounds never become durable experience. The deposition cursor advances only
+after the engine accepted the batch.
+
+Delivery is pull-only. The Planner references a memory with
+`ContextRef{kind:'memory', memoryId}`; the Runtime re-validates account
+ownership and the enabled state, fetches the body on the host side, and
+materializes it as `task_execution_evidence(kind='long_term_memory')`. The
+ADR-0021 budget (4,000 characters per item, 24,000 per task) and the
+`executor_evidence_accessed` audit apply unchanged. A memory is never spliced
+into the prompt body, and an unavailable memory is an explicit failure rather
+than empty content.
+
+The Planner never reaches the engine. The Server owns the adapter and projects a
+bounded preview into the account database; the Planner reads that read model
+through the `search_memory` and `list_memory_assets` MCP tools, exactly as it
+reads tasks and interactions from the database. Engine credentials are read
+from the SecretStore on demand and injected into the sidecar environment only;
+they never enter the Server `process.env`, which the Planner process tree
+inherits, and the Executor container has neither a memory credential nor a
+memory network route.
+
+`memory.enabled=false` means no sidecar, no request, no model cost and no
+index. The extraction model is chosen explicitly by the user from the providers
+they already configured; the system enforces only hard constraints (the
+Provider protocol must be `openai-compatible`, the Provider and Model must be
+enabled, the Model must belong to that Provider and must declare
+`structured-output`) and never recommends, downgrades or fills in a model.
+Extraction spend belongs to the user-selected Provider.
+
+Deposition is sanitized first: secret-like content is redacted before it
+reaches the engine, content whose secret cannot be masked is refused, and
+dangerous-command content is marked as sanitized. A re-bind never re-enables
+an asset the user disabled.
+
+Degradation never fails a task. An unavailable engine means deposition is
+dropped and logged, recall returns an empty result with a `degraded` flag,
+materialization fails explicitly, and governance actions report the error. The
+engine's BM25 recall depends on SQLite FTS5; without FTS5 the recall silently
+returns nothing, so FTS5 availability in the engine health response is a
+blocking gate and the memory seam stays closed rather than appearing to work.
+
 Upstream result access (2026-10-17): attempt evidence/ResultReference services
 are enabled from registered Harness driver support in the authorized configuration
 revision, independent of AgentClass names. Custom Pi/Codex Executors receive

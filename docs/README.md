@@ -21,7 +21,7 @@ This directory contains both current technical documentation and historical plan
 
 - [斜杠指令参考](current/commands.md)：唯一的当前指令清单与 Desktop/Web 联想说明；[精简与联想验收记录](plans/2026-10-22-command-simplification-and-desktop-completion.md)。
 
-- [记忆系统接入 TencentDB Agent Memory 设计方案](plans/2026-10-22-memory-system-tdai-integration-design.md)：记忆体系现状审计（采集/晋级/送达三处断链）、以 TDAI 为唯一记忆引擎的目标架构、记忆沉淀契约、证据投递 pull 语义、开关与 Provider 配置、凭证纪律及 ADR 影响；唯一待评审方案，尚未实施。
+- [记忆系统接入 TencentDB Agent Memory 设计方案](plans/2026-10-22-memory-system-tdai-integration-design.md)：记忆体系现状审计（采集/晋级/送达三处断链）、以 TDAI 为唯一记忆引擎的目标架构、记忆沉淀契约、证据投递 pull 语义、开关与 Provider 配置、凭证纪律及 ADR 影响；已实施，见 [ADR-0049](../adr/0049-long-term-memory-ownership-deposition-and-delivery.md) 与文档末尾的实施记录。
 
 - [任务状态简化设计](plans/2026-10-22-task-state-simple-design.md)：统一六个状态、转换规则、队列规则及跨模块一致性的产品目标；[技术落地方案](plans/2026-10-22-task-state-implementation-plan.md)细化源码入口、唯一事务提交、操作收尾、恢复迁移与跨端联动验收。两者均待评审，尚未实施。
 
@@ -102,6 +102,8 @@ evolved the active graph to v5 for concurrent dispatch and publication without
 replacing those semantics.
 
 ## Local Implementation Pending Validation
+
+- [长期记忆接入 TDAI](plans/2026-10-22-memory-system-tdai-integration-design.md)：记忆引擎接入、沉淀调度、证据投递与设置页管理面已完成源码实施与本地端到端验证（真实引擎回路 + 用户旅程用例）；等待真实账号的体感验收。
 
 - [轨迹页执行计划内嵌 DAG](plans/2026-10-03-work-graph-inline-dag.md)：卡片内展示真实依赖箭头、并行分支与汇合，节点选择联动详情，支持移动端滚动；本地实现并验证，未部署。
 - [TUI Workspace task dashboard and switching](plans/2026-10-03-tui-workspace-task-dashboard.md): workspace task overview, task-to-Turn navigation and independent drafts; local only pending user validation.

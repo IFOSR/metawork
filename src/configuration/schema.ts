@@ -552,6 +552,51 @@ const RoutingConfigurationSchema = z.object({
   }).strict().optional(),
 }).strict();
 
+/**
+ * Memory configuration (design §7).
+ *
+ * The extraction model is user-chosen. The system only enforces hard
+ * constraints: the Provider protocol must be `openai-compatible` (the engine
+ * speaks `{baseUrl}/chat/completions`), the Provider must be enabled, the Model
+ * must belong to that Provider, and the Model must declare structured output.
+ * There is no recommendation, no automatic downgrade and no default fill-in.
+ */
+const MemoryConfigurationSchema = z.object({
+  enabled: z.boolean(),
+  providerRef: ReferenceIdSchema.optional(),
+  modelRef: ReferenceIdSchema.optional(),
+  retrieval: z.object({
+    maxResults: z.number().int().min(1).max(20).optional(),
+    maxChars: z.number().int().min(200).max(8_000).optional(),
+  }).strict().optional(),
+  sidecar: z.object({
+    port: z.number().int().min(1).max(65_535).optional(),
+    dataDir: z.string().trim().min(1).max(1_024).optional(),
+    autoStart: z.boolean().optional(),
+  }).strict().optional(),
+}).strict().superRefine((memory, context) => {
+  // Design §7.2 three-state model: `enabled` with no extraction model is a
+  // persistable state that the settings page renders as "choose a model".
+  // Rejecting it here would make that state unreachable through the normal
+  // settings transaction (review P2-7). An extraction model, when present, is
+  // still validated by `validateMemoryExtractionModel`.
+  if (!memory.enabled) return;
+  if (memory.providerRef && !memory.modelRef) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['memory', 'modelRef'],
+      message: 'memory extraction requires a modelRef for the selected providerRef',
+    });
+  }
+  if (!memory.providerRef && memory.modelRef) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['memory', 'providerRef'],
+      message: 'memory extraction requires a providerRef for the selected modelRef',
+    });
+  }
+});
+
 export const AnyFusionConfigurationV2Schema = z.object({
   schemaVersion: z.literal(2),
   providers: z.record(ReferenceIdSchema, ProviderDefinitionSchema),
@@ -562,7 +607,9 @@ export const AnyFusionConfigurationV2Schema = z.object({
   runtimePolicy: RuntimePolicySchema,
   gateway: GatewayConfigSchema,
   routing: RoutingConfigurationSchema.optional(),
+  memory: MemoryConfigurationSchema.optional(),
 }).strict().superRefine((configuration, context) => {
+  validateMemoryExtractionModel(configuration, context);
   for (const [modelRef, model] of Object.entries(configuration.models)) {
     const provider = configuration.providers[model.providerRef];
     if (!provider) {
@@ -733,6 +780,76 @@ export const AnyFusionConfigurationV2Schema = z.object({
     }
   }
 }) as z.ZodType<AnyFusionConfigurationV2>;
+
+/**
+ * Enforce the three hard constraints of the memory extraction model selector
+ * (design §7.3). The system never recommends, never downgrades and never fills
+ * the choice in; it only refuses an extraction model that cannot work.
+ */
+function validateMemoryExtractionModel(
+  configuration: AnyFusionConfigurationV2,
+  context: z.core.$RefinementCtx,
+): void {
+  const memory = configuration.memory;
+  if (!memory?.enabled) return;
+  // An enabled memory without a chosen model is valid: it is the "choose a
+  // model" state (design §7.2), not an invalid configuration.
+  if (!memory.providerRef || !memory.modelRef) return;
+  const provider = configuration.providers[memory.providerRef];
+  if (!provider) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['memory', 'providerRef'],
+      message: `unknown Provider reference: ${memory.providerRef}`,
+    });
+    return;
+  }
+  if (!provider.enabled) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['memory', 'providerRef'],
+      message: `memory extraction requires an enabled Provider: ${memory.providerRef}`,
+    });
+  }
+  if (provider.protocol !== 'openai-compatible') {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['memory', 'providerRef'],
+      message:
+        `memory extraction requires an openai-compatible Provider; ${memory.providerRef} uses ${provider.protocol}`,
+    });
+  }
+  const model = configuration.models[memory.modelRef];
+  if (!model) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['memory', 'modelRef'],
+      message: `unknown Model reference: ${memory.modelRef}`,
+    });
+    return;
+  }
+  if (model.providerRef !== memory.providerRef) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['memory', 'modelRef'],
+      message: `memory extraction Model must belong to Provider ${memory.providerRef}`,
+    });
+  }
+  if (!model.enabled) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['memory', 'modelRef'],
+      message: `memory extraction requires an enabled Model: ${memory.modelRef}`,
+    });
+  }
+  if (!model.capabilities.includes('structured-output')) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['memory', 'modelRef'],
+      message: `memory extraction requires the structured-output capability: ${memory.modelRef}`,
+    });
+  }
+}
 
 export function parseAnyFusionConfigurationV2(value: unknown): AnyFusionConfigurationV2 {
   const normalizedVersion = value && typeof value === 'object' && !Array.isArray(value)

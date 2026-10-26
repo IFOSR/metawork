@@ -22,6 +22,12 @@ export type ContextRef =
   | { kind: 'artifact'; artifactId: string }
   | { kind: 'task_resource'; locator: string }
   | { kind: 'task_evidence'; evidenceId: string }
+  /**
+   * Long-term memory recalled from the memory engine. Reaches the Executor only
+   * through the evidence channel; it is never spliced into the prompt body.
+   */
+  | { kind: 'memory'; memoryId: string }
+  /** Compatibility alias for the retired local preference store. */
   | { kind: 'preference'; preferenceId: string };
 
 export interface WorkGraphAcceptanceCriterion {

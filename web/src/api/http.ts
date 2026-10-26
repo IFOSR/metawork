@@ -30,6 +30,7 @@ import type {
 } from './session-types';
 import { documentPreviewFormat, MAX_DOCUMENT_PREVIEW_BYTES } from '../../../src/delivery/document-preview-format';
 import type { ConversationAttachment } from './session-types';
+import type { MemoryAssetView, MemoryStatusView } from './memory';
 
 class HttpError extends Error {
   constructor(readonly status: number, readonly body: string) {
@@ -40,8 +41,7 @@ class HttpError extends Error {
 export class HttpClient {
   constructor(private readonly onUnauthorized?: () => void) {}
 
-  private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(path, {
+  private async request<T>(path: string, init?: RequestInit): Promise<T> {    const response = await fetch(path, {
       ...init,
       credentials: 'same-origin',
       headers: {
@@ -58,8 +58,33 @@ export class HttpClient {
     return response.json() as Promise<T>;
   }
 
+  /** Raw request passthrough for the memory management view. */
+  requestMemory(path: string, init?: RequestInit): Promise<unknown> {
+    return this.request<unknown>(path, init);
+  }
+
   getConfig(signal?: AbortSignal): Promise<ConfigSnapshot> {
     return this.request<ConfigSnapshot>('/api/config', { signal });
+  }
+
+  /** Long-term memory management view. */
+  getMemoryStatus(): Promise<MemoryStatusView> {
+    return this.request<MemoryStatusView>('/api/memory/status');
+  }
+
+  getMemoryAssets(): Promise<{ items: MemoryAssetView[]; total: number }> {
+    return this.request<{ items: MemoryAssetView[]; total: number }>('/api/memory/assets');
+  }
+
+  setMemoryAssetEnabled(memoryId: string, enabled: boolean): Promise<unknown> {
+    return this.request('/api/memory/assets/enabled', {
+      method: 'POST',
+      body: JSON.stringify({ memoryId, enabled }),
+    });
+  }
+
+  deleteMemoryAsset(memoryId: string): Promise<unknown> {
+    return this.request(`/api/memory/assets/${encodeURIComponent(memoryId)}`, { method: 'DELETE' });
   }
 
   getExecutorManagement(config?: Record<string, unknown>): Promise<ExecutorManagementView> {

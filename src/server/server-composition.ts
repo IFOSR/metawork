@@ -242,6 +242,13 @@ import { ConversationTaskSchedulerRepo } from '../storage/conversation-task-sche
 import type { ConversationResultDelivery } from '../session/conversation-session.js';
 import { createBackgroundResultDelivery } from '../gateway/background-result-delivery.js';
 import { DEFAULT_OFFICIAL_SERVICE_URL, OfficialServiceClient, LocalAuthorizationService } from '../authorization/index.js';
+import {
+  MemoryRuntimeController,
+  describeMemoryStatus,
+} from '../memory/memory-runtime-controller.js';
+import { resolveMemorySidecarCommand } from '../memory/memory-sidecar-command.js';
+import { MemoryEvidenceService } from '../memory/memory-evidence-service.js';
+import { createMemoryManagementQuery, type MemoryManagementQuery } from '../management/memory-management.js';
 
 function toMutationResult(result: ActivateDraftResult): ConfigurationMutationResult {
   if (result.ok) return { ok: true, revisionId: result.snapshot.revisionId };
@@ -372,6 +379,7 @@ async function startWebMode(options: {
   launchContexts: WebLaunchContextService;
   agentReadiness: AgentInstallationReadinessService;
   officialAuthorization?: LocalAuthorizationService;
+  memoryQuery?: MemoryManagementQuery;
 }): Promise<ManagementServer> {
   const webDistDir = process.env.ANYFUSION_WEB_DIST
     ? resolve(process.env.ANYFUSION_WEB_DIST)
@@ -396,6 +404,7 @@ async function startWebMode(options: {
     artifactQuery: options.artifactQuery,
     agentReadiness: options.agentReadiness,
     officialAuthorization: options.officialAuthorization,
+    ...(options.memoryQuery ? { memoryQuery: options.memoryQuery } : {}),
   });
   await managementServer.start();
   process.stdout.write([
@@ -784,6 +793,50 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     contentHash: migratedSnapshot.contentHash,
   });
 
+  // 4b. Long-term memory (optional capability).
+  //
+  // When memory is disabled there is no sidecar, no request, no model cost and
+  // no index. The extraction credential is read from the SecretStore and
+  // injected into the sidecar environment only; it never enters the Server's
+  // own process.env, which the Planner process tree inherits.
+  const sidecarResolution = resolveMemorySidecarCommand({ installRoot: paths.root });
+  const memoryRuntimeController = await MemoryRuntimeController.create({
+    configuration: migratedSnapshot.config,
+    options: {
+      accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+      db,
+      secretStore,
+      dataDir: accountPaths.memory,
+      sidecarCommand: sidecarResolution.command,
+      sidecarUnavailableReason: sidecarResolution.reason ?? 'memory_engine_unreachable',
+      logger: message => console.error(`[memory] ${message}`),
+    },
+  });
+  console.log(`[memory] ${describeMemoryStatus(memoryRuntimeController.status)}`);
+
+  // A stable handle for execution evidence. The controller rebuilds the runtime
+  // when the memory section of the active revision changes, so the attempt
+  // runner must not capture one runtime instance (review P1-1).
+  const memoryEvidenceProxy = {
+    collectMemoryRefs: MemoryEvidenceService.collectMemoryRefs,
+    async materialize(input: {
+      accountId: string;
+      taskId: string;
+      memoryIds: readonly string[];
+    }) {
+      const evidence = memoryRuntimeController.runtime.evidence;
+      if (!evidence) {
+        // Memory is off or degraded; report it per reference instead of
+        // silently dropping the requirement.
+        return {
+          materialized: [] as string[],
+          failed: input.memoryIds.map(memoryId => ({ memoryId, reason: 'memory_unavailable' })),
+        };
+      }
+      return evidence.materialize(input);
+    },
+  };
+
   // 4. 初始化 Repos
   const taskSearchIndexRepo = new TaskSearchIndexRepo(db);
   const taskRepo = new TaskRepo(db, taskSearchIndexRepo);
@@ -1141,6 +1194,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     memoryEngine,
     orchestration,
     contextRecaller,
+    // Evidence delivery resolves the live runtime on every reference, so a
+    // configuration activation that rebuilds the memory runtime keeps working.
+    memoryEvidence: memoryEvidenceProxy,
     notifier,
     workspaceRoot: accountPaths.workspaceStore,
     attemptsRoot: accountPaths.attempts,
@@ -1303,6 +1359,24 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         models: billingModelPriceInputs(Object.values(snapshot.config.models)),
       });
       await gatewayFeishuManager?.applyConfiguration(buildApplicationConfig(snapshot));
+      // Long-term memory is a revisioned setting (design §7). Applying it here
+      // is what makes the settings switch actually take effect: the controller
+      // rebuilds the runtime only when the memory section changed, draining the
+      // pending segment first (review P1-1, P1-2).
+      try {
+        const applied = await memoryRuntimeController.applyConfiguration(snapshot.config);
+        if (applied.rebuilt) {
+          console.log(
+            `[memory] reconfigured: ${describeMemoryStatus(applied.status)}`
+            + (applied.flushed > 0 ? ` (flushed ${applied.flushed} turn messages)` : ''),
+          );
+          if (applied.error) console.warn(`[memory] reconfigure degraded: ${applied.error}`);
+        }
+      } catch (error) {
+        // A memory failure must never fail a configuration activation: the
+        // revision is already committed and every other section applied.
+        console.error(`[memory] reconfigure failed: ${(error as Error).message}`);
+      }
       republishAgentReadiness?.();
     },
     onActivationFailed: async ({ snapshot, runtime }) => {
@@ -1331,6 +1405,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         models: billingModelPriceInputs(Object.values(snapshot.config.models)),
       });
       await gatewayFeishuManager?.applyConfiguration(buildApplicationConfig(snapshot));
+      // A failed activation restores the previous revision, so the memory
+      // runtime must follow it back (review P1-1).
+      try {
+        await memoryRuntimeController.applyConfiguration(snapshot.config);
+      } catch (error) {
+        console.error(`[memory] restore after failed activation failed: ${(error as Error).message}`);
+      }
       republishAgentReadiness?.();
     },
   });
@@ -1457,6 +1538,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       orchestration,
       config,
       plannerProposalRepo: new PlannerProposalRepo(db),
+      refreshMemoryRecall: async input => {
+          await memoryRuntimeController.runtime.refreshRecall({
+            accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+            conversationId: input.conversationId,
+            query: input.query,
+          });
+        },
       queryUsage: {
         lifecycle: billingServices.lifecycle,
         externalAccountRef: billingServices.externalAccountRef,
@@ -2405,6 +2493,14 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       clientNotifications: { read: cursor => clientNotifications.read(LOCAL_DEFAULT_ACCOUNT_ID, cursor) },
       serviceActivity: () => activityProjection.serviceSummary(LOCAL_DEFAULT_ACCOUNT_ID),
       agentReadiness,
+      memoryQuery: createMemoryManagementQuery({
+        resolveRuntime: () => memoryRuntimeController.runtime,
+        accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+        readConfiguration: async () => {
+          const snapshot = await configurationRepository.getActiveSnapshot();
+          return { providers: snapshot.config.providers, models: snapshot.config.models };
+        },
+      }),
       sessionRuntime: new WebGatewaySessionRuntime({
         accountId: LOCAL_DEFAULT_ACCOUNT_ID,
         catalog: webSessionCatalog,
@@ -2918,6 +3014,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           plannerSupervisor.stop(),
         ]);
         await accountRegistry.shutdown();
+        // Final deposition before the Server stops (design §5.2).
+        await memoryRuntimeController.stop();
       },
     });
     serverApplication = createServerApplication(composition, {

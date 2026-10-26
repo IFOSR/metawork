@@ -111,8 +111,61 @@ function asPlainRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-export function selectModelPolicy(
-  selection: string,
+/** Editable long-term memory state. */
+export interface MemoryConfigDraft {
+  enabled: boolean;
+  providerRef: string;
+  modelRef: string;
+}
+
+/**
+ * Reads the memory section of a configuration revision.
+ *
+ * Memory is opt-in: a revision without the section is read as disabled, and the
+ * extraction model is never filled in automatically.
+ */
+export function loadMemoryDraft(config: Record<string, unknown>): MemoryConfigDraft {
+  const memory = asPlainRecord(config.memory);
+  return {
+    enabled: memory?.enabled === true,
+    providerRef: typeof memory?.providerRef === 'string' ? memory.providerRef : '',
+    modelRef: typeof memory?.modelRef === 'string' ? memory.modelRef : '',
+  };
+}
+
+/**
+ * Materializes the `memory` section for an activation payload.
+ *
+ * An enabled memory always carries an explicit provider and model: the Server
+ * rejects an enabled memory without them, so the panel must not be able to
+ * produce that state.
+ */
+export function buildMemorySection(
+  draft: MemoryConfigDraft,
+  originalConfig: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const originalMemory = asPlainRecord(originalConfig.memory);
+  if (!draft.enabled && !originalMemory) return undefined;
+  if (!draft.enabled) {
+    return {
+      ...(originalMemory ?? {}),
+      enabled: false,
+      ...(draft.providerRef ? { providerRef: draft.providerRef } : {}),
+      ...(draft.modelRef ? { modelRef: draft.modelRef } : {}),
+    };
+  }
+  return {
+    ...(originalMemory ?? {}),
+    enabled: true,
+    // Empty selections are omitted, not written as empty strings: a reference
+    // must match the reference-id pattern, and "enabled but no model yet" is
+    // the persistable needs-model state (design §7.2, review P2-7).
+    ...(draft.providerRef.trim() ? { providerRef: draft.providerRef.trim() } : {}),
+    ...(draft.modelRef.trim() ? { modelRef: draft.modelRef.trim() } : {}),
+  };
+}
+
+export function selectModelPolicy(  selection: string,
   modelRefs: string[],
   current: EditableModelPolicy,
 ): EditableModelPolicy {

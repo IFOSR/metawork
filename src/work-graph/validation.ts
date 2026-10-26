@@ -190,6 +190,7 @@ export function contextRefKey(ref: ContextRef): string {
     case 'artifact': return `${ref.kind}:${ref.artifactId}`;
     case 'task_resource': return `${ref.kind}:${ref.locator}`;
     case 'task_evidence': return `${ref.kind}:${ref.evidenceId}`;
+    case 'memory': return `${ref.kind}:${ref.memoryId}`;
     case 'preference': return `${ref.kind}:${ref.preferenceId}`;
   }
 }

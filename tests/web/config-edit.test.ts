@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   MODEL_CAPABILITIES,
+  buildMemorySection,
   buildSpanRoutingSection,
   clampTimeout,
+  loadMemoryDraft,
   loadSpanRoutingDraft,
   selectModelPolicy,
 } from '../../web/src/config-edit.js';
@@ -120,5 +122,59 @@ describe('Span routing advanced settings draft', () => {
     expect(clampTimeout(10)).toBe(500);
     expect(clampTimeout(999_999)).toBe(10_000);
     expect(clampTimeout(Number.NaN)).toBe(8_000);
+  });
+});
+
+describe('Web long-term memory editing', () => {
+  it('reads a revision without a memory section as disabled', () => {
+    expect(loadMemoryDraft({})).toEqual({ enabled: false, providerRef: '', modelRef: '' });
+  });
+
+  it('reads the stored provider and model', () => {
+    expect(loadMemoryDraft({
+      memory: { enabled: true, providerRef: 'openai-like', modelRef: 'extraction-model' },
+    })).toEqual({ enabled: true, providerRef: 'openai-like', modelRef: 'extraction-model' });
+  });
+
+  it('does not add a memory section for a revision that never had one', () => {
+    expect(buildMemorySection(
+      { enabled: false, providerRef: '', modelRef: '' },
+      {},
+    )).toBeUndefined();
+  });
+
+  it('writes an explicit provider and model when memory is enabled', () => {
+    const section = buildMemorySection(
+      { enabled: true, providerRef: ' openai-like ', modelRef: ' extraction-model ' },
+      {},
+    );
+    expect(section).toEqual({
+      enabled: true,
+      providerRef: 'openai-like',
+      modelRef: 'extraction-model',
+    });
+  });
+
+  it('never auto-fills an extraction model', () => {
+    const section = buildMemorySection(
+      { enabled: true, providerRef: '', modelRef: '' },
+      {},
+    );
+    // An empty reference must be omitted, not written as '': the schema rejects
+    // an empty ref, and "enabled but no model yet" is a valid persisted state.
+    expect(section).toEqual({ enabled: true });
+  });
+
+  it('keeps the stored section so a toggle does not drop it', () => {
+    const section = buildMemorySection(
+      { enabled: false, providerRef: 'openai-like', modelRef: 'extraction-model' },
+      { memory: { enabled: true, providerRef: 'openai-like', modelRef: 'extraction-model', retrieval: { maxResults: 8 } } },
+    );
+    expect(section).toMatchObject({
+      enabled: false,
+      providerRef: 'openai-like',
+      modelRef: 'extraction-model',
+      retrieval: { maxResults: 8 },
+    });
   });
 });

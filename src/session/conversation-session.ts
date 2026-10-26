@@ -172,6 +172,15 @@ export interface ConversationSessionDeps {
   readonly commandReadServices?: CommandReadServices;
   readonly taskEngine?: TaskEngine;
   readonly memoryEngine?: MemoryEngine;
+  /**
+   * Long-term memory recall. The Server refreshes the Planner-facing candidate
+   * set before a planning turn so that the Planner can reference a memory by
+   * id. Failures never block the turn.
+   */
+  readonly refreshMemoryRecall?: (input: {
+    conversationId: string;
+    query: string;
+  }) => Promise<void>;
   readonly orchestration?: OrchestrationEngine;
   readonly config?: Config;
   readonly taskExecutionApplicationService?: SessionTaskExecutionApplicationService;
@@ -859,6 +868,21 @@ export class ConversationSession {
     };
   }
 
+  /**
+   * Refresh the long-term memory candidates for this turn. Memory is an
+   * optional capability: when it is unavailable the Planner simply plans
+   * without it.
+   */
+  private async refreshMemoryRecall(userInput: string): Promise<void> {
+    const refresh = this.deps.refreshMemoryRecall;
+    if (!refresh) return;
+    try {
+      await refresh({ conversationId: this.deps.conversationId, query: userInput });
+    } catch {
+      // A recall failure must never block the turn.
+    }
+  }
+
   /** Releases stale admission state for this Conversation before planning. */
   private async reconcileAdmissionBeforePlanning(): Promise<void> {
     const conversationId = this.deps.conversationId;
@@ -963,6 +987,7 @@ export class ConversationSession {
     // same-topic conflict, so explicit new work is not held by dead state.
     await this.reconcileAdmissionBeforePlanning();
     this.beginPlannerTurn(userInput, images, attachments);
+    await this.refreshMemoryRecall(userInput);
     const context = this.buildPlanningContext(userInput, images, attachments);
     if (!context) {
       this.endPlannerTurn();

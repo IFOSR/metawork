@@ -28,11 +28,15 @@ import {
 } from './provider-secret-state';
 import {
   SPAN_ROUTING_DEFAULT_TIMEOUT_MS,
+  buildMemorySection,
   buildSpanRoutingSection,
+  loadMemoryDraft,
   loadSpanRoutingDraft,
   type SpanRoutingDraft,
 } from '../config-edit';
 import { SpanRoutingSettings } from './SpanRoutingSettings';
+import { MemorySettingsPanel, type MemorySettingsDraft } from './MemorySettingsPanel';
+import { createMemoryApiClient } from '../api/memory';
 import { ModelConnectionDialog, type NewModelConnectionDraft } from './ModelConnectionDialog';
 import { ExecutorEditorDialog } from './ExecutorEditorDialog';
 import { applyExecutorSnapshot } from '../executor-management';
@@ -467,6 +471,11 @@ export function SettingsPanel({
     apiKey: '',
   });
   const [spanCredentialConfigured, setSpanCredentialConfigured] = useState(false);
+  const [memoryDraft, setMemoryDraft] = useState<MemorySettingsDraft>({
+    enabled: false,
+    providerRef: '',
+    modelRef: '',
+  });
   const [newModelIds, setNewModelIds] = useState<Record<string, string>>({});
   const [capabilityCatalog, setCapabilityCatalog] = useState<Record<string, string[]>>({});
   const [modelDiscoveries, setModelDiscoveries] = useState<Record<string, {
@@ -541,6 +550,7 @@ export function SettingsPanel({
     setCatalog(loadCatalog(config, completion));
     setRuntimePolicy(loadRuntimePolicy(config));
     setSpanDraft(loadSpanRoutingDraft(config));
+    setMemoryDraft(loadMemoryDraft(config));
     const nextDraft = loadRoutingDraft(config);
     setDraft(nextDraft);
     setFacts(loadRoutingFacts(config));
@@ -811,6 +821,7 @@ export function SettingsPanel({
       }
     }
     const spanRoutingSection = buildSpanRoutingSection(spanDraft, originalConfig);
+    const memorySection = buildMemorySection(memoryDraft, originalConfig);
     const knownSecretReferences = Object.values(originalProviders)
       .map(provider => asRecord(provider).apiKeyRef)
       .filter((reference): reference is string => typeof reference === 'string');
@@ -943,6 +954,7 @@ export function SettingsPanel({
         agentClasses,
         harnesses,
         ...(spanRoutingSection ? { routing: spanRoutingSection } : {}),
+        ...(memorySection ? { memory: memorySection } : {}),
         runtimePolicy: {
           ...asRecord(originalConfig.runtimePolicy),
           ...runtimePolicy,
@@ -2439,6 +2451,17 @@ export function SettingsPanel({
                   <p className="settings-help-text">系统内置模型由 MetaWork 管理，无需在此配置。</p>
                 )}
               </section>
+
+              {http && (
+                <MemorySettingsPanel
+                  api={createMemoryApiClient((path, init) => (
+                    http.requestMemory(path, init) as Promise<unknown>
+                  ))}
+                  draft={memoryDraft}
+                  onChange={setMemoryDraft}
+                  disabled={editingDisabled}
+                />
+              )}
 
               <ExecutorTools agents={agentReadiness} http={http} command={codexCommand}
                 onCommand={setCodexCommand} disabled={editingDisabled} />

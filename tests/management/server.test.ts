@@ -2329,6 +2329,7 @@ interface ManagementServerTestOverrides {
     refresh(input?: { force?: boolean }): Promise<readonly AgentReadiness[]>;
     subscribe(listener: (agents: readonly AgentReadiness[]) => void): () => void;
   };
+  readonly memoryQuery?: import('../../src/management/memory-management.js').MemoryManagementQuery;
 }
 
 function createManagementServer(
@@ -2367,6 +2368,7 @@ function createManagementServer(
       ...overrides.configQuery,
     },
     agentReadiness: overrides.agentReadiness,
+    ...(overrides.memoryQuery ? { memoryQuery: overrides.memoryQuery } : {}),
   });
 }
 
@@ -2552,3 +2554,130 @@ function readUpgradeResponse(socket: Socket): Promise<{ status: number; rest: Bu
     socket.once('error', onError);
   });
 }
+
+describe('long-term memory management API', () => {
+  async function request(
+    server: ManagementServer,
+    path: string,
+    options: { method?: string; body?: unknown; authenticated?: boolean } = {},
+  ) {
+    const payload = options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body));
+    const input = Object.assign(Readable.from(payload ? [payload] : []), {
+      method: options.method ?? 'GET',
+      url: path,
+      headers: (options.authenticated ?? true) ? { authorization: 'Bearer manual-token' } : {},
+    }) as IncomingMessage;
+    let status = 0;
+    let result = '';
+    const response = {
+      setHeader() {},
+      writeHead(value: number) { status = value; },
+      end(value: string) { result = value; },
+    } as unknown as ServerResponse;
+    await server['handleRequest'](input, response);
+    return { status, body: JSON.parse(result) };
+  }
+
+  function memoryQuery(log: string[]) {
+    return {
+      status: async () => ({
+        enabled: true,
+        mode: 'enabled' as const,
+        providerRef: 'openai-like',
+        modelRef: 'extraction-model',
+        engineReady: true,
+        ftsAvailable: true,
+        modelName: 'GPT-4o mini',
+        modelPricing: { costInputPerMillion: 1 },
+        selectableProviders: [],
+      }),
+      listAssets: async (input: { limit: number; offset: number }) => {
+        log.push(`list:${input.limit}:${input.offset}`);
+        return {
+          items: [{
+            memoryId: 'mem-1', tdaiMemoryId: 'tdai-1', type: 'instruction',
+            preview: '偏好中文表格', source: 'conversation', workspaceId: 'ws-1',
+            enabled: true, createdAt: '', updatedAt: '',
+          }],
+          total: 1,
+        };
+      },
+      setEnabled: async (input: { memoryId: string; enabled: boolean }) => {
+        log.push(`toggle:${input.memoryId}:${input.enabled}`);
+        if (input.memoryId !== 'mem-1') return null;
+        return {
+          memoryId: 'mem-1', tdaiMemoryId: 'tdai-1', type: 'atomic', digest: 'sha256',
+          source: 'conversation' as const, workspaceId: 'ws-1', enabled: input.enabled,
+          confidence: null, createdAt: '', updatedAt: '',
+        };
+      },
+      deleteAsset: async (input: { memoryId: string }) => {
+        log.push(`delete:${input.memoryId}`);
+        return input.memoryId === 'mem-1';
+      },
+    };
+  }
+
+  it('requires authentication for every memory route', async () => {
+    const log: string[] = [];
+    const server = createManagementServer(0, { memoryQuery: memoryQuery(log) });
+    expect((await request(server, '/api/memory/status', { authenticated: false })).status).toBe(401);
+    expect((await request(server, '/api/memory/assets', { authenticated: false })).status).toBe(401);
+    expect((await request(server, '/api/memory/assets/enabled', {
+      method: 'POST', body: { memoryId: 'mem-1', enabled: false }, authenticated: false,
+    })).status).toBe(401);
+    expect(log).toEqual([]);
+  });
+
+  it('reports the memory status', async () => {
+    const log: string[] = [];
+    const server = createManagementServer(0, { memoryQuery: memoryQuery(log) });
+    const result = await request(server, '/api/memory/status');
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ enabled: true, mode: 'enabled', ftsAvailable: true });
+  });
+
+  it('bounds the asset page size', async () => {
+    const log: string[] = [];
+    const server = createManagementServer(0, { memoryQuery: memoryQuery(log) });
+    await request(server, '/api/memory/assets?limit=9999&offset=-5');
+    expect(log).toEqual(['list:200:0']);
+    await request(server, '/api/memory/assets?limit=abc');
+    expect(log[1]).toBe('list:50:0');
+  });
+
+  it('disables and deletes an asset', async () => {
+    const log: string[] = [];
+    const server = createManagementServer(0, { memoryQuery: memoryQuery(log) });
+    const toggled = await request(server, '/api/memory/assets/enabled', {
+      method: 'POST', body: { memoryId: 'mem-1', enabled: false },
+    });
+    expect(toggled.status).toBe(200);
+    expect(toggled.body).toMatchObject({ memoryId: 'mem-1', enabled: false });
+
+    const deleted = await request(server, '/api/memory/assets/mem-1', { method: 'DELETE' });
+    expect(deleted.status).toBe(200);
+    expect(log).toEqual(['toggle:mem-1:false', 'delete:mem-1']);
+  });
+
+  it('rejects a malformed toggle and an unknown asset', async () => {
+    const log: string[] = [];
+    const server = createManagementServer(0, { memoryQuery: memoryQuery(log) });
+    expect((await request(server, '/api/memory/assets/enabled', {
+      method: 'POST', body: { memoryId: '', enabled: false },
+    })).status).toBe(400);
+    expect((await request(server, '/api/memory/assets/enabled', {
+      method: 'POST', body: { memoryId: 'mem-1', enabled: 'yes' },
+    })).status).toBe(400);
+    expect((await request(server, '/api/memory/assets/enabled', {
+      method: 'POST', body: { memoryId: 'mem-unknown', enabled: false },
+    })).status).toBe(404);
+    expect((await request(server, '/api/memory/assets/mem-unknown', { method: 'DELETE' })).status).toBe(404);
+  });
+
+  it('reports unavailable instead of guessing when memory is not wired', async () => {
+    const server = createManagementServer(0);
+    expect((await request(server, '/api/memory/status')).status).toBe(503);
+    expect((await request(server, '/api/memory/assets')).status).toBe(503);
+  });
+});

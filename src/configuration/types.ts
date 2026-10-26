@@ -286,6 +286,37 @@ export interface RoutingConfiguration {
   span?: SpanRoutingConfiguration;
 }
 
+/**
+ * Long-term memory configuration (design §7).
+ *
+ * `enabled` is the product switch: when it is false there is no sidecar, no
+ * request, no model cost and no index. The extraction model is chosen by the
+ * user from the providers they already configured; the system never recommends,
+ * never downgrades and never fills it in (D6).
+ */
+export interface MemoryConfiguration {
+  enabled: boolean;
+  /** Must reference an enabled `openai-compatible` provider. */
+  providerRef?: string;
+  /** Must belong to `providerRef`. */
+  modelRef?: string;
+  retrieval?: {
+    maxResults?: number;
+    maxChars?: number;
+  };
+  sidecar?: {
+    port?: number;
+    dataDir?: string;
+    autoStart?: boolean;
+  };
+}
+
+/** Defaults applied when the memory section is absent or partially specified. */
+export const MEMORY_DEFAULTS = {
+  retrieval: { maxResults: 5, maxChars: 2_000 },
+  sidecar: { port: 8420, autoStart: true },
+} as const;
+
 export interface AnyFusionConfigurationV2 {
   schemaVersion: 2;
   providers: Record<string, ProviderDefinition>;
@@ -300,6 +331,12 @@ export interface AnyFusionConfigurationV2 {
    * existed parse unchanged and keep their original content hash.
    */
   routing?: RoutingConfiguration;
+  /**
+   * Optional additive memory section. Revisions created before this field
+   * existed parse unchanged and keep their original content hash; memory is
+   * disabled until the user turns it on.
+   */
+  memory?: MemoryConfiguration;
 }
 
 export type ConfigurationSnapshot = Readonly<{

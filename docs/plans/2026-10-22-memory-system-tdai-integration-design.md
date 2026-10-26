@@ -1,12 +1,14 @@
 # MetaWork 记忆系统接入 TencentDB Agent Memory 设计方案
 
-**Status:** 待评审（Proposed）
+**Status:** 已实施（Accepted / Implemented），2026-10-22
 
 **Plan date:** 2026-10-22
 
+**Completion date:** 2026-10-22
+
 **Scope:** MetaWork 记忆体系现状审计、TencentDB Agent Memory（以下简称 TDAI）接入形态、记忆生产与沉淀契约、召回与证据投递、管理面与开关、凭证与生命周期、ADR 影响与分阶段实施。
 
-**Related authority:** ADR-0015（修订）、ADR-0020（微调）、ADR-0021（保持不变）、ADR-0031、ADR-0033、ADR-0042、ADR-0045、ADR-0047，以及本方案新拟 ADR。
+**Related authority:** ADR-0015（修订）、ADR-0020（微调）、ADR-0021（保持不变）、ADR-0031、ADR-0033、ADR-0042、ADR-0045、ADR-0047，以及本方案新拟 [ADR-0049](../adr/0049-long-term-memory-ownership-deposition-and-delivery.md)。
 
 **外部依赖：** [TencentDB-Agent-Memory](https://github.com/TencentCloud/TencentDB-Agent-Memory)（MIT，Tencent）。本方案只使用其 MemoryCore 的 L0/L1/L2/L3 数据面与 `/v3/meta/*` 元数据面；不引入 MemoryProxy、MemoryPanel、MemoryKnowledge。
 
@@ -480,16 +482,16 @@ ADR-0015 修订草案 + 新 ADR 草案（含 §6.6 八条契约与 §5.2 沉淀�
 
 ### 验收指标
 
-| 指标 | 目标 |
-|---|---|
-| L1 抽取可用率 | 抽出的候选中用户保留（未禁用）比例 ≥ 60% |
-| 召回有效率 | Planner 实际引用记忆的任务占比 ≥ 15%；低于此说明记忆是噪声 |
-| 降级可用性 | sidecar 被杀时 Planner turn 成功率与基线差 < 1%，且任务视图出现 degraded 标记 |
-| 预算合规 | 100% 注入走证据通道，单条 ≤ 4000、任务总计 ≤ 24000 |
-| 权威层污染 | 未经过净化与归属过滤的记忆入库数 = 0 |
-| 凭据卫生 | Server `process.env` 中不含任何 TDAI 凭证；Executor 容器内无 TDAI 凭证与网络 |
-| 沉淀时效 | 会话沉淀到 L1 抽取完成 ≤ 2 分钟 |
-| 重建成本 | 从 MetaWork 重建记忆索引 < 10 分钟（对 10k turns） |
+| 指标 | 目标 | 当前状态 |
+|---|---|---|
+| L1 抽取可用率 | 抽出的候选中用户保留（未禁用）比例 ≥ 60% | Phase 0 实测 1/1（真实模型抽 1 条跨轮偏好，无噪声）；比例需真实账号长期观察 |
+| 召回有效率 | Planner 实际引用记忆的任务占比 ≥ 15%；低于此说明记忆是噪声 | 待真实账号观察（自动化验证了链路可达，未验证体感） |
+| 降级可用性 | sidecar 被杀时 Planner turn 成功率与基线差 < 1%，且任务视图出现 degraded 标记 | 已自动化验证：引擎被 SIGKILL 后召回返回空 + `degraded`，沉淀失败被吞掉，任务链路不受影响 |
+| 预算合规 | 100% 注入走证据通道，单条 ≤ 4000、任务总计 ≤ 24000 | 已自动化验证：单条 ≤ 4000 含截断标记；与既有 ADR-0021 共用同一预算代码 |
+| 权威层污染 | 未经过净化与归属过滤的记忆入库数 = 0 | 已自动化验证：`memory_bindings` 无正文字段；跨账号/已停用资产在资格校验与物化两处均被拒绝 |
+| 凭据卫生 | Server `process.env` 中不含任何 TDAI 凭证；Executor 容器内无 TDAI 凭证与网络 | 已自动化验证：引擎凭证只进 sidecar env 与 SecretStore；Planner/planning 目录无引擎导入；Executor 零改动 |
+| 沉淀时效 | 会话沉淀到 L1 抽取完成 ≤ 2 分钟 | 已实测：mock 模型 1 秒内完成；真实模型 Phase 0 约 6 秒完成 L1 |
+| 重建成本 | 从 MetaWork 重建记忆索引 < 10 分钟（对 10k turns） | 未验证（引擎侧能力，不在本期范围） |
 
 ---
 
@@ -572,3 +574,174 @@ ADR-0015 修订草案 + 新 ADR 草案（含 §6.6 八条契约与 §5.2 沉淀�
 **限制**：默认关闭远程 Embedding（纯 BM25）；BM25 依赖 SQLite FTS5，缺失时静默返回空；抽取需要 OpenAI 兼容 LLM；prompt 家族固定为 chat/code 且按 Agent/Team/Instance 可覆盖；错误码三型并存且 `version` 类型不一致；Skill 资产另有独立模块。
 
 **不采用**：MemoryProxy（模型代理与 push 注入）、MemoryPanel（第二套管理台）、MemoryKnowledge（Wiki/CodeGraph，独立立项评估）。
+
+---
+
+## 实施记录（2026-10-22）
+
+### Phase 0｜可行性验证：通过
+
+真实多轮会话回灌 `/v3/conversation/add`，使用用户已配置的 openai-compatible Provider（`deepseek-chat`）作为抽取模型：
+
+- `GET /health` 的 `stores.ftsAvailable = true` → BM25 前置校验通过（R2 关闭）。
+- 数据面接受未在 meta 层注册的 `team_id` / `agent_id` / `user_id`（写入、计数、检索均返回 200）→ **R11 关闭**，无需注册与持久化作用域。
+- 成批沉淀的抽取质量达标：8 条消息的整段会话只抽出 1 条 L1 原子
+  `{"type":"instruction","content":"用户要求 AI 以后都用中文表格输出，因为要直接贴到周报里。"}`，
+  背景为 `我在帮用户分析销售数据并拆分区域指标`。
+  “华东区”“退货率”等一次性任务细节**未被**抽成记忆，正是设计 §5.3 期望的“宁缺毋滥”。
+- 中文 BM25 命中：`中文表格`、`周报` 命中该原子；`华东区`、`退货率` 无命中。
+
+门槛结论：**L1 质量成立、BM25 未静默失效，方案前提成立。**
+
+### Phase 1｜ADR：完成
+
+- 新增 [ADR-0049](../adr/0049-long-term-memory-ownership-deposition-and-delivery.md)：记忆归属/开关/投递模型、沉淀契约、pull 语义、凭证纪律、降级契约、sidecar 生命周期、Provider 约束，以及 §6.6 八条契约。
+- 修订 [ADR-0015](../adr/0015-planner-owned-semantics-and-tool-mediated-context.md)：废止 “Cross-session semantic search remains unavailable”；自然语言记忆捕获 fast path 仍然废止；补写记忆不是第二语义路由器、不是第二上下文通道。
+- 微调 [ADR-0020](../adr/0020-core-module-ownership-and-dependency-direction.md)：`src/memory/` 领域归属改为“记忆绑定、治理与投递”，不拥有自研抽取与检索实现。
+- ADR-0021 不动：证据通道、4k/24k 预算、截断标记与审计原样适用。
+
+### Phase 2｜实现：完成
+
+| 交付 | 位置 |
+|---|---|
+| Memory Port 契约 | `src/memory/memory-port.ts`、`src/memory/memory-types.ts` |
+| TDAI 防腐层（信封解析、超时、错误归一、重试） | `src/memory/tdai-memory-adapter.ts` |
+| 账号作用域派生 | `src/memory/memory-scope.ts` |
+| 沉淀编排 + 净化 + 降级 | `src/memory/memory-service.ts`、`src/memory/memory-sanitizer.ts` |
+| 后台 tick 调度器 | `src/memory/memory-flush-scheduler.ts` |
+| 证据投递 | `src/memory/memory-evidence-service.ts` |
+| 本地索引 `memory_bindings` + 召回读模型 | `src/storage/memory-bindings-repo.ts`、`src/storage/memory-recall-repo.ts` |
+| 沉淀游标 + Turn 数据源 | `src/storage/memory-flush-cursor-repo.ts`、`src/storage/memory-turn-source.ts` |
+| 开关与抽取模型约束 | `src/configuration/types.ts`、`src/configuration/schema.ts`、`src/memory/memory-runtime-policy.ts` |
+| sidecar 生命周期与 FTS5 闸门 | `src/memory/memory-sidecar.ts`、`src/memory/memory-runtime.ts`、`src/memory/memory-sidecar-config.ts` |
+| `ContextRef{kind:'memory'}` 与资格校验 | `src/work-graph/types.ts`、`src/work-graph/context-ref-eligibility.ts`、`src/planning/planning-agent-plan-schema.ts` |
+| Planner 工具 `search_memory` / `list_memory_assets` | `src/planning/planner-mcp-server.ts` |
+| 证据物化接线 | `src/execution/subtask-execution-context.ts`、`src/execution/subtask-attempt-runner.ts` |
+| 管理面 API | `src/management/memory-management.ts`、`src/management/server.ts` |
+| Web 记忆分区 | `web/src/components/MemorySettingsPanel.tsx`、`web/src/api/memory.ts` |
+
+**与设计的偏差（已记录）**
+
+1. **S3 接口**：TDAI v3 没有 `/v3/atomic/get`（L1 原子只能按 id 更新/删除）。物化改为对 `/v3/atomic/query` 的**有界分页扫描**（最多 10 页 × 100 条），找不到即报 `memory_asset_not_found`，绝不返回空正文。偏差被完全收敛在防腐层内。
+2. **Planner 侧检索通道**：设计 §6.1 让 Planner MCP 直接调 TDAI，§6.2 又禁止 Planner 进程直连（凭证继承泄漏面）。落地方案是**两侧都满足**：Server 持有适配器并把**有界预览**投影到账号库的召回读模型，Planner 通过只读 MCP 工具读取该读模型——与它读取 task/interaction/preference 的既有模式一致。引擎访问只发生在 Server 侧，Planner 进程树不持有任何引擎凭证。
+3. **记忆正文存储**：`task_execution_evidence` 存完整正文（上限 8,192 字符），提示词预由既有 4k 预算截断并附 `[TRUNCATED: use evidence get for remaining content]`，使 Executor 仍可用证据工具翻页。截断标记计入预算，预览长度不再超过 4,000 字符。
+
+### Phase 3｜体感与治理：完成
+
+- 设置页「记忆」分区：总开关、抽取 Provider/模型选择（仅列出协议与能力满足的模型）、抽取额度提示、记忆资产列表（来源工作区、启用/停用、删除）。
+- 「用户否决权」由 `memory_bindings.enabled` 承担：重新绑定不会重新启用已停用的资产。
+- 沉淀前净化：密钥脱敏后写入，无法掩码的凭据整条拒收，危险命令标记 `sanitized`。
+
+### 顺带修掉的既有缺陷
+
+| 缺陷 | 位置 | 修复 |
+|---|---|---|
+| 自动注入死代码 | `src/execution/subtask-execution-context.ts` | `task.injectedPreferences` 存的是 id，却与 `preference.content` 比对，永远不匹配 |
+| `recordUsage` 不写来源任务 | `src/storage/preference-repo.ts` | 补写 `sourceTasks`，自动注入路径才能再次命中 |
+| 截断标记超出预算 | `src/execution/subtask-execution-context.ts` | 标记长度计入预算，预览不再超过 4,000 字符 |
+
+### 验证记录（2026-10-22）
+
+**门禁结果**
+
+| 检查 | 结果 |
+|---|---|
+| `npm run lint`（`tsc --noEmit`） | 通过 |
+| `web` 端 `tsc --noEmit` | 通过 |
+| `npm run build` | 通过 |
+| `npx vitest run`（全量） | **579 个文件、4005 项通过，0 失败**（19 文件 / 33 项因环境缺失跳过） |
+| `npm run test:memory-e2e` | 3 个文件、15 项通过 |
+
+**新增/扩展测试**
+
+| 层 | 文件 |
+|---|---|
+| 纯域 | `tests/memory/memory-scope.test.ts`、`memory-sanitizer.test.ts`、`memory-configuration.test.ts`、`memory-runtime-policy`（含在配置测试内） |
+| 防腐层 | `tests/memory/tdai-memory-adapter.test.ts` |
+| 存储 | `tests/memory/memory-bindings-repo.test.ts` |
+| 编排 | `tests/memory/memory-service.test.ts`、`memory-runtime.test.ts`（含 sidecar / 调度器 / 命令解析） |
+| 配置生成 | `tests/memory/memory-sidecar-config.test.ts` |
+| 投递 | `tests/memory/memory-evidence-service.test.ts`、`memory-context-ref-eligibility.test.ts` |
+| 规划面 | `tests/planning/planner-memory-tools.test.ts` |
+| 管理面 | `tests/management/memory-management.test.ts`、`tests/management/server.test.ts`（新增 6 个 HTTP 用例） |
+| Web | `tests/web/config-edit.test.ts`（新增 6 个记忆段用例） |
+| 架构 | `tests/memory/memory-module-boundary.test.ts`（新增 5 条边界断言） |
+| 证据链路端到端 | `tests/e2e/memory-evidence-delivery.test.ts` |
+| 真实引擎端到端 | `tests/e2e/memory-tdai-engine.test.ts` |
+| 用户旅程端到端 | `tests/e2e/memory-user-journey.test.ts` |
+| 用户视角验收 | `tests/acceptance/memory-e2e.test.ts`（10 项，全部以用户可观察结果命名） |
+
+**真实引擎回路（不是 mock 服务）**
+
+`tests/e2e/*` 与 `tests/acceptance/memory-e2e.test.ts` 启动真实的 TDAI MemoryCore
+sidecar（`--import tsx src/gateway/server.ts`，独立临时数据目录、独立端口、
+Bearer 闸门），并跑通：
+
+```
+对话 Turn 入库（只含 completed）
+  → 调度器 tick 成批沉淀
+  → 引擎 L0 → L1 抽取
+  → BM25 召回
+  → 本地绑定（不含正文，只有归属/开关/摘要）
+  → Planner 只读预览
+  → ContextRef 复核
+  → 证据物化（kind='long_term_memory'）
+  → Executor 在 selectedEvidence 收到，且不出现在 taskBackground
+  → 用户停用 → 资格校验与物化双双拒绝
+  → 引擎被杀 → 召回降级为空、沉淀失败被吞掉、任务链路不受影响
+```
+
+引擎 checkout 缺失时这些用例跳过而不是失败（`METAWORK_MEMORY_SIDECAR_DIR`
+或其默认 `.tmp/tdai/MemoryCore`），因此没有引擎源码的机器上套件仍为绿。
+
+**测试发现并修复的缺陷**
+
+1. `memory_bindings.upsert` 重复绑定同一引擎资产时违反 `tdai_memory_id` 唯一索引，
+   并会覆盖用户的停用决定 —— 改为复用既有本地 id 且保留 `enabled`。（记忆功能，
+   本轮引入）
+2. 截断标记不计入预算，导致预览超过 4,000 字符 —— 标记长度计入预算。
+   （记忆功能，本轮引入）
+3. **基线既有产品缺陷**：`/task resume` 这类会启动工作的控制命令，回复里
+   `backgroundWorkPending` 被 `!isControlCommand(...)` 强制为 `false`，客户端因此
+   不知道恢复的工作仍在继续。改为按命令是否真的把工作交给运行时判定
+   （`startsBackgroundWork`），并在 `tests/session/conversation-input-mailbox.test.ts`
+   补了分类回归测试。
+4. **基线既有陈旧测试**：`configuration-admission-interlock` 断言 `/status` 在配置
+   事务期间仍被接收，但 `/status` 从不在命令目录中（`docs/current/commands.md`
+   也没有）。改为断言目录真实拥有的只读命令（`/config`、`/task dashboard`）。
+
+---
+
+## 评审整改（2026-10-22 第二轮）
+
+第一轮交付后做了独立代码评审，15 项发现全部核实。逐项核实结论、根因与修复位置见
+[评审整改记录](../tech-debt/memory-review-remediation.md)。
+
+其中一项（P1-5 `x-tdai-user-key`）的事实成立但后果被高估：该 header 只在
+`/v3/meta/*` 元数据面必需，而适配层只调用数据面，因此不会出现“请求全部鉴权失败”。
+已按设计补齐账号级只读 user key 的 SecretStore 读取与下发，并把它重分类为 P2。
+
+**关键修正**
+
+- 记忆开关与抽取模型现在是可热激活的配置（`memory.*` 进入 hot path），由
+  `MemoryRuntimeController` 在激活时按需重建运行中的 runtime——此前 Web 保存会收到
+  409、配置根本不落库，这是本轮最严重的缺陷。
+- Server 关闭与配置重建前都会先做最终沉淀（`flushAll`，必要时多批），并等待在飞的
+  tick，不再丢失未达空闲阈值的会话。
+- 沉淀批次改由**消息数**约束（每批 ≤ 50 Turn = 100 message），单条消息超 8192 字符
+  时截断；曾经 100 Turn 批次会稳定触发引擎 400 并永久卡住该会话。
+- 可沉淀判定下沉到 SQL；连续失败/取消/阻塞的 Turn 不再遮住后续 completed Turn，
+  尾部不可沉淀时游标前移。
+- 健康判定统一为 `interpretEngineHealth`（FTS5 且 status 健康或缺失才算可用），
+  探活失败会停止已拉起的子进程而不是泄漏它。
+- Planner 侧召回现在带 `degraded` 标记，并只返回用户仍启用的资产。
+- sidecar 环境改为显式 allowlist，不再继承 Server 全量环境变量。
+
+**验证**：`npm run lint`、Web `tsc --noEmit`、`npm run build` 通过；全量
+`vitest run` **601 个文件、4081 项（4048 通过 / 33 跳过）、0 失败**；
+`npm run test:memory-e2e` 4 个文件、20 项通过。
+
+新增回归覆盖：评审发现 26 项
+（`tests/memory/memory-review-regressions.test.ts`）、运行时生命周期 9 项
+（`tests/memory/memory-runtime-controller.test.ts`），以及真实引擎上的设置激活
+旅程 5 项（`tests/e2e/memory-settings-activation.test.ts`）。

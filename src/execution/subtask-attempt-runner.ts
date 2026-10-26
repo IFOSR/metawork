@@ -40,7 +40,7 @@ import type { WorkUnitClaimService } from './work-unit-claim-service.js';
 import { generateInteractionId } from '../utils/id.js';
 import { ExecutionEvidenceToolServer } from './execution-evidence-tool-server.js';
 import type { KernelFailure } from '../core/kernel-failure.js';
-import type { Subtask } from '../core/types.js';
+import type { Subtask, Task } from '../core/types.js';
 import { ExecutorAttemptRuntimeRepo, type ExecutorAttemptRuntimeRecord } from '../storage/executor-attempt-runtime-repo.js';
 import { deriveRecoverySafety } from '../routing/types.js';
 import {
@@ -84,6 +84,7 @@ import {
 } from '../storage/workspace-publication-repo.js';
 import { AttemptTerminalService } from './attempt-terminal-service.js';
 import { authorizedExecutorBindingFingerprint, type AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
+import { MemoryEvidenceService } from '../memory/memory-evidence-service.js';
 import {
   formatExecutorProgress,
   normalizeDependencyMaterializationFailure,
@@ -172,6 +173,12 @@ export interface SubtaskAttemptRunnerDeps {
   usageSpanOpener?: (span: MeteringSpanRecord) => void;
   usageSpanCloser?: (spanId: string, state: 'closed' | 'uncertain', closedAt: string) => void;
   usagePayer?: Payer;
+  /**
+   * Long-term memory delivery. The memory references of the Subtask are
+   * materialized into execution evidence before the context is built
+   * (design §10).
+   */
+  memoryEvidence?: import('../memory/memory-evidence-service.js').MemoryEvidencePort;
 }
 
 /** Owns one Subtask attempt from claim through immutable terminal persistence. */
@@ -659,6 +666,7 @@ export class SubtaskAttemptRunner {
       const attemptControlHost = this.deps.attemptExecutionBackend.pathMode === 'native'
         ? '127.0.0.1'
         : process.env.METACLAW_CONTROL_HOST ?? 'metaclaw-control';
+      await this.materializeMemoryEvidence(task, subtask);
       const built = this.contextBuilder.build({
         executionId: input.executionId,
         task,
@@ -1735,6 +1743,23 @@ export class SubtaskAttemptRunner {
         claim.release();
       }
     }
+  }
+
+  /**
+   * Materialize the long-term memory references of one Subtask into execution
+   * evidence. Memory reaches an Executor only through this channel; it is never
+   * spliced into the prompt (design §10).
+   */
+  private async materializeMemoryEvidence(task: Task, subtask: Subtask): Promise<void> {
+    const service = this.deps.memoryEvidence;
+    if (!service) return;
+    const memoryIds = MemoryEvidenceService.collectMemoryRefs(subtask.contextRefs ?? []);
+    if (!memoryIds.length) return;
+    await service.materialize({
+      accountId: task.accountId ?? this.deps.accountId ?? 'local-default',
+      taskId: task.id,
+      memoryIds,
+    });
   }
 
   private isStillCurrent(taskId: string, subtaskId: string, attemptId: string, workUnitId: string): boolean {

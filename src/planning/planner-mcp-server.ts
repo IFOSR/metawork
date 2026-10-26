@@ -330,6 +330,85 @@ export class PlannerDataReader {
     };
   }
 
+  /**
+   * Long-term memory candidates for this conversation.
+   *
+   * The Planner process tree may not reach the memory engine directly, so the
+   * Server projects the recall result into the account database. The Planner
+   * reads a bounded preview and references an asset by `memoryId`; the body is
+   * materialized later as execution evidence.
+   */
+  searchMemory(input: { query?: string; limit?: number }) {
+    const limit = boundedLimit(input.limit);
+    // Only assets the user still allows: a memory disabled after the recall was
+    // projected must not be offered to the Planner, or it would pick a reference
+    // the Runtime then rejects (review P2-3).
+    const rows = this.db.prepare(`
+      SELECT c.memory_id, c.type, c.preview, c.score, c.created_at, b.source
+      FROM memory_recall_candidates c
+      INNER JOIN memory_bindings b
+        ON b.memory_id = c.memory_id AND b.account_id = c.account_id
+      WHERE c.account_id = ? AND c.conversation_id = ? AND b.enabled = 1
+      ORDER BY c.score DESC, c.created_at ASC
+      LIMIT ?
+    `).all(this.accountId, this.conversationId, limit) as Array<Record<string, unknown>>;
+    const query = input.query?.trim().toLowerCase() ?? '';
+    const items = rows
+      .map(row => ({
+        memoryId: String(row.memory_id),
+        type: String(row.type),
+        preview: truncateText(String(row.preview ?? ''), 400),
+        score: Number(row.score ?? 0),
+        source: String(row.source ?? 'conversation'),
+        createdAt: String(row.created_at ?? ''),
+      }))
+      .filter(item => !query
+        || item.preview.toLowerCase().includes(query)
+        || item.type.toLowerCase().includes(query));
+    const degraded = this.db.prepare(`SELECT degraded, reason FROM memory_recall_state
+      WHERE account_id = ? AND conversation_id = ?`)
+      .get(this.accountId, this.conversationId) as { degraded: number; reason: string | null } | undefined;
+    const isDegraded = (degraded?.degraded ?? 0) === 1;
+    // Design §6.1/§6.6: distinguish "no matching memory" from "the memory engine
+    // is unavailable", so the Planner can say so instead of silently planning
+    // without memory.
+    return {
+      count: items.length,
+      items,
+      degraded: isDegraded,
+      ...(isDegraded
+        ? {
+          degradedReason: truncateText(degraded?.reason ?? 'memory engine unavailable', 300),
+          advice: '长期记忆暂不可用；请基于当前请求规划，并在回复中说明未能参考历史记忆。',
+        }
+        : {}),
+    };
+  }
+
+  /** The account memory assets the Planner may reference. */
+  listMemoryAssets(limit?: number) {
+    const bounded = boundedLimit(limit);
+    const rows = this.db.prepare(`
+      SELECT memory_id, tdai_memory_id, source, enabled, confidence, created_at, updated_at
+      FROM memory_bindings
+      WHERE account_id = ?
+      ORDER BY created_at DESC, memory_id ASC
+      LIMIT ?
+    `).all(this.accountId, bounded) as Array<Record<string, unknown>>;
+    return {
+      count: rows.length,
+      items: rows.map(row => ({
+        memoryId: String(row.memory_id),
+        type: 'atomic',
+        source: String(row.source ?? 'conversation'),
+        enabled: Number(row.enabled ?? 1) === 1,
+        confidence: row.confidence === null || row.confidence === undefined ? null : Number(row.confidence),
+        createdAt: String(row.created_at ?? ''),
+        updatedAt: String(row.updated_at ?? ''),
+      })),
+    };
+  }
+
   getExecutorDiagnostics(input: { agentClassName?: string; limit?: number }) {
     const limit = boundedLimit(input.limit);
     const params: unknown[] = [];
@@ -410,6 +489,19 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
       limit: z.number().int().min(1).max(MAX_RESULTS).optional(),
     },
   }, async input => toolResult(reader.getExecutorDiagnostics(input)));
+  server.registerTool('search_memory', {
+    description: 'Search the account long-term memory for durable preferences, practices and prior experience. Call it when the request depends on how the user likes to work, on a recurring procedure, or on a decision made in an earlier session. Reference a result with contextRefs [{kind:"memory", memoryId}]; the body is delivered to the Executor as evidence, never pasted into the prompt. When the result carries degraded:true the memory engine was unavailable, so plan without it and tell the user memory could not be consulted.',
+    inputSchema: {
+      query: z.string().min(1).max(500).optional(),
+      limit: z.number().int().min(1).max(MAX_RESULTS).optional(),
+    },
+  }, async input => toolResult(reader.searchMemory(input)));
+  server.registerTool('list_memory_assets', {
+    description: 'List the account long-term memory assets that may be referenced by memoryId, with their type, a short preview and whether the user disabled them.',
+    inputSchema: {
+      limit: z.number().int().min(1).max(MAX_RESULTS).optional(),
+    },
+  }, async input => toolResult(reader.listMemoryAssets(input.limit)));
   return server;
 }
 

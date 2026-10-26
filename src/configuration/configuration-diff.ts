@@ -170,7 +170,14 @@ function isHotPath(path: string): boolean {
     || /^agentClasses\.[^.]+\.responsibility$/u.test(path)
     || /^agentClasses\.[^.]+\.primaryUseCases$/u.test(path)
     || /^agentClasses\.[^.]+\.avoidUseCases$/u.test(path)
-    || /^agentClasses\.[^.]+\.executorManual(?:\.|$)/u.test(path);
+    || /^agentClasses\.[^.]+\.executorManual(?:\.|$)/u.test(path)
+    // Long-term memory is resolved from the current active revision by the
+    // MemoryRuntime: the switch and the extraction model are applied by
+    // restarting only the memory sidecar, which never touches a Task, a
+    // partition or a running attempt. Treating it as restart-required would
+    // make the settings page unable to turn memory on at all (review P1-1).
+    || path === 'memory'
+    || path.startsWith('memory.');
 }
 
 function collectDiff(

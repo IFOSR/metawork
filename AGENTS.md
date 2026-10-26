@@ -50,7 +50,7 @@ the composition root. Detailed ownership and dependency rules live in
 | Workspace Catalog and Conversation directory | [`src/workspace/`](src/workspace/) |
 | Attempts, recovery, execution backends, Git publication | [`src/execution/`](src/execution/), [`src/executor/`](src/executor/), [`src/resource/`](src/resource/) |
 | Durable facts | [`src/storage/`](src/storage/) |
-| Task and explicit memory | [`src/task/`](src/task/), [`src/memory/`](src/memory/) |
+| Task and long-term memory | [`src/task/`](src/task/), [`src/memory/`](src/memory/) |
 | CLI, commands, native TUI bridge, and retired Ink UI | [`src/cli/`](src/cli/), [`src/commands/`](src/commands/), [`src/tui-bridge/`](src/tui-bridge/), [`src/tui/`](src/tui/) |
 | Single MetaWork TUI (Gateway-only client) | [`planner/AnyFusion-Pi/packages/coding-agent/src/modes/metawork-tui/`](planner/AnyFusion-Pi/packages/coding-agent/src/modes/metawork-tui/) |
 | Gateway, Feishu, notifications, delivery | [`src/gateway/`](src/gateway/), [`src/integrations/`](src/integrations/), [`src/notifications/`](src/notifications/), [`src/delivery/`](src/delivery/) |

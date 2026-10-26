@@ -1,7 +1,7 @@
 ---
 status: accepted
-amended_by: ADR-0017, ADR-0018, ADR-0020, ADR-0021, ADR-0022, ADR-0023
-last_updated: 2026-08-30
+amended_by: ADR-0017, ADR-0018, ADR-0020, ADR-0021, ADR-0022, ADR-0023, ADR-0049
+last_updated: 2026-10-22
 ---
 
 # Planner-Owned Semantics And Tool-Mediated Context
@@ -42,7 +42,7 @@ The runtime image contains the compiled MetaClaw application, generated current 
 
 There is one semantic owner and one logical authorization seam. New tasks do not consume unrelated history, while continuation/status requests can obtain evidence on demand. Static Routing Catalog facts survive restarts without pretending to be runtime health. Runtime follows approved claim/probe order but owns no post-failure fallback or configured-default resume policy.
 
-The current Planner does not receive a reconstructed per-turn SQLite history block and has no write-capable tools. Current-session dialogue stays in the persisted Pi session; confirmed preferences, task facts and runtime diagnostics remain MetaClaw-owned and may be exposed only through bounded read-only query contracts. Cross-session semantic search remains unavailable. Parallel execution, preemption, AgentClass versioning, and Planner replanning after probe exhaustion also remain out of scope.
+The current Planner does not receive a reconstructed per-turn SQLite history block and has no write-capable tools. Current-session dialogue stays in the persisted Pi session; confirmed preferences, task facts and runtime diagnostics remain MetaClaw-owned and may be exposed only through bounded read-only query contracts. Parallel execution, preemption, AgentClass versioning, and Planner replanning after probe exhaustion also remain out of scope.
 
 ## Superseded amendment: bounded initial memory context
 
@@ -287,3 +287,35 @@ guidance remains blocked when semantic normalization fails. The profile cannot
 widen Permission Profiles, authorize an unconfigured Model, alter dynamic
 health, or bypass Kernel validation. Provider credentials, URLs, commands and
 private runtime paths remain excluded.
+
+## Amendment: cross-session long-term memory (2026-10-22)
+
+ADR-0049 supersedes the sentence "Cross-session semantic search remains
+unavailable" above. Long-term memory is now available as an optional
+capability, and it does not weaken the semantic ownership or the tool-mediated
+context rules established by this ADR.
+
+The natural-language memory capture fast path stays retired. ADR-0049's
+deposition is not a capture fast path: it runs on a background tick over
+already-completed conversation turns, it never reinterprets the current user
+input, and it never creates a Task, a plan or an execution.
+
+Memory is not a second semantic router and not a second context channel. The
+Planner does not receive memory as passive prompt context and does not receive
+it through the model traffic path. The Planner receives memory candidates
+through bounded read-only MCP tools (`search_memory`, `list_memory_assets`) that
+read a MetaWork-owned read model, exactly like the other durable-fact queries
+this ADR already authorizes. The Planner may reference a memory in its proposal;
+the Runtime re-validates that reference and delivers the body to the Executor
+only through the `task_execution_evidence` channel, with the ADR-0021 budget
+and audit unchanged.
+
+MetaWork remains the only client of the memory engine. The Planner process
+tree never holds an engine credential and never reaches the engine directly.
+The engine is not in the model traffic path: no model request is proxied,
+redirected or injected through it.
+
+Same-session continuity remains owned by the persisted Pi session, the Context
+Bridge and exact `ContextRef{kind:'interaction'}` references. Memory adds
+cross-session continuity only; it does not participate in same-session
+continuity and must not duplicate it.

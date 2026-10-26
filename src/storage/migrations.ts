@@ -3,7 +3,74 @@ import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 import { installObservationSchema } from './observation-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 51;
+export const CURRENT_SCHEMA_VERSION = 53;
+
+/**
+ * Local memory index (design §4.2).
+ *
+ * The account is the only isolation boundary. Bodies live in the memory engine;
+ * this table keeps only ownership, the user switch and a content digest, so the
+ * engine can be discarded and rebuilt without losing the user's choices.
+ */
+const MEMORY_BINDINGS_SQL = `
+  CREATE TABLE IF NOT EXISTS memory_bindings (
+    memory_id       TEXT PRIMARY KEY,
+    tdai_memory_id  TEXT NOT NULL,
+    account_id      TEXT NOT NULL,
+    workspace_id    TEXT,
+    source          TEXT NOT NULL DEFAULT 'conversation',
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    confidence      REAL,
+    content_digest  TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_memory_bindings_account
+    ON memory_bindings(account_id, enabled);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_bindings_tdai
+    ON memory_bindings(tdai_memory_id);
+  CREATE TABLE IF NOT EXISTS memory_recall_candidates (
+    account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, memory_id TEXT NOT NULL,
+    type TEXT NOT NULL, preview TEXT NOT NULL, score REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, conversation_id, memory_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_memory_recall_conversation
+    ON memory_recall_candidates(account_id, conversation_id, score DESC);
+`;
+
+/**
+ * Memory deposition state (schema 53).
+ *
+ * `memory_flush_state` replaces the earlier reuse of
+ * `conversation_history_streams(kind='memory')`, because the deposition needs
+ * more than a cursor: it also records whether the deposited segment was
+ * sanitized (design §8.2 `source='sanitized'`).
+ *
+ * `memory_recall_state` records whether the last recall for a conversation was
+ * served by a healthy engine, so that the Planner can distinguish "no matching
+ * memory" from "the memory engine is unavailable" (design §6.1, §6.6).
+ */
+const MEMORY_STATE_SQL = `
+  CREATE TABLE IF NOT EXISTS memory_flush_state (
+    account_id      TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    last_sequence   INTEGER NOT NULL DEFAULT 0,
+    sanitized       INTEGER NOT NULL DEFAULT 0,
+    updated_at      TEXT NOT NULL,
+    PRIMARY KEY (account_id, conversation_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_memory_flush_state_sequence
+    ON memory_flush_state(account_id, last_sequence);
+  CREATE TABLE IF NOT EXISTS memory_recall_state (
+    account_id      TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    degraded        INTEGER NOT NULL DEFAULT 0,
+    reason          TEXT,
+    updated_at      TEXT NOT NULL,
+    PRIMARY KEY (account_id, conversation_id)
+  );
+`;
 
 const MANAGED_SERVICES_SQL = `
   CREATE TABLE IF NOT EXISTS public_workspace_files (
@@ -1642,6 +1709,30 @@ export function runMigrations(
       const changed = db.prepare('UPDATE schema_version SET version = 51 WHERE version = 50').run();
       if (changed.changes !== 1) throw new Error('schema version changed during 50 to 51 migration');
     })();
+    version = 51;
+  }
+  if (version === 51) {
+    db.transaction(() => {
+      db.exec(MEMORY_BINDINGS_SQL);
+      const changed = db.prepare('UPDATE schema_version SET version = 52 WHERE version = 51').run();
+      if (changed.changes !== 1) throw new Error('schema version changed during 51 to 52 migration');
+    })();
+    version = 52;
+  }
+  if (version === 52) {
+    db.transaction(() => {
+      db.exec(MEMORY_STATE_SQL);
+      // Carry an already-deposited cursor forward so an installation that ran
+      // the previous schema does not deposit the same segment twice.
+      db.exec(`
+        INSERT OR IGNORE INTO memory_flush_state
+          (account_id, conversation_id, last_sequence, sanitized, updated_at)
+        SELECT account_id, conversation_id, last_sequence, 0, datetime('now')
+        FROM conversation_history_streams WHERE kind = 'memory';
+      `);
+      const changed = db.prepare('UPDATE schema_version SET version = 53 WHERE version = 52').run();
+      if (changed.changes !== 1) throw new Error('schema version changed during 52 to 53 migration');
+    })();
   }
   // Current-schema databases may have been created before a new projection
   // invalidation trigger was introduced. Reinstalling the idempotent trigger
@@ -1659,7 +1750,7 @@ function runBaseMigrations(
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
     ).all() as Array<{ version: number }>;
-    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
+    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 41) {
@@ -1811,6 +1902,8 @@ function runBaseMigrations(
     db.exec(PUBLICATION_DELIVERY_SQL);
     db.exec(RETRY_WAKE_SQL);
     db.exec(NAVIGATION_PROJECTION_SQL);
+    db.exec(MEMORY_BINDINGS_SQL);
+    db.exec(MEMORY_STATE_SQL);
     installObservationSchema(db);
     db.exec(`CREATE INDEX IF NOT EXISTS kernel_permission_resolution_request ON kernel_events
       (correlation_id) WHERE event_type = 'permission_resolution_received'`);

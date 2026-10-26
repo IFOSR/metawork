@@ -55,6 +55,8 @@ Planner 输出提案，不产生执行授权。Kernel 是战略决策的唯一�
 
 `memory/`、`guidance/`、`learning/`、`delivery/` 和 integrations 保持各自领域归属，不因本路线图被吸收到 Kernel 或 Execution Runtime。它们与核心执行链的具体 seam 留给独立解耦计划。
 
+`memory/` 的领域归属经 ADR-0049 微调：它拥有记忆绑定、归属、治理与投递（沉淀编排、净化、召回读模型、证据物化），不拥有自研的抽取与检索实现。记忆引擎只经 `Memory Port` 接入，方向单一；`Execution Runtime` 只在物化证据时依赖记忆的公开 port，不解析记忆正文。
+
 ### 4. Application Shell 与 Persistence 是外围层
 
 `session/`、`commands/`、`tui/`、`gateway/` 是 Application Shell。它们负责入口、依赖组装、事件触发、调用核心模块和界面投影，不拥有业务策略。目标 Session 循环只做：

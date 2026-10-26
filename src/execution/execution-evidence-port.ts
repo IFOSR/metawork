@@ -14,7 +14,14 @@ export class ExecutionEvidenceIdentityError extends Error {
   }
 }
 
-export type ExecutionEvidenceKind = 'user_input' | 'task_resource' | 'task_evidence' | 'preference' | 'assistant_ref';
+export type ExecutionEvidenceKind =
+  | 'user_input'
+  | 'task_resource'
+  | 'task_evidence'
+  | 'preference'
+  /** Long-term memory recalled from the memory engine (design §10). */
+  | 'long_term_memory'
+  | 'assistant_ref';
 
 export interface EvidenceDescriptor {
   evidenceId: string;

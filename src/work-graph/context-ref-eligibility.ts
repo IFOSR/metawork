@@ -91,6 +91,18 @@ export function buildEligibleContextRefKeys(input: {
       if (row?.status === 'confirmed') eligible.add(contextRefKey(ref));
       continue;
     }
+    if (ref.kind === 'memory') {
+      if (!input.db) continue;
+      const accountId = input.accountId ?? input.targetTask?.accountId;
+      if (!accountId) continue;
+      // The account is the only isolation boundary; a disabled asset is not
+      // eligible and can never be materialized into evidence.
+      const row = input.db.prepare(
+        'SELECT 1 FROM memory_bindings WHERE memory_id = ? AND account_id = ? AND enabled = 1',
+      ).get(ref.memoryId, accountId);
+      if (row) eligible.add(contextRefKey(ref));
+      continue;
+    }
     if (ref.kind === 'task_evidence') {
       if (!input.db) continue;
       const row = input.db.prepare(`

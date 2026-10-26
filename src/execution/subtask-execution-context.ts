@@ -271,9 +271,12 @@ export class SubtaskExecutionContextBuilder {
         content: readTaskResource(locator),
       });
     }
+    // `task.injectedPreferences` holds preference ids, not preference bodies.
+    // Comparing against the body never matched, so the automatic injection
+    // path was dead (design §10).
     const injected = new Set(task.injectedPreferences);
     for (const preference of this.preferenceRepo.findByStatus('confirmed')) {
-      if (!injected.has(preference.content) && !preference.sourceTasks.includes(task.id)) continue;
+      if (!injected.has(preference.id) && !preference.sourceTasks.includes(task.id)) continue;
       this.evidenceRepo.upsert({
         id: createEvidenceId('preference', preference.id),
         taskId: task.id,
@@ -472,6 +475,17 @@ export class SubtaskExecutionContextBuilder {
       title = `Confirmed preference ${preference.id}`;
       content = preference.content;
       this.evidenceRepo.upsert({ id: evidenceId, taskId: task.id, kind: 'preference', sourceId: preference.id, title, content });
+    } else if (ref.kind === 'memory') {
+      // Long-term memory is materialized by the Runtime before the attempt
+      // starts. If it is missing, the evidence is unavailable and the attempt
+      // fails explicitly — an empty body is never passed off as evidence.
+      evidenceId = createEvidenceId('long_term_memory', ref.memoryId);
+      const row = this.evidenceRepo.findForTask(task.id, evidenceId);
+      if (!row || row.kind !== 'long_term_memory') {
+        throw new Error(`memory_not_authorized: ${ref.memoryId}`);
+      }
+      title = row.title;
+      content = row.content;
     } else if (ref.kind === 'task_evidence') {
       const row = this.evidenceRepo.findForTask(task.id, ref.evidenceId);
       if (!row || row.kind !== 'task_evidence') throw new Error(`task_evidence_not_authorized: ${ref.evidenceId}`);
@@ -494,8 +508,10 @@ export class SubtaskExecutionContextBuilder {
       throw new Error(`context_ref_not_supported: ${ref.kind}`);
     }
     const truncated = content.length > budget;
+    // The marker is part of the budget: the preview must never exceed it.
+    const marker = '\n[TRUNCATED: use evidence get for remaining content]';
     const preview = truncated
-      ? `${content.slice(0, Math.max(0, budget - 48))}\n[TRUNCATED: use evidence get for remaining content]`
+      ? `${content.slice(0, Math.max(0, budget - marker.length))}${marker}`
       : content;
     return { ref, evidenceId, title, content: preview, truncated };
   }

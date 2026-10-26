@@ -46,6 +46,7 @@ import {
 } from '../kernel/control-kernel.js';
 import { DurableKernelWorkflow, KernelApplicationInterruptedError, type KernelWorkflow, type KernelWorkflowStore } from '../kernel/kernel-workflow.js';
 import type { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
+import type { MemoryEvidencePort } from '../memory/memory-evidence-service.js';
 import { deriveRecoverySafety } from '../routing/types.js';
 import type { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
 import type { RetryWakeRepo } from '../storage/retry-wake-repo.js';
@@ -487,6 +488,12 @@ export interface KernelExecutionRuntimeDeps {
   preflightWorkspacePath?: (path: string) => Promise<string>;
   agentClassService: AgentClassService;
   workGraphRuntimeService: WorkGraphRuntimeService;
+  /**
+   * Long-term memory delivery. The Runtime materializes the memory references
+   * of an authorized work graph into execution evidence before the attempt
+   * starts (design §10).
+   */
+  memoryEvidence?: MemoryEvidencePort;
   subtaskRepo: SubtaskRepo;
   workGraphRevisionRepo: WorkGraphRevisionRepo;
   effectOutboxRepo: KernelEffectOutboxRepo;

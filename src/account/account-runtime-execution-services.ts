@@ -72,6 +72,10 @@ export function buildAccountRuntimeExecutionServices(deps: {
   usageSpanOpener?: (span: import('../metering/ports.js').MeteringSpanRecord) => void;
   usageSpanCloser?: (spanId: string, state: 'closed' | 'uncertain', closedAt: string) => void;
   usagePayer?: Payer;
+  /**
+   * Long-term memory delivery into execution evidence (design §10).
+   */
+  memoryEvidence?: import('../memory/memory-evidence-service.js').MemoryEvidencePort;
 }): AccountRuntimeExecutionServices {
   const resourceLeaseService = new ResourceLeaseService(new SqliteResourceLeaseRepository(deps.db));
   const dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
@@ -102,6 +106,7 @@ export function buildAccountRuntimeExecutionServices(deps: {
     db: deps.db,
     sessionId: deps.sessionId,
     getSessionId: deps.getSessionId,
+    ...(deps.memoryEvidence ? { memoryEvidence: deps.memoryEvidence } : {}),
     taskRuntimeService: deps.taskRuntimeService,
     subtaskRepo: deps.subtaskRepo,
     workUnitClaimService: deps.workUnitClaimService,

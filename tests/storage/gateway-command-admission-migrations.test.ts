@@ -283,6 +283,14 @@ function schema43(path?: string): Database.Database {
   const witnessIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'observation_witness_%'").all() as { name: string }[];
   for (const { name } of witnessIndexes) db.exec(`DROP INDEX "${name}"`);
   for (const name of ['kernel_permission_resolution_request', 'permission_pending_page', 'conversation_activity_tasks']) db.exec(`DROP INDEX IF EXISTS "${name}"`);
+  // The long-term memory index arrived after schema 43; drop it so the captured
+  // schema43 hash keeps describing the historical state.
+  db.exec(`
+    DROP TABLE IF EXISTS memory_recall_state;
+    DROP TABLE IF EXISTS memory_flush_state;
+    DROP TABLE IF EXISTS memory_recall_candidates;
+    DROP TABLE IF EXISTS memory_bindings;
+  `);
   for (const table of [...admissionTables, ...retryWakeTables, ...observationTables, 'workspace_publication_deliveries']) {
     db.exec(`DROP TABLE IF EXISTS ${table}`);
   }
@@ -355,6 +363,7 @@ function facts(db: Database.Database, tables?: string[]): Record<string, string[
       && !admissionTables.includes(name)
       && !retryWakeTables.includes(name)
       && !['workspace_publication_deliveries', 'public_workspace_files', 'managed_local_services', 'managed_local_service_effects', 'workspace_directory_dirty'].includes(name)
+      && !['memory_bindings', 'memory_recall_candidates', 'memory_flush_state', 'memory_recall_state'].includes(name)
       && !observationTables.includes(name)
     ));
   return Object.fromEntries(names.map(name => [

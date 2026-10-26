@@ -23,6 +23,7 @@
     "build": "tsup && node dist/generate-planner-schema.js dist/planning-agent-plan-v8.schema.json && node dist/emit-pi-attempt-extension.js dist/pi-attempt-tools.ts && node scripts/prepare-pi-pdf.mjs && npm run build:web",
     "build:web": "npm ci --prefix web --ignore-scripts && npm run build --prefix web",
     "test": "vitest run",
+    "test:memory-e2e": "vitest run tests/acceptance/memory-e2e.test.ts tests/e2e/memory-tdai-engine.test.ts tests/e2e/memory-user-journey.test.ts tests/e2e/memory-settings-activation.test.ts",
     "test:task8-contract": "vitest run tests/acceptance/task8-cross-repository-contract.test.ts",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",

@@ -90,6 +90,11 @@ export function buildAccountRuntimeComposition(deps: {
   db: Database.Database;
   taskEngine: TaskEngine;
   memoryEngine: MemoryEngine;
+  /**
+   * Long-term memory delivery. Optional: without it the Executor never sees a
+   * memory asset, and the memory seam stays closed.
+   */
+  memoryEvidence?: import('../memory/memory-evidence-service.js').MemoryEvidencePort;
   orchestration: OrchestrationEngine;
   contextRecaller: ContextRecaller;
   notifier: NotificationService;
@@ -211,6 +216,7 @@ export function buildAccountRuntimeComposition(deps: {
     usageSpanOpener: deps.usageSpanOpener,
     usageSpanCloser: deps.usageSpanCloser,
     usagePayer: deps.usagePayer,
+    ...(deps.memoryEvidence ? { memoryEvidence: deps.memoryEvidence } : {}),
   });
   const plannerModel = deps.plannerBinding
     ? deps.stagedConfiguration.snapshot.config.models[deps.plannerBinding.modelRef] : undefined;
