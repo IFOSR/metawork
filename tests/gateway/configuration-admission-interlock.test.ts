@@ -83,7 +83,10 @@ describe('configuration admission interlock', () => {
     });
     expect(permission.status).toBe('accepted');
 
-    for (const [index, text] of ['/status', '/task list', '/task cancel task_1'].entries()) {
+    // Read-only queries and control operations must stay admissible while a
+    // configuration transaction is active. These are the commands the catalog
+    // actually owns; `/status` was never a catalog command.
+    for (const [index, text] of ['/config', '/task dashboard', '/task list', '/task cancel task_1'].entries()) {
       const receipt = await fixture.submit('conv_1', `req_s${index}`, `idem_s${index}`, {
         kind: 'slash_command', text,
       });

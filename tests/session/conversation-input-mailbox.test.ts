@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ConversationInputMailbox,
+  startsBackgroundWork,
   type MailboxCommand,
 } from '../../src/session/conversation-input-mailbox.js';
 
@@ -253,5 +254,46 @@ describe('ConversationInputMailbox', () => {
     releaseActive!();
     await waitFor(() => mailbox.isIdle);
     expect(executed).toContain('req_settings');
+  });
+});
+
+describe('background work classification', () => {
+  function slash(text: string): MailboxCommand {
+    return { requestId: 'r', idempotencyKey: 'i', command: { kind: 'slash_command', text } };
+  }
+
+  it('treats read-only control commands as not starting work', () => {
+    for (const text of ['/task dashboard', '/task list', '/task show task_1', '/config', '/help']) {
+      expect(startsBackgroundWork(slash(text)), text).toBe(false);
+    }
+  });
+
+  it('treats the commands that hand work to the runtime as starting work', () => {
+    for (const text of [
+      '/task resume task_1',
+      '/task unblock task_1',
+      '/task retry-result task_1',
+      '/task accept-result task_1',
+      '/task result retry task_1',
+      '/task result verify task_1',
+      '/task recovery resolve recovery_1',
+    ]) {
+      expect(startsBackgroundWork(slash(text)), text).toBe(true);
+    }
+  });
+
+  it('does not mistake a prefix for the command itself', () => {
+    // `/task resumed` is not `/task resume`.
+    expect(startsBackgroundWork(slash('/task resumed task_1'))).toBe(false);
+    expect(startsBackgroundWork(slash('/task'))).toBe(false);
+  });
+
+  it('never classifies a natural-language message or a cancellation as work-starting', () => {
+    expect(startsBackgroundWork({
+      requestId: 'r', idempotencyKey: 'i', command: { kind: 'user_message', text: '/task resume t' },
+    })).toBe(false);
+    expect(startsBackgroundWork({
+      requestId: 'r', idempotencyKey: 'i', command: { kind: 'cancel_task', taskId: 't' },
+    })).toBe(false);
   });
 });

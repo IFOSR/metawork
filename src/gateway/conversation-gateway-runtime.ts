@@ -6,7 +6,7 @@ import type { RuntimeRegistry } from '../account/runtime-registry.js';
 import type { ConversationRegistry } from '../session/conversation-registry.js';
 import type { ConversationSession, ConversationResultDelivery } from '../session/conversation-session.js';
 import type { MailboxCommand, MailboxReceipt } from '../session/conversation-input-mailbox.js';
-import { isControlCommand } from '../session/conversation-input-mailbox.js';
+import { isControlCommand, startsBackgroundWork } from '../session/conversation-input-mailbox.js';
 import type { InteractionTrace } from '../management/interaction-trace.js';
 import type { GatewayCommand } from './client-protocol.js';
 import {
@@ -572,8 +572,12 @@ export class ConversationGatewayRuntime {
           delivery.content, delivery.certification, delivery.completeness, delivery.resultId, origin,
         );
       }
-      // A query/control reply is complete even while another Task continues.
-      const backgroundWorkPending = !isControlCommand(mailboxCommand) && conversation.hasBackgroundWork();
+      // A query/control reply is complete even while another Task continues; a
+      // control command that hands work to the runtime reports that the work
+      // continues after the reply (ADR-0037).
+      const backgroundWorkPending = (mailboxCommand.command.kind === 'user_message'
+        || startsBackgroundWork(mailboxCommand))
+        && conversation.hasBackgroundWork();
       const result = await this.publishResultDelivery(
         conversation.conversationId,
         mailboxCommand.requestId,

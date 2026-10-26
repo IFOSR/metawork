@@ -37,6 +37,32 @@ const DEFAULT_MAX_QUEUE_SIZE = 16;
 const controlCommandCatalog = createDefaultCommandCatalog();
 
 /**
+ * Slash commands whose execution can start or extend Task work.
+ *
+ * A control command's reply is complete even while an unrelated Task continues,
+ * but these commands do hand work to the runtime; the client must be told that
+ * the work continues after the reply (ADR-0037). The list is explicit because
+ * command `effect` text is prose and cannot be classified reliably.
+ */
+const BACKGROUND_WORK_COMMAND_PATHS: ReadonlyArray<readonly string[]> = [
+  ['task', 'resume'],
+  ['task', 'unblock'],
+  ['task', 'retry-result'],
+  ['task', 'accept-result'],
+  ['task', 'recovery', 'resolve'],
+  ['task', 'result', 'retry'],
+  ['task', 'result', 'verify'],
+];
+
+export function startsBackgroundWork(command: MailboxCommand): boolean {
+  if (command.command?.kind !== 'slash_command') return false;
+  const words = command.command.text.trim().replace(/^\//u, '').split(/\s+/u);
+  return BACKGROUND_WORK_COMMAND_PATHS.some(path => (
+    words.length >= path.length && path.every((word, index) => words[index] === word)
+  ));
+}
+
+/**
  * Explicit system commands are never semantic turns, so they execute without
  * waiting behind a Planner turn. Natural-language input remains FIFO. Gateway
  * cancellation and permission decisions use the same immediate control lane.
