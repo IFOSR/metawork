@@ -561,10 +561,17 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
           data: image.data,
           mimeType: image.mimeType,
         }));
+        // Attachment metadata is scoped to this Planner turn. The MCP server
+        // exposes the same metadata through get_planning_context, but a
+        // resumed Pi session may decide to continue from its previous tool
+        // result and never call that tool again. Keep the current attachment
+        // set in the prompt so a follow-up such as "这是什么情况？" cannot
+        // silently lose the fact that the user supplied an image or file.
+        const turnPrompt = buildTurnPrompt(prompt, context.attachments);
         proc.stdin?.write(`${JSON.stringify({
           id: requestId,
           type: 'prompt',
-          message: prompt,
+          message: turnPrompt,
           ...(images && images.length > 0 ? { images } : {}),
         })}\n`);
       };
@@ -1289,6 +1296,27 @@ function recordFields(value: unknown): string[] {
     })
     .sort()
     .slice(0, 20);
+}
+
+function buildTurnPrompt(
+  prompt: string,
+  attachments: PlanningContext['attachments'] | undefined,
+): string {
+  if (!attachments || attachments.length === 0) return prompt;
+  const manifest = attachments.slice(0, 32).map(attachment => ({
+    attachmentId: attachment.attachmentId,
+    name: attachment.name,
+    mime: attachment.mime,
+    size: attachment.size,
+    availability: attachment.availability,
+  }));
+  return [
+    prompt,
+    '',
+    '[MetaWork current-turn attachments]',
+    'The following attachment metadata belongs to this user turn. Treat it as authoritative input; route work that needs the attachment through the appropriate Executor and reference the attachmentId. Do not infer file contents from metadata alone.',
+    JSON.stringify(manifest),
+  ].join('\n');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

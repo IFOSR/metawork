@@ -16,16 +16,26 @@ const changes = {
 };
 
 describe('workspace change observation card', () => {
-  it('separates delivered, undelivered and scratch files with the coverage reason', () => {
+  it('separates delivered, unregistered and scratch files with the coverage reason', () => {
     const html = renderToStaticMarkup(createElement(WorkspaceChangesCard, {
       changes, delivered: ['out/deck.pptx'],
     }));
     expect(html).toContain('本轮改动');
     expect(html).toContain('out/deck.pptx');
     expect(html).toContain('临时');
-    expect(html).toContain('未交付');
-    expect(html).toContain('记录不完整：仅覆盖可观察到的改动');
-    expect(html).toContain('shell_unobserved');
+    expect(html).toContain('未登记');
+    expect(html).toContain('改动记录范围有限（不影响任务完成状态）');
+    expect(html).toContain('通过 Shell 写入的文件无法由文件观察通道完整核对。');
+  });
+
+  it('does not label in-place observed files as undelivered when no publication receipt exists', () => {
+    const html = renderToStaticMarkup(createElement(WorkspaceChangesCard, {
+      changes: { ...changes, missingReasons: ['filesystem_scope_limited'] },
+      delivered: [],
+    }));
+    expect(html).not.toContain('未交付');
+    expect(html).not.toContain('未登记');
+    expect(html).toContain('当前 Workspace 不是 Git 仓库，只核对了授权范围内的文件。');
   });
 
   it('reports a complete observation without reasons', () => {
@@ -35,6 +45,6 @@ describe('workspace change observation card', () => {
       delivered: ['out/deck.pptx'],
     }));
     expect(html).toContain('本轮改动已完整记录');
-    expect(html).not.toContain('未交付');
+    expect(html).not.toContain('未登记');
   });
 });

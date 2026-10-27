@@ -34,8 +34,11 @@ function lifecycle(input: {
   } as GatewayTaskViewSnapshot['lifecycle'];
 }
 
-function renderDelivery(delivery?: GatewayTaskViewSnapshot['publicDelivery']) {
-  return renderToStaticMarkup(createElement(TaskResultActions, { delivery }));
+function renderDelivery(
+  delivery?: GatewayTaskViewSnapshot['publicDelivery'],
+  workspaceChanges?: GatewayTaskViewSnapshot['workspaceChanges'],
+) {
+  return renderToStaticMarkup(createElement(TaskResultActions, { delivery, workspaceChanges }));
 }
 
 function renderBlocked(input: {
@@ -102,5 +105,19 @@ describe('Task result action presentation', () => {
     expect(html).toContain('src/server.ts');
     expect(html).toContain('发布失败');
     expect(html).toContain('未登记文件：package.json');
+  });
+
+  it('explains observed in-place changes when there is no separate publication receipt', () => {
+    const html = renderDelivery({
+      workspace: '/user/projects', taskDirectory: null,
+      mode: 'in_place', state: 'not_published', stateLabel: '本轮没有文件变更',
+      files: [], conflicts: [],
+    }, {
+      recordId: 'change_attempt', coverage: 'partial', missingReasons: ['filesystem_scope_limited'],
+      totalFiles: 1, recordedAt: '2026-10-27T00:00:00.000Z',
+      files: [{ path: 'hello.py', added: 2, deleted: 1 }],
+    });
+    expect(html).toContain('已在 Workspace 观察到 1 个文件变更');
+    expect(html).not.toContain('本轮没有文件变更');
   });
 });

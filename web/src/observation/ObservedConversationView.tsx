@@ -21,6 +21,9 @@ export interface ConversationViewportMemory {
   heights: Map<string, number>;
 }
 
+/** A small amount of slack keeps a user at the tail while a stream grows. */
+const FOLLOW_LATEST_THRESHOLD = 64;
+
 /** Visible rows subscribe individually; the list only observes membership and freshness. */
 export const ObservedConversationView = memo(function ObservedConversationView({ conversationId, ws, http, memory, initialTurnId, initialTaskId, onOpenTrajectory, onOpenBilling, onOpenArtifact, onOpenAttachment, onOpenSubtaskDetail }: {
   conversationId: string; ws: WsClient; http: HttpClient; memory: ConversationViewportMemory;
@@ -43,7 +46,13 @@ export const ObservedConversationView = memo(function ObservedConversationView({
   const [pinned, setPinned] = useState<ReadonlySet<string>>(new Set());
   const initialLocated = useRef<string | null>(null);
   const anchor = useRef<Anchor | null>(memory.anchors.get(conversationId) ?? null);
+  const followLatest = useRef(anchor.current?.bottom !== false);
+  const [followingLatest, setFollowingLatest] = useState(followLatest.current);
+  // Ignore the first ResizeObserver pass. It runs before a persisted anchor's
+  // full Turn body is measured and must not overwrite the saved offset.
   const programmaticScroll = useRef(true);
+  const programmaticScrollUntil = useRef(Number.POSITIVE_INFINITY);
+  const programmaticReleaseTimer = useRef<ReturnType<typeof setTimeout> | undefined>();
   const positions = useMemo(() => {
     let y = 0;
     return window.ids.map(id => {
@@ -96,17 +105,35 @@ export const ObservedConversationView = memo(function ObservedConversationView({
   useEffect(() => {
     const canvas = root.current?.closest<HTMLElement>('.workspace-canvas');
     if (!canvas) return;
+    const previousOverflowAnchor = canvas.style.overflowAnchor;
+    // The virtual list owns anchoring. Native scroll anchoring can otherwise
+    // move the viewport while a streamed Turn grows, fighting our saved Turn
+    // offset and producing the visible jitter reported by users.
+    canvas.style.overflowAnchor = 'none';
     let frame = 0;
     let saveTimer: ReturnType<typeof setTimeout> | undefined;
+    const listTop = () => list.current
+      ? list.current.getBoundingClientRect().top - canvas.getBoundingClientRect().top + canvas.scrollTop
+      : 0;
+    const setFollowLatest = (value: boolean) => {
+      if (followLatest.current === value) return;
+      followLatest.current = value;
+      setFollowingLatest(value);
+    };
     const update = () => {
       frame = 0;
-      if (programmaticScroll.current) return;
-      const relativeTop = Math.max(0, canvas.scrollTop - (list.current && canvas ? list.current.getBoundingClientRect().top - canvas.getBoundingClientRect().top + canvas.scrollTop : 0));
+      if (programmaticScroll.current) {
+        if (Date.now() < programmaticScrollUntil.current) return;
+        programmaticScroll.current = false;
+      }
+      const relativeTop = Math.max(0, canvas.scrollTop - listTop());
+      const distanceFromBottom = Math.max(0, canvas.scrollHeight - canvas.scrollTop - canvas.clientHeight);
+      setFollowLatest(distanceFromBottom <= FOLLOW_LATEST_THRESHOLD);
       setViewport({ top: relativeTop, height: canvas.clientHeight });
       const row = positionsRef.current.find(item => item.top + item.height >= relativeTop);
-      if (row && !programmaticScroll.current) {
+      if (row) {
         anchor.current = { turnId: row.id, offset: relativeTop - row.top,
-          bottom: canvas.scrollHeight - canvas.scrollTop - canvas.clientHeight < 48 };
+          bottom: followLatest.current };
         memory.anchors.delete(conversationId); memory.anchors.set(conversationId, anchor.current);
         while (memory.anchors.size > 64) memory.anchors.delete(memory.anchors.keys().next().value!);
         if (desktopBridge()) {
@@ -118,35 +145,109 @@ export const ObservedConversationView = memo(function ObservedConversationView({
       }
     };
     const onScroll = () => { if (!frame) frame = requestAnimationFrame(update); };
-    const userScroll = () => { programmaticScroll.current = false; };
+    const userScroll = (event: Event) => {
+      // A user gesture always wins over a pending smooth/programmatic scroll.
+      programmaticScroll.current = false;
+      programmaticScrollUntil.current = 0;
+      if (programmaticReleaseTimer.current) clearTimeout(programmaticReleaseTimer.current);
+      // Wheel/keyboard intent arrives before the browser emits the resulting
+      // scroll event. Detach immediately so a concurrent stream update cannot
+      // win the race and pull the viewport back to the tail.
+      const key = event instanceof KeyboardEvent ? event.key : '';
+      const wheelUp = event instanceof WheelEvent && event.deltaY < 0;
+      const keyUp = key === 'ArrowUp' || key === 'PageUp' || key === 'Home';
+      if (wheelUp || keyUp) {
+        followLatest.current = false;
+        setFollowingLatest(false);
+      }
+    };
     canvas.addEventListener('scroll', onScroll, { passive: true });
-    for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) canvas.addEventListener(type, userScroll, { passive: true });
+    for (const type of ['wheel', 'touchstart', 'touchmove', 'pointerdown', 'keydown']) canvas.addEventListener(type, userScroll, { passive: true });
     const observer = new ResizeObserver(onScroll); observer.observe(canvas);
     return () => {
       if (saveTimer) clearTimeout(saveTimer);
+      if (programmaticReleaseTimer.current) clearTimeout(programmaticReleaseTimer.current);
       canvas.removeEventListener('scroll', onScroll);
-      for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) canvas.removeEventListener(type, userScroll);
+      for (const type of ['wheel', 'touchstart', 'touchmove', 'pointerdown', 'keydown']) canvas.removeEventListener(type, userScroll);
       observer.disconnect(); cancelAnimationFrame(frame);
+      canvas.style.overflowAnchor = previousOverflowAnchor;
     };
   }, [conversationId, memory]);
 
   useLayoutEffect(() => {
     const canvas = root.current?.closest<HTMLElement>('.workspace-canvas');
     if (!canvas || !positions.length) return;
-    programmaticScroll.current = true;
     const saved = anchor.current;
     const row = saved && positions.find(item => item.id === saved.turnId);
-    const requestedTop = !saved || saved.bottom ? Math.max(0, total - canvas.clientHeight)
+    const requestedTop = followLatest.current
+      ? Math.max(0, total - canvas.clientHeight)
       : row ? Math.max(0, row.top + saved.offset) : Math.max(0, viewport.top);
     // Clamp the rendered position while preserving the desired anchor: later
     // body/height updates can restore it, and stale offsets cannot show a void.
     const top = Math.max(0, Math.min(requestedTop, total - canvas.clientHeight));
     const listTop = list.current ? list.current.getBoundingClientRect().top - canvas.getBoundingClientRect().top + canvas.scrollTop : 0;
-    canvas.scrollTop = listTop + top;
+    // The measured row can be taller than the virtual estimate (for example a
+    // streamed markdown report). In follow mode the browser's scrollHeight is
+    // the authoritative tail; the estimate can leave the viewport visibly
+    // above the latest output and incorrectly show the return button.
+    const targetScrollTop = followLatest.current
+      ? Math.max(0, canvas.scrollHeight - canvas.clientHeight)
+      : listTop + top;
+    // In reading mode, only adjust when a preceding row moved. Avoid writing
+    // scrollTop on every streamed height update; that write is what causes the
+    // viewport to fight the user's wheel gesture.
+    if (Math.abs(canvas.scrollTop - targetScrollTop) > 1) {
+      programmaticScroll.current = true;
+      programmaticScrollUntil.current = Date.now() + 250;
+      // The canvas has a global smooth scroll style for user-facing jumps.
+      // Internal layout corrections must be immediate; animating every row
+      // measurement makes the virtual list chase a moving target.
+      const previousScrollBehavior = canvas.style.scrollBehavior;
+      canvas.style.scrollBehavior = 'auto';
+      canvas.scrollTop = targetScrollTop;
+      canvas.style.scrollBehavior = previousScrollBehavior;
+      if (programmaticReleaseTimer.current) clearTimeout(programmaticReleaseTimer.current);
+      programmaticReleaseTimer.current = setTimeout(() => {
+        programmaticScroll.current = false;
+        programmaticScrollUntil.current = 0;
+      }, 250);
+    } else if (programmaticScroll.current && !(saved && !saved.bottom)) {
+      programmaticScroll.current = false;
+      programmaticScrollUntil.current = 0;
+    }
     // Use the virtual coordinates until measured rows settle. Reading scrollHeight
     // here can select an empty window when a newly mounted row is much taller than its estimate.
-    setViewport({ top, height: canvas.clientHeight });
-  }, [positions, total]);
+    setViewport(previous => Math.abs(previous.top - top) > 1 || previous.height !== canvas.clientHeight
+      ? { top, height: canvas.clientHeight } : previous);
+  }, [positions, total, viewport.top]);
+
+  const returnToLatest = useCallback(() => {
+    followLatest.current = true;
+    setFollowingLatest(true);
+    const latestId = window.ids.at(-1);
+    if (latestId) {
+      const latestAnchor: Anchor = { turnId: latestId, offset: 0, bottom: true };
+      anchor.current = latestAnchor;
+      memory.anchors.delete(conversationId);
+      memory.anchors.set(conversationId, latestAnchor);
+      while (memory.anchors.size > 64) memory.anchors.delete(memory.anchors.keys().next().value!);
+      if (desktopBridge()) {
+        void desktopBridge()!.setViewport(conversationId, latestAnchor).catch(reportPersistenceError);
+      }
+    } else {
+      anchor.current = null;
+    }
+    const canvas = root.current?.closest<HTMLElement>('.workspace-canvas');
+    if (!canvas) return;
+    programmaticScroll.current = true;
+    programmaticScrollUntil.current = Date.now() + 700;
+    if (programmaticReleaseTimer.current) clearTimeout(programmaticReleaseTimer.current);
+    programmaticReleaseTimer.current = setTimeout(() => {
+      programmaticScroll.current = false;
+      programmaticScrollUntil.current = 0;
+    }, 700);
+    canvas.scrollTo({ top: canvas.scrollHeight, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  }, [conversationId, memory, window.ids]);
 
   const loadOlder = async () => {
     if (!window.olderCursor || !window.cursor || loading) return;
@@ -201,7 +302,7 @@ export const ObservedConversationView = memo(function ObservedConversationView({
       {error && <button type="button" onClick={() => setInitialLoadAttempt(value => value + 1)}>重新加载</button>}
     </div>}
     {window.olderCursor && <button disabled={loading} onClick={() => void loadOlder()}>{loading ? '正在加载…' : '加载更早的对话'}</button>}
-    {!window.atLatest && <button onClick={() => { anchor.current = null; ws.observations.latest(conversationId); }}>返回最新对话</button>}
+    {!window.atLatest && <button type="button" onClick={() => { anchor.current = null; ws.observations.latest(conversationId); }}>返回最新对话</button>}
     {!window.ids.length && window.status === 'ready' && <div className="workspace-empty"><h2>还没有对话内容</h2><p>在下方输入你的目标，开始这个任务。</p></div>}
     <div ref={list}>
     {visible.map((row, index) => <Fragment key={row.id}>
@@ -213,10 +314,9 @@ export const ObservedConversationView = memo(function ObservedConversationView({
     </Fragment>)}
     <div style={{ height: Math.max(0, total - (visible.at(-1) ? visible.at(-1)!.top + visible.at(-1)!.height : 0)) }} aria-hidden />
     </div>
-    {anchor.current && !anchor.current.bottom && <button className="back-to-latest" onClick={() => {
-      anchor.current = null; const canvas = root.current?.closest<HTMLElement>('.workspace-canvas');
-      canvas?.scrollTo({ top: canvas.scrollHeight, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
-    }}>↓ 回到最新</button>}
+    {!followingLatest && <button type="button" className="back-to-latest" aria-label="回到最新输出" onClick={returnToLatest}>
+      ↓ 回到最新
+    </button>}
   </div>;
 });
 
@@ -255,7 +355,7 @@ const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, htt
         : <LiveExecutionPanel turn={projection} onSelectSubtask={(subtaskId, title) => onOpenSubtaskDetail(projection, subtaskId, title)} />) : undefined} />
     <BlockedActions ws={ws} http={http} conversationId={conversationId} taskId={turn.taskId ?? null}
       lifecycle={details.taskLifecycle} permission={details.pendingPermission} refresh={details.refresh} />
-    <TaskResultActions delivery={details.publicDelivery} />
+    <TaskResultActions delivery={details.publicDelivery} workspaceChanges={details.workspaceChanges} />
     {details.workspaceChanges && (
       <WorkspaceChangesCard changes={details.workspaceChanges} delivered={details.publicDelivery?.files ?? []} />
     )}

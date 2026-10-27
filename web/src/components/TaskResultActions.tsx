@@ -5,10 +5,14 @@ import type { GatewayTaskViewSnapshot } from '../../../src/gateway/task-view';
  * "需要你的处理才能继续" card above, so the user never sees two button rows that
  * claim to be the same next step.
  */
-export function TaskResultActions({ delivery }: {
+export function TaskResultActions({ delivery, workspaceChanges }: {
   delivery?: GatewayTaskViewSnapshot['publicDelivery'];
+  workspaceChanges?: GatewayTaskViewSnapshot['workspaceChanges'];
 }) {
   if (!delivery) return null;
+  const stateLabel = delivery.state === 'not_published' && (workspaceChanges?.totalFiles ?? 0) > 0
+    ? `已在 Workspace 观察到 ${workspaceChanges!.totalFiles} 个文件变更`
+    : delivery.stateLabel;
   return <section className="task-result-actions" aria-label="任务交付">
     {delivery && <div className="task-result-facts" data-mode={delivery.mode}>
       <p><span className="fact-key">Workspace</span>{delivery.workspace}</p>
@@ -18,7 +22,7 @@ export function TaskResultActions({ delivery }: {
       <p><span className="fact-key">执行方式</span>目标 Workspace 就地执行（{sourceLabel(delivery.modeSource)}）</p>
       <p data-state={delivery.state}>
         <span className="fact-key">工作区文件</span>
-        {delivery.stateLabel}
+        {stateLabel}
       </p>
       {delivery.files.length > 0 && (
         <details>

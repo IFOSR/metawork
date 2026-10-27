@@ -731,6 +731,13 @@ describe('PlannerProcessSupervisor', () => {
         mimeType: 'image/png',
         data: Buffer.from('fake-png').toString('base64'),
       }],
+      attachments: [{
+        attachmentId: 'att_chart',
+        name: 'chart.png',
+        mime: 'image/png',
+        size: 123,
+        availability: 'available',
+      }],
     } as never, 'kernel')).resolves.toMatchObject({
       submittedPlan: { id: 'plan-images' },
     });
@@ -739,6 +746,8 @@ describe('PlannerProcessSupervisor', () => {
     expect(promptCommand?.images).toEqual([
       { type: 'image', data: Buffer.from('fake-png').toString('base64'), mimeType: 'image/png' },
     ]);
+    expect(promptCommand?.message).toContain('[MetaWork current-turn attachments]');
+    expect(promptCommand?.message).toContain('"attachmentId":"att_chart"');
   });
 
   it('accepts RPC message events that echo an image larger than 1 MiB', async () => {
