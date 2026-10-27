@@ -2401,6 +2401,25 @@ export class KernelExecutionRuntime {
       });
     }
     if (action.type === 'dispatch_batch') {
+      // Service-repair events are submitted while the source Subtask is still
+      // `done`. Reopen it only after Kernel authorization has been applied so
+      // a crash before/while workflow submission cannot strand an
+      // `awaiting_decision` node without a durable dispatch event. The
+      // transition is idempotent across application recovery: a replay sees
+      // `awaiting_decision` and proceeds to the same idempotent dispatch insert.
+      for (const item of action.items) {
+        if (item.attemptPayload?.protocol !== 'metawork:service-repair:v1') continue;
+        const subtask = this.deps.subtaskRepo.findById(item.subtaskId);
+        if (subtask?.taskId === action.taskId && subtask.status === 'done') {
+          this.lifecycle.transitionSubtask({
+            subtaskId: subtask.id,
+            to: 'awaiting_decision',
+            actor: 'kernel-execution-runtime',
+            reason: 'Kernel authorized service repair continuation',
+            changes: { error: '服务未就绪，已授权自动修复' },
+          });
+        }
+      }
       this.reconcileTaskState(action.taskId, { decisionId: decision.id,
         operationKey: `dispatch_resume:${decision.id}`, resumeAuthorized: true,
         reason: 'Kernel authorized this runnable frontier' });
@@ -4212,17 +4231,10 @@ export class KernelExecutionRuntime {
       failure,
       ordinal,
     });
-    // The Kernel's recovery branch authorizes a continuation for an
-    // `awaiting_decision` node, so the node is reopened for exactly the
-    // submission. Every outcome that does not authorize a dispatch rolls it
-    // back: a refused, stale or failed submission must never leave a node that
-    // no repair path can reach.
-    this.reopenSubtaskForServiceRepair(target.subtaskId, failure.summary);
     let decisions;
     try {
       ({ decisions } = await input.workflow.submit(event));
     } catch (error) {
-      this.rollbackRefusedServiceRepair(target.subtaskId);
       await this.handleServiceVerificationFailure({
         ...input,
         target,
@@ -4237,7 +4249,6 @@ export class KernelExecutionRuntime {
     if (!authorized) {
       // The Kernel refused the round (identity, budget or ordering). Report its
       // own reason instead of pretending a repair is running.
-      this.rollbackRefusedServiceRepair(target.subtaskId);
       await this.handleServiceVerificationFailure({
         ...input,
         target,
@@ -4446,35 +4457,6 @@ export class KernelExecutionRuntime {
         },
       },
     } as KernelEvent;
-  }
-
-  private reopenSubtaskForServiceRepair(subtaskId: string, reason: string): void {
-    const subtask = this.deps.subtaskRepo.findById(subtaskId);
-    if (!subtask || subtask.status !== 'done') return;
-    this.lifecycle.transitionSubtask({
-      subtaskId,
-      to: 'awaiting_decision',
-      actor: 'kernel-execution-runtime',
-      reason: `service repair submission: ${reason}`,
-      changes: { error: `服务未就绪：${reason}` },
-    });
-  }
-
-  /**
-   * Restore the node when the Kernel did not authorize the repair round. The
-   * completed work stays completed; only the pending repair placeholder is
-   * withdrawn (`awaiting_completion → completed`).
-   */
-  private rollbackRefusedServiceRepair(subtaskId: string): void {
-    const subtask = this.deps.subtaskRepo.findById(subtaskId);
-    if (!subtask || subtask.status !== 'awaiting_decision') return;
-    this.lifecycle.transitionSubtask({
-      subtaskId,
-      to: 'done',
-      actor: 'kernel-execution-runtime',
-      reason: 'service repair round was not authorized; the completed work stays completed',
-      changes: { error: null },
-    });
   }
 
   private reportServiceVerificationError(taskId: string, error: unknown): void {

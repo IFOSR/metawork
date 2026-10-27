@@ -62,6 +62,10 @@ export class ManagedLocalServices {
       retryable: boolean;
     }
   >();
+
+  private diagnosticsKey(serviceId: string, workspaceId: string | null | undefined): string {
+    return `${workspaceId ?? ''}\u0000${serviceId}`;
+  }
   constructor(private readonly deps: {
     accountId: string;
     /** Workspace identity of the owning service set, when the host knows it. */
@@ -372,7 +376,7 @@ export class ManagedLocalServices {
         this.deps.store.save(record);
       } catch {
         record.state = 'failed'; record.healthMessage = '启动进程失败'; this.deps.store.save(record);
-        this.lastDiagnostics.set(record.specification.serviceId, {
+        this.lastDiagnostics.set(this.diagnosticsKey(record.specification.serviceId, record.workspaceId), {
           specificationRevision: record.specificationRevision,
           exitObserved: true, healthStatus: null, retryable: true,
         });
@@ -395,8 +399,10 @@ export class ManagedLocalServices {
       this.deps.store.save(timedOut);
       // Keep the last real HTTP answer: a 503 (or any non-2xx) is exactly the
       // repair input the next round needs. Only the timeout verdict is new.
-      const lastTimeoutAnswer = this.lastDiagnostics.get(timedOut.specification.serviceId);
-      this.lastDiagnostics.set(timedOut.specification.serviceId, {
+      const lastTimeoutAnswer = this.lastDiagnostics.get(
+        this.diagnosticsKey(timedOut.specification.serviceId, timedOut.workspaceId),
+      );
+      this.lastDiagnostics.set(this.diagnosticsKey(timedOut.specification.serviceId, timedOut.workspaceId), {
         specificationRevision: timedOut.specificationRevision,
         exitObserved: false,
         healthStatus: lastTimeoutAnswer?.specificationRevision === timedOut.specificationRevision
@@ -487,9 +493,11 @@ export class ManagedLocalServices {
       } catch { record.state = 'unhealthy'; record.healthMessage = '服务已启动，但尚未通过健康检查'; }
     }
     record.updatedAt = new Date().toISOString(); this.deps.store.save(record);
-    const previous = this.lastDiagnostics.get(record.specification.serviceId);
+    const previous = this.lastDiagnostics.get(
+      this.diagnosticsKey(record.specification.serviceId, record.workspaceId),
+    );
     const sameContract = previous?.specificationRevision === record.specificationRevision;
-    this.lastDiagnostics.set(record.specification.serviceId, {
+    this.lastDiagnostics.set(this.diagnosticsKey(record.specification.serviceId, record.workspaceId), {
       specificationRevision: record.specificationRevision,
       exitObserved,
       // A later observation of a stopped process has no HTTP answer; the last
@@ -511,7 +519,7 @@ export class ManagedLocalServices {
         ? this.requireScoped(serviceId, workspaceId)
         : this.require(serviceId);
       const view = record.state === 'stopped' ? this.view(record) : await this.check(record);
-      const known = this.lastDiagnostics.get(serviceId);
+      const known = this.lastDiagnostics.get(this.diagnosticsKey(serviceId, record.workspaceId));
       const facts = known && known.specificationRevision === record.specificationRevision
         ? known
         : {

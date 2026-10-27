@@ -110,7 +110,7 @@ export class ImageContainerExecutorAdapter implements ExecutorAdapter {
         },
         mounts: [
           { source: binding.workspacePath, target: '/workspace', mode: 'rw' },
-          ...(input.context.workspaceContext?.accessMode !== 'write' && input.context.workspaceContext.readOnlySourcePath
+          ...(input.context.workspaceContext?.accessMode !== 'write' && input.context.workspaceContext?.readOnlySourcePath
             ? [{ source: input.context.workspaceContext.readOnlySourcePath, target: '/source', mode: 'ro' as const }]
             : []),
           { source: binding.inputsPath, target: '/inputs', mode: 'ro' },

@@ -309,6 +309,26 @@ http.createServer((req,res)=>{res.statusCode=req.url==='/health'?200:503;res.end
     await secondWorkspaceManager.stop('backend');
   }, 20000);
 
+  it('keeps same-revision diagnostics separate per Workspace', async () => {
+    const { manager, spec, deps } = await fixture();
+    const revision = localServiceSpecificationRevision(spec);
+    deps.store.save({
+      accountId: 'local-default', workspaceId: 'workspace-a', specificationRevision: revision,
+      specification: spec, state: 'failed', processId: null, processToken: null,
+      healthMessage: '服务进程已退出', updatedAt: new Date().toISOString(),
+    });
+    deps.store.save({
+      accountId: 'local-default', workspaceId: 'workspace-b', specificationRevision: revision,
+      specification: spec, state: 'stopped', processId: null, processToken: null,
+      healthMessage: '服务已停止', updatedAt: new Date().toISOString(),
+    });
+
+    const first = await manager.observe(spec.serviceId, 'workspace-a');
+    expect(first.diagnostics.exitObserved).toBe(true);
+    const second = await manager.observe(spec.serviceId, 'workspace-b');
+    expect(second.diagnostics.exitObserved).toBe(false);
+  });
+
   it('reports bounded diagnostics for the current specification without exposing them publicly', async () => {
     const { manager, spec, published } = await fixture();
     await writeFile(join(published, 'server.mjs'), `import http from 'node:http';

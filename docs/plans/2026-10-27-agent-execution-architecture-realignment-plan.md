@@ -440,3 +440,8 @@ P1/P2 已实施（2026-10-27，第三批）：
 binding 成员校验、修复目标的服务归属证据、服务修复预算只计有效轮次、`previousRound`
 的 retry 关系与“紧邻上一轮”约束、Planner 的六态枚举 / `none` 原因 / 失败 Attempt
 终态集合 / account 隔离，均已按上表修复并有回归测试。
+
+崩溃窗口修复（2026-10-27，第六批）：服务修复在 `workflow.submit()` 前保持 Subtask 为
+`done`；Kernel 只对服务修复 continuation 接受该状态，授权后的 dispatch 应用阶段才重开为
+`awaiting_decision` 并送入 AttemptSupervisor。拒绝、异常或提交前进程退出均不会留下不可达的
+`awaiting_decision` 节点；Decision application 重试沿用持久化幂等语义。

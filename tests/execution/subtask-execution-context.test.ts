@@ -854,4 +854,34 @@ describe('previous round relation gates', () => {
       reasonCode: 'service_start_failed',
     });
   });
+
+  it('ignores newer work from another Workspace when finding the previous round', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    sqlTask(db, {
+      id: 'task_failed',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_ctx',
+      status: 'failed',
+      updatedAt: '2026-10-27T00:00:00.000Z',
+    });
+    sqlTask(db, {
+      id: 'task_other_workspace',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_other',
+      status: 'succeeded',
+      updatedAt: '2026-10-27T00:01:00.000Z',
+    });
+    sqlTask(db, {
+      id: 'task_context',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_ctx',
+      status: 'running',
+      updatedAt: '2026-10-27T00:02:00.000Z',
+    });
+    expect(buildFor(db, task()).context.previousRound).toMatchObject({
+      taskId: 'task_failed',
+      reasonCode: 'service_start_failed',
+    });
+  });
 });

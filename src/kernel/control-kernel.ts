@@ -1298,13 +1298,22 @@ export class ControlKernel {
       const subtask = event.subtaskId
         ? snapshot.subtasks.find(item => item.id === event.subtaskId)
         : null;
+      const serviceRepairPayload = event.recovery.attemptPayload?.protocol === 'metawork:service-repair:v1'
+        ? event.recovery.attemptPayload
+        : null;
+      const isServiceRepair = serviceRepairPayload !== null;
+      const expectedStatus = event.recovery.attemptKind === 'primary'
+        ? 'ready'
+        : 'awaiting_decision';
+      // A service-repair event is durable before its completed Subtask is
+      // reopened. Accepting `done` here lets Kernel application perform the
+      // reopen and dispatch as one recoverable workflow application. Other
+      // recovery protocols must still start from awaiting_decision.
+      const statusAuthorized = subtask?.status === expectedStatus
+        || (isServiceRepair && event.recovery.attemptKind === 'continuation' && subtask?.status === 'done');
       if (
         !subtask
-        || subtask.status !== (
-          event.recovery.attemptKind === 'primary'
-            ? 'ready'
-            : 'awaiting_decision'
-        )
+        || !statusAuthorized
         || event.recovery.bindingFingerprint !== authorizedExecutorBindingFingerprint(
           event.recovery.authorizedBinding,
         )
@@ -1321,11 +1330,11 @@ export class ControlKernel {
           subtaskId: event.subtaskId ?? null,
         }, 'workspace recovery dispatch identity is incomplete or stale');
       }
-      if (event.recovery.attemptPayload?.protocol === 'metawork:service-repair:v1') {
+      if (serviceRepairPayload) {
         // A service repair is a bounded, ordered continuation. The Kernel owns
         // the budget and the ordinal: a replay of an already-used round, or a
         // round past the budget, is refused instead of re-running the executor.
-        const payload = event.recovery.attemptPayload;
+        const payload = serviceRepairPayload;
         const used = snapshot.serviceRepairAttemptsBySubtask?.[subtask.id] ?? 0;
         if (
           event.recovery.attemptKind !== 'continuation'

@@ -313,6 +313,7 @@ export class SubtaskExecutionContextBuilder {
           SELECT 1 FROM tasks newer
           WHERE newer.conversation_id = t.conversation_id
             AND newer.id NOT IN (t.id, ?)
+            AND COALESCE(newer.workspace_id, '') = COALESCE(t.workspace_id, '')
             AND newer.updated_at > t.updated_at
         )
       ORDER BY t.updated_at DESC

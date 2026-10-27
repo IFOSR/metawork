@@ -575,7 +575,7 @@ private async handleServiceVerificationFailure(input: {
 | 1 | 服务失败被错误收敛为最终失败 | 失败先记录 `repair_pending`（不是 `definite_failure`），只有修复预算耗尽或没有可交付的 Executor 目标时才记录确定性失败 | `kernel-execution-runtime.requestServiceRepair/handleServiceVerificationFailure` |
 | 2 | 诊断没有进入 Kernel continuation | 诊断进入 `dispatch_requested` 的 `recovery.attemptPayload`（`metawork:service-repair:v1`），Kernel 授权后生成新的 continuation dispatch；runner 把 payload 投影为 recovery packet 并渲染到 prompt | `kernel-execution-runtime.serviceRepairEvent`、`subtask-attempt-runner.boundedRecoveryPacket`、`executor/prompt-builder` |
 | 3 | 服务反馈缺少来源 Attempt | `serviceRepairTarget()` 从本 Generation 的最新 completed receipt 解析 `subtaskId`、`sourceAttemptId`、`authorizedBinding`、`bindingFingerprint`，并携带 specification revision 与轮次 | 同上 |
-| 4 | 恢复候选排除了已完成 Subtask | 已完成节点通过受控重开 + 显式 recovery dispatch 获得恢复入口，不再依赖 `resumeRecoveryCandidates()` 的 `awaiting_decision/blocked` 前提 | `reopenSubtaskForServiceRepair`、`decideDispatch` recovery 分支 |
+| 4 | 恢复候选排除了已完成 Subtask | 已完成节点在 Kernel 授权通过后的应用阶段受控重开，再由显式 recovery dispatch 获得恢复入口，不再依赖 `resumeRecoveryCandidates()` 的 `awaiting_decision/blocked` 前提 | `kernel-execution-runtime.applyExecutionDecision`、`decideDispatch` recovery 分支 |
 | 5 | Subtask 生命周期无法受控重开 | `SUBTASK_TRANSITIONS.completed = ['awaiting_completion']`（唯一出向转换，新增 `isSubtaskReopen()`）；runner 的 continuation 前提 `awaiting_decision` 因此可满足 | `task/task-lifecycle.ts` |
 | 6 | Task 状态模型把可修复失败当成最终失败 | `TaskOperationOutcome` 增加 `repair_pending`（schema 60 迁移）；服务必需工作保持 `running`，`activeOperation.phase = 'retrying'`，Task 保持 running 且展示真实错误 | `task-operation-result-repo`、`task-state-facts`、`migrations` |
 | 7 | 幂等键过粗 | 操作键 `service:start:<serviceId>:<revision>:<sourceAttemptId>:<ordinal>`；trace `eventKey` 与 dispatch `event id` 同样包含 service/revision/attempt/round | `serviceOperationKey`、`serviceRepairEvent` |
@@ -702,7 +702,7 @@ native Server 单实例检查与完整用户验收未执行。
 
 | # | 缺陷 | 修复 | 代码 |
 | --- | --- | --- | --- |
-| 1 | 服务修复在 Kernel 授权前重开 Subtask，被拒绝/异常后留下不可达状态 | 仅在提交前后短暂重开；任何未授权的结局（拒绝、过期、异常、batch 不含本 Subtask）都回滚到 `done` | `kernel-execution-runtime.requestServiceRepair/rollbackRefusedServiceRepair` |
+| 1 | 服务修复在 Kernel 授权前重开 Subtask，被拒绝/异常后留下不可达状态 | `workflow.submit()` 前不改变 Subtask；Kernel 仅对 `metawork:service-repair:v1` 接受 `done`，授权 dispatch 的应用阶段才重开为 `awaiting_decision`；拒绝/异常自然保持 `done` | `control-kernel.decideDispatch`、`kernel-execution-runtime.applyExecutionDecision` |
 | 2 | 无 workflow 的服务修复路径卡死（已改为 awaiting_decision，`serviceRepairTarget` 只认 done） | 无 workflow 时**不**重开：只写 `repair_pending`，Subtask 保持 `done`，下一次 drive 仍能找到修复目标 | 同上 |
 | 3 | 忽略 Kernel 拒绝结果，仍返回 true 并重复健康检查 | 读取 `workflow.submit()` 的 decision，只有针对本 Subtask 的 `dispatch_batch` 才算授权；否则返回 false 并记录确定性失败 | 同上 |
 | 4 | 服务修复不校验 Executor binding 仍属于该 Subtask | Kernel recovery 分支新增 `subtask.executorBindings` 成员校验（指纹自洽不再足够） | `control-kernel.decideDispatch` |
@@ -768,3 +768,21 @@ CLI 的 next-step 文案指向"直接输入新的要求"——三者语义一致
 - 仍未执行（需要真实环境/外部依赖）：native Server 单实例启动/停止检查（本机无安装配置根）、
   真实 Provider 的 Hello World / See you later / BS 服务端到端用户验收、P3（DeepSeek Harness
   ACP Adapter，方案明确为后续可选事项）。
+
+## 实施记录（2026-10-27，第六批：服务修复授权崩溃窗口）
+
+状态更新为：**服务修复 continuation 的授权顺序已收敛，崩溃窗口已关闭。**
+
+- `requestServiceRepair()` 在 `workflow.submit()` 前不再把 `done` Subtask 改成
+  `awaiting_decision`。Kernel 拒绝、提交异常或进程在提交前退出时，已完成节点保持可恢复的
+  `done` 状态。
+- `ControlKernel` 仅对 `metawork:service-repair:v1` 的 continuation 接受 `done` 节点；普通
+  recovery 仍要求 `awaiting_decision`。Kernel 同时继续校验 binding、规格版本、来源 Attempt、
+  修复轮次和预算。
+- 只有 Kernel 已授权的 `dispatch_batch` 进入 Runtime 应用阶段后，才执行
+  `done → awaiting_decision`，随后交给 `AttemptSupervisor`。Decision application 处于 applying
+  时崩溃，启动恢复会重试同一个 Decision；状态转换和 dispatch item 都按现有幂等键收敛。
+
+新增回归覆盖：授权前节点不变、拒绝/异常不变、授权应用时才重开并送入 Supervisor，以及
+`done` 只对服务修复协议开放。验证通过：`npm run lint`、`npm run build`，以及 6 个相关测试文件
+共 110 个用例全部通过；`git diff --check` 通过。

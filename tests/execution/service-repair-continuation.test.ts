@@ -92,6 +92,7 @@ function runtimeWith(overrides: {
     },
     dispatchItemRepo: {
       listByTask: () => overrides.dispatchItems ?? [],
+      insertBatch: vi.fn(),
     },
     managedLocalServices: {
       observe: async () => overrides.serviceObservation ?? {
@@ -193,8 +194,9 @@ describe('service repair continuation', () => {
     });
     expect(dispatched).toBe(true);
     expect(workflow.submit).toHaveBeenCalledTimes(1);
-    // Reopened only around the submission so the Kernel can authorize it.
-    expect(transitions.map(item => item.to)).toEqual(['awaiting_decision']);
+    // The completed node remains unchanged until the authorized dispatch is
+    // applied. The workflow event is the durable recovery boundary.
+    expect(transitions).toEqual([]);
     expect(drain).toHaveBeenCalledWith('task-1');
     const event = submitted[0] as Extract<KernelEvent, { type: 'dispatch_requested' }>;
     expect(event.type).toBe('dispatch_requested');
@@ -371,17 +373,38 @@ describe('Kernel authorization of a service repair round', () => {
     expect(exhausted.reason).toContain('service repair budget exhausted');
   });
 
-  it('requires the reopened Subtask and a binding the Subtask still authorizes', () => {
+  it('accepts a completed Subtask only for service repair and still requires its binding', () => {
     const kernel = new ControlKernel();
     const stale = dispatchSnapshot({});
     (stale as unknown as { subtasks: Array<{ status: string }> }).subtasks[0]!.status = 'done';
-    expect(kernel.decide(repairEvent(0), stale).action).toMatchObject({ type: 'block_work' });
+    expect(kernel.decide(repairEvent(0), stale).action).toMatchObject({ type: 'dispatch_batch' });
     // A self-consistent fingerprint is not enough: the Subtask must still list
     // this binding, otherwise a revoked or expired Executor would run the round.
     const foreign = dispatchSnapshot({});
     (foreign as unknown as { subtasks: Array<{ executorBindings: AuthorizedExecutorBinding[] }> })
       .subtasks[0]!.executorBindings = [];
     expect(kernel.decide(repairEvent(0), foreign).action).toMatchObject({ type: 'block_work' });
+  });
+
+  it('reopens a completed Subtask only while applying the authorized dispatch', async () => {
+    const { runtime, transitions } = runtimeWith({});
+    const enqueue = vi.fn();
+    Object.defineProperty(runtime, 'attemptSupervisor', { value: { enqueue } });
+    const decision = new ControlKernel().decide(repairEvent(0), dispatchSnapshot({}));
+    expect(decision.action.type).toBe('dispatch_batch');
+    await (runtime as unknown as {
+      applyExecutionDecision(input: Record<string, unknown>): Promise<KernelEvent | null>;
+    }).applyExecutionDecision({
+      decision,
+      executionId: 'execution-service-repair',
+      request: { workspacePath: '/tmp/metawork-test-source' },
+      progressTracker: {},
+      supervisorContext: {},
+      attemptFacts: [],
+      finishExecution: vi.fn(),
+    });
+    expect(transitions.map(item => item.to)).toEqual(['awaiting_decision']);
+    expect(enqueue).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -542,7 +565,7 @@ describe('service repair authorization outcomes', () => {
     };
   }
 
-  it('rolls the Subtask back and reports the Kernel reason when the round is refused', async () => {
+  it('leaves the completed Subtask unchanged and reports the Kernel reason when the round is refused', async () => {
     const { runtime, operations, outputs, transitions } = runtimeWith({});
     const workflow = {
       submit: vi.fn(async (event: KernelEvent) => ({
@@ -557,15 +580,15 @@ describe('service repair authorization outcomes', () => {
       workflow,
     });
     expect(dispatched).toBe(false);
-    // Reopened for the submission, then restored: no unreachable node remains.
-    expect(transitions.map(item => item.to)).toEqual(['awaiting_decision', 'done']);
+    // Refused repair leaves the completed node untouched.
+    expect(transitions).toEqual([]);
     const latest = operations.at(-1)!;
     expect(latest).toMatchObject({ outcome: 'definite_failure' });
     expect(String(latest.message)).toContain('服务进程已退出');
     expect(outputs.join('\n')).toContain('Kernel 未授权自动修复：service repair budget exhausted after 3 rounds');
   });
 
-  it('rolls back when the submission itself throws', async () => {
+  it('leaves the completed Subtask unchanged when the submission itself throws', async () => {
     const { runtime, operations, outputs, transitions } = runtimeWith({});
     const workflow = { submit: vi.fn(async () => { throw new Error('workflow store unavailable'); }) };
     const dispatched = await projectionOf(runtime).requestServiceRepair({
@@ -576,7 +599,7 @@ describe('service repair authorization outcomes', () => {
       workflow,
     });
     expect(dispatched).toBe(false);
-    expect(transitions.map(item => item.to)).toEqual(['awaiting_decision', 'done']);
+    expect(transitions).toEqual([]);
     expect(operations.at(-1)).toMatchObject({ outcome: 'definite_failure' });
     expect(outputs.join('\n')).toContain('workflow store unavailable');
   });
@@ -600,7 +623,7 @@ describe('service repair authorization outcomes', () => {
     });
     // A batch that does not contain this Subtask did not authorize this round.
     expect(dispatched).toBe(false);
-    expect(transitions.map(item => item.to)).toEqual(['awaiting_decision', 'done']);
+    expect(transitions).toEqual([]);
   });
 });
 
